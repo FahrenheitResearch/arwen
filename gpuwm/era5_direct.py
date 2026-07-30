@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import time
 from types import SimpleNamespace
 from typing import Mapping
@@ -660,6 +661,17 @@ def main(argv: list[str] | None = None) -> int:
         hierarchy_source_orography=hierarchy_source_orography,
     )
     print(json.dumps(proof, indent=2, sort_keys=True))
+    # Parity with the GFS and 20CRv3 front doors, and the last silent
+    # one of the three the prepared-forecast runners actually support:
+    # a complete, hash-bound run command on stderr, so the proof
+    # document on stdout stays machine-readable.
+    from gpuwm.gfs_direct import prepared_forecast_next_command
+
+    for line in prepared_forecast_next_command(
+            proof, output_root=args.output_root,
+            experiment_config=args.experiment_config,
+            wps_namelist=args.wps_namelist, source="era5"):
+        print(line, file=sys.stderr)
     return 0
 
 

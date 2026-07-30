@@ -194,28 +194,35 @@ exactly ([VERIFICATION.md](VERIFICATION.md)).
 ## Which suites each data route can actually prepare
 
 Selectable is not the same as preparable, and the difference is
-route-dependent. State of play in v1.0.1, plainly:
+route-dependent. State of play in v1.1.1:
 
 | route | what it can prepare |
 |---|---|
 | ERA5 config door (`[case_data]` -> `gpuwm run`) | the registry-admitted combinations |
-| GFS / HRRR preprocessor door (`rw-wps`) | **YSU (1) + MM5 surface layer (91) + Noah (2) only** |
+| GFS single domain | WSM6, Thompson, Morrison, NSSL2, MYNN; Noah-MP with an expert acknowledgement. RUC is deliberately withdrawn on this route |
+| ERA5 single domain | the same normal profiles, plus RUC |
+| HRRR single domain | the normal profiles, plus RUC and expert Noah-MP |
+| prepared domain trees (GFS, ERA5, HRRR, 20CRv3) | the normal profile family, plus expert Noah-MP |
 
-The GFS/HRRR restriction is not a science limit, it is a plumbing one:
-the front door unconditionally runs the stock-WRF exporter on its way
-out, and that exporter hard-requires `bl_pbl_physics = 1`,
-`sf_sfclay_physics = 91`, `sf_surface_physics = 2` because those are the
-combinations whose `wrfinput`/`wrfbdy` have been accepted by unchanged
-WRF v4.6.1. So **MYNN, RUC and Noah-MP are selectable but not
-preparable through the GFS/HRRR route today**, even though the GPU model
-runs all of them: the prepared cache binds the configuration bitwise, so
-there is no workaround short of the ERA5 door.
+v1.0.1 restricted the GFS/HRRR door to YSU + MM5 surface layer + Noah,
+because the front door unconditionally ran the stock-WRF exporter and
+that exporter hard-requires `bl_pbl_physics = 1`, `sf_sfclay_physics =
+91`, `sf_surface_physics = 2`. v1.1.0 removed that coupling and made
+MYNN, RUC and Noah-MP reachable; v1.1.1 withdrew exactly one
+combination, GFS + RUC, because the GFS route supplies none of the
+soil/surface fields RUC's initialization needs and the failure landed
+mid-forecast rather than at preparation.
 
-That is a bug, not a design, and it is the first item of the next
-release: the exporter requirement belongs to callers who actually want
-stock-WRF output, not to everyone who wants an ArWen forecast. Until
-then this page says so rather than letting a user discover it after
-preprocessing.
+**This table is a summary of a machine-readable authority, not the
+authority itself.** The shipped registry decides, and it will answer for
+your exact configuration:
+
+```
+rw-wps --show-physics-registry
+```
+
+Read `runner_routes.*.source_template_ids` and `expert_template_ids`.
+Where this page and that output disagree, the output is right.
 
 The prepared SINGLE-domain forecast runner adds a second, separate
 restriction: it accepts only the shipped `--physics-profile` values and
@@ -239,8 +246,8 @@ structured substitution report rather than silently rewriting:
 
 Every other unimplemented scheme id is a hard error. Options WRF
 accepts but ArWen has not validated -- moving nests, vertical
-refinement, adaptive time step, `feedback != 0`, `use_theta_m = 1`,
-non-SINT nest interpolation -- are rejected loudly at load; the
+refinement, adaptive time step, `use_theta_m = 1`, non-SINT nest
+interpolation -- are rejected loudly at load; the
 complete register with WRF source citations is
 [PROVENANCE.md](../../PROVENANCE.md).
 

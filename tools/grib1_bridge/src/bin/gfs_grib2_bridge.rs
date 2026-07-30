@@ -4,7 +4,11 @@
 //! coordinates.  The complete series is inventoried before an output path is
 //! created, and publication is an atomic directory rename.
 
+use gpuwm_preprocess_cpu::quantization::{
+    decode_quantum, is_coded_value, BoundKind, BoundVerdict, Bounds, ClampTally,
+};
 use grib_core::grib2::{flip_rows, unpack_message, Grib2File, Grib2Message, GridDefinition};
+use std::collections::BTreeMap;
 use std::env;
 use std::error::Error;
 use std::fs::{self, File};
@@ -36,7 +40,26 @@ struct FieldSpec {
     level_value: f64,
     minimum: f64,
     maximum: f64,
+    /// What each end of the declared range IS.  `Physical` marks a
+    /// saturating limit real cells sit exactly on -- zero snow, a unit
+    /// soil-moisture or ice fraction -- which is where GRIB2's packing
+    /// quantum can land a value a hair outside; those clamp back onto
+    /// the bound and are counted.  `Sanity` marks a slack plausibility
+    /// range no real value approaches, which is never widened.
+    minimum_kind: BoundKind,
+    maximum_kind: BoundKind,
     allow_missing: bool,
+}
+
+impl FieldSpec {
+    fn bounds(&self) -> Bounds {
+        Bounds::closed(
+            self.minimum,
+            self.maximum,
+            self.minimum_kind,
+            self.maximum_kind,
+        )
+    }
 }
 
 const PRESSURE_SPECS: [FieldSpec; 5] = [
@@ -51,6 +74,8 @@ const PRESSURE_SPECS: [FieldSpec; 5] = [
         level_value: 0.0,
         minimum: -1000.0,
         maximum: 80_000.0,
+        minimum_kind: BoundKind::Sanity,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: false,
     },
     FieldSpec {
@@ -64,6 +89,8 @@ const PRESSURE_SPECS: [FieldSpec; 5] = [
         level_value: 0.0,
         minimum: 120.0,
         maximum: 400.0,
+        minimum_kind: BoundKind::Sanity,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: false,
     },
     FieldSpec {
@@ -77,6 +104,8 @@ const PRESSURE_SPECS: [FieldSpec; 5] = [
         level_value: 0.0,
         minimum: 0.0,
         maximum: 110.0,
+        minimum_kind: BoundKind::Physical,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: false,
     },
     FieldSpec {
@@ -90,6 +119,8 @@ const PRESSURE_SPECS: [FieldSpec; 5] = [
         level_value: 0.0,
         minimum: -250.0,
         maximum: 250.0,
+        minimum_kind: BoundKind::Sanity,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: false,
     },
     FieldSpec {
@@ -103,6 +134,8 @@ const PRESSURE_SPECS: [FieldSpec; 5] = [
         level_value: 0.0,
         minimum: -250.0,
         maximum: 250.0,
+        minimum_kind: BoundKind::Sanity,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: false,
     },
 ];
@@ -119,6 +152,8 @@ const SURFACE_SPECS: [FieldSpec; 11] = [
         level_value: 0.0,
         minimum: 10_000.0,
         maximum: 120_000.0,
+        minimum_kind: BoundKind::Sanity,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: false,
     },
     FieldSpec {
@@ -132,6 +167,8 @@ const SURFACE_SPECS: [FieldSpec; 11] = [
         level_value: 0.0,
         minimum: -1000.0,
         maximum: 10_000.0,
+        minimum_kind: BoundKind::Sanity,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: false,
     },
     FieldSpec {
@@ -145,6 +182,8 @@ const SURFACE_SPECS: [FieldSpec; 11] = [
         level_value: 0.0,
         minimum: 170.0,
         maximum: 400.0,
+        minimum_kind: BoundKind::Sanity,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: false,
     },
     FieldSpec {
@@ -158,6 +197,8 @@ const SURFACE_SPECS: [FieldSpec; 11] = [
         level_value: 0.0,
         minimum: 0.0,
         maximum: 100_000.0,
+        minimum_kind: BoundKind::Physical,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: true,
     },
     FieldSpec {
@@ -171,6 +212,8 @@ const SURFACE_SPECS: [FieldSpec; 11] = [
         level_value: 0.0,
         minimum: 0.0,
         maximum: 100.0,
+        minimum_kind: BoundKind::Physical,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: true,
     },
     FieldSpec {
@@ -184,6 +227,8 @@ const SURFACE_SPECS: [FieldSpec; 11] = [
         level_value: 2.0,
         minimum: 170.0,
         maximum: 400.0,
+        minimum_kind: BoundKind::Sanity,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: false,
     },
     FieldSpec {
@@ -197,6 +242,8 @@ const SURFACE_SPECS: [FieldSpec; 11] = [
         level_value: 2.0,
         minimum: 0.0,
         maximum: 110.0,
+        minimum_kind: BoundKind::Physical,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: false,
     },
     FieldSpec {
@@ -210,6 +257,8 @@ const SURFACE_SPECS: [FieldSpec; 11] = [
         level_value: 10.0,
         minimum: -200.0,
         maximum: 200.0,
+        minimum_kind: BoundKind::Sanity,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: false,
     },
     FieldSpec {
@@ -223,6 +272,8 @@ const SURFACE_SPECS: [FieldSpec; 11] = [
         level_value: 10.0,
         minimum: -200.0,
         maximum: 200.0,
+        minimum_kind: BoundKind::Sanity,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: false,
     },
     FieldSpec {
@@ -236,6 +287,8 @@ const SURFACE_SPECS: [FieldSpec; 11] = [
         level_value: 0.0,
         minimum: 0.0,
         maximum: 1.0,
+        minimum_kind: BoundKind::Physical,
+        maximum_kind: BoundKind::Physical,
         allow_missing: false,
     },
     FieldSpec {
@@ -249,6 +302,8 @@ const SURFACE_SPECS: [FieldSpec; 11] = [
         level_value: 0.0,
         minimum: 0.0,
         maximum: 1.0,
+        minimum_kind: BoundKind::Physical,
+        maximum_kind: BoundKind::Physical,
         allow_missing: false,
     },
 ];
@@ -265,6 +320,8 @@ const SOIL_SPECS: [FieldSpec; 8] = [
         level_value: 0.0,
         minimum: 170.0,
         maximum: 400.0,
+        minimum_kind: BoundKind::Sanity,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: true,
     },
     FieldSpec {
@@ -278,6 +335,8 @@ const SOIL_SPECS: [FieldSpec; 8] = [
         level_value: 0.1,
         minimum: 170.0,
         maximum: 400.0,
+        minimum_kind: BoundKind::Sanity,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: true,
     },
     FieldSpec {
@@ -291,6 +350,8 @@ const SOIL_SPECS: [FieldSpec; 8] = [
         level_value: 0.4,
         minimum: 170.0,
         maximum: 400.0,
+        minimum_kind: BoundKind::Sanity,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: true,
     },
     FieldSpec {
@@ -304,6 +365,8 @@ const SOIL_SPECS: [FieldSpec; 8] = [
         level_value: 1.0,
         minimum: 170.0,
         maximum: 400.0,
+        minimum_kind: BoundKind::Sanity,
+        maximum_kind: BoundKind::Sanity,
         allow_missing: true,
     },
     FieldSpec {
@@ -317,6 +380,8 @@ const SOIL_SPECS: [FieldSpec; 8] = [
         level_value: 0.0,
         minimum: 0.0,
         maximum: 1.0,
+        minimum_kind: BoundKind::Physical,
+        maximum_kind: BoundKind::Physical,
         allow_missing: true,
     },
     FieldSpec {
@@ -330,6 +395,8 @@ const SOIL_SPECS: [FieldSpec; 8] = [
         level_value: 0.1,
         minimum: 0.0,
         maximum: 1.0,
+        minimum_kind: BoundKind::Physical,
+        maximum_kind: BoundKind::Physical,
         allow_missing: true,
     },
     FieldSpec {
@@ -343,6 +410,8 @@ const SOIL_SPECS: [FieldSpec; 8] = [
         level_value: 0.4,
         minimum: 0.0,
         maximum: 1.0,
+        minimum_kind: BoundKind::Physical,
+        maximum_kind: BoundKind::Physical,
         allow_missing: true,
     },
     FieldSpec {
@@ -356,6 +425,8 @@ const SOIL_SPECS: [FieldSpec; 8] = [
         level_value: 1.0,
         minimum: 0.0,
         maximum: 1.0,
+        minimum_kind: BoundKind::Physical,
+        maximum_kind: BoundKind::Physical,
         allow_missing: true,
     },
 ];
@@ -519,8 +590,13 @@ fn matches_parameter(message: &Grib2Message, expected: Parameter) -> bool {
         && message.product.parameter_number == expected.number
 }
 
+/// Historical floor for recognizing an exact coded value.  A record
+/// whose packing is coarser than this earns its own, larger tolerance;
+/// none earns a smaller one.
+const CODE_EPSILON: f64 = 1.0e-9;
+
 fn same_level(left: f64, right: f64) -> bool {
-    (left - right).abs() <= 1.0e-9
+    (left - right).abs() <= CODE_EPSILON
 }
 
 fn unique_match<F>(
@@ -984,11 +1060,69 @@ fn parse_series(path: &Path) -> Result<Vec<SeriesInput>, Box<dyn Error>> {
     Ok(result)
 }
 
+/// What one decoded field contributed to the receipts.
+#[derive(Clone, Copy, Debug)]
+struct FieldSummary {
+    finite: usize,
+    missing: usize,
+    minimum: f64,
+    maximum: f64,
+    /// Cells that sat outside a physical bound by no more than this
+    /// record's derived quantization tolerance and were clamped onto it.
+    clamped: ClampTally,
+}
+
+/// The decode quantum of the record carrying this field.
+fn field_quantum(message: &Grib2Message) -> f64 {
+    decode_quantum(
+        message.data_rep.template,
+        message.data_rep.binary_scale,
+        message.data_rep.decimal_scale,
+    )
+}
+
+/// The quantization census, as gate lines.
+///
+/// A bounded physical field whose cells sit exactly on their limit
+/// decodes a fraction of one packing step outside it; those cells were
+/// clamped onto the bound, and the receipt says which fields and how
+/// far, so the clamping is auditable rather than invisible.  The three
+/// lines are always written -- a run with no clamps says so with zeros
+/// and an empty field list, which is a stronger statement than silence.
+fn clamp_receipt_lines(census: &BTreeMap<&'static str, ClampTally>) -> Vec<String> {
+    let total: usize = census.values().map(|tally| tally.clamps).sum();
+    let worst = census
+        .values()
+        .map(|tally| tally.max_excursion)
+        .fold(0.0f64, f64::max);
+    let fields = census
+        .iter()
+        .filter(|(_, tally)| tally.clamps > 0)
+        .map(|(name, tally)| format!("{name}:{}:{}", tally.clamps, tally.max_excursion))
+        .collect::<Vec<_>>()
+        .join(",");
+    vec![
+        format!("bound_clamp_total\t{total}"),
+        format!("bound_clamp_max_excursion\t{worst}"),
+        format!("bound_clamp_fields\t{fields}"),
+    ]
+}
+
+fn out_of_range(spec: FieldSpec, value: f64, excursion: f64, tolerance: f64) -> Box<dyn Error> {
+    format!(
+        "{} value {value} outside [{},{}] by {excursion} \
+         (quantization tolerance {tolerance}); a bound-kissing value is clamped, \
+         this one is not",
+        spec.name, spec.minimum, spec.maximum
+    )
+    .into()
+}
+
 fn write_field(
     message: &Grib2Message,
     writer: &mut BufWriter<File>,
     spec: FieldSpec,
-) -> Result<(usize, usize, f64, f64), Box<dyn Error>> {
+) -> Result<FieldSummary, Box<dyn Error>> {
     let (values, present) = scan_normalized(message)?;
     let expected = message.grid.nx as usize * message.grid.ny as usize;
     if values.len() != expected {
@@ -999,19 +1133,51 @@ fn write_field(
         )
         .into());
     }
+    emit_values(
+        &values,
+        present.as_deref(),
+        spec,
+        field_quantum(message),
+        writer,
+    )
+}
+
+/// Bound-check, clamp, and emit one decoded field.  Split from
+/// `write_field` so the decision this patch changed can be exercised on
+/// bare values, without a hand-packed GRIB2 record standing in the way.
+fn emit_values<W: Write>(
+    values: &[f64],
+    present: Option<&[bool]>,
+    spec: FieldSpec,
+    quantum: f64,
+    writer: &mut W,
+) -> Result<FieldSummary, Box<dyn Error>> {
+    let bounds = spec.bounds();
     let mut finite = 0usize;
     let mut missing = 0usize;
     let mut minimum = f64::INFINITY;
     let mut maximum = f64::NEG_INFINITY;
-    for (value_index, raw_value) in values.into_iter().enumerate() {
-        let value = normalize_for_output(raw_value, spec)?;
+    let mut clamped = ClampTally::default();
+    for (value_index, raw_value) in values.iter().copied().enumerate() {
+        let mut value = normalize_for_output(raw_value, spec, quantum)?;
         if value.is_finite() {
-            if value < spec.minimum || value > spec.maximum {
-                return Err(format!(
-                    "{} value {value} outside [{},{}]",
-                    spec.name, spec.minimum, spec.maximum
-                )
-                .into());
+            match bounds.check(value, quantum) {
+                BoundVerdict::Inside => {}
+                BoundVerdict::Clamped {
+                    value: bound,
+                    excursion,
+                } => {
+                    // The cell is physically AT the limit; the packing
+                    // grid simply has no representation exactly on it.
+                    value = bound;
+                    clamped.record(excursion);
+                }
+                BoundVerdict::Refuse {
+                    excursion,
+                    tolerance,
+                } => {
+                    return Err(out_of_range(spec, value, excursion, tolerance));
+                }
             }
             finite += 1;
             minimum = minimum.min(value);
@@ -1045,24 +1211,49 @@ fn write_field(
     if finite == 0 {
         return Err(format!("{} has no finite support", spec.name).into());
     }
-    Ok((finite, missing, minimum, maximum))
+    Ok(FieldSummary {
+        finite,
+        missing,
+        minimum,
+        maximum,
+        clamped,
+    })
 }
 
-fn normalize_for_output(value: f64, spec: FieldSpec) -> Result<f64, Box<dyn Error>> {
+/// The land mask is a code field, not a range: its contract is the exact
+/// set 0/1 (or 0/1/2 on the legacy parameter).  The same packing grid
+/// that pushes a saturated soil cell past 1.0 pushes a land cell off its
+/// code, so the codes are recognized to the record's own tolerance
+/// rather than to a fixed epsilon, then re-emitted exactly.
+fn normalize_for_output(
+    value: f64,
+    spec: FieldSpec,
+    quantum: f64,
+) -> Result<f64, Box<dyn Error>> {
     if spec.name != "LANDSEA" || !value.is_finite() {
         return Ok(value);
     }
+    // Codes sit at 0, 1 and (legacy) 2; the widest offer any of them
+    // earns covers all of them, and never falls below the historical
+    // epsilon this contract already shipped with.
+    let tolerance = spec
+        .bounds()
+        .tolerance_at(1.0, BoundKind::Physical, quantum)
+        .max(CODE_EPSILON);
     if spec.parameter.number == 0 {
-        if same_level(value, 0.0) || same_level(value, 2.0) {
+        if is_coded_value(value, 0.0, tolerance) || is_coded_value(value, 2.0, tolerance) {
             return Ok(0.0);
         }
-        if same_level(value, 1.0) {
+        if is_coded_value(value, 1.0, tolerance) {
             return Ok(1.0);
         }
         return Err(format!("legacy GFS LAND value {value} is not 0/1/2").into());
     }
-    if same_level(value, 0.0) || same_level(value, 1.0) {
-        return Ok(value);
+    if is_coded_value(value, 0.0, tolerance) {
+        return Ok(0.0);
+    }
+    if is_coded_value(value, 1.0, tolerance) {
+        return Ok(1.0);
     }
     Err(format!("GFS LANDN value {value} is not 0/1").into())
 }
@@ -1284,7 +1475,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
         let mut manifest = BufWriter::new(File::create(partial.join("inventory.tsv"))?);
         let mut decoded_hashes = Vec::new();
-        writeln!(manifest, "hour\tindex\tvariable\tdiscipline\tcategory\tparameter\tlevel_value\tlevel_type\tdrt\tbitmap\tfinite\tmissing\tminimum\tmaximum\tfilename")?;
+        // Per-field clamp census, summed over every hour and level, so a
+        // receipt reader can see exactly which bounded fields were
+        // kissed by the packing grid and by how much.
+        let mut clamp_census: BTreeMap<&'static str, ClampTally> = BTreeMap::new();
+        writeln!(manifest, "hour\tindex\tvariable\tdiscipline\tcategory\tparameter\tlevel_value\tlevel_type\tdrt\tbitmap\tfinite\tmissing\tminimum\tmaximum\tclamped\tmax_excursion\tfilename")?;
         for ((input, inv), (file, _)) in inputs.iter().zip(&inventories).zip(&loaded) {
             let time_dir = partial.join(format!("f{:03}", input.hour));
             fs::create_dir(&time_dir)?;
@@ -1298,11 +1493,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let mut writer = BufWriter::new(File::create(&path)?);
                 for selected in inv.selected.iter().filter(|field| field.name == name) {
                     let message = &file.messages[selected.index];
-                    let (finite, missing, minimum, maximum) =
-                        write_field(message, &mut writer, selected.spec)?;
+                    let summary = write_field(message, &mut writer, selected.spec)?;
+                    clamp_census
+                        .entry(name)
+                        .or_default()
+                        .merge(summary.clamped);
                     writeln!(
                         manifest,
-                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\tf{:03}/{}.f32le",
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\tf{:03}/{}.f32le",
                         input.hour,
                         selected.index,
                         name,
@@ -1313,10 +1511,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                         message.product.level_type,
                         message.data_rep.template,
                         message.bitmap.is_some(),
-                        finite,
-                        missing,
-                        minimum,
-                        maximum,
+                        summary.finite,
+                        summary.missing,
+                        summary.minimum,
+                        summary.maximum,
+                        summary.clamped.clamps,
+                        summary.clamped.max_excursion,
                         input.hour,
                         name
                     )?;
@@ -1345,6 +1545,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         decoded_manifest.flush()?;
         drop(decoded_manifest);
+        for line in clamp_receipt_lines(&clamp_census) {
+            writeln!(gate, "{line}")?;
+        }
         writeln!(gate, "inventory_sha256\t{inventory_sha256}")?;
         writeln!(
             gate,
@@ -1897,12 +2100,12 @@ mod tests {
             .find(|field| field.name == "LANDSEA")
             .copied()
             .unwrap();
-        assert_eq!(normalize_for_output(2.0, legacy_spec).unwrap(), 0.0);
-        assert_eq!(normalize_for_output(1.0, legacy_spec).unwrap(), 1.0);
-        assert!(normalize_for_output(0.5, legacy_spec).is_err());
+        assert_eq!(normalize_for_output(2.0, legacy_spec, 0.0).unwrap(), 0.0);
+        assert_eq!(normalize_for_output(1.0, legacy_spec, 0.0).unwrap(), 1.0);
+        assert!(normalize_for_output(0.5, legacy_spec, 0.0).is_err());
         let mut modern_spec = legacy_spec;
         modern_spec.parameter.number = 218;
-        assert!(normalize_for_output(2.0, modern_spec).is_err());
+        assert!(normalize_for_output(2.0, modern_spec, 0.0).is_err());
     }
 
     #[test]
@@ -2014,5 +2217,259 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("not at the parsed envelope boundary"));
+    }
+
+    /// A GFS record's packing: reference plus `X * 2^-19`, scaled by
+    /// `10^-3`.  One step of that grid is 1.9073486328125e-9, which is
+    /// exactly the distance the field report's soil-moisture value sat
+    /// above saturation.
+    fn reported_packing() -> grib_core::grib2::DataRepresentation {
+        grib_core::grib2::DataRepresentation {
+            template: 0,
+            binary_scale: -19,
+            decimal_scale: 3,
+            ..grib_core::grib2::DataRepresentation::default()
+        }
+    }
+
+    fn reported_quantum() -> f64 {
+        let mut message = valid_message(0);
+        message.data_rep = reported_packing();
+        field_quantum(&message)
+    }
+
+    fn spec_named(name: &str) -> FieldSpec {
+        PRESSURE_SPECS
+            .iter()
+            .chain(SURFACE_SPECS.iter())
+            .chain(SOIL_SPECS.iter())
+            .find(|spec| spec.name == name)
+            .copied()
+            .unwrap_or_else(|| panic!("no spec named {name}"))
+    }
+
+    #[test]
+    fn saturated_soil_moisture_clamps_instead_of_refusing() {
+        // The externally reported blocker, to the digit:
+        //   GFS_SM010040 value 1.0000000019073487 outside [0,1]
+        // A cell whose soil is physically saturated is encoded at 1.0 and
+        // decodes one packing step above it.  It is now clamped, counted
+        // and reported -- not read as corruption.
+        let spec = spec_named("GFS_SM010040");
+        let quantum = reported_quantum();
+        assert_eq!(quantum, 1.9073486328125e-9);
+        let mut sink = Vec::new();
+        let summary = emit_values(
+            &[0.0, 0.25, 1.0000000019073487, 1.0],
+            None,
+            spec,
+            quantum,
+            &mut sink,
+        )
+        .unwrap();
+        assert_eq!(summary.finite, 4);
+        assert_eq!(summary.clamped.clamps, 1);
+        // One packing step, as far as f64 can resolve a step that small
+        // beside 1.0 -- comfortably inside the offer at that bound.
+        assert_eq!(summary.clamped.max_excursion, 1.0000000019073487f64 - 1.0);
+        assert!(summary.clamped.max_excursion <= spec.bounds().high_tolerance(quantum));
+        // The emitted value is the bound itself, not the excursion.
+        assert_eq!(summary.maximum, 1.0);
+        let emitted: Vec<f32> = sink
+            .chunks_exact(4)
+            .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        assert_eq!(emitted, vec![0.0f32, 0.25, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn a_genuinely_impossible_soil_moisture_still_refuses() {
+        let spec = spec_named("GFS_SM010040");
+        let quantum = reported_quantum();
+        let error = emit_values(&[0.5, 1.05], None, spec, quantum, &mut Vec::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("GFS_SM010040 value 1.05 outside [0,1]"),
+            "{error}"
+        );
+        // The refusal shows its own arithmetic: how far out it was, and
+        // how far out it would have tolerated.
+        assert!(error.contains("by 0.05"), "{error}");
+        assert!(error.contains("quantization tolerance 0.000001"), "{error}");
+        // The gate has an edge, not a slope: just past the offer refuses.
+        let offer = spec.bounds().high_tolerance(quantum);
+        assert!(emit_values(
+            &[0.5, 1.0 + offer * 1.000001],
+            None,
+            spec,
+            quantum,
+            &mut Vec::new()
+        )
+        .is_err());
+        assert!(emit_values(&[0.5, 1.0 + offer], None, spec, quantum, &mut Vec::new()).is_ok());
+    }
+
+    #[test]
+    fn a_slack_sanity_bound_is_not_widened_by_the_same_packing() {
+        // Relative humidity's zero is physical; its 110 % ceiling is a
+        // plausibility range.  Same record, same quantum, opposite
+        // verdicts.
+        let spec = spec_named("RH");
+        let quantum = reported_quantum();
+        let summary = emit_values(&[-quantum, 50.0], None, spec, quantum, &mut Vec::new()).unwrap();
+        assert_eq!(summary.clamped.clamps, 1);
+        assert_eq!(summary.minimum, 0.0);
+        assert_eq!(spec.bounds().high_tolerance(quantum), 0.0);
+        assert!(emit_values(
+            &[50.0, 110.0 + quantum],
+            None,
+            spec,
+            quantum,
+            &mut Vec::new()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn every_bounded_physical_field_survives_a_bound_kissing_cell() {
+        // The class, not the instance.  Each field declaring a physical
+        // end is fed a value exactly one offered tolerance outside that
+        // end and must clamp; the roster is pinned so a newly added
+        // bounded field has to state which of its ends is physical
+        // rather than inherit silence.
+        let quantum = reported_quantum();
+        let mut roster = Vec::new();
+        for spec in PRESSURE_SPECS
+            .iter()
+            .chain(SURFACE_SPECS.iter())
+            .chain(SOIL_SPECS.iter())
+            .copied()
+        {
+            let bounds = spec.bounds();
+            if spec.minimum_kind == BoundKind::Physical {
+                roster.push(format!("{}:minimum", spec.name));
+            }
+            if spec.maximum_kind == BoundKind::Physical {
+                roster.push(format!("{}:maximum", spec.name));
+            }
+            if spec.name == "LANDSEA" {
+                // A code field, not a range: its quantization fix lives
+                // in the discretizer and is asserted on its own below.
+                continue;
+            }
+            if spec.minimum_kind == BoundKind::Physical {
+                let summary = emit_values(
+                    &[spec.minimum - bounds.low_tolerance(quantum), spec.maximum],
+                    None,
+                    spec,
+                    quantum,
+                    &mut Vec::new(),
+                )
+                .unwrap_or_else(|error| panic!("{} low bound: {error}", spec.name));
+                assert_eq!(summary.clamped.clamps, 1, "{}", spec.name);
+            }
+            if spec.maximum_kind == BoundKind::Physical {
+                let summary = emit_values(
+                    &[spec.minimum, spec.maximum + bounds.high_tolerance(quantum)],
+                    None,
+                    spec,
+                    quantum,
+                    &mut Vec::new(),
+                )
+                .unwrap_or_else(|error| panic!("{} high bound: {error}", spec.name));
+                assert_eq!(summary.clamped.clamps, 1, "{}", spec.name);
+            }
+        }
+        assert_eq!(
+            roster,
+            vec![
+                "RH:minimum",
+                "SNOW:minimum",
+                "SNOWH:minimum",
+                "RH2:minimum",
+                "LANDSEA:minimum",
+                "LANDSEA:maximum",
+                "XICE:minimum",
+                "XICE:maximum",
+                "GFS_SM000010:minimum",
+                "GFS_SM000010:maximum",
+                "GFS_SM010040:minimum",
+                "GFS_SM010040:maximum",
+                "GFS_SM040100:minimum",
+                "GFS_SM040100:maximum",
+                "GFS_SM100200:minimum",
+                "GFS_SM100200:maximum",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_land_mask_codes_are_recognized_to_the_same_tolerance() {
+        // LANDSEA is a code field, and the same packing grid that pushed
+        // soil moisture past saturation pushes a land cell off its code.
+        let spec = spec_named("LANDSEA");
+        let quantum = reported_quantum();
+        let mut modern = spec;
+        modern.parameter.number = 218;
+        assert_eq!(
+            normalize_for_output(1.0000000019073487, modern, quantum).unwrap(),
+            1.0
+        );
+        assert_eq!(normalize_for_output(-quantum, modern, quantum).unwrap(), 0.0);
+        // Still exactly two codes: half land is not a code.
+        assert!(normalize_for_output(0.5, modern, quantum).is_err());
+    }
+
+    #[test]
+    fn the_receipt_names_the_clamped_fields_and_their_worst_excursion() {
+        let mut census: BTreeMap<&'static str, ClampTally> = BTreeMap::new();
+        // A field that decoded clean must not appear in the field list.
+        census.insert("GFS_SM000010", ClampTally::default());
+        census.insert(
+            "GFS_SM010040",
+            ClampTally {
+                clamps: 41,
+                max_excursion: 1.9073486328125e-9,
+            },
+        );
+        census.insert(
+            "XICE",
+            ClampTally {
+                clamps: 7,
+                max_excursion: 5.0e-10,
+            },
+        );
+        let lines = clamp_receipt_lines(&census);
+        assert_eq!(lines[0], "bound_clamp_total\t48");
+        assert_eq!(
+            lines[1]
+                .strip_prefix("bound_clamp_max_excursion\t")
+                .unwrap()
+                .parse::<f64>()
+                .unwrap(),
+            1.9073486328125e-9
+        );
+        let fields: Vec<&str> = lines[2]
+            .strip_prefix("bound_clamp_fields\t")
+            .unwrap()
+            .split(',')
+            .collect();
+        assert_eq!(fields.len(), 2);
+        assert!(fields[0].starts_with("GFS_SM010040:41:"), "{fields:?}");
+        assert_eq!(
+            fields[0].rsplit(':').next().unwrap().parse::<f64>().unwrap(),
+            1.9073486328125e-9
+        );
+        assert!(fields[1].starts_with("XICE:7:"), "{fields:?}");
+        // A clean run still says so, in the same three lines.
+        assert_eq!(
+            clamp_receipt_lines(&BTreeMap::new()),
+            vec![
+                "bound_clamp_total\t0".to_string(),
+                "bound_clamp_max_excursion\t0".to_string(),
+                "bound_clamp_fields\t".to_string(),
+            ]
+        );
     }
 }

@@ -6,6 +6,9 @@
 //! south-to-north row-major FP32 source window.  No field is selected by
 //! display name or message position.
 
+use gpuwm_preprocess_cpu::quantization::{
+    decode_quantum, BoundKind, BoundVerdict, Bounds, ClampTally,
+};
 use grib_core::grib2::{unpack_message, Grib2File, Grib2Message, GridDefinition};
 use std::env;
 use std::error::Error;
@@ -689,11 +692,77 @@ fn validate_window(window: Window, grid: &GridFingerprint) -> Result<(), Box<dyn
     Ok(())
 }
 
+/// The inventory manifest's column names.
+///
+/// Rows are rendered by `manifest_row` and nowhere else, and a test pins
+/// the two to the same width.  Three hand-written rows once gained two
+/// columns while this line did not, and nothing in the build noticed: a
+/// 13-column row shipped under an 11-column header, which is a receipt
+/// that reads wrong rather than one that fails loudly.
+const MANIFEST_HEADER: &str = "role\tindex\tvariable\tlevel_value\tlevel_type\tdrt\tbitmap\tdecoded_count\tminimum\tmaximum\tclamped\tmax_excursion\tfilename";
+
+#[allow(clippy::too_many_arguments)]
+fn manifest_row(
+    role: &str,
+    index: usize,
+    variable: &str,
+    level_value: f64,
+    level_type: u8,
+    drt: u16,
+    bitmap: bool,
+    stats: Stats,
+    filename: &str,
+) -> String {
+    format!(
+        "{role}\t{index}\t{variable}\t{level_value}\t{level_type}\t{drt}\t{bitmap}\t{}\t{}\t{}\t{}\t{}\t{filename}",
+        stats.count,
+        stats.minimum,
+        stats.maximum,
+        stats.clamped.clamps,
+        stats.clamped.max_excursion,
+    )
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Stats {
     minimum: f64,
     maximum: f64,
     count: usize,
+    /// Cells clamped back onto a physical bound they overshot by no more
+    /// than this record's own packing step.
+    clamped: ClampTally,
+}
+
+/// The physical bounds a variable is held to, and how far past each the
+/// packing grid is allowed to have pushed a cell that sits exactly on it.
+///
+/// A mixing ratio is zero across most of a domain and a fraction is one
+/// over solid ice; both are encoded AT the limit and both can decode a
+/// step outside it.  See `quantization` for the derivation -- this bridge
+/// makes the same distinction, with `f64::INFINITY` standing in for "no
+/// bound declared on this side".
+///
+/// These fields carry no declared range, so the tolerance ceiling is
+/// anchored on `scale`: the magnitude the record's own data occupies,
+/// measured before any clamping.  A field that is zero everywhere gets a
+/// scale of zero and therefore no tolerance at all, which is right --
+/// there is nothing there to have been quantized.
+fn value_bounds(nonnegative: bool, unit_fraction: bool, scale: f64) -> Bounds {
+    Bounds {
+        minimum: if nonnegative { 0.0 } else { f64::NEG_INFINITY },
+        maximum: if unit_fraction { 1.0 } else { f64::INFINITY },
+        minimum_kind: if nonnegative {
+            BoundKind::Physical
+        } else {
+            BoundKind::Sanity
+        },
+        maximum_kind: if unit_fraction {
+            BoundKind::Physical
+        } else {
+            BoundKind::Sanity
+        },
+        scale,
+    }
 }
 
 fn decode_crop_write(
@@ -702,8 +771,9 @@ fn decode_crop_write(
     window: Window,
     variable: &str,
     nonnegative: bool,
+    unit_fraction: bool,
 ) -> Result<Stats, Box<dyn Error>> {
-    let values = unpack_message(message)?;
+    let mut values = unpack_message(message)?;
     let nx = message.grid.nx as usize;
     let ny = message.grid.ny as usize;
     if values.len() != nx * ny {
@@ -714,17 +784,50 @@ fn decode_crop_write(
         )
         .into());
     }
-    let mut minimum = f64::INFINITY;
-    let mut maximum = f64::NEG_INFINITY;
+    // Anchor first, judge second: the tolerance ceiling is a fraction of
+    // the magnitude this record's own data occupies, which is only known
+    // once the whole field has been read.
+    let mut scale = 0.0f64;
     for value in values.iter().copied() {
         if !value.is_finite() {
             return Err(format!("{variable} contains a non-finite decoded value").into());
         }
-        if nonnegative && value < 0.0 {
-            return Err(format!("{variable} contains negative value {value}").into());
+        scale = scale.max(value.abs());
+    }
+    let bounds = value_bounds(nonnegative, unit_fraction, scale);
+    let quantum = decode_quantum(
+        message.data_rep.template,
+        message.data_rep.binary_scale,
+        message.data_rep.decimal_scale,
+    );
+    let mut minimum = f64::INFINITY;
+    let mut maximum = f64::NEG_INFINITY;
+    let mut clamped = ClampTally::default();
+    for value in values.iter_mut() {
+        match bounds.check(*value, quantum) {
+            BoundVerdict::Inside => {}
+            BoundVerdict::Clamped {
+                value: bound,
+                excursion,
+            } => {
+                *value = bound;
+                clamped.record(excursion);
+            }
+            BoundVerdict::Refuse {
+                excursion,
+                tolerance,
+            } => {
+                return Err(format!(
+                    "{variable} value {value} outside [{},{}] by {excursion} \
+                     (quantization tolerance {tolerance}); a bound-kissing value \
+                     is clamped, this one is not",
+                    bounds.minimum, bounds.maximum
+                )
+                .into());
+            }
         }
-        minimum = minimum.min(value);
-        maximum = maximum.max(value);
+        minimum = minimum.min(*value);
+        maximum = maximum.max(*value);
     }
     for j in window.j_start..=window.j_end {
         for i in window.i_start..=window.i_end {
@@ -739,6 +842,7 @@ fn decode_crop_write(
         minimum,
         maximum,
         count: values.len(),
+        clamped,
     })
 }
 
@@ -754,6 +858,15 @@ fn atmosphere_nonnegative(variable: &str) -> bool {
                 .map(|spec| spec.nonnegative)
         })
         .unwrap_or(false)
+}
+
+/// The variables whose upper limit is a saturating physical one rather
+/// than a plausibility ceiling: land and ice are areal fractions, and
+/// volumetric soil moisture is a saturation fraction.  Water vapour at
+/// 2 m is deliberately absent -- one kg/kg is an impossibility, not a
+/// limit real cells sit on -- so it keeps its exact refusal.
+fn unit_fraction(variable: &str) -> bool {
+    matches!(variable, "LANDSEA" | "XICE" | "SOILW")
 }
 
 fn write_atmosphere(
@@ -779,22 +892,29 @@ fn write_atmosphere(
                 .messages
                 .get(selected.index)
                 .ok_or("selected atmosphere index disappeared on reopen")?;
-            let stats =
-                decode_crop_write(message, &mut writer, window, spec.name, spec.nonnegative)?;
+            let stats = decode_crop_write(
+                message,
+                &mut writer,
+                window,
+                spec.name,
+                spec.nonnegative,
+                unit_fraction(spec.name),
+            )?;
             any_positive |= stats.maximum > 0.0;
             writeln!(
                 manifest,
-                "{role}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                selected.index,
-                spec.name,
-                selected.level_value,
-                message.product.level_type,
-                message.data_rep.template,
-                message.bitmap.is_some(),
-                stats.count,
-                stats.minimum,
-                stats.maximum,
-                path.file_name().unwrap().to_string_lossy()
+                "{}",
+                manifest_row(
+                    role,
+                    selected.index,
+                    spec.name,
+                    selected.level_value,
+                    message.product.level_type,
+                    message.data_rep.template,
+                    message.bitmap.is_some(),
+                    stats,
+                    &path.file_name().unwrap().to_string_lossy(),
+                )
             )?;
         }
         writer.flush()?;
@@ -824,24 +944,30 @@ fn write_atmosphere(
             window,
             spec.name,
             atmosphere_nonnegative(spec.name),
+            unit_fraction(spec.name),
         )?;
         writer.flush()?;
-        if matches!(spec.name, "Q2" | "LANDSEA" | "XICE") && stats.maximum > 1.0 {
+        // Q2 keeps its post-hoc ceiling: one kg/kg of water vapour is a
+        // plausibility limit, not a saturating one, so no quantization
+        // argument applies to it.  LANDSEA and XICE are fractions and are
+        // now held to one cell at a time, inside the decoder.
+        if spec.name == "Q2" && stats.maximum > 1.0 {
             return Err(format!("{role} {} exceeds one: {}", spec.name, stats.maximum).into());
         }
         writeln!(
             manifest,
-            "{role}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            selected.index,
-            spec.name,
-            selected.level_value,
-            message.product.level_type,
-            message.data_rep.template,
-            message.bitmap.is_some(),
-            stats.count,
-            stats.minimum,
-            stats.maximum,
-            path.file_name().unwrap().to_string_lossy()
+            "{}",
+            manifest_row(
+                role,
+                selected.index,
+                spec.name,
+                selected.level_value,
+                message.product.level_type,
+                message.data_rep.template,
+                message.bitmap.is_some(),
+                stats,
+                &path.file_name().unwrap().to_string_lossy(),
+            )
         )?;
     }
     Ok(())
@@ -869,23 +995,22 @@ fn write_soil(
                 .messages
                 .get(selected.index)
                 .ok_or("selected soil index disappeared on reopen")?;
-            let stats = decode_crop_write(message, &mut writer, window, variable, true)?;
-            if variable == "SOILW" && stats.maximum > 1.0 {
-                return Err(format!("{role} SOILW exceeds one: {}", stats.maximum).into());
-            }
+            let stats =
+                decode_crop_write(message, &mut writer, window, variable, true, unit_fraction(variable))?;
             writeln!(
                 manifest,
-                "{role}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                selected.index,
-                variable,
-                selected.level_value,
-                message.product.level_type,
-                message.data_rep.template,
-                message.bitmap.is_some(),
-                stats.count,
-                stats.minimum,
-                stats.maximum,
-                path.file_name().unwrap().to_string_lossy()
+                "{}",
+                manifest_row(
+                    role,
+                    selected.index,
+                    variable,
+                    selected.level_value,
+                    message.product.level_type,
+                    message.data_rep.template,
+                    message.bitmap.is_some(),
+                    stats,
+                    &path.file_name().unwrap().to_string_lossy(),
+                )
             )?;
         }
         writer.flush()?;
@@ -1373,7 +1498,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             return Err(format!("parallel decode failed: {errors:?}").into());
         }
         let mut manifest = BufWriter::new(File::create(partial.join("inventory.tsv"))?);
-        writeln!(manifest, "role\tindex\tvariable\tlevel_value\tlevel_type\tdrt\tbitmap\tdecoded_count\tminimum\tmaximum\tfilename")?;
+        writeln!(manifest, "{MANIFEST_HEADER}")?;
         for input in &inputs {
             let fragment_path = partial.join(format!(".inventory-f{:02}.tsv", input.forecast_hour));
             let mut fragment = File::open(&fragment_path)?;
@@ -1602,5 +1727,114 @@ mod tests {
         assert!(validate_series_cycle_horizon(&[17, 18], "2026-07-18 05:00:00").is_ok());
         assert!(validate_series_cycle_horizon(&[18, 19], "2026-07-18 05:00:00").is_err());
         assert!(validate_series_cycle_horizon(&[0, 1], "not-a-cycle").is_err());
+    }
+
+    /// One step of a `2^-19 * 10^-3` packing grid -- the spacing that put
+    /// a saturated GFS soil cell above 1.0, and the same shape of thing
+    /// that puts a hydrometeor-free HRRR cell below 0.0.
+    const ONE_STEP: f64 = 1.9073486328125e-9;
+
+    #[test]
+    fn a_hydrometeor_free_cell_clamps_to_zero_rather_than_refusing() {
+        // Cloud water is exactly zero over most of a domain.  Encoded at
+        // the bound, it can decode a step below it; that is the packing
+        // grid talking, not corruption.
+        let bounds = value_bounds(true, false, 0.02);
+        match bounds.check(-ONE_STEP, ONE_STEP) {
+            BoundVerdict::Clamped { value, excursion } => {
+                assert_eq!(value, 0.0);
+                assert_eq!(excursion, ONE_STEP);
+            }
+            other => panic!("a dry cell must clamp, got {other:?}"),
+        }
+        // Genuinely negative cloud water is still refused.
+        assert!(matches!(
+            bounds.check(-1.0e-4, ONE_STEP),
+            BoundVerdict::Refuse { .. }
+        ));
+    }
+
+    #[test]
+    fn a_saturated_soil_moisture_cell_clamps_to_one() {
+        let bounds = value_bounds(true, true, 1.0);
+        assert!(matches!(
+            bounds.check(1.0 + ONE_STEP, ONE_STEP),
+            BoundVerdict::Clamped { value: 1.0, .. }
+        ));
+        assert!(matches!(
+            bounds.check(1.05, ONE_STEP),
+            BoundVerdict::Refuse { .. }
+        ));
+    }
+
+    #[test]
+    fn only_the_true_fractions_are_held_to_one() {
+        // Water vapour at 2 m has no saturating unit limit, so its
+        // ceiling stays an exact refusal rather than a clamped one.
+        for variable in ["LANDSEA", "XICE", "SOILW"] {
+            assert!(unit_fraction(variable), "{variable}");
+        }
+        for variable in ["Q2", "SPFH", "QC", "PSFC", "TT"] {
+            assert!(!unit_fraction(variable), "{variable}");
+        }
+        assert!(matches!(
+            value_bounds(true, false, 1.0).check(1.0 + ONE_STEP, ONE_STEP),
+            BoundVerdict::Inside
+        ));
+    }
+
+    #[test]
+    fn a_field_that_is_zero_everywhere_is_offered_nothing() {
+        // With no magnitude to measure a negligible fraction of, there is
+        // nothing that could have been quantized: the gate stays shut.
+        let bounds = value_bounds(true, false, 0.0);
+        assert_eq!(bounds.low_tolerance(ONE_STEP), 0.0);
+        assert!(matches!(
+            bounds.check(-ONE_STEP, ONE_STEP),
+            BoundVerdict::Refuse { .. }
+        ));
+    }
+
+    #[test]
+    fn every_manifest_row_is_as_wide_as_the_header() {
+        // The receipt this pins is not hypothetical: three hand-written
+        // rows gained `clamped` and `max_excursion` while the header
+        // line did not, and the build could not notice -- a 13-column
+        // row shipped under an 11-column header, a receipt that reads
+        // wrong rather than one that fails.
+        let row = manifest_row(
+            "atmosphere",
+            7,
+            "SOILW",
+            0.05,
+            SOIL_LEVEL_TYPE,
+            0,
+            false,
+            Stats {
+                minimum: 0.0,
+                maximum: 1.0,
+                count: 4,
+                clamped: ClampTally {
+                    clamps: 2,
+                    max_excursion: 1.9073486328125e-9,
+                },
+            },
+            "SOILW.f32le",
+        );
+        assert_eq!(
+            row.split('\t').count(),
+            MANIFEST_HEADER.split('\t').count(),
+            "row {row}\nheader {MANIFEST_HEADER}"
+        );
+        assert!(!row.contains('\n'));
+        // And the two clamp columns really carry the census.
+        let columns: Vec<&str> = row.split('\t').collect();
+        let header: Vec<&str> = MANIFEST_HEADER.split('\t').collect();
+        let clamped = header.iter().position(|name| *name == "clamped").unwrap();
+        assert_eq!(columns[clamped], "2");
+        assert_eq!(
+            columns[clamped + 1].parse::<f64>().unwrap(),
+            1.9073486328125e-9
+        );
     }
 }

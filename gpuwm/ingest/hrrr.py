@@ -20,6 +20,7 @@ from typing import Mapping, MutableMapping
 import numpy as np
 
 from gpuwm.hrrr_forecast import validate_hrrr_source_forecast_hours
+from gpuwm.ingest.quantization import clamp_bound_kissing
 from gpuwm.ingest.horiz import (
     HorizontalSnapshot,
     _cupy,
@@ -769,8 +770,29 @@ def _source_window_rotation(
 
 
 def _require_source_physical_ranges(source: Mapping[str, np.ndarray]) -> None:
-    landsea = np.asarray(source["LANDSEA"])
-    soilw = np.asarray(source["SOILW"])
+    """Admit the source fields, clamping only what sits ON a bound.
+
+    A solid-land cell is stored at a land fraction of exactly 1.0 and
+    saturated soil at a moisture fraction of exactly 1.0; both come back
+    a hair above it, because the decode rounds.  Refusing those was the
+    HRRR twin of the GFS field report -- ``1.0000000019`` was reproduced
+    on both -- so the two unit fractions are now clamped within the
+    round-off this pipeline carries and refuse beyond it.  The
+    temperature and humidity ranges below are plausibility windows no
+    real value approaches, and are untouched.
+
+    This is admission, not repair: a snapshot's field mapping is a
+    read-only proxy, so the clamped copies decide the verdict here and
+    the arrays are clamped again where they are consumed (the soil seam,
+    and the mapped-output check below).  Clamping at the point of use is
+    the honest place for it -- nothing downstream inherits a value this
+    function silently rewrote.
+    """
+
+    landsea, _ = clamp_bound_kissing(
+        source["LANDSEA"], minimum=0.0, maximum=1.0)
+    soilw, _ = clamp_bound_kissing(
+        source["SOILW"], minimum=0.0, maximum=1.0)
     soilt = np.asarray(source["SOILT"])
     spfh = np.asarray(source["SPFH"])
     q2 = np.asarray(source["Q2"])
@@ -802,6 +824,9 @@ def _record_soil_field_stats(report, name, source, candidate,
     if source_values.shape[1] == 0 or target_values.shape[1] == 0:
         raise ValueError("soil mapping requires source and target land cells")
     lower, upper = limits
+    # Interpolation inherits the source's bound-kissing cells, so the
+    # mapped output is admitted on the same terms the source was.
+    candidate, _ = clamp_bound_kissing(candidate, minimum=lower, maximum=upper)
     if (not np.isfinite(candidate).all()
             or np.any((candidate < lower) | (candidate > upper))):
         raise ValueError(

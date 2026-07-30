@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import math
 import os
+import shlex
 import shutil
 import tomllib
 from datetime import datetime
@@ -883,6 +884,18 @@ def _posix(path) -> str:
     return str(path).replace("\\", "/")
 
 
+def _printed_path(path) -> str:
+    """A path inside a printed command, quoted if a shell would split it.
+
+    ``--out C:/my domains/case`` is a valid destination and was printed
+    bare, so the "next:" command -- whose entire value is that it can be
+    pasted -- became two arguments the moment it was.  Ordinary paths
+    come back unquoted.
+    """
+
+    return shlex.quote(_posix(path))
+
+
 def _relative_or_absolute(path: Path, base: Path) -> str:
     try:
         return _posix(os.path.relpath(path, base))
@@ -1390,7 +1403,7 @@ def domain_main(args) -> int:
     print("next: gpuwm fetch "
           f"--source {args.source} --cycle {fetch_hints['cycle']} "
           f"--hours {fetch_hints['hours']} {area_flag} "
-          f"--out {printed_out}")
+          f"--out {_printed_path(printed_out)}")
     for note in area_notes:
         print(f"note: {note}")
     print(f"physics: {physics_summary(profile)}")
@@ -1427,7 +1440,7 @@ def domain_main(args) -> int:
         print("gpuwm check: deferred -- declared inputs not on disk yet:")
         for item in missing:
             print(f"  missing {item}")
-        print(f"  after fetching, run: gpuwm check {_posix(out)} "
+        print(f"  after fetching, run: gpuwm check {_printed_path(out)} "
               f"--budget-gib {budget_gib:g} --vram-gib {vram_gib:g}")
         _print_geog_help()
         return 0
@@ -1448,8 +1461,10 @@ def register_cli(subparsers) -> None:
         help="wizard: emit an experiment TOML for a point + GPU budget, "
              "sized by the in-process VRAM estimator")
     parser.add_argument("--point", required=True, metavar="LAT,LON",
-                        help="domain center in decimal degrees, any land "
-                             "point on earth; the projection is "
+                        help="domain center in decimal degrees, anywhere "
+                             "except the poles themselves -- a domain "
+                             "containing a pole is unsupported, so |lat| "
+                             "90 is refused; the projection is "
                              "auto-selected from |lat| (<25 Mercator, "
                              "25-60 Lambert conformal, >60 polar "
                              "stereographic) unless --projection is set. "

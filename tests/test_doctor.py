@@ -1051,3 +1051,144 @@ def test_the_whole_printed_report_pastes_as_one_sequence(
                 "remedy continuation lines must line up under the label: "
                 f"{line!r}")
         cursor += len(printed)
+
+
+def test_doctor_finds_basemaps_the_way_the_renderer_does(tmp_path,
+                                                         monkeypatch):
+    """A renderer built from a clone resolves assets from its own tree.
+
+    This is the V-14 field finding: gpuwm doctor probed only its own
+    checkout path and announced "NO basemap assets found" on installs
+    where rw_wrfbatch was drawing coastlines from the build directory
+    beside it.
+    """
+
+    from gpuwm import rustwx
+
+    monkeypatch.delenv("RUSTWX_BASEMAP_DIR", raising=False)
+    monkeypatch.delenv("RUSTWX_ASSETS_DIR", raising=False)
+    # Somewhere with no assets above it, so the cwd walk cannot rescue
+    # a probe that fails to look beside the executable.
+    working = tmp_path / "elsewhere"
+    working.mkdir()
+    monkeypatch.chdir(working)
+
+    clone = tmp_path / "clone" / "tools" / "rustwx"
+    renderer = clone / "target" / "release" / "rw_wrfbatch"
+    renderer.parent.mkdir(parents=True)
+    renderer.write_bytes(b"")
+    assets = clone / "assets" / "basemap"
+    assets.mkdir(parents=True)
+
+    # The renderer walks up from its own directory: target/release ->
+    # target -> tools/rustwx, where the assets are.
+    assert rustwx.resolve_basemap_dir(renderer) == assets
+    # And only by walking up from it: nothing else in this environment
+    # can reach that build's assets, which is exactly the situation a
+    # pip user is in.
+    assert rustwx.resolve_basemap_dir(None) != assets
+    assert assets not in rustwx.basemap_candidates(None)
+
+
+def test_the_basemap_environment_overrides_win_in_the_renderers_order(
+        tmp_path, monkeypatch):
+    from gpuwm import rustwx
+
+    monkeypatch.delenv("RUSTWX_ASSETS_DIR", raising=False)
+    override = tmp_path / "override"
+    override.mkdir()
+    clone = tmp_path / "clone" / "tools" / "rustwx"
+    renderer = clone / "target" / "release" / "rw_wrfbatch"
+    renderer.parent.mkdir(parents=True)
+    renderer.write_bytes(b"")
+    (clone / "assets" / "basemap").mkdir(parents=True)
+
+    monkeypatch.setenv("RUSTWX_BASEMAP_DIR", str(override))
+    assert rustwx.resolve_basemap_dir(renderer) == override
+    assert rustwx.basemap_candidates(renderer)[0] == override
+
+    monkeypatch.delenv("RUSTWX_BASEMAP_DIR")
+    monkeypatch.setenv("RUSTWX_ASSETS_DIR", str(tmp_path / "assets_root"))
+    assert rustwx.basemap_candidates(renderer)[0] == (
+        tmp_path / "assets_root" / "basemap")
+
+
+def test_the_checkout_path_is_still_the_last_candidate():
+    """The vendored crate's own assets remain reachable, just not alone."""
+
+    from gpuwm import rustwx
+
+    assert rustwx.basemap_candidates(None)[-1] == rustwx.basemap_dir()
+
+
+def test_a_real_doctor_gap_prints_a_comment_only_remedy(monkeypatch,
+                                                        tmp_path):
+    """The honest case the README now admits, proved from doctor.
+
+    An unset-then-wrong `GPUWM_CASE_DATA_ROOT` is a gap whose fix is a
+    path only the user knows, so doctor prints a `#`-comment remedy with
+    no runnable command in it. That is exactly the case that makes
+    "every gap prints the exact command" a lie -- and the case the
+    softened README covers with "a few cannot be".
+    """
+
+    missing = tmp_path / "not-a-real-root"
+    monkeypatch.setenv("GPUWM_CASE_DATA_ROOT", str(missing))
+    gap = {check.name: check
+           for check in doctor._case_data_root_check()}["GPUWM_CASE_DATA_ROOT"]
+    assert gap.status == "missing"
+    assert gap.remedy
+    remedy_lines = [line.strip() for line in gap.remedy.splitlines()
+                    if line.strip()]
+    # Every line is a comment: there is genuinely no command to print.
+    assert remedy_lines and all(line.startswith("#") for line in remedy_lines), \
+        gap.remedy
+
+
+def test_every_remedy_line_doctor_can_emit_is_a_command_or_a_comment():
+    """Doctor's own closing contract, over the whole live estate.
+
+    Not "every remedy is a command" -- some are `#`-comment-only, some
+    are multi-step. The invariant the README must state, and does, is
+    that every printed remedy LINE is a command or a `#` comment, so the
+    block survives being pasted whole.
+    """
+
+    for check in doctor.collect_checks():
+        if not check.remedy:
+            continue
+        for raw in check.remedy.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            assert line.startswith("#") or _looks_like_command(line), (
+                check.name, line)
+
+
+def _looks_like_command(line: str) -> bool:
+    # A command line starts a shell invocation or continues one; a prose
+    # sentence would fail this and be caught. Mirrors the doctor remedy
+    # contract, deliberately narrow.
+    first = line.split()[0] if line.split() else ""
+    return (first in {"pip", "python", "cargo", "git", "bash", "set",
+                      "export", "rustup", "conda", "uv", "$env:GPUWM_GRIB1_BRIDGE",
+                      "gpuwm", "rw-wps"}
+            or line.endswith("\\")
+            or "=" in first)
+
+
+def test_the_readme_states_doctors_contract_not_the_old_overclaim():
+    """The README claim is bound to doctor's behaviour, not free prose.
+
+    v1.1.1 shipped "every gap prints the exact command that fixes it",
+    which the two comment-only gaps above contradict. The README must
+    carry doctor's real contract instead.
+    """
+    from pathlib import Path
+
+    import gpuwm
+
+    readme = (Path(gpuwm.__file__).resolve().parent.parent
+              / "README.md").read_text(encoding="utf-8")
+    assert "every gap prints the exact command that fixes it" not in readme
+    assert "command or a `#` comment" in readme

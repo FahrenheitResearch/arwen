@@ -21,6 +21,7 @@ from gpuwm.gfs_direct import (
     _verify_static_receipt,
     _verify_input_manifest,
 )
+from gpuwm.bridges import decode_failure_message
 from gpuwm.experiment import VerticalConfig, load_experiment
 from gpuwm.physics_compat import MORRISON_PROFILE_ID, WSM6_PROFILE_ID
 from gpuwm.ingest.grib import Era5Snapshot
@@ -461,7 +462,9 @@ def test_the_front_door_prints_the_forecast_command_it_already_knows(tmp_path):
     # The two values v1.0.0 left the user to work out are filled in.
     assert f"--physics-profile {WSM6_PROFILE_ID}" in text
     outdir = root.parent / f"{root.name}-forecast"
-    assert f"--outdir {outdir}" in text
+    # POSIX display form: the certified runtime is Linux/CUDA, and
+    # forward slashes are accepted by every path API on Windows too.
+    assert f"--outdir {_printed(outdir)}" in text
     _assert_pasteable(lines)
     _assert_runner_accepts_printed_outdir(text, prepared_root=root)
 
@@ -476,10 +479,18 @@ def test_the_front_door_prints_the_forecast_command_it_already_knows(tmp_path):
     assert "prepared_domain_tree_forecast.py" in hierarchy_text
     assert f"--preparation-receipt-sha256 {proof_digest}" in hierarchy_text
     assert f"--experiment-config-sha256 {_digest(config)}" in hierarchy_text
-    assert f"--outdir {outdir}" in hierarchy_text
+    assert f"--outdir {_printed(outdir)}" in hierarchy_text
     _assert_pasteable(hierarchy)
     _assert_runner_accepts_printed_outdir(
         hierarchy_text, prepared_root=root, config=config)
+
+
+def _printed(value) -> str:
+    """A path as the next-command printer renders it."""
+
+    import shlex
+
+    return shlex.quote(str(value).replace("\\", "/"))
 
 
 def _assert_runner_accepts_printed_outdir(text, *, prepared_root,
@@ -822,3 +833,124 @@ def test_the_front_door_manifest_line_is_pasteable_too(tmp_path):
     printed = [line for text in said for line in text.splitlines()]
     assert any("rw-wps --source gfs" in line for line in printed)
     _assert_pasteable(printed)
+
+
+def test_a_bound_refusal_reaches_python_with_the_reason_and_a_remedy():
+    """The reported blocker's shape, as a user would now receive it.
+
+    v1.1.1 raised ``GFS Rust bridge failed: <stderr>`` and stopped.  The
+    stderr is true and unreadable on its own: a soil-moisture value of
+    1.05 means nothing to someone who did not write the bridge, and the
+    obvious reading -- that the range is too tight -- is the one thing
+    that must not be acted on.
+    """
+
+    stderr = (
+        "GFS_SM010040 value 1.05 outside [0,1] by 0.05 "
+        "(quantization tolerance 0.000001); a bound-kissing value is "
+        "clamped, this one is not\n")
+    message = decode_failure_message("GFS Rust bridge", stderr)
+    lines = message.splitlines()
+
+    # The bridge's own words survive verbatim on the first line.
+    assert lines[0] == (
+        "GFS Rust bridge failed: " + stderr.strip())
+    # And the remedy says what the number means, that bound-kissing is
+    # already handled, and what to actually do.
+    assert "remedy:" in message
+    assert "GFS_SM010040 decoded 1.05" in message
+    assert "clamps those" in message
+    assert "Re-fetch the cycle and re-run" in message
+    # Every remedy line is a comment or a command, so the block survives
+    # being pasted whole.
+    for line in lines[2:]:
+        assert line.strip().startswith("#"), line
+    _assert_pasteable(lines)
+
+
+def test_a_failure_that_is_not_a_bound_refusal_gains_no_quantization_prose():
+    """A missing file is not a packing story and must not be told as one."""
+
+    message = decode_failure_message(
+        "GFS Rust bridge", "series line 1 references missing \"f000.grb2\"\n")
+    assert message == (
+        "GFS Rust bridge failed: series line 1 references missing "
+        "\"f000.grb2\"")
+    assert "quantization" not in message
+    assert "remedy" not in message
+
+
+def test_a_silent_decoder_failure_still_names_itself():
+    assert decode_failure_message("GFS Rust bridge", "   ") == (
+        "GFS Rust bridge failed")
+
+
+def test_the_printed_command_survives_a_path_with_a_space_in_it():
+    """Not lexical this time: the line is shell-parsed back to argv.
+
+    The existing checks reject angle brackets and ALL-CAPS placeholders,
+    which is why a real defect walked past them -- a perfectly valid
+    `--outdir` containing a space was printed bare and split into two
+    arguments the moment the command was pasted.
+    """
+
+    import shlex
+
+    from gpuwm.gfs_direct import _arg
+
+    for awkward in ("plain/path", "a dir/with spaces", "quote's/dir",
+                    "dollar$dir/x"):
+        rendered = _arg(awkward)
+        assert shlex.split(f"--outdir {rendered}") == ["--outdir", awkward]
+    # An ordinary path is left alone, so this is invisible except where
+    # it matters.
+    assert _arg("relative/output") == "relative/output"
+
+
+@pytest.mark.parametrize("proof", [
+    # The single-domain branch (gfs_direct.py ~1233-1242): prints
+    # --prepared-root, --experiment-config, --wps-namelist, --outdir.
+    {"input_manifest_sha256": "a" * 64,
+     "prepared_cache": {"content_sha256": "b" * 64}},
+    # The multi-domain hierarchy branch (~1207-1216): a proof with no
+    # single prepared-cache identity, printing the OTHER runner's
+    # --prepared-root, --experiment-config, --outdir.  Both branches
+    # interpolate paths, so both must survive a path with a space.
+    {"schema": "gpuwm-gfs-native-hierarchy-proof-v1"},
+], ids=["single-domain", "hierarchy"])
+def test_every_printed_path_in_the_forecast_command_is_shell_parseable(
+        tmp_path, proof):
+    import shlex
+    import shutil
+
+    from gpuwm.gfs_direct import prepared_forecast_next_command
+
+    root = tmp_path / "a case with spaces" / "prepared"
+    root.mkdir(parents=True)
+    (root / "proof.json").write_text(json.dumps(proof), encoding="utf-8")
+    # The experiment config and namelist live in the spaced directory too,
+    # so their printed paths -- not only --outdir -- carry a space and
+    # must be quoted to survive the parse.
+    config = shutil.copy2(
+        _wizard_single_domain_config(tmp_path), root / "case config.toml")
+    namelist = root / "namelist with spaces.wps"
+    namelist.write_text("&share\n/\n", encoding="utf-8")
+
+    lines = prepared_forecast_next_command(
+        proof, output_root=root, experiment_config=config,
+        wps_namelist=namelist)
+    command = " ".join(
+        line.strip().rstrip("\\") for line in lines
+        if line.strip().startswith(("python ", "--", "      --")))
+    # The line shell-parses at all only because every path with a space
+    # in it is quoted; an unquoted one would split here.
+    argv = shlex.split(command)
+    outdir = argv[argv.index("--outdir") + 1]
+    assert " " in outdir, outdir
+    assert Path(outdir).name == f"{root.name}-forecast"
+    # Every value that IS a path this process wrote to a spaced directory
+    # must come back through the parse whole, not split.
+    prepared_root = argv[argv.index("--prepared-root") + 1]
+    assert prepared_root == str(root).replace("\\", "/"), prepared_root
+    config_arg = argv[argv.index("--experiment-config") + 1]
+    assert " " in config_arg and Path(config_arg).is_file(), config_arg

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from typing import Mapping
 import numpy as np
 
 from gpuwm import __version__
+from gpuwm.bridges import decode_failure_message
 from gpuwm.era5_direct import (
     _canonical_surface,
     _load_static,
@@ -816,8 +818,8 @@ def prepare_gfs_wrf(
             check=False, text=True, capture_output=True,
         )
         if completed.returncode != 0:
-            raise RuntimeError(
-                "GFS Rust bridge failed: " + completed.stderr.strip())
+            raise RuntimeError(decode_failure_message(
+                "GFS Rust bridge", completed.stderr))
         expected_source_sha256 = {
             hour: manifest["files"][f"grib-f{hour:03d}"]["sha256"]
             for hour, _ in records
@@ -1124,6 +1126,21 @@ def prepare_gfs_wrf(
             raise
 
 
+def _arg(value) -> str:
+    """One printed argument, quoted if a shell would split it.
+
+    A perfectly valid ``--outdir`` or config path with a space in it was
+    printed bare, so the command whose entire purpose is to be pasted
+    broke the moment it was.  POSIX display form, exactly as
+    ``source_cli._quote_command`` renders ``--dry-run`` argv, because
+    the certified runtime is Linux/CUDA and forward slashes are accepted
+    by every path API on Windows too.  Ordinary paths come back
+    unquoted, so this is invisible except where it matters.
+    """
+
+    return shlex.quote(str(value).replace("\\", "/"))
+
+
 def prepared_forecast_next_command(
         proof: Mapping[str, object], *, output_root, experiment_config,
         wps_namelist, source: str = "gfs") -> list[str]:
@@ -1205,11 +1222,11 @@ def prepared_forecast_next_command(
                 f"  (cannot read {config_path}; no next command to print)"]
         return lines + [
             "  python tools/prepared_domain_tree_forecast.py \\",
-            f"      --prepared-root {output_root} \\",
+            f"      --prepared-root {_arg(output_root)} \\",
             f"      --preparation-receipt-sha256 {proof_digest} \\",
-            f"      --experiment-config {config_path} \\",
+            f"      --experiment-config {_arg(config_path)} \\",
             f"      --experiment-config-sha256 {config_digest} \\",
-            f"      --io-mode history --outdir {outdir}",
+            f"      --io-mode history --outdir {_arg(outdir)}",
             "  (this proof carries no single prepared-cache identity "
             "because it is a multi-domain hierarchy product.)",
         ]
@@ -1232,14 +1249,14 @@ def prepared_forecast_next_command(
     lines += [
         "  python tools/prepared_single_domain_forecast.py \\",
         f"      --source {source} \\",
-        f"      --prepared-root {output_root} \\",
+        f"      --prepared-root {_arg(output_root)} \\",
         f"      --proof-sha256 {proof_digest} \\",
         f"      --source-manifest-sha256 {manifest_digest} \\",
         f"      --prepared-content-sha256 {content} \\",
-        f"      --experiment-config {Path(experiment_config)} \\",
-        f"      --wps-namelist {Path(wps_namelist)} \\",
+        f"      --experiment-config {_arg(experiment_config)} \\",
+        f"      --wps-namelist {_arg(wps_namelist)} \\",
         f"      --physics-profile {profile} \\",
-        f"      --io-mode history --outdir {outdir}",
+        f"      --io-mode history --outdir {_arg(outdir)}",
         "  (--run-seconds and --history-interval-seconds default to the "
         "hash-bound experiment; the runner refuses any other value.)",
     ]

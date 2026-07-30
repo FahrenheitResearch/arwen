@@ -8,6 +8,8 @@
 //! contiguous ranges.  No reduction crosses a worker boundary, so changing
 //! the worker count cannot change an output element's arithmetic.
 
+pub mod quantization;
+
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicI32, Ordering};
 

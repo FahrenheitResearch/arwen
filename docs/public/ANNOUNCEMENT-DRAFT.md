@@ -21,13 +21,23 @@ seconds. A four-domain nest ladder down to 500 m grid spacing fits on a
 single command.
 
 The part I care most about is the verification story. Every physics
-scheme is a transcription of WRF v4.6.1 source, gated three ways:
-bit-level kernel oracles against unmodified WRF Fortran (several
-components are bit-identical; the rest carry measured ULP distances,
-published per option), t=0 initialization parity (the model opens the
-WRF initial state at the FP32 floor on all four domains of the
-reference case), and matched-run forecasts scored frame by frame
-against a 48-rank WRF reference. On the reference case -- 3 April
+scheme is a transcription of WRF v4.6.1 source, and the project applies
+three gates: bit-level kernel oracles against unmodified WRF Fortran
+(several components are bit-identical; the rest carry measured ULP
+distances, published per option), t=0 initialization parity (the model
+opens the WRF initial state at the FP32 floor on all four domains of the
+reference case), and matched-run forecasts scored frame by frame against
+a 48-rank WRF reference.
+
+Not every selectable option has passed all three, and the product says
+which. MYNN has an assembled-driver gate and a 300-step coupled-runtime
+gate but no forecast-trajectory comparison; Noah, Noah-MP and RUC are
+`implemented-unverified`, with component-oracle evidence and documented
+divergences. The shipped registry carries that maturity per option --
+`rw-wps --show-physics-registry` prints the warnings verbatim -- and
+[PHYSICS.md](PHYSICS.md) states it per scheme. The numbers below are
+evidence for the reference configurations they name, not a maturity
+claim about everything the registry will let you select. On the reference case -- 3 April
 1974, four nests to 500 m -- the 3 km domain at +3 hours matches WRF
 to composite-reflectivity correlation 0.985, with >=20 dBZ echo
 coverage within 3 pixels of WRF's 14,227. The docs publish the full

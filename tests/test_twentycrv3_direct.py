@@ -273,8 +273,12 @@ def test_the_20crv3_front_door_prints_the_run_command_too(tmp_path):
     # No placeholders, and no holed command: every value resolved.
     assert "<" not in text and ">" not in text
     # The outdir is a SIBLING of the preparation, which is the only kind
-    # the runner's protected-input guard accepts.
-    assert f"--outdir {root.parent / (root.name + '-forecast')}" in text
+    # the runner's protected-input guard accepts.  POSIX display form:
+    # the printer renders forward slashes (and quotes on a space), the
+    # same contract as `rw-wps --dry-run`.
+    expected_outdir = str(
+        root.parent / (root.name + "-forecast")).replace("\\", "/")
+    assert f"--outdir {expected_outdir}" in text
     # And 20crv3 really is a source that runner takes.
     import importlib.util
     spec = importlib.util.spec_from_file_location(

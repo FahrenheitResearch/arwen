@@ -1466,16 +1466,47 @@ def _author_mapped_contract(args: argparse.Namespace) -> dict[str, object]:
 
 
 def _author_twentycr_manifest(args: argparse.Namespace) -> dict[str, object]:
+    """Author the 20CRv3 input manifest, and say what to do with it.
+
+    The parity gap this closes: the GFS route's authoring step ends by
+    printing the whole front-door command with its digest filled in, and
+    every mapped authoring step prints an ``AUTHORED`` line.  20CRv3's
+    printed nothing -- a user who had just watched a manifest be written
+    still had to find its path and compute its SHA-256 by hand before
+    they could run anything.
+
+    It cannot print the WHOLE command, and does not pretend to.  20CRv3
+    authoring deliberately REFUSES ``--wps-namelist``, ``--geog-root``,
+    ``--experiment-config``, ``--output-root`` and the two GRIB2 tool
+    paths, so those values do not exist in this process.  What it prints
+    is the half it knows -- bound, exact, pasteable -- and a comment
+    naming the half it does not, rather than a command with placeholders
+    in it that fails when pasted.
+    """
+
     from gpuwm.twentycrv3_direct import write_20crv3_manifest
 
     output = Path(args.author_input_manifest).resolve()
     source = write_20crv3_manifest(args.source_root, output)
+    digest = _sha256(output)
+    print(f"AUTHORED input_manifest={output} sha256={digest}",
+          file=sys.stderr)
+    print("20crv3: next: feed the 20CRv3 front door, manifest already "
+          "bound:", file=sys.stderr)
+    print(f"  --source-manifest {output} "
+          f"--source-manifest-sha256 {digest}", file=sys.stderr)
+    print("  # authoring refuses the rest of the run's flags, so it "
+          "cannot bind them\n"
+          "  # for you: --grib2-inventory, --grib2-dump, "
+          "--wps-namelist, --geog-root,\n"
+          "  # --experiment-config, --output-root.",
+          file=sys.stderr)
     return {
         "schema": "rw-wps.20crv3-manifest-authoring.v1",
         "status": "PASS",
         "manifest": {
             "path": str(output),
-            "sha256": _sha256(output),
+            "sha256": digest,
             "content_sha256": source["content_sha256"],
             "member": source["member"],
             "file_count": source["file_count"],

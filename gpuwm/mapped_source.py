@@ -32,6 +32,7 @@ import netCDF4
 import numpy as np
 
 from gpuwm.ingest.grib import Era5Snapshot, build_rust_bridge, inspect_grib1_envelopes
+from gpuwm.ingest.quantization import admit_bounded
 from gpuwm.ingest.soil_contract import (
     MAPPED_SOIL_MOISTURE,
     MAPPED_SOIL_TEMPERATURE,
@@ -3009,6 +3010,13 @@ def mapped_frames_to_regular_snapshots(
             raise ValueError(
                 "mapped land fraction must be finite and share the soil grid"
             )
+        # A fraction, and now checked as one.  Finiteness alone let a
+        # mis-scaled unit transform deliver 2.0 here, which the >= 0.5
+        # threshold below reads as land without complaint; a value that
+        # merely kisses 0 or 1 is decode rounding and clamps.
+        source_land, _ = admit_bounded(
+            source_land, name="land fraction", minimum=0.0, maximum=1.0,
+            subject="mapped")
         terrestrial = source_land >= 0.5
         if not np.isfinite(soil_t[:, terrestrial]).all():
             raise ValueError(

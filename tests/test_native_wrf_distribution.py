@@ -262,7 +262,7 @@ def test_native_wrf_contract_is_versioned_and_explicit():
     contract = distribution_contract("linux-x86_64")
     windows_contract = distribution_contract("windows-x86_64")
     assert contract["schema"] == RUNTIME_SCHEMA
-    assert contract["gpuwm_version"] == __version__ == "0.1.1"
+    assert contract["gpuwm_version"] == __version__
     assert contract["python_distribution"] == PYTHON_DISTRIBUTION == "rw-wps"
     assert contract["runtime_forbidden"] == ["WPS", "real.exe"]
     assert contract["platform"]["python"] == ">=3.11"
@@ -819,3 +819,40 @@ def test_gfs_provenance_prefers_bound_distribution_manifest(tmp_path, monkeypatc
     assert identity["commit"] == "a" * 40
     assert identity["distribution_manifest_sha256"] == hashlib.sha256(
         manifest.read_bytes()).hexdigest()
+
+
+def test_a_freshly_sealed_artifact_carries_the_distribution_version():
+    """The stale constant was not merely printed -- it was SEALED IN.
+
+    Native runtime contracts, prepared-cache writer identity and the
+    standalone RW-WPS wheel's own pyproject all stamped ``0.1.1`` on a
+    1.1.1 release.  Two of those feed gates that compare a wheel's
+    metadata version against ``gpuwm.__version__``, so the stale
+    constant was one truthful version away from refusing its own seal.
+    """
+
+    from importlib import metadata
+    import gpuwm
+    from tools.build_rw_wps_release import _standalone_pyproject
+
+    distribution = metadata.version("gpuwm")
+    for platform in ("linux-x86_64", "windows-x86_64"):
+        contract = distribution_contract(platform)
+        assert contract["gpuwm_version"] == distribution, platform
+
+    # The standalone wheel's version is the one the sealed-runtime
+    # receipt compares against; it must be stamped, never typed.
+    stamped = [line for line in _standalone_pyproject().splitlines()
+               if line.startswith("version = ")]
+    assert stamped == [f'version = "{distribution}"'], stamped
+    assert gpuwm.__version__ == distribution
+
+
+def test_a_freshly_written_prepared_cache_stamps_this_release(tmp_path):
+    from importlib import metadata
+
+    from gpuwm.ingest.prepared_cache import (
+        CACHE_WRITER_KEY, cache_writer_version)
+
+    header = {CACHE_WRITER_KEY: {"gpuwm_version": __version__}}
+    assert cache_writer_version(header) == metadata.version("gpuwm")

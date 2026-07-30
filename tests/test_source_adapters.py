@@ -9,6 +9,7 @@ import tomllib
 
 import pytest
 
+from gpuwm import __version__ as gpuwm_version
 from gpuwm.physics_compat import (
     MYNN_PROFILE_ID,
     NOAHMP_PROFILE_ID,
@@ -353,7 +354,7 @@ def test_cli_reports_installed_version_without_run_arguments(capsys):
     with pytest.raises(SystemExit) as stopped:
         main(["--version"])
     assert stopped.value.code == 0
-    assert capsys.readouterr().out.strip() == "RW-WPS 0.1.1"
+    assert capsys.readouterr().out.strip() == f"RW-WPS {gpuwm_version}"
 
 
 def test_cli_exposes_fail_closed_public_support_matrix(capsys):
@@ -576,6 +577,66 @@ def test_cli_20crv3_authors_create_only_member_manifest(
     assert receipt["manifest"]["sha256"] == hashlib.sha256(
         manifest.read_bytes()
     ).hexdigest()
+
+
+def test_cli_20crv3_authoring_says_what_to_do_with_the_manifest(
+    tmp_path: Path, capsys
+):
+    """Parity with the GFS route's authoring step.
+
+    GFS ends by printing the whole front-door command with its digest
+    filled in; every mapped authoring step prints an ``AUTHORED`` line.
+    20CRv3 printed nothing, so a user who had just watched a manifest be
+    written still had to locate it and compute its SHA-256 by hand.
+    """
+
+    source = tmp_path / "member072"
+    source.mkdir()
+    for stamp in ("1932032100", "1932032103"):
+        for role in ("pl", "sfc"):
+            (source / f"mem072_{stamp}_{role}.grb2").write_bytes(
+                f"fixture:{stamp}:{role}".encode()
+            )
+    manifest = tmp_path / "member072.manifest.json"
+
+    assert main([
+        "--source", "20crv3",
+        "--source-root", str(source),
+        "--author-input-manifest", str(manifest),
+        "--author-only",
+    ]) == 0
+
+    captured = capsys.readouterr()
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    # stdout stays the machine-readable receipt.
+    assert json.loads(captured.out)["status"] == "PASS"
+
+    lines = captured.err.splitlines()
+    assert f"AUTHORED input_manifest={manifest.resolve()} sha256={digest}" \
+        in lines
+    assert any("next:" in line for line in lines)
+    # The half it knows is bound and exact -- no placeholder, no digest
+    # for the user to compute.
+    bound = [line for line in lines if line.strip().startswith("--")]
+    assert len(bound) == 1
+    assert f"--source-manifest {manifest.resolve()}" in bound[0]
+    assert f"--source-manifest-sha256 {digest}" in bound[0]
+    assert "<" not in bound[0] and ">" not in bound[0]
+
+    # And the half it cannot know is named, as comments, because
+    # authoring refuses those flags outright.
+    comments = "\n".join(line for line in lines if line.strip().startswith("#"))
+    for flag in ("--grib2-inventory", "--grib2-dump", "--wps-namelist",
+                 "--geog-root", "--experiment-config", "--output-root"):
+        assert flag in comments, flag
+        # Refused at authoring: this is a real limit, not an oversight.
+        assert main([
+            "--source", "20crv3",
+            "--source-root", str(source),
+            "--author-input-manifest", str(tmp_path / "again.json"),
+            "--author-only",
+            flag, str(tmp_path),
+        ]) != 0
 
 
 def _mapped_args(source_format="grib2"):

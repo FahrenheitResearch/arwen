@@ -241,6 +241,18 @@ def _staged_internal_imports(
                     violations.append(record)
     return violations
 
+#: The token :func:`_standalone_pyproject` replaces with this release.
+_STANDALONE_VERSION_PLACEHOLDER = "0.0.0+placeholder"
+
+#: The standalone RW-WPS wheel's own pyproject.  Its version is a
+#: placeholder that :func:`_standalone_pyproject` fills in from the
+#: running package, because it is not free to be anything else: the
+#: sealed-runtime receipt refuses unless the installed ``rw-wps``
+#: distribution version equals ``gpuwm.__version__``
+#: (``native_wrf_distribution._installed_record_receipt``).  It read
+#: ``0.1.1`` and agreed with the stale package constant by coincidence;
+#: the moment that constant started telling the truth, a hardcoded
+#: version here would have failed the very seal it feeds.
 _STANDALONE_PYPROJECT = """\
 [build-system]
 requires = ["setuptools>=68"]
@@ -248,7 +260,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rw-wps"
-version = "0.1.1"
+version = "0.0.0+placeholder"
 description = "Native parallel preprocessing and stock-WRF initialization"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -286,6 +298,23 @@ gpuwm = [
 ]
 tools = ["*.sh"]
 """
+
+
+def _standalone_pyproject() -> str:
+    """The standalone wheel's pyproject, stamped with THIS release.
+
+    A plain substitution rather than ``str.format``: the template is
+    TOML and carries braces of its own (``license = { file = ... }``).
+    """
+
+    from gpuwm import __version__
+
+    stamped = _STANDALONE_PYPROJECT.replace(
+        _STANDALONE_VERSION_PLACEHOLDER, __version__)
+    if _STANDALONE_VERSION_PLACEHOLDER in stamped:
+        raise RuntimeError(
+            "the standalone pyproject template lost its version placeholder")
+    return stamped
 
 
 def _require_tracked(source: Path) -> None:
@@ -349,7 +378,7 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
     _copy_source(REPO / "LICENSE", destination / "LICENSE")
     _copy_source(REPO / "NOTICE", destination / "NOTICE")
     (destination / "pyproject.toml").write_text(
-        _STANDALONE_PYPROJECT,
+        _standalone_pyproject(),
         encoding="utf-8",
         newline="\n",
     )

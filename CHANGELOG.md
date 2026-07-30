@@ -1,5 +1,228 @@
 # Changelog
 
+## 1.1.2 (2026-07-30)
+
+### A saturated soil cell is packing, not corruption
+
+- **Fixed, and this is why 1.1.2 exists:** a pip user's GFS preparation
+  died with `RuntimeError: GFS Rust bridge failed: GFS_SM010040 value
+  1.0000000019073487 outside [0,1]`. Nothing was wrong with their data.
+  GRIB2 reconstructs every value as `(R + X * 2^E) * 10^-D`, so the
+  representable values sit on a grid of spacing `2^E * 10^-D` and the
+  encoder rounds onto it. A cell whose soil is physically **saturated**
+  is encoded at exactly 1.0 and decodes one step above it -- and that
+  reported number is exactly one step of that record's own grid
+  (`E = -19`, `D = 3`, one step = 1.9073486328125e-9), which is the whole
+  argument. It is a statement about the packing, not about the data.
+- **How it is fixed, and how far:** every bound now declares what it
+  **is**. A *physical* bound is a saturating limit real cells sit on;
+  a value past it by no more than the tolerance derived from that
+  record's own quantum is clamped onto the bound, counted, and
+  published. A *sanity* bound is a slack plausibility range no real
+  value approaches; it is offered nothing and refuses exactly as before.
+  The offer cannot be talked upward by the record: it is the quantum,
+  raised only to the round-off floor of the bound's own magnitude -- so
+  a field with a slack ceiling cannot buy extra room at its physical
+  floor -- and capped at 1e-4 of the field's declared range, so integer
+  packing (one step = the whole range) or template 5.4's placeholder
+  scale slots cannot widen the gate. `1.05` still refuses, and now says
+  by how much and against what offer.
+- **The exposure was never one field.** In the GFS bridge: `RH`, `RH2`,
+  `SNOW` and `SNOWH` at zero; `XICE` and all four `GFS_SM` soil layers
+  at both ends; and `LANDSEA`, whose 0/1 codes were matched against a
+  fixed 1e-9 that the same grid can overshoot. In the HRRR bridge the
+  identical shape: every field declared non-negative (a hydrometeor
+  mixing ratio is exactly zero across most of a domain) and the
+  `LANDSEA`/`XICE`/`SOILW` unit fractions. `Q2` keeps its exact ceiling
+  -- one kg/kg of water vapour is an impossibility, not a limit real
+  cells sit on, so no quantization argument applies to it.
+- **The clamping is auditable, not invisible.** `gate.tsv` gains
+  `bound_clamp_total`, `bound_clamp_max_excursion` and
+  `bound_clamp_fields` (per field: count and worst excursion); both
+  bridges' inventory manifests gain `clamped` and `max_excursion`
+  columns. A run with no clamps says so with zeros and an empty field
+  list, which is a stronger statement than silence.
+- **And the refusal explains itself.** `GFS Rust bridge failed:
+  <stderr>` was true and unreadable on its own -- a soil value of 1.05
+  means nothing to someone who did not write the decoder, and the
+  obvious reading, that the range is too tight, is the one action that
+  must not be taken. An out-of-range refusal now carries what the number
+  is, that a bound-kissing value is already clamped against the record's
+  own packing step, and that a value past *that* points at the
+  downloaded bytes: re-fetch and re-run. Every remedy line is a comment,
+  so the block pastes whole. Failures that are not bound refusals gain
+  nothing.
+
+### Three surfaces that were telling users something untrue
+
+- **Fixed:** `gpuwm.__version__` was a hand-typed `"0.1.1"` that four
+  releases walked past. It is read from the installed distribution's
+  metadata now, because two surfaces quote it to say which release is
+  speaking: the prepared-cache provenance refusal, which told a 1.1.1
+  user *"this is gpuwm 0.1.1"* -- a sentence whose entire job is to name
+  the release -- and `rw-wps --version`. The test pins it to the
+  metadata **and** rejects a release-shaped literal in the module, since
+  a constant that matches today's install passes the first check and
+  rots at the next cut, which is exactly what happened. Cache content
+  digests are unaffected: the writer's version stamp was already outside
+  the hashed basis.
+- **Fixed:** `gpuwm doctor` announced *"NO basemap assets found"* on
+  installs where `rw_wrfbatch` was drawing the coastlines it said were
+  missing. Doctor probed one path -- the checkout's own
+  `tools/rustwx/assets/basemap` -- while the renderer walks its own
+  candidate list. Doctor now walks the same list in the same order: the
+  two `RUSTWX_*` overrides, then `assets/basemap` (and the macOS
+  `Resources` layout) under each of the first eight ancestors of the
+  **executable's** directory -- which is how a build at
+  `tools/rustwx/target/release` reaches the crate's assets two levels up
+  -- then the working-directory walk, then the crate path it used to
+  check alone. Doctor already resolved the renderer in order to report
+  on it, so it had the missing fact all along. The warning survives for
+  the case it was written for: nothing found anywhere still says so, and
+  still names the environment variable.
+- **Fixed:** the 20CRv3 authoring step printed nothing at all. The GFS
+  route ends by printing the whole front-door command with its digest
+  filled in, and every mapped authoring step prints an `AUTHORED` line;
+  a user who had just watched a 20CRv3 manifest be written still had to
+  locate it and compute its SHA-256 by hand. It now prints the
+  `AUTHORED` line and a `next:` block: the half it knows
+  (`--source-manifest` and `--source-manifest-sha256`, bound and exact)
+  as a pasteable fragment, and the half it cannot know named in
+  comments. It does not print a whole command, because 20CRv3 authoring
+  deliberately **refuses** `--wps-namelist`, `--geog-root`,
+  `--experiment-config`, `--output-root` and the two GRIB2 tool paths --
+  those values do not exist in that process, and a command with
+  placeholders in it fails when pasted.
+
+### The same class, everywhere it existed
+
+- **Fixed:** an audit reproduced the reported `1.0000000019` refusal on
+  the HRRR and mapped routes, not only GFS. The strict `[0,1]` gates on
+  HRRR source `LANDSEA`/`SOILW`, on the mapped soil output, on the HRRR
+  soil nodes and on declarative mapped soil moisture all read a
+  saturated cell as corruption. The bridges derive their tolerance from
+  a record's own packing parameters; by these seams the packing is gone
+  and only an array remains, so the head-room there is the round-off the
+  pipeline demonstrably carries -- a few float32 ulps of the bound's own
+  magnitude, the same constant the HRRR soil report already used for its
+  convex-hull comparison. It moves cells that are AT a bound back onto
+  it and leaves everything else untouched, so each existing refusal
+  still sees, and still refuses, exactly what it did before.
+- **Fixed:** mapped land fraction gained the check it never had. It was
+  tested for finiteness and then thresholded at 0.5, so a mis-scaled
+  unit transform delivering `2.0` was read as land without complaint. It
+  is a fraction and is admitted as one. (The netCDF test fixture's own
+  land fraction walked to 1.25 -- its helper adds 0.25 per time step to
+  every variable -- and is corrected to a physical value.)
+- **Fixed:** the stale version was not only printed, it was **sealed
+  in**. The standalone RW-WPS wheel's pyproject carried a hardcoded
+  `0.1.1` while `_installed_record_receipt` refuses unless that
+  distribution's version equals `gpuwm.__version__`; the two agreed by
+  coincidence. The moment the constant started telling the truth, a
+  hardcoded version there would have failed the very seal it feeds. It
+  is stamped from the package now, and a test proves a freshly sealed
+  native contract, a prepared-cache writer stamp and that wheel all
+  carry the distribution version.
+
+### Commands that survive being pasted
+
+- **Fixed:** a successful HRRR fetch printed a front-door command ending
+  in a literal `...`, which its own consumer rejects with `unrecognized
+  arguments: ...`. A GFS fetch without `--author-front-door-manifest`
+  printed a template carrying `GFS_GRIB2_BRIDGE_EXE`, `NAMELIST_WPS` and
+  `EXPERIMENT_TOML` and called it "next". Both now print the bound half
+  as a real command and name the rest in comments.
+- **Fixed:** the materialized GFS front-door command, the wizard's
+  `next:` and `check:` lines, and both prepared-forecast commands
+  interpolated paths bare, so a perfectly valid `--out`, config or
+  `--outdir` containing a space split into two arguments the moment the
+  command was pasted. They render POSIX display form and quote when a
+  shell would split, exactly as `rw-wps --dry-run` already did. The new
+  test shell-parses the printed line back to argv through a path with a
+  space in it -- the old checks were lexical and could not see this.
+- **Fixed:** the missing-CuPy remedy put a parenthesised alternative on
+  the same physical line as the command it followed. Separate command
+  and comment lines, which is doctor's form.
+- **Fixed:** `--force-refetch` said it moves "every existing file in
+  `--out`" aside. It moves the files that fetch would write; manifests,
+  forecast hours you did not request and unrelated files stay. The
+  behaviour was right and the scope word was not.
+
+### Pages that described a build we no longer ship
+
+- **Fixed:** the physics route table was labelled "state of play in
+  v1.0.1" and claimed the GFS/HRRR door could prepare only YSU + MM5
+  surface layer + Noah. v1.1.0 removed that coupling. The table now
+  lists the shipped routes, names the one deliberate withdrawal (GFS +
+  RUC, whose initialization the GFS route cannot supply), and points at
+  `rw-wps --show-physics-registry` as the authority it summarizes.
+  `DATA.md` repeated the same claim and now agrees.
+- **Fixed:** README, `CONFIGURATION.md` and `PHYSICS.md` said two-way
+  feedback is absent, `0 only`, or rejected at load, while 1.1.1 runs
+  and stamps an experimental feedback path. They describe what ships,
+  with its limits: experimental, stamped in run provenance, refused by
+  one-way consumers, and feeding back dynamic state only where WRF also
+  feeds back hundreds of masked land-surface fields.
+- **Fixed:** `HARDWARE.md` kept the 3 GiB reserve for 12 and 16 GiB
+  cards that v1.1.0 replaced with a flat 4 GiB, and said `gpuwm check`
+  "still warns rather than blocks" after it began exiting 4 on an
+  exceeded budget. Both corrected, with the distinction spelled out: a
+  script reading the exit status is blocked, a person reading the output
+  is advised, and nothing prevents a later `gpuwm run`.
+- **Fixed:** the announcement draft said every physics scheme is "gated
+  three ways". The registry says otherwise for MYNN, Noah, Noah-MP and
+  RUC, and says so in warnings it prints on request. The draft now
+  states which gates each option has passed and points at the registry.
+- **Fixed:** README promised that every doctor gap "prints the exact
+  command that fixes it". Doctor's own contract -- every remedy LINE is
+  a command or a `#` comment -- is the accurate one, and one gap
+  (`GPUWM_CASE_DATA_ROOT`) needs a path only the user knows.
+- **Fixed:** `gpuwm domain --help` offered "any land point on earth"
+  while the parser refuses a pole and the South Pole is land. The help
+  now says what the gate does. The gate is unchanged.
+
+### The last front door that said nothing
+
+- **Fixed:** three sources reach the prepared-forecast runners -- GFS,
+  ERA5 and 20CRv3 -- and two of them ended a successful preparation by
+  printing a complete, hash-bound run command. ERA5 dumped its proof
+  document and stopped, so a user who had just prepared a bundle
+  reconstructed three SHA-256 values by hand, one of them findable only
+  by grepping the JSON. It routes through the same shared printer now.
+  The mapped route stays deliberately silent: `mapped` is not a
+  `--source` either runner accepts, so a `next:` there would lead
+  straight to a refusal -- the GDAS dead end this project already
+  decided against.
+
+### Guidance that still named a withdrawn gate
+
+- **Fixed:** the RUC physics template's own warning said it is "OFFERED
+  FOR ... gfs" while the route matrix withdrew GFS in v1.1.1 -- a
+  GFS-initialised RUC forecast prepares and then cannot take its first
+  step. The admission tests checked the matrix and never the prose
+  against it, so the template kept telling users what the gate had
+  stopped offering. The warning now names exactly the sources the matrix
+  reaches (HRRR and ERA5) and explains the withdrawal, and a test
+  asserts prose-and-matrix agreement so the two cannot drift apart
+  again.
+- **Tightened:** the pasteability guard added earlier this release now
+  runs over BOTH prepared next-command branches -- single-domain and the
+  multi-domain hierarchy -- with the config, namelist and output all in
+  a directory whose name contains a space, shell-parsed back to argv.
+  And the README's doctor claim ("a remedy whose every line is a command
+  or a `#` comment") is now bound to doctor's real behaviour by a test
+  that proves a genuine comment-only gap exists and rejects the old
+  "every gap prints the exact command" overclaim.
+
+### Carried, not fixed here
+
+- Ordinary missing-file arguments still produce raw tracebacks on
+  several public CLIs rather than a sentence. The fix pattern exists in
+  this codebase; the surface is wide enough to want its own pass.
+- Install and remedy guidance still points at mutable `main` rather than
+  the released tag. Pinning it is a release-process decision, not a
+  patch-lane one.
+
 ## 1.1.1 (2026-07-30)
 
 ### The GFS front door stops applying a single-domain gate to nests

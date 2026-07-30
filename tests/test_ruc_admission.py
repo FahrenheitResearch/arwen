@@ -401,6 +401,48 @@ def test_the_mapped_source_is_deliberately_not_offered_ruc():
             soil_layer_contract=contract)
 
 
+def test_the_ruc_warning_prose_names_exactly_the_sources_the_matrix_offers():
+    """Guidance vs gates, in one template's own words.
+
+    The route matrix withdrew ``gfs`` in v1.1.1 -- a GFS-initialised RUC
+    forecast prepares and then cannot take its first step -- and the
+    admission tests above check the matrix. Nothing checked the WARNING
+    prose against it, so the template kept telling users RUC is "OFFERED
+    FOR ... gfs" while the gate it describes had already stopped offering
+    it. A user reads the prose, not the JSON route list.
+
+    So the sources the prose claims to offer must equal the sources the
+    matrix actually reaches -- no more (an offer the runner refuses) and
+    no fewer (a working route the user is never told about).
+    """
+    import re
+
+    from gpuwm.physics_registry import physics_registry
+
+    registry = physics_registry()
+
+    matrix_sources = set()
+    for route in registry["runner_routes"].values():
+        for key in ("source_template_ids", "expert_template_ids"):
+            for source, template_ids in (route.get(key) or {}).items():
+                if RUC_TEMPLATE_ID in template_ids:
+                    matrix_sources.add(source)
+    # The matrix is the ground truth the prose must match.
+    assert matrix_sources == {"era5", "hrrr"}, matrix_sources
+
+    prose = " ".join(registry["templates"][RUC_TEMPLATE_ID]["warnings"])
+    offered_clause = re.search(
+        r"OFFERED FOR THE DIRECT (.+?) SOURCES", prose)
+    assert offered_clause, prose
+    # Every known direct source is named as offered iff the matrix reaches
+    # it -- the exact prose/gate agreement the withdrawal broke.
+    named = set(re.findall(r"\b(gfs|hrrr|era5)\b", offered_clause.group(1)))
+    assert named == matrix_sources, (named, matrix_sources)
+    assert "gfs" not in named, (
+        "the RUC warning still offers gfs, which the route matrix "
+        "withdrew in v1.1.1")
+
+
 # ---------------------------------------------------------------------------
 # 2.  the cost is flat, which is what makes width fatal
 # ---------------------------------------------------------------------------

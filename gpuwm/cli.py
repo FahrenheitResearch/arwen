@@ -269,9 +269,15 @@ def main(argv: list[str] | None = None) -> int:
                 f"gpuwm {args.command}: this command needs the GPU "
                 "runtime (CuPy), which the base install does not "
                 "include.\n"
-                "  remedy: pip install 'gpuwm[gpu]'   "
-                "(or: pip install cupy-cuda12x)\n"
-                "  `gpuwm doctor` checks the whole runtime estate.",
+                # One command per line, alternatives as comments: the
+                # old single line put a parenthesised second option on
+                # the same physical line as the first, so pasting the
+                # whole remedy was a shell error in either shell.  This
+                # is doctor's form, which this message predates.
+                "  remedy: pip install 'gpuwm[gpu]'\n"
+                "  # or, if you pin the CUDA wheel yourself:\n"
+                "  #   pip install cupy-cuda12x\n"
+                "  # `gpuwm doctor` checks the whole runtime estate.",
                 file=sys.stderr)
             return 2
         raise

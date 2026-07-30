@@ -431,12 +431,16 @@ same `record_bars`, including `inventory_change_accepted`.
 
 ## Which physics each route can prepare
 
-The GFS and HRRR preprocessor door can prepare **YSU + MM5 surface
-layer + Noah only** -- its stock-WRF exporter hard-requires that
-combination, and the prepared cache binds the configuration bitwise, so
-MYNN, RUC and Noah-MP are selectable but not preparable through those
-routes today. ERA5's config door has no such restriction. Details and
-the fix plan: [PHYSICS.md](PHYSICS.md#which-suites-each-data-route-can-actually-prepare).
+Every route prepares the normal profile family (WSM6, Thompson,
+Morrison, NSSL2, MYNN), and Noah-MP behind an expert acknowledgement.
+RUC is available on ERA5 and HRRR and deliberately withdrawn on GFS,
+which supplies none of the soil/surface fields its initialization needs.
+The v1.0.1 restriction to YSU + MM5 surface layer + Noah is gone.
+
+The shipped registry is the authority, and answers for your exact
+configuration: `rw-wps --show-physics-registry`
+(`runner_routes.*.source_template_ids` and `expert_template_ids`).
+Details: [PHYSICS.md](PHYSICS.md#which-suites-each-data-route-can-actually-prepare).
 
 ## Static geography (WPS_GEOG)
 

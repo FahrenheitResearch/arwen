@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shutil
 
 #: Bridge executable -> the environment variable that names a prebuilt
@@ -504,7 +505,58 @@ def bridge_remedy(name: str) -> str:
         subject="the GRIB bridges")
 
 
+#: A bridge's out-of-range refusal, as it reaches Python: the field, the
+#: decoded value, and the range it left.  Matched only to explain the
+#: refusal -- never to suppress it.
+_BOUND_REFUSAL = re.compile(
+    r"(?P<field>\S+) value (?P<value>\S+) outside \[(?P<range>[^\]]*)\]")
+
+
+def decode_failure_message(subject: str, stderr: str) -> str:
+    """A decoder's refusal, with the reason it gives and what to do next.
+
+    The bridges fail closed and say why on stderr; Python's job is to
+    carry that verbatim and add the sentence a user cannot be expected
+    to supply -- what the number means, and whether re-running can help.
+
+    An out-of-range refusal earns a specific remedy, because the obvious
+    reading of it is wrong.  A field value a hair outside a physical
+    bound is GRIB2 packing, not bad data, and the bridge now clamps
+    those against the record's own quantization step; so a refusal that
+    survives that says the value is further out than the encoding can
+    explain.  That points at the bytes, which a re-fetch can fix, rather
+    than at the bound, which no one should widen.
+
+    Every remedy line is a command or a ``#`` comment, so the block
+    survives being pasted whole.
+    """
+
+    detail = stderr.strip()
+    message = f"{subject} failed: {detail}" if detail else f"{subject} failed"
+    match = _BOUND_REFUSAL.search(detail)
+    if match is None:
+        return message
+    field = match.group("field")
+    value = match.group("value")
+    bounds = match.group("range")
+    return message + (
+        "\n  remedy:"
+        f"\n  # {field} decoded {value}, outside its physical range "
+        f"[{bounds}]."
+        "\n  # A value that merely touches a bound is expected -- GRIB2"
+        "\n  # packing rounds onto a fixed grid, so a cell encoded AT a"
+        "\n  # limit can decode a step past it -- and the bridge already"
+        "\n  # clamps those, within that record's own packing step."
+        "\n  # This one is further out than the encoding can account for,"
+        "\n  # so the suspect is the source record, not the range."
+        "\n  # Re-fetch the cycle and re-run; a truncated or corrupted"
+        "\n  # download is the usual cause and is not detectable any"
+        "\n  # earlier than here.  If it survives a clean re-fetch, the"
+        "\n  # published record is bad and the refusal is correct.")
+
+
 __all__ = [
+    "decode_failure_message",
     "BRIDGE_ABI_MARKERS", "bridge_abi_matches",
     "BRIDGE_ENV", "CARGO_BUILD_HINT", "CLONE_DIR", "CRATE_RELATIVE",
     "REPOSITORY_URL", "RUSTWX_CRATE_RELATIVE", "WINDOWS_SHELL",

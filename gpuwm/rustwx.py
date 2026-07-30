@@ -62,6 +62,84 @@ def basemap_dir() -> Path:
     return crate_dir() / "assets" / "basemap"
 
 
+#: How many ancestors of the renderer executable's own directory the
+#: renderer walks looking for ``assets/basemap``.  Mirrors
+#: ``rustwx-render``'s ``basemap_root_candidates``; a build at
+#: ``tools/rustwx/target/release/`` reaches the crate's assets at the
+#: second ancestor, which is why a renderer built from a clone finds its
+#: basemaps whatever directory it is launched from.
+_RENDERER_EXE_ANCESTORS = 8
+
+#: And how many ancestors of the working directory it walks.
+_RENDERER_CWD_ANCESTORS = 6
+
+
+def basemap_candidates(renderer: Path | None = None) -> tuple[Path, ...]:
+    """Where the RENDERER looks for basemaps, in its own order.
+
+    Not where gpuwm keeps them.  ``gpuwm doctor`` used to probe the
+    single checkout path :func:`basemap_dir` and announce "NO basemap
+    assets found" whenever it was absent -- which is every pip install,
+    including ones where ``rw_wrfbatch`` was resolving the assets
+    perfectly well from its own build directory.  A report that
+    contradicts the artifact is worse than no report, so this mirrors
+    ``rustwx-render``'s ``basemap_root_candidates`` instead:
+
+    1. ``RUSTWX_BASEMAP_DIR``;
+    2. ``RUSTWX_ASSETS_DIR/basemap``;
+    3. ``assets/basemap`` and ``Resources/assets/basemap`` under each of
+       the first eight ancestors of the executable's own directory;
+    4. ``assets/basemap`` and ``basemap`` under each of the first six
+       ancestors of the working directory;
+    5. the crate's own ``assets/basemap`` -- the compile-time workspace
+       root, which for this vendored crate is :func:`basemap_dir`.
+
+    Duplicates are dropped, first occurrence winning, exactly as the
+    renderer does it.
+    """
+
+    candidates: list[Path] = []
+
+    def push(path: Path) -> None:
+        if path not in candidates:
+            candidates.append(path)
+
+    override = os.environ.get("RUSTWX_BASEMAP_DIR")
+    if override:
+        push(Path(override))
+    assets = os.environ.get("RUSTWX_ASSETS_DIR")
+    if assets:
+        push(Path(assets) / "basemap")
+
+    if renderer is not None:
+        parent = Path(renderer).resolve().parent
+        for ancestor in (parent, *parent.parents)[:_RENDERER_EXE_ANCESTORS]:
+            push(ancestor / "assets" / "basemap")
+            push(ancestor / "Resources" / "assets" / "basemap")
+
+    working = Path.cwd()
+    for ancestor in (working, *working.parents)[:_RENDERER_CWD_ANCESTORS]:
+        push(ancestor / "assets" / "basemap")
+        push(ancestor / "basemap")
+
+    push(basemap_dir())
+    return tuple(candidates)
+
+
+def resolve_basemap_dir(renderer: Path | None = None) -> Path | None:
+    """The first candidate that exists, or None if the renderer has none.
+
+    The renderer resolves each asset SUBDIRECTORY independently, so a
+    root that exists is evidence rather than proof; a root that exists
+    nowhere is proof, and that is the only case worth warning about.
+    """
+
+    for candidate in basemap_candidates(renderer):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def renderer_candidates() -> tuple[Path, ...]:
     """Deterministic candidate paths for the renderer, best first."""
 
@@ -262,7 +340,7 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
 
 __all__ = [
     "CARGO_BUILD_HINT", "RENDERER_ENV", "RENDERER_NAME", "basemap_dir",
-    "crate_dir", "find_renderer", "list_products", "probe_renderer",
-    "renderer_candidates", "renderer_env", "renderer_remedy",
-    "run_renderer",
+    "basemap_candidates", "crate_dir", "find_renderer", "list_products",
+    "probe_renderer", "renderer_candidates", "renderer_env",
+    "renderer_remedy", "resolve_basemap_dir", "run_renderer",
 ]

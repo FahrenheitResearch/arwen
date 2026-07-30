@@ -33,7 +33,7 @@ them.
 | `start_time` | `&time_control start_*` | required | TOML datetime, offset-free | |
 | `run_seconds` | `run_days/hours/minutes/seconds` or `end_*` | required | > 0 | |
 | `restart_interval_s` | `restart_interval` (minutes in WRF) | required | >= 0; 0 disables | whole multiple of d01 dt |
-| `feedback` | `feedback` | 0 | **0 only** | one-way nesting only; a two-way namelist (explicit or by the Registry default 1) is refused, never quietly imported one-way |
+| `feedback` | `feedback` | 0 | **0 or 1** | 0 is one-way and supported; 1 is the EXPERIMENTAL two-way path (stamped as such in run provenance; one-way consumers refuse a feedback-modified parent). Any other value is refused, and a two-way namelist is never quietly imported one-way |
 | `smooth_option` | `smooth_option` | 0 | **0 only** | the parent smoother acts only under two-way feedback |
 | `blend_width` | `blend_width` | 5 | >= 0 | terrain blend zone; enters the parent-row clearance rule |
 | `spec_bdy_width` | `&bdy_control spec_bdy_width` | 5 | >= spec_zone + relax_zone | |
@@ -238,7 +238,7 @@ fail-loud unimplemented).
 
 ## Not implemented (refused or dropped with a reason)
 
-Two-way nesting (`feedback`), moving nests, adaptive time step,
+Moving nests, adaptive time step,
 vertical nest refinement, automatic eta generation, FDDA nudging
 (active `grid_fdda`/`grid_sfdda`/`obs_nudge_opt` refuse; inert keys
 drop), stochastic physics (SPP/SPPT/SKEBS), `mp_zero_out` (documented

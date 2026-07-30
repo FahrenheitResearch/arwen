@@ -344,17 +344,22 @@ def _rust_renderer_check() -> Check:
             name, "missing", f"{found} -- {evidence}",
             "# rebuild it:\n" + bridges.install_aware_build_hint(
                 rustwx.CARGO_BUILD_HINT, "tools/rustwx"))
-    basemap = rustwx.basemap_dir()
-    if os.environ.get("RUSTWX_BASEMAP_DIR") or os.environ.get(
-            "RUSTWX_ASSETS_DIR"):
-        basemap_note = "basemaps from the RUSTWX_* environment override"
-    elif basemap.is_dir():
-        basemap_note = f"basemaps {basemap}"
-    else:
+    # Ask the question the renderer answers, in the renderer's own
+    # order.  Probing gpuwm's checkout path alone reported "NO basemap
+    # assets found" on every pip install -- including the ones where
+    # rw_wrfbatch resolves the assets from its own build directory and
+    # draws the coastlines the report says are missing.
+    basemap = rustwx.resolve_basemap_dir(found)
+    if basemap is None:
         basemap_note = ("NO basemap assets found -- charts render "
                         "without coast/state/county lines; set "
                         "RUSTWX_BASEMAP_DIR to a checkout's "
                         "tools/rustwx/assets/basemap")
+    elif os.environ.get("RUSTWX_BASEMAP_DIR") or os.environ.get(
+            "RUSTWX_ASSETS_DIR"):
+        basemap_note = f"basemaps {basemap} (RUSTWX_* environment override)"
+    else:
+        basemap_note = f"basemaps {basemap}"
     return Check(name, "verified", f"{found} -- {evidence}; {basemap_note}")
 
 

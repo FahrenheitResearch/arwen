@@ -154,7 +154,10 @@ renderer, loads the CPU library and reads its ABI,
 hash-validates the staged Thompson tables, parses the Noah tables,
 and requires each WPS_GEOG dataset's index file -- anything it can only
 see (not prove) is labeled `present` instead of `ok`, and every gap
-prints the exact command that fixes it. Details, wheel caveats, and the
+prints a remedy whose every line is a command or a `#` comment, so the
+block survives being pasted whole. Most are exact commands; a few
+cannot be, and say so rather than inventing one -- an unset
+`GPUWM_CASE_DATA_ROOT` needs a path only you know. Details, wheel caveats, and the
 sealed archives: [docs/install.md](docs/install.md).
 
 ## First light
@@ -240,9 +243,14 @@ Stated plainly, up front:
   `share/module_llxy.F`, plus short GPU smoke integrations -- not
   matched-run verified. The deep matched-run validation (the 1974
   reference family) exists for northern-hemisphere Lambert only.
-- **Nesting.** One-way, static nests only. Children may start later on an
-  exact parent-step and forcing-cadence seam. No feedback, no moving nests,
-  no vertical refinement, no adaptive time step.
+- **Nesting.** Static nests. Children may start later on an exact
+  parent-step and forcing-cadence seam. One-way is the supported
+  default; two-way feedback (`feedback = 1`) ships as an EXPERIMENTAL
+  path -- it runs, it is stamped as experimental in the run's own
+  provenance, and one-way consumers refuse a feedback-modified parent.
+  It feeds back dynamic state only, where WRF also feeds back hundreds
+  of masked land-surface fields, so it is not a WRF-equivalent claim.
+  No moving nests, no vertical refinement, no adaptive time step.
 - **Precision.** The model state is FP32 (like WRF's default REAL).
   No end-to-end bit-identity with WRF is claimed anywhere; see
   [VERIFICATION.md](docs/public/VERIFICATION.md) for exactly what is

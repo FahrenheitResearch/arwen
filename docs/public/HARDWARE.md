@@ -17,8 +17,8 @@ gpuwm domain --point 35.3,-97.5 --card 24gb ...    # or --vram-gib N
 
 | card tier | flat reserve | working budget | what fits (measured examples) |
 |---|---|---|---|
-| 12 GiB | 3 GiB | 9 GiB | Four domains: 156x126 / 312x256 / 336x276 / 268x220, or 398x318 single-domain at 12 km. **Windows: experimental** (see below) |
-| 16 GiB | 3 GiB | 13 GiB | full 12-3-1-0.5 km four-domain ladder at ~3.3 GiB alloc estimate |
+| 12 GiB | 4 GiB | 8 GiB | Four domains: 156x126 / 312x256 / 336x276 / 268x220, or 398x318 single-domain at 12 km. **Windows: experimental** (see below) |
+| 16 GiB | 4 GiB | 12 GiB | full 12-3-1-0.5 km four-domain ladder at ~3.3 GiB alloc estimate |
 | 24 GiB | 4 GiB | 20 GiB | four domains: 170x136 (12 km), 336x272 (3 km), 360x294 (1 km), 288x236 (500 m) |
 | 32 GiB | 6 GiB | 26 GiB | the reference-class case: 4 domains to 500 m at 400x400+ |
 
@@ -44,8 +44,13 @@ What that risks, plainly: the layout may be optimistic. The worst case
 is paging (slow) or a clean out-of-memory failure before or during the
 run. **Neither corrupts a forecast and neither damages anything** --
 which is why sizing optimistically is the better failure here than
-refusing a card gpuwm can probably run. `gpuwm check` is unchanged: it
-still warns rather than blocks.
+refusing a card gpuwm can probably run. `gpuwm check` does not stop a
+later `gpuwm run` -- nothing prevents you from starting a forecast it
+warned about -- but since v1.1.0 an observed peak above the WDDM budget
+is an exit code 4, not a green exit with a warning in it. A script that
+reads the exit status is blocked; a person reading the output is
+advised. (Reserves moved to a flat 4 GiB through 24 GiB in v1.1.0; the
+12/16 GiB rows above were 3 GiB in v1.0.1.)
 
 **Please send the calibration back.** One measured peak from a real
 Windows small-card run is worth more than every estimate on this page.

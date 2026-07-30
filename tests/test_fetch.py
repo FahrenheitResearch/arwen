@@ -1087,8 +1087,21 @@ def test_cli_fetch_hrrr_prints_the_front_door_handoff(tmp_path,
     assert rc == 0
     printed = capsys.readouterr().out
     digest = fetch.sha256_file(out / "SHA256SUMS")
-    assert "rw-wps --source hrrr" in printed
     assert f"--source-manifest-sha256 {digest}" in printed
+    # The handoff used to end in a literal `...` on a command line, and
+    # the consumer refuses it: `unrecognized arguments: ...`.  What it
+    # prints now is a bound fragment plus comments, so nothing it
+    # produces fails the moment it is pasted.
+    assert "..." not in printed
+    lines = printed.splitlines()
+    bound = [line for line in lines if line.strip().startswith("--")]
+    assert len(bound) == 1
+    assert f"--source-root {out}" in bound[0]
+    assert f"--source-manifest {out / 'SHA256SUMS'}" in bound[0]
+    comments = " ".join(l for l in lines if l.strip().startswith("#"))
+    for flag in ("--wps-namelist", "--geog-root", "--experiment-config",
+                 "--valid-time", "--output-root"):
+        assert flag in comments, flag
 
 
 # ---------------------------------------------------------------------------

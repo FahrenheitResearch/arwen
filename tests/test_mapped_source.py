@@ -223,7 +223,11 @@ def _write_source(
         variable("specific_humidity_2m", "kg kg-1", ("y", "x"), 0.006)
         variable("eastward_wind_10m", "m s-1", ("y", "x"), 4.0)
         variable("northward_wind_10m", "m s-1", ("y", "x"), 1.0)
-        variable("land_fraction", "1", ("y", "x"), 1.0)
+        # 0.75, not 1.0: the helper above adds 0.25 per time step to
+        # every variable, which walked a bounded FRACTION to 1.25 by the
+        # second frame.  The mapped join now admits land fraction as the
+        # fraction it is, so an unphysical fixture is refused -- rightly.
+        variable("land_fraction", "1", ("y", "x"), 0.75)
         if split_soil:
             for index in range(4):
                 variable(

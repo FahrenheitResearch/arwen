@@ -7,6 +7,7 @@ from typing import Mapping
 
 import numpy as np
 
+from gpuwm.ingest.quantization import clamp_bound_kissing
 from gpuwm.ingest.soil_contract import (
     MAPPED_SOIL_MOISTURE,
     MAPPED_SOIL_TEMPERATURE,
@@ -268,6 +269,10 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
                 or np.any((soil_temperature_nodes < 170.0)
                           | (soil_temperature_nodes > 400.0))):
             raise ValueError("HRRR SOILT nodes are outside 170..400 K")
+        # Saturated soil is stored AT 1.0 and decodes a hair above it;
+        # that is the decode rounding, not a broken node.
+        soil_moisture_nodes, _ = clamp_bound_kissing(
+            soil_moisture_nodes, minimum=0.0, maximum=1.0)
         if (not np.isfinite(soil_moisture_nodes).all()
                 or np.any((soil_moisture_nodes < 0.0)
                           | (soil_moisture_nodes > 1.0))):
@@ -392,6 +397,11 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
         # At this post-interpolation stage, only target-ocean values may be
         # absent; the declared repair below replaces them. Target-land gaps
         # and nonphysical values remain fatal.
+        # Same admission on the declarative route: a mapped saturated
+        # cell reaches here one rounding step above 1.0 for exactly the
+        # reasons the GFS bridge now clamps for.
+        declared_moisture, _ = clamp_bound_kissing(
+            declared_moisture, minimum=0.0, maximum=1.0)
         land_temperature = declared_temperature[:, terrestrial]
         land_moisture = declared_moisture[:, terrestrial]
         if not np.isfinite(land_temperature).all() \

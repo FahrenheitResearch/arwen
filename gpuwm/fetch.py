@@ -1181,11 +1181,23 @@ def author_gfs_front_door_manifest(
     # into the inputs.
     from gpuwm.geog_assets import default_geog_root
 
+    def printed(value) -> str:
+        """One printed argument, quoted if a shell would split it.
+
+        POSIX display form, as `source_cli._quote_command` renders argv:
+        the certified runtime is Linux/CUDA, and forward slashes are
+        accepted by every path API on Windows too.  A valid `--out` or
+        config path containing a space used to be split the moment this
+        command -- whose entire value is that it can be pasted -- was.
+        """
+
+        return shlex.quote(str(value).replace("\\", "/"))
+
     static_args = (
-        f" --static-input {static_input}"
-        f" --static-receipt {static_receipt}"
+        f" --static-input {printed(static_input)}"
+        f" --static-receipt {printed(static_receipt)}"
         if static_input is not None
-        else f" --geog-root {default_geog_root()}")
+        else f" --geog-root {printed(default_geog_root())}")
     output_root = out.resolve() / "prepared"
     progress(f"fetch {source}: front-door manifest {path}")
     progress(f"fetch {source}: front-door manifest sha256 {digest}")
@@ -1206,14 +1218,14 @@ def author_gfs_front_door_manifest(
         return path, digest
     progress(
         "fetch gfs: feed the GFS front door with:\n"
-        f"  rw-wps --source gfs --gfs-series {roles['series']}"
+        f"  rw-wps --source gfs --gfs-series {printed(roles['series'])}"
         f" --cycle {cycle:%Y-%m-%d_%H:%M:%S}"
-        f" --bridge {bridge}"
-        f" --wps-namelist {wps_namelist}"
-        f" --experiment-config {experiment_config}"
-        f" --source-manifest {path}"
+        f" --bridge {printed(bridge)}"
+        f" --wps-namelist {printed(wps_namelist)}"
+        f" --experiment-config {printed(experiment_config)}"
+        f" --source-manifest {printed(path)}"
         f" --source-manifest-sha256 {digest}"
-        f"{static_args} --output-root {output_root}")
+        f"{static_args} --output-root {printed(output_root)}")
     return path, digest
 
 
@@ -2427,10 +2439,25 @@ def fetch_main(args) -> int:
         raise ValueError(f"unknown fetch source {source!r}")
     print(f"fetch {source}: manifest {manifest}")
     if source == "hrrr":
+        # The trailing `...` this used to print was on a command line
+        # after a "front door:" label, and the consumer refuses it:
+        # `gpuwm-wrf-init: error: unrecognized arguments: ...`.  A
+        # successful producer must not print a command that fails before
+        # it can look at what was just fetched.  So the half this step
+        # knows is a bound fragment, and the half it cannot know is a
+        # comment naming the flags -- the same shape the 20CRv3
+        # authoring step uses.
         sums = args.out / "SHA256SUMS"
-        print("fetch hrrr: front door: rw-wps --source hrrr "
-              f"--source-root {args.out} --source-manifest {sums} "
-              f"--source-manifest-sha256 {sha256_file(sums)} ...")
+        print("fetch hrrr: next: feed the HRRR front door, source "
+              "already bound:")
+        print(f"  --source-root {args.out} --source-manifest {sums} "
+              f"--source-manifest-sha256 {sha256_file(sums)}")
+        print("  # fetching cannot bind the run's own flags: "
+              "--wps-namelist, --geog-root,\n"
+              "  # --experiment-config, --valid-time and --output-root "
+              "are yours to supply.\n"
+              "  # `rw-wps --show-source hrrr` lists the full argument "
+              "contract.")
     elif args.author_front_door_manifest:
         author_gfs_front_door_manifest(
             out=args.out, bridge=args.bridge,
@@ -2450,11 +2477,21 @@ def fetch_main(args) -> int:
               "single-domain front door today use `--source gfs`.  See "
               "`rw-wps --show-source gdas`.")
     else:
+        # A template with GFS_GRIB2_BRIDGE_EXE, NAMELIST_WPS and
+        # EXPERIMENT_TOML in it was presented as "next" and does not run
+        # as printed.  Same shape as the HRRR handoff above: the bound
+        # half is a real command, the three values only the user has are
+        # named in comments.
         print(f"fetch {source}: next: author the front-door input "
-              f"manifest with `gpuwm fetch --source {source} "
-              f"--author-front-door-manifest --out {args.out} "
-              "--bridge GFS_GRIB2_BRIDGE_EXE --wps-namelist NAMELIST_WPS "
-              "--experiment-config EXPERIMENT_TOML`")
+              "manifest.  This half is bound:")
+        print(f"  gpuwm fetch --source {source} "
+              f"--author-front-door-manifest --out "
+              f"{shlex.quote(str(args.out))}")
+        print("  # and these three are yours to point at: --bridge (the "
+              "built\n"
+              "  # gfs_grib2_bridge), --wps-namelist, "
+              "--experiment-config.\n"
+              "  # `gpuwm doctor` names the bridge path on this machine.")
     return 0
 
 
@@ -2581,8 +2618,10 @@ def register_cli(subparsers) -> None:
              "exactly which hours were fetched")
     parser.add_argument(
         "--force-refetch", action="store_true",
-        help="move every existing file in --out aside (nothing is "
-             "deleted) and re-download; required when re-fetching a "
+        help="move the existing files this fetch would write aside "
+             "(nothing is deleted) and re-download them; unrelated "
+             "files, manifests and forecast hours you did not request "
+             "stay where they are.  Required when re-fetching a "
              "different area/cycle into the same --out")
     parser.add_argument(
         "--engine", default=None, choices=FETCH_ENGINES,
