@@ -326,8 +326,44 @@ def _standalone_pyproject() -> str:
     return stamped
 
 
+class NotAGitCheckout(RuntimeError):
+    """The tree cannot answer whether a file is tracked.
+
+    Distinct from "this file is untracked", which is a refusal.  A
+    snapshot extracted from a tarball or a `git archive` has no index at
+    all, so the question has no answer there -- and the two are not the
+    same finding.  Conflating them cost a Linux gate run a 40-line
+    `CalledProcessError` traceback ending in `exit status 128`, which
+    reads as a staging bug rather than as "this directory is not a
+    checkout".
+    """
+
+
+def _tree_is_a_git_checkout() -> bool:
+    """Does ``REPO`` have a git index to ask?  Asked once, cached."""
+
+    global _GIT_CHECKOUT
+    if _GIT_CHECKOUT is None:
+        probe = subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", "--git-dir"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _GIT_CHECKOUT = probe.returncode == 0
+    return _GIT_CHECKOUT
+
+
+#: Memo for :func:`_tree_is_a_git_checkout` (None = not yet asked).
+_GIT_CHECKOUT: bool | None = None
+
+
 def _require_tracked(source: Path) -> None:
     relative = source.resolve().relative_to(REPO).as_posix()
+    if not _tree_is_a_git_checkout():
+        raise NotAGitCheckout(
+            f"{REPO} is not a git checkout, so whether {relative} is "
+            "tracked cannot be answered.  RW-WPS wheel staging copies "
+            "tracked files only; run it from a clone (CI's "
+            "actions/checkout leaves one), not from an extracted "
+            "archive")
     subprocess.run(
         ["git", "-C", str(REPO), "ls-files", "--error-unmatch", relative],
         check=True,

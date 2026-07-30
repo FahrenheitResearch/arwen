@@ -37,12 +37,15 @@ from tools.build_native_wrf_distribution import (
     _write_deterministic_tar,
 )
 from tools.build_rw_wps_release import (
+    NotAGitCheckout,
     _cargo_release_environment,
     _run as _run_release_subprocess,
     _stage_rw_wps_python_project,
     _staged_internal_imports,
     _staged_verification_imports,
 )
+
+
 from tools.build_native_wrf_windows_distribution import (
     _dynamic_msvc_runtime_imports,
     _require_static_msvc_runtime,
@@ -52,6 +55,26 @@ from tools.smoke_rw_wps_cpu_install import _safe_extract, _safe_extract_zip
 
 
 ROOT = Path(__file__).parents[1]
+
+
+def _stage_or_skip(destination):
+    """Stage the standalone project, or say why the tree cannot.
+
+    Staging copies tracked files only, so a tree with no git index
+    cannot be staged at all -- the question has no answer there.  That
+    is a property of the directory the suite is running in, not a
+    finding about the product, and it must not read as one: the Linux
+    pre-cut gate ran against a `git archive` extraction and got a
+    subprocess traceback ending in `exit status 128`, which looked like
+    a staging bug for as long as it took to read the command.
+
+    CI's own checkout is a clone, so this never skips there.
+    """
+
+    try:
+        return _stage_rw_wps_python_project(destination)
+    except NotAGitCheckout as error:
+        pytest.skip(str(error))
 
 
 def test_distribution_builder_runs_directly_outside_checkout(tmp_path):
@@ -393,7 +416,7 @@ def test_windows_installer_and_launcher_are_fail_closed():
 
 def test_standalone_python_project_excludes_forecast_executor(tmp_path):
     staged = tmp_path / "rw-wps-python"
-    receipt = _stage_rw_wps_python_project(staged)
+    receipt = _stage_or_skip(staged)
     files = set(receipt["files"])
 
     assert receipt["distribution"] == "rw-wps"
@@ -444,7 +467,7 @@ def test_standalone_python_project_excludes_forecast_executor(tmp_path):
 
 def test_standalone_python_project_imports_without_source_tree_or_cupy(tmp_path):
     staged = tmp_path / "rw-wps-python"
-    _stage_rw_wps_python_project(staged)
+    _stage_or_skip(staged)
     script = r"""
 from importlib.abc import MetaPathFinder
 from pathlib import Path

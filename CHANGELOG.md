@@ -1,4 +1,16 @@
 # Changelog
+## 1.2.3 (2026-07-30)
+
+The 1.2.2 workflow stopped at its test gate on two defects the ubuntu
+runner exposed: a doctor test that asserted the complete-tree Thompson
+table state on a checkout where the externalized 243 MiB asset is
+legitimately absent, and a remedy-contract test that flipped the shell
+flag without re-deriving the build hints frozen from it at import, so
+POSIX remedies were judged by PowerShell rules. Both tests now assert
+each platform's own truth, negative-controlled, run against the public
+byte-mirror under Python 3.11 and 3.13 on both shell arms. No runtime
+code change.
+
 ## 1.2.2 (2026-07-30)
 
 The 1.2.1 release stopped in its workflow before any wheel reached

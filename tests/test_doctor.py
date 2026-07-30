@@ -8,6 +8,7 @@ doctor describes.  Everything here is CPU-only and read-only.
 """
 from __future__ import annotations
 
+from pathlib import Path
 import re
 
 import pytest
@@ -178,11 +179,43 @@ def test_cpu_library_check_requires_a_loadable_abi(monkeypatch, tmp_path):
 def test_thompson_tables_check_uses_the_load_time_hash_validation(
         monkeypatch, tmp_path):
     """A relocated root with wrong bytes must fail exactly as a run
-    would; the packaged root must verify."""
+    would; the packaged root must earn whichever answer it has.
+
+    The packaged root has two correct states and this used to assert
+    only one.  A developer tree has staged the externalized assets, so
+    the check verifies.  A fresh clone of the PUBLIC repository has
+    not: `freezeH2O.dat` is 243 MiB, past GitHub's blob limit, and is
+    published as a release asset rather than committed -- so `missing`
+    there is the honest answer, and the assertion that it be `verified`
+    was a statement about the author's disk.  It passed on every
+    developer box and failed on the ubuntu publish runner's clean
+    checkout, which is the worst place to learn it.
+
+    Neither branch is a skip.  The incomplete tree is held to MORE than
+    the complete one: the gap must be exactly the externalized assets
+    (a packaged asset missing is a broken install, not a pending
+    download) and the remedy must be the command that stages them.
+    """
+
+    from gpuwm import table_assets
+    from gpuwm.physics_compat import thompson_table_root
+
     monkeypatch.delenv("GPUWM_THOMPSON_TABLE_ROOT", raising=False)
+    root = Path(thompson_table_root())
+    _valid, invalid, absent = table_assets.classify_assets(root)
     packaged = doctor._thompson_tables_check()
-    assert packaged.status == "verified"
-    assert "SHA-256" in packaged.detail
+    if not invalid and not absent:
+        assert packaged.status == "verified"
+        assert "SHA-256" in packaged.detail
+    else:
+        assert packaged.status == "missing"
+        assert not invalid, (
+            f"the packaged root holds files with the wrong bytes: {invalid}")
+        assert all(
+            asset.filename in table_assets.EXTERNALIZED_TABLE_FILENAMES
+            for asset in absent), [asset.filename for asset in absent]
+        assert "gpuwm fetch-tables" in (packaged.remedy or "")
+        assert "reinstall" not in (packaged.remedy or "")
 
     (tmp_path / "qr_acr_qg_V4.dat").write_bytes(b"tampered")
     monkeypatch.setenv("GPUWM_THOMPSON_TABLE_ROOT", str(tmp_path))
@@ -443,7 +476,7 @@ def test_the_pip_bootstrap_wires_what_it_builds(monkeypatch, tmp_path,
 
     from gpuwm import bridges
 
-    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    _force_shell(monkeypatch, windows)
     monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path)
     monkeypatch.setattr(bridges, "crate_dir",
                         lambda: tmp_path / "tools" / "grib1_bridge")
@@ -533,6 +566,120 @@ _REMEDY_COMMANDS = frozenset({
 #: A bare ALL-CAPS word is a placeholder the reader must expand.
 _PLACEHOLDER_WORD = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
 
+#: Spellings only Windows PowerShell understands.  The mirror of the
+#: `&&` rule below, which is the half that had ever run: these tests
+#: only ever executed on Windows, where a POSIX remedy carrying
+#: `New-Item` would have been produced by a branch the host never took.
+#: On a Linux runner that branch is the one under test.
+_POWERSHELL_ONLY = ("New-Item", "Copy-Item", "-ItemType", "$env:")
+
+#: Modules that freeze a shell-dependent string at import.
+#: :func:`_force_shell` re-derives them; a test below re-finds them by
+#: searching rather than by a list, so a fourth one cannot appear
+#: unnoticed.
+_SHELL_CONSTANT_MODULES = ("gpuwm.bridges", "gpuwm.rustwx",
+                           "gpuwm.rustwx_fetch")
+
+
+def _frozen_shell_constants():
+    """(module, name, value) for every module-level build hint.
+
+    Found by searching the modules for constants that contain a cargo
+    build line, not by naming them: the trap this guards against is a
+    NEW constant frozen at import, and a hand-written list is exactly
+    what would not mention it.
+    """
+
+    import importlib
+
+    found = []
+    for module_name in _SHELL_CONSTANT_MODULES:
+        module = importlib.import_module(module_name)
+        for name, value in vars(module).items():
+            if (name.isupper() and isinstance(value, str)
+                    and "cargo build " in value):
+                found.append((module_name, name, value))
+    return found
+
+
+def _force_shell(monkeypatch, windows):
+    """Put the remedy generators on ``windows``'s shell, completely.
+
+    ``bridges.WINDOWS_SHELL`` alone is not the whole dimension.  Three
+    modules compute a build hint from it *at import*, so a test that
+    flips the flag and then reaches one of those constants is judging a
+    remedy generated for the host against the rules of the other
+    platform.  On a Windows box that mistake is invisible -- the frozen
+    hint already spells `;` -- and on the ubuntu publish runner it
+    failed the cut: `cd tools/grib1_bridge && cargo build ... && cd
+    ../..` measured against "PowerShell cannot parse '&&'".
+
+    One helper, so a forcing site cannot do half the job.
+    """
+
+    from gpuwm import bridges, rustwx, rustwx_fetch
+
+    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    monkeypatch.setattr(bridges, "CARGO_BUILD_HINT",
+                        bridges.cargo_build_one_liner(bridges.CRATE_RELATIVE))
+    rustwx_hint = bridges.cargo_build_one_liner(bridges.RUSTWX_CRATE_RELATIVE)
+    monkeypatch.setattr(rustwx, "CARGO_BUILD_HINT", rustwx_hint)
+    monkeypatch.setattr(rustwx_fetch, "CARGO_BUILD_HINT", rustwx_hint)
+
+
+def _force_bare_estate(monkeypatch):
+    """Nothing Rust is built yet: a fresh checkout, or any CI runner.
+
+    The estate is a dimension too, and on a developer box it has only
+    ever had one value -- everything built.  `collect_checks()` then
+    answers those checks `ok` with no remedy, so a sweep over "every
+    remedy doctor can print" sweeps almost nothing, and the shell
+    forcing added earlier cannot help: there is no remedy to spell.
+
+    That is how a whitelist missing `cd` survived every local run and
+    failed the first bare Linux gate on the first line of the checkout
+    build remedy.  Forcing the estate is the missing half.
+    """
+
+    from gpuwm import rustwx, rustwx_fetch
+    from gpuwm.ingest import cpu_backend
+
+    def _no_library():
+        raise FileNotFoundError("gpuwm_preprocess_cpu not found")
+
+    monkeypatch.setattr(bridges, "find_bridge", lambda name: None)
+    monkeypatch.setattr(rustwx, "find_renderer", lambda: None)
+    monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", lambda: None)
+    monkeypatch.setattr(cpu_backend, "CpuPreprocessBackend", _no_library)
+
+
+@pytest.mark.parametrize("windows", (False, True))
+def test_the_shell_forcing_helper_re_derives_every_frozen_hint(
+        monkeypatch, windows):
+    """Forcing the shell must move EVERY constant built from it.
+
+    The failure this pins is not hypothetical: it is the one that ended
+    three release cuts' worth of CI on `&&`.  Both arms run here, so
+    whichever platform the suite runs on, the other one is exercised.
+    """
+
+    before = _frozen_shell_constants()
+    assert before, (
+        "the search found no build hints at all; it has stopped looking "
+        "where they live, and this guard is now vacuous")
+
+    _force_shell(monkeypatch, windows)
+
+    separator = ";" if windows else "&&"
+    stale = "&&" if windows else ";"
+    for module_name, name, value in _frozen_shell_constants():
+        assert separator in value, (
+            f"{module_name}.{name} was not re-derived for "
+            f"{'windows' if windows else 'posix'}: {value!r}")
+        assert stale not in value, (
+            f"{module_name}.{name} still carries the other shell's "
+            f"separator: {value!r}")
+
 
 def _assert_remedy_lines_are_commands_or_comments(remedy, *, windows):
     """EVERY line: a command that runs as printed, or a `#` comment.
@@ -540,6 +687,13 @@ def _assert_remedy_lines_are_commands_or_comments(remedy, *, windows):
     No exemptions -- not even the first line.  The closing report
     claims this of every remedy, so a headline sentence must be a
     `#` comment, never bare prose fused into a paste.
+
+    The shell rules are per-platform and that is deliberate: `&&` is
+    correct in sh (and fails fast, which `;` does not) and is a parse
+    error in Windows PowerShell 5.1, so one universal separator would
+    have to be wrong somewhere.  What the contract requires is that a
+    remedy generated FOR a platform obeys THAT platform's rules -- in
+    both directions, which is the part that was missing.
     """
 
     lines = remedy.splitlines()
@@ -561,6 +715,10 @@ def _assert_remedy_lines_are_commands_or_comments(remedy, *, windows):
         if windows:
             assert "&&" not in stripped, (
                 f"Windows PowerShell 5.1 cannot parse '&&': {line!r}")
+        else:
+            for spelling in _POWERSHELL_ONLY:
+                assert spelling not in stripped, (
+                    f"a POSIX shell has no {spelling!r}: {line!r}")
 
 
 @pytest.mark.parametrize("windows", (False, True))
@@ -571,7 +729,7 @@ def test_the_emitted_bootstrap_is_shell_correct_on_both_platforms(
 
     from gpuwm import bridges
 
-    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    _force_shell(monkeypatch, windows)
     monkeypatch.setattr(bridges, "cargo_is_installed", lambda: cargo)
     # A pip install: no crate anywhere.
     monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path)
@@ -619,17 +777,21 @@ def test_the_emitted_bootstrap_is_shell_correct_on_both_platforms(
         assert activation == '. "$HOME/.cargo/env"'
 
 
+@pytest.mark.parametrize("windows", (False, True))
 def test_the_invalid_override_branches_emit_install_aware_remedies(
-        monkeypatch, tmp_path):
+        monkeypatch, tmp_path, windows):
     """doctor's `fix ENV ... or unset it and <remedy>` paths.
 
     Both called the old install-unaware helpers, which kept `<clone>`
     placeholders and told a pip-only install to enter a relative
-    `tools/rustwx` it does not have.
+    `tools/rustwx` it does not have.  Both shells, because these two
+    remedies are assembled by the same generator whose separator is
+    per-platform.
     """
 
     from gpuwm import bridges, rustwx, rustwx_fetch
 
+    _force_shell(monkeypatch, windows)
     monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path)
     monkeypatch.setattr(bridges, "crate_dir",
                         lambda: tmp_path / "tools" / "grib1_bridge")
@@ -641,28 +803,41 @@ def test_the_invalid_override_branches_emit_install_aware_remedies(
             "a pip install has no tools/rustwx to cd into; the remedy "
             "must start from the clone")
         _assert_remedy_lines_are_commands_or_comments(
-            remedy, windows=bridges.WINDOWS_SHELL)
+            remedy, windows=windows)
 
 
-def test_every_remedy_doctor_can_print_obeys_the_closing_claim():
+@pytest.mark.parametrize("estate", ("live", "bare"))
+@pytest.mark.parametrize("windows", (False, True))
+def test_every_remedy_doctor_can_print_obeys_the_closing_claim(
+        monkeypatch, windows, estate):
     """The closing line makes a claim about EVERY remedy.  Check them all.
 
     Including the non-Rust ones: the pip-extra and fetch-geog hints used
     to trail a parenthetical on the command line itself.
+
+    And on both shells, not just the one this box has.  Reading the real
+    ``WINDOWS_SHELL`` meant the sweep over every remedy doctor can
+    actually assemble here ran against exactly one platform's spelling
+    -- the author's -- so the other platform's version of these same
+    blocks was covered by nothing until a release cut ran it.
     """
 
-    from gpuwm import bridges, doctor
+    from gpuwm import doctor
+
+    _force_shell(monkeypatch, windows)
+    if estate == "bare":
+        _force_bare_estate(monkeypatch)
 
     for check in doctor.collect_checks():
         if not check.remedy:
             continue
         _assert_remedy_lines_are_commands_or_comments(
-            check.remedy, windows=bridges.WINDOWS_SHELL)
+            check.remedy, windows=windows)
 
     for hint in (doctor.GPU_EXTRA_HINT, doctor.RENDER_EXTRA_HINT,
                  doctor.GEOG_HINT, doctor.REINSTALL_HINT):
         _assert_remedy_lines_are_commands_or_comments(
-            hint, windows=bridges.WINDOWS_SHELL)
+            hint, windows=windows)
         assert hint.splitlines()[0].split()[0] in _REMEDY_COMMANDS
 
 
@@ -708,7 +883,7 @@ def test_every_conditional_remedy_branch_obeys_the_claim(
     def _missing(*_args, **_kwargs):
         raise FileNotFoundError("ENV_VAR points at nothing on disk")
 
-    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    _force_shell(monkeypatch, windows)
     monkeypatch.setattr(bridges, "cargo_is_installed", lambda: False)
     _set_staging(monkeypatch, tmp_path, available=staging)
 
@@ -952,15 +1127,10 @@ def _force_every_gap(monkeypatch, tmp_path, *, windows, shape, mode,
             (root / "tools" / crate / "Cargo.toml").write_text(
                 "[package]\n", encoding="utf-8")
 
-    # The shell under test -- and the three build hints, which are
-    # frozen at import for whichever platform is running the tests.
-    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    # The shell under test -- flag and the three hints frozen from it at
+    # import, which is one indivisible move (_force_shell).
+    _force_shell(monkeypatch, windows)
     monkeypatch.setattr(bridges, "cargo_is_installed", lambda: False)
-    monkeypatch.setattr(bridges, "CARGO_BUILD_HINT",
-                        bridges.cargo_build_one_liner(bridges.CRATE_RELATIVE))
-    rustwx_hint = bridges.cargo_build_one_liner(bridges.RUSTWX_CRATE_RELATIVE)
-    monkeypatch.setattr(rustwx, "CARGO_BUILD_HINT", rustwx_hint)
-    monkeypatch.setattr(rustwx_fetch, "CARGO_BUILD_HINT", rustwx_hint)
 
     monkeypatch.setattr(bridges, "_package_parent", lambda: root)
     monkeypatch.setattr(bridges, "crate_dir",
@@ -1142,9 +1312,10 @@ def test_the_whole_printed_report_pastes_as_one_sequence(
         cursor += len(printed)
 
 
+@pytest.mark.parametrize("windows", (False, True))
 @pytest.mark.parametrize("staging", (False, True))
 def test_the_pip_remedy_offers_the_prebuilt_bundle_first(
-        monkeypatch, tmp_path, staging):
+        monkeypatch, tmp_path, staging, windows):
     """One gap, two true remedies, decided by what the release published.
 
     With a bundle for this platform the first thing a wheel user is
@@ -1157,6 +1328,7 @@ def test_the_pip_remedy_offers_the_prebuilt_bundle_first(
 
     from gpuwm import bridge_assets, bridges
 
+    _force_shell(monkeypatch, windows)
     monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path / "wheel")
     monkeypatch.setattr(bridges, "crate_dir",
                         lambda: tmp_path / "wheel" / "tools" / "grib1_bridge")
@@ -1164,8 +1336,7 @@ def test_the_pip_remedy_offers_the_prebuilt_bundle_first(
     pins = _set_staging(monkeypatch, tmp_path, available=staging)
 
     remedy = bridges.bridge_remedy("grib1_bridge")
-    _assert_remedy_lines_are_commands_or_comments(
-        remedy, windows=bridges.WINDOWS_SHELL)
+    _assert_remedy_lines_are_commands_or_comments(remedy, windows=windows)
     commands = [line.strip() for line in remedy.splitlines()
                 if line.strip() and not line.strip().startswith("#")]
 
@@ -1302,15 +1473,27 @@ def test_a_real_doctor_gap_prints_a_comment_only_remedy(monkeypatch,
         gap.remedy
 
 
-def test_every_remedy_line_doctor_can_emit_is_a_command_or_a_comment():
-    """Doctor's own closing contract, over the whole live estate.
+@pytest.mark.parametrize("estate", ("live", "bare"))
+def test_every_remedy_line_doctor_can_emit_is_a_command_or_a_comment(
+        monkeypatch, estate):
+    """Doctor's own closing contract, over the estate it can reach.
 
     Not "every remedy is a command" -- some are `#`-comment-only, some
     are multi-step. The invariant the README must state, and does, is
     that every printed remedy LINE is a command or a `#` comment, so the
     block survives being pasted whole.
+
+    Two estates, because one of them was doing all the work and it was
+    the empty one.  "live" is whatever this machine happens to have;
+    "bare" is a checkout with nothing built, which is every CI runner
+    and every new user, and is the only estate that makes doctor emit
+    the checkout build remedy this test now covers.
     """
 
+    if estate == "bare":
+        _force_bare_estate(monkeypatch)
+
+    swept = 0
     for check in doctor.collect_checks():
         if not check.remedy:
             continue
@@ -1318,18 +1501,46 @@ def test_every_remedy_line_doctor_can_emit_is_a_command_or_a_comment():
             line = raw.strip()
             if not line:
                 continue
+            swept += 1
             assert line.startswith("#") or _looks_like_command(line), (
                 check.name, line)
+    if estate == "bare":
+        # A sweep that swept nothing passes vacuously, which is how the
+        # missing `cd` lived here for as long as it did.
+        assert swept >= 20, (
+            f"the bare estate produced only {swept} remedy lines; the "
+            "forcing has stopped reaching doctor's gaps")
+
+
+#: Spellings this sweep accepts on top of :data:`_REMEDY_COMMANDS`.
+#: The README scan shares this predicate and quotes shell lines that
+#: doctor itself never prints.
+_EXTRA_COMMAND_TOKENS = frozenset({
+    "set", "rustup", "conda", "uv", "rw-wps",
+    "$env:GPUWM_GRIB1_BRIDGE",
+})
 
 
 def _looks_like_command(line: str) -> bool:
-    # A command line starts a shell invocation or continues one; a prose
-    # sentence would fail this and be caught. Mirrors the doctor remedy
-    # contract, deliberately narrow.
+    """A command line starts a shell invocation, or continues one.
+
+    The whitelist is :data:`_REMEDY_COMMANDS` -- the one the structural
+    contract uses -- plus the spellings above.  It used to be a second,
+    hand-written set that claimed to mirror the contract and did not:
+    it was missing `cd`, and `cd <crate> && cargo build ... && cd ../..`
+    is the FIRST line of the checkout remedy for every Rust artifact.
+
+    That gap survived because it is only reachable on a machine where
+    something is unbuilt.  Every developer box here has all eight
+    artifacts, so `collect_checks()` returns those checks `ok` with no
+    remedy at all, and the sweep below had nothing to sweep.  A bare
+    Linux runner has none of them, produces the remedy on its first
+    run, and failed the pre-cut gate on it.
+    """
+
     first = line.split()[0] if line.split() else ""
-    return (first in {"pip", "python", "cargo", "git", "bash", "set",
-                      "export", "rustup", "conda", "uv", "$env:GPUWM_GRIB1_BRIDGE",
-                      "gpuwm", "rw-wps"}
+    return (first in _REMEDY_COMMANDS
+            or first in _EXTRA_COMMAND_TOKENS
             or line.endswith("\\")
             or "=" in first)
 
