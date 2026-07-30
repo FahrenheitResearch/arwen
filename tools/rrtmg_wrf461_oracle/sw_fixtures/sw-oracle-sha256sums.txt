@@ -1,0 +1,7 @@
+cefe75fa749205a0451dceb873caa86651e999057b51e342acdb531d132d20f9  /mnt/c/Users/drew/Downloads/WRF_1974_MP55_reference_bundle/WRF_source_v4.6.1_group/phys/module_ra_rrtmg_lw.F
+447345d2658cd370e6bc97ff2ab582a5d12b84adffc58f72a938b353e017987e  /mnt/c/Users/drew/Downloads/WRF_1974_MP55_reference_bundle/WRF_source_v4.6.1_group/phys/module_ra_rrtmg_sw.F
+a7d25f5b4d33be8629cbef7ecacc1ff413bf398a021297793e843ba1cc627baf  RRTMG_SW_DATA
+bcfdee24b63a4c909522a329b8e16c539f0173c7e5aea2caf933ab4fe28c5c97  RRTMG_LW_DATA
+05b975a340039983b600347f42c9650b07c75ee7c2ec3c60de567f8e73f0bcea  /mnt/c/Users/drew/Documents/Codex/2026-07-22/files-mentioned-by-the-user-gpuwm/work/rrtmg-sw/tools/rrtmg_wrf461_oracle/sw_stub_wrf.F90
+9c16d3b67ab77c6d60273bfc2f5329d7465d5e810373badc3ea6a5da47635abb  /mnt/c/Users/drew/Documents/Codex/2026-07-22/files-mentioned-by-the-user-gpuwm/work/rrtmg-sw/tools/rrtmg_wrf461_oracle/sw_dump_tables.F90
+19294e76926baf5f4b980724b898e2fe42b54e22da704e6883054a1f8a8b1970  /mnt/c/Users/drew/Documents/Codex/2026-07-22/files-mentioned-by-the-user-gpuwm/work/rrtmg-sw/tools/rrtmg_wrf461_oracle/sw_fixture_driver.F90

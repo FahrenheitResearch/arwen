@@ -1,0 +1,82 @@
+{
+  "verification": [
+    {
+      "station": "OUN",
+      "time_utc": "2024-05-06T00:00:00Z",
+      "configs": [
+        {
+          "name": "entraining_pseudoadiabatic",
+          "max_temp_diff_k": 0.00012882768162114644,
+          "mean_temp_diff_k": 2.7260255313009666e-05,
+          "cape_diff_jkg": -0.00023766825030691052,
+          "ecape_diff_jkg": -0.0005904399877181277,
+          "ncape_diff_jkg": 0.02290825549243891,
+          "js_per_call_ms": 155.2828,
+          "rust_per_call_ms": 1.1916
+        },
+        {
+          "name": "entraining_irreversible",
+          "max_temp_diff_k": 2.2794390019953426e-06,
+          "mean_temp_diff_k": 4.5994184814315376e-07,
+          "cape_diff_jkg": 6.16997141378306e-07,
+          "ecape_diff_jkg": -0.00013189091259846464,
+          "ncape_diff_jkg": 0.012760337724557758,
+          "js_per_call_ms": 158.5811,
+          "rust_per_call_ms": 1.1887
+        }
+      ]
+    },
+    {
+      "station": "LBF",
+      "time_utc": "2024-06-20T00:00:00Z",
+      "configs": [
+        {
+          "name": "entraining_pseudoadiabatic",
+          "max_temp_diff_k": 1.4542200858613796e-05,
+          "mean_temp_diff_k": 2.2703669802106414e-06,
+          "cape_diff_jkg": 0.0005773908267485695,
+          "ecape_diff_jkg": -0.006681068321086059,
+          "ncape_diff_jkg": 0.318155073572143,
+          "js_per_call_ms": 57.6584,
+          "rust_per_call_ms": 0.4145
+        },
+        {
+          "name": "entraining_irreversible",
+          "max_temp_diff_k": 6.625188035513929e-06,
+          "mean_temp_diff_k": 1.4546819411391216e-06,
+          "cape_diff_jkg": 0.0002967575814381007,
+          "ecape_diff_jkg": -0.0046033085345698055,
+          "ncape_diff_jkg": 0.31757441044692314,
+          "js_per_call_ms": 62.050799999999995,
+          "rust_per_call_ms": 0.4179
+        }
+      ]
+    },
+    {
+      "station": "BMX",
+      "time_utc": "2024-03-14T00:00:00Z",
+      "configs": [
+        {
+          "name": "entraining_pseudoadiabatic",
+          "max_temp_diff_k": 0.0003938579859266156,
+          "mean_temp_diff_k": 7.454425241275482e-05,
+          "cape_diff_jkg": -0.00026878768787241825,
+          "ecape_diff_jkg": -0.0010322949806322868,
+          "ncape_diff_jkg": 0.0555389428387798,
+          "js_per_call_ms": 154.282,
+          "rust_per_call_ms": 1.2648
+        },
+        {
+          "name": "entraining_irreversible",
+          "max_temp_diff_k": 2.3034137683453082e-05,
+          "mean_temp_diff_k": 4.128727159252694e-06,
+          "cape_diff_jkg": 2.454856726963328e-05,
+          "ecape_diff_jkg": -0.00044715016929330886,
+          "ncape_diff_jkg": 0.0555389428387798,
+          "js_per_call_ms": 157.5824,
+          "rust_per_call_ms": 1.7268999999999999
+        }
+      ]
+    }
+  ]
+}

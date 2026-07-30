@@ -1,0 +1,23 @@
+# RW-WPS GFS pressure-level GRIB2 authoring authority.
+# GRIB1 Param | GRIB1 Level | Level1 | Level2 | Name | Units | Description | GRIB2 Discipline | Category | Parameter | Level Type |
+ |  | * |  | RW_geopotential_height_0 | m | geopotential_height | 0 | 3 | 5 | 100 |
+ |  | * |  | RW_air_temperature_0 | K | air_temperature | 0 | 0 | 0 | 100 |
+ |  | * |  | RW_eastward_wind_0 | m s-1 | eastward_wind | 0 | 2 | 2 | 100 |
+ |  | * |  | RW_northward_wind_0 | m s-1 | northward_wind | 0 | 2 | 3 | 100 |
+ |  | * |  | RW_relative_humidity_0 | % | relative_humidity | 0 | 1 | 1 | 100 |
+ |  | * |  | RW_surface_pressure_0 | Pa | surface_pressure | 0 | 3 | 0 | 1 |
+ |  | * |  | RW_terrain_height_0 | m | terrain_height | 0 | 3 | 5 | 1 |
+ |  | * |  | RW_skin_temperature_0 | K | skin_temperature | 0 | 0 | 0 | 1 |
+ |  | * |  | RW_air_temperature_2m_0 | K | air_temperature_2m | 0 | 0 | 0 | 103 |
+ |  | * |  | RW_relative_humidity_2m_0 | % | relative_humidity_2m | 0 | 1 | 1 | 103 |
+ |  | * |  | RW_eastward_wind_10m_0 | m s-1 | eastward_wind_10m | 0 | 2 | 2 | 103 |
+ |  | * |  | RW_northward_wind_10m_0 | m s-1 | northward_wind_10m | 0 | 2 | 3 | 103 |
+ |  | * |  | RW_land_fraction_0 | 0/1 Flag | land_fraction | 2 | 0 | 0 | 1 |
+ |  | * |  | RW_soil_temperature_0 | K | soil_temperature_0_0.1m | 2 | 0 | 2 | 106 |
+ |  | * |  | RW_soil_temperature_1 | K | soil_temperature_0.1_0.4m | 2 | 0 | 2 | 106 |
+ |  | * |  | RW_soil_temperature_2 | K | soil_temperature_0.4_1.0m | 2 | 0 | 2 | 106 |
+ |  | * |  | RW_soil_temperature_3 | K | soil_temperature_1.0_2.0m | 2 | 0 | 2 | 106 |
+ |  | * |  | RW_volumetric_soil_moisture_0 | fraction | volumetric_soil_moisture_0_0.1m | 2 | 0 | 192 | 106 |
+ |  | * |  | RW_volumetric_soil_moisture_1 | fraction | volumetric_soil_moisture_0.1_0.4m | 2 | 0 | 192 | 106 |
+ |  | * |  | RW_volumetric_soil_moisture_2 | fraction | volumetric_soil_moisture_0.4_1.0m | 2 | 0 | 192 | 106 |
+ |  | * |  | RW_volumetric_soil_moisture_3 | fraction | volumetric_soil_moisture_1.0_2.0m | 2 | 0 | 192 | 106 |

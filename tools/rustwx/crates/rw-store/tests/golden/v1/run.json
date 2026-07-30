@@ -1,0 +1,26 @@
+{
+  "schema": "rw-store.run.v1",
+  "model": "golden",
+  "run": "20260101_00z",
+  "grid_hash": "f3c7edfa3b093ea606ac51f29afb67ebf8eb787c2ebc6fa283cde95001b8760e",
+  "nx": 20,
+  "ny": 300,
+  "hours": {
+    "0": {
+      "file": "f000.rws",
+      "written_unix": 1770000000,
+      "encode_ms": 5,
+      "variables": [
+        "t2m",
+        "mask_demo",
+        "const_demo",
+        "temp_iso"
+      ]
+    }
+  },
+  "writer": {
+    "name": "rw-store",
+    "version": "0.1.0",
+    "build": "golden-v1"
+  }
+}

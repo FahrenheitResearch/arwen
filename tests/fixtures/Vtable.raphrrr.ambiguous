@@ -1,0 +1,5 @@
+GRIB1| Level| From |  To  | metgrid  |  metgrid | metgrid                                 |GRIB2|GRIB2|GRIB2|GRIB2|
+Param| Type |Level1|Level2| Name     |  Units   | Description                             |Discp|Catgy|Param|Level|
+-----+------+------+------+----------+----------+-----------------------------------------+-----------------------+
+  11 | 109  |   *  |      | TT       | K        | Temperature                             |  0  |  0  |  0  | 105 |
+  11 | 105  |   2  |      | TT       | K        | Temperature at 2 m                      |  0  |  0  |  0  | 103 |

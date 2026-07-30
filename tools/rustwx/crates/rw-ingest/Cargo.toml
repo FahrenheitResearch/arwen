@@ -1,0 +1,40 @@
+[package]
+name = "rw-ingest"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Live GRIB -> .rws ingest flow (fetch, extract, derive, write) shared by the CLI bins and the UI shell"
+
+[dependencies]
+rayon.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rustwx-core = { path = "../rustwx-core" }
+rustwx-io = { path = "../rustwx-io" }
+rustwx-models = { path = "../rustwx-models" }
+rustwx-products = { path = "../rustwx-products" }
+rw-store = { path = "../rw-store" }
+# Deep profiling scopes (default off): the "profiling" feature wraps the
+# per-stage boundaries of process_fetched_hour in puffin scopes. Headless
+# bins compile this out; the UI shell enables it for its profiler panel.
+puffin = { version = "0.20", optional = true }
+
+[features]
+profiling = ["dep:puffin"]
+
+[dev-dependencies]
+# The ingest derived/heavy precompute tests prove the wiring by calling the
+# underlying calc kernels directly with identically prepared inputs.
+rustwx-calc = { path = "../rustwx-calc" }
+
+# Polite-mode priority APIs (src/throttle.rs): process-wide drop for the
+# headless bins plus the per-thread variant interactive hosts use for their
+# dedicated background pool. Win32_System_Threading carries
+# SetPriorityClass / SetThreadPriority / GetCurrentThread.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }

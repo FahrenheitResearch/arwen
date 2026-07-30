@@ -1,0 +1,3541 @@
+"""Memory preflight: itemized estimator, scratch registry, N0 ``--alloc``.
+
+Phase-5 Task 11 (panel lane L4; folds robust-5), implementing architecture
+section E of docs/superpowers/specs/2026-07-16-phase5-nesting-architecture.md:
+the all-resident four-domain decision is gated by an ENFORCED memory
+estimate -- ``gpuwm check --alloc`` constructs every persistent device
+allocation for the experiment, runs zero steps, and reports the measured
+pool/device numbers against the estimate and the measured WDDM budget.
+Measured > estimate is a FAILING GATE (milestone N0, ledger records
+``alloc_fits_wddm_budget`` / ``alloc_measured_le_estimate`` /
+``alloc_estimate_le_wddm_budget`` -- F11 amendment: every leg blocks).
+
+Three-tier model.  Tier 1 is exact arithmetic; tiers 2/3 are PROVISIONAL
+POLICY calibrated on two controller measurements (the d01 run fixture
+``.superpowers/sdd/codex/n0-preflight-baseline.log`` and the N0
+allocation probe ``n0-alloc-probe-r2.json``) -- the tier-2/3 constants
+parameterize the reserve proposal for controller ratification; the tests
+pin their ALGEBRA (calibration consistency), they do not and cannot
+validate the model against independent evidence:
+
+* TIER 1 -- LIVE ARRAYS.  Exact itemized persistent residency from shape
+  formulas: (a) ``DomainState`` arrays (transcribed from
+  ``gpuwm/core/state.py``); (b) ``PhysicsDriver`` persistents per scheme
+  (``gpuwm/core/physics.py``: the surface fields dict, held tendency
+  stacks, conditionally retained ``last_ysu`` output, scratch-aliased
+  microphysics diagnostics, KF W0AVG + LUT d01-only, RRTMGP lat/lon +
+  ozone); (c)
+  every named scratch slot from the static registry below; (d) LBC
+  residents -- d01 eager interval tables, children's rolling
+  one-interval ``nest_*`` tables + F16's arena-aliased full-parent field
+  + SINT geometry (the F4 NEST ALLOCATION MANIFEST); (e) the RRTMGP shared
+  chunk workspace from
+  the phase-maximum chunk formula, plus the per-domain radiation column
+  packing and physics-prep transients that coexist with it inside a
+  step.  d01 fixture cross-check: itemized residency 1.4544 GiB vs the
+  measured full-physics pool-used peak 1.47 GiB (ratio 0.989; the
+  residual ~17 MB is per-call KF/coupling transient tails owned by the
+  15% headroom).
+* TIER 2 -- POOL RETENTION (provisional).  CuPy's pool retains freed
+  transient blocks it cannot re-bin.  The N0 probe measured alloc-time
+  retention NIL (held - used = 16 MB); the d01 RUN fixture showed
+  5.52 GiB held vs 1.47 used, i.e. retention is a run-churn phenomenon.
+  ``pool_retention_residual_bytes()`` (fixture held minus the d01
+  alloc-estimate basis) is the run-time reserve term; it belongs to the
+  N5/N6 run gates, not the N0 allocation gate (split proposed below).
+* TIER 3 -- DEVICE-SIDE FOOTPRINT.  ``cudaMemGetInfo`` sees the CUDA
+  context, JIT modules, and non-pool allocations on top of the pool.
+  The N0 probe measured a fresh allocation-only process at
+  ``PROBE_DEVICE_OVERHEAD_BYTES`` = 1.39 GiB; the run fixture's
+  apparent 5.72 GiB gap is thereby attributed to 12 h of other-process/
+  WDDM drift and RETIRED from the model (kept only as
+  ``CAL_FIXTURE_OVERHEAD_BYTES`` for the record).  The probe number is
+  a lower bound on run-time overhead (zero steps JIT-compile almost
+  nothing), so the run-gate reserve keeps margin above it.
+
+RESERVE POLICY (plan Task 11, amended; controller ratifies at N0,
+``--reserve-gib`` overrides): the budget is ALWAYS the MEASURED free
+VRAM at startup minus the configured reserve -- never nominal 32 GiB.
+Two proposals, split by gate (PENDING RATIFICATION):
+
+* ``ReservePolicy.n0_alloc()`` -- the N0 allocation-gate reserve:
+  probe-measured non-pool overhead + external margin (alloc-time
+  retention measured nil).  The ``--alloc`` default.
+* ``ReservePolicy.run_time()`` -- the N5/N6 run-gate reserve: adds the
+  fixture-calibrated run-churn retention residual on top.
+
+Robust-5 fold-ins: a headroom check runs before state construction and
+before each high-water phase; persistent scratch is prewarmed at setup;
+the RRTMGP ``column_chunk`` is the FIRST over-budget lever
+(:func:`recommend_column_chunk`); OOM means record diagnostics and
+terminate -- never ``free_all_blocks()``-and-continue.
+
+STAGED-RESIDENCY CONTINGENCY (documented sketch ONLY -- no machinery, per
+architecture section E fallback lever (3)): if the enforced chain cannot
+fit even after the chunk lever and a transient-scratch shared arena, a
+``StagedPlan`` would demote d04 (the dominant block) to staged residency:
+its DomainState lives host-side pinned, uploaded per d03-step window,
+with the coupler writing boundary tables into a device staging pool.
+That is a DESIGN REOPEN materially changing lanes L6/L7 and is flagged as
+the top risk; nothing here implements it.
+
+CPU/GPU split: every estimator path is CPU-only (no cupy import); only
+:func:`run_alloc_preflight` (the ``--alloc`` mode, controller-run) touches
+the device.  The ``gpuwm check`` CLI wiring ships as
+:func:`register_cli` per the F2 ownership map -- the one-line ``cli.py``
+hookup is a controller handoff commit at merge.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from dataclasses import dataclass, field
+from datetime import datetime
+from functools import lru_cache
+from pathlib import Path
+
+from gpuwm.config import (DEFAULT_COLUMN_CHUNK, RunConfig,
+                          radiation_enabled, radiation_scheme_ids,
+                          soil_layer_count)
+from gpuwm.experiment import DomainConfig, ExperimentConfig
+
+# ---------------------------------------------------------------------------
+# Calibration fixture (.superpowers/sdd/codex/n0-preflight-baseline.log,
+# controller-measured 2026-07-16 -- the plan's [PRE-FLIGHT] values).
+# ---------------------------------------------------------------------------
+
+GIB = 1024 ** 3
+
+#: WDDM baseline at fixture time: free / total, and the implied non-gpuwm
+#: residency (30.27 of 31.84 GiB free -> 1.57 GiB other processes).  The
+#: BUDGET is never taken from these numbers -- it is re-measured at every
+#: ``--alloc`` startup; the fixture values calibrate tests and projections.
+CAL_WDDM_FREE_BYTES = int(30.27 * GIB)
+CAL_WDDM_TOTAL_BYTES = int(31.84 * GIB)
+
+#: d01 full-physics fixture: CuPy pool USED peak (step-boundary sampling ->
+#: persistent residency), pool HELD (used + retained churn blocks), and the
+#: cudaMemGetInfo device-side footprint (held + non-pool overhead).
+CAL_D01_POOL_USED_PEAK_BYTES = int(1.47 * GIB)
+CAL_D01_POOL_HELD_BYTES = int(5.52 * GIB)
+CAL_D01_DEVICE_FOOTPRINT_BYTES = int(11.24 * GIB)
+
+#: Plan-mandated allocator-headroom factor over the itemized subtotal.
+ALLOCATOR_HEADROOM = 1.15
+
+#: Fixture memGetInfo gap = footprint - pool held = 5.72 GiB.  RETIRED as
+#: an overhead model by the N0 probe (a fresh allocation-only process
+#: measures 1.39 GiB): the difference is attributed to other-process/WDDM
+#: drift across the fixture's 12 h run window.  Kept for the record only.
+CAL_FIXTURE_OVERHEAD_BYTES = (CAL_D01_DEVICE_FOOTPRINT_BYTES
+                              - CAL_D01_POOL_HELD_BYTES)
+
+#: Tier-2 calibration: pool retention beyond live arrays = held - used =
+#: 5.52 - 1.47 = 4.05 GiB on the d01 RUN fixture (run churn; the N0
+#: allocation probe measured alloc-time retention nil).  The estimate's
+#: workspace + transient terms and the 15% headroom already cover most of
+#: that churn; the run-gate reserve carries the calibrated residual (see
+#: :func:`pool_retention_residual_bytes`, computed against the d01
+#: fixture's own alloc-estimate basis so nothing is double-counted).
+CAL_D01_POOL_RETENTION_BYTES = (CAL_D01_POOL_HELD_BYTES
+                                - CAL_D01_POOL_USED_PEAK_BYTES)
+
+#: Controller N0 allocation probe (.superpowers/sdd/codex/
+#: n0-alloc-probe-r2.json, 2026-07-16, ``--alloc --reserve-gib 2`` on the
+#: fresh box): the full four-domain manifest-driven allocation completed;
+#: pool retention at allocation time is nil and the non-pool device
+#: overhead of a fresh process is 1.39 GiB.  These are the tier-2/3
+#: RE-CALIBRATION measurements the fixture could not provide.
+PROBE_POOL_USED_PEAK_BYTES = 26_581_917_184
+PROBE_POOL_HELD_BYTES = 26_598_071_296
+PROBE_DEVICE_FOOTPRINT_BYTES = 28_088_020_992
+PROBE_FREE_BYTES = 32_499_564_544
+#: Fresh-process non-pool overhead = footprint - held = 1,489,949,696 B.
+#: LOWER BOUND on run-time overhead: zero steps JIT-compile almost none
+#: of the kernel modules; the run-gate reserve keeps margin above it.
+PROBE_DEVICE_OVERHEAD_BYTES = (PROBE_DEVICE_FOOTPRINT_BYTES
+                               - PROBE_POOL_HELD_BYTES)
+
+#: Reserve margin for non-gpuwm residency GROWTH during a 12 h run (the
+#: baseline 1.57 GiB other-process residency is already outside "free").
+EXTERNAL_MARGIN_BYTES = GIB // 2
+
+#: Default ERA5 forcing cadence for the d01 eager LBC table formula; the
+#: real value is owned by CaseDataConfig (Task 2/3) and passed through.
+DEFAULT_FORCING_INTERVAL_SECONDS = 21600.0
+
+#: N0 ledger record names (gpuwm/verify/nest_gates.py, F11 amendment).
+N0_GATE_METRICS = ("alloc_fits_wddm_budget", "alloc_measured_le_estimate",
+                   "alloc_estimate_le_wddm_budget")
+
+#: Observed machine-peak envelope factor over the footprint projection.
+#:
+#: The Thompson 12-18Z matched rerun (2026-07-28, the only multi-domain run
+#: with whole-run machine-wide VRAM sampling; receipts in
+#: docs/thompson-rematch-20260728.md and the campaign handoff) measured a
+#: true machine peak of 29,004 MiB = 30,412,898,304 B against this
+#: estimator's footprint projection of 17,416,429,288 B -- a ratio of
+#: 1.7462.  The projection misses CuPy pool retention across the run and
+#: output/checkpoint write transients, so it under-projects the number the
+#: WDDM budget actually confronts.  The single observation is rounded UP to
+#: 1.75 (an envelope must not under-round); it is presented as an OBSERVED
+#: envelope, not a model, and it deliberately does not change any gate:
+#: the enforced numbers remain the itemized estimate and the measured
+#: --alloc legs.  Re-derive from the next machine-peak-instrumented run
+#: rather than tuning it.
+OBSERVED_PEAK_OVER_FOOTPRINT = 1.75
+
+
+def observed_peak_envelope_bytes(footprint_projection_bytes: int) -> int:
+    """The empirical machine-peak envelope for a footprint projection."""
+
+    return int(footprint_projection_bytes * OBSERVED_PEAK_OVER_FOOTPRINT)
+
+
+# ---------------------------------------------------------------------------
+# TIER 3, RE-MEASURED: what the CuPy pool never sees
+# ---------------------------------------------------------------------------
+#
+# ``PROBE_DEVICE_OVERHEAD_BYTES`` above (1.39 GiB) was taken from a process
+# that ran ZERO steps, and its own docstring flags it as a lower bound
+# "because zero steps JIT-compile almost none of the kernel modules".  It is
+# worse than a lower bound: it models the wrong thing.  Measured 2026-07-26
+# on the user's RTX 5090 (170 SMs, 1536 resident threads per SM, driver
+# 610.74) by running real integrations with ``cudaMemGetInfo`` and the CuPy
+# pool sampled together at 1 s, and bracketing the FIRST launch of every
+# kernel symbol:
+#
+#   ============================  ==========  ==========  ==========
+#   term                          3 domains   4 domains   scales with
+#   ============================  ==========  ==========  ==========
+#   CuPy pool, reserved peak      13,697 MiB  21,072 MiB  columns
+#   CUDA context                     432 MiB     430 MiB  nothing
+#   local-memory backing store     5,738 MiB      64 MiB  ONE kernel
+#   other non-pool                  ~400 MiB    ~430 MiB  nothing
+#   ============================  ==========  ==========  ==========
+#
+# NVRTC module images are not on that list because they do not measure: all
+# 51 kernel modules compiled and loaded cost 2 MiB of device memory between
+# them, and resolving every symbol another 18 MiB.
+#
+# The dominant term is the LOCAL-MEMORY BACKING STORE.  When a kernel's
+# per-thread local frame exceeds the context's default stack limit, the
+# driver answers the kernel's first launch by allocating a backing store for
+# the device's whole resident-thread capacity -- not for the launched grid --
+# and keeps it for the life of the process.  One allocation serves the
+# process, sized by the LARGEST per-thread frame launched so far, so the term
+# is a MAXIMUM over launched kernels and is completely independent of domain
+# count.  That is why the old estimator was short by the same ~5.5 GiB at
+# three domains and at four.
+#
+# The law is exact on this device, verified against a synthetic kernel at
+# five local-frame sizes and against two real forecasts:
+#
+#     reservation = (max_local_size_bytes - default_stack_limit_bytes)
+#                   * max_threads_per_multiprocessor * multiprocessor_count
+#
+# ``kf_column`` measures 24,064 B of local frame, so
+# (24064 - 1024) * 1536 * 170 = 6,016,204,800 B = 5,737.5 MiB; the measured
+# step across its first launch was 5,738.0 MiB, twice, in two separate runs.
+# The baseline term ``default_stack_limit_bytes * capacity`` = 255 MiB is
+# already inside :data:`CUDA_CONTEXT_BYTES`, which is why it is subtracted.
+
+#: How far the CuPy pool's RESERVED high-water runs past the enforced
+#: estimate.  ``alloc_estimate_bytes`` bounds pool USED, which is what
+#: ``alloc_measured_le_estimate`` checks; a rail is spent on what the pool
+#: HOLDS.  Measured on the two traced forecasts of 2026-07-26:
+#:
+#:   ==========  ==============  ================  ==========
+#:   domains     estimate (MiB)  pool reserved     over
+#:   ==========  ==============  ================  ==========
+#:   3           13,373          13,697            2.42%
+#:   4           20,480          21,072            2.89%
+#:   ==========  ==============  ================  ==========
+#:
+#: 3% is the rounded-up bound over both, carried as the N0 reserve's
+#: retention term whenever the caller supplies the estimate it applies to.
+#: It is a fitted constant from two points and is documented as such; what
+#: keeps it honest is that it moves the gate in the refusing direction.
+POOL_RESERVED_OVER_ESTIMATE_FRACTION = 0.03
+
+#: Device memory a fresh CUDA context holds before gpuwm allocates anything:
+#: measured 432 MiB (three fresh processes: 433, 432, 430), of which
+#: 1024 B x 1536 x 170 = 255 MiB is the default-stack local-memory store.
+CUDA_CONTEXT_BYTES = 432 * 1024 ** 2
+
+
+@dataclass(frozen=True)
+class DeviceLocalMemoryProfile:
+    """The device constants the local-memory reservation law needs."""
+
+    name: str
+    multiprocessor_count: int
+    max_threads_per_multiprocessor: int
+    default_stack_limit_bytes: int = 1024
+
+    @property
+    def resident_thread_capacity(self) -> int:
+        return (self.multiprocessor_count
+                * self.max_threads_per_multiprocessor)
+
+    def reservation_bytes(self, max_local_size_bytes: int) -> int:
+        """Device bytes the driver reserves for a launched kernel whose
+        per-thread local frame is ``max_local_size_bytes``.  Zero when the
+        frame fits the default stack, whose store the context already
+        carries."""
+        over = int(max_local_size_bytes) - self.default_stack_limit_bytes
+        return 0 if over <= 0 else over * self.resident_thread_capacity
+
+
+#: Measured 2026-07-26 from ``cudaGetDeviceProperties`` +
+#: ``cudaDeviceGetLimit(cudaLimitStackSize)`` on the run host.
+MEASURED_LOCAL_MEMORY_PROFILE = DeviceLocalMemoryProfile(
+    name="NVIDIA GeForce RTX 5090",
+    multiprocessor_count=170,
+    max_threads_per_multiprocessor=1536,
+    default_stack_limit_bytes=1024,
+)
+
+
+def local_memory_profile_from_device(cp) -> DeviceLocalMemoryProfile:
+    """Read the profile off the attached device (``--alloc`` path only)."""
+    props = cp.cuda.runtime.getDeviceProperties(0)
+    name = props["name"]
+    return DeviceLocalMemoryProfile(
+        name=name.decode() if isinstance(name, bytes) else str(name),
+        multiprocessor_count=int(props["multiProcessorCount"]),
+        max_threads_per_multiprocessor=int(
+            props["maxThreadsPerMultiProcessor"]),
+        default_stack_limit_bytes=int(cp.cuda.runtime.deviceGetLimit(0)),
+    )
+
+
+#: Per-module MAXIMUM static local frame per thread, in bytes, as the CUDA
+#: driver reports it in ``CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES`` after NVRTC
+#: compiles ``gpuwm/core/kernels/<module>.cu`` with the shipped options and
+#: NO integer defines injected -- i.e. at each module's unspecialized bound.
+#: Measured 2026-07-26 over every ``extern "C" __global__`` symbol in every
+#: module; regenerated and compared by
+#: ``tests/test_preflight.py::test_the_recorded_local_frames_match_the_driver``.
+#:
+#: Two modules do not launch at their unspecialized bound: ``kf`` and
+#: ``refl`` compile their column arrays to the configuration's own level
+#: count (:data:`LEVEL_SPECIALIZED_KERNEL_FRAMES`), so their rows here are
+#: the CEILING, not the price.  Everything else launches as compiled.
+#:
+#: A module maximum is an UPPER bound over the kernels a scheme can launch --
+#: e.g. Morrison's launched sedimentation kernel measures 1,280 B against the
+#: module's 5,120 B.  Over-pricing is the safe direction for a rail gate and
+#: under-pricing is what put a run 1,630 MiB over; the bound is stated, not
+#: silently tightened.
+KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
+    "acoustic": 544,
+    "advection": 0,
+    "coriolis_map": 0,
+    "diagnostics": 0,
+    "diff6": 0,
+    "diff6_seam": 0,
+    "diffusion": 0,
+    "dycore": 0,
+    "health": 0,
+    "kessler": 5120,
+    "kf": 24064,
+    "lbc_flow": 0,
+    "lbc_state": 0,
+    "morrison": 5120,
+    "mynn_pbl": 0,
+    "mynn_surface": 0,
+    "nest": 0,
+    "nest_microphysics": 0,
+    "noah": 176,
+    "noahmp_bareflux": 0,
+    "noahmp_fluxprep": 0,
+    "noahmp_leaves": 272,
+    "noahmp_radiation": 0,
+    "noahmp_sflx": 0,
+    "noahmp_snow": 200,
+    "noahmp_soilwater": 0,
+    "noahmp_vegeflux": 0,
+    "noahmp_vegprecip": 0,
+    "noahmp_water": 224,
+    "nssl2": 15504,
+    "nssl2_diagnostics": 0,
+    "nssl2_driver_support": 15504,
+    "nssl2_fused_gs": 112,
+    "nssl2_nucond": 0,
+    "nssl2_qvexcess": 0,
+    "openbc": 0,
+    "pd_advection": 0,
+    "refl": 18432,
+    "rrtmg_lw": 0,
+    "rrtmg_mcica_wrf": 0,
+    "rrtmgp_cloud": 0,
+    "rrtmgp_gas": 512,
+    "rrtmgp_mcica": 0,
+    "rrtmgp_rte": 5152,
+    "rrtmgp_validation": 0,
+    "ruc": 144,
+    "saxpy": 0,
+    "sfclay": 0,
+    "smag2d": 0,
+    "spec_bdy": 0,
+    "thompson": 11264,
+    "uh_diag": 0,
+    "vert_interp": 768,
+    "wsm6": 7216,
+    "ysu": 9232,
+}
+
+@dataclass(frozen=True)
+class LevelSpecializedFrame:
+    """A kernel module whose per-thread local frame is compiled to ``nz``.
+
+    ``kf.cu`` and ``refl.cu`` declare their per-thread column arrays against
+    a ``#ifndef``-guarded compile-time bound, and their launchers specialize
+    that bound to the field's own level count through
+    ``gpuwm.core.kernels.get_kernel_int_defines``.  The column arrays are the
+    only thing in either kernel that scales with the bound, so the frame the
+    driver reports is ``bytes_per_level * levels`` rounded up to the local
+    frame's 8-byte granularity.
+
+    Measured on the RTX 5090 (driver 610.74, NVRTC 13.x, ``-std=c++17``),
+    module maximum per bound:
+
+      ==========  ============  ==========  ==========
+      module      bound         frame       reserved
+      ==========  ============  ==========  ==========
+      kf          128 (ceiling)  24,064 B   5,738 MiB
+      kf           49            9,216 B    2,040 MiB
+      kf           30            5,640 B    1,152 MiB
+      refl        256 (ceiling)  18,432 B   4,334 MiB
+      refl         49            3,528 B      626 MiB
+      refl         30            2,160 B      286 MiB
+      ==========  ============  ==========  ==========
+
+    ``tests/test_kernel_local_bounds.py`` re-measures every row against the
+    driver, so a compiler or source change that breaks the linear form fails
+    loudly instead of silently mispricing a rail gate.
+    """
+
+    module: str
+    define: str
+    unspecialized_levels: int
+    bytes_per_level: int
+    alignment_bytes: int = 8
+
+    def frame_bytes(self, levels: int) -> int:
+        levels = int(levels)
+        if levels < 1:
+            raise ValueError(
+                f"{self.module}: level-specialized frame needs levels >= 1, "
+                f"got {levels}")
+        if levels > self.unspecialized_levels:
+            raise ValueError(
+                f"{self.module}: {levels} levels exceeds the {self.define} "
+                f"ceiling of {self.unspecialized_levels}")
+        raw = self.bytes_per_level * levels
+        remainder = raw % self.alignment_bytes
+        return raw if remainder == 0 else raw + self.alignment_bytes - remainder
+
+
+#: The two modules whose local frame follows the configuration's ``nz``.
+#: ``bytes_per_level`` is fixed by construction against the unspecialized
+#: row of :data:`KERNEL_MAX_LOCAL_SIZE_BYTES` (checked at import below), so
+#: the two tables cannot drift apart.
+LEVEL_SPECIALIZED_KERNEL_FRAMES: dict[str, LevelSpecializedFrame] = {
+    "kf": LevelSpecializedFrame("kf", "KF_KMAX", 128, 188),
+    "refl": LevelSpecializedFrame("refl", "REFL_KMAX", 256, 72),
+}
+
+for _spec in LEVEL_SPECIALIZED_KERNEL_FRAMES.values():
+    if (_spec.frame_bytes(_spec.unspecialized_levels)
+            != KERNEL_MAX_LOCAL_SIZE_BYTES[_spec.module]):
+        raise RuntimeError(
+            f"{_spec.module}: level-specialized frame model disagrees with "
+            "the driver-measured unspecialized frame")
+del _spec
+
+#: Kernel modules whose local frame CANNOT be measured at this checkout
+#: because they do not compile alone: ``noahmp_driver.cu``,
+#: ``noahmp_energy.cu``, ``noahmp_thermal.cu`` and ``noahmp_libm_slab.cu``
+#: all fail NVRTC with ``identifier "r_pow" is undefined`` -- they are
+#: fragments that borrow ``noahmp_leaves.cu``'s single audited libm
+#: transcription and compile only through
+#: ``noahmp_kernel_sources.translation_unit_source``.  A configuration that
+#: selects one as a standalone module is REFUSED rather than priced from a
+#: guess -- see :func:`kernel_local_memory_bytes`.
+#: The legacy-RRTMG members are the same shape of thing: ``rrtmg_sw.cu``,
+#: ``rrtmg_lw_chain.cu`` and the ``rrtmg_lw_taugb*.cu`` band fragments
+#: compile only through their own chained translation unit
+#: (gpuwm/core/rrtmg_lw.py / rrtmg_sw.py), never as standalone NVRTC
+#: modules, and no ``physics_kernel_modules`` selector row names them
+#: directly -- a legacy 4/4 radiation request prices its TRANSIENT VRAM
+#: through the call-peak envelope (``legacy_radiation_vram_bytes``) and
+#: its LOCAL-MEMORY frame through the driver-measured composite rows in
+#: :data:`CHAINED_TRANSLATION_UNIT_FRAMES`, which cover these fragments
+#: as the translation units they actually launch in.
+UNMEASURED_KERNEL_MODULES = frozenset({
+    "noahmp_driver", "noahmp_energy", "noahmp_thermal", "noahmp_libm_slab",
+    "rrtmg_sw", "rrtmg_lw_chain", "rrtmg_lw_taugb02_10_11_12",
+    "rrtmg_lw_taugb03_05", "rrtmg_lw_taugb06_09", "rrtmg_lw_taugb13_16"})
+
+
+@dataclass(frozen=True)
+class ChainedTranslationUnitFrame:
+    """A chained translation unit's driver-measured widest local frame.
+
+    The legacy-RRTMG kernels never load per ``.cu`` file: the LW chain
+    concatenates ``rrtmg_lw.cu`` + ``rrtmg_lw_chain.cu`` + the four
+    ``rrtmg_lw_taugb*.cu`` band fragments into ONE NVRTC translation unit
+    (gpuwm/core/rrtmg_lw.py section 10), and the SW composition compiles
+    ``rrtmg_sw.cu`` through its own unit (gpuwm/core/rrtmg_sw.py).  The
+    fragments therefore stay in :data:`UNMEASURED_KERNEL_MODULES` --
+    selecting one standalone still refuses -- while the unit that DOES
+    launch carries the frame the driver measured for it.
+
+    ``covers`` names the unmeasured fragments this measurement subsumes;
+    the import-time checks below keep the two tables consistent.
+    """
+
+    module: str
+    max_local_size_bytes: int
+    covers: frozenset[str]
+
+
+#: Measured 2026-07-27 (cupy 14.0.1 NVRTC on sm_120, RTX 5090) over every
+#: kernel of each chained unit -- the record and its drift-bound re-audit
+#: live in ``tests/test_rrtmg_lw_cuda.py`` (``LOCAL_FRAME_BOUNDS``); the
+#: prose record is docs/rrtmg_legacy_integration.md section 6:
+#:
+#: * LW unit: ``rlw_rtrn_march`` 2,048 B/thread (exactly its four
+#:   128-float per-thread work arrays atrans/atot/bbugas/bbutot at the
+#:   fixed RLW_MAXLAY = 128 bound -- NOT nz-specialized), ``rlw_cldprmc``
+#:   64 B, every other kernel 0 B.  Machine-wide store ~510 MiB, of which
+#:   the 1,024 B default-stack half already sits in CUDA_CONTEXT_BYTES.
+#: * SW unit: every kernel 0 B after the spcvmc workspace restructure
+#:   (the old ~1.65 GiB hidden lmem reservation became pool-priced
+#:   transient VRAM, priced by ``legacy_radiation_vram_bytes``).
+#:
+#: A re-measure past these values must move this table in the same diff.
+CHAINED_TRANSLATION_UNIT_FRAMES: dict[str, ChainedTranslationUnitFrame] = {
+    "rrtmg_lw_legacy_chain": ChainedTranslationUnitFrame(
+        module="rrtmg_lw_legacy_chain",
+        max_local_size_bytes=2048,
+        covers=frozenset({
+            "rrtmg_lw_chain", "rrtmg_lw_taugb02_10_11_12",
+            "rrtmg_lw_taugb03_05", "rrtmg_lw_taugb06_09",
+            "rrtmg_lw_taugb13_16"})),
+    "rrtmg_sw_legacy": ChainedTranslationUnitFrame(
+        module="rrtmg_sw_legacy",
+        max_local_size_bytes=0,
+        covers=frozenset({"rrtmg_sw"})),
+}
+
+_seen_covers: set[str] = set()
+for _tu_name, _tu in CHAINED_TRANSLATION_UNIT_FRAMES.items():
+    if _tu_name != _tu.module or _tu_name in KERNEL_MAX_LOCAL_SIZE_BYTES:
+        raise RuntimeError(
+            f"{_tu_name}: chained-unit frame must carry its own key and "
+            "must not shadow a standalone-measured module")
+    if not _tu.covers <= UNMEASURED_KERNEL_MODULES:
+        raise RuntimeError(
+            f"{_tu_name}: covers must name only fragments that cannot be "
+            "measured standalone (UNMEASURED_KERNEL_MODULES); anything "
+            "else is priced from KERNEL_MAX_LOCAL_SIZE_BYTES")
+    if _seen_covers & _tu.covers:
+        raise RuntimeError(
+            f"{_tu_name}: a fragment may be covered by exactly one "
+            "chained translation unit")
+    _seen_covers |= _tu.covers
+del _seen_covers, _tu_name, _tu
+
+#: Kernel modules every integration loads regardless of the physics
+#: selectors: dynamics, diffusion, nesting, lateral boundaries, health and
+#: output diagnostics.  Their maximum local frame is 768 B (``vert_interp``),
+#: below the default stack limit, so this set reserves nothing at all.
+CORE_KERNEL_MODULES = frozenset({
+    "acoustic", "advection", "coriolis_map", "diagnostics", "diff6",
+    "diffusion", "dycore", "health", "lbc_flow", "lbc_state", "nest",
+    "nest_microphysics", "openbc", "pd_advection", "saxpy", "smag2d",
+    "spec_bdy", "vert_interp"})
+
+#: ``mp_physics`` -> the kernel modules that scheme launches.  Keys are
+#: exactly ``gpuwm/config.py``'s accepted set (0, 1, 6, 8, 10, 18).
+_MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
+    0: (),
+    1: ("kessler",),
+    6: ("wsm6",),
+    8: ("thompson",),
+    10: ("morrison",),
+    18: ("nssl2", "nssl2_driver_support", "nssl2_diagnostics",
+         "nssl2_fused_gs", "nssl2_nucond", "nssl2_qvexcess"),
+}
+
+#: ``mp_physics`` values with a REFL_10CM path in ``gpuwm/core/refl.py``.
+#: The ``refl`` module is priced only when a history frame can come due
+#: during the run (:func:`refl_diagnostic_reachable`), because the kernel is
+#: launched from the ``refl_10cm_due`` branch of the microphysics drivers and
+#: from nowhere else.
+_REFLECTIVITY_MICROPHYSICS = frozenset({1, 6, 8, 10, 18})
+
+_CUMULUS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
+    0: (), 1: ("kf",)}
+_PBL_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
+    0: (), 1: ("ysu",), 5: ("mynn_pbl",)}
+_SURFACE_LAYER_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
+    0: (), 1: ("sfclay",), 5: ("mynn_surface",), 91: ("sfclay",)}
+_LAND_SURFACE_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
+    0: (),
+    2: ("noah",),
+    3: ("ruc",),
+    4: ("noahmp_bareflux", "noahmp_driver", "noahmp_energy",
+        "noahmp_fluxprep", "noahmp_leaves", "noahmp_radiation",
+        "noahmp_sflx", "noahmp_snow", "noahmp_soilwater", "noahmp_thermal",
+        "noahmp_vegeflux", "noahmp_vegprecip", "noahmp_water"),
+}
+#: ``ra_physics = 4`` is two implementations behind one selector value;
+#: the row here is the modern RTE+RRTMGP set and
+#: :func:`_radiation_44_kernel_modules` dispatches on
+#: ``RunConfig.ra_rrtmg_variant`` -- the legacy variant launches the
+#: chained translation units + the device McICA twin instead, and an
+#: unknown variant refuses rather than pricing either row (fail-closed).
+_RADIATION_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
+    0: (),
+    4: ("rrtmgp_cloud", "rrtmgp_gas", "rrtmgp_mcica", "rrtmgp_rte"),
+    90: (),
+}
+
+#: What a legacy 4/4 selection launches: the two chained translation
+#: units (:data:`CHAINED_TRANSLATION_UNIT_FRAMES`) and the standalone
+#: ``rrtmg_mcica_wrf.cu`` device McICA twin (measured 0 B like every
+#: other standalone row).
+_RRTMG_LEGACY_KERNEL_MODULES: tuple[str, ...] = (
+    "rrtmg_mcica_wrf", "rrtmg_lw_legacy_chain", "rrtmg_sw_legacy")
+
+
+def _radiation_44_kernel_modules(run) -> tuple[str, ...]:
+    """Kernel modules a resolved 4/4 radiation request launches."""
+    from gpuwm.physics_compat import (
+        RRTMG_VARIANT_LEGACY, RRTMG_VARIANT_RTE_RRTMGP, rrtmg_variant)
+    variant = rrtmg_variant(run)
+    if variant == RRTMG_VARIANT_RTE_RRTMGP:
+        return _RADIATION_KERNEL_MODULES[4]
+    if variant == RRTMG_VARIANT_LEGACY:
+        return _RRTMG_LEGACY_KERNEL_MODULES
+    raise ValueError(
+        f"no kernel-module row for ra_physics=4 with "
+        f"ra_rrtmg_variant={variant!r}; add one to "
+        "gpuwm/core/preflight.py before this configuration can be "
+        "priced or gated.")
+
+_SELECTOR_TABLES = (
+    ("mp_physics", _MICROPHYSICS_KERNEL_MODULES),
+    ("cu_physics", _CUMULUS_KERNEL_MODULES),
+    ("bl_pbl_physics", _PBL_KERNEL_MODULES),
+    ("sf_sfclay_physics", _SURFACE_LAYER_KERNEL_MODULES),
+    ("sf_surface_physics", _LAND_SURFACE_KERNEL_MODULES),
+    ("ra_physics", _RADIATION_KERNEL_MODULES),
+)
+
+
+def refl_diagnostic_reachable(exp: ExperimentConfig) -> bool:
+    """Can a history frame carrying REFL_10CM come due inside the run?
+
+    The reflectivity kernels are launched from the microphysics drivers'
+    ``refl_10cm_due`` branch, which follows the history cadence.  A run
+    shorter than every domain's history interval never reaches one -- both
+    traced forecasts behind this model wrote their t=0 frames and never
+    launched a ``refl`` kernel.  Anything else prices it.
+    """
+    intervals = [float(getattr(dc, "history_interval_s", 0.0) or 0.0)
+                 for dc in exp.domains]
+    if not intervals or min(intervals) <= 0.0:
+        return True
+    return float(exp.run_seconds) >= min(intervals)
+
+
+def domain_kernel_modules(dc: DomainConfig, *,
+                          prices_refl: bool) -> frozenset[str]:
+    """Kernel modules ONE domain's selectors can launch (no core modules).
+
+    FAIL-CLOSED: a selector value with no table entry raises rather than
+    quietly pricing zero.  A new scheme that reaches production without a row
+    here stops ``gpuwm check``; it does not slip past it.
+    """
+    modules: set[str] = set()
+    for selector, table in _SELECTOR_TABLES:
+        value = int(getattr(dc.run, selector))
+        if value not in table:
+            raise ValueError(
+                f"no kernel-module row for {selector}={value} on "
+                f"d{dc.grid_id:02d}; add one to gpuwm/core/preflight.py "
+                "before this configuration can be priced or gated.")
+        if selector == "ra_physics" and value == 4:
+            # One selector value, two implementations: dispatch on the
+            # trajectory-bound ra_rrtmg_variant (fail-closed inside).
+            modules.update(_radiation_44_kernel_modules(dc.run))
+        else:
+            modules.update(table[value])
+    if prices_refl and int(dc.run.mp_physics) in _REFLECTIVITY_MICROPHYSICS:
+        modules.add("refl")
+    return frozenset(modules)
+
+
+def physics_kernel_modules(exp: ExperimentConfig) -> frozenset[str]:
+    """Every kernel module the experiment's selectors can launch."""
+    prices_refl = refl_diagnostic_reachable(exp)
+    modules = set(CORE_KERNEL_MODULES)
+    for dc in exp.domains:
+        modules |= domain_kernel_modules(dc, prices_refl=prices_refl)
+    return frozenset(modules)
+
+
+def kernel_local_frame_bytes(exp: ExperimentConfig) -> dict[str, int]:
+    """Widest per-thread local frame each launched module compiles to.
+
+    A module launched by several domains is priced at the deepest of them:
+    the specialized frame is monotone in the level count, and the driver's
+    reservation is a maximum over everything the process ever launches.
+    """
+    modules = physics_kernel_modules(exp)
+    unmeasured = sorted(modules & UNMEASURED_KERNEL_MODULES)
+    if unmeasured:
+        raise ValueError(
+            "cannot price the local-memory reservation: "
+            f"{', '.join(unmeasured)} do not compile at this checkout "
+            "(NVRTC: identifier \"r_pow\" is undefined), so their per-thread "
+            "local frame has never been measured.  Refusing to guess.")
+    missing = sorted(modules - set(KERNEL_MAX_LOCAL_SIZE_BYTES)
+                     - set(CHAINED_TRANSLATION_UNIT_FRAMES))
+    if missing:
+        raise ValueError(
+            "no measured local frame for kernel module(s) "
+            f"{', '.join(missing)}; regenerate KERNEL_MAX_LOCAL_SIZE_BYTES.")
+
+    prices_refl = refl_diagnostic_reachable(exp)
+    frames = {module: (
+                  CHAINED_TRANSLATION_UNIT_FRAMES[module].max_local_size_bytes
+                  if module in CHAINED_TRANSLATION_UNIT_FRAMES
+                  else KERNEL_MAX_LOCAL_SIZE_BYTES[module])
+              for module in modules
+              if module not in LEVEL_SPECIALIZED_KERNEL_FRAMES}
+    for dc in exp.domains:
+        levels = int(dc.run.nz)
+        for module in domain_kernel_modules(dc, prices_refl=prices_refl):
+            specialized = LEVEL_SPECIALIZED_KERNEL_FRAMES.get(module)
+            if specialized is None:
+                continue
+            frame = specialized.frame_bytes(levels)
+            if frame > frames.get(module, -1):
+                frames[module] = frame
+    return frames
+
+
+def kernel_local_memory_bytes(
+        exp: ExperimentConfig, *,
+        profile: DeviceLocalMemoryProfile | None = None) -> int:
+    """The launch-time local-memory backing store the experiment reserves.
+
+    One allocation per process, sized by the largest per-thread local frame
+    among the kernels the configuration launches -- so this is a maximum, not
+    a sum, and it does not grow with domain count.  It DOES grow with the
+    level count, because the two widest frames in the tree (``kf`` and
+    ``refl``) compile their column arrays to ``nz``.
+    """
+    profile = MEASURED_LOCAL_MEMORY_PROFILE if profile is None else profile
+    widest = max(kernel_local_frame_bytes(exp).values(), default=0)
+    return profile.reservation_bytes(widest)
+
+
+def non_pool_device_bytes(
+        exp: ExperimentConfig, *,
+        profile: DeviceLocalMemoryProfile | None = None) -> int:
+    """Device residency of a gpuwm process that the CuPy pool never reports:
+    the CUDA context plus the local-memory backing store."""
+    return CUDA_CONTEXT_BYTES + kernel_local_memory_bytes(
+        exp, profile=profile)
+
+
+# ---------------------------------------------------------------------------
+# Itemized shape formulas
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class MemoryItem:
+    """One named device allocation: shape formula result + byte width."""
+
+    name: str
+    category: str  # state | physics | scratch | lbc | nest | transient
+    shape: tuple[int, ...]
+    itemsize: int = 4
+    dtype: str = "float32"
+
+    @property
+    def nbytes(self) -> int:
+        n = self.itemsize
+        for extent in self.shape:
+            n *= int(extent)
+        return n
+
+
+def _items(category: str, shapes: dict[str, tuple[int, ...]],
+           itemsize: int = 4) -> tuple[MemoryItem, ...]:
+    return tuple(MemoryItem(name, category, tuple(shape), itemsize)
+                 for name, shape in shapes.items())
+
+
+def _nest_items(shapes: dict[str, tuple[int, ...]],
+                dtypes: dict[str, str]) -> tuple[MemoryItem, ...]:
+    """F4 nest items with their semantic dtype recorded explicitly."""
+    if shapes.keys() != dtypes.keys():
+        raise RuntimeError("nest shape/dtype registries drifted")
+    return tuple(MemoryItem(name, "nest", tuple(shape), 4, dtypes[name])
+                 for name, shape in shapes.items())
+
+
+@dataclass(frozen=True)
+class PhysicsArrayLifetime:
+    """Closed-world lifetime proof for one exact physics-array set."""
+
+    names: tuple[str, ...]
+    disposition: str
+    evidence: str
+    proof: str
+
+
+_YSU_3D = ("du", "dv", "dtheta", "dqv", "dqc", "dqi",
+           "exch_h", "exch_m")
+_YSU_2D = ("hpbl", "kpbl", "wstar", "delta", "topdown_radsum",
+           "wstar3_2", "cloudflg")
+_TENDENCY_COMPONENTS = ("ru", "rv", "rtheta", "rqv", "rqc", "rqr",
+                        "rqi", "rqs")
+_MICROPHYSICS_COMPONENTS = ("rainnc", "rainncv", "sr", "snownc",
+                            "snowncv", "graupelnc", "graupelncv", "hailnc",
+                            "hailncv")
+
+#: Persistent-physics counterpart to ``SCRATCH_SLOT_LIFETIME_AUDIT``.
+#: Exact names make the three reclamations closed-world: a future diagnostic
+#: or tendency component receives no aliasing without a new reviewed row.
+PHYSICS_ARRAY_LIFETIME_AUDIT = (
+    PhysicsArrayLifetime(
+        tuple(f"last_ysu/{name}" for name in (*_YSU_3D, *_YSU_2D)),
+        "transient_when_bldt_zero", "gpuwm/core/physics.py:862-893",
+        "field copies and coupling are the only readers; bldt=0 releases "
+        "the dict after them, while every positive cadence retains it"),
+    PhysicsArrayLifetime(
+        tuple(f"microphysics/{name}" for name in _MICROPHYSICS_COMPONENTS),
+        "aliases_serialized_scratch", "gpuwm/core/dycore.py:1429-1439; "
+        "gpuwm/core/physics.py:514-534,569-631,842-856; "
+        "gpuwm/runtime.py:571-585",
+        "pre-RK Noah reads precede the post-RK scheme write; output reads "
+        "after accept, so the driver can alias the canonical mp_* set"),
+    PhysicsArrayLifetime(
+        tuple(f"tendencies/{name}" for name in _TENDENCY_COMPONENTS),
+        "aliases_fresh_pbl_at_bldt_zero", "gpuwm/core/physics.py:779-819,"
+        "895-959",
+        "bldt=0 YSU replaces pbl_tendencies before every composition; "
+        "positive cadence retains the separate target unchanged"),
+    PhysicsArrayLifetime(
+        tuple(f"{stack}/{name}" for stack in
+              ("pbl_tendencies", "radiation_tendencies",
+               "cumulus_tendencies") for name in _TENDENCY_COMPONENTS),
+        "retained_family_state", "gpuwm/core/physics.py:633-777,895-959",
+        "radiation/cumulus carry between due calls; PBL is the proven "
+        "bldt=0 composition backing but is otherwise held family state"),
+)
+
+
+def physics_array_lifetime(name: str) -> PhysicsArrayLifetime | None:
+    """Return the unique exact-name physics lifetime row, if audited."""
+    matches = [row for row in PHYSICS_ARRAY_LIFETIME_AUDIT
+               if name in row.names]
+    if len(matches) > 1:
+        raise RuntimeError(f"physics lifetime audit overlaps for {name!r}")
+    return matches[0] if matches else None
+
+
+
+def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
+    """Exact ``DomainState`` allocation list (state.py:52-237 transcribed).
+
+    Every array ``DomainState.__init__`` allocates, keyed by attribute
+    name, under the same conditionals (``cfg.moist``, microphysics scheme,
+    ``cfg.terrain_opt``).  Cross-checked against the restart
+    manifest's attribute classification by test (a state.py field added
+    without updating BOTH manifests fails the suite).
+    """
+    nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
+    m = (nz, ny, nx)
+    xs = (nz, ny, nx + 1)
+    ys = (nz, ny + 1, nx)
+    fl = (nz + 1, ny, nx)
+    s2 = (ny, nx)
+    shapes: dict[str, tuple[int, ...]] = {
+        # Prognostics + EOS diagnostics.
+        "u": xs, "v": ys, "w": fl, "thp": m, "php": fl, "mup": s2,
+        "p": m, "al": m, "alt": m,
+        # RK time-t copies.
+        "u0": xs, "v0": ys, "w0": fl, "thp0": m, "php0": fl, "mup0": s2,
+        # Slow-tendency slots.
+        "ru_t": xs, "rv_t": ys, "rw_t": fl, "rth_t": m, "rph_t": fl,
+        "rmu_t": s2,
+        # Acoustic-substep perturbations.
+        "u_pp": xs, "v_pp": ys, "w_pp": fl, "th_pp": m, "ph_pp": fl,
+        "mu_pp": s2, "p_pp": m, "p_pp_old": m, "ww_pp": fl, "al_pp": m,
+        # General-form plumbing + map factors / rotation.
+        "mub2d": s2, "ht": s2,
+        "c1h": (nz,), "c2h": (nz,), "c1f": (nz + 1,), "c2f": (nz + 1,),
+        "c3h": (nz,), "c4h": (nz,), "c3f": (nz + 1,), "c4f": (nz + 1,),
+        "msft": s2, "msfu": (ny, nx + 1), "msfv": (ny + 1, nx),
+        "f": s2, "e": s2, "sina": s2, "cosa": s2,
+        # Vertical-coordinate arrays.
+        "dnw": (nz,), "rdnw": (nz,), "dn": (nz,), "rdn": (nz,),
+        "fnp": (nz,), "fnm": (nz,), "znu": (nz,), "znw": (nz + 1,),
+    }
+    if cfg.terrain_opt == 0:
+        shapes.update(thb=(nz,), pb=(nz,), alb=(nz,), phb=(nz + 1,))
+    else:
+        shapes.update(thb=m, pb=m, alb=m, phb=fl)
+    if cfg.moist:
+        for name in ("qv", "qc", "qr", "qv0", "qc0", "qr0", "h_diabatic"):
+            shapes[name] = m
+        if cfg.mp_physics in (6, 8, 10, 18):
+            for name in ("qi", "qs", "qg", "qi0", "qs0", "qg0",
+                         "effc", "effi", "effs"):
+                shapes[name] = m
+        if cfg.mp_physics == 8:
+            for name in ("nr", "ni", "nr0", "ni0"):
+                shapes[name] = m
+        if cfg.mp_physics == 10:
+            for name in ("nc", "nr", "ni", "ns", "ng", "nr0", "ni0",
+                         "ns0", "ng0", "effr"):
+                shapes[name] = m
+        if cfg.mp_physics == 18:
+            for name in (
+                    "qh", "qndrop", "qnr", "qni", "qns", "qng", "qnh",
+                    "qnn", "qvolg", "qvolh", "qh0", "qndrop0", "qnr0",
+                    "qni0", "qns0", "qng0", "qnh0", "qnn0", "qvolg0",
+                    "qvolh0"):
+                shapes[name] = m
+    return shapes
+
+
+def shared_dycore_state_symbols() -> frozenset[str]:
+    """Restart-REBUILT symbols eligible for sequential-domain sharing.
+
+    The restart manifest is the sole inventory authority.  Keeping this as a
+    function avoids a second module-level set that could drift independently.
+    """
+    from gpuwm.io.restart import STATE_REBUILT_ATTRS
+
+    return STATE_REBUILT_ATTRS
+
+
+def shared_dycore_state_workspace_shapes(
+        domains: tuple[object, ...]) -> dict[str, tuple[int, ...]]:
+    """Maximum requested shape for each active restart-REBUILT symbol."""
+    maxima: dict[str, tuple[int, ...]] = {}
+    rebuilt = shared_dycore_state_symbols()
+    for dc in domains:
+        shapes = state_array_shapes(dc.run)
+        for symbol in rebuilt & shapes.keys():
+            shape = shapes[symbol]
+            previous = maxima.get(symbol)
+            if previous is None or math.prod(shape) > math.prod(previous):
+                maxima[symbol] = shape
+    return {symbol: maxima[symbol] for symbol in sorted(maxima)}
+
+
+def shared_dycore_state_workspace_bytes(
+        domains: tuple[object, ...]) -> int:
+    """Exact bytes for one float32 maximum backing per active symbol."""
+    return sum(4 * math.prod(shape) for shape in
+               shared_dycore_state_workspace_shapes(domains).values())
+
+
+#: initialize_physics's own 2-D allocations before the SFCLAY/Noah unions
+#: (physics.py:935-950).
+_PHYSICS_INIT_FIELDS_2D = (
+    "landmask", "xland", "tsk", "pblh", "mavail", "lakemask",
+    "ivgtyp", "isltyp", "vegfra", "tmn", "xice", "swdown", "glw",
+    "snow", "snowh",
+)
+
+
+def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
+    """The surface ``fields`` dict's 2-D inventory, reconstructed from the
+    same name tuples ``initialize_physics`` consumes (physics.py:935-990):
+    init fields | SFCLAY_OUTPUTS | NOAH _F2D, plus ``ebal``/``kpbl``.
+
+    ``initialize_physics`` additionally allocates MYNN's extra persistent
+    surface diagnostics when ``sf_sfclay_physics == 5``, and deliberately
+    does NOT allocate them otherwise.  Passing ``cfg`` reproduces that
+    selection; omitting it returns the MM5/Noah union, which is what every
+    caller without a configuration in hand means.  Under-counting here is a
+    correctness bar on this hardware, not a cosmetic one.
+    """
+    from gpuwm.core.noah import _F2D as NOAH_FIELDS_2D
+    from gpuwm.core.sfclay import SFCLAY_OUTPUTS
+
+    union = dict.fromkeys(_PHYSICS_INIT_FIELDS_2D)
+    union.update(dict.fromkeys(SFCLAY_OUTPUTS))
+    if cfg is not None and int(cfg.sf_sfclay_physics) == 5:
+        from gpuwm.core.mynn_sfclay import MYNN_SURFACE_OUTPUTS
+        union.update(dict.fromkeys(MYNN_SURFACE_OUTPUTS))
+    union.update(dict.fromkeys(NOAH_FIELDS_2D))
+    union.update(dict.fromkeys(("ebal", "kpbl")))
+    if cfg is not None and int(cfg.bl_pbl_physics) == 5:
+        from gpuwm.core.mynn_pbl_runtime import (
+            MYNN_PBL_DIAGNOSTICS_2D, MYNN_PBL_DIAGNOSTICS_INT_2D,
+        )
+        union.update(dict.fromkeys(MYNN_PBL_DIAGNOSTICS_2D))
+        union.update(dict.fromkeys(MYNN_PBL_DIAGNOSTICS_INT_2D))
+    if cfg is not None and int(cfg.sf_surface_physics) == 3:
+        from gpuwm.core.ruc_runtime import RUC_DIAGNOSTICS_2D, RUC_STATE_2D
+        union.update(dict.fromkeys(RUC_STATE_2D))
+        union.update(dict.fromkeys(RUC_DIAGNOSTICS_2D))
+    if cfg is not None and int(cfg.sf_surface_physics) == 4:
+        from gpuwm.core.noahmp_runtime import (
+            NOAHMP_DIAGNOSTICS_2D, NOAHMP_STATE_2D, NOAHMP_STATE_INT_2D,
+        )
+        union.update(dict.fromkeys(NOAHMP_STATE_2D))
+        union.update(dict.fromkeys(NOAHMP_STATE_INT_2D))
+        union.update(dict.fromkeys(NOAHMP_DIAGNOSTICS_2D))
+    return tuple(union)
+
+
+def physics_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
+    """``PhysicsDriver`` persistents per selected scheme (physics.py).
+
+    Includes the surface/Noah ``fields`` dict, held family tendencies, a
+    separate composed target except in the proven bldt=0/PBL identity path,
+    positive-cadence raw YSU retention, radiative heating rates, mp=0 output
+    placeholders, KF W0AVG/LUT, and RRTMGP setup grids.  Active microphysics
+    diagnostics and KF ``cu_*`` persistence live in the scratch registry.
+    """
+    from gpuwm.core.physics import (microphysics_scratch_slots,
+                                    physics_driver_required,
+                                    physics_retains_ysu_output,
+                                    physics_reuses_pbl_composition)
+
+    if not physics_driver_required(cfg):
+        return {}
+    nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
+    m = (nz, ny, nx)
+    s2 = (ny, nx)
+    shapes: dict[str, tuple[int, ...]] = {}
+    for name in physics_field_names_2d(cfg):
+        shapes[f"fields/{name}"] = s2
+    n_soil = soil_layer_count(cfg)
+    for name in ("smois", "tslb", "sh2o", "smcrel"):
+        shapes[f"fields/{name}"] = (n_soil, ny, nx)
+    shapes["fields/exch_h"] = m
+    shapes["fields/exch_m"] = m
+    if int(cfg.bl_pbl_physics) == 5:
+        # initialize_physics allocates MYNN's ten carried 3-D arrays only for
+        # this selector.  Missing them here under-counts VRAM by 10*nz*ny*nx
+        # FP32 words, which on a four-domain nest is not a rounding error.
+        from gpuwm.core.mynn_pbl_runtime import MYNN_PBL_STATE_3D
+        for name in MYNN_PBL_STATE_3D:
+            shapes[f"fields/{name}"] = m
+    if int(cfg.sf_surface_physics) == 3:
+        # RUC's two Registry-package soil-column arrays, SMFR3D and
+        # KEEPFR3DFLAG.  At nine levels that is 18*ny*nx FP32 words per
+        # domain on top of the four generic soil arrays.
+        from gpuwm.core.ruc_runtime import RUC_STATE_3D
+        for name in RUC_STATE_3D:
+            shapes[f"fields/{name}"] = (n_soil, ny, nx)
+    if int(cfg.sf_surface_physics) == 4:
+        # Noah-MP's snow stack.  Three (NSNOW, ny, nx) arrays plus one
+        # (NSNOW + n_soil, ny, nx); missing them under-counts by
+        # (4*NSNOW + n_soil)*ny*nx FP32 words per domain.
+        from gpuwm.core.noahmp_runtime import (
+            NOAHMP_STATE_SNOWSOIL_3D, NOAHMP_STATE_SNOW_3D, NSNOW,
+        )
+        for name in NOAHMP_STATE_SNOW_3D:
+            shapes[f"fields/{name}"] = (NSNOW, ny, nx)
+        for name in NOAHMP_STATE_SNOWSOIL_3D:
+            shapes[f"fields/{name}"] = (NSNOW + n_soil, ny, nx)
+
+    stacks = ["pbl_tendencies", "radiation_tendencies", "cumulus_tendencies"]
+    reuse_pbl = physics_reuses_pbl_composition(cfg)
+    if (radiation_enabled(cfg) or cfg.cu_physics) and not reuse_pbl:
+        stacks.append("tendencies")  # composed target, physics.py:426-428
+    for stack in stacks:
+        shapes[f"{stack}/ru"] = (nz, ny, nx + 1)
+        shapes[f"{stack}/rv"] = (nz, ny + 1, nx)
+        for comp in ("rtheta", "rqv", "rqc"):
+            shapes[f"{stack}/{comp}"] = m
+    if cfg.cu_physics:
+        # Mixed-phase KF returns QR/QI/QS independently.  At bldt=0 the fresh
+        # PBL stack is the composed target; positive cadence keeps the
+        # historical separate target.
+        target = "pbl_tendencies" if reuse_pbl else "tendencies"
+        for comp in ("rqr", "rqi", "rqs"):
+            shapes[f"cumulus_tendencies/{comp}"] = m
+            shapes[f"{target}/{comp}"] = m
+    if cfg.bl_pbl_physics and cfg.mp_physics in (6, 8, 10, 18):
+        # Mixed-phase states carry qi; YSU returns dqi and rqi survives
+        # composition (physics.py:263-264, :681-692).
+        shapes["pbl_tendencies/rqi"] = m
+        if (radiation_enabled(cfg) or cfg.cu_physics) and not reuse_pbl:
+            shapes["tendencies/rqi"] = m
+
+    if physics_retains_ysu_output(cfg):
+        # Positive cadence preserves the historical retained diagnostic.
+        # At bldt=0 the same arrays are step transients itemized below.
+        for name in _YSU_3D:
+            shapes[f"last_ysu/{name}"] = m
+        for name in _YSU_2D:
+            shapes[f"last_ysu/{name}"] = s2
+
+    shapes["rthratenlw"] = m
+    shapes["rthratensw"] = m
+    shapes["_pending_rainbl"] = s2
+    # Active microphysics diagnostics alias the carrying mp_* scratch set.
+    # With mp_physics=0 there is no canonical set, so the historical three
+    # zero-filled output-plumbing arrays remain driver-owned.
+    if not microphysics_scratch_slots(cfg.mp_physics):
+        for comp in ("rainnc", "rainncv", "sr"):
+            shapes[f"microphysics/{comp}"] = s2
+    if cfg.cu_physics == 1:
+        shapes["cumulus/w0avg"] = m  # kf.py:174, WRF Registry r-flagged
+        # Once-per-process lru_cache device LUT (kf.py load_kf_table +
+        # _device_table): temperature/qsat (250,220) + thetae_base (220,)
+        # + log_ratio (200,) FP32 = 441,680 B.  Counted on the cumulus
+        # domain -- exactly one in every ratified config (cu is d01-only);
+        # the cache itself is process-wide.
+        shapes["cumulus/kf_lut_temperature"] = (250, 220)
+        shapes["cumulus/kf_lut_qsat"] = (250, 220)
+        shapes["cumulus/kf_lut_thetae_base"] = (220,)
+        shapes["cumulus/kf_lut_log_ratio"] = (200,)
+    ra_lw_physics, ra_sw_physics = radiation_scheme_ids(cfg)
+    if ra_lw_physics or ra_sw_physics:
+        shapes["radiation/latitude_deg"] = s2
+        shapes["radiation/longitude_deg"] = s2
+    if (ra_lw_physics, ra_sw_physics) == (4, 4):
+        # RRTMGPRadiation.__post_init__ ozone climatology profiles
+        # (rrtmgp.py:1076-1077): two 60-level FP32 device arrays, 480 B.
+        shapes["radiation/_ozone_logp"] = (60,)
+        shapes["radiation/_ozone_vmr"] = (60,)
+    return shapes
+
+
+def _perimeter_count(ny: int, nx: int, width: int) -> int:
+    """Cells in ``width`` nested frames (lateral_bc.py:220-223 verbatim)."""
+    return sum(2 * (nx - 2 * d) + 2 * max(ny - 2 * d - 2, 0)
+               for d in range(width))
+
+
+#: d01 external-LBC field inventory (state boundaries built by
+#: build_state_lateral_boundaries: u/v/theta/phi/mu + qv when moist) with
+#: each field's (levels, ny-extent, nx-extent) source dims.
+def _lbc_field_dims(cfg: RunConfig) -> dict[str, tuple[int, int, int]]:
+    nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
+    dims = {"u": (nz, ny, nx + 1), "v": (nz, ny + 1, nx),
+            "theta": (nz, ny, nx), "phi": (nz + 1, ny, nx),
+            "mu": (1, ny, nx)}
+    if cfg.moist:
+        dims["qv"] = (nz, ny, nx)
+    return dims
+
+
+def lbc_interval_values(cfg: RunConfig) -> int:
+    """FP32 values in ONE interval's side tables (value + tendency), per
+    ``_field_boundary`` (lateral_bc.py:149-167): west/east
+    ``(lev, ny, W)`` + south/north ``(lev, W, nx)``, each twice."""
+    width = cfg.spec_bdy_width
+    total = 0
+    for lev, ny, nx in _lbc_field_dims(cfg).values():
+        total += 2 * (2 * lev * ny * width + 2 * lev * width * nx)
+    return total
+
+
+def lbc_intervals(run_seconds: float, forcing_interval_seconds: float) -> int:
+    """Eager interval count for the root's forcing coverage."""
+    return max(1, math.ceil(run_seconds / float(forcing_interval_seconds)))
+
+
+def mynn_pbl_column_chunk(cfg: RunConfig) -> int:
+    """Columns per MYNN call for this domain.
+
+    The declared chunk, capped by the domain: a 50x20 verification grid has
+    1,000 columns and asks for one chunk of 1,000, while a 600x600 nest asks
+    for 22 chunks of 16,384.  The workspace is therefore the same size on
+    both, which is the property that lets a launch gate refuse a
+    configuration before it allocates.
+    """
+    from gpuwm.core.mynn_pbl_scratch import MYNN_PBL_COLUMN_CHUNK
+    return max(1, min(int(MYNN_PBL_COLUMN_CHUNK), int(cfg.ny) * int(cfg.nx)))
+
+
+def mynn_pbl_scratch_slots(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
+    """Every ``bl_pbl_physics=5`` scratch slot and its exact shape.
+
+    Split out of :func:`scratch_slot_registry` so the MYNN workspace can be
+    priced, diffed and gated on its own; ``tests/test_mynn_pbl_scratch.py``
+    checks this against the slot names the solver actually requests.
+    """
+    from gpuwm.core.mynn_pbl_scratch import (
+        mynn_pbl_flag_shapes, mynn_pbl_index_shapes,
+        mynn_pbl_scratch_shapes, mynn_pbl_tendency_field_shapes,
+    )
+    chunk = mynn_pbl_column_chunk(cfg)
+    nz, ny, nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
+    slots: dict[str, tuple[int, ...]] = {}
+    slots.update(mynn_pbl_scratch_shapes(chunk, nz))
+    slots.update(mynn_pbl_index_shapes(chunk, nz))
+    slots.update(mynn_pbl_flag_shapes())
+    slots.update(mynn_pbl_tendency_field_shapes(nz, ny, nx))
+    return slots
+
+
+def mynn_pbl_scratch_bytes_for(cfg: RunConfig) -> int:
+    """Device bytes the MYNN workspace occupies for this domain."""
+    total = 0
+    for shape in mynn_pbl_scratch_slots(cfg).values():
+        values = 1
+        for extent in shape:
+            values *= int(extent)
+        total += values * 4
+    return total
+
+
+def scratch_slot_registry(cfg: RunConfig, *,
+                          n_lbc_intervals: int = 0
+                          ) -> dict[str, tuple[int, ...]]:
+    """Static registry: every named ``DomainState.scratch`` slot and its
+    exact shape formula, keyed by the RunConfig features that create it.
+
+    The completeness test (tests/test_preflight.py) AST-scans every
+    ``scratch(...)`` call site in ``gpuwm/`` against this registry -- an
+    unclassified slot is an error.  Sources cited per family.  Child
+    ``nest_*`` slots live in :func:`nest_allocation_manifest` (the F4
+    manifest), not here.
+    """
+    nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
+    m = (nz, ny, nx)
+    xs = (nz, ny, nx + 1)
+    ys = (nz, ny + 1, nx)
+    fl = (nz + 1, ny, nx)
+    s2 = (ny, nx)
+    slots: dict[str, tuple[int, ...]] = {}
+
+    # dycore.py rk stage fluxes (:102, :154-155) + integration health
+    # (:1471-1474; nblocks = min(256, max(1, ceil(largest/256)))).
+    slots.update(rk_ww=fl, rk_ru=xs, rk_rv=ys)
+    largest = max(nz * ny * (nx + 1), (nz + 1) * ny * nx)
+    nblocks = min(256, max(1, (largest + 255) // 256))
+    slots["integration_health_partial"] = (nblocks, 8)
+    slots["integration_health_result"] = (7,)
+    # health.py StateHealthValidator: descriptor metadata and compact result.
+    # These are always the fixed MAX_HEALTH_FIELDS footprint, independent of
+    # case size; inventory additions fail at that explicit cap.
+    from gpuwm.core.health import MAX_HEALTH_FIELDS
+    health_words = (MAX_HEALTH_FIELDS * 2,)
+    slots.update(
+        integration_health_field_ptr=health_words,
+        integration_health_aux_ptr=health_words,
+        integration_health_field_size=health_words,
+        integration_health_bounds=(MAX_HEALTH_FIELDS, 2),
+        integration_health_flags=(MAX_HEALTH_FIELDS,),
+        integration_health_planes=(MAX_HEALTH_FIELDS,),
+        integration_health_status_bits=health_words,
+        integration_health_validation=(4,),
+    )
+    # advection.py:161-163.
+    slots.update(adv_ru=xs, adv_rv=ys, adv_rw=fl)
+    # acoustic.py:115-116, :223-226.
+    slots.update(acoustic_mu_pp_old=s2, acoustic_th_pp_old=m,
+                 acoustic_c2a=m, acoustic_a=fl, acoustic_alpha=fl,
+                 acoustic_gamma=fl)
+    if cfg.moist and cfg.moist_cq:
+        # acoustic.py:prepare_moist_cq.  These stage-fixed face arrays alias
+        # the disjoint advection-only adv_ru/rv/rw arena backings below.
+        slots.update(acoustic_cqu=xs, acoustic_cqv=ys, acoustic_cqw=fl)
+    if cfg.open_x:
+        slots["openbc_upp_faces"] = (nz, ny, 2)     # acoustic.py:121
+    if cfg.open_y:
+        slots["openbc_vpp_faces"] = (nz, 2, nx)     # acoustic.py:125
+    if cfg.emdiv > 0.0:
+        slots.update(acoustic_mudf=s2)
+
+    if cfg.moist:
+        # dycore.py:1370-1372 acoustic time-averaged mass fluxes.
+        slots.update(rk_ru_m=xs, rk_rv_m=ys, rk_ww_m=fl)
+        slots["moist_rq_t"] = m                     # moist.py:247
+        pd = cfg.moist_adv_opt == 1 and not (cfg.open_x or cfg.open_y)
+        if pd:
+            slots.update(pd_fxl=xs, pd_fxc=xs, pd_fyl=ys, pd_fyc=ys,
+                         pd_fzl=fl, pd_fzc=fl)      # moist.py:283-288
+            slots["moist_pd_q0"] = m                # moist.py:197
+        if cfg.specified:
+            slots["lbc_qv_held"] = m                # moist.py:274
+
+    if cfg.nwp_diagnostics == 1:
+        # gpuwm/core/uh_diag.py: the serialized UP_HELI_MAX running max
+        # (eagerly allocated by DomainState.__init__) plus two per-launch
+        # work planes (column UH and the use_column flags).
+        slots.update(up_heli_max=s2, uh_diag_col=s2, uh_diag_use=s2)
+
+    if cfg.mp_physics == 1:
+        # microphysics.py:143-163 (Kessler prep + accumulators).
+        slots.update(mp_th=m, mp_rho=m, mp_pii=m, mp_z=m, mp_dz8w=m,
+                     mp_z8w=fl, mp_rainnc=s2, mp_rainncv=s2,
+                     mp_kessler_sr=s2)
+    if cfg.mp_physics == 6:
+        # wsm6.py preparation, persistent precipitation and due reflectivity.
+        slots.update(wsm6_theta=m, wsm6_rho=m, wsm6_pii=m, wsm6_dz=m,
+                     wsm6_z8w=fl, mp_rainnc=s2, mp_rainncv=s2,
+                     mp_snownc=s2, mp_snowncv=s2, mp_graupelnc=s2,
+                     mp_graupelncv=s2, mp_sr=s2, refl_t=m, refl_10cm=m)
+    if cfg.mp_physics == 8:
+        # microphysics.py:_apply_thompson preparation,
+        # persistent precipitation, output-due private graupel-number shadow,
+        # and Thompson REFL_10CM staging.  The three reference fields are
+        # deliberately distinct registry entries even where the runtime can
+        # lifetime-alias their arena backings.
+        slots.update(
+            mp_th=m, mp_pii=m, mp_dz8w=m, mp_z8w=fl,
+            mp_thompson_temperature=m,
+            mp_thompson_frozen_reference_density=m,
+            mp_thompson_frozen_reference_temperature=m,
+            mp_thompson_rain_reference_density=m,
+            mp_thompson_snow_melt_marker=m,
+            mp_thompson_graupel_melt_marker=m,
+            mp_thompson_snow_velocity_boost=m,
+            mp_thompson_graupel_number_shadow=m,
+            mp_rainnc=s2, mp_rainncv=s2, mp_snownc=s2, mp_snowncv=s2,
+            mp_graupelnc=s2, mp_graupelncv=s2, mp_sr=s2,
+            refl_t=m, refl_10cm=m,
+        )
+    if cfg.mp_physics == 10:
+        # morrison.py:153-172 (prep + accumulators) + refl.py:324-325.
+        slots.update(morr_theta=m, morr_rho=m, morr_pii=m, morr_dz=m,
+                     morr_ice_to_snow=m, morr_z8w=fl,
+                     mp_rainnc=s2, mp_rainncv=s2, mp_snownc=s2,
+                     mp_snowncv=s2, mp_graupelnc=s2, mp_graupelncv=s2,
+                     mp_sr=s2, refl_t=m, refl_10cm=m)
+    if cfg.mp_physics:
+        # microphysics.py spec-zone ring guard: per-edge snapshot buffers
+        # for the WRF tile-clip exclusion (specified/nested only; exact
+        # shapes from the single-source helper).
+        from gpuwm.core.microphysics import spec_zone_ring_save_slots
+        slots.update(spec_zone_ring_save_slots(cfg))
+    if cfg.mp_physics == 18:
+        # nssl2_runtime.py exact moist-physics prep, post-process radar
+        # temperature, output handoff, and persistent precipitation state.
+        # The mp_* prep names intentionally reuse the already classified
+        # Kessler rebuild slots: their lifetime/shape contract is identical.
+        slots.update(mp_th=m, mp_rho=m, mp_pii=m, mp_dz8w=m, mp_z8w=fl,
+                     nssl2_driver_state=(16, nz, ny, nx),
+                     nssl2_driver_surface_export=(5, ny, nx),
+                     nssl2_driver_ignored_accumulator=s2,
+                     nssl2_fused_temperature=m,
+                     nssl2_primary_ice_target=m,
+                     nssl2_nucond_ss=m, refl_t=m, refl_10cm=m,
+                     mp_rainnc=s2, mp_rainncv=s2, mp_snownc=s2,
+                     mp_snowncv=s2, mp_graupelnc=s2,
+                     mp_graupelncv=s2, mp_hailnc=s2, mp_hailncv=s2,
+                     mp_sr=s2)
+
+    if cfg.km_opt == 4:
+        slots.update(smag_km=m, smag_kh=m)
+    if cfg.km_opt == 4 or cfg.diff_6th_opt:
+        # dycore.py prepare_fixed_tendencies: carrying WRF forward
+        # tendencies shared by Smagorinsky and sixth-order diffusion.
+        slots.update(smag_ru=xs, smag_rv=ys, smag_rw=fl, smag_rth=m)
+        if cfg.moist:
+            for name in ("qv", "qc", "qr"):
+                slots["smag_r" + name] = m
+            if cfg.mp_physics in (6, 8, 10, 18):
+                for name in ("qi", "qs", "qg"):
+                    slots["smag_r" + name] = m
+            if cfg.mp_physics == 8:
+                for name in ("nr", "ni"):
+                    slots["smag_r" + name] = m
+            if cfg.mp_physics == 10:
+                for name in ("nr", "ni", "ns", "ng"):
+                    slots["smag_r" + name] = m
+            if cfg.mp_physics == 18:
+                for name in ("qh", "qndrop", "qnr", "qni", "qns", "qng",
+                             "qnh", "qnn", "qvolg", "qvolh"):
+                    slots["smag_r" + name] = m
+    if cfg.km_opt == 4 or cfg.diff_6th_opt:
+        # Smagorinsky reuses the x/y face workspaces for u/v staging and
+        # metric scalar fluxes; sixth-order diffusion subsequently overwrites
+        # them.  z/m are required only by diff6 itself.
+        slots.update(diff6_x=xs, diff6_y=ys)
+    if cfg.diff_6th_opt:
+        slots.update(diff6_z=fl, diff6_m=m)
+    if cfg.khdif > 0.0 or cfg.kvdif > 0.0:
+        slots.update(diff_u=xs, diff_v=ys, diff_w=fl, diff_th=m)
+
+    from gpuwm.core.physics import physics_enabled
+    if physics_enabled(cfg):
+        slots["physics_qtot"] = m                   # physics.py:369
+        if not cfg.moist:
+            slots.update(physics_dry_qv=m, physics_dry_qc=m)
+        if cfg.mp_physics not in (6, 8, 10, 18):
+            slots["physics_qi"] = m                 # physics.py:395
+    if int(cfg.bl_pbl_physics) == 5:
+        # MYNN's whole working set, declared in
+        # gpuwm/core/mynn_pbl_scratch.py.  Before it was declared the solver
+        # allocated it fresh on every call and this registry knew none of it:
+        # measured at nz = 49 on the RTX 5090, 46,160 bytes per column in 439
+        # pool allocations per step, which is 15,847.6 MiB at the 360,000
+        # columns of a d04 nest against a preflight estimate that did not
+        # move at all.  A headroom check that reassuring on a card with no
+        # ECC is a hazard, not a safeguard.
+        #
+        # These shapes are written against the COLUMN CHUNK, not ny*nx, which
+        # is what makes the estimate bounded: mynn_pbl_runtime walks the
+        # domain in chunks of that width and the split is bitwise identical
+        # to the wide call.  Only the six returned A-grid tendency fields are
+        # full width, because couple_ysu_tendencies consumes whole fields.
+        slots.update(mynn_pbl_scratch_slots(cfg))
+    if cfg.cu_physics:
+        # physics.py:451-470 KF driver persistence (restart-serialized).
+        slots.update(cu_rainc=s2, cu_nca=s2, cu_pratec=s2, cu_raincv=s2,
+                     cu_expiring=s2,
+                     cu_rthcuten=m, cu_rqvcuten=m, cu_rqccuten=m,
+                     cu_rqicuten=m, cu_rqrcuten=m, cu_rqscuten=m)
+
+    if cfg.specified:
+        # lateral_bc.py resident attachment: held relax tendencies (:612),
+        # Davies weights (:294), the MU boundary frame (:664), and the
+        # packed eager forcing tables (:545) when interval count is known.
+        slots.update(lbc_relax_u=xs, lbc_relax_v=ys, lbc_relax_theta=m,
+                     lbc_relax_phi=fl)
+        if cfg.moist:
+            slots["lbc_qv_held"] = m
+        slots["lbc_weights_0"] = (2, cfg.spec_bdy_width)
+        slots[f"lbc_old_mup_frame_{cfg.spec_zone}"] = (
+            _perimeter_count(ny, nx, cfg.spec_zone),)
+        if cfg.specified and n_lbc_intervals > 0:
+            slots["lbc_forcing_tables"] = (
+                n_lbc_intervals * lbc_interval_values(cfg),)
+    elif cfg.nested:
+        # Rolling tables themselves live in the F4/F16 nest manifest.
+        # Only the tiny Davies weights and MU finalizer frame use the legacy
+        # LBC scratch registry. Nested held increments are recomputed from
+        # RK time-t copies, so no extra full-domain carrying slots exist.
+        frame_width = min(max(cfg.spec_zone, cfg.relax_zone + 1),
+                          cfg.spec_bdy_width)
+        slots["lbc_weights_0"] = (2, frame_width)
+        slots[f"lbc_old_mup_frame_{cfg.spec_zone}"] = (
+            _perimeter_count(ny, nx, cfg.spec_zone),)
+        # One temporary is reused serially for u/v/w/theta/phi.  W is the
+        # largest field only when horizontal extents exceed nz; retain the
+        # true maximum so valid skinny/high-top grids remain capacity-safe.
+        slots["lbc_nested_relax"] = _full_field_capacity(cfg)
+    return slots
+
+
+# ---------------------------------------------------------------------------
+# F4 NEST ALLOCATION MANIFEST -- authoritative; Tasks 10/13 register slots
+# matching these names/shapes EXACTLY (registry-equality gate; any drift is
+# a plan amendment).
+# ---------------------------------------------------------------------------
+
+def nest_field_kinds(cfg: RunConfig) -> tuple[str, ...]:
+    """Child forcing field kinds: u/v/w/t(thm)/ph/mu + ALL active
+    moist/scalar species including Thompson/Morrison numbers (architecture
+    section D;
+    module_bc_em.F:320-345 w coupling; Registry scalar set qnr/qni/qns/
+    qng at Registry.EM_COMMON:3026).  ``nc`` is excluded: it has no
+    advection copy (state.py -- no ``nc0``), matching WRF's default
+    Morrison without prognostic droplet number."""
+    kinds = ["u", "v", "w", "t", "ph", "mu"]
+    if cfg.moist:
+        kinds += ["qv", "qc", "qr"]
+        if cfg.mp_physics in (6, 8, 10, 18):
+            kinds += ["qi", "qs", "qg"]
+        if cfg.mp_physics == 8:
+            kinds += ["nr", "ni"]
+        if cfg.mp_physics == 10:
+            kinds += ["nr", "ni", "ns", "ng"]
+        if cfg.mp_physics == 18:
+            kinds += ["qh", "qndrop", "qnr", "qni", "qns", "qng",
+                      "qnh", "qnn", "qvolg", "qvolh"]
+    return tuple(kinds)
+
+
+def _kind_dims(kind: str, nz: int, ny: int, nx: int) -> tuple[int, int, int]:
+    """(levels, ny-extent, nx-extent) of one field kind on the child grid."""
+    if kind == "u":
+        return (nz, ny, nx + 1)
+    if kind == "v":
+        return (nz, ny + 1, nx)
+    if kind in ("w", "ph"):
+        return (nz + 1, ny, nx)
+    if kind == "mu":
+        return (1, ny, nx)
+    return (nz, ny, nx)
+
+
+def _full_field_capacity(cfg: RunConfig) -> tuple[int, ...]:
+    """Flat capacity of the largest full field for one domain."""
+    shapes = (_kind_dims(kind, cfg.nz, cfg.ny, cfg.nx)
+              for kind in nest_field_kinds(cfg))
+    return (max(math.prod(shape) for shape in shapes),)
+
+
+def nest_slot_shapes(dc: DomainConfig, spec_bdy_width: int,
+                     parent: DomainConfig | None = None
+                     ) -> dict[str, tuple[int, ...]]:
+    """Every persistent ``nest_*`` device slot for ONE child domain.
+
+    Three families (architecture section E item (d), F4/F16 amendments):
+
+    * Rolling one-interval boundary tables, WRF Registry naming
+      (``u_bxs``/``u_btxs`` style): per kind, per side, value
+      (``nest_{kind}_b{xs,xe,ys,ye}``) and tendency
+      (``nest_{kind}_bt{side}``).  x-sides ``(lev, ny_ext, W)``, y-sides
+      ``(lev, W, nx_ext)`` -- the exact ``_field_boundary`` layout the
+      Phase-4 resident-table CUDA machinery consumes
+      (lateral_bc.py:149-167), refreshed every parent step with dtbc
+      reset (mediation_force_domain.F semantics; registered deviation:
+      rolling device tables instead of WRF's persistent host bdy
+      arrays).
+    * TWO simultaneously live force-local coupled fields
+      (``nest_parent_field`` and ``nest_child_field``), shared through the
+      sequential-domain arena when two distinct dead RK backings have enough
+      capacity and otherwise allocated explicitly.  Each is overwritten
+      before every ``bdy_interp1`` read.  F16 retires all four-side donor-strip
+      rows.
+    * SINT geometry: six arrays per stagger class, matching T10's landed
+      ``device_tables`` exactly: ``ci/ip`` at ``nx_ext`` and ``cj/jp`` at
+      ``ny_ext`` (int32), plus ``xig`` at ``nri`` and ``xjg`` at ``nrj``
+      (float32).
+    """
+    run = dc.run
+    nz, ny, nx = run.nz, run.ny, run.nx
+    ratio = dc.parent_grid_ratio
+    # interp_fcn.F:2517, identical to nest_interp.bdy_width().  The rolling
+    # manifest must describe the exact arrays bdy_interp1 writes, even when
+    # a case configures a wider maximum boundary allocation.
+    width = min(max(int(run.spec_zone), int(run.relax_zone) + 1),
+                int(spec_bdy_width))
+    shapes: dict[str, tuple[int, ...]] = {}
+
+    for kind in nest_field_kinds(run):
+        lev, ny_ext, nx_ext = _kind_dims(kind, nz, ny, nx)
+        for prefix in ("b", "bt"):
+            shapes[f"nest_{kind}_{prefix}xs"] = (lev, ny_ext, width)
+            shapes[f"nest_{kind}_{prefix}xe"] = (lev, ny_ext, width)
+            shapes[f"nest_{kind}_{prefix}ys"] = (lev, width, nx_ext)
+            shapes[f"nest_{kind}_{prefix}ye"] = (lev, width, nx_ext)
+
+    parent_run = run if parent is None else parent.run
+    shapes["nest_parent_field"] = _full_field_capacity(parent_run)
+    shapes["nest_child_field"] = _full_field_capacity(run)
+
+    for stag, (nx_ext, ny_ext) in (("m", (nx, ny)), ("x", (nx + 1, ny)),
+                                   ("y", (nx, ny + 1))):
+        shapes[f"nest_sint_ci_{stag}"] = (nx_ext,)
+        shapes[f"nest_sint_ip_{stag}"] = (nx_ext,)
+        shapes[f"nest_sint_cj_{stag}"] = (ny_ext,)
+        shapes[f"nest_sint_jp_{stag}"] = (ny_ext,)
+        shapes[f"nest_sint_xig_{stag}"] = (ratio,)
+        shapes[f"nest_sint_xjg_{stag}"] = (ratio,)
+    return shapes
+
+
+def nest_slot_dtypes(dc: DomainConfig, spec_bdy_width: int,
+                     parent: DomainConfig | None = None) -> dict[str, str]:
+    """Semantic dtype of every F4/F16 nest slot (all are four bytes)."""
+    shapes = nest_slot_shapes(dc, spec_bdy_width, parent)
+    return {name: ("int32" if name.startswith(("nest_sint_ci_",
+                                                "nest_sint_ip_",
+                                                "nest_sint_cj_",
+                                                "nest_sint_jp_"))
+                   else "float32")
+            for name in shapes}
+
+
+def nest_allocation_manifest(exp: ExperimentConfig
+                             ) -> dict[int, dict[str, tuple[int, ...]]]:
+    """The frozen nest allocation manifest: ``grid_id -> {slot: shape}``
+    for every CHILD domain.  N0's ``--alloc`` allocates exactly these
+    entries as real device allocations (F4: the residency proof covers
+    the actual coupler footprint, not proxies)."""
+    manifest: dict[int, dict[str, tuple[int, ...]]] = {}
+    by_id = {dc.grid_id: dc for dc in exp.domains}
+    for dc in exp.domains:
+        if dc.parent_id == 0:
+            continue
+        manifest[dc.grid_id] = nest_slot_shapes(
+            dc, exp.spec_bdy_width, by_id[dc.parent_id])
+    return manifest
+
+
+# ---------------------------------------------------------------------------
+# Scratch-slot lifetime audit (architecture section E lever 2)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ScratchSlotLifetime:
+    """One reviewed row in the scratch sharing admission table.
+
+    Patterns ending in ``*`` classify a generated slot family.  ``kind`` is
+    either ``write_before_read`` (safe on the sequential-domain arena),
+    ``carrying`` (observed after the producing step/call), or
+    ``excluded_unproven`` (correctness-first exclusion).
+    """
+
+    patterns: tuple[str, ...]
+    kind: str
+    evidence: str
+    rationale: str
+
+    @property
+    def arena_eligible(self) -> bool:
+        return self.kind == "write_before_read"
+
+
+# Committed audit table. tests/test_preflight.py expands every registry and
+# F4-manifest slot through this table, rejects gaps/overlaps, and separately
+# proves that every arena-admitted row is write-before-read classified.
+SCRATCH_SLOT_LIFETIME_AUDIT = (
+    ScratchSlotLifetime(
+        ("rk_ww", "rk_ru", "rk_rv", "rk_ru_m", "rk_rv_m", "rk_ww_m"),
+        "write_before_read",
+        "gpuwm/core/dycore.py:102-113,154-161,1373-1414; "
+        "gpuwm/core/nest.py:_coupled_child_field",
+        "stage/moist fluxes are filled before stage reads; FORCE borrows "
+        "the matching rk_ru/rk_rv/rk_ww staggered backing only after the "
+        "prior step and before the next stage rewrite"),
+    ScratchSlotLifetime(
+        ("adv_ru", "adv_rv", "adv_rw"), "write_before_read",
+        "gpuwm/core/advection.py:161-180",
+        "the advection-only path fills all three flux arrays before launch"),
+    ScratchSlotLifetime(
+        ("acoustic_mu_pp_old", "acoustic_th_pp_old", "acoustic_c2a",
+         "acoustic_a", "acoustic_alpha", "acoustic_gamma", "acoustic_mudf",
+         "acoustic_cqu", "acoustic_cqv", "acoustic_cqw",
+         "openbc_upp_faces", "openbc_vpp_faces"),
+        "write_before_read",
+        "gpuwm/core/acoustic.py:115-190,223-235; gpuwm/core/dycore.py:1360-1395",
+        "substep histories/coefficient/filter slots are seeded in their stage"),
+    ScratchSlotLifetime(
+        ("smag_km", "smag_kh", "smag_ru", "smag_rv", "smag_rw",
+         "smag_rth", "smag_rqv", "smag_rqc", "smag_rqr", "smag_rqi",
+         "smag_rqs", "smag_rqg", "smag_rnr", "smag_rni", "smag_rns",
+         "smag_rng", "smag_rqh", "smag_rqndrop", "smag_rqnr",
+         "smag_rqni", "smag_rqns", "smag_rqng", "smag_rqnh",
+         "smag_rqnn", "smag_rqvolg", "smag_rqvolh"),
+        "write_before_read",
+        "gpuwm/core/dycore.py:prepare_fixed_tendencies",
+        "time-t K and its held tendencies are written and consumed before "
+        "the RK loop; K is dead before acoustic alpha/gamma overwrite the "
+        "borrowed backings, while all three RK stages read only the held "
+        "tendencies"),
+    ScratchSlotLifetime(
+        ("diff_u", "diff_v", "diff_w", "diff_th"), "write_before_read",
+        "gpuwm/core/diffusion.py:121-130",
+        "each constant-K temporary is zeroed and filled before accumulation"),
+    ScratchSlotLifetime(
+        ("diff6_x", "diff6_y", "diff6_z", "diff6_m"),
+        "write_before_read", "gpuwm/core/dycore.py:prepare_fixed_tendencies; "
+        "gpuwm/core/dycore.py:apply_diff6",
+        "the diff6 target loops consume one temporary at a time; however, "
+        "km_opt=4 uses x/y simultaneously for momentum staging and for "
+        "scalar face fluxes, so every Smagorinsky configuration retains "
+        "two distinct face backings"),
+    ScratchSlotLifetime(
+        ("moist_pd_q0", "moist_rq_t", "pd_fxl", "pd_fxc", "pd_fyl",
+         "pd_fyc", "pd_fzl", "pd_fzc"), "write_before_read",
+        "gpuwm/core/moist.py:197-203,247-308",
+        "source copies, tendencies, and six PD fluxes are filled before use"),
+    ScratchSlotLifetime(
+        ("mp_th", "mp_rho", "mp_pii", "mp_z", "mp_dz8w", "mp_z8w",
+         "nssl2_driver_state", "nssl2_driver_surface_export",
+         "nssl2_driver_ignored_accumulator",
+         "nssl2_fused_temperature", "nssl2_primary_ice_target",
+         "nssl2_nucond_ss"),
+        "write_before_read", "gpuwm/core/microphysics.py:143-169; "
+        "gpuwm/core/nssl2_runtime.py:_prepare_fields; "
+        "gpuwm/core/nssl2_fused_gs.py:launch_fused_gs; "
+        "gpuwm/core/kernels/nssl2_fused_gs.cu:nssl2_prepare_fused_gs; "
+        "gpuwm/core/nssl2_nucond.py:139-143; "
+        "gpuwm/core/kernels/nssl2_nucond.cu:96-107",
+        "Kessler and NSSL preparation fields are rebuilt for every scheme "
+        "call; gather overwrites the driver state and sediment export planes "
+        "while the ignored accumulator is explicitly reset before RMW; the "
+        "fused-GS prepass overwrites temperature and primary-ice target "
+        "snapshots before the process kernel reads them; NUCOND overwrites "
+        "its supersaturation filter before reading it"),
+    ScratchSlotLifetime(
+        ("mp_thompson_temperature",
+         "mp_thompson_frozen_reference_density",
+         "mp_thompson_frozen_reference_temperature",
+         "mp_thompson_rain_reference_density",
+         "mp_thompson_snow_melt_marker",
+         "mp_thompson_graupel_melt_marker",
+         "mp_thompson_snow_velocity_boost",
+         "mp_thompson_graupel_number_shadow"),
+        "write_before_read",
+        "gpuwm/core/microphysics.py:_apply_thompson; "
+        "gpuwm/core/kernels/thompson.cu:129-217,1999-2020,5674-5682",
+        "the adapter fills temperature before its first consumer; cloud/rain "
+        "reference kernels write every cell before fallout; the warm source "
+        "writes both held melt markers for every cell before their consumers; "
+        "the fused cold source resets every velocity boost; output-due "
+        "graupel number is initialized across the complete field before "
+        "source/fallout reads"),
+    ScratchSlotLifetime(
+        ("wsm6_theta", "wsm6_rho", "wsm6_pii", "wsm6_dz",
+         "wsm6_z8w"), "write_before_read",
+        "gpuwm/core/wsm6.py:89-98",
+        "WSM6 preparation fully assigns each array before the scheme launch "
+        "or any dependent read"),
+    ScratchSlotLifetime(
+        ("morr_theta", "morr_rho", "morr_pii", "morr_dz",
+         "morr_ice_to_snow", "morr_z8w"), "write_before_read",
+        "gpuwm/core/morrison.py:159-202",
+        "Morrison preparation fields are rebuilt for every scheme call"),
+    ScratchSlotLifetime(
+        ("refl_t",), "write_before_read", "gpuwm/core/refl.py:349-372; "
+        "gpuwm/core/nssl2_runtime.py:apply_nssl2_production",
+        "post-scheme temperature preparation is assigned after the final "
+        "condensation hook and before the reflectivity launch"),
+    ScratchSlotLifetime(
+        ("physics_qtot", "physics_qi"), "write_before_read",
+        "gpuwm/core/physics.py:387-414",
+        "physics preparation explicitly zeroes these arrays before reads"),
+    ScratchSlotLifetime(
+        ("lbc_qv_held", "lbc_relax_u", "lbc_relax_v",
+         "lbc_relax_theta", "lbc_relax_phi"),
+        "write_before_read",
+        "gpuwm/core/moist.py:263-281; gpuwm/ingest/lateral_bc.py:611-628",
+        "RK stage 1 captures held tendencies before later stages consume them"),
+    ScratchSlotLifetime(
+        ("lbc_old_mup_frame_*",), "write_before_read",
+        "gpuwm/ingest/lateral_bc.py:658-728",
+        "the MU install kernel writes the frame before fused field finalizers"),
+    ScratchSlotLifetime(
+        ("lbc_nested_relax",), "write_before_read",
+        "gpuwm/ingest/lateral_bc.py:apply_state_lateral_boundaries; "
+        "gpuwm/core/acoustic.py:prepare_acoustic_coefficients",
+        "each nested field overwrites the temporary before immediate use; "
+        "the following acoustic preparation overwrites its aliased backing "
+        "before any acoustic read"),
+    ScratchSlotLifetime(
+        ("cu_expiring",), "excluded_unproven",
+        "gpuwm/core/physics.py:_advance_cumulus_clock,finish_step",
+        "the mask is cleared immediately after the pre-RK compose, but "
+        "internal substeps can read that carried zero without a same-step "
+        "overwrite; retain per-domain "
+        "identity rather than overclaim write-before-read sharing"),
+    # EXCLUDED (unproven): each snapshot is fully written at capture and
+    # read back at restore within one microphysics.apply call, but the
+    # whole scheme dispatch (which allocates and writes its own scratch)
+    # runs BETWEEN that write and read -- sharing a backing with any
+    # dispatch-written slot would corrupt the ring restore.  Tiny
+    # (~2*(nx+ny)*nz per field); correctness beats the savings.
+    ScratchSlotLifetime(
+        ("mp_ring_save_*",), "excluded_unproven",
+        "gpuwm/core/microphysics.py:_capture_spec_zone_ring,"
+        "_restore_spec_zone_ring",
+        "the snapshot must survive the full scheme dispatch between its "
+        "capture write and restore read; retain per-domain identity"),
+    ScratchSlotLifetime(
+        ("integration_health_partial", "integration_health_result"),
+        "write_before_read",
+        "gpuwm/core/dycore.py:1474-1486",
+        "the two reduction kernels overwrite their outputs before host read"),
+    # EXCLUDED (carrying): T15's validator launch tables are immutable
+    # setup-time category maps filled once in HealthValidator.__init__
+    # (gpuwm/core/health.py:476-491, "immutable setup-time category maps")
+    # and reused every step; arena-sharing across domains would corrupt
+    # them.  Tiny (~48 KB/domain); classified at the T15 merge.
+    ScratchSlotLifetime(
+        ("integration_health_field_ptr", "integration_health_aux_ptr",
+         "integration_health_field_size", "integration_health_bounds",
+         "integration_health_flags", "integration_health_planes",
+         "integration_health_status_bits", "integration_health_validation"),
+        "carrying",
+        "gpuwm/core/health.py:476-496",
+        "setup-time launch tables persist across steps, and the status/"
+        "result buffers may be read asynchronously by supervision between "
+        "steps; per-domain only (conservative; ~49 KB/domain)"),
+
+    # EXCLUDED (carrying): these microphysics accumulators are read-modify-
+    # write and restart-serialized (restart.py:148-158; kessler.cu:91-92;
+    # morrison.cu:1087-1103), so per-domain identity must be preserved.
+    ScratchSlotLifetime(
+        ("mp_rainnc", "mp_rainncv", "mp_snownc", "mp_snowncv",
+         "mp_graupelnc", "mp_graupelncv", "mp_hailnc", "mp_hailncv",
+         "mp_sr", "mp_kessler_sr"),
+        "carrying", "gpuwm/io/restart.py:148-158",
+        "restart-visible live microphysics accumulator/diagnostic state"),
+    # EXCLUDED (carrying): KF initialization stores these arrays on the
+    # driver and later calls update them (physics.py:474-500); restart.py:
+    # 148-158 serializes the same slots.
+    ScratchSlotLifetime(
+        ("cu_rainc", "cu_nca", "cu_pratec", "cu_raincv", "cu_rthcuten",
+         "cu_rqvcuten", "cu_rqccuten", "cu_rqicuten", "cu_rqrcuten",
+         "cu_rqscuten"), "carrying",
+        "gpuwm/core/physics.py:474-500; gpuwm/io/restart.py:148-158",
+        "KF timers, rates, and precipitation persist across scheme calls"),
+    # EXCLUDED (carrying): the output driver retains this exact view after the
+    # producing step until consumption (physics.py:468-472; refl.py:376-399).
+    ScratchSlotLifetime(
+        ("refl_10cm",), "carrying", "gpuwm/core/refl.py:376-399",
+        "one-frame output handoff can outlive the producing domain step"),
+    # EXCLUDED (carrying): UP_HELI_MAX is a restart-serialized elementwise
+    # running max, read-modify-written every step and consumed by history
+    # frames; per-domain identity must be preserved.
+    ScratchSlotLifetime(
+        ("up_heli_max",), "carrying",
+        "gpuwm/core/uh_diag.py:update_up_heli_max,reset_up_heli_max; "
+        "gpuwm/io/restart.py:SERIALIZED_SCRATCH_SLOTS",
+        "restart-visible running-max accumulator with a reset only at "
+        "history writes"),
+    # UP_HELI_MAX work planes: uh_columns writes every cell of both planes
+    # (edge threads included) before uh_smooth_max reads them, all inside
+    # one update_up_heli_max call.
+    ScratchSlotLifetime(
+        ("uh_diag_col", "uh_diag_use"), "write_before_read",
+        "gpuwm/core/kernels/uh_diag.cu:uh_columns,uh_smooth_max; "
+        "gpuwm/core/uh_diag.py:update_up_heli_max",
+        "per-launch column UH and use_column planes, fully rewritten by "
+        "every diagnostic call before the smoother reads them"),
+    # EXCLUDED (unproven): unlike physics_qi, these dry placeholders are only
+    # zero-initialized by DomainState.scratch and are not rewritten in
+    # _prepare_atmosphere (physics.py:404-414). Correctness beats tiny savings.
+    ScratchSlotLifetime(
+        ("physics_dry_qv", "physics_dry_qc"), "excluded_unproven",
+        "gpuwm/core/physics.py:404-414",
+        "constant-zero placeholders lack a per-step write-before-read"),
+    # EXCLUDED (carrying/setup): weights are cached by key and forcing views
+    # remain attached across all steps (lateral_bc.py:282-301,535-577).
+    ScratchSlotLifetime(
+        ("lbc_weights_*", "lbc_forcing_tables"), "carrying",
+        "gpuwm/ingest/lateral_bc.py:282-301,535-577",
+        "resident forcing tables and cached weights are cross-step setup"),
+    # MYNN's declared workspace.  Split three ways on purpose.
+    #
+    # WRITE-BEFORE-READ: the kernel that owns the slot fills the whole
+    # requested prefix before anything reads it, verified against the CUDA
+    # source rather than assumed.  Two of them needed a code change to earn
+    # the classification: mynn_pbl.cu:945 returns before k == 0, so the nine
+    # mym_turbulence products and the seven full-column level-2 fields kept
+    # the surface zero of a fresh allocation.  mynn_pbl_gpu now zeroes that
+    # one element explicitly.  MynnPblScratch.poison() is the runtime lever
+    # and tests/test_mynn_pbl_scratch.py drives it: NaN every slot in this
+    # group, run a carried forecast, require the same hash.
+    ScratchSlotLifetime(
+        ("mynn_pbl_prep", "mynn_pbl_zw", "mynn_pbl_surface",
+         "mynn_pbl_delt", "mynn_pbl_diss_heat", "mynn_pbl_exchange",
+         "mynn_pbl_pblh", "mynn_pbl_level2_pairs", "mynn_pbl_level2_out",
+         "mynn_pbl_level2_full", "mynn_pbl_mixlength",
+         "mynn_pbl_mixlength_work", "mynn_pbl_turbulence",
+         "mynn_pbl_predict", "mynn_pbl_predict_work",
+         "mynn_pbl_condensation", "mynn_pbl_initialize",
+         "mynn_pbl_initialize_work", "mynn_pbl_plume_layer",
+         "mynn_pbl_plume_face", "mynn_pbl_plume_column",
+         "mynn_pbl_plume_work", "mynn_pbl_plume_scratch",
+         "mynn_pbl_tendency", "mynn_pbl_tendency_work",
+         "mynn_pbl_tendency_face", "mynn_pbl_stage_layer",
+         "mynn_pbl_stage_dx", "mynn_pbl_out_du", "mynn_pbl_out_dv",
+         "mynn_pbl_out_dtheta", "mynn_pbl_out_dqv", "mynn_pbl_out_dqc",
+         "mynn_pbl_out_dqi"),
+        "write_before_read",
+        "gpuwm/core/mynn_pbl_scratch.py; gpuwm/core/mynn_pbl_gpu.py; "
+        "gpuwm/core/kernels/mynn_pbl.cu:945,2482-2489,2799-2821,1400-1406",
+        "each solver leaf fills its own outputs and work vectors before any "
+        "reader; the six returned A-grid tendency fields are fully written "
+        "across the chunk walk and are dead the moment "
+        "couple_ysu_tendencies has multiplied them into new arrays",
+    ),
+    # EXCLUDED (constant): nothing writes these.  WRF passes them to systems
+    # this lane's pinned identity switches off, and every reader requires
+    # them to be zero -- so they are read-before-write by construction, the
+    # same reason physics_dry_qv/physics_dry_qc are excluded above.  Sharing
+    # a backing with a slot that IS written would put a nonzero mass flux
+    # into a tendency solve that is supposed to have none.
+    ScratchSlotLifetime(
+        ("mynn_pbl_zero_layer", "mynn_pbl_zero_face",
+         "mynn_pbl_zero_column", "mynn_pbl_plume_zero_layer",
+         "mynn_pbl_plume_zero_face", "mynn_pbl_tendency_zero"),
+        "excluded_unproven",
+        "gpuwm/core/mynn_pbl_scratch.py:MYNN_PBL_CONSTANT_ZERO_SLOTS; "
+        "gpuwm/core/mynn_pbl_gpu.py:mynn_bl_driver_cuda",
+        "constant-zero feeds for the mass-flux, subsidence, detrainment, "
+        "snow, ozone, stochastic and ocean-current systems this identity "
+        "disables; they have no per-step write to be before",
+    ),
+    # EXCLUDED (int32): ScratchArena is float32-only by construction, so an
+    # index slot cannot draw a view from it.  Excluding them here is what
+    # makes DomainState.scratch fall back to a per-state int32 allocation
+    # instead of raising on the dtype.
+    ScratchSlotLifetime(
+        ("mynn_pbl_kpbl", "mynn_pbl_pblh_index", "mynn_pbl_plume_index",
+         "mynn_pbl_validity_flags"),
+        "excluded_unproven",
+        "gpuwm/core/state.py:ScratchArena.view; "
+        "gpuwm/core/mynn_pbl_scratch.py:MYNN_PBL_INDEX_SLOTS",
+        "int32 one-based level indices and the validity words; the shared "
+        "arena admits float32 only",
+    ),
+    ScratchSlotLifetime(
+        ("nest_parent_field", "nest_child_field"), "write_before_read",
+        "gpuwm/core/nest.py:_coupled_parent_field,_coupled_child_field,force",
+        "each field coupling overwrites the full requested prefix before "
+        "bdy_interp1 reads it; the two simultaneous fields use distinct "
+        "backings and FORCE ends before any aliased RK-stage read"),
+    ScratchSlotLifetime(
+        tuple(f"nest_{kind}_b*" for kind in
+              ("u", "v", "w", "t", "ph", "mu", "qv", "qc", "qr",
+               "qi", "qs", "qg", "nr", "ni", "ns", "ng", "qh",
+               "qndrop", "qnr", "qni", "qns", "qng", "qnh", "qnn",
+               "qvolg", "qvolh")),
+        "carrying", "gpuwm/core/nest.py:force; "
+        "gpuwm/ingest/lateral_bc.py:attach_nest_boundaries",
+        "rolling value/tendency frames are consumed through the complete "
+        "child subcycle and must remain child-owned"),
+    ScratchSlotLifetime(
+        ("nest_sint_*",), "carrying",
+        "gpuwm/core/nest.py:_bind_geometry; "
+        "gpuwm/core/nest_interp.py:NestRegistration.device_tables",
+        "setup geometry is bound once and reused by every force"),
+)
+
+
+def scratch_slot_lifetime(slot: str) -> ScratchSlotLifetime | None:
+    """Return the unique audit row for ``slot``, or ``None`` if unclassified."""
+    matches = []
+    for row in SCRATCH_SLOT_LIFETIME_AUDIT:
+        if any((slot.startswith(pattern[:-1]) if pattern.endswith("*")
+                else slot == pattern) for pattern in row.patterns):
+            matches.append(row)
+    if len(matches) > 1:
+        raise RuntimeError(f"scratch lifetime audit overlaps for {slot!r}")
+    return matches[0] if matches else None
+
+
+def scratch_slot_uses_arena(slot: str) -> bool:
+    row = scratch_slot_lifetime(slot)
+    if row is None:
+        raise KeyError(f"scratch slot {slot!r} has no lifetime audit row")
+    return row.arena_eligible
+
+
+def shared_scratch_arena_shapes(
+        domains: tuple[DomainConfig, ...]
+        ) -> dict[str, tuple[int, ...]]:
+    """Max request shape per admitted slot for the sequential-domain arena.
+
+    Max is by element count because :class:`ScratchArena` returns contiguous
+    reshaped prefix views. Ties retain the first (parent-first) request. The
+    runtime builder and the estimator both call this exact function.
+    """
+    shapes: dict[str, tuple[int, ...]] = {}
+    for dc in domains:
+        for slot, shape in scratch_slot_registry(
+                dc.run, n_lbc_intervals=0).items():
+            if not scratch_slot_uses_arena(slot):
+                continue
+            shape = tuple(shape)
+            if slot not in shapes or math.prod(shape) > math.prod(shapes[slot]):
+                shapes[slot] = shape
+    if all(hasattr(dc, "grid_id") and hasattr(dc, "parent_id")
+           for dc in domains):
+        by_id = {dc.grid_id: dc for dc in domains}
+        for dc in domains:
+            if dc.parent_id == 0:
+                continue
+            force_shapes = {
+                "nest_parent_field": _full_field_capacity(
+                    by_id[dc.parent_id].run),
+                "nest_child_field": _full_field_capacity(dc.run),
+            }
+            for slot, shape in force_shapes.items():
+                if (slot not in shapes
+                        or math.prod(shape) > math.prod(shapes[slot])):
+                    shapes[slot] = shape
+    return shapes
+
+
+def shared_scratch_arena_aliases(
+        domains: tuple[DomainConfig, ...]) -> dict[str, str]:
+    """Disjoint-lifetime arena aliases admitted by the reviewed audit.
+
+    FORCE occurs between complete domain steps.  All three RK backings are
+    dead after the preceding STEP and overwritten before their next stage
+    read.  Parent and child coupled fields are simultaneously live, so the
+    alias assignment below admits them only onto two distinct capacity-safe
+    RK backings.  Preference order preserves F16's historical parent->rk_ru,
+    child->rk_ww addresses on ordinary production grids; an explicit logical
+    backing remains when no safe pair exists.
+
+    Sixth-order diffusion itself processes targets serially.  On a diff6-only
+    configuration x/y/m can all reuse the largest z backing.  The combined
+    Smagorinsky path also borrows x/y, and needs both face buffers
+    simultaneously for momentum staging and scalar fluxes.  If any domain
+    enables km_opt=4, x and y therefore remain distinct while x/m may still
+    reuse z.
+
+    Smagorinsky K_m/K_h are consumed only while the pre-RK preparation builds
+    the held mixing tendencies.  Each stage later prepares acoustic alpha and
+    gamma from scratch before its first acoustic read, and no stage reads K.
+    The two mass-point K arrays can therefore borrow prefixes of those two
+    independent full-level coefficient backings.
+    """
+    aliases = {}
+    shapes = shared_scratch_arena_shapes(domains)
+    # The standalone advection-only adv_* path and the acoustic RK path are
+    # mutually exclusive inside dycore.step.  cq overwrites all three faces
+    # once per RK stage before calc_coefs/advance_uv/advance_w reads them.
+    for cq, adv in (("acoustic_cqu", "adv_ru"),
+                    ("acoustic_cqv", "adv_rv"),
+                    ("acoustic_cqw", "adv_rw")):
+        if (cq in shapes and adv in shapes
+                and math.prod(shapes[cq]) <= math.prod(shapes[adv])):
+            aliases[cq] = adv
+    parent_slot = "nest_parent_field"
+    child_slot = "nest_child_field"
+    rk_targets = ("rk_ru", "rk_ww", "rk_rv")
+    pair_preferences = (
+        ("rk_ru", "rk_ww"), ("rk_ru", "rk_rv"),
+        ("rk_rv", "rk_ww"), ("rk_ww", "rk_ru"),
+        ("rk_ww", "rk_rv"), ("rk_rv", "rk_ru"),
+    )
+
+    def force_slot_fits(slot: str, target: str) -> bool:
+        return (slot in shapes and target in shapes
+                and math.prod(shapes[slot]) <= math.prod(shapes[target]))
+
+    force_pair = next((
+        (parent_target, child_target)
+        for parent_target, child_target in pair_preferences
+        if force_slot_fits(parent_slot, parent_target)
+        and force_slot_fits(child_slot, child_target)
+    ), None)
+    if force_pair is not None:
+        aliases[parent_slot], aliases[child_slot] = force_pair
+    else:
+        # Correctness-first fallback: alias only the larger logical request
+        # when one dead RK backing can hold it; the other remains explicit.
+        logical_slots = sorted(
+            (slot for slot in (parent_slot, child_slot) if slot in shapes),
+            key=lambda slot: math.prod(shapes[slot]), reverse=True)
+        for slot in logical_slots:
+            target = next((candidate for candidate in rk_targets
+                           if force_slot_fits(slot, candidate)), None)
+            if target is not None:
+                aliases[slot] = target
+                break
+    if ("lbc_nested_relax" in shapes and "acoustic_a" in shapes
+            and math.prod(shapes["lbc_nested_relax"])
+            <= math.prod(shapes["acoustic_a"])):
+        aliases["lbc_nested_relax"] = "acoustic_a"
+    smag_uses_xy = any(dc.run.km_opt == 4 for dc in domains)
+    if "diff6_z" in shapes:
+        candidates = (("diff6_x", "diff6_m") if smag_uses_xy
+                      else ("diff6_x", "diff6_y", "diff6_m"))
+        for slot in candidates:
+            if (slot in shapes
+                    and math.prod(shapes[slot])
+                    <= math.prod(shapes["diff6_z"])):
+                aliases[slot] = "diff6_z"
+    for slot, target in (("smag_km", "acoustic_alpha"),
+                         ("smag_kh", "acoustic_gamma")):
+        if (slot in shapes and target in shapes
+                and math.prod(shapes[slot]) <= math.prod(shapes[target])):
+            aliases[slot] = target
+    return aliases
+
+
+def shared_scratch_arena_bytes(
+        domains: tuple[DomainConfig, ...]) -> int:
+    shapes = shared_scratch_arena_shapes(domains)
+    aliases = shared_scratch_arena_aliases(domains)
+    return sum(4 * math.prod(shape) for slot, shape in shapes.items()
+               if slot not in aliases)
+
+
+# ---------------------------------------------------------------------------
+# RRTMGP workspace + per-step transient formulas
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def _gas_table_meta() -> dict[str, int]:
+    """ngpt/ngas per band from the shipped k-distributions (lazy import --
+    the estimator stays CPU-only; table loading is host NetCDF I/O)."""
+    from gpuwm.core.rrtmgp import load_gas_tables
+
+    lw = load_gas_tables("lw")
+    sw = load_gas_tables("sw")
+    return {"ngpt_lw": lw.ngpt, "ngpt_sw": sw.ngpt,
+            "ngas_lw": lw.ngas, "ngas_sw": sw.ngas,
+            "nband_lw": lw.nband, "nband_sw": sw.nband}
+
+
+@lru_cache(maxsize=1)
+def k_distribution_bytes() -> int:
+    """Device bytes of the lru_cache-shared k-distribution/cloud tables,
+    counted ONCE per process (rrtmgp.py:324/:436 -- baseline behavior,
+    never claimed as savings).  Uses the to_device dtype rule
+    (rrtmgp.py:266-282): float -> f32, int -> i32, bool -> 1 byte."""
+    import numpy as np
+    from gpuwm.core.rrtmgp import load_cloud_tables, load_gas_tables
+
+    total = 0
+    for tables in (load_gas_tables("lw"), load_gas_tables("sw"),
+                   load_cloud_tables("lw"), load_cloud_tables("sw")):
+        for value in vars(tables).values():
+            if isinstance(value, np.ndarray):
+                itemsize = 1 if value.dtype == bool else 4
+                total += value.size * itemsize
+    return total
+
+
+def rrtmgp_workspace_phases(nz: int, column_chunk: int, p_top: float = 10000.0
+                            ) -> dict[str, dict[str, tuple[tuple[int, ...],
+                                                           int]]]:
+    """Per-chunk SIMULTANEOUS live sets, one dict per solver phase.
+
+    ONE shared working set sized to the fixed column chunk, reused by all
+    four domains (architecture section E RRTMGP CHUNK POLICY: legal
+    because domains step strictly sequentially and workspace shape is
+    f(chunk_columns, nz, p_top) with nz/p_top identical everywhere).  The
+    workspace
+    bound is the MAXIMUM over phases of each phase's exact live set --
+    not a union with substitutions (p5t11 shadow review F2):
+
+    * ``lw_optics`` (rrtmgp.py:1291-1306): gas tau + finalized tau alive
+      together with the McICA bool mask, per-chunk VMR, band cloud
+      optics, and col_dry (:1615, retained by BOTH the gas and finalized
+      optics results -- one shared array, counted once).
+    * ``lw_rte`` (:1307-1317): mask deleted; Planck lay/lev/sfc sources
+      (:1747-1749) + emissivity/incident g-point arrays join while both
+      tau cubes and the two chunk flux outputs stay live through :1313-1316.
+    * ``sw_optics`` (:1353-1368): gas tau/ssa + finalized tau/ssa/g (five
+      g-point cubes) + mask + VMR + band cloud optics + col_dry.
+    * ``sw_rte`` (:1369-1381): mask deleted; albedo/incidence g-point
+      arrays, the materialized (chunk,nz) mu0 broadcast (:1690-1691) and
+      three (chunk,nz+1) flux arrays join while all five cubes stay live
+      until the ``del`` at :1380.
+    """
+    from gpuwm.core.rrtmgp import rrtmgp_above_model_layer_counts
+
+    meta = _gas_table_meta()
+    c = int(column_chunk)
+    lw_g, sw_g = meta["ngpt_lw"], meta["ngpt_sw"]
+    lw_upper, sw_upper = rrtmgp_above_model_layer_counts(p_top)
+    lw_nz, sw_nz = int(nz) + lw_upper, int(nz) + sw_upper
+    if max(lw_nz, sw_nz) > 128:
+        raise ValueError(
+            "RRTMGP workspace cannot exceed the 128-layer CUDA solver limit")
+
+    lw_common = {
+        "gas_tau": ((c, lw_nz, lw_g), 4),
+        "optics_tau": ((c, lw_nz, lw_g), 4),
+        "vmr": ((c, lw_nz, meta["ngas_lw"] + 1), 4),
+        "cld_tau": ((c, lw_nz, meta["nband_lw"]), 4),
+        "cld_ssa": ((c, lw_nz, meta["nband_lw"]), 4),
+        "cld_asy": ((c, lw_nz, meta["nband_lw"]), 4),
+        "col_dry": ((c, lw_nz), 4),
+    }
+    sw_common = {
+        "gas_tau": ((c, sw_nz, sw_g), 4),
+        "gas_ssa": ((c, sw_nz, sw_g), 4),
+        "optics_tau": ((c, sw_nz, sw_g), 4),
+        "optics_ssa": ((c, sw_nz, sw_g), 4),
+        "optics_g": ((c, sw_nz, sw_g), 4),
+        "vmr": ((c, sw_nz, meta["ngas_sw"] + 1), 4),
+        "cld_tau": ((c, sw_nz, meta["nband_sw"]), 4),
+        "cld_ssa": ((c, sw_nz, meta["nband_sw"]), 4),
+        "cld_asy": ((c, sw_nz, meta["nband_sw"]), 4),
+        "col_dry": ((c, sw_nz), 4),
+    }
+    return {
+        "lw_optics": {**lw_common,
+                       "mcica_mask": ((c, lw_nz, lw_g), 1)},
+        "lw_rte": {**lw_common,
+                   "lay_source": ((c, lw_nz, lw_g), 4),
+                   "lev_source": ((c, lw_nz + 1, lw_g), 4),
+                   "sfc_source": ((c, lw_g), 4),
+                   "emiss_gpt": ((c, lw_g), 4),
+                   "incident": ((c, lw_g), 4),
+                   "flux_up": ((c, lw_nz + 1), 4),
+                   "flux_dn": ((c, lw_nz + 1), 4)},
+        "sw_optics": {**sw_common,
+                       "mcica_mask": ((c, sw_nz, sw_g), 1)},
+        "sw_rte": {**sw_common,
+                   "albedo_gpt": ((c, sw_g), 4),
+                   "inc_gpt": ((c, sw_g), 4),
+                   "mu0": ((c, sw_nz), 4),
+                   "flux_up": ((c, sw_nz + 1), 4),
+                   "flux_dn": ((c, sw_nz + 1), 4),
+                   "flux_dir": ((c, sw_nz + 1), 4)},
+    }
+
+
+def rrtmgp_workspace_shapes(nz: int, column_chunk: int, p_top: float = 10000.0
+                            ) -> dict[str, tuple[tuple[int, ...], int]]:
+    """The shared chunk workspace: the phase-maximum simultaneous set,
+    ``{"<phase>/<name>": (shape, itemsize)}`` (see
+    :func:`rrtmgp_workspace_phases`)."""
+
+    def total(items):
+        return sum(math.prod(shape) * size for shape, size in items.values())
+
+    phases = rrtmgp_workspace_phases(nz, column_chunk, p_top)
+    phase = max(phases, key=lambda name: total(phases[name]))
+    return {f"{phase}/{name}": spec
+            for name, spec in phases[phase].items()}
+
+
+def rrtmgp_column_shapes(
+        cfg: RunConfig, p_top: float = 10000.0, *,
+        column_chunk: int = DEFAULT_COLUMN_CHUNK,
+) -> dict[str, tuple[tuple[int, ...], int]]:
+    """Per-domain radiation column packing transients (rrtmgp.py
+    ``RRTMGPRadiation.__call__``): full-``ncol`` model arrays plus the
+    chunk-local above-model profile/path/cloud/interpolation arrays that
+    coexist with the shared solver workspace.  Freed at call end; domains
+    step sequentially, so the experiment estimate takes the MAX over
+    domains."""
+    if radiation_scheme_ids(cfg) != (4, 4):
+        return {}
+    from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
+    if rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY:
+        # The legacy adapter's transients are priced as ONE shared
+        # call-peak envelope in estimate_experiment (LW/SW run
+        # sequentially per chunk, one domain at a time), not as
+        # per-domain RRTMGP column shapes.
+        return {}
+    from gpuwm.core.rrtmgp import rrtmgp_above_model_layer_counts
+
+    if (isinstance(column_chunk, bool)
+            or not isinstance(column_chunk, int)
+            or column_chunk < 1):
+        raise ValueError("column_chunk must be a positive integer")
+    nz = cfg.nz
+    lw_upper, sw_upper = rrtmgp_above_model_layer_counts(p_top)
+    peak_upper = max(lw_upper, sw_upper)
+    peak_nz = nz + peak_upper
+    ncol = cfg.ny * cfg.nx
+    cap_ncol = min(ncol, column_chunk)
+    shapes: dict[str, tuple[tuple[int, ...], int]] = {}
+    lay = ["play", "tlay", "qv", "exner", "qc", "qr", "qi", "qs", "cldfra",
+           "clwp", "ciwp", "reliq", "dgice"]
+    if cfg.mp_physics == 10:
+        lay += ["nc", "nr", "ni", "ns", "effc", "effr", "effi", "effs"]
+    elif cfg.mp_physics in (6, 8, 18):
+        lay += ["effc", "effi", "effs"]
+    for name in lay:
+        shapes[f"columns/{name}"] = ((ncol, nz), 4)
+    for name in ("metadata_jt", "metadata_jp", "metadata_iatm",
+                  "metadata_ftemp", "metadata_fpress"):
+        shapes[f"columns/{name}"] = ((cap_ncol, peak_nz), 4)
+    for name in ("plev", "tlev", "lw_up", "lw_dn", "sw_up", "sw_dn"):
+        shapes[f"columns/{name}"] = ((ncol, nz + 1), 4)
+    # LW's 25-layer real74 cap is the peak phase.  The live model columns above
+    # remain needed for SW, but only one solver chunk's expanded thermo/cloud
+    # copies and metadata coexist.  With no representable upper layer the
+    # adapter returns the model slices directly and creates no duplicate cap.
+    if peak_upper:
+        for name in ("play", "tlay", "qv", "cldfra",
+                     "clwp", "ciwp", "reliq", "dgice"):
+            shapes[f"columns/upper_peak_{name}"] = ((cap_ncol, peak_nz), 4)
+        for name in ("plev", "tlev"):
+            shapes[f"columns/upper_peak_{name}"] = (
+                (cap_ncol, peak_nz + 1), 4)
+    shapes["columns/emiss_bands"] = ((ncol, 16), 4)
+    for name in ("tsfc", "mu0", "albedo_surface", "daylight"):
+        shapes[f"columns/{name}"] = ((ncol,), 4)
+    return shapes
+
+
+def dudhia_column_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
+    """Conservative device-transient envelope for Dudhia shortwave.
+
+    The adapter packs ten top-down layer fields.  SWPARA then carries five
+    full-column work arrays plus a heating/output reversal; the driver holds
+    its returned/coupled copies while validating.  Twenty-four layer-sized
+    arrays and forty column-sized vectors bound those simultaneously live
+    values and CuPy expression temporaries without pretending they share the
+    RRTMGP chunk workspace.
+    """
+    if radiation_scheme_ids(cfg)[1] != 1:
+        return {}
+    ncol = cfg.ny * cfg.nx
+    return {
+        "dudhia/layer_envelope": (24, ncol, cfg.nz),
+        "dudhia/column_envelope": (40, ncol),
+        "dudhia/lookup_tables": (2, 4, 5),
+    }
+
+
+def atmosphere_transient_shapes(cfg: RunConfig
+                                ) -> dict[str, tuple[int, ...]]:
+    """``_prepare_atmosphere`` per-call transients (physics.py:338-400):
+    fresh device arrays alive for the whole physics call, including
+    through radiation."""
+    from gpuwm.core.physics import physics_enabled
+
+    if not physics_enabled(cfg):
+        return {}
+    nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
+    m = (nz, ny, nx)
+    fl = (nz + 1, ny, nx)
+    return {"atmosphere/theta": m, "atmosphere/temperature": m,
+            "atmosphere/pressure": m, "atmosphere/exner": m,
+            "atmosphere/u": m, "atmosphere/v": m, "atmosphere/dz": m,
+            "atmosphere/p_interface": fl, "atmosphere/z_interface": fl}
+
+
+def ysu_output_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
+    """Raw per-call YSU outputs before field-copy/coupling consumption.
+
+    These allocations exist on every YSU call.  Positive ``bldt`` retains
+    the result after the call (and is also counted as persistent); bldt=0
+    releases it at the last consumer, so it appears only in this category.
+    """
+    if not cfg.bl_pbl_physics:
+        return {}
+    m = (cfg.nz, cfg.ny, cfg.nx)
+    s2 = (cfg.ny, cfg.nx)
+    shapes = {f"ysu_output/{name}": m for name in _YSU_3D}
+    shapes.update({f"ysu_output/{name}": s2 for name in _YSU_2D})
+    return shapes
+
+
+def noahmp_lsm_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
+    """Noah-MP land-surface per-call device transients, both paths.
+
+    Shapes here are ``(columns, bytes-per-column)`` with ``itemsize=1``,
+    because the underlying allocations are dozens of named arrays whose
+    itemization lives with their owners (the allocation-inventory rows in
+    ``tests/test_physics_allocation_inventory.py``); what preflight owes is
+    the bound, not the roster.
+
+    * ``slab_chunk_transients`` is the forecast path's per-chunk cost:
+      :func:`gpuwm.core.noahmp_column_slab.evaluate_sflx_slab` over
+      ``SLAB_COLUMN_CHUNK`` land columns.  The ceiling and the bound are the
+      runtime's own constants, so price and bound cannot drift apart.
+      Measured on the RTX 5090: 2,751 B of CuPy pool growth per column for
+      one 65,536-column chunk call, priced at 4,096.
+    * ``slab_grid_transients`` is the same call's whole-grid residue: the
+      device prologue intermediates (Q_ML through FICEOLD), the land index
+      arrays and the pool's cross-chunk fragmentation, which scale with
+      ``nx*ny`` and not with the chunk.  Measured at 360,000 columns: the
+      whole-call pool growth of 311.8 MiB minus the chunk term's measured
+      172.0 MiB is 407 B per grid column, priced at 512.
+    * ``staged_leaf_batches`` is the per-column seam kept as the paired
+      second implementation: four leaf batches at 620 B per staged column
+      (52 + 76 + 296 + 196, derived in the allocation inventory), bounded by
+      ``COLUMN_BATCH``.
+
+    Only one path runs per call; all are priced because together they are
+    still decided by bounds rather than by the nest, and the staged term is
+    three orders of magnitude below the slab ones.  At d04 the two slab
+    terms price 431.8 MiB against the measured 311.8.
+    """
+    if getattr(cfg, "sf_surface_physics", 0) != 4:
+        return {}
+    from gpuwm.core.noahmp_runtime import (
+        COLUMN_BATCH, SLAB_COLUMN_CHUNK, SLAB_GRID_TRANSIENT_BYTES_PER_COLUMN,
+        SLAB_TRANSIENT_BYTES_PER_COLUMN)
+
+    columns = int(cfg.ny) * int(cfg.nx)
+    return {
+        "noahmp_lsm/slab_chunk_transients":
+            (min(SLAB_COLUMN_CHUNK, columns),
+             SLAB_TRANSIENT_BYTES_PER_COLUMN),
+        "noahmp_lsm/slab_grid_transients":
+            (columns, SLAB_GRID_TRANSIENT_BYTES_PER_COLUMN),
+        "noahmp_lsm/staged_leaf_batches":
+            (min(COLUMN_BATCH, columns), _NOAHMP_STAGED_BYTES_PER_COLUMN),
+    }
+
+
+#: 620 B of leaf-batch rows per staged column: bare_flux 52 + radiation 76 +
+#: water 296 + sflx_pre 196, the derivation the allocation inventory records.
+_NOAHMP_STAGED_BYTES_PER_COLUMN = 620
+
+
+# ---------------------------------------------------------------------------
+# Estimates
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class DomainMemoryEstimate:
+    """Itemized memory for one domain (architecture section E contract)."""
+
+    grid_id: int
+    items: tuple[MemoryItem, ...]
+
+    def category_bytes(self, category: str) -> int:
+        return sum(item.nbytes for item in self.items
+                   if item.category == category)
+
+    @property
+    def resident_bytes(self) -> int:
+        """Persistent tier-1 residency (state/physics/scratch/lbc/nest)."""
+        return sum(item.nbytes for item in self.items
+                   if item.category != "transient")
+
+    @property
+    def transient_bytes(self) -> int:
+        """Per-step transients (radiation columns + physics prep/YSU outputs)
+        coexisting with the chunk workspace; freed between steps."""
+        return sum(item.nbytes for item in self.items
+                   if item.category == "transient")
+
+    @property
+    def arena_scratch_bytes(self) -> int:
+        """This domain's requests admitted by the lifetime audit.
+
+        The value remains part of :attr:`resident_bytes` so a bare/single-
+        domain estimate keeps the historical per-state accounting. The
+        experiment estimate replaces the multi-domain sum with one per-slot
+        maximum.
+        """
+        return sum(item.nbytes for item in self.items
+                   if item.category in ("scratch", "lbc", "nest")
+                   and scratch_slot_uses_arena(item.name))
+
+    @property
+    def rebuilt_state_bytes(self) -> int:
+        """This domain's restart-REBUILT state-array requests."""
+        rebuilt = shared_dycore_state_symbols()
+        return sum(item.nbytes for item in self.items
+                   if item.category == "state" and item.name in rebuilt)
+
+
+def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
+                    parent: DomainConfig | None = None,
+                    n_lbc_intervals: int = 0,
+                    p_top: float = 10000.0,
+                    column_chunk: int = DEFAULT_COLUMN_CHUNK,
+                    ) -> DomainMemoryEstimate:
+    """Itemized :class:`DomainMemoryEstimate` for one domain.
+
+    ``spec_bdy_width`` (the experiment's) sizes child ``nest_*`` tables;
+    ``n_lbc_intervals`` sizes the root's eager forcing tables.  Both
+    default from the domain's own RunConfig / to zero intervals for a
+    bare single-domain estimate.
+    """
+    run = dc.run
+    width = run.spec_bdy_width if spec_bdy_width is None else spec_bdy_width
+    items: list[MemoryItem] = []
+    items += _items("state", state_array_shapes(run))
+    items += _items("physics", physics_array_shapes(run))
+    registry = scratch_slot_registry(
+        run, n_lbc_intervals=(n_lbc_intervals if run.specified else 0))
+    # The (d) LBC residents live in the scratch pool but report under
+    # their own itemization category (architecture section E contract).
+    items += _items("lbc", {slot: shape for slot, shape in registry.items()
+                            if slot.startswith("lbc_")})
+    items += _items("scratch",
+                    {slot: shape for slot, shape in registry.items()
+                     if not slot.startswith("lbc_")})
+    if dc.parent_id != 0:
+        shapes = nest_slot_shapes(dc, width, parent)
+        items += _nest_items(shapes, nest_slot_dtypes(dc, width, parent))
+    items += _items("transient", atmosphere_transient_shapes(run))
+    items += _items("transient", ysu_output_transient_shapes(run))
+    items += _items("transient", noahmp_lsm_transient_shapes(run),
+                    itemsize=1)
+    items += tuple(MemoryItem(name, "transient", shape, size)
+                   for name, (shape, size)
+                   in rrtmgp_column_shapes(
+                       run, p_top, column_chunk=column_chunk).items())
+    items += _items("transient", dudhia_column_shapes(run))
+    return DomainMemoryEstimate(dc.grid_id, tuple(items))
+
+
+@dataclass(frozen=True)
+class ExperimentMemoryEstimate:
+    """The experiment-level three-tier estimate.
+
+    ``alloc_estimate_bytes`` is THE enforced number of the N0/N5/N6
+    chain: ``ALLOCATOR_HEADROOM x (resident + shared chunk workspace +
+    max-over-domains step transients)``. Multi-domain resident scratch uses
+    the lifetime-audited per-slot maximum; a single domain keeps the original
+    per-state sum. ``held/footprint`` projections add the calibrated
+    tier-2/tier-3 terms for reserve-policy visibility. ``workspace_bytes`` is
+    not a pool-reuse allowance: Task 14 constructs one byte allocation of
+    exactly this size and every domain adapter consumes its phase views; the
+    builder refuses any runtime/ledger byte drift.
+    """
+
+    domains: tuple[DomainMemoryEstimate, ...]
+    k_tables_bytes: int
+    workspace_bytes: int
+    scratch_arena_bytes: int
+    uses_shared_scratch_arena: bool
+    dycore_state_workspace_bytes: int
+    uses_shared_dycore_state_workspace: bool
+    column_chunk: int
+    headroom: float = ALLOCATOR_HEADROOM
+    retention_residual_bytes: int = field(default=0)
+    device_overhead_bytes: int = PROBE_DEVICE_OVERHEAD_BYTES
+
+    @property
+    def resident_bytes(self) -> int:
+        per_domain = sum(d.resident_bytes for d in self.domains)
+        if self.uses_shared_scratch_arena:
+            per_domain -= self.scratch_arena_request_bytes
+            per_domain += self.scratch_arena_bytes
+        if self.uses_shared_dycore_state_workspace:
+            per_domain -= self.dycore_state_request_bytes
+            per_domain += self.dycore_state_workspace_bytes
+        return per_domain + self.k_tables_bytes
+
+    @property
+    def dycore_state_request_bytes(self) -> int:
+        """Unshared sum of restart-REBUILT requests across all domains."""
+        return sum(d.rebuilt_state_bytes for d in self.domains)
+
+    @property
+    def dycore_state_saved_bytes(self) -> int:
+        """Resident bytes removed by per-symbol maximum sharing."""
+        if not self.uses_shared_dycore_state_workspace:
+            return 0
+        return (self.dycore_state_request_bytes
+                - self.dycore_state_workspace_bytes)
+
+    @property
+    def scratch_arena_request_bytes(self) -> int:
+        """Unshared sum of arena-admitted requests across all domains."""
+        return sum(d.arena_scratch_bytes for d in self.domains)
+
+    @property
+    def scratch_arena_saved_bytes(self) -> int:
+        """Resident bytes removed by max-per-slot sharing."""
+        if not self.uses_shared_scratch_arena:
+            return 0
+        return self.scratch_arena_request_bytes - self.scratch_arena_bytes
+
+    @property
+    def transient_peak_bytes(self) -> int:
+        """Domains step strictly sequentially (architecture section E
+        chunk-policy adjudication); one domain's step transients live at
+        a time, so the peak takes the max, not the sum."""
+        return max((d.transient_bytes for d in self.domains), default=0)
+
+    @property
+    def subtotal_bytes(self) -> int:
+        return (self.resident_bytes + self.workspace_bytes
+                + self.transient_peak_bytes)
+
+    @property
+    def alloc_estimate_bytes(self) -> int:
+        return math.ceil(self.headroom * self.subtotal_bytes)
+
+    @property
+    def held_projection_bytes(self) -> int:
+        return self.alloc_estimate_bytes + self.retention_residual_bytes
+
+    @property
+    def footprint_projection_bytes(self) -> int:
+        return self.held_projection_bytes + self.device_overhead_bytes
+
+
+def pool_retention_residual_bytes() -> int:
+    """Tier-2 RUN-gate reserve term (provisional policy): the d01 RUN
+    fixture's pool-held bytes beyond the d01 alloc-estimate basis
+    (measured used-peak + default-chunk workspace, with headroom).
+    Calibrated, clamped at zero: if the enumerated workspace already
+    over-covers the fixture's retention, nothing extra is reserved (no
+    double count).  The N0 probe measured allocation-time retention NIL,
+    so this term belongs to the N5/N6 run gates, not the N0 alloc gate
+    (:meth:`ReservePolicy.run_time` vs :meth:`ReservePolicy.n0_alloc` --
+    split pending controller ratification)."""
+    meta_free_basis = math.ceil(ALLOCATOR_HEADROOM * (
+        CAL_D01_POOL_USED_PEAK_BYTES
+        + _workspace_total_bytes(49, DEFAULT_COLUMN_CHUNK)))
+    return max(0, CAL_D01_POOL_HELD_BYTES - meta_free_basis)
+
+
+def _workspace_total_bytes(nz: int, column_chunk: int,
+                           p_top: float = 10000.0) -> int:
+    return sum(math.prod(shape) * size for shape, size in
+               rrtmgp_workspace_shapes(nz, column_chunk, p_top).values())
+
+
+def estimate_experiment(
+        exp: ExperimentConfig, *,
+        column_chunk: int | None = None,
+        forcing_interval_seconds: float = DEFAULT_FORCING_INTERVAL_SECONDS,
+) -> ExperimentMemoryEstimate:
+    """Sum the per-domain itemizations; count the lru_cache-shared
+    k-distribution tables ONCE (rrtmgp.py:324/:436 -- baseline behavior,
+    never claimed as savings); replace audited scratch with its per-slot max
+    for multi-domain experiments; size the ONE explicitly allocated and
+    adapter-consumed shared chunk workspace; apply the 15% allocator-headroom
+    factor. The result is compared against the
+    MEASURED budget (free VRAM at startup minus the configured reserve --
+    never nominal 32 GiB)."""
+    column_chunk = (exp.column_chunk if column_chunk is None
+                    else column_chunk)
+    if (isinstance(column_chunk, bool)
+            or not isinstance(column_chunk, int)
+            or column_chunk < 1):
+        raise ValueError(
+            "column_chunk must be a positive integer number of radiation "
+            f"columns, got {column_chunk!r}.")
+    n_int = lbc_intervals(exp.run_seconds, forcing_interval_seconds)
+    by_id = {dc.grid_id: dc for dc in exp.domains}
+    domains = tuple(
+        estimate_domain(
+            dc, spec_bdy_width=exp.spec_bdy_width,
+            parent=(None if dc.parent_id == 0 else by_id[dc.parent_id]),
+            n_lbc_intervals=n_int, p_top=exp.vertical.p_top,
+            column_chunk=column_chunk)
+        for dc in exp.domains)
+    from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
+    variants_44 = {rrtmg_variant(dc.run) for dc in exp.domains
+                   if radiation_scheme_ids(dc.run) == (4, 4)}
+    if len(variants_44) > 1:
+        raise ValueError(
+            "mixed ra_rrtmg_variant values across 4/4 domains are not "
+            f"supported by the VRAM preflight: {sorted(variants_44)}")
+    uses_rrtmgp = bool(variants_44) and variants_44 != {RRTMG_VARIANT_LEGACY}
+    uses_legacy = variants_44 == {RRTMG_VARIANT_LEGACY}
+    legacy_envelope = 0
+    if uses_legacy:
+        # One shared call-peak term: the legacy engines run one domain
+        # at a time with LW/SW sequenced and freed in between, so the
+        # experiment-wide radiation transient is the max single-call
+        # envelope (engine-default chunking -- the adapter's
+        # column_chunk=None contract).
+        from gpuwm.core.rrtmg_legacy import legacy_radiation_vram_bytes
+        legacy_envelope = max(
+            legacy_radiation_vram_bytes(
+                ncol=dc.run.ny * dc.run.nx, nz=dc.run.nz,
+                p_top=exp.vertical.p_top, column_chunk=None)
+            for dc in exp.domains
+            if radiation_scheme_ids(dc.run) == (4, 4))
+    uses_arena = len(exp.domains) > 1
+    arena_shapes = (shared_scratch_arena_shapes(exp.domains)
+                    if uses_arena else {})
+    nz = exp.domains[0].run.nz
+    return ExperimentMemoryEstimate(
+        domains=domains,
+        k_tables_bytes=k_distribution_bytes() if uses_rrtmgp else 0,
+        workspace_bytes=(_workspace_total_bytes(
+            nz, column_chunk, exp.vertical.p_top)
+                          if uses_rrtmgp else legacy_envelope),
+        scratch_arena_bytes=(shared_scratch_arena_bytes(exp.domains)
+                             if uses_arena else 0),
+        uses_shared_scratch_arena=uses_arena,
+        dycore_state_workspace_bytes=(
+            shared_dycore_state_workspace_bytes(exp.domains)
+            if uses_arena else 0),
+        uses_shared_dycore_state_workspace=uses_arena,
+        column_chunk=column_chunk,
+        retention_residual_bytes=(pool_retention_residual_bytes()
+                                  if uses_rrtmgp else 0),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Reserve policy + gate evaluation (F11 chain, exact comparisons)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ReservePolicy:
+    """Configured reserve: what the MEASURED budget subtracts from free
+    VRAM.  Two proposals, split by gate, PENDING CONTROLLER RATIFICATION
+    at N0 (``--reserve-gib`` overrides with a flat value):
+
+    * :meth:`n0_alloc` -- the allocation-gate reserve: the probe-measured
+      fresh-process non-pool overhead (1.39 GiB) + external margin;
+      alloc-time pool retention was measured nil, so no retention term.
+    * :meth:`run_time` -- the N5/N6 run-gate reserve: adds the
+      fixture-calibrated run-churn retention residual.  The probe
+      overhead is a lower bound at run time (JIT module loads), which
+      the external margin partially covers -- flagged, not resolved.
+    """
+
+    retention_residual_bytes: int
+    device_overhead_bytes: int
+    external_margin_bytes: int = EXTERNAL_MARGIN_BYTES
+
+    @classmethod
+    def n0_alloc(cls, exp: ExperimentConfig | None = None, *,
+                 profile: DeviceLocalMemoryProfile | None = None,
+                 estimate_bytes: int | None = None) -> "ReservePolicy":
+        """Allocation-gate reserve.
+
+        With an experiment, ``device_overhead_bytes`` is the MEASURED
+        non-pool residency of a process running THAT configuration -- CUDA
+        context plus the local-memory backing store its widest launched
+        kernel reserves (:func:`non_pool_device_bytes`).  Without one it
+        falls back to the 2026-07-16 zero-step probe constant, which is the
+        number that was 5.5 GiB short of every real run.
+
+        With ``estimate_bytes``, the retention term carries
+        :data:`POOL_RESERVED_OVER_ESTIMATE_FRACTION` -- the measured gap
+        between what the pool hands out and what it holds onto.
+        """
+        overhead = (PROBE_DEVICE_OVERHEAD_BYTES if exp is None
+                    else non_pool_device_bytes(exp, profile=profile))
+        retention = (0 if estimate_bytes is None else math.ceil(
+            POOL_RESERVED_OVER_ESTIMATE_FRACTION * int(estimate_bytes)))
+        return cls(retention_residual_bytes=retention,
+                   device_overhead_bytes=overhead)
+
+    @classmethod
+    def run_time(cls, exp: ExperimentConfig | None = None, *,
+                 profile: DeviceLocalMemoryProfile | None = None
+                 ) -> "ReservePolicy":
+        overhead = (PROBE_DEVICE_OVERHEAD_BYTES if exp is None
+                    else non_pool_device_bytes(exp, profile=profile))
+        return cls(retention_residual_bytes=pool_retention_residual_bytes(),
+                   device_overhead_bytes=overhead)
+
+    @classmethod
+    def flat(cls, reserve_bytes: int) -> "ReservePolicy":
+        return cls(retention_residual_bytes=0, device_overhead_bytes=0,
+                   external_margin_bytes=int(reserve_bytes))
+
+    @property
+    def reserve_bytes(self) -> int:
+        return (self.retention_residual_bytes + self.device_overhead_bytes
+                + self.external_margin_bytes)
+
+    def budget_bytes(self, measured_free_bytes: int) -> int:
+        return int(measured_free_bytes) - self.reserve_bytes
+
+
+def evaluate_alloc_gates(*, measured_used_bytes: int | None,
+                         estimate_bytes: int,
+                         measured_free_bytes: int | None,
+                         reserve: ReservePolicy) -> dict[str, bool | None]:
+    """The F11 enforced chain, evaluated EXACTLY (no tolerance), keyed by
+    the pre-registered N0 ledger records (verify/nest_gates.py).  ``None``
+    marks a leg whose measurement is unavailable (estimator-only mode);
+    a missing measurement can never report a pass."""
+    budget = (None if measured_free_bytes is None
+              else reserve.budget_bytes(measured_free_bytes))
+    return {
+        "alloc_fits_wddm_budget": (
+            None if (measured_used_bytes is None or budget is None)
+            else measured_used_bytes <= budget),
+        "alloc_measured_le_estimate": (
+            None if measured_used_bytes is None
+            else measured_used_bytes <= estimate_bytes),
+        "alloc_estimate_le_wddm_budget": (
+            None if budget is None else estimate_bytes <= budget),
+    }
+
+
+def device_wide_used_bytes() -> int:
+    """Device memory held by EVERY process on the card, from NVML.
+
+    ``cudaMemGetInfo`` is not a substitute here.  On this WDDM host it
+    reported 1,614 MiB used at a moment NVML reported 3,903 MiB -- it does
+    not see the desktop compositor's allocations, so a budget built from its
+    ``free`` over-states the card by ~2.3 GiB.  Its DELTAS are exact (a
+    traced run's memGetInfo-derived process peak agreed with the NVML
+    device-wide series to 27 MiB), which is why the estimator uses it for
+    growth and NVML for the whole-machine rail.
+
+    Fails closed through ``supervisor.GPUPreflightError`` when nvidia-smi is
+    unavailable: a rail that cannot be measured must never read as headroom.
+    """
+    from gpuwm.supervisor import _run_nvidia_smi
+
+    text = _run_nvidia_smi(["--query-gpu=memory.used",
+                            "--format=csv,noheader,nounits"])
+    return int(text.strip().splitlines()[0]) * 1024 ** 2
+
+
+def device_rail_free_bytes(rail_bytes: int, *,
+                           other_process_bytes: int) -> int:
+    """Bytes this process may hold before the WHOLE CARD crosses the rail.
+
+    The rail is a property of the host, not of the model: this box has no
+    ECC and has already corrupted fine-domain output near capacity, so the
+    bar is on total device residency, and every other process on the card --
+    a 3.4 GiB desktop, here -- spends it.
+    """
+    return int(rail_bytes) - int(other_process_bytes)
+
+
+def recommend_column_chunk(exp: ExperimentConfig, budget_bytes: int, *,
+                           start_chunk: int | None = None,
+                           floor: int = 256) -> int | None:
+    """FIRST over-budget lever (robust-5 / architecture section E): the
+    largest halving of ``start_chunk`` (down to ``floor``) whose estimate
+    fits the budget, or None if none fits."""
+    chunk = int(exp.column_chunk if start_chunk is None else start_chunk)
+    while chunk >= floor:
+        estimate = estimate_experiment(exp, column_chunk=chunk)
+        if estimate.alloc_estimate_bytes <= budget_bytes:
+            return chunk
+        chunk //= 2
+    return None
+
+
+# ---------------------------------------------------------------------------
+# N0 --alloc runner (GPU; controller-run)
+# ---------------------------------------------------------------------------
+
+class PreflightHeadroomError(RuntimeError):
+    """Free VRAM is short of the remaining estimate BEFORE construction.
+
+    Carries structured fields so ``check_main`` can still emit the full
+    JSON report (estimate-side legs evaluated, abort reason recorded)
+    with an exit code distinct from a gate-leg FAIL.
+    """
+
+    def __init__(self, message: str, *, phase: str, free_bytes: int,
+                 total_bytes: int, reserve_bytes: int,
+                 remaining_bytes: int):
+        super().__init__(message)
+        self.phase = phase
+        self.free_bytes = int(free_bytes)
+        self.total_bytes = int(total_bytes)
+        self.reserve_bytes = int(reserve_bytes)
+        self.remaining_bytes = int(remaining_bytes)
+
+
+class PreflightAllocError(RuntimeError):
+    """Device allocation failed during --alloc; diagnostics attached."""
+
+    def __init__(self, message: str, *, phase: str,
+                 free_bytes: int | None = None):
+        super().__init__(message)
+        self.phase = phase
+        self.free_bytes = None if free_bytes is None else int(free_bytes)
+
+
+@dataclass
+class AllocReport:
+    """Measured N0 numbers + gate legs from one --alloc run."""
+
+    estimate: ExperimentMemoryEstimate
+    reserve: ReservePolicy
+    free_before_bytes: int
+    total_bytes: int
+    pool_used_peak_bytes: int
+    pool_held_peak_bytes: int
+    free_at_peak_bytes: int
+    free_after_release_bytes: int
+    gates: dict[str, bool | None]
+
+    @property
+    def device_footprint_bytes(self) -> int:
+        return self.free_before_bytes - self.free_at_peak_bytes
+
+    @property
+    def measured_overhead_bytes(self) -> int:
+        """Re-calibrated tier-3 term: measured footprint minus pool held."""
+        return self.device_footprint_bytes - self.pool_held_peak_bytes
+
+    @property
+    def passed(self) -> bool:
+        return all(leg is True for leg in self.gates.values())
+
+
+def _require_headroom(cp, remaining_bytes: int, reserve: ReservePolicy,
+                      phase: str) -> None:
+    """Robust-5: headroom check before state construction and before each
+    high-water phase.  Fails loudly BEFORE the allocation that would OOM."""
+    free, total = cp.cuda.runtime.memGetInfo()
+    if free - reserve.reserve_bytes < remaining_bytes:
+        raise PreflightHeadroomError(
+            f"headroom check failed before {phase}: free {free / GIB:.2f} "
+            f"GiB minus reserve {reserve.reserve_bytes / GIB:.2f} GiB is "
+            f"short of the remaining itemized need "
+            f"{remaining_bytes / GIB:.2f} GiB (device total "
+            f"{total / GIB:.2f} GiB)",
+            phase=phase, free_bytes=free, total_bytes=total,
+            reserve_bytes=reserve.reserve_bytes,
+            remaining_bytes=remaining_bytes)
+
+
+def _synthetic_root_boundaries(cfg: RunConfig, n_intervals: int):
+    """Zero-valued LateralBoundaries with the exact real74 table shapes,
+    so attach_lateral_boundaries performs the REAL eager device upload."""
+    import numpy as np
+    from gpuwm.ingest.lateral_bc import build_lateral_boundaries
+
+    snapshot = {name: np.zeros(dims, dtype=np.float64)
+                for name, dims in _lbc_field_dims(cfg).items()}
+    # mu snapshots are 2-D in domain_boundary_snapshot; (1, ny, nx) works
+    # identically through _field_boundary, but keep the exact contract.
+    snapshot["mu"] = np.zeros((cfg.ny, cfg.nx), dtype=np.float64)
+    times = [float(i) * DEFAULT_FORCING_INTERVAL_SECONDS
+             for i in range(n_intervals + 1)]
+    return build_lateral_boundaries(
+        [snapshot] * (n_intervals + 1), times,
+        spec_bdy_width=cfg.spec_bdy_width, spec_zone=cfg.spec_zone,
+        relax_zone=cfg.relax_zone)
+
+
+def _materialize_physics(state, cfg: RunConfig, start_time: datetime):
+    """initialize_physics + the steady-state extras the first steps would
+    allocate (composed rqr/rqi/rqs, Morrison accumulator optionals, KF W0AVG),
+    so the alloc proof covers the run's real persistent driver set."""
+    import cupy as cp
+    import numpy as np
+    from gpuwm.core.physics import (initialize_physics,
+                                    physics_retains_ysu_output,
+                                    physics_reuses_pbl_composition)
+    from gpuwm.core.state import DTYPE
+
+    ny, nx = cfg.ny, cfg.nx
+    grid = np.zeros((ny, nx), dtype=np.float64)
+    driver = initialize_physics(
+        state, cfg, landmask=1.0, tsk=290.0, soil_temperature=285.0,
+        soil_moisture=0.30, radiation_start_time=start_time,
+        radiation_latitude=grid, radiation_longitude=grid + 1.0)
+    m = state.p.shape
+    zero_m = lambda: cp.zeros(m, dtype=DTYPE)
+    zero_s = lambda: cp.zeros((ny, nx), dtype=DTYPE)
+    if cfg.cu_physics:
+        target = (driver.pbl_tendencies
+                  if physics_reuses_pbl_composition(cfg)
+                  else driver.tendencies)
+        for comp in ("rqr", "rqi", "rqs"):
+            if getattr(driver.cumulus_tendencies, comp) is None:
+                setattr(driver.cumulus_tendencies, comp, zero_m())
+            if getattr(target, comp) is None:
+                setattr(target, comp, zero_m())
+        adapter = driver.cumulus_callable
+        if adapter is not None and getattr(adapter, "w0avg", None) is None:
+            adapter.w0avg = zero_m()          # kf.py:174 shape contract
+            adapter._history_state = state
+    if cfg.bl_pbl_physics and cfg.mp_physics in (6, 8, 10, 18):
+        if driver.pbl_tendencies.rqi is None:
+            driver.pbl_tendencies.rqi = zero_m()
+        if ((radiation_enabled(cfg) or cfg.cu_physics)
+                and not physics_reuses_pbl_composition(cfg)):
+            if driver.tendencies.rqi is None:
+                driver.tendencies.rqi = zero_m()
+    if cfg.mp_physics in (6, 10):
+        # PhysicsDriver initialization already aliases and materializes all
+        # seven carrying mp_* scratch slots; only the behavior-gating counter
+        # changes after the first real scheme call.
+        driver.microphysics_updates = 1
+    if physics_retains_ysu_output(cfg):
+        # Materialize the positive-cadence retained YSU output set so the
+        # --alloc measurement covers true runtime residency, not just
+        # construction (review fix round): same shapes/dtypes as
+        # launch_ysu's out dict (ysu.py:79-92), zero-filled.
+        last_ysu = {name: zero_m() for name in
+                    ("du", "dv", "dtheta", "dqv", "dqc", "dqi",
+                     "exch_h", "exch_m")}
+        for name in ("hpbl", "wstar", "delta", "topdown_radsum",
+                     "wstar3_2"):
+            last_ysu[name] = zero_s()
+        for name in ("kpbl", "cloudflg"):
+            last_ysu[name] = cp.zeros((ny, nx), dtype=cp.int32)
+        driver.last_ysu = last_ysu
+    return driver
+
+
+def run_alloc_preflight(
+        exp: ExperimentConfig, *,
+        column_chunk: int | None = None,
+        forcing_interval_seconds: float = DEFAULT_FORCING_INTERVAL_SECONDS,
+        reserve: ReservePolicy | None = None) -> AllocReport:
+    """N0: construct all DomainStates + drivers + d01 LBC + the F4 nest
+    manifest allocations + the RRTMGP workspace on the real device, run
+    ZERO steps, report pool used/peak vs estimate, free.
+
+    OOM policy (robust-5): any device allocation failure records the
+    phase and pool/device diagnostics and TERMINATES the worker via
+    :class:`PreflightAllocError` -- never ``free_all_blocks()`` and
+    continue.
+    """
+    import cupy as cp
+
+    from gpuwm.core.state import (DTYPE, DomainState,
+                                  build_shared_dycore_state_workspace,
+                                  build_shared_scratch_arena)
+    from gpuwm.ingest.lateral_bc import attach_lateral_boundaries
+
+    reserve = ReservePolicy.n0_alloc() if reserve is None else reserve
+    estimate = estimate_experiment(
+        exp, column_chunk=column_chunk,
+        forcing_interval_seconds=forcing_interval_seconds)
+    column_chunk = estimate.column_chunk
+    n_int = lbc_intervals(exp.run_seconds, forcing_interval_seconds)
+
+    pool = cp.get_default_memory_pool()
+    free_before, total = cp.cuda.runtime.memGetInfo()
+    used_peak = pool.used_bytes()
+    held_peak = pool.total_bytes()
+    free_at_peak = free_before
+
+    def sample(phase: str) -> None:
+        nonlocal used_peak, held_peak, free_at_peak
+        cp.cuda.runtime.deviceSynchronize()
+        used_peak = max(used_peak, pool.used_bytes())
+        held_peak = max(held_peak, pool.total_bytes())
+        free_at_peak = min(free_at_peak, cp.cuda.runtime.memGetInfo()[0])
+
+    per_domain = {}
+    for d in estimate.domains:
+        resident = d.resident_bytes
+        if estimate.uses_shared_scratch_arena:
+            resident -= d.arena_scratch_bytes
+        if estimate.uses_shared_dycore_state_workspace:
+            resident -= d.rebuilt_state_bytes
+        per_domain[d.grid_id] = resident
+    remaining = (sum(per_domain.values()) + estimate.scratch_arena_bytes
+                 + estimate.dycore_state_workspace_bytes
+                 + estimate.workspace_bytes + estimate.k_tables_bytes)
+    holdings: list[object] = []
+    phase = "startup"
+    arena = None
+    dycore_state_workspace = None
+    try:
+        if estimate.uses_shared_dycore_state_workspace:
+            phase = "shared dycore-state workspace"
+            _require_headroom(cp, remaining, reserve, phase)
+            dycore_state_workspace = build_shared_dycore_state_workspace(
+                exp.domains)
+            if (dycore_state_workspace.nbytes
+                    != estimate.dycore_state_workspace_bytes):
+                raise RuntimeError(
+                    "runtime shared dycore-state workspace drifted from "
+                    f"the estimator: {dycore_state_workspace.nbytes} != "
+                    f"{estimate.dycore_state_workspace_bytes} bytes")
+            holdings.append(dycore_state_workspace)
+            sample(phase)
+            remaining -= estimate.dycore_state_workspace_bytes
+
+        if estimate.uses_shared_scratch_arena:
+            phase = "shared transient-scratch arena"
+            _require_headroom(cp, remaining, reserve, phase)
+            arena = build_shared_scratch_arena(exp.domains)
+            if arena.nbytes != estimate.scratch_arena_bytes:
+                raise RuntimeError(
+                    "runtime scratch arena drifted from the estimator: "
+                    f"{arena.nbytes} != {estimate.scratch_arena_bytes} bytes")
+            holdings.append(arena)
+            sample(phase)
+            remaining -= estimate.scratch_arena_bytes
+
+        states: dict[int, DomainState] = {}
+        by_id = {dc.grid_id: dc for dc in exp.domains}
+        for dc in exp.domains:
+            phase = f"domain d{dc.grid_id:02d} construction"
+            _require_headroom(cp, remaining, reserve, phase)
+            # Preserve the historical constructor call on the default/single-
+            # domain path; only a multi-domain experiment receives workspaces.
+            state_kwargs = {}
+            if arena is not None:
+                state_kwargs["scratch_arena"] = arena
+            if dycore_state_workspace is not None:
+                state_kwargs["dycore_state_workspace"] = (
+                    dycore_state_workspace)
+            state = DomainState(dc.run, **state_kwargs)
+            states[dc.grid_id] = state
+            # Prewarm every registry scratch slot (robust-5: persistent
+            # scratch prewarmed at setup).  The root's packed forcing
+            # tables come from the REAL attach below, not a prewarm.
+            registry = scratch_slot_registry(dc.run, n_lbc_intervals=0)
+            for slot, shape in registry.items():
+                state.scratch(shape, slot)
+            if dc.parent_id == 0 and dc.run.specified:
+                attach_lateral_boundaries(
+                    state, _synthetic_root_boundaries(dc.run, n_int))
+                # Davies weights are created on first force; prove their
+                # bytes now under the exact resident slot name.
+                state.scratch((2, dc.run.spec_bdy_width), "lbc_weights_0")
+            if dc.parent_id != 0:
+                shapes = nest_slot_shapes(
+                    dc, exp.spec_bdy_width, by_id[dc.parent_id])
+                dtypes = nest_slot_dtypes(
+                    dc, exp.spec_bdy_width, by_id[dc.parent_id])
+                for slot, shape in shapes.items():
+                    state.scratch(shape, slot, dtype=dtypes[slot])
+            from gpuwm.core.physics import physics_driver_required
+            if physics_driver_required(dc.run):
+                _materialize_physics(state, dc.run, exp.start_time)
+            sample(phase)
+            remaining -= per_domain[dc.grid_id]
+
+        phase = "rrtmgp k-tables + shared chunk workspace"
+        _require_headroom(cp, remaining, reserve, phase)
+        from gpuwm.physics_compat import (RRTMG_VARIANT_LEGACY,
+                                          rrtmg_variant)
+        legacy_44 = [dc for dc in exp.domains
+                     if radiation_scheme_ids(dc.run) == (4, 4)
+                     and rrtmg_variant(dc.run) == RRTMG_VARIANT_LEGACY]
+        if legacy_44:
+            # Legacy variant: hold the priced call-peak envelope (the
+            # estimate's shared term) so the residency proof covers the
+            # adapter's worst single call.
+            phase = "legacy-RRTMG call-peak envelope"
+            from gpuwm.core.rrtmg_legacy import legacy_radiation_vram_bytes
+            envelope = max(
+                legacy_radiation_vram_bytes(
+                    ncol=dc.run.ny * dc.run.nx, nz=dc.run.nz,
+                    p_top=exp.vertical.p_top, column_chunk=None)
+                for dc in legacy_44)
+            holdings.append(cp.zeros(envelope, dtype=cp.uint8))
+        if any(radiation_scheme_ids(dc.run) == (4, 4)
+               and rrtmg_variant(dc.run) != RRTMG_VARIANT_LEGACY
+               for dc in exp.domains):
+            from gpuwm.core.rrtmgp import load_cloud_tables, load_gas_tables
+            for kind in ("lw", "sw"):
+                holdings.append(load_gas_tables(kind).to_device())
+                holdings.append(load_cloud_tables(kind).to_device())
+            nz = exp.domains[0].run.nz
+            for name, (shape, size) in rrtmgp_workspace_shapes(
+                    nz, column_chunk, exp.vertical.p_top).items():
+                dtype = cp.bool_ if size == 1 else DTYPE
+                holdings.append(cp.zeros(shape, dtype=dtype))
+        if any(dc.run.cu_physics == 1 for dc in exp.domains):
+            # The once-per-process KF device LUT (kf.py _device_table):
+            # materialized so the residency proof covers it.
+            from gpuwm.core.kf import _device_table
+            holdings.append(_device_table())
+        sample(phase)
+
+        gates = evaluate_alloc_gates(
+            measured_used_bytes=used_peak,
+            estimate_bytes=estimate.alloc_estimate_bytes,
+            measured_free_bytes=free_before, reserve=reserve)
+    except cp.cuda.memory.OutOfMemoryError as exc:
+        free_now, _ = cp.cuda.runtime.memGetInfo()
+        raise PreflightAllocError(
+            f"--alloc OOM during {phase}: pool used "
+            f"{pool.used_bytes() / GIB:.2f} GiB, held "
+            f"{pool.total_bytes() / GIB:.2f} GiB, device free "
+            f"{free_now / GIB:.2f} GiB of {total / GIB:.2f} GiB; itemized "
+            f"estimate {estimate.alloc_estimate_bytes / GIB:.2f} GiB. "
+            "Terminating (never free_all_blocks-and-continue); first "
+            "lever: shrink the RRTMGP column_chunk.",
+            phase=phase, free_bytes=free_now,
+        ) from exc
+
+    # Zero steps by contract.  Free everything and report the release.
+    # The driver <-> state attachment is a reference cycle; collect it so
+    # the arrays actually return to the pool before free_all_blocks.
+    import gc
+    holdings.clear()
+    states.clear()
+    # Loop locals otherwise keep the final state (and through it the shared
+    # arena) alive past free_all_blocks().
+    state = None
+    arena = None
+    dycore_state_workspace = None
+    gc.collect()
+    pool.free_all_blocks()
+    cp.cuda.runtime.deviceSynchronize()
+    free_after, _ = cp.cuda.runtime.memGetInfo()
+    return AllocReport(
+        estimate=estimate, reserve=reserve,
+        free_before_bytes=int(free_before), total_bytes=int(total),
+        pool_used_peak_bytes=int(used_peak),
+        pool_held_peak_bytes=int(held_peak),
+        free_at_peak_bytes=int(free_at_peak),
+        free_after_release_bytes=int(free_after), gates=gates)
+
+
+# ---------------------------------------------------------------------------
+# CLI (`gpuwm check`) -- registrar only; cli.py hookup is a controller
+# handoff commit (F2 ownership map).
+# ---------------------------------------------------------------------------
+
+def _load_experiment_any(path: Path) -> ExperimentConfig:
+    import tomllib
+
+    from gpuwm.case_data import load_experiment_case
+    from gpuwm.config import load_config
+    from gpuwm.experiment import (build_experiment,
+                                  experiment_from_run_config,
+                                  is_experiment_toml)
+
+    if is_experiment_toml(path):
+        with open(path, "rb") as fh:
+            raw = tomllib.load(fh)
+        if "case_data" not in raw:
+            # `gpuwm domain --source gfs|hrrr` deliberately emits no
+            # [case_data]: those tables feed the native front door.  The
+            # memory preflight needs only the experiment geometry, so
+            # validate the advisory [fetch] hints and load the tables.
+            fetch_table = raw.pop("fetch", None)
+            if fetch_table is not None:
+                from gpuwm.fetch import validate_fetch_hints
+                validate_fetch_hints(fetch_table, source=str(path))
+            return build_experiment(raw, source=str(path))
+        exp, _case_data = load_experiment_case(path)
+        return exp
+    return experiment_from_run_config(load_config(path),
+                                      datetime(1970, 1, 1))
+
+
+def _format_bytes(n: int | None) -> str:
+    return "n/a" if n is None else f"{n / GIB:7.2f} GiB"
+
+
+def _leg_text(value: bool | None) -> str:
+    return {True: "PASS", False: "FAIL", None: "not measured"}[value]
+
+
+def check_main(args) -> int:
+    """``gpuwm check CONFIG [--alloc]``: memory section of the preflight.
+
+    Exit codes: 0 = every requested leg measured and PASSED; 1 = a leg
+    FAILED; 2 = fail-closed -- the requested legs could not be evaluated
+    (estimator mode with no budget, or an ``--alloc`` that produced no
+    measurements); 3 = the ``--alloc`` run ABORTED before measuring
+    (headroom precheck / OOM) -- the JSON/text report is still emitted
+    with the estimate-side legs and the abort reason.
+    """
+    exp = _load_experiment_any(args.config)
+    # Read the card BEFORE anything in this process touches CUDA, so the
+    # other-process residency the rail must respect is not inflated by our
+    # own context (which the reserve already carries).
+    rail_bytes = (None if args.rail_mib is None
+                  else int(args.rail_mib) * 1024 ** 2)
+    other_process_bytes = None if rail_bytes is None else (
+        device_wide_used_bytes())
+    chunk = (exp.column_chunk if args.column_chunk is None
+             else args.column_chunk)
+    # The retention term is a fraction OF the estimate, so the estimate is
+    # formed first.  It is pure arithmetic and the runners re-derive it from
+    # the same inputs, so there is no second source of truth.
+    reserve = ReservePolicy.n0_alloc(
+        exp, estimate_bytes=estimate_experiment(
+            exp, column_chunk=chunk,
+            forcing_interval_seconds=args.forcing_interval_s
+        ).alloc_estimate_bytes)
+    if args.reserve_gib is not None:
+        # Flat controller-ratified reserve replacing the proposed stack.
+        reserve = ReservePolicy.flat(int(args.reserve_gib * GIB))
+
+    report = None
+    abort = None
+    if args.alloc:
+        try:
+            report = run_alloc_preflight(
+                exp, column_chunk=chunk,
+                forcing_interval_seconds=args.forcing_interval_s,
+                reserve=reserve)
+        except (PreflightHeadroomError, PreflightAllocError) as exc:
+            abort = exc
+        if report is not None:
+            estimate = report.estimate
+            measured_used = report.pool_used_peak_bytes
+            free = report.free_before_bytes
+            gates = report.gates
+        else:
+            # Aborted before measurement: still report the estimate side
+            # (F1 fix) -- the measured legs stay None and can never pass.
+            estimate = estimate_experiment(
+                exp, column_chunk=chunk,
+                forcing_interval_seconds=args.forcing_interval_s)
+            measured_used = None
+            free = getattr(abort, "free_bytes", None)
+            gates = evaluate_alloc_gates(
+                measured_used_bytes=None,
+                estimate_bytes=estimate.alloc_estimate_bytes,
+                measured_free_bytes=free, reserve=reserve)
+    else:
+        estimate = estimate_experiment(
+            exp, column_chunk=chunk,
+            forcing_interval_seconds=args.forcing_interval_s)
+        measured_used = None
+        free = None
+        if args.budget_gib is not None:
+            # CPU-mode measured budget: caller supplies the measured free
+            # VRAM; the reserve still applies on top.
+            free = int(args.budget_gib * GIB) + reserve.reserve_bytes
+        else:
+            try:
+                import cupy as cp
+                free = int(cp.cuda.runtime.memGetInfo()[0])
+            except Exception:
+                free = None
+        gates = evaluate_alloc_gates(
+            measured_used_bytes=None,
+            estimate_bytes=estimate.alloc_estimate_bytes,
+            measured_free_bytes=free, reserve=reserve)
+
+    # The whole-machine rail, when one is configured, is an ADDITIONAL
+    # ceiling on top of measured free VRAM -- never a replacement and never a
+    # widening.  ``free`` becomes the smaller of what the driver will hand
+    # out and what the rail leaves after every other process on the card.
+    rail = None
+    if rail_bytes is not None:
+        rail_free = device_rail_free_bytes(
+            rail_bytes, other_process_bytes=other_process_bytes)
+        rail = {"rail_bytes": rail_bytes,
+                "other_process_bytes": other_process_bytes,
+                "rail_free_bytes": rail_free}
+        free = rail_free if free is None else min(int(free), rail_free)
+        gates = evaluate_alloc_gates(
+            measured_used_bytes=measured_used,
+            estimate_bytes=estimate.alloc_estimate_bytes,
+            measured_free_bytes=free, reserve=reserve)
+
+    budget = None if free is None else reserve.budget_bytes(free)
+    if args.json:
+        payload = {
+            "config": str(args.config), "experiment": exp.name,
+            "column_chunk": estimate.column_chunk,
+            "domains": {
+                f"d{d.grid_id:02d}": {
+                    "resident_bytes": d.resident_bytes,
+                    "arena_scratch_request_bytes": d.arena_scratch_bytes,
+                    "transient_bytes": d.transient_bytes,
+                    "by_category": {c: d.category_bytes(c) for c in
+                                    ("state", "physics", "scratch", "lbc",
+                                     "nest", "transient")},
+                } for d in estimate.domains},
+            "k_tables_bytes": estimate.k_tables_bytes,
+            "workspace_bytes": estimate.workspace_bytes,
+            "scratch_arena_bytes": estimate.scratch_arena_bytes,
+            "scratch_arena_request_bytes":
+                estimate.scratch_arena_request_bytes,
+            "scratch_arena_saved_bytes": estimate.scratch_arena_saved_bytes,
+            "uses_shared_scratch_arena":
+                estimate.uses_shared_scratch_arena,
+            "dycore_state_workspace_bytes":
+                estimate.dycore_state_workspace_bytes,
+            "dycore_state_request_bytes":
+                estimate.dycore_state_request_bytes,
+            "dycore_state_saved_bytes": estimate.dycore_state_saved_bytes,
+            "uses_shared_dycore_state_workspace":
+                estimate.uses_shared_dycore_state_workspace,
+            "resident_bytes": estimate.resident_bytes,
+            "transient_peak_bytes": estimate.transient_peak_bytes,
+            "subtotal_bytes": estimate.subtotal_bytes,
+            "alloc_estimate_bytes": estimate.alloc_estimate_bytes,
+            "held_projection_bytes": estimate.held_projection_bytes,
+            "footprint_projection_bytes":
+                estimate.footprint_projection_bytes,
+            "observed_peak_envelope_factor": OBSERVED_PEAK_OVER_FOOTPRINT,
+            "observed_peak_envelope_bytes": observed_peak_envelope_bytes(
+                estimate.footprint_projection_bytes),
+            "reserve_bytes": reserve.reserve_bytes,
+            "reserve_components": {
+                "retention_residual_bytes":
+                    reserve.retention_residual_bytes,
+                "device_overhead_bytes": reserve.device_overhead_bytes,
+                "external_margin_bytes": reserve.external_margin_bytes,
+            },
+            "run_time_reserve_bytes": ReservePolicy.run_time(
+                exp).reserve_bytes,
+            "pool_reserved_over_estimate_fraction":
+                POOL_RESERVED_OVER_ESTIMATE_FRACTION,
+            "cuda_context_bytes": CUDA_CONTEXT_BYTES,
+            "kernel_local_memory_bytes": kernel_local_memory_bytes(exp),
+            "kernel_modules": sorted(physics_kernel_modules(exp)),
+            "measured_free_bytes": free, "budget_bytes": budget,
+            "observed_peak_envelope_exceeds_budget": (
+                None if budget is None
+                else observed_peak_envelope_bytes(
+                    estimate.footprint_projection_bytes) > budget),
+            "gates": gates,
+        }
+        if rail is not None:
+            payload["device_rail"] = rail
+        if abort is not None:
+            payload["abort"] = {
+                "error": type(abort).__name__,
+                "phase": abort.phase,
+                "reason": str(abort),
+                "free_bytes": getattr(abort, "free_bytes", None),
+            }
+        if report is not None:
+            payload["alloc"] = {
+                "pool_used_peak_bytes": report.pool_used_peak_bytes,
+                "pool_held_peak_bytes": report.pool_held_peak_bytes,
+                "device_footprint_bytes": report.device_footprint_bytes,
+                "measured_overhead_bytes": report.measured_overhead_bytes,
+                "free_after_release_bytes":
+                    report.free_after_release_bytes,
+            }
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"gpuwm check: memory preflight for {exp.name!r} "
+              f"({len(exp.domains)} domain(s); column_chunk "
+              f"{estimate.column_chunk})")
+        for d in estimate.domains:
+            cats = ", ".join(
+                f"{c} {d.category_bytes(c) / GIB:.3f}"
+                for c in ("state", "physics", "scratch", "lbc", "nest")
+                if d.category_bytes(c))
+            print(f"  d{d.grid_id:02d}: resident "
+                  f"{d.resident_bytes / GIB:6.2f} GiB ({cats}); step "
+                  f"transients {d.transient_bytes / GIB:.2f} GiB")
+        print(f"  shared: k-tables {estimate.k_tables_bytes / GIB:.3f} GiB; "
+              f"chunk workspace {estimate.workspace_bytes / GIB:.2f} GiB; "
+              f"scratch arena {estimate.scratch_arena_bytes / GIB:.2f} GiB "
+              f"(saves {estimate.scratch_arena_saved_bytes / GIB:.2f} GiB); "
+              f"dycore state {estimate.dycore_state_workspace_bytes / GIB:.2f} "
+              f"GiB (saves {estimate.dycore_state_saved_bytes / GIB:.2f} GiB)")
+        print(f"  TIER 1  resident: {_format_bytes(estimate.resident_bytes)}"
+              f"   subtotal (+workspace+transient peak): "
+              f"{_format_bytes(estimate.subtotal_bytes)}")
+        print(f"  ESTIMATE (x{estimate.headroom:.2f} headroom): "
+              f"{_format_bytes(estimate.alloc_estimate_bytes)}")
+        print(f"  TIER 2  pool-held projection: "
+              f"{_format_bytes(estimate.held_projection_bytes)}"
+              f"   TIER 3 device-footprint projection: "
+              f"{_format_bytes(estimate.footprint_projection_bytes)}")
+        widest = kernel_local_memory_bytes(exp)
+        print(f"  NON-POOL: CUDA context "
+              f"{_format_bytes(CUDA_CONTEXT_BYTES)} + local-memory backing "
+              f"store {_format_bytes(widest)} "
+              f"({len(physics_kernel_modules(exp))} kernel modules selected)"
+              f"; RE-MEASURED device-footprint projection "
+              f"{_format_bytes(estimate.alloc_estimate_bytes + widest
+                               + CUDA_CONTEXT_BYTES
+                               + reserve.retention_residual_bytes)}"
+              " (the TIER 3 line above is the retired zero-step probe model)")
+        envelope = observed_peak_envelope_bytes(
+            estimate.footprint_projection_bytes)
+        print(f"  OBSERVED PEAK ENVELOPE "
+              f"(x{OBSERVED_PEAK_OVER_FOOTPRINT:.2f} footprint): "
+              f"{_format_bytes(envelope)} -- the one machine-peak-"
+              f"instrumented run (Thompson rematch 2026-07-28) peaked at "
+              f"1.746x its footprint projection machine-wide (CuPy pool "
+              f"retention + write transients the projection does not "
+              f"model), so expect true peak VRAM near this envelope, "
+              f"not the projection.")
+        print(f"  reserve {reserve.reserve_bytes / GIB:.2f} GiB "
+              f"(retention {reserve.retention_residual_bytes / GIB:.2f} + "
+              f"overhead {reserve.device_overhead_bytes / GIB:.2f} + "
+              f"external {reserve.external_margin_bytes / GIB:.2f}); "
+              f"measured free {_format_bytes(free)}; budget "
+              f"{_format_bytes(budget)}")
+        if rail is not None:
+            print(f"  DEVICE RAIL {_format_bytes(rail['rail_bytes'])} "
+                  f"whole-machine; other processes hold "
+                  f"{_format_bytes(rail['other_process_bytes'])}, leaving "
+                  f"{_format_bytes(rail['rail_free_bytes'])} for this run")
+        if report is not None:
+            print(f"  --alloc measured: pool used peak "
+                  f"{_format_bytes(report.pool_used_peak_bytes)}; held "
+                  f"{_format_bytes(report.pool_held_peak_bytes)}; device "
+                  f"footprint {_format_bytes(report.device_footprint_bytes)}"
+                  f" (non-pool overhead re-calibration "
+                  f"{_format_bytes(report.measured_overhead_bytes)}); free "
+                  f"after release "
+                  f"{_format_bytes(report.free_after_release_bytes)}")
+        if abort is not None:
+            print(f"  ABORTED before measurement ({type(abort).__name__} "
+                  f"during {abort.phase}): {abort}")
+        for metric in N0_GATE_METRICS:
+            print(f"  {metric}: {_leg_text(gates[metric])}")
+        if budget is not None and envelope > budget:
+            print(f"  WARNING: observed peak envelope "
+                  f"{_format_bytes(envelope)} exceeds the WDDM budget "
+                  f"{_format_bytes(budget)} by "
+                  f"{_format_bytes(envelope - budget)}.  The gates above "
+                  f"compare the itemized estimate; the rematch receipts "
+                  f"show the true machine peak lands near the envelope, "
+                  f"so this configuration may run out of budget even "
+                  f"though the estimate gate passes -- trim the "
+                  f"configuration or free VRAM before trusting the pass.")
+        if budget is not None and estimate.alloc_estimate_bytes > budget:
+            lever = recommend_column_chunk(exp, budget)
+            print("  OVER BUDGET; first lever (RRTMGP column_chunk): "
+                  + (f"--column-chunk {lever}" if lever else
+                     "no chunk halving fits after shared-scratch arena -- "
+                     "staged residency (DESIGN REOPEN) per section E"))
+    if abort is not None:
+        return 3
+    if args.alloc:
+        # A requested measurement run fails CLOSED: every leg must have
+        # been measured AND passed (shadow F5 / Fable F6).
+        return 0 if all(leg is True for leg in gates.values()) else 1
+    evaluable = [leg for leg in gates.values() if leg is not None]
+    if not evaluable:
+        return 2  # nothing verifiable: fail closed at the command boundary
+    return 0 if all(evaluable) else 1
+
+
+def register_cli(subparsers) -> None:
+    """Register ``gpuwm check`` (memory section + ``--alloc``).  Per the F2
+    ownership map the one-line ``cli.py`` hookup is a controller handoff
+    commit at merge; Task 3's input-catalog section joins the same
+    subcommand at its own handoff."""
+    p = subparsers.add_parser(
+        "check",
+        help="memory preflight: itemized estimate vs the measured WDDM "
+             "budget; --alloc performs the enforced N0 allocation run")
+    p.add_argument("config", type=Path, metavar="CONFIG",
+                   help="experiment TOML (or legacy RunConfig TOML, "
+                        "wrapped as a one-domain experiment)")
+    p.add_argument("--alloc", action="store_true",
+                   help="construct every persistent allocation on the "
+                        "device, zero steps, report measured vs estimate "
+                        "(N0; GPU required)")
+    p.add_argument("--column-chunk", type=int, default=None,
+                   metavar="COLS", help="RRTMGP chunk override (the first "
+                   "over-budget lever)")
+    p.add_argument("--reserve-gib", type=float, default=None, metavar="GIB",
+                   help="override the calibrated reserve policy with a "
+                        "flat reserve")
+    p.add_argument("--budget-gib", type=float, default=None, metavar="GIB",
+                   help="CPU-mode measured budget (free VRAM minus "
+                        "reserve) for the estimate<=budget leg")
+    p.add_argument("--rail-mib", type=int, default=None, metavar="MIB",
+                   help="whole-machine device residency ceiling: the budget "
+                        "is additionally capped at RAIL minus what every "
+                        "other process on the card already holds (read from "
+                        "NVML before this process touches CUDA).  A property "
+                        "of the host, so there is no default")
+    p.add_argument("--forcing-interval-s", type=float,
+                   default=DEFAULT_FORCING_INTERVAL_SECONDS, metavar="S",
+                   help="forcing cadence sizing the root's eager LBC "
+                        "tables (default ERA5 6-hourly)")
+    p.add_argument("--json", action="store_true",
+                   help="machine-readable report")
+    p.set_defaults(func=check_main)
+
+
+__all__ = [
+    "CORE_KERNEL_MODULES", "CUDA_CONTEXT_BYTES", "DeviceLocalMemoryProfile",
+    "POOL_RESERVED_OVER_ESTIMATE_FRACTION",
+    "KERNEL_MAX_LOCAL_SIZE_BYTES", "MEASURED_LOCAL_MEMORY_PROFILE",
+    "CHAINED_TRANSLATION_UNIT_FRAMES", "ChainedTranslationUnitFrame",
+    "UNMEASURED_KERNEL_MODULES", "local_memory_profile_from_device",
+    "device_rail_free_bytes", "device_wide_used_bytes",
+    "kernel_local_memory_bytes", "non_pool_device_bytes",
+    "physics_kernel_modules", "refl_diagnostic_reachable",
+    "LEVEL_SPECIALIZED_KERNEL_FRAMES", "LevelSpecializedFrame",
+    "domain_kernel_modules", "kernel_local_frame_bytes",
+    "ALLOCATOR_HEADROOM", "AllocReport", "CAL_D01_DEVICE_FOOTPRINT_BYTES",
+    "CAL_D01_POOL_HELD_BYTES", "CAL_D01_POOL_RETENTION_BYTES",
+    "CAL_D01_POOL_USED_PEAK_BYTES", "CAL_WDDM_FREE_BYTES",
+    "CAL_WDDM_TOTAL_BYTES", "DEFAULT_COLUMN_CHUNK",
+    "DEFAULT_FORCING_INTERVAL_SECONDS", "CAL_FIXTURE_OVERHEAD_BYTES",
+    "DomainMemoryEstimate", "EXTERNAL_MARGIN_BYTES",
+    "ExperimentMemoryEstimate", "GIB", "MemoryItem", "N0_GATE_METRICS",
+    "PROBE_DEVICE_FOOTPRINT_BYTES", "PROBE_DEVICE_OVERHEAD_BYTES",
+    "PROBE_FREE_BYTES", "PROBE_POOL_HELD_BYTES",
+    "PROBE_POOL_USED_PEAK_BYTES",
+    "PHYSICS_ARRAY_LIFETIME_AUDIT", "PhysicsArrayLifetime",
+    "PreflightAllocError", "PreflightHeadroomError", "ReservePolicy",
+    "SCRATCH_SLOT_LIFETIME_AUDIT", "ScratchSlotLifetime",
+    "atmosphere_transient_shapes", "check_main", "dudhia_column_shapes",
+    "estimate_domain", "estimate_experiment", "evaluate_alloc_gates",
+    "k_distribution_bytes", "lbc_interval_values", "lbc_intervals",
+    "nest_allocation_manifest", "nest_field_kinds", "nest_slot_dtypes",
+    "nest_slot_shapes",
+    "physics_array_lifetime", "physics_array_shapes",
+    "physics_field_names_2d",
+    "pool_retention_residual_bytes", "recommend_column_chunk",
+    "register_cli", "rrtmgp_column_shapes", "rrtmgp_workspace_phases",
+    "rrtmgp_workspace_shapes",
+    "run_alloc_preflight", "scratch_slot_lifetime",
+    "scratch_slot_registry", "scratch_slot_uses_arena",
+    "shared_dycore_state_symbols", "shared_dycore_state_workspace_bytes",
+    "shared_dycore_state_workspace_shapes",
+    "shared_scratch_arena_aliases", "shared_scratch_arena_bytes",
+    "shared_scratch_arena_shapes", "state_array_shapes",
+    "ysu_output_transient_shapes",
+]

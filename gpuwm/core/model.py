@@ -1,0 +1,737 @@
+"""Domain-tree construction and the Phase-5 flat-schedule executor."""
+
+from __future__ import annotations
+
+from collections.abc import Iterator, Mapping
+from contextlib import nullcontext
+import dataclasses
+from dataclasses import dataclass, field
+from datetime import datetime
+import hashlib
+import json
+import math
+import numpy as np
+from pathlib import Path
+from types import MappingProxyType
+from typing import Literal, Protocol, runtime_checkable
+
+from gpuwm.core.clock import DomainClock, Schedule
+from gpuwm.config import radiation_scheme_ids
+from gpuwm.core.state import DomainState
+from gpuwm.experiment import DomainConfig
+from gpuwm.static.lambert import LambertGrid
+
+
+RestartPhase = Literal["PERIOD_BEGIN"]
+PERIOD_BEGIN: RestartPhase = "PERIOD_BEGIN"
+"""The only legal multi-domain checkpoint phase.
+
+Task 14 serializes this marker explicitly; it is never inferred from elapsed
+time.  Restore invalidates child boundary tables, and the ordinary parent STEP
+then FORCE must rebuild them before any child STEP.
+"""
+
+
+@dataclass
+class FeedbackScratch:
+    """Placeholder for child-owned restricted feedback data.
+
+    Phase 5 allocates no feedback payload because ``feedback=0`` is enforced
+    at experiment load.  Phase 5b replaces ``payload`` with the typed scratch
+    views produced by ``feedback_prepare`` without changing the structural
+    coupler protocol or schedule table.
+    """
+
+    payload: object | None = None
+
+
+@runtime_checkable
+class NestCoupler(Protocol):
+    """Node-facing parent/child coupling surface.
+
+    Concrete couplers satisfy this protocol structurally; they do not need to
+    import or inherit it.  The parent-read-only rule applies to ``force``
+    ONLY.  Phase 5b's feedback transaction makes its parent-mutation boundary
+    explicit; all three feedback phases remain dormant while Phase 5 enforces
+    one-way coupling at experiment load.
+
+    WRF initialization is part of that activation contract, not an optional
+    post-hoc sweep: ``med_nest_initial`` saves ``parent%ht_coarse`` and calls
+    ``med_nest_feedback`` (share/mediation_integrate.F:774-777); when
+    ``feedback != 0`` the mediation layer mutates the parent
+    (:1035-1037), after which initialization re-runs ``start_domain`` on the
+    parent (:787-838).  A Phase-5b builder must reproduce that ordered
+    initialization transaction.  A bottom-up feedback sweep after all
+    domains have been initialized is not equivalent.
+    """
+
+    def force(self, node: DomainNode) -> None:
+        """Read the parent without mutation and refresh/mutate the child."""
+        ...
+
+    def feedback_prepare(self, node: DomainNode,
+                         out: FeedbackScratch) -> None:
+        """Read the child only and write restricted data into scratch."""
+        ...
+
+    def feedback_commit(self, node: DomainNode) -> None:
+        """PARENT MUTATED: masked merge plus ``ht_coarse`` bookkeeping."""
+        ...
+
+    def feedback_finalize(self, node: DomainNode) -> None:
+        """PARENT MUTATED: restore parent halo/diagnostic validity."""
+        ...
+
+
+@dataclass
+class DomainNode:
+    """One configured domain and its parent-first tree links."""
+
+    cfg: DomainConfig
+    grid: LambertGrid
+    state: DomainState
+    clock: DomainClock
+    parent: DomainNode | None
+    children: list[DomainNode]
+    coupler: NestCoupler | None
+
+    def __post_init__(self) -> None:
+        cfg_id = self.cfg.grid_id
+        if self.cfg.run.grid_id != cfg_id:
+            raise ValueError(
+                f"DomainNode grid_id mismatch: cfg.grid_id={cfg_id}, "
+                f"cfg.run.grid_id={self.cfg.run.grid_id}")
+        if self.clock.spec.grid_id != cfg_id:
+            raise ValueError(
+                f"DomainNode grid_id mismatch: cfg.grid_id={cfg_id}, "
+                f"clock.spec.grid_id={self.clock.spec.grid_id}")
+
+        if self.cfg.parent_id == 0:
+            if self.parent is not None:
+                raise ValueError(
+                    f"root DomainNode grid_id={cfg_id} must have parent=None")
+            if self.coupler is not None:
+                raise ValueError(
+                    f"root DomainNode grid_id={cfg_id} must have coupler=None")
+            return
+
+        if self.parent is None:
+            raise ValueError(
+                f"child DomainNode grid_id={cfg_id} must receive its "
+                "already-constructed parent (parent-before-child)")
+        if self.parent.cfg.grid_id != self.cfg.parent_id:
+            raise ValueError(
+                f"DomainNode parent_id mismatch for grid_id={cfg_id}: "
+                f"cfg.parent_id={self.cfg.parent_id}, "
+                f"parent.cfg.grid_id={self.parent.cfg.grid_id}")
+
+
+@dataclass
+class ExperimentState:
+    """Loop-free container populated by the full Task-14 builder.
+
+    The future executor may checkpoint this tree only at ``PERIOD_BEGIN``
+    with equal domain ticks, no pending FORCE/FEEDBACK/D2H/mutation, and all
+    prior feedback committed.  A restored tree starts with invalid child
+    boundary tables; eager rebuild from parent(t) is forbidden, and a child
+    STEP before the normal parent STEP + FORCE rebuild is an assertion error.
+    """
+
+    root: DomainNode
+    nodes_by_grid_id: Mapping[int, DomainNode]
+    schedule: Schedule
+    memory_ledger: object | None
+    experiment_fingerprint: str
+
+    def node(self, grid_id: int) -> DomainNode:
+        """Return one domain node by its configured grid identifier."""
+        return self.nodes_by_grid_id[grid_id]
+
+    def walk_parent_first(self) -> Iterator[DomainNode]:
+        """Walk the tree depth-first with every parent before its children."""
+        stack = [self.root]
+        while stack:
+            current = stack.pop()
+            yield current
+            stack.extend(reversed(current.children))
+
+
+@dataclass
+class SharedRRTMGPChunkWorkspace:
+    """One real byte allocation shared by all sequential RRTMGP adapters.
+
+    Each solver phase lays its audited live set over the same backing.  Common
+    optics entries keep identical offsets into the following RTE phase, while
+    dead mask storage is reused by sources/fluxes.  ``phase`` returns only the
+    active column prefix; kernels or explicit fills overwrite every returned
+    element before its first read (``RRTMGP_WORKSPACE_LIFETIME_AUDIT``).
+
+    The hidden injection fields keep this allocation CPU-testable with NumPy;
+    production passes neither and therefore performs exactly one CuPy byte
+    allocation of the preflight ledger's phase maximum.
+    """
+
+    nz: int
+    column_chunk: int
+    p_top: float = 10000.0
+    _array_module: object | None = field(
+        default=None, repr=False, compare=False)
+    _phase_layouts_input: object | None = field(
+        default=None, repr=False, compare=False)
+    _storage: object = field(init=False, repr=False, compare=False)
+    _phase_layouts: object = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self.nz < 1 or self.column_chunk < 1:
+            raise ValueError("RRTMGP workspace dimensions must be positive")
+        if not math.isfinite(self.p_top) or self.p_top < 0.0:
+            raise ValueError(
+                "RRTMGP workspace p_top must be finite and nonnegative")
+        xp = self._array_module
+        if xp is None:
+            import cupy as xp
+        layouts = self._phase_layouts_input
+        if layouts is None:
+            from gpuwm.core.preflight import rrtmgp_workspace_phases
+            layouts = rrtmgp_workspace_phases(
+                self.nz, self.column_chunk, self.p_top)
+        layouts = {str(phase): dict(items)
+                   for phase, items in dict(layouts).items()}
+        if not layouts:
+            raise ValueError("RRTMGP workspace has no solver phases")
+        totals = {}
+        for phase, items in layouts.items():
+            offset = 0
+            for name, (shape, itemsize) in items.items():
+                shape = tuple(int(extent) for extent in shape)
+                itemsize = int(itemsize)
+                if (not shape or shape[0] != self.column_chunk
+                        or any(extent < 1 for extent in shape)
+                        or itemsize not in (1, 4)):
+                    raise ValueError(
+                        f"invalid RRTMGP workspace slot {phase}/{name}: "
+                        f"{shape}, itemsize={itemsize}")
+                if offset % itemsize:
+                    raise ValueError(
+                        f"unaligned RRTMGP workspace slot {phase}/{name}")
+                offset = offset + math.prod(shape) * itemsize
+            totals[phase] = offset
+        storage = xp.empty((max(totals.values()),), dtype=xp.uint8)
+        self._storage = storage
+        self._phase_layouts = MappingProxyType(layouts)
+
+    @property
+    def nbytes(self) -> int:
+        return int(self._storage.nbytes)
+
+    @property
+    def storage(self):
+        """The single backing allocation (identity/debug inspection only)."""
+        return self._storage
+
+    def phase(self, name: str, ncol: int) -> Mapping[str, object]:
+        """Return active-prefix views for one audited solver live set."""
+        if ncol < 1 or ncol > self.column_chunk:
+            raise ValueError(
+                f"RRTMGP chunk columns {ncol} outside 1..{self.column_chunk}")
+        try:
+            layout = self._phase_layouts[name]
+        except KeyError as exc:
+            raise KeyError(f"unknown RRTMGP workspace phase {name!r}") from exc
+        views = {}
+        offset = 0
+        for slot, (raw_shape, itemsize) in layout.items():
+            shape = tuple(int(extent) for extent in raw_shape)
+            count = math.prod(shape)
+            size = count * int(itemsize)
+            dtype = np.bool_ if int(itemsize) == 1 else np.float32
+            full = self._storage[offset:offset + size].view(dtype).reshape(shape)
+            views[slot] = full[:ncol]
+            offset = offset + size
+        return MappingProxyType(views)
+
+
+@dataclass(frozen=True)
+class ModelMemoryLedger:
+    """Builder record tying the runtime arena/workspace to the estimator."""
+
+    estimate: object
+    shared_scratch_arena_bytes: int
+    shared_dycore_state_workspace_bytes: int
+    radiation_workspace: SharedRRTMGPChunkWorkspace | None
+
+
+@dataclass
+class ModelRuntimeStatus:
+    """Transaction state used by the tree checkpoint phase contract."""
+
+    schedule_cursor: str = PERIOD_BEGIN
+    pending_force: int = 0
+    pending_feedback: int = 0
+    pending_d2h: int = 0
+    mutation_in_progress: bool = False
+    prior_feedback_committed: bool = True
+
+
+def _jsonable(value):
+    if dataclasses.is_dataclass(value):
+        return _jsonable(dataclasses.asdict(value))
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, (datetime, Path)):
+        return value.isoformat() if isinstance(value, datetime) else str(value)
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+def experiment_fingerprint(exp, catalog) -> str:
+    """Hash immutable trajectory setup plus the InputCatalog inventory.
+
+    Forecast duration and output/restart cadence are deliberately excluded:
+    they can change on resume without changing any integration before or
+    after the checkpoint.  Domain geometry, timestep, physics, nesting,
+    forcing provenance, and every other experiment field remain bound.
+    """
+    experiment = _jsonable(exp)
+    for name in ("run_seconds", "restart_interval_s"):
+        experiment.pop(name, None)
+    for domain in experiment.get("domains", ()):
+        domain.pop("history_interval_s", None)
+        run = domain.get("run", {})
+        for name in ("run_seconds", "output_interval_s",
+                     "restart_interval_s"):
+            run.pop(name, None)
+    payload = {
+        "experiment": experiment,
+        "input_catalog": _jsonable(catalog.run_provenance),
+    }
+    # A mixed-scheme restart is trajectory-compatible only with the exact
+    # translator implementation, field map, and policy metadata.  Keep the
+    # legacy/same-scheme payload byte-inert, but bind every mixed directed
+    # edge to its complete executable identity.
+    from gpuwm.core.microphysics_transition import (
+        resolve_microphysics_transition,
+    )
+    by_id = {domain.grid_id: domain for domain in exp.domains}
+    mixed_edges = []
+    for domain in exp.domains:
+        if domain.parent_id == 0:
+            continue
+        contract = resolve_microphysics_transition(
+            by_id[domain.parent_id].run, domain.run)
+        if contract.mixed:
+            mixed_edges.append({
+                "source_domain": int(domain.parent_id),
+                "target_domain": int(domain.grid_id),
+                "contract": _jsonable(contract.receipt()),
+            })
+    if mixed_edges:
+        payload["mixed_microphysics_transitions"] = mixed_edges
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def uses_modern_rrtmgp_workspace(exp) -> bool:
+    """Whether the tree build must allocate the shared RRTMGP workspace.
+
+    Variant-aware, mirroring ``estimate_experiment``: the persistent
+    :class:`SharedRRTMGPChunkWorkspace` exists only for the modern
+    RTE+RRTMGP adapter.  The legacy-RRTMG variant runs one domain at a
+    time under its engine-default ``column_chunk=None`` contract with
+    LW/SW allocations sequenced and freed between calls, so its VRAM
+    price is the estimator's transient call-peak envelope
+    (``workspace_bytes`` under ``uses_legacy``), never a held workspace
+    -- constructing (and cross-checking) the modern workspace for it
+    both wastes the allocation and trips the memory-ledger drift guard.
+    Mixed 4/4 variants are already rejected by the estimator.
+    """
+    from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
+
+    variants_44 = {rrtmg_variant(dc.run) for dc in exp.domains
+                   if radiation_scheme_ids(dc.run) == (4, 4)}
+    return bool(variants_44) and variants_44 != {RRTMG_VARIANT_LEGACY}
+
+
+def _forcing_cadence_seconds(catalog) -> float:
+    """Resolve T9's LBC cadence from decoded InputCatalog records."""
+    records = tuple(catalog.lbc_records)
+    if not records:
+        raise ValueError("the forcing catalog has no LBC interval")
+    deltas = {float(record.delta_seconds) for record in records}
+    if len(deltas) != 1:
+        raise ValueError(
+            "the integer DomainClock requires one uniform forcing cadence; "
+            f"InputCatalog deltas are {sorted(deltas)}")
+    return deltas.pop()
+
+
+def build_experiment(exp, case_data) -> ExperimentState:
+    """Build the all-resident domain tree parent before child.
+
+    The real root follows the existing Task-2 preparation path.  Each child
+    then follows Task 12's WRF-order initialization and receives its own
+    physics driver and Task-13 coupler.  Every state is constructed against
+    the one shared transient arena before any scratch slot is materialized.
+    """
+    from gpuwm import runtime
+    from gpuwm.core.clock import build_schedule, resolve_clock
+    from gpuwm.core.preflight import estimate_experiment
+    from gpuwm.core.state import (build_shared_dycore_state_workspace,
+                                  build_shared_scratch_arena)
+    from gpuwm.ingest.lateral_bc import bind_lateral_boundary_clock
+    from gpuwm.ingest.nest_init import initialize_child
+    from gpuwm.ingest.preflight import build_input_catalog
+    from gpuwm.core.nest import NestCoupler as ConcreteNestCoupler
+
+    catalog = build_input_catalog(case_data)
+    snapshots = runtime.forcing_snapshots(case_data, catalog)
+    forcing_times = runtime.forcing_schedule(exp, case_data, snapshots)
+    lbc_interval_s = _forcing_cadence_seconds(catalog)
+    tick_clock = resolve_clock(exp, lbc_interval_s=lbc_interval_s)
+    schedule = build_schedule(exp, tick_clock)
+    clocks = tick_clock.clocks()
+    estimate = estimate_experiment(
+        exp, forcing_interval_seconds=lbc_interval_s)
+    dycore_state_workspace = (
+        build_shared_dycore_state_workspace(exp.domains)
+        if len(exp.domains) > 1 else None)
+    if (dycore_state_workspace is not None
+            and dycore_state_workspace.nbytes
+            != estimate.dycore_state_workspace_bytes):
+        raise RuntimeError(
+            "runtime shared dycore-state workspace drifted from the memory "
+            f"ledger: {dycore_state_workspace.nbytes} != "
+            f"{estimate.dycore_state_workspace_bytes} bytes")
+    arena = (build_shared_scratch_arena(exp.domains)
+             if len(exp.domains) > 1 else None)
+    if arena is not None and arena.nbytes != estimate.scratch_arena_bytes:
+        raise RuntimeError(
+            "runtime scratch arena drifted from the memory ledger: "
+            f"{arena.nbytes} != {estimate.scratch_arena_bytes} bytes")
+    # Variant-aware (F' contract): the shared chunk workspace is a modern
+    # RTE+RRTMGP object.  Under ra_rrtmg_variant='rrtmg_legacy' the
+    # estimator's workspace_bytes is the legacy transient call-peak
+    # envelope, not a persistent allocation, and the legacy adapter keeps
+    # its engine-default column_chunk=None contract -- so no workspace is
+    # built (and no chunking attributes are stamped onto the adapter).
+    radiation_workspace = (
+        SharedRRTMGPChunkWorkspace(
+            nz=exp.root.run.nz, column_chunk=exp.column_chunk,
+            p_top=exp.vertical.p_top)
+        if uses_modern_rrtmgp_workspace(exp) else None)
+    if (radiation_workspace is not None
+            and radiation_workspace.nbytes != estimate.workspace_bytes):
+        raise RuntimeError(
+            "runtime RRTMGP workspace drifted from the memory ledger: "
+            f"{radiation_workspace.nbytes} != {estimate.workspace_bytes} bytes")
+    ledger = ModelMemoryLedger(
+        estimate=estimate,
+        shared_scratch_arena_bytes=(0 if arena is None else arena.nbytes),
+        shared_dycore_state_workspace_bytes=(
+            0 if dycore_state_workspace is None
+            else dycore_state_workspace.nbytes),
+        radiation_workspace=radiation_workspace)
+
+    prepared_root = runtime.prepare_root_experiment_case(
+        exp, case_data, input_catalog=catalog,
+        forcing_by_time=snapshots, scratch_arena=arena,
+        dycore_state_workspace=dycore_state_workspace)
+    root_dc = exp.root
+    root = DomainNode(
+        cfg=root_dc, grid=prepared_root.grid,
+        state=prepared_root.initial_result.state,
+        clock=clocks[root_dc.grid_id], parent=None, children=[], coupler=None)
+    # Davies clock bind (seam closure 2026-07-28, retires the F20
+    # adjudication): the root's external Davies launches consume WRF's
+    # post-increment dtbc.  WRF resets dtbc on every boundary read
+    # (share/mediation_integrate.F:1515-1522) and adds one model step at
+    # solve entry BEFORE any relax/spec consumer (dyn_em/solve_em.F:
+    # 371-372); the executor's on_lbc_reset + prepare_step already runs
+    # that exact recurrence on the root DomainClock, so binding here --
+    # after attachment, before any solve or restart restoration -- makes
+    # every root boundary launch take dtbc_launch_fp32 (dt..T_bdy) in
+    # place of the retired one-step-lagged elapsed-based value (0..T-dt).
+    # The former frozen-Phase-4 anchor bytes encode the retired
+    # semantics; the N-series ratchets regenerate against the seam-
+    # closure anchor epoch (PROVENANCE.md "Root external-boundary dtbc").
+    bind_lateral_boundary_clock(root.state, root.clock)
+    nodes: dict[int, DomainNode] = {root_dc.grid_id: root}
+    prepared_by_id = {root_dc.grid_id: prepared_root}
+
+    root_radiation = root.state.physics.radiation_callable
+    if root_radiation is not None and radiation_workspace is not None:
+        root_radiation.column_chunk = radiation_workspace.column_chunk
+        root_radiation.chunk_workspace = radiation_workspace
+
+    for dc in exp.domains[1:]:
+        parent = nodes[dc.parent_id]
+        initialized = initialize_child(
+            dc, parent, catalog, exp.vertical,
+            source_orography=case_data.source_orography,
+            scratch_arena=arena,
+            dycore_state_workspace=dycore_state_workspace,
+            sfcp_to_sfcp=case_data.sfcp_to_sfcp)
+        prepared = runtime.prepare_child_case(
+            initialized, dc, exp=exp, data=case_data,
+            forcing_times=forcing_times,
+            radiation_workspace=radiation_workspace,
+            # Legacy-RRTMG ozone routing (WRF computes o33d on the root
+            # domain only; children receive parent-interpolated fields):
+            # the child's adapter takes the parent's radiation callable
+            # as its ozone provider.  Inert for every other variant.
+            radiation_parent=parent.state.physics.radiation_callable)
+        node = DomainNode(
+            cfg=dc, grid=initialized.grid, state=initialized.state,
+            clock=clocks[dc.grid_id], parent=parent,
+            children=[], coupler=None)
+        node.coupler = ConcreteNestCoupler(node)
+        parent.children.append(node)
+        # The marker is present both before and after FORCE.  It makes the
+        # restart setup fingerprint independent of rolling table contents.
+        node.state._nest_restart_classification = "REBUILT"
+        nodes[dc.grid_id] = node
+        prepared_by_id[dc.grid_id] = prepared
+
+    built = ExperimentState(
+        root=root, nodes_by_grid_id=MappingProxyType(nodes),
+        schedule=schedule, memory_ledger=ledger,
+        experiment_fingerprint=experiment_fingerprint(exp, catalog))
+    # Keep the wave-1 dataclass contract stable: Task-14 runtime machinery is
+    # attached as non-field infrastructure, so T12/T13 consumers remain inert.
+    built._scratch_arena = arena
+    built._dycore_state_workspace = dycore_state_workspace
+    built._prepared_by_grid_id = MappingProxyType(prepared_by_id)
+    built._input_catalog = catalog
+    built._runtime_status = ModelRuntimeStatus()
+    built._resumed = False
+    built._resume_committed_history_grid_ids = frozenset()
+    built._io_manager = None
+    built._last_checkpoint = None
+    return built
+
+
+def _trim_default_pool() -> None:
+    """Release UNUSED cached CuPy pool blocks back to the driver.
+
+    Live allocations are untouched, so this cannot change any computed
+    value (see execute_experiment's pool_trim_per_period).
+    """
+    import cupy as cp
+    cp.get_default_memory_pool().free_all_blocks()
+
+
+def execute_experiment(
+        model: ExperimentState, *, history_handler=None,
+        restart_handler=None, progress_callback=None,
+        validate_state: bool = True, health_debug: bool = False,
+        arena_nan_poison: bool = False,
+        skip_feedback_path: bool = False,
+        pool_trim_per_period: bool = True):
+    """Wire one :class:`ExperimentState` into ``execute_schedule``.
+
+    STEP calls the domain's existing dycore, FORCE calls its node-facing
+    coupler, and FEEDBACK walks the dormant three-phase transaction.  The
+    clock module remains the only op-table walker and therefore the only
+    source of runtime scheduling comparisons.
+
+    ``pool_trim_per_period`` releases the CuPy default pool's UNUSED
+    cached blocks at every period commit.  Measured on the 4-domain
+    real74 shape (2026-07-17 5-sim-min A/B): step-time churn re-inflates
+    the pool from ~21 to ~30 GiB held against ~20 GiB live, driving WDDM
+    page demotion; per-period trimming held the pool at 21.5-23.4 GiB,
+    kept the device below the demotion band, and cut wall time 32%.
+    Byte-inert by construction -- free_all_blocks releases only unused
+    cached blocks, never live allocations, so no computed value can
+    change; allocator behavior is not part of any ratified comparator.
+    Disable only for allocator forensics.
+    """
+    from gpuwm.core.clock import execute_schedule
+    from gpuwm.core.dycore import step
+    from gpuwm.core.state import refresh_model_time
+
+    status = model._runtime_status
+    feedback_scratch = {
+        node.cfg.grid_id: FeedbackScratch()
+        for node in model.walk_parent_first() if node.parent is not None}
+    arena = model._scratch_arena
+    dycore_state_workspace = model._dycore_state_workspace
+    io_manager = model._io_manager
+    restart_enabled = model.root.clock.spec.restart_ticks is not None
+
+    validators = {}
+    if validate_state:
+        from gpuwm.core.health import StateHealthValidator
+        validators = {node.cfg.grid_id: StateHealthValidator(node.state)
+                      for node in model.walk_parent_first()}
+        for validator in validators.values():
+            validator.require_healthy(phase="initialized-or-restored")
+
+    def poison() -> None:
+        if arena_nan_poison and arena is not None:
+            arena.poison()
+
+    def domain_turn(owner):
+        if dycore_state_workspace is None:
+            return nullcontext()
+        return dycore_state_workspace.acquire(owner)
+
+    def on_period_begin(period, clocks) -> None:
+        status.schedule_cursor = PERIOD_BEGIN
+        status.prior_feedback_committed = True
+
+    def on_step(grid_id, clock) -> None:
+        with domain_turn(("STEP", grid_id)):
+            node = model.node(grid_id)
+            if node.clock is not clock:
+                raise RuntimeError(
+                    "DomainNode clock identity drifted from executor")
+            if node.parent is not None:
+                if node.coupler is None or not bool(node.coupler.valid):
+                    raise AssertionError(
+                        f"child d{grid_id:02d} STEP attempted with INVALID "
+                        "nest tables; ordinary parent STEP -> FORCE is "
+                        "required")
+            if validators and health_debug:
+                validators[grid_id].require_healthy(
+                    phase=f"pre-step.d{grid_id:02d}")
+            status.schedule_cursor = "EXECUTING"
+            # Kernel-facing curr_secs mirrors WRF REAL; after the solve the
+            # public state clock is refreshed from exact integer ticks.
+            refresh_model_time(node.state, clock, kernel_launch=True)
+            step(node.state, node.cfg.run,
+                 # REFL_10CM is a one-frame producer/consumer handoff. A
+                 # headless forecast still advances history alarms in the
+                 # clock report, but has no output consumer, so it must not
+                 # stage a field that can never be consumed.
+                 refl_10cm_due=(
+                     history_handler is not None
+                     and clock.history_rings_within_step()))
+            refresh_model_time(node.state, clock, after_step=True)
+            poison()
+            if validators and health_debug:
+                validators[grid_id].require_healthy(
+                    phase=f"post-step.d{grid_id:02d}")
+            if pool_trim_per_period:
+                # Step-cadence trim: one root period holds up to 36 d04
+                # substeps of transients; trimming only at period commit let
+                # the pool refill past the WDDM ceiling on the 4-domain
+                # shape (measured 32.2 GiB peak, 50 s above 31.5 GiB in a
+                # 15-sim-min run). Same byte-inert release, per STEP op.
+                _trim_default_pool()
+
+    def on_force(child_id, parent_id, child_clock, parent_clock) -> None:
+        with domain_turn(("FORCE", child_id, parent_id)):
+            node = model.node(child_id)
+            if node.parent is None or node.parent.cfg.grid_id != parent_id:
+                raise RuntimeError(
+                    "schedule FORCE edge differs from domain tree")
+            status.pending_force = status.pending_force + 1
+            status.prior_feedback_committed = False
+            try:
+                node.coupler.force(node)
+                if validators and health_debug:
+                    validators[child_id].require_healthy(
+                        phase=(f"post-force.d{child_id:02d}"
+                               f"-from-d{parent_id:02d}"))
+            finally:
+                status.pending_force = status.pending_force - 1
+            poison()
+
+    def on_feedback_prepare(child_id, parent_id, child_clock,
+                            parent_clock) -> None:
+        node = model.node(child_id)
+        status.pending_feedback = status.pending_feedback + 1
+        node.coupler.feedback_prepare(node, feedback_scratch[child_id])
+
+    def on_feedback_commit(child_id, parent_id, child_clock,
+                           parent_clock) -> None:
+        node = model.node(child_id)
+        status.mutation_in_progress = True
+        try:
+            node.coupler.feedback_commit(node)
+        finally:
+            status.mutation_in_progress = False
+
+    def on_feedback_finalize(child_id, parent_id, child_clock,
+                             parent_clock) -> None:
+        node = model.node(child_id)
+        status.mutation_in_progress = True
+        try:
+            node.coupler.feedback_finalize(node)
+        finally:
+            status.mutation_in_progress = False
+            status.pending_feedback = status.pending_feedback - 1
+        poison()
+
+    def on_history(grid_id, ticks) -> None:
+        if history_handler is not None:
+            history_handler(model, model.node(grid_id), ticks)
+        if io_manager is not None:
+            status.pending_d2h = int(io_manager.pending)
+
+    def on_restart(ticks) -> None:
+        if io_manager is not None:
+            io_manager.drain()
+            status.pending_d2h = int(io_manager.pending)
+        if restart_handler is not None:
+            restart_handler(model, ticks)
+
+    def on_period_end(period, clocks) -> None:
+        status.schedule_cursor = PERIOD_BEGIN
+        status.prior_feedback_committed = status.pending_feedback == 0
+        root_clock = clocks[model.root.cfg.grid_id]
+        mandatory = (
+            root_clock.at_stop_time
+            or any(clock.history_due() for clock in clocks.values())
+            or (restart_enabled and root_clock.restart_due()))
+        if validators and (health_debug or mandatory
+                           or root_clock.step_count % 4 == 0):
+            for gid, validator in validators.items():
+                validator.require_healthy(
+                    phase=f"post-d01-sync.d{gid:02d}")
+
+    def on_period_commit(period, clocks) -> None:
+        root_clock = clocks[model.root.cfg.grid_id]
+        if pool_trim_per_period:
+            _trim_default_pool()
+        if progress_callback is not None:
+            progress_callback(
+                model_elapsed_seconds=root_clock.elapsed_seconds,
+                outer_step=root_clock.step_count,
+                last_durable_wrfout=(None if io_manager is None else
+                                     io_manager.last_durable_wrfout),
+                last_checkpoint=model._last_checkpoint,
+                phase="post-d01-sync", step_wall_seconds=0.0)
+
+    clocks = {node.cfg.grid_id: node.clock
+              for node in model.walk_parent_first()}
+    root_ticks = model.root.clock.ticks
+    if root_ticks % model.schedule.period_ticks != 0:
+        raise ValueError("model does not start at a PERIOD_BEGIN tick")
+    start_period = root_ticks // model.schedule.period_ticks
+    return execute_schedule(
+        model.schedule, on_step=on_step, on_force=on_force,
+        on_feedback_prepare=on_feedback_prepare,
+        on_feedback_commit=on_feedback_commit,
+        on_feedback_finalize=on_feedback_finalize,
+        on_history=on_history, on_restart=on_restart,
+        on_period_begin=on_period_begin, on_period_end=on_period_end,
+        on_period_commit=on_period_commit,
+        skip_feedback_path=skip_feedback_path, clocks=clocks,
+        start_period=start_period,
+        committed_initial_history_grid_ids=(
+            model._resume_committed_history_grid_ids
+            if bool(model._resumed) else ()))
+
+
+__all__ = [
+    "PERIOD_BEGIN", "RestartPhase", "DomainNode", "FeedbackScratch",
+    "NestCoupler", "ExperimentState", "ModelMemoryLedger",
+    "ModelRuntimeStatus", "SharedRRTMGPChunkWorkspace", "build_experiment",
+    "execute_experiment", "experiment_fingerprint",
+]

@@ -1,0 +1,10 @@
+[package]
+name = "wx-field"
+version = "0.3.6"
+edition = "2021"
+description = "Shared type foundation for the unified atmospheric engine — fields, projections, metadata"
+license = "MIT"
+authors = ["Fahrenheit Research"]
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }

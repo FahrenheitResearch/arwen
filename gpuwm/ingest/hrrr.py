@@ -1,0 +1,1032 @@
+"""Native HRRR window loading and Lambert-to-Lambert interpolation.
+
+The on-disk format is produced by ``hrrr_grib2_bridge``.  The loader binds
+the editable gate and every payload to an externally recorded SHA-256 of the
+``SHA256SUMS`` manifest before exposing arrays.  Horizontal interpolation is
+performed in HRRR projection coordinates.  Wind vectors are explicitly
+rotated from the source grid basis to earth-relative, interpolated, and then
+rotated into the target Lambert basis.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+import hashlib
+from pathlib import Path
+from types import MappingProxyType
+from typing import Mapping, MutableMapping
+
+import numpy as np
+
+from gpuwm.hrrr_forecast import validate_hrrr_source_forecast_hours
+from gpuwm.ingest.horiz import (
+    HorizontalSnapshot,
+    _cupy,
+    _wps_oned_gpu,
+    lambert_rotation,
+)
+from gpuwm.static.lambert import EARTH_RADIUS_M, LambertGrid
+
+
+HRRR_EARTH_RADIUS_M = 6_371_229.0
+HRRR_GRID_SPACING_M = 3_000.0
+HRRR_WPS_EQUIVALENT_DX_M = (
+    HRRR_GRID_SPACING_M * EARTH_RADIUS_M / HRRR_EARTH_RADIUS_M
+)
+HRRR_SOIL_DEPTHS_M = np.array(
+    [0.0, 0.01, 0.04, 0.10, 0.30, 0.60, 1.0, 1.6, 3.0],
+    dtype=np.float64,
+)
+HRRR_HYBRID_LEVELS = np.arange(1.0, 51.0, dtype=np.float64)
+
+_ATMOSPHERE_3D = (
+    "PRES", "QC", "QI", "QR", "QS", "QG", "HGT", "TT", "SPFH",
+    "U_MASS", "V_MASS",
+)
+_ATMOSPHERE_2D = (
+    "PSFC", "SOILHGT", "SKINTEMP", "SNOW", "SNOWH", "T2", "Q2",
+    "U10_MASS", "V10_MASS", "LANDSEA", "XICE",
+)
+_SOIL_3D = ("SOILT", "SOILW")
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _verify_manifest(root: Path, expected_manifest_sha256: str) -> None:
+    manifest = root / "SHA256SUMS"
+    expected = str(expected_manifest_sha256).lower()
+    if len(expected) != 64 or any(ch not in "0123456789abcdef" for ch in expected):
+        raise ValueError("expected_manifest_sha256 must be 64 lowercase/uppercase hex digits")
+    actual = _sha256(manifest)
+    if actual != expected:
+        raise ValueError(
+            f"HRRR SHA256SUMS hash mismatch: expected {expected}, got {actual}")
+    seen: set[Path] = set()
+    for line_number, raw in enumerate(manifest.read_text().splitlines(), 1):
+        if not raw:
+            continue
+        try:
+            digest, relative = raw.split(None, 1)
+        except ValueError as exc:
+            raise ValueError(
+                f"malformed SHA256SUMS line {line_number}") from exc
+        relative = relative.removeprefix("*").removeprefix("./")
+        candidate = Path(relative)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise ValueError(
+                f"unsafe SHA256SUMS path on line {line_number}: {relative!r}")
+        path = root / candidate
+        if candidate in seen:
+            raise ValueError(f"duplicate SHA256SUMS path {relative!r}")
+        seen.add(candidate)
+        # `find ... > SHA256SUMS` sees the just-opened zero-byte destination.
+        # Its self-entry cannot be recursively satisfied; the caller's
+        # externally recorded manifest hash already binds the actual file.
+        if candidate == Path("SHA256SUMS"):
+            continue
+        if not path.is_file():
+            raise FileNotFoundError(f"manifest payload is missing: {path}")
+        payload_hash = _sha256(path)
+        if payload_hash != digest.lower():
+            raise ValueError(
+                f"HRRR payload hash mismatch for {relative}: "
+                f"expected {digest.lower()}, got {payload_hash}")
+
+
+def _read_gate(root: Path) -> dict[str, str]:
+    gate_path = root / "gate.txt"
+    values: dict[str, str] = {}
+    for line_number, raw in enumerate(gate_path.read_text().splitlines(), 1):
+        try:
+            key, value = raw.split("\t", 1)
+        except ValueError as exc:
+            raise ValueError(f"malformed gate.txt line {line_number}") from exc
+        if key in values:
+            raise ValueError(f"duplicate gate.txt key {key!r}")
+        values[key] = value
+    required = {
+        "status": "PASS",
+        "atmosphere_selected_per_time": "561",
+        "hybrid_levels": "50",
+        "soil_selected_per_time": "18",
+        "window_shape": None,
+        "window_zero_based_inclusive": None,
+        "qice_mapping": None,
+        "cross_time_inventory": None,
+    }
+    missing = sorted(set(required) - set(values))
+    if missing:
+        raise ValueError(f"gate.txt is missing keys: {missing}")
+    for key, expected in required.items():
+        if expected is not None and values[key] != expected:
+            raise ValueError(
+                f"gate.txt {key} is {values[key]!r}, expected {expected!r}")
+    if not values["qice_mapping"].startswith(
+            "PASS discipline=0 category=1 parameter=82 level_type=105"):
+        raise ValueError("gate.txt does not bind current-HRRR CIMIXR/QICE")
+    if not values["cross_time_inventory"].startswith("PASS"):
+        raise ValueError("gate.txt cross-time inventory did not pass")
+    return values
+
+
+def _parse_window(gate: Mapping[str, str]) -> tuple[int, int, int, int]:
+    text = gate["window_zero_based_inclusive"]
+    try:
+        i_text, j_text = text.split()
+        i_start, i_end = map(int, i_text.removeprefix("i=").split(".."))
+        j_start, j_end = map(int, j_text.removeprefix("j=").split(".."))
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"invalid gate window {text!r}") from exc
+    if min(i_start, j_start) < 0 or i_end < i_start or j_end < j_start:
+        raise ValueError(f"invalid gate window {text!r}")
+    expected_shape = f"{j_end - j_start + 1}x{i_end - i_start + 1}"
+    if gate["window_shape"] != expected_shape:
+        raise ValueError(
+            f"gate window_shape {gate['window_shape']!r} != {expected_shape!r}")
+    return i_start, i_end, j_start, j_end
+
+
+def _map_f32(path: Path, shape: tuple[int, ...]) -> np.memmap:
+    expected_bytes = int(np.prod(shape, dtype=np.int64)) * 4
+    actual_bytes = path.stat().st_size
+    if actual_bytes != expected_bytes:
+        raise ValueError(
+            f"{path} has {actual_bytes} bytes; expected {expected_bytes} "
+            f"for shape {shape}")
+    return np.memmap(path, mode="r", dtype="<f4", shape=shape, order="C")
+
+
+@dataclass(frozen=True)
+class HrrrNativeSnapshot:
+    """One verified HRRR source window in native hybrid coordinates."""
+
+    valid_time: datetime
+    forecast_hour: int
+    i_start: int
+    j_start: int
+    ny: int
+    nx: int
+    fields: Mapping[str, np.ndarray]
+
+    def __post_init__(self) -> None:
+        if self.forecast_hour not in range(49):
+            raise ValueError("the native bridge supports source leads f00..f48")
+        object.__setattr__(self, "fields", MappingProxyType(dict(self.fields)))
+
+
+def _gate_forecast_hours(gate: Mapping[str, str]) -> tuple[int, ...]:
+    text = gate.get("forecast_hours")
+    if text is None:
+        # Backward-compatible read of the already sealed f00/f01 proof.
+        return (0, 1)
+    try:
+        hours = tuple(int(value) for value in text.split(","))
+    except ValueError as exc:
+        raise ValueError("gate.txt forecast_hours is invalid") from exc
+    try:
+        series_count = int(gate["series_count"])
+    except (KeyError, ValueError) as exc:
+        raise ValueError(
+            "gate.txt series_count is missing or invalid") from exc
+    if series_count != len(hours):
+        raise ValueError("gate.txt series_count differs from forecast_hours")
+    try:
+        cycle = datetime.strptime(gate["cycle"], "%Y-%m-%d %H:%M:%S")
+    except (KeyError, ValueError) as exc:
+        raise ValueError("gate.txt cycle is missing or invalid") from exc
+    try:
+        return validate_hrrr_source_forecast_hours(hours, cycle=cycle)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"gate.txt source forecast window is invalid: {exc}") from exc
+
+
+def load_hrrr_native_window(
+        root, forecast_hour: int, *,
+        expected_manifest_sha256: str) -> HrrrNativeSnapshot:
+    """Verify and memory-map one native bridge forecast-hour snapshot.
+
+    ``expected_manifest_sha256`` must come from evidence outside the bridge
+    directory.  Supplying it prevents an edited verdict or edited
+    ``SHA256SUMS`` file from becoming self-authenticating evidence.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        raise FileNotFoundError(f"HRRR bridge directory is missing: {root}")
+    _verify_manifest(root, expected_manifest_sha256)
+    gate = _read_gate(root)
+    return _load_verified_hrrr_native_window(root, gate, forecast_hour)
+
+
+def _load_verified_hrrr_native_window(
+        root: Path, gate: Mapping[str, str],
+        forecast_hour: int) -> HrrrNativeSnapshot:
+    available_hours = _gate_forecast_hours(gate)
+    i_start, i_end, j_start, j_end = _parse_window(gate)
+    try:
+        cycle = datetime.strptime(gate["cycle"], "%Y-%m-%d %H:%M:%S")
+    except (KeyError, ValueError) as exc:
+        raise ValueError("gate.txt cycle is missing or invalid") from exc
+    forecast_hour = int(forecast_hour)
+    if forecast_hour not in available_hours:
+        raise ValueError(
+            f"forecast_hour must be one of {available_hours}, got {forecast_hour}")
+    ny = j_end - j_start + 1
+    nx = i_end - i_start + 1
+    atmosphere_dir = root / f"atmosphere-f{forecast_hour:02d}"
+    soil_dir = root / f"soil-f{forecast_hour:02d}"
+    fields: dict[str, np.ndarray] = {}
+    for name in _ATMOSPHERE_3D:
+        fields[name] = _map_f32(
+            atmosphere_dir / f"{name}.f32le", (50, ny, nx))
+    for name in _ATMOSPHERE_2D:
+        fields[name] = _map_f32(
+            atmosphere_dir / f"{name}.f32le", (ny, nx))
+    for name in _SOIL_3D:
+        fields[name] = _map_f32(soil_dir / f"{name}.f32le", (9, ny, nx))
+    return HrrrNativeSnapshot(
+        valid_time=cycle + timedelta(hours=forecast_hour),
+        forecast_hour=forecast_hour,
+        i_start=i_start,
+        j_start=j_start,
+        ny=ny,
+        nx=nx,
+        fields=fields,
+    )
+
+
+def load_hrrr_native_series(
+        root, forecast_hours, *,
+        expected_manifest_sha256: str) -> tuple[HrrrNativeSnapshot, ...]:
+    """Verify one bridge publication once and map several forecast hours."""
+    root = Path(root)
+    if not root.is_dir():
+        raise FileNotFoundError(f"HRRR bridge directory is missing: {root}")
+    _verify_manifest(root, expected_manifest_sha256)
+    gate = _read_gate(root)
+    requested = tuple(int(hour) for hour in forecast_hours)
+    if not requested or len(set(requested)) != len(requested):
+        raise ValueError("forecast_hours must be a non-empty unique sequence")
+    return tuple(
+        _load_verified_hrrr_native_window(root, gate, hour)
+        for hour in requested
+    )
+
+
+def load_hrrr_pipeline_ready_window(
+        root, forecast_hour: int) -> HrrrNativeSnapshot:
+    """Map one hour after the live producer's atomic ready receipt.
+
+    This is deliberately not an evidence-loading API: the caller must own the
+    decoder process, consume its global inventory preflight receipt, and verify
+    the source hashes before accepting an hourly ready receipt.  The completed
+    bridge is still sealed and externally bound before it becomes reusable.
+    """
+    root = Path(root)
+    gate = _read_gate(root)
+    return _load_verified_hrrr_native_window(
+        root, gate, int(forecast_hour))
+
+
+def hrrr_source_grid() -> LambertGrid:
+    """Return the HRRR grid expressed in WPS's fixed-radius coordinates.
+
+    Scaling ``dx`` by ``R_WPS/R_HRRR`` makes WPS's 6,370-km projection
+    geometrically identical to GRIB shape-of-Earth 6 (6,371.229 km).
+    """
+    return LambertGrid(
+        ref_lat=21.138123,
+        ref_lon=-122.719528,
+        truelat1=38.5,
+        truelat2=38.5,
+        stand_lon=-97.5,
+        dx=HRRR_WPS_EQUIVALENT_DX_M,
+        dy=HRRR_WPS_EQUIVALENT_DX_M,
+        e_we=1800,
+        e_sn=1060,
+        known_x=1.0,
+        known_y=1.0,
+    )
+
+
+def _projected_index_geometry(snapshot: HrrrNativeSnapshot,
+                              target_lat, target_lon):
+    """Resolve exact zero-based HRRR-window interpolation coordinates."""
+
+    source_x, source_y = hrrr_source_grid().latlon_to_ij(
+        target_lat, target_lon)
+    # LambertGrid coordinates are one-based; bridge window origins are
+    # zero-based indices in the original south-to-north GRIB scan.
+    global_x = np.asarray(source_x, dtype=np.float64) - 1.0
+    global_y = np.asarray(source_y, dtype=np.float64) - 1.0
+    global_ix = np.floor(global_x).astype(np.int64)
+    global_iy = np.floor(global_y).astype(np.int64)
+    ix = global_ix - snapshot.i_start
+    iy = global_iy - snapshot.j_start
+    if (np.min(ix - 1) < 0 or np.max(ix + 2) >= snapshot.nx
+            or np.min(iy - 1) < 0 or np.max(iy + 2) >= snapshot.ny):
+        raise ValueError(
+            "HRRR bridge window lacks the four-point interpolation halo")
+    x = global_x - snapshot.i_start
+    y = global_y - snapshot.j_start
+    nearest_ix = (
+        np.floor(global_x + 0.5).astype(np.int64) - snapshot.i_start)
+    nearest_iy = (
+        np.floor(global_y + 0.5).astype(np.int64) - snapshot.j_start)
+    return x, y, ix, iy, nearest_ix, nearest_iy, global_ix, global_iy
+
+
+def _wps_oned_cpu(x, a, b, c, d):
+    """NumPy FP32 mirror of WPS ``oned`` with CUDA FTZ decisions."""
+
+    zero = np.float32(0.0)
+    half = np.float32(0.5)
+    one = np.float32(1.0)
+    regular = ((one - x)
+               * (b + x * (half * (c - a) + x * (half * (c + a) - b)))
+               + x * (c + (one - x)
+                      * (half * (b - d) + (one - x)
+                         * (half * (b + d) - c))))
+    out = np.zeros_like(regular)
+    out = np.where(x == zero, b, out)
+    out = np.where(x == one, c, out)
+    product = np.multiply(b, c, dtype=np.float32)
+    both = np.abs(product) >= np.float32(np.finfo(np.float32).tiny)
+    only_a = both & (a != zero) & (d == zero)
+    only_d = both & (a == zero) & (d != zero)
+    neither = both & (a == zero) & (d == zero)
+    all_four = both & (a != zero) & (d != zero)
+    out = np.where(neither, b * (one - x) + c * x, out)
+    out = np.where(
+        only_a, b + x * (half * (c - a) + x * (half * (c + a) - b)), out)
+    out = np.where(
+        only_d,
+        c + (one - x) * (half * (b - d)
+                          + (one - x) * (half * (b + d) - c)),
+        out,
+    )
+    return np.asarray(np.where(all_four, regular, out), dtype=np.float32)
+
+
+class _ProjectedGpuPlan:
+    """WPS overlapping-parabolic interpolation on projected source indices."""
+
+    def __init__(self, snapshot: HrrrNativeSnapshot, target_lat, target_lon):
+        cp = _cupy()
+        (x, y, ix, iy, nearest_ix, nearest_iy,
+         global_ix, global_iy) = _projected_index_geometry(
+             snapshot, target_lat, target_lon)
+        global_x = x + snapshot.i_start
+        global_y = y + snapshot.j_start
+        self.source_shape = (snapshot.ny, snapshot.nx)
+        self.target_shape = global_x.shape
+        self.x_host = x
+        self.y_host = y
+        self.ix = cp.asarray(ix, dtype=cp.int32)
+        self.iy = cp.asarray(iy, dtype=cp.int32)
+        # Split global coordinates into an exact integer donor and an FP32
+        # fractional weight.  This keeps stencil selection independent of the
+        # bridge crop and avoids a second FP32 floor near integer boundaries.
+        self.fx = cp.asarray(global_x - global_ix, dtype=cp.float32)
+        self.fy = cp.asarray(global_y - global_iy, dtype=cp.float32)
+        self.nearest_ix = cp.asarray(nearest_ix, dtype=cp.int32)
+        self.nearest_iy = cp.asarray(nearest_iy, dtype=cp.int32)
+
+    def apply(self, field, *, method="parabolic"):
+        cp = _cupy()
+        field = cp.asarray(field, dtype=cp.float32)
+        if field.ndim < 2 or field.shape[-2:] != self.source_shape:
+            raise ValueError("HRRR field trailing dimensions do not match window")
+        lead = (slice(None),) * (field.ndim - 2)
+        expand = (None,) * (field.ndim - 2)
+        ny, nx = self.source_shape
+        if method == "nearest":
+            return field[lead + (self.nearest_iy, self.nearest_ix)]
+        iy = self.iy
+        ix = self.ix
+        fy = self.fy[expand]
+        fx = self.fx[expand]
+        if method == "bilinear":
+            lower = ((cp.float32(1.0) - fx)
+                     * field[lead + (iy, ix)]
+                     + fx * field[lead + (iy, ix + 1)])
+            upper = ((cp.float32(1.0) - fx)
+                     * field[lead + (iy + 1, ix)]
+                     + fx * field[lead + (iy + 1, ix + 1)])
+            return ((cp.float32(1.0) - fy) * lower + fy * upper).astype(
+                cp.float32, copy=False)
+        if method != "parabolic":
+            raise ValueError(
+                "method must be 'nearest', 'bilinear', or 'parabolic'")
+        xindices = [cp.clip(ix + offset, 0, nx - 1)
+                    for offset in (-1, 0, 1, 2)]
+        yindices = [cp.clip(iy + offset, 0, ny - 1)
+                    for offset in (-1, 0, 1, 2)]
+        rows = []
+        tiny = cp.float32(1.0e-20)
+        zero = cp.float32(0.0)
+        for jy in yindices:
+            values = [cp.where(field[lead + (jy, jx)] == zero,
+                               tiny, field[lead + (jy, jx)])
+                      for jx in xindices]
+            rows.append(_wps_oned_gpu(fx, *values))
+        result = _wps_oned_gpu(fy, *rows)
+        return cp.where(result == tiny, zero, result).astype(
+            cp.float32, copy=False)
+
+    def masked_bilinear_stencil(
+            self, source_valid, target_apply, *, fallback_radius=8):
+        indices_y, indices_x, weights, report = (
+            _build_masked_bilinear_stencil(
+                self.x_host, self.y_host, source_valid, target_apply,
+                fallback_radius=fallback_radius))
+        return _GpuMaskedBilinearStencil(
+            self.source_shape, indices_y, indices_x, weights, report)
+
+
+class _ProjectedCpuPlan:
+    """Exact-donor NumPy WPS interpolation on projected source indices.
+
+    The Rust regular-grid ABI currently accepts only fractional coordinates.
+    Passing a local coordinate just below an integer through FP32 can advance
+    its donor after rounding.  HRRR therefore retains the FP64-selected donor
+    separately, exactly like the CUDA plan, while outer domain parallelism
+    supplies the CPU concurrency.
+    """
+
+    def __init__(self, snapshot: HrrrNativeSnapshot, target_lat, target_lon,
+                 backend):
+        (x, y, ix, iy, nearest_ix, nearest_iy,
+         global_ix, global_iy) = _projected_index_geometry(
+             snapshot, target_lat, target_lon)
+        global_x = x + snapshot.i_start
+        global_y = y + snapshot.j_start
+        self.source_shape = (snapshot.ny, snapshot.nx)
+        self.target_shape = tuple(map(int, x.shape))
+        self.x_host = x
+        self.y_host = y
+        self.ix = ix.astype(np.int32)
+        self.iy = iy.astype(np.int32)
+        self.fx = np.asarray(global_x - global_ix, dtype=np.float32)
+        self.fy = np.asarray(global_y - global_iy, dtype=np.float32)
+        self.nearest_ix = nearest_ix.astype(np.int32)
+        self.nearest_iy = nearest_iy.astype(np.int32)
+
+    def apply(self, field, *, method="parabolic"):
+        field = np.asarray(field, dtype=np.float32)
+        if field.ndim < 2 or field.shape[-2:] != self.source_shape:
+            raise ValueError("HRRR field trailing dimensions do not match window")
+        lead = (slice(None),) * (field.ndim - 2)
+        expand = (None,) * (field.ndim - 2)
+        if method == "nearest":
+            return field[lead + (self.nearest_iy, self.nearest_ix)]
+        iy = self.iy
+        ix = self.ix
+        fy = self.fy[expand]
+        fx = self.fx[expand]
+        if method == "bilinear":
+            lower = ((np.float32(1.0) - fx)
+                     * field[lead + (iy, ix)]
+                     + fx * field[lead + (iy, ix + 1)])
+            upper = ((np.float32(1.0) - fx)
+                     * field[lead + (iy + 1, ix)]
+                     + fx * field[lead + (iy + 1, ix + 1)])
+            return np.asarray(
+                (np.float32(1.0) - fy) * lower + fy * upper,
+                dtype=np.float32)
+        if method != "parabolic":
+            raise ValueError(
+                "method must be 'nearest', 'bilinear', or 'parabolic'")
+        ny, nx = self.source_shape
+        xindices = [np.clip(ix + offset, 0, nx - 1)
+                    for offset in (-1, 0, 1, 2)]
+        yindices = [np.clip(iy + offset, 0, ny - 1)
+                    for offset in (-1, 0, 1, 2)]
+        rows = []
+        tiny = np.float32(1.0e-20)
+        zero = np.float32(0.0)
+        for jy in yindices:
+            values = [np.where(field[lead + (jy, jx)] == zero,
+                               tiny, field[lead + (jy, jx)])
+                      for jx in xindices]
+            rows.append(_wps_oned_cpu(fx, *values))
+        result = _wps_oned_cpu(fy, *rows)
+        return np.asarray(np.where(result == tiny, zero, result),
+                          dtype=np.float32)
+
+    def masked_bilinear_stencil(
+            self, source_valid, target_apply, *, fallback_radius=8):
+        indices_y, indices_x, weights, report = (
+            _build_masked_bilinear_stencil(
+                self.x_host, self.y_host, source_valid, target_apply,
+                fallback_radius=fallback_radius))
+        return _CpuMaskedBilinearStencil(
+            self.source_shape, indices_y, indices_x, weights, report)
+
+
+@dataclass(frozen=True)
+class _GpuMaskedBilinearStencil:
+    """Four non-negative, unit-sum source weights per target point."""
+
+    source_shape: tuple[int, int]
+    indices_y: object
+    indices_x: object
+    weights: object
+    report: Mapping[str, object]
+
+    def __init__(self, source_shape, indices_y, indices_x, weights, report):
+        cp = _cupy()
+        object.__setattr__(self, "source_shape", tuple(source_shape))
+        object.__setattr__(self, "indices_y", cp.asarray(indices_y, dtype=cp.int32))
+        object.__setattr__(self, "indices_x", cp.asarray(indices_x, dtype=cp.int32))
+        object.__setattr__(self, "weights", cp.asarray(weights, dtype=cp.float32))
+        object.__setattr__(self, "report", MappingProxyType(dict(report)))
+
+    def apply(self, field):
+        cp = _cupy()
+        field = cp.asarray(field, dtype=cp.float32)
+        if field.ndim < 2 or field.shape[-2:] != self.source_shape:
+            raise ValueError("HRRR field trailing dimensions do not match window")
+        lead = (slice(None),) * (field.ndim - 2)
+        expand = (None,) * (field.ndim - 2)
+        result = None
+        for corner in range(4):
+            value = field[lead + (
+                self.indices_y[corner], self.indices_x[corner])]
+            term = value * self.weights[corner][expand]
+            result = term if result is None else result + term
+        return result.astype(cp.float32, copy=False)
+
+
+@dataclass(frozen=True)
+class _CpuMaskedBilinearStencil:
+    """Host equivalent of the convex four-donor surface stencil."""
+
+    source_shape: tuple[int, int]
+    indices_y: np.ndarray
+    indices_x: np.ndarray
+    weights: np.ndarray
+    report: Mapping[str, object]
+
+    def __init__(self, source_shape, indices_y, indices_x, weights, report):
+        object.__setattr__(self, "source_shape", tuple(source_shape))
+        object.__setattr__(
+            self, "indices_y", np.asarray(indices_y, dtype=np.int32))
+        object.__setattr__(
+            self, "indices_x", np.asarray(indices_x, dtype=np.int32))
+        object.__setattr__(
+            self, "weights", np.asarray(weights, dtype=np.float32))
+        object.__setattr__(self, "report", MappingProxyType(dict(report)))
+
+    def apply(self, field):
+        field = np.asarray(field, dtype=np.float32)
+        if field.ndim < 2 or field.shape[-2:] != self.source_shape:
+            raise ValueError("HRRR field trailing dimensions do not match window")
+        lead = (slice(None),) * (field.ndim - 2)
+        expand = (None,) * (field.ndim - 2)
+        result = None
+        for corner in range(4):
+            value = field[lead + (
+                self.indices_y[corner], self.indices_x[corner])]
+            term = value * self.weights[corner][expand]
+            result = term if result is None else result + term
+        return np.asarray(result, dtype=np.float32)
+
+
+def _build_masked_bilinear_stencil(
+        x, y, source_valid, target_apply, *, fallback_radius=8):
+    """Build a convex, surface-type-aware bilinear stencil on the CPU.
+
+    Invalid source corners receive zero weight and the remaining weights are
+    renormalized.  A target with no valid bilinear corner receives its nearest
+    valid source donor within ``fallback_radius`` cells.  The explicit finite
+    radius prevents a silently distant land/ocean substitution.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    source_valid = np.asarray(source_valid, dtype=bool)
+    target_apply = np.asarray(target_apply, dtype=bool)
+    if x.shape != y.shape or x.shape != target_apply.shape:
+        raise ValueError("masked-bilinear target arrays must have equal shapes")
+    if source_valid.ndim != 2:
+        raise ValueError("masked-bilinear source_valid must be 2-D")
+    if not np.isfinite(x).all() or not np.isfinite(y).all():
+        raise ValueError("masked-bilinear coordinates must be finite")
+    fallback_radius = int(fallback_radius)
+    if fallback_radius < 0:
+        raise ValueError("fallback_radius must be non-negative")
+
+    ny, nx = source_valid.shape
+    x0 = np.floor(x).astype(np.int64)
+    y0 = np.floor(y).astype(np.int64)
+    x1 = x0 + 1
+    y1 = y0 + 1
+    if (np.min(x0) < 0 or np.max(x1) >= nx
+            or np.min(y0) < 0 or np.max(y1) >= ny):
+        raise ValueError("masked-bilinear coordinates leave the source window")
+    fx = x - x0
+    fy = y - y0
+    indices_x = np.stack((x0, x1, x0, x1))
+    indices_y = np.stack((y0, y0, y1, y1))
+    weights = np.stack((
+        (1.0 - fx) * (1.0 - fy),
+        fx * (1.0 - fy),
+        (1.0 - fx) * fy,
+        fx * fy,
+    ))
+    corner_valid = source_valid[indices_y, indices_x]
+    weights *= corner_valid
+    raw_support = np.sum(weights, axis=0)
+    direct = target_apply & (raw_support > 0.0)
+    weights[:, direct] /= raw_support[direct]
+
+    needs_fallback = target_apply & ~direct
+    fallback_count = int(np.count_nonzero(needs_fallback))
+    fallback_max_distance = 0.0
+    fallback_distance_histogram: dict[str, int] = {}
+    if fallback_count:
+        flat_missing = np.flatnonzero(needs_fallback)
+        missing_x = x.ravel()[flat_missing]
+        missing_y = y.ravel()[flat_missing]
+        center_x = np.floor(missing_x + 0.5).astype(np.int64)
+        center_y = np.floor(missing_y + 0.5).astype(np.int64)
+        best_distance2 = np.full(flat_missing.size, np.inf)
+        donor_x = np.full(flat_missing.size, -1, dtype=np.int64)
+        donor_y = np.full(flat_missing.size, -1, dtype=np.int64)
+        for offset_y in range(-fallback_radius, fallback_radius + 1):
+            candidate_y = center_y + offset_y
+            y_inside = (candidate_y >= 0) & (candidate_y < ny)
+            for offset_x in range(-fallback_radius, fallback_radius + 1):
+                candidate_x = center_x + offset_x
+                inside = y_inside & (candidate_x >= 0) & (candidate_x < nx)
+                if not np.any(inside):
+                    continue
+                candidate_valid = np.zeros(flat_missing.size, dtype=bool)
+                positions = np.flatnonzero(inside)
+                candidate_valid[positions] = source_valid[
+                    candidate_y[positions], candidate_x[positions]]
+                distance2 = ((candidate_x - missing_x) ** 2
+                             + (candidate_y - missing_y) ** 2)
+                candidate_valid &= distance2 <= float(fallback_radius ** 2)
+                improve = candidate_valid & (distance2 < best_distance2)
+                donor_x[improve] = candidate_x[improve]
+                donor_y[improve] = candidate_y[improve]
+                best_distance2[improve] = distance2[improve]
+        if np.any(donor_x < 0):
+            unresolved = int(np.count_nonzero(donor_x < 0))
+            raise ValueError(
+                f"no valid surface-matched HRRR donor within "
+                f"{fallback_radius} cells for {unresolved} target point(s)")
+        flat_x = indices_x.reshape(4, -1)
+        flat_y = indices_y.reshape(4, -1)
+        flat_weights = weights.reshape(4, -1)
+        flat_x[:, flat_missing] = donor_x[None, :]
+        flat_y[:, flat_missing] = donor_y[None, :]
+        flat_weights[:, flat_missing] = 0.0
+        flat_weights[0, flat_missing] = 1.0
+        fallback_distances = np.sqrt(best_distance2)
+        fallback_max_distance = float(np.max(fallback_distances))
+        distance_bins = np.ceil(fallback_distances).astype(np.int64)
+        fallback_distance_histogram = {
+            str(int(cell_radius)): int(np.count_nonzero(
+                distance_bins == cell_radius))
+            for cell_radius in np.unique(distance_bins)
+        }
+
+    # Non-applicable targets are overwritten by the complementary stencil or
+    # an explicit physical fill.  Give them a harmless unit-sum donor so no
+    # NaN can be created transiently on the GPU.
+    unused = ~target_apply
+    weights[:, unused] = 0.0
+    weights[0, unused] = 1.0
+    sums = np.sum(weights, axis=0)
+    selected_source_is_valid = source_valid[indices_y, indices_x]
+    cross_surface = (
+        (weights > 0.0) & target_apply[None, :, :]
+        & ~selected_source_is_valid)
+    cross_surface_count = int(np.count_nonzero(cross_surface))
+    if cross_surface_count:
+        raise AssertionError(
+            "masked-bilinear stencil selected an incompatible surface donor")
+    if (not np.isfinite(weights).all() or np.any(weights < 0.0)
+            or not np.allclose(sums, 1.0, rtol=0.0, atol=2.0e-15)):
+        raise AssertionError("masked-bilinear stencil is not finite and convex")
+    if sum(fallback_distance_histogram.values()) != fallback_count:
+        raise AssertionError("fallback distance histogram is incomplete")
+    report = {
+        "operator": "masked_convex_bilinear_with_nearest_valid_fallback",
+        "source_valid_count": int(np.count_nonzero(source_valid)),
+        "target_apply_count": int(np.count_nonzero(target_apply)),
+        "direct_target_count": int(np.count_nonzero(direct)),
+        "renormalized_target_count": int(np.count_nonzero(
+            direct & (raw_support < 1.0 - 1.0e-12))),
+        "fallback_target_count": fallback_count,
+        "fallback_radius_cells": fallback_radius,
+        "fallback_max_distance_cells": fallback_max_distance,
+        "fallback_distance_ceiling_histogram_cells": (
+            fallback_distance_histogram),
+        "unresolved_target_count": 0,
+        "cross_surface_donor_count": cross_surface_count,
+        "donor_surface_class": "land",
+        "minimum_nonzero_raw_support": (
+            float(np.min(raw_support[direct])) if np.any(direct) else None),
+        "weight_sum_minimum": float(np.min(sums)),
+        "weight_sum_maximum": float(np.max(sums)),
+        "negative_weight_count": int(np.count_nonzero(weights < 0.0)),
+    }
+    return (indices_y.astype(np.int32), indices_x.astype(np.int32),
+            weights.astype(np.float32), report)
+
+
+def _source_window_rotation(
+        snapshot: HrrrNativeSnapshot) -> tuple[np.ndarray, np.ndarray]:
+    """Return source-grid ``(SINALPHA, COSALPHA)`` on a bridge window."""
+
+    source = hrrr_source_grid()
+    x = np.arange(
+        snapshot.i_start + 1,
+        snapshot.i_start + snapshot.nx + 1,
+        dtype=np.float64,
+    )
+    y = np.arange(
+        snapshot.j_start + 1,
+        snapshot.j_start + snapshot.ny + 1,
+        dtype=np.float64,
+    )
+    _, longitude = source.ij_to_latlon(*np.meshgrid(x, y))
+    difference = source.stand_lon - longitude
+    difference = np.where(difference > 180.0, difference - 360.0, difference)
+    difference = np.where(difference < -180.0, difference + 360.0, difference)
+    alpha = source.hemi * source.cone * np.pi / 180.0 * difference
+    return np.sin(alpha), np.cos(alpha)
+
+
+def _require_source_physical_ranges(source: Mapping[str, np.ndarray]) -> None:
+    landsea = np.asarray(source["LANDSEA"])
+    soilw = np.asarray(source["SOILW"])
+    soilt = np.asarray(source["SOILT"])
+    spfh = np.asarray(source["SPFH"])
+    q2 = np.asarray(source["Q2"])
+    if (not np.isfinite(landsea).all()
+            or np.any((landsea < 0.0) | (landsea > 1.0))):
+        raise ValueError("source HRRR LANDSEA is non-finite or outside 0..1")
+    if (not np.isfinite(soilw).all()
+            or np.any((soilw < 0.0) | (soilw > 1.0))):
+        raise ValueError("source HRRR SOILW is non-finite or outside 0..1")
+    if (not np.isfinite(soilt).all()
+            or np.any((soilt < 170.0) | (soilt > 400.0))):
+        raise ValueError("source HRRR SOILT is non-finite or outside 170..400 K")
+    if (not np.isfinite(spfh).all()
+            or np.any((spfh < 0.0) | (spfh > 0.1))):
+        raise ValueError("source HRRR SPFH is non-finite or outside 0..0.1")
+    if (not np.isfinite(q2).all()
+            or np.any((q2 < 0.0) | (q2 > 0.1))):
+        raise ValueError("source HRRR Q2 is non-finite or outside 0..0.1")
+
+
+def _record_soil_field_stats(report, name, source, candidate,
+                             source_land, target_land, limits):
+    if hasattr(candidate, "get"):
+        candidate = candidate.get()
+    candidate = np.asarray(candidate).astype(np.float64, copy=False)
+    source = np.asarray(source, dtype=np.float64)
+    source_values = source[:, source_land]
+    target_values = candidate[:, target_land]
+    if source_values.shape[1] == 0 or target_values.shape[1] == 0:
+        raise ValueError("soil mapping requires source and target land cells")
+    lower, upper = limits
+    if (not np.isfinite(candidate).all()
+            or np.any((candidate < lower) | (candidate > upper))):
+        raise ValueError(
+            f"mapped HRRR {name} is non-finite or outside {lower}..{upper}")
+    source_min = np.min(source_values, axis=1)
+    source_max = np.max(source_values, axis=1)
+    target_min = np.min(target_values, axis=1)
+    target_max = np.max(target_values, axis=1)
+    tolerance = 4.0 * np.finfo(np.float32).eps * np.maximum(
+        1.0, np.maximum(np.abs(source_min), np.abs(source_max)))
+    convex_violations = np.sum(
+        (target_values < (source_min[:, None] - tolerance[:, None]))
+        | (target_values > (source_max[:, None] + tolerance[:, None])),
+        axis=1,
+    )
+    report[name] = {
+        "physical_limits": [lower, upper],
+        "all_target_minimum": float(np.min(candidate)),
+        "all_target_maximum": float(np.max(candidate)),
+        "source_land_minimum_by_depth": source_min.tolist(),
+        "source_land_maximum_by_depth": source_max.tolist(),
+        "target_land_minimum_by_depth": target_min.tolist(),
+        "target_land_maximum_by_depth": target_max.tolist(),
+        "source_window_land_mean_by_depth": np.mean(
+            source_values, axis=1).tolist(),
+        "target_land_mean_by_depth": np.mean(target_values, axis=1).tolist(),
+        "target_minus_source_window_land_mean_by_depth": (
+            np.mean(target_values, axis=1)
+            - np.mean(source_values, axis=1)).tolist(),
+        "convex_bound_violation_count_by_depth": convex_violations.tolist(),
+        "convex_bounds_conserved": bool(np.count_nonzero(convex_violations) == 0),
+        "mean_delta_note": (
+            "Diagnostic only: source window and target land masks/areas differ; "
+            "this is not an integral-conservation claim."),
+    }
+
+
+def interpolate_hrrr_to_lambert(
+        snapshot: HrrrNativeSnapshot,
+        grid: LambertGrid, *, target_landmask,
+        soil_mapping_report: MutableMapping[str, object] | None = None,
+        surface_fallback_radius: int = 8,
+        backend="cuda", workers: int | None = None,
+        cpu_bridge: Path | str | None = None) -> HorizontalSnapshot:
+    """Interpolate a verified HRRR window to one WRF Lambert C grid.
+
+    Atmospheric continuous fields use WPS's overlapping-parabolic operator.
+    Soil uses non-negative bilinear weights restricted to source land, with a
+    bounded nearest-valid fallback.
+    This intentionally repairs WPS ``sixteen_pt`` overshoot (including
+    negative soil moisture) rather than reproducing it.  Target-water soil is
+    filled with target skin temperature and unit moisture, as WRF soil setup
+    expects.  HRRR winds are grid-relative.  They are converted to the earth
+    basis on the source mass grid, interpolated to each target staggering, and
+    converted to the target Lambert basis before placing U/V on C-grid faces.
+    """
+    if not isinstance(snapshot, HrrrNativeSnapshot):
+        raise TypeError("snapshot must be an HrrrNativeSnapshot")
+    if not isinstance(grid, LambertGrid):
+        raise TypeError("grid must be a LambertGrid")
+    from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
+
+    engine = resolve_preprocess_backend(
+        backend, workers=workers, cpu_bridge=cpu_bridge)
+    xp = engine.array_module
+    mass_lat, mass_lon = grid.latlon_mass()
+    u_lat, u_lon = grid.latlon_u()
+    v_lat, v_lon = grid.latlon_v()
+    plan_type = (
+        _ProjectedGpuPlan if getattr(engine, "name", None) == "cuda"
+        else _ProjectedCpuPlan)
+    if plan_type is _ProjectedGpuPlan:
+        mass_plan = plan_type(snapshot, mass_lat, mass_lon)
+        u_plan = plan_type(snapshot, u_lat, u_lon)
+        v_plan = plan_type(snapshot, v_lat, v_lon)
+    else:
+        mass_plan = plan_type(snapshot, mass_lat, mass_lon, engine)
+        u_plan = plan_type(snapshot, u_lat, u_lon, engine)
+        v_plan = plan_type(snapshot, v_lat, v_lon, engine)
+    source = snapshot.fields
+    _require_source_physical_ranges(source)
+    target_landmask = np.asarray(target_landmask)
+    if target_landmask.shape != mass_plan.target_shape:
+        raise ValueError(
+            "target_landmask shape does not match the target mass grid")
+    if (not np.isfinite(target_landmask).all()
+            or np.any((target_landmask != 0.0) & (target_landmask != 1.0))):
+        raise ValueError("target_landmask must contain only finite 0/1 values")
+    target_land = target_landmask.astype(bool)
+    source_land = np.asarray(source["LANDSEA"]) >= 0.5
+    land_stencil = mass_plan.masked_bilinear_stencil(
+        source_land, target_land, fallback_radius=surface_fallback_radius)
+    out: dict[str, object] = {}
+    for name in (
+            "PRES", "HGT", "TT",
+            "SPFH", "PSFC", "SOILHGT", "SKINTEMP", "SNOW", "SNOWH",
+            "T2", "Q2"):
+        out[name] = mass_plan.apply(source[name], method="parabolic")
+    # WPS METGRID.TBL routes hydrometeor mass through
+    # ``four_pt+average_4pt`` rather than the overshooting parabolic operator.
+    # Bilinear interpolation preserves both non-negativity and compact support.
+    for name in ("QC", "QI", "QR", "QS", "QG"):
+        out[name] = mass_plan.apply(source[name], method="bilinear")
+    # Do not derive/map RH here.  With FLAG_SH, real.exe diagnoses rh_gc from
+    # the already horizontally mapped SPECHUMD, TT, and PRES.  initialize_real
+    # mirrors that order; retaining a separately mapped 50-level RH field is
+    # both scientifically different and avoidable target-grid residency.
+    # initialize_real uses WPS's GHT spelling; retain HGT as the native-GRIB
+    # diagnostic spelling so oracle reports stay explicit.
+    out["GHT"] = out["HGT"]
+    target_land_backend = engine.bool_array(target_land)
+    for name, water_fill in (("SOILT", out["SKINTEMP"]), ("SOILW", 1.0)):
+        mapped_land = land_stencil.apply(source[name])
+        selector = target_land_backend[None, :, :]
+        if name == "SOILT":
+            fill = xp.broadcast_to(water_fill[None, :, :], mapped_land.shape)
+        else:
+            fill = xp.full(mapped_land.shape, water_fill, dtype=xp.float32)
+        out[name] = xp.where(selector, mapped_land, fill)
+    # LANDSEA is the model/static surface classification.  Preserve the
+    # nearest source classification separately for WPS-oracle diagnostics.
+    out["SOURCE_LANDSEA"] = mass_plan.apply(
+        source["LANDSEA"], method="nearest")
+    out["LANDSEA"] = engine.float32(target_landmask)
+    out["XICE"] = mass_plan.apply(source["XICE"], method="nearest")
+    source_sina, source_cosa = _source_window_rotation(snapshot)
+
+    def map_grid_relative_wind(u_name, v_name):
+        source_u = engine.float32(source[u_name])
+        source_v = engine.float32(source[v_name])
+        source_sina_backend = engine.float32(source_sina)
+        source_cosa_backend = engine.float32(source_cosa)
+        if source_u.shape != source_v.shape:
+            raise ValueError("u_grid and v_grid shapes differ")
+        source_u_earth = (
+            source_u * source_cosa_backend - source_v * source_sina_backend)
+        source_v_earth = (
+            source_v * source_cosa_backend + source_u * source_sina_backend)
+        u_earth_at_u = u_plan.apply(source_u_earth, method="parabolic")
+        v_earth_at_u = u_plan.apply(source_v_earth, method="parabolic")
+        target_sina_u, target_cosa_u = lambert_rotation(grid, "u")
+        target_u = engine.rotate_earth_to_grid(
+            u_earth_at_u, v_earth_at_u,
+            target_sina_u, target_cosa_u)[0]
+        del u_earth_at_u, v_earth_at_u
+        # Build V after U so four full target-face earth-wind temporaries do
+        # not coexist on large domains.  CuPy can reuse the released blocks.
+        u_earth_at_v = v_plan.apply(source_u_earth, method="parabolic")
+        v_earth_at_v = v_plan.apply(source_v_earth, method="parabolic")
+        target_sina_v, target_cosa_v = lambert_rotation(grid, "v")
+        target_v = engine.rotate_earth_to_grid(
+            u_earth_at_v, v_earth_at_v,
+            target_sina_v, target_cosa_v)[1]
+        return target_u, target_v
+
+    out["UU"], out["VV"] = map_grid_relative_wind("U_MASS", "V_MASS")
+    out["U10"], out["V10"] = map_grid_relative_wind(
+        "U10_MASS", "V10_MASS")
+    # sfcprs2 must compare the HRRR PSFC surface with its own horizontally
+    # consistent orography, not the target GEOG terrain.
+    out["SOURCE_OROGRAPHY"] = out["SOILHGT"]
+    skin_host = out["SKINTEMP"]
+    if hasattr(skin_host, "get"):
+        skin_host = skin_host.get()
+    skin_host = np.asarray(skin_host)
+    if (not np.isfinite(skin_host).all()
+            or np.any((skin_host < 170.0) | (skin_host > 400.0))):
+        raise ValueError(
+            "mapped HRRR SKINTEMP is non-finite or outside 170..400 K")
+    local_report: dict[str, object] = {
+        "policy": (
+            "source-land-masked convex bilinear; bounded nearest-valid "
+            "fallback; "
+            "target-water SOILT=SKINTEMP and SOILW=1"),
+        "integral_conservation_claimed": False,
+        "preprocess_backend": engine.receipt(),
+        "wind_rotation": {
+            "policy": (
+                "source_grid_to_earth_then_earth_to_target_grid; "
+                "interpolation occurs in the earth-relative basis"),
+            "source_projection": {
+                "truelat1": 38.5,
+                "truelat2": 38.5,
+                "stand_lon": -97.5,
+            },
+            "target_projection": {
+                "truelat1": grid.truelat1,
+                "truelat2": grid.truelat2,
+                "stand_lon": grid.stand_lon,
+            },
+        },
+        "source_land_count": int(np.count_nonzero(source_land)),
+        "source_water_count": int(np.count_nonzero(~source_land)),
+        "target_land_count": int(np.count_nonzero(target_land)),
+        "target_water_count": int(np.count_nonzero(~target_land)),
+        "land_stencil": dict(land_stencil.report),
+        "fields": {},
+    }
+    _record_soil_field_stats(
+        local_report["fields"], "SOILT", source["SOILT"], out["SOILT"],
+        source_land, target_land, (170.0, 400.0))
+    _record_soil_field_stats(
+        local_report["fields"], "SOILW", source["SOILW"], out["SOILW"],
+        source_land, target_land, (0.0, 1.0))
+    if soil_mapping_report is not None:
+        if len(soil_mapping_report):
+            raise ValueError("soil_mapping_report must be empty")
+        soil_mapping_report.update(local_report)
+    return HorizontalSnapshot(
+        valid_time=snapshot.valid_time,
+        levels_hpa=HRRR_HYBRID_LEVELS,
+        fields=out,
+    )
+
+
+__all__ = [
+    "HRRR_EARTH_RADIUS_M",
+    "HRRR_GRID_SPACING_M",
+    "HRRR_HYBRID_LEVELS",
+    "HRRR_SOIL_DEPTHS_M",
+    "HRRR_WPS_EQUIVALENT_DX_M",
+    "HrrrNativeSnapshot",
+    "hrrr_source_grid",
+    "interpolate_hrrr_to_lambert",
+    "load_hrrr_native_series",
+    "load_hrrr_pipeline_ready_window",
+    "load_hrrr_native_window",
+]

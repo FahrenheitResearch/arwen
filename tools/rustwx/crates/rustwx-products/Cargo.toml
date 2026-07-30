@@ -1,0 +1,25 @@
+[package]
+name = "rustwx-products"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+bincode = "1.3"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+image = { version = "0.25", default-features = false, features = ["gif", "png"] }
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+shapefile = "0.7"
+rustwx-calc = { path = "../rustwx-calc" }
+rustwx-core = { path = "../rustwx-core" }
+rustwx-io = { path = "../rustwx-io" }
+rustwx-models = { path = "../rustwx-models" }
+rustwx-render = { path = "../rustwx-render" }
+grib-core = { path = "../../vendor/grib-core" }

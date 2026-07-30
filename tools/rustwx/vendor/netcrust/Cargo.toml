@@ -1,0 +1,16 @@
+[package]
+name = "netcrust"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "WRF-focused pure-Rust NetCDF/NetCDF4 reader facade"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/FahrenheitResearch/netcrust"
+keywords = ["netcdf", "hdf5", "wrf", "weather", "meteorology"]
+categories = ["science", "parser-implementations"]
+
+[dependencies]
+hdf5-reader = { path = "vendor/hdf5-reader" }
+ndarray = "0.17"
+netcdf-reader = "0.3"
+thiserror = "2"

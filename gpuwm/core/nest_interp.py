@@ -1,0 +1,685 @@
+"""Parent->child nest interpolation operators (Phase 5 Task 10, lane L3).
+
+WRF v4.6.1 transliterations, with the horizontal operator authority being
+``share/sint.F`` ITSELF (architecture doc section D, F6 amendment): SINT
+(sint.F:2-198) / SINTB (:203-347) are the Smolarkiewicz positive-definite
+monotonic transport with field-dependent DONOR/TR4 flux statement functions
+(sint.F:36-44) and nonlinear overshoot/undershoot limiters (:66-192);
+``interp_fcn_sint`` (share/interp_fcn.F:874-993) and ``bdy_interp1``
+(:2423-2626) are only the tile/stagger wrappers around it.  A fixed
+precomputed weighted stencil is NOT SINT -- the flux/limiter arithmetic
+depends on the field values and is evaluated per field at force time.
+
+What IS precomputed, once at setup, is GEOMETRY ONLY (F6): the donor index
+maps and the XIG/XJG offset coefficient tables (sint.F:46-59), built in
+FP64 on host (nests are static) and stored FP32 on device.  WRF constructs
+XIG/XJG in REAL, i.e. FP32, on every call (sint.F:13-14, :31, :46-57): the
+FP64-build/FP32-store is a REGISTERED DEVIATION (architecture deviations
+list) whose numeric consequence is tested by N1.5.  The FP64 mirrors in
+``gpuwm/verify/npref.py`` consume the SAME FP32-rounded tables.
+
+Device-buffer policy (F4 nest allocation manifest): this module never
+registers scratch slots itself.  Every device-side entry point accepts an
+optional ``alloc(shape, dtype)`` callable; the owning lanes (L4 preflight
+manifest, L6 coupler) pass allocators backed by the child state's scratch
+pool with manifest-declared ``nest_*`` slot names.  The default is a plain
+CuPy allocation, appropriate for tests only.  BIND-BEFORE-FIRST-USE
+(REQUIREMENT on the owning lanes, enforced): manifest consumers MUST call
+``NestRegistration.device_tables(alloc=manifest_alloc)`` before the first
+driver call on that registration -- drivers upload lazily into
+non-manifest allocations otherwise, and a later manifest bind on a
+default-bound registration raises rather than silently leaving the
+geometry outside the N0 footprint (see ``device_tables``).
+
+This module is importable without CuPy (host geometry + validation); the
+CUDA module is compiled on first device use, with ``-fmad=false`` so the
+summation paths round like the FP64 mirrors (plan Task 10).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from functools import lru_cache
+
+import numpy as np
+
+from gpuwm.core import constants as c
+from gpuwm.core.kernels import _preamble
+
+_THREADS = 256
+
+#: Wrapper-specific stagger offsets (the ONLY difference between the two
+#: WRF entry points' geometry):
+#:
+#: - ``interp``: interp_fcn_sint, interp_fcn.F:920-929 --
+#:   ``ioff = (nri-1)/2`` when x-staggered, else 0;
+#: - ``bdy``: bdy_interp1, interp_fcn.F:2504-2510 --
+#:   ``ioff = MAX((nri-1)/2, 1)`` when x-staggered, else 0.
+#:
+#: The two agree for every ratio >= 3; they differ at nri in {1, 2}, where
+#: bdy_interp1's MAX(...,1) shifts the staggered donor lookup by one child
+#: index.  Transliterated faithfully, anomaly included (pinned in tests;
+#: flagged for the N2 ratio-1 identity-nest fixtures, which exercise
+#: exactly this corner).
+WRAPPERS = ("interp", "bdy")
+
+
+def _wrapper_offset(wrapper: str, staggered: bool, ratio: int) -> int:
+    if wrapper == "interp":
+        return (ratio - 1) // 2 if staggered else 0    # interp_fcn.F:922-925
+    if wrapper == "bdy":
+        return max((ratio - 1) // 2, 1) if staggered else 0    # :2505-2507
+    raise ValueError(f"unknown wrapper {wrapper!r}; expected one of "
+                     f"{WRAPPERS}")
+
+
+def sint_offsets(ratio: int, staggered: bool) -> np.ndarray:
+    """The XIG/XJG offset coefficient table for one direction (sint.F:46-59).
+
+    WRF builds, for refinement ratio ``rr`` and sub-cell position ``ip``
+    (0-based; XIG index J-1 = ip per the psca pickup ``ip+1 + jp*nri``,
+    interp_fcn.F:985/:2583)::
+
+        rioff = 1 if staggered and rr even else 0            (sint.F:49-52)
+        XIG   = (rr - 1 - rioff)/(2*rr) - ip/rr              (sint.F:56)
+
+    Built here in FP64, returned FP32 (the registered deviation; WRF
+    builds in REAL).  The offset is the SINT advection displacement: the
+    child point samples the parent field at ``donor_position - XIG``.
+    """
+    rr = int(ratio)
+    if rr < 1:
+        raise ValueError("refinement ratio must be >= 1")
+    rioff = 1.0 if (staggered and rr % 2 == 0) else 0.0
+    table = np.array([(rr - 1.0 - rioff) / (2.0 * rr) - ip / rr
+                      for ip in range(rr)], dtype=np.float64)
+    return table.astype(np.float32)
+
+
+def bdy_width(spec_zone: int, relax_zone: int, spec_bdy_width: int) -> int:
+    """LBC strip width, interp_fcn.F:2517 (= 5 for the ratified bundle)::
+
+        sz = MIN(MAX( spec_zone, relax_zone + 1 ),spec_bdy_width)
+    """
+    return min(max(int(spec_zone), int(relax_zone) + 1), int(spec_bdy_width))
+
+
+@dataclass
+class NestRegistration:
+    """Static parent->child SINT geometry for one stagger/wrapper variant.
+
+    Donor maps follow the WRF pickup arithmetic (interp_fcn.F:975-985 /
+    :2562-2569): for child 1-based index ``n`` and lookup index
+    ``n1 = n + ioff``::
+
+        ci = ipos + (n1-1)/nri        ! donor coarse cell (1-based)
+        ip = mod(n1-1, nri)           ! sub-cell position, XIG index
+
+    stored 0-based for gpuwm arrays (``ci0 = ci - 1``).  ``ipos``/``jpos``
+    are WRF ``i_parent_start``/``j_parent_start`` (1-based namelist
+    semantics; the child's origin cell sits inside parent cell ipos).
+    ``xig``/``xjg`` are the FP32-stored offset tables (:data:`sint_offsets`).
+    """
+
+    nri: int
+    nrj: int
+    i_parent_start: int
+    j_parent_start: int
+    nxc: int                 # child x extent for this stagger
+    nyc: int                 # child y extent for this stagger
+    nxp: int                 # parent x extent for this stagger
+    nyp: int                 # parent y extent for this stagger
+    xstag: bool
+    ystag: bool
+    wrapper: str
+    ioff: int
+    joff: int
+    ci: np.ndarray           # (nxc,) int32, 0-based donor parent i
+    ip: np.ndarray           # (nxc,) int32, XIG index
+    cj: np.ndarray           # (nyc,) int32
+    jp: np.ndarray           # (nyc,) int32
+    xig: np.ndarray          # (nri,) float32
+    xjg: np.ndarray          # (nrj,) float32
+    _device: dict = field(default_factory=dict, repr=False)
+    _binding: str = field(default="", repr=False)   # "" | "default" | "manifest"
+
+    def device_tables(self, alloc=None):
+        """Upload (once) and return the device geometry tables.
+
+        BIND-BEFORE-FIRST-USE CONTRACT (F4 nest allocation manifest;
+        review finding): runtime consumers (lane L6's coupler, lane L4's
+        ``--alloc`` preflight) MUST call ``device_tables(alloc=...)``
+        with a manifest-backed allocator BEFORE any driver
+        (:func:`sint`/:func:`bdy_interp1`/...) touches this
+        registration.  Drivers upload lazily with ``alloc=None`` into
+        plain CuPy allocations that the F4 registry-equality test cannot
+        see -- acceptable for tests ONLY.  The binding is explicit and
+        idempotent-checked:
+
+        - first call wins and records its mode (``default`` vs
+          ``manifest``);
+        - a later ``alloc=...`` call on a default-bound registration
+          raises (the silent manifest bypass the review flagged);
+        - a repeated ``alloc=...`` call is idempotent (returns the
+          existing manifest-backed tables, no re-allocation).
+
+        ``alloc(name, shape, dtype)`` returns the named device buffer (a
+        manifest ``nest_*`` scratch slot).  Passing ``name`` makes binding
+        independent of dictionary/allocation order.
+        """
+        if self._device:
+            if alloc is not None and self._binding == "default":
+                raise RuntimeError(
+                    "NestRegistration geometry tables were already "
+                    "uploaded into default (non-manifest) allocations by "
+                    "an earlier driver call; manifest binding must happen "
+                    "BEFORE first use (F4 bind-before-first-use contract)")
+            return self._device
+        import cupy as cp
+
+        def _up(name, host):
+            if alloc is None:
+                return cp.asarray(host)
+            buf = alloc(name, host.shape, host.dtype)
+            buf[...] = cp.asarray(host)
+            return buf
+
+        self._device = {name: _up(name, getattr(self, name))
+                        for name in ("ci", "ip", "cj", "jp",
+                                     "xig", "xjg")}
+        self._binding = "default" if alloc is None else "manifest"
+        return self._device
+
+
+def _donor_maps(n_child, ratio, pos, ioff, n_parent, label):
+    """0-based donor/sub-cell maps for one direction (interp_fcn.F:975-985)."""
+    n1 = np.arange(1, n_child + 1, dtype=np.int64) + ioff
+    ci = pos + (n1 - 1) // ratio          # 1-based donor cell
+    ip = (n1 - 1) % ratio
+    lo, hi = int(ci.min()) - 1, int(ci.max()) - 1     # 0-based extremes
+    if lo < 2 or hi > n_parent - 3:
+        raise ValueError(
+            f"child {label} extent needs parent donors {lo}..{hi} with a "
+            f"+-2 SINT stencil (sint.F ior=2), outside the parent extent "
+            f"{n_parent}; move the nest inward or enlarge the parent")
+    return (ci - 1).astype(np.int32), ip.astype(np.int32)
+
+
+def register_nest(*, nri, nrj, i_parent_start, j_parent_start,
+                  child_nx, child_ny, parent_nx, parent_ny,
+                  stagger="", wrapper="interp") -> NestRegistration:
+    """Build the static SINT geometry for one field stagger.
+
+    Stagger dispatch per the ratified section-D contract (the
+    interp_fcn_sint call sites): ``"x"`` for u, ``"y"`` for v, ``""`` for
+    mass scalars/mu and for w/ph full levels (the horizontal stencil is
+    unchanged by z-staggering).  ``child_nx``/``parent_nx`` are the MASS
+    counts; staggered extents (+1) are derived here.  WRF's sint assumes a
+    square refinement ratio (``rr = nint(sqrt(float(nf)))``, sint.F:46);
+    non-square ratios are rejected loudly.
+    """
+    if int(nri) != int(nrj):
+        raise ValueError("SINT assumes a square refinement ratio "
+                         "(rr = nint(sqrt(float(nf))), sint.F:46)")
+    if stagger not in ("", "x", "y"):
+        raise ValueError('stagger must be "", "x" or "y" '
+                         "(interp_fcn.F:860: 'there are only two "
+                         "staggerings I accept')")
+    nri, nrj = int(nri), int(nrj)
+    xstag, ystag = stagger == "x", stagger == "y"
+    nxc = int(child_nx) + (1 if xstag else 0)
+    nyc = int(child_ny) + (1 if ystag else 0)
+    nxp = int(parent_nx) + (1 if xstag else 0)
+    nyp = int(parent_ny) + (1 if ystag else 0)
+    ioff = _wrapper_offset(wrapper, xstag, nri)
+    joff = _wrapper_offset(wrapper, ystag, nrj)
+    ci, ip = _donor_maps(nxc, nri, int(i_parent_start), ioff, nxp, "x")
+    cj, jp = _donor_maps(nyc, nrj, int(j_parent_start), joff, nyp, "y")
+    return NestRegistration(
+        nri=nri, nrj=nrj, i_parent_start=int(i_parent_start),
+        j_parent_start=int(j_parent_start), nxc=nxc, nyc=nyc,
+        nxp=nxp, nyp=nyp, xstag=xstag, ystag=ystag, wrapper=wrapper,
+        ioff=ioff, joff=joff, ci=ci, ip=ip, cj=cj, jp=jp,
+        xig=sint_offsets(nri, xstag), xjg=sint_offsets(nrj, ystag))
+
+
+@lru_cache(maxsize=None)
+def _nest_module():
+    """Compile nest.cu with FMA contraction disabled (plan Task 10).
+
+    A dedicated loader (rather than ``kernels.load_module``) because this
+    module alone carries the ``-fmad=false`` requirement: the SINT/TR4
+    summation paths must round like the FP64 mirrors for the pinned
+    fp64_mirror_floor comparator (nest_gates.FP64_MIRROR_MAX_ULPS).
+    """
+    import cupy as cp
+    from pathlib import Path
+    src = _preamble() + (Path(__file__).parent / "kernels"
+                         / "nest.cu").read_text()
+    mod = cp.RawModule(code=src,
+                       options=("-std=c++17", "-fmad=false"),
+                       name_expressions=None)
+    mod.compile()
+    return mod
+
+
+def _kernel(name):
+    return _nest_module().get_function(name)
+
+
+def _launch(kernel, count, args):
+    kernel(((count + _THREADS - 1) // _THREADS,), (_THREADS,), args)
+
+
+def _as3d(arr):
+    return arr[None] if arr.ndim == 2 else arr
+
+
+def _check_table(buf, shape, what):
+    """Fail loud on a mis-shaped/mis-typed/non-contiguous device buffer.
+
+    The kernels index linearly over ``prod(shape)`` threads; a wrong
+    preallocated buffer (a manifest slot with a drifted shape formula)
+    must raise here instead of writing out of bounds on device.
+    """
+    if tuple(buf.shape) != tuple(shape):
+        raise ValueError(f"{what} has shape {tuple(buf.shape)}, "
+                         f"expected {tuple(shape)}")
+    if buf.dtype != np.float32:
+        raise ValueError(f"{what} must be float32, got {buf.dtype}")
+    flags = getattr(buf, "flags", None)
+    if flags is not None and not flags.c_contiguous:
+        raise ValueError(f"{what} must be C-contiguous")
+    return buf
+
+
+_SINT_EP = float(np.float32(1.0e-10))
+
+
+def _numpy_sint_donor(y1, y2, a):
+    """WRF ``DONOR`` statement used by the host SINT implementation."""
+    sign = np.copysign(1.0, a)
+    return (y1 * np.maximum(0.0, sign)
+            - y2 * np.minimum(0.0, sign)) * a
+
+
+def _numpy_sint_tr4(ym1, y0, yp1, yp2, a):
+    """WRF ``TR4`` statement used by the host SINT implementation."""
+    one12 = 1.0 / 12.0
+    one24 = 1.0 / 24.0
+    return (a * one12 * (7.0 * (yp1 + y0) - (yp2 + ym1))
+            - a * a * one24 * (15.0 * (yp1 - y0) - (yp2 - ym1))
+            - a * a * a * one12 * ((yp1 + y0) - (yp2 + ym1))
+            + a * a * a * a * one24
+            * (3.0 * (yp1 - y0) - (yp2 - ym1)))
+
+
+def _numpy_sint_pass(ym2, ym1, y0, yp1, yp2, a):
+    """One WRF SINTB residual-advection pass, evaluated in FP32."""
+    fl0 = _numpy_sint_donor(ym1, y0, a)
+    fl1 = _numpy_sint_donor(y0, yp1, a)
+    w = y0 - (fl1 - fl0)
+    maximum = np.maximum(np.maximum(ym1, y0), np.maximum(yp1, w))
+    minimum = np.minimum(np.minimum(ym1, y0), np.minimum(yp1, w))
+    f0 = _numpy_sint_tr4(ym2, ym1, y0, yp1, a) - fl0
+    f1 = _numpy_sint_tr4(ym1, y0, yp1, yp2, a) - fl1
+    pp0, pn0 = np.maximum(0.0, f0), np.minimum(0.0, f0)
+    pp1, pn1 = np.maximum(0.0, f1), np.minimum(0.0, f1)
+    overshoot = (maximum - w) / (-pn1 + pp0 + _SINT_EP)
+    undershoot = (w - minimum) / (pp1 - pn0 + _SINT_EP)
+    c0 = (pp0 * np.minimum(1.0, overshoot)
+          + pn0 * np.minimum(1.0, undershoot))
+    c1 = (pp1 * np.minimum(1.0, undershoot)
+          + pn1 * np.minimum(1.0, overshoot))
+    return w - (c1 - c0)
+
+
+def _numpy_sint(cfld, reg):
+    """Production host mirror of the FP32 ``nest_sint`` CUDA kernel.
+
+    This implementation deliberately lives in the production core rather
+    than ``gpuwm.verify``: parallel CPU hierarchy finalization is a public
+    RW-WPS runtime path and must not depend on developer-only verification
+    modules omitted from the standalone distribution.
+    """
+    parent = np.asarray(cfld, dtype=np.float32)
+    squeeze = parent.ndim == 2
+    if squeeze:
+        parent = parent[None]
+    if parent.ndim != 3:
+        raise ValueError("parent field must be 2-D or 3-D")
+    _, nyp, nxp = parent.shape
+    ci = np.asarray(reg.ci, dtype=np.int64)
+    cj = np.asarray(reg.cj, dtype=np.int64)
+    if (ci.min() < 2 or ci.max() > nxp - 3
+            or cj.min() < 2 or cj.max() > nyp - 3):
+        raise ValueError("parent field too small for the +-2 SINT stencil "
+                         "around the registered donor cells")
+    ax = np.asarray(reg.xig, dtype=np.float32)[
+        np.asarray(reg.ip, dtype=np.int64)][None, None, :]
+    ay = np.asarray(reg.xjg, dtype=np.float32)[
+        np.asarray(reg.jp, dtype=np.int64)][None, :, None]
+    ii = ci[None, :]
+    jj = cj[:, None]
+    rows = []
+    for joff in range(-2, 3):
+        row = [parent[:, jj + joff, ii + ioff]
+               for ioff in range(-2, 3)]
+        rows.append(_numpy_sint_pass(*row, ax))
+    result = _numpy_sint_pass(*rows, ay)
+    return result[0] if squeeze else result
+
+
+def sint(cfld, reg: NestRegistration, *, out=None, alloc=None):
+    """SINT-interpolate a parent device field onto the child grid.
+
+    ``cfld`` is ``(ny_p, nx_p)`` or ``(nz, ny_p, nx_p)`` FP32 (already
+    coupled by the caller where WRF couples -- this operator is the bare
+    horizontal interpolation the wrappers share).  Returns the child-extent
+    field with the same leading shape.
+    """
+    if isinstance(cfld, np.ndarray):
+        if alloc is not None:
+            raise ValueError("NumPy SINT does not accept a device allocator")
+        result = np.ascontiguousarray(
+            _numpy_sint(cfld, reg), dtype=np.float32)
+        if out is None:
+            return result
+        _check_table(_as3d(out), _as3d(result).shape, "sint out= buffer")
+        out[...] = result
+        return out
+
+    c3 = _as3d(cfld)
+    nz, nyp, nxp = c3.shape
+    if (nyp, nxp) != (reg.nyp, reg.nxp):
+        raise ValueError(f"parent field {c3.shape[1:]} does not match the "
+                         f"registration extent {(reg.nyp, reg.nxp)}")
+    if out is not None:
+        _check_table(_as3d(out), (nz, reg.nyc, reg.nxc), "sint out= buffer")
+        out = _as3d(out)
+    else:
+        import cupy as cp
+        out = (alloc((nz, reg.nyc, reg.nxc), np.float32) if alloc is not None
+               else cp.empty((nz, reg.nyc, reg.nxc), dtype=cp.float32))
+    dev = reg.device_tables(alloc=None)
+    _launch(_kernel("nest_sint"), nz * reg.nyc * reg.nxc, (
+        c3, out, dev["ci"], dev["ip"], dev["cj"], dev["jp"],
+        dev["xig"], dev["xjg"],
+        np.int32(nz), np.int32(reg.nyc), np.int32(reg.nxc),
+        np.int32(nyp), np.int32(nxp)))
+    return out if cfld.ndim == 3 else out[0]
+
+
+_SIDES = ("west", "east", "south", "north")
+
+
+def bdy_interp1(cfld, nfld, reg: NestRegistration, *,
+                parent_dt_fp32, parent_interval_ticks=None,
+                spec_zone=1, relax_zone=4, spec_bdy_width=5,
+                out=None, alloc=None):
+    """Build the child's four-side boundary VALUE/TENDENCY device tables.
+
+    Transliteration of ``bdy_interp1`` (interp_fcn.F:2423-2626): VALUE is
+    the child's current coupled state (:2584); TENDENCY is
+    ``rdt * (SINT(coupled parent @ t+dtp) - child)`` (:2583) with REAL*8
+    ``rdt = 1.D0/cdt`` (:2480/:2500).
+
+    TENDENCY-INTERVAL CONTRACT (F7 amendment): ``cdt`` IS THE
+    PARENT/COARSE-GRID STEP -- interp_fcn.F:2320 declares ``cdt, ndt`` as
+    "Time step size for CG and FG" (dummy declarations :2345, :2472).  The
+    API therefore carries ``parent_dt_fp32``/``parent_interval_ticks``
+    explicitly; the child's own dt has no business here (it governs only
+    the Davies application).  ``reg`` must be built with
+    ``wrapper="bdy"`` (the MAX((nri-1)/2,1) stagger offset, :2504-2510).
+
+    Returns ``{"west"|"east"|"south"|"north": (value, tendency)}`` FP32
+    device tables in the Phase-4 lateral_bc.py orientation: west/east
+    ``(nz, ny_c, sz)``, south/north ``(nz, sz, nx_c)``, width index 0 at
+    the domain edge.  ``out`` may pass preallocated tables of exactly that
+    layout (the L6 rolling nest_* slots); ``alloc(shape, dtype)`` places
+    fresh ones.
+    """
+    if reg.wrapper != "bdy":
+        raise ValueError("bdy_interp1 needs a wrapper='bdy' registration "
+                         "(stagger ioff = MAX((nri-1)/2,1), "
+                         "interp_fcn.F:2504-2510)")
+    if parent_interval_ticks is not None and int(parent_interval_ticks) <= 0:
+        raise ValueError("parent_interval_ticks must be positive")
+    cdt = np.float32(parent_dt_fp32)
+    if not np.isfinite(cdt) or cdt <= 0.0:
+        raise ValueError("parent_dt_fp32 must be a positive finite parent "
+                         "step (interp_fcn.F:2320 cdt semantics)")
+    c3, n3 = _as3d(cfld), _as3d(nfld)
+    nz, nyp, nxp = c3.shape
+    if (nyp, nxp) != (reg.nyp, reg.nxp):
+        raise ValueError("parent field does not match the registration")
+    if n3.shape != (nz, reg.nyc, reg.nxc):
+        raise ValueError("child field does not match the registration")
+    sz = bdy_width(spec_zone, relax_zone, spec_bdy_width)     # :2517
+    shapes = {"west": (nz, reg.nyc, sz), "east": (nz, reg.nyc, sz),
+              "south": (nz, sz, reg.nxc), "north": (nz, sz, reg.nxc)}
+    if out is None:
+        import cupy as cp
+
+        def _new(shape):
+            return (alloc(shape, np.float32) if alloc is not None
+                    else cp.empty(shape, dtype=cp.float32))
+        out = {side: (_new(shapes[side]), _new(shapes[side]))
+               for side in _SIDES}
+    for side in _SIDES:            # fail loud BEFORE any device work
+        value, tendency = out[side]
+        _check_table(value, shapes[side], f"{side} value table")
+        _check_table(tendency, shapes[side], f"{side} tendency table")
+    dev = reg.device_tables(alloc=None)
+    for index, side in enumerate(_SIDES):
+        value, tendency = out[side]
+        count = nz * sz * (reg.nyc if index < 2 else reg.nxc)
+        _launch(_kernel("nest_bdy_interp1"), count, (
+            c3, n3, value, tendency,
+            dev["ci"], dev["ip"], dev["cj"], dev["jp"],
+            dev["xig"], dev["xjg"], cdt,
+            np.int32(index), np.int32(sz),
+            np.int32(nz), np.int32(reg.nyc), np.int32(reg.nxc),
+            np.int32(nyp), np.int32(nxp)))
+    return out
+
+
+def blend_terrain(ter_interpolated, ter_input, *,
+                  spec_bdy_width=5, blend_width=5):
+    """Blend parent-interpolated and fine terrain in place on ``ter_input``.
+
+    ``blend_terrain`` (dyn_em/nest_init_utils.F:712-785): rows <=
+    spec_bdy_width take the parent value (:766-769); the next blend_width
+    frames blend with weights ``blend_cell/(blend_width+1)`` (:759-765);
+    the interior stays fine.  Applied to ht, mub AND phb at child init
+    (mediation_integrate.F:733-741; blending all three is the ratified
+    adjudication).  2-D ``(ny, nx)`` or 3-D ``(nk, ny, nx)`` FP32 device
+    arrays; k is inert.
+    """
+    if isinstance(ter_input, np.ndarray):
+        if not isinstance(ter_interpolated, np.ndarray):
+            raise TypeError("NumPy terrain blending requires NumPy operands")
+        coarse = np.asarray(ter_interpolated, dtype=np.float64)
+        fine = np.asarray(ter_input, dtype=np.float64)
+        if coarse.shape != fine.shape:
+            raise ValueError("blend operands must have identical shapes")
+        squeeze = fine.ndim == 2
+        work_f = fine[None] if squeeze else fine
+        work_c = coarse[None] if squeeze else coarse
+        _, ny, nx = work_f.shape
+        sbw, width = int(spec_bdy_width), int(blend_width)
+        ide, jde = nx + 1, ny + 1
+        i1 = np.arange(1, nx + 1)[None, None, :]
+        j1 = np.arange(1, ny + 1)[None, :, None]
+        reciprocal = 1.0 / (width + 1)
+        blended_output = work_f.copy()
+        for blend_cell in range(width, 0, -1):
+            hit = (
+                (i1 == sbw + blend_cell)
+                | (j1 == sbw + blend_cell)
+                | (i1 == ide - sbw - blend_cell)
+                | (j1 == jde - sbw - blend_cell)
+            )
+            blended = (
+                blend_cell * work_f
+                + (width + 1 - blend_cell) * work_c
+            ) * reciprocal
+            blended_output = np.where(hit, blended, blended_output)
+        specified = (
+            (i1 <= sbw) | (j1 <= sbw)
+            | (i1 >= ide - sbw) | (j1 >= jde - sbw)
+        )
+        blended_output = np.where(specified, work_c, blended_output)
+        ter_input[...] = np.asarray(
+            blended_output[0] if squeeze else blended_output,
+            dtype=np.float32,
+        )
+        return ter_input
+
+    ci3, ti3 = _as3d(ter_interpolated), _as3d(ter_input)
+    if ci3.shape != ti3.shape:
+        raise ValueError("blend operands must have identical shapes")
+    nk, ny, nx = ti3.shape
+    _launch(_kernel("nest_blend_terrain"), nk * ny * nx, (
+        ci3, ti3, np.int32(spec_bdy_width), np.int32(blend_width),
+        np.int32(nk), np.int32(ny), np.int32(nx)))
+    return ter_input
+
+
+def adjust_tempqv(mub, save_mub, c3, c4, p_top, th, pp, qv, *,
+                  use_theta_m=0):
+    """Correct theta/qv in place for the blended-MUB pressure change.
+
+    ``adjust_tempqv`` (dyn_em/nest_init_utils.F:812-890), called at child
+    init right after blend_terrain (mediation_integrate.F:749): RH is
+    conserved across the ``save_mub -> mub`` column-mass change; ``th``
+    and ``qv`` are updated in place, ``pp`` is read only (the Fortran
+    INTENT(INOUT) never writes it; its ``znw`` dummy is unused and
+    dropped).  ``c3``/``c4`` are the half-level hybrid coefficients
+    (state ``c3h``/``c4h``); ``R_v/R_d`` is passed from the constants
+    module.  Evaluated in FP64, stored FP32 (documented deviation -- see
+    the kernel header).
+    """
+    if isinstance(th, np.ndarray):
+        if not all(isinstance(value, np.ndarray)
+                   for value in (mub, save_mub, c3, c4, pp, qv)):
+            raise TypeError("NumPy adjust_tempqv requires NumPy operands")
+        mub64 = np.asarray(mub, dtype=np.float64)
+        saved64 = np.asarray(save_mub, dtype=np.float64)
+        c3_64 = np.asarray(c3, dtype=np.float64)[:, None, None]
+        c4_64 = np.asarray(c4, dtype=np.float64)[:, None, None]
+        th64 = np.asarray(th, dtype=np.float64)
+        pp64 = np.asarray(pp, dtype=np.float64)
+        qv64 = np.asarray(qv, dtype=np.float64)
+        rvord = c.RVOVRD
+        p_old = c4_64 + c3_64 * saved64[None] + float(p_top) + pp64
+        if use_theta_m == 1:
+            tc = ((th64 + 300.0) * (p_old / 1.0e5) ** (2.0 / 7.0)
+                  / (1.0 + rvord * qv64) - 273.15)
+        else:
+            tc = ((th64 + 300.0) * (p_old / 1.0e5) ** (2.0 / 7.0)
+                  - 273.15)
+        es = 610.78 * np.exp(17.0809 * tc / (234.175 + tc))
+        rh = (qv64 * p_old / (0.622 + qv64)) / es
+        p_new = c4_64 + c3_64 * mub64[None] + float(p_top) + pp64
+        if use_theta_m == 1:
+            thloc = (th64 + 300.0) / (1.0 + rvord * qv64)
+        else:
+            thloc = th64 + 300.0
+        dth1 = (-191.86e-3 * thloc / (p_new + p_old)
+                * (p_new - p_old))
+        dth = (-191.86e-3 * (thloc + 0.5 * dth1) / (p_new + p_old)
+               * (p_new - p_old))
+        if use_theta_m == 1:
+            adjusted_th = ((thloc + dth) * (1.0 + rvord * qv64)
+                           - 300.0)
+        else:
+            adjusted_th = thloc + dth - 300.0
+        tc = ((thloc + dth) * (p_new / 1.0e5) ** (2.0 / 7.0)
+              - 273.15)
+        es = 610.78 * np.exp(17.0809 * tc / (234.175 + tc))
+        vapor_pressure = rh * es
+        adjusted_qv = 0.622 * vapor_pressure / (p_new - vapor_pressure)
+        th[...] = np.asarray(adjusted_th, dtype=np.float32)
+        qv[...] = np.asarray(adjusted_qv, dtype=np.float32)
+        return th, qv
+
+    th3, pp3, qv3 = th, pp, qv
+    nz, ny, nx = th3.shape
+    if pp3.shape != th3.shape or qv3.shape != th3.shape:
+        raise ValueError("th/pp/qv shapes differ")
+    if mub.shape != (ny, nx) or save_mub.shape != (ny, nx):
+        raise ValueError("mub/save_mub must be (ny, nx)")
+    if c3.shape != (nz,) or c4.shape != (nz,):
+        raise ValueError("c3/c4 must be half-level (nz,) columns")
+    _launch(_kernel("nest_adjust_tempqv"), nz * ny * nx, (
+        mub, save_mub, c3, c4, np.float64(p_top), th3, pp3, qv3,
+        np.float64(c.RVOVRD), np.int32(use_theta_m),
+        np.int32(nz), np.int32(ny), np.int32(nx)))
+    return th, qv
+
+
+def _copy_common(cfld, nfld, reg: NestRegistration, spec_zone):
+    c3, n3 = _as3d(cfld), _as3d(nfld)
+    nz, nyp, nxp = c3.shape
+    if (nyp, nxp) != (reg.nyp, reg.nxp) or n3.shape[1:] != (reg.nyc,
+                                                            reg.nxc):
+        raise ValueError("fields do not match the registration extents")
+    if n3.shape[0] != nz:
+        raise ValueError("parent/child level counts differ")
+    args = (np.int32(reg.i_parent_start), np.int32(reg.j_parent_start),
+            np.int32(reg.nri), np.int32(reg.nrj), np.int32(spec_zone),
+            np.int32(reg.xstag), np.int32(reg.ystag),
+            np.int32(nz), np.int32(nyp), np.int32(nxp),
+            np.int32(reg.nyc), np.int32(reg.nxc))
+    istag = 0 if reg.xstag else 1
+    jstag = 0 if reg.ystag else 1
+    ni_cells = ((reg.nxc - (1 if reg.xstag else 0)) // reg.nri
+                - istag - 2 * spec_zone + 1)
+    nj_cells = ((reg.nyc - (1 if reg.ystag else 0)) // reg.nrj
+                - jstag - 2 * spec_zone + 1)
+    count = nz * max(ni_cells, 0) * max(nj_cells, 0)
+    return c3, n3, args, count
+
+
+def copy_fcn(cfld, nfld, reg: NestRegistration, *, spec_zone=1):
+    """Feedback cell-average of the child onto the parent, in place.
+
+    ``copy_fcn`` (interp_fcn.F:1397-1742), BOTH parity branches: odd
+    (:1463-1562) and even (:1567-1737) ratios cell-average all nri*nrj
+    child points at weight 1/(nri*nrj) for mass fields and 1/nri along
+    the face for u/v.  DORMANT Phase-5b machinery (design D4): the
+    kernels land and are oracled at N1; the
+    ``feedback_prepare``/``feedback_commit``/``feedback_finalize``
+    transaction is a no-op at feedback=0 and nothing calls this in Phase 5
+    runs.
+    """
+    c3, n3, args, count = _copy_common(cfld, nfld, reg, spec_zone)
+    if count > 0:
+        _launch(_kernel("nest_copy_fcn"), count, (c3, n3, *args))
+    return cfld
+
+
+def copy_fcnm(cfld, nfld, reg: NestRegistration, *, spec_zone=1):
+    """Feedback 1-pt pick for masked REAL fields, in place (dormant P5b).
+
+    ``copy_fcnm`` (interp_fcn.F:1747-1824): center child on odd ratios,
+    SW-corner nearest neighbor on even ratios (:1806).
+    """
+    c3, n3, args, count = _copy_common(cfld, nfld, reg, spec_zone)
+    if count > 0:
+        _launch(_kernel("nest_copy_fcnm"), count, (c3, n3, *args))
+    return cfld
+
+
+def copy_fcni(cfld, nfld, reg: NestRegistration, *, spec_zone=1):
+    """Feedback 1-pt pick for INTEGER fields, in place (dormant P5b).
+
+    ``copy_fcni`` (interp_fcn.F:1829-1906), the int32 twin of copy_fcnm.
+    """
+    c3, n3, args, count = _copy_common(cfld, nfld, reg, spec_zone)
+    if c3.dtype != np.int32 or n3.dtype != np.int32:
+        raise TypeError("copy_fcni operates on INTEGER (int32) fields")
+    if count > 0:
+        _launch(_kernel("nest_copy_fcni"), count, (c3, n3, *args))
+    return cfld

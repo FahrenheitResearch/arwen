@@ -1,0 +1,163 @@
+diff --git a/gpuwm/io/wrfout.py b/gpuwm/io/wrfout.py
+index 510109187296de99565db5f27b7dbfed77470920..44774a3c5c9e8318719f634e8cf6579edb40b664 100644
+--- a/gpuwm/io/wrfout.py
++++ b/gpuwm/io/wrfout.py
+@@ -11,9 +11,16 @@ record.  Only ``state_frame`` touches the GPU (deferred cupy import) --
+ the writer itself is CPU-importable.
+ """
+ from __future__ import annotations
++from contextlib import suppress
++from pathlib import Path
++
+ import numpy as np
+ import netCDF4
+
++from gpuwm.supervisor import (fsync_file, quarantine_file,
++                              replace_file_with_retry, unique_temp_path)
++
++_COMPLETION_ATTR = "GPUWM_WRITE_COMPLETE"
+ #: WRF Registry metadata ``name -> (description, units)`` for the
+ #: variables gpuwm writes; unknown names get empty strings.
+ _VAR_META = {
+@@ -193,11 +200,69 @@ def state_frame(
+     return fields
+
+
++def validate_wrfout_file(path, *, inventory, shapes, times):
++    """Reopen and prove inventory/shapes/Times/completion before publish."""
++    path = Path(path)
++    with netCDF4.Dataset(path, "r") as ds:
++        if int(getattr(ds, _COMPLETION_ATTR, 0)) != 1:
++            raise ValueError(f"wrfout {path} has no completion attribute")
++        actual = set(ds.variables)
++        if actual != set(inventory):
++            raise ValueError(
++                f"wrfout {path} inventory mismatch: expected "
++                f"{sorted(inventory)}, got {sorted(actual)}")
++        for name, expected in shapes.items():
++            actual_shape = tuple(ds.variables[name].shape)
++            if actual_shape != tuple(expected):
++                raise ValueError(
++                    f"wrfout {path} variable {name} shape {actual_shape} "
++                    f"!= completed shape {tuple(expected)}")
++        raw_times = ds.variables["Times"][:]
++        actual_times = tuple(
++            row.tobytes().decode("ascii").rstrip("\x00")
++            for row in raw_times)
++        if actual_times != tuple(times):
++            raise ValueError(
++                f"wrfout {path} Times mismatch: expected {tuple(times)}, "
++                f"got {actual_times}")
++
++
++def quarantine_orphan_wrfouts(directory):
++    """Move orphan temporaries and incomplete final files out of sight."""
++    directory = Path(directory)
++    if not directory.exists():
++        return tuple()
++    moved = []
++    temporaries = set(directory.glob(".wrfout*.tmp*"))
++    temporaries.update(directory.glob("wrfout*.tmp*"))
++    for path in sorted(temporaries):
++        target = quarantine_file(path, reason="orphan-wrfout-tmp")
++        if target is not None:
++            moved.append(target)
++    for path in sorted(directory.glob("wrfout*")):
++        if not path.is_file() or ".tmp" in path.name:
++            continue
++        try:
++            with netCDF4.Dataset(path, "r") as ds:
++                complete = int(getattr(ds, _COMPLETION_ATTR, 0)) == 1
++        except Exception:
++            complete = False
++        if not complete:
++            target = quarantine_file(path, reason="incomplete-wrfout")
++            if target is not None:
++                moved.append(target)
++    return tuple(moved)
++
++
+ class WrfoutWriter:
+     def __init__(self, path, *, nx, ny, nz, dx, dy, title="gpuwm",
+                  global_attrs=None):
+         self.nx, self.ny, self.nz = nx, ny, nz
+-        self.ds = netCDF4.Dataset(path, "w", format="NETCDF4_CLASSIC")
++        self._final_path = Path(path)
++        self._final_path.parent.mkdir(parents=True, exist_ok=True)
++        self._temp_path = unique_temp_path(self._final_path, hidden=True)
++        self.ds = netCDF4.Dataset(
++            self._temp_path, "w", format="NETCDF4_CLASSIC")
+         ds = self.ds
+         ds.createDimension("Time", None)
+         ds.createDimension("DateStrLen", 19)
+@@ -218,6 +283,8 @@ class WrfoutWriter:
+             ds.setncatts(dict(global_attrs))
+         ds.createVariable("Times", "S1", ("Time", "DateStrLen"))
+         self._n = 0
++        self._times = []
++        self._closed = False
+
+     def _dims_for(self, shape):
+         nz, ny, nx = self.nz, self.ny, self.nx
+@@ -255,13 +322,58 @@ class WrfoutWriter:
+             if name not in self.ds.variables:
+                 self._create_variable(name, self._dims_for(arr.shape))
+             self.ds.variables[name][t] = arr
++        self._times.append(buf.rstrip(b"\x00").decode("ascii"))
+         self._n += 1
+
+     def close(self):
+-        self.ds.close()
++        if self._closed:
++            return
++        inventory = tuple(self.ds.variables)
++        shapes = {name: tuple(variable.shape)
++                  for name, variable in self.ds.variables.items()}
++        times = tuple(self._times)
++        try:
++            self.ds.setncattr(_COMPLETION_ATTR, np.int32(1))
++            self.ds.close()
++            self._closed = True
++            fsync_file(self._temp_path)
++            validate_wrfout_file(
++                self._temp_path, inventory=inventory, shapes=shapes,
++                times=times)
++            # Sharing violations receive the same capped 0.50 s retry as the
++            # heartbeat, but a durable wrfout publication remains fail-loud.
++            replace_file_with_retry(self._temp_path, self._final_path)
++        except BaseException:
++            if not self._closed:
++                # A half-closed netCDF handle can fail repeatedly.  Preserve
++                # the original publication error and still reach quarantine.
++                with suppress(BaseException):
++                    self.ds.close()
++                self._closed = True
++            if self._temp_path.exists():
++                with suppress(BaseException):
++                    quarantine_file(
++                        self._temp_path,
++                        reason="failed-wrfout-publication")
++            raise
++
++    def abort(self):
++        """Close without completion and quarantine a failed write."""
++        if self._closed:
++            return
++        with suppress(BaseException):
++            self.ds.close()
++        self._closed = True
++        if self._temp_path.exists():
++            with suppress(BaseException):
++                quarantine_file(self._temp_path, reason="aborted-wrfout")
+
+     def __enter__(self):
+         return self
+
+-    def __exit__(self, *exc):
+-        self.close()
++    def __exit__(self, exc_type, exc, traceback):
++        if exc_type is None:
++            self.close()
++        else:
++            self.abort()
++        return False

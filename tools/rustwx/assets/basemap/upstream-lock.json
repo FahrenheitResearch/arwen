@@ -1,0 +1,52 @@
+{
+  "repos": [
+    {
+      "name": "rusbie",
+      "url": "https://github.com/FahrenheitResearch/rusbie.git",
+      "commit": "bd13520b906993d58b1b29d27aaa8aae877a9338",
+      "purpose": "HRRR subset planning, source probing, cache layout, and range-download reference"
+    },
+    {
+      "name": "cfrust",
+      "url": "https://github.com/FahrenheitResearch/cfrust.git",
+      "commit": "d326eca4615df9cb3b081181e5e56a9026bb7c3f",
+      "purpose": "GRIB2 parser, tables, and unpacking reference"
+    },
+    {
+      "name": "sharprs",
+      "url": "https://github.com/FahrenheitResearch/sharprs.git",
+      "commit": "16cf0757304eb690d0208c304e32a4676178f00a",
+      "purpose": "Parcel diagnostics, shear, helicity, and STP reference"
+    },
+    {
+      "name": "ecape-rs",
+      "url": "https://github.com/FahrenheitResearch/ecape-rs.git",
+      "commit": "fac8292886800d226051a3098141c9e554106d5f",
+      "purpose": "Future ECAPE adapter seam"
+    },
+    {
+      "name": "wrf-rust-plots",
+      "url": "https://github.com/FahrenheitResearch/wrf-rust-plots.git",
+      "commit": "2088e9599dcf7c7e55be5261c935a48c7afbdd60",
+      "purpose": "Palette and native rendering reference"
+    },
+    {
+      "name": "metrust-py",
+      "url": "https://github.com/FahrenheitResearch/metrust-py.git",
+      "commit": "1b8436779832be326f24bd2acd40a908e9f54685",
+      "purpose": "Grid kinematics, smoothing, and mesoanalysis reference"
+    },
+    {
+      "name": "open-mrms",
+      "url": "https://github.com/FahrenheitResearch/open-mrms.git",
+      "commit": "3d08c318e38b09f50734eea3434c08993dbaf499",
+      "purpose": "Zarr writer, partitioned store layout, and ingest-to-store reference"
+    },
+    {
+      "name": "rustdar",
+      "url": "https://github.com/FahrenheitResearch/rustdar.git",
+      "commit": "3a708877b3f7bb5a93e0d14a95df36a3e0ada698",
+      "purpose": "NEXRAD Level II parser, derived radar products, detection, and radar rendering reference"
+    }
+  ]
+}

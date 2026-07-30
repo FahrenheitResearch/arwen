@@ -1,0 +1,28 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.7) 2.39
+# -O0 module_sf_noahlsm libm symbols (THE REFERENCE):
+U atanf
+U expf
+U log10f
+U logf
+U powf
+# -O0 module_sf_noahdrv libm symbols:
+U expf
+U logf
+U powf
+# -O2 -ftree-vectorize (WRF's own phys/ setting):
+U atanf
+U expf
+U log10f
+U logf
+U powf
+# -Ofast -ftree-vectorize:
+U atanf
+U cbrtf
+U expf
+U log10f
+U logf
+U powf
+# positive control (plain expf loop at -Ofast), proves the grep works:
+U _ZGVbN4v_expf
+U expf

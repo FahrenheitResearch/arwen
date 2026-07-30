@@ -1,0 +1,68 @@
+{
+  "schema": "gpuwm.nssl2.qvexcess-evidence.v1",
+  "base_commit": "c0458cb57d936a8288556ccde242ccc6836b8534",
+  "wrf": {
+    "version": "4.6.1",
+    "commit": "d66e442fccc04111067e29274c9f9eaccc3cef28",
+    "source": "phys/module_mp_nssl_2mom.F",
+    "source_lines": {
+      "pure_qvexcess": "6052-6199",
+      "default_maxsup_caller": "11537-11567"
+    },
+    "source_sha256": "5aaae368289694c929d38365d77d445e4f22291a30a48555df7a21d470b72ae3",
+    "compiler": "gfortran -O2",
+    "oracle_visibility_change": "Only QVEXCESS module visibility is added; no executable statement changes."
+  },
+  "oracle_build": {
+    "command": "tools/nssl2_wrf461_qvexcess_oracle/build.sh /path/to/WRF-v4.6.1 /new/oracle-build",
+    "build_sh_sha256": "9f3756b1a73c1694c157fdd2f694285887e0e41f1d6331660c05b567a14d1324",
+    "visibility_patch_sha256": "93c6859c8bcfb3913e5d263b5bd54f2776cb87ff92ac449f5fbdeeef0eb8f04b",
+    "harness_sha256": "505566ad27a751cd3dabc2c03bf52012bb97bba02e547c7eca45dfdb4f81d1f8",
+    "stub_wrf_sha256": "edb9fdd90b672032a1be874b0f1a8ea8cde44475e53f318f547e62cec5fff890"
+  },
+  "fixture": {
+    "path": "gpuwm/data/nssl2/oracle/qvexcess.csv",
+    "rows": 128,
+    "sha256": "fbbcb323d356f10fe47d147c22c2a901f738fe22cf48427c2ad077abcef17661",
+    "targets_percent": [0.0, 0.4, 90.0, 250.0],
+    "iteration_branch_codes": [-2, -1, 0, 1],
+    "representations": ["split base/perturbation", "combined workspace"],
+    "trace_final_bit_gate": "All 128 literal-trace qvex results are bitwise equal to official QVEXCESS results before fixture emission."
+  },
+  "implementation": {
+    "gpuwm/core/nssl2_qvexcess.py": "d96653541745438bb22a2626f4e6687b4881580f4e903d91bd2adeefda530ddb",
+    "gpuwm/core/kernels/nssl2_qvexcess.cu": "6906dcd9f8822d73d87ff3cb6e545a1b1ddef567c16c658435d4f669f1f369dc",
+    "tests/test_nssl2_qvexcess.py": "e52a4bbab1ff6c62d412c41306f08f30437028bde391dc1157f6272e246f99bc"
+  },
+  "contracts": {
+    "pure_api": "Reads direct FP32 workspace concentration views and writes only caller-owned qvex output; qv, qc, theta, number, and CCN inputs are immutable.",
+    "caller_adapter": "Separate named adapter applies WRF latent theta, vapor/cloud transfer, and active default imaxsupopt=4 cloud-number/predicted-CCN coupling.",
+    "number_units": "Caller adapter number and predicted-CCN arrays are already native #/m3; it performs no Registry or density unit round trip.",
+    "combined_oracle": "workspace_qvex is emitted by a separate official-routine call using combined FP32 theta and vapor; it is not inferred from split fixture columns.",
+    "conservation": "Adapter tests pin qv+qc conservation, latent theta closure, native nonnegativity, and number/CCN coupling."
+  },
+  "validation": {
+    "oracle_rebuild": "complete; official result equals literal trace bit-for-bit for 128/128 rows",
+    "focused_gate": {
+      "command": "python -m pytest -q tests/test_nssl2_qvexcess.py",
+      "result": "10 passed"
+    },
+    "full_relevant_gate": {
+      "command": "python -m pytest -q tests/test_nssl2_contract.py tests/test_nssl2_gpu.py tests/test_nssl2_nucond_diagnostics.py tests/test_nssl2_qvexcess.py",
+      "result": "85 passed"
+    },
+    "changed_file_ruff_gate": {
+      "command": "python -m ruff check gpuwm/core/nssl2_qvexcess.py tests/test_nssl2_qvexcess.py",
+      "result": "passed"
+    }
+  },
+  "frozen_integration_seams": {
+    "gpuwm/core/nssl2.py": "3bd1f16e1973ee41f0eaf07dc6db359f63932b8862c5ee1274ab91ad93910347",
+    "gpuwm/core/kernels/nssl2.cu": "67873ac07b4b17b77d5a4f58fb0f103129f3db99e3543d67b39d0a937ac13520",
+    "gpuwm/core/nssl2_driver_support.py": "d425c440ef1c1f46c8d71eee5f5eb3d2f2382239e3356d6e6bc465aa40284e5b",
+    "gpuwm/core/kernels/nssl2_driver_support.cu": "8e8b01cc0ca43d48ce6d4a200174ff0be6f5c268d57714fe755fd43ee635934d",
+    "hash_scope": "base_commit_git_blob",
+    "base_commit_must_be_ancestor": true,
+    "checkout_policy": "Current checkout bytes may differ in legitimate descendants; the base blobs remain immutable evidence."
+  }
+}

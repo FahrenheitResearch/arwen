@@ -1,0 +1,26 @@
+[package]
+name = "shapefile"
+version = "0.7.0"
+authors = ["tmontaigu <thomas.montaigu@laposte.net>"]
+description = "Read & Write shapefiles in Rust"
+license = "MIT"
+readme = "README.md"
+keywords = ["shapefile"]
+homepage = "https://github.com/tmontaigu/shapefile-rs"
+repository = "https://github.com/tmontaigu/shapefile-rs"
+exclude = ["tests/data/*"]
+edition = "2021"
+
+[dependencies]
+byteorder = "1.2.7"
+dbase = "0.6.0"
+geo-types = { version = ">=0.4.0, <0.8.0", optional = true }
+geo-traits = { version = "0.2", optional = true }
+
+[features]
+encoding_rs = ["dbase/encoding_rs"]
+yore = ["dbase/yore"]
+
+
+[package.metadata.docs.rs]
+features = ["geo-types", "geo-traits"]

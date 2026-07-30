@@ -1,0 +1,633 @@
+"""CPU gates for the Task-14 model loop and tree restart contract."""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from dataclasses import replace
+from datetime import datetime
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+from gpuwm.core.clock import (Op, STEP, Schedule, build_schedule,
+                              execute_schedule, resolve_clock)
+from gpuwm.core.model import (PERIOD_BEGIN, DomainNode, ExperimentState,
+                              ModelRuntimeStatus, execute_experiment,
+                              experiment_fingerprint)
+from gpuwm.io import restart
+from gpuwm.static.lambert import grids_from_projection_config
+from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
+
+
+class _Coupler:
+    def __init__(self, child):
+        self.child = child
+        self.valid = False
+        self.calls = []
+
+    def force(self, node):
+        lead = node.parent.clock.ticks - node.clock.ticks
+        interval = node.parent.clock.spec.step_ticks
+        if lead != interval:
+            raise RuntimeError("parent must lead child by one parent interval")
+        self.valid = True
+        self.calls.append("force")
+
+    def invalidate(self):
+        self.valid = False
+        self.calls.append("invalidate")
+
+    def feedback_prepare(self, node, out):
+        self.calls.append("prepare")
+
+    def feedback_commit(self, node):
+        self.calls.append("commit")
+
+    def feedback_finalize(self, node):
+        self.calls.append("finalize")
+
+
+class _HistoryPhysics:
+    def __init__(self):
+        self.mp_physics = 10
+        self.refl_10cm = None
+
+
+class _HistoryState:
+    """Minimal concrete state for runtime's real REFL history handoff."""
+
+    def __init__(self):
+        self.elapsed_seconds = 0.0
+        self.qv = np.ones((1,), dtype=np.float32)
+        self.physics = _HistoryPhysics()
+
+
+class _RecordingWriters:
+    def __init__(self):
+        self.frames = []
+        self.drains = 0
+        self.last_durable_wrfout = None
+
+    @property
+    def pending(self):
+        return 0
+
+    def submit(self, node, ticks, *, refl_field=None):
+        if ticks:
+            assert refl_field is not None
+        self.frames.append((node.cfg.grid_id, ticks, refl_field))
+
+    def drain(self):
+        self.drains += 1
+
+
+def _model():
+    exp = load_scaffold()
+    clock = resolve_clock(exp)
+    schedule = build_schedule(exp, clock)
+    clocks = clock.clocks()
+    grids = grids_from_projection_config(exp)
+    root = DomainNode(
+        exp.domains[0], grids[0], SimpleNamespace(elapsed_seconds=0.0),
+        clocks[1], None, [], None)
+    child = DomainNode(
+        exp.domains[1], grids[1], SimpleNamespace(elapsed_seconds=0.0),
+        clocks[2], root, [], None)
+    child.coupler = _Coupler(child)
+    root.children.append(child)
+    model = ExperimentState(
+        root, {1: root, 2: child}, schedule, None, "fixture-fingerprint")
+    model._runtime_status = ModelRuntimeStatus()
+    model._resumed = False
+    model._resume_committed_history_grid_ids = frozenset()
+    model._scratch_arena = None
+    model._dycore_state_workspace = None
+    model._io_manager = None
+    model._last_checkpoint = None
+    return exp, model
+
+
+def _history_model(run_seconds: float):
+    exp = load_scaffold(variant="n2b")
+    domains = tuple(replace(
+        dc, history_interval_s=900.0,
+        run=replace(dc.run, run_seconds=run_seconds,
+                    output_interval_s=900.0,
+                    restart_interval_s=1800.0))
+        for dc in exp.domains)
+    exp = replace(exp, run_seconds=run_seconds,
+                  restart_interval_s=1800.0, domains=domains)
+    tick_clock = resolve_clock(exp)
+    schedule = build_schedule(exp, tick_clock)
+    clocks = tick_clock.clocks()
+    grids = grids_from_projection_config(exp)
+    root = DomainNode(
+        domains[0], grids[0], _HistoryState(), clocks[1], None, [], None)
+    child = DomainNode(
+        domains[1], grids[1], _HistoryState(), clocks[2], root, [], None)
+    child.coupler = _Coupler(child)
+    root.children.append(child)
+    model = ExperimentState(
+        root, {1: root, 2: child}, schedule, None, "history-fixture")
+    model._runtime_status = ModelRuntimeStatus()
+    model._resumed = False
+    model._resume_committed_history_grid_ids = frozenset()
+    model._scratch_arena = None
+    model._dycore_state_workspace = None
+    model._io_manager = None
+    model._last_checkpoint = None
+    return model
+
+
+def test_experiment_fingerprint_allows_only_schedule_extension_fields():
+    """Tree identity separates trajectory setup from resumable cadence."""
+    exp = load_scaffold()
+    catalog = SimpleNamespace(run_provenance={"forcing": "same"})
+    extended_domains = tuple(replace(
+        dc, history_interval_s=1200.0,
+        run=replace(dc.run, run_seconds=7200.0,
+                    output_interval_s=1200.0,
+                    restart_interval_s=2400.0))
+        for dc in exp.domains)
+    extended = replace(
+        exp, run_seconds=7200.0, restart_interval_s=2400.0,
+        domains=extended_domains)
+
+    assert experiment_fingerprint(exp, catalog) == \
+        experiment_fingerprint(extended, catalog)
+    assert experiment_fingerprint(exp, catalog) != experiment_fingerprint(
+        replace(extended, blend_width=extended.blend_width + 1), catalog)
+
+
+def test_mixed_transition_implementation_is_restart_fingerprint_bound(
+        monkeypatch):
+    import gpuwm.core.microphysics_transition as transition
+
+    exp = load_scaffold(variant="n2b")
+    root, child = exp.domains
+    mixed = replace(exp, domains=(
+        replace(root, run=replace(
+            root.run, mp_physics=8, moist=True, moist_cq=True)),
+        replace(child, run=replace(
+            child.run, mp_physics=18, moist=True, moist_cq=True,
+            nest_microphysics_transition=transition.MP8_TO_MP18_POLICY)),
+    ))
+    catalog = SimpleNamespace(run_provenance={"forcing": "same"})
+    before = experiment_fingerprint(mixed, catalog)
+    monkeypatch.setattr(
+        transition, "transition_implementation_identity",
+        lambda: {
+            "driver_sha256": "1" * 64,
+            "kernel_sha256": "2" * 64,
+            "contract_sha256": "3" * 64,
+        })
+    assert experiment_fingerprint(mixed, catalog) != before
+
+
+def test_ratio1_wk82_scaffold_is_cpu_buildable_and_morrison_complete():
+    dry = load_scaffold(variant="n2a")
+    moist = load_scaffold(variant="n2b")
+    assert len(dry.domains) == len(moist.domains) == 2
+    assert all(not dc.run.moist and dc.run.mp_physics == 0
+               for dc in dry.domains)
+    root, child = moist.domains
+    assert (child.parent_grid_ratio,
+            child.parent_time_step_ratio) == (1, 1)
+    assert root.run.mp_physics == child.run.mp_physics == 10
+    assert root.run.moist and child.run.moist
+    assert (root.run.nx, root.run.ny, root.run.nz, root.run.dt) == (
+        child.run.nx, child.run.ny, child.run.nz, child.run.dt)
+    schedule = build_schedule(moist, resolve_clock(moist))
+    assert Schedule.op_counts(schedule.interior_period) == {
+        "STEP": 2, "FORCE": 1, "FEEDBACK": 1}
+
+
+def test_disabled_restart_does_not_poll_per_period(monkeypatch):
+    exp, model = _model()
+    assert exp.restart_interval_s == 0.0
+
+    def unexpected_poll(_clock):
+        raise AssertionError("disabled restart alarm was polled")
+
+    monkeypatch.setattr(
+        "gpuwm.core.clock.DomainClock.restart_due", unexpected_poll)
+    monkeypatch.setattr("gpuwm.core.dycore.step",
+                        lambda *_args, **_kwargs: None)
+    report = execute_experiment(
+        model, validate_state=False, pool_trim_per_period=False)
+    assert report.restarts == 0
+
+
+def test_executor_wires_step_force_feedback_and_before_solve_alarms(
+        monkeypatch):
+    _exp, model = _model()
+    step_calls = []
+    history = []
+
+    def fake_step(state, cfg, *, refl_10cm_due=False, **kwargs):
+        step_calls.append((cfg.grid_id, state.elapsed_seconds,
+                           bool(refl_10cm_due)))
+
+    monkeypatch.setattr("gpuwm.core.dycore.step", fake_step)
+    report = execute_experiment(
+        model, validate_state=False,
+        history_handler=lambda tree, node, ticks: history.append(
+            (node.cfg.grid_id, ticks)))
+
+    assert report.steps == 20
+    assert report.forces == report.feedback_calls == 10
+    assert history == [(1, 0), (2, 0), (1, 30), (2, 30),
+                       (1, 60), (2, 60)]
+    assert [call for call in step_calls if call[2]] == [
+        (1, 24.0, True), (2, 24.0, True),
+        (1, 54.0, True), (2, 54.0, True)]
+    assert {node.clock.ticks for node in model.walk_parent_first()} == {60}
+    assert model._runtime_status.schedule_cursor == PERIOD_BEGIN
+
+
+def test_headless_executor_does_not_stage_unconsumable_reflectivity(
+        monkeypatch):
+    """A clock history alarm is not an output request without a handler."""
+    _exp, model = _model()
+    reflectivity_requests = []
+
+    def fake_step(_state, _cfg, *, refl_10cm_due=False, **_kwargs):
+        reflectivity_requests.append(bool(refl_10cm_due))
+
+    monkeypatch.setattr("gpuwm.core.dycore.step", fake_step)
+    report = execute_experiment(
+        model, validate_state=False, pool_trim_per_period=False)
+
+    assert report.histories == {1: 3, 2: 3}
+    assert reflectivity_requests
+    assert not any(reflectivity_requests)
+
+
+def test_health_debug_checks_each_domain_step_and_force(monkeypatch):
+    """Attribution mode catches defects before the next physics consumer."""
+    _exp, model = _model()
+    phases = []
+
+    class _RecordingValidator:
+        def __init__(self, state):
+            self.state = state
+
+        def require_healthy(self, *, phase=None):
+            phases.append((self.state, phase))
+
+    monkeypatch.setattr(
+        "gpuwm.core.health.StateHealthValidator", _RecordingValidator)
+    monkeypatch.setattr("gpuwm.core.dycore.step",
+                        lambda *_args, **_kwargs: None)
+
+    execute_experiment(
+        model, health_debug=True, pool_trim_per_period=False)
+
+    root = model.node(1).state
+    child = model.node(2).state
+    assert sum(state is root and phase == "pre-step.d01"
+               for state, phase in phases) == 10
+    assert sum(state is root and phase == "post-step.d01"
+               for state, phase in phases) == 10
+    assert sum(state is child and phase == "pre-step.d02"
+               for state, phase in phases) == 10
+    assert sum(state is child and phase == "post-step.d02"
+               for state, phase in phases) == 10
+    assert sum(state is child and phase == "post-force.d02-from-d01"
+               for state, phase in phases) == 10
+
+
+def test_executor_owns_shared_dycore_workspace_for_step_and_force(
+        monkeypatch):
+    """The real dispatcher guards every state-observing domain turn."""
+    _exp, model = _model()
+
+    class _TurnWorkspace:
+        def __init__(self):
+            self.owner = None
+            self.acquisitions = []
+
+        @contextmanager
+        def acquire(self, owner):
+            assert self.owner is None
+            self.owner = owner
+            self.acquisitions.append(owner)
+            try:
+                yield self
+            finally:
+                self.owner = None
+
+    workspace = _TurnWorkspace()
+    model._dycore_state_workspace = workspace
+
+    def fake_step(state, cfg, **kwargs):
+        assert workspace.owner == ("STEP", cfg.grid_id)
+
+    child = model.node(2)
+    original_force = child.coupler.force
+
+    def checked_force(node):
+        assert workspace.owner == ("FORCE", 2, 1)
+        original_force(node)
+
+    child.coupler.force = checked_force
+    monkeypatch.setattr("gpuwm.core.dycore.step", fake_step)
+    execute_experiment(
+        model, validate_state=False, pool_trim_per_period=False)
+
+    assert workspace.owner is None
+    assert workspace.acquisitions.count(("STEP", 1)) == 10
+    assert workspace.acquisitions.count(("STEP", 2)) == 10
+    assert workspace.acquisitions.count(("FORCE", 2, 1)) == 10
+
+
+def test_history_alarm_t0_and_fifteen_minute_coincidence():
+    exp = load_scaffold()
+    domains = tuple(replace(
+        dc, history_interval_s=900.0,
+        run=replace(dc.run, run_seconds=900.0, output_interval_s=900.0))
+        for dc in exp.domains)
+    exp = replace(exp, run_seconds=900.0, domains=domains)
+    schedule = build_schedule(exp, resolve_clock(exp))
+    alarms = []
+    execute_schedule(
+        schedule,
+        on_history=lambda gid, ticks: alarms.append((gid, ticks)))
+    assert alarms == [(1, 0), (2, 0), (1, 900), (2, 900)]
+
+
+def test_resume_suppresses_every_committed_domain_alarm():
+    exp = load_scaffold()
+    schedule = build_schedule(exp, resolve_clock(exp))
+    clocks = schedule.clock.clocks()
+    for clock in clocks.values():
+        clock.ticks = 30
+        clock.step_count = 5
+    alarms = []
+    execute_schedule(
+        schedule, clocks=clocks, start_period=5,
+        committed_initial_history_grid_ids={1, 2},
+        on_history=lambda gid, ticks: alarms.append((gid, ticks)))
+    assert alarms == [(1, 60), (2, 60)]
+
+
+def test_real_history_handler_30_minute_restart_split_has_exact_frames(
+        monkeypatch):
+    """Converged F1: the production consume_refl_10cm path must survive
+    the exact 30-minute split with no serialized child stash.  Pre-fix, the
+    resumed d02 t=1800 callback consumes a missing stash and raises; post-fix,
+    both committed boundary frames are suppressed and t=2700 is produced once.
+    """
+    from gpuwm.core.refl import stash_refl_10cm
+    from gpuwm.runtime import _submit_tree_history_frame
+
+    def fake_step(state, cfg, *, refl_10cm_due=False, **_kwargs):
+        if refl_10cm_due:
+            endpoint = int(round(state.elapsed_seconds + cfg.dt))
+            stash_refl_10cm(
+                state, np.asarray([cfg.grid_id, endpoint], dtype=np.int64))
+
+    monkeypatch.setattr("gpuwm.core.dycore.step", fake_step)
+
+    straight = _history_model(2700.0)
+    straight_writers = _RecordingWriters()
+    straight._io_manager = straight_writers
+    execute_experiment(
+        straight, validate_state=False,
+        history_handler=lambda _tree, node, ticks: (
+            _submit_tree_history_frame(straight_writers, node, ticks)))
+
+    first = _history_model(1800.0)
+    first_writers = _RecordingWriters()
+    first._io_manager = first_writers
+    checkpoints = []
+    execute_experiment(
+        first, validate_state=False,
+        history_handler=lambda _tree, node, ticks: (
+            _submit_tree_history_frame(first_writers, node, ticks)),
+        restart_handler=lambda _tree, ticks: checkpoints.append(
+            (ticks, tuple((gid, tick)
+                          for gid, tick, _refl in first_writers.frames))))
+    assert checkpoints == [(1800, ((1, 0), (2, 0), (1, 900), (2, 900),
+                                    (1, 1800), (2, 1800)))]
+
+    resumed = _history_model(2700.0)
+    for node in resumed.walk_parent_first():
+        node.clock.ticks = 1800
+        node.clock.step_count = 1800 // node.clock.spec.step_ticks
+        node.state.elapsed_seconds = 1800.0
+        assert node.state.physics.refl_10cm is None
+    resumed._resumed = True
+    resumed._resume_committed_history_grid_ids = frozenset({1, 2})
+    resumed_writers = _RecordingWriters()
+    resumed._io_manager = resumed_writers
+    execute_experiment(
+        resumed, validate_state=False,
+        history_handler=lambda _tree, node, ticks: (
+            _submit_tree_history_frame(resumed_writers, node, ticks)))
+
+    straight_by_domain = {
+        gid: [ticks for frame_gid, ticks, _refl in straight_writers.frames
+              if frame_gid == gid]
+        for gid in (1, 2)}
+    split_frames = first_writers.frames + resumed_writers.frames
+    split_by_domain = {
+        gid: [ticks for frame_gid, ticks, _refl in split_frames
+              if frame_gid == gid]
+        for gid in (1, 2)}
+    assert straight_by_domain == split_by_domain == {
+        1: [0, 900, 1800, 2700], 2: [0, 900, 1800, 2700]}
+
+
+def test_fifteen_minute_history_restart_and_lbc_seam_ordering():
+    exp = load_scaffold()
+    domains = tuple(replace(
+        dc, history_interval_s=900.0,
+        run=replace(dc.run, run_seconds=1800.0,
+                    output_interval_s=900.0,
+                    restart_interval_s=900.0))
+        for dc in exp.domains)
+    exp = replace(exp, run_seconds=1800.0,
+                  restart_interval_s=900.0, domains=domains)
+    schedule = build_schedule(
+        exp, resolve_clock(exp, lbc_interval_s=900.0))
+    events = []
+    execute_schedule(
+        schedule,
+        on_history=lambda gid, ticks: events.append(
+            ("history", gid, ticks)),
+        on_restart=lambda ticks: events.append(("restart", 1, ticks)),
+        on_lbc_reset=lambda ticks: events.append(("lbc_reset", 1, ticks)))
+    assert [event for event in events if event[2] == 900] == [
+        ("history", 1, 900), ("history", 2, 900),
+        ("restart", 1, 900), ("lbc_reset", 1, 900)]
+
+
+def test_child_step_asserts_while_restored_tables_are_invalid(monkeypatch):
+    _exp, model = _model()
+    model.schedule = Schedule(
+        clock=model.schedule.clock,
+        interior_period=(Op(STEP, 2, 0),),
+        final_period=(Op(STEP, 2, 0),))
+    monkeypatch.setattr("gpuwm.core.dycore.step", lambda *args, **kwargs: None)
+    with pytest.raises(AssertionError, match="INVALID nest tables"):
+        execute_experiment(model, validate_state=False)
+
+
+def test_tree_checkpoint_header_and_pending_work_refusal(monkeypatch,
+                                                         tmp_path):
+    _exp, model = _model()
+    captured = []
+
+    def fake_write(path, state, cfg, **kwargs):
+        path.write_bytes(b"fixture")
+        captured.append((cfg.grid_id, kwargs["tree_header"]))
+        return path
+
+    monkeypatch.setattr(restart, "write_restart", fake_write)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, datetime(1982, 5, 20))
+    assert root_path.name.startswith("gpuwmrst_d01_")
+    assert [gid for gid, _header in captured] == [2, 1]
+    assert len({header["checkpoint_set_id"]
+                for _gid, header in captured}) == 1
+    for gid, header in captured:
+        assert header["grid_id"] == gid
+        assert header["experiment_fingerprint"] == "fixture-fingerprint"
+        assert header["phase"] == PERIOD_BEGIN
+        assert header["nest_tables"] == "REBUILT"
+        assert (header["elapsed_ticks"], header["tick_den"]) == (0, 1)
+
+    model._runtime_status.pending_d2h = 1
+    with pytest.raises(restart.RestartMismatchError, match="pending work"):
+        restart.write_tree_restart(
+            tmp_path, model, datetime(1982, 5, 20, 0, 1))
+    model._runtime_status.pending_d2h = 0
+    model._runtime_status.schedule_cursor = "EXECUTING"
+    with pytest.raises(restart.RestartMismatchError,
+                       match="explicit PERIOD_BEGIN"):
+        restart.write_tree_restart(
+            tmp_path, model, datetime(1982, 5, 20, 0, 2))
+
+
+def test_failed_same_time_tree_rewrite_preserves_last_complete_generation(
+        monkeypatch, tmp_path):
+    """A failed rewrite must not replace members of the committed set.
+
+    The child is published before the root commit marker.  Reusing fixed
+    per-instant member names therefore used to replace the valid child's
+    archive before a root-write failure, leaving the older checkpoint
+    unrecoverably mixed across two set IDs.
+    """
+    _exp, model = _model()
+    fail_root = {"value": False}
+
+    def fake_write(path, state, cfg, **kwargs):
+        if fail_root["value"] and cfg.grid_id == 1:
+            raise OSError("injected root publication failure")
+        header = kwargs["tree_header"]
+        path.write_bytes(
+            f"{header['checkpoint_set_id']}:{cfg.grid_id}".encode("ascii"))
+        return path
+
+    monkeypatch.setattr(restart, "write_restart", fake_write)
+    instant = datetime(1982, 5, 20)
+    committed_root = restart.write_tree_restart(tmp_path, model, instant)
+    committed = restart._tree_restart_paths(committed_root, {1, 2})
+    committed_bytes = {gid: path.read_bytes()
+                       for gid, path in committed.items()}
+
+    fail_root["value"] = True
+    with pytest.raises(OSError, match="root publication failure"):
+        restart.write_tree_restart(tmp_path, model, instant)
+
+    assert committed_root.exists()
+    assert restart._tree_restart_paths(committed_root, {1, 2}) == committed
+    assert {gid: path.read_bytes() for gid, path in committed.items()} == \
+        committed_bytes
+    # Failed, uncommitted generation members are best-effort cleaned up.
+    assert set(tmp_path.iterdir()) == set(committed.values())
+
+
+def _tree_headers(model, *, phase=PERIOD_BEGIN, child_ticks=0):
+    headers = {}
+    for node in model.walk_parent_first():
+        ticks = child_ticks if node.cfg.grid_id == 2 else 0
+        headers[node.cfg.grid_id] = {
+            "format_version": restart.RESTART_FORMAT_VERSION,
+            "experiment_fingerprint": model.experiment_fingerprint,
+            "checkpoint_set_id": "fixture-set",
+            "grid_id": node.cfg.grid_id,
+            "parent_id": node.cfg.parent_id,
+            "domain_ids": [1, 2],
+            "elapsed_ticks": ticks,
+            "tick_den": 1,
+            "elapsed_seconds": float(ticks),
+            "phase": phase,
+            "nest_tables": "REBUILT",
+            "dtbc_fp32_bits": int(np.float32(0).view(np.uint32)),
+        }
+    return headers
+
+
+def _tree_files(tmp_path):
+    paths = {}
+    for gid in (1, 2):
+        path = tmp_path / f"gpuwmrst_d{gid:02d}_1982-05-20_00_00_00.npz"
+        path.write_bytes(b"fixture")
+        paths[gid] = path
+    return paths
+
+
+def test_tree_restore_refuses_partial_phase_and_mismatched_ticks(
+        monkeypatch, tmp_path):
+    _exp, model = _model()
+    paths = _tree_files(tmp_path)
+    headers = _tree_headers(model)
+    monkeypatch.setattr(
+        restart, "_validate_restart",
+        lambda path, *_args: SimpleNamespace(
+            header=headers[int(path.name.split("_d")[1][:2])]))
+    monkeypatch.setattr(restart, "_apply_validated_restart",
+                        lambda *args, **kwargs: None)
+
+    paths[2].unlink()
+    with pytest.raises(restart.RestartMismatchError, match="partial"):
+        restart.restore_tree_restart(paths[1], model)
+    paths[2].write_bytes(b"fixture")
+
+    headers[2]["phase"] = "EXECUTING"
+    with pytest.raises(restart.RestartMismatchError, match="phase"):
+        restart.restore_tree_restart(paths[1], model)
+    headers[2]["phase"] = PERIOD_BEGIN
+    headers[2]["elapsed_ticks"] = headers[2]["elapsed_seconds"] = 6
+    with pytest.raises(restart.RestartMismatchError,
+                       match="elapsed ticks mismatch"):
+        restart.restore_tree_restart(paths[1], model)
+
+
+def test_tree_restore_invalidates_children_and_forbids_eager_force(
+        monkeypatch, tmp_path):
+    _exp, model = _model()
+    paths = _tree_files(tmp_path)
+    headers = _tree_headers(model)
+    monkeypatch.setattr(
+        restart, "_validate_restart",
+        lambda path, *_args: SimpleNamespace(
+            header=headers[int(path.name.split("_d")[1][:2])]))
+    monkeypatch.setattr(restart, "_apply_validated_restart",
+                        lambda *args, **kwargs: None)
+
+    info = restart.restore_tree_restart(paths[1], model)
+    child = model.node(2)
+    assert info.phase == PERIOD_BEGIN
+    assert child.coupler.valid is False
+    from gpuwm.core.nest import NestCoupler
+    # Bypass only geometry registration (the ratio-1 identity scaffold fills
+    # the parent and deliberately lacks a +-2 interpolation halo).  Calling
+    # the real method still executes its identity and restored-clock guard.
+    production_coupler = object.__new__(NestCoupler)
+    production_coupler.child_node = child
+    with pytest.raises(RuntimeError, match="parent must lead"):
+        production_coupler.force(child)  # real parent(t) guard, lines 181-186

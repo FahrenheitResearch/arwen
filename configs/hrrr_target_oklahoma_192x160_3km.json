@@ -1,0 +1,19 @@
+{
+  "schema": "gpuwm-hrrr-target-domain-v1",
+  "name": "hrrr_oklahoma_192x160_3km",
+  "map_proj": "lambert",
+  "nx": 192,
+  "ny": 160,
+  "nz": 49,
+  "dx_m": 3000.0,
+  "dy_m": 3000.0,
+  "ref_lat": 35.5,
+  "ref_lon": -98.0,
+  "truelat1": 30.0,
+  "truelat2": 60.0,
+  "stand_lon": -97.0,
+  "time_step_seconds": 15,
+  "spec_bdy_width": 5,
+  "spec_zone": 1,
+  "relax_zone": 4
+}

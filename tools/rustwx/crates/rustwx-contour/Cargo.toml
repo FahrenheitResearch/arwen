@@ -1,0 +1,12 @@
+[package]
+name = "rustwx-contour"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+rust-version.workspace = true
+description = "Renderer-agnostic contour and fill topology for rustwx"
+
+[lib]
+name = "rustwx_contour"
+path = "src/lib.rs"

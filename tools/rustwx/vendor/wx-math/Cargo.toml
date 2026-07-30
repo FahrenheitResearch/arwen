@@ -1,0 +1,11 @@
+[package]
+name = "wx-math"
+version = "0.3.6"
+edition = "2021"
+description = "Meteorological computations and grid math"
+license = "MIT"
+authors = ["Fahrenheit Research"]
+
+[dependencies]
+wx-field = { path = "../wx-field" }
+rayon = "1"

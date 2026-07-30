@@ -1,0 +1,181 @@
+Noah-MP leaf-visibility exposure patch (adjudicated 2026-07-24, commit 3377df1)
+==============================================================================
+
+Target     : WRF v4.6.1 @ d66e442fccc04111067e29274c9f9eaccc3cef28
+File       : phys/module_sf_noahmplsm.F
+Pristine   : sha256 bd592a5b7db29000e715250e3a7c779ffb5e0dcc356f6b5a7d9e1c9f69c55282
+Patched    : sha256 3cd3690d6455cfb8549cb41979b7e101e7436464c478f7f7973ab226488ac206
+Lines      : 12351 before, 12351 after (one-for-one line substitution)
+Statements : all 50 module accessibility statements at source lines 30-84
+
+What this changes
+-----------------
+Every "private ::" accessibility *statement* becomes "public ::". Nothing
+else. No declaration attribute, no executable statement, no expression, no
+declaration order, and no line count changes.
+
+The three "INTEGER, PRIVATE, PARAMETER" entity-attribute declarations
+(MBAND at line 222, NSOIL at 223, NSTAGE at 224) are deliberately NOT
+touched: those are attribute specifications inside a type declaration, not
+accessibility statements, so the module's own private constants stay private
+and cannot leak into a harness program unit.
+
+Lifted symbols, in source order (the exact set the harness re-verifies):
+
+  ATM PHENOLOGY PRECIP_HEAT ENERGY THERMOPROP CSNOW TDFCND RADIATION ALBEDO
+  SNOW_AGE SNOWALB_BATS SNOWALB_CLASS GROUNDALB TWOSTREAM SURRAD VEGE_FLUX
+  SFCDIF1 SFCDIF2 STOMATA CANRES ESAT RAGRB BARE_FLUX TSNOSOI HRT HSTEP
+  ROSR12 PHASECHANGE FRH2O WATER CANWATER SNOWWATER SNOWFALL COMBINE DIVIDE
+  COMBO COMPACT SNOWH2O SOILWATER ZWTEQ INFIL SRT WDFCND1 WDFCND2 SSTEP
+  GROUNDWATER SHALLOWWATERTABLE CARBON CO2FLUX ERROR
+
+The two commented-out entries (BVOCFLUX at line 81, CH4FLUX at line 82) are
+comments and are left as comments; they name routines that do not exist in
+v4.6.1.
+
+Why
+---
+MODULE_SF_NOAHMPLSM exports exactly two procedures, NOAHMP_SFLX and
+noahmp_options. Every solver leaf is private, so a per-leaf oracle against
+the byte-unmodified module is impossible. Two alternatives were adjudicated
+and rejected:
+
+  * whole-column-only oracles: a mismatch localises to "somewhere in a
+    9,300-line column", which is not a debuggable signal;
+  * BIND(C, name="__module_sf_noahmplsm_MOD_<leaf>") symbol aliasing: UNSAFE,
+    not merely fragile. The built module already exposes IPA-renamed
+    specialisations such as "..._MOD_sfcdif1.constprop.0.isra.0", so an alias
+    can silently bind a specialised clone instead of the real routine and
+    yield a passing oracle for the wrong function.
+
+Visibility is not physics. private/public cannot change numerical semantics,
+and at the harness's -O0 it cannot change the codegen of the routine bodies
+at all.
+
+Audit
+-----
+tools/noahmp_wrf461_oracle/check_visibility_patch.py re-derives the patched
+file from the pristine one, asserts both SHA-256 digests above, asserts the
+two files have identical line counts, and asserts that every differing line
+is exactly a "private ::" -> "public ::" substitution with the symbol name
+and all surrounding whitespace preserved. build_leaves.sh runs it before
+compiling and fails closed.
+
+The pristine whole-column harness (build.sh / run_sflx.F90) keeps compiling
+the UNPATCHED module, so gpuwm/data/noahmp/oracle/noahmp-sflx.csv remains a
+byte-unmodified reference and stays available as the composition cross-check.
+
+--- a/phys/module_sf_noahmplsm.F
++++ b/phys/module_sf_noahmplsm.F
+@@ -27,61 +27,61 @@
+   public  :: noahmp_options
+   public  :: NOAHMP_SFLX
+ 
+-  private :: ATM
+-  private :: PHENOLOGY
+-  private :: PRECIP_HEAT
+-  private :: ENERGY
+-  private ::       THERMOPROP
+-  private ::               CSNOW
+-  private ::               TDFCND
+-  private ::       RADIATION
+-  private ::               ALBEDO
+-  private ::                         SNOW_AGE
+-  private ::                         SNOWALB_BATS  
+-  private ::                         SNOWALB_CLASS
+-  private ::                         GROUNDALB
+-  private ::                         TWOSTREAM
+-  private ::               SURRAD
+-  private ::       VEGE_FLUX
+-  private ::               SFCDIF1                  
+-  private ::               SFCDIF2                
+-  private ::               STOMATA                  
+-  private ::               CANRES                  
+-  private ::               ESAT
+-  private ::               RAGRB
+-  private ::       BARE_FLUX
+-  private ::       TSNOSOI
+-  private ::               HRT
+-  private ::               HSTEP   
+-  private ::                         ROSR12
+-  private ::       PHASECHANGE
+-  private ::               FRH2O           
++  public :: ATM
++  public :: PHENOLOGY
++  public :: PRECIP_HEAT
++  public :: ENERGY
++  public ::       THERMOPROP
++  public ::               CSNOW
++  public ::               TDFCND
++  public ::       RADIATION
++  public ::               ALBEDO
++  public ::                         SNOW_AGE
++  public ::                         SNOWALB_BATS  
++  public ::                         SNOWALB_CLASS
++  public ::                         GROUNDALB
++  public ::                         TWOSTREAM
++  public ::               SURRAD
++  public ::       VEGE_FLUX
++  public ::               SFCDIF1                  
++  public ::               SFCDIF2                
++  public ::               STOMATA                  
++  public ::               CANRES                  
++  public ::               ESAT
++  public ::               RAGRB
++  public ::       BARE_FLUX
++  public ::       TSNOSOI
++  public ::               HRT
++  public ::               HSTEP   
++  public ::                         ROSR12
++  public ::       PHASECHANGE
++  public ::               FRH2O           
+ 
+-  private :: WATER
+-  private ::       CANWATER
+-  private ::       SNOWWATER
+-  private ::               SNOWFALL
+-  private ::               COMBINE
+-  private ::               DIVIDE
+-  private ::                         COMBO
+-  private ::               COMPACT
+-  private ::               SNOWH2O
+-  private ::       SOILWATER
+-  private ::               ZWTEQ
+-  private ::               INFIL
+-  private ::               SRT
+-  private ::                         WDFCND1        
+-  private ::                         WDFCND2       
+-  private ::               SSTEP
+-  private ::       GROUNDWATER
+-  private ::       SHALLOWWATERTABLE
++  public :: WATER
++  public ::       CANWATER
++  public ::       SNOWWATER
++  public ::               SNOWFALL
++  public ::               COMBINE
++  public ::               DIVIDE
++  public ::                         COMBO
++  public ::               COMPACT
++  public ::               SNOWH2O
++  public ::       SOILWATER
++  public ::               ZWTEQ
++  public ::               INFIL
++  public ::               SRT
++  public ::                         WDFCND1        
++  public ::                         WDFCND2       
++  public ::               SSTEP
++  public ::       GROUNDWATER
++  public ::       SHALLOWWATERTABLE
+ 
+-  private :: CARBON
+-  private ::       CO2FLUX
++  public :: CARBON
++  public ::       CO2FLUX
+ !  private ::       BVOCFLUX
+ !  private ::       CH4FLUX
+ 
+-  private :: ERROR
++  public :: ERROR
+ 
+ ! =====================================options for different schemes================================
+ ! **recommended

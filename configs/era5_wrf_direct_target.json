@@ -1,0 +1,19 @@
+{
+  "schema": "gpuwm-hrrr-target-domain-v1",
+  "name": "era5_direct_proof_250x200x49_12km",
+  "map_proj": "lambert",
+  "nx": 250,
+  "ny": 200,
+  "nz": 49,
+  "dx_m": 12000.0,
+  "dy_m": 12000.0,
+  "ref_lat": 39.6848,
+  "ref_lon": -83.9297,
+  "truelat1": 30.0,
+  "truelat2": 60.0,
+  "stand_lon": -83.9297,
+  "time_step_seconds": 5,
+  "spec_bdy_width": 5,
+  "spec_zone": 1,
+  "relax_zone": 4
+}

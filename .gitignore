@@ -1,0 +1,29 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+out/
+*.nc
+# Declared config artifacts are tracked: the repo-wide *.nc rule silently
+# dropped the committed source-orography assets from a plain `git add`
+# once (they had to be force-added at 4dd3e82).  Output/scratch NetCDF
+# stays ignored; anything under configs/ is a deliberate, reviewed asset.
+!configs/**/*.nc
+# Externalized table asset: published as a GitHub release asset and
+# staged by `gpuwm fetch-tables` (never in the public git history --
+# GitHub rejects blobs over 100 MiB).  The development tree force-tracks
+# its copy as the source of truth; a fetched copy in any other checkout
+# must not show up as dirt.
+gpuwm/data/thompson/tables/freezeH2O.dat
+*.png
+!docs/**
+.superpowers/
+.worktrees/
+tools/grib1_bridge/target/
+tools/hrrr_grib2_bridge-*
+.pytest-ckpt/
+!tools/grib1_bridge/vendor/**
+tools/rustwx/target/
+!tools/rustwx/vendor/**
+!tools/rustwx/assets/**

@@ -1,0 +1,47 @@
+[package]
+name = "wx-core"
+version = "0.3.9"
+edition = "2021"
+description = "Pure Rust GRIB2 processor and weather model data library — HRRR, GFS, NAM, RAP"
+license = "MIT"
+repository = "https://github.com/FahrenheitResearch/rustmet"
+homepage = "https://github.com/FahrenheitResearch/rustmet"
+keywords = ["grib2", "weather", "meteorology", "nwp", "forecast"]
+categories = ["science", "parser-implementations"]
+authors = ["Fahrenheit Research"]
+
+[features]
+default = ["network", "jpeg2000"]
+network = ["ureq", "rustls", "rustls-rustcrypto", "webpki-roots"]
+jpeg2000 = ["openjp2"]
+
+[dependencies]
+# HTTP - blocking, pure Rust TLS (optional, not available in WASM)
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots", "gzip"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["std"], optional = true }
+rustls-rustcrypto = { version = "0.0.2-alpha", optional = true }
+webpki-roots = { version = "0.26", optional = true }
+
+# Compression (GRIB2 deflate)
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+# JPEG2000 for GRIB2 Template 5.40 (optional, C library won't compile to WASM)
+openjp2 = { version = "0.6", optional = true }
+
+# Error handling
+thiserror = "2"
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# PNG decoding for GRIB2 Template 5.41
+png = "0.17"
+
+# Parallelism
+rayon = "1"
+
+# Shared field types and projections
+wx-field = { path = "../wx-field" }
+
+# Meteorological computations
+wx-math = { path = "../wx-math" }

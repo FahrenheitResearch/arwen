@@ -1,0 +1,10 @@
+--- module_mp_nssl_2mom.F.orig
++++ module_mp_nssl_2mom.F
+@@ -177,6 +177,7 @@
+   
+   public nssl_2mom_driver
+   public nssl_2mom_init
++  public calc_eff_radius, calcnfromq, nssl_2mom_gs, sediment1d, NUCOND ! oracle-only visibility; no executable statements changed
+   private gamma_sp,gamxinf,GAML02, GAML02d300, GAML02d500, fqvs, fqis
+   private gamma_dp, gamxinfdp, gamma_dpr
+   private delbk, delabk

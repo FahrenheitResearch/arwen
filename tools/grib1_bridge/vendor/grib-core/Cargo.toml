@@ -1,0 +1,26 @@
+[package]
+name = "grib-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false }
+thiserror = "2"
+
+[dependencies.openjp2]
+version = "0.6"
+optional = true
+
+[dependencies.png]
+version = "0.17"
+optional = true
+
+[dependencies.libaec-sys]
+version = "0.1"
+optional = true
+
+[features]
+default = ["jpeg2000", "png_codec"]
+jpeg2000 = ["dep:openjp2"]
+png_codec = ["dep:png"]
+ccsds = ["dep:libaec-sys"]

@@ -1,0 +1,27 @@
+# Library-only subset of the source workspace's rusty-weather package:
+# the store-backed production render engine (batch_render + render_all +
+# store_render + windowed_store).  The eleven command-line bins, their
+# tests/fixtures, and the bin-only dependencies (clap, image, mimalloc,
+# libmimalloc-sys, rw-ingest, ecape-rs, windows-sys) are not vendored;
+# see ../../VENDOR.md.
+
+[package]
+name = "rusty-weather"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lib]
+# The bins that normally share this package are trimmed, so the package
+# would otherwise infer a src/main.rs target that does not exist.
+path = "src/lib.rs"
+
+[dependencies]
+serde_json.workspace = true
+rustwx-core = { path = "../rustwx-core" }
+rustwx-models = { path = "../rustwx-models" }
+rustwx-products = { path = "../rustwx-products" }
+rustwx-render = { path = "../rustwx-render" }
+rw-store = { path = "../rw-store" }

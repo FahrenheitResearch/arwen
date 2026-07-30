@@ -1,0 +1,78 @@
+image: "rust:latest"
+
+stages:
+- build
+- test
+
+before_script:
+- rustup toolchain add $toolchain
+
+variables:
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+build:stable:
+  stage: build
+  variables:
+    toolchain: stable
+  script:
+  - cargo +stable build
+
+test:stable:
+  stage: test
+  variables:
+    toolchain: stable
+  dependencies:
+  - build:stable
+  script:
+  - cargo +stable test
+
+build:stable:gpu_cache:
+  stage: build
+  variables:
+    toolchain: stable
+  script:
+  - cargo +stable build --features 'gpu_cache'
+
+test:stable:gpu_cache:
+  stage: test
+  variables:
+    toolchain: stable
+  dependencies:
+  - build:stable:gpu_cache
+  script:
+  - cargo +stable test --features 'gpu_cache'
+
+# Heavier testing using "dev"
+test:dev:
+  stage: test
+  variables:
+    toolchain: stable
+  dependencies:
+  - build:stable:gpu_cache
+  script:
+  - cargo test --workspace --all-features
+  - cargo test --workspace --all-features --benches
+
+build:nightly:gpu_cache:
+  stage: build
+  variables:
+    toolchain: nightly
+  script:
+  - cargo +nightly build --features 'gpu_cache'
+
+build:redox:
+  stage: build
+  variables:
+    toolchain: nightly
+  script:
+  - rustup target add x86_64-unknown-redox --toolchain nightly
+  - cargo +nightly build --target=x86_64-unknown-redox -v
+
+build:no_std:
+  stage: build
+  variables:
+    toolchain: stable
+  script:
+  - rustup target add thumbv6m-none-eabi --toolchain stable
+  - cargo +stable build --target thumbv6m-none-eabi --no-default-features --features libm-math -v

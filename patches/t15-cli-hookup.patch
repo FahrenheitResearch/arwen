@@ -1,0 +1,29 @@
+diff --git a/gpuwm/cli.py b/gpuwm/cli.py
+index 5ae25cd934cad7829d23d0019caf09df2c3ad232..555ee734b68d651feb9d69f1bc748130c896b765 100644
+--- a/gpuwm/cli.py
++++ b/gpuwm/cli.py
+@@ -101,6 +101,10 @@ def main(argv: list[str] | None = None) -> int:
+                           "forecast length / output and restart cadence "
+                           "may differ); restart writing itself is the "
+                           "restart_interval_s config key")
++    # Compose with the existing memory-preflight registrar above; Task 15
++    # owns only the run parser's supervision flags and dispatch helper.
++    from gpuwm.supervisor import register_cli as supervisor_register_cli
++    supervisor_register_cli(sub)
+     imp = sub.add_parser(
+         "import-namelist",
+         help="translate WRF namelist.wps + namelist.input into a "
+@@ -168,8 +172,12 @@ def main(argv: list[str] | None = None) -> int:
+             output = runtime.write_ingest(exp, data, args.output)
+             print(f"ingest {exp.name}: {output}")
+         else:
++            if not args.no_supervise:
++                from gpuwm.supervisor import supervise_from_cli
++                return supervise_from_cli(args)
+             summary = runtime.run_experiment(exp, data, args.outdir,
+-                                             restart=args.restart)
++                                             restart=args.restart,
++                                             health_debug=args.health_debug)
+             print({"experiment": exp.name, "outdir": str(args.outdir),
+                    "wrfout_count": len(summary.wrfout_paths),
+                    "completed_seconds": summary.completed_seconds,

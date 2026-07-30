@@ -1,0 +1,9 @@
+# Sdist-side twin of the size-driven [tool.setuptools.exclude-package-data]
+# entries in pyproject.toml (exclude-package-data governs the wheel only).
+# The two largest Thompson tables are externalized: published as GitHub
+# release assets and staged by `gpuwm fetch-tables` under the SHA-256 pins
+# in gpuwm/core/thompson_contract.py.  Without these lines the sdist
+# exceeds PyPI's 100 MB per-file cap.
+# tests/test_package_data_coverage.py pins this file against the wheel list.
+exclude gpuwm/data/thompson/tables/freezeH2O.dat
+exclude gpuwm/data/thompson/tables/qr_acr_qg_V4.dat

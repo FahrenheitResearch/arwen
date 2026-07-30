@@ -1,0 +1,11 @@
+--- module_mp_nssl_2mom.F.orig
++++ module_mp_nssl_2mom.F
+@@ -178,5 +178,8 @@
+   public nssl_2mom_driver
+   public nssl_2mom_init
++  public nssl_2mom_gs ! oracle-only visibility; no executable statements changed
++  public ido, xdnmx, xdnmn, cdx, xdn0, ventr, ventc, c1sw, nxtra
++  public tabqvs, tabqis, nqsat, fqsat
+   private gamma_sp,gamxinf,GAML02, GAML02d300, GAML02d500, fqvs, fqis
+   private gamma_dp, gamxinfdp, gamma_dpr
+   private delbk, delabk

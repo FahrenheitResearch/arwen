@@ -1,0 +1,62 @@
+## gpuwm vendored Rusty Weather renderer workspace.
+##
+## The crates under crates/ and vendor/ are a verbatim subset of Drew's
+## rusty-weather workspace (MIT, LICENSE in this directory), vendored at
+## the exact working-tree state that produced the campaign renderer
+## binary (rw_wrf_batch.exe sha256 aa220a5a...); provenance and the two
+## deliberate divergences are documented in VENDOR.md.  The one new
+## crate is crates/rw-wrfbatch, the headless wrfout -> product-PNG
+## batch renderer `gpuwm render --engine rust` drives.
+
+[workspace]
+members = [
+    "crates/rustwx-calc",
+    "crates/rustwx-contour",
+    "crates/rustwx-core",
+    "crates/rustwx-io",
+    "crates/rustwx-models",
+    "crates/rustwx-products",
+    "crates/rustwx-render",
+    "crates/rusty-weather",
+    "crates/rw-ingest",
+    "crates/rw-store",
+    "crates/rw-wrfbatch",
+]
+exclude = [
+    "vendor/ecape-rs",
+    "vendor/grib-core",
+    "vendor/metrust",
+    "vendor/netcrust",
+    "vendor/netcrust/vendor/hdf5-reader",
+    "vendor/wx-core",
+    "vendor/wx-field",
+    "vendor/wx-math",
+    "vendor/wx-radar",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
+rust-version = "1.85"
+
+[workspace.dependencies]
+rayon = "1"
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+rustls-rustcrypto = "0.0.2-alpha"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots"] }
+
+# netcrust must resolve `hdf5-reader = "0.3"` to the vendored, production-
+# tested tree (vendor/netcrust/vendor/hdf5-reader), not the crates.io
+# package.  Patches only apply from the workspace root, so the pin lives
+# here, exactly as in the source workspace.
+[patch.crates-io]
+hdf5-reader = { path = "vendor/netcrust/vendor/hdf5-reader" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

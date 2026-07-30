@@ -1,0 +1,8 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.7) 2.39
+# -O0 libm/libmvec symbols (THE REFERENCE; empty = pure arithmetic):
+# -O2 -ftree-vectorize:
+# -Ofast -ftree-vectorize:
+# positive control (plain expf loop at -Ofast), proves the grep works:
+U _ZGVbN4v_expf
+U expf

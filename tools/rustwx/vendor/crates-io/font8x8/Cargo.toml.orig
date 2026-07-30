@@ -1,0 +1,29 @@
+[package]
+name = "font8x8"
+version = "0.3.1"
+authors = [
+	"Joaquin Rosales <casabenita7@gmail.com>",
+	"Philipp Oppermann <dev@phil-opp.com>",
+	"Jonathan Pallant <github@thejpster.org.uk>"
+]
+description = "8x8 monochrome bitmap font for rendering."
+homepage = "https://gitlab.com/saibatizoku/font8x8-rs"
+repository = "https://gitlab.com/saibatizoku/font8x8-rs"
+readme = "README.md"
+keywords = ["font", "8bit", "8-bit", "bitmap", "monochrome"]
+categories = ["no-std", "rendering"]
+license = "MIT"
+
+[dependencies]
+# To disable all features, run `cargo build` with the `--no-default-features` option.
+# Doing  This only includes the constants.
+[features]
+default = ["unicode", "std"]
+
+# adds strong-typed unicode encoding and decoding, as well
+# as Default, Debug, Display, Clone, implementations.
+unicode = []
+
+# Disabling this feature removes the dependency on the standard library
+# and makes the library no_std compatible.
+std = []

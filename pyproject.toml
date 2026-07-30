@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpuwm"
+version = "1.0.0"
+description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+# numpy>=2 is load-bearing: the legacy-RRTMG FP32 max_ulp-0 discipline
+# relies on NEP-50 weak promotion (float32 op python-scalar stays
+# float32); numpy 1.26 would silently widen those chains to float64.
+# The rrtmg modules also guard this at import time.
+dependencies = ["numpy>=2.0", "netCDF4>=1.6", "matplotlib>=3.8"]
+keywords = ["WRF", "WPS", "GRIB", "NetCDF", "weather", "CUDA"]
+classifiers = ["License :: OSI Approved :: Apache Software License"]
+
+[project.urls]
+Homepage = "https://github.com/FahrenheitResearch/arwen"
+Repository = "https://github.com/FahrenheitResearch/arwen"
+Changelog = "https://github.com/FahrenheitResearch/arwen/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+license-files = ["LICENSE", "NOTICE"]
+
+[project.optional-dependencies]
+gpu = ["cupy-cuda12x>=13.0"]
+# gpuwm render's mandated science core: derived quantities come from the
+# wrf package (pip distribution wrf-rust), pinned to the certified version.
+render = ["wrf-rust==0.2.35"]
+geog = ["rasterio>=1.3", "pyproj>=3.6"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+gpuwm = "gpuwm.cli:main"
+gpuwm-wrf-init = "gpuwm.source_cli:main"
+rw-wps = "gpuwm.source_cli:main"
+gpuwm-wrf-runtime-check = "gpuwm.native_wrf_distribution:main"
+gpuwm-mapped-inspect = "gpuwm.mapped_source:main"
+
+[tool.setuptools.packages.find]
+include = ["gpuwm*", "tools"]
+
+# Recursive globs, never an enumeration of filenames. The previous per-directory
+# enumeration had drifted 52 files behind the tree -- including parameter tables
+# and lookup fixtures that physics code loads at run time -- because every new
+# oracle directory needed a line here and nobody regenerated the list.
+# gpuwm/data and gpuwm/authorities hold no Python, so "everything under them"
+# is both correct and incapable of going stale.
+# tests/test_package_data_coverage.py fails if any file lands outside these.
+[tool.setuptools.package-data]
+gpuwm = [
+    "*.json",
+    "authorities/**/*",
+    "data/**/*",
+]
+"gpuwm.core.kernels" = ["*.cu", "*.cuh"]
+"gpuwm.ingest" = ["*.md"]
+tools = ["prepare_hrrr_*.sh"]
+
+# Wheel exclusions come in exactly two pinned classes; nothing may be
+# excluded for any other reason, and tests/test_package_data_coverage.py
+# pins both lists exactly.
+#
+# 1. License-driven: the four RFMIP reference-result NetCDFs are
+#    CC-BY-NC-SA-4.0 (gpuwm/data/rrtmgp/PROVENANCE.md): they stay in-repo
+#    as test fixtures, but shipping them in the distributable would attach
+#    a non-commercial restriction to the wheel.  Their license text
+#    (LICENSE-CC-BY-NC-SA-4.0) still ships so PROVENANCE.md stays
+#    resolvable.
+# 2. Size-driven externalized assets: the two largest Thompson tables
+#    would push the wheel and sdist over PyPI's 100 MB per-file cap
+#    (freezeH2O.dat, 243 MiB, additionally exceeds GitHub's 100 MiB blob
+#    limit and is absent from the public repository too).  Both are
+#    published as GitHub release assets and staged by
+#    `gpuwm fetch-tables` (gpuwm/table_assets.py), verified against the
+#    same size + SHA-256 pins every mp8 run enforces
+#    (gpuwm/core/thompson_contract.py).  MANIFEST.in carries the same
+#    two exclusions for the sdist.
+[tool.setuptools.exclude-package-data]
+gpuwm = [
+    "data/rrtmgp/rfmip-clear-sky-reference-lw-down.nc",
+    "data/rrtmgp/rfmip-clear-sky-reference-lw-up.nc",
+    "data/rrtmgp/rfmip-clear-sky-reference-sw-down.nc",
+    "data/rrtmgp/rfmip-clear-sky-reference-sw-up.nc",
+    "data/thompson/tables/freezeH2O.dat",
+    "data/thompson/tables/qr_acr_qg_V4.dat",
+]
+
+[tool.pytest.ini_options]
+markers = ["gpu: requires a CUDA GPU + cupy",
+           "slow: an exhaustive sweep, minutes rather than seconds",
+           "network: live-internet smoke, additionally gated on GPUWM_NETWORK_TESTS=1"]
+testpaths = ["tests"]

@@ -1,0 +1,482 @@
+diff --git old/dyn_em/solve_em.F new/dyn_em/solve_em.F
+--- old/dyn_em/solve_em.F
++++ new/dyn_em/solve_em.F
+@@ -372,0 +373 @@ SUBROUTINE solve_em ( grid , config_flags  &
++   CALL gpuwm_dump_dtbc_oracle ( grid )
+@@ -4996,0 +4998,63 @@ END SUBROUTINE solve_em
++
++
++SUBROUTINE gpuwm_dump_dtbc_oracle ( grid )
++   USE module_domain, ONLY : domain, get_ijk_from_grid
++   IMPLICIT NONE
++   TYPE(domain), INTENT(IN) :: grid
++   CHARACTER(LEN=1024) dump_path
++   INTEGER dump_unit, env_status, path_len, ios
++   INTEGER ids, ide, jds, jde, kds, kde, &
++           ims, ime, jms, jme, kms, kme, &
++           ips, ipe, jps, jpe, kps, kpe
++   INTEGER(KIND=4) domain_i, ordinal_i, count_i
++   INTEGER, SAVE :: oracle_step_ordinal = 0
++   LOGICAL dump_exists
++   REAL(KIND=4) dtbc_i, values(6)
++
++   IF ( .NOT. grid%nested ) RETURN
++   IF ( oracle_step_ordinal .GE. grid%parent_time_step_ratio ) RETURN
++   dump_path = ''
++   CALL GET_ENVIRONMENT_VARIABLE ( 'GPUWM_WRF_ORACLE_DUMP', dump_path, &
++                                   LENGTH=path_len, STATUS=env_status )
++   IF ( env_status .EQ. 1 .OR. path_len .EQ. 0 ) RETURN
++   IF ( env_status .NE. 0 ) THEN
++      CALL wrf_error_fatal ( 'GPUWM_WRF_ORACLE_DUMP path is too long' )
++   ENDIF
++   INQUIRE ( FILE=dump_path(1:path_len), EXIST=dump_exists )
++   IF ( .NOT. dump_exists ) RETURN
++
++   CALL get_ijk_from_grid ( grid, &
++                            ids, ide, jds, jde, kds, kde, &
++                            ims, ime, jms, jme, kms, kme, &
++                            ips, ipe, jps, jpe, kps, kpe )
++   values(1) = grid%u_bxs(jds,kds,1) + &
++               grid%dtbc * grid%u_btxs(jds,kds,1)
++   values(2) = grid%v_bys(ids,kds,1) + &
++               grid%dtbc * grid%v_btys(ids,kds,1)
++   values(3) = grid%t_bxe(jds,kds,1) + &
++               grid%dtbc * grid%t_btxe(jds,kds,1)
++   values(4) = grid%w_bye(ids,kds,1) + &
++               grid%dtbc * grid%w_btye(ids,kds,1)
++   values(5) = grid%ph_bxs(jds,kds,1) + &
++               grid%dtbc * grid%ph_btxs(jds,kds,1)
++   values(6) = grid%mu_bys(ids,1,1) + &
++               grid%dtbc * grid%mu_btys(ids,1,1)
++
++   OPEN ( NEWUNIT=dump_unit, FILE=dump_path(1:path_len), &
++          STATUS='OLD', POSITION='APPEND', ACCESS='STREAM', &
++          FORM='UNFORMATTED', ACTION='WRITE', IOSTAT=ios )
++   IF ( ios .NE. 0 ) THEN
++      CALL wrf_error_fatal ( 'cannot append N1.5 dtbc oracle' )
++   ENDIF
++   oracle_step_ordinal = oracle_step_ordinal + 1
++   domain_i = grid%id
++   ordinal_i = oracle_step_ordinal
++   dtbc_i = grid%dtbc
++   count_i = SIZE(values)
++   WRITE ( dump_unit ) 'DBDY', domain_i, ordinal_i, dtbc_i, count_i, values
++   CLOSE ( dump_unit, IOSTAT=ios )
++   IF ( ios .NE. 0 ) THEN
++      CALL wrf_error_fatal ( 'failed to close N1.5 dtbc oracle' )
++   ENDIF
++   RETURN
++END SUBROUTINE gpuwm_dump_dtbc_oracle
+diff --git old/share/mediation_force_domain.F new/share/mediation_force_domain.F
+--- old/share/mediation_force_domain.F
++++ new/share/mediation_force_domain.F
+@@ -6,0 +7,2 @@ SUBROUTINE med_force_domain ( parent_grid , nested_grid )
++   USE module_state_description, ONLY : PARAM_FIRST_SCALAR
++   USE module_scalar_tables, ONLY : moist_dname_table, scalar_dname_table
+@@ -17,0 +20,3 @@ SUBROUTINE med_force_domain ( parent_grid , nested_grid )
++   INTEGER oracle_record_count
++   LOGICAL oracle_enabled
++   LOGICAL, SAVE :: oracle_dumped = .FALSE.
+@@ -94,0 +100 @@ SUBROUTINE med_force_domain ( parent_grid , nested_grid )
++   CALL gpuwm_begin_force_dump ( nested_grid, parent_grid, config_flags )
+@@ -177,0 +184 @@ SUBROUTINE med_force_domain ( parent_grid , nested_grid )
++   CALL gpuwm_dump_nest_tables ( nested_grid, parent_grid, config_flags )
+@@ -206,0 +214 @@ SUBROUTINE med_force_domain ( parent_grid , nested_grid )
++   CALL gpuwm_finish_force_dump ( nested_grid, parent_grid )
+@@ -220 +227,0 @@ SUBROUTINE med_force_domain ( parent_grid , nested_grid )
+-END SUBROUTINE med_force_domain
+@@ -221,0 +229,394 @@ END SUBROUTINE med_force_domain
++CONTAINS
++
++   SUBROUTINE gpuwm_begin_force_dump ( ngrid, pgrid, nconfig )
++      TYPE(domain), POINTER :: ngrid, pgrid
++      TYPE(grid_config_rec_type), INTENT(IN) :: nconfig
++      CHARACTER(LEN=1024) dump_path
++      CHARACTER(LEN=2048) message
++      CHARACTER(LEN=16) magic
++      INTEGER dump_unit, env_status, path_len, ios
++      INTEGER ids, ide, jds, jde, kds, kde, &
++              ims, ime, jms, jme, kms, kme, &
++              ips, ipe, jps, jpe, kps, kpe
++      INTEGER(KIND=4) marker, header_i(8), bounds_i(6)
++      REAL(KIND=4) dt_i(2)
++
++      oracle_enabled = .FALSE.
++      IF ( oracle_dumped ) RETURN
++      IF ( .NOT. ( ngrid%active_this_task .AND. &
++                   pgrid%active_this_task ) ) RETURN
++      dump_path = ''
++      CALL GET_ENVIRONMENT_VARIABLE ( 'GPUWM_WRF_ORACLE_DUMP', dump_path, &
++                                      LENGTH=path_len, STATUS=env_status )
++      IF ( env_status .EQ. 1 .OR. path_len .EQ. 0 ) RETURN
++      IF ( env_status .NE. 0 ) THEN
++         CALL wrf_error_fatal ( 'GPUWM_WRF_ORACLE_DUMP path is too long' )
++      ENDIF
++
++      CALL get_ijk_from_grid ( ngrid, &
++                               ids, ide, jds, jde, kds, kde, &
++                               ims, ime, jms, jme, kms, kme, &
++                               ips, ipe, jps, jpe, kps, kpe )
++
++      OPEN ( NEWUNIT=dump_unit, FILE=dump_path(1:path_len), &
++             STATUS='REPLACE', ACCESS='STREAM', FORM='UNFORMATTED', &
++             ACTION='WRITE', IOSTAT=ios )
++      IF ( ios .NE. 0 ) THEN
++         WRITE ( message, '(A,A,A,I0)' ) 'cannot open N1.5 dump ', &
++                 dump_path(1:path_len), '; iostat=', ios
++         CALL wrf_error_fatal ( TRIM(message) )
++      ENDIF
++
++      magic = 'GPUWM-N1P5-DUMP1'
++      marker = 16909060
++      header_i = (/ 1, ngrid%id, pgrid%id, 1, nconfig%mp_physics, &
++                    ngrid%spec_bdy_width, &
++                    MAX(0, SIZE(ngrid%moist,4)-PARAM_FIRST_SCALAR+1), &
++                    MAX(0, SIZE(ngrid%scalar,4)-PARAM_FIRST_SCALAR+1) /)
++      dt_i = (/ pgrid%dt, ngrid%dt /)
++      bounds_i = (/ ids, ide, jds, jde, kds, kde /)
++      WRITE ( dump_unit ) magic
++      WRITE ( dump_unit ) marker
++      WRITE ( dump_unit ) header_i
++      WRITE ( dump_unit ) dt_i
++      WRITE ( dump_unit ) bounds_i
++      CALL gpuwm_dump_prognostic ( dump_unit, 'before', pgrid )
++      CALL gpuwm_dump_prognostic ( dump_unit, 'before', ngrid )
++      CALL gpuwm_dump_force_inputs ( dump_unit, pgrid )
++      CALL gpuwm_dump_force_inputs ( dump_unit, ngrid )
++      CLOSE ( dump_unit, IOSTAT=ios )
++      IF ( ios .NE. 0 ) THEN
++         CALL wrf_error_fatal ( 'failed to close GPUWM N1.5 dump header' )
++      ENDIF
++      oracle_enabled = .TRUE.
++   END SUBROUTINE gpuwm_begin_force_dump
++
++   SUBROUTINE gpuwm_dump_force_inputs ( unit, dgrid )
++      INTEGER, INTENT(IN) :: unit
++      TYPE(domain), POINTER :: dgrid
++      INTEGER ids, ide, jds, jde, kds, kde, &
++              ims, ime, jms, jme, kms, kme, &
++              ips, ipe, jps, jpe, kps, kpe
++      INTEGER itrace
++
++      CALL get_ijk_from_grid ( dgrid, &
++                               ids, ide, jds, jde, kds, kde, &
++                               ims, ime, jms, jme, kms, kme, &
++                               ips, ipe, jps, jpe, kps, kpe )
++
++      ! Complete uncoupled BEFORE operands.  The producer restores these
++      ! into gpuwm-layout arrays and performs coupling into fresh scratch;
++      ! the WRF state itself is never reused as a candidate table.
++      CALL gpuwm_dump_input_2d ( unit, dgrid%id, 'state', 'mu', &
++           dgrid%mu_2(ids:ide-1,jds:jde-1) )
++      CALL gpuwm_dump_input_3d ( unit, dgrid%id, 'state', 'u', &
++           dgrid%u_2(ids:ide,kds:kde-1,jds:jde-1) )
++      CALL gpuwm_dump_input_3d ( unit, dgrid%id, 'state', 'v', &
++           dgrid%v_2(ids:ide-1,kds:kde-1,jds:jde) )
++      CALL gpuwm_dump_input_3d ( unit, dgrid%id, 'state', 'w', &
++           dgrid%w_2(ids:ide-1,kds:kde,jds:jde-1) )
++      CALL gpuwm_dump_input_3d ( unit, dgrid%id, 'state', 't', &
++           dgrid%t_2(ids:ide-1,kds:kde-1,jds:jde-1) )
++      CALL gpuwm_dump_input_3d ( unit, dgrid%id, 'state', 'ph', &
++           dgrid%ph_2(ids:ide-1,kds:kde,jds:jde-1) )
++
++      DO itrace = PARAM_FIRST_SCALAR, SIZE(dgrid%moist,4)
++         CALL gpuwm_dump_input_3d ( unit, dgrid%id, 'moist', &
++              moist_dname_table(dgrid%id,itrace), &
++              dgrid%moist(ids:ide-1,kds:kde-1,jds:jde-1,itrace) )
++      ENDDO
++      DO itrace = PARAM_FIRST_SCALAR, SIZE(dgrid%scalar,4)
++         CALL gpuwm_dump_input_3d ( unit, dgrid%id, 'scalar', &
++              scalar_dname_table(dgrid%id,itrace), &
++              dgrid%scalar(ids:ide-1,kds:kde-1,jds:jde-1,itrace) )
++      ENDDO
++
++      CALL gpuwm_dump_input_2d ( unit, dgrid%id, 'aux', 'mub', &
++           dgrid%mub(ids:ide-1,jds:jde-1) )
++      CALL gpuwm_dump_input_3d ( unit, dgrid%id, 'aux', 't_init', &
++           dgrid%t_init(ids:ide-1,kds:kde-1,jds:jde-1) )
++      CALL gpuwm_dump_input_1d ( unit, dgrid%id, 'aux', 'c1h', &
++           dgrid%c1h(kds:kde-1) )
++      CALL gpuwm_dump_input_1d ( unit, dgrid%id, 'aux', 'c2h', &
++           dgrid%c2h(kds:kde-1) )
++      CALL gpuwm_dump_input_1d ( unit, dgrid%id, 'aux', 'c1f', &
++           dgrid%c1f(kds:kde) )
++      CALL gpuwm_dump_input_1d ( unit, dgrid%id, 'aux', 'c2f', &
++           dgrid%c2f(kds:kde) )
++      CALL gpuwm_dump_input_2d ( unit, dgrid%id, 'aux', 'msft', &
++           dgrid%msfty(ids:ide-1,jds:jde-1) )
++      CALL gpuwm_dump_input_2d ( unit, dgrid%id, 'aux', 'msfu', &
++           dgrid%msfuy(ids:ide,jds:jde-1) )
++      CALL gpuwm_dump_input_2d ( unit, dgrid%id, 'aux', 'msfv', &
++           dgrid%msfvx(ids:ide-1,jds:jde) )
++   END SUBROUTINE gpuwm_dump_force_inputs
++
++   SUBROUTINE gpuwm_dump_input_1d ( unit, domain, family_in, field_in, values )
++      INTEGER, INTENT(IN) :: unit, domain
++      CHARACTER(LEN=*), INTENT(IN) :: family_in, field_in
++      REAL, DIMENSION(:), INTENT(IN) :: values
++      CHARACTER(LEN=8) phase, family
++      CHARACTER(LEN=32) field
++      INTEGER(KIND=4) domain_i, rank_i, dims_i(3)
++      phase = 'before'
++      family = family_in
++      field = field_in
++      domain_i = domain
++      rank_i = 1
++      dims_i = (/ SIZE(values,1), 0, 0 /)
++      WRITE ( unit ) 'INPT', phase, domain_i, family, field, rank_i, dims_i
++      WRITE ( unit ) values
++   END SUBROUTINE gpuwm_dump_input_1d
++
++   SUBROUTINE gpuwm_dump_input_2d ( unit, domain, family_in, field_in, values )
++      INTEGER, INTENT(IN) :: unit, domain
++      CHARACTER(LEN=*), INTENT(IN) :: family_in, field_in
++      REAL, DIMENSION(:,:), INTENT(IN) :: values
++      CHARACTER(LEN=8) phase, family
++      CHARACTER(LEN=32) field
++      INTEGER(KIND=4) domain_i, rank_i, dims_i(3)
++      phase = 'before'
++      family = family_in
++      field = field_in
++      domain_i = domain
++      rank_i = 2
++      dims_i = (/ SHAPE(values), 0 /)
++      WRITE ( unit ) 'INPT', phase, domain_i, family, field, rank_i, dims_i
++      WRITE ( unit ) values
++   END SUBROUTINE gpuwm_dump_input_2d
++
++   SUBROUTINE gpuwm_dump_input_3d ( unit, domain, family_in, field_in, values )
++      INTEGER, INTENT(IN) :: unit, domain
++      CHARACTER(LEN=*), INTENT(IN) :: family_in, field_in
++      REAL, DIMENSION(:,:,:), INTENT(IN) :: values
++      CHARACTER(LEN=8) phase, family
++      CHARACTER(LEN=32) field
++      INTEGER(KIND=4) domain_i, rank_i, dims_i(3)
++      phase = 'before'
++      family = family_in
++      field = field_in
++      domain_i = domain
++      rank_i = 3
++      dims_i = SHAPE(values)
++      WRITE ( unit ) 'INPT', phase, domain_i, family, field, rank_i, dims_i
++      WRITE ( unit ) values
++   END SUBROUTINE gpuwm_dump_input_3d
++
++   SUBROUTINE gpuwm_dump_nest_tables ( ngrid, pgrid, nconfig )
++      TYPE(domain), POINTER :: ngrid, pgrid
++      TYPE(grid_config_rec_type), INTENT(IN) :: nconfig
++      CHARACTER(LEN=1024) dump_path
++      CHARACTER(LEN=2048) message
++      INTEGER dump_unit, env_status, path_len, ios, itrace
++      INTEGER ids, ide, jds, jde, kds, kde, &
++              ims, ime, jms, jme, kms, kme, &
++              ips, ipe, jps, jpe, kps, kpe
++
++      IF ( .NOT. oracle_enabled ) RETURN
++      dump_path = ''
++      CALL GET_ENVIRONMENT_VARIABLE ( 'GPUWM_WRF_ORACLE_DUMP', dump_path, &
++                                      LENGTH=path_len, STATUS=env_status )
++      IF ( env_status .NE. 0 .OR. path_len .EQ. 0 ) THEN
++         CALL wrf_error_fatal ( 'GPUWM_WRF_ORACLE_DUMP disappeared' )
++      ENDIF
++      CALL get_ijk_from_grid ( ngrid, &
++                               ids, ide, jds, jde, kds, kde, &
++                               ims, ime, jms, jme, kms, kme, &
++                               ips, ipe, jps, jpe, kps, kpe )
++      OPEN ( NEWUNIT=dump_unit, FILE=dump_path(1:path_len), &
++             STATUS='OLD', POSITION='APPEND', ACCESS='STREAM', &
++             FORM='UNFORMATTED', ACTION='WRITE', IOSTAT=ios )
++      IF ( ios .NE. 0 ) THEN
++         CALL wrf_error_fatal ( 'cannot append N1.5 boundary tables' )
++      ENDIF
++      oracle_record_count = 0
++
++      CALL gpuwm_dump_eight ( dump_unit, 'state', 'u', &
++           ngrid%u_bxs(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%u_bxe(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%u_bys(ids:ide,  kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%u_bye(ids:ide,  kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%u_btxs(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%u_btxe(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%u_btys(ids:ide,  kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%u_btye(ids:ide,  kds:kde-1,1:ngrid%spec_bdy_width) )
++      CALL gpuwm_dump_eight ( dump_unit, 'state', 'v', &
++           ngrid%v_bxs(jds:jde,  kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%v_bxe(jds:jde,  kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%v_bys(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%v_bye(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%v_btxs(jds:jde,  kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%v_btxe(jds:jde,  kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%v_btys(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%v_btye(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width) )
++      CALL gpuwm_dump_eight ( dump_unit, 'state', 'w', &
++           ngrid%w_bxs(jds:jde-1,kds:kde,1:ngrid%spec_bdy_width), &
++           ngrid%w_bxe(jds:jde-1,kds:kde,1:ngrid%spec_bdy_width), &
++           ngrid%w_bys(ids:ide-1,kds:kde,1:ngrid%spec_bdy_width), &
++           ngrid%w_bye(ids:ide-1,kds:kde,1:ngrid%spec_bdy_width), &
++           ngrid%w_btxs(jds:jde-1,kds:kde,1:ngrid%spec_bdy_width), &
++           ngrid%w_btxe(jds:jde-1,kds:kde,1:ngrid%spec_bdy_width), &
++           ngrid%w_btys(ids:ide-1,kds:kde,1:ngrid%spec_bdy_width), &
++           ngrid%w_btye(ids:ide-1,kds:kde,1:ngrid%spec_bdy_width) )
++      CALL gpuwm_dump_eight ( dump_unit, 'state', 't', &
++           ngrid%t_bxs(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%t_bxe(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%t_bys(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%t_bye(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%t_btxs(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%t_btxe(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%t_btys(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width), &
++           ngrid%t_btye(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width) )
++      CALL gpuwm_dump_eight ( dump_unit, 'state', 'ph', &
++           ngrid%ph_bxs(jds:jde-1,kds:kde,1:ngrid%spec_bdy_width), &
++           ngrid%ph_bxe(jds:jde-1,kds:kde,1:ngrid%spec_bdy_width), &
++           ngrid%ph_bys(ids:ide-1,kds:kde,1:ngrid%spec_bdy_width), &
++           ngrid%ph_bye(ids:ide-1,kds:kde,1:ngrid%spec_bdy_width), &
++           ngrid%ph_btxs(jds:jde-1,kds:kde,1:ngrid%spec_bdy_width), &
++           ngrid%ph_btxe(jds:jde-1,kds:kde,1:ngrid%spec_bdy_width), &
++           ngrid%ph_btys(ids:ide-1,kds:kde,1:ngrid%spec_bdy_width), &
++           ngrid%ph_btye(ids:ide-1,kds:kde,1:ngrid%spec_bdy_width) )
++      CALL gpuwm_dump_eight ( dump_unit, 'state', 'mu', &
++           ngrid%mu_bxs(jds:jde-1,1:1,1:ngrid%spec_bdy_width), &
++           ngrid%mu_bxe(jds:jde-1,1:1,1:ngrid%spec_bdy_width), &
++           ngrid%mu_bys(ids:ide-1,1:1,1:ngrid%spec_bdy_width), &
++           ngrid%mu_bye(ids:ide-1,1:1,1:ngrid%spec_bdy_width), &
++           ngrid%mu_btxs(jds:jde-1,1:1,1:ngrid%spec_bdy_width), &
++           ngrid%mu_btxe(jds:jde-1,1:1,1:ngrid%spec_bdy_width), &
++           ngrid%mu_btys(ids:ide-1,1:1,1:ngrid%spec_bdy_width), &
++           ngrid%mu_btye(ids:ide-1,1:1,1:ngrid%spec_bdy_width) )
++
++      DO itrace = PARAM_FIRST_SCALAR, SIZE(ngrid%moist,4)
++         CALL gpuwm_dump_eight ( dump_unit, 'moist', &
++              moist_dname_table(ngrid%id,itrace), &
++              ngrid%moist_bxs(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace), &
++              ngrid%moist_bxe(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace), &
++              ngrid%moist_bys(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace), &
++              ngrid%moist_bye(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace), &
++              ngrid%moist_btxs(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace), &
++              ngrid%moist_btxe(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace), &
++              ngrid%moist_btys(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace), &
++              ngrid%moist_btye(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace) )
++      ENDDO
++      DO itrace = PARAM_FIRST_SCALAR, SIZE(ngrid%scalar,4)
++         CALL gpuwm_dump_eight ( dump_unit, 'scalar', &
++              scalar_dname_table(ngrid%id,itrace), &
++              ngrid%scalar_bxs(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace), &
++              ngrid%scalar_bxe(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace), &
++              ngrid%scalar_bys(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace), &
++              ngrid%scalar_bye(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace), &
++              ngrid%scalar_btxs(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace), &
++              ngrid%scalar_btxe(jds:jde-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace), &
++              ngrid%scalar_btys(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace), &
++              ngrid%scalar_btye(ids:ide-1,kds:kde-1,1:ngrid%spec_bdy_width,itrace) )
++      ENDDO
++
++      WRITE ( dump_unit ) 'DONE', oracle_record_count
++      CLOSE ( dump_unit, IOSTAT=ios )
++      IF ( ios .NE. 0 ) THEN
++         CALL wrf_error_fatal ( 'failed to close GPUWM N1.5 dump' )
++      ENDIF
++      WRITE ( message, '(A,A,A,I0)' ) 'GPUWM N1.5 dump: ', &
++              dump_path(1:path_len), ' tables=', oracle_record_count
++      CALL wrf_message ( TRIM(message) )
++   END SUBROUTINE gpuwm_dump_nest_tables
++
++   SUBROUTINE gpuwm_finish_force_dump ( ngrid, pgrid )
++      TYPE(domain), POINTER :: ngrid, pgrid
++      CHARACTER(LEN=1024) dump_path
++      INTEGER dump_unit, env_status, path_len, ios
++
++      IF ( .NOT. oracle_enabled ) RETURN
++      dump_path = ''
++      CALL GET_ENVIRONMENT_VARIABLE ( 'GPUWM_WRF_ORACLE_DUMP', dump_path, &
++                                      LENGTH=path_len, STATUS=env_status )
++      IF ( env_status .NE. 0 .OR. path_len .EQ. 0 ) THEN
++         CALL wrf_error_fatal ( 'GPUWM_WRF_ORACLE_DUMP disappeared' )
++      ENDIF
++      OPEN ( NEWUNIT=dump_unit, FILE=dump_path(1:path_len), &
++             STATUS='OLD', POSITION='APPEND', ACCESS='STREAM', &
++             FORM='UNFORMATTED', ACTION='WRITE', IOSTAT=ios )
++      IF ( ios .NE. 0 ) THEN
++         CALL wrf_error_fatal ( 'cannot append N1.5 post-force samples' )
++      ENDIF
++      CALL gpuwm_dump_prognostic ( dump_unit, 'after', pgrid )
++      CALL gpuwm_dump_prognostic ( dump_unit, 'after', ngrid )
++      CLOSE ( dump_unit, IOSTAT=ios )
++      IF ( ios .NE. 0 ) THEN
++         CALL wrf_error_fatal ( 'failed to close N1.5 post-force samples' )
++      ENDIF
++      oracle_dumped = .TRUE.
++      oracle_enabled = .FALSE.
++   END SUBROUTINE gpuwm_finish_force_dump
++
++   SUBROUTINE gpuwm_dump_prognostic ( unit, phase_in, dgrid )
++      INTEGER, INTENT(IN) :: unit
++      CHARACTER(LEN=*), INTENT(IN) :: phase_in
++      TYPE(domain), POINTER :: dgrid
++      CHARACTER(LEN=8) phase
++      INTEGER ids, ide, jds, jde, kds, kde, &
++              ims, ime, jms, jme, kms, kme, &
++              ips, ipe, jps, jpe, kps, kpe
++      INTEGER il, ih, jl, jh, kl, kh
++      INTEGER(KIND=4) domain_i, count_i
++      REAL(KIND=4) values(12)
++
++      CALL get_ijk_from_grid ( dgrid, &
++                               ids, ide, jds, jde, kds, kde, &
++                               ims, ime, jms, jme, kms, kme, &
++                               ips, ipe, jps, jpe, kps, kpe )
++      il = MAX(ids,ips)
++      ih = MIN(ide-1,ipe)
++      jl = MAX(jds,jps)
++      jh = MIN(jde-1,jpe)
++      kl = MAX(kds,kps)
++      kh = MIN(kde-1,kpe)
++      values = (/ dgrid%mu_2(il,jl), dgrid%t_2(il,kl,jl), &
++                  dgrid%u_2(il,kl,jl), dgrid%v_2(il,kl,jl), &
++                  dgrid%w_2(il,kl,jl), dgrid%ph_2(il,kl,jl), &
++                  dgrid%mu_2(ih,jh), dgrid%t_2(ih,kh,jh), &
++                  dgrid%u_2(ih,kh,jh), dgrid%v_2(ih,kh,jh), &
++                  dgrid%w_2(ih,kh,jh), dgrid%ph_2(ih,kh,jh) /)
++      phase = phase_in
++      domain_i = dgrid%id
++      count_i = SIZE(values)
++      WRITE ( unit ) 'PROG', phase, domain_i, count_i, values
++   END SUBROUTINE gpuwm_dump_prognostic
++
++   SUBROUTINE gpuwm_dump_eight ( unit, family, field, &
++                                 bxs, bxe, bys, bye, &
++                                 btxs, btxe, btys, btye )
++      INTEGER, INTENT(IN) :: unit
++      CHARACTER(LEN=*), INTENT(IN) :: family, field
++      REAL, DIMENSION(:,:,:), INTENT(IN) :: bxs, bxe, bys, bye
++      REAL, DIMENSION(:,:,:), INTENT(IN) :: btxs, btxe, btys, btye
++      CALL gpuwm_dump_table ( unit, family, field, 'xs', 'value', bxs )
++      CALL gpuwm_dump_table ( unit, family, field, 'xe', 'value', bxe )
++      CALL gpuwm_dump_table ( unit, family, field, 'ys', 'value', bys )
++      CALL gpuwm_dump_table ( unit, family, field, 'ye', 'value', bye )
++      CALL gpuwm_dump_table ( unit, family, field, 'xs', 'tendency', btxs )
++      CALL gpuwm_dump_table ( unit, family, field, 'xe', 'tendency', btxe )
++      CALL gpuwm_dump_table ( unit, family, field, 'ys', 'tendency', btys )
++      CALL gpuwm_dump_table ( unit, family, field, 'ye', 'tendency', btye )
++   END SUBROUTINE gpuwm_dump_eight
++
++   SUBROUTINE gpuwm_dump_table ( unit, family_in, field_in, side_in, &
++                                 kind_in, values )
++      INTEGER, INTENT(IN) :: unit
++      CHARACTER(LEN=*), INTENT(IN) :: family_in, field_in, side_in, kind_in
++      REAL, DIMENSION(:,:,:), INTENT(IN) :: values
++      CHARACTER(LEN=8) family, kind
++      CHARACTER(LEN=32) field
++      CHARACTER(LEN=2) side
++      INTEGER(KIND=4) dims(3)
++      family = family_in
++      field = field_in
++      side = side_in
++      kind = kind_in
++      dims = SHAPE(values)
++      WRITE ( unit ) 'TABL', family, field, side, kind, dims
++      WRITE ( unit ) values
++      oracle_record_count = oracle_record_count + 1
++   END SUBROUTINE gpuwm_dump_table
++
++END SUBROUTINE med_force_domain

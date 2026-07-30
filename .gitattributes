@@ -1,0 +1,17 @@
+gpuwm/data/** -text
+tools/grib1_bridge/vendor/** -text
+patches/** -text
+*.sh text eol=lf
+*.ps1 text eol=lf
+*.cmd text eol=lf
+configs/rw-wps-gfs-pressure-grib2.mapping.json text eol=lf
+configs/rw-wps-gfs-terrain.composition.json text eol=lf
+configs/rw-wps-era5-1974-probe.mapping.json text eol=lf
+configs/rw-wps-era5-1974-terrain.composition.json text eol=lf
+configs/rw-wps-era5-netcdf.mapping.json text eol=lf
+configs/rw-wps-era5-netcdf-terrain.composition.json text eol=lf
+gpuwm/authorities/*.json text eol=lf
+gpuwm/physics_registry_v2.json text eol=lf
+tools/rustwx/vendor/** -text
+tools/rustwx/crates/** -text
+tools/rustwx/assets/** -text

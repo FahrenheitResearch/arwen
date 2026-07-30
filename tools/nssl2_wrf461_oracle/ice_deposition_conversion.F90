@@ -1,0 +1,146 @@
+program nssl2_ice_deposition_conversion_oracle
+  use module_mp_nssl_2mom, only: nssl_2mom_init, nssl_2mom_gs
+  implicit none
+
+  integer, parameter :: nx = 4, nz = 12, na = 40, nxtra = 20
+  integer, parameter :: lc = 3, lr = 4, li = 5, ls = 6, lh = 7
+  integer, parameter :: lhl = 8, lqmx = 30, lt = 1, lv = 2
+  integer, parameter :: lni = 12, lns = 13
+  integer :: i, k, unit, nml_unit, case_id, repetition, table_index
+  real :: nssl_params(20), dt, temperature, pressure, exner, rho
+  real :: target_diameter, ice_mass, before_qi, before_ni, rh_ice
+  real :: table_temperature, qsi, before_qv
+  real :: xdnmx(lc:lhl), xdnmn(lc:lhl), xdn0(lc:lhl), cdx(lc:lhl)
+  integer :: ido(lc:lqmx)
+  double precision :: timevtcalc
+  character(len=512) :: output_path
+
+  call get_command_argument(1, output_path)
+  if (len_trim(output_path) == 0) then
+     error stop 'usage: nssl2_ice_deposition_conversion_oracle OUTPUT.csv'
+  endif
+
+  nssl_params = 0.0
+  nssl_params(1:10) = [0.5e9, 0.0, 1.0, 4.0e5, 4.0e4, &
+                       8.0e5, 3.0e6, 500.0, 900.0, 100.0]
+  open(newunit=nml_unit, file='namelist.input', status='replace', action='write')
+  write(nml_unit,'(A)') '&nssl_mp_params'
+  write(nml_unit,'(A)') '  icenucopt = 0,'
+  write(nml_unit,'(A)') '  isnwfrac = 0,'
+  write(nml_unit,'(A)') '/'
+  close(nml_unit)
+  call nssl_2mom_init(nssl_params=nssl_params, ipctmp=5, mixphase=0, &
+       nssl_density_on=.true., nssl_hail_on=.true.,                 &
+       nssl_ccn_on=.true., nssl_icdx=6, nssl_icdxhl=6)
+
+  xdnmx = 900.0; xdnmx(lc) = 1000.0; xdnmx(lr) = 1000.0
+  xdnmx(li) = 917.0; xdnmx(ls) = 300.0
+  xdnmn = 900.0; xdnmn(lc) = 1000.0; xdnmn(lr) = 1000.0
+  xdnmn(li) = 100.0; xdnmn(ls) = 100.0
+  xdnmn(lh) = 170.0; xdnmn(lhl) = 500.0
+  xdn0 = 900.0; xdn0(lc) = 1000.0; xdn0(lr) = 1000.0
+  xdn0(li) = 900.0; xdn0(ls) = 100.0
+  xdn0(lh) = 500.0; xdn0(lhl) = 900.0
+  cdx = 0.6; cdx(ls) = 2.0; cdx(lh) = 0.8; cdx(lhl) = 0.45
+  ido = 1
+
+  open(newunit=unit, file=trim(output_path), status='replace', action='write')
+  write(unit,'(A)') 'case,i,k,dt_s,rho_kg_m3,pressure_pa,exner,temperature_k,rh_ice,target_ice_diameter_m,theta_before_k,qv_before,qi_before,qni_before_per_kg,qs_before,qns_before_per_kg,theta_after_k,qv_after,qi_after,qni_after_per_kg,qs_after,qns_after_per_kg'
+  do k = 1, nz
+     do i = 1, nx
+        case_id = mod((k-1)*nx+i-1, 12)
+        repetition = ((k-1)*nx+i-1)/12
+        select case (case_id)
+        case (0)
+           temperature = 238.0; target_diameter = 99.0e-6; rh_ice = 1.005; dt = 1.0
+        case (1)
+           temperature = 245.0; target_diameter = 100.0e-6; rh_ice = 1.005; dt = 1.0
+        case (2)
+           temperature = 250.0; target_diameter = 101.0e-6; rh_ice = 1.005; dt = 1.0
+        case (3)
+           temperature = 255.0; target_diameter = 150.0e-6; rh_ice = 1.0001; dt = 0.1
+        case (4)
+           temperature = 260.0; target_diameter = 150.0e-6; rh_ice = 1.02; dt = 1.0
+        case (5)
+           temperature = 265.0; target_diameter = 200.0e-6; rh_ice = 1.10; dt = 2.0
+        case (6)
+           temperature = 268.0; target_diameter = 300.0e-6; rh_ice = 1.20; dt = 5.0
+        case (7)
+           temperature = 270.0; target_diameter = 80.0e-6; rh_ice = 1.05; dt = 10.0
+        case (8)
+           temperature = 272.0; target_diameter = 120.0e-6; rh_ice = 1.01; dt = 30.0
+        case (9)
+           temperature = 258.0; target_diameter = 180.0e-6; rh_ice = 1.50; dt = 60.0
+        case (10)
+           temperature = 248.0; target_diameter = 250.0e-6; rh_ice = 1.001; dt = 300.0
+        case default
+           temperature = 263.0; target_diameter = 130.0e-6; rh_ice = 1.25; dt = 1000.0
+        end select
+        pressure = 100000.0 - 9000.0*real(repetition) - 500.0*real(case_id)
+        rho = 1.25 - 0.13*real(repetition) + 0.003*real(case_id)
+        exner = (pressure/100000.0)**(287.04/1004.0)
+        table_index = int((temperature-163.15)/0.002 + 1.5)
+        table_index = min(1000001, max(1, table_index))
+        table_temperature = 163.15 + real(table_index-1)*0.002
+        qsi = (380.0/pressure)*exp(21.87455*(table_temperature-273.15) &
+             /(table_temperature-7.66))
+        before_qv = rh_ice*qsi
+        select case (repetition)
+        case (0)
+           before_qi = 0.0
+        case (1)
+           before_qi = 1.0e-13
+        case (2)
+           before_qi = 2.5e-5
+        case default
+           before_qi = 1.0e-3
+        end select
+        ice_mass = (target_diameter/0.1871)**(1.0/0.3429)
+        before_ni = before_qi/ice_mass
+        call run_cell(unit)
+     enddo
+  enddo
+  close(unit)
+  print '(A,1X,A)', 'NSSL2_ICE_DEPOSITION_CONVERSION_ORACLE_COMPLETE', &
+       trim(output_path)
+
+contains
+
+  subroutine run_cell(output_unit)
+    integer, intent(in) :: output_unit
+    real :: a1(1,1,3,na)
+    real :: u0(1,1,3), u1(1,1,3), u2(1,1,3), u3(1,1,3)
+    real :: u4(1,1,3), u5(1,1,3), u6(1,1,3), u7(1,1,3)
+    real :: u8(1,1,3), u9(1,1,3), uu0(1,1,3), uu7(1,1,3)
+    real :: zg(1,1,3), dd(1,1,3), pp2(1,1,3), ppn(1,1,3)
+    real :: ww(1,1,3), tt3(1,1,3), tee(1,3), aa(1,1,3,nxtra)
+    real :: rp(1,3), ep(1,3), alp(1,3,3), el(1,1,3), th(3,1)
+    real :: theta_before
+
+    theta_before = temperature/exner
+    a1 = 0.0
+    a1(:,:,:,lt) = theta_before
+    a1(:,:,:,lv) = before_qv
+    a1(:,:,:,li) = before_qi
+    a1(:,:,:,lni) = before_ni*rho
+    u0 = temperature
+    u1 = 0.0; u2 = 0.0; u3 = 0.0; u4 = 0.0; u5 = 0.0
+    u6 = 0.0; u7 = 0.0; u8 = 0.0; u9 = 0.0
+    uu0 = 380.0/pressure; uu7 = 1.0; zg = 1000.0; dd = rho
+    pp2 = exner; ppn = pressure; ww = 0.0; tt3 = 0.0; tee = 0.0
+    aa = 0.0; rp = 0.0; ep = 0.0; alp = 0.0; el = 0.0; th = 0.0
+    timevtcalc = 0.0d0
+
+    call nssl_2mom_gs(1,1,3,na,1,0,0,dt,zg,                &
+         u0,u1,u2,u3,u4,u5,u6,u7,u8,u9,a1,dd,pp2,ppn,ww,0, &
+         uu0,uu7,1.0,1.0,1.0,1,ido,xdnmx,xdnmn,cdx,xdn0,  &
+         tt3,tee,th,1,1000.0,1000.0,3,timevtcalc,aa,.false.,&
+         .false.,rp,ep,alp,el,1,1,1,1,1)
+
+    write(output_unit,'(3(I0,","),18(ES24.16E3,","),ES24.16E3)') &
+         case_id, i, k, dt, rho, pressure, exner, temperature, rh_ice, &
+         target_diameter, theta_before, before_qv, before_qi, before_ni, &
+         0.0, 0.0, a1(1,1,2,lt), a1(1,1,2,lv), a1(1,1,2,li), &
+         a1(1,1,2,lni)/rho, a1(1,1,2,ls), a1(1,1,2,lns)/rho
+  end subroutine run_cell
+end program nssl2_ice_deposition_conversion_oracle

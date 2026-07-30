@@ -1,0 +1,18 @@
+[package]
+name = "rw-store"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fs4 = { version = "1.1", default-features = false, features = ["sync"] }
+memmap2 = "0.9"
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+zstd = "0.13"
+rustwx-core = { path = "../rustwx-core" }

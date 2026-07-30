@@ -1,0 +1,90 @@
+{
+  "authority": {
+    "basis": [
+      "gpuwm.verify.nest_gates.REFL_10CM_FSS_FAMILY supplies the previously preregistered 20/30/40 dBZ event and 5 km neighborhood family",
+      "gpuwm.verify.nest_gates.FSS_DEGENERATE_EVENT_FLOOR supplies the 1e-4 event-coverage hold rule",
+      "No repository authority ratifies native NSSL mass, number, volume, precipitation, or hail CPU-vs-GPU tolerances for this 12 h 500 m experiment"
+    ],
+    "candidate_warning": "This file is a documented candidate. It must be reviewed and explicitly ratified or replaced before its numeric rows can support a scientific PASS claim.",
+    "ratified_for_this_comparison": false
+  },
+  "continuous_metric_rules": [],
+  "fixed_before_gpu_run_required": true,
+  "health": {
+    "finite_required": true,
+    "nonnegative_epsilon": 1e-12,
+    "nonnegative_epsilon_basis": "Matches tools/run_real74_nssl2_500m.py on-disk acceptance; it is a numerical-health allowance, not a scientific-difference tolerance."
+  },
+  "percentiles_absolute_error": [
+    50.0,
+    90.0,
+    95.0,
+    99.0,
+    99.9
+  ],
+  "policy_id": "real74-nssl2-500m-cpu-gpu-candidate-v1",
+  "schema": "gpuwm.real74-nssl2-500m-comparison-policy/v1",
+  "status": "candidate-unratified",
+  "surface_events": {
+    "composite_reflectivity": {
+      "minimum_fss": {
+        "20": 0.9,
+        "30": 0.8,
+        "40": 0.7
+      },
+      "neighborhood_radius_km": 5.0,
+      "numeric_basis": "Candidate reuse of gpuwm.verify.nest_gates.REFL_10CM_FSS_FAMILY; that family was ratified for the earlier matched-Morrison ladder, not for this NSSL experiment.",
+      "source": "REFL_10CM",
+      "thresholds": [
+        20.0,
+        30.0,
+        40.0
+      ],
+      "units": "dBZ"
+    },
+    "gridscale_precipitation": {
+      "minimum_fss": {},
+      "neighborhood_radius_km": 5.0,
+      "numeric_basis": "Candidate diagnostic event levels only; no acceptance minimum is asserted.",
+      "source": "RAINNC",
+      "thresholds": [
+        0.1,
+        1.0,
+        10.0,
+        25.0,
+        50.0
+      ],
+      "units": "mm"
+    },
+    "hail_accumulation": {
+      "minimum_fss": {},
+      "neighborhood_radius_km": 5.0,
+      "numeric_basis": "Candidate diagnostic event levels only; no acceptance minimum is asserted.",
+      "source": "HAILNC",
+      "thresholds": [
+        0.1,
+        1.0,
+        5.0,
+        10.0
+      ],
+      "units": "mm"
+    }
+  },
+  "surface_metric_convention": {
+    "categorical_scores": [
+      "hits",
+      "misses",
+      "false_alarms",
+      "correct_negatives",
+      "probability_of_detection",
+      "false_alarm_ratio",
+      "critical_success_index",
+      "frequency_bias",
+      "equitable_threat_score",
+      "heidke_skill_score"
+    ],
+    "degenerate_event_floor": 0.0001,
+    "fss_formula": "1 - sum((Fc-Fr)^2) / sum(Fc^2+Fr^2), edge-extended square neighborhood; a row is held when either event coverage is below the floor",
+    "interior_exclusion_cells": 5
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "authority": {
+    "approved_at_utc": "2026-07-22T22:18:03Z",
+    "approved_by": "Codex GPUWM validation task under the user's explicit finish-and-validate mandate",
+    "basis": [
+      "GPUWM's official-WRF per-process oracle gates establish formula-level NSSL-2 fidelity before any production trajectory is admitted",
+      "gpuwm.verify.nest_gates.REFL_10CM_FSS_FAMILY supplies the repository's preregistered 20/30/40 dBZ event thresholds and 5 km neighborhood family",
+      "gpuwm.verify.nest_gates.FSS_DEGENERATE_EVENT_FLOOR supplies the 1e-4 event-coverage hold rule",
+      "No defensible repository authority exists for fixed 12-hour NSSL mass, number, volume, precipitation, or hail CPU-vs-GPU difference tolerances; those metrics remain mandatory report-only diagnostics"
+    ],
+    "ratification_scope": "The structural and numerical-health gates are strict. Scientific acceptance applies only to nondegenerate composite-reflectivity FSS rows under the frozen thresholds; all continuous native-state, precipitation, hail, and inventory metrics remain report-only.",
+    "ratified_for_this_comparison": true,
+    "record": "docs/real74-nssl2-500m-comparison-ratification-v1.md"
+  },
+  "continuous_metric_rules": [],
+  "fixed_before_gpu_run_required": true,
+  "health": {
+    "finite_required": true,
+    "nonnegative_epsilon": 1e-12,
+    "nonnegative_epsilon_basis": "Matches tools/run_real74_nssl2_500m.py on-disk acceptance; it is a numerical-health allowance, not a scientific-difference tolerance."
+  },
+  "percentiles_absolute_error": [
+    50.0,
+    90.0,
+    95.0,
+    99.0,
+    99.9
+  ],
+  "policy_id": "real74-nssl2-500m-cpu-gpu-ratified-v1",
+  "schema": "gpuwm.real74-nssl2-500m-comparison-policy/v1",
+  "status": "ratified",
+  "surface_events": {
+    "composite_reflectivity": {
+      "minimum_fss": {
+        "20": 0.9,
+        "30": 0.8,
+        "40": 0.7
+      },
+      "neighborhood_radius_km": 5.0,
+      "numeric_basis": "Pre-run ratification of gpuwm.verify.nest_gates.REFL_10CM_FSS_FAMILY for storm-morphology validation of this matched NSSL-2 experiment.",
+      "source": "REFL_10CM",
+      "thresholds": [
+        20.0,
+        30.0,
+        40.0
+      ],
+      "units": "dBZ"
+    },
+    "gridscale_precipitation": {
+      "minimum_fss": {},
+      "neighborhood_radius_km": 5.0,
+      "numeric_basis": "Frozen diagnostic event levels only; no unsupported acceptance minimum is asserted.",
+      "source": "RAINNC",
+      "thresholds": [
+        0.1,
+        1.0,
+        10.0,
+        25.0,
+        50.0
+      ],
+      "units": "mm"
+    },
+    "hail_accumulation": {
+      "minimum_fss": {},
+      "neighborhood_radius_km": 5.0,
+      "numeric_basis": "Frozen diagnostic event levels only; no unsupported acceptance minimum is asserted.",
+      "source": "HAILNC",
+      "thresholds": [
+        0.1,
+        1.0,
+        5.0,
+        10.0
+      ],
+      "units": "mm"
+    }
+  },
+  "surface_metric_convention": {
+    "categorical_scores": [
+      "hits",
+      "misses",
+      "false_alarms",
+      "correct_negatives",
+      "probability_of_detection",
+      "false_alarm_ratio",
+      "critical_success_index",
+      "frequency_bias",
+      "equitable_threat_score",
+      "heidke_skill_score"
+    ],
+    "degenerate_event_floor": 0.0001,
+    "fss_formula": "1 - sum((Fc-Fr)^2) / sum(Fc^2+Fr^2), edge-extended square neighborhood; a row is held when either event coverage is below the floor",
+    "interior_exclusion_cells": 5
+  }
+}

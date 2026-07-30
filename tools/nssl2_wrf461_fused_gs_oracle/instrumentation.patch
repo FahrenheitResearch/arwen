@@ -1,0 +1,45 @@
+--- module_mp_nssl_2mom.F
++++ module_mp_nssl_2mom.F
+@@ -17920,0 +17921 @@
++      IF ( iunit /= 0 ) write(iunit,'(*(g0,:,","))') 'BIGG_ACTIVE',kgs(mgs),temcg(mgs),qx(mgs,lr),cx(mgs,lr),xdia(mgs,lr,1),dbigg,qrfrz(mgs),qrfrzs(mgs),qrfrzf(mgs),crfrz(mgs),crfrzs(mgs),crfrzf(mgs),vrfrzf(mgs)
+@@ -19280,0 +19282 @@
++      IF ( iunit /= 0 ) write(iunit,'(*(g0,:,","))') 'FROZEN_DEP_PRE',kgs(mgs),temp1,qsimxdep(mgs)
+@@ -19287,0 +19290 @@
++      IF ( iunit /= 0 ) write(iunit,'(*(g0,:,","))') 'FROZEN_DEP_APPLY',kgs(mgs),frac
+@@ -19301,0 +19305 @@
++      IF ( iunit /= 0 ) write(iunit,'(*(g0,:,","))') 'FROZEN_SUB_PRE',kgs(mgs),temp1,qsimxsub(mgs)
+@@ -19305,0 +19310 @@
++      IF ( iunit /= 0 ) write(iunit,'(*(g0,:,","))') 'FROZEN_SUB_APPLY',kgs(mgs),frac
+@@ -20335,0 +20341 @@
++      IF ( iunit /= 0 ) write(iunit,'(*(g0,:,","))') 'RAIN_HEAT_PRE_COLD',kgs(mgs),temcg(mgs),qrztot(mgs),qrzmax(mgs),qx(mgs,lr)*dtpinv,fwet1(mgs),xdia(mgs,lr,1),rwvent(mgs),cx(mgs,lr),qrfrz(mgs),qrfrzs(mgs),qrfrzf(mgs),crfrz(mgs),crfrzs(mgs),crfrzf(mgs),qiacr(mgs),qiacrs(mgs),qiacrf(mgs),ciacr(mgs),ciacrs(mgs),ciacrf(mgs),viacrf(mgs),qsacr(mgs)
+@@ -20350,0 +20357 @@
++      IF ( iunit /= 0 ) write(iunit,'(*(g0,:,","))') 'RAIN_HEAT_FACTOR',kgs(mgs),temcg(mgs),qrztot(mgs),qrzmax(mgs),qrzfac(mgs)
+@@ -20381,0 +20389 @@
++      IF ( iunit /= 0 ) write(iunit,'(*(g0,:,","))') 'RAIN_HEAT_POST',kgs(mgs),qrzfac(mgs),qrfrz(mgs),qrfrzs(mgs),qrfrzf(mgs),crfrz(mgs),crfrzs(mgs),crfrzf(mgs),vrfrzf(mgs),qiacr(mgs),qiacrs(mgs),qiacrf(mgs),ciacr(mgs),ciacrs(mgs),ciacrf(mgs),viacrf(mgs),qsacr(mgs)
+@@ -22673,0 +22682,26 @@
++
++      IF ( iunit /= 0 ) THEN
++       DO mgs = 1,ngscnt
++        write(iunit,'(*(g0,:,","))') 'LIMIT',kgs(mgs), &
++     &   qvimxd(mgs),qimxd(mgs),qcmxd(mgs),qrmxd(mgs), &
++     &   qsmxd(mgs),qhmxd(mgs),qhlmxd(mgs), &
++     &   cimxd(mgs),ccmxd(mgs),crmxd(mgs),csmxd(mgs),chmxd(mgs), &
++     &   qsimxdep(mgs),qsimxsub(mgs), &
++     &   qidpv(mgs),qsdpv(mgs),qhdpv(mgs),qhldpv(mgs), &
++     &   qisbv(mgs),qssbv(mgs),qhsbv(mgs),qhlsbv(mgs), &
++     &   qrcnw(mgs),qracw(mgs),qiacw(mgs),qsacw(mgs),qhacw(mgs), &
++     &   qhlacw(mgs),qwfrz(mgs),qwctfz(mgs),qiihr(mgs), &
++     &   qiacr(mgs),qsacr(mgs),qhacr(mgs),qhlacr(mgs),qrfrz(mgs),qrcev(mgs), &
++     &   qscni(mgs),qscnvi(mgs),qhaci(mgs),qhlaci(mgs), &
++     &   qhacs(mgs),qhlacs(mgs),qscnh(mgs),qsmlr(mgs), &
++     &   qhmlr(mgs),qhlmlr(mgs),qhshr(mgs),qhlshr(mgs), &
++     &   qhlcnh(mgs),qhmul1(mgs),qhlmul1(mgs), &
++     &   pqwvi(mgs)+pqwvd(mgs),pqcwi(mgs)+pqcwd(mgs), &
++     &   pqrwi(mgs)+pqrwd(mgs),pqcii(mgs)+pqcid(mgs), &
++     &   pqswi(mgs)+pqswd(mgs),pqhwi(mgs)+pqhwd(mgs), &
++     &   pqhli(mgs)+pqhld(mgs),pccwi(mgs)+pccwd(mgs), &
++     &   pcrwi(mgs)+pcrwd(mgs),pccii(mgs)+pccid(mgs), &
++     &   pcswi(mgs)+pcswd(mgs),pchwi(mgs)+pchwd(mgs), &
++     &   pchli(mgs)+pchld(mgs)
++       ENDDO
++      ENDIF

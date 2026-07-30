@@ -1,0 +1,178 @@
+diff --git a/gpuwm/runtime.py b/gpuwm/runtime.py
+index 4bcf63610efa1b422ddae38b0e5b6e0b055e57e5..8a8ca8876c1d78feefe86554ede250a9af3862f1 100644
+--- a/gpuwm/runtime.py
++++ b/gpuwm/runtime.py
+@@ -37,6 +37,8 @@ Equivalence notes (the argument the A/B gate checks empirically):
+
+ from __future__ import annotations
+
++import inspect
++import time
+ from datetime import datetime, timedelta
+ from dataclasses import dataclass
+ from pathlib import Path
+@@ -577,12 +579,20 @@ def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
+ # Integrate: the extracted outer-step loop
+ # ---------------------------------------------------------------------------
+
++
++def _preparation_progress(progress_callback, phase: str) -> None:
++    reporter = getattr(progress_callback, "preparing", None)
++    if reporter is not None:
++        reporter(phase)
++
++
+ def integrate_prepared_case(
+         output_dir, prepared, *, start_time: datetime, output_title: str,
+         domain_id: int = 1, integration_cfg: RunConfig | None = None,
+         restart_path=None, run_seconds: float | None = None,
+         history_interval_s: float | None = None,
+-        restart_interval_s: float | None = None) -> RealCaseRunSummary:
++        restart_interval_s: float | None = None, progress_callback=None,
++        health_debug: bool = False) -> RealCaseRunSummary:
+     """Integrate a prepared real case and write its configured outputs.
+
+     Extraction of the frozen reference integration loop: intentionally free
+@@ -607,9 +617,11 @@ def integrate_prepared_case(
+     the compatibility copies on ``cfg``.
+     """
+     import cupy as cp
++    from gpuwm.core.health import StateHealthValidator
+     from gpuwm.core.dycore import stability_report, step
+     from gpuwm.io.restart import (restart_filename, restore_restart,
+                                   write_restart)
++    from gpuwm.supervisor import validate_manifest_checkpoint
+
+     cfg = prepared.cfg
+     run_seconds = cfg.run_seconds if run_seconds is None else run_seconds
+@@ -628,6 +640,10 @@ def integrate_prepared_case(
+     output_dir.mkdir(parents=True, exist_ok=True)
+     integration_cfg = cfg if integration_cfg is None else integration_cfg
+     state = prepared.initial_result.state
++    _preparation_progress(progress_callback, "initialize-health-validator")
++    health = StateHealthValidator(state)
++    phase_hook_supported = "phase_observer" in inspect.signature(
++        step).parameters
+     # bldt=0 follows each internal dynamics step; radiation follows the
+     # configured WRF STEPRA calendar on those internal steps.
+     state.physics.bldt_seconds = integration_cfg.dt
+@@ -642,15 +658,20 @@ def integrate_prepared_case(
+     swdown_peak = -np.inf
+     swdown_peak_time = start_time
+     start_outer_step = 0
++    last_checkpoint = None
+     if restart_path is None:
+         # No microphysics call precedes the cold-start frame, so there is no
+         # WRF-arranged post-call reflectivity field to consume.
++        _preparation_progress(progress_callback, "cold-start-wrfout")
+         outputs.append(write_case_output(
+             prepared, output_dir, start_time, start_time=start_time,
+             title=output_title, domain_id=domain_id,
+             expect_refl_10cm=False))
+     else:
+-        info = restore_restart(restart_path, state, cfg)
++        _preparation_progress(progress_callback, "validate-checkpoint")
++        last_checkpoint = validate_manifest_checkpoint(restart_path)
++        _preparation_progress(progress_callback, "restore-checkpoint")
++        info = restore_restart(last_checkpoint, state, cfg)
+         start_outer_step = whole_step_count(
+             info.elapsed_seconds, cfg.dt, "restart elapsed_seconds")
+         if start_outer_step >= outer_steps:
+@@ -671,15 +692,32 @@ def integrate_prepared_case(
+             swdown_peak_time = datetime.fromisoformat(
+                 trackers["swdown_peak_time"])
+         surface_forcing_updates = state.physics.call_counts["radiation"]
++    _preparation_progress(progress_callback, "initial-health-gate")
++    health.require_healthy(phase="initialized-or-restored")
++    if progress_callback is not None:
++        progress_callback(
++            model_elapsed_seconds=float(state.elapsed_seconds),
++            outer_step=start_outer_step,
++            last_durable_wrfout=(outputs[-1] if outputs else None),
++            last_checkpoint=last_checkpoint, phase="initialized-or-restored",
++            step_wall_seconds=0.0)
+     dynamics_substeps = int(round(cfg.dt / integration_cfg.dt))
+     for outer_step in range(start_outer_step, outer_steps):
++        outer_started = time.perf_counter()
+         forcing_time = start_time + timedelta(seconds=outer_step * cfg.dt)
+         for substep in range(dynamics_substeps):
+             refl_due = (cfg.mp_physics in (1, 10)
+                         and refl_10cm_due(
+                             outer_step, substep, output_outer_steps,
+                             dynamics_substeps))
+-            step(state, integration_cfg, refl_10cm_due=refl_due)
++            phase = f"outer-{outer_step + 1}.substep-{substep + 1}"
++            if health_debug and not phase_hook_supported:
++                health.require_healthy(phase=phase + ".pre-step")
++            step_kwargs = {"refl_10cm_due": refl_due}
++            if health_debug and phase_hook_supported:
++                step_kwargs["phase_observer"] = health.phase_observer
++            step(state, integration_cfg, **step_kwargs)
++            health.require_healthy(phase=phase + ".post-step")
+             width = cfg.spec_bdy_width
+             report = stability_report(
+                 state, integration_cfg, boundary_width=width)
+@@ -716,7 +754,7 @@ def integrate_prepared_case(
+         if (restart_write_steps is not None
+                 and (outer_step + 1) % restart_write_steps == 0):
+             valid = start_time + timedelta(seconds=(outer_step + 1) * cfg.dt)
+-            write_restart(
++            last_checkpoint = write_restart(
+                 output_dir / restart_filename(valid, f"d{domain_id:02d}"),
+                 state, cfg,
+                 run_trackers={
+@@ -728,6 +766,16 @@ def integrate_prepared_case(
+                     "swdown_peak_wm2": float(swdown_peak),
+                     "swdown_peak_time": swdown_peak_time.isoformat(),
+                 })
++        # The state gate completed after the final internal step.  Publish
++        # progress only after any due wrfout/checkpoint is durable, so a
++        # heartbeat can never advertise unguarded or unpublished work.
++        if progress_callback is not None:
++            progress_callback(
++                model_elapsed_seconds=float(state.elapsed_seconds),
++                outer_step=outer_step + 1,
++                last_durable_wrfout=(outputs[-1] if outputs else None),
++                last_checkpoint=last_checkpoint, phase="post-d01-sync",
++                step_wall_seconds=time.perf_counter() - outer_started)
+     cp.cuda.runtime.deviceSynchronize()
+
+     rainc_max = 0.0
+@@ -877,17 +925,26 @@ def write_ingest(exp: ExperimentConfig, data: CaseDataConfig,
+
+
+ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
+-                   restart=None) -> RealCaseRunSummary:
++                   restart=None, progress_callback=None,
++                   health_debug: bool = False) -> RealCaseRunSummary:
+     """Prepare and integrate an experiment (single domain, Task 2).
+
+     Prints the resolved-config report (G2) before any device work, then
+     runs the extracted prepare/integrate pipeline with every input and
+     policy drawn from the config pair.
+     """
++    from gpuwm.io.wrfout import quarantine_orphan_wrfouts
++
++    outdir = Path(outdir)
++    outdir.mkdir(parents=True, exist_ok=True)
++    _preparation_progress(progress_callback, "quarantine-wrfout")
++    quarantine_orphan_wrfouts(outdir)
++    _preparation_progress(progress_callback, "resolve-schedule")
+     dc = single_domain(exp)
+     snapshots = forcing_snapshots(data)
+     times = forcing_schedule(exp, data, snapshots)
+     print(resolved_config_report(exp, data, forcing_times=times))
++    _preparation_progress(progress_callback, "prepare-case")
+     prepared = prepare_experiment_case(exp, data)
+     return integrate_prepared_case(
+         outdir, prepared, start_time=exp.start_time,
+@@ -895,7 +952,8 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
+         run_seconds=exp.run_seconds,
+         history_interval_s=dc.history_interval_s,
+         restart_interval_s=exp.restart_interval_s,
+-        restart_path=restart)
++        restart_path=restart, progress_callback=progress_callback,
++        health_debug=health_debug)
+
+
+ __all__ = [

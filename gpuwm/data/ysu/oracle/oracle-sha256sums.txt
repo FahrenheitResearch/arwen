@@ -1,0 +1,5 @@
+a76e1e5b52fc7cd40be9ccb506fde28b1ef2486b812d518f7f1c882766d484db  <wrf-4.6.1-checkout>/phys/ccpp_kind_types.F
+a695daa712591b30fa72b8f24eac003e8e7016531283d29443bcc04ce3ea77d8  <wrf-4.6.1-checkout>/phys/physics_mmm/bl_ysu.F90
+94e48dd676e79e231ae70969aef418f7fd7f657dca664d3720685a79119242b1  <oracle-workspace>/tools/ysu_wrf461_oracle/run_bl_ysu.F90
+e6c8bbebc1c1ee293cd22d3994e4f065099df18d44e22ff00a59a7af67c684f9  ysu-levels.csv
+d3d8ef7ab468c338f07eea0db829c1f03319985ecd0de57d9f91b6fa66c351f1  ysu-surface.csv

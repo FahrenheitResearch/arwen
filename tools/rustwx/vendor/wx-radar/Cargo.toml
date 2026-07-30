@@ -1,0 +1,16 @@
+[package]
+name = "wx-radar"
+version = "0.3.6"
+edition = "2021"
+description = "Radar data processing — NEXRAD Level-II parser, PPI renderer, color tables"
+license = "MIT"
+authors = ["Fahrenheit Research"]
+
+[dependencies]
+wx-field = { path = "../wx-field" }
+byteorder = "1"
+bzip2 = "0.5"
+rayon = "1"
+flate2 = "1"
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }

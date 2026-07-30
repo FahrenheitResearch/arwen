@@ -1,0 +1,49 @@
+# RELEASE-EXCLUDE: internal campaign material that must NOT enter the
+# public release snapshot.
+#
+# These paths are development-campaign records -- lead/controller
+# handoffs, phase plans, machine-specific runbooks -- several of which
+# carry developer-absolute paths (C:\Users\...), contradicting the
+# release builder's own "no developer-specific absolute paths" bar and
+# confusing a stranger about what the product is (acceptance finding
+# F13, PRODUCT-V1-ACCEPTANCE-20260729).
+#
+# This file is an exclusion manifest for the snapshot/release builders;
+# nothing listed here is deleted from the development tree.  One path or
+# glob per line, relative to the repository root; lines starting with
+# '#' are comments.
+
+# Campaign handoffs and internal project history (developer paths inside).
+docs/gpuwm-controller-handoff.md
+docs/lead-handoff-2026-07-26.md
+docs/gpuwm-project-history.md
+docs/tree_triage_2026-07-26.md
+docs/assembly-execution-20260728.md
+
+# Internal development-campaign plans/specs (machine paths inside).
+docs/superpowers/**
+
+# Internal campaign reports and machine-specific runbooks.
+docs/morrison_oracle_report.md
+docs/mynn_four_domain_report.md
+docs/mynn_noahmp_ruc_completion_plan.md
+docs/easy-physics-rtx5090-runbook.md
+docs/easy-physics-integration-status.md
+docs/wsm6-rtx5090-runbook.md
+docs/real74-nssl2-500m-runbook.md
+docs/real74-nssl2-500m-comparison-ratification-v1.md
+docs/ports/rrtm-dudhia-remote-gpu-runbook.md
+docs/ports/wrf-rrtm-dudhia-status.md
+
+# Internal acceptance/handoff ledgers (the release ships its own docs).
+handoffs/**
+evidence/**
+work/**
+
+# Externalized large asset: GitHub rejects plain blobs over 100 MiB, so
+# this 243 MiB table is published as a GitHub release asset instead of
+# living in the public git history.  `gpuwm fetch-tables` stages it,
+# SHA-256-verified against gpuwm/core/thompson_contract.py, and the
+# install scripts run that automatically; the development tree keeps
+# the file tracked as the source of truth for the release asset.
+gpuwm/data/thompson/tables/freezeH2O.dat

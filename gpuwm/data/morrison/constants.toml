@@ -1,0 +1,63 @@
+# Morrison two-moment constants transcribed from WRF v4.6.1
+# Registry/Registry.EM_COMMON:2663-2666 and
+# phys/module_mp_morr_two_moment.F:337-510.  SI units unless noted.
+
+[switches]
+inum = 1
+iliq = 0
+inuc = 0
+igraup = 0
+ihail = 1
+ndcnst_cm3 = 250.0
+
+[rimed_ice.hail]
+ag = 114.5
+bg = 0.5
+rhog = 900.0
+
+[rimed_ice.graupel]
+ag = 19.3
+bg = 0.37
+rhog = 400.0
+
+[fall_speed]
+ai = 700.0
+ac = 3.0e7
+as = 11.72
+ar = 841.99667
+ag = 114.5
+bi = 1.0
+bc = 2.0
+bs = 0.41
+br = 0.8
+bg = 0.5
+
+[bulk]
+rhosu = 1.084519011666677
+rhow = 997.0
+rhoi = 500.0
+rhosn = 100.0
+rhog = 900.0
+aimm = 0.66
+bimm = 100.0
+ecr = 1.0
+dcs = 1.25e-4
+mg0 = 1.6e-10
+f1s = 0.86
+f2s = 0.28
+f1r = 0.78
+f2r = 0.308
+qsmall = 1.0e-14
+eii = 0.1
+eci = 0.7
+cpw = 4187.0
+
+[lambda_limits]
+lami_max = 1.0e6
+lami_min = 2857.1428571428573
+lamr_max = 5.0e4
+lamr_min = 357.14285714285717
+lams_max = 1.0e5
+lams_min = 500.0
+lamg_max = 5.0e4
+lamg_min = 500.0

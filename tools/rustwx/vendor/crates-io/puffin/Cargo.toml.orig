@@ -1,0 +1,65 @@
+[package]
+name = "puffin"
+version = "0.20.0"
+authors = ["Embark <opensource@embark-studios.com>"]
+categories = ["development-tools::profiling"]
+description = "Simple instrumentation profiler for games"
+edition.workspace = true
+homepage = "https://github.com/EmbarkStudios/puffin"
+keywords = ["profiler", "instrumentation", "gamedev"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/EmbarkStudios/puffin"
+rust-version.workspace = true
+include = ["**/*.rs", "Cargo.toml", "README.md", "../puffin.jpg"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+
+[features]
+default = []
+packing = ["dep:bincode", "lz4", "serde"]
+
+# Support lz4 compression. Fast, and lightweight dependency.
+# If both `lz4` and `zstd` are enabled, lz4 will be used for compression.
+lz4 = ["dep:lz4_flex"]
+
+# Support zstd compression. Slow and big dependency, but very good compression ratio.
+zstd = ["dep:zstd", "dep:ruzstd"]
+
+# Feature for enabling loading/saving data to a binary stream and/or file.
+serialization = ["packing"]
+
+# Enable this to be able to run puffin inside a browser when compiling to wasm
+web = ["dep:js-sys", "dep:web-time"]
+
+
+[dependencies]
+byteorder.workspace = true
+cfg-if.workspace = true
+itertools.workspace = true
+parking_lot.workspace = true
+
+# Optional:
+anyhow.workspace = true
+bincode = { workspace = true, optional = true }
+lz4_flex = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+zstd = { workspace = true, optional = true } # native only
+
+# web:
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { workspace = true, optional = true }
+ruzstd = { workspace = true, optional = true } # works on wasm
+web-time = { workspace = true, optional = true }
+
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "benchmark"
+harness = false

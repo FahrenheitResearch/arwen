@@ -1,0 +1,143 @@
+{
+  "schema": "gpuwm-native-wrf-support-matrix-v1",
+  "release_state": "dedicated_rw_wps_cross_checkout_reproducible_clean_linux_cpu_package_gate",
+  "public_release_ready": false,
+  "runtime_forbidden": [
+    "geogrid.exe",
+    "ungrib.exe",
+    "metgrid.exe",
+    "real.exe"
+  ],
+  "inputs": {
+    "standard_namelist_wps": "implemented",
+    "standard_namelist_input": "implemented_with_machine_readable_fail_closed_support_report",
+    "wps_geog_native_reader": "implemented",
+    "arbitrary_wps_geog_multidomain_orchestration": "implemented_for_hrrr_lambert_max_dom_1_through_21",
+    "mapped_lambert_multidomain_orchestration": "implemented_to_mapping_declared_max_dom_4; canonical-LF current-contract GFS stock-WRF proof passed through d04 and superseded evidence remains invalidated",
+    "named_era5_gfs_lambert_multidomain_orchestration": "implemented_source_neutral_through_d06_not_yet_stock_wrf_gated",
+    "certified_hrrr_d01_d06_orchestration": "stock_wrf_proof_passed",
+    "relocatable_domain_artifact_manifest": "implemented"
+  },
+  "meteorological_sources": {
+    "hrrr_conus_sfc_plus_nat": {
+      "single_domain": "stock_wrf_proof_passed",
+      "nested_hierarchy": "stock_wrf_proof_passed_through_d06_with_parser_and_export_coverage_through_d21"
+    },
+    "gfs_pgrb2_0p25": {
+      "single_domain": "stock_wrf_proof_passed",
+      "nested_hierarchy": "canonical-LF mapped current contract stock-WRF proof passed through declared max_dom 4; named adapter implemented through d06"
+    },
+    "era5_combined_grib1": {
+      "single_domain": "stock_wrf_proof_passed",
+      "nested_hierarchy": "named_adapter_implemented_through_d06_not_yet_stock_wrf_gated"
+    },
+    "20crv3_member_grib2": {
+      "single_domain": "named_exact_member_adapter_and_native_preparation_implemented_not_stock_wrf_gated",
+      "nested_hierarchy": "public_shared_hierarchy_route_implemented_to_packaged_mapping_declared_max_dom_4_not_stock_wrf_gated",
+      "public_cli": "rw-wps_source_20crv3_with_create_only_member_manifest_authoring",
+      "distribution": "exact_mapping_composition_and_provenance_authorities_packaged_in_wheel_and_native_runtime_archive"
+    },
+    "declarative_mapped_composition": {
+      "grib1": "genuine_era5_single_domain_stock_wrf_proof_passed",
+      "grib2": "genuine canonical-LF current-contract GFS clean stock-WRF proof passed through d04",
+      "netcdf": "genuine_era5_single_domain_stock_wrf_proof_passed",
+      "target_ceiling": "mapping_declared_max_dom_current_examples_limit_4"
+    }
+  },
+  "execution_backends": {
+    "cpu_preprocessing": "implemented_and_numerically_compared",
+    "cpu_only_setup_export": "implemented_for_era5_gfs_20crv3_and_mapped_without_cupy_import; clean_machine_real_data_matrix_pending",
+    "cuda_preprocessing": "implemented_and_numerically_compared",
+    "parallel_source_decode": "implemented_for_hrrr_pipeline",
+    "hrrr_pipeline_worker_budget": "1_through_64_decoder_hour_jobs_independent_of_native_transform_threads",
+    "parallel_per_domain_initialization": "implemented_for_hrrr_d01_through_d21_and_live_gated_through_d06",
+    "mapped_parallel_per_domain_initialization": "implemented_to_declared_max_dom_cpu_default_8_cuda_default_1 with native-export and current-contract stock-WRF live gates through d04",
+    "twentycrv3_parallel_per_domain_initialization": "public_named_route_uses_mapped_hierarchy_to_packaged_declared_max_dom_4_not_stock_wrf_gated",
+    "named_era5_gfs_parallel_per_domain_initialization": "implemented_through_d06_cpu_default_8_cuda_serial_deterministic_not_yet_live_gated",
+    "cross_machine_clean_install": "not_yet_publicly_gated"
+  },
+  "release_artifacts": {
+    "deterministic_linux_runtime_archive": "implemented_two_independent_checkout_paths_byte_identical_same_host_gate",
+    "deterministic_windows_x86_64_cpu_runtime_archive": "implemented_with_locked_offline_path_remapped_rust_pe_bridges_cpu_dll_and_powershell_integrity_controls; second_machine_and_real_source_gates_pending",
+    "installed_text_private_path_scan": "implemented",
+    "model_independent_python_wheel": "dedicated_rw_wps_distribution_clean_linux_cpu_gate_pass_forecast_executors_absent",
+    "public_sdist_wheel_sbom_signatures": "not_yet_implemented"
+  },
+  "domain_geometry": {
+    "projection": {
+      "lambert_conformal": "implemented_both_hemispheres; northern hemisphere matched-run verified; southern hemisphere oracle-verified plus smoke-run verified, not matched-run verified",
+      "mercator": "implemented; oracle-verified plus smoke-run verified, not matched-run verified",
+      "polar_stereographic": "implemented_both_poles; oracle-verified plus smoke-run verified, not matched-run verified",
+      "latitude_longitude": "unsupported_fail_closed",
+      "rotated": "unsupported_fail_closed",
+      "pole_containing_domains": "unsupported_fail_closed",
+      "antimeridian_crossing_domains": "implemented; oracle-verified plus smoke-run verified, not matched-run verified"
+    },
+    "static_one_way_nests": "stock_wrf_proof_passed_through_d06",
+    "two_way_feedback": "unsupported_fail_closed",
+    "moving_nests": "unsupported_fail_closed",
+    "grid_ids": "contiguous_parent_before_child_d01_through_d21",
+    "vertical": {
+      "explicit_eta": "implemented_arbitrary_level_count",
+      "hybrid_opt_2": "implemented",
+      "shared_across_domains": "required",
+      "vertical_refinement": "unsupported_fail_closed"
+    }
+  },
+  "final_products": {
+    "wrfinput_d01": "stock_wrf_proof_passed",
+    "wrfinput_d02": "stock_wrf_proof_passed_for_certified_hrrr_slice_and_canonical_lf_current_contract_gfs",
+    "wrfinput_d02_through_d04_gfs": "stock_wrf_proof_passed_for_canonical_lf_current_contract",
+    "wrfinput_d03_through_dNN": "deprecated_aggregate_key_see_split_depth_keys",
+    "wrfbdy_d01": "stock_wrf_proof_passed",
+    "wrfinput_d02_through_d06": "stock_wrf_proof_passed_for_certified_hrrr_slice",
+    "wrfinput_d07_through_d21": "parser_and_atomic_export_covered_not_stock_wrf_gated",
+    "auxiliary_lower_boundary_files": "not_yet_inventory_complete",
+    "atomic_output_directory": "implemented",
+    "deterministic_hash_receipt": "implemented"
+  },
+  "physics_initialization": {
+    "supported_slice": {
+      "mp_physics": 6,
+      "microphysics": "WSM6",
+      "bl_pbl_physics": 1,
+      "pbl": "YSU",
+      "sf_sfclay_physics": 91,
+      "surface_layer": "classic_MM5",
+      "sf_surface_physics": 2,
+      "land_surface": "Noah_4_layer",
+      "native_radiation": "longwave_off_plus_Dudhia_shortwave",
+      "stock_acceptance_runtime_deltas": "ra_lw_physics_0_to_1_use_theta_m_0_to_1_stock_only_ghg_input_0",
+      "hybrid_opt": 2,
+      "hypsometric_opt": 2
+    },
+    "thompson_mp8": "registry_inventory_and_direct_writer_implemented; exact_f9760c9_current_GFS_d01_d04_files_advanced_unchanged_WRF_v4.6.1_plus_10_seconds; broader_source_domain_certification_pending",
+    "mynn_surface_and_pbl": "unsupported_fail_closed",
+    "ruc_9_layer_lsm": "unsupported_fail_closed",
+    "morrison_mp10": "registry_inventory_and_direct_writer_implemented; exact_f9760c9_current_GFS_d01_d04_files_advanced_unchanged_WRF_v4.6.1_plus_10_seconds; broader_source_domain_certification_pending",
+    "exact_f9760c9_gfs_d01_d04_stock_acceptance": {
+      "source_commit": "f9760c9bf3191c0b010283ad348970f03351689d",
+      "source_tree": "77a3204e5179d1a08bda5b884f404c6b2694b90c",
+      "wrf_commit": "d66e442fccc04111067e29274c9f9eaccc3cef28",
+      "wrf_exe_sha256": "cfac96554c8f9796c7522aaf023131ea7681ddf12110a327e51a548958874089",
+      "run_seconds": 10,
+      "mp_physics_passed": [
+        6,
+        8,
+        10
+      ],
+      "scope": "exact hash-bound current GFS d01-d04 export only; does not certify broader source, geometry, level, or physics envelopes"
+    },
+    "mp55": "unsupported_fail_closed_no_stock_wrf_initialization_inventory"
+  },
+  "known_release_blockers": [
+    "native_static_generation_wired_for_arbitrary_domain_hierarchies",
+    "stock_wrf_nested_acceptance_outside_certified_hrrr_d01_d06_and_gfs_d01_d04_envelopes",
+    "twentycrv3_unchanged_stock_wrf_gate",
+    "broader_physics_state_inventory",
+    "redistributable_clean_room_fixtures",
+    "cross_machine_cpu_cuda_ci_and_public_documentation_review",
+    "license_owner_decision",
+    "security_attribution_and_release_artifact_review"
+  ]
+}

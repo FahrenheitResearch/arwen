@@ -1,0 +1,20 @@
+{
+  "schema": "gpuwm-20crv3-in-band-terrain-provenance-v1",
+  "source": "NOAA-CIRES-DOE 20CRv3 every-member GRIB2 surface product",
+  "field": "terrain_height",
+  "selector": {
+    "format": "grib2",
+    "discipline": 0,
+    "category": 3,
+    "parameter": 5,
+    "center": 7,
+    "subcenter": 2,
+    "master_table_version": 2,
+    "local_table_version": 1,
+    "level_type": 1,
+    "level_value": 0
+  },
+  "time_policy": "decoded at every valid time and required invariant",
+  "member_policy": "member identity is authoritative in memNNN filenames and the hash-bound input manifest because the supplied PDT omits it",
+  "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-20crv3-grib2-inputs-v1"
+}

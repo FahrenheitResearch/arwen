@@ -1,0 +1,48 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        features: ["", "--features geo-types", "--features yore", "--features encoding_rs", "--all-features"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install latest stable
+        uses: dtolnay/rust-toolchain@888c2e1ea69ab0d4330cbf0af1ecc7b68f368cc1
+        with:
+          toolchain: stable
+
+      - name: check fmt
+        run: cargo fmt --check
+
+      - name: clippy ${{ matrix.features }}
+        run: cargo clippy ${{ matrix.features }}
+
+
+  test:
+    name: Test Suite
+    needs: [check]
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        features: [ "", "--features geo-types", "--features yore", "--features encoding_rs", "--all-features" ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install latest stable
+        uses: dtolnay/rust-toolchain@888c2e1ea69ab0d4330cbf0af1ecc7b68f368cc1
+        with:
+          toolchain: stable
+
+      - name: test ${{ matrix.features }}
+        run: cargo test ${{ matrix.features }}
+

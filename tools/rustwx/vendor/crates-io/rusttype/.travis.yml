@@ -1,0 +1,4 @@
+language: rust
+rust: stable
+env: RUST_BACKTRACE=full
+script: cargo test --features 'gpu_cache'

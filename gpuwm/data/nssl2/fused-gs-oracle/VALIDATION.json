@@ -1,0 +1,31 @@
+{
+  "bigg_diameter_max_m": 0.518665671,
+  "bigg_diameter_min_m": 3.03239312e-06,
+  "canonical_sha256": "fc27cd1c1a9a1ddefcd086551d0a0ea53f731800bf398445de684d53fcf15971",
+  "case_families": 14,
+  "cases": 30,
+  "diagnostic_records": {
+    "BIGG_ACTIVE": 1800,
+    "FROZEN_DEP_APPLY": 46,
+    "FROZEN_DEP_PRE": 460,
+    "FROZEN_SUB_APPLY": 34,
+    "FROZEN_SUB_PRE": 460,
+    "LIMIT": 14950,
+    "RAIN_HEAT_FACTOR": 920,
+    "RAIN_HEAT_POST": 3680,
+    "RAIN_HEAT_PRE_COLD": 5060
+  },
+  "diagnostic_rows": 27410,
+  "diagnostics_sha256": "f2281b6fdfed3daa6cd66b6dfb9e9bf949a8a4a232bdc02488635f6b3dae0d69",
+  "dt_s": [
+    0.1,
+    1.0,
+    10.0,
+    60.0,
+    300.0
+  ],
+  "rain_heat_factor_max": 1.0,
+  "rain_heat_factor_min": 0.0,
+  "rows": 240,
+  "schema": "gpuwm.nssl2.fused-gs.validation.v1"
+}

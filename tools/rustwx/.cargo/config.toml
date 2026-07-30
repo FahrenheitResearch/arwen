@@ -1,0 +1,26 @@
+# Source replacement: every crates.io and git dependency resolves to the
+# checked-in vendor/crates-io directory (emitted by `cargo vendor --locked`),
+# so a clean clone builds with --offline and without touching the network.
+# The three git sources are all FahrenheitResearch (Drew's own) repositories,
+# pinned to the exact revisions the campaign renderer was built against.
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/FahrenheitResearch/ecape-rs?rev=82922534c02a888e773c50463b5a49d535606276"]
+git = "https://github.com/FahrenheitResearch/ecape-rs"
+rev = "82922534c02a888e773c50463b5a49d535606276"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/FahrenheitResearch/metrust-py.git?rev=1b8436779832be326f24bd2acd40a908e9f54685"]
+git = "https://github.com/FahrenheitResearch/metrust-py.git"
+rev = "1b8436779832be326f24bd2acd40a908e9f54685"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/FahrenheitResearch/wrf-rust.git?rev=93bd2ca670c13fec35bcfc27a58108e6fd71c627"]
+git = "https://github.com/FahrenheitResearch/wrf-rust.git"
+rev = "93bd2ca670c13fec35bcfc27a58108e6fd71c627"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor/crates-io"

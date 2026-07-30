@@ -1,0 +1,78 @@
+ArWen (Python package "gpuwm", preprocessor "rw-wps")
+Copyright 2026 ArWen contributors
+
+Licensed under the Apache License, Version 2.0. Third-party datasets,
+tables, vendored components, and dependencies retain their own licenses
+and notices. Per-asset provenance (sources, generation recipes, SHA-256
+pins) is recorded in PROVENANCE.md and in the gpuwm/data/*/PROVENANCE.md
+files beside each packaged asset.
+
+--------------------------------------------------------------------------
+
+WRF / NCAR / UCAR
+
+ArWen is an independent implementation. It is not affiliated with or
+endorsed by the National Center for Atmospheric Research (NCAR) or the
+University Corporation for Atmospheric Research (UCAR). The Weather
+Research and Forecasting (WRF) model, developed at NCAR, is the
+transcription and verification authority for ArWen's WRF-derived
+mechanisms (WRF v4.6.1, https://github.com/wrf-model/WRF, released by
+UCAR as open source per its own notice).
+
+This distribution packages certain data assets generated with or copied
+from the WRF v4.6.1 distribution, including: Thompson microphysics
+lookup tables (generated with WRF's own table generator and
+SHA-256-pinned), Noah land-surface parameter tables (VEGPARM.TBL,
+SOILPARM.TBL, GENPARM.TBL; byte-identical to WRF's run directory), the
+Kain-Fritsch lookup table, an ERA5 Vtable, and the RRTMG radiation data
+files named below.
+
+--------------------------------------------------------------------------
+
+RRTMG (Atmospheric and Environmental Research, Inc.)
+
+The legacy-RRTMG radiation option transcribes WRF v4.6.1's RRTMG
+longwave and shortwave schemes and packages the RRTMG_LW_DATA and
+RRTMG_SW_DATA coefficient files and the ozone climatology files
+distributed with WRF. RRTMG was developed by Atmospheric and
+Environmental Research, Inc. (AER); its code and data carry AER's
+copyright and license notices, which are retained with the assets.
+
+--------------------------------------------------------------------------
+
+RTE+RRTMGP
+
+The default radiation option uses k-distribution data from the
+RTE+RRTMGP project (https://github.com/earth-system-radiation),
+distributed under the BSD-3-Clause license, Copyright Atmospheric and
+Environmental Research and contributors. The license text is retained
+with the packaged data under gpuwm/data/rrtmgp.
+
+--------------------------------------------------------------------------
+
+wrf-rust
+
+Product rendering (gpuwm render) uses the "wrf-rust" Python package
+(imported as "wrf") as its diagnostic core. wrf-rust is a separate
+project with its own license and is installed via the optional
+[render] extra; it is not vendored in this distribution.
+
+--------------------------------------------------------------------------
+
+Vendored Rust crates
+
+The GRIB decode workspace (tools/grib1_bridge) vendors its Rust
+dependency sources for offline, locked builds. Each vendored crate
+retains its own license; see tools/grib1_bridge/vendor.
+
+--------------------------------------------------------------------------
+
+Data services (not redistributed)
+
+ArWen downloads or templates requests for data from NOAA (GFS via the
+NOMADS filter service and AWS Open Data; HRRR via AWS Open Data), from
+the Copernicus Climate Data Store (ERA5; use is subject to the
+Copernicus license and requires the user's own account), and relies on
+the user-staged NCAR WPS geographical dataset (WPS_GEOG) for static
+fields. None of these datasets are redistributed by this repository;
+their terms are between the user and the provider.
