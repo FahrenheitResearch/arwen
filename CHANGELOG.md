@@ -1,4 +1,12 @@
-﻿# Changelog
+# Changelog
+## 1.2.2 (2026-07-30)
+
+The 1.2.1 release stopped in its workflow before any wheel reached
+PyPI: the release tooling wrote pyproject.toml with a UTF-8 byte-order
+mark, which pip's TOML parser refuses at line 1. Rewritten without the
+mark; the release tooling now writes both files byte-order-mark-free.
+No code change.
+
 ## 1.2.1 (2026-07-30)
 
 The 1.2.0 release workflow stopped at its test gate before any wheel
