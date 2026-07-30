@@ -920,4 +920,80 @@ mod tests {
         };
         assert_eq!(record.end - record.start + 1, record.bytes);
     }
+
+    /// The resolved wx-core must be one that actually paces NOMADS.
+    ///
+    /// Two different wx-core crates were vendored under the same `0.3.9`
+    /// version string: the working-tree copy with the cross-process governor,
+    /// and the published crates.io copy with no governor at all. Only a path
+    /// dependency kept the right one in the graph. That is a trap that
+    /// resolves silently, and the symptom -- an ArWen fetch hammering a shared
+    /// public service until the user's IP is blocked -- would surface a long
+    /// way from its cause.
+    ///
+    /// This gate does not check which copy was resolved. It asks the resolved
+    /// crate what it is configured to do, then makes it DO it: two paced calls
+    /// for a NOMADS URL, with the state file and the gap pointed somewhere
+    /// harmless, must be spaced by the gap and must leave the shared state
+    /// behind. A governorless wx-core fails to link, and a wx-core whose
+    /// governor stopped working fails here. No network request is made.
+    #[test]
+    fn the_resolved_wx_core_actually_paces_nomads() {
+        use std::time::{Duration, Instant};
+
+        let scratch = std::env::temp_dir().join(format!(
+            "rw_fetch_governor_probe_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|value| value.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&scratch).expect("scratch");
+        let state = scratch.join("nomads.state");
+        // SAFETY: single-threaded test process, and both variables are read
+        // by wx-core on every call rather than cached at startup.
+        unsafe {
+            std::env::set_var("RUSTWX_NOMADS_RATE_STATE", &state);
+            std::env::set_var("RUSTWX_NOMADS_MIN_INTERVAL_MS", "400");
+        }
+
+        let capability = wx_core::download::nomads_governor();
+        assert_eq!(
+            capability.state_path, state,
+            "the governor is not reading the state file it says it reads"
+        );
+        assert_eq!(capability.min_request_gap, Duration::from_millis(400));
+        assert!(capability.cooldown >= Duration::from_secs(60));
+
+        let url = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?file=x";
+        wx_core::download::pace_nomads_request(url);
+        let started = Instant::now();
+        wx_core::download::pace_nomads_request(url);
+        let spacing = started.elapsed();
+        assert!(
+            spacing >= Duration::from_millis(350),
+            "a second NOMADS request was paced by only {spacing:?}; the              resolved wx-core is not governing this host"
+        );
+        assert!(
+            std::fs::read_to_string(&state)
+                .unwrap_or_default()
+                .contains("last_request_ms="),
+            "the governor recorded no node-wide state"
+        );
+
+        // A non-NOMADS host is never paced, so the governor cannot be
+        // "working" merely by sleeping on everything.
+        let started = Instant::now();
+        wx_core::download::pace_nomads_request(
+            "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20260730/12/atmos/x",
+        );
+        assert!(started.elapsed() < Duration::from_millis(200));
+
+        unsafe {
+            std::env::remove_var("RUSTWX_NOMADS_RATE_STATE");
+            std::env::remove_var("RUSTWX_NOMADS_MIN_INTERVAL_MS");
+        }
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
 }

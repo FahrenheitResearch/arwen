@@ -32,8 +32,11 @@ _TOTAL_ORDER_OWNERS = {
     ),
 }
 
-#: Third-party sources are not ours to police.
-_VENDORED = ("tools/grib1_bridge/vendor",)
+#: Third-party sources are not ours to police.  ``work/`` holds frozen
+#: release-snapshot trees -- historical bytes of already-shipped versions,
+#: which no edit here can retroactively fix and which are not importable
+#: live source.
+_VENDORED = ("tools/grib1_bridge/vendor", "work/")
 
 #: Trees that a packaging run fills with copies of the source tree.  Both are
 #: gitignored (``.gitignore:4-5``) and neither is a second implementation:

@@ -680,8 +680,9 @@ def test_the_closing_line_states_what_it_can_prove():
 
 
 @pytest.mark.parametrize("windows", (False, True))
+@pytest.mark.parametrize("staging", (False, True))
 def test_every_conditional_remedy_branch_obeys_the_claim(
-        monkeypatch, tmp_path, windows):
+        monkeypatch, tmp_path, windows, staging):
     """Force the branches collect_checks() cannot reach on a dev box.
 
     On a machine with the checkout present and the binaries built,
@@ -709,6 +710,7 @@ def test_every_conditional_remedy_branch_obeys_the_claim(
 
     monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
     monkeypatch.setattr(bridges, "cargo_is_installed", lambda: False)
+    _set_staging(monkeypatch, tmp_path, available=staging)
 
     remedies = []
     for shape in (checkout, pip_shape):
@@ -865,7 +867,63 @@ def _assert_the_paste_composes(remedies, *, windows):
     return clones
 
 
-def _force_every_gap(monkeypatch, tmp_path, *, windows, shape, mode):
+def _pin_a_bundle(tmp_path, platform="linux-x86_64"):
+    """A pins document whose numbers come from bytes on this disk.
+
+    doctor only reads the platform and the download size out of it, but
+    a hash typed by hand is a hash nobody computed, so this hashes an
+    archive it just wrote.
+    """
+
+    import hashlib
+    import zipfile
+
+    from gpuwm import bridge_assets
+
+    archive = tmp_path / f"gpuwm-bridges-v0-doctor-{platform}.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for artifact in bridge_assets.BUNDLED_ARTIFACTS:
+            name = bridge_assets.artifact_filename(artifact, platform)
+            zf.writestr(name, name.encode() * 32)
+    blob = archive.read_bytes()
+    binaries = []
+    with zipfile.ZipFile(archive) as zf:
+        for artifact in bridge_assets.BUNDLED_ARTIFACTS:
+            name = bridge_assets.artifact_filename(artifact, platform)
+            payload = zf.read(name)
+            binaries.append(bridge_assets.BinaryPin(
+                artifact.name, name, len(payload),
+                hashlib.sha256(payload).hexdigest()))
+    bundle = bridge_assets.BundlePin(
+        platform=platform, filename=archive.name, bytes=len(blob),
+        sha256=hashlib.sha256(blob).hexdigest(), binaries=tuple(binaries))
+    return bridge_assets.BridgePins(release="v0-doctor",
+                                    platforms={platform: bundle})
+
+
+def _set_staging(monkeypatch, tmp_path, *, available):
+    """Make ``bridges.prebuilt_bundle_offer`` reachable, or not.
+
+    Both are real states of a real install: a release that published a
+    bundle for this platform, and one that did not (every tree before
+    the first bundled release, plus every platform that has no bundle).
+    doctor's report has to be honest and pasteable in both.
+    """
+
+    from gpuwm import bridge_assets
+
+    if not available:
+        monkeypatch.setattr(bridge_assets, "host_platform", lambda: None)
+        return None
+    pins = _pin_a_bundle(tmp_path)
+    monkeypatch.setattr(bridge_assets, "load_pins", lambda path=None: pins)
+    monkeypatch.setattr(bridge_assets, "host_platform",
+                        lambda: "linux-x86_64")
+    return pins
+
+
+def _force_every_gap(monkeypatch, tmp_path, *, windows, shape, mode,
+                     staging=False):
     """Make collect_checks() reach a remedy on (nearly) every check.
 
     The idiom of the branch-forcing test above, widened to the whole
@@ -883,6 +941,8 @@ def _force_every_gap(monkeypatch, tmp_path, *, windows, shape, mode):
     from gpuwm.core import noah as noah_core
     from gpuwm.core import thompson_contract
     from gpuwm.ingest import cpu_backend
+
+    _set_staging(monkeypatch, tmp_path, available=staging)
 
     root = tmp_path / shape
     root.mkdir(parents=True, exist_ok=True)
@@ -991,8 +1051,9 @@ def _force_every_gap(monkeypatch, tmp_path, *, windows, shape, mode):
 @pytest.mark.parametrize("windows", (False, True))
 @pytest.mark.parametrize("shape", ("checkout", "wheel"))
 @pytest.mark.parametrize("mode", ("absent", "stale", "override"))
+@pytest.mark.parametrize("staging", (False, True))
 def test_the_whole_printed_report_pastes_as_one_sequence(
-        monkeypatch, tmp_path, windows, shape, mode):
+        monkeypatch, tmp_path, windows, shape, mode, staging):
     """Every remedy doctor can print, in print order, pasted as a block.
 
     The contract is not "each block is well formed"; it is "select the
@@ -1001,10 +1062,17 @@ def test_the_whole_printed_report_pastes_as_one_sequence(
     block's `cd` went somewhere else, `git clone` came back once per
     bridge, the CPU-library remedy fused prose onto the build command,
     and four remedies were prose with no `#` at all.
+
+    ``staging`` is the fifth: when the release published a bundle for
+    this platform, every Rust remedy on a wheel install leads with
+    `gpuwm fetch-bridges` and demotes the clone-and-build to comments.
+    A paste that ran BOTH would clone 2.5 GB and compile for two
+    minutes to obtain files the line above already staged, so the
+    composition has to be checked in that arrangement too.
     """
 
     _force_every_gap(monkeypatch, tmp_path, windows=windows, shape=shape,
-                     mode=mode)
+                     mode=mode, staging=staging)
     checks = doctor.collect_checks()
     remedies = [check.remedy for check in checks if check.remedy]
     assert len(remedies) >= 12, (
@@ -1023,12 +1091,33 @@ def test_the_whole_printed_report_pastes_as_one_sequence(
     #    a reader re-runs doctor and pastes the report again.
     _assert_the_paste_composes(remedies * 2, windows=windows)
 
-    if shape == "wheel":
+    if shape == "wheel" and not staging:
         assert len(clones) >= 2, (
             "a wheel gaps every Rust artifact at once; the clone should "
             f"appear in several blocks: {clones}")
         assert len(set(clones)) == 1, (
             f"the blocks clone into different directories: {set(clones)}")
+    elif shape == "wheel":
+        # The same gaps, one command instead of a clone -- and the build
+        # route still printed, because it is the only route on a
+        # platform with no bundle.  Commented, so the paste does not run
+        # both.
+        assert not clones, (
+            "with a bundle published, a paste must not also clone and "
+            f"compile: {clones}")
+        rust_blocks = [remedy for remedy in remedies
+                       if "cargo build" in remedy]
+        assert len(rust_blocks) >= 6, (
+            f"the sweep stopped reaching the Rust remedies: {len(rust_blocks)}")
+        for remedy in rust_blocks:
+            commands = [line.strip() for line in remedy.splitlines()
+                        if line.strip() and not line.strip().startswith("#")]
+            assert commands and commands[0] == "gpuwm fetch-bridges", (
+                f"the prebuilt bundle must be offered first: {commands[:2]}")
+            assert all(command == "gpuwm fetch-bridges"
+                       for command in commands), (
+                "the source build must be commented out when the bundle "
+                f"is offered: {commands}")
     else:
         assert not clones, "a checkout has the sources; cloning is noise"
         assert any("cargo build --release --locked --offline" in remedy
@@ -1051,6 +1140,74 @@ def test_the_whole_printed_report_pastes_as_one_sequence(
                 "remedy continuation lines must line up under the label: "
                 f"{line!r}")
         cursor += len(printed)
+
+
+@pytest.mark.parametrize("staging", (False, True))
+def test_the_pip_remedy_offers_the_prebuilt_bundle_first(
+        monkeypatch, tmp_path, staging):
+    """One gap, two true remedies, decided by what the release published.
+
+    With a bundle for this platform the first thing a wheel user is
+    handed is the one command that finishes the job; without one they
+    get the clone-and-build bootstrap they have always got.  Neither
+    arm may leave the other's route out: the build is the only route on
+    a platform with no bundle, so it stays printed -- as comments -- and
+    a reader who pastes the report runs exactly one of them.
+    """
+
+    from gpuwm import bridge_assets, bridges
+
+    monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path / "wheel")
+    monkeypatch.setattr(bridges, "crate_dir",
+                        lambda: tmp_path / "wheel" / "tools" / "grib1_bridge")
+    monkeypatch.setattr(bridges, "cargo_is_installed", lambda: True)
+    pins = _set_staging(monkeypatch, tmp_path, available=staging)
+
+    remedy = bridges.bridge_remedy("grib1_bridge")
+    _assert_remedy_lines_are_commands_or_comments(
+        remedy, windows=bridges.WINDOWS_SHELL)
+    commands = [line.strip() for line in remedy.splitlines()
+                if line.strip() and not line.strip().startswith("#")]
+
+    if not staging:
+        assert "gpuwm fetch-bridges" not in remedy, (
+            "a platform with no published bundle must not be offered a "
+            "command that would refuse")
+        assert any(line.startswith("git clone") for line in commands)
+        assert any(line.startswith("cargo build") for line in commands)
+        return
+
+    assert commands == ["gpuwm fetch-bridges"], commands
+    assert "git clone" in remedy and "cargo build" in remedy, (
+        "the source route must still be printed; it is the only one on "
+        "a platform with no bundle")
+    bundle = pins.bundle_for("linux-x86_64")
+    assert f"{bundle.bytes / (1024 * 1024):.0f} MiB" in remedy, (
+        "the offer should say how large the download is")
+    assert str(bridges.default_bridge_dir()) in remedy
+    # And the one-line composition, for callers that cannot print a block.
+    one_line = bridges.install_aware_one_line_hint(bridges.CARGO_BUILD_HINT)
+    assert "gpuwm fetch-bridges" in one_line
+
+
+def test_the_offer_is_absent_when_the_pins_document_is_unreadable(
+        monkeypatch, tmp_path):
+    """A broken pins file is not an offer, and not a traceback either.
+
+    doctor runs on machines whose install is already wrong; a remedy
+    composer that raised while explaining a gap would take the whole
+    report down with it.
+    """
+
+    from gpuwm import bridge_assets, bridges
+
+    broken = tmp_path / "bridge-pins.json"
+    broken.write_text("{ not json", encoding="utf-8")
+    monkeypatch.setattr(bridge_assets, "packaged_pins_path", lambda: broken)
+    monkeypatch.setattr(bridge_assets, "host_platform",
+                        lambda: "linux-x86_64")
+    assert bridges.prebuilt_bundle_offer() is None
+    assert bridge_assets.staging_available() is False
 
 
 def test_doctor_finds_basemaps_the_way_the_renderer_does(tmp_path,

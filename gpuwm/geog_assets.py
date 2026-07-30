@@ -51,6 +51,8 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from gpuwm import fetch_guard
+
 GEOG_FETCH_MANIFEST_SCHEMA = "gpuwm-geog-fetch-manifest-v1"
 GEOG_FETCH_MANIFEST_NAME = "geog-fetch-manifest.json"
 
@@ -256,13 +258,69 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_dataset_dir(root: Path, dataset: str) -> tuple[bool, str]:
+def dataset_corpus(root: Path, dataset: str) -> tuple[int, int]:
+    """``(regular file count, total bytes)`` of one installed dataset.
+
+    A cheap stat walk: the tile trees run to gigabytes, so re-hashing
+    them at every use is not a bar anybody would leave switched on.
+    """
+
+    files = 0
+    total = 0
+    for path in (root / dataset).rglob("*"):
+        if path.is_file():
+            files += 1
+            total += path.stat().st_size
+    return files, total
+
+
+def installed_receipt(root: Path, dataset: str) -> dict | None:
+    """What the local manifest says was installed for ``dataset``.
+
+    Returns the ``{"files": n, "bytes": n}`` entry recorded when the
+    dataset was extracted, or ``None`` when no manifest claims it (an
+    install from before this receipt existed, or a directory some other
+    tool staged).
+    """
+
+    manifest = _load_manifest(root)
+    for entry in manifest.get("archives", {}).values():
+        if not isinstance(entry, dict):
+            continue
+        datasets = entry.get("datasets")
+        if not isinstance(datasets, dict):
+            continue
+        recorded = datasets.get(dataset)
+        if (isinstance(recorded, dict)
+                and isinstance(recorded.get("files"), int)
+                and isinstance(recorded.get("bytes"), int)):
+            return recorded
+    return None
+
+
+def validate_dataset_dir(root: Path, dataset: str, *,
+                         check_receipt: bool = True) -> tuple[bool, str]:
     """(ok, detail) for one staged dataset directory.
 
     The bar is doctor's own -- the directory exists and carries its WPS
     ``index`` file -- plus the index must actually parse
     (:func:`gpuwm.static.geog.parse_index`), so a zero-byte or truncated
     index cannot pass.
+
+    And, when the local manifest recorded what was installed, the tile
+    corpus must still match that receipt.  Index-only validation was the
+    whole bar until now, which meant a directory whose *tiles* were
+    corrupt, truncated, deleted or added to was classified valid beside
+    an intact ``index`` and reused indefinitely -- fetch returned zero
+    work and never looked at the manifest.  Comparing the file count and
+    total byte count against the extraction receipt catches missing,
+    extra and short tiles for the cost of a stat walk.  It does not
+    catch a same-size mutation of a tile's contents: that needs a full
+    content digest of a multi-gigabyte tree, which is a deliberate
+    verification mode rather than something to run on every command.
+
+    ``check_receipt=False`` asks for the historical index-only bar, for
+    callers validating a tree they have just staged themselves.
     """
 
     directory = root / dataset
@@ -286,16 +344,37 @@ def validate_dataset_dir(root: Path, dataset: str) -> tuple[bool, str]:
         parsed.dtype  # noqa: B018 -- raises on an undecodable wordsize
     except Exception as error:  # any parse failure is the finding
         return False, f"{index} does not parse as a WPS index: {error}"
-    return True, f"{directory} present, index parses"
+    if not check_receipt:
+        return True, f"{directory} present, index parses"
+    receipt = installed_receipt(root, dataset)
+    if receipt is None:
+        return True, (f"{directory} present, index parses (no local "
+                      f"{GEOG_FETCH_MANIFEST_NAME} entry to check the "
+                      "tile corpus against)")
+    files, total = dataset_corpus(root, dataset)
+    if (files, total) != (receipt["files"], receipt["bytes"]):
+        return False, (
+            f"{directory} no longer matches what "
+            f"{GEOG_FETCH_MANIFEST_NAME} records was installed: "
+            f"{files} files / {total:,} B on disk, "
+            f"{receipt['files']} files / {receipt['bytes']:,} B recorded "
+            "(a tile is missing, truncated, or added)")
+    return True, (f"{directory} present, index parses, {files} tiles / "
+                  f"{total:,} B match the recorded install")
 
 
-def _quarantine(path: Path, progress, label: str) -> None:
-    """Move a refused file aside (never deleted, never reused)."""
+def _quarantine(path: Path, progress, label: str) -> Path:
+    """Move a refused file aside (never deleted, never reused).
 
-    aside = path.with_name(f"{path.name}.rejected-{time.time_ns()}")
-    os.replace(path, aside)
+    The name is proven free first: ``.rejected-<time_ns>`` on its own
+    collides inside a clock tick, and ``os.replace`` onto the collision
+    destroys the older evidence.
+    """
+
+    aside = fetch_guard.quarantine(path)
     progress(f"fetch-geog {label}: moved rejected file aside to "
              f"{aside.name}")
+    return aside
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +383,38 @@ def _quarantine(path: Path, progress, label: str) -> None:
 
 def _default_urlopen(request: Request):
     return urlopen(request, timeout=_TIMEOUT_S)
+
+
+#: Sidecar recording which object a partial archive is a prefix OF.
+_RESUME_SIDECAR_SUFFIX = ".fetch-resume.json"
+
+
+def _resume_sidecar(dest: Path) -> Path:
+    return dest.with_name(dest.name + _RESUME_SIDECAR_SUFFIX)
+
+
+def _resume_identity(response, url: str) -> dict:
+    headers = getattr(response, "headers", None)
+    getter = headers.get if headers is not None else (lambda _key: None)
+    return {
+        "url": url,
+        "etag": getter("ETag"),
+        "last_modified": getter("Last-Modified"),
+    }
+
+
+def _content_range_start(value: str) -> int | None:
+    """The first byte a ``206`` says it is sending, or None."""
+
+    text = (value or "").strip()
+    if not text.lower().startswith("bytes "):
+        return None
+    span = text[6:].split("/", 1)[0].strip()
+    first = span.split("-", 1)[0].strip()
+    try:
+        return int(first)
+    except ValueError:
+        return None
 
 
 def download_archive(url: str, dest: Path, *, expected_bytes: int,
@@ -319,17 +430,70 @@ def download_archive(url: str, dest: Path, *, expected_bytes: int,
     hash check with a confusing story.  ``--allow-upstream-drift``
     turns ``strict_size`` off, deferring to the verify step's sanity
     band (a republished archive rarely keeps its byte count).
+
+    Resume is bound to an *object*, not just to a byte count.  A partial
+    file used to be resumed from its length alone: nothing checked that
+    the bytes about to be appended came from the same URL, the same
+    version, or even the requested offset, so a republished or
+    reconfigured upstream could produce a chimera stitched out of two
+    generations.  The exact pin normally catches that; under
+    ``--allow-upstream-drift`` -- where the size band *is* the whole
+    integrity policy -- a same-size chimera passed.  Now the first
+    response's identity (URL, ``ETag``, ``Last-Modified``) is recorded
+    in a sidecar, a resume must match it and is sent with ``If-Range``,
+    and a ``206`` whose ``Content-Range`` does not start at the
+    requested offset is refused.  A mismatch restarts from zero after
+    setting the partial aside; nothing is deleted.
     """
 
     offset = dest.stat().st_size if dest.exists() else 0
+    sidecar = _resume_sidecar(dest)
+    recorded: dict = {}
+    if offset:
+        try:
+            loaded = json.loads(sidecar.read_text(encoding="utf-8"))
+            recorded = loaded if isinstance(loaded, dict) else {}
+        except (OSError, ValueError):
+            recorded = {}
+        bound_to_another = bool(recorded) and recorded.get("url") != url
+        # A partial with no record at all is either a pre-1.1.3 resume
+        # or something else's file.  On the pinned path the exact
+        # size+SHA-256 pin is a complete integrity policy and catches any
+        # mixture, so such a partial is still worth resuming.  Under
+        # --allow-upstream-drift there is no pin -- the size band IS the
+        # policy, and a same-size chimera passes it -- so an unbound
+        # partial has to start again.
+        unbound_and_unpinned = not recorded and not strict_size
+        if bound_to_another or unbound_and_unpinned:
+            progress(
+                f"fetch-geog {label}: the partial archive on disk is not a "
+                f"recorded prefix of {url} "
+                + (f"(it was recorded against {recorded.get('url')!r})"
+                   if bound_to_another else
+                   "(no resume record, and --allow-upstream-drift has no "
+                   "pin to catch a mixed archive)")
+                + "; setting it aside and downloading from the start")
+            _quarantine(dest, progress, label)
+            sidecar.unlink(missing_ok=True)
+            offset = 0
+            recorded = {}
     if strict_size and offset > expected_bytes:
         _quarantine(dest, progress, label)
+        sidecar.unlink(missing_ok=True)
         offset = 0
+        recorded = {}
     if strict_size and offset == expected_bytes:
         return
     headers = {"User-Agent": _USER_AGENT}
     if offset:
         headers["Range"] = f"bytes={offset}-"
+        validator = recorded.get("etag") or recorded.get("last_modified")
+        if validator:
+            # If the object changed, the server answers 200 with the whole
+            # new body and the restart below is taken -- which is exactly
+            # the outcome wanted, decided by the origin rather than
+            # guessed at here.
+            headers["If-Range"] = validator
         progress(f"fetch-geog {label}: resuming at "
                  f"{offset / (1024 * 1024):.1f} MiB")
     request = Request(url, headers=headers)
@@ -337,10 +501,30 @@ def download_archive(url: str, dest: Path, *, expected_bytes: int,
     try:
         with urlopen_fn(request) as response:
             status = getattr(response, "status", 200)
+            if offset and status == 206:
+                response_headers = getattr(response, "headers", None)
+                raw_range = ("" if response_headers is None
+                             else response_headers.get("Content-Range") or "")
+                start = _content_range_start(raw_range)
+                if start != offset:
+                    raise GeogFetchError(
+                        f"{label}: resume asked for bytes {offset}- and the "
+                        f"server answered 206 with Content-Range "
+                        f"{raw_range!r}, which does not start there; the "
+                        "partial file is kept and untouched -- move it "
+                        "aside and re-run to download from the start")
             mode = "ab" if (offset and status == 206) else "wb"
             if offset and status != 206:
                 progress(f"fetch-geog {label}: server ignored the resume "
-                         "range; restarting the download")
+                         "range (or the object changed); restarting the "
+                         "download")
+                recorded = {}
+            if not recorded:
+                fetch_guard.atomic_write_text(
+                    sidecar,
+                    json.dumps(_resume_identity(response, url),
+                               indent=2, sort_keys=True) + "\n",
+                    tag="geog")
             with dest.open(mode) as sink:
                 while block := response.read(_BLOCK_BYTES):
                     sink.write(block)
@@ -361,11 +545,14 @@ def download_archive(url: str, dest: Path, *, expected_bytes: int,
     size = dest.stat().st_size
     if strict_size and size != expected_bytes:
         _quarantine(dest, progress, label)
+        sidecar.unlink(missing_ok=True)
         raise GeogFetchError(
             f"{label}: downloaded {size:,} B from {url}, expected "
             f"{expected_bytes:,} B; the file was moved aside -- re-run "
             "to fetch fresh (if this repeats, the upstream archive has "
             "changed; see --allow-upstream-drift)")
+    # The archive is whole: the resume record has nothing left to bind.
+    sidecar.unlink(missing_ok=True)
     seconds = time.perf_counter() - started
     rate = (size - offset) / (1024 * 1024) / seconds if seconds > 0 else 0.0
     progress(f"fetch-geog {label}: {dest.name} {size:,} B in "
@@ -511,7 +698,10 @@ def extract_datasets(archive: Path, root: Path, datasets: tuple[str, ...],
 
     for dataset in datasets:
         staged = tmp / dataset
-        ok, detail = validate_dataset_dir(tmp, dataset)
+        # Index-only here on purpose: this tree was just written by this
+        # process and no receipt describes it yet -- the corpus check
+        # belongs to the reuse path, against the receipt published below.
+        ok, detail = validate_dataset_dir(tmp, dataset, check_receipt=False)
         if not ok:
             raise GeogFetchError(
                 f"{label}: extracted dataset failed validation: {detail} "
@@ -552,12 +742,37 @@ def _load_manifest(root: Path) -> dict:
 def _write_manifest(root: Path, payload: dict) -> Path:
     payload["updated"] = datetime.now(timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ")
-    path = root / GEOG_FETCH_MANIFEST_NAME
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n",
-                   encoding="utf-8", newline="\n")
-    os.replace(tmp, path)
-    return path
+    return fetch_guard.atomic_write_text(
+        root / GEOG_FETCH_MANIFEST_NAME,
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        tag="geog")
+
+
+def publish_archive_entry(root: Path, filename: str, entry: dict) -> Path:
+    """Record one installed archive in the manifest, immediately.
+
+    Two defects closed at once, and both need the read to happen here
+    rather than at the start of the run.
+
+    *Provenance survived nothing.*  Entries used to accumulate in memory
+    and be published once, after every archive, and the verified archive
+    was normally deleted before that.  A kill between the directory
+    install and the final write lost the only record of where those
+    tiles came from -- and the rerun classified the directory valid and
+    returned before it could rebuild the entry.  Publishing per archive
+    means the receipt is never further behind the disk than one archive.
+
+    *Concurrent fetches lost each other's updates.*  Two processes each
+    loaded the manifest at startup and each replaced it with its own
+    version, so whichever finished last dropped the other's datasets
+    while both directories sat installed and unrecorded.  Re-reading the
+    canonical manifest here, under the geog-root lock, merges instead.
+    """
+
+    with fetch_guard.hold("fetch-geog", root):
+        manifest = _load_manifest(root)
+        manifest["archives"][filename] = entry
+        return _write_manifest(root, manifest)
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +810,26 @@ def fetch_geog(*, root: Path, datasets: tuple[str, ...], source: str,
 
     Returns the count of datasets newly staged (0 = everything was
     already present and valid).
+
+    One writer per geog root: the classification, the archive
+    downloads, the extractions and every manifest publication run under
+    an exclusive OS lock, so two concurrent ``fetch-geog`` runs cannot
+    quarantine each other's freshly installed directories or race on the
+    same archive path.
     """
+
+    root.mkdir(parents=True, exist_ok=True)
+    with fetch_guard.hold("fetch-geog", root, progress=progress):
+        return _fetch_geog_locked(
+            root=root, datasets=datasets, source=source, bundle=bundle,
+            keep_archives=keep_archives, allow_drift=allow_drift,
+            progress=progress, urlopen_fn=urlopen_fn)
+
+
+def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
+                       bundle: bool, keep_archives: bool, allow_drift: bool,
+                       progress, urlopen_fn) -> int:
+    """The fetch-geog engine, with the geog-root lock already held."""
 
     needed: list[str] = []
     for name in datasets:
@@ -619,7 +853,6 @@ def fetch_geog(*, root: Path, datasets: tuple[str, ...], source: str,
 
     archive_dir = root / ARCHIVE_SUBDIR
     archive_dir.mkdir(parents=True, exist_ok=True)
-    manifest = _load_manifest(root)
     staged = 0
 
     def run_archive(filename: str, expected_bytes: int,
@@ -646,14 +879,18 @@ def fetch_geog(*, root: Path, datasets: tuple[str, ...], source: str,
         counts = extract_datasets(dest, root, targets,
                                   progress=progress, label=label)
         staged += len(targets)
-        manifest["archives"][filename] = {
+        # Published NOW, before the verified archive is removed: the
+        # receipt is the only record of where these tiles came from, and
+        # holding it in memory until every archive finished meant a kill
+        # in between lost it with nothing able to rebuild it.
+        publish_archive_entry(root, filename, {
             "url": url, "source": source,
             "archive_bytes": dest.stat().st_size,
             "archive_sha256": observed, "pinned": pinned,
             "datasets": {target: counts[target] for target in targets},
             "fetched_at": datetime.now(timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"),
-        }
+        })
         if keep_archives:
             progress(f"fetch-geog {label}: kept archive {dest}")
         else:
@@ -670,7 +907,6 @@ def fetch_geog(*, root: Path, datasets: tuple[str, ...], source: str,
             run_archive(archive.filename, archive.archive_bytes,
                         archive.archive_sha256, (name,), name)
 
-    _write_manifest(root, manifest)
     failures = []
     for name in datasets:
         ok, detail = validate_dataset_dir(root, name)

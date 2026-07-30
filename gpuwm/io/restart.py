@@ -89,6 +89,7 @@ from pathlib import Path
 import numpy as np
 
 from gpuwm.config import radiation_scheme_ids
+from gpuwm.supervisor import fsync_file
 from gpuwm.physics_compat import (RRTMG_VARIANT_LEGACY,
                                   RRTMG_VARIANT_RTE_RRTMGP, rrtmg_variant)
 from gpuwm.core.nssl2_contract import (
@@ -532,6 +533,56 @@ class RestartMismatchError(ValueError):
     """The restart file does not match the resuming configuration/setup."""
 
 
+def producer_identity() -> dict[str, str]:
+    """Which build wrote this file.
+
+    A checkpoint or a history file that has been separated from the run's
+    logs -- archived, mailed, or found in a directory a year later -- can
+    otherwise say nothing about the code that produced it.  The version is
+    the installed distribution's, not a hand-maintained constant, because
+    the hand-maintained constant is exactly what went stale for four
+    releases; and the restart format version rides along because a reader
+    that cannot parse the payload still needs to know why.
+    """
+    from gpuwm import DISTRIBUTION_NAME, __version__
+
+    return {
+        "distribution": DISTRIBUTION_NAME,
+        "version": __version__,
+        "restart_format_version": str(RESTART_FORMAT_VERSION),
+    }
+
+
+def _admissible_elapsed_seconds(value, where: str) -> float:
+    """Model-clock seconds that arithmetic can survive.
+
+    ``float(value)`` alone admits ``NaN`` -- Python's json writes and reads
+    the bare token by default -- and admits a negative clock, and both pass
+    every identity check a restart makes before poisoning cadence and
+    resume arithmetic downstream of them.  MP18 already refused both; this
+    is the same refusal for every format and both directions.
+    """
+    # ``bool`` is an ``int`` and ``float("600")`` succeeds, so neither a
+    # flag nor a numeric string may pass as a clock: the header field is
+    # written as a JSON number and anything else is a malformed header.
+    if isinstance(value, bool) or not isinstance(value, (int, float,
+                                                         np.integer,
+                                                         np.floating)):
+        raise RestartManifestError(
+            f"{where} elapsed_seconds must be a real number, got {value!r}")
+    try:
+        elapsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RestartManifestError(
+            f"{where} elapsed_seconds must be a real number, "
+            f"got {value!r}") from exc
+    if not math.isfinite(elapsed) or elapsed < 0.0:
+        raise RestartManifestError(
+            f"{where} elapsed_seconds must be finite and non-negative, "
+            f"got {elapsed!r}")
+    return elapsed
+
+
 def _nssl2_restart_contract_identity() -> dict[str, object]:
     """Return the exact versioned MP18 state carried by restart v5."""
     return {
@@ -613,19 +664,28 @@ def _validate_nssl2_live_restart_state(state, cfg) -> None:
             "MP18 restart first-call authority microphysics_updates must be "
             f"a non-negative integer, got {updates!r}")
     try:
-        elapsed = float(state.elapsed_seconds)
-    except (TypeError, ValueError) as exc:
+        _admissible_elapsed_seconds(state.elapsed_seconds, "MP18 restart")
+    except RestartManifestError:
         raise RestartManifestError(
             "MP18 restart elapsed_seconds must be finite and non-negative") \
-            from exc
-    if (isinstance(state.elapsed_seconds, bool)
-            or not math.isfinite(elapsed) or elapsed < 0.0):
-        raise RestartManifestError(
-            "MP18 restart elapsed_seconds must be finite and non-negative")
+            from None
 
 
 def restart_filename(valid_time: datetime, domain: str = "d01") -> str:
-    """WRF ``wrfrst``-style file name for a restart valid time."""
+    """WRF ``wrfrst``-style file name for a restart valid time.
+
+    Whole seconds only, refused rather than truncated, for the reason
+    ``gpuwm.io.wrfout.wrfout_filename`` gives: this name is the standalone
+    checkpoint's whole identity and its publisher replaces, so two legal
+    sub-second checkpoints used to collapse onto one file and the earlier
+    one ceased to exist.
+    """
+    if valid_time.microsecond:
+        raise ValueError(
+            f"restart valid time {valid_time!r} is not on a whole second; "
+            "checkpoint filenames carry whole seconds only, so distinct "
+            "sub-second instants would alias onto one file and the later "
+            "checkpoint would replace the earlier one")
     return valid_time.strftime(f"gpuwmrst_{domain}_%Y-%m-%d_%H_%M_%S.npz")
 
 
@@ -1635,7 +1695,13 @@ def write_restart(path, state, cfg, *, run_trackers=None,
         "format_version": RESTART_FORMAT_VERSION,
         "case": cfg.case,
         "created": datetime.now(timezone.utc).isoformat(),
-        "elapsed_seconds": float(state.elapsed_seconds),
+        # The producer's own identity, so a checkpoint separated from its
+        # logs can still say which build wrote it.  ``gpuwm.__version__``
+        # comes from installed distribution metadata, so this is the release
+        # that is speaking rather than a hand-maintained constant.
+        "producer": producer_identity(),
+        "elapsed_seconds": _admissible_elapsed_seconds(
+            state.elapsed_seconds, "restart write"),
         "config": dataclasses.asdict(cfg),
         "setup_fingerprint": setup_fingerprint(state),
         "physics_setup": physics_setup,
@@ -1655,8 +1721,14 @@ def write_restart(path, state, cfg, *, run_trackers=None,
                 f"tree restart header may not replace base keys "
                 f"{sorted(overlap)}")
         header.update(dict(tree_header))
+    # ``allow_nan=False``: Python's json emits bare ``NaN``/``Infinity``
+    # tokens by default, which are not JSON, and the reader accepts them
+    # back.  A header that cannot express a non-finite clock is a header
+    # whose clock cannot poison resume arithmetic after every identity
+    # check has already passed.
     payload = {_HEADER_KEY: np.frombuffer(
-        json.dumps(header).encode("utf-8"), dtype=np.uint8)}
+        json.dumps(header, allow_nan=False).encode("utf-8"),
+        dtype=np.uint8)}
     payload.update(arrays)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Atomic publish: a crash mid-write must not leave a truncated file
@@ -1665,6 +1737,13 @@ def write_restart(path, state, cfg, *, run_trackers=None,
     try:
         with temp.open("wb") as stream:
             np.savez(stream, **payload)
+        # Atomic visibility was already sound; durability was not.  Closing
+        # a file leaves its bytes in the page cache, so a machine or volume
+        # crash could expose the published name with content that never
+        # reached the disk.  The wrfout writer already fsyncs before it
+        # replaces; the checkpoint did not, and a checkpoint is the thing a
+        # crash is supposed to leave behind.
+        fsync_file(temp)
         os.replace(temp, path)
     except BaseException:
         temp.unlink(missing_ok=True)
@@ -2455,8 +2534,9 @@ def _validate_restart(path, state, cfg) -> _ValidatedRestart:
                 f"restart member {key} does not match its manifest entry")
 
     try:
-        elapsed = float(header["elapsed_seconds"])
-    except (TypeError, ValueError) as exc:
+        elapsed = _admissible_elapsed_seconds(
+            header["elapsed_seconds"], f"restart file {path}")
+    except (TypeError, ValueError, KeyError, RestartManifestError) as exc:
         raise RestartMismatchError(
             f"restart file {path} has an invalid elapsed_seconds") from exc
     _validate_nssl2_stored_restart_state(

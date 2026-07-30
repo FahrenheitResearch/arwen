@@ -35,3 +35,8 @@ tools/rustwx/target/
 # still ship; their bytecode does not.
 tools/grib1_bridge/vendor/**/__pycache__/
 tools/rustwx/vendor/**/__pycache__/
+
+# Scratch for live acceptance runs (fetched GRIB, decoded arrays, prepared
+# wrfinput/wrfbdy).  Real data, reproducible from the commands in the
+# handoff report, and never a build input.
+/cache/

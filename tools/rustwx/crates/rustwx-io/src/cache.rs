@@ -769,6 +769,19 @@ fn quarantine_cache_paths(paths: &[&Path], reason: &str) {
     }
 }
 
+/// Move one suspect cache file aside.  Never deletes it.
+///
+/// A failed rename used to fall through to `fs::remove_file`, which turns
+/// quarantine into deletion at exactly the moment quarantine matters: a full
+/// disk, a directory that cannot be created, a file another process holds
+/// open.  The evidence of what actually arrived is then gone, and gone
+/// precisely in the cases hardest to reproduce.
+///
+/// Leaving the file where it is instead is safe here: every current-schema
+/// entry is re-verified against its recorded request identity, length and
+/// SHA-256 at load, so an entry that could not be moved aside is refused on
+/// every subsequent use rather than served.  It costs a re-verification per
+/// use, which is the correct price for not destroying evidence.
 fn quarantine_cache_path(path: &Path, reason: &str) {
     if !path.exists() {
         return;
@@ -777,8 +790,14 @@ fn quarantine_cache_path(path: &Path, reason: &str) {
     if let Some(parent) = quarantine_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    if fs::rename(path, &quarantine_path).is_err() {
-        let _ = fs::remove_file(path);
+    if let Err(err) = fs::rename(path, &quarantine_path) {
+        eprintln!(
+            "rustwx-io cache: could not move {} aside ({}); leaving it in \
+             place -- it stays refused by the use-time verification and is \
+             never deleted",
+            path.display(),
+            err
+        );
     }
 }
 

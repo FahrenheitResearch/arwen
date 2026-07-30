@@ -1012,8 +1012,17 @@ def test_front_door_manifest_feeds_the_gfs_verifier_unedited(
     assert "--cycle 2026-07-28_06:00:00" in printed
 
     payload = json.loads(manifest_path.read_text())
-    assert payload["source"] == {"model": "GFS", "product": "pgrb2.0p25",
-                                 "cycle": "2026-07-28T06:00:00Z"}
+    # The identity block also carries the pressure ladder the fetch took
+    # and the source top it implies: the front door validates the case's
+    # p_top against the source top BEFORE the bridge runs, so it has to
+    # read it from the receipt rather than from a constant.
+    assert payload["source"] == {
+        "model": "GFS", "product": "pgrb2.0p25",
+        "cycle": "2026-07-28T06:00:00Z",
+        "pressure_levels_hpa": [float(level) for level
+                                in gfs_transport.PRESSURE_LEVELS_HPA],
+        "top_pressure_pa": 10000.0,
+    }
     assert payload["files"]["bridge"]["sha256"] == fetch.sha256_file(bridge)
 
     roles = {

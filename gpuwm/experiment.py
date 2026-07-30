@@ -625,6 +625,31 @@ def _check_cadence(label: str, seconds: Fraction, dt: Fraction, grid_id,
             f"dt = {dt} s exactly, {seconds}/({dt}) = {steps}.")
 
 
+def _check_whole_second_cadence(label: str, seconds: Fraction, grid_id,
+                                source: str) -> None:
+    """Refuse a publication cadence the file names cannot express.
+
+    History and standalone-restart instants become file names and a
+    ``Times`` record at whole-second resolution, and both publishers
+    replace.  A quarter-second history interval is divisible by a
+    quarter-second step, so it used to pass admission -- and then three
+    distinct legal frames formatted to one name, each replacing the last,
+    with no exception raised anywhere.  Whole seconds are the widest
+    cadence the on-disk contract can name, so they are the widest cadence
+    admitted; the alternative is a run that quietly loses its own output.
+    """
+    if seconds <= 0:
+        return
+    if seconds.denominator != 1:
+        raise ValueError(
+            f"{label} = {float(seconds):g} s on domain grid_id={grid_id} "
+            f"of {source} is not a whole number of seconds. History and "
+            "restart files are named, and their Times record written, to "
+            "whole-second resolution, so distinct sub-second instants "
+            "would alias onto one file name and the later one would "
+            "replace the earlier.")
+
+
 def validate_boundary_timing(
         exp: ExperimentConfig, boundary_interval_seconds: int, *,
         source: str = "boundary forcing") -> None:
@@ -1180,6 +1205,9 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         # --- cadence divisibility (integer domain steps) ----------------
         _check_cadence("history_interval_s", Fraction(history_interval_s),
                        dt_ex, grid_id, source)
+        _check_whole_second_cadence(
+            "history_interval_s", Fraction(history_interval_s), grid_id,
+            source)
         if radiation_enabled(run):
             radt_min = run.radt if run.radt > 0.0 else run.radt_minutes
             _check_cadence("radt", Fraction(radt_min) * 60, dt_ex,
@@ -1195,6 +1223,9 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             _check_cadence("restart_interval_s",
                            Fraction(restart_interval_s), dt_ex, grid_id,
                            source)
+            _check_whole_second_cadence(
+                "restart_interval_s", Fraction(restart_interval_s), grid_id,
+                source)
 
         dc = DomainConfig(
             grid_id=grid_id, parent_id=parent_id, i_parent_start=i_start,

@@ -1,5 +1,392 @@
 # Changelog
 
+## 1.2.0 (2026-07-30)
+
+`pip install gpuwm` followed by `gpuwm fetch-bridges` puts the compiled
+GRIB decoders, the CPU preprocessing library, the fetch backbone and the
+batch renderer onto a machine with no clone and no Rust toolchain.
+History files carry the variable names, NetCDF types, axes, precipitation
+accumulators and physics-selector globals a WRF reader expects, which
+changes what a v1.1.x file looked like. `gpuwm fetch --source gfs`
+accepts the model top the case asks for instead of stopping at 100 hPa.
+The fetch and cache state machines take a single-writer lock, publish
+atomically, verify cached bytes where they are used, and pace NOMADS from
+the Python transport as well as the Rust one. Two documentation pages
+state where the determinism claim and the `gpuwm adapt` trust boundary
+stop.
+
+### Breaking: what a reader of v1.1.x output must change
+
+- **43 Noah-MP fields are written under WRF's external names.** The
+  history writer upper-cased the internal symbol, so `tvxy` went out as
+  `TVXY`. WRF's external name is the Registry `dname` column upper-cased
+  (`tools/gen_wrf_io.c:331-334`), which makes those fields `TV`, `TG`,
+  `ISNOW`, `TSNO`, `ZSNSO`, `SNICE`, `SNLIQ`, `PGS`, `T2V`, `Q2B`,
+  `RUNSF` and so on. Two fields keep the symbol spelling, `qsnowxy` and
+  `qrainxy`, because that is what their `dname` is. Anything keyed to the
+  old `*XY` spellings reads a v1.2.0 file and finds nothing; anything
+  keyed to WRF's names reads it and finds the field.
+- **`EL_PBL`, `EXCH_H` and `EXCH_M` are written on `bottom_top_stag`,
+  one level taller.** The Registry declares them `Z`-staggered, and WRF
+  writes them at `nz+1` with the top interface left at the Registry cold
+  value of zero, which is what its own PBL driver leaves there. A script
+  that hard-coded `nz` levels for these three MYNN fields reads `nz+1`.
+- **`--force-refetch` moves every regular file in `--out` aside.** The
+  help text has always described a whole-directory replacement; the
+  implementation quarantined per forecast hour, so a shorter forced
+  window left earlier hours canonical and unlisted, and an interrupt
+  mid-sweep left a manifest claiming bytes that had been replaced. The
+  sweep is now receipts first (`fetch-manifest.json`, `SHA256SUMS`, the
+  series) and payloads second, over every regular file in the directory,
+  including index files, selector files, stale parts and files the
+  operator put there. Nothing is deleted -- everything is renamed aside,
+  files an earlier quarantine already set aside are left alone, and
+  subdirectories are untouched. A directory that was half a fetch and
+  half someone's notes comes back with the notes renamed.
+- **Four integer fields are written as `NC_INT` with `FieldType 106`.**
+  `KTOP_PLUME` and `KPBL` (MYNN), `ISNOW` and `PGS` (Noah-MP) are
+  `state integer` rows in the Registry and are allocated as 32-bit
+  integers in the model; they had been shipping as float32 with
+  `FieldType 104`. Values were already integral, so the change is to type
+  and metadata, not to content -- but a reader that assumed float32 for
+  every variable except `ITIMESTEP` sees a different dtype.
+- **Projection globals are single precision.** `DX`, `DY`, `TRUELAT1`,
+  `TRUELAT2`, `STAND_LON`, `CEN_LAT`, `CEN_LON`, `MOAD_CEN_LAT`,
+  `POLE_LAT` and `POLE_LON` are written `NC_FLOAT`, which is what stock
+  WRF writes; they had been `NC_DOUBLE`. Both consumers tolerate either,
+  but a byte-level comparison against a v1.1.x file differs.
+- **A fractional history or restart cadence is refused at config
+  admission.** `history_interval_s` and `restart_interval_s` must be a
+  whole number of seconds. A quarter-second cadence on a quarter-second
+  step divides evenly into steps and was accepted, and then wrote three
+  distinct model instants onto one file name, because the filename and
+  the `Times` string carry whole seconds. Sub-second history remains
+  unsupported; it is refused rather than silently collapsed. The writers
+  refuse a `valid_time` with a nonzero microsecond and a `Times` value
+  longer than 19 characters for the same reason.
+
+### Prebuilt Rust artifacts arrive as a download
+
+- **Added: `gpuwm fetch-bridges`.** A pip install has never been able to
+  read a GRIB file. The wheel ships no compiled Rust, so the five
+  decoders, the CPU preprocessing library, the `rw_fetch` backbone and
+  the `rw_wrfbatch` renderer had exactly one route onto a machine: clone
+  the repository, install a Rust toolchain, and run `cargo build` in two
+  workspaces. The artifacts are published as one release bundle per
+  platform, and this command downloads the one matching this OS and
+  architecture, verifies every artifact against the size + SHA-256 pins
+  packaged in the wheel, and stages it into `~/.gpuwm/bridges` -- the
+  directory the resolver already searched. Bundles are published for
+  Windows x86-64 and Linux x86-64; the platform check asks what this box
+  can execute and nothing else, and anywhere without a bundle keeps the
+  build-from-source route, which works everywhere.
+- **Every byte is checked three ways before it is installed**: the exact
+  size, the SHA-256 pin, and -- for the decoders that declare one -- the
+  contract marker `gpuwm doctor` looks for in an already-built binary.
+  A staged file that fails any of the three is deleted rather than
+  installed, and members are read out of the archive by their exact
+  pinned filename, so nothing can be written anywhere the pins did not
+  name. An interrupted download resumes against the partial, or restarts
+  when the server ignores the range rather than appending to bytes it did
+  not extend. `--from DIR` stages the same bundle -- or the loose
+  artifacts -- from a local directory, offline, under identical checks.
+- **A stale artifact is replaced, not refused.** This is the one place
+  the contract differs from `gpuwm fetch-tables`, deliberately: a physics
+  table that does not match its pin is the operator's file and is never
+  overwritten, while a bridge executable that does not match is a build
+  from a different release. Leaving that one in place is exactly the skew that
+  made 1.1.0 preparations fail with a message blaming a file gpuwm had
+  just written correctly. The replacement still happens only after the
+  new bytes pass all three checks.
+- **`gpuwm doctor` offers it first, and only when it is true.** Every
+  Rust-artifact remedy on a wheel install leads with
+  `gpuwm fetch-bridges` and keeps the clone-and-build block beneath it,
+  commented out -- printed because it is the only route on a platform
+  with no bundle, commented because a reader who pastes the whole report
+  must not also compile what the line above already staged. The offer
+  appears only when the pins this wheel carries name a bundle for this
+  platform, so the report never advertises a command that would refuse.
+- **Pins are generated during the release cut**, by
+  `tools/build_bridge_bundle.py`, from the exact bytes the release
+  uploads, before the wheel is built -- the bundles are compiled from the
+  commit being released, so they cannot be pinned any earlier. The
+  release workflow builds both platforms with
+  `cargo build --release --locked`, uploads the bundles and their
+  manifest to the release *before* publishing the wheel that points at
+  them, and re-reads its own pins as the last step before PyPI.
+  `RELEASE_CHECKLIST.md` carries the same sequence for a cut driven by
+  hand. A tree that has not been through a cut declares no platform,
+  which is what an unpinned document says instead of carrying a hash
+  nobody computed.
+
+### Scheme output a WRF reader can read
+
+- **Every emitted scheme field has a record**, in
+  `gpuwm/io/wrf_output_schema.py`: 85 fields across MYNN, Noah-MP and
+  RUC, each carrying WRF's external name, its NetCDF type and
+  `FieldType`, its stagger, and its description and units transcribed
+  from the pinned v4.6.1 Registry with the Registry line cited. Where
+  WRF's own strings are visibly wrong they are transcribed as they are,
+  because a gpuwm file that disagreed with a WRF file about the same
+  field is the failure this table exists to prevent. The writer refuses
+  to publish a field whose Registry stagger contradicts the axis the
+  dimension table gave it, refuses a float payload for a field WRF
+  declares integer, and refuses a scheme field that has no record rather
+  than shipping it without metadata.
+- **The six precipitation accumulators WRF always writes are always
+  written.** `RAINC`, `RAINSH`, `RAINNC`, `SNOWNC`, `GRAUPELNC` and
+  `HAILNC` are core per-domain history fields in `Registry.EM_COMMON`
+  with no package gate, so WRF writes all six whatever the physics
+  selection is, filling them with zeros when nothing produced the
+  quantity. gpuwm emitted each one only when the scheme that fills it was
+  routed, so `RAINC` was absent from every `cu_physics=0` run, `HAILNC`
+  from everything but NSSL2, and `RAINSH` from every file it had ever
+  written. Every precipitation recipe in wrf-python and wrf-rust reads
+  `RAINC + RAINNC` unconditionally, which is why a wrfout that omits
+  `RAINC` fails an entire product family. The six are emitted always,
+  zero-filled when the producer is absent. `RAINSH` is always zero and
+  the code says why: gpuwm implements no shallow cumulus, and zero is
+  what WRF writes for `shcu_physics=0`.
+- **Eleven physics-selector globals are stamped into every history
+  file.** `MP_PHYSICS`, `RA_LW_PHYSICS`, `RA_SW_PHYSICS`,
+  `SF_SFCLAY_PHYSICS`, `SF_URBAN_PHYSICS`, `SF_SURFACE_PHYSICS`,
+  `SF_SURFACE_MOSAIC`, `SF_OCEAN_PHYSICS`, `BL_PBL_PHYSICS`,
+  `CU_PHYSICS` and `SHCU_PHYSICS`, as `NC_INT`, every one of them present
+  in stock WRF output and cited to its Registry line. Four are constants
+  because gpuwm has no such option to select, which makes WRF's "off"
+  value the true one -- and it is what makes the accumulator zeros
+  legible, since `SHCU_PHYSICS=0` beside `RAINSH` at zero answers a
+  question neither answers alone. The radiation pair is resolved through
+  `gpuwm.config.radiation_scheme_ids` rather than copied from the config,
+  because gpuwm's `-1/-1` is a legacy sentinel meaning "use the aggregate
+  spelling" and is not a WRF scheme id. The globals are written only when
+  the writer was given a resolved run configuration, so an idealized
+  caller receives none.
+- **Identity in the files themselves.** wrfout carries a `GPUWM_VERSION`
+  global; the restart header records the producing distribution, its
+  version, and the restart format version. `TITLE` remains the caller's
+  configured output title, which is why it never identified the producer.
+  This is producer identity only: nothing in this release hashes or
+  otherwise binds checkpoint or history *contents*.
+- **A restart clock must be a real, finite, non-negative number.**
+  Elapsed seconds are checked on write and on restore for every format --
+  refusing NaN, both infinities, negatives, booleans and numeric strings
+  -- and the header is written with `allow_nan=False`, so it cannot
+  express the value at all. The idealized `Times` helper rolls over the
+  calendar instead of emitting `0001-01-32` past the end of a month.
+- **A checkpoint is fsynced before it becomes visible.** The standalone
+  restart temporary and the feedback receipt are flushed and fsynced
+  before the atomic rename, and the receipt stages under a unique name.
+  Funnelling every publisher through one durability helper is recorded
+  and not done.
+
+### The GFS route follows the case's model top
+
+- **`gpuwm fetch --source gfs --p-top-pa PA`** names the model top the
+  fetched atmosphere must reach. The certified 21-level ladder is
+  extended upward along whatever the live index publishes until a level
+  sits at or above the requested top, which is the condition
+  `gpuwm.vertical_contract` enforces at ingest. Requesting 5000 Pa adds
+  the 70 and 50 hPa levels and nothing else. `--all-levels` takes the
+  whole published ladder. An unsatisfiable request is refused by name,
+  stating the deepest top the source offers.
+- **The route stopped at 10000 Pa, with no flag and no receipt.** Every
+  ArWen GFS run was capped at a 100 hPa model top by a hardcoded level
+  list, the fetch manifest never recorded which ladder was taken, and the
+  user met the consequence three steps later at ingest ("source
+  atmosphere stops at 10000 Pa but requested p_top is 5000 Pa") with no
+  mention of the fetch that chose it. The ladder and the source top are
+  recorded in the fetch receipt and in the front-door manifest, the
+  record-count bar is derived from the request rather than fixed at 124,
+  the decoder derives its ladder from the source and reports what it
+  decoded, and the vertical contract reads the declared ladder instead of
+  a constant. A decode whose ladder the input manifest does not declare
+  is refused.
+- **Extending, never replacing.** Every level a certified run already
+  used is present at every requested top, which is what lets the bridge
+  and the front door check "is this the certified ladder, extended
+  upward?" rather than trusting a number. Whole GRIB objects remain the
+  default transfer shape; level subsetting stays an opt-in bandwidth
+  saver and is no longer a ceiling on the model top.
+
+### Fetch and cache state machines
+
+- **One writer per output directory.** `gpuwm fetch` takes an
+  OS-enforced lock -- a Windows byte-range lock or a POSIX `flock` -- on
+  a file kept outside the output tree, keyed on the resolved target path.
+  The CLI holds it across the prior-request guard and the transfer it
+  authorises, and `fetch_gfs`, `fetch_hrrr`, `fetch_geog` and the table
+  stager take it themselves, so a direct library caller gets the same
+  contract. A second process queues and then refuses, naming the holder's
+  pid. The lock is an OS lock because the kernel releases it when the
+  holder dies: a crashed fetch must not leave a directory permanently
+  unfetchable. `GPUWM_FETCH_LOCK_TIMEOUT_S` bounds the wait, default
+  600 s, `0` to fail fast; `GPUWM_FETCH_LOCK_ROOT` moves the lock root.
+- **Receipts describe only what finished.** An HRRR wait-timeout no
+  longer lists a half-fetched hour in `files` and `SHA256SUMS` while
+  `forecast_hours` omits it; the partial product stays on disk unclaimed
+  and is re-verified under the ordinary bars on the next run. HRRR
+  publishes a manifest after every completed hour, as GFS already did, so
+  a kill after hour zero leaves a usable receipt. Assembly happens inside
+  the unique staging directory, so a canonical `.part` is never created,
+  and a legacy one left by an older release is swept by force.
+- **Nothing is published under a name another writer could be using.**
+  `atomic_write_text`/`atomic_write_bytes` stage under a name unique per
+  process and per call, fsync, then rename, and fsync the containing
+  directory where the platform has one -- Windows exposes no directory
+  handle through the standard library, so there the guarantee is that the
+  rename is atomic, not that it is durable across power loss. Quarantine
+  proves `<name>.rejected-<stamp>` free before renaming, because
+  nanosecond stamps collide inside a tick and the rename destroyed the
+  older evidence. Table staging names are unique per writer and the
+  stage-verify-install sequence runs under the table-root lock.
+- **The raw download cache verifies at use.** Entries carry a sidecar
+  recording the exact key, the byte count and a checksum; a read
+  re-checks all three and renames a failing entry aside so the next
+  request refetches it. Payloads land by atomic rename from a per-call
+  staging name. A range response is validated before it is adopted: 206,
+  a matching `Content-Range`, and the exact byte count asked for. A
+  failed quarantine leaves the file in place and reports, rather than
+  deleting the evidence.
+- **The NOMADS governor fails closed, and paces the Python transport
+  too.** A governor state file that exists but does not parse is read as
+  "a request just happened" rather than as an empty state, and a request
+  whose shared record fails to land still waits out the gap locally --
+  both strictly stricter than before, in Rust and in Python. The GFS CGI
+  transport, the HRRR index and range transports and the availability
+  probes `--wait-for` polls all route through a Python governor speaking
+  the same protocol over the same state files as the Rust client, so a
+  Rust fetch and a Python fetch on one node pace each other. The NOMADS
+  range pool narrows to one worker, since the governor serialises those
+  requests anyway.
+- **Geography reuse compares the tile corpus, not just the index.** File
+  count and total bytes are checked against the extraction receipt, which
+  catches missing, truncated, extra and added tiles; an install with no
+  receipt keeps the index-only bar and says so. A same-size mutation of a
+  tile's contents still passes, and closing that needs a content digest
+  of a multi-gigabyte tree, which is recorded as a deliberate
+  verification mode rather than something to run on every command that
+  opens WPS_GEOG. Each archive's provenance entry is published as it
+  lands, before the verified archive is removed, and publication re-reads
+  and merges the canonical manifest under the geography-root lock instead
+  of overwriting it. A resume is bound by sidecar to the first response's
+  URL, ETag and Last-Modified, is sent with `If-Range`, and refuses a 206
+  that does not start at the requested offset.
+
+### Two pages that say where a claim stops
+
+- **`docs/public/DETERMINISM.md`.** Consumer cards have no ECC, and
+  running the forecast twice and comparing bytes is what stands in for
+  it. The page states that as a transient-fault screen inside a fixed
+  numerical environment and not as an ECC replacement, because equality
+  cannot detect a fault that is identical in both runs. It names the
+  seven undetected fault classes, the pin set that "fixed environment"
+  actually means, the three mechanisms that make the pin set necessary
+  (library-owned reduction order, FMA contraction and CUDA math
+  functions, FP32 subnormal flushing), what each compared surface covers
+  and omits, and the six known improvements that are recorded and not
+  shipped -- the largest being that no fail-closed comparator command
+  exists in this release. Linked from the README, `HARDWARE.md`, and
+  `VERIFICATION.md`.
+- **`docs/adapt-validation-contract.md`.** `gpuwm adapt` proves the
+  emitted files implement your descriptor and that your GRIB files
+  satisfy it. It does not prove the descriptor is a correct physical
+  reading of them. The page gives every input dimension in two columns
+  -- validated for you, trusted from your declaration -- and a
+  self-check the reader can run for each trusted row. Wired into the
+  adapt parser's description and epilog and into both of the command's
+  completion messages, so it is found at the point of use.
+
+### Input and checkpoint identity
+
+- **`--directory-input-hash content`** (also `GPUWM_DIRECTORY_INPUT_HASH`)
+  binds a declared directory input -- in practice the static geography
+  tree -- by each file's SHA-256 instead of its mtime. The default stays
+  `inventory`, which is cheap enough to run before every launch on a
+  multi-GB tree but has two known modes that matter to a dual-run
+  comparison: a byte-identical copy staged separately compares
+  different, and a change that preserves path, size, and mtime compares
+  equal. Every recorded hash carries the algorithm that produced it, and
+  the `inventory` record layout is unchanged, so digests from earlier
+  releases still compare equal.
+- **Checkpoint discovery no longer ties.** Sets are ordered by valid
+  time, then nanosecond mtime, then set id. Two sets at one model
+  instant with tied second-resolution mtimes previously fell back on
+  filesystem discovery order, which made the choice of resume point a
+  property of the filesystem rather than of the run.
+
+### WRF-Runner interoperability
+
+Verified against namelist pairs generated by WRF-Runner (the
+collaborator's workflow tool, branch New-PC-Updates) running its own
+code, and against its plotting pipeline and viewer consuming gpuwm
+history files unchanged.
+
+- **`gpuwm import-namelist` no longer leaks a traceback on an unported
+  selector.** A runner-generated pair carrying `ra_lw_physics=1` (the
+  unported WRF RRTM longwave) crashed the CLI with a stack trace where
+  every neighbouring refusal printed one actionable line; the
+  `NotImplementedError` refusals from `validate_run_config` land on the
+  uniform CLI refusal boundary -- message on stderr, exit 2, no partial
+  output file.
+- **The namelist support report classifies what WRF-Runner namelists
+  actually carry, and gates two things it used to wave through.**
+  `io_form_auxinput2`, `override_restart_timers`, `iofields_filename`
+  and `ignore_iofields_warning` classify as runtime-only instead of
+  eight lines of `UNCLASSIFIED_NAMELIST_SETTING` noise;
+  `sf_surface_mosaic`/`usemonalb`/`rdlai2d` are state-relevant and
+  value-gated to their WRF defaults with the exact selector named.
+  Two new fail-closed codes: `NEST_INPUT_STREAM_UNSUPPORTED`
+  (`fine_input_stream` nonzero -- WRF's delayed-nest-start pattern needs
+  a per-nest input file RW-WPS does not produce) and
+  `FDDA_INPUT_NOT_PRODUCED` (`grid_fdda` active -- `wrffdda_d0N` is a
+  real.exe product, and the report previously classified the request
+  runtime-only while blessing an export that cannot feed it).
+
+### Release plumbing
+
+- **The publish workflow runs tests.** The release path had no test gate
+  -- a cut built a wheel and shipped it. It runs the
+  packaging-and-contract suite first (what ships in the wheel, what
+  doctor promises, what both fetch commands verify before installing),
+  and runs it on pull requests too, because a gate whose first execution
+  is a release cut is a gate that ambushes the cut. It is not the whole
+  suite: the model's own tests need a CUDA GPU and staged case data, and
+  five test modules import CuPy at module scope, so collecting everything
+  on a GPU-less runner fails before a single test runs.
+- **The job that writes release assets is not the job that publishes to
+  PyPI.** Uploading the bridge bundles needs `contents: write`, and
+  Trusted Publishing needs `id-token: write`; they are separate jobs, so
+  neither credential is held by a job that has the other. The ordering is
+  unchanged and is now a property of the job graph: the assets job
+  uploads the bundles and writes the pins computed from those exact
+  bytes, and only then does the publish job build the wheel around them
+  and push it.
+- **The RW-WPS standalone project stops reaching the forecast side.**
+  `gpuwm/resume.py` is no longer staged into it -- nothing that wheel
+  ships imports it, no entry point exposes it, and its own lookups are a
+  module that wheel forbids and one it does not stage. `gpuwm/doctor.py`
+  stays, because a preprocessing install is exactly the one that needs
+  to be told which bridge is missing, and it reads its nine dataset
+  names from `gpuwm.geog_assets` rather than reaching through the domain
+  wizard into the CLI.
+- **Both direct-proof descriptors validate against the physics
+  registry again.** `configs/gfs_wrf_direct_proof.toml` and
+  `configs/era5_wrf_direct_proof.toml` resolved through the legacy
+  aggregate radiation spelling, which then demanded `ra_physics = 4`;
+  naming `ra_lw_physics = 0` and `ra_sw_physics = 1` in each resolves
+  them to `dudhia-shortwave`, and in each `radt` moves 12.0 to 1.0 and
+  `diff_6th_factor` moves 0.12 to 0.08 -- the values the profile they
+  identify as declares. The two descriptors are deliberately equal apart
+  from source, start, and run length, and a test binds that equality.
+- **The vendored `wx-core` is 0.3.10** and publishes a capability probe
+  -- what this build's NOMADS governor is configured to do, read from the
+  places the pacing code reads -- so a consumer can demonstrate the
+  pacing rather than infer it from where the crate lives. Two copies of
+  that crate shared version 0.3.9 and only one carried the governor; a
+  dependency-graph reorder can no longer swap in the governorless copy
+  under the same version string.
+
 ## 1.1.2 (2026-07-30)
 
 ### A saturated soil cell is packing, not corruption

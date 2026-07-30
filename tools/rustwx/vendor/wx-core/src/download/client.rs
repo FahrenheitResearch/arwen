@@ -189,11 +189,22 @@ fn now_millis() -> u128 {
         .as_millis()
 }
 
-fn read_nomads_state(path: &Path) -> (u128, u128) {
-    let Ok(text) = fs::read_to_string(path) else {
-        return (0, 0);
+/// Read the shared pacing state: `(last_request_ms, cooldown_until_ms, sound)`.
+///
+/// `sound` is false when the file EXISTS but carries no usable
+/// `last_request_ms`. That case used to be indistinguishable from "nobody has
+/// fetched yet": both mapped to zero timestamps, which puts `last_request +
+/// gap` in 1970 and waves the request straight through. A governor that
+/// protects a shared public service must not treat corruption as permission to
+/// send, so an unusable state is reported as "a request just happened" and the
+/// caller waits a full gap. A genuinely absent file is still a real zero.
+fn read_nomads_state(path: &Path) -> (u128, u128, bool) {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (0, 0, true),
+        Err(_) => return (now_millis(), 0, false),
     };
-    let mut last_request_ms = 0;
+    let mut last_request_ms: Option<u128> = None;
     let mut cooldown_until_ms = 0;
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else {
@@ -203,15 +214,24 @@ fn read_nomads_state(path: &Path) -> (u128, u128) {
             continue;
         };
         match key.trim() {
-            "last_request_ms" => last_request_ms = parsed,
+            "last_request_ms" => last_request_ms = Some(parsed),
             "cooldown_until_ms" => cooldown_until_ms = parsed,
             _ => {}
         }
     }
-    (last_request_ms, cooldown_until_ms)
+    match last_request_ms {
+        Some(value) => (value, cooldown_until_ms, true),
+        None => (now_millis(), cooldown_until_ms, false),
+    }
 }
 
-fn write_nomads_state(path: &Path, last_request_ms: u128, cooldown_until_ms: u128) {
+/// Publish the shared pacing state; false when the bytes did not land.
+///
+/// The result used to be discarded. A process that held the sentinel, failed
+/// to record its request and proceeded left the next process seeing an older
+/// `last_request_ms` and free to send immediately -- the failure opened the
+/// gate instead of closing it. Callers now absorb the gap locally instead.
+fn write_nomads_state(path: &Path, last_request_ms: u128, cooldown_until_ms: u128) -> bool {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -220,9 +240,7 @@ fn write_nomads_state(path: &Path, last_request_ms: u128, cooldown_until_ms: u12
         "last_request_ms={}\ncooldown_until_ms={}\n",
         last_request_ms, cooldown_until_ms
     );
-    if fs::write(&tmp, body).is_ok() {
-        let _ = fs::rename(tmp, path);
-    }
+    fs::write(&tmp, body).is_ok() && fs::rename(tmp, path).is_ok()
 }
 
 struct NomadsRateLock {
@@ -315,7 +333,7 @@ fn mark_nomads_rate_limited(url: &str, reason: &str) {
     let cooldown = env_duration_ms("RUSTWX_NOMADS_COOLDOWN_MS", NOMADS_DEFAULT_COOLDOWN);
     let state_path = nomads_state_path();
     let _lock = acquire_nomads_rate_lock(&state_path);
-    let (last_request_ms, existing_cooldown_until_ms) = read_nomads_state(&state_path);
+    let (last_request_ms, existing_cooldown_until_ms, _sound) = read_nomads_state(&state_path);
     let now = now_millis();
     if existing_cooldown_until_ms > now {
         log_nomads_event(url, "cooldown_existing", reason, None);
@@ -336,13 +354,27 @@ fn pace_request(url: &str) {
         NOMADS_DEFAULT_MIN_REQUEST_GAP,
     );
     let state_path = nomads_state_path();
+    // An unusable state buys exactly one full gap, then this process
+    // republishes a sound one. Charging it every round would spin forever
+    // against a file nobody can parse: refusing to send is not the same as
+    // refusing to finish.
+    let mut corruption_paid = false;
     loop {
         let Some(_lock) = acquire_nomads_rate_lock(&state_path) else {
             std::thread::sleep(min_gap);
             continue;
         };
 
-        let (last_request_ms, cooldown_until_ms) = read_nomads_state(&state_path);
+        let (mut last_request_ms, cooldown_until_ms, sound) = read_nomads_state(&state_path);
+        if !sound {
+            if !corruption_paid {
+                drop(_lock);
+                std::thread::sleep(min_gap);
+                corruption_paid = true;
+                continue;
+            }
+            last_request_ms = 0; // the gap has been served in full
+        }
         let now = now_millis();
         let sleep_until =
             cooldown_until_ms.max(last_request_ms.saturating_add(min_gap.as_millis()));
@@ -353,9 +385,66 @@ fn pace_request(url: &str) {
             ));
             continue;
         }
-        write_nomads_state(&state_path, now, cooldown_until_ms);
+        if !write_nomads_state(&state_path, now, cooldown_until_ms) {
+            // The record did not land, so the next process will not see this
+            // request. Absorb the gap here instead of letting it send now.
+            drop(_lock);
+            std::thread::sleep(min_gap);
+        }
         return;
     }
+}
+
+/// What this build's cross-process NOMADS governor is configured to do.
+///
+/// Everything here is read from the same places `pace_request` reads, so a
+/// consumer that prints or asserts on it is describing the governor that will
+/// actually run -- not a constant that happens to sit beside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NomadsGovernor {
+    /// The node-wide state file this process paces against.
+    pub state_path: PathBuf,
+    /// Minimum spacing between NOMADS requests across all processes.
+    pub min_request_gap: Duration,
+    /// How long an over-rate-limit answer pauses the whole node.
+    pub cooldown: Duration,
+    /// When a held sentinel is treated as abandoned.
+    pub lock_stale_after: Duration,
+}
+
+/// The NOMADS governor this build carries.
+///
+/// A **capability probe**, and the reason it exists is worth stating. Two
+/// different wx-core crates were vendored under the same `0.3.9` version
+/// string: this one, and the published crates.io copy, which has no governor
+/// at all -- no pacing, no cooldown, no state file. Only a path dependency
+/// kept the right one in the graph, and "we must have got the right one
+/// because of where it lives" is an assumption, not a check.
+///
+/// So consumers ask the resolved crate what it can do. A build wired to a
+/// governorless wx-core does not link (this symbol is absent there), and a
+/// build wired to this one can be made to *demonstrate* the pacing via
+/// [`pace_nomads_request`] rather than infer it.
+pub fn nomads_governor() -> NomadsGovernor {
+    NomadsGovernor {
+        state_path: nomads_state_path(),
+        min_request_gap: env_duration_ms(
+            "RUSTWX_NOMADS_MIN_INTERVAL_MS",
+            NOMADS_DEFAULT_MIN_REQUEST_GAP,
+        ),
+        cooldown: env_duration_ms("RUSTWX_NOMADS_COOLDOWN_MS", NOMADS_DEFAULT_COOLDOWN),
+        lock_stale_after: NOMADS_LOCK_STALE_AFTER,
+    }
+}
+
+/// Block until this process may send `url`, exactly as the HTTP path does.
+///
+/// Public so a consumer can PROVE the governor runs -- issue two paced calls
+/// for a NOMADS URL and observe the spacing and the state file -- instead of
+/// trusting that the crate it linked is the one with the governor in it. A
+/// no-op for every host but NOMADS, and it makes no network request.
+pub fn pace_nomads_request(url: &str) {
+    pace_request(url);
 }
 
 /// Build a ureq agent with TLS configured via rustls-rustcrypto.
@@ -801,12 +890,58 @@ impl DownloadClient {
         };
 
         let mut response = self.get_response_following_redirects(url, Some(&range_header))?;
+        // Validate the ANSWER before adopting it, not after concatenating it.
+        // A range GET whose reply is a 200 (the origin ignored the header and
+        // sent the whole object), or a 206 for some other span, or a body of
+        // the wrong length, used to be accepted, cached, and concatenated into
+        // the caller's subset -- the outer GRIB bars then rejected the
+        // assembled file with no indication which chunk was wrong, and the bad
+        // bytes stayed in the cache. This is the same three-clause check the
+        // Python range transport has always applied.
+        let status = response.status().as_u16();
+        if status != 206 {
+            return Err(crate::RustmetError::Http(format!(
+                "range request for {} ({}) returned HTTP {}, not 206; the \
+                 origin did not serve the requested span",
+                url, range_header, status
+            )));
+        }
+        let content_range = response
+            .headers()
+            .get(CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let expected_prefix = if end == u64::MAX {
+            format!("bytes {}-", start)
+        } else {
+            format!("bytes {}-{}/", start, end)
+        };
+        if !content_range.starts_with(&expected_prefix) {
+            return Err(crate::RustmetError::Http(format!(
+                "range request for {} ({}) answered with Content-Range {:?}, \
+                 which is not the requested span",
+                url, range_header, content_range
+            )));
+        }
         let data = response
             .body_mut()
             .with_config()
             .limit(MAX_BODY_SIZE)
             .read_to_vec()
             .map_err(|err| crate::RustmetError::Http(format!("failed to read {}: {}", url, err)))?;
+        if end != u64::MAX {
+            let expected_len = end - start + 1;
+            if data.len() as u64 != expected_len {
+                return Err(crate::RustmetError::Http(format!(
+                    "range request for {} ({}) returned {} bytes, expected {}",
+                    url,
+                    range_header,
+                    data.len(),
+                    expected_len
+                )));
+            }
+        }
 
         // Store in cache (errors silently ignored)
         if let Some(cache) = &self.cache {
@@ -911,9 +1046,14 @@ fn full_file_ranges(total_len: u64, chunk_size: u64) -> Vec<(u64, u64)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{full_file_ranges, parse_content_range_total, DownloadClient, DownloadConfig};
+    use super::{
+        full_file_ranges, now_millis, parse_content_range_total, read_nomads_state,
+        write_nomads_state, DownloadClient, DownloadConfig,
+    };
+    use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::path::PathBuf;
     use std::thread;
     use std::time::Duration;
 
@@ -980,5 +1120,121 @@ mod tests {
         assert_eq!(full_file_ranges(0, 4), Vec::<(u64, u64)>::new());
         assert_eq!(full_file_ranges(1, 4), vec![(0, 0)]);
         assert_eq!(full_file_ranges(10, 4), vec![(0, 3), (4, 7), (8, 9)]);
+    }
+
+    /// A range GET must be answered with the span it asked for.
+    #[test]
+    fn a_range_reply_that_is_not_the_requested_span_is_refused() {
+        // The origin ignores the Range header and sends the whole object.
+        let whole = spawn_http_server(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world"
+                .to_vec(),
+        ]);
+        let message = test_client()
+            .get_range(&format!("{}/x", whole), 0, 4)
+            .expect_err("a 200 is not the requested span")
+            .to_string();
+        assert!(message.contains("not 206"), "{}", message);
+
+        // The origin answers 206 for a different span.
+        let wrong_span = spawn_http_server(vec![
+            b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 6-10/11\r\n\
+              Content-Length: 5\r\nConnection: close\r\n\r\nworld"
+                .to_vec(),
+        ]);
+        let message = test_client()
+            .get_range(&format!("{}/x", wrong_span), 0, 4)
+            .expect_err("a foreign span must be refused")
+            .to_string();
+        assert!(message.contains("not the requested span"), "{}", message);
+
+        // The span is right but the body is short.
+        let short = spawn_http_server(vec![
+            b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-4/11\r\n\
+              Content-Length: 3\r\nConnection: close\r\n\r\nhel"
+                .to_vec(),
+        ]);
+        let message = test_client()
+            .get_range(&format!("{}/x", short), 0, 4)
+            .expect_err("a short body must be refused")
+            .to_string();
+        assert!(message.contains("expected 5"), "{}", message);
+    }
+
+    #[test]
+    fn a_well_formed_range_reply_is_accepted() {
+        let base = spawn_http_server(vec![
+            b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-4/11\r\n\
+              Content-Length: 5\r\nConnection: close\r\n\r\nhello"
+                .to_vec(),
+        ]);
+        assert_eq!(
+            test_client()
+                .get_range(&format!("{}/x", base), 0, 4)
+                .expect("well-formed range"),
+            b"hello"
+        );
+    }
+
+    fn state_scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rustwx_state_{}", name));
+        let _ = fs::create_dir_all(&dir);
+        dir.join("rustwx_nomads_rate_limit.state")
+    }
+
+    /// An absent state is a real zero: nobody has fetched yet.
+    #[test]
+    fn absent_state_reads_as_a_genuine_zero() {
+        let path = state_scratch("absent");
+        let _ = fs::remove_file(&path);
+        assert_eq!(read_nomads_state(&path), (0, 0, true));
+    }
+
+    /// The lie: corruption parsed as zero is permission to send.
+    #[test]
+    fn corrupt_state_reads_as_just_now_not_as_zero() {
+        for body in [
+            "",
+            "garbage without an equals sign\n",
+            "last_request_ms=not-a-number\n",
+            "cooldown_until_ms=5\n",
+        ] {
+            let path = state_scratch("corrupt");
+            fs::write(&path, body).unwrap();
+            let (last, _cooldown, sound) = read_nomads_state(&path);
+            assert!(!sound, "body {:?} should be reported unsound", body);
+            assert!(
+                last > 0 && last >= now_millis().saturating_sub(60_000),
+                "body {:?} must read as a recent request, got {}",
+                body,
+                last
+            );
+        }
+        let path = state_scratch("corrupt");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_sound_state_round_trips_through_both_halves() {
+        let path = state_scratch("roundtrip");
+        assert!(write_nomads_state(&path, 111, 222));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "last_request_ms=111\ncooldown_until_ms=222\n");
+        assert_eq!(read_nomads_state(&path), (111, 222, true));
+        let _ = fs::remove_file(&path);
+    }
+
+    /// A write that cannot land must be reported, not swallowed: the caller
+    /// absorbs the gap locally instead of letting the next process send.
+    #[test]
+    fn a_state_write_that_cannot_land_reports_failure() {
+        let dir = std::env::temp_dir().join("rustwx_state_unwritable");
+        let _ = fs::create_dir_all(&dir);
+        // A directory where the state file should be: neither write nor
+        // rename can succeed onto it.
+        let path = dir.join("occupied.state");
+        let _ = fs::remove_file(&path);
+        let _ = fs::create_dir_all(&path);
+        assert!(!write_nomads_state(&path, 1, 2));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

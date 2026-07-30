@@ -897,7 +897,7 @@ dependencies = [
  "chrono",
  "flate2",
  "rayon",
- "wx-core 0.3.9 (git+https://github.com/FahrenheitResearch/metrust-py.git?rev=1b8436779832be326f24bd2acd40a908e9f54685)",
+ "wx-core 0.3.9",
  "wx-field 0.3.6 (git+https://github.com/FahrenheitResearch/metrust-py.git?rev=1b8436779832be326f24bd2acd40a908e9f54685)",
  "wx-math 0.3.6 (git+https://github.com/FahrenheitResearch/metrust-py.git?rev=1b8436779832be326f24bd2acd40a908e9f54685)",
  "wx-radar 0.3.6 (git+https://github.com/FahrenheitResearch/metrust-py.git?rev=1b8436779832be326f24bd2acd40a908e9f54685)",
@@ -911,7 +911,7 @@ dependencies = [
  "ecape-rs 0.1.4",
  "flate2",
  "rayon",
- "wx-core 0.3.9",
+ "wx-core 0.3.10",
  "wx-field 0.3.6",
  "wx-math 0.3.6",
  "wx-radar 0.3.6",
@@ -1600,7 +1600,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
- "wx-core 0.3.9",
+ "wx-core 0.3.10",
 ]
 
 [[package]]
@@ -1671,7 +1671,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "wx-core 0.3.9",
+ "wx-core 0.3.10",
 ]
 
 [[package]]
@@ -2252,24 +2252,6 @@ dependencies = [
 [[package]]
 name = "wx-core"
 version = "0.3.9"
-dependencies = [
- "chrono",
- "flate2",
- "openjp2",
- "png 0.17.16",
- "rayon",
- "rustls",
- "rustls-rustcrypto",
- "thiserror",
- "ureq",
- "webpki-roots 0.26.11",
- "wx-field 0.3.6",
- "wx-math 0.3.6",
-]
-
-[[package]]
-name = "wx-core"
-version = "0.3.9"
 source = "git+https://github.com/FahrenheitResearch/metrust-py.git?rev=1b8436779832be326f24bd2acd40a908e9f54685#1b8436779832be326f24bd2acd40a908e9f54685"
 dependencies = [
  "chrono",
@@ -2284,6 +2266,24 @@ dependencies = [
  "webpki-roots 0.26.11",
  "wx-field 0.3.6 (git+https://github.com/FahrenheitResearch/metrust-py.git?rev=1b8436779832be326f24bd2acd40a908e9f54685)",
  "wx-math 0.3.6 (git+https://github.com/FahrenheitResearch/metrust-py.git?rev=1b8436779832be326f24bd2acd40a908e9f54685)",
+]
+
+[[package]]
+name = "wx-core"
+version = "0.3.10"
+dependencies = [
+ "chrono",
+ "flate2",
+ "openjp2",
+ "png 0.17.16",
+ "rayon",
+ "rustls",
+ "rustls-rustcrypto",
+ "thiserror",
+ "ureq",
+ "webpki-roots 0.26.11",
+ "wx-field 0.3.6",
+ "wx-math 0.3.6",
 ]
 
 [[package]]

@@ -13,6 +13,8 @@ import sys
 
 import numpy as np
 
+from gpuwm.core.fp32_ulp import fp32_ulp_distance
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 from lw_fixtures import read_fixture  # noqa: E402
@@ -127,11 +129,8 @@ def ulp_report(got, want, what):
     neq = got.view(np.uint32) != want.view(np.uint32)
     if not neq.any():
         return None
-    gi = np.asarray(got.view(np.int32), np.int64)
-    wi = np.asarray(want.view(np.int32), np.int64)
-    gi = np.where(gi < 0, -0x80000000 - gi, gi)
-    wi = np.where(wi < 0, -0x80000000 - wi, wi)
-    ulp = int(np.abs(gi - wi)[neq].max())
+    # NaN-mismatch lanes report the MISMATCH sentinel, not a small number.
+    ulp = int(fp32_ulp_distance(got, want)[neq].max())
     idx = tuple(int(v) for v in np.argwhere(neq)[0])
     return (f"{what}: {int(neq.sum())}/{got.size} differ, max_ulp={ulp}, "
             f"first at {idx}: got {got[idx]!r} want {want[idx]!r}")

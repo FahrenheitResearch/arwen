@@ -21,9 +21,10 @@ import re
 import shutil
 import tempfile
 import time
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from gpuwm.hrrr_forecast import validate_hrrr_source_forecast_hours
+from gpuwm.nomads_governor import governed_workers, paced_urlopen
 
 
 BASE_URL = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com"
@@ -178,13 +179,13 @@ def _hours(raw: str, *, cycle: datetime | None = None) -> tuple[int, ...]:
 
 def _request_bytes(url: str) -> tuple[bytes, dict[str, str]]:
     request = Request(url, headers={"User-Agent": "rw-wps-hrrr-range/1"})
-    with urlopen(request, timeout=120) as response:
+    with paced_urlopen(request, timeout=120) as response:
         return response.read(), {key.lower(): value for key, value in response.headers.items()}
 
 
 def _head(url: str) -> dict[str, str]:
     request = Request(url, method="HEAD", headers={"User-Agent": "rw-wps-hrrr-range/1"})
-    with urlopen(request, timeout=120) as response:
+    with paced_urlopen(request, timeout=120) as response:
         headers = {key.lower(): value for key, value in response.headers.items()}
     if "content-length" not in headers or int(headers["content-length"]) <= 0:
         raise ValueError(f"HRRR source omitted a positive Content-Length: {url}")
@@ -198,12 +199,17 @@ def _publish_exact(path: Path, payload: bytes) -> None:
         if path.read_bytes() != payload:
             raise FileExistsError(f"existing authority differs from NOAA response: {path}")
         return
-    temporary = path.with_suffix(path.suffix + ".part")
-    with temporary.open("xb") as stream:
-        stream.write(payload)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    temporary = path.with_suffix(
+        f"{path.suffix}.{os.getpid()}-{time.time_ns()}.part")
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _parse_index(payload: bytes, object_bytes: int) -> tuple[IndexRow, ...]:
@@ -334,7 +340,8 @@ def _download_range(
                 "Range": f"bytes={byte_range.start}-{byte_range.end}",
                 "Accept-Encoding": "identity",
             })
-            with urlopen(request, timeout=300) as response, path.open("wb") as output:
+            with paced_urlopen(request, timeout=300) as response, \
+                    path.open("wb") as output:
                 if response.status != 206:
                     raise ValueError(f"range request returned HTTP {response.status}")
                 content_range = response.headers.get("Content-Range", "")
@@ -380,12 +387,26 @@ def _download_subset(
         prefix=f".{destination.name}.ranges-", dir=destination.parent))
     try:
         chunks = tuple(staging / f"{index:04d}.part" for index in range(len(ranges)))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        # A NOMADS transfer is serialized by the rate governor anyway --
+        # eight workers would queue on the same node-wide sentinel for
+        # the same 2.5 s gap -- so the pool states that plainly instead
+        # of letting the burst shape depend on thread scheduling.  S3
+        # keeps the pool the caller asked for.
+        with ThreadPoolExecutor(
+                max_workers=governed_workers(url, workers)) as pool:
             list(pool.map(
                 lambda pair: _download_range(url, pair[0], pair[1], retries),
                 zip(ranges, chunks),
             ))
-        partial = destination.with_suffix(destination.suffix + ".part")
+        # Assembly happens INSIDE the unique staging directory, never at
+        # a canonical `<destination>.part`.  A killed run used to leave
+        # that fixed name behind, and the next run opened it with `xb`,
+        # got FileExistsError, and could neither resume, overwrite, nor
+        # quarantine it -- an unrecoverable state reachable by one kill.
+        # Staging is unique per attempt and removed in `finally`, so the
+        # only thing that ever appears at a canonical name is a complete,
+        # framed, fsynced file arriving by atomic rename.
+        partial = staging / "assembled.part"
         with partial.open("xb") as output:
             for chunk in chunks:
                 with chunk.open("rb") as stream:

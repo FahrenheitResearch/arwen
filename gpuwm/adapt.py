@@ -1175,6 +1175,28 @@ def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
         "adapt",
         help="verify actual GRIB2 files and author a runnable mapped adapter",
+        description=(
+            "Verify actual GRIB2 files against a descriptor you write, and "
+            "author a runnable mapped adapter. A successful adaptation "
+            "establishes that the emitted files implement your descriptor "
+            "exactly and that your GRIB files satisfy it. It does not "
+            "establish that your descriptor is a correct physical "
+            "interpretation of those files: units, absolute geolocation, "
+            "cell registration, vertical sufficiency, intended time "
+            "semantics, land-mask polarity, and soil depth labels are "
+            "trusted from your declaration."
+        ),
+        epilog=(
+            "Before you run the adapter: read "
+            "docs/adapt-validation-contract.md, which lists every input "
+            "dimension in two columns -- validated for you, and trusted "
+            "from your declaration -- with a self-check you can run for "
+            "each trusted row. docs/arbitrary-verified-adapters.md covers "
+            "the descriptor schema, the battery, and refusal examples. "
+            "Both are in the repository, under "
+            "https://github.com/FahrenheitResearch/arwen/tree/main/docs, "
+            "if this is a wheel install without a checkout."
+        ),
     )
     parser.add_argument(
         "--vtable",
@@ -1249,6 +1271,14 @@ def _from_cli(args) -> int:
             "REPLACE_WITH_* value, declare the full pressure levels, and "
             "review every selector before authoring"
         )
+        print(
+            "What the battery will check for you, and what it will trust "
+            "from your declaration -- units, geolocation, cell "
+            "registration, level sufficiency, land-mask polarity -- is "
+            "docs/adapt-validation-contract.md. Read it while you fill "
+            "this in, not after.",
+            file=sys.stderr,
+        )
         return 0
     missing = [
         name
@@ -1273,6 +1303,16 @@ def _from_cli(args) -> int:
     print(
         "RUNNABLE, NOT stock-WRF certified: unchanged-stock-WRF evidence "
         "is a separate exact-authority gate.",
+        file=sys.stderr,
+    )
+    print(
+        "The battery proved these files implement your descriptor and that "
+        "your GRIB files satisfy it. It did not check that the descriptor "
+        "is a correct physical reading of them: units, absolute "
+        "geolocation, cell registration, level sufficiency, intended time "
+        "semantics, land-mask polarity, and soil depth labels are trusted "
+        "from your declaration. Run the self-checks in "
+        "docs/adapt-validation-contract.md before you run the adapter.",
         file=sys.stderr,
     )
     return 0

@@ -113,9 +113,19 @@ def _pin(dataset: str, payload: bytes,
 
 
 class _FakeResponse:
-    def __init__(self, payload: bytes, status: int = 200):
+    """A stub that answers like a real origin, headers included.
+
+    A ``206`` without ``Content-Range`` is not a thing HTTP allows, and
+    a stub that omits it lets a resume gate pass vacuously -- the
+    transport is supposed to check that the server is sending the bytes
+    it asked for, and it cannot check a header the stub never sends.
+    """
+
+    def __init__(self, payload: bytes, status: int = 200,
+                 headers: dict[str, str] | None = None):
         self._data = io.BytesIO(payload)
         self.status = status
+        self.headers = dict(headers or {})
 
     def read(self, n: int = -1) -> bytes:
         return self._data.read(n)
@@ -127,7 +137,8 @@ class _FakeResponse:
         return False
 
 
-def _fake_transport(files: dict[str, bytes], *, honor_range: bool = True):
+def _fake_transport(files: dict[str, bytes], *, honor_range: bool = True,
+                    etag: str = '"pinned-object-v1"'):
     """urlopen_fn serving ``files`` by basename, recording every request."""
 
     calls: list = []
@@ -139,8 +150,12 @@ def _fake_transport(files: dict[str, bytes], *, honor_range: bool = True):
         header = request.headers.get("Range")
         if header and honor_range:
             offset = int(header.split("=", 1)[1].rstrip("-"))
-            return _FakeResponse(payload[offset:], status=206)
-        return _FakeResponse(payload)
+            return _FakeResponse(payload[offset:], status=206, headers={
+                "ETag": etag,
+                "Content-Range":
+                    f"bytes {offset}-{len(payload) - 1}/{len(payload)}",
+            })
+        return _FakeResponse(payload, headers={"ETag": etag})
 
     urlopen_fn.calls = calls
     return urlopen_fn

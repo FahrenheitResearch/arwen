@@ -20,7 +20,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 rustwx-core = { path = "../rustwx-core" }
 rustwx-models = { path = "../rustwx-models" }
-wx-core = { path = "../../vendor/wx-core", default-features = false, features = ["network"] }
+# The version is pinned beside the path deliberately: a governorless
+# wx-core 0.3.9 is also vendored (vendor/crates-io), and a bare path
+# dependency would accept it silently if resolution ever changed.
+wx-core = { path = "../../vendor/wx-core", version = "0.3.10", default-features = false, features = ["network"] }
 
 [dev-dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

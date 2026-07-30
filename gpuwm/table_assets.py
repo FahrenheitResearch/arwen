@@ -36,9 +36,11 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
+import time
 import urllib.error
 import urllib.request
 
+from gpuwm import fetch_guard
 from gpuwm.core.thompson_contract import (
     CLASSIC_TABLE_ASSETS,
     TableAsset,
@@ -113,6 +115,22 @@ def missing_externalized_assets(
             if asset.filename in EXTERNALIZED_TABLE_FILENAMES]
 
 
+def _staging_path(root: Path, asset: TableAsset) -> Path:
+    """A staging name only this process, and only this call, can own.
+
+    The staging file used to be a fixed ``.<filename>.fetch-partial``
+    shared by every writer into the table root.  Verification and the
+    ``os.replace`` that installs the verified bytes are separate steps,
+    so a second writer could rewrite that fixed file in between and get
+    its bytes installed under the first writer's successful pin check --
+    an install that never matched the pin it was blessed by.  A unique
+    name means the bytes hashed are the bytes moved.
+    """
+
+    return root / (f".{asset.filename}.fetch-partial-"
+                   f"{os.getpid()}-{time.time_ns()}")
+
+
 def _stage(temp: Path, final: Path, asset: TableAsset) -> None:
     """Verify ``temp`` against ``asset`` pins, then atomically install."""
 
@@ -136,19 +154,25 @@ def _stage(temp: Path, final: Path, asset: TableAsset) -> None:
 
 
 def fetch_asset_from_url(root: Path, asset: TableAsset, url: str) -> Path:
-    """Download ``url`` into ``root`` with pre-install verification."""
+    """Download ``url`` into ``root`` with pre-install verification.
+
+    Held under the table-root lock: staging, verifying and installing is
+    one transaction, so a concurrent fetch into the same root queues
+    behind it instead of interleaving with it.
+    """
 
     final = root / asset.filename
-    temp = root / f".{asset.filename}.fetch-partial"
-    try:
-        with urllib.request.urlopen(url) as response, \
-                temp.open("wb") as sink:
-            shutil.copyfileobj(response, sink, _BLOCK_BYTES)
-    except (urllib.error.URLError, OSError) as error:
-        temp.unlink(missing_ok=True)
-        raise TableAssetError(
-            f"{asset.filename}: download failed from {url}: {error}")
-    _stage(temp, final, asset)
+    with fetch_guard.hold("fetch-tables", root):
+        temp = _staging_path(root, asset)
+        try:
+            with urllib.request.urlopen(url) as response, \
+                    temp.open("wb") as sink:
+                shutil.copyfileobj(response, sink, _BLOCK_BYTES)
+        except (urllib.error.URLError, OSError) as error:
+            temp.unlink(missing_ok=True)
+            raise TableAssetError(
+                f"{asset.filename}: download failed from {url}: {error}")
+        _stage(temp, final, asset)
     return final
 
 
@@ -161,14 +185,15 @@ def fetch_asset_from_dir(root: Path, asset: TableAsset,
         raise TableAssetError(
             f"{asset.filename}: not found in --from directory {source_dir}")
     final = root / asset.filename
-    temp = root / f".{asset.filename}.fetch-partial"
-    try:
-        shutil.copyfile(source, temp)
-    except OSError as error:
-        temp.unlink(missing_ok=True)
-        raise TableAssetError(
-            f"{asset.filename}: copy from {source} failed: {error}")
-    _stage(temp, final, asset)
+    with fetch_guard.hold("fetch-tables", root):
+        temp = _staging_path(root, asset)
+        try:
+            shutil.copyfile(source, temp)
+        except OSError as error:
+            temp.unlink(missing_ok=True)
+            raise TableAssetError(
+                f"{asset.filename}: copy from {source} failed: {error}")
+        _stage(temp, final, asset)
     return final
 
 

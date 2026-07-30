@@ -423,6 +423,102 @@ def test_unclassified_physics_fails_closed_and_names_action(tmp_path):
     assert "will not be ignored or substituted" in issue["action"]
 
 
+def test_wrf_runner_runtime_io_keys_classify_without_unclassified(tmp_path):
+    """The CPU-WRF runtime I/O keys a WRF-Runner-generated namelist always
+    carries (2026-07-30 interop verification) classify as runtime-only
+    instead of spraying UNCLASSIFIED_NAMELIST_SETTING noise."""
+    wps, inp = _write_pair(tmp_path)
+    text = inp.read_text(encoding="utf-8").replace(
+        " run_hours = 12,",
+        " run_hours = 12,\n"
+        " io_form_auxinput2 = 2,\n"
+        " override_restart_timers = .true.,\n"
+        " iofields_filename = 'iofields.txt',\n"
+        " ignore_iofields_warning = .true.,\n"
+        " fine_input_stream = 0, 0, 0, 0, 0, 0,",
+    )
+    inp.write_text(text, encoding="utf-8")
+    report = analyze_namelists(wps, inp, source_top_pressure_pa=5000.0)
+    assert not [item for item in report["issues"]
+                if item["code"] == "UNCLASSIFIED_NAMELIST_SETTING"]
+    runtime_keys = {
+        entry["key"] for entry in report["classifications"]
+        ["runtime_output_only"] if entry["section"] == "time_control"
+    }
+    assert {"io_form_auxinput2", "override_restart_timers",
+            "iofields_filename", "ignore_iofields_warning"} <= runtime_keys
+    # all-zero fine_input_stream is the prepared path: classified, no issue
+    assert not [item for item in report["issues"]
+                if item["code"] == "NEST_INPUT_STREAM_UNSUPPORTED"]
+    assert report["verdict"] == "PASS"
+
+
+def test_delayed_nest_input_stream_fails_precisely(tmp_path):
+    """fine_input_stream = 0, 2 (WRF's delayed-nest-start pattern, the
+    newest WRF-Runner feature) names the missing per-nest input file
+    rather than an unclassified-setting shrug."""
+    wps, inp = _write_pair(tmp_path)
+    text = inp.read_text(encoding="utf-8").replace(
+        " run_hours = 12,",
+        " run_hours = 12,\n fine_input_stream = 0, 2, 2, 2, 2, 2,",
+    )
+    inp.write_text(text, encoding="utf-8")
+    report = analyze_namelists(wps, inp, source_top_pressure_pa=5000.0)
+    assert report["verdict"] == "FAIL"
+    issue = next(item for item in report["issues"]
+                 if item["code"] == "NEST_INPUT_STREAM_UNSUPPORTED")
+    assert "met_em-class input" in issue["message"]
+    assert not [item for item in report["issues"]
+                if item["code"] == "UNCLASSIFIED_NAMELIST_SETTING"]
+
+
+def test_active_grid_fdda_fails_as_missing_wrffdda(tmp_path):
+    """grid_fdda=1 was silently classified runtime-only while real.exe is
+    the only producer of the wrffdda_d0N file it reads; the report must
+    refuse what the export cannot feed (found live against a
+    WRF-Runner-generated nudging namelist, 2026-07-30)."""
+    wps, inp = _write_pair(tmp_path)
+    text = inp.read_text(encoding="utf-8").replace(
+        "&dynamics",
+        "&fdda\n grid_fdda = 1, 0, 0, 0, 0, 0,\n/\n&dynamics",
+        1,
+    )
+    inp.write_text(text, encoding="utf-8")
+    report = analyze_namelists(wps, inp, source_top_pressure_pa=5000.0)
+    assert report["verdict"] == "FAIL"
+    issue = next(item for item in report["issues"]
+                 if item["code"] == "FDDA_INPUT_NOT_PRODUCED")
+    assert "wrffdda_d0N" in issue["message"]
+
+
+def test_mosaic_monalb_rdlai2d_gate_on_nondefault_values(tmp_path):
+    """sf_surface_mosaic/usemonalb/rdlai2d are initialized-state selectors:
+    the WRF-default values pass cleanly, anything else is refused inside
+    UNSUPPORTED_PHYSICS_STATE with the exact selector named."""
+    report = analyze_namelists(
+        *_write_pair(tmp_path, extra_physics=(
+            "sf_surface_mosaic = 0, 0, 0, 0, 0, 0,\n"
+            " usemonalb = .false.,\n rdlai2d = .false.,")),
+        source_top_pressure_pa=5000.0,
+    )
+    assert report["verdict"] == "PASS"
+
+    report = analyze_namelists(
+        *_write_pair(tmp_path, extra_physics=(
+            "sf_surface_mosaic = 1, 1, 1, 1, 1, 1,\n"
+            " usemonalb = .true.,\n rdlai2d = .true.,")),
+        source_top_pressure_pa=5000.0,
+    )
+    assert report["verdict"] == "FAIL"
+    message = next(item["message"] for item in report["issues"]
+                   if item["code"] == "UNSUPPORTED_PHYSICS_STATE")
+    assert "sf_surface_mosaic=1" in message
+    assert "usemonalb=.true." in message
+    assert "rdlai2d=.true." in message
+    assert not [item for item in report["issues"]
+                if item["code"] == "UNCLASSIFIED_NAMELIST_SETTING"]
+
+
 def test_unsupported_land_model_fails_precisely(tmp_path):
     wps, inp = _write_pair(tmp_path)
     text = inp.read_text(encoding="utf-8").replace(

@@ -25,6 +25,10 @@ import numpy as np
 import netCDF4
 
 from gpuwm.config import NO_LAND_SURFACE_SOIL_LAYERS, soil_layer_count
+from gpuwm.io.wrf_output_schema import (
+    OUTPUT_FIELDS_BY_NETCDF_NAME, PHYSICS_SELECTOR_GLOBALS,
+    SCHEME_OUTPUT_FIELDS, WRF_FIELD_TYPE_INTEGER, WRF_FIELD_TYPE_REAL,
+)
 from gpuwm.supervisor import (fsync_file, quarantine_file,
                               replace_file_with_retry, unique_temp_path)
 
@@ -95,11 +99,12 @@ _VAR_META = {
     "UP_HELI_MAX": ("MAX UPDRAFT HELICITY", "m2 s-2"),
     "HGT": ("Terrain Height", "m"),
     "PSFC": ("SFC PRESSURE", "Pa"),
-    "RAINNC": ("ACCUMULATED TOTAL GRID SCALE PRECIPITATION", "mm"),
-    "RAINC": ("ACCUMULATED TOTAL CUMULUS PRECIPITATION", "mm"),
-    "SNOWNC": ("ACCUMULATED TOTAL GRID SCALE SNOW AND ICE", "mm"),
-    "GRAUPELNC": ("ACCUMULATED TOTAL GRID SCALE GRAUPEL", "mm"),
-    "HAILNC": ("ACCUMULATED TOTAL GRID SCALE HAIL", "mm"),
+    # RAINC/RAINSH/RAINNC/SNOWNC/GRAUPELNC/HAILNC used to live here.  They
+    # are now in gpuwm.io.wrf_output_schema.PRECIPITATION_OUTPUT_FIELDS,
+    # because they are no longer merely *described* by this table -- they are
+    # emitted unconditionally, and the thing that decides that has to be the
+    # same thing that carries their Registry metadata.  Two tables describing
+    # one field is how two tables come to disagree about one field.
     "SNOW": ("SNOW WATER EQUIVALENT", "kg m-2"),
     "SNOWH": ("PHYSICAL SNOW DEPTH", "m"),
     "SNOWC": ("FLAG INDICATING SNOW COVERAGE (1 FOR SNOW COVER)", ""),
@@ -140,60 +145,42 @@ _VAR_META = {
     "P_TOP": ("PRESSURE TOP OF THE MODEL", "Pa"),
     "ZNU": ("eta values on half (mass) levels", ""),
     "ZNW": ("eta values on full (w) levels", ""),
-    # RUC's carried state, written only under sf_surface_physics=3.  Every
-    # description and unit below is transcribed verbatim from the WRF v4.6.1
-    # Registry row named in the comment, including the two rows that leave
-    # ``units`` empty and carry the unit inside the description instead --
-    # inventing a unit for those would make a gpuwm wrfout disagree with a WRF
-    # one on the same field.
-    # Six of the rows below live in one contiguous Registry block, cited once
-    # as a RANGE rather than per field.  That is not brevity: the generic-code
-    # case-token gate (tests/test_runtime.py) forbids a bare four-digit case
-    # year anywhere under gpuwm/io, and one of those line numbers collides
-    # with one.  A range citation is exact, resolves to the same block, and
-    # does not smuggle a banned literal past a gate by reformatting it.
-    # Registry.EM_COMMON:1970-1977 -- QSG, QVG, QCG, DEW, SOILT1, TSNAV:
-    "QSG": ("SURFACE SATURATION WATER VAPOR MIXING RATIO", "kg kg-1"),
-    "QVG": ("WATER VAPOR MIXING RATIO AT THE SURFACE", "kg kg-1"),
-    "QCG": ("CLOUD WATER MIXING RATIO AT THE GROUND SURFACE", "kg kg-1"),
-    "DEW": ("DEW MIXING RATIO AT THE SURFACE", "kg kg-1"),
-    "SOILT1": ("TEMPERATURE INSIDE SNOW ", "K"),
-    "TSNAV": ("AVERAGE SNOW TEMPERATURE ", "C"),
-    # And the rest, cited individually:
-    "RHOSNF": ("DENSITY OF FROZEN PRECIP", "kg/m^3"),     # :1003
-    "SNOWFALLAC": ("RUN-TOTAL ACCUMULATED SNOWFALL [mm]", ""),   # :1004
-    "PRECIPFR": ("TIME-STEP FROZEN PRECIP [mm]", ""),     # :1005
-    "SMFR3D": ("SOIL ICE", ""),                           # :1006
-    "KEEPFR3DFLAG": ("FLAG - 1. FROZEN SOIL YES, 0 - NO", ""),   # :1007
-    "ACRUNOFF": ("ACCUMULATED RUNOFF", "kg m-2"),         # :866
-    "SFCEXC": ("SURFACE EXCHANGE COEFFICIENT", "m s-1"),  # :863
-    "SFCEVP": ("ACCUMULATED SURFACE EVAPORATION", "kg m-2"),     # :860
-    # The four LSMRUC driver locals gpuwm publishes.  WRF keeps all four as
-    # automatic arrays and returns none of them, so there is no Registry row
-    # to transcribe and the description says so rather than implying one.
-    "RUC_INFILTR": ("gpuwm diagnostic: LSMRUC infiltration flux (no WRF "
-                    "Registry counterpart)", "m s-1"),
-    "RUC_SMELT": ("gpuwm diagnostic: LSMRUC snow-melt water flux (no WRF "
-                  "Registry counterpart)", "m s-1"),
-    "RUC_RUNOFF1": ("gpuwm diagnostic: LSMRUC surface runoff rate (no WRF "
-                    "Registry counterpart)", "m s-1"),
-    "RUC_RUNOFF2": ("gpuwm diagnostic: LSMRUC underground runoff rate (no "
-                    "WRF Registry counterpart)", "m s-1"),
 }
 
-#: Staggered dimension -> WRF ``stagger`` attribute value.
+#: Staggered dimension -> WRF ``stagger`` attribute value.  WRF appends
+#: ``_stag`` to a dimension's dataset name exactly when the field is staggered
+#: on that axis (``tools/gen_wrf_io.c:138,187,213``), which is why the snow
+#: and snow+soil axes below are ``*_stag`` and not the bare dimspec names:
+#: every Noah-MP field on them is declared ``Z``-staggered.
 _STAGGER = {"west_east_stag": "X", "south_north_stag": "Y",
             "bottom_top_stag": "Z", "soil_layers_stag": "Z",
-            "snow_layers": "Z", "snso_layers": "Z"}
+            "snow_layers_stag": "Z", "snso_layers_stag": "Z"}
 
 #: Noah-MP snow-stack history fields, keyed by name for the same reason
 #: TSLB/SMOIS/SH2O are: their leading extent is a scheme's own vertical axis,
 #: which collides with ``bottom_top`` for a shallow model column.  The
 #: dimension names are WRF's (``Registry/registry.dimspec:53,55``: ``snly`` ->
-#: ``snow_layers``, ``snsl`` -> ``snso_layers``), so a reader that knows WRF
-#: knows these.
-_SNOW_LAYER_FIELDS = frozenset({"TSNOXY", "SNICEXY", "SNLIQXY"})
-_SNSO_LAYER_FIELDS = frozenset({"ZSNSOXY"})
+#: ``snow_layers``, ``snsl`` -> ``snso_layers``, each ``_stag``-suffixed by
+#: the declared ``Z`` staggering), so a reader that knows WRF knows these.
+#: The names are the external ones from the output schema, never the Registry
+#: symbols -- ``TSNOXY`` is not a name any WRF ever wrote.
+_SNOW_LAYER_FIELDS = frozenset(
+    SCHEME_OUTPUT_FIELDS[key].netcdf_name
+    for key in ("tsnoxy", "snicexy", "snliqxy"))
+_SNSO_LAYER_FIELDS = frozenset({SCHEME_OUTPUT_FIELDS["zsnsoxy"].netcdf_name})
+
+#: MYNN's three ``ikj`` carriers that WRF declares ``Z``-staggered, so WRF
+#: writes them on ``bottom_top_stag`` with one more level than the mass
+#: column.  gpuwm computes exactly the ``nz`` mass levels the MYNN solver
+#: fills; WRF's own array is dimensioned ``kms:kme`` and its PBL driver never
+#: writes the extra interface entry either, leaving the Registry cold value
+#: zero there.  The writer lifts these onto WRF's axis and pads with that same
+#: zero, so a reader that knows WRF's EL_PBL shape receives WRF's EL_PBL
+#: shape -- rather than an ``nz``-level array under a name whose declared
+#: schema says ``nz + 1``.
+_Z_STAGGERED_MASS_FIELDS = frozenset(
+    SCHEME_OUTPUT_FIELDS[key].netcdf_name
+    for key in ("el_pbl", "exch_h", "exch_m"))
 
 #: Every history field whose leading extent is the SOIL axis.  TSLB, SMOIS and
 #: SH2O are generic; SMFR3D and KEEPFR3DFLAG are RUC's own Registry package
@@ -215,20 +202,86 @@ _DEFAULT_LANDUSE_ATTRS = {
 }
 
 
+def _producer_version() -> str:
+    """The release that wrote this file, from installed metadata.
+
+    Imported at call time rather than at module import so the writer stays
+    importable from a source tree that was never installed; ``gpuwm``
+    answers ``0+unknown`` there rather than inventing a number.
+    """
+    from gpuwm import __version__
+
+    return str(__version__)
+
+
 def wrfout_filename(valid_time, domain_id: int = 1) -> str:
-    """Colon-free, second-complete WRF history filename."""
+    """Colon-free, second-complete WRF history filename.
+
+    A sub-second instant is refused rather than formatted.  The name carries
+    whole seconds and the publisher replaces an existing file, so three legal
+    quarter-second frames used to collapse onto one name and silently
+    overwrite each other -- the second and third frames of that run simply
+    ceased to exist, with no exception anywhere.  Losing output is not an
+    acceptable answer to an unsupported cadence; refusing it is.
+    """
     if (isinstance(domain_id, bool) or not isinstance(domain_id, int)
             or domain_id < 1):
         raise ValueError(
             f"domain_id must be a positive integer, got {domain_id!r}")
+    if getattr(valid_time, "microsecond", 0):
+        raise ValueError(
+            f"wrfout valid time {valid_time!r} is not on a whole second; "
+            "history filenames and the Times record carry whole seconds "
+            "only, so distinct sub-second instants would alias onto one "
+            "file and the later frame would replace the earlier one")
     return valid_time.strftime(
         f"wrfout_d{domain_id:02d}_%Y-%m-%d_%H_%M_%S")
+
+
+def wrf_physics_selector_attrs(run) -> dict[str, np.int32]:
+    """WRF's physics-selector globals, from the resolved gpuwm configuration.
+
+    Stock WRF stamps every physics selector into every history file, and
+    that is what lets a reader tell an *absent* scheme from an *inactive*
+    one.  Without them a wrfout whose ``RAINSH`` is all zeros is ambiguous:
+    a shallow-cumulus scheme may have run and produced nothing, or none may
+    exist.  ``SHCU_PHYSICS=0`` is the difference.
+
+    Radiation goes through ``radiation_scheme_ids`` rather than reading the
+    two config fields, because gpuwm's ``-1/-1`` is a legacy sentinel
+    meaning "use the aggregate ``ra_physics``", not a WRF scheme id.  The
+    resolver is the repository's own authority for what actually ran, and
+    writing the raw sentinel would put a number in the file that no WRF
+    selector has.
+    """
+    from gpuwm.config import radiation_scheme_ids
+
+    lw, sw = radiation_scheme_ids(run)
+    attrs: dict[str, np.int32] = {}
+    for selector in PHYSICS_SELECTOR_GLOBALS:
+        if selector.source == "config":
+            value = getattr(run, selector.run_config_field)
+        elif selector.source == "radiation_lw":
+            value = lw
+        elif selector.source == "radiation_sw":
+            value = sw
+        elif selector.source == "unimplemented":
+            # gpuwm has no such scheme to select, so WRF's "off" value is
+            # the resolved truth about this run, not a placeholder.
+            value = 0
+        else:
+            raise ValueError(
+                f"unknown selector source {selector.source!r} for "
+                f"{selector.name} ({selector.registry})")
+        attrs[selector.name] = np.int32(value)
+    return attrs
 
 
 def wrf_global_attrs(
         grid, start_time, *, landuse_attrs=None, grid_id=None,
         parent_id=None, i_parent_start=None, j_parent_start=None,
         parent_grid_ratio=None, dt=None, hybrid_opt=None, etac=None,
+        run=None,
         ) -> dict[str, object]:
     """WRF projection/pole/land-use globals derived from case inputs.
 
@@ -243,16 +296,24 @@ def wrf_global_attrs(
     supplies the complete groups together.  POLE_LAT/POLE_LON stay
     90/0: WPS writes those constants for every non-lat-lon projection.
     """
+    # Every projection global below is NC_FLOAT, not NC_DOUBLE.  A Python
+    # float would enter netCDF4 as a double, and stock WRF writes all of these
+    # single-precision (verified on the group's v4.6.1 wrfout: DX, DY,
+    # TRUELAT1/2, STAND_LON, CEN_LAT/LON, MOAD_CEN_LAT, POLE_LAT/LON and DT
+    # are every one of them float32).  Readers tolerate the widening, but a
+    # file that claims WRF's schema should not differ from WRF's schema.
     attrs = {
         "MAP_PROJ": int(getattr(grid, "wrf_map_proj", 1)),
         "MAP_PROJ_CHAR": str(getattr(grid, "map_proj_char",
                                      "Lambert Conformal")),
-        "TRUELAT1": grid.truelat1, "TRUELAT2": grid.truelat2,
-        "STAND_LON": grid.stand_lon,
-        "MOAD_CEN_LAT": getattr(grid, "moad_cen_lat", grid.ref_lat),
-        "CEN_LAT": getattr(grid, "cen_lat", grid.ref_lat),
-        "CEN_LON": getattr(grid, "cen_lon", grid.ref_lon),
-        "POLE_LAT": 90.0, "POLE_LON": 0.0,
+        "TRUELAT1": np.float32(grid.truelat1),
+        "TRUELAT2": np.float32(grid.truelat2),
+        "STAND_LON": np.float32(grid.stand_lon),
+        "MOAD_CEN_LAT": np.float32(
+            getattr(grid, "moad_cen_lat", grid.ref_lat)),
+        "CEN_LAT": np.float32(getattr(grid, "cen_lat", grid.ref_lat)),
+        "CEN_LON": np.float32(getattr(grid, "cen_lon", grid.ref_lon)),
+        "POLE_LAT": np.float32(90.0), "POLE_LON": np.float32(0.0),
         "SIMULATION_START_DATE": start_time.strftime("%Y-%m-%d_%H:%M:%S"),
         "START_DATE": start_time.strftime("%Y-%m-%d_%H:%M:%S"),
         "GRIDTYPE": "C", **_DEFAULT_LANDUSE_ATTRS,
@@ -287,16 +348,47 @@ def wrf_global_attrs(
     if hybrid_opt is not None:
         attrs["HYBRID_OPT"] = np.int32(hybrid_opt)
         attrs["ETAC"] = np.float32(etac)
+    if run is not None:
+        attrs.update(wrf_physics_selector_attrs(run))
     return attrs
 
 
+#: The idealized cases' synthetic epoch.  Held here rather than formatted
+#: inline because the month and year are no longer literals in the output:
+#: they roll over.
+_IDEALIZED_EPOCH = datetime(1, 1, 1)
+
+
 def wrf_time_str(t_s: float) -> str:
-    """WRF ``Times`` string for ``t_s`` seconds after 0001-01-01_00:00:00
-    (day rollover handled; sub-second times round to the second)."""
-    h, s = divmod(int(round(t_s)), 3600)
-    m, s = divmod(s, 60)
-    d, h = divmod(h, 24)
-    return f"0001-01-{d + 1:02d}_{h:02d}:{m:02d}:{s:02d}"
+    """WRF ``Times`` string for ``t_s`` seconds after the idealized epoch.
+
+    Calendar arithmetic, not field arithmetic.  The previous form advanced
+    only the day field and hard-coded the year and month, so a thirty-one
+    day integration emitted ``0001-01-32`` and a year-long one emitted
+    ``0001-01-366`` -- syntactically invalid ``Times`` strings that no WRF
+    reader can parse, produced silently by a helper five idealized
+    verification cases use.
+
+    The epoch stays year 1: it is the frozen idealized-case contract, and
+    moving it would move every fixture that depends on it.  Callers should
+    know that year 1 is outside NumPy's ``datetime64[ns]`` range, so
+    wrf-python -- which converts the parsed ``Times`` sequence to
+    nanoseconds -- wraps such a date to somewhere in the 1700s.  That is a
+    limitation of the synthetic epoch, not of the string: the string is now
+    a real date either way, and the real-case path (which is what carries a
+    wrf-python compatibility promise) has always used real dates.
+    """
+    seconds = int(round(t_s))
+    if seconds < 0:
+        raise ValueError(
+            f"idealized Times seconds must be non-negative, got {t_s!r}")
+    try:
+        valid = _IDEALIZED_EPOCH + timedelta(seconds=seconds)
+    except OverflowError as exc:
+        raise ValueError(
+            f"idealized Times seconds {t_s!r} overflows the calendar past "
+            "year 9999") from exc
+    return valid.strftime("%Y-%m-%d_%H:%M:%S")
 
 
 def _live_state_history_fields(state) -> dict[str, object]:
@@ -363,31 +455,38 @@ def _live_state_history_fields(state) -> dict[str, object]:
     live_surface = getattr(physics, "fields", {})
     # MYNN's ten carried 3-D arrays and its four plume diagnostics exist only
     # under bl_pbl_physics=5, and wrfout does not auto-walk ``fields`` the way
-    # the health collector does, so each emitted name is listed explicitly.
+    # the health collector does, so each emitted field is listed explicitly.
     # The gate is the driver's own resolved routing, for the same reason the
     # land-surface gate below is: a scheme that did not run must not appear to
-    # have written state.
+    # have written state.  The listed keys are the scheme's *runtime* keys and
+    # the emitted names come from the output schema, so no name here is
+    # spelled twice and a key with no schema row raises rather than shipping
+    # an anonymous float32.  ``exch_h``/``exch_m``/``rmol``/``kpbl`` are named
+    # individually because they are shared EM_COMMON rows rather than members
+    # of MYNN's own runtime inventories.
     if dispatch is not None:
         from gpuwm.core.physics import PHYSICS_SLOT_DISPATCH
 
         mynn_runner = PHYSICS_SLOT_DISPATCH["bl_pbl_physics"][5]
         if dispatch.get("bl_pbl_physics") == mynn_runner:
-            for output_name, field_name in (
-                    ("QKE", "qke"), ("TSQ", "tsq"), ("QSQ", "qsq"),
-                    ("COV", "cov"), ("EL_PBL", "el_pbl"), ("SH3D", "sh3d"),
-                    ("SM3D", "sm3d"), ("QC_BL", "qc_bl"), ("QI_BL", "qi_bl"),
-                    ("CLDFRA_BL", "cldfra_bl"), ("EXCH_H", "exch_h"),
-                    ("EXCH_M", "exch_m"), ("MAXWIDTH", "maxwidth"),
-                    ("MAXMF", "maxmf"), ("ZTOP_PLUME", "ztop_plume"),
-                    ("KTOP_PLUME", "ktop_plume"), ("RMOL", "rmol"),
-                    ("KPBL", "kpbl")):
+            from gpuwm.core.mynn_pbl_runtime import (
+                MYNN_PBL_DIAGNOSTICS_2D, MYNN_PBL_DIAGNOSTICS_INT_2D,
+                MYNN_PBL_STATE_3D,
+            )
+            for field_name in (*MYNN_PBL_STATE_3D, *MYNN_PBL_DIAGNOSTICS_2D,
+                               *MYNN_PBL_DIAGNOSTICS_INT_2D,
+                               "exch_h", "exch_m", "rmol", "kpbl"):
                 if field_name in live_surface:
-                    fields[output_name] = live_surface[field_name]
+                    fields[SCHEME_OUTPUT_FIELDS[field_name].netcdf_name] = \
+                        live_surface[field_name]
     # Noah-MP's carried state and published diagnostics, on the same terms:
     # they exist only under sf_surface_physics=4, wrfout does not auto-walk
-    # ``fields``, and the gate is the resolved routing.  The output names are
-    # WRF's own Registry spellings, so a wrfout from this path is readable by
-    # the same tooling that reads WRF's.
+    # ``fields``, and the gate is the resolved routing.  The output names come
+    # from the schema, which carries WRF's *external* names.  They used to be
+    # the runtime keys upper-cased, which is not the same thing and was wrong
+    # for every Noah-MP field but two: WRF writes ``TV``/``ISNOW``/``ZSNSO``,
+    # never ``TVXY``/``ISNOWXY``/``ZSNSOXY``, so no WRF-name consumer could
+    # find Noah-MP state in a gpuwm wrfout at all.
     if dispatch is not None:
         from gpuwm.core.physics import PHYSICS_SLOT_DISPATCH
 
@@ -402,11 +501,13 @@ def _live_state_history_fields(state) -> dict[str, object]:
                                *NOAHMP_STATE_SNOWSOIL_3D,
                                *NOAHMP_DIAGNOSTICS_2D):
                 if field_name in live_surface:
-                    fields[field_name.upper()] = live_surface[field_name]
+                    fields[SCHEME_OUTPUT_FIELDS[field_name].netcdf_name] = \
+                        live_surface[field_name]
     # RUC's carried state and its four published driver locals, on the same
     # terms: they exist only under sf_surface_physics=3, wrfout does not
-    # auto-walk ``fields``, and the gate is the resolved routing.  The
-    # Registry-spelled names are upper-cased so WRF tooling reads them; the
+    # auto-walk ``fields``, and the gate is the resolved routing.  RUC's
+    # external names happen to be its symbols upper-cased, but they are taken
+    # from the schema anyway so that the coincidence is not load-bearing; the
     # four ruc_* driver locals have no Registry counterpart and keep their
     # prefix so nothing mistakes them for WRF output.
     if dispatch is not None:
@@ -420,7 +521,8 @@ def _live_state_history_fields(state) -> dict[str, object]:
             for field_name in (*RUC_STATE_2D, *RUC_STATE_3D,
                                *RUC_DIAGNOSTICS_2D):
                 if field_name in live_surface:
-                    fields[field_name.upper()] = live_surface[field_name]
+                    fields[SCHEME_OUTPUT_FIELDS[field_name].netcdf_name] = \
+                        live_surface[field_name]
     if dispatch is not None:
         land_surface_active = dispatch.get("sf_surface_physics") is not None
     else:
@@ -595,7 +697,16 @@ class WrfoutWriter:
         # dimensioned staggered vertical axis, not bottom_top.
         ds.createDimension("soil_layers_stag", self.soil_layers)
         ds.setncatts({
-            "TITLE": title, "DX": float(dx), "DY": float(dy),
+            # NC_FLOAT, not the NC_DOUBLE a Python float would become: stock
+            # WRF writes DX/DY single-precision like every other projection
+            # global (see wrf_global_attrs).
+            "TITLE": title,
+            # TITLE is the caller's configured output title, so it is not a
+            # provenance seal: a wrfout separated from its logs could not say
+            # which build wrote it.  GPUWM_VERSION can, and it reads the
+            # installed distribution's metadata rather than a constant.
+            "GPUWM_VERSION": _producer_version(),
+            "DX": np.float32(dx), "DY": np.float32(dy),
             "WEST-EAST_GRID_DIMENSION": nx + 1,
             "SOUTH-NORTH_GRID_DIMENSION": ny + 1,
             "BOTTOM-TOP_GRID_DIMENSION": nz + 1,
@@ -615,7 +726,7 @@ class WrfoutWriter:
                 schema.setdefault(
                     "ITIMESTEP", np.asarray(0, dtype=np.int32))
             for name, value in schema.items():
-                shape = getattr(value, "shape", value)
+                shape = self._wrf_shape(name, getattr(value, "shape", value))
                 self._create_variable(name, self._dims_for(name, shape))
             self._declared_fields = frozenset(schema)
 
@@ -635,6 +746,43 @@ class WrfoutWriter:
             raise ValueError(
                 f"wrfout dimension {name} is {len(existing)}, not {size}")
 
+    def _wrf_shape(self, name, shape):
+        """On-disk shape for ``name``: WRF's, which is not always gpuwm's."""
+        shape = tuple(shape)
+        if name in _Z_STAGGERED_MASS_FIELDS and shape == (
+                self.nz, self.ny, self.nx):
+            return (self.nz + 1, self.ny, self.nx)
+        return shape
+
+    @staticmethod
+    def _check_integer_field_dtype(name, array):
+        """A field WRF declares integer must arrive as one.
+
+        netCDF4 casts on assignment, so handing a float array to an ``i4``
+        variable truncates every value in silence -- which would restore
+        the exact defect the schema exists to end, one layer further in.
+        Only the integer direction is checked: a real field legitimately
+        accepts any float width.
+        """
+        schema = OUTPUT_FIELDS_BY_NETCDF_NAME.get(name)
+        if schema is None or schema.dtype != "i4":
+            return
+        if array.dtype.kind not in ("i", "u"):
+            raise ValueError(
+                f"wrfout variable {name} is declared integer by WRF v4.6.1 "
+                f"({schema.registry}) but the frame supplied "
+                f"{array.dtype}; writing it would truncate every value")
+
+    def _wrf_array(self, name, array):
+        """``array`` on its WRF axis, zero-padding the unfilled top level."""
+        self._check_integer_field_dtype(name, array)
+        if (name not in _Z_STAGGERED_MASS_FIELDS
+                or array.shape != (self.nz, self.ny, self.nx)):
+            return array
+        lifted = np.zeros((self.nz + 1, self.ny, self.nx), dtype=array.dtype)
+        lifted[:self.nz] = array
+        return lifted
+
     def _dims_for(self, name, shape):
         nz, ny, nx = self.nz, self.ny, self.nx
         if name in _SNOW_LAYER_FIELDS or name in _SNSO_LAYER_FIELDS:
@@ -648,12 +796,12 @@ class WrfoutWriter:
                     f"{tuple(shape)}, which is not a snow stack over "
                     f"{(ny, nx)}")
             if name in _SNOW_LAYER_FIELDS:
-                self._ensure_dimension("snow_layers", snow_layers)
-                axis = "snow_layers"
+                self._ensure_dimension("snow_layers_stag", snow_layers)
+                axis = "snow_layers_stag"
             else:
                 self._ensure_dimension(
-                    "snso_layers", snow_layers + self.soil_layers)
-                axis = "snso_layers"
+                    "snso_layers_stag", snow_layers + self.soil_layers)
+                axis = "snso_layers_stag"
             return ("Time", axis, "south_north", "west_east")
         if name in _SOIL_LAYER_FIELDS:
             expected = (self.soil_layers, ny, nx)
@@ -677,16 +825,37 @@ class WrfoutWriter:
         return ("Time",) + table[tuple(shape)]
 
     def _create_variable(self, name, dims):
-        """Variable with WRF type, memory order, Registry, and grid attrs."""
-        dtype = "i4" if name == "ITIMESTEP" else "f4"
+        """Variable with WRF type, memory order, Registry, and grid attrs.
+
+        A scheme field's type, ``FieldType``, ``description``, ``units`` and
+        staggering all come from its transcribed WRF v4.6.1 Registry row
+        rather than from the writer's own assumptions, and the row's stagger
+        is checked against the one the dimension table implies.  Those two
+        can only disagree if the dimension table routed the field onto the
+        wrong axis, which is a schema lie a reader cannot detect -- so it is
+        refused here instead of published.
+        """
+        schema = OUTPUT_FIELDS_BY_NETCDF_NAME.get(name)
+        if schema is not None:
+            dtype, field_type = schema.dtype, schema.field_type
+            desc, units = schema.description, schema.units
+        else:
+            dtype = "i4" if name == "ITIMESTEP" else "f4"
+            field_type = (WRF_FIELD_TYPE_INTEGER if name == "ITIMESTEP"
+                          else WRF_FIELD_TYPE_REAL)
+            desc, units = _VAR_META.get(name, ("", ""))
+        stagger = next((s for d, s in _STAGGER.items() if d in dims), "")
+        if schema is not None and schema.stagger != stagger:
+            raise ValueError(
+                f"wrfout variable {name} lands on dimensions {dims}, whose "
+                f"stagger is {stagger!r}, but WRF v4.6.1 declares it "
+                f"{schema.stagger!r} ({schema.registry})")
         var = self.ds.createVariable(name, dtype, dims)
-        desc, units = _VAR_META.get(name, ("", ""))
         if name == "XTIME":
             origin = str(getattr(self.ds, "START_DATE", "")).replace(
                 "_", " ", 1)
             desc = units = f"minutes since {origin}"
-        var.setncattr("FieldType", np.int32(
-            106 if name == "ITIMESTEP" else 104))
+        var.setncattr("FieldType", np.int32(field_type))
         if dims == ("Time",):
             var.MemoryOrder = "0  "
         elif len(dims) == 2:
@@ -695,7 +864,7 @@ class WrfoutWriter:
             var.MemoryOrder = "XYZ" if len(dims) == 4 else "XY "
         var.description = desc
         var.units = units
-        var.stagger = next((s for d, s in _STAGGER.items() if d in dims), "")
+        var.stagger = stagger
         spatial = any(d in dims for d in (
             "west_east", "west_east_stag", "south_north",
             "south_north_stag"))
@@ -743,8 +912,17 @@ class WrfoutWriter:
     def write_frame(self, time_str: str, fields: dict[str, np.ndarray]):
         t = self._n
         # netCDF4 1.7.x stringtochar mangles S-dtype input under numpy 2,
-        # so build the 19-char record directly (truncate, null-pad).
-        buf = time_str.encode("ascii")[:19].ljust(19, b"\x00")
+        # so build the 19-char record directly (null-pad).  A longer value
+        # is refused rather than truncated: the only way to exceed 19 is a
+        # sub-second instant, and silently dropping the fraction is how two
+        # distinct frames came to describe the same second.
+        encoded = time_str.encode("ascii")
+        if len(encoded) > 19:
+            raise ValueError(
+                f"wrfout Times record {time_str!r} exceeds the 19-character "
+                "WRF format; sub-second history instants are not supported "
+                "and must not be truncated into an aliased one")
+        buf = encoded.ljust(19, b"\x00")
         self.ds.variables["Times"][t] = np.frombuffer(buf, dtype="S1")
         frame = dict(fields)
         for name, value in self._time_coordinate_fields(time_str).items():
@@ -757,7 +935,7 @@ class WrfoutWriter:
                 "wrfout frame does not match the creation-time field "
                 f"schema: missing={missing}, extra={extra}")
         for name, arr in frame.items():
-            arr = np.asarray(arr)
+            arr = self._wrf_array(name, np.asarray(arr))
             if name not in self.ds.variables:
                 self._create_variable(name, self._dims_for(name, arr.shape))
             self.ds.variables[name][t] = arr

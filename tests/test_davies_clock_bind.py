@@ -38,14 +38,19 @@ from conftest import requires_gpu
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: The only modules that may reference the binder: its definition, the
-#: production tree build, and the N5S restored-model builder.  Sweeping the
-#: whole package keeps the F20-era hardening (no aliased/getattr caller can
-#: slip in an unadjudicated bind site) while inverting the old negative pin
-#: into the positive production contract.
+#: production tree build, the N5S restored-model builder, and the
+#: standalone offline child (adjudicated 2026-07-30: it is a
+#: boundary-consumer root in its own process and binds a DomainClock to
+#: its external LBC mirror -- the same post-increment dtbc recurrence as
+#: the production root).  Sweeping the whole package keeps the F20-era
+#: hardening (no aliased/getattr caller can slip in an unadjudicated bind
+#: site) while inverting the old negative pin into the positive
+#: production contract.
 SANCTIONED_BINDER_MODULES = (
     Path("ingest") / "lateral_bc.py",
     Path("core") / "model.py",
     Path("verify") / "cases" / "real74_n5s.py",
+    Path("offline_child_run.py"),
 )
 
 

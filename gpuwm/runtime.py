@@ -180,8 +180,16 @@ def _write_feedback_provenance_receipt(
         json.dumps(payload, indent=2, sort_keys=True, allow_nan=False)
         + "\n").encode("utf-8")
     path = Path(outdir) / FEEDBACK_PROVENANCE_RECEIPT_NAME
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_bytes(encoded)
+    # Unique temp and an explicit durability barrier, matching the
+    # microphysics transition receipt below.  A fixed temp name is not
+    # reentrant outside the supervisor's serialization, and a receipt whose
+    # bytes never left the page cache is a receipt a power failure can
+    # unwrite after the rename has already made it look durable.
+    temporary = path.with_name(f".{path.name}.partial-{os.getpid()}")
+    with temporary.open("wb") as stream:
+        stream.write(encoded)
+        stream.flush()
+        os.fsync(stream.fileno())
     os.replace(temporary, path)
     return path, hashlib.sha256(encoded).hexdigest(), payload
 
@@ -945,8 +953,13 @@ def _global_wrf_attrs(
     if coord is not None:
         identity.update(hybrid_opt=int(coord.hybrid_opt),
                         etac=float(coord.etac))
+    # ``run`` carries the resolved physics selectors, which are what let a
+    # reader tell "no shallow-cumulus scheme exists" from "one ran and
+    # produced nothing".
     attrs = wrf_global_attrs(
-        grid, start_time, landuse_attrs=landuse_attrs, **identity)
+        grid, start_time, landuse_attrs=landuse_attrs,
+        run=(None if domain is None else getattr(domain, "run", domain)),
+        **identity)
     if feedback is not None:
         attrs.update(
             GPUWM_FEEDBACK=str(feedback["feedback"]),

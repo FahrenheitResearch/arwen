@@ -298,7 +298,9 @@ Claimed, each with its receipt above or in the linked pages:
   and several deliberate deviations from WRF are registered in
   [PROVENANCE.md](../../PROVENANCE.md). "Bitwise" statements are always
   scoped to a named comparison (a kernel oracle, a restart identity, a
-  dual-run byte comparison) -- never to WRF output files.
+  dual-run byte comparison) -- never to WRF output files. What the
+  dual-run byte comparison covers, and what it cannot detect in place
+  of ECC, is [DETERMINISM.md](DETERMINISM.md).
 - **One case is deeply validated.** The matched-run evidence is one
   meteorological situation, one season, one region, one option set.
   Other cases, seasons, and physics combinations inherit component

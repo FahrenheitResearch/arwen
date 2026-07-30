@@ -40,6 +40,12 @@ _PREPROCESSING_KEYS = {
         "start_month", "start_day", "start_hour", "start_minute",
         "start_second", "end_year", "end_month", "end_day", "end_hour",
         "end_minute", "end_second", "interval_seconds", "input_from_file",
+        # Selects which input stream initializes each nest.  0 is the
+        # standard parent-interpolation path RW-WPS prepares; any nonzero
+        # value (2 = met_em via auxinput2, the delayed-nest-start pattern
+        # observed in WRF-Runner-generated namelists, 2026-07-30) demands
+        # a per-nest input file RW-WPS does not produce -- gated below.
+        "fine_input_stream",
     },
     "domains": {
         "time_step", "time_step_fract_num", "time_step_fract_den", "max_dom",
@@ -68,6 +74,12 @@ _PHYSICS_STATE_KEYS = {
         "mosaic_soil", "mosaic_cat", "icloud", "morr_rimed_ice", "hail_opt",
         "ghg_input", "o3input", "aer_opt", "sst_update", "surface_input_source",
         "num_land_cat", "fractional_seaice",
+        # Land-surface state selectors WRF-Runner-generated namelists carry
+        # (2026-07-30 interop verification).  Each changes what real.exe
+        # must have initialized, so they are state-relevant and value-gated
+        # below: only the WRF-default value each certified export actually
+        # ran with is accepted.
+        "sf_surface_mosaic", "usemonalb", "rdlai2d",
     }
 }
 
@@ -80,6 +92,12 @@ _RUNTIME_OUTPUT_KEYS = {
         "history_begin", "restart", "restart_interval", "io_form_history",
         "io_form_restart", "io_form_input", "io_form_boundary", "nocolons",
         "nwp_diagnostics", "debug_level",
+        # CPU-WRF-runtime I/O keys observed in WRF-Runner-generated
+        # namelists (2026-07-30): none changes what RW-WPS must prepare.
+        # io_form_auxinput2 only matters when fine_input_stream is
+        # nonzero, which the preprocessing gate refuses independently.
+        "io_form_auxinput2", "override_restart_timers",
+        "iofields_filename", "ignore_iofields_warning",
     },
     "physics": {
         "radt", "bldt", "cudt", "isfflx", "ifsnow", "do_radar_ref",
@@ -711,6 +729,62 @@ def analyze_namelists(
                 "Set feedback=0. RW-WPS does not silently change this value.",
             ))
 
+        # fine_input_stream selects each nest's initialization input stream.
+        # 0 is the parent-interpolation path this export prepares; nonzero
+        # (2 = met_em through auxinput2, WRF's delayed-nest-start pattern)
+        # requires a per-nest input file RW-WPS does not produce.
+        try:
+            streams = _integers(
+                _column(inp.get("time_control", {}), "fine_input_stream",
+                        max_dom, default=0),
+                "&time_control/fine_input_stream",
+            )
+            if any(stream != 0 for stream in streams):
+                issues.append(_issue(
+                    "NEST_INPUT_STREAM_UNSUPPORTED",
+                    "&time_control/fine_input_stream",
+                    f"fine_input_stream={streams}; nonzero streams initialize "
+                    "a nest from its own met_em-class input at its start "
+                    "time (WRF's delayed-nest-start pattern), and RW-WPS "
+                    "produces no such per-nest input file.",
+                    "Set fine_input_stream=0 for every domain, or keep WPS + "
+                    "real.exe for delayed nest initialization.",
+                ))
+        except (KeyError, TypeError, ValueError) as error:
+            issues.append(_issue(
+                "NEST_INPUT_STREAM_UNSUPPORTED",
+                "&time_control/fine_input_stream",
+                str(error),
+                "Declare integer fine_input_stream values in d01..dNN order.",
+            ))
+
+        # real.exe writes wrffdda_d0N when grid_fdda is active; RW-WPS
+        # replaces real.exe and does not.  An active nudging request in a
+        # namelist this report blesses would fail at WRF runtime on a
+        # missing input file, so it must fail here instead.
+        fdda = inp.get("fdda", {})
+        try:
+            grid_fdda = _integers(
+                _column(fdda, "grid_fdda", max_dom, default=0),
+                "&fdda/grid_fdda",
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            grid_fdda = None
+            issues.append(_issue(
+                "FDDA_INPUT_NOT_PRODUCED", "&fdda/grid_fdda",
+                str(error),
+                "Declare integer grid_fdda values in d01..dNN order, or "
+                "remove &fdda.",
+            ))
+        if grid_fdda is not None and any(value != 0 for value in grid_fdda):
+            issues.append(_issue(
+                "FDDA_INPUT_NOT_PRODUCED", "&fdda/grid_fdda",
+                f"grid_fdda={grid_fdda}; analysis nudging reads "
+                "wrffdda_d0N, which real.exe generates and RW-WPS does not.",
+                "Set grid_fdda=0 (remove &fdda), or keep WPS + real.exe for "
+                "nudged runs.",
+            ))
+
         bdy = inp.get("bdy_control", {})
         try:
             width = _integers(
@@ -822,6 +896,17 @@ def analyze_namelists(
                 _column(physics, "sf_urban_physics", max_dom, default=0),
                 "&physics/sf_urban_physics",
             )
+            mosaic = _integers(
+                _column(physics, "sf_surface_mosaic", max_dom, default=0),
+                "&physics/sf_surface_mosaic",
+            )
+            monalb = _column(physics, "usemonalb", max_dom, default=False)
+            lai2d = _column(physics, "rdlai2d", max_dom, default=False)
+            if any(not isinstance(value, bool)
+                   for value in (*monalb, *lai2d)):
+                raise ValueError(
+                    "&physics/usemonalb and &physics/rdlai2d must contain "
+                    "logicals")
             for index in range(max_dom):
                 inventory = stock_wrf_physics_inventory(mp[index])
                 configuration_errors = []
@@ -842,6 +927,24 @@ def analyze_namelists(
                 if urban[index] != 0:
                     configuration_errors.append(
                         f"sf_urban_physics={urban[index]} (urban state not inventoried)"
+                    )
+                if mosaic[index] != 0:
+                    configuration_errors.append(
+                        f"sf_surface_mosaic={mosaic[index]} (mosaic land "
+                        "state not inventoried; the export initializes "
+                        "dominant-category Noah state only)"
+                    )
+                if monalb[index]:
+                    configuration_errors.append(
+                        "usemonalb=.true. (monthly-albedo initialized state "
+                        "is not evidenced for this export; only the WRF "
+                        "default .false. is)"
+                    )
+                if lai2d[index]:
+                    configuration_errors.append(
+                        "rdlai2d=.true. (LAI-from-static initialized state "
+                        "is not evidenced for this export; only the WRF "
+                        "default .false. is)"
                     )
                 if configuration_errors:
                     issues.append(_issue(

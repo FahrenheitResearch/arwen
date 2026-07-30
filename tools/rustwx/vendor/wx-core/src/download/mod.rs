@@ -10,7 +10,9 @@ pub use cache::{Cache, DiskCache};
 pub use catalog::{
     expand_var_group, expand_vars, get_group, group_names, variable_groups, VariableGroup,
 };
-pub use client::{DownloadClient, DownloadConfig};
+pub use client::{
+    nomads_governor, pace_nomads_request, DownloadClient, DownloadConfig, NomadsGovernor,
+};
 pub use fallback::{fetch_with_fallback, probe_sources, FetchResult};
 #[cfg(feature = "network")]
 pub use idx::available_fhours;

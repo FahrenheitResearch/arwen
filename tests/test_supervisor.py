@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -13,6 +14,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import gpuwm.case_data as case_data
+import gpuwm.supervisor as supervisor
 from gpuwm.supervisor import (
     HEARTBEAT_SCHEMA, GPUAlreadyLockedError, GPUFileLock, GPUIdentity,
     GPUPreflightError, GPUProcess, Heartbeat, RollingStepWall,
@@ -476,7 +479,8 @@ def _install_scripted_supervisor(monkeypatch, tmp_path, scripts, *,
         return process
 
     monkeypatch.setattr(supervisor, "config_digest", lambda _path: "a" * 64)
-    monkeypatch.setattr(supervisor, "resolved_input_hashes", lambda _path: {})
+    monkeypatch.setattr(supervisor, "resolved_input_hashes",
+                        lambda _path, **_kwargs: {})
     monkeypatch.setattr(supervisor, "select_gpu", lambda _uuid: gpu)
     monkeypatch.setattr(supervisor, "preflight_exclusive_gpu",
                         lambda *args, **kwargs: None)
@@ -725,3 +729,126 @@ def test_supervise_monitor_detects_heartbeat_regression(monkeypatch, tmp_path):
             max_restarts=3, poll_seconds=0.05)
     assert len(processes) == 1
     assert processes[0].terminated
+
+
+# --- directory-input identity ------------------------------------------
+#
+# The dual-run byte comparison is only as good as the binding between a
+# run and its inputs.  Files are content-hashed; a *directory* input --
+# in practice the static geography tree -- is bound by inventory
+# (path/size/mtime) by default, which has one false-positive and one
+# false-negative mode.  Both are gated here, at both mode values, because
+# docs/public/DETERMINISM.md tells scientists exactly which one they get.
+
+
+def _geography_tree(root: Path) -> Path:
+    root.mkdir(parents=True)
+    (root / "nested").mkdir()
+    (root / "index").write_bytes(b"projection=regular_ll\n")
+    (root / "nested" / "00001-01200.00001-01200").write_bytes(
+        bytes(range(256)) * 4)
+    return root
+
+
+def _stamp(root: Path, mtime_ns: int) -> None:
+    for child in sorted(root.rglob("*")):
+        if child.is_file():
+            os.utime(child, ns=(mtime_ns, mtime_ns))
+
+
+@pytest.mark.parametrize(
+    "mode, copies_agree",
+    [("inventory", False), ("content", True)])
+def test_directory_hash_and_a_byte_identical_copy(tmp_path, mode,
+                                                  copies_agree):
+    """A staged copy with fresh mtimes: inventory false-positives."""
+    left = _geography_tree(tmp_path / "left")
+    right = _geography_tree(tmp_path / "right")
+    _stamp(left, 1_500_000_000_000_000_000)
+    _stamp(right, 1_600_000_000_000_000_000)
+
+    left_digest = supervisor._hash_directory_manifest(left, mode=mode)
+    right_digest = supervisor._hash_directory_manifest(right, mode=mode)
+    assert (left_digest == right_digest) is copies_agree
+
+
+@pytest.mark.parametrize(
+    "mode, edit_is_seen",
+    [("inventory", False), ("content", True)])
+def test_directory_hash_and_a_size_and_mtime_preserving_edit(tmp_path, mode,
+                                                             edit_is_seen):
+    """A same-size edit with the mtime restored: inventory misses it."""
+    tree = _geography_tree(tmp_path / "geog")
+    _stamp(tree, 1_500_000_000_000_000_000)
+    before = supervisor._hash_directory_manifest(tree, mode=mode)
+
+    target = tree / "nested" / "00001-01200.00001-01200"
+    payload = bytearray(target.read_bytes())
+    payload[17] ^= 0x01                      # one bit, same length
+    target.write_bytes(bytes(payload))
+    _stamp(tree, 1_500_000_000_000_000_000)  # and the mtime is put back
+
+    after = supervisor._hash_directory_manifest(tree, mode=mode)
+    assert (before != after) is edit_is_seen
+
+
+def test_directory_hash_inventory_digest_is_unchanged_by_the_mode_argument(
+        tmp_path):
+    """Old inventory digests stay comparable: no domain prefix was added."""
+    tree = _geography_tree(tmp_path / "geog")
+    _stamp(tree, 1_500_000_000_000_000_000)
+    expected = hashlib.sha256()
+    for relative in ("index", "nested/00001-01200.00001-01200"):
+        child = tree / relative
+        expected.update(
+            f"{relative}\0{child.stat().st_size}\0"
+            f"{child.stat().st_mtime_ns}\n".encode("utf-8"))
+    assert supervisor._hash_directory_manifest(tree, mode="inventory") == \
+        expected.hexdigest()
+
+
+@pytest.mark.parametrize("mode", ["inventory", "content"])
+def test_resolved_input_hashes_records_the_algorithm_it_used(
+        monkeypatch, tmp_path, mode):
+    tree = _geography_tree(tmp_path / "geog")
+    forcing = tmp_path / "forcing.grib2"
+    forcing.write_bytes(b"GRIB")
+
+    class _Case:
+        def resolved_inputs(self):
+            return (case_data.ResolvedInput(role="forcing", path=forcing),
+                    case_data.ResolvedInput(role="geog_root", path=tree))
+
+    monkeypatch.setattr(case_data, "load_experiment_case",
+                        lambda _path: (None, _Case()))
+    hashes = supervisor.resolved_input_hashes(
+        tmp_path / "case.toml", directory_hash=mode)
+    assert hashes[f"geog_root:{tree}"]["algorithm"] == \
+        f"sha256-directory-{mode}"
+    assert hashes[f"forcing:{forcing}"]["algorithm"] == "sha256"
+
+
+@pytest.mark.parametrize(
+    "requested, env, expected",
+    [(None, None, "inventory"),
+     (None, "content", "content"),
+     ("content", None, "content"),
+     ("inventory", "content", "inventory")])
+def test_directory_hash_mode_resolution(monkeypatch, requested, env,
+                                        expected):
+    monkeypatch.delenv(supervisor.DIRECTORY_HASH_ENV, raising=False)
+    if env is not None:
+        monkeypatch.setenv(supervisor.DIRECTORY_HASH_ENV, env)
+    assert supervisor.directory_hash_mode(requested) == expected
+
+
+@pytest.mark.parametrize("bad", ["mtime", "sha256", ""])
+def test_directory_hash_mode_refuses_an_unknown_mode(monkeypatch, bad):
+    monkeypatch.delenv(supervisor.DIRECTORY_HASH_ENV, raising=False)
+    with pytest.raises(ValueError, match="is not one of"):
+        supervisor.directory_hash_mode(bad)
+    monkeypatch.setenv(supervisor.DIRECTORY_HASH_ENV, bad)
+    with pytest.raises(ValueError, match="environment variable"):
+        supervisor.directory_hash_mode()
+    with pytest.raises(ValueError, match="is not one of"):
+        supervisor._hash_directory_manifest(Path("."), mode=bad)

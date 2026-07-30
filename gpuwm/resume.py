@@ -70,7 +70,14 @@ def discover_checkpoint_sets(outdir) -> list[CheckpointSet]:
 
     Newest-first is by restart valid time, then by file modification time
     for two sets checkpointing the same instant (a supervisor retry writes
-    a fresh set id at the same model clock).
+    a fresh set id at the same model clock), then by set id.
+
+    The mtime is read in nanoseconds and the set id breaks the remaining
+    tie.  Second-resolution mtimes and a coarsening filesystem could put
+    two sets for one model instant on an exact tie, and the order then
+    fell out of ``Path.glob`` discovery -- so which checkpoint a resume
+    continued from was a property of the filesystem, not of the run.  A
+    set with no id sorts below any set that has one.
     """
     outdir = Path(outdir)
     groups: dict[tuple[str, str | None], dict[int, Path]] = {}
@@ -90,8 +97,9 @@ def discover_checkpoint_sets(outdir) -> list[CheckpointSet]:
     return sorted(
         sets,
         key=lambda s: (s.valid_time,
-                       max(path.stat().st_mtime
-                           for path in s.members.values())),
+                       max(path.stat().st_mtime_ns
+                           for path in s.members.values()),
+                       "" if s.set_id is None else s.set_id),
         reverse=True)
 
 

@@ -6,6 +6,7 @@ import argparse
 from datetime import datetime, timedelta
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shlex
@@ -75,11 +76,22 @@ LEGACY_PROOF_SCHEMA = "gpuwm-gfs-direct-wrf-proof-v2"
 #: v2 by inference, exactly as the direct proof's v2 is not.
 HIERARCHY_PROOF_SCHEMA = "gpuwm-gfs-native-hierarchy-proof-v2"
 LEGACY_HIERARCHY_PROOF_SCHEMA = "gpuwm-gfs-native-hierarchy-proof-v1"
-_PRESSURE_LEVELS_HPA = np.asarray(
+#: The isobaric ladder every GFS subset carries, and the floor this
+#: front door requires -- not the ceiling.  A case whose model top sits
+#: above 100 hPa is fetched with the ladder EXTENDED UPWARD
+#: (``gpuwm fetch --source gfs --p-top-pa 5000`` adds the 70 and 50 hPa
+#: levels), and the bridge reports the ladder it actually decoded in its
+#: gate.  This constant is what that ladder must still contain, and what
+#: stands in for a directory fetched before the ladder was recorded.
+_CERTIFIED_PRESSURE_LEVELS_HPA = np.asarray(
     [100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600,
      650, 700, 750, 800, 850, 900, 925, 950, 975, 1000],
     dtype=np.float64,
 )
+#: Kept as the historical spelling: several tests and downstream readers
+#: import it by this name, and it means exactly what it always did --
+#: the certified 21-level ladder.
+_PRESSURE_LEVELS_HPA = _CERTIFIED_PRESSURE_LEVELS_HPA
 _THREE_D = ("GHT", "T", "RH", "U", "V")
 _TWO_D = (
     "PSFC", "SOURCE_OROGRAPHY", "SKINTEMP", "SNOW", "SNOWH",
@@ -229,10 +241,81 @@ def _geometry_contract(grid, cfg) -> dict[str, object]:
     return native_geometry_contract(grid, cfg)
 
 
-def _validate_grid_and_vertical_contract(exp, wps_namelist: Path):
+#: The source top a fetch directory implies when its receipt predates the
+#: recorded ladder: the certified ladder is the only thing it can have
+#: been, because nothing before this release could fetch another.
+_CERTIFIED_SOURCE_TOP_PA = float(_CERTIFIED_PRESSURE_LEVELS_HPA.min() * 100.0)
+
+
+def _validate_ladder(levels: np.ndarray, context: str) -> np.ndarray:
+    """The certified ladder, optionally extended upward.  Or a refusal.
+
+    Mirrors ``gfs_grib2_bridge::observed_pressure_levels`` on the Python
+    side of the same handoff, so the two ends of the decode cannot
+    disagree about what a legal ladder is.  Two clauses say it all: the
+    ladder is strictly increasing, and it ENDS with the certified 21
+    exactly.  Together those force every extra level strictly above the
+    certified top -- an increasing list whose last 21 begin at 100 hPa
+    cannot carry anything at or below 100 hPa ahead of them -- so an
+    interior insertion, a dropped certified level, and a reordering are
+    all refused without a third clause that could never fire.
+    """
+
+    if levels.ndim != 1 or levels.size < _CERTIFIED_PRESSURE_LEVELS_HPA.size:
+        raise ValueError(
+            f"{context}: {levels.size} isobaric level(s), fewer than the "
+            f"{_CERTIFIED_PRESSURE_LEVELS_HPA.size} every GFS subset carries")
+    if np.any(np.diff(levels) <= 0.0):
+        raise ValueError(
+            f"{context}: isobaric ladder is not strictly increasing")
+    tail = levels[-_CERTIFIED_PRESSURE_LEVELS_HPA.size:]
+    if not np.allclose(tail, _CERTIFIED_PRESSURE_LEVELS_HPA, rtol=0.0,
+                       atol=1e-6):
+        raise ValueError(
+            f"{context}: isobaric ladder does not end with the certified "
+            f"{_CERTIFIED_PRESSURE_LEVELS_HPA.size}-level ladder")
+    return levels
+
+
+def _manifest_source_top_pa(manifest: Mapping[str, object]) -> float:
+    """The source top the fetch receipt declares, in Pa.
+
+    The vertical contract is checked BEFORE the bridge runs, so the model
+    top a case may ask for has to come from the receipt rather than from
+    a constant -- a constant is exactly what capped every GFS run at
+    10000 Pa regardless of what was actually fetched.
+    """
+
+    identity = manifest.get("source")
+    if not isinstance(identity, dict):
+        return _CERTIFIED_SOURCE_TOP_PA
+    levels = identity.get("pressure_levels_hpa")
+    declared = identity.get("top_pressure_pa")
+    if not isinstance(levels, list) or not levels:
+        return _CERTIFIED_SOURCE_TOP_PA
+    try:
+        ladder = np.asarray([float(level) for level in levels],
+                            dtype=np.float64)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "GFS input manifest declares an unreadable pressure ladder"
+        ) from error
+    _validate_ladder(ladder, "GFS input manifest")
+    top = float(ladder.min() * 100.0)
+    if isinstance(declared, (int, float)) and not math.isclose(
+            float(declared), top, rel_tol=0.0, abs_tol=1e-6):
+        raise ValueError(
+            f"GFS input manifest declares a source top of {float(declared):g} "
+            f"Pa but its pressure ladder tops out at {top:g} Pa")
+    return top
+
+
+def _validate_grid_and_vertical_contract(exp, wps_namelist: Path, *,
+                                         source_top_pressure_pa: float
+                                         = _CERTIFIED_SOURCE_TOP_PA):
     return validate_native_lambert_contract(
         exp, wps_namelist, source_name="GFS",
-        source_top_pressure_pa=float(_PRESSURE_LEVELS_HPA.min() * 100.0),
+        source_top_pressure_pa=float(source_top_pressure_pa),
     )
 
 
@@ -458,6 +541,7 @@ def _load_bridge_snapshots(
     cycle: datetime,
     records: tuple[tuple[int, Path], ...],
     expected_source_sha256: Mapping[int, str] | None = None,
+    expected_levels_hpa: tuple[float, ...] | None = None,
 ) -> tuple[Era5Snapshot, ...]:
     gate = _parse_gate(root / "gate.tsv")
     hours = tuple(int(value) for value in gate["forecast_hours"].split(","))
@@ -465,8 +549,24 @@ def _load_bridge_snapshots(
         raise ValueError("GFS bridge forecast-hour inventory differs from series")
     if gate["cycle"] != cycle.strftime("%Y-%m-%d %H:%M:%S"):
         raise ValueError("GFS bridge cycle differs from requested cycle")
-    if tuple(float(value) / 100.0 for value in gate["pressure_levels_pa"].split(",")) != tuple(_PRESSURE_LEVELS_HPA):
-        raise ValueError("GFS bridge pressure-level inventory differs from contract")
+    # The ladder is the bridge's report of what it decoded, not a constant
+    # to match: a case whose model top sits above 100 hPa is fetched with
+    # extra levels on top, and asserting equality against the certified 21
+    # is what made 10000 Pa a silent ceiling on every GFS run.  It still
+    # has to BE the certified ladder extended upward -- same rule the
+    # bridge applies to the source -- and when the caller knows which
+    # ladder was fetched, the two must agree exactly.
+    levels_hpa = _validate_ladder(
+        np.asarray(
+            [float(value) / 100.0
+             for value in gate["pressure_levels_pa"].split(",")],
+            dtype=np.float64),
+        "GFS bridge gate")
+    if expected_levels_hpa is not None and not np.array_equal(
+            levels_hpa, np.asarray(expected_levels_hpa, dtype=np.float64)):
+        raise ValueError(
+            "GFS bridge decoded a pressure ladder the input manifest does "
+            "not declare")
     expected_identity = {
         "originating_center": "7",
         "master_table_version": "2",
@@ -558,7 +658,7 @@ def _load_bridge_snapshots(
         for name in _THREE_D:
             field = _read_f32(
                 time_root / f"{name}.f32le",
-                (_PRESSURE_LEVELS_HPA.size, ny, nx),
+                (levels_hpa.size, ny, nx),
             )
             fields[name] = field
         for name in _TWO_D:
@@ -566,7 +666,7 @@ def _load_bridge_snapshots(
             fields[name] = field
         snapshots.append(Era5Snapshot(
             valid_time=cycle + timedelta(hours=hour),
-            levels_hpa=_PRESSURE_LEVELS_HPA,
+            levels_hpa=levels_hpa,
             latitude=latitude,
             longitude=longitude,
             fields=fields,
@@ -785,8 +885,18 @@ def prepare_gfs_wrf(
         raise ValueError("GFS series does not cover the configured run")
     boundary_interval_seconds = (hours[1] - hours[0]) * 3600
     cfg = exp.root.run
+    # What the fetch actually reached, not what the default ladder would
+    # have reached: the case's p_top is checked against this.
+    source_top_pressure_pa = _manifest_source_top_pa(manifest)
+    manifest_levels = manifest.get("source", {}).get("pressure_levels_hpa") \
+        if isinstance(manifest.get("source"), dict) else None
+    expected_levels_hpa = (tuple(float(level) for level in manifest_levels)
+                           if isinstance(manifest_levels, list)
+                           and manifest_levels else None)
     if len(exp.domains) == 1:
-        grid = _validate_grid_and_vertical_contract(exp, Path(wps_namelist))
+        grid = _validate_grid_and_vertical_contract(
+            exp, Path(wps_namelist),
+            source_top_pressure_pa=source_top_pressure_pa)
         grids = (grid,)
     else:
         if geog_root is None:
@@ -794,8 +904,7 @@ def prepare_gfs_wrf(
                 "nested GFS preparation requires an explicit geog_root")
         grids = validate_native_lambert_contracts(
             exp, Path(wps_namelist), source_name="GFS",
-            source_top_pressure_pa=float(
-                _PRESSURE_LEVELS_HPA.min() * 100.0),
+            source_top_pressure_pa=source_top_pressure_pa,
         )
         grid = grids[0]
     if static_input is None:
@@ -825,7 +934,8 @@ def prepare_gfs_wrf(
             for hour, _ in records
         }
         snapshots = _load_bridge_snapshots(
-            decoded, cycle_time, records, expected_source_sha256)
+            decoded, cycle_time, records, expected_source_sha256,
+            expected_levels_hpa=expected_levels_hpa)
         decode_seconds = time.perf_counter() - decode_started
         lake_mask = static["LU_INDEX"] == 21
         coverage_receipt = {

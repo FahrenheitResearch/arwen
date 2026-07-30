@@ -438,14 +438,29 @@ def test_state_frame_from_domain_state():
 
 
 def test_wrf_time_str():
-    """WRF Times formatting: seconds from 0001-01-01_00:00:00, day
+    """WRF Times formatting: seconds from 0001-01-01_00:00:00, calendar
     rollover included (shared helper single-sources what straka/igw
-    duplicated)."""
+    duplicated).
+
+    The month and year roll too, which they did not before v1.1.3: the
+    helper incremented only the day field, so this test stopping at day two
+    was the whole reason ``0001-01-32`` and ``0001-01-366`` could ship.  The
+    cases below cross a month end, a leap-less February, and a year end.
+    """
     from gpuwm.io.wrfout import wrf_time_str
     assert wrf_time_str(0.0) == "0001-01-01_00:00:00"
     assert wrf_time_str(305.0) == "0001-01-01_00:05:05"
     assert wrf_time_str(7200.0) == "0001-01-01_02:00:00"
     assert wrf_time_str(86400.0 + 3661.0) == "0001-01-02_01:01:01"
+    assert wrf_time_str(30 * 86400.0) == "0001-01-31_00:00:00"
+    assert wrf_time_str(31 * 86400.0) == "0001-02-01_00:00:00"
+    assert wrf_time_str(58 * 86400.0) == "0001-02-28_00:00:00"
+    assert wrf_time_str(59 * 86400.0) == "0001-03-01_00:00:00"
+    assert wrf_time_str(365 * 86400.0) == "0002-01-01_00:00:00"
+    with pytest.raises(ValueError, match="non-negative"):
+        wrf_time_str(-1.0)
+    with pytest.raises(ValueError, match="overflows"):
+        wrf_time_str(1.0e15)
 
 
 def test_async_writer_netCDF_sessions_are_process_serial(monkeypatch,

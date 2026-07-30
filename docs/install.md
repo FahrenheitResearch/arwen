@@ -79,13 +79,39 @@ python -m pytest -q \
   tests/test_native_wrf_distribution.py
 ```
 
-**Wheel installs are not self-sufficient for the data routes.**  A pip
+**Wheel installs need two more commands for the data routes.**  A pip
 wheel deliberately contains no compiled Rust, so `gpuwm check`/`run`
-(ERA5 route) and the `rw-wps` GFS/HRRR front doors need the same
-one-time `cargo build --release --locked --offline` from a source
-clone.  Point the install at the built executables with the
-per-bridge environment variables (`GPUWM_GRIB1_BRIDGE`,
-`GPUWM_GFS_GRIB2_BRIDGE`, ...) or copy them into `~/.gpuwm/bridges/`.
+(ERA5 route) and the `rw-wps` GFS/HRRR front doors have nothing to
+decode GRIB with until the artifacts are on the machine:
+
+```bash
+pip install gpuwm
+gpuwm fetch-bridges
+gpuwm fetch-tables
+gpuwm doctor
+```
+
+`gpuwm fetch-bridges` downloads one release bundle for this platform --
+the five GRIB decoders, the CPU preprocessing library, the `rw_fetch`
+backbone and the `rw_wrfbatch` renderer -- verifies every artifact
+against the exact size + SHA-256 pins packaged in the wheel, and stages
+them into `~/.gpuwm/bridges`, the directory the resolver already
+searches.  It is re-run safe (present, pin-valid artifacts are left
+alone), an interrupted download resumes or restarts, and `--from DIR`
+stages the same bundle -- or the loose artifacts -- from a local
+directory with identical verification, for air-gapped installs.
+`--dest DIR` stages elsewhere; `GPUWM_BRIDGE_ASSET_URL_BASE` points it
+at a mirror.
+
+Bundles are published for Windows x86-64 and Linux x86-64.  On any
+other platform, and on any release that published no bundle, the
+command says so by name and the route is the same one-time
+`cargo build --release --locked --offline` from a source clone: point
+the install at the built executables with the per-artifact environment
+variables (`GPUWM_GRIB1_BRIDGE`, `GPUWM_GFS_GRIB2_BRIDGE`, ...) or copy
+them into `~/.gpuwm/bridges/`.  `gpuwm doctor` prints whichever of the
+two remedies is true for the machine it runs on.
+
 The wheel and sdist also exclude the two externalized Thompson tables
 (freezeH2O.dat, 243 MiB, and qr_acr_qg_V4.dat, 71 MiB -- together they
 would put the artifacts over PyPI's per-file limit); run

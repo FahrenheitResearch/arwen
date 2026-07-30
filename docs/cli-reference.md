@@ -54,6 +54,13 @@ separate exact-authority gate. See
 `arbitrary-verified-adapters.md` for the schema, battery, refusal examples,
 output contract, and runnable-versus-certified boundary.
 
+The battery proves the emitted files implement your descriptor and that your
+GRIB files satisfy it. Units, absolute geolocation, cell registration, level
+sufficiency, intended time semantics, land-mask polarity, and soil depth
+labels are trusted from your declaration. `adapt-validation-contract.md`
+gives the two-column contract for every input dimension and a self-check you
+can run for each trusted row.
+
 ## Named source routes
 
 | `--source` | Required source control | Notes |

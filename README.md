@@ -130,15 +130,29 @@ cd tools\rustwx; cargo build --release --locked --offline; cd ..\..
 gpuwm doctor
 ```
 
-**A plain `pip install gpuwm` is not enough to read weather data.** The
-wheel ships no compiled Rust, and every GRIB decode -- ERA5, GFS, GDAS,
-HRRR, 20CRv3 -- goes through the fail-closed Rust bridges in
-`tools/grib1_bridge`, which exist only in a clone. So a pip-only
-install can size domains and read documentation, and will refuse every
-real data source until you clone this repository and run the one
-`cargo build` above (about two minutes). `gpuwm doctor` prints the
-whole sequence, including the rustup line when `cargo` is missing.
-Shipping prebuilt bridges in the wheel is not yet done.
+**`pip install gpuwm` needs two more commands before it can read
+weather data.** The wheel ships no compiled Rust, and every GRIB decode
+-- ERA5, GFS, GDAS, HRRR, 20CRv3 -- goes through the fail-closed Rust
+bridges built from `tools/grib1_bridge`, which a wheel does not carry.
+Two commands close that gap:
+
+```bash
+pip install gpuwm
+gpuwm fetch-bridges     # prebuilt decoders, renderer and fetch backbone
+gpuwm fetch-tables      # the two externalized Thompson tables
+gpuwm doctor            # what is still missing, and the command for each
+```
+
+`gpuwm fetch-bridges` downloads one bundle for your platform -- the
+five GRIB decoders, the CPU preprocessing library, the Rust fetch
+backbone and the batch renderer -- and verifies every artifact against
+the SHA-256 pins packaged in the wheel before staging it into
+`~/.gpuwm/bridges`, where the resolver already looks. A release
+publishes bundles for Windows x86-64 and Linux x86-64; anywhere else,
+and on any release that published none, the command says so by name and
+the clone-and-`cargo build` route above is the answer. `--from DIR`
+stages the same bundle offline. `gpuwm doctor` prints whichever of the
+two remedies is true for your machine.
 
 `[gpu]` installs CuPy (required by `gpuwm check`/`run` and the sizing
 wizard); `[render]` installs the pinned `wrf-rust` package for
@@ -298,10 +312,18 @@ of the measured results:
 What these numbers mean, what is deliberately not claimed, and how to
 reproduce them: [VERIFICATION.md](docs/public/VERIFICATION.md).
 
+Consumer GeForce cards have no ECC memory, and running the forecast
+twice and comparing bytes is what stands in for it. That comparison is a
+transient-fault screen inside a fixed numerical environment, not an ECC
+replacement: it cannot detect a fault that is identical in both runs.
+What it does detect, what it does not, and the pin set that defines
+"fixed environment": [DETERMINISM.md](docs/public/DETERMINISM.md).
+
 ## Documentation
 
 - [First light walkthrough](docs/public/FIRST-LIGHT.md)
 - [Verification](docs/public/VERIFICATION.md)
+- [Determinism and the no-ECC dual-run screen](docs/public/DETERMINISM.md)
 - [Physics options and maturity](docs/public/PHYSICS.md)
 - [Configuration knobs (WRF namelist parity)](docs/public/CONFIGURATION.md)
 - [Getting data](docs/public/DATA.md)
@@ -311,6 +333,7 @@ reproduce them: [VERIFICATION.md](docs/public/VERIFICATION.md).
 - [Install and verify](docs/install.md)
 - [CLI reference](docs/cli-reference.md)
 - [Arbitrary but verified GRIB adapters](docs/arbitrary-verified-adapters.md)
+- [What `gpuwm adapt` validates, and what it trusts](docs/adapt-validation-contract.md)
 - [Migrating from WPS](docs/migrating-from-wps.md)
 - [Community support matrix](docs/community-support-matrix.md)
 

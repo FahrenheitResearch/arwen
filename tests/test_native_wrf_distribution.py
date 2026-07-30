@@ -417,6 +417,18 @@ def test_standalone_python_project_excludes_forecast_executor(tmp_path):
     assert "gpuwm/offline_child.py" not in files
     assert "gpuwm/offline_child_run.py" not in files
     assert "gpuwm/offline_child_smoke.py" not in files
+    # `gpuwm resume` locates a forecast checkpoint for the supervisor's
+    # `run --restart` dispatch: nothing here imports it, no entry point
+    # exposes it, and its own lookups are gpuwm.supervisor (forbidden
+    # above) and gpuwm.io.restart (not staged).  A preprocessing wheel
+    # has no checkpoints to resume from.
+    assert "gpuwm/resume.py" not in files
+    # doctor, on the other hand, belongs: a preprocessing install is
+    # exactly the one that needs to be told which bridge is missing.  It
+    # is here because its WPS_GEOG check reads the dataset list from
+    # gpuwm.geog_assets, which stages the tree, rather than from the
+    # domain wizard, which imports the CUDA front door.
+    assert "gpuwm/doctor.py" in files
     assert "tools/hrrr_state_proof.py" not in files
     assert "tools/hrrr_two_domain_forecast.py" not in files
     assert "LICENSE" in files
@@ -464,6 +476,11 @@ import gpuwm.hrrr_hierarchy_direct
 import gpuwm.mapped_direct
 import gpuwm.twentycrv3
 import gpuwm.twentycrv3_wrf
+# The estate report is part of this surface: a preprocessing install is
+# the one that most needs to be told which bridge is missing, and it
+# must reach that conclusion without the CUDA front door the domain
+# wizard drags in.
+import gpuwm.doctor
 import tools.hrrr_single_domain_benchmark
 from gpuwm.core.nest_interp import register_nest, sint
 import numpy as np
@@ -498,11 +515,21 @@ for module in (
     gpuwm.mapped_direct,
     gpuwm.twentycrv3,
     gpuwm.twentycrv3_wrf,
+    gpuwm.doctor,
     tools.hrrr_single_domain_benchmark,
 ):
     assert Path(module.__file__).resolve().is_relative_to(root)
+# Importing doctor is not the check; running the geography check is.
+# The old spelling reached gpuwm.domain_wizard from inside the function
+# body, where an import test that only imports modules never sees it.
+gpuwm.doctor._geog_tree_checks(Path(os.environ["RW_WPS_STAGED_ROOT"])
+                               / "no-such-geog-root")
+# and the call really did take the lazy-import path, so the absences
+# below are evidence rather than an artifact of nothing having run
+assert "gpuwm.geog_assets" in sys.modules
 for name in (
     "cupy", "gpuwm.cli", "gpuwm.core.model", "gpuwm.core.physics",
+    "gpuwm.domain_wizard", "gpuwm.resume",
     "gpuwm.runtime", "gpuwm.supervisor", "gpuwm.verify",
 ):
     assert name not in sys.modules

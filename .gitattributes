@@ -16,3 +16,6 @@ tools/rustwx/vendor/** -text
 tools/rustwx/crates/** -text
 tools/rustwx/assets/** -text
 tests/fixtures/**/*.grib2 -text
+# A captured NOAA index is evidence: it round-trips byte for byte or the
+# digest its README publishes stops being true on a fresh checkout.
+tests/fixtures/**/*.idx -text

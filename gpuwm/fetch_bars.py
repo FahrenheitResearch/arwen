@@ -98,11 +98,22 @@ NOTHING_DOWNLOADED = "Nothing was downloaded."
 def resolve_bar(kind: str, derived: int | None, *,
                 accept_inventory_change: bool = False,
                 progress=print,
-                on_refusal=None) -> RecordBar:
+                on_refusal=None,
+                certified: int | None = None) -> RecordBar:
     """Resolve the record-count bar for ``kind``.
 
     Raises :class:`ValueError` when the live inventory disagrees with
     the certified constant and the operator has not accepted the change.
+
+    ``certified`` overrides the table entry for requests whose census is
+    a known function of the request itself rather than a fixed number.
+    The GFS selection is the case: it takes five records per isobaric
+    level, so a run that asks for a model top above 100 hPa fetches a
+    longer ladder and legitimately expects more than 124 records.  The
+    tripwire still fires -- it is simply aimed at the count this
+    request's ladder implies, not at the count the default ladder
+    implies, which would otherwise refuse every deeper top as an
+    upstream inventory change.
 
     ``on_refusal`` is for callers that can only derive the bar *after*
     the payload has landed -- the Rust HRRR transport reads the census
@@ -118,7 +129,8 @@ def resolve_bar(kind: str, derived: int | None, *,
         raise ValueError(
             f"unknown record bar {kind!r}; known: "
             f"{sorted(CERTIFIED_RECORD_BARS)}")
-    certified = CERTIFIED_RECORD_BARS[kind]
+    if certified is None:
+        certified = CERTIFIED_RECORD_BARS[kind]
     if derived is None:
         return RecordBar(kind=kind, expected=certified, certified=certified,
                          derived=None)
@@ -173,7 +185,11 @@ def nomads_selector_pairs(variables: tuple[str, ...],
     names = tuple(name.removeprefix("var_") for name in variables)
     level_names = [level.removeprefix("lev_").replace("_", " ")
                    for level in levels]
-    level_names += [f"{value} mb" for value in pressure_levels_hpa]
+    # ``format(..., "g")`` because the index spells a level without
+    # trailing zeros -- "50 mb", never "50.0 mb" -- and the ladder is a
+    # float tuple once a requested model top has extended it upward.
+    level_names += [f"{format(float(value), 'g')} mb"
+                    for value in pressure_levels_hpa]
     return frozenset(
         (name, level) for name in names for level in level_names)
 

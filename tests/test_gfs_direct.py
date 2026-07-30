@@ -593,11 +593,23 @@ def test_a_config_bound_to_no_shipped_profile_prints_prose_not_a_command(
              "prepared_cache": {"content_sha256": "b" * 64}}
     (root / "proof.json").write_text(json.dumps(proof), encoding="utf-8")
 
-    # A shipped proof descriptor: single-domain and valid, but its
-    # physics predate the profiles and match none of them.
+    # A shipped proof descriptor with exactly one selector taken off
+    # the profile it otherwise resolves to: single-domain and valid,
+    # matching none of the shipped profiles.  Derived from the shipped
+    # file rather than hand-written, so the only difference from a
+    # config that DOES resolve is the one line this test is about --
+    # and `radt` is the specific line, because 12.0 is the value the
+    # shipped descriptors carried while they matched no profile at all.
+    descriptor = tmp_path / "off-profile.toml"
+    shipped = Path("configs/gfs_wrf_direct_proof.toml").read_text(
+        encoding="utf-8")
+    assert shipped.count("radt = 1.0") == 1
+    descriptor.write_text(shipped.replace("radt = 1.0", "radt = 12.0"),
+                          encoding="utf-8")
+
     lines = prepared_forecast_next_command(
         proof, output_root=root,
-        experiment_config=Path("configs/gfs_wrf_direct_proof.toml"),
+        experiment_config=descriptor,
         wps_namelist=Path("configs/gfs_wrf_direct_proof.namelist.wps"))
     text = "\n".join(lines)
     assert "matches none of the profiles" in text

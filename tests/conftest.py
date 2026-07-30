@@ -177,6 +177,30 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_local)
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _isolated_fetch_lock_root(tmp_path_factory):
+    """Keep every test's output locks out of the machine-wide lock root.
+
+    ``gpuwm.fetch_guard`` keys its lock files on the resolved output path
+    and keeps them outside the output tree, which means a suite that
+    fetches into a hundred ``tmp_path`` directories leaves a hundred
+    dead lock files under ``%PROGRAMDATA%/gpuwm/locks``.  Pointing the
+    root at the session's own temp directory makes the suite hermetic
+    and leaves the user's machine alone.  Tests that need their own root
+    (the lock gates themselves) override the variable per test.
+    """
+    from gpuwm import fetch_guard
+
+    root = tmp_path_factory.mktemp("fetch-locks")
+    previous = os.environ.get(fetch_guard.LOCK_ROOT_ENV)
+    os.environ[fetch_guard.LOCK_ROOT_ENV] = str(root)
+    yield root
+    if previous is None:
+        os.environ.pop(fetch_guard.LOCK_ROOT_ENV, None)
+    else:
+        os.environ[fetch_guard.LOCK_ROOT_ENV] = previous
+
+
 def assert_gates(case: str, metrics: dict) -> None:
     """Assert every benchmark gate for ``case`` passes.
 

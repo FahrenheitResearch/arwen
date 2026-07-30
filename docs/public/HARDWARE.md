@@ -180,7 +180,9 @@ estimate <= budget) instead of trusting arithmetic.
   the flat tier reserves (3/4/6 GiB) exist so routine runs never
   operate there. The reference run that peaked 57.1 MiB under budget
   completed cleanly and bit-deterministically -- and is exactly the
-  margin the sizing model now prevents.
+  margin the sizing model now prevents. What running the forecast
+  twice and comparing bytes does and does not detect in place of ECC
+  is stated precisely in [DETERMINISM.md](DETERMINISM.md).
 - Redirected stdout is block-buffered on Windows; watch the run's
   progress file, not the log tail: `run-progress.json` in `--outdir`
   for the config-driven `gpuwm run` route, `evidence/progress.json` for
@@ -243,3 +245,6 @@ hardware-level facts worth knowing:
 - Determinism holds per build and hardware: the reference run
   reproduced output frames SHA256-identically across a mid-run kill
   and relaunch. No cross-GPU or cross-driver bit-identity is claimed.
+  The pin set that "per build and hardware" actually names, and the
+  three mechanisms that make it necessary, are in
+  [DETERMINISM.md](DETERMINISM.md).

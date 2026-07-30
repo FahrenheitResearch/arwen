@@ -19,7 +19,16 @@ const PRESSURE_LEVEL_TYPE: u8 = 100;
 const SURFACE_LEVEL_TYPE: u8 = 1;
 const HEIGHT_LEVEL_TYPE: u8 = 103;
 const SOIL_LEVEL_TYPE: u8 = 106;
-const PRESSURE_LEVELS_PA: [f64; 21] = [
+/// The isobaric ladder every GFS subset must carry, in Pa.
+///
+/// This is the floor, not the ceiling. A case whose model top sits above 100
+/// hPa needs the ladder EXTENDED UPWARD -- `gpuwm fetch --source gfs
+/// --p-top-pa 5000` fetches the 70 and 50 hPa levels as well -- and a bridge
+/// that insists on exactly these 21 would refuse the very file that was
+/// fetched to satisfy it. The observed ladder is therefore derived from the
+/// source (see `observed_pressure_levels`) and validated to CONTAIN this one,
+/// so a deeper top adds levels and can never quietly drop one.
+const CERTIFIED_PRESSURE_LEVELS_PA: [f64; 21] = [
     10_000.0, 15_000.0, 20_000.0, 25_000.0, 30_000.0, 35_000.0, 40_000.0, 45_000.0, 50_000.0,
     55_000.0, 60_000.0, 65_000.0, 70_000.0, 75_000.0, 80_000.0, 85_000.0, 90_000.0, 92_500.0,
     95_000.0, 97_500.0, 100_000.0,
@@ -852,16 +861,96 @@ fn scan_normalized(
     Ok((values, present))
 }
 
+/// The isobaric ladder this file actually carries, in ascending Pa.
+///
+/// A level counts only when EVERY 3-D spec appears on it exactly once:
+/// four-fifths of a level is not a level this bridge can decode, and adopting
+/// one would produce arrays with a hole in them.
+///
+/// The result must be the certified ladder, optionally extended upward.  Two
+/// clauses say all of it:
+///
+///   * it must END with the certified 21 exactly -- so a source missing a
+///     level the certified runs have always used is refused rather than
+///     silently decoded one level short;
+///   * it must be strictly increasing -- the arrays and the vertical
+///     interpolation downstream are ordered by construction.
+///
+/// Together those force every extra level strictly above the certified top: an
+/// increasing ladder whose last 21 begin at 10000 Pa cannot carry anything at
+/// or below 10000 Pa ahead of them.  So an interior insertion, a dropped
+/// certified level and a reordering are all refused, and no third clause is
+/// needed (one would be unreachable).
+fn observed_pressure_levels(file: &Grib2File) -> Result<Vec<f64>, Box<dyn Error>> {
+    let mut candidates: Vec<f64> = Vec::new();
+    for message in &file.messages {
+        if message.product.level_type != PRESSURE_LEVEL_TYPE {
+            continue;
+        }
+        let level = message.product.level_value;
+        if !level.is_finite() || level <= 0.0 {
+            continue;
+        }
+        if !candidates.iter().any(|seen| same_level(*seen, level)) {
+            candidates.push(level);
+        }
+    }
+    candidates.sort_by(|left, right| left.partial_cmp(right).unwrap());
+    let mut levels: Vec<f64> = Vec::new();
+    for level in candidates {
+        let complete = PRESSURE_SPECS.iter().all(|spec| {
+            file.messages
+                .iter()
+                .filter(|m| {
+                    matches_parameter(m, spec.parameter)
+                        && m.product.level_type == PRESSURE_LEVEL_TYPE
+                        && same_level(m.product.level_value, level)
+                })
+                .count()
+                == 1
+        });
+        if complete {
+            levels.push(level);
+        }
+    }
+    if levels.len() < CERTIFIED_PRESSURE_LEVELS_PA.len() {
+        return Err(format!(
+            "source carries {} complete isobaric levels, fewer than the {} \
+             certified levels every GFS subset must have",
+            levels.len(),
+            CERTIFIED_PRESSURE_LEVELS_PA.len()
+        )
+        .into());
+    }
+    let tail = &levels[levels.len() - CERTIFIED_PRESSURE_LEVELS_PA.len()..];
+    if tail
+        .iter()
+        .zip(CERTIFIED_PRESSURE_LEVELS_PA.iter())
+        .any(|(observed, expected)| !same_level(*observed, *expected))
+    {
+        return Err(format!(
+            "source isobaric ladder {tail:?} Pa does not end with the certified \
+             ladder {CERTIFIED_PRESSURE_LEVELS_PA:?} Pa"
+        )
+        .into());
+    }
+    if levels.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err("source isobaric ladder is not strictly increasing".into());
+    }
+    Ok(levels)
+}
+
 fn inventory(
     file: &Grib2File,
     cycle: &str,
     hour: u32,
     expected_forecast_process_id: u8,
+    pressure_levels_pa: &[f64],
 ) -> Result<Inventory, Box<dyn Error>> {
-    let mut selected = Vec::with_capacity(124);
+    let mut selected = Vec::with_capacity(PRESSURE_SPECS.len() * pressure_levels_pa.len() + 19);
     let mut fingerprint: Option<GridFingerprint> = None;
     for spec in PRESSURE_SPECS {
-        for level in PRESSURE_LEVELS_PA {
+        for &level in pressure_levels_pa {
             let index = unique_match(
                 &file.messages,
                 &format!("{} at {} Pa", spec.name, level),
@@ -968,8 +1057,24 @@ fn inventory(
             spec: actual_spec,
         });
     }
-    if selected.len() != 124 {
-        return Err(format!("selected {} GFS records, expected 124", selected.len()).into());
+    // Five records per isobaric level plus the single-level ones.  The count
+    // is a function of the ladder, not the constant 124 that a 21-level
+    // ladder happens to produce -- a case whose model top sits above 100 hPa
+    // decodes a longer ladder and 124 would refuse the very file that was
+    // fetched to satisfy it.  Still exact, and still fail-closed.
+    let expected =
+        PRESSURE_SPECS.len() * pressure_levels_pa.len() + SURFACE_SPECS.len() + SOIL_SPECS.len();
+    if selected.len() != expected {
+        return Err(format!(
+            "selected {} GFS records, expected {} ({} isobaric levels x {} fields + {} \
+             single-level records)",
+            selected.len(),
+            expected,
+            pressure_levels_pa.len(),
+            PRESSURE_SPECS.len(),
+            SURFACE_SPECS.len() + SOIL_SPECS.len()
+        )
+        .into());
     }
     Ok(Inventory {
         selected,
@@ -1332,11 +1437,24 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok::<_, Box<dyn Error>>((file, digest))
         })
         .collect::<Result<_, _>>()?;
+    // The ladder comes from the fetched files, not from a constant: a case
+    // whose model top sits above 100 hPa fetches extra levels, and a bridge
+    // with the ladder baked in would refuse exactly the file that was fetched
+    // to satisfy it. Derived once from f000 and applied to every hour, so a
+    // series whose hours disagree about their levels fails the per-hour
+    // inventory checks below rather than decoding a ragged column.
+    let pressure_levels_pa = observed_pressure_levels(&loaded[0].0)?;
     let inventories: Vec<Inventory> = inputs
         .iter()
         .zip(&loaded)
         .map(|(input, (file, _))| {
-            inventory(file, &cycle, input.hour, input.expected_forecast_process_id)
+            inventory(
+                file,
+                &cycle,
+                input.hour,
+                input.expected_forecast_process_id,
+                &pressure_levels_pa,
+            )
         })
         .collect::<Result<_, _>>()?;
     for (input, observed) in inputs.iter().zip(&inventories) {
@@ -1399,7 +1517,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         writeln!(
             gate,
             "pressure_levels_pa\t{}",
-            PRESSURE_LEVELS_PA
+            pressure_levels_pa
                 .iter()
                 .map(|v| format!("{v:.0}"))
                 .collect::<Vec<_>>()
@@ -1957,18 +2075,137 @@ mod tests {
         );
     }
 
+    /// A file carrying the certified ladder plus ``extra`` levels, minus
+    /// ``omit``, with all five 3-D fields on every level it keeps.
+    fn pressure_ladder_file(extra: &[f64], omit: &[f64]) -> Grib2File {
+        let mut messages = Vec::new();
+        let levels: Vec<f64> = CERTIFIED_PRESSURE_LEVELS_PA
+            .iter()
+            .copied()
+            .chain(extra.iter().copied())
+            .filter(|level| !omit.iter().any(|dropped| same_level(*dropped, *level)))
+            .collect();
+        for level in levels {
+            for spec in PRESSURE_SPECS {
+                let mut message = valid_message(spec.parameter.number);
+                message.discipline = spec.parameter.discipline;
+                message.product.parameter_category = spec.parameter.category;
+                message.product.parameter_number = spec.parameter.number;
+                message.product.level_type = PRESSURE_LEVEL_TYPE;
+                message.product.level_value = level;
+                messages.push(message);
+            }
+        }
+        Grib2File { messages }
+    }
+
     #[test]
     fn frozen_gfs_inventory_cardinality() {
         assert_eq!(
-            PRESSURE_SPECS.len() * PRESSURE_LEVELS_PA.len()
+            PRESSURE_SPECS.len() * CERTIFIED_PRESSURE_LEVELS_PA.len()
                 + SURFACE_SPECS.len()
                 + SOIL_SPECS.len(),
             124
         );
     }
+
+    /// The selected-record count is a function of the ladder.
+    ///
+    /// A live 23-level decode caught this as a hardcoded `!= 124`: the fetch
+    /// was right, the ladder derivation was right, and the bridge refused its
+    /// own correctly decoded 134 records at the last cardinality check. The
+    /// arithmetic is asserted at both ladder lengths so the constant cannot
+    /// creep back.
+    #[test]
+    fn the_selected_record_count_follows_the_ladder() {
+        let single_level = SURFACE_SPECS.len() + SOIL_SPECS.len();
+        assert_eq!(single_level, 19);
+        for (levels, expected) in [(21usize, 124usize), (23, 134), (28, 159), (41, 224)] {
+            assert_eq!(
+                PRESSURE_SPECS.len() * levels + single_level,
+                expected,
+                "{levels} isobaric levels"
+            );
+        }
+    }
+
     #[test]
     fn pressure_levels_are_strictly_increasing() {
-        assert!(PRESSURE_LEVELS_PA.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(CERTIFIED_PRESSURE_LEVELS_PA
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]));
+    }
+
+    /// A ladder with 50 and 70 hPa on top is what a p_top=5000 Pa case
+    /// fetches, and the bridge must decode it rather than refuse it.
+    #[test]
+    fn an_upward_extended_ladder_is_accepted() {
+        let file = pressure_ladder_file(&[5_000.0, 7_000.0], &[]);
+        let observed = observed_pressure_levels(&file).expect("extended ladder");
+        assert_eq!(observed.len(), CERTIFIED_PRESSURE_LEVELS_PA.len() + 2);
+        assert_eq!(observed[0], 5_000.0);
+        assert_eq!(observed[1], 7_000.0);
+        assert_eq!(
+            &observed[2..],
+            &CERTIFIED_PRESSURE_LEVELS_PA[..],
+            "the certified ladder must survive underneath the extension"
+        );
+    }
+
+    #[test]
+    fn the_certified_ladder_alone_is_accepted_unchanged() {
+        let file = pressure_ladder_file(&[], &[]);
+        assert_eq!(
+            observed_pressure_levels(&file).expect("certified ladder"),
+            CERTIFIED_PRESSURE_LEVELS_PA.to_vec()
+        );
+    }
+
+    /// A level short of the certified ladder is incompleteness, not a
+    /// shallower request: refuse rather than decode one level short.
+    #[test]
+    fn a_ladder_missing_a_certified_level_is_refused() {
+        let file = pressure_ladder_file(&[], &[50_000.0]);
+        let message = observed_pressure_levels(&file)
+            .expect_err("a missing certified level must refuse")
+            .to_string();
+        assert!(
+            message.contains("certified") || message.contains("fewer than"),
+            "{message}"
+        );
+    }
+
+    /// Four fifths of a level is not a level: a hole in one field must not
+    /// become a decoded array with a hole in it.
+    #[test]
+    fn a_level_missing_one_field_is_not_a_level() {
+        let mut file = pressure_ladder_file(&[5_000.0], &[]);
+        // Drop RH at 5000 Pa only.
+        let rh = PRESSURE_SPECS
+            .iter()
+            .find(|spec| spec.name == "RH")
+            .expect("RH spec")
+            .parameter;
+        file.messages.retain(|m| {
+            !(matches_parameter(m, rh)
+                && m.product.level_type == PRESSURE_LEVEL_TYPE
+                && same_level(m.product.level_value, 5_000.0))
+        });
+        assert_eq!(
+            observed_pressure_levels(&file).expect("incomplete top level dropped"),
+            CERTIFIED_PRESSURE_LEVELS_PA.to_vec()
+        );
+    }
+
+    /// An "extra" level below the certified top is a different ladder, not an
+    /// extension of this one.
+    #[test]
+    fn an_interior_extra_level_is_refused() {
+        let file = pressure_ladder_file(&[12_500.0], &[]);
+        let message = observed_pressure_levels(&file)
+            .expect_err("an interior extra level must refuse")
+            .to_string();
+        assert!(message.contains("certified"), "{message}");
     }
 
     #[test]

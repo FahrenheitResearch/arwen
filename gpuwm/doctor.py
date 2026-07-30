@@ -2,8 +2,9 @@
 
 The pip package deliberately splits its runtime across four estates the
 installer cannot see from ``pip install`` alone: the GPU runtime (CuPy),
-the render extra (wrf-rust + matplotlib), the compiled Rust bridges
-(never shipped in the wheel), and the locally staged data roots
+the render extra (wrf-rust + matplotlib), the compiled Rust artifacts
+(never shipped in the wheel; ``gpuwm fetch-bridges`` stages a release's
+prebuilt bundle where one exists for the platform), and the data roots
 (``WPS_GEOG``/``GPUWM_CASE_DATA_ROOT``).  Doctor checks each one for
 real, not by presence: it imports CuPy/wrf/matplotlib in short-lived
 subprocesses, probe-executes every bridge executable, loads the CPU
@@ -242,7 +243,8 @@ def _bridge_checks() -> list[Check]:
             else:
                 checks.append(Check(
                     f"bridge {name}", "missing", f"{found} -- {evidence}",
-                    f"# rebuild it -- needed by: {consumer}\n"
+                    f"# this one has to be replaced -- needed by: "
+                    f"{consumer}\n"
                     + bridges.install_aware_build_hint(
                         bridges.CARGO_BUILD_HINT)))
         elif crate.is_file():
@@ -302,7 +304,7 @@ def _fetch_backbone_check() -> Check:
     if not ok:
         return Check(
             name, "missing", f"{found} -- {evidence}",
-            "# rebuild it:\n" + bridges.install_aware_build_hint(
+            "# it has to be replaced:\n" + bridges.install_aware_build_hint(
                 rustwx_fetch.CARGO_BUILD_HINT, "tools/rustwx"))
     return Check(name, "verified", f"{found} -- {evidence}")
 
@@ -342,7 +344,7 @@ def _rust_renderer_check() -> Check:
     if not ok:
         return Check(
             name, "missing", f"{found} -- {evidence}",
-            "# rebuild it:\n" + bridges.install_aware_build_hint(
+            "# it has to be replaced:\n" + bridges.install_aware_build_hint(
                 rustwx.CARGO_BUILD_HINT, "tools/rustwx"))
     # Ask the question the renderer answers, in the renderer's own
     # order.  Probing gpuwm's checkout path alone reported "NO basemap
@@ -388,7 +390,7 @@ def _cpu_library_check() -> Check:
         return Check(
             "cpu preprocess library", "missing",
             f"found but not loadable as ABI v{CPU_BACKEND_ABI}: {error}",
-            "# rebuild it:\n" + remedy)
+            "# it has to be replaced:\n" + remedy)
     path, abi = backend.path, backend.abi_version
     backend.close()
     return Check("cpu preprocess library", "verified",
@@ -463,9 +465,26 @@ def _noah_tables_check() -> Check:
 # ---------------------------------------------------------------------------
 
 def _geog_tree_checks(geog: Path) -> list[Check]:
-    """Check one staged WPS_GEOG tree, wherever it was resolved from."""
+    """Check one staged WPS_GEOG tree, wherever it was resolved from.
 
-    from gpuwm.domain_wizard import GEOG_DATASETS
+    The dataset list comes from :mod:`gpuwm.geog_assets` -- the module
+    that stages the tree -- rather than from the domain wizard, which
+    also declares it.  The two are one list: ``geog_assets`` derives its
+    order from :data:`gpuwm.geog_assets.GEOG_ARCHIVES` and
+    ``tests/test_fetch_geog.py`` asserts it equals
+    ``gpuwm.domain_wizard.GEOG_DATASETS`` exactly, so this is the same
+    nine names read from the half doctor's remedy names.
+
+    Reading them from the wizard instead was also the one thing that
+    made this report unreachable from a preprocessing-only install: the
+    wizard imports the memory preflight and ``gpuwm.cli``, so the
+    standalone RW-WPS wheel could not stage a module that named it, and
+    its package-boundary scan said so.
+    """
+
+    from gpuwm.geog_assets import geog_datasets
+
+    GEOG_DATASETS = geog_datasets()
 
     checks: list[Check] = []
     if not geog.is_dir():

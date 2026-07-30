@@ -41,6 +41,7 @@ import sys
 from pathlib import Path
 
 from gpuwm.adapt import register_cli as adapt_register_cli
+from gpuwm.bridge_assets import register_cli as bridge_assets_register_cli
 from gpuwm.config import load_config
 from gpuwm.core.preflight import check_main
 from gpuwm.core.preflight import register_cli as preflight_register_cli
@@ -169,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
     downscale_register_cli(sub)
     doctor_register_cli(sub)
     table_assets_register_cli(sub)
+    bridge_assets_register_cli(sub)
     adapt_register_cli(sub)
     lst = sub.add_parser(
         "cases", help="list the discovered verification cases and the "
@@ -308,7 +310,8 @@ def main(argv: list[str] | None = None) -> int:
 
 def _dispatch(args) -> int:
     if args.command in ("check", "fetch", "fetch-geog", "domain", "render",
-                        "downscale", "doctor", "fetch-tables", "adapt"):
+                        "downscale", "doctor", "fetch-tables",
+                        "fetch-bridges", "adapt"):
         return args.func(args)
 
     if args.command == "cases":
@@ -340,9 +343,21 @@ def _dispatch(args) -> int:
             raise ValueError(
                 f"--output {args.output} aliases an input namelist; "
                 "refusing to overwrite the source file.")
-        toml_text, report = import_namelists(
-            args.wps, args.input, name=args.name,
-            rrtmg_variant=args.rrtmg_variant)
+        try:
+            toml_text, report = import_namelists(
+                args.wps, args.input, name=args.name,
+                rrtmg_variant=args.rrtmg_variant)
+        except NotImplementedError as error:
+            # validate_run_config raises its "not executable yet" refusals
+            # (e.g. ra_lw_physics=1, WRF RRTM longwave) as
+            # NotImplementedError.  Reached through the importer they are
+            # documented user-facing refusals exactly like the importer's
+            # own ValueError contract messages -- print the message on the
+            # uniform CLI refusal boundary, never a traceback.  Observed
+            # live against a WRF-Runner-generated namelist pair carrying
+            # ra_lw_physics=1 (2026-07-30 interop verification).
+            print(f"gpuwm import-namelist: {error}", file=sys.stderr)
+            return 2
         if args.output is not None:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             # Atomic publication: a mid-write failure must never leave a

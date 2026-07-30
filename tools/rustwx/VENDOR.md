@@ -128,6 +128,87 @@ command-line bins and their 9.8 MB test fixtures.
     bucket availability is a source fact an input selector cannot
     express).  The inventory fixture regenerates via
     `RW_UPDATE_PRODUCT_CATALOG_FIXTURE=1`.
+13. `vendor/wx-core/src/download/cache.rs`: the raw `DiskCache` used by
+    `rw_fetch --cache-dir` verifies entries AT USE and publishes them
+    atomically.  The source version wrote the canonical file directly
+    with `std::fs::write` and returned whatever `std::fs::read` found,
+    with no key, length or checksum consulted -- so a killed writer
+    left a prefix at the canonical name that the next run adopted as
+    the object, and a persistently bad entry was never displaced, so
+    every retry read the same poison and the outer validation failed
+    forever.  Each entry now carries a `.meta` sidecar recording the
+    exact cache key, byte count and an FNV-1a-64 checksum of the
+    payload; `get` re-checks all three, `has` requires the sidecar, and
+    a failing entry is renamed aside (never deleted) so the next
+    request refetches.  The payload lands by atomic rename from a
+    staging name unique per process and per call.  The checksum is an
+    integrity check against truncation, partial writes and bit rot --
+    not a cryptographic seal, and nothing treats it as one: upstream
+    authenticity remains the caller's manifest digest and the GRIB
+    envelope/record-count bars above this layer remain the completeness
+    gate.  Audited as ArWen v1.1.1 finding F-7 / lying state LS-7.
+14. `vendor/wx-core/src/download/client.rs`: the cross-process NOMADS
+    rate governor fails CLOSED on its own failures.  `read_nomads_state`
+    used to map an unreadable or malformed state file to `(0, 0)`,
+    indistinguishable from "nobody has fetched yet" -- which puts
+    `last_request + gap` in 1970 and waves the request straight through,
+    so corrupting one small file disabled the pacing that protects a
+    shared public service.  It now distinguishes an absent file (a real
+    zero) from a present-but-unusable one (read as "a request just
+    happened"), and `pace_request` charges that penalty exactly once
+    before republishing a sound state, so an unparseable file cannot
+    spin the caller forever.  `write_nomads_state` returns whether the
+    bytes landed instead of discarding the result; a process whose
+    record did not land absorbs the minimum gap locally rather than
+    leaving the next process free to send immediately.  Audited as
+    finding F-6 / lying state LS-8.  The governor's constants,
+    protocol, file names and env overrides are unchanged -- ArWen's new
+    `gpuwm/nomads_governor.py` speaks the same protocol over the same
+    files so the Rust and Python transports pace each other.
+15. `vendor/wx-core/src/download/client.rs::get_range` validates the
+    ANSWER before adopting it: the status must be 206, the
+    `Content-Range` must begin with the requested span, and the body
+    must be exactly the requested number of bytes (the first two
+    clauses only, for open-ended ranges).  The source version accepted
+    whatever came back -- a 200 with the whole object, a 206 for some
+    other span, a short body -- cached it and concatenated it into the
+    caller's subset, leaving the outer GRIB bars to reject the assembly
+    with nothing to say about which chunk was wrong while the bad bytes
+    stayed cached.  These are the same three clauses ArWen's Python
+    range transport has always applied.  Audited as finding F-7.
+16. `crates/rustwx-io/src/cache.rs::quarantine_cache_path` no longer
+    deletes the original when the quarantine rename fails.  The source
+    version fell through to `fs::remove_file`, which turns quarantine
+    into deletion exactly when quarantine matters -- a full disk, an
+    uncreatable directory, a file held open elsewhere -- and destroys
+    the evidence of what arrived in the cases hardest to reproduce.  A
+    file that cannot be moved aside is now left in place and reported;
+    current-schema entries are re-verified against their recorded
+    request identity, length and SHA-256 at load, so it stays refused
+    on every use rather than served.  Audited as finding F-8.
+17. `vendor/wx-core` is version **0.3.10**, and `crates/rw-fetch` and
+    `crates/rustwx-io` pin `version = "0.3.10"` beside their `path`.
+    The source tree and `vendor/crates-io/wx-core` both said `0.3.9`,
+    and those two crates are NOT the same code: the crates.io copy has
+    no NOMADS governor at all -- no pacing, no cooldown, no state file --
+    and no verified-at-use download cache.  Only the path dependency
+    kept the right one in the graph, and one version string covering two
+    behaviours is a trap that resolves silently.  The bump plus the
+    version pin make the governorless copy unable to satisfy the
+    requirement at all.  `vendor/crates-io` itself is untouched, as this
+    file requires.
+
+    The pin is belt; the braces are a capability probe.  `wx-core` now
+    exports `download::nomads_governor()` (what this build's governor is
+    configured to do, read from the same places the pacing reads) and
+    `download::pace_nomads_request()` (the pacing entry point itself), and
+    `rw-fetch`'s `the_resolved_wx_core_actually_paces_nomads` test makes
+    the resolved crate DEMONSTRATE the spacing -- two paced calls against
+    a scratch state file must be a configured gap apart and must leave
+    node-wide state, while a non-NOMADS host must not be paced at all.
+    A governorless wx-core fails to link; a wx-core whose governor
+    stopped working fails the test.  Neither asserts which copy was
+    resolved, which is the point.
 
 ## vendor/crates-io
 

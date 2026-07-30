@@ -14,8 +14,9 @@ resolution mechanism shared by ingest (:func:`gpuwm.ingest.grib
 3. ``<root>/libexec/bridges`` beside the package (the sealed runtime
    archive layout);
 4. the user-level default directory :func:`default_bridge_dir`
-   (``~/.gpuwm/bridges``), where a wheel user copies the built
-   executables once.
+   (``~/.gpuwm/bridges``), which ``gpuwm fetch-bridges``
+   (:mod:`gpuwm.bridge_assets`) stages the release's prebuilt bundle
+   into, and where a wheel user otherwise copies their own build once.
 
 Nothing here runs cargo; resolution is read-only so ``gpuwm doctor``
 can report the estate without side effects.
@@ -242,6 +243,78 @@ def build_from_clone_hint(
     return tuple(lines)
 
 
+def prebuilt_bundle_offer() -> tuple[str, ...] | None:
+    """The ``gpuwm fetch-bridges`` lead-in, or None when it would lie.
+
+    Returned only when this install can actually do it: a platform key
+    for this OS/architecture, and a bundle pinned for that platform in
+    the pins document *this wheel carries*.  Both are properties of
+    artifacts on disk, so the offer is never a promise about a release
+    that has not happened -- a tree whose pins name no platform gets the
+    build-from-source remedy it has always got, unchanged.
+
+    Every line is a command or a ``#`` comment, because doctor prints
+    these verbatim and claims exactly that of them.
+    """
+
+    try:
+        from gpuwm import bridge_assets
+
+        pins = bridge_assets.load_pins()
+        platform = bridge_assets.host_platform()
+        bundle = pins.bundle_for(platform)
+    except Exception:  # a broken/absent pins document is not an offer
+        return None
+    if bundle is None:
+        return None
+    mib = bundle.bytes / (1024 * 1024)
+    return (
+        "  gpuwm fetch-bridges",
+        f"  # one {mib:.0f} MiB download: the prebuilt {bundle.platform} "
+        "bundle,",
+        "  # every artifact verified against the SHA-256 pins packaged "
+        "with",
+        f"  # this release before it is staged into {default_bridge_dir()}.",
+        "  # --from DIR stages the same bundle from a local directory, "
+        "offline.",
+    )
+
+
+def _as_comments(block: str) -> str:
+    """Comment out a build block so a paste does not also run it.
+
+    When the prebuilt bundle is offered first, the source build is the
+    alternative rather than the next step: a reader who selects the whole
+    report must not clone 2.5 GB and compile for two minutes to obtain
+    files the line above already staged.  The block's own ``#`` notes
+    stay as they are; only its commands are demoted, indented one level
+    so it is visible which lines are the ones to uncomment.
+    """
+
+    lines: list[str] = []
+    for line in block.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lines.append(f"  {stripped}" if stripped.startswith("#")
+                     else f"  #   {stripped}")
+    return "\n".join(lines)
+
+
+def _bundle_first(build_block: str) -> str:
+    """``gpuwm fetch-bridges`` first, the source build commented after it."""
+
+    offer = prebuilt_bundle_offer()
+    if offer is None:
+        return build_block
+    return "\n".join(offer + (
+        "  # Or build the artifacts from source instead -- the route that",
+        "  # works on every platform, including ones with no published",
+        "  # bundle.  Uncomment these to take it:",
+        _as_comments(build_block),
+    ))
+
+
 def sources_present(crate_relative: str = CRATE_RELATIVE) -> bool:
     """Does this install carry the Rust sources for ``crate_relative``?
 
@@ -274,7 +347,7 @@ def install_aware_build_hint(one_liner: str,
 
     if sources_present(crate_relative):
         return one_liner
-    return "\n".join(build_from_clone_hint(crate_relative))
+    return _bundle_first("\n".join(build_from_clone_hint(crate_relative)))
 
 
 def install_aware_one_line_hint(one_liner: str,
@@ -295,6 +368,11 @@ def install_aware_one_line_hint(one_liner: str,
 
     if sources_present(crate_relative):
         return one_liner
+    if prebuilt_bundle_offer() is not None:
+        return ("run `gpuwm fetch-bridges`, which stages this platform's "
+                "prebuilt artifacts under the SHA-256 pins packaged with "
+                "this release (`gpuwm doctor` prints the source-build "
+                "route as well)")
     return ("run `gpuwm doctor`, which prints the build steps for this "
             "install (a wheel carries no Rust sources, so this one needs "
             "a clone)")
@@ -442,6 +520,14 @@ def artifact_remedy(*, env_var: str, filename: str, subject: str,
     One implementation for the bridges, the renderer and the fetch
     backbone.  Three copies is how two of them kept ``<clone>`` and the
     "exact copy-pasteable" claim after the third stopped saying it.
+
+    On a pip install there is now a third true answer, when the release
+    published a bundle this platform can run: one download, verified
+    against the packaged pins.  It leads, and the clone-and-build route
+    follows it commented out -- still printed, because it is the only
+    route on a platform with no bundle, and commented because a reader
+    who pastes the report must not also compile what the line above
+    already staged.
     """
 
     crate = _package_parent() / Path(crate_relative)
@@ -457,16 +543,31 @@ def artifact_remedy(*, env_var: str, filename: str, subject: str,
     clone_built = _shell_path(CLONE_DIR, crate_relative,
                               "target/release") + \
         ("\\" if WINDOWS_SHELL else "/") + filename
-    return (
-        f"# this install carries no Rust sources -- the wheel ships none --\n"
-        f"# so {subject} must be built from a clone.  About two minutes, "
-        f"once:\n"
+    source_route = (
         f"{steps}\n"
         f"  # building it is not the same as wiring it, so finish the job:\n"
         + install_into_default_bridge_dir(clone_built) + "\n"
         f"  # OR, instead of copying, point gpuwm at the build in place:\n"
         f"  #   {env_var}={clone_built}\n"
         f"  #   (relative to the directory you ran git clone in)")
+    offer = prebuilt_bundle_offer()
+    if offer is None:
+        return (
+            "# this install carries no Rust sources -- the wheel ships "
+            "none --\n"
+            f"# so {subject} must be built from a clone.  About two "
+            "minutes, once:\n"
+            f"{source_route}")
+    return (
+        "# this install carries no Rust sources -- the wheel ships none --\n"
+        f"# so there are two routes to {subject}: the prebuilt bundle\n"
+        "# this release published, or a clone and a build.  The download\n"
+        "# is one command:\n"
+        + "\n".join(offer) + "\n"
+        "  # Or build it from source instead -- the route that works on\n"
+        "  # every platform, including ones with no published bundle.\n"
+        "  # Uncomment these to take it:\n"
+        + _as_comments(source_route))
 
 
 def install_into_default_bridge_dir(built: str) -> str:
@@ -568,5 +669,6 @@ __all__ = [
     "install_aware_build_hint", "install_into_default_bridge_dir",
     "rust_toolchain_install_command",
     "install_aware_one_line_hint",
+    "prebuilt_bundle_offer",
     "sources_present",
 ]

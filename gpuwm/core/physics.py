@@ -1694,17 +1694,58 @@ class PhysicsDriver:
         for name, value in fields.items():
             self.fields[name][...] = _as_2d(value, shape, name)
 
+    def _zero_accumulator(self) -> cp.ndarray:
+        """A fresh zero surface field, shaped like every other 2-D output.
+
+        Fresh rather than cached on purpose.  A cached array would be a new
+        ``PhysicsDriver`` attribute, and every attribute of this object is
+        walked and classified by the restart manifest -- so a convenience
+        buffer would become a restart-contract change.  These are written
+        only at history cadence, and one 2-D allocation per published frame
+        is not worth that.
+        """
+        return cp.zeros(self.fields["tsk"].shape, dtype=DTYPE)
+
     def output_fields(self) -> dict[str, cp.ndarray]:
-        """WRF diagnostic name -> live FP32 device surface field."""
+        """WRF diagnostic name -> live FP32 device surface field.
+
+        The six surface precipitation accumulators are emitted **always**,
+        as zeros when the scheme that would fill them is not running.  That
+        is WRF's contract, not a convenience: ``RAINC``, ``RAINSH``,
+        ``RAINNC``, ``SNOWNC``, ``GRAUPELNC`` and ``HAILNC`` are core
+        (``misc``) history rows with no package gate, so stock WRF allocates
+        and writes all six in every run -- see
+        ``gpuwm.io.wrf_output_schema.PRECIPITATION_OUTPUT_FIELDS`` for the
+        rows and for the near neighbours that are excluded.
+
+        gpuwm used to omit each of them whenever its producer was absent,
+        which reads as "this run had no cumulus scheme" to a human and as
+        "this file is broken" to a reader: every wrf-python/wrf-rust
+        precipitation recipe computes ``RAINC + RAINNC`` unconditionally,
+        because in WRF output both always exist.  Omitting ``RAINC`` under
+        ``cu_physics=0`` therefore failed every downstream QPF product,
+        which is exactly how this was found.
+
+        ``RAINSH`` is always zero here, and that is a true statement rather
+        than a placeholder: gpuwm implements no shallow-cumulus scheme, and
+        zero is what WRF writes for ``shcu_physics=0``.
+        """
         output = {name: self.fields[field]
                   for name, field in _OUTPUT_FIELDS.items()}
         if self.radiation_active:
             output.update(SWDOWN=self.fields["swdown"],
                           GLW=self.fields["glw"])
-        if self.rainc is not None:
-            output["RAINC"] = self.rainc
-        if self.mp_physics:
-            output["RAINNC"] = self.microphysics.rainnc
+        output["RAINC"] = (self._zero_accumulator() if self.rainc is None
+                           else self.rainc)
+        output["RAINSH"] = self._zero_accumulator()
+        microphysics = self.microphysics if self.mp_physics else None
+        for name, attribute in (("RAINNC", "rainnc"), ("SNOWNC", "snownc"),
+                                ("GRAUPELNC", "graupelnc"),
+                                ("HAILNC", "hailnc")):
+            value = (None if microphysics is None
+                     else getattr(microphysics, attribute, None))
+            output[name] = (self._zero_accumulator() if value is None
+                            else value)
         return output
 
 

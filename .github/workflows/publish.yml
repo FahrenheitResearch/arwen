@@ -1,17 +1,206 @@
-# Publish gpuwm to PyPI via Trusted Publishing (OIDC; no API token).
+# Publish gpuwm to PyPI via Trusted Publishing (OIDC; no API token), and
+# publish the prebuilt Rust bundles the wheel's pins point at.
 #
 # Registered publisher (cross-check on PyPI): project `gpuwm`,
 # owner `FahrenheitResearch`, repository `arwen`,
 # workflow `publish.yml`, environment `pypi`.
+#
+# Order matters and is enforced by `needs:`.  The wheel carries SHA-256
+# pins for release assets that do not exist until this run builds them:
+#
+#   test -> cut -> bridges (one job per platform: build, then pack)
+#                -> assets  (upload the bundles as release assets, then
+#                            write the pins computed from those exact
+#                            bytes and hand them on)
+#                -> publish (build the wheel around those pins and push
+#                            it to PyPI)
+#
+# A wheel whose pins named assets nobody had uploaded yet would send
+# every user of it to a 404, so the assets go up first.  `needs:` makes
+# that a property of the graph rather than of step ordering inside one
+# job: `publish` cannot start until `assets` has finished uploading, and
+# it builds the wheel from the pins `assets` produced.
+#
+# The two jobs are separate because their privileges are: `assets` holds
+# `contents: write` to write release assets and has no OIDC identity,
+# `publish` holds `id-token: write` for PyPI Trusted Publishing and can
+# only read the repository.  Neither can do the other's job, so a
+# compromise of either step is contained to one of the two things a cut
+# does.
 name: publish
 
 on:
   release:
     types: [published]
   workflow_dispatch:
+  # A test gate that first runs during a release cut is a gate that
+  # ambushes the cut.  Pull requests run it; nothing else here runs on
+  # them.
+  pull_request:
 
 jobs:
+  # The publish path had no test gate at all: a cut built a wheel and
+  # shipped it.  This is the packaging-and-contract surface -- what ships
+  # in the wheel, what `gpuwm doctor` promises, and what the two fetch
+  # commands verify before they install anything -- which is the part a
+  # bad cut breaks.
+  #
+  # Not the whole suite, and the reason is a property of the runner
+  # rather than a preference: the model's own tests need a CUDA GPU and
+  # staged case data, and five test modules import cupy at module scope,
+  # so collecting everything on a GPU-less runner fails before a single
+  # test runs.  Widening this list is welcome as far as the runner can
+  # honestly go.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[dev]"
+      - name: packaging and contract tests
+        run: |
+          python -m pytest -q -m "not gpu and not slow and not network" \
+            tests/test_bridge_fetch.py \
+            tests/test_table_fetch.py \
+            tests/test_package_data_coverage.py \
+            tests/test_doctor.py \
+            tests/test_cli.py \
+            tests/test_source_adapters.py \
+            tests/test_namelist_compat.py \
+            tests/test_native_wrf_distribution.py
+
+  # One name for the release, resolved once and consumed by every job
+  # that writes an artifact named after it.  The tag and the packaged
+  # version must agree: they are the same claim in two files, and a
+  # bundle named for one while the wheel says the other is a download
+  # nobody can find.
+  cut:
+    if: github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - id: resolve
+        run: |
+          version=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          tag='${{ github.event.release.tag_name }}'
+          if [ -z "$tag" ]; then tag="v$version"; fi
+          if [ "$tag" != "v$version" ]; then
+            echo "release tag $tag does not match pyproject version $version" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  # One bundle per platform, built from the vendored workspaces at this
+  # exact commit.  Both crates vendor their dependencies and replace the
+  # crates.io source, so `--locked` resolves without the network and the
+  # lockfiles cannot drift under the build.
+  bridges:
+    if: github.event_name != 'pull_request'
+    needs: cut
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win-x86_64
+          - os: ubuntu-latest
+            platform: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: pin the toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          cargo --version
+      - name: build the GRIB decoders and the CPU preprocessing library
+        working-directory: tools/grib1_bridge
+        run: cargo build --release --locked
+      - name: build the fetch backbone and the batch renderer
+        working-directory: tools/rustwx
+        run: cargo build --release --locked
+      - name: pack the bundle
+        shell: bash
+        run: |
+          python tools/build_bridge_bundle.py pack \
+            --release '${{ needs.cut.outputs.tag }}' \
+            --platform '${{ matrix.platform }}' \
+            --search tools/grib1_bridge/target/release \
+            --search tools/rustwx/target/release \
+            --out dist-bridges
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bridges-${{ matrix.platform }}
+          path: dist-bridges/*.zip
+          if-no-files-found: error
+
+  # Release assets, and nothing else.  This job holds `contents: write`
+  # because the bundles are attachments on the release that triggered the
+  # run; it deliberately has no `id-token`, so it cannot obtain a PyPI
+  # Trusted Publishing credential.
+  assets:
+    if: github.event_name != 'pull_request'
+    needs: [cut, bridges]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bridges-*
+          merge-multiple: true
+          path: dist-bridges
+      # The assets go up before the wheel that pins them.
+      - name: publish the bundles as release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload '${{ needs.cut.outputs.tag }}' \
+            dist-bridges/*.zip --clobber
+      - name: write the pins computed from the uploaded bytes
+        run: |
+          python tools/build_bridge_bundle.py pin \
+            --release '${{ needs.cut.outputs.tag }}' \
+            $(for bundle in dist-bridges/*.zip; do printf -- '--bundle %s ' "$bundle"; done) \
+            --out gpuwm/data/bridges/bridge-pins.json \
+            --manifest dist-bridges/bridge-bundle-manifest.json
+      - name: publish the manifest beside them
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload '${{ needs.cut.outputs.tag }}' \
+            dist-bridges/bridge-bundle-manifest.json --clobber
+      # The pins are the only thing `publish` needs from this job, and
+      # they describe bytes that are already on the release by the time
+      # this step runs.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bridge-pins
+          path: gpuwm/data/bridges/bridge-pins.json
+          if-no-files-found: error
+
+  # PyPI, and nothing else.  `id-token: write` is the Trusted Publishing
+  # credential; `contents: read` is everything else this job may do.  It
+  # cannot reach the release, which is why `assets` runs first and hands
+  # the pins over as a workflow artifact.
   publish:
+    if: github.event_name != 'pull_request'
+    needs: [cut, assets]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -26,6 +215,36 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          name: bridge-pins
+          path: dist-pins
+      # Copied rather than downloaded straight over the checkout, so the
+      # write is a step that can be read in the log rather than an
+      # overwrite that depends on the action's behaviour.
+      - name: install the pins computed from the uploaded bytes
+        run: cp dist-pins/bridge-pins.json gpuwm/data/bridges/bridge-pins.json
       - run: python -m pip install build
       - run: python -m build
+      # The same reading the runtime does, on the tree that was just
+      # built: every supported platform pinned, every artifact named,
+      # and the release the pins point at is this one.
+      - name: the built package can read its own pins
+        run: |
+          python - <<'PY'
+          import os
+          from gpuwm import bridge_assets
+          tag = os.environ["RELEASE_TAG"]
+          pins = bridge_assets.load_pins()
+          assert pins.release == tag, pins.release
+          assert set(pins.platforms) == set(
+              bridge_assets.SUPPORTED_PLATFORMS), sorted(pins.platforms)
+          for platform, bundle in sorted(pins.platforms.items()):
+              expected = {bridge_assets.artifact_filename(artifact, platform)
+                          for artifact in bridge_assets.BUNDLED_ARTIFACTS}
+              assert {pin.filename for pin in bundle.binaries} == expected
+              print(platform, bundle.filename, bundle.bytes, bundle.sha256)
+          PY
+        env:
+          RELEASE_TAG: ${{ needs.cut.outputs.tag }}
       - uses: pypa/gh-action-pypi-publish@release/v1

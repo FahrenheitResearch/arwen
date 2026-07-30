@@ -764,26 +764,32 @@ def test_a_real_wrfout_carries_the_noahmp_state_and_reads_back(tmp_path):
     for _ in range(3):
         step(state, cfg)
     frame = state_frame(state)
-    for name in ("TVXY", "TGXY", "ISNOWXY", "ZSNSOXY", "SNICEXY", "SNLIQXY",
-                 "TSNOXY", "TAUSSXY", "FSAXY", "ETRANXY", "SOILENERGY"):
+    # WRF's external names, which are not the Registry symbols: the wrfout
+    # spells ``tvxy`` as ``TV`` and ``isnowxy`` as ``ISNOW``, because that
+    # is what the Registry's dname column says and what stock WRF writes.
+    # gpuwm/io/wrf_output_schema.py is where each one is transcribed.
+    for name in ("TV", "TG", "ISNOW", "ZSNSO", "SNICE", "SNLIQ",
+                 "TSNO", "TAUSS", "FSA", "ETRAN", "SOILENERGY"):
         assert name in frame, name
 
     path = tmp_path / "wrfout_d01_2026-07-01_18_00_36"
     writer = WrfoutWriter(path, nx=cfg.nx, ny=cfg.ny, nz=cfg.nz,
                           dx=cfg.dx, dy=cfg.dy, soil_layers=4)
-    host = {name: np.asarray(value, dtype=np.float32)
-            for name, value in frame.items()}
+    # ISNOW and PGS are int32 and stay int32: coercing the frame to float32
+    # here is what the writer used to do to them on disk.
+    host = {name: np.asarray(value) for name, value in frame.items()}
     writer.write_frame("2026-07-01_18:00:36", host)
     writer.close()
 
     with netCDF4.Dataset(path) as ds:
-        assert len(ds.dimensions["snow_layers"]) == NSNOW
-        assert len(ds.dimensions["snso_layers"]) == NSNOW + 4
-        assert ds.variables["SNICEXY"].dimensions == (
-            "Time", "snow_layers", "south_north", "west_east")
-        assert ds.variables["ZSNSOXY"].dimensions == (
-            "Time", "snso_layers", "south_north", "west_east")
-        for name in ("TVXY", "TGXY", "ZSNSOXY", "SNICEXY", "FSAXY"):
+        assert len(ds.dimensions["snow_layers_stag"]) == NSNOW
+        assert len(ds.dimensions["snso_layers_stag"]) == NSNOW + 4
+        assert ds.variables["SNICE"].dimensions == (
+            "Time", "snow_layers_stag", "south_north", "west_east")
+        assert ds.variables["ZSNSO"].dimensions == (
+            "Time", "snso_layers_stag", "south_north", "west_east")
+        assert ds.variables["ISNOW"].dtype == np.int32
+        for name in ("TV", "TG", "ZSNSO", "SNICE", "FSA", "ISNOW"):
             stored = np.asarray(ds.variables[name][0])
             np.testing.assert_array_equal(stored, host[name], err_msg=name)
 

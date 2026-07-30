@@ -214,13 +214,19 @@ def test_the_peak_rose_because_noahmp_became_selectable_again(
     the rise is Noah-MP returning and not some validator quietly loosening.
     If a wider case ever enters this census, the budget rail is expected to
     speak again -- for the width nothing has measured, not for this one.
+
+    Re-pinned 2026-07-30: 60 -> 72.  The v1.1 any-combo registry expansion
+    made mp_physics=18 selectable in the lsm4 slice; the re-run census
+    measures a uniform 12 rows per MP across {0, 1, 6, 8, 10, 18} where
+    the 2026-07-27 census had five MP values, and the worst-count peak is
+    unchanged at 601 (pinned by the test above).
     """
     report = four_domain_census
     lsm4_rows = [row for row in report["rows"]
                  if row["sf_surface_physics"] == 4]
-    assert len(lsm4_rows) == 60, (
-        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 60 the "
-        "2026-07-27 census recorded; re-run the census and re-pin")
+    assert len(lsm4_rows) == 72, (
+        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 72 the "
+        "2026-07-30 census recorded; re-run the census and re-pin")
     budget_refusals = [entry["selection"] for entry in report["rejected"]
                        if "Noah-MP column budget" in entry["reason"]]
     assert not budget_refusals, (
@@ -229,10 +235,11 @@ def test_the_peak_rose_because_noahmp_became_selectable_again(
         f"{budget_refusals[:5]}")
     refused = [entry for entry in report["rejected"]
                if "-lsm4-" in entry["selection"]]
-    assert len(refused) == 180, (
-        f"{len(refused)} lsm4 refusals against the 180 pre-budget ones "
-        "recorded on 2026-07-27 (60 MYNN/Noah-MP pair, 60 MYNN half-suite, "
-        "40 LSM-without-surface-layer, 20 km_opt=4/pbl0)")
+    assert len(refused) == 216, (
+        f"{len(refused)} lsm4 refusals against the 216 pre-budget ones "
+        "recorded on 2026-07-30 (72 MYNN/Noah-MP pair, 72 MYNN half-suite, "
+        "48 LSM-without-surface-layer, 24 km_opt=4/pbl0 -- the 2026-07-27 "
+        "180 scaled uniformly by the v1.1 MP expansion, 5 -> 6 values)")
 
 
 def test_worst_selectable_count_stays_inside_the_early_warning_band(

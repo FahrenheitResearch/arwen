@@ -291,10 +291,18 @@ def test_production_binds_root_boundary_clock_at_sanctioned_sites_only():
     positive inventory: sweeping the whole gpuwm package for the
     identifier -- names, attributes, string literals (getattr evasion),
     and import aliases -- the ONLY modules that may mention it are the
-    definition and the two adjudicated callers.  The pre-bind Phase-4
+    definition and the adjudicated callers.  The pre-bind Phase-4
     anchor bytes encode the retired elapsed-based semantics; the
     N-series ratchets regenerate against the seam-closure anchor epoch
-    (PROVENANCE.md 'Root external-boundary dtbc')."""
+    (PROVENANCE.md 'Root external-boundary dtbc').
+
+    Adjudicated 2026-07-30: offline_child_run.py.  The standalone
+    offline child is a boundary-consumer root in its own process -- it
+    binds a DomainClock to its external LBC mirror so child boundary
+    launches take the same post-increment dtbc recurrence as the
+    production tree root.  Same semantics, third sanctioned site; the
+    v1.1 offline-nest lane added the caller without updating this
+    inventory."""
     import ast
 
     package_root = Path(real74_d02.REPOSITORY_ROOT) / "gpuwm"
@@ -302,6 +310,7 @@ def test_production_binds_root_boundary_clock_at_sanctioned_sites_only():
         package_root / "ingest" / "lateral_bc.py",
         package_root / "core" / "model.py",
         package_root / "verify" / "cases" / "real74_n5s.py",
+        package_root / "offline_child_run.py",
     }
     referencing = set()
     for path in sorted(package_root.rglob("*.py")):

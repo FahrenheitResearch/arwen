@@ -43,6 +43,14 @@ FAILURE_CAPSULE_NAME = "failure-capsule.json"
 COMPUTE_MEMORY_THRESHOLD_MIB = 64
 MICROPHYSICS_TRANSITION_RECEIPT_NAME = "microphysics-transitions.json"
 
+# How a declared *directory* input is bound to a run's identity.  Files are
+# always content-hashed; a directory is not, because the static geography
+# tree is multi-GB and this runs before every launch.  See
+# docs/public/DETERMINISM.md for what each mode does and does not detect.
+DIRECTORY_HASH_MODES = ("inventory", "content")
+DIRECTORY_HASH_DEFAULT = "inventory"
+DIRECTORY_HASH_ENV = "GPUWM_DIRECTORY_INPUT_HASH"
+
 # Windows sharing violations are normally transient (the supervisor, an
 # editor, or an indexer has the old publication open without FILE_SHARE_DELETE).
 # Retry for at most 0.50 s total, then let durable artifacts fail loudly while
@@ -314,21 +322,67 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _hash_directory_manifest(path: Path) -> str:
-    """Hash a deterministic directory inventory without rereading GEOG GBs."""
+def directory_hash_mode(requested: str | None = None) -> str:
+    """Resolve the directory-input hash mode: argument, env, then default.
+
+    ``inventory`` binds a directory by relative path, size, and mtime.  It
+    is cheap enough to run before every launch on a multi-GB static
+    geography tree, and it is the default for that reason.  It has two
+    known failure modes, both of which matter to a dual-run comparison:
+    a byte-identical copy with fresh mtimes compares *different*, and a
+    changed file that preserves path, size, and mtime compares *equal*.
+
+    ``content`` binds the same directory by relative path, size, and the
+    SHA-256 of each file's bytes.  It answers "are these the same input
+    bytes" instead of "does this look like the same directory listing",
+    at the cost of reading every file.
+    """
+    value = (os.environ.get(DIRECTORY_HASH_ENV, DIRECTORY_HASH_DEFAULT)
+             if requested is None else requested)
+    if value not in DIRECTORY_HASH_MODES:
+        source = ("argument" if requested is not None
+                  else f"{DIRECTORY_HASH_ENV} environment variable")
+        raise ValueError(
+            f"directory hash mode {value!r} from the {source} is not one of "
+            f"{list(DIRECTORY_HASH_MODES)}")
+    return value
+
+
+def _hash_directory_manifest(path: Path, *, mode: str = "inventory") -> str:
+    """Hash a directory input in ``inventory`` or ``content`` mode.
+
+    The record layout is deliberately unprefixed so that an ``inventory``
+    digest recorded by an earlier release still compares equal here; the
+    two modes are told apart by the ``algorithm`` label stored beside the
+    digest, never by the digest alone.
+    """
+    if mode not in DIRECTORY_HASH_MODES:
+        raise ValueError(
+            f"directory hash mode {mode!r} is not one of "
+            f"{list(DIRECTORY_HASH_MODES)}")
     digest = hashlib.sha256()
     for child in sorted(item for item in path.rglob("*") if item.is_file()):
+        relative = child.relative_to(path).as_posix()
         stat = child.stat()
-        record = (f"{child.relative_to(path).as_posix()}\0{stat.st_size}\0"
-                  f"{stat.st_mtime_ns}\n").encode("utf-8")
+        third = (_hash_file(child) if mode == "content"
+                 else str(stat.st_mtime_ns))
+        record = f"{relative}\0{stat.st_size}\0{third}\n".encode("utf-8")
         digest.update(record)
     return digest.hexdigest()
 
 
-def resolved_input_hashes(config_path: str | Path) -> dict[str, Any]:
-    """Hash declared case inputs before any device import/allocation."""
+def resolved_input_hashes(config_path: str | Path, *,
+                          directory_hash: str | None = None) -> dict[str, Any]:
+    """Hash declared case inputs before any device import/allocation.
+
+    Files are always content-hashed.  Directory inputs follow
+    ``directory_hash`` (see :func:`directory_hash_mode`), and every record
+    carries the algorithm that produced it so two runs can refuse to
+    compare digests that were not computed the same way.
+    """
     from gpuwm.case_data import load_experiment_case
 
+    mode = directory_hash_mode(directory_hash)
     _, data = load_experiment_case(config_path)
     result: dict[str, Any] = {}
     for record in data.resolved_inputs():
@@ -339,8 +393,8 @@ def resolved_input_hashes(config_path: str | Path) -> dict[str, Any]:
                            "detail": record.detail}
         elif path.is_dir():
             result[key] = {
-                "algorithm": "sha256-directory-inventory",
-                "digest": _hash_directory_manifest(path),
+                "algorithm": f"sha256-directory-{mode}",
+                "digest": _hash_directory_manifest(path, mode=mode),
                 "detail": record.detail,
             }
         else:
@@ -898,7 +952,8 @@ def supervise_experiment(
         max_restarts: int = 3, poll_seconds: float = 1.0,
         prep_timeout_seconds: float | None = None,
         health_debug: bool = False, allow_shared_gpu: bool = False,
-        lock_path: str | Path | None = None) -> SupervisorResult:
+        lock_path: str | Path | None = None,
+        directory_hash: str | None = None) -> SupervisorResult:
     """Run an experiment under exclusive-GPU fresh-process supervision."""
     if max_restarts < 0:
         raise ValueError("max_restarts must be nonnegative")
@@ -913,7 +968,7 @@ def supervise_experiment(
     outdir.mkdir(parents=True, exist_ok=True)
     run_id = str(uuid.uuid4())
     digest = config_digest(config_path)
-    inputs = resolved_input_hashes(config_path)
+    inputs = resolved_input_hashes(config_path, directory_hash=directory_hash)
     gpu = select_gpu(gpu_uuid)
     checkpoint = (None if restart is None
                   else validate_manifest_checkpoint(restart))
@@ -1218,6 +1273,17 @@ def register_cli(subparsers: argparse._SubParsersAction,
              "device verification and the GPUWM UUID lock remain enforced")
     run.add_argument("--health-debug", action="store_true",
                      help="enable debug phase health attribution hooks")
+    run.add_argument(
+        "--directory-input-hash", dest="directory_input_hash",
+        default=None, choices=DIRECTORY_HASH_MODES,
+        help="how declared directory inputs (the static geography tree) are "
+             "bound to this run's identity: 'inventory' (default) uses "
+             "relative path, size, and mtime; 'content' reads every file and "
+             "uses its SHA-256. Use 'content' when two runs being compared "
+             "for byte identity stage their geography separately, and when "
+             "an mtime-preserving change to that tree must not go unnoticed "
+             f"(docs/public/DETERMINISM.md). Also settable as "
+             f"{DIRECTORY_HASH_ENV}.")
 
 
 def supervise_from_cli(args: argparse.Namespace) -> int:
@@ -1227,7 +1293,8 @@ def supervise_from_cli(args: argparse.Namespace) -> int:
         max_restarts=args.supervisor_max_restarts,
         prep_timeout_seconds=args.prep_timeout,
         allow_shared_gpu=args.allow_shared_gpu,
-        health_debug=args.health_debug)
+        health_debug=args.health_debug,
+        directory_hash=getattr(args, "directory_input_hash", None))
     transition_receipt, transition_sha = _current_transition_receipt(
         args.outdir, result.run_id, config_digest(args.config))
     print({"run_id": result.run_id, "status": result.heartbeat.status,
@@ -1290,12 +1357,14 @@ if __name__ == "__main__":
 
 
 __all__ = [
-    "COMPUTE_MEMORY_THRESHOLD_MIB", "FAILURE_CAPSULE_NAME",
+    "COMPUTE_MEMORY_THRESHOLD_MIB", "DIRECTORY_HASH_DEFAULT",
+    "DIRECTORY_HASH_ENV", "DIRECTORY_HASH_MODES", "FAILURE_CAPSULE_NAME",
     "GPUAlreadyLockedError", "GPUFileLock", "GPUIdentity",
     "GPUPreflightError", "GPUProcess", "HEARTBEAT_NAME",
     "HEARTBEAT_SCHEMA", "Heartbeat", "RollingStepWall", "RuntimeHeartbeat",
     "SupervisorError", "SupervisorResult", "atomic_publish_file",
-    "atomic_write_json", "config_digest", "fsync_file", "is_cuda_fatal",
+    "atomic_write_json", "config_digest", "directory_hash_mode",
+    "fsync_file", "is_cuda_fatal",
     "parse_compute_apps_output", "preflight_exclusive_gpu",
     "quarantine_file", "read_heartbeat", "register_cli",
     "replace_file_with_retry", "resolved_input_hashes", "select_gpu",

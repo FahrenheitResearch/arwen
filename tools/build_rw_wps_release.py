@@ -44,6 +44,15 @@ _TOP_LEVEL_EXCLUDES = {
     "offline_child.py",
     "offline_child_run.py",
     "offline_child_smoke.py",
+    # `gpuwm resume` locates a forecast checkpoint and hands it to the
+    # supervisor's `run --restart` dispatch.  It reached this staging
+    # only because it is a top-level module: nothing RW-WPS ships
+    # imports it (the one importer is the excluded gpuwm.cli), no
+    # standalone entry point exposes it, and its own two lookups are the
+    # restart validator in gpuwm.supervisor and the header reader in
+    # gpuwm.io.restart -- one forbidden here, the other not staged at
+    # all.  A preprocessing wheel has no checkpoints to resume from.
+    "resume.py",
     "runtime.py",
     "state_digest.py",
     "supervisor.py",

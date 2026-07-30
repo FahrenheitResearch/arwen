@@ -472,3 +472,54 @@ def test_the_gfs_vtable_ships_in_the_wheel():
     # And it is the real thing, not a stub: the parser reads it and the
     # skeleton generator produces a descriptor from it.
     assert len(adapt.parse_wps_vtable(path)) >= 20
+
+
+# --- the trust boundary is published at the point of use ----------------
+#
+# The battery proves the emitted files implement the descriptor.  It does
+# not prove the descriptor reads the files correctly, and a scientist has
+# to learn that while writing the descriptor rather than after a
+# plausible-looking run.  These gates bind the CLI's own words to the
+# page that carries the two-column contract, so renaming or dropping the
+# page fails here instead of leaving a dangling instruction in --help.
+
+_TRUST_DOC = "docs/adapt-validation-contract.md"
+
+
+def _adapt_parser_texts() -> list[str]:
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    adapt.register_cli(parser.add_subparsers(dest="command"))
+    adapt_parser = parser._subparsers._group_actions[0].choices["adapt"]
+    return [adapt_parser.description or "", adapt_parser.epilog or ""]
+
+
+@pytest.mark.parametrize(
+    "referenced",
+    [_TRUST_DOC, "docs/arbitrary-verified-adapters.md"])
+def test_every_doc_the_adapt_cli_names_exists(referenced):
+    assert (ROOT / referenced).is_file()
+
+
+def test_adapt_help_names_the_trust_boundary_and_the_page(capsys):
+    description, epilog = _adapt_parser_texts()
+    assert "trusted from your declaration" in description
+    assert _TRUST_DOC.rsplit("/", 1)[-1] in epilog
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["adapt", "--help"])
+    assert exit_info.value.code == 0
+    rendered = capsys.readouterr().out
+    assert "adapt-validation-contract.md" in rendered
+
+
+def test_the_trust_page_carries_both_literal_columns():
+    text = (ROOT / _TRUST_DOC).read_text(encoding="utf-8")
+    assert "Validated for you" in text
+    assert "Trusted from your declaration" in text
+    # Every dimension the audit found trusted has to be named on the page.
+    lowered = text.lower()
+    for dimension in ("units", "registration", "sufficiency",
+                      "land mask", "source cycle", "depth labels"):
+        assert dimension in lowered, dimension

@@ -12,6 +12,14 @@ have a named ArWen adapter. It combines three authorities:
 Nothing is inferred from a product name or filename. Passing the battery makes
 the resulting mapped adapter **runnable, not stock-WRF certified**.
 
+Passing the battery also does not make the descriptor physically correct. What
+`adapt` validates for you, what it trusts from your declaration -- units,
+absolute geolocation, cell registration, level sufficiency, time semantics,
+land-mask polarity, soil depth labels -- and a self-check you can run for each
+trusted row, are in
+[adapt-validation-contract.md](adapt-validation-contract.md). Read it while you
+write the descriptor.
+
 ## Start with a skeleton
 
 Generate a review-required descriptor rather than writing JSON without a
@@ -125,7 +133,9 @@ runnable_mapping_not_stock_wrf_certified
 
 Runnable means the declared mapping and composition are executable by
 ArWen's mapped engine and this exact GRIB inventory passed the ingest battery.
-It does not mean ArWen produced equivalent `wrfinput`/`wrfbdy` files to an
+It does not mean the descriptor is a correct physical interpretation of the
+files ([adapt-validation-contract.md](adapt-validation-contract.md)). It does
+not mean ArWen produced equivalent `wrfinput`/`wrfbdy` files to an
 unchanged stock WRF toolchain, nor that stock WRF accepted and integrated
 them. Stock-WRF certification is a separate gate keyed to exact retained
 mapping, composition, source, geometry, and evidence hashes. A newly authored

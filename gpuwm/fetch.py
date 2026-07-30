@@ -62,7 +62,8 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from gpuwm import fetch_bars
+from gpuwm import fetch_bars, fetch_guard
+from gpuwm.nomads_governor import paced_urlopen
 
 
 FETCH_MANIFEST_SCHEMA = "gpuwm-fetch-manifest-v1"
@@ -481,10 +482,19 @@ def hrrr_forecast_hours(hours: int, cycle: datetime) -> tuple[int, ...]:
 # ---------------------------------------------------------------------------
 
 def _head_ok(url: str) -> bool:
+    """Availability probe, governed when it is aimed at NOMADS.
+
+    ``--wait-for`` polls this every 30 s per product per host and
+    ``--transport auto`` probes a whole window with it, so it is a real
+    request stream and belongs under the same node-wide pacer as the
+    payload transfers -- not beside them.  Probes at S3 pass straight
+    through, unpaced.
+    """
+
     request = Request(url, method="HEAD",
                       headers={"User-Agent": _USER_AGENT})
     try:
-        with urlopen(request, timeout=60) as response:
+        with paced_urlopen(request, timeout=60) as response:
             return 200 <= response.status < 300
     except (HTTPError, URLError, OSError):
         return False
@@ -722,9 +732,17 @@ def count_grib2_messages(path: Path) -> int:
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8", newline="\n")
-    os.replace(tmp, path)
+    """Publish a receipt whole, or leave the previous one alone.
+
+    The staging name used to be a fixed ``<name>.tmp``, which is exactly
+    the file two publishers collide on -- one could be renaming the
+    other's half-written bytes onto a canonical receipt.  The shared
+    helper stages under a per-process, per-call name and fsyncs before
+    the rename, so a crash leaves either the old receipt or the new one
+    and never a torn or foreign one.
+    """
+
+    fetch_guard.atomic_write_text(path, text, tag="fetch")
 
 
 def write_fetch_manifest(out: Path, payload: dict) -> Path:
@@ -833,8 +851,67 @@ def _manifest_payload(*, source: str, cycle: datetime,
 # GFS
 # ---------------------------------------------------------------------------
 
+def gfs_live_index(cycle: datetime, *, progress=print, opener=None,
+                   source: str = "gfs") -> str | None:
+    """The live ``.idx`` behind one GFS/GDAS cycle, or None.
+
+    The NOMADS CGI subset has no index of its own -- it *is* the subset
+    -- so the live inventory is the ``.idx`` of the corresponding full
+    ``pgrb2.0p25`` object on S3.  Two questions are answered from this
+    one document: how many records the selection yields (the record
+    bar) and which isobaric levels the product publishes (the ladder a
+    requested model top is resolved against).  Reading it once means
+    both answers describe the same generation of the same object.
+
+    Returns None when it cannot be read; callers stand the certified
+    constants in and say so.  A transient S3 blip must not stop a fetch
+    whose own record count is checked anyway.
+    """
+
+    url = f"{gfs_object_url(cycle, 0, source)}.idx"
+    request = Request(url, headers={"User-Agent": _USER_AGENT})
+    try:
+        with (opener or paced_urlopen)(request, timeout=120) as response:
+            return response.read().decode("utf-8", errors="replace")
+    except (HTTPError, URLError, OSError, ValueError) as error:
+        progress(f"fetch {source}: could not read the live inventory at "
+                 f"{url} ({error}); the certified constants stand in")
+        return None
+
+
+def gfs_available_levels(cycle: datetime, *, progress=print, opener=None,
+                         source: str = "gfs",
+                         index_text: str | None = None
+                         ) -> tuple[float, ...]:
+    """Which isobaric levels this cycle publishes for every 3-D field.
+
+    The live index first; the captured certified ladder only when it
+    cannot be read.  Deciding which levels a requested model top needs
+    is a claim about what the product carries, and the product is the
+    authority on that -- but a fetch must not fail because S3 hiccuped,
+    so the certified fallback is named out loud when it is used.
+    """
+
+    from tools import download_gfs_native_subset as transport
+
+    if index_text is None:
+        index_text = gfs_live_index(cycle, progress=progress, opener=opener,
+                                    source=source)
+    if index_text is not None:
+        levels = transport.available_levels_from_index(index_text)
+        if levels:
+            return levels
+        progress(f"fetch {source}: the live inventory names no isobaric "
+                 "level carrying all of "
+                 f"{', '.join(transport.PRESSURE_FIELDS)}; the certified "
+                 "ladder stands in")
+    return transport.CERTIFIED_AVAILABLE_LEVELS_HPA
+
+
 def gfs_derived_record_bar(cycle: datetime, *, progress=print,
-                           opener=None, source: str = "gfs") -> int | None:
+                           opener=None, source: str = "gfs",
+                           levels_hpa: tuple[float, ...] | None = None,
+                           index_text: str | None = None) -> int | None:
     """How many records the GFS selection yields in the live inventory.
 
     The NOMADS CGI subset has no index of its own -- it *is* the subset
@@ -845,6 +922,13 @@ def gfs_derived_record_bar(cycle: datetime, *, progress=print,
     :mod:`tools.download_gfs_native_subset`, so there is no second table
     to drift.
 
+    ``levels_hpa`` is the ladder this request actually asks for; the
+    count is derived against it, so a run with a deeper model top is
+    measured against its own selection rather than the default one.
+    ``index_text`` lets the caller hand over an index it has already
+    read, so the ladder and the count describe one generation of one
+    object rather than two reads that could straddle a publication.
+
     Returns ``None`` when the index cannot be read; the caller then
     stands the certified constant in and says so.  A transient S3 blip
     must not stop a fetch whose own record count is checked anyway.
@@ -853,26 +937,63 @@ def gfs_derived_record_bar(cycle: datetime, *, progress=print,
     from gpuwm.fetch_bars import count_index_selection, nomads_selector_pairs
     from tools import download_gfs_native_subset as transport
 
-    url = f"{gfs_object_url(cycle, 0, source)}.idx"
-    request = Request(url, headers={"User-Agent": _USER_AGENT})
-    try:
-        with (opener or urlopen)(request, timeout=120) as response:
-            text = response.read().decode("utf-8", errors="replace")
-    except (HTTPError, URLError, OSError, ValueError) as error:
-        progress(f"fetch {source}: could not read the live inventory at "
-                 f"{url} ({error}); the certified record bar stands in")
+    if index_text is None:
+        index_text = gfs_live_index(cycle, progress=progress, opener=opener,
+                                    source=source)
+    if index_text is None:
         return None
-    return count_index_selection(text, nomads_selector_pairs(
-        transport.NOMADS_VARIABLES, transport.NOMADS_LEVELS,
-        transport.PRESSURE_LEVELS_HPA))
+    if levels_hpa is None:
+        levels_hpa = transport.PRESSURE_LEVELS_HPA
+    return count_index_selection(index_text, nomads_selector_pairs(
+        transport.NOMADS_VARIABLES, transport.NOMADS_LEVELS, levels_hpa))
 
 
 def fetch_gfs(*, cycle: datetime, hours: tuple[int, ...], area: Area,
               out: Path, progress=print, force: bool = False,
               accept_inventory_change: bool = False,
               derived_bar=gfs_derived_record_bar,
-              source: str = "gfs") -> Path:
+              source: str = "gfs",
+              top_pressure_pa: float | None = None,
+              all_levels: bool = False,
+              available_levels=gfs_available_levels) -> Path:
     """Download the exact GFS pgrb2.0p25 subset series into ``out``.
+
+    Single writer per ``--out``: the whole flow -- reading the prior
+    receipt, moving files aside under ``force``, transferring, and
+    publishing the new receipt -- runs under an exclusive OS lock on the
+    output root, so two concurrent fetches cannot interleave into a
+    manifest that describes the other one's bytes.  A second run
+    announces the wait and then refuses loudly rather than proceed.
+
+    ``top_pressure_pa`` is the model top the fetched atmosphere must
+    reach.  Left ``None`` the certified 21-level ladder is fetched
+    exactly as before (a 100 hPa / 10000 Pa source top); given a value
+    the ladder is extended upward along whatever the live inventory says
+    the product publishes, until a level sits at or above it.  A top the
+    product genuinely cannot serve refuses, naming the deepest it can.
+    ``all_levels`` takes every level the product carries instead.
+
+    See :func:`_fetch_gfs_locked` for the transfer itself.
+    """
+
+    with fetch_guard.hold("fetch-out", out, progress=progress):
+        return _fetch_gfs_locked(
+            cycle=cycle, hours=hours, area=area, out=out, progress=progress,
+            force=force, accept_inventory_change=accept_inventory_change,
+            derived_bar=derived_bar, source=source,
+            top_pressure_pa=top_pressure_pa, all_levels=all_levels,
+            available_levels=available_levels)
+
+
+def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
+                      out: Path, progress=print, force: bool = False,
+                      accept_inventory_change: bool = False,
+                      derived_bar=gfs_derived_record_bar,
+                      source: str = "gfs",
+                      top_pressure_pa: float | None = None,
+                      all_levels: bool = False,
+                      available_levels=gfs_available_levels) -> Path:
+    """The GFS transfer, with the output-root lock already held.
 
     Reuses the certified NOMADS query builder and downloader in
     :mod:`tools.download_gfs_native_subset` (single source for the
@@ -886,7 +1007,9 @@ def fetch_gfs(*, cycle: datetime, hours: tuple[int, ...], area: Area,
     walk, the exact 124-record count, AND -- when the prior fetch
     manifest recorded its digest -- that same sha256; a swapped file is
     never re-blessed by the area-blind count alone.  ``force`` moves
-    every existing subset aside (never deletes) and re-downloads.
+    every existing file in ``out`` aside -- receipts first, so an
+    interrupted force leaves no manifest claiming replaced bytes -- and
+    re-downloads.  Nothing is ever deleted.
     """
 
     from gpuwm.fetch_bars import resolve_bar
@@ -901,14 +1024,55 @@ def fetch_gfs(*, cycle: datetime, hours: tuple[int, ...], area: Area,
         beyond = [hour for hour in hours if hour > GDAS_MAX_FORECAST_HOUR]
         if beyond:
             raise ValueError(gdas_capability_refusal(beyond[0]))
+    if top_pressure_pa is not None and all_levels:
+        raise ValueError(
+            "--p-top-pa names the model top the ladder must reach and "
+            "--all-levels takes every level the product carries; they "
+            "are two answers to the same question, so pass one")
     prefix = GFS_CONTAINER_PREFIX[source]
     out.mkdir(parents=True, exist_ok=True)
+    # One read of the live index answers both questions below, so the
+    # ladder and the record count describe the same generation of the
+    # same object rather than two reads that could straddle a
+    # publication.
+    index_text = gfs_live_index(cycle, progress=progress, source=source)
+    available = available_levels(cycle, progress=progress, source=source,
+                                 index_text=index_text)
+    if all_levels:
+        levels = tuple(float(level) for level in available)
+        progress(f"fetch {source}: --all-levels takes the whole published "
+                 f"ladder, {len(levels)} isobaric levels "
+                 f"({min(levels):g}..{max(levels):g} hPa)")
+    else:
+        levels = transport.levels_for_top(top_pressure_pa,
+                                          available=available)
+        if top_pressure_pa is not None:
+            extra = len(levels) - len(transport.PRESSURE_LEVELS_HPA)
+            progress(
+                f"fetch {source}: model top {float(top_pressure_pa):g} Pa "
+                f"needs {len(levels)} isobaric levels, source top "
+                f"{min(levels) * 100.0:g} Pa"
+                + (f" ({extra} level(s) above the certified 100 hPa "
+                   "ladder)" if extra else " (the certified ladder "
+                   "already reaches it)"))
+    source_top_pa = min(levels) * 100.0
     # One record bar for the whole request: the selection is
     # instantaneous fields only, so its census does not vary by hour.
+    # The certified count is a function of THIS request's ladder --
+    # five records per level plus the single-level records -- so a
+    # deeper top is not mistaken for an upstream inventory change.
     bar = resolve_bar("gfs", derived_bar(cycle, progress=progress,
-                                        source=source),
+                                         source=source, levels_hpa=levels,
+                                         index_text=index_text),
                       accept_inventory_change=accept_inventory_change,
-                      progress=progress)
+                      progress=progress,
+                      certified=transport.record_count_for_levels(
+                          len(levels)))
+    if force:
+        # Receipts first, then every other existing file: an interrupted
+        # force must never leave a manifest behind that still claims a
+        # payload it has already replaced.
+        _force_quarantine_output(out, progress, source)
     prior_digests = _prior_manifest_digests(out)
     box = area.as_nomads()
     longitude_amplification = area.nomads_longitude_amplification
@@ -960,6 +1124,13 @@ def fetch_gfs(*, cycle: datetime, hours: tuple[int, ...], area: Area,
         payload["engine"] = "python"
         payload["mode"] = "nomads-cgi-subset"
         payload["record_bars"] = [bar.as_manifest()]
+        # The ladder is request state, not a constant, so the receipt
+        # carries it: the front-door manifest passes it to the bridge,
+        # and the vertical contract needs the source top to decide
+        # whether the case's p_top is reachable at all.
+        payload["pressure_levels_hpa"] = [
+            float(format(float(level), "g")) for level in levels]
+        payload["source_top_pressure_pa"] = source_top_pa
         return write_fetch_manifest(out, payload)
 
     def resume_command() -> str:
@@ -983,10 +1154,14 @@ def fetch_gfs(*, cycle: datetime, hours: tuple[int, ...], area: Area,
             name = (f"{prefix}.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}"
                     ".subset.grib2")
             path = out / name
-            url = transport.nomads_query(cycle, hour, model=source, **box)
+            url = transport.nomads_query(
+                cycle, hour, model=source,
+                pressure_levels_hpa=levels, **box)
             current = (hour, name, path, url)
-            if force and path.exists():
-                _quarantine_rejected(path, progress, f"gfs f{hour:03d}")
+            # No per-hour force quarantine here: the whole directory was
+            # swept before the loop, receipts first.  Moving a payload
+            # aside mid-loop is what let an old manifest outlive the
+            # bytes it claimed.
             if path.exists():
                 observed = count_grib2_messages(path)
                 if observed != bar.expected:
@@ -1153,16 +1328,29 @@ def author_gfs_front_door_manifest(
         raise ValueError(
             "front-door manifest inputs are missing:\n  "
             + "\n  ".join(missing))
+    identity = {
+        # The front door verifies schema, roles and digests, not the
+        # model string, so the tag is provenance: which container
+        # this series came out of, in one place a receipt can read.
+        "model": source.upper(),
+        "product": "pgrb2.0p25",
+        "cycle": cycle.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    # The pressure ladder the fetch actually took, and the source top it
+    # implies.  The front door validates the case's p_top against the
+    # source top BEFORE the bridge runs, so it has to learn it from the
+    # receipt rather than from a constant -- a constant is exactly what
+    # capped every GFS run at 10000 Pa.  Absent for a directory fetched
+    # by an older ArWen, where the certified 100 hPa ladder is the only
+    # thing it can have been.
+    levels = prior.get("pressure_levels_hpa")
+    if isinstance(levels, list) and levels and all(
+            isinstance(level, (int, float)) for level in levels):
+        identity["pressure_levels_hpa"] = [float(level) for level in levels]
+        identity["top_pressure_pa"] = float(min(levels)) * 100.0
     payload = {
         "schema": GFS_FRONT_DOOR_MANIFEST_SCHEMA,
-        "source": {
-            # The front door verifies schema, roles and digests, not the
-            # model string, so the tag is provenance: which container
-            # this series came out of, in one place a receipt can read.
-            "model": source.upper(),
-            "product": "pgrb2.0p25",
-            "cycle": cycle.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        },
+        "source": identity,
         "files": {
             role: {"name": path.name, "sha256": sha256_file(path)}
             for role, path in roles.items()
@@ -1348,13 +1536,20 @@ def _existing_hrrr_digest(dest: Path, *, expected_count: int,
     return digest
 
 
-def _quarantine_rejected(dest: Path, progress, label: str) -> None:
-    """Move a failed existing file aside (never deleted, never reused)."""
+def _quarantine_rejected(dest: Path, progress, label: str) -> Path:
+    """Move a failed existing file aside (never deleted, never reused).
 
-    aside = dest.with_name(f"{dest.name}.rejected-{time.time_ns()}")
-    os.replace(dest, aside)
+    The name is proven free first.  ``.rejected-<time_ns>`` alone is
+    not: two quarantines inside one clock tick -- or two processes --
+    produce the same name, and ``os.replace`` onto it silently destroys
+    the earlier evidence, which is the one thing quarantine promises not
+    to do.
+    """
+
+    aside = fetch_guard.quarantine(dest)
     progress(f"fetch {label}: moved rejected file aside to "
              f"{aside.name}")
+    return aside
 
 
 def _quarantine_inventory_payload(dest: Path, out: Path, entry: dict,
@@ -1377,9 +1572,7 @@ def _quarantine_inventory_payload(dest: Path, out: Path, entry: dict,
                  else None):
         if path is None or not path.is_file():
             continue
-        aside = path.with_name(f"{path.name}.inventory-change-"
-                               f"{time.time_ns()}")
-        os.replace(path, aside)
+        aside = fetch_guard.quarantine(path, tag="inventory-change")
         moved.append(aside.name)
     if not moved:
         return "Nothing was left on disk."
@@ -1388,6 +1581,69 @@ def _quarantine_inventory_payload(dest: Path, out: Path, entry: dict,
             f"disk; it has been moved aside as {', '.join(moved)} in "
             f"{out} and no manifest was written, so nothing downstream "
             f"will read it as a fetch product.  Nothing was deleted.")
+
+
+#: Suffix fragments that mark a file as *already* set aside.  A force
+#: sweep leaves these alone: re-quarantining evidence only renames it,
+#: and the audited property that quarantine artifacts are never treated
+#: as canonical and never recursively quarantined is worth keeping.
+_QUARANTINE_MARKS = (".rejected-", ".inventory-change-")
+
+
+def _force_quarantine_output(out: Path, progress, label: str) -> list[str]:
+    """``--force-refetch``: move every existing file in ``out`` aside.
+
+    Two properties, and the order between them is the whole point.
+
+    *The receipt goes first.*  Force used to move each requested payload
+    aside one at a time, as its turn came round in the fetch loop, while
+    the previous ``fetch-manifest.json`` stayed canonical -- so a kill
+    (or a network failure) part-way through left a readable manifest
+    claiming a digest for bytes that had just been renamed away.  That
+    directory lies until something re-reads it.  Quarantining the
+    manifest and the checksum/series receipts *before* touching a single
+    payload means an interrupted force leaves a directory with payloads
+    and no receipt, which the front door already refuses honestly.
+
+    *Every file, as advertised.*  The CLI has always said force moves
+    every existing file in ``--out`` aside; it actually moved only the
+    payload paths the new request selected.  Forecast hours outside a
+    shortened window, ``.idx`` indexes, selector files, stale ``.part``
+    files and unrelated files all stayed canonical -- old payloads that
+    the new manifest does not list, and sidecars that can block the
+    recovery force was invoked to perform.  Now the sweep matches the
+    sentence.
+
+    Nothing is deleted and nothing already set aside is touched again.
+    Subdirectories are left alone: fetch writes no directories into
+    ``--out``, so anything that is one belongs to the operator.
+    """
+
+    if not out.is_dir():
+        return []
+    receipts = (FETCH_MANIFEST_NAME, "SHA256SUMS")
+    def order(path: Path) -> tuple[int, str]:
+        if path.name in receipts:
+            return 0, path.name
+        if path.name.endswith("-series.tsv"):
+            return 1, path.name
+        return 2, path.name
+
+    candidates = sorted(
+        (path for path in out.iterdir()
+         if path.is_file()
+         and not any(mark in path.name for mark in _QUARANTINE_MARKS)),
+        key=order)
+    moved: list[str] = []
+    for path in candidates:
+        aside = fetch_guard.quarantine(path)
+        moved.append(aside.name)
+    if moved:
+        progress(f"fetch {label}: --force-refetch moved {len(moved)} "
+                 f"existing file(s) in {out} aside (receipts first, so no "
+                 "manifest survives claiming replaced bytes); nothing was "
+                 "deleted: " + ", ".join(moved))
+    return moved
 
 
 def _validate_hrrr_area(area: Area) -> None:
@@ -1577,6 +1833,19 @@ def _download_one_hrrr_product(
     from tools import download_hrrr_native_subset as range_transport
 
     if engine == "rust":
+        # The backbone names its output after the URL, so the soil
+        # product lands as `wrfprs` and Python renames it to `soil`
+        # afterwards.  A kill in that gap leaves a canonical orphan
+        # under the source name: the next Rust run refuses because its
+        # own destination already exists, and force never selected that
+        # name, so the directory was unrecoverable without hand
+        # intervention.  Set the orphan aside first -- it is unclaimed
+        # by any receipt and nothing is deleted.
+        landing = out / source_name
+        if landing != dest and landing.exists():
+            _quarantine_rejected(
+                landing, progress,
+                f"hrrr {label} orphaned {source_name}")
         entry = _rw_fetch_hrrr(
             binary=engine_bin, cycle=cycle, hour=hour, kind=kind,
             host=host, mode=mode, out=out, cache_dir=cache_dir,
@@ -1695,6 +1964,41 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
                transport_fallback: tuple[str, ...] = ()) -> Path:
     """Byte-range download the native HRRR subset series into ``out``.
 
+    Single writer per ``--out``: the prior-receipt read, the ``force``
+    sweep, the transfers and every receipt publication run under an
+    exclusive OS lock on the output root, so two concurrent HRRR fetches
+    cannot publish receipts describing each other's bytes.
+
+    See :func:`_fetch_hrrr_locked` for the transfer itself.
+    """
+
+    with fetch_guard.hold("fetch-out", out, progress=progress):
+        return _fetch_hrrr_locked(
+            cycle=cycle, hours=hours, area=area, out=out, workers=workers,
+            retries=retries, progress=progress, force=force,
+            transport=transport, wait=wait, wait_timeout_s=wait_timeout_s,
+            probe=probe, sleeper=sleeper, clock=clock, engine=engine,
+            engine_bin=engine_bin, mode=mode, cache_dir=cache_dir,
+            accept_inventory_change=accept_inventory_change,
+            transport_fallback=transport_fallback)
+
+
+def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
+                       area: Area | None, out: Path, workers: int = 8,
+                       retries: int = 5, progress=print,
+                       force: bool = False, transport: str = "s3",
+                       wait: bool = False,
+                       wait_timeout_s: float = (
+                           HRRR_WAIT_TIMEOUT_DEFAULT_MINUTES * 60),
+                       probe=None, sleeper=time.sleep,
+                       clock=time.monotonic,
+                       engine: str = "python",
+                       engine_bin: Path | None = None,
+                       mode: str = "auto", cache_dir: Path | None = None,
+                       accept_inventory_change: bool = False,
+                       transport_fallback: tuple[str, ...] = ()) -> Path:
+    """The HRRR transfer, with the output-root lock already held.
+
     Reuses the proven ``.idx`` selection/range transport in
     :mod:`tools.download_hrrr_native_subset` per product (atmosphere
     ``wrfnat`` subset + soil records of ``wrfprs``), adds resumability,
@@ -1717,6 +2021,17 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
     prefix -- so a re-run of the same command resumes instead of
     refusing -- and a ``RuntimeError`` reports exactly what was and was
     not fetched.
+
+    The manifest is republished after every **completed hour**, and it
+    claims only the files of the hours it declares complete.  Both
+    halves matter: without the first, an ordinary kill after many good
+    hours leaves a fresh output with valid payloads and no receipt at
+    all; without the second, the timeout path publishes the
+    half-fetched hour's atmosphere in ``files`` and ``SHA256SUMS``
+    while ``forecast_hours`` names only the earlier prefix -- one
+    receipt with two definitions of complete.  A half-fetched hour
+    stays on disk unclaimed and is re-verified under the ordinary bars
+    on the next run.
 
     ``engine`` selects the downloader: ``'python'`` is the stdlib
     byte-range transport in :mod:`tools.download_hrrr_native_subset`,
@@ -1772,6 +2087,11 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
     if area is not None:
         _validate_hrrr_area(area)
     out.mkdir(parents=True, exist_ok=True)
+    if force:
+        # Receipts first, then every other existing file -- including the
+        # `.idx` indexes, whose byte-identity guard could otherwise block
+        # the very host failover force was invoked to unblock.
+        _force_quarantine_output(out, progress, "hrrr")
     prior_digests = _prior_manifest_digests(out)
     prior_records = _prior_manifest_records(out)
     bars.update(_prior_manifest_bars(out))
@@ -1780,11 +2100,23 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
     complete_hours: list[int] = []
 
     def publish_manifest(recorded_hours: tuple[int, ...]) -> Path:
+        # A receipt claims only files belonging to a COMPLETE hour.  An
+        # hour is complete when both its products landed and verified;
+        # `files` grows a product at a time, so publishing it whole
+        # against an earlier `forecast_hours` prefix -- which is exactly
+        # what the wait-timeout branch did -- produced one receipt with
+        # two contradictory definitions of completeness: `forecast_hours`
+        # said [0] while `files` and `SHA256SUMS` carried the half-done
+        # hour 1.  A half-fetched hour stays on disk, unclaimed, and the
+        # next run re-verifies it under the ordinary bars.
+        wanted = set(recorded_hours)
+        claimed = [item for item in files
+                   if item["forecast_hour"] in wanted]
         sums = out / "SHA256SUMS"
         _atomic_write_text(sums, "".join(
             f"{item['sha256']}  {item['name']}\n"
-            for item in sorted(files, key=lambda item: item["name"])))
-        entries = files + [{
+            for item in sorted(claimed, key=lambda item: item["name"])))
+        entries = claimed + [{
             "name": sums.name, "role": "checksums", "forecast_hour": None,
             "bytes": sums.stat().st_size, "sha256": sha256_file(sums),
             "url": None, "transport": None,
@@ -1909,6 +2241,12 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
                 "records": count_grib2_messages(dest),
             })
         complete_hours.append(hour)
+        # Checkpoint per completed hour, as GFS already did.  Publishing
+        # only after the whole nested loop meant an ordinary SIGKILL
+        # after many good hours left a fresh output with valid payloads
+        # and no receipt at all, which the front door then refused --
+        # verified data, unusable, and nothing to resume from.
+        publish_manifest(tuple(complete_hours))
     return publish_manifest(hours)
 
 
@@ -2258,6 +2596,21 @@ def fetch_main(args) -> int:
                 f"{', '.join(hrrr_only)}: --source hrrr only (GFS rides "
                 "the NOMADS grib filter already; ERA5 is a manual CDS "
                 "retrieval)")
+    if source not in GFS_CONTAINER_SOURCES:
+        gfs_only = sorted(
+            flag for flag, value in (
+                ("--p-top-pa", args.p_top_pa),
+                ("--all-levels", args.all_levels or None),
+            ) if value is not None)
+        if gfs_only:
+            raise ValueError(
+                f"{', '.join(gfs_only)}: --source "
+                f"{'/'.join(GFS_CONTAINER_SOURCES)} only.  HRRR is fetched "
+                "on its native hybrid levels (no isobaric ladder to "
+                "choose), and the ERA5 request template carries its own "
+                "level list.")
+    if args.p_top_pa is not None and args.p_top_pa <= 0:
+        raise ValueError("--p-top-pa must be a positive pressure in Pa")
 
     author_roles = {
         "--bridge": args.bridge,
@@ -2365,13 +2718,21 @@ def fetch_main(args) -> int:
         else:
             cycle = parse_cycle(args.cycle, source)
             require_published_cycle(source, cycle, hours[-1])
-        if not args.force_refetch:
-            check_prior_request(args.out, source=source, cycle=cycle,
-                                area=area)
-        manifest = fetch_gfs(
-            cycle=cycle, hours=hours, area=area, out=args.out,
-            force=args.force_refetch, source=source,
-            accept_inventory_change=args.accept_inventory_change)
+        # The request-identity guard and the transfer it authorises are
+        # one decision: taking the lock around BOTH is what stops two
+        # writers from passing the guard together and then publishing
+        # incompatible receipts into the same directory.  The library
+        # call re-enters the same lock (it is re-entrant per process).
+        with fetch_guard.hold("fetch-out", args.out):
+            if not args.force_refetch:
+                check_prior_request(args.out, source=source, cycle=cycle,
+                                    area=area)
+            manifest = fetch_gfs(
+                cycle=cycle, hours=hours, area=area, out=args.out,
+                force=args.force_refetch, source=source,
+                accept_inventory_change=args.accept_inventory_change,
+                top_pressure_pa=args.p_top_pa,
+                all_levels=args.all_levels)
     elif source == "hrrr":
         if args.cadence is not None:
             raise ValueError("HRRR is hourly; --cadence does not apply")
@@ -2413,28 +2774,31 @@ def fetch_main(args) -> int:
             require_published_cycle(
                 source, cycle, hrrr_forecast_hours(args.hours, cycle)[-1])
         hours = hrrr_forecast_hours(args.hours, cycle)
-        if not args.force_refetch:
-            check_prior_request(args.out, source="hrrr", cycle=cycle,
-                                area=area)
-        if not args.wait_for:
-            # One transport decision per invocation; 'auto' probes
-            # NOMADS for the window's final hour pair and falls back S3.
-            transport = resolve_hrrr_transport(
-                cycle, transport, last_hour=hours[-1])
-        timeout_minutes = (args.wait_timeout_minutes
-                           if args.wait_timeout_minutes is not None
-                           else HRRR_WAIT_TIMEOUT_DEFAULT_MINUTES)
-        print(f"fetch hrrr: engine {engine}"
-              + (f" ({engine_bin})" if engine_bin is not None else "")
-              + (f", mode {mode}" if engine == "rust" else ""))
-        manifest = fetch_hrrr(
-            cycle=cycle, hours=hours, area=area, out=args.out,
-            force=args.force_refetch, transport=transport,
-            wait=args.wait_for, wait_timeout_s=timeout_minutes * 60.0,
-            engine=engine, engine_bin=engine_bin, mode=mode,
-            cache_dir=args.cache_dir,
-            accept_inventory_change=args.accept_inventory_change,
-            transport_fallback=transport_fallback)
+        # One lock over the guard and the transfer it authorises; see the
+        # GFS branch above.
+        with fetch_guard.hold("fetch-out", args.out):
+            if not args.force_refetch:
+                check_prior_request(args.out, source="hrrr", cycle=cycle,
+                                    area=area)
+            if not args.wait_for:
+                # One transport decision per invocation; 'auto' probes
+                # NOMADS for the window's final hour pair, falls back S3.
+                transport = resolve_hrrr_transport(
+                    cycle, transport, last_hour=hours[-1])
+            timeout_minutes = (args.wait_timeout_minutes
+                               if args.wait_timeout_minutes is not None
+                               else HRRR_WAIT_TIMEOUT_DEFAULT_MINUTES)
+            print(f"fetch hrrr: engine {engine}"
+                  + (f" ({engine_bin})" if engine_bin is not None else "")
+                  + (f", mode {mode}" if engine == "rust" else ""))
+            manifest = fetch_hrrr(
+                cycle=cycle, hours=hours, area=area, out=args.out,
+                force=args.force_refetch, transport=transport,
+                wait=args.wait_for, wait_timeout_s=timeout_minutes * 60.0,
+                engine=engine, engine_bin=engine_bin, mode=mode,
+                cache_dir=args.cache_dir,
+                accept_inventory_change=args.accept_inventory_change,
+                transport_fallback=transport_fallback)
     else:
         raise ValueError(f"unknown fetch source {source!r}")
     print(f"fetch {source}: manifest {manifest}")
@@ -2618,14 +2982,38 @@ def register_cli(subparsers) -> None:
              "exactly which hours were fetched")
     parser.add_argument(
         "--force-refetch", action="store_true",
-        help="move the existing files this fetch would write aside "
-             "(nothing is deleted) and re-download them; unrelated "
-             "files, manifests and forecast hours you did not request "
-             "stay where they are.  Required when re-fetching a "
-             "different area/cycle into the same --out")
+        help="move every existing file in --out aside (nothing is "
+             "deleted) and re-download this request.  The receipts go "
+             "first -- fetch-manifest.json, SHA256SUMS, the series -- so "
+             "an interrupted force can never leave a manifest behind "
+             "claiming payloads it has already replaced; then payloads, "
+             ".idx indexes, stale parts and anything else in the "
+             "directory.  Files already set aside by an earlier "
+             "quarantine are left untouched, and subdirectories are "
+             "yours.  Required when re-fetching a different area/cycle "
+             "into the same --out")
+    parser.add_argument(
+        "--p-top-pa", type=float, default=None, metavar="PA",
+        help="gfs/gdas only: the model top (Pa) the fetched atmosphere "
+             "must reach.  The pressure ladder is extended upward along "
+             "whatever the live inventory publishes until a level sits "
+             "at or above it, so --p-top-pa 5000 fetches the 70 and 50 "
+             "hPa levels the certified 100 hPa ladder stops short of.  "
+             "Omitted, the certified 21-level ladder is fetched exactly "
+             "as before (a 10000 Pa source top).  A top the product "
+             "cannot serve refuses and names the deepest it can")
+    parser.add_argument(
+        "--all-levels", action="store_true",
+        help="gfs/gdas only: fetch every isobaric level the product "
+             "publishes instead of choosing a ladder.  The NOMADS grib "
+             "filter IS the transport for this source -- the raw S3 "
+             "objects are north-to-south and the certified bridge "
+             "refuses them -- so this is the full-level-set route, and "
+             "level subsetting stays an opt-in bandwidth saver rather "
+             "than a ceiling on the model top")
     parser.add_argument(
         "--engine", default=None, choices=FETCH_ENGINES,
-        help="hrrr only: which downloader moves the bytes.  'rust' is "
+        help="hrrr only: which downloader moves the bytes.  'rust' is"
              "the vendored rw_fetch backbone (16 MiB parallel range "
              "GETs, .idx coalescing, the cross-process NOMADS rate "
              "governor, a disk cache); 'python' is the stdlib transport "

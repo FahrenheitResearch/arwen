@@ -59,6 +59,8 @@ sf_sfclay_physics = 91
 sf_surface_physics = 2
 bl_pbl_physics = 1
 ra_physics = 0
+ra_lw_physics = 0
+ra_sw_physics = 1
 bldt = 0.0
 
 [[domain]]
@@ -75,7 +77,7 @@ dx = 12000.0
 specified = true
 nested = false
 history_interval_s = 3600.0
-radt = 12.0
+radt = 1.0
 cu_physics = 0
 cudt_minutes = 0.0
-diff_6th_factor = 0.12
+diff_6th_factor = 0.08

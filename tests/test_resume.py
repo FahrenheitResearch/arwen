@@ -12,6 +12,7 @@ model state); the identity checks that consume the payload belong to
 from __future__ import annotations
 
 import json
+import os
 import re
 
 import numpy as np
@@ -222,3 +223,47 @@ def test_cli_resume_resolves_then_dispatches_as_run(tmp_path, monkeypatch,
     assert seen["restart"] == tree[1]
     out = capsys.readouterr().out
     assert re.search(r"resume: continuing from .*abc123\.npz", out)
+
+
+# --- tie-break determinism ---------------------------------------------
+#
+# Two checkpoint sets can land on one model instant (a supervisor retry
+# writes a fresh set id at the same model clock).  When their mtimes also
+# tie -- second-resolution or a coarsening filesystem -- the selection
+# used to fall out of Path.glob discovery order, so which checkpoint a
+# resume continued from was a property of the filesystem.  Both creation
+# orders must now choose the same set.
+
+
+@pytest.mark.parametrize("creation_order",
+                         [("aaa111", "bbb222"), ("bbb222", "aaa111")])
+def test_tied_sets_at_one_instant_resolve_by_set_id(tmp_path,
+                                                    creation_order):
+    instant = "1974-04-03_15_00_00"
+    for set_id in creation_order:
+        _tree(tmp_path, instant, set_id)
+    stamp = 1_500_000_000_000_000_000
+    for path in tmp_path.glob("gpuwmrst_d*.npz"):
+        os.utime(path, ns=(stamp, stamp))
+
+    sets = discover_checkpoint_sets(tmp_path)
+    assert [entry.set_id for entry in sets] == ["bbb222", "aaa111"]
+    assert resolve_resume_checkpoint(tmp_path, LATEST).checkpoint.name == \
+        f"gpuwmrst_d01_{instant}__bbb222.npz"
+
+
+def test_a_subsecond_newer_set_wins_over_its_predecessor(tmp_path):
+    """Nanosecond mtimes: 'newer' is not rounded away inside one second."""
+    instant = "1974-04-03_15_00_00"
+    # The lexicographically SMALLER set id is the newer one, so a set-id
+    # tie-break alone would pick the wrong set and only mtime resolution
+    # can carry this.
+    older = _tree(tmp_path, instant, "zzz999")
+    newer = _tree(tmp_path, instant, "aaa111")
+    for path in older.values():
+        os.utime(path, ns=(1_500_000_000_100_000_000,) * 2)
+    for path in newer.values():
+        os.utime(path, ns=(1_500_000_000_900_000_000,) * 2)
+
+    assert [entry.set_id for entry in discover_checkpoint_sets(tmp_path)] == \
+        ["aaa111", "zzz999"]

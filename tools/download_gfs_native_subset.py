@@ -16,13 +16,145 @@ import os
 from pathlib import Path
 import time
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from gpuwm.nomads_governor import paced_urlopen
 
 
+#: The pressure ladder ArWen was certified against: 21 levels topping
+#: out at 100 hPa.  It is the DEFAULT, not the ceiling -- see
+#: :func:`levels_for_top`.  A run whose model top sits above 100 hPa
+#: (WRF-Runner's GFS namelists all declare ``p_top = 5000`` Pa, i.e. 50
+#: hPa) needs the ladder extended upward, and the product publishes the
+#: levels to do it.
 PRESSURE_LEVELS_HPA = (
     100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600,
     650, 700, 750, 800, 850, 900, 925, 950, 975, 1000,
 )
+
+#: Every isobaric level ``pgrb2.0p25`` publishes for ALL FIVE of the
+#: fields the 3-D selection takes (HGT, TMP, RH, UGRD, VGRD).
+#:
+#: Captured from a live inventory on 2026-07-30 -- the unedited index in
+#: ``tests/fixtures/gfs-inventory/``, whose README records the object,
+#: the digest and the census.  This constant is a tripwire and a
+#: fallback, exactly as ``fetch_bars.CERTIFIED_RECORD_BARS`` is for the
+#: record count: the live index is consulted first
+#: (:func:`available_levels_from_index`), and this stands in only when it
+#: cannot be read.  A test binds the two together, so the constant
+#: cannot quietly drift from the file it was taken from.
+#:
+#: Note the last 21 entries are exactly :data:`PRESSURE_LEVELS_HPA`: a
+#: deeper top extends the certified ladder upward, it never replaces it.
+CERTIFIED_AVAILABLE_LEVELS_HPA = (
+    0.01, 0.02, 0.04, 0.07, 0.1, 0.2, 0.4, 0.7, 1, 2, 3, 5, 7, 10,
+    15, 20, 30, 40, 50, 70,
+    100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600,
+    650, 700, 750, 800, 850, 900, 925, 950, 975, 1000,
+)
+
+#: The fields the selection takes on every isobaric level.  One level
+#: therefore contributes exactly this many records, which is what makes
+#: the record bar a linear function of the ladder length.
+PRESSURE_FIELDS = ("HGT", "TMP", "RH", "UGRD", "VGRD")
+
+#: Records the selection takes that do not sit on an isobaric level:
+#: HGT/PRES/TMP/WEASD/SNOD/LAND/ICEC at the surface (7), TMP/RH at 2 m
+#: (2), UGRD/VGRD at 10 m (2), and TSOIL+SOILW on the four below-ground
+#: layers (8).
+SINGLE_LEVEL_RECORD_COUNT = 19
+
+
+class TopPressureUnavailable(ValueError):
+    """The requested model top is above everything the product carries.
+
+    Distinct from a malformed request so callers can say *how far up the
+    source actually reaches* rather than merely refusing.
+    """
+
+
+def available_levels_from_index(index_text: str) -> tuple[float, ...]:
+    """The isobaric levels this object publishes for every 3-D field.
+
+    A level counts only when all five of :data:`PRESSURE_FIELDS` appear
+    on it: four-fifths of a level is not a level the bridge can decode,
+    and silently selecting one would make the fetch pass its own record
+    bar and fail at ingest.
+    """
+
+    per_field: dict[str, set[float]] = {name: set() for name in PRESSURE_FIELDS}
+    for line in index_text.splitlines():
+        fields = line.strip().split(":")
+        if len(fields) < 6:
+            continue
+        variable, level = fields[3], fields[4]
+        if variable not in per_field or not level.endswith(" mb"):
+            continue
+        try:
+            per_field[variable].add(float(level[:-3]))
+        except ValueError:
+            continue
+    if not all(per_field.values()):
+        return ()
+    usable = set.intersection(*per_field.values())
+    return tuple(sorted(usable))
+
+
+def levels_for_top(
+        top_pressure_pa: float | None, *,
+        available: tuple[float, ...] = CERTIFIED_AVAILABLE_LEVELS_HPA,
+        certified: tuple[int, ...] = PRESSURE_LEVELS_HPA,
+) -> tuple[float, ...]:
+    """The ladder that covers a model top of ``top_pressure_pa``.
+
+    ``None`` asks for the certified ladder unchanged -- today's
+    behaviour, byte for byte, for every caller that does not care.
+
+    Otherwise the certified ladder is extended UPWARD along whatever the
+    product actually publishes until a level sits at or above the
+    requested top (i.e. at a pressure at or below it), because that is
+    the condition ``gpuwm.vertical_contract`` enforces at ingest: the
+    source atmosphere has to reach the model top, not stop under it.
+    Extending rather than replacing keeps every level a certified run
+    already used, so a deeper top adds data and changes nothing that was
+    there before.
+
+    Raises :class:`TopPressureUnavailable` when the request is above
+    everything the product carries, naming the deepest top it can serve.
+    """
+
+    ladder = tuple(float(level) for level in certified)
+    if top_pressure_pa is None:
+        return ladder
+    top = float(top_pressure_pa)
+    if not top > 0.0:
+        raise ValueError(
+            f"the requested model top must be a positive pressure in Pa, "
+            f"got {top_pressure_pa!r}")
+    if min(ladder) * 100.0 <= top:
+        return ladder
+    higher = sorted(
+        (level for level in available if float(level) < min(ladder)),
+        reverse=True)
+    extension: list[float] = []
+    for level in higher:
+        extension.append(float(level))
+        if float(level) * 100.0 <= top:
+            return tuple(sorted(extension)) + ladder
+    deepest = min(available) if available else min(ladder)
+    raise TopPressureUnavailable(
+        f"a model top of {top:g} Pa needs a GFS pgrb2.0p25 level at or "
+        f"above it, and the deepest this product publishes for all of "
+        f"{', '.join(PRESSURE_FIELDS)} is {deepest:g} hPa "
+        f"({deepest * 100.0:g} Pa).  Raise --p-top-pa to "
+        f"{deepest * 100.0:g} Pa or above, or use a source whose "
+        "atmosphere reaches higher.")
+
+
+def record_count_for_levels(level_count: int) -> int:
+    """How many records the selection takes for a ladder that long."""
+
+    return len(PRESSURE_FIELDS) * int(level_count) + SINGLE_LEVEL_RECORD_COUNT
 NOMADS_LEVELS = (
     "lev_surface",
     "lev_2_m_above_ground",
@@ -87,10 +219,23 @@ NOMADS_MODELS = {
 }
 
 
+def _level_parameter(level_hpa: float) -> str:
+    """``lev_<L>_mb`` exactly as the grib filter spells it.
+
+    The filter's level names carry no trailing zeros: 0.5 hPa is
+    ``lev_0.5_mb`` and 100 hPa is ``lev_100_mb``, never ``lev_100.0_mb``.
+    """
+
+    value = float(level_hpa)
+    text = f"{value:g}"
+    return f"lev_{text}_mb"
+
+
 def nomads_query(
         cycle: datetime, forecast_hour: int, *, left_lon: float,
         right_lon: float, bottom_lat: float, top_lat: float,
         model: str = "gfs",
+        pressure_levels_hpa: tuple[float, ...] = PRESSURE_LEVELS_HPA,
 ) -> str:
     if not 0.0 <= left_lon < right_lon <= 360.0:
         raise ValueError("GFS subset longitudes must increase within [0, 360]")
@@ -113,7 +258,7 @@ def nomads_query(
         ("bottomlat", format(bottom_lat, "g")),
     ]
     parameters.extend(
-        (f"lev_{level}_mb", "on") for level in PRESSURE_LEVELS_HPA)
+        (_level_parameter(level), "on") for level in pressure_levels_hpa)
     parameters.extend((name, "on") for name in NOMADS_LEVELS)
     parameters.extend((name, "on") for name in NOMADS_VARIABLES)
     parameters.append((
@@ -124,13 +269,30 @@ def nomads_query(
 
 
 def _download(url: str, destination: Path, *, retries: int = 5) -> None:
-    partial = destination.with_suffix(destination.suffix + ".part")
+    """Stream one NOMADS CGI subset onto ``destination``, governed.
+
+    Every request goes through :mod:`gpuwm.nomads_governor`, so this
+    transport observes the same node-wide NOMADS spacing and cooldown
+    the Rust backbone does instead of racing it.
+
+    The staging name carries this process's pid and a nanosecond stamp.
+    A fixed ``<name>.part`` is a file two runs collide on and a killed
+    run leaves behind under a name the next run cannot tell from its
+    own; a unique one is only ever this attempt's, and is removed when
+    the attempt fails.
+    """
+
+    partial = destination.with_suffix(
+        f"{destination.suffix}.{os.getpid()}-{time.time_ns()}.part")
     for attempt in range(1, retries + 1):
         try:
             request = Request(url, headers={"User-Agent": "rw-wps-gfs-fetch/1"})
-            with urlopen(request, timeout=300) as response, partial.open("wb") as output:
+            with paced_urlopen(request, timeout=300) as response, \
+                    partial.open("wb") as output:
                 while block := response.read(1024 * 1024):
                     output.write(block)
+                output.flush()
+                os.fsync(output.fileno())
             with partial.open("rb") as stream:
                 signature = stream.read(4)
                 stream.seek(-4, os.SEEK_END)
@@ -141,6 +303,7 @@ def _download(url: str, destination: Path, *, retries: int = 5) -> None:
             os.replace(partial, destination)
             return
         except Exception:
+            partial.unlink(missing_ok=True)
             if attempt == retries:
                 raise
             time.sleep(5 * attempt)

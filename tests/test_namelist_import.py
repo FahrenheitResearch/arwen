@@ -1561,3 +1561,27 @@ def test_cli_import_namelist_refuses_output_aliasing(tmp_path):
                    "--output", str(inp_path)])
     assert rc == 2  # uniform CLI refusal boundary: message, no traceback
     assert inp_path.read_text() == INPUT_TEXT  # source intact
+
+
+def test_cli_import_namelist_unported_selector_refuses_without_traceback(
+        tmp_path, capsys):
+    """A validate_run_config NotImplementedError (ra_lw_physics=1, the
+    unported WRF RRTM longwave) must reach the operator as the uniform CLI
+    refusal -- message on stderr, exit 2 -- not as a leaked traceback.
+
+    Observed live during the 2026-07-30 WRF-Runner interop verification: a
+    runner-generated namelist pair carrying ra_lw_physics=1 crashed
+    ``gpuwm import-namelist`` with a stack trace where every neighbouring
+    refusal (unmapped keys, FDDA, mosaic) printed one actionable line."""
+    unported = INPUT_TEXT.replace(
+        " ra_lw_physics = 4, 4,", " ra_lw_physics = 1, 1,").replace(
+        " ra_sw_physics = 4, 4,", " ra_sw_physics = 1, 1,")
+    wps_path, inp_path = _pair(tmp_path, inp=unported)
+    out = tmp_path / "resolved.toml"
+    rc = cli.main(["import-namelist", str(wps_path), str(inp_path),
+                   "--output", str(out)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "gpuwm import-namelist: ra_lw_physics=1" in err
+    assert "Traceback" not in err
+    assert not out.exists()  # refusal precedes any output publication
