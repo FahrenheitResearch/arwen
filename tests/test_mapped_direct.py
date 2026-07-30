@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from fractions import Fraction
 import hashlib
 import json
 from pathlib import Path
@@ -54,8 +55,10 @@ def _experiment(domain_count: int, *, nz: int = 49, run_seconds: int = 3600):
             # than defaulting.
             sf_surface_physics=2,
         )
-        domains.append(SimpleNamespace(grid_id=index + 1, run=run))
-    return SimpleNamespace(
+        domains.append(SimpleNamespace(
+            grid_id=index + 1, parent_id=0 if index == 0 else index,
+            start_time=None, run=run))
+    exp = SimpleNamespace(
         domains=tuple(domains),
         root=domains[0],
         start_time=_START,
@@ -65,6 +68,10 @@ def _experiment(domain_count: int, *, nz: int = 49, run_seconds: int = 3600):
             p_top=10_000.0,
         ),
     )
+    exp.dt_exact = lambda grid_id: Fraction(60, 3 ** (grid_id - 1))
+    exp.domain_start_offset_exact = lambda _grid_id: Fraction(0)
+    exp.domain_start_time = lambda _grid_id: exp.start_time
+    return exp
 
 
 @pytest.mark.parametrize(
@@ -98,13 +105,6 @@ def _experiment(domain_count: int, *, nz: int = 49, run_seconds: int = 3600):
             False,
             "boundary.*interval|cadence",
         ),
-        (
-            _target_mapping(boundary_interval_seconds=1800),
-            _experiment(2),
-            1800,
-            True,
-            "whole.hour|integer hour|sub.hour",
-        ),
     ],
 )
 def test_mapped_target_contract_fails_closed(
@@ -124,6 +124,20 @@ def test_mapped_target_contract_returns_bound_receipt():
     assert receipt["target_vertical_levels"] == 49
     assert receipt["boundary_interval_seconds"] == 3600
     assert receipt["require_lateral_boundaries"] is True
+
+
+def test_mapped_target_contract_accepts_five_minute_hierarchy_and_names_real_refusal():
+    receipt = mapped_direct._validate_target_contract(
+        _target_mapping(boundary_interval_seconds=300),
+        _experiment(2), 300, hierarchy=True)
+    assert receipt["boundary_interval_seconds"] == 300
+
+    with pytest.raises(
+            ValueError,
+            match=r"310 s.*whole number of root-domain steps.*31/6"):
+        mapped_direct._validate_target_contract(
+            _target_mapping(boundary_interval_seconds=310),
+            _experiment(2), 310, hierarchy=True)
 
 
 class _Grid:
@@ -588,6 +602,20 @@ def test_mapped_hierarchy_routes_complete_root_inputs(
     )
     assert proof["domain_count"] == domain_count
     assert proof["hierarchy_workers"] == expected_workers
+
+
+def test_mapped_hierarchy_preserves_five_minute_offsets_end_to_end(
+        monkeypatch, tmp_path):
+    args, calls, _expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=2, backend="cpu",
+        cadence=300, mapping_updates={"boundary_interval_seconds": 300})
+
+    proof = mapped_direct.prepare_mapped_wrf(**args)
+
+    assert proof["forcing_offsets_seconds"] == [0, 300]
+    hierarchy_call = calls["hierarchy"][0]
+    assert hierarchy_call["forcing_offsets_seconds"] == (0, 300)
+    assert "forcing_hours" not in hierarchy_call
     assert args["output_root"].is_dir()
 
 
@@ -612,10 +640,10 @@ def test_mapped_hierarchy_routes_complete_root_inputs(
         ),
         (
             2,
-            1800,
+            310,
             49,
-            {"boundary_interval_seconds": 1800},
-            "whole.hour|integer hour|sub.hour",
+            {"boundary_interval_seconds": 310},
+            "whole number of root-domain steps",
         ),
     ],
 )

@@ -1,4 +1,4 @@
-"""Per-parent-step one-way nest forcing.
+"""Per-parent-step nest forcing and experimental two-way restriction.
 
 The coupler is node-facing (``force(node)``), leaves the parent state
 read-only, and refreshes child-owned rolling boundary value/tendency tables.
@@ -21,11 +21,12 @@ from gpuwm.core.microphysics_transition import (
     transition_handles_field,
     transition_parent_field_shape,
 )
-from gpuwm.core.nest_interp import bdy_interp1, register_nest
+from gpuwm.core.nest_interp import bdy_interp1, copy_fcn, register_nest
 from gpuwm.core.preflight import (nest_field_kinds, nest_slot_dtypes,
                                   nest_slot_shapes)
 from gpuwm.ingest.lateral_bc import (attach_nest_boundaries,
-                                     couple_nest_field)
+                                     couple_nest_field,
+                                     uncouple_feedback_field)
 
 
 _STAGGER = {"u": "x", "v": "y"}
@@ -54,12 +55,15 @@ class NestCoupler:
     y-staggered horizontal geometry; w/ph use mass horizontal geometry.
     """
 
-    def __init__(self, child_node):
+    def __init__(self, child_node, *, feedback: int = 0):
         if child_node.parent is None:
             raise ValueError("NestCoupler requires a child DomainNode")
         if child_node.cfg.parent_id != child_node.parent.cfg.grid_id:
             raise ValueError("child/parent configuration link is inconsistent")
         self.child_node = child_node
+        if feedback not in (0, 1):
+            raise ValueError("NestCoupler feedback must be 0 or 1")
+        self.feedback = int(feedback)
         child = child_node.cfg
         parent = child_node.parent.cfg
         ratio = int(child.parent_grid_ratio)
@@ -79,12 +83,27 @@ class NestCoupler:
         self.slot_dtypes = nest_slot_dtypes(child, width, parent)
         self.microphysics_transition = resolve_microphysics_transition(
             parent.run, child.run)
+        if self.feedback == 1 and parent.run.nz != child.run.nz:
+            raise ValueError(
+                "experimental feedback is horizontal-only and requires "
+                "identical parent/child vertical level counts")
+        if (self.feedback == 1
+                and nest_field_kinds(parent.run)
+                != nest_field_kinds(child.run)):
+            raise ValueError(
+                "experimental two-way feedback requires identical active "
+                "parent/child prognostic field inventories; the configured "
+                f"one-way transition {self.microphysics_transition.policy_id!r} "
+                "has no reverse restriction contract")
         self.force_count = 0
         self.first_parent_ticks = None
         self.last_parent_ticks = None
         self._geometry_bound = False
         self._valid = False
         self._last_tables = None
+        self._prepared_feedback = None
+        self.feedback_count = 0
+        self.last_feedback_ticks = None
 
     @property
     def valid(self) -> bool:
@@ -175,7 +194,11 @@ class NestCoupler:
             "parent_interval_ticks": interval_ticks,
             "final_parent_ticks": parent_ticks,
             "expected_cumulative_force_count": (
-                parent_ticks // interval_ticks),
+                max(0, (parent_ticks
+                        - self.child_node.clock.spec.start_ticks)
+                    // interval_ticks)),
+            "domain_start_ticks": int(
+                self.child_node.clock.spec.start_ticks),
             "current_process_coverage_complete": (
                 self.force_count
                 == (parent_ticks - process_start_ticks) // interval_ticks),
@@ -267,18 +290,96 @@ class NestCoupler:
         self._valid = True
 
     def feedback_prepare(self, node, out: FeedbackScratch) -> None:
-        """Dormant Phase-5 feedback prepare (feedback=0 is load-enforced)."""
+        """Freeze the synchronized feedback field plan.
+
+        The numerical transaction stays inside the two already-audited
+        full-field arena slots, so fields are restricted and committed one
+        at a time in :meth:`feedback_commit`; no per-field persistent payload
+        or unregistered allocation is introduced.
+        """
         if node is not self.child_node:
             raise ValueError("feedback node does not match this coupler")
-        out.payload = None
+        if self.feedback == 0:
+            out.payload = None
+            return
+        parent = node.parent
+        if parent is None:
+            raise ValueError("cannot feed back a root domain")
+        if int(parent.clock.ticks) != int(node.clock.ticks):
+            raise RuntimeError(
+                f"feedback requires synchronized clocks, got parent "
+                f"{parent.clock.ticks} and child {node.clock.ticks}")
+        kinds = nest_field_kinds(parent.cfg.run)
+        missing = [
+            kind for kind in kinds
+            if kind != "mu" and getattr(
+                node.state, {"t": "thp", "ph": "php"}.get(kind, kind),
+                None) is None
+        ]
+        if missing:
+            raise RuntimeError(
+                f"child state lacks parent feedback fields {missing}")
+        payload = {
+            "kinds": kinds,
+            "ticks": int(node.clock.ticks),
+        }
+        self._prepared_feedback = payload
+        out.payload = payload
 
     def feedback_commit(self, node) -> None:
         if node is not self.child_node:
             raise ValueError("feedback node does not match this coupler")
+        if self.feedback == 0:
+            return
+        payload = self._prepared_feedback
+        if payload is None:
+            raise RuntimeError("feedback commit has no prepared transaction")
+        if int(node.clock.ticks) != int(payload["ticks"]):
+            raise RuntimeError("feedback clock changed after prepare")
+        parent = node.parent
+        run = node.cfg.run
+        self._bind_geometry()
+
+        # WRF couples/restricts MU before uncoupling momenta and scalars.
+        # MU itself is already in feedback units, so it can be written
+        # directly into the exact parent overlap.
+        child_mu = self._coupled_child_field("mu")
+        copy_fcn(
+            parent.state.mup[None], child_mu, self.registrations["m"],
+            spec_zone=run.spec_zone)
+
+        for kind in payload["kinds"]:
+            if kind == "mu":
+                continue
+            child_field = self._coupled_child_field(kind)
+            shape = _field_shape(parent.state, kind)
+            backing = self._scratch("nest_parent_field")
+            count = math.prod(shape)
+            if count > backing.size:
+                raise RuntimeError("parent feedback field exceeds arena capacity")
+            restricted = backing.reshape(-1)[:count].reshape(shape)
+            stagger = _STAGGER.get(kind, "m")
+            reg = self.registrations[stagger]
+            copy_fcn(
+                restricted, child_field, reg, spec_zone=run.spec_zone)
+            uncouple_feedback_field(
+                parent.state, kind, restricted, reg,
+                spec_zone=run.spec_zone)
+        self.feedback_count += 1
+        self.last_feedback_ticks = int(node.clock.ticks)
 
     def feedback_finalize(self, node) -> None:
         if node is not self.child_node:
             raise ValueError("feedback node does not match this coupler")
+        if self.feedback == 0:
+            return
+        if self._prepared_feedback is None:
+            raise RuntimeError("feedback finalize has no committed transaction")
+        from gpuwm.core.diagnostics import update_diagnostics
+
+        parent = node.parent
+        update_diagnostics(parent.state, parent.cfg.run.hypsometric_opt)
+        self._prepared_feedback = None
 
 
 __all__ = ["NestCoupler"]

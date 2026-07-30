@@ -291,6 +291,14 @@ def inspect_parent_history_frame(
 
     path = Path(path)
     with netCDF4.Dataset(path) as dataset:
+        feedback = (
+            dataset.getncattr("GPUWM_FEEDBACK")
+            if "GPUWM_FEEDBACK" in dataset.ncattrs() else None)
+        if str(feedback).strip().lower() == "experimental":
+            raise OfflineChildContractError(
+                f"{path} carries experimental two-way feedback provenance; "
+                "gpuwm downscale assumes a one-way parent archive and "
+                "refuses feedback-modified parent history")
         if "Times" not in dataset.variables:
             raise OfflineChildContractError(f"{path} has no WRF Times variable")
         valid_time = _decode_time(dataset.variables["Times"])

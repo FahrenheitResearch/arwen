@@ -1870,11 +1870,14 @@ def stability_report(state: DomainState, cfg: RunConfig | None = None,
                      *, boundary_width: int | None = None) -> dict:
     """Runtime health check with one compact device-to-host result readback.
 
-    The two-stage device reduction returns max |u|, |w|, and |theta'|;
-    NaNs propagate through the same maxima, so ``"nan"`` checks exactly the
-    same fields as before.  When ``boundary_width`` is supplied, the same
-    traversal also returns the first overall |w| argmax and boundary/free-
-    interior |w| maxima used by the real74 integration monitor.
+    The two-stage device reduction returns max |u|, |w|, and |theta'| plus
+    max ``|w_upper| / dz_cell`` with each upper-face velocity paired with
+    its own live geopotential layer thickness.  NaNs propagate through the
+    same maxima, so ``"nan"`` checks exactly the same fields as before; bad
+    layer geometry makes the CFL non-finite and therefore fails the runner's
+    safety gate.  When ``boundary_width`` is supplied, the same traversal
+    also returns the first overall |w| argmax and boundary/free-interior |w|
+    maxima used by the real74 integration monitor.
     """
     if state.u.size == 0 or state.w.size == 0 or state.thp.size == 0:
         raise ValueError(
@@ -1891,14 +1894,25 @@ def stability_report(state: DomainState, cfg: RunConfig | None = None,
                 f"{ny} x {nx}")
     largest = max(state.u.size, state.w.size, state.thp.size)
     nblocks = min(256, max(1, (largest + 255) // 256))
-    partial = state.scratch((nblocks, 8), "integration_health_partial")
-    result = state.scratch((7,), "integration_health_result")
+    partial = state.scratch((nblocks, 9), "integration_health_partial")
+    result = state.scratch((8,), "integration_health_result")
+    if cfg is None:
+        ph = phb = state.w  # ncells=0 below: valid, never dereferenced
+        ncells = 0
+        phb_full = 0
+    else:
+        ph = state.php
+        phb = state.phb
+        ncells = state.thp.size
+        phb_full = int(state.phb.ndim == 3)
     kernel = get_kernel("health", "health_partial")
     kernel((nblocks,), (256,),
-           (state.u, state.w, state.thp, partial,
+           (state.u, state.w, state.thp, ph, phb, partial,
             np.uint64(state.u.size), np.uint64(state.w.size),
-            np.uint64(state.thp.size), np.int32(width),
-            np.int32(state.w.shape[1]), np.int32(state.w.shape[2])))
+            np.uint64(state.thp.size), np.uint64(ncells),
+            np.int32(phb_full), np.int32(width),
+            np.int32(state.w.shape[1]), np.int32(state.w.shape[2]),
+            DTYPE(c.G)))
     kernel = get_kernel("health", "health_final")
     kernel((1,), (256,), (partial, result, np.int32(nblocks)))
     host = cp.asnumpy(result)                           # sole health readback
@@ -1906,17 +1920,40 @@ def stability_report(state: DomainState, cfg: RunConfig | None = None,
     nan = not (math.isfinite(u_max) and math.isfinite(w_max)
                and math.isfinite(th_max))
     cfl = None
+    horizontal_cfl = None
+    vertical_cfl = None
     if cfg is not None and not nan:
-        dz_min = state.dz_min
-        if dz_min is None:
-            dz_min = cfg.ztop
-        cfl = cfg.dt * max(u_max / cfg.dx, w_max / dz_min)
+        horizontal_cfl = cfg.dt * u_max / cfg.dx
+        vertical_cfl = cfg.dt * float(host[5])
+        cfl = max(horizontal_cfl, vertical_cfl)
     report = {"u_max": u_max, "w_max": w_max, "th_max": th_max,
-              "cfl": cfl, "nan": nan}
+              "cfl": cfl, "horizontal_cfl": horizontal_cfl,
+              "vertical_cfl": vertical_cfl, "nan": nan}
     if boundary_width is not None:
-        index_words = host[5:7].view(np.uint32)
+        index_words = host[6:8].view(np.uint32)
         w_argmax = int(index_words[0]) | (int(index_words[1]) << 32)
         report.update(
             boundary_w_max=float(host[3]), interior_w_max=float(host[4]),
             w_argmax=w_argmax)
     return report
+
+
+def stability_gate_failed(report: dict, *, max_cfl: float,
+                          max_w_ms: float) -> bool:
+    """True when a single-domain history sample crosses a safety limit.
+
+    Equality remains accepted, preserving the established threshold
+    convention; the first representable value above either limit fails.
+    """
+
+    cfl = report.get("cfl")
+    w_max = report.get("w_max")
+    return (
+        bool(report.get("nan"))
+        or cfl is None
+        or not math.isfinite(float(cfl))
+        or float(cfl) > max_cfl
+        or w_max is None
+        or not math.isfinite(float(w_max))
+        or float(w_max) > max_w_ms
+    )

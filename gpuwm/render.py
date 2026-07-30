@@ -744,18 +744,30 @@ def fallback_notice(engine: str, why: str) -> str | None:
 
     One line, and it carries everything needed to act on it: the engine
     actually used, the products available against the rust catalog, and
-    the exact build command.  The multi-line remedy belongs to ``gpuwm
-    doctor``; a notice that scrolls is a notice that gets skimmed.
+    a fix that is true on THIS install.  The multi-line remedy belongs
+    to ``gpuwm doctor``; a notice that scrolls is a notice that gets
+    skimmed.
+
+    That last clause used to be the bare ``cd tools/rustwx; cargo build``
+    one-liner, naming a directory a wheel install does not have.  The
+    1.0.1 remedy contract fixed that everywhere except here, because
+    this call site assembled its own string.  It goes through the same
+    install-aware machinery now, in the one-line form: the one-liner
+    where the crate exists, a pointer to ``gpuwm doctor`` where it does
+    not -- because the honest answer there is a whole bootstrap and this
+    notice gets exactly one physical line.
     """
 
     if engine != "matplotlib" or why == "requested":
         return None
-    from gpuwm import rustwx
+    from gpuwm import bridges, rustwx
 
+    fix = bridges.install_aware_one_line_hint(
+        rustwx.CARGO_BUILD_HINT, rustwx.RUSTWX_CRATE_RELATIVE)
     return (f"render: engine matplotlib -- rust render engine not "
             f"available ({why}); {len(PRODUCTS)} of the rust catalog's "
             f"{_RUST_CATALOG_PRODUCTS} products are renderable. Build it "
-            f"with: {rustwx.CARGO_BUILD_HINT}")
+            f"with: {fix}")
 
 
 def _pair_main(args: argparse.Namespace) -> int:

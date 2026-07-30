@@ -14,7 +14,10 @@ from gpuwm.ingest.hrrr_target import HrrrTargetDomain
 from gpuwm.ingest.prepared_cache import prepared_cache_identity
 from gpuwm.physics_compat import (
     MORRISON_PROFILE_ID,
+    MYNN_PROFILE_ID,
+    NOAHMP_PROFILE_ID,
     NSSL2_PROFILE_ID,
+    RUC_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     WRF_RRTMG_TO_RTE_RRTMGP,
     WSM6_PROFILE_ID,
@@ -54,7 +57,8 @@ def test_hrrr_runner_capability_query_is_side_effect_free_without_run_args(
     assert payload["supported_sources"] == ["hrrr"]
     assert payload["physics_profile_ids"] == [
         WSM6_PROFILE_ID, THOMPSON_PROFILE_ID, MORRISON_PROFILE_ID,
-        NSSL2_PROFILE_ID]
+        NSSL2_PROFILE_ID, MYNN_PROFILE_ID, RUC_PROFILE_ID,
+        NOAHMP_PROFILE_ID]
     assert payload["report_schema"] == "gpuwm-native-hrrr-benchmark-v2"
     assert payload["window"]["maximum_source_forecast_hour"] == 48
     assert payload["window"]["maximum_run_seconds"] == 172_800
@@ -95,6 +99,14 @@ def test_hrrr_runner_capability_query_is_side_effect_free_without_run_args(
     assert nssl2["readiness"] == "VALIDATION_CANDIDATE"
     assert nssl2["explicit_expert_consent_required"] is False
     assert nssl2["resolved_fixed_preset"] is True
+    assert payload["physics_profiles"][MYNN_PROFILE_ID]["readiness"] \
+        == "IMPLEMENTED_UNVERIFIED"
+    assert payload["physics_profiles"][RUC_PROFILE_ID]["readiness"] \
+        == "IMPLEMENTED_UNVERIFIED"
+    noahmp = payload["physics_profiles"][NOAHMP_PROFILE_ID]
+    assert noahmp["explicit_expert_consent_required"] is True
+    assert noahmp["expert_acknowledgement_id"] \
+        == "noahmp-host-column-throughput-v1"
     assert payload["capability_query"]["requires_cupy"] is False
     assert list(tmp_path.iterdir()) == []
 
@@ -534,7 +546,9 @@ def test_native_hrrr_cli_requires_explicit_history_cadence():
 def _write_native_physics_namelist(
         path, *, mp_physics=6, include_diff_factor=True,
         full_real74_suite=False, morr_rimed_ice=1, cu_physics=1,
-        nssl_controls=""):
+        nssl_controls="", sf_sfclay_physics=91,
+        sf_surface_physics=2, bl_pbl_physics=1,
+        num_soil_layers=None):
     diff_factor = (" diff_6th_factor = 0.10, 0.08,\n"
                    if include_diff_factor else "")
     if full_real74_suite:
@@ -557,14 +571,17 @@ def _write_native_physics_namelist(
             f" morr_rimed_ice = 1, {morr_rimed_ice},\n"
             if mp_physics == 10 else "")
     else:
-        radiation = """ ra_lw_physics = 0, 0,
+        soil = (
+            f" num_soil_layers = 4, {num_soil_layers},\n"
+            if num_soil_layers is not None else "")
+        radiation = f""" ra_lw_physics = 0, 0,
  ra_sw_physics = 1, 1,
  radt = 3, 1,
- sf_sfclay_physics = 91, 91,
- sf_surface_physics = 2, 2,
- bl_pbl_physics = 1, 1,
+ sf_sfclay_physics = 91, {sf_sfclay_physics},
+ sf_surface_physics = 2, {sf_surface_physics},
+ bl_pbl_physics = 1, {bl_pbl_physics},
  cu_physics = 0, 0,
-"""
+{soil}"""
         dynamics = ""
         morrison = ""
     path.write_text(f"""&physics
@@ -604,6 +621,48 @@ def test_native_hrrr_fixed_physics_profile_rejects_missing_control(tmp_path):
     _write_native_physics_namelist(path, include_diff_factor=False)
     with pytest.raises(ValueError, match="requires.*diff_6th_factor"):
         _validate_native_hrrr_physics_profile(path)
+
+
+@pytest.mark.parametrize(
+    ("profile", "sfclay", "surface", "pbl", "soil_layers"),
+    (
+        (MYNN_PROFILE_ID, 5, 2, 5, 4),
+        (RUC_PROFILE_ID, 91, 3, 1, 9),
+        (NOAHMP_PROFILE_ID, 91, 4, 1, 4),
+    ),
+)
+def test_native_hrrr_new_front_door_families_prepare_exact_profile(
+        tmp_path, profile, sfclay, surface, pbl, soil_layers):
+    path = tmp_path / "namelist.input"
+    _write_native_physics_namelist(
+        path, sf_sfclay_physics=sfclay,
+        sf_surface_physics=surface, bl_pbl_physics=pbl,
+        num_soil_layers=soil_layers)
+    acknowledgements = (
+        ("noahmp-host-column-throughput-v1",)
+        if profile == NOAHMP_PROFILE_ID else ()
+    )
+
+    receipt = _validate_native_hrrr_physics_profile(
+        path, profile, expert_acknowledgements=acknowledgements)
+
+    assert receipt["profile"] == profile
+    assert receipt["readiness"] == "IMPLEMENTED_UNVERIFIED"
+    assert receipt["resolved"]["sf_sfclay_physics"] == sfclay
+    assert receipt["resolved"]["sf_surface_physics"] == surface
+    assert receipt["resolved"]["bl_pbl_physics"] == pbl
+    assert receipt["resolved"]["num_soil_layers"] == soil_layers
+    assert receipt["front_door_selection"]["profile"] == profile
+
+
+def test_native_hrrr_noahmp_refuses_without_registry_acknowledgement(tmp_path):
+    path = tmp_path / "namelist.input"
+    _write_native_physics_namelist(
+        path, sf_surface_physics=4, num_soil_layers=4)
+
+    with pytest.raises(
+            ValueError, match="noahmp-host-column-throughput-v1"):
+        _validate_native_hrrr_physics_profile(path, NOAHMP_PROFILE_ID)
 
 
 def test_native_hrrr_thompson_profile_is_guarded_and_table_bound(

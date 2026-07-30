@@ -207,6 +207,23 @@ _ADAPTERS = (
     _adapter(
         "gdas", aliases=("gdas-0p25", "gdas-0.25"),
         default_product="pgrb2.0p25", max_hour=9,
+        notes=(
+            "Fetch and decode only, and that part is real: `gpuwm fetch "
+            "--source gdas` serves f000..f009 and the certified "
+            "gfs_grib2_bridge decodes it, against a committed real "
+            "NOMADS f000/f003/f006/f009 corpus -- the endpoint included "
+            "-- with the declared analysis and "
+            "forecast generating processes (81/96). What is missing is "
+            "this adapter: no field, level, or cadence mapping is "
+            "declared, so there is no ingest route and no front door. "
+            "GDAS publishes the same pgrb2.0p25 container as GFS -- same "
+            "0.25-degree grid, same codes, same 124-record census under "
+            "the certified selector -- so the roadmap here is to reuse "
+            "the gfs_pgrb2_0p25_v1 mapping wholesale rather than author "
+            "a new one. That reuse has not been run end to end, and this "
+            "registry does not declare a route it has not run. Use "
+            "--source gfs for a runnable single-domain front door."
+        ),
     ),
     _adapter(
         "gefs", aliases=("gefs-ensemble",),

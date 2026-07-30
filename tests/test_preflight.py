@@ -295,7 +295,7 @@ def test_scratch_registry_feature_matrix(d01_cfg):
     assert d01["smag_rqi"] == m and d01["smag_rng"] == m
     assert d01["diff6_m"] == m
     assert d01["acoustic_mudf"] == (d01_cfg.ny, d01_cfg.nx)  # emdiv=0.01
-    assert d01["integration_health_partial"] == (256, 8)
+    assert d01["integration_health_partial"] == (256, 9)
     assert d01["integration_health_field_ptr"] == (2048,)
     assert d01["integration_health_aux_ptr"] == (2048,)
     assert d01["integration_health_field_size"] == (2048,)
@@ -1073,14 +1073,18 @@ def test_estimate_domain_itemization_pins(exp1):
     assert by_cat == {
         "state": 563557756,
         "physics": 275706760,
-        "scratch": 567285348,  # KF hold + expiry mask + ring-guard saves
+        # KF hold + expiry mask + ring-guard saves, plus the v1.1
+        # co-located vertical-CFL reduction field: one extra FP32 word in
+        # each of the 256 `integration_health_partial` blocks and in the
+        # single `health_final` block, 4 * (256 + 1) = 1,028 B.
+        "scratch": 567286376,
         "lbc": 67091504,
         "nest": 0,
         "transient": 441262500,
     }
     assert d01.resident_bytes == sum(
         v for c, v in by_cat.items() if c != "transient")
-    assert d01.resident_bytes == 1473641368
+    assert d01.resident_bytes == 1473642396
     assert est.resident_bytes == d01.resident_bytes + est.k_tables_bytes
     assert d01.transient_bytes == 441262500
 
@@ -1123,35 +1127,40 @@ def test_estimate_4dom_golden_pins(exp4, est4):
     # 8,050,560 B on d01--d04 (sum 23,815,680 B, the ring lane's ledgered
     # 4-domain total) on top of the ports-branch pins; both components
     # byte-derived on their certified branches.
-    assert per_domain == {1: 1503329568, 2: 5403117960,
-                          3: 6799611664, 4: 9728898936}
+    # v1.1 hygiene merge: the co-located vertical-CFL reduction adds one
+    # FP32 word to each of the 256 `integration_health_partial` blocks and
+    # to `health_final`, so every domain gains exactly 4 * (256 + 1) =
+    # 1,028 B over the ring-lane pins.  Constant per domain because the
+    # health reduction's block count does not scale with the grid.
+    assert per_domain == {1: 1503330596, 2: 5403118988,
+                          3: 6799612692, 4: 9728899964}
     nest = {d.grid_id: d.category_bytes("nest") for d in est4.domains}
     assert nest == {1: 0, 2: 103165552, 3: 149390256, 4: 193084928}
     # The post-CQ request includes both simultaneously live nested-force
     # full-field slots.  The shared physical arena still aliases them to
     # distinct dead RK backings when those capacities fit.
-    assert est4.scratch_arena_request_bytes == 9471814012
+    assert est4.scratch_arena_request_bytes == 9471818124
     # Every Smag path requires distinct horizontal face staging; x/m reuse z
     # while y remains independent.  The pre-RK Smag K pair then borrows the
     # later acoustic coefficient backings.  These remove 141,237,600 B and
     # 141,120,000 B of exact physical allocation.
-    assert est4.scratch_arena_bytes == 3315314804
+    assert est4.scratch_arena_bytes == 3315315832
     # 9,471,814,012 requested - 3,315,314,804 physical = 6,156,499,208 B.
-    assert est4.scratch_arena_saved_bytes == 6156499208
+    assert est4.scratch_arena_saved_bytes == 6156502292
     assert est4.dycore_state_request_bytes == 4930458300
     assert est4.dycore_state_workspace_bytes == 2061345600
     assert est4.dycore_state_saved_bytes == 2869112700
     # Ring snapshot slots are resident (arena-excluded): the ports-branch
     # residency plus the exact 23,815,680-B ring total.
-    assert est4.resident_bytes == 14433109932
+    assert est4.resident_bytes == 14433110960
     # The case configures column_chunk = 6250 (byte-identical to 3125,
     # 33% faster per radiation call); the 3125 numbers stay pinned in the
     # ladder below, so the trade this bought is on the record both ways.
     assert est4.workspace_bytes == 2051400000
     assert est4.transient_peak_bytes == 3182840000
-    assert est4.subtotal_bytes == 19667349932
+    assert est4.subtotal_bytes == 19667350960
     assert est4.alloc_estimate_bytes == math.ceil(
-        1.15 * est4.subtotal_bytes) == 22617452422
+        1.15 * est4.subtotal_bytes) == 22617453604
     # Chunk ladder after arena sharing and physics-persistent reclamation.
     # The 1024-descriptor health-slot registration adds 49,168 B/domain to
     # the audited scratch; the pins below are computed on the merged tree.
@@ -1160,8 +1169,8 @@ def test_estimate_4dom_golden_pins(exp4, est4):
         for chunk in (6250, 3125, 1562, 256)}
     # Every rung carries the ring lane's ceil(1.15 x 23,815,680) =
     # 27,388,032 B on top of the ports-branch ladder.
-    assert ladder == {6250: 22617452422, 3125: 21421912422,
-                      1562: 20823951136, 256: 20324311059}
+    assert ladder == {6250: 22617453604, 3125: 21421913604,
+                      1562: 20823952318, 256: 20324312241}
 
 
 def test_d01_calibration_bounds_measured_fixture(exp1):
@@ -1290,7 +1299,7 @@ def test_n0_probe_projection_flags_stale_calibration_after_exact_aliases(
                       - est.dycore_state_saved_bytes
                       - (3035550000 - est.workspace_bytes)
                       - diff6_alias_saved - 141_120_000)
-    assert projected_used - est.alloc_estimate_bytes == -1_315_538
+    assert projected_used - est.alloc_estimate_bytes == -1_316_720
     legs = pf.evaluate_alloc_gates(
         measured_used_bytes=projected_used,
         estimate_bytes=est.alloc_estimate_bytes,
@@ -1382,10 +1391,10 @@ def test_check_cli_estimator_json(capsys):
     # Ring-guard mp_ring_save_* saves add 23,815,680 B of per-domain
     # (arena-excluded) scratch across the four domains; x1.15 headroom
     # lands 27,388,032 B above the ports-branch CLI pin.
-    assert payload["alloc_estimate_bytes"] == 22617452422
+    assert payload["alloc_estimate_bytes"] == 22617453604
     # All requested moist-CQ slots are represented; the shared arena aliases
     # their lifetimes without changing the exact physical backing.
-    assert payload["scratch_arena_saved_bytes"] == 6156499208
+    assert payload["scratch_arena_saved_bytes"] == 6156502292
     assert payload["dycore_state_saved_bytes"] == 2869112700
     assert payload["domains"]["d04"]["by_category"]["nest"] == 193084928
     assert payload["gates"]["alloc_estimate_le_wddm_budget"] is True
@@ -1406,7 +1415,7 @@ def test_check_cli_estimator_json(capsys):
     # B.  3,872.9 MiB of the old reserve was a compile-time array bound.
     # retention_residual is 3% of the alloc estimate, which carries the
     # ring lane's 27,388,032 B: +821,641 B over the ports-branch pin.
-    assert payload["reserve_bytes"] == 3811652277
+    assert payload["reserve_bytes"] == 3811652313
     assert payload["reserve_components"]["device_overhead_bytes"] == (
         pf.CUDA_CONTEXT_BYTES + 2143272960)
     assert payload["kernel_local_memory_bytes"] == 2143272960
@@ -1427,14 +1436,120 @@ def test_check_cli_over_budget_fails_and_names_the_lever(capsys):
     assert "--column-chunk 1562" in out
 
 
+def test_check_over_budget_envelope_exits_nonzero(capsys, monkeypatch):
+    """B-1: the report said "exceeds the WDDM budget" and exited 0.
+
+    A node-7 pilot on virgin 1.0.1 read `gpuwm check`'s own sentence --
+    "observed peak envelope 12.98 GiB exceeds the WDDM budget 11.64 GiB"
+    -- out of a command that exited 0, so every script wrapping it read
+    green.  The prose and the exit code cannot disagree; the prose is the
+    accurate one.  4, not 1: no gate failed, and the levers differ.
+    """
+    monkeypatch.setattr(pf.sys, "platform", "win32")
+    rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100",
+                     "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0, "a fitting envelope is still a clean pass"
+
+    estimate_gib = payload["alloc_estimate_bytes"] / GIB
+    tight = str(math.ceil(estimate_gib) + 1)
+    rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", tight])
+    out = capsys.readouterr().out
+    assert "WARNING: observed peak envelope" in out
+    assert rc == pf._EXIT_ENVELOPE_OVER_BUDGET
+    assert rc != 0, "the sentence and the exit code must agree"
+    # The warning names the code, so the reader of the text and the
+    # reader of `echo $?` learn the same thing.
+    assert f"exit code {pf._EXIT_ENVELOPE_OVER_BUDGET}" in out
+
+    # A HARDER verdict outranks it: a failing gate is still 1, and a
+    # fail-closed non-evaluable run is still 2.
+    rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "19.5"])
+    assert capsys.readouterr().out.count("OVER BUDGET") == 1
+    assert rc == 1
+    import sys
+    monkeypatch.setitem(sys.modules, "cupy", None)
+    rc = _run_check(["check", str(CONFIG_4DOM)])
+    capsys.readouterr()
+    assert rc == 2
+
+
+def test_declared_free_is_capped_at_the_cards_physical_total(capsys):
+    """B-2: `--card 16gb` declared 16.68 GiB free on a 16 GB card.
+
+    The wizard states a budget and `check` adds the reserve back to
+    recover a notional free.  That arithmetic never saw the card, so the
+    16 GB tier bought the estimate about a gigabyte of budget the card
+    does not physically have.  Free cannot exceed total, ever.
+    """
+    # The pure function first: declared size and measurement are both
+    # ceilings, the tighter one binds, and neither ever widens.
+    gib = int(GIB)
+    assert pf.cap_free_to_physical(
+        17 * gib, card_total_bytes=16 * gib,
+        measured_total_bytes=None) == (16 * gib, 16 * gib)
+    # A measurement of the same card is tighter than its nameplate size
+    # (a "16 GB" card has ~15.57 GiB usable), and it wins.
+    assert pf.cap_free_to_physical(
+        17 * gib, card_total_bytes=16 * gib,
+        measured_total_bytes=15 * gib) == (15 * gib, 15 * gib)
+    # Already within capacity: untouched, and no cap is reported.
+    assert pf.cap_free_to_physical(
+        10 * gib, card_total_bytes=16 * gib,
+        measured_total_bytes=15 * gib) == (10 * gib, None)
+    # No capacity statement at all imposes no ceiling -- a ceiling that
+    # cannot be measured must never be invented.
+    assert pf.cap_free_to_physical(
+        99 * gib, card_total_bytes=None,
+        measured_total_bytes=None) == (99 * gib, None)
+
+    # And end to end through the CLI, with the tier's own numbers: a
+    # 16 GB card, the wizard's flat 3 GiB reserve, budget 13 GiB.  The
+    # reserve check adds back is larger than 3 GiB, so the naive free
+    # lands above the card.
+    rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "13",
+                     "--vram-gib", "16", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reserve_bytes"] > 3 * gib, "otherwise nothing to cap"
+    assert payload["measured_free_bytes"] <= 16 * gib
+    assert payload["free_bytes_capped_to_physical_bytes"] is not None
+    assert "capped" in payload["free_bytes_source"]
+    # The budget follows the capped free, so the gate is evaluated
+    # against VRAM that exists.
+    assert payload["budget_bytes"] == (
+        payload["measured_free_bytes"] - payload["reserve_bytes"])
+    assert rc != 0, "22.6 GiB of estimate does not fit a 16 GB card"
+
+    # Text mode says so out loud rather than only in --json.
+    _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "13",
+                "--vram-gib", "16"])
+    out = capsys.readouterr().out
+    assert "CAPPED" in out
+    assert "free VRAM cannot exceed the card" in out
+
+    # Without a card size the declared figure stands: --budget-gib is
+    # how you size for a machine that is not this one.
+    rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100",
+                     "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["free_bytes_capped_to_physical_bytes"] is None
+    assert payload["measured_free_bytes"] > 100 * gib
+    assert rc == 0
+
+
 def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     """The empirical envelope line: honest, informational, budget-aware.
 
     The Thompson rematch measured a machine peak of 1.746x the footprint
     projection (29,004 MiB vs 16.22 GiB); ``gpuwm check`` must surface
     footprint x1.75 as an OBSERVED envelope and warn when it exceeds the
-    WDDM budget -- WITHOUT changing any gate or exit code, because the
-    enforced numbers remain the itemized estimate and the measured legs.
+    WDDM budget -- WITHOUT changing any gate, because the enforced
+    numbers remain the itemized estimate and the measured legs.
+
+    The exit code is NOT informational, though: see
+    ``test_check_over_budget_envelope_exits_nonzero``.  A node-7 pilot
+    read this command's rc 0 out of a report whose own text said the
+    configuration might not fit.
     """
     monkeypatch.setattr(pf.sys, "platform", "win32")
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100",
@@ -1458,8 +1573,7 @@ def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     assert "WARNING: observed peak envelope" not in out
 
     # A budget the ESTIMATE fits but the envelope exceeds: the estimate
-    # gate still passes and the exit code stays 0 (informational only),
-    # but the warning names the honest number.
+    # gate still passes, and the warning names the honest number.
     envelope_gib = payload["observed_peak_envelope_bytes"] / GIB
     estimate_gib = payload["alloc_estimate_bytes"] / GIB
     tight = str(math.ceil(estimate_gib) + 1)
@@ -1467,12 +1581,12 @@ def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", tight,
                      "--json"])
     payload = json.loads(capsys.readouterr().out)
-    assert rc == 0
+    assert rc == pf._EXIT_ENVELOPE_OVER_BUDGET
     assert payload["gates"]["alloc_estimate_le_wddm_budget"] is True
     assert payload["observed_peak_envelope_exceeds_budget"] is True
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", tight])
     out = capsys.readouterr().out
-    assert rc == 0
+    assert rc == pf._EXIT_ENVELOPE_OVER_BUDGET
     assert "WARNING: observed peak envelope" in out
     assert "exceeds the WDDM budget" in out
     # Estimator-only mode (no budget, no GPU): nothing to compare, no
@@ -1609,7 +1723,7 @@ def test_check_cli_legacy_config_wraps(capsys):
     assert list(payload["domains"]) == ["d01"]
     # The 1024-descriptor health capacity adds 24,576 B and the ring-guard
     # saves 3,010,560 B to the pre-assembly pin (itemization-pin derivation).
-    assert payload["domains"]["d01"]["resident_bytes"] == 1473641368
+    assert payload["domains"]["d01"]["resident_bytes"] == 1473642396
 
 
 def test_check_cli_fails_closed_when_nothing_is_evaluable(capsys,
@@ -1832,8 +1946,11 @@ def test_alloc_preflight_n0_four_domain():
     # abort: under the full suite, session-scoped gpu fixtures hold device
     # memory no gc can surrender, so the fresh-process probe legitimately
     # cannot fit -- assert the abort JSON is well-formed, then skip (the
-    # binding N0 evidence is the controller's standalone probe).
-    assert proc.returncode in (0, 1, 3), proc.stderr[-2000:]
+    # binding N0 evidence is the controller's standalone probe).  exit 4 =
+    # every measured leg passed but the observed peak envelope sits above
+    # the budget, which on a four-domain config is the expected verdict on
+    # most cards; the measured legs below are what this test is about.
+    assert proc.returncode in (0, 1, 3, 4), proc.stderr[-2000:]
     report = json.loads(proc.stdout)
     if proc.returncode == 3:
         assert report.get("abort"), "exit 3 must carry a structured abort"

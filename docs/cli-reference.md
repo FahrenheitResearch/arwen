@@ -27,6 +27,33 @@ R1,R2,...` for any other root spacing and integer refinement chain.
 `--namelist-input`. Add `--source-top-pressure-pa` when the source top is
 known; requesting a higher model top then fails before preprocessing.
 
+## `gpuwm adapt`
+
+`gpuwm adapt` is the create-only front door for an arbitrary GRIB2 source
+whose capabilities can be verified without a named adapter.
+
+```text
+gpuwm adapt --vtable VTABLE --skeleton DESCRIPTOR
+
+gpuwm adapt --vtable VTABLE --descriptor DESCRIPTOR
+  --input GRIB2 [--input GRIB2 ...] --output-dir DIR
+  [--grib2-inventory EXE --grib2-dump EXE]
+```
+
+Skeleton mode writes a review-required `rw-wps.descriptor.v1` scaffold.
+Authoring mode compiles its Vtable selectors, inventories the actual files,
+checks exact fields/levels, target unit/axis/staggering bindings, complete
+declared soil policy, one regular-lat/lon GDT 0 grid, uniform cadence, and
+source-top coverage of the descriptor's model top. Any failure names the
+missing capability and writes no adapter.
+
+Success writes an SHA-256-bound mapping/composition/provenance authority
+triple plus `adapter.inputs.json`. Its exact status is
+`runnable_mapping_not_stock_wrf_certified`; unchanged-stock-WRF evidence is a
+separate exact-authority gate. See
+`arbitrary-verified-adapters.md` for the schema, battery, refusal examples,
+output contract, and runnable-versus-certified boundary.
+
 ## Named source routes
 
 | `--source` | Required source control | Notes |

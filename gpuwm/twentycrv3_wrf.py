@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 import time
 from typing import Sequence
 
@@ -163,8 +164,51 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: The tables the native front doors consume.  A config carrying
+#: anything else is not a 20CRv3 config, and saying so in one sentence is
+#: the whole difference between a refusal and a crash.
+_NATIVE_CONFIG_TABLES = ("experiment", "shared", "projection", "domain")
+
+
+def _refuse_incompatible_config(path: Path, error: Exception) -> str:
+    """One sentence: what is incompatible, and which config route works.
+
+    A node-8 pilot pointed this front door at the wizard's default TOML
+    and got a raw traceback out of `experiment.build_experiment`
+    ("unknown table(s)/top-level key(s) ['case_data']").  The gate is
+    right -- `[case_data]` declares the ERA5 config-driven run path, and
+    this route does not read it -- but a traceback does not tell anyone
+    how to produce a config that works.
+    """
+
+    detail = str(error)
+    if "case_data" in detail:
+        why = ("its [case_data] table declares the ERA5 config-driven run "
+               "path, which this native front door does not read")
+    else:
+        why = detail
+    return (
+        f"rw-wps --source 20crv3: {path} is not a config this front door "
+        f"can consume: {why}.  It reads "
+        f"[{']/['.join(_NATIVE_CONFIG_TABLES)}] only.  Emit a compatible "
+        f"config with `gpuwm domain --source gfs` -- that route emits no "
+        f"[case_data] table, and only the geometry and physics tables it "
+        f"writes are consumed here -- then pass it as --experiment-config."
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    # Config compatibility first, before any GRIB2 is decoded: a refusal
+    # the user can act on beats a traceback twenty minutes in.
+    from gpuwm.experiment import load_experiment
+
+    try:
+        load_experiment(args.experiment_config)
+    except ValueError as error:
+        print(_refuse_incompatible_config(Path(args.experiment_config),
+                                          error), file=sys.stderr)
+        return 2
     proof = prepare_20crv3_wrf(
         mapping=args.mapping,
         composition=args.composition,
@@ -183,6 +227,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         hierarchy_workers=args.hierarchy_workers,
     )
     print(json.dumps(proof, indent=2, sort_keys=True, allow_nan=False))
+    # Parity with the GFS front door: a complete, hash-bound run command,
+    # on stderr so the proof document on stdout stays machine-readable.
+    # The 20CRv3 route ran end to end for a node-8 pilot and then said
+    # nothing at all about how to run the forecast.
+    from gpuwm.gfs_direct import prepared_forecast_next_command
+
+    for line in prepared_forecast_next_command(
+            proof, output_root=args.output_root,
+            experiment_config=args.experiment_config,
+            wps_namelist=args.wps_namelist, source="20crv3"):
+        print(line, file=sys.stderr)
     return 0
 
 

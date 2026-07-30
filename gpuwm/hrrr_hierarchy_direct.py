@@ -29,6 +29,7 @@ from gpuwm.ingest.hrrr_target import load_hrrr_target_domain
 from gpuwm.ingest.nest_init import NestedInputCatalog, ParentInitView
 from gpuwm.ingest.prepared_cache import (
     PreparedCacheReader,
+    prepared_domain_config_identity,
     prepared_cache_identity,
     restore_prepared_cache,
 )
@@ -398,7 +399,7 @@ def _compare_stock_experiment(native_exp, stock_exp) -> None:
 def _effective_domain_config(domain) -> dict[str, object]:
     """Canonicalize cadence fields that are inactive under selected schemes."""
 
-    document = asdict(domain)
+    document = prepared_domain_config_identity(domain)
     run = document["run"]
     if run["radt"] > 0.0:
         run["radt_minutes"] = run["radt"]

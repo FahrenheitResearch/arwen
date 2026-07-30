@@ -77,6 +77,7 @@ from gpuwm.supervisor import atomic_write_json  # noqa: E402
 from gpuwm.physics_compat import (  # noqa: E402
     MORRISON_PROFILE_ID,
     MYNN_PROFILE_ID,
+    NOAHMP_PROFILE_ID,
     NSSL2_PROFILE_ID,
     RUC_PROFILE_ID,
     THOMPSON_PROFILE_ID,
@@ -86,6 +87,7 @@ from gpuwm.physics_compat import (  # noqa: E402
     single_domain_runtime_switches,
     thompson_runtime_requirements,
     thompson_table_root,
+    validate_single_domain_physics_profile,
 )
 from gpuwm.source_authorities import twentycrv3_authority_sha256  # noqa: E402
 from gpuwm.wrf_physics_inventory import (  # noqa: E402
@@ -106,6 +108,7 @@ MORRISON_PHYSICS_PROFILE = MORRISON_PROFILE_ID
 NSSL2_PHYSICS_PROFILE = NSSL2_PROFILE_ID
 RUC_PHYSICS_PROFILE = RUC_PROFILE_ID
 MYNN_PHYSICS_PROFILE = MYNN_PROFILE_ID
+NOAHMP_PHYSICS_PROFILE = NOAHMP_PROFILE_ID
 PHYSICS_PROFILES = (
     PHYSICS_PROFILE,
     TWENTYCRV3_WSM6_PHYSICS_PROFILE,
@@ -114,6 +117,7 @@ PHYSICS_PROFILES = (
     NSSL2_PHYSICS_PROFILE,
     MYNN_PHYSICS_PROFILE,
     RUC_PHYSICS_PROFILE,
+    NOAHMP_PHYSICS_PROFILE,
 )
 SUPPORTED_SOURCES = frozenset({"gfs", "era5", "20crv3"})
 _SOURCE_PHYSICS_PROFILES = MappingProxyType({
@@ -121,7 +125,8 @@ _SOURCE_PHYSICS_PROFILES = MappingProxyType({
         PHYSICS_PROFILE, THOMPSON_PHYSICS_PROFILE,
         MORRISON_PHYSICS_PROFILE, NSSL2_PHYSICS_PROFILE,
         MYNN_PHYSICS_PROFILE,
-        RUC_PHYSICS_PROFILE),
+        RUC_PHYSICS_PROFILE,
+        NOAHMP_PHYSICS_PROFILE),
     "era5": (
         PHYSICS_PROFILE, THOMPSON_PHYSICS_PROFILE,
         MORRISON_PHYSICS_PROFILE, NSSL2_PHYSICS_PROFILE,
@@ -160,9 +165,17 @@ _SOURCE_SCHEMA = {
     "20crv3": "gpuwm-20crv3-grib2-inputs-v1",
 }
 _PROOF_SCHEMA = {
-    "gfs": "gpuwm-gfs-direct-wrf-proof-v2",
+    "gfs": "gpuwm-gfs-direct-wrf-proof-v3",
     "era5": "gpuwm-era5-direct-wrf-proof-v2",
     "20crv3": "gpuwm-mapped-direct-wrf-proof-v1",
+}
+_LEGACY_PROOF_SCHEMAS = {
+    # v2 remains independently verifiable.  It predates the explicit
+    # front-door physics selection receipt and therefore cannot be promoted
+    # to v3 by inference.
+    "gfs": frozenset({"gpuwm-gfs-direct-wrf-proof-v2"}),
+    "era5": frozenset(),
+    "20crv3": frozenset(),
 }
 _HIERARCHY_PROOF_SCHEMA = {
     "gfs": "gpuwm-gfs-native-hierarchy-proof-v1",
@@ -323,6 +336,33 @@ def runner_capabilities() -> dict[str, object]:
                 "restart but has no gpuwm/WRF trajectory comparison; the CUDA "
                 "leaves also differ from the CPU references by up to 137 ULP "
                 "in the diffusivities away from their oracle fixtures"),
+        },
+        RUC_PHYSICS_PROFILE: {
+            "selector": 6,
+            "readiness": "IMPLEMENTED_UNVERIFIED",
+            "explicit_expert_consent_required": False,
+            "explicit_profile_selection_required": True,
+            "runtime_guards": [],
+            "external_table_assets": [],
+            "resolved_fixed_preset": True,
+            "warning": (
+                "RUC LSM runs with its nine-layer soil state but has no "
+                "gpuwm/WRF forecast trajectory comparison"),
+        },
+        NOAHMP_PHYSICS_PROFILE: {
+            "selector": 6,
+            "readiness": "IMPLEMENTED_UNVERIFIED_EXPERT",
+            "explicit_expert_consent_required": True,
+            "explicit_profile_selection_required": True,
+            "runtime_guards": [
+                "measured 360,000-column ceiling or explicit expert budget",
+                "glacier columns refused",
+            ],
+            "external_table_assets": [],
+            "resolved_fixed_preset": True,
+            "warning": (
+                "Noah-MP runs on the device but has no gpuwm/WRF forecast "
+                "trajectory comparison"),
         },
     }
     return {
@@ -639,6 +679,16 @@ def _profile_readiness(source: str, profile: str) -> tuple[str, str | None]:
     if profile == NSSL2_PHYSICS_PROFILE:
         return "VALIDATION_CANDIDATE", (
             "NSSL-2 MP18 is implemented but remains a validation candidate")
+    if profile == MYNN_PHYSICS_PROFILE:
+        return "IMPLEMENTED_UNVERIFIED", (
+            "MYNN 5/5 has no gpuwm/WRF forecast trajectory comparison")
+    if profile == RUC_PHYSICS_PROFILE:
+        return "IMPLEMENTED_UNVERIFIED", (
+            "RUC LSM has no gpuwm/WRF forecast trajectory comparison")
+    if profile == NOAHMP_PHYSICS_PROFILE:
+        return "IMPLEMENTED_UNVERIFIED_EXPERT", (
+            "Noah-MP has no gpuwm/WRF forecast trajectory comparison and "
+            "retains its registry-owned expert acknowledgement")
     return "SUPPORTED_RUNNER_PROFILE", None
 
 
@@ -920,25 +970,26 @@ def _strict_json(value):
 def _stability_diagnosis(sample: Mapping[str, object], state, run) -> str:
     """Say which Courant term tripped, and that dt is the remedy.
 
-    ``cfl`` in the health report is ``dt * max(u_max/dx, w_max/dz_min)``
-    -- one number over two very different terms.  With the certified
-    49-level eta profile ``dz_min`` is about 14.3 m, so the vertical term
-    dominates by three orders of magnitude and the horizontal one is
-    never close: a measured tropical abort read ``cfl 27.70`` with a
-    horizontal Courant number of 0.15.  Printing the single number sent
-    a first-time user reading dycore.py to find out what it meant, with
-    nothing anywhere saying the time step was the fix.
+    The vertical term is the maximum co-located ``dt*|w_upper|/dz_cell``;
+    it never combines a global updraft with an unrelated thin layer.
     """
 
+    def number(key, default):
+        try:
+            return float(sample.get(key, default))
+        except (TypeError, ValueError):
+            return float(default)
+
     dt = float(run.dt)
-    dz_min = getattr(state, "dz_min", None) or float(run.ztop)
-    u_max = float(sample.get("u_max", float("nan")))
-    w_max = float(sample.get("w_max", float("nan")))
-    horizontal = dt * u_max / float(run.dx)
-    vertical = dt * w_max / float(dz_min)
+    u_max = number("u_max", float("nan"))
+    w_max = number("w_max", float("nan"))
+    horizontal = number(
+        "horizontal_cfl", dt * u_max / float(run.dx))
+    vertical = number("vertical_cfl", float("nan"))
     if vertical >= horizontal:
-        term = (f"VERTICAL Courant {vertical:.2f} (w_max {w_max:.2f} m/s "
-                f"over the {dz_min:.1f} m thinnest layer)")
+        term = (
+            f"VERTICAL Courant {vertical:.2f} "
+            "(maximum co-located |w|/layer-thickness)")
     else:
         term = (f"HORIZONTAL Courant {horizontal:.2f} (u_max {u_max:.2f} "
                 f"m/s over dx {float(run.dx) / 1000:.3f} km)")
@@ -1120,6 +1171,18 @@ def _verify_thompson_runtime_environment(
             f"preflight resolved {expected_root}, now {actual_root}")
 
 
+def _sibling_outdir(protected: Path) -> Path:
+    """A concrete --outdir the guard below will accept, beside ``protected``.
+
+    Named in the refusal so it reads as an instruction rather than a rule,
+    and matching what the GFS front door suggests, so the two surfaces
+    send the user to the same directory.
+    """
+
+    protected = Path(protected)
+    return protected.parent / f"{protected.name}-forecast"
+
+
 def claim_output_directory(
         path: Path, *, protected_roots=(),
 ) -> Path:
@@ -1132,7 +1195,9 @@ def claim_output_directory(
         if resolved == protected or protected in resolved.parents:
             raise ValueError(
                 f"forecast output must not be inside protected input tree "
-                f"{protected}")
+                f"{protected}; the forecast may not write into its own "
+                f"inputs.  Pass an --outdir beside them instead, for "
+                f"example {_sibling_outdir(protected)}")
     path.mkdir(parents=True, exist_ok=False)
     return path.resolve()
 
@@ -1296,7 +1361,8 @@ def _resolve_prepared_layout(
     if proof.get("status") != "READY_NOT_YET_STOCK_WRF_GATED":
         raise ValueError(
             f"{source.upper()} preparation proof is not READY for forecast")
-    if schema == _PROOF_SCHEMA[source]:
+    if (schema == _PROOF_SCHEMA[source]
+            or schema in _LEGACY_PROOF_SCHEMAS[source]):
         if len(source_exp.domains) != 1:
             raise ValueError(
                 "single-domain preparation proof requires a one-domain "
@@ -1652,6 +1718,9 @@ def _validate_profile_switches(
         THOMPSON_PHYSICS_PROFILE: "guarded Thompson MP8 profile",
         MORRISON_PHYSICS_PROFILE: "Morrison MP10 runtime profile",
         NSSL2_PHYSICS_PROFILE: "NSSL-2 validation-candidate profile",
+        MYNN_PHYSICS_PROFILE: "MYNN 5/5 implemented-unverified profile",
+        RUC_PHYSICS_PROFILE: "RUC LSM implemented-unverified profile",
+        NOAHMP_PHYSICS_PROFILE: "Noah-MP expert profile",
     }
     for domain in domains:
         cfg = domain.run
@@ -1754,6 +1823,33 @@ def _validate_physics(
         }
     receipt["output_cadence"] = cadence_receipt
     return receipt
+
+
+def _validate_front_door_physics_proof(
+        proof: Mapping[str, object], *, source: str, profile: str, cfg,
+) -> dict[str, object] | None:
+    """Verify v3's explicit physics receipt without rewriting v2 history."""
+
+    if source != "gfs" or proof.get("schema") in _LEGACY_PROOF_SCHEMAS[source]:
+        return None
+    if proof.get("schema") != _PROOF_SCHEMA[source]:
+        return None
+    selected = proof.get("physics")
+    if not isinstance(selected, dict):
+        raise ValueError("GFS v3 preparation proof physics receipt is missing")
+    acknowledgements = selected.get("expert_acknowledgements")
+    if (not isinstance(acknowledgements, list)
+            or any(not isinstance(value, str) for value in acknowledgements)):
+        raise ValueError(
+            "GFS v3 preparation proof expert acknowledgements are malformed")
+    expected = validate_single_domain_physics_profile(
+        profile, config=cfg,
+        expert_acknowledgements=tuple(acknowledgements))
+    if selected != expected:
+        raise ValueError(
+            "GFS v3 preparation proof physics selection differs from the "
+            "hash-bound experiment/profile")
+    return expected
 
 
 def _validate_proof_content_sha256(proof: Mapping[str, object]) -> str:
@@ -2447,6 +2543,8 @@ def preflight_prepared_forecast(
     physics_receipt = _validate_physics(
         exp, physics_profile, run_seconds, history_interval_seconds,
         source=source)
+    front_door_physics = _validate_front_door_physics_proof(
+        proof, source=source, profile=physics_profile, cfg=exp.root.run)
     physics_receipt["execution_plan"] = _execution_plan_receipt(
         source_exp=source_exp, executed_exp=exp, profile=physics_profile,
         history_interval_seconds=history_interval_seconds)
@@ -2625,8 +2723,14 @@ def preflight_prepared_forecast(
             "ny": int(exp.root.run.ny),
             "nz": int(exp.root.run.nz),
         }
+        expected_export_schema = (
+            "gpuwm-native-direct-wrf-export-v3"
+            if source == "gfs"
+            and proof.get("schema") == _PROOF_SCHEMA["gfs"]
+            else "gpuwm-native-direct-wrf-export-v2"
+        )
         if (not isinstance(export, dict)
-                or export.get("schema") != "gpuwm-native-direct-wrf-export-v2"
+                or export.get("schema") != expected_export_schema
                 or export.get("status") != "READY"
                 or export.get("forcing_hours") != list(forcing_hours)
                 or export.get("boundary_interval_seconds")
@@ -2636,6 +2740,11 @@ def preflight_prepared_forecast(
                 != exp.start_time.strftime("%Y-%m-%d_%H:%M:%S")):
             raise ValueError(
                 "proof direct-WRF export identity differs from the run")
+        if expected_export_schema.endswith("-v3") \
+                and export.get("physics") != front_door_physics:
+            raise ValueError(
+                "GFS v3 export physics receipt differs from the preparation "
+                "proof")
         export_source = export.get("source")
         expected_export_source = {
             "contract_sha256": _sha256(contract_path),
@@ -2794,7 +2903,7 @@ def run_prepared_forecast(
     import cupy as cp
 
     from gpuwm.core.clock import build_schedule, resolve_clock
-    from gpuwm.core.dycore import stability_report
+    from gpuwm.core.dycore import stability_gate_failed, stability_report
     from gpuwm.core.health import StateHealthValidator
     from gpuwm.core.model import (
         DomainNode, ExperimentState, ModelRuntimeStatus, execute_experiment,
@@ -2903,11 +3012,8 @@ def run_prepared_forecast(
             **report,
         }
         history.append(_strict_json(sample))
-        if (bool(report["nan"]) or report["cfl"] is None
-                or not math.isfinite(float(report["cfl"]))
-                or float(report["cfl"]) > 10.0
-                or not math.isfinite(float(report["w_max"]))
-                or float(report["w_max"]) > 150.0):
+        if stability_gate_failed(
+                report, max_cfl=10.0, max_w_ms=150.0):
             raise FloatingPointError(
                 "prepared forecast stability threshold failed: "
                 + _stability_diagnosis(sample, current.state, current.cfg.run)
@@ -3261,8 +3367,15 @@ def main(argv=None) -> int:
         return 0
     args = _parse_args(argv)
     _resolve_clock_arguments(args)
-    outdir = claim_output_directory(
-        args.outdir, protected_roots=(args.prepared_root,))
+    # A rejected --outdir is a usage mistake, not a crash: one sentence
+    # naming the problem and a directory that works, never a traceback.
+    try:
+        outdir = claim_output_directory(
+            args.outdir, protected_roots=(args.prepared_root,))
+    except (ValueError, FileExistsError) as error:
+        print(f"prepared_single_domain_forecast: --outdir refused: {error}",
+              file=sys.stderr)
+        return 2
     started = time.perf_counter()
     _atomic_json(outdir / "progress.json", {
         "schema": PROGRESS_SCHEMA,

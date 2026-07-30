@@ -1,0 +1,507 @@
+"""Experimental two-way nest feedback activation gates."""
+
+import hashlib
+from dataclasses import replace
+from datetime import datetime, timedelta
+from types import MappingProxyType
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+from conftest import requires_gpu
+
+from gpuwm.config import RunConfig
+from gpuwm.core.model import FeedbackScratch
+from gpuwm.core.nest_interp import feedback_parent_bounds, register_nest
+from gpuwm.experiment import DomainConfig
+
+
+def _domain(
+        grid_id, parent_id, *, nx, ny, ratio=1, run_seconds=30.0,
+        root_specified=True):
+    root = parent_id == 0
+    run = RunConfig(
+        nx=nx, ny=ny, nz=2, dx=3000.0 if root else 3000.0 / ratio,
+        dy=3000.0 if root else 3000.0 / ratio, ztop=12000.0,
+        dt=30.0 if root else 30.0 / ratio, run_seconds=run_seconds,
+        output_interval_s=30.0, grid_id=grid_id,
+        specified=root and root_specified, nested=not root,
+        moist=True, mp_physics=0,
+        spec_bdy_width=5, spec_zone=1, relax_zone=4)
+    return DomainConfig(
+        grid_id=grid_id, parent_id=parent_id,
+        i_parent_start=1 if root else 4,
+        j_parent_start=1 if root else 4,
+        parent_grid_ratio=1 if root else ratio,
+        parent_time_step_ratio=1 if root else ratio,
+        history_interval_s=30.0, run=run,
+        time_step=30 if root else None)
+
+
+def test_feedback_parent_bounds_exclude_child_specified_zone():
+    mass = register_nest(
+        nri=3, nrj=3, i_parent_start=4, j_parent_start=4,
+        child_nx=9, child_ny=9, parent_nx=14, parent_ny=14,
+        stagger="", wrapper="bdy")
+    xface = register_nest(
+        nri=3, nrj=3, i_parent_start=4, j_parent_start=4,
+        child_nx=9, child_ny=9, parent_nx=14, parent_ny=14,
+        stagger="x", wrapper="bdy")
+    assert feedback_parent_bounds(mass, spec_zone=1) == (4, 4, 4, 4)
+    assert feedback_parent_bounds(xface, spec_zone=1) == (4, 5, 4, 4)
+
+
+def test_feedback_refuses_one_way_only_microphysics_transition():
+    from gpuwm.core.microphysics_transition import MP8_TO_MP18_POLICY
+    from gpuwm.core.nest import NestCoupler
+
+    parent_cfg = _domain(1, 0, nx=14, ny=14)
+    parent_cfg = replace(
+        parent_cfg,
+        run=replace(parent_cfg.run, mp_physics=8, moist_cq=True))
+    child_cfg = _domain(2, 1, nx=9, ny=9, ratio=3)
+    child_cfg = replace(
+        child_cfg,
+        run=replace(
+            child_cfg.run, mp_physics=18, moist_cq=True,
+            nest_microphysics_transition=MP8_TO_MP18_POLICY))
+    parent = SimpleNamespace(cfg=parent_cfg)
+    child = SimpleNamespace(cfg=child_cfg, parent=parent)
+
+    NestCoupler(child, feedback=0)
+    with pytest.raises(
+            ValueError,
+            match="identical active parent/child prognostic.*no reverse"):
+        NestCoupler(child, feedback=1)
+
+    same_scheme = replace(
+        child_cfg,
+        run=replace(
+            parent_cfg.run, grid_id=2, nx=9, ny=9, nz=3,
+            dx=1000.0, dy=1000.0, dt=10.0, specified=False,
+            nested=True))
+    with pytest.raises(ValueError, match="horizontal-only.*vertical level"):
+        NestCoupler(
+            SimpleNamespace(cfg=same_scheme, parent=parent), feedback=1)
+
+
+def test_feedback_provenance_is_explicit_and_feedback0_is_absent(tmp_path):
+    from datetime import datetime
+
+    from gpuwm.experiment import (
+        ExperimentConfig, ProjectionConfig, VerticalConfig)
+    from gpuwm.runtime import (
+        FEEDBACK_EXPERIMENTAL_WARNING, _global_wrf_attrs,
+        _write_feedback_provenance_receipt, feedback_provenance)
+
+    root = _domain(1, 0, nx=14, ny=14)
+    base = ExperimentConfig(
+        name="feedback-provenance", start_time=datetime(2000, 1, 1),
+        run_seconds=30.0, vertical=VerticalConfig((), 0.0, 1, 0.2),
+        projection=ProjectionConfig(
+            "lambert", 35.0, -97.0, 30.0, 60.0, -97.0),
+        restart_interval_s=0.0, domains=(root,))
+    assert feedback_provenance(base) is None
+    legacy = feedback_provenance(replace(base, feedback=1))
+    assert legacy["vertical_mapping"] == \
+        "shared-legacy-level-count-horizontal-only"
+    experimental = replace(
+        base, feedback=1,
+        vertical=VerticalConfig((1.0, 0.5, 0.0), 10000.0, 1, 0.2))
+    receipt = feedback_provenance(experimental)
+    assert receipt["feedback"] == "experimental"
+    assert receipt["stock_wrf_certified"] is False
+    assert receipt["vertical_mapping"] == \
+        "shared-explicit-eta-ladder-horizontal-only"
+    assert "not certified against stock WRF yet" in \
+        FEEDBACK_EXPERIMENTAL_WARNING
+
+    path, digest, written = _write_feedback_provenance_receipt(
+        tmp_path, experimental, resumed=True)
+    assert path.name == "feedback-provenance.json"
+    assert len(digest) == 64
+    assert written["feedback"] == "experimental"
+    assert written["resumed"] is True
+
+    grid = SimpleNamespace(
+        truelat1=30.0, truelat2=60.0, stand_lon=-97.0,
+        ref_lat=35.0, ref_lon=-97.0)
+    attrs = _global_wrf_attrs(
+        grid, base.start_time, domain=root,
+        feedback=receipt)
+    assert attrs["GPUWM_FEEDBACK"] == "experimental"
+    assert attrs["GPUWM_FEEDBACK_VALUE"] == 1
+    assert attrs["GPUWM_FEEDBACK_STOCK_WRF_CERTIFIED"] == 0
+    assert "GPUWM_FEEDBACK" not in _global_wrf_attrs(
+        grid, base.start_time, domain=root)
+
+
+def _seed_state(state, *, child):
+    import cupy as cp
+
+    state.mub2d[...] = cp.float32(128.0)
+    state.mup[...] = cp.float32(0.0)
+    state.thb[...] = cp.float32(300.0)
+    state.c1h[...] = cp.float32(1.0)
+    state.c2h[...] = cp.float32(0.0)
+    state.c1f[...] = cp.float32(1.0)
+    state.c2f[...] = cp.float32(0.0)
+    state.rdnw[...] = cp.float32(-0.001)
+    state.p_top = np.float32(10000.0)
+    for k in range(state.phb.shape[0]):
+        state.phb[k, ...] = cp.float32(k * 1000.0)
+    if child:
+        state.u[...] = cp.float32(2.0)
+        state.v[...] = cp.float32(3.0)
+        state.w[...] = cp.float32(4.0)
+        state.php[...] = cp.float32(8.0)
+        state.thp[...] = cp.float32(0.0)
+        pattern = cp.arange(1, 10, dtype=cp.float32).reshape(3, 3)
+        state.thp[:, 3:6, 3:6] = pattern
+        state.qv[...] = cp.float32(0.002)
+        state.qc[...] = cp.float32(0.003)
+        state.qr[...] = cp.float32(0.004)
+    else:
+        state.u[...] = cp.float32(-2.0)
+        state.v[...] = cp.float32(-3.0)
+        state.w[...] = cp.float32(-4.0)
+        state.php[...] = cp.float32(-8.0)
+        state.thp[...] = cp.float32(-9.0)
+        state.qv[...] = cp.float32(0.1)
+        state.qc[...] = cp.float32(0.2)
+        state.qr[...] = cp.float32(0.3)
+
+
+def _seed_operator_patterns(state, ratio):
+    """Construct discriminating mass/U/V feedback stencils."""
+    import cupy as cp
+
+    state.thp[...] = cp.float32(0.0)
+    mass = cp.arange(
+        1, ratio * ratio + 1, dtype=cp.float32).reshape(ratio, ratio)
+    state.thp[:, ratio:2 * ratio, ratio:2 * ratio] = mass
+
+    state.u[...] = cp.float32(0.0)
+    state.u[:, ratio:2 * ratio, ratio] = cp.arange(
+        1, ratio + 1, dtype=cp.float32)
+    state.u[:, ratio:2 * ratio, 2 * ratio] = cp.arange(
+        ratio + 1, 2 * ratio + 1, dtype=cp.float32)
+
+    state.v[...] = cp.float32(0.0)
+    state.v[:, ratio, ratio:2 * ratio] = cp.arange(
+        2 * ratio + 1, 3 * ratio + 1, dtype=cp.float32)
+    state.v[:, 2 * ratio, ratio:2 * ratio] = cp.arange(
+        3 * ratio + 1, 4 * ratio + 1, dtype=cp.float32)
+
+
+@requires_gpu
+@pytest.mark.gpu
+@pytest.mark.parametrize("ratio", [4, 3], ids=["even-ratio-4", "odd-ratio-3"])
+def test_feedback_restricts_exact_mass_faces_and_leaves_rim_untouched(ratio):
+    import cupy as cp
+
+    from gpuwm.core.nest import NestCoupler
+    from gpuwm.core.preflight import nest_field_kinds
+    from gpuwm.core.state import DomainState
+
+    parent_cfg = _domain(1, 0, nx=14, ny=14)
+    child_cfg = _domain(
+        2, 1, nx=ratio * 3, ny=ratio * 3, ratio=ratio)
+    parent_state = DomainState(parent_cfg.run)
+    child_state = DomainState(child_cfg.run)
+    _seed_state(parent_state, child=False)
+    _seed_state(child_state, child=True)
+    _seed_operator_patterns(child_state, ratio)
+    clock = SimpleNamespace(ticks=0)
+    parent = SimpleNamespace(
+        cfg=parent_cfg, state=parent_state, clock=clock)
+    child = SimpleNamespace(
+        cfg=child_cfg, state=child_state, clock=clock, parent=parent)
+    coupler = NestCoupler(child, feedback=1)
+
+    before = {}
+    for kind in nest_field_kinds(parent_cfg.run):
+        name = {"t": "thp", "ph": "php"}.get(kind, kind)
+        value = parent_state.mup if kind == "mu" else getattr(
+            parent_state, name)
+        before[kind] = cp.asnumpy(value).copy()
+
+    scratch = FeedbackScratch()
+    coupler.feedback_prepare(child, scratch)
+    coupler.feedback_commit(child)
+    coupler.feedback_finalize(child)
+
+    assert coupler.feedback_count == 1
+    mass_average = (ratio * ratio + 1) / 2.0
+    u_face_0 = (ratio + 1) / 2.0
+    u_face_1 = (3 * ratio + 1) / 2.0
+    v_face_0 = (5 * ratio + 1) / 2.0
+    v_face_1 = (7 * ratio + 1) / 2.0
+    if ratio == 4:
+        # Even 4:1 copy_fcn: exact dyadic 1/16 mass and 1/4 face
+        # averages over the constructed 1..16 / four-point stencils.
+        assert float(parent_state.thp[0, 4, 4]) == mass_average == 8.5
+        assert float(parent_state.u[0, 4, 4]) == u_face_0 == 2.5
+        assert float(parent_state.u[0, 4, 5]) == u_face_1 == 6.5
+        assert float(parent_state.v[0, 4, 4]) == v_face_0 == 10.5
+        assert float(parent_state.v[0, 5, 4]) == v_face_1 == 14.5
+    else:
+        # Odd 3:1 takes copy_fcn's centered average path.  Its 1/3 and
+        # 1/9 weights are FP32-rounded, so compare at the kernel's floor.
+        assert float(parent_state.thp[0, 4, 4]) == pytest.approx(
+            mass_average, abs=1.0e-6)
+        assert float(parent_state.u[0, 4, 4]) == pytest.approx(
+            u_face_0, abs=1.0e-6)
+        assert float(parent_state.u[0, 4, 5]) == pytest.approx(
+            u_face_1, abs=1.0e-6)
+        assert float(parent_state.v[0, 4, 4]) == pytest.approx(
+            v_face_0, abs=1.0e-6)
+        assert float(parent_state.v[0, 5, 4]) == pytest.approx(
+            v_face_1, abs=1.0e-6)
+    assert float(parent_state.qv[0, 4, 4]) == pytest.approx(
+        0.002, abs=1.0e-8)
+
+    footprint = np.zeros(parent_state.mup.shape, dtype=bool)
+    footprint[3:6, 3:6] = True
+    mass_reg = coupler.registrations["m"]
+    i_lo, i_hi, j_lo, j_hi = feedback_parent_bounds(
+        mass_reg, spec_zone=child_cfg.run.spec_zone)
+    interior = np.zeros_like(footprint)
+    interior[j_lo:j_hi + 1, i_lo:i_hi + 1] = True
+    rim = footprint & ~interior
+    np.testing.assert_array_equal(
+        cp.asnumpy(parent_state.thp)[:, rim], before["t"][:, rim])
+
+    for kind in nest_field_kinds(parent_cfg.run):
+        name = {"t": "thp", "ph": "php"}.get(kind, kind)
+        value = parent_state.mup if kind == "mu" else getattr(
+            parent_state, name)
+        after = cp.asnumpy(value)
+        reg = coupler.registrations[
+            "x" if kind == "u" else "y" if kind == "v" else "m"]
+        i_lo, i_hi, j_lo, j_hi = feedback_parent_bounds(
+            reg, spec_zone=child_cfg.run.spec_zone)
+        mask = np.zeros(after.shape[-2:], dtype=bool)
+        mask[j_lo:j_hi + 1, i_lo:i_hi + 1] = True
+        outside = np.broadcast_to(~mask, after.shape)
+        np.testing.assert_array_equal(after[outside], before[kind][outside])
+
+
+def _feedback_experiment(run_seconds, feedback=1):
+    from gpuwm.experiment import (
+        ExperimentConfig, ProjectionConfig, VerticalConfig)
+
+    return ExperimentConfig(
+        name="feedback-restart-determinism",
+        start_time=datetime(2000, 1, 1),
+        run_seconds=run_seconds,
+        vertical=VerticalConfig((1.0, 0.5, 0.0), 10000.0, 1, 0.2),
+        projection=ProjectionConfig(
+            "lambert", 35.0, -97.0, 30.0, 60.0, -97.0),
+        restart_interval_s=30.0,
+        domains=(
+            _domain(
+                1, 0, nx=14, ny=14, run_seconds=run_seconds,
+                root_specified=False),
+            _domain(
+                2, 1, nx=9, ny=9, ratio=3,
+                run_seconds=run_seconds),
+        ),
+        feedback=feedback)
+
+
+def _feedback_model(exp):
+    from gpuwm.core.clock import build_schedule, resolve_clock
+    from gpuwm.core.model import (
+        DomainNode, ExperimentState, ModelRuntimeStatus)
+    from gpuwm.core.nest import NestCoupler
+    from gpuwm.core.state import DomainState
+
+    clock = resolve_clock(exp)
+    clocks = clock.clocks()
+    root_cfg, child_cfg = exp.domains
+    root_state = DomainState(root_cfg.run)
+    child_state = DomainState(child_cfg.run)
+    _seed_state(root_state, child=False)
+    _seed_state(child_state, child=True)
+    root_state._nest_restart_classification = "REBUILT"
+    child_state._nest_restart_classification = "REBUILT"
+    grid = SimpleNamespace()
+    root = DomainNode(
+        cfg=root_cfg, grid=grid, state=root_state, clock=clocks[1],
+        parent=None, children=[], coupler=None)
+    child = DomainNode(
+        cfg=child_cfg, grid=grid, state=child_state, clock=clocks[2],
+        parent=root, children=[], coupler=None)
+    root.children.append(child)
+    child.coupler = NestCoupler(child, feedback=exp.feedback)
+    if exp.feedback == 1:
+        # Mirrors gpuwm.core.model's build path: the initialization
+        # transaction runs only when feedback is on.
+        scratch = FeedbackScratch()
+        child.coupler.feedback_prepare(child, scratch)
+        child.coupler.feedback_commit(child)
+        child.coupler.feedback_finalize(child)
+    model = ExperimentState(
+        root=root, nodes_by_grid_id=MappingProxyType({1: root, 2: child}),
+        schedule=build_schedule(exp, clock), memory_ledger=None,
+        experiment_fingerprint="feedback-restart-determinism-v1")
+    model._scratch_arena = None
+    model._dycore_state_workspace = None
+    model._runtime_status = ModelRuntimeStatus()
+    model._resumed = False
+    model._resume_committed_history_grid_ids = frozenset()
+    model._io_manager = None
+    model._last_checkpoint = None
+    return model
+
+
+def _feedback_state_sha256(model):
+    import cupy as cp
+
+    from gpuwm.io.restart import STATE_SERIALIZED_ATTRS
+
+    cp.cuda.Stream.null.synchronize()
+    digest = hashlib.sha256()
+    for node in model.walk_parent_first():
+        digest.update(f"d{node.cfg.grid_id:02d}\n".encode())
+        for name in STATE_SERIALIZED_ATTRS:
+            value = getattr(node.state, name, None)
+            if value is None:
+                continue
+            host = cp.asnumpy(value)
+            digest.update(name.encode() + b"\0")
+            digest.update(str(host.shape).encode() + b"\0")
+            digest.update(host.dtype.str.encode() + b"\0")
+            digest.update(host.tobytes(order="C"))
+    return digest.hexdigest()
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_feedback_restart_continuation_is_sha_identical(monkeypatch, tmp_path):
+    from gpuwm.core.model import execute_experiment
+    from gpuwm.core.preflight import nest_field_kinds
+    from gpuwm.io.restart import restore_tree_restart, write_tree_restart
+
+    def deterministic_step(state, cfg, *, refl_10cm_due=False):
+        del refl_10cm_due
+        for index, kind in enumerate(nest_field_kinds(cfg)):
+            name = {"t": "thp", "ph": "php"}.get(kind, kind)
+            target = state.mup if kind == "mu" else getattr(state, name)
+            target += np.float32(cfg.grid_id * 0.01 + index * 0.001)
+
+    monkeypatch.setattr("gpuwm.core.dycore.step", deterministic_step)
+    full_exp = _feedback_experiment(60.0)
+    unbroken = _feedback_model(full_exp)
+    execute_experiment(
+        unbroken, validate_state=False, pool_trim_per_period=False)
+    unbroken_sha = _feedback_state_sha256(unbroken)
+
+    first_leg = _feedback_model(_feedback_experiment(30.0))
+    execute_experiment(
+        first_leg, validate_state=False, pool_trim_per_period=False)
+    restart_path = write_tree_restart(
+        tmp_path, first_leg, full_exp.start_time + timedelta(seconds=30))
+
+    resumed = _feedback_model(full_exp)
+    restore_tree_restart(restart_path, resumed)
+    assert resumed.node(2).coupler.valid is False
+    execute_experiment(
+        resumed, validate_state=False, pool_trim_per_period=False)
+    resumed_sha = _feedback_state_sha256(resumed)
+
+    assert resumed.node(2).coupler.feedback_count == 2
+    assert resumed_sha == unbroken_sha
+
+
+#: The ``feedback = 0`` whole-tree state digest, over the tiny
+#: two-domain fixture below with the dycore replaced by the same
+#: deterministic step the restart test uses.
+#:
+#: This is not a value invented here.  It is the digest recorded for
+#: **both sides** of the feedback lane's ``feedback = 0`` base/tip A/B --
+#: pre-feedback base ``e7bf4d88`` and lane tip ``80561c6e`` -- in the
+#: internal ledger ``PRODUCT-V11-FEEDBACK-20260730.md``, which is where
+#: the changelog's "a ``feedback = 0`` run is byte-identical to the
+#: pre-change tree" sentence comes from.  Freezing it here turns a
+#: one-off comparison against a tree this release no longer contains
+#: into something the release itself can re-run: the pre-change value is
+#: the bar, and any later change that perturbs a default-configuration
+#: run fails against it.
+#:
+#: It is a same-arithmetic tripwire, not a portability claim.  If it ever
+#: disagrees on different hardware, that is worth knowing on its own
+#: terms -- a card-dependent ``feedback = 0`` run would also undermine
+#: the dual-run byte comparison this project uses as its corruption
+#: detector -- so read a failure as "something moved", and let the A/B
+#: assertion in the test say whether feedback is what moved.
+FEEDBACK_ZERO_STATE_SHA256 = (
+    "727ac476e0ebbf97a89be350a151c593e2b9447cc5d9b14fe0436d5f89e47557")
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_feedback_zero_output_is_pinned_and_costs_nothing(monkeypatch):
+    """`feedback = 0` output is pinned, and the bypass is provably free.
+
+    The changelog promises that an in-place upgrade to the feedback
+    release leaves a ``feedback = 0`` run byte-identical.  That was
+    established by running an archived pre-feedback tree beside the lane
+    tip -- a comparison this release cannot repeat, because it does not
+    contain the base tree.  What it can do is carry the *number* that
+    comparison produced, which is what ``FEEDBACK_ZERO_STATE_SHA256``
+    above is, and re-derive it from the shipped code every time:
+
+    1. **The pre-change digest is the bar.** A complete ``feedback = 0``
+       run over the committed tiny two-domain fixture must reproduce the
+       digest the pre-feedback tree produced.  Any later change that
+       perturbs a default-configuration run fails here instead of
+       shipping.
+    2. **The bypass costs nothing.** The same run with
+       ``skip_feedback_path=True`` -- the executor with the feedback
+       call path structurally absent, which is what the pre-change tree
+       was -- must produce the identical digest, and the coupler must
+       record zero transactions.  Feedback machinery that is dormant on
+       paper but perturbs state in practice fails here, and this half
+       holds regardless of hardware.
+    """
+
+    from gpuwm.core.model import execute_experiment
+    from gpuwm.core.preflight import nest_field_kinds
+
+    def deterministic_step(state, cfg, *, refl_10cm_due=False):
+        del refl_10cm_due
+        for index, kind in enumerate(nest_field_kinds(cfg)):
+            name = {"t": "thp", "ph": "php"}.get(kind, kind)
+            target = state.mup if kind == "mu" else getattr(state, name)
+            target += np.float32(cfg.grid_id * 0.01 + index * 0.001)
+
+    monkeypatch.setattr("gpuwm.core.dycore.step", deterministic_step)
+
+    exp = _feedback_experiment(60.0, feedback=0)
+    assert exp.feedback == 0
+
+    dormant = _feedback_model(exp)
+    assert dormant.node(2).coupler.feedback == 0
+    execute_experiment(
+        dormant, validate_state=False, pool_trim_per_period=False)
+    dormant_sha = _feedback_state_sha256(dormant)
+    # Dispatched at every table position, and a no-op at every one.
+    assert dormant.node(2).coupler.feedback_count == 0
+
+    bypassed = _feedback_model(exp)
+    execute_experiment(
+        bypassed, validate_state=False, pool_trim_per_period=False,
+        skip_feedback_path=True)
+    bypassed_sha = _feedback_state_sha256(bypassed)
+    assert bypassed.node(2).coupler.feedback_count == 0
+
+    assert dormant_sha == bypassed_sha, (
+        "feedback = 0 is not free: walking the dormant three-phase "
+        "transaction changed the run's state relative to an executor "
+        "with the feedback call path removed")
+    assert dormant_sha == FEEDBACK_ZERO_STATE_SHA256, (
+        "the feedback = 0 output of this tree moved; if the change was "
+        "intended, re-freeze FEEDBACK_ZERO_STATE_SHA256 and say so in "
+        "the changelog, because it is an in-place-upgrade promise")

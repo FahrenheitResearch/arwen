@@ -36,7 +36,7 @@ from __future__ import annotations
 import math
 import tomllib
 from dataclasses import dataclass, fields
-from datetime import datetime
+from datetime import datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
 
@@ -131,6 +131,7 @@ _DOMAIN_VERTICAL_KEYS = ("nz", "e_vert", "eta_levels", "p_top", "ztop",
 _DOMAIN_KEYS = frozenset({
     "grid_id", "parent_id", "i_parent_start", "j_parent_start",
     "parent_grid_ratio", "parent_time_step_ratio", "history_interval_s",
+    "start_time",
     "e_we", "e_sn", "nx", "ny", "dx", "dy", "dt",
     "time_step", "time_step_fract_num", "time_step_fract_den",
     "specified", "nested",
@@ -326,6 +327,7 @@ class DomainConfig:
     time_step: int | None = None
     time_step_fract_num: int = 0
     time_step_fract_den: int = 1
+    start_time: datetime | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -348,8 +350,9 @@ class ExperimentConfig:
 
     ``blend_width`` defaults to 5 per Registry.EM_COMMON:2324 (``rconfig
     integer blend_width ... 5 "width of cg fg terrain blended zone"``).
-    ``feedback``/``smooth_option`` are 0 this phase (two-way coupling is
-    Phase 5b; nonzero values are rejected at load).
+    ``feedback`` is a tree-wide switch: 0 is the production one-way path
+    and 1 enables the experimental child-to-parent restriction path.
+    ``smooth_option`` remains 0 because parent smoothing is not implemented.
     """
 
     name: str
@@ -366,6 +369,14 @@ class ExperimentConfig:
     column_chunk: int = DEFAULT_COLUMN_CHUNK
 
     def __post_init__(self):
+        if self.feedback not in (0, 1):
+            raise ValueError(
+                "feedback must be 0 (one-way) or 1 (experimental "
+                f"two-way), got {self.feedback!r}.")
+        if self.smooth_option != 0:
+            raise ValueError(
+                "smooth_option must remain 0; parent smoothing is not "
+                f"implemented, got {self.smooth_option!r}.")
         if (isinstance(self.column_chunk, bool)
                 or not isinstance(self.column_chunk, int)
                 or self.column_chunk < 1):
@@ -388,6 +399,22 @@ class ExperimentConfig:
     def children_of(self, grid_id: int) -> tuple[DomainConfig, ...]:
         self.domain(grid_id)  # KeyError on unknown ids
         return tuple(dc for dc in self.domains if dc.parent_id == grid_id)
+
+    def domain_start_time(self, grid_id: int) -> datetime:
+        """Absolute valid time at which one configured domain becomes live.
+
+        ``None`` is retained only for programmatic legacy fixtures created
+        before per-domain starts entered the schema; it means the experiment
+        start.  Every TOML-loaded domain carries an explicit resolved value.
+        """
+        value = self.domain(grid_id).start_time
+        return self.start_time if value is None else value
+
+    def domain_start_offset_exact(self, grid_id: int) -> Fraction:
+        """Exact seconds from the experiment start to a domain start."""
+        delta = self.domain_start_time(grid_id) - self.start_time
+        return (Fraction(delta.days * 86400 + delta.seconds)
+                + Fraction(delta.microseconds, 1_000_000))
 
     def dt_exact(self, grid_id: int) -> Fraction:
         """The domain's model step as an EXACT rational (seconds).
@@ -460,7 +487,7 @@ def experiment_from_run_config(cfg: RunConfig,
         j_parent_start=1, parent_grid_ratio=1, parent_time_step_ratio=1,
         history_interval_s=float(cfg.output_interval_s), run=cfg,
         time_step=int(whole), time_step_fract_num=rem.numerator,
-        time_step_fract_den=rem.denominator)
+        time_step_fract_den=rem.denominator, start_time=start_time)
     return ExperimentConfig(
         name=cfg.case or "run_config", start_time=start_time,
         run_seconds=float(cfg.run_seconds),
@@ -598,6 +625,57 @@ def _check_cadence(label: str, seconds: Fraction, dt: Fraction, grid_id,
             f"dt = {dt} s exactly, {seconds}/({dt}) = {steps}.")
 
 
+def validate_boundary_timing(
+        exp: ExperimentConfig, boundary_interval_seconds: int, *,
+        source: str = "boundary forcing") -> None:
+    """Validate the structural hierarchy/forcing timing contract.
+
+    There is no whole-hour requirement.  The decoded boundary cadence must
+    be a positive integer number of seconds and an exact number of root
+    steps, because the root Davies clock resets only at top-of-step interval
+    seams.  A delayed child start must additionally be an exact parent-step
+    boundary and an exact boundary-forcing seam.  History output cadence is
+    independent and is deliberately absent from this contract.
+    """
+    if (isinstance(boundary_interval_seconds, bool)
+            or not isinstance(boundary_interval_seconds, int)
+            or boundary_interval_seconds <= 0):
+        raise ValueError(
+            "boundary_interval_seconds must be a positive integer number "
+            f"of seconds for {source}, got {boundary_interval_seconds!r}.")
+    interval = Fraction(boundary_interval_seconds)
+    root_steps = interval / exp.dt_exact(exp.root.grid_id)
+    if root_steps.denominator != 1:
+        raise ValueError(
+            f"boundary_interval_seconds = {boundary_interval_seconds} s "
+            f"for {source} is not a whole number of root-domain steps: "
+            f"d{exp.root.grid_id:02d} dt = "
+            f"{exp.dt_exact(exp.root.grid_id)} s exactly, cadence/dt = "
+            f"{root_steps}.")
+    for dc in exp.domains[1:]:
+        offset = exp.domain_start_offset_exact(dc.grid_id)
+        parent_offset = exp.domain_start_offset_exact(dc.parent_id)
+        parent_dt = exp.dt_exact(dc.parent_id)
+        parent_steps = (offset - parent_offset) / parent_dt
+        if parent_steps.denominator != 1:
+            raise ValueError(
+                f"delayed start_time for d{dc.grid_id:02d} "
+                f"({exp.domain_start_time(dc.grid_id).isoformat()}; offset "
+                f"{float(offset):g} s) is not aligned to its parent step "
+                f"boundary: d{dc.parent_id:02d} dt = {parent_dt} s "
+                f"exactly, (child-parent start offset)/dt = "
+                f"{parent_steps}.")
+        forcing_seams = offset / interval
+        if forcing_seams.denominator != 1:
+            raise ValueError(
+                f"delayed start_time for d{dc.grid_id:02d} "
+                f"({exp.domain_start_time(dc.grid_id).isoformat()}; offset "
+                f"{float(offset):g} s) is not aligned to the "
+                f"boundary-forcing cadence: boundary_interval_seconds = "
+                f"{boundary_interval_seconds} s, offset/cadence = "
+                f"{forcing_seams}.")
+
+
 def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     """Validate a parsed experiment TOML dict and build the config."""
     known_tables = ("experiment", "shared", "projection", "domain")
@@ -639,18 +717,17 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             f"run_seconds in [experiment] of {source} must be a finite "
             f"positive duration in seconds, got {exp['run_seconds']!r}.")
     feedback = exp.get("feedback", 0)
-    if feedback != 0:
+    if feedback not in (0, 1):
         raise ValueError(
             f"feedback = {feedback!r} in [experiment] of {source} is "
-            "rejected: gpuwm implements one-way nesting only; set "
-            "feedback = 0 (two-way child-to-parent feedback is not "
-            "supported).")
+            "rejected: feedback must be 0 (one-way) or 1 "
+            "(experimental two-way child-to-parent restriction).")
     smooth_option = exp.get("smooth_option", 0)
     if smooth_option != 0:
         raise ValueError(
             f"smooth_option = {smooth_option!r} in [experiment] of "
-            f"{source} is rejected: the parent smoother only acts under "
-            "two-way feedback, which gpuwm does not implement; set "
+            f"{source} is rejected: the parent smoother is not "
+            "implemented, including for experimental feedback = 1; set "
             "smooth_option = 0.")
     blend_width = _positive_int("experiment", "blend_width",
                                 exp.get("blend_width", 5), source, 0)
@@ -839,6 +916,57 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                 f"{source} does not name a previously declared domain "
                 f"(domains must be listed parent-before-child); declared "
                 f"so far: {sorted(by_id)}.")
+
+        domain_start = dom.get("start_time", start_time)
+        if (not isinstance(domain_start, datetime)
+                or domain_start.tzinfo is not None):
+            raise ValueError(
+                f"start_time on [[domain]] grid_id = {grid_id} of {source} "
+                "must be an offset-free TOML datetime, got "
+                f"{domain_start!r}.")
+        if is_root and domain_start != start_time:
+            raise ValueError(
+                f"root [[domain]] grid_id = {grid_id} of {source} has "
+                f"start_time = {domain_start.isoformat()}, but the root "
+                "must start at [experiment].start_time = "
+                f"{start_time.isoformat()}.")
+        # Construct through integer microseconds so the exact offset check
+        # below cannot inherit a floating duration.
+        run_microseconds = Fraction(str(run_seconds)) * 1_000_000
+        if run_microseconds.denominator != 1:
+            raise ValueError(
+                f"run_seconds = {run_seconds!r} in {source} cannot be "
+                "represented on Python's microsecond datetime lattice.")
+        stop_time = start_time + timedelta(
+            microseconds=int(run_microseconds))
+        if domain_start < start_time or domain_start >= stop_time:
+            raise ValueError(
+                f"start_time = {domain_start.isoformat()} on d{grid_id:02d} "
+                f"of {source} must lie in the experiment window "
+                f"[{start_time.isoformat()}, {stop_time.isoformat()}).")
+        if not is_root:
+            parent_start = by_id[parent_id].start_time
+            if parent_start is None:
+                parent_start = start_time
+            if domain_start < parent_start:
+                raise ValueError(
+                    f"start_time = {domain_start.isoformat()} on "
+                    f"d{grid_id:02d} of {source} precedes parent "
+                    f"d{parent_id:02d} start_time = "
+                    f"{parent_start.isoformat()}.")
+            delta = domain_start - parent_start
+            offset = (Fraction(delta.days * 86400 + delta.seconds)
+                      + Fraction(delta.microseconds, 1_000_000))
+            parent_steps = offset / dt_by_id[parent_id]
+            if parent_steps.denominator != 1:
+                raise ValueError(
+                    f"delayed start_time for d{grid_id:02d} "
+                    f"({domain_start.isoformat()}; offset "
+                    f"{float(offset):g} s) is not aligned to its parent "
+                    f"step boundary: d{parent_id:02d} dt = "
+                    f"{dt_by_id[parent_id]} s exactly, "
+                    f"(child-parent start offset)/dt = "
+                    f"{parent_steps}.")
 
         # Flags: root takes external specified LBCs, children are nested
         # -- WRF &bdy_control, bundle namelist.input specified=T,F,F,F /
@@ -1074,7 +1202,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             parent_time_step_ratio=tratio,
             history_interval_s=history_interval_s, run=run,
             time_step=time_step, time_step_fract_num=fract_num,
-            time_step_fract_den=fract_den)
+            time_step_fract_den=fract_den, start_time=domain_start)
         domains.append(dc)
         by_id[grid_id] = dc
         dt_by_id[grid_id] = dt_ex

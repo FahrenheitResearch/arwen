@@ -849,6 +849,7 @@ def test_per_domain_writer_builds_static_metadata_once(
 
     metadata = {"XLAT": np.arange(4, dtype=np.float64).reshape(2, 2)}
     metadata_calls = []
+    global_start_calls = []
 
     def build_metadata(grid, static_fields):
         metadata_calls.append((grid, static_fields))
@@ -870,12 +871,15 @@ def test_per_domain_writer_builds_static_metadata_once(
             pass
 
     monkeypatch.setattr(runtime, "_metadata_frame", build_metadata)
-    monkeypatch.setattr(runtime, "_global_wrf_attrs",
-                        lambda *_args, **_kwargs: {})
+    def global_attrs(_grid, start_time, *_args, **_kwargs):
+        global_start_calls.append(start_time)
+        return {}
+    monkeypatch.setattr(runtime, "_global_wrf_attrs", global_attrs)
     monkeypatch.setattr(wrfout, "AsyncDomainWrfoutWriter", CapturingWriter)
 
     cfg = SimpleNamespace(
         grid_id=1,
+        start_time=datetime(1974, 4, 3, 12, 5),
         # sf_surface_physics is not optional in a RunConfig stand-in any more:
         # the soil axis is resolved from the SCHEME (config.soil_layer_count),
         # so a fake that declares a layer count without declaring whose it is
@@ -902,6 +906,7 @@ def test_per_domain_writer_builds_static_metadata_once(
     writers.submit(node, 900)
 
     assert metadata_calls == [(grid, static_fields)]
+    assert global_start_calls == [datetime(1974, 4, 3, 12, 5)]
     submissions = writers._writers[1].submissions
     assert submissions[0][1]["extra_fields"] is metadata
     assert submissions[1][1]["extra_fields"] is metadata

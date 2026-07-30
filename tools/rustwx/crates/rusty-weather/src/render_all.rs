@@ -71,6 +71,30 @@ impl ProductRequest {
 // every non-opt-in catalog candidate and let per-store field
 // availability decide -- filtering "all"/"direct" through a per-model
 // fetch plan here was a source-identity gate on the render path.
+/// Every product slug this build can be asked for by name, deduplicated.
+///
+/// The four families overlap in principle (a slug is classified by the
+/// first family that claims it), so this counts distinct spellings rather
+/// than summing the catalogs.
+pub fn known_product_slugs() -> Vec<String> {
+    let mut slugs: Vec<String> = store_direct_recipe_slugs();
+    slugs.extend(store_derived_recipe_slugs().into_iter().map(str::to_string));
+    slugs.extend(store_heavy_recipe_slugs().into_iter().map(str::to_string));
+    slugs.extend(
+        HrrrWindowedProduct::supported_products()
+            .iter()
+            .map(|product| product.slug().to_string()),
+    );
+    slugs.sort();
+    slugs.dedup();
+    slugs
+}
+
+/// How many distinct product slugs `--list-products` will print.
+pub fn known_product_slug_count() -> usize {
+    known_product_slugs().len()
+}
+
 pub fn partition_products(spec: &str) -> Result<ProductRequest, Box<dyn std::error::Error>> {
     let derived_catalog = || {
         store_derived_recipe_slugs()
@@ -144,9 +168,17 @@ pub fn partition_products(spec: &str) -> Result<ProductRequest, Box<dyn std::err
                 } else if plot_recipe(slug).is_some() {
                     direct.push(slug.to_string());
                 } else {
+                    // Name the problem AND the choices.  The bare "neither a
+                    // direct plot recipe, ..." told a user what the token was
+                    // not, which is unactionable when the vocabulary is a few
+                    // hundred slugs long; the group keywords are the choices
+                    // at this level and --list-products prints the rest.
                     return Err(format!(
-                        "unknown product '{slug}': neither a direct plot recipe, a \
-                         derived/heavy recipe slug, nor a windowed product slug"
+                        "unknown product '{slug}'; choose from 'all', 'direct', \
+                         'derived', 'heavy', 'windowed', or a comma-separated \
+                         list of the {} product slugs that --list-products \
+                         prints",
+                        known_product_slug_count()
                     )
                     .into());
                 }

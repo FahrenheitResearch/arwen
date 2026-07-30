@@ -21,8 +21,8 @@ bundle's 1,4,3,3 ratios).  The namelist chain is authoritative; the
 
 Omitted namelist keys resolve to their WRF v4.6.1 Registry defaults
 (review F2), so an implicitly two-way namelist (omitted ``feedback`` =>
-Registry default 1) trips the loader's feedback rejection instead of
-silently importing as one-way; ``km_opt`` (Registry default -1 =
+Registry default 1) enables the plainly labelled experimental feedback
+path instead of silently importing as one-way; ``km_opt`` (Registry default -1 =
 must-set) is a hard error when omitted.  Values gpuwm supplies WITHOUT a
 Registry source (the ``ztop`` scaffold; ``time_step_sound`` auto -> 4)
 are recorded as :class:`AppliedDefault` entries.  Registry defaults that
@@ -57,7 +57,7 @@ import math
 import re
 import tomllib
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
 
@@ -691,8 +691,8 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             f"{input_path} says {max_dom}.")
 
     # ---- &time_control: start/run length --------------------------------
-    def _dt_from_columns(prefix: str) -> datetime:
-        parts = {}
+    def _dt_columns(prefix: str) -> list[datetime]:
+        parts: dict[str, list[int]] = {}
         for unit, default in (("year", None), ("month", None),
                               ("day", None), ("hour", 0), ("minute", 0),
                               ("second", 0)):
@@ -702,13 +702,23 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                 raise ValueError(
                     f"{input_path} &time_control is missing "
                     f"{prefix}_{unit}.")
-            parts[unit] = _uniform("time_control", f"{prefix}_{unit}",
-                                   col)
-        return datetime(parts["year"], parts["month"], parts["day"],
-                        parts["hour"], parts["minute"], parts["second"])
+            parts[unit] = list(col)
+        try:
+            return [
+                datetime(parts["year"][index], parts["month"][index],
+                         parts["day"][index], parts["hour"][index],
+                         parts["minute"][index], parts["second"][index])
+                for index in range(max_dom)
+            ]
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"{input_path} &time_control has an invalid per-domain "
+                f"{prefix}_* datetime column: {error}") from None
 
-    start_time = _dt_from_columns("start")
-    end_time = _dt_from_columns("end")
+    start_times = _dt_columns("start")
+    end_times = _dt_columns("end")
+    start_time = start_times[0]
+    end_time = _uniform("time_control", "end_* datetime", end_times)
     run_days = int(tc.scalar("run_days", 0))
     run_hours = int(tc.scalar("run_hours", 0))
     run_minutes = int(tc.scalar("run_minutes", 0))
@@ -722,15 +732,31 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             f"{input_path} &time_control yields a non-positive run "
             f"length: run_days/hours/minutes/seconds all zero and "
             f"end {end_time} <= start {start_time}.")
+    expected_end = start_time + timedelta(seconds=run_seconds)
+    if end_time != expected_end:
+        raise ValueError(
+            f"{input_path} &time_control run_* ends the root at "
+            f"{expected_end}, but the uniform end_* columns declare "
+            f"{end_time}.")
 
     wps_start = share.take("start_date")
     if wps_start is not None:
-        parsed = datetime.strptime(str(wps_start[0]),
-                                   "%Y-%m-%d_%H:%M:%S")
-        if parsed != start_time:
+        if len(wps_start) > max_dom:
             raise ValueError(
-                f"start mismatch: {wps_path} start_date = {wps_start[0]} "
-                f"but {input_path} start_* = {start_time}.")
+                f"{wps_path} &share/start_date declares {len(wps_start)} "
+                f"values but max_dom = {max_dom}.")
+        wps_start = list(wps_start) + [wps_start[-1]] * (
+            max_dom - len(wps_start))
+        parsed = [
+            datetime.strptime(str(value), "%Y-%m-%d_%H:%M:%S")
+            for value in wps_start
+        ]
+        if parsed != start_times:
+            raise ValueError(
+                f"per-domain start mismatch: {wps_path} start_date = "
+                f"{[value.isoformat() for value in parsed]} but "
+                f"{input_path} start_* = "
+                f"{[value.isoformat() for value in start_times]}.")
     drop("share", "end_date", share.take("end_date"),
          "run length comes from &time_control run_*/end_*")
     for section, obj, key, reason in (
@@ -970,8 +996,8 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     # (review F2 -- silently substituting gpuwm-convenient values is a
     # never-silent violation): p_top_requested 5000 Pa
     # (Registry.EM_COMMON:2275), feedback 1 (:2322), smooth_option 2
-    # (:2323) -- an implicitly two-way namelist therefore trips the
-    # loader's feedback rejection instead of importing as one-way.
+    # (:2323) -- an implicitly two-way namelist therefore selects the
+    # experimental runtime path instead of importing as one-way.
     p_top = float(dm.scalar("p_top_requested", 5000))
 
     _NEST_GUARD_WHY = {
@@ -1888,6 +1914,9 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             f"nested = {_fmt(nested[n])}",
             f"history_interval_s = {_fmt(history_interval_s[n])}",
         ]
+        if start_times[n] != start_time:
+            lines.append(
+                f"start_time = {start_times[n].isoformat(sep='T')}")
         if epssm[n] != epssm[0]:
             lines.append(f"epssm = {_fmt(epssm[n])}")
         if radt[n] > 0.0:

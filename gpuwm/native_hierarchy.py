@@ -37,7 +37,8 @@ def initialize_and_export_native_hierarchy(
         wrf_output: Path, root_initial_result, root_met, root_soil,
         root_static_fields, root_boundaries,
         bridge_manifest_sha256: str, source_manifest_sha256: str,
-        namelist_sha256: str, forcing_hours: Sequence[int],
+        namelist_sha256: str, forcing_hours: Sequence[int] | None = None,
+        forcing_offsets_seconds: Sequence[int] | None = None,
         source_identity: Mapping[str, object], source_orography=None,
         workers: int = 8, preprocess_backend="cpu", cpu_bridge=None,
         boundary_interval_seconds: int = 3600, scratch_arena=None,
@@ -98,6 +99,7 @@ def initialize_and_export_native_hierarchy(
         bridge_manifest_sha256=bridge_manifest_sha256,
         source_manifest_sha256=source_manifest_sha256,
         namelist_sha256=namelist_sha256, forcing_hours=forcing_hours,
+        forcing_offsets_seconds=forcing_offsets_seconds,
         source_identity=source_identity, valid_time=exp.start_time,
         root_metadata=root_metadata)
     timings["verified_hierarchy_artifacts"] = time.perf_counter() - started

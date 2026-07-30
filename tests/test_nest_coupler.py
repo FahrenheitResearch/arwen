@@ -501,6 +501,10 @@ def test_force_uses_node_parent_clock_and_preserves_parent(monkeypatch):
         "parent_interval_ticks": 3,
         "final_parent_ticks": 3,
         "expected_cumulative_force_count": 1,
+        # The delayed-child work made the expected count relative to when the
+        # child actually starts, and publishes that offset so the two numbers
+        # can be read together.  This child starts with its parent, so 0.
+        "domain_start_ticks": 0,
         "current_process_coverage_complete": True,
         "first_parent_ticks": 3,
         "last_parent_ticks": 3,

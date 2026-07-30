@@ -619,6 +619,31 @@ def adjust_tempqv(mub, save_mub, c3, c4, p_top, th, pp, qv, *,
     return th, qv
 
 
+def feedback_parent_bounds(reg: NestRegistration, *, spec_zone=1
+                           ) -> tuple[int, int, int, int]:
+    """Return the 0-based inclusive parent rectangle written by feedback.
+
+    These are ``copy_fcn``'s WRF v4.6.1 loop bounds.  The child specified
+    zone is excluded in parent-cell units; staggered directions retain the
+    coincident high-side face.
+    """
+    spec_zone = int(spec_zone)
+    if spec_zone < 0:
+        raise ValueError("feedback spec_zone must be non-negative")
+    istag = 0 if reg.xstag else 1
+    jstag = 0 if reg.ystag else 1
+    nide_span = reg.nxc - (1 if reg.xstag else 0)
+    njde_span = reg.nyc - (1 if reg.ystag else 0)
+    ci_lo = reg.i_parent_start + spec_zone
+    ci_hi = (reg.i_parent_start + nide_span // reg.nri
+             - istag - spec_zone)
+    cj_lo = reg.j_parent_start + spec_zone
+    cj_hi = (reg.j_parent_start + njde_span // reg.nrj
+             - jstag - spec_zone)
+    # Fortran indices are 1-based; Python/CUDA array indices are 0-based.
+    return ci_lo - 1, ci_hi - 1, cj_lo - 1, cj_hi - 1
+
+
 def _copy_common(cfld, nfld, reg: NestRegistration, spec_zone):
     c3, n3 = _as3d(cfld), _as3d(nfld)
     nz, nyp, nxp = c3.shape
@@ -632,12 +657,10 @@ def _copy_common(cfld, nfld, reg: NestRegistration, spec_zone):
             np.int32(reg.xstag), np.int32(reg.ystag),
             np.int32(nz), np.int32(nyp), np.int32(nxp),
             np.int32(reg.nyc), np.int32(reg.nxc))
-    istag = 0 if reg.xstag else 1
-    jstag = 0 if reg.ystag else 1
-    ni_cells = ((reg.nxc - (1 if reg.xstag else 0)) // reg.nri
-                - istag - 2 * spec_zone + 1)
-    nj_cells = ((reg.nyc - (1 if reg.ystag else 0)) // reg.nrj
-                - jstag - 2 * spec_zone + 1)
+    ci_lo, ci_hi, cj_lo, cj_hi = feedback_parent_bounds(
+        reg, spec_zone=spec_zone)
+    ni_cells = ci_hi - ci_lo + 1
+    nj_cells = cj_hi - cj_lo + 1
     count = nz * max(ni_cells, 0) * max(nj_cells, 0)
     return c3, n3, args, count
 
@@ -661,10 +684,13 @@ def copy_fcn(cfld, nfld, reg: NestRegistration, *, spec_zone=1):
 
 
 def copy_fcnm(cfld, nfld, reg: NestRegistration, *, spec_zone=1):
-    """Feedback 1-pt pick for masked REAL fields, in place (dormant P5b).
+    """Feedback 1-pt pick for masked REAL fields, in place.
 
     ``copy_fcnm`` (interp_fcn.F:1747-1824): center child on odd ratios,
-    SW-corner nearest neighbor on even ratios (:1806).
+    SW-corner nearest neighbor on even ratios (:1806).  ArWen's live
+    feedback inventory currently has no masked fields; this exact WRF
+    behavior is retained as the certification-matching default if that
+    inventory is extended.
     """
     c3, n3, args, count = _copy_common(cfld, nfld, reg, spec_zone)
     if count > 0:
@@ -673,9 +699,10 @@ def copy_fcnm(cfld, nfld, reg: NestRegistration, *, spec_zone=1):
 
 
 def copy_fcni(cfld, nfld, reg: NestRegistration, *, spec_zone=1):
-    """Feedback 1-pt pick for INTEGER fields, in place (dormant P5b).
+    """Feedback 1-pt pick for INTEGER fields, in place.
 
     ``copy_fcni`` (interp_fcn.F:1829-1906), the int32 twin of copy_fcnm.
+    No integer field is present in ArWen's live feedback inventory.
     """
     c3, n3, args, count = _copy_common(cfld, nfld, reg, spec_zone)
     if c3.dtype != np.int32 or n3.dtype != np.int32:

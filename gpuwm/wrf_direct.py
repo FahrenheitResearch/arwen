@@ -6,13 +6,12 @@ static cache, and a small geometry receipt.  A frozen WRF-v4.6.1 declaration
 contract supplies only NetCDF metadata; all gridded state is derived from the
 native inputs.
 
-The first supported slice is a single specified projected domain
+The supported slice is a single specified projected domain
 (lambert/mercator/polar; MAP_PROJ and MAP_PROJ_CHAR derive from the
-geometry receipt) with an explicit validated hybrid eta coordinate,
-WSM6, YSU, revised-MM5 surface layer, and Noah LSM.  Stock-WRF
-acceptance is proven for Lambert; mercator/polar exports are
-oracle-gated but not yet stock-WRF-gated.  Unsupported
-cache/configuration combinations fail closed.
+geometry receipt) with an explicit validated hybrid eta coordinate and a
+registry-resolved fixed physics profile.  Stock-WRF acceptance is proven for
+Lambert; mercator/polar exports are oracle-gated but not yet stock-WRF-gated.
+Unsupported cache/configuration combinations fail closed.
 """
 
 from __future__ import annotations
@@ -35,6 +34,7 @@ import netCDF4
 import numpy as np
 
 from gpuwm.core import constants as _model_constants
+from gpuwm.ingest.prepared_cache import prepared_domain_config_identity
 from gpuwm.static.lambert import LambertGrid, grids_from_projection_config
 from gpuwm.static.projection import (MAP_PROJ_CHARS, WRF_MAP_PROJ_CODES,
                                      projection_class)
@@ -71,6 +71,33 @@ _CANONICAL_SURFACE_FIELDS = frozenset({
     "TSK", "TSLB", "SMOIS", "SH2O", "TMN", "SEAICE", "XLAND",
     "LANDMASK", "SNOW", "SNOWH",
 })
+
+
+def _direct_export_soil_geometry(
+        sf_surface_physics: int, num_soil_layers: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the WRF ZS/DZS geometry selected by the land-surface scheme."""
+
+    scheme = int(sf_surface_physics)
+    count = int(num_soil_layers)
+    if scheme in {2, 4}:
+        if count != 4:
+            raise ValueError(
+                f"Noah/Noah-MP direct export requires four soil layers, "
+                f"got sf_surface_physics={scheme}, num_soil_layers={count}")
+        return _NOAH_LAYER_MIDPOINTS_M, _NOAH_LAYER_THICKNESS_M
+    if scheme == 3:
+        from gpuwm.ingest.ruc_soil import ruc_soil_depths
+
+        depths, thicknesses = ruc_soil_depths(count)
+        return (
+            np.asarray(depths, dtype=np.float64),
+            np.asarray(thicknesses, dtype=np.float64),
+        )
+    raise ValueError(
+        f"sf_surface_physics={scheme} has no source-driven direct-export "
+        "soil geometry; gpuwm/ingest/ruc_soil.py:"
+        "preprocess_land_surface_soil implements selectors 2, 3, and 4")
 
 
 @dataclass(frozen=True)
@@ -569,7 +596,8 @@ def _date_text(value: datetime) -> str:
 
 
 def _dimensions(contract: Mapping[str, object], *, nx: int, ny: int,
-                nz: int) -> dict[str, int | None]:
+                nz: int, num_soil_layers: int = 4
+                ) -> dict[str, int | None]:
     overrides = {
         "Time": None,
         "west_east": nx,
@@ -578,6 +606,7 @@ def _dimensions(contract: Mapping[str, object], *, nx: int, ny: int,
         "south_north_stag": ny + 1,
         "bottom_top": nz,
         "bottom_top_stag": nz + 1,
+        "soil_layers_stag": num_soil_layers,
     }
     return {
         item["name"]: overrides.get(item["name"], int(item["length"]))
@@ -656,9 +685,11 @@ def _prepared_vertical_contract(
 
 def _global_updates(*, valid_time: datetime, nx: int, ny: int, nz: int,
                     dx: float, dy: float, dt: float,
-                    geometry: Mapping[str, object]) -> dict[str, object]:
+                    geometry: Mapping[str, object],
+                    physics_selection: Mapping[str, object] | None = None,
+                    ) -> dict[str, object]:
     stamp = _date_text(valid_time)
-    return {
+    updates = {
         # WRF's input gate recognizes versioned initial data from the TITLE
         # token itself.  Preserve an honest producer label while retaining
         # the required V4.x-compatible marker.
@@ -701,6 +732,29 @@ def _global_updates(*, valid_time: datetime, nx: int, ny: int, nz: int,
         "JULYR": valid_time.year,
         "JULDAY": valid_time.timetuple().tm_yday,
     }
+    if physics_selection is not None:
+        selectors = physics_selection.get("selectors")
+        if not isinstance(selectors, Mapping):
+            raise ValueError(
+                "front-door physics selection lacks selector provenance")
+        global_names = {
+            "mp_physics": "MP_PHYSICS",
+            "ra_lw_physics": "RA_LW_PHYSICS",
+            "ra_sw_physics": "RA_SW_PHYSICS",
+            "sf_sfclay_physics": "SF_SFCLAY_PHYSICS",
+            "sf_surface_physics": "SF_SURFACE_PHYSICS",
+            "bl_pbl_physics": "BL_PBL_PHYSICS",
+            "cu_physics": "CU_PHYSICS",
+        }
+        missing = sorted(set(global_names) - set(selectors))
+        if missing:
+            raise ValueError(
+                f"front-door physics selection lacks selectors {missing}")
+        updates.update({
+            global_name: selectors[selector]
+            for selector, global_name in global_names.items()
+        })
+    return updates
 
 
 def _create_dataset(path: Path, contract: Mapping[str, object],
@@ -895,6 +949,8 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
                      geometry: Mapping[str, object],
                      valid_time: datetime, *,
                      p_top: float, mp_physics: int = 6,
+                     sf_surface_physics: int = 2,
+                     num_soil_layers: int = 4,
                      ) -> dict[str, np.ndarray]:
     u = cache.array("state/u")
     v = cache.array("state/v")
@@ -929,6 +985,19 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
     v10_face = np.asarray(cache.array("met/V10"), dtype=np.float64)
     month_index = valid_time.month - 1
     surface = _surface_fields(cache, static, month_index)
+    soil_depths, soil_thicknesses = _direct_export_soil_geometry(
+        sf_surface_physics, num_soil_layers)
+    soil_shape_drift = {
+        name: tuple(np.asarray(surface[name]).shape)
+        for name in ("TSLB", "SMOIS", "SH2O")
+        if tuple(np.asarray(surface[name]).shape)
+        != (int(num_soil_layers), ny, nx)
+    }
+    if soil_shape_drift:
+        raise ValueError(
+            f"prepared surface soil geometry differs from "
+            f"sf_surface_physics={sf_surface_physics}, "
+            f"num_soil_layers={num_soil_layers}: {soil_shape_drift}")
     raw_lu = np.asarray(static["LU_INDEX"], dtype=np.int32)
     # WRF real.exe remaps MODIS lake category 21 to the Noah water category
     # when sf_lake_physics=0.  Leaving IVGTYP=21 reaches Noah's fatal
@@ -955,8 +1024,8 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
         "LU_INDEX": lu,
         "ZNU": cache.array("coord/znu"),
         "ZNW": cache.array("coord/znw"),
-        "ZS": _NOAH_LAYER_MIDPOINTS_M,
-        "DZS": _NOAH_LAYER_THICKNESS_M,
+        "ZS": soil_depths,
+        "DZS": soil_thicknesses,
         "U": u,
         "V": v,
         "W": cache.array("state/w"),
@@ -1172,12 +1241,20 @@ def _attribute_matches(actual, expected) -> bool:
 
 def _domain_global_attributes(updates: Mapping[str, object]) \
         -> dict[str, object]:
-    names = (
+    names = [
         "GRID_ID", "PARENT_ID", "I_PARENT_START", "J_PARENT_START",
         "PARENT_GRID_RATIO", "WEST-EAST_GRID_DIMENSION",
         "SOUTH-NORTH_GRID_DIMENSION", "BOTTOM-TOP_GRID_DIMENSION",
         "DX", "DY", "DT", "CEN_LAT", "CEN_LON", "MOAD_CEN_LAT",
         "TRUELAT1", "TRUELAT2", "STAND_LON",
+    ]
+    names.extend(
+        name for name in (
+            "MP_PHYSICS", "RA_LW_PHYSICS", "RA_SW_PHYSICS",
+            "SF_SFCLAY_PHYSICS", "SF_SURFACE_PHYSICS",
+            "BL_PBL_PHYSICS", "CU_PHYSICS",
+        )
+        if name in updates
     )
     missing = [name for name in names if name not in updates]
     if missing:
@@ -1188,9 +1265,12 @@ def _domain_global_attributes(updates: Mapping[str, object]) \
 
 def _validate_file(path: Path, contract: Mapping[str, object], *,
                    nx: int, ny: int, nz: int,
+                   num_soil_layers: int = 4,
                    expected_global_attributes: Mapping[str, object]
                    | None = None) -> dict[str, object]:
-    expected_dimensions = _dimensions(contract, nx=nx, ny=ny, nz=nz)
+    expected_dimensions = _dimensions(
+        contract, nx=nx, ny=ny, nz=nz,
+        num_soil_layers=num_soil_layers)
     with netCDF4.Dataset(path) as dataset:
         if expected_global_attributes is not None:
             missing_attributes = sorted(
@@ -1231,27 +1311,44 @@ def _validate_file(path: Path, contract: Mapping[str, object], *,
     return {"bytes": path.stat().st_size, "sha256": _sha256(path)}
 
 
+def _forcing_offsets_from_identity(
+        identity: Mapping[str, object],
+) -> tuple[list[int], str]:
+    offsets = identity.get("forcing_offsets_seconds")
+    if offsets is not None:
+        key = "forcing_offsets_seconds"
+        factor = 1
+    else:
+        offsets = identity.get("forcing_hours")
+        key = "forcing_hours"
+        factor = 3600
+    if (not isinstance(offsets, list) or len(offsets) < 2
+            or any(isinstance(value, bool) or not isinstance(value, int)
+                   for value in offsets)):
+        raise ValueError(
+            "direct exporter requires at least two integer forcing offsets")
+    seconds = [value * factor for value in offsets]
+    if seconds[0] != 0 or any(
+            later <= earlier
+            for earlier, later in zip(seconds, seconds[1:])):
+        raise ValueError(
+            "direct exporter requires increasing forcing offsets beginning "
+            "at zero")
+    return seconds, key
+
+
 def _forcing_interval_indices(cache: PreparedCache,
                               boundary_interval_seconds: int) -> list[int]:
-    forcing_hours = cache.header["identity"].get("forcing_hours")
-    if (not isinstance(forcing_hours, list)
-            or len(forcing_hours) < 2
-            or any(not isinstance(hour, int) for hour in forcing_hours)):
-        raise ValueError(
-            "direct exporter requires at least two integer forcing hours")
-    if forcing_hours[0] != 0 or any(
-            later <= earlier
-            for earlier, later in zip(forcing_hours, forcing_hours[1:])):
-        raise ValueError(
-            "direct exporter requires increasing forcing hours beginning at f00")
+    identity = cache.header["identity"]
+    forcing_offsets, forcing_key = _forcing_offsets_from_identity(identity)
     expected_step_seconds = {
-        (later - earlier) * 3600
-        for earlier, later in zip(forcing_hours, forcing_hours[1:])
+        later - earlier
+        for earlier, later in zip(forcing_offsets, forcing_offsets[1:])
     }
     if expected_step_seconds != {boundary_interval_seconds}:
         raise ValueError(
             "prepared forcing cadence does not match the requested boundary "
-            f"interval: forcing_hours={forcing_hours}, "
+            f"interval: {forcing_key}={identity[forcing_key]}, "
             f"boundary_interval_seconds={boundary_interval_seconds}")
 
     observed_indices = set()
@@ -1263,7 +1360,7 @@ def _forcing_interval_indices(cache: PreparedCache,
             except ValueError as error:
                 raise ValueError(
                     f"invalid prepared LBC interval key {name!r}") from error
-    expected_indices = list(range(len(forcing_hours) - 1))
+    expected_indices = list(range(len(forcing_offsets) - 1))
     if sorted(observed_indices) != expected_indices:
         raise ValueError(
             "prepared LBC interval inventory does not span every forcing pair: "
@@ -1321,7 +1418,7 @@ def _prepared_domain_context(artifact: PreparedDomainArtifacts, domain,
                              exp, expected_grid, valid_time: datetime):
     cache = PreparedCache(artifact.prepared_cache)
     identity = cache.header["identity"]
-    expected_domain = json.loads(_canonical(asdict(domain)))
+    expected_domain = prepared_domain_config_identity(domain)
     if identity.get("domain_config") != expected_domain:
         raise ValueError(
             f"d{domain.grid_id:02d} prepared cache is not bound to the "
@@ -1389,6 +1486,13 @@ def _prepared_domain_context(artifact: PreparedDomainArtifacts, domain,
             f"d{domain.grid_id:02d} static cache digest differs from "
             "prepared identity")
     return cache, cfg, geometry, p_top, static_sha256
+
+
+def _configured_domain_start(exp, domain) -> datetime:
+    if hasattr(exp, "domain_start_time"):
+        return exp.domain_start_time(domain.grid_id)
+    configured = getattr(domain, "start_time", None)
+    return exp.start_time if configured is None else configured
 
 
 def _hierarchy_global_updates(*, valid_time: datetime, cfg,
@@ -1482,9 +1586,10 @@ def export_prepared_wrf_hierarchy(
         shutil.rmtree(root_output)
 
         for (domain, artifact), expected_grid in zip(pairs, expected_grids):
+            domain_valid_time = _configured_domain_start(exp, domain)
             cache, cfg, geometry, p_top, static_sha256 = \
                 _prepared_domain_context(
-                    artifact, domain, exp, expected_grid, valid_time)
+                    artifact, domain, exp, expected_grid, domain_valid_time)
             physics_inventory = stock_wrf_physics_inventory(
                 int(cfg["mp_physics"]))
             domain_contract_bundle = _physics_contract_bundle(
@@ -1496,15 +1601,15 @@ def export_prepared_wrf_hierarchy(
                     input_contract, nx=int(cfg["nx"]), ny=int(cfg["ny"]),
                     nz=int(cfg["nz"]))
                 updates = _hierarchy_global_updates(
-                    valid_time=valid_time, cfg=cfg, geometry=geometry,
+                    valid_time=domain_valid_time, cfg=cfg, geometry=geometry,
                     domain=domain)
                 with np.load(artifact.static_cache, allow_pickle=False) as static:
                     fields = _wrfinput_fields(
-                        cache, static, geometry, valid_time, p_top=p_top,
+                        cache, static, geometry, domain_valid_time, p_top=p_top,
                         mp_physics=physics_inventory.mp_physics)
                     _write_wrfinput(
                         staging / name, input_contract, dimensions,
-                        updates, fields, _date_text(valid_time))
+                        updates, fields, _date_text(domain_valid_time))
                 files[name] = _validate_file(
                     staging / name, input_contract,
                     nx=int(cfg["nx"]), ny=int(cfg["ny"]), nz=int(cfg["nz"]),
@@ -1518,6 +1623,7 @@ def export_prepared_wrf_hierarchy(
                     artifact.geometry_receipt),
                 "mp_physics": physics_inventory.mp_physics,
                 "microphysics": physics_inventory.scheme,
+                "start_time": _date_text(domain_valid_time),
                 "resolved_physics_contract_sha256":
                     _contract_payload_sha256(domain_contract_bundle),
             }
@@ -1536,7 +1642,12 @@ def export_prepared_wrf_hierarchy(
             "dy_m": domain.run.dy,
             "dt_s": domain.run.dt,
             "mp_physics": domain.run.mp_physics,
+            "start_time": _date_text(_configured_domain_start(exp, domain)),
         } for domain, _artifact in pairs]
+        forcing_key = (
+            "forcing_offsets_seconds"
+            if "forcing_offsets_seconds" in root_manifest
+            else "forcing_hours")
         manifest = {
             "schema": "gpuwm-native-direct-wrf-hierarchy-export-v1",
             "status": "READY",
@@ -1545,7 +1656,7 @@ def export_prepared_wrf_hierarchy(
             "boundary_record_count": root_manifest["boundary_record_count"],
             "boundary_times": root_manifest["boundary_times"],
             "next_boundary_times": root_manifest["next_boundary_times"],
-            "forcing_hours": root_manifest["forcing_hours"],
+            forcing_key: root_manifest[forcing_key],
             "hierarchy": hierarchy,
             "vertical": {
                 "e_vert": len(exp.vertical.eta_levels),
@@ -1627,7 +1738,10 @@ def export_prepared_wrf_namelists(
 def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
                         output_dir, *, valid_time: datetime,
                         boundary_interval_seconds: int = 3600,
-                        overwrite: bool = False) -> dict[str, object]:
+                        overwrite: bool = False,
+                        physics_profile: str | None = None,
+                        expert_acknowledgements: Sequence[str] = (),
+                        ) -> dict[str, object]:
     cache = PreparedCache(Path(prepared_cache))
     static_path = Path(static_cache)
     geometry_path = Path(geometry_receipt)
@@ -1639,6 +1753,15 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
 
     identity = cache.header["identity"]
     cfg = identity["domain_config"]["run"]
+    physics_selection = None
+    if physics_profile is not None:
+        from gpuwm.physics_compat import (
+            validate_single_domain_physics_profile,
+        )
+
+        physics_selection = validate_single_domain_physics_profile(
+            physics_profile, config=cfg,
+            expert_acknowledgements=tuple(expert_acknowledgements))
     try:
         physics_inventory = stock_wrf_physics_inventory(
             cfg.get("mp_physics"))
@@ -1648,15 +1771,22 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
     contract_bundle = _physics_contract_bundle(
         _load_contract(), physics_inventory.mp_physics)
     required = {
-        "bl_pbl_physics": 1,
-        "sf_sfclay_physics": 91,
-        "sf_surface_physics": 2,
         "hybrid_opt": 2,
         "hypsometric_opt": 2,
         "specified": True,
         "nested": False,
         "spec_bdy_width": 5,
     }
+    if physics_selection is None:
+        # Compatibility entry point for historical callers and proof
+        # documents.  New front doors always supply a profile and take the
+        # selector-capability path above; omitting it retains the exact v2
+        # stock slice rather than widening an old API implicitly.
+        required.update({
+            "bl_pbl_physics": 1,
+            "sf_sfclay_physics": 91,
+            "sf_surface_physics": 2,
+        })
     mismatch = {name: (cfg.get(name), expected)
                 for name, expected in required.items()
                 if cfg.get(name) != expected}
@@ -1664,6 +1794,7 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
         raise ValueError(f"unsupported direct-export configuration: {mismatch}")
     interval_indices = _forcing_interval_indices(
         cache, boundary_interval_seconds)
+    _forcing_offsets, forcing_key = _forcing_offsets_from_identity(identity)
     prepared_valid_time = datetime.fromisoformat(
         cache.header["metadata"]["user"]["initial_valid_time"])
     if _date_text(prepared_valid_time) != _date_text(valid_time):
@@ -1703,20 +1834,28 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
         valid_time=valid_time, nx=nx, ny=ny, nz=nz,
         dx=float(cfg["dx"]), dy=float(cfg["dy"]), dt=float(cfg["dt"]),
         geometry=geometry,
+        physics_selection=physics_selection,
     )
+    num_soil_layers = int(cfg.get("num_soil_layers", 4))
+    sf_surface_physics = int(cfg["sf_surface_physics"])
     try:
         with np.load(static_path, allow_pickle=False) as static:
             wrfinput_fields = _wrfinput_fields(
                 cache, static, geometry, valid_time, p_top=p_top,
-                mp_physics=physics_inventory.mp_physics)
+                mp_physics=physics_inventory.mp_physics,
+                sf_surface_physics=sf_surface_physics,
+                num_soil_layers=num_soil_layers)
             input_contract = contract_bundle["wrfinput"]
             input_dimensions = _dimensions(
-                input_contract, nx=nx, ny=ny, nz=nz)
+                input_contract, nx=nx, ny=ny, nz=nz,
+                num_soil_layers=num_soil_layers)
             _write_wrfinput(
                 staging / "wrfinput_d01", input_contract, input_dimensions,
                 updates, wrfinput_fields, stamp)
         bdy_contract = contract_bundle["wrfbdy"]
-        bdy_dimensions = _dimensions(bdy_contract, nx=nx, ny=ny, nz=nz)
+        bdy_dimensions = _dimensions(
+            bdy_contract, nx=nx, ny=ny, nz=nz,
+            num_soil_layers=num_soil_layers)
         _write_wrfbdy(
             staging / "wrfbdy_d01", bdy_contract, bdy_dimensions,
             updates, cache, boundary_times, boundary_interval_seconds)
@@ -1724,18 +1863,24 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
             "wrfinput_d01": _validate_file(
                 staging / "wrfinput_d01", input_contract,
                 nx=nx, ny=ny, nz=nz,
+                num_soil_layers=num_soil_layers,
                 expected_global_attributes=_domain_global_attributes(
                     updates)),
             "wrfbdy_d01": _validate_file(
                 staging / "wrfbdy_d01", bdy_contract,
                 nx=nx, ny=ny, nz=nz,
+                num_soil_layers=num_soil_layers,
                 expected_global_attributes=_domain_global_attributes(
                     updates)),
         }
         limitations = [
             "single specified projected domain only (lambert stock-WRF-gated; mercator/polar exports oracle-gated, not yet stock-WRF-gated)",
-            f"{physics_inventory.scheme}+YSU+classic-MM5+Noah initialized "
-            "state contract",
+            (
+                f"{physics_inventory.scheme}+YSU+classic-MM5+Noah "
+                "initialized state contract"
+                if physics_selection is None else
+                f"{physics_selection['profile']} initialized state contract"
+            ),
             "T_INIT is bound to final dry theta and is diagnostic-only",
             "hydrometeor/W/HT_SHAD/PC external LBC arrays are zero",
             "forcing must be uniformly spaced and begin at f00",
@@ -1744,7 +1889,11 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
                 name.startswith("surface/") for name in cache._arrays):
             limitations.insert(2, "warm-soil SH2O initialization only")
         manifest = {
-            "schema": "gpuwm-native-direct-wrf-export-v2",
+            "schema": (
+                "gpuwm-native-direct-wrf-export-v2"
+                if physics_selection is None
+                else "gpuwm-native-direct-wrf-export-v3"
+            ),
             "status": "READY",
             "valid_time": stamp,
             "next_boundary_time": next_boundary_stamps[0],
@@ -1752,7 +1901,7 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
             "boundary_record_count": len(boundary_times),
             "boundary_times": boundary_stamps,
             "next_boundary_times": next_boundary_stamps,
-            "forcing_hours": identity["forcing_hours"],
+            forcing_key: identity[forcing_key],
             "dimensions": {"nx": nx, "ny": ny, "nz": nz},
             "source": {
                 "prepared_header_sha256": _sha256(cache.header_path),
@@ -1766,6 +1915,8 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
             "files": files,
             "limitations": limitations,
         }
+        if physics_selection is not None:
+            manifest["physics"] = physics_selection
         (staging / "manifest.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8")
@@ -1796,6 +1947,12 @@ def main() -> None:
             "cross-checks the namelist start time"))
     parser.add_argument("--boundary-interval-seconds", type=int, default=3600)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--physics-profile",
+        help="registered fixed physics template carried by the prepared cache")
+    parser.add_argument(
+        "--expert-acknowledgement", action="append", default=[],
+        help="registry-owned expert acknowledgement id; repeat as needed")
     args = parser.parse_args()
     valid_time = (datetime.strptime(args.valid_time, "%Y-%m-%d_%H:%M:%S")
                   if args.valid_time is not None else None)
@@ -1808,6 +1965,9 @@ def main() -> None:
             ("--prepared-cache", args.prepared_cache),
             ("--static-cache", args.static_cache),
             ("--geometry-receipt", args.geometry_receipt),
+            ("--physics-profile", args.physics_profile),
+            ("--expert-acknowledgement",
+             args.expert_acknowledgement or None),
         ) if value is not None]
         if missing or incompatible:
             parser.error(
@@ -1837,7 +1997,9 @@ def main() -> None:
             args.prepared_cache, args.static_cache, args.geometry_receipt,
             args.output, valid_time=valid_time,
             boundary_interval_seconds=args.boundary_interval_seconds,
-            overwrite=args.overwrite)
+            overwrite=args.overwrite,
+            physics_profile=args.physics_profile,
+            expert_acknowledgements=tuple(args.expert_acknowledgement))
     print(json.dumps(manifest, indent=2, sort_keys=True))
 
 

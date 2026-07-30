@@ -1,10 +1,66 @@
-# tests/test_dycore_full.py
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from conftest import requires_gpu
 from gpuwm.config import RunConfig
 
 pytestmark = pytest.mark.gpu
+
+
+@requires_gpu
+def test_stability_cfl_is_co_located_and_threshold_continuous():
+    import cupy as cp
+    from gpuwm.core import constants as c
+    from gpuwm.core.dycore import stability_gate_failed, stability_report
+
+    class SyntheticState:
+        def __init__(self, w, z):
+            nz = len(z) - 1
+            self.u = cp.zeros((nz, 1, 2), dtype=cp.float32)
+            self.w = cp.asarray(w, dtype=cp.float32).reshape(nz + 1, 1, 1)
+            self.thp = cp.zeros((nz, 1, 1), dtype=cp.float32)
+            self.php = (
+                cp.asarray(z, dtype=cp.float32) * cp.float32(c.G)
+            ).reshape(nz + 1, 1, 1)
+            self.phb = cp.zeros(nz + 1, dtype=cp.float32)
+            self.buffers = {}
+
+        def scratch(self, shape, slot):
+            return self.buffers.setdefault(
+                slot, cp.zeros(shape, dtype=cp.float32))
+
+    run = SimpleNamespace(dt=10.0, dx=1000.0)
+
+    # Strong updraft aloft, over its own thick layer: old global extrema
+    # produced CFL=100; the co-located vertical term is exactly 1.
+    aloft = stability_report(
+        SyntheticState([0.0, 0.0, 100.0], [0.0, 10.0, 1010.0]), run)
+    assert aloft["vertical_cfl"] == pytest.approx(1.0)
+    assert not stability_gate_failed(
+        aloft, max_cfl=10.0, max_w_ms=150.0)
+
+    # A genuine first-layer violation remains fatal.
+    surface = stability_report(
+        SyntheticState([0.0, 11.0, 0.0], [0.0, 10.0, 1010.0]), run)
+    assert surface["vertical_cfl"] == pytest.approx(11.0)
+    assert stability_gate_failed(
+        surface, max_cfl=10.0, max_w_ms=150.0)
+
+    # The existing strict-greater-than threshold is continuous.
+    at_limit = stability_report(
+        SyntheticState([0.0, 10.0, 0.0], [0.0, 10.0, 1010.0]), run)
+    assert at_limit["cfl"] == pytest.approx(10.0)
+    assert not stability_gate_failed(
+        at_limit, max_cfl=10.0, max_w_ms=150.0)
+    above = stability_report(
+        SyntheticState(
+            [0.0, np.nextafter(np.float32(10.0), np.float32(np.inf)), 0.0],
+            [0.0, 10.0, 1010.0]),
+        run)
+    assert above["cfl"] > 10.0
+    assert stability_gate_failed(
+        above, max_cfl=10.0, max_w_ms=150.0)
 
 
 def _theta_centroid_height(s, b, vc):

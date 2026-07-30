@@ -83,6 +83,20 @@ exactly, chained in float32 exactly as WRF chains it.
 `history_interval_s` is per-domain and must divide into whole domain
 steps. The adaptive time step (`use_adaptive_time_step`) is refused.
 
+Each `[[domain]]` may also carry an offset-free `start_time`. It defaults to
+`[experiment].start_time`; d01 must equal that root start. A delayed child is
+dormant until its timestamp, then follows the ordinary parent-state nest
+initialization path. The timestamp must be an exact boundary of its parent's
+step clock and an exact external-forcing seam. Restart headers persist
+`STARTED`/`NOT_STARTED` lifecycle state, so resuming before the timestamp does
+not initialize the child early.
+
+External boundary cadence has no whole-hour rule. It must be a positive,
+uniform whole-second interval and an exact integer number of d01 steps because
+the Davies boundary clock resets at a top-of-step seam. Five-minute forcing is
+therefore valid for a 60-second d01 step; 310-second forcing is not
+(`310/60 = 31/6` steps). History cadence is independent.
+
 ### Dynamics
 
 Shared across domains unless marked per-domain. Every key below is a

@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from types import MappingProxyType
+from typing import Mapping
 
 
 # Exact token emitted into imported gpuwm configurations when WRF's legacy
@@ -255,23 +256,25 @@ MYNN_PROFILE_ID = "wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1"
 #: 16.8 wall seconds per simulated minute at d04's 360,000 columns snow-free
 #: and 65.7 fully snow-covered, measured at that width, not extrapolated.
 RUC_PROFILE_ID = "wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1"
-#: The profiles the HRRR single-domain path offers.  Neither
-#: :data:`MYNN_PROFILE_ID` nor :data:`RUC_PROFILE_ID` is a member, although
-#: both declare complete runtime switches below and both are offered by
-#: ``tools/prepared_single_domain_forecast.py``: every consumer of THIS tuple
-#: carries its own per-profile table -- ``_HRRR_SOURCE_ABSENT_STATE_DEFAULTS``
-#: and ``_HRRR_SOURCE_ABSENT_WRF_FIELDS`` in
-#: ``tools/hrrr_single_domain_benchmark.py``, and the pair map in
-#: ``tools/prepare_hrrr_wrf.py`` -- and none of them has a row for either.
-#: Membership would put the profile in ``gpuwm/source_cli.py``'s
-#: ``--physics-profile`` choices and then ``KeyError`` on the first
-#: source-absent field, which is selectable and not usable.  Adding one is a
-#: change to those three tables, made with an HRRR case in hand.
+#: The Noah-MP fixed template remains expert-only because its component is
+#: implemented but has no GPUWM/WRF forecast-trajectory comparison.  The
+#: registry owns the acknowledgement id and warnings; callers must not
+#: duplicate them as a profile-name special case.
+NOAHMP_PROFILE_ID = (
+    "wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1"
+)
+#: Every fixed single-domain template the front door can validate.  Expert
+#: templates remain in this discovery tuple: selection is accepted by the
+#: parser, then the registry-owned acknowledgement/capability checks below
+#: fail closed before preparation if consent or an implementation is absent.
 SINGLE_DOMAIN_PHYSICS_PROFILES = (
     WSM6_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     MORRISON_PROFILE_ID,
     NSSL2_PROFILE_ID,
+    MYNN_PROFILE_ID,
+    RUC_PROFILE_ID,
+    NOAHMP_PROFILE_ID,
 )
 
 # Complete runtime products shared by every source-specific single-domain
@@ -281,6 +284,18 @@ SINGLE_DOMAIN_PHYSICS_PROFILES = (
 # may materialize these switches into a case-specific experiment descriptor,
 # but they must not reinterpret or partially apply them.
 _SINGLE_DOMAIN_RUNTIME_SWITCHES = MappingProxyType({
+    NOAHMP_PROFILE_ID: MappingProxyType({
+        "moist": True, "moist_cq": False, "mp_physics": 6,
+        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
+        "wsm6_hail_opt": 0, "ra_physics": 0,
+        "ra_lw_physics": 0, "ra_sw_physics": 1, "radt": 1.0,
+        "wrf_rrtmg_compatibility": "none",
+        "sf_sfclay_physics": 91, "sf_surface_physics": 4,
+        "bl_pbl_physics": 1, "cu_physics": 0, "cudt_minutes": 0.0,
+        "num_soil_layers": 4, "terrain_opt": 1,
+        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
+        "diff_6th_slopeopt": 1,
+    }),
     # Byte-for-byte the WSM6 row apart from the land surface:
     # sf_surface_physics 2 -> 3 and the nine soil layers RUC's own level
     # geometry needs.  Everything RUC pins that has no namelist field --
@@ -409,6 +424,218 @@ def identify_single_domain_profile(run_config) -> str | None:
 #: Sentinel for :func:`identify_single_domain_profile`: a config that
 #: lacks a switch entirely never matches a profile that pins it.
 _MISSING = object()
+
+
+class PhysicsCapabilityError(ValueError):
+    """A selector combination has no executable registry capability."""
+
+
+def _selection_value(settings: Mapping[str, object] | object, name: str):
+    if isinstance(settings, Mapping):
+        return settings.get(name)
+    return getattr(settings, name, None)
+
+
+def _registry_pointer(component_id: str, option_id: str | None = None) -> str:
+    pointer = (
+        "gpuwm/physics_registry_v2.json#/components/"
+        f"{component_id}"
+    )
+    if option_id is not None:
+        pointer += f"/options/{option_id}"
+    return pointer
+
+
+def validate_physics_capabilities(
+        settings: Mapping[str, object] | object,
+) -> dict[str, str]:
+    """Resolve selectors to implemented registry components, fail closed.
+
+    This check deliberately knows no source id and no profile id.  It answers
+    only whether the selected component implementations and their couplings
+    exist.  The returned mapping is component id -> option id and is suitable
+    for comparing a named template after capability has been established.
+    """
+
+    from gpuwm.physics_registry import physics_registry
+
+    registry = physics_registry()
+    resolved: dict[str, str] = {}
+    options_by_component: dict[str, Mapping[str, object]] = {}
+    for component_id, raw_component in registry["components"].items():
+        component = raw_component
+        selector_keys = tuple(component.get("selector_keys", ()))
+        if not selector_keys:
+            continue
+        selected = {
+            key: _selection_value(settings, key)
+            for key in selector_keys
+        }
+        candidates = []
+        for option_id, raw_option in component["options"].items():
+            option = raw_option
+            selectors = option.get("selectors", {})
+            if (isinstance(selectors, Mapping)
+                    and set(selectors) == set(selector_keys)
+                    and all(selected[key] == selectors[key]
+                            for key in selector_keys)):
+                candidates.append((option_id, option))
+        if len(candidates) != 1:
+            raise PhysicsCapabilityError(
+                f"{_registry_pointer(component_id)} has no implemented "
+                f"option for selectors {selected}; no source/profile "
+                "substitution is allowed")
+        option_id, option = candidates[0]
+        if option.get("implemented") is not True:
+            declaration = option.get("reachability", {})
+            blocker = (
+                declaration.get("blocker")
+                if isinstance(declaration, Mapping) else None
+            )
+            raise PhysicsCapabilityError(
+                f"{_registry_pointer(component_id, option_id)} blocks "
+                f"selectors {selected}: "
+                f"{blocker or 'component is declared unimplemented'}")
+        resolved[component_id] = option_id
+        options_by_component[component_id] = option
+
+    for component_id, option in options_by_component.items():
+        constraints = option.get("constraints", {})
+        if not isinstance(constraints, Mapping):
+            continue
+        required_settings = constraints.get("required_settings", {})
+        if isinstance(required_settings, Mapping):
+            drift = {
+                name: {
+                    "selected": _selection_value(settings, name),
+                    "required": required,
+                }
+                for name, required in required_settings.items()
+                if _selection_value(settings, name) is not None
+                and _selection_value(settings, name) != required
+            }
+            if drift:
+                option_id = resolved[component_id]
+                raise PhysicsCapabilityError(
+                    f"{_registry_pointer(component_id, option_id)} requires "
+                    f"settings {drift}")
+        requirements = constraints.get("requires_components", {})
+        if isinstance(requirements, Mapping):
+            for required_component, allowed in requirements.items():
+                selected_option = resolved.get(required_component)
+                if (not isinstance(allowed, list)
+                        or selected_option not in allowed):
+                    option_id = resolved[component_id]
+                    raise PhysicsCapabilityError(
+                        f"{_registry_pointer(component_id, option_id)} "
+                        f"requires {required_component} in {allowed}, got "
+                        f"{selected_option!r}")
+
+    # Runtime-only coupled restrictions and measured-width rails remain the
+    # executable authority.  They cite the exact WRF/CUDA reason in their
+    # blocker receipts and are intentionally applied after registry
+    # implementation resolution.
+    runtime_selection = {
+        name: int(_selection_value(settings, name))
+        for name in (
+            "mp_physics", "sf_sfclay_physics", "bl_pbl_physics",
+            "sf_surface_physics", "num_soil_layers",
+        )
+    }
+    nx = _selection_value(settings, "nx")
+    ny = _selection_value(settings, "ny")
+    if (isinstance(nx, int) and not isinstance(nx, bool)
+            and isinstance(ny, int) and not isinstance(ny, bool)):
+        runtime_selection["columns"] = nx * ny
+    require_ready_wrf_physics(**runtime_selection)
+    return resolved
+
+
+def validate_single_domain_physics_profile(
+        profile: str,
+        *,
+        config: Mapping[str, object] | object | None = None,
+        expert_acknowledgements: tuple[str, ...] = (),
+) -> dict[str, object]:
+    """Validate one named template through registry/runtime capabilities.
+
+    A named profile supplies the intended immutable product.  The executable
+    decision remains selector-based: when ``config`` is present its selectors
+    are resolved first, so an unfinished piece reports its cited capability
+    blocker rather than being hidden behind a profile-name mismatch.
+    """
+
+    from gpuwm.physics_registry import physics_registry, registry_sha256
+
+    registry = physics_registry()
+    template = registry["templates"].get(profile)
+    if not isinstance(template, Mapping):
+        raise ValueError(
+            f"physics profile {profile!r} is not a registered fixed template")
+    expected = single_domain_runtime_switches(profile)
+    selected_settings = expected if config is None else config
+    resolved_components = validate_physics_capabilities(selected_settings)
+    expected_components = dict(template.get("components", {}))
+    if resolved_components != expected_components:
+        raise ValueError(
+            f"selected physics differs from profile {profile!r}: "
+            f"components={resolved_components}, expected={expected_components}")
+    if config is not None:
+        drift = {
+            name: {
+                "selected": _selection_value(config, name),
+                "expected": value,
+            }
+            for name, value in expected.items()
+            if _selection_value(config, name) != value
+        }
+        if drift:
+            raise ValueError(
+                f"selected physics differs from profile {profile!r}: "
+                f"settings={drift}")
+
+    required_acknowledgements: dict[str, list[str]] = {}
+    for route_id, route in registry["runner_routes"].items():
+        expert = route.get("expert_template_ids", {})
+        if not isinstance(expert, Mapping):
+            continue
+        if any(
+                isinstance(template_ids, list) and profile in template_ids
+                for template_ids in expert.values()):
+            acknowledgement = route.get("expert_acknowledgement_id")
+            if isinstance(acknowledgement, str):
+                required_acknowledgements.setdefault(
+                    acknowledgement, []).append(route_id)
+    acknowledged = set(expert_acknowledgements)
+    missing = sorted(set(required_acknowledgements) - acknowledged)
+    if missing:
+        citations = {
+            acknowledgement: [
+                "gpuwm/physics_registry_v2.json#/runner_routes/"
+                + route_id
+                for route_id in required_acknowledgements[acknowledgement]
+            ]
+            for acknowledgement in missing
+        }
+        raise PhysicsCapabilityError(
+            f"expert physics acknowledgement required: {citations}")
+
+    selectors = {
+        key: _selection_value(selected_settings, key)
+        for component in registry["components"].values()
+        for key in component.get("selector_keys", ())
+    }
+    return {
+        "schema": "gpuwm-front-door-physics-selection-v1",
+        "profile": profile,
+        "registry_sha256": registry_sha256(registry),
+        "components": resolved_components,
+        "selectors": selectors,
+        "resolved": expected,
+        "expert_acknowledgements": sorted(
+            acknowledged & set(required_acknowledgements)),
+        "maturity": template.get("maturity"),
+    }
 
 
 def thompson_runtime_requirements() -> dict[str, object]:
@@ -667,6 +894,7 @@ def require_ready_wrf_physics(**selection: int) -> None:
 __all__ = [
     "EXPERIMENTAL_THOMPSON_ENV",
     "MYNN_PROFILE_ID",
+    "NOAHMP_PROFILE_ID",
     "NOAHMP_EXPERT_COLUMN_BUDGET_ENV",
     "NOAHMP_MEASURED_COLUMN_CEILING",
     "NOAHMP_MEASURED_SLAB_CALL_SECONDS",
@@ -677,6 +905,7 @@ __all__ = [
     "NSSL2_PROFILE_ID",
     "RUC_PROFILE_ID",
     "PhysicsPortBlocker",
+    "PhysicsCapabilityError",
     "RRTMG_VARIANT_LEGACY",
     "RRTMG_VARIANT_RTE_RRTMGP",
     "THOMPSON_PROFILE_ID",
@@ -697,4 +926,6 @@ __all__ = [
     "rrtmg_variant",
     "single_domain_runtime_switches",
     "thompson_runtime_requirements",
+    "validate_physics_capabilities",
+    "validate_single_domain_physics_profile",
 ]

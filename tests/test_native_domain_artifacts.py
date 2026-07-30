@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from dataclasses import replace
+from datetime import datetime, timedelta
 import json
 from types import SimpleNamespace
 
@@ -285,7 +286,9 @@ def test_hierarchy_writer_joins_root_lbc_and_child_without_lbc_atomically(
     root_initial.state.lateral_boundaries = boundaries
     child_initial.state.lateral_boundaries = None
     root_domain = _domain(1, 0)
-    child_domain = _domain(2, 1)
+    root_time = datetime(2026, 7, 20)
+    child_domain = replace(
+        _domain(2, 1), start_time=root_time + timedelta(minutes=5))
     exp = SimpleNamespace(domains=(root_domain, child_domain))
     child_result = SimpleNamespace(
         domain=child_domain,
@@ -304,7 +307,7 @@ def test_hierarchy_writer_joins_root_lbc_and_child_without_lbc_atomically(
         source_manifest_sha256="b" * 64,
         namelist_sha256="c" * 64, forcing_hours=(0, 1),
         source_identity={"source": "fixture"},
-        valid_time=datetime(2026, 7, 20))
+        valid_time=root_time)
 
     assert build.receipt["status"] == "READY"
     assert build.receipt["boundary_inventory"] == {
@@ -317,6 +320,8 @@ def test_hierarchy_writer_joins_root_lbc_and_child_without_lbc_atomically(
     assert [domain["verification"]["path"]
             for domain in build.receipt["domains"]] == [
                 "prepared-cache", "prepared-cache"]
+    assert build.receipt["domains"][1]["valid_time"] == \
+        "2026-07-20T00:05:00"
     assert not tuple(tmp_path.glob(".d-*"))
 
 

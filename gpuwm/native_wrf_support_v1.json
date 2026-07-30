@@ -74,6 +74,8 @@
       "antimeridian_crossing_domains": "implemented; oracle-verified plus smoke-run verified, not matched-run verified"
     },
     "static_one_way_nests": "stock_wrf_proof_passed_through_d06",
+    "delayed_child_starts": "implemented_in_namelist_import_native_artifacts_gpuwm_runtime_and_restart_resume_with_exact_parent_step_and_forcing_seam_gates; synthetic_end_to_end_covered_not_a_new_stock_wrf_certification",
+    "forcing_cadence": "generic_mapped_hierarchies_support_positive_uniform_whole_second_offsets_including_five_minutes_when_exact_integer_root_steps; named_source_product_limits_remain",
     "two_way_feedback": "unsupported_fail_closed",
     "moving_nests": "unsupported_fail_closed",
     "grid_ids": "contiguous_parent_before_child_d01_through_d21",

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 import hashlib
 import importlib.util
 import json
@@ -134,6 +134,14 @@ def _strict_json(value):
         return [_strict_json(item) for item in value]
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, datetime):
+        # v1.1 nests gave DomainConfig an optional per-domain start_time,
+        # so a serialized domain config now reaches here carrying a
+        # datetime.  ISO 8601 is what every other identity document in
+        # the tree already writes (prepared_cache, source_hierarchy,
+        # native_domain_artifacts), and identity digests only agree if
+        # this agrees with them.
+        return value.isoformat()
     if isinstance(value, np.integer):
         return int(value)
     if isinstance(value, np.bool_):
@@ -197,6 +205,17 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
+def _sibling_outdir(protected: Path) -> Path:
+    """A concrete --outdir the guard below will accept, beside ``protected``.
+
+    Named in the refusal so it reads as an instruction rather than a
+    rule.  It matches what the front door now suggests, so the two
+    surfaces send the user to the same directory.
+    """
+    protected = Path(protected)
+    return protected.parent / f"{protected.name}-forecast"
+
+
 def claim_output_directory(output: Path, *, protected_roots: tuple[Path, ...]) -> Path:
     """Create exactly one output directory without adopting old content."""
 
@@ -205,7 +224,10 @@ def claim_output_directory(output: Path, *, protected_roots: tuple[Path, ...]) -
         protected = Path(protected).resolve()
         if _inside(result, protected) or _inside(protected, result):
             raise ValueError(
-                f"output directory {result} overlaps protected input {protected}"
+                f"output directory {result} overlaps protected input "
+                f"{protected}; the forecast may not write into its own "
+                f"inputs.  Pass an --outdir beside them instead, for "
+                f"example {_sibling_outdir(protected)}"
             )
     result.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -387,6 +409,11 @@ def _domain_rows(exp) -> list[dict[str, object]]:
 def resolve_execution_plan(exp) -> Mapping[str, object]:
     """Resolve every edge through the engine's actual transition authority."""
 
+    if int(exp.feedback) != 0:
+        raise ValueError(
+            "the prepared domain-tree forecast product carries a static "
+            "one-way execution plan and refuses feedback=1; use the native "
+            "experiment runner for experimental two-way feedback")
     by_id = {domain.grid_id: domain for domain in exp.domains}
     transitions = []
     for domain in exp.domains:
@@ -1374,9 +1401,18 @@ def main(argv=None) -> int:
         print(json.dumps(runner_capabilities(), sort_keys=True))
         return 0
     args = _parser().parse_args(argv)
-    outdir = claim_output_directory(
-        args.outdir, protected_roots=(args.prepared_root, args.experiment_config)
-    )
+    # A rejected --outdir is a usage mistake, not a crash: it must read as
+    # one sentence naming the problem and a directory that works.  A node-8
+    # pilot met this guard as a raw traceback, on a command the front door
+    # itself had suggested.
+    try:
+        outdir = claim_output_directory(
+            args.outdir,
+            protected_roots=(args.prepared_root, args.experiment_config))
+    except (ValueError, FileExistsError) as error:
+        print(f"prepared_domain_tree_forecast: --outdir refused: {error}",
+              file=sys.stderr)
+        return 2
     try:
         inputs = preflight_prepared_tree(
             prepared_root=args.prepared_root,

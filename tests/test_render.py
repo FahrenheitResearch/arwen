@@ -291,8 +291,9 @@ def test_the_matplotlib_fallback_announces_itself(monkeypatch, capsys):
     # ... what that costs, against the rust catalog ...
     assert f"{len(render_module.PRODUCTS)} of the rust catalog's " \
            f"{render_module._RUST_CATALOG_PRODUCTS} products" in notice
-    # ... and the exact command that fixes it.
-    from gpuwm import rustwx
+    # ... and, in a checkout, the exact command that fixes it.
+    from gpuwm import bridges, rustwx
+    assert bridges.sources_present(rustwx.RUSTWX_CRATE_RELATIVE)
     assert rustwx.CARGO_BUILD_HINT in notice
     assert "cargo build --release --locked --offline" in notice
 
@@ -314,6 +315,59 @@ def test_the_matplotlib_fallback_announces_itself(monkeypatch, capsys):
     # before any product line.)
     assert "rust render engine not available" in captured.err
     assert "probe exited 1" in captured.err
+
+
+def test_the_fallback_notice_is_install_aware_in_one_line(monkeypatch):
+    """A wheel install has no `tools/rustwx` to cd into.
+
+    The 1.0.1 remedy contract stopped doctor sending pip users to a
+    directory a wheel does not carry; this second call site assembled its
+    own string and kept doing it.  It is bound to ONE physical line, and
+    the pip-shape answer is a whole bootstrap -- so the honest one-line
+    composition names `gpuwm doctor` rather than inlining a command that
+    cannot work here.
+    """
+    from gpuwm import bridges, render as render_module, rustwx
+
+    why = "rust renderer not built (gpuwm doctor shows the build one-liner)"
+
+    # Checkout shape: the one-liner, unchanged.
+    monkeypatch.setattr(bridges, "sources_present", lambda *a, **k: True)
+    checkout = render_module.fallback_notice("matplotlib", why)
+    assert "\n" not in checkout
+    assert rustwx.CARGO_BUILD_HINT in checkout
+
+    # Wheel shape: still one line, and it no longer names the directory
+    # that is not there.
+    monkeypatch.setattr(bridges, "sources_present", lambda *a, **k: False)
+    wheel = render_module.fallback_notice("matplotlib", why)
+    assert wheel is not None
+    assert "\n" not in wheel, wheel
+    assert "cd tools" not in wheel, wheel
+    assert "gpuwm doctor" in wheel
+    # Still says what the fallback costs, in both shapes.
+    for text in (checkout, wheel):
+        assert "engine matplotlib" in text
+        assert f"{len(render_module.PRODUCTS)} of the rust catalog's" in text
+
+
+def test_sources_present_answers_about_the_crate_it_is_asked_about(
+        monkeypatch, tmp_path):
+    """It used to answer for tools/grib1_bridge whatever it was asked.
+
+    A tree carrying one crate and not the other therefore got a `cd` into
+    the missing one -- the exact class of bug the install-aware remedies
+    exist to prevent.
+    """
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path)
+    (tmp_path / "tools" / "grib1_bridge").mkdir(parents=True)
+
+    assert bridges.sources_present("tools/grib1_bridge") is True
+    assert bridges.sources_present("tools/rustwx") is False
+    # The default is unchanged for every existing caller.
+    assert bridges.sources_present() is True
 
 
 # ---------------------------------------------------------------------------

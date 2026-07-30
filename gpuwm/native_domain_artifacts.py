@@ -102,6 +102,36 @@ def _forcing_hours(values: Sequence[int]) -> tuple[int, ...]:
     return hours
 
 
+def _forcing_offsets(
+        *, forcing_hours: Sequence[int] | None,
+        forcing_offsets_seconds: Sequence[int] | None,
+) -> tuple[int, ...]:
+    if (forcing_hours is None) == (forcing_offsets_seconds is None):
+        raise ValueError(
+            "exactly one of forcing_hours or forcing_offsets_seconds is "
+            "required")
+    if forcing_hours is not None:
+        return tuple(hour * 3600 for hour in _forcing_hours(forcing_hours))
+    offsets = tuple(forcing_offsets_seconds)
+    if (len(offsets) < 2 or offsets[0] != 0
+            or any(isinstance(offset, bool) or not isinstance(offset, int)
+                   for offset in offsets)
+            or any(later <= earlier
+                   for earlier, later in zip(offsets, offsets[1:]))):
+        raise ValueError(
+            "forcing_offsets_seconds must contain increasing integer "
+            "seconds beginning at zero and include at least one boundary "
+            "interval")
+    return offsets
+
+
+def _domain_valid_time(exp, domain, root_valid_time: datetime) -> datetime:
+    configured = getattr(domain, "start_time", None)
+    if configured is None:
+        return root_valid_time
+    return configured
+
+
 def _validate_domain_boundary_mode(domain, boundaries) -> None:
     root = int(domain.parent_id) == 0
     if root:
@@ -124,8 +154,10 @@ def write_native_domain_artifacts(
         output: Path, *, domain, grid, initial_result, met, soil,
         static_fields: Mapping[str, object], boundaries,
         bridge_manifest_sha256: str, source_manifest_sha256: str,
-        namelist_sha256: str, forcing_hours: Sequence[int],
+        namelist_sha256: str, forcing_hours: Sequence[int] | None = None,
+        forcing_offsets_seconds: Sequence[int] | None = None,
         source_identity: Mapping[str, object], valid_time: datetime,
+        forcing_origin_time: datetime | None = None,
         metadata: Mapping[str, object] | None = None,
 ) -> NativeDomainArtifactBuild:
     """Build one root/child artifact set in an atomic directory.
@@ -158,7 +190,20 @@ def write_native_domain_artifacts(
         raise ValueError(
             "root state carries different external LBCs than the artifact "
             "writer received")
-    hours = _forcing_hours(forcing_hours)
+    offsets = _forcing_offsets(
+        forcing_hours=forcing_hours,
+        forcing_offsets_seconds=forcing_offsets_seconds)
+    legacy_hours = (
+        _forcing_hours(forcing_hours)
+        if forcing_hours is not None else None)
+    forcing_identity = (
+        {"forcing_hours": legacy_hours}
+        if legacy_hours is not None else
+        {"forcing_offsets_seconds": offsets})
+    if forcing_origin_time is None:
+        forcing_origin_time = valid_time
+    if not isinstance(forcing_origin_time, datetime):
+        raise TypeError("forcing_origin_time must be a datetime")
     digests = {
         "bridge_manifest_sha256": _digest(
             bridge_manifest_sha256, "bridge_manifest_sha256"),
@@ -183,11 +228,13 @@ def write_native_domain_artifacts(
             source_manifest_sha256=digests["source_manifest_sha256"],
             static_cache_sha256=static_receipt["sha256"],
             namelist_sha256=digests["namelist_sha256"],
-            domain_config=domain, forcing_hours=hours,
+            domain_config=domain, **forcing_identity,
             source_identity=dict(source_identity),
         )
         user_metadata = dict(metadata or {})
-        reserved = {"initial_valid_time", "last_valid_time", "forcing_hours"}
+        reserved = {
+            "initial_valid_time", "last_valid_time", "forcing_hours",
+            "forcing_offsets_seconds"}
         conflict = reserved & set(user_metadata)
         if conflict:
             raise ValueError(
@@ -195,8 +242,12 @@ def write_native_domain_artifacts(
         user_metadata.update({
             "initial_valid_time": valid_time.isoformat(),
             "last_valid_time": (
-                valid_time + timedelta(hours=hours[-1])).isoformat(),
-            "forcing_hours": list(hours),
+                forcing_origin_time
+                + timedelta(seconds=offsets[-1])).isoformat(),
+            **{
+                key: list(values)
+                for key, values in forcing_identity.items()
+            },
         })
         prepared_receipt = write_prepared_cache(
             prepared_path, identity=identity,
@@ -219,7 +270,10 @@ def write_native_domain_artifacts(
                 "external-specified" if int(domain.parent_id) == 0
                 else "nested-parent-forced"),
             "valid_time": valid_time.isoformat(),
-            "forcing_hours": list(hours),
+            **{
+                key: list(values)
+                for key, values in forcing_identity.items()
+            },
             "artifacts": {
                 "prepared_cache": {
                     "path": prepared_path.name,
@@ -260,7 +314,8 @@ def write_native_hierarchy_artifacts(
         root_soil, root_static_fields: Mapping[str, object], root_boundaries,
         child_results: Sequence[object],
         bridge_manifest_sha256: str, source_manifest_sha256: str,
-        namelist_sha256: str, forcing_hours: Sequence[int],
+        namelist_sha256: str, forcing_hours: Sequence[int] | None = None,
+        forcing_offsets_seconds: Sequence[int] | None = None,
         source_identity: Mapping[str, object], valid_time: datetime,
         root_metadata: Mapping[str, object] | None = None,
 ) -> NativeHierarchyArtifactBuild:
@@ -310,8 +365,10 @@ def write_native_hierarchy_artifacts(
             bridge_manifest_sha256=bridge_manifest_sha256,
             source_manifest_sha256=source_manifest_sha256,
             namelist_sha256=namelist_sha256, forcing_hours=forcing_hours,
+            forcing_offsets_seconds=forcing_offsets_seconds,
             source_identity={**dict(source_identity), "grid_id": 1},
-            valid_time=valid_time, metadata=root_metadata))
+            valid_time=valid_time, forcing_origin_time=valid_time,
+            metadata=root_metadata))
         for domain, result in zip(domains[1:], children):
             metadata = {
                 "input_preparation_seconds": result.input_preparation_seconds,
@@ -327,9 +384,11 @@ def write_native_hierarchy_artifacts(
                 source_manifest_sha256=source_manifest_sha256,
                 namelist_sha256=namelist_sha256,
                 forcing_hours=forcing_hours,
+                forcing_offsets_seconds=forcing_offsets_seconds,
                 source_identity={
                     **dict(source_identity), "grid_id": int(domain.grid_id)},
-                valid_time=valid_time, metadata=metadata))
+                valid_time=_domain_valid_time(exp, domain, valid_time),
+                forcing_origin_time=valid_time, metadata=metadata))
         manifest = staging / "domain-artifacts.json"
         write_domain_artifacts_manifest(
             manifest, tuple(build.artifacts for build in builds))

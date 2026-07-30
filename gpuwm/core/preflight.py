@@ -1445,8 +1445,8 @@ def scratch_slot_registry(cfg: RunConfig, *,
     slots.update(rk_ww=fl, rk_ru=xs, rk_rv=ys)
     largest = max(nz * ny * (nx + 1), (nz + 1) * ny * nx)
     nblocks = min(256, max(1, (largest + 255) // 256))
-    slots["integration_health_partial"] = (nblocks, 8)
-    slots["integration_health_result"] = (7,)
+    slots["integration_health_partial"] = (nblocks, 9)
+    slots["integration_health_result"] = (8,)
     # health.py StateHealthValidator: descriptor metadata and compact result.
     # These are always the fixed MAX_HEALTH_FIELDS footprint, independent of
     # case size; inventory additions fail at that explicit cap.
@@ -1664,7 +1664,14 @@ def nest_field_kinds(cfg: RunConfig) -> tuple[str, ...]:
     module_bc_em.F:320-345 w coupling; Registry scalar set qnr/qni/qns/
     qng at Registry.EM_COMMON:3026).  ``nc`` is excluded: it has no
     advection copy (state.py -- no ``nc0``), matching WRF's default
-    Morrison without prognostic droplet number."""
+    Morrison without prognostic droplet number.
+
+    This inventory contains only REAL prognostic fields handled by WRF
+    ``copy_fcn`` (mass-cell or U/V face averaging).  It contains no
+    masked/surface ``copy_fcnm`` fields and no integer ``copy_fcni`` fields;
+    that is an explicit two-way-feedback scope divergence from stock WRF,
+    not a request to apply the mass operator to masked state.
+    """
     kinds = ["u", "v", "w", "t", "ph", "mu"]
     if cfg.moist:
         kinds += ["qv", "qc", "qr"]
@@ -2974,6 +2981,58 @@ def device_wide_used_bytes() -> int:
     return int(text.strip().splitlines()[0]) * 1024 ** 2
 
 
+def device_physical_total_bytes() -> int | None:
+    """Physical VRAM total of the card, from NVML, or None if unreadable.
+
+    NVML and not ``cudaMemGetInfo``: capacity is the one device question
+    that must be answerable in CPU mode, and ``memGetInfo`` cannot be
+    asked without standing up a CUDA context -- which is exactly what an
+    estimator-mode preflight promises not to do.  ``device_wide_used_bytes``
+    already argues NVML is the authority on this host anyway.
+
+    Unreadable is None, never a number: this figure is used as a CEILING
+    only, so a card that cannot be read simply imposes no ceiling.
+    """
+    try:
+        from gpuwm.supervisor import _run_nvidia_smi
+
+        text = _run_nvidia_smi(["--query-gpu=memory.total",
+                                "--format=csv,noheader,nounits"])
+        total = int(text.strip().splitlines()[0]) * 1024 ** 2
+    except Exception:
+        return None
+    return total if total > 0 else None
+
+
+def cap_free_to_physical(free_bytes: int, *,
+                         card_total_bytes: int | None,
+                         measured_total_bytes: int | None
+                         ) -> tuple[int, int | None]:
+    """Clamp a free-VRAM figure to what the card physically has.
+
+    A DERIVED free figure is arithmetic (declared budget + reserve) and
+    nothing in that arithmetic knows how big the card is: the ``--card
+    16gb`` wizard tier produced a notional free of 16.68 GiB on a card
+    whose physical total is 15.57 GiB, which then bought the estimate a
+    gigabyte of budget that does not exist.  Free can never exceed total,
+    on any card, so the smaller of the two capacity statements we have --
+    the caller's declared card size and a live measurement of it -- is an
+    ADDITIONAL ceiling, in the same idiom as the device rail: never a
+    replacement and never a widening.
+
+    Returns ``(free, cap)`` where ``cap`` is the ceiling that actually
+    bound, or None when the figure was already within capacity.
+    """
+    caps = [int(c) for c in (card_total_bytes, measured_total_bytes)
+            if c is not None and int(c) > 0]
+    if not caps:
+        return int(free_bytes), None
+    cap = min(caps)
+    if int(free_bytes) <= cap:
+        return int(free_bytes), None
+    return cap, cap
+
+
 def device_rail_free_bytes(rail_bytes: int, *,
                            other_process_bytes: int) -> int:
     """Bytes this process may hold before the WHOLE CARD crosses the rail.
@@ -3396,6 +3455,13 @@ def _load_experiment_any(path: Path) -> ExperimentConfig:
                                       datetime(1970, 1, 1))
 
 
+#: ``gpuwm check`` exit code for "every gate passed, but the observed peak
+#: envelope exceeds the budget".  Nonzero, because the report says in prose
+#: that the run may not fit and a script must be able to see that; distinct
+#: from 1, because no gate failed and the levers are different.
+_EXIT_ENVELOPE_OVER_BUDGET = 4
+
+
 def _format_bytes(n: int | None) -> str:
     return "n/a" if n is None else f"{n / GIB:7.2f} GiB"
 
@@ -3412,13 +3478,24 @@ def check_main(args) -> int:
     (estimator mode with no budget, or an ``--alloc`` that produced no
     measurements); 3 = the ``--alloc`` run ABORTED before measuring
     (headroom precheck / OOM) -- the JSON/text report is still emitted
-    with the estimate-side legs and the abort reason.
+    with the estimate-side legs and the abort reason; 4 = every gate
+    passed but the observed peak envelope EXCEEDS the budget, which the
+    report warns about in prose.  4 is distinct from 1 because the gates
+    genuinely passed and the levers differ, but it is nonzero because a
+    report whose own text says the run may not fit must never read green
+    to a script.  A harder verdict wins: 1, 2 and 3 outrank 4.
     """
     exp = _load_experiment_any(args.config)
     #: Whether the free-VRAM figure below was measured off the device or
     #: derived from a declared --budget-gib.  Printed, because the two
     #: must never wear the same label.
     free_source = "measured"
+    #: Declared physical capacity of the card this preflight is sizing for
+    #: (``--vram-gib``, which the wizard passes from its card tier).  A
+    #: ceiling on the free figure, never a source of one.
+    card_total_gib = getattr(args, "vram_gib", None)
+    #: The capacity ceiling that actually bound the free figure, if any.
+    capped_to = None
     # Read the card BEFORE anything in this process touches CUDA, so the
     # other-process residency the rail must respect is not inflated by our
     # own context (which the reserve already carries).
@@ -3434,7 +3511,8 @@ def check_main(args) -> int:
     reserve = ReservePolicy.n0_alloc(
         exp, estimate_bytes=estimate_experiment(
             exp, column_chunk=chunk,
-            forcing_interval_seconds=args.forcing_interval_s
+            forcing_interval_seconds=args.forcing_interval_s,
+            vram_gib=card_total_gib
         ).alloc_estimate_bytes)
     if args.reserve_gib is not None:
         # Flat controller-ratified reserve replacing the proposed stack.
@@ -3460,7 +3538,8 @@ def check_main(args) -> int:
             # (F1 fix) -- the measured legs stay None and can never pass.
             estimate = estimate_experiment(
                 exp, column_chunk=chunk,
-                forcing_interval_seconds=args.forcing_interval_s)
+                forcing_interval_seconds=args.forcing_interval_s,
+                vram_gib=card_total_gib)
             measured_used = None
             free = getattr(abort, "free_bytes", None)
             gates = evaluate_alloc_gates(
@@ -3470,7 +3549,8 @@ def check_main(args) -> int:
     else:
         estimate = estimate_experiment(
             exp, column_chunk=chunk,
-            forcing_interval_seconds=args.forcing_interval_s)
+            forcing_interval_seconds=args.forcing_interval_s,
+            vram_gib=card_total_gib)
         measured_used = None
         free = None
         if args.budget_gib is not None:
@@ -3483,6 +3563,20 @@ def check_main(args) -> int:
             # number a user then trusts.
             free = int(args.budget_gib * GIB) + reserve.reserve_bytes
             free_source = "declared (--budget-gib)"
+            # ...and, once a card is named, it is capped by that card.
+            # The arithmetic above knows the budget but not the capacity,
+            # so on its own it can and did synthesise a free figure larger
+            # than the whole card.  Without --vram-gib there is no card to
+            # cap against: --budget-gib is explicitly a "size for a machine
+            # that is not this one" flag, so this box's own capacity is
+            # not evidence about the target and must not bind it.
+            if card_total_gib is not None:
+                free, capped_to = cap_free_to_physical(
+                    free, card_total_bytes=int(card_total_gib * GIB),
+                    measured_total_bytes=device_physical_total_bytes())
+            if capped_to is not None:
+                free_source = ("declared (--budget-gib), capped at the "
+                               "card's physical total")
         else:
             try:
                 import cupy as cp
@@ -3490,6 +3584,16 @@ def check_main(args) -> int:
                 free_source = "measured"
             except Exception:
                 free = None
+            if free is not None and card_total_gib is not None:
+                # Sizing for a SMALLER card than the one under the desk is
+                # a legitimate use of --vram-gib, and it must not inherit
+                # this box's headroom.
+                free, capped_to = cap_free_to_physical(
+                    free, card_total_bytes=int(card_total_gib * GIB),
+                    measured_total_bytes=None)
+                if capped_to is not None:
+                    free_source = ("measured, capped at the declared "
+                                   "card's physical total")
         gates = evaluate_alloc_gates(
             measured_used_bytes=None,
             estimate_bytes=estimate.alloc_estimate_bytes,
@@ -3513,6 +3617,12 @@ def check_main(args) -> int:
             measured_free_bytes=free, reserve=reserve)
 
     budget = None if free is None else reserve.budget_bytes(free)
+    envelope = observed_peak_envelope_bytes(
+        estimate.footprint_projection_bytes, vram_gib=card_total_gib)
+    #: The report's own prose says this configuration may not fit.  It is
+    #: read here, before either renderer, because the exit code has to
+    #: carry it whether or not anybody reads the text.
+    envelope_over_budget = budget is not None and envelope > budget
     if args.json:
         payload = {
             "config": str(args.config), "experiment": exp.name,
@@ -3548,12 +3658,13 @@ def check_main(args) -> int:
             "held_projection_bytes": estimate.held_projection_bytes,
             "footprint_projection_bytes":
                 estimate.footprint_projection_bytes,
-            "observed_peak_envelope_platform": envelope_platform(),
-            "observed_peak_envelope_factor": peak_envelope_factor(),
-            "observed_peak_envelope_basis":
-                PEAK_ENVELOPE_BASIS[envelope_platform()],
-            "observed_peak_envelope_bytes": observed_peak_envelope_bytes(
-                estimate.footprint_projection_bytes),
+            "observed_peak_envelope_platform":
+                envelope_platform(vram_gib=card_total_gib),
+            "observed_peak_envelope_factor":
+                peak_envelope_factor(vram_gib=card_total_gib),
+            "observed_peak_envelope_basis": PEAK_ENVELOPE_BASIS[
+                envelope_platform(vram_gib=card_total_gib)],
+            "observed_peak_envelope_bytes": envelope,
             "reserve_bytes": reserve.reserve_bytes,
             "reserve_components": {
                 "retention_residual_bytes":
@@ -3570,11 +3681,10 @@ def check_main(args) -> int:
             "kernel_modules": sorted(physics_kernel_modules(exp)),
             "measured_free_bytes": free,
             "free_bytes_source": free_source,
+            "free_bytes_capped_to_physical_bytes": capped_to,
             "budget_bytes": budget,
             "observed_peak_envelope_exceeds_budget": (
-                None if budget is None
-                else observed_peak_envelope_bytes(
-                    estimate.footprint_projection_bytes) > budget),
+                None if budget is None else envelope_over_budget),
             "gates": gates,
         }
         if rail is not None:
@@ -3633,9 +3743,7 @@ def check_main(args) -> int:
                                + CUDA_CONTEXT_BYTES
                                + reserve.retention_residual_bytes)}"
               " (the TIER 3 line above is the retired zero-step probe model)")
-        envelope = observed_peak_envelope_bytes(
-            estimate.footprint_projection_bytes)
-        family = envelope_platform()
+        family = envelope_platform(vram_gib=card_total_gib)
         if family == "windows":
             provenance = (
                 "the one machine-peak-instrumented Windows run (Thompson "
@@ -3652,7 +3760,8 @@ def check_main(args) -> int:
                 "factor is a margin over the measurements rather than a "
                 "multiplier stacked on top of them")
         print(f"  OBSERVED PEAK ENVELOPE "
-              f"(x{peak_envelope_factor():.2f} footprint, {family} factor; "
+              f"(x{peak_envelope_factor(vram_gib=card_total_gib):.2f} "
+              f"footprint, {family} factor; "
               f"{PEAK_ENVELOPE_BASIS[family]}): "
               f"{_format_bytes(envelope)} -- {provenance}.")
         print(f"  reserve {reserve.reserve_bytes / GIB:.2f} GiB "
@@ -3661,6 +3770,11 @@ def check_main(args) -> int:
               f"external {reserve.external_margin_bytes / GIB:.2f}); "
               f"{free_source} free {_format_bytes(free)}; budget "
               f"{_format_bytes(budget)}")
+        if capped_to is not None:
+            print(f"  CAPPED: the declared free figure exceeded the card's "
+                  f"physical total and was clamped to "
+                  f"{_format_bytes(capped_to)}; free VRAM cannot exceed "
+                  f"the card")
         if rail is not None:
             print(f"  DEVICE RAIL {_format_bytes(rail['rail_bytes'])} "
                   f"whole-machine; other processes hold "
@@ -3680,7 +3794,7 @@ def check_main(args) -> int:
                   f"during {abort.phase}): {abort}")
         for metric in N0_GATE_METRICS:
             print(f"  {metric}: {_leg_text(gates[metric])}")
-        if budget is not None and envelope > budget:
+        if envelope_over_budget:
             print(f"  WARNING: observed peak envelope "
                   f"{_format_bytes(envelope)} exceeds the WDDM budget "
                   f"{_format_bytes(budget)} by "
@@ -3689,7 +3803,9 @@ def check_main(args) -> int:
                   f"show the true machine peak lands near the envelope, "
                   f"so this configuration may run out of budget even "
                   f"though the estimate gate passes -- trim the "
-                  f"configuration or free VRAM before trusting the pass.")
+                  f"configuration or free VRAM before trusting the pass.  "
+                  f"(exit code {_EXIT_ENVELOPE_OVER_BUDGET}: gates passed, "
+                  f"envelope did not.)")
         if budget is not None and estimate.alloc_estimate_bytes > budget:
             lever = recommend_column_chunk(exp, budget)
             print("  OVER BUDGET; first lever (RRTMGP column_chunk): "
@@ -3701,11 +3817,18 @@ def check_main(args) -> int:
     if args.alloc:
         # A requested measurement run fails CLOSED: every leg must have
         # been measured AND passed (shadow F5 / Fable F6).
-        return 0 if all(leg is True for leg in gates.values()) else 1
+        if not all(leg is True for leg in gates.values()):
+            return 1
+        return _EXIT_ENVELOPE_OVER_BUDGET if envelope_over_budget else 0
     evaluable = [leg for leg in gates.values() if leg is not None]
     if not evaluable:
         return 2  # nothing verifiable: fail closed at the command boundary
-    return 0 if all(evaluable) else 1
+    if not all(evaluable):
+        return 1
+    # Gates passed.  The report may still have said, in its own words,
+    # that the machine peak lands above the budget -- that sentence and
+    # exit 0 cannot both be true, and the sentence is the accurate one.
+    return _EXIT_ENVELOPE_OVER_BUDGET if envelope_over_budget else 0
 
 
 def register_cli(subparsers) -> None:
@@ -3733,6 +3856,12 @@ def register_cli(subparsers) -> None:
     p.add_argument("--budget-gib", type=float, default=None, metavar="GIB",
                    help="CPU-mode measured budget (free VRAM minus "
                         "reserve) for the estimate<=budget leg")
+    p.add_argument("--vram-gib", type=float, default=None, metavar="GIB",
+                   help="physical VRAM total of the card being sized for.  "
+                        "A CEILING on the free figure, never a source of "
+                        "one: a declared --budget-gib plus the reserve can "
+                        "otherwise synthesise more free VRAM than the card "
+                        "physically has")
     p.add_argument("--rail-mib", type=int, default=None, metavar="MIB",
                    help="whole-machine device residency ceiling: the budget "
                         "is additionally capped at RAIL minus what every "
@@ -3754,6 +3883,7 @@ __all__ = [
     "KERNEL_MAX_LOCAL_SIZE_BYTES", "MEASURED_LOCAL_MEMORY_PROFILE",
     "CHAINED_TRANSLATION_UNIT_FRAMES", "ChainedTranslationUnitFrame",
     "UNMEASURED_KERNEL_MODULES", "local_memory_profile_from_device",
+    "cap_free_to_physical", "device_physical_total_bytes",
     "device_rail_free_bytes", "device_wide_used_bytes",
     "kernel_local_memory_bytes", "non_pool_device_bytes",
     "physics_kernel_modules", "refl_diagnostic_reachable",

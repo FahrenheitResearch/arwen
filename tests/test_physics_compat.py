@@ -8,9 +8,13 @@ import pytest
 
 from gpuwm.config import RunConfig, validate_run_config
 from gpuwm.physics_compat import (
+    PhysicsCapabilityError,
     UnsupportedPhysicsSuiteError,
+    WSM6_PROFILE_ID,
     WRF_RRTMG_TO_RTE_RRTMGP,
     pending_wrf_physics_components,
+    single_domain_runtime_switches,
+    validate_physics_capabilities,
 )
 
 
@@ -53,6 +57,22 @@ def test_full_target_reports_every_remaining_coupled_component():
     assert pending_wrf_physics_components(
         mp_physics=6, sf_sfclay_physics=91, bl_pbl_physics=1,
         sf_surface_physics=3, num_soil_layers=9) == ()
+
+
+def test_front_door_capability_refusal_cites_unimplemented_registry_option():
+    selected = single_domain_runtime_switches(WSM6_PROFILE_ID)
+    selected.update(ra_lw_physics=1, ra_sw_physics=1)
+
+    with pytest.raises(PhysicsCapabilityError) as caught:
+        validate_physics_capabilities(selected)
+
+    message = str(caught.value)
+    assert (
+        "gpuwm/physics_registry_v2.json#/components/radiation/options/"
+        "wrf-rrtm-dudhia"
+    ) in message
+    assert "Not implemented: the 1/1 WRF RRTM+Dudhia pair" in message
+    assert "selectors {'ra_lw_physics': 1, 'ra_sw_physics': 1}" in message
 
 
 def test_a_mynn_half_suite_is_the_only_mynn_refusal_left():

@@ -178,9 +178,20 @@ def test_parent_history_contract_checks_geometry_cadence_and_scheme(tmp_path):
     assert contract.source_mp_physics == 8
     assert contract.start_time == start
     assert contract.end_time == start + timedelta(minutes=5)
-
     with pytest.raises(OfflineChildContractError, match="exceeds"):
         validate_parent_history(paths, max_boundary_interval_seconds=299)
+
+
+def test_offline_child_refuses_feedback_modified_parent_provenance(tmp_path):
+    path = tmp_path / "feedback-parent.nc"
+    _history(path, datetime(1974, 4, 3, 12))
+    with netCDF4.Dataset(path, "a") as dataset:
+        dataset.GPUWM_FEEDBACK = "experimental"
+        dataset.GPUWM_FEEDBACK_VALUE = 1
+    with pytest.raises(
+            OfflineChildContractError,
+            match="two-way feedback provenance.*one-way parent"):
+        inspect_parent_history_frame(path)
 
 
 def test_wrf_namelist_binding_is_authoritative_and_digested(tmp_path):

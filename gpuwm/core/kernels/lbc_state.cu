@@ -603,6 +603,80 @@ void couple_nest_field(
     out[tid] = __fmul_rn(ch, value);
 }
 
+// Child-to-parent feedback inverse. copy_fcn has already written the
+// restricted coupled values into the parent-shaped `coupled` buffer and MU
+// has already been restricted in the live parent. Only the registered
+// parent overlap is visited, so no couple/uncouple round trip can perturb
+// the one-way exterior.
+extern "C" __global__
+void uncouple_feedback_field(
+    real* __restrict__ target,
+    const real* __restrict__ coupled,
+    const real* __restrict__ mub2d,
+    const real* __restrict__ mup,
+    const real* __restrict__ thb,
+    const real* __restrict__ c1h,
+    const real* __restrict__ c2h,
+    const real* __restrict__ c1f,
+    const real* __restrict__ c2f,
+    const real* __restrict__ msft,
+    const real* __restrict__ msfu,
+    const real* __restrict__ msfv,
+    int has_msf, int thb_3d, int kind,
+    int i_lo, int i_hi, int j_lo, int j_hi,
+    int nz, int ny, int nx, int mny, int mnx)
+{
+    int ni = i_hi - i_lo + 1;
+    int nj = j_hi - j_lo + 1;
+    int tid = blockIdx.x*blockDim.x + threadIdx.x;
+    if (tid >= nz*nj*ni) return;
+    int k = tid/(nj*ni);
+    int rem = tid - k*nj*ni;
+    int j = j_lo + rem/ni;
+    int i = i_lo + rem%ni;
+    size_t idx = I3(k, j, i, ny, nx);
+    real value = coupled[idx];
+    real ch;
+    if (kind == LBC_U) {
+        ch = u_face_hybrid_current(
+            c1h[k], c2h[k], mub2d, mup, j, i, mny, mnx);
+        if (has_msf)
+            value = __fmul_rn(value, msfu[(size_t)j*nx + i]);
+        target[idx] = __fdiv_rn(value, ch);
+        return;
+    }
+    if (kind == LBC_V) {
+        ch = v_face_hybrid_current(
+            c1h[k], c2h[k], mub2d, mup, j, i, mny, mnx);
+        if (has_msf)
+            value = __fmul_rn(value, msfv[(size_t)j*nx + i]);
+        target[idx] = __fdiv_rn(value, ch);
+        return;
+    }
+    if (kind == LBC_W) {
+        ch = hybrid_point_current(
+            c1f[k], c2f[k], mub2d, mup, j, i, mnx);
+        if (has_msf)
+            value = __fmul_rn(value, msft[(size_t)j*nx + i]);
+        target[idx] = __fdiv_rn(value, ch);
+        return;
+    }
+    if (kind == LBC_PHI) {
+        ch = hybrid_point_current(
+            c1f[k], c2f[k], mub2d, mup, j, i, mnx);
+        target[idx] = __fdiv_rn(value, ch);
+        return;
+    }
+    ch = hybrid_point_current(
+        c1h[k], c2h[k], mub2d, mup, j, i, mnx);
+    real result = __fdiv_rn(value, ch);
+    if (kind == LBC_THETA) {
+        size_t h = thb_3d ? I3(k, j, i, mny, mnx) : (size_t)k;
+        result = __fsub_rn(__fadd_rn(result, 300.0f), thb[h]);
+    }
+    target[idx] = result;
+}
+
 static __device__ __forceinline__
 real coupled_old_target(int kind, int k, int j, int i,
                         const real* target,

@@ -55,6 +55,10 @@ _MAPPING_TOP_LEVEL = {
     "fields",
     "derivations",
     "target",
+    # Optional front-door policy consumed by ``gpuwm adapt``.  It is bound
+    # by the descriptor digest in the emitted provenance, but is deliberately
+    # removed before the executable rw-wps.mapping.v1 document is validated.
+    "adapt",
 }
 _FIELD_KEYS = {
     "selectors",
@@ -653,6 +657,7 @@ def compile_mapping_descriptor(
         )
 
     candidate = copy.deepcopy(descriptor)
+    candidate.pop("adapt", None)
     candidate["schema"] = MAPPING_SCHEMA
     fields = candidate["fields"]
     if not isinstance(fields, dict) or not fields:

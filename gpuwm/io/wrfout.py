@@ -1136,6 +1136,10 @@ class PerDomainWrfoutWriters:
         self._abort_event = threading.Event()
         for node in model.walk_parent_first():
             case = prepared[node.cfg.grid_id]
+            configured_start = getattr(node.cfg, "start_time", None)
+            domain_start_time = (
+                start_time if configured_start is None
+                else configured_start)
             self._metadata_by_grid_id[node.cfg.grid_id] = _metadata_frame(
                 node.grid, case.static_fields)
             self._writers[node.cfg.grid_id] = AsyncDomainWrfoutWriter(
@@ -1143,9 +1147,10 @@ class PerDomainWrfoutWriters:
                 dx=node.cfg.run.dx, dy=node.cfg.run.dy, title=title,
                 soil_layers=soil_layer_count(node.cfg.run),
                 global_attrs=_global_wrf_attrs(
-                    node.grid, start_time,
+                    node.grid, domain_start_time,
                     getattr(case, "geog_selection", None),
-                    domain=node.cfg, coord=case.initial_result.coord),
+                    domain=node.cfg, coord=case.initial_result.coord,
+                    feedback=getattr(model, "_feedback_provenance", None)),
                 abort_event=self._abort_event)
         self.last_durable_wrfout = None
 

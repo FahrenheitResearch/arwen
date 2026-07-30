@@ -215,8 +215,8 @@ def test_tropical_points_get_the_halved_root_clock(tmp_path, capsys):
     """|lat| < 25 emits 2.5 s/km, with the reason in the file.
 
     A 12 km Mercator domain at Manila on the wizard's own 60 s clock
-    destabilised at +1 h (vertical Courant 27.7 against the ~14.3 m
-    first eta layer); the same domain at a shorter step completed 6 h.
+    destabilised at +1 h; the same domain at a shorter step completed
+    6 h.  The emitted rationale names the co-located v1.1 CFL gate.
     """
     from gpuwm.domain_wizard import (ROOT_TIME_STEP_S,
                                      TROPICAL_ROOT_TIME_STEP_S,
@@ -236,7 +236,7 @@ def test_tropical_points_get_the_halved_root_clock(tmp_path, capsys):
     raw = tomllib.loads(text)
     assert raw["domain"][0]["time_step"] == TROPICAL_ROOT_TIME_STEP_S
     assert "TROPICAL CLOCK" in text
-    assert "VERTICAL" in text
+    assert "co-located vertical" in text
     # The chain still derives exactly, and the config still loads.
     exp = experiment_from_text(text, source=str(out))
     assert exp.root.time_step == TROPICAL_ROOT_TIME_STEP_S
@@ -263,8 +263,11 @@ def test_polar_fetch_box_stays_clear_of_the_pole(tmp_path, capsys):
     assert 0.0 < POLE_CLEARANCE_DEG < 1.0
     assert MAX_FETCH_ABS_LAT == pytest.approx(90.0 - POLE_CLEARANCE_DEG)
 
+    # A 32 GiB card, so the footprint is large enough to reach the pole
+    # in the first place -- on the small tiers the fitted domain now stops
+    # short of it and the clamp never fires, which proves nothing.
     rc, out = _run_wizard(tmp_path, point="69.65,18.96", source="gfs",
-                          cycle="2026-07-29T18")
+                          cycle="2026-07-29T18", card="32gb")
     printed = capsys.readouterr().out
     assert rc == 0, printed
     raw = tomllib.loads(out.read_text(encoding="utf-8"))

@@ -35,9 +35,17 @@ def test_gfs_series_requires_f000_and_uniform_cadence(tmp_path):
         (tmp_path / f"f{hour:03}.grib2").write_bytes(b"GRIB")
     series = tmp_path / "series.tsv"
     series.write_text(
-        "0\tf000.grib2\n3\tf003.grib2\n6\tf006.grib2\n",
+        "0\tf000.grib2\t81\n"
+        "3\tf003.grib2\t96\n"
+        "6\tf006.grib2\t96\n",
         encoding="utf-8")
     assert [hour for hour, _ in _read_series(series)] == [0, 3, 6]
+    series.write_text("0\tf000.grib2\t96\n3\tf003.grib2\t96\n")
+    with pytest.raises(ValueError, match="analysis process ID 81"):
+        _read_series(series)
+    series.write_text("0\tf000.grib2\t81\n3\tf003.grib2\t82\n")
+    with pytest.raises(ValueError, match="uncertified forecast process ID 82"):
+        _read_series(series)
     series.write_text("0\tf000.grib2\n3\tf003.grib2\n7\tf006.grib2\n")
     with pytest.raises(ValueError, match="uniform"):
         _read_series(series)
@@ -452,8 +460,10 @@ def test_the_front_door_prints_the_forecast_command_it_already_knows(tmp_path):
     assert "default to the hash-bound experiment" in text
     # The two values v1.0.0 left the user to work out are filled in.
     assert f"--physics-profile {WSM6_PROFILE_ID}" in text
-    assert f"--outdir {root / 'forecast'}" in text
+    outdir = root.parent / f"{root.name}-forecast"
+    assert f"--outdir {outdir}" in text
     _assert_pasteable(lines)
+    _assert_runner_accepts_printed_outdir(text, prepared_root=root)
 
     # A multi-domain hierarchy proof has no prepared-cache identity, so
     # it names the OTHER runner -- and prints that runner's WHOLE
@@ -466,8 +476,47 @@ def test_the_front_door_prints_the_forecast_command_it_already_knows(tmp_path):
     assert "prepared_domain_tree_forecast.py" in hierarchy_text
     assert f"--preparation-receipt-sha256 {proof_digest}" in hierarchy_text
     assert f"--experiment-config-sha256 {_digest(config)}" in hierarchy_text
-    assert f"--outdir {root / 'forecast'}" in hierarchy_text
+    assert f"--outdir {outdir}" in hierarchy_text
     _assert_pasteable(hierarchy)
+    _assert_runner_accepts_printed_outdir(
+        hierarchy_text, prepared_root=root, config=config)
+
+
+def _assert_runner_accepts_printed_outdir(text, *, prepared_root,
+                                          config=None):
+    """The printed --outdir must survive the runner's own guard.
+
+    ``_assert_pasteable`` is lexical: it rejects placeholders but never
+    asks whether the command would be REFUSED.  That is exactly how the
+    node-8 finding shipped green -- the front door suggested
+    ``<prepared_root>/forecast`` while both runners declare
+    ``--prepared-root`` a protected input and refuse any --outdir that
+    overlaps it, so the suggestion produced a traceback.
+    """
+
+    import importlib.util
+    import sys as _sys
+
+    printed = [line.split("--outdir ", 1)[1].strip()
+               for line in text.splitlines() if "--outdir " in line]
+    assert printed, "no --outdir was printed"
+    spec = importlib.util.spec_from_file_location(
+        "_tree_runner_guard",
+        Path(__file__).resolve().parents[1] / "tools"
+        / "prepared_domain_tree_forecast.py")
+    module = importlib.util.module_from_spec(spec)
+    _sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    protected = ((Path(prepared_root), Path(config)) if config is not None
+                 else (Path(prepared_root),))
+    for candidate in printed:
+        # The guard itself, not a re-implementation of it.  It creates
+        # the directory on success, so release what we just claimed --
+        # both printed commands name the same outdir, and the second
+        # claim would otherwise fail for the wrong reason.
+        claimed = module.claim_output_directory(
+            Path(candidate), protected_roots=protected)
+        claimed.rmdir()
 
 
 #: A bare ALL-CAPS token is how v1.0.0 spelled "you work this one out"

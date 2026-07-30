@@ -104,8 +104,11 @@ def test_area_nomads_box_uses_0_360_and_widens_over_greenwich():
     box = fetch.parse_area("30,-100,40,-90").as_nomads()
     assert box == {"left_lon": 260.0, "right_lon": 270.0,
                    "bottom_lat": 30.0, "top_lat": 40.0}
-    wrapped = fetch.parse_area("40,-10,50,10").as_nomads()
+    area = fetch.parse_area("40,-10,50,10")
+    wrapped = area.as_nomads()
     assert (wrapped["left_lon"], wrapped["right_lon"]) == (0.0, 360.0)
+    assert area.longitude_span_degrees == 20.0
+    assert area.nomads_longitude_amplification == 18.0
 
 
 def test_area_longitude_pair_wider_than_180_crosses_the_antimeridian():
@@ -129,6 +132,7 @@ def test_area_longitude_pair_wider_than_180_crosses_the_antimeridian():
     assert not band.crosses_antimeridian
     assert band.as_nomads()["left_lon"] == 0.0
     assert band.as_nomads()["right_lon"] == 360.0
+    assert band.nomads_longitude_amplification is None
 
 
 def test_point_box_wraps_across_the_antimeridian():
@@ -274,9 +278,9 @@ def test_fetch_gfs_writes_series_and_manifest(tmp_path, monkeypatch):
 
     series = (out / "gfs-series.tsv").read_text().splitlines()
     assert series == [
-        "0\tgfs.t06z.pgrb2.0p25.f000.subset.grib2",
-        "3\tgfs.t06z.pgrb2.0p25.f003.subset.grib2",
-        "6\tgfs.t06z.pgrb2.0p25.f006.subset.grib2",
+        "0\tgfs.t06z.pgrb2.0p25.f000.subset.grib2\t81",
+        "3\tgfs.t06z.pgrb2.0p25.f003.subset.grib2\t96",
+        "6\tgfs.t06z.pgrb2.0p25.f006.subset.grib2\t96",
     ]
     manifest = json.loads(manifest_path.read_text())
     assert manifest["schema"] == fetch.FETCH_MANIFEST_SCHEMA
@@ -293,6 +297,103 @@ def test_fetch_gfs_writes_series_and_manifest(tmp_path, monkeypatch):
             path.read_bytes()).hexdigest()
     assert manifest["payload_bytes"] == sum(
         item["bytes"] for item in manifest["files"])
+
+
+def test_fetch_gfs_refreshes_manifest_after_each_verified_hour(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(gfs_transport, "_download", _fake_gfs_download)
+    published_hours = []
+    original_write = fetch.write_fetch_manifest
+
+    def record_write(out, payload):
+        published_hours.append(payload["forecast_hours"])
+        return original_write(out, payload)
+
+    monkeypatch.setattr(fetch, "write_fetch_manifest", record_write)
+    fetch.fetch_gfs(
+        cycle=datetime(2026, 7, 28, 6), hours=(0, 3, 6),
+        area=fetch.parse_area("30,-100,40,-90"), out=tmp_path / "gfs",
+        progress=lambda line: None,
+        derived_bar=lambda cycle, **kwargs: fetch.GFS_SUBSET_RECORD_COUNT)
+
+    assert published_hours == [[0], [0, 3], [0, 3, 6]]
+
+
+def test_fetch_gfs_discloses_prime_meridian_full_band_amplification(
+        tmp_path, monkeypatch):
+    urls = []
+
+    def download(url, destination, **kwargs):
+        urls.append(url)
+        _fake_gfs_download(url, destination)
+
+    monkeypatch.setattr(gfs_transport, "_download", download)
+    lines = []
+    out = tmp_path / "greenwich"
+    manifest_path = fetch.fetch_gfs(
+        cycle=datetime(2026, 7, 28, 6), hours=(0, 3),
+        area=fetch.parse_area("40,-10,50,10"), out=out,
+        progress=lines.append,
+        derived_bar=lambda cycle, **kwargs: fetch.GFS_SUBSET_RECORD_COUNT)
+
+    queries = [
+        dict(parse_qsl(urlsplit(url).query, keep_blank_values=True))
+        for url in urls]
+    assert {(query["leftlon"], query["rightlon"])
+            for query in queries} == {("0", "360")}
+    notes = [line for line in lines if "NOTE" in line]
+    assert len(notes) == 1
+    assert "requested box lat 40..50, lon -10..10" in notes[0]
+    assert "fetched band lat 40..50, lon 0..360" in notes[0]
+    assert "18x longitude-span amplification" in notes[0]
+    assert "compressed-byte amplification is data-dependent" in notes[0]
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["nomads_area"]["left_lon"] == 0.0
+    assert manifest["nomads_area"]["right_lon"] == 360.0
+    assert manifest["longitude_span_amplification"] == 18.0
+    assert "18x longitude-span amplification" in manifest["notes"]
+
+    # An equal-width dateline crop is expressible as one narrow [0,360]
+    # interval and must not inherit the Greenwich widening disclosure.
+    urls.clear()
+    lines.clear()
+    dateline_manifest = fetch.fetch_gfs(
+        cycle=datetime(2026, 7, 28, 6), hours=(0, 3),
+        area=fetch.parse_area("40,170,50,-170"),
+        out=tmp_path / "dateline", progress=lines.append,
+        derived_bar=lambda cycle, **kwargs: fetch.GFS_SUBSET_RECORD_COUNT)
+    query = dict(parse_qsl(urlsplit(urls[0]).query, keep_blank_values=True))
+    assert (query["leftlon"], query["rightlon"]) == ("170", "190")
+    assert not [line for line in lines if "NOTE" in line]
+    manifest = json.loads(dateline_manifest.read_text())
+    assert "longitude_span_amplification" not in manifest
+
+
+def test_fetch_gfs_first_hour_interrupt_records_empty_request(
+        tmp_path, monkeypatch):
+    def interrupt(url, destination, **kwargs):
+        destination.with_suffix(destination.suffix + ".part").write_bytes(
+            b"not a complete GRIB stream")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(gfs_transport, "_download", interrupt)
+    out = tmp_path / "gfs"
+    area = fetch.parse_area("30,-100,40,-90")
+    with pytest.raises(RuntimeError, match="resume exactly with") as caught:
+        fetch.fetch_gfs(
+            cycle=datetime(2026, 7, 28, 6), hours=(0, 3),
+            area=area, out=out, progress=lambda line: None,
+            derived_bar=lambda cycle, **kwargs:
+            fetch.GFS_SUBSET_RECORD_COUNT)
+
+    manifest = json.loads((out / fetch.FETCH_MANIFEST_NAME).read_text())
+    assert manifest["forecast_hours"] == []
+    assert [item["role"] for item in manifest["files"]] == ["series"]
+    assert "f000.subset.grib2.part" in str(caught.value)
+    # The empty prefix still records request identity, so the next run is
+    # allowed to replace the .part instead of refusing a manifestless dir.
+    fetch.check_prior_request(
+        out, source="gfs", cycle=datetime(2026, 7, 28, 6), area=area)
 
 
 def test_fetch_gfs_resumes_by_skipping_verified_files(tmp_path, monkeypatch):
@@ -729,34 +830,82 @@ def test_refetch_hours_extension_still_resumes(tmp_path, monkeypatch,
     assert manifest["forecast_hours"] == [0, 3, 6]
 
 
-def test_resume_refuses_a_pre_manifest_interrupt(tmp_path, monkeypatch,
-                                                 capsys):
-    """The manifest is written after the downloads, so a fetch killed
-    mid-window leaves envelope-valid files with no recorded request.
-    Those files are area-blind (any area passes the 124-record bar) and
-    must NOT be resumed; the refusal names both remedies."""
-    monkeypatch.setattr(gfs_transport, "_download", _fake_gfs_download)
+def test_gfs_interrupt_manifests_verified_prefix_and_resumes(
+        tmp_path, monkeypatch, capsys):
+    """Ctrl-C is an orderly, byte-honest outcome: the completed prefix
+    is digest-bound, an in-flight .part is named but not blessed, and the
+    printed command resumes without re-downloading good bytes."""
+    calls = []
+
+    def interrupted_download(url, destination, **kwargs):
+        calls.append(destination.name)
+        if len(calls) == 1:
+            _fake_gfs_download(url, destination)
+            return
+        partial = destination.with_suffix(destination.suffix + ".part")
+        partial.write_bytes(b"GRIB interrupted, not a complete envelope")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(gfs_transport, "_download", interrupted_download)
+    monkeypatch.setattr(
+        fetch, "require_published_cycle",
+        lambda source, cycle, last_hour: None)
+    original_fetch = fetch.fetch_gfs
+
+    def no_live_inventory(**kwargs):
+        return original_fetch(
+            **kwargs,
+            derived_bar=lambda cycle, **options:
+            fetch.GFS_SUBSET_RECORD_COUNT)
+
+    monkeypatch.setattr(fetch, "fetch_gfs", no_live_inventory)
     out = tmp_path / "gfs"
     base = ["fetch", "--source", "gfs", "--cycle", "2026-07-28T06",
-            "--hours", "3", "--area", "30,-100,40,-90", "--out", str(out)]
-    assert cli.main(base) == 0
-    capsys.readouterr()
-    # Simulate the interrupt: files present, manifest never written.
-    (out / fetch.FETCH_MANIFEST_NAME).unlink()
+            "--hours", "6", "--cadence", "3",
+            "--area", "30,-100,40,-90", "--out", str(out)]
 
     rc = cli.main(base)
     assert rc == 2
     err = capsys.readouterr().err
-    assert fetch.FETCH_MANIFEST_NAME in err
-    assert "UNVERIFIED" in err
-    assert "different --out" in err and "--force-refetch" in err
+    first = "gfs.t06z.pgrb2.0p25.f000.subset.grib2"
+    partial = "gfs.t06z.pgrb2.0p25.f003.subset.grib2.part"
+    assert "Verified complete GRIB files on disk" in err
+    assert first in err and "sha256" in err
+    assert "Unverified partial/incomplete GRIB files" in err
+    assert partial in err
+    assert "resume exactly with: gpuwm fetch --source gfs" in err
+    assert "--cycle 2026-07-28T06 --hours 6 --cadence 3" in err
+    assert str(out) in err
     assert "Traceback" not in err
 
-    # --force-refetch quarantines the unverifiable files and re-fetches.
-    assert cli.main(base + ["--force-refetch"]) == 0
-    assert (out / fetch.FETCH_MANIFEST_NAME).is_file()
-    assert list(out.glob("*.rejected-*")), \
-        "unverifiable files must be quarantined, not deleted"
+    manifest = json.loads((out / fetch.FETCH_MANIFEST_NAME).read_text())
+    assert manifest["forecast_hours"] == [0]
+    assert [item["name"] for item in manifest["files"]] == [
+        first, "gfs-series.tsv"]
+    assert (out / "gfs-series.tsv").read_text().splitlines() == [
+        f"0\t{first}\t81"]
+    assert hashlib.sha256((out / first).read_bytes()).hexdigest() == (
+        manifest["files"][0]["sha256"])
+
+    resumed = []
+
+    def finish_download(url, destination, **kwargs):
+        resumed.append(destination.name)
+        destination.with_suffix(destination.suffix + ".part").unlink(
+            missing_ok=True)
+        _fake_gfs_download(url, destination)
+
+    monkeypatch.setattr(gfs_transport, "_download", finish_download)
+    assert cli.main(base) == 0
+    printed = capsys.readouterr().out
+    assert f"{first} exists" in printed and "verified -- skipped" in printed
+    assert resumed == [
+        "gfs.t06z.pgrb2.0p25.f003.subset.grib2",
+        "gfs.t06z.pgrb2.0p25.f006.subset.grib2",
+    ]
+    manifest = json.loads((out / fetch.FETCH_MANIFEST_NAME).read_text())
+    assert manifest["forecast_hours"] == [0, 3, 6]
+    assert not (out / partial).exists()
 
 
 @pytest.mark.parametrize("damage", ["truncated-json", "foreign-schema"])

@@ -105,18 +105,18 @@ ROOT_TIME_STEP_S = 60
 
 #: Halved root clock (2.5 s per km) for domains inside the tropics.
 #:
-#: The stability gate is a VERTICAL Courant number against the thinnest
-#: model layer, and the certified 49-level eta profile's first layer is
-#: about 14.3 m, so it trips at w_max > 10 * 14.3 / dt.  A tropical
-#: Mercator domain at Manila (14.6 N) on the wizard's own 60 s clock
-#: reached w_max 6.62 m/s and aborted at +1 h; the same domain at 15 s
-#: kept w_max at 1.5-3.0 m/s and completed 6 h, which says most of that
-#: 6.62 m/s was numerical rather than atmospheric.  Convection is
-#: deeper and more continuous at low latitude, so the 5 s/km rule of
-#: thumb (WRF's own 6*dx_km agrees with it) is not conservative enough
-#: there.  Halving is the cheapest possible remedy: radiation and
-#: cumulus are called on wall-clock intervals, so 4x the steps cost
-#: node 2 only +22% wall time (490 s vs 400 s for the same 6 h).
+#: A tropical Mercator domain at Manila (14.6 N) on the wizard's own
+#: 60 s clock reached w_max 6.62 m/s and destabilized at +1 h; the same
+#: domain at 15 s kept w_max at 1.5-3.0 m/s and completed 6 h.  The old
+#: monitor exaggerated that event by pairing the global w maximum with
+#: the unrelated thinnest layer; v1.1 now uses co-located |w|/dz.  The
+#: trajectory evidence still supports a conservative tropical clock:
+#: convection is deeper and more continuous at low latitude, so the
+#: 5 s/km rule of thumb (WRF's own 6*dx_km agrees with it) is not
+#: conservative enough there.  Halving is the cheapest possible remedy:
+#: radiation and cumulus are called on wall-clock intervals, so 4x the
+#: steps cost node 2 only +22% wall time (490 s vs 400 s for the same
+#: 6 h).
 #: Receipt: ARWEN-NODE2-4090-CUDA128-WORLDWIDE-20260730.md, PP-9.
 TROPICAL_ROOT_TIME_STEP_S = 30
 
@@ -134,9 +134,18 @@ _DIFF6_FACTORS = (0.12, 0.10, 0.08, 0.06)
 
 def vram_reserve_gib(vram_gib: float) -> float:
     """Flat VRAM reserve (GiB) by card capacity: WDDM/driver/CUDA context
-    plus the near-capacity stability ceiling of consumer cards."""
-    if vram_gib <= 16.0:
-        return 3.0
+    plus the near-capacity stability ceiling of consumer cards.
+
+    The small-card figure was 3.0 GiB and it was a promise the preflight
+    would not keep: ``ReservePolicy.n0_alloc`` charges the CUDA context
+    plus the widest launched kernel's local-memory backing store plus a
+    retention residual, which lands at 3.5-3.6 GiB on exactly those 12
+    and 16 GiB cards.  Sizing a layout against a 3.0 GiB reserve and then
+    handing it to a preflight applying 3.55 is how a node-7 pilot got a
+    wizard-certified config whose own check said the envelope did not
+    fit.  4.0 -- the figure the 24 GiB tier already uses -- clears the
+    measured reserve on both small tiers with about 0.45 GiB to spare.
+    """
     if vram_gib <= 24.0:
         return 4.0
     return 6.0
@@ -919,8 +928,8 @@ def render_config(*, name: str, start_time: datetime, hours: int,
             f"({float(per_km):g} s per km), half the "
             f"{float(time_step) * 2:g} s\n"
             "# the 5 s/km convention would give at this dx.  The "
-            "stability gate is a VERTICAL\n"
-            "# Courant number against the ~14.3 m first eta layer; "
+            "stability gate uses the\n"
+            "# maximum co-located vertical |w|/layer-thickness; "
             "tropical convection\n"
             "# destabilised a measured 12 km Mercator domain at 60 s and "
             "was comfortably\n"
@@ -1362,8 +1371,10 @@ def domain_main(args) -> int:
             "and memory preflight for this file; the native front door "
             "validates its own inputs.")
         from gpuwm.cli import main as cli_main
+        # The card size travels with the budget: --budget-gib alone lets
+        # check re-derive a notional free larger than the whole card.
         rc = cli_main(["check", str(out), "--budget-gib",
-                       f"{budget_gib:g}"])
+                       f"{budget_gib:g}", "--vram-gib", f"{vram_gib:g}"])
         if rc != 0:
             print(f"gpuwm check FAILED (rc {rc}) on the emitted config; "
                   "the wizard does not certify this file", flush=True)
@@ -1376,11 +1387,12 @@ def domain_main(args) -> int:
         for item in missing:
             print(f"  missing {item}")
         print(f"  after fetching, run: gpuwm check {_posix(out)} "
-              f"--budget-gib {budget_gib:g}")
+              f"--budget-gib {budget_gib:g} --vram-gib {vram_gib:g}")
         _print_geog_help()
         return 0
     from gpuwm.cli import main as cli_main
-    rc = cli_main(["check", str(out), "--budget-gib", f"{budget_gib:g}"])
+    rc = cli_main(["check", str(out), "--budget-gib", f"{budget_gib:g}",
+                   "--vram-gib", f"{vram_gib:g}"])
     if rc != 0:
         print(f"gpuwm check FAILED (rc {rc}) on the emitted config; the "
               "wizard does not certify this file", flush=True)

@@ -1,13 +1,14 @@
 // Combined integration-health reductions.  Two device launches produce one
-// compact host record for u/w/theta maxima, w argmax, and real74 boundary /
-// interior w maxima.  Max comparisons are exact for non-negative FP32 abs
-// values; the lowest 64-bit flat index wins ties, matching argmax.  The
-// compact float record stores that index as two exact uint32 payload words.
-// Partial records are [u, w, theta, edge-w, interior-w, index-lo, index-hi,
-// mask]; the final record drops the mask and keeps the first seven fields.
+// compact host record for u/w/theta maxima, co-located vertical CFL rate,
+// w argmax, and real74 boundary / interior w maxima.  Max comparisons are
+// exact for non-negative FP32 abs values; the lowest 64-bit flat index wins
+// ties, matching argmax.  The compact float record stores that index as two
+// exact uint32 payload words.  Partial records are [u, w, theta, edge-w,
+// interior-w, max(|w_upper|/dz_cell), index-lo, index-hi, mask]; the final
+// record drops the mask and keeps the first eight fields.
 
 #define HEALTH_THREADS 256
-#define HEALTH_FIELDS 8
+#define HEALTH_FIELDS 9
 
 static __device__ __forceinline__
 void update_max(real value, unsigned long long index, real& current,
@@ -23,13 +24,16 @@ extern "C" __global__
 void health_partial(const real* __restrict__ u,
                     const real* __restrict__ w,
                     const real* __restrict__ thp,
+                    const real* __restrict__ ph,
+                    const real* __restrict__ phb,
                     real* __restrict__ partial,
                     unsigned long long nu, unsigned long long nw,
                     unsigned long long nth,
-                    int width, int ny, int nx)
+                    unsigned long long ncells,
+                    int phb_full, int width, int ny, int nx, real gravity)
 {
     real umax = 0.0f, wmax = 0.0f, thmax = 0.0f;
-    real edge = 0.0f, interior = 0.0f;
+    real edge = 0.0f, interior = 0.0f, vertical_rate = 0.0f;
     unsigned long long windex = 0xffffffffffffffffull;
     unsigned mask = 0u;
     unsigned long long start = ((unsigned long long)blockIdx.x * blockDim.x
@@ -66,8 +70,28 @@ void health_partial(const real* __restrict__ u,
         if (isnan(value)) mask |= 4u;
         else if (value > thmax) thmax = value;
     }
+    // One mass cell owns dz between its lower/upper geopotential faces and
+    // the w value on its upper face.  Reducing this ratio preserves
+    // co-location: a strong upper-level updraft over a thick layer can no
+    // longer be paired with an unrelated thin surface layer.
+    unsigned long long plane = (unsigned long long)ny * nx;
+    for (unsigned long long ix = start; ix < ncells; ix += stride) {
+        unsigned long long k = ix / plane;
+        unsigned long long upper = ix + plane;
+        real base_lower = phb_full ? phb[ix] : phb[k];
+        real base_upper = phb_full ? phb[upper] : phb[k + 1];
+        real dz = ((ph[upper] + base_upper) - (ph[ix] + base_lower))
+                  / gravity;
+        real speed = fabsf(w[upper]);
+        if (!isfinite(dz) || dz <= 0.0f || !isfinite(speed)) {
+            mask |= 32u;
+        } else {
+            real rate = speed / dz;
+            vertical_rate = rate > vertical_rate ? rate : vertical_rate;
+        }
+    }
 
-    __shared__ real values[5][HEALTH_THREADS];
+    __shared__ real values[6][HEALTH_THREADS];
     __shared__ unsigned long long indices[HEALTH_THREADS];
     __shared__ unsigned masks[HEALTH_THREADS];
     int lane = threadIdx.x;
@@ -76,6 +100,7 @@ void health_partial(const real* __restrict__ u,
     values[2][lane] = thmax;
     values[3][lane] = edge;
     values[4][lane] = interior;
+    values[5][lane] = vertical_rate;
     indices[lane] = windex;
     masks[lane] = mask;
     __syncthreads();
@@ -92,17 +117,19 @@ void health_partial(const real* __restrict__ u,
                               ? values[3][lane + offset] : values[3][lane];
             values[4][lane] = values[4][lane + offset] > values[4][lane]
                               ? values[4][lane + offset] : values[4][lane];
+            values[5][lane] = values[5][lane + offset] > values[5][lane]
+                              ? values[5][lane + offset] : values[5][lane];
             masks[lane] |= masks[lane + offset];
         }
         __syncthreads();
     }
     if (lane == 0) {
         size_t out = (size_t)blockIdx.x * HEALTH_FIELDS;
-        for (int field = 0; field < 5; ++field)
+        for (int field = 0; field < 6; ++field)
             partial[out + field] = values[field][0];
-        partial[out + 5] = __uint_as_float((unsigned)indices[0]);
-        partial[out + 6] = __uint_as_float((unsigned)(indices[0] >> 32));
-        partial[out + 7] = __uint_as_float(masks[0]);
+        partial[out + 6] = __uint_as_float((unsigned)indices[0]);
+        partial[out + 7] = __uint_as_float((unsigned)(indices[0] >> 32));
+        partial[out + 8] = __uint_as_float(masks[0]);
     }
 }
 
@@ -110,26 +137,26 @@ extern "C" __global__
 void health_final(const real* __restrict__ partial,
                   real* __restrict__ result, int nblocks)
 {
-    real maxima[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    real maxima[6] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
     unsigned long long windex = 0xffffffffffffffffull;
     unsigned mask = 0u;
     int lane = threadIdx.x;
     for (int block = lane; block < nblocks; block += HEALTH_THREADS) {
         size_t src = (size_t)block * HEALTH_FIELDS;
         maxima[0] = partial[src] > maxima[0] ? partial[src] : maxima[0];
-        unsigned long long index = __float_as_uint(partial[src + 5]);
-        index |= ((unsigned long long)__float_as_uint(partial[src + 6])) << 32;
+        unsigned long long index = __float_as_uint(partial[src + 6]);
+        index |= ((unsigned long long)__float_as_uint(partial[src + 7])) << 32;
         update_max(partial[src + 1], index, maxima[1], windex);
-        for (int field = 2; field < 5; ++field)
+        for (int field = 2; field < 6; ++field)
             maxima[field] = partial[src + field] > maxima[field]
                             ? partial[src + field] : maxima[field];
-        mask |= __float_as_uint(partial[src + 7]);
+        mask |= __float_as_uint(partial[src + 8]);
     }
 
-    __shared__ real values[5][HEALTH_THREADS];
+    __shared__ real values[6][HEALTH_THREADS];
     __shared__ unsigned long long indices[HEALTH_THREADS];
     __shared__ unsigned masks[HEALTH_THREADS];
-    for (int field = 0; field < 5; ++field)
+    for (int field = 0; field < 6; ++field)
         values[field][lane] = maxima[field];
     indices[lane] = windex;
     masks[lane] = mask;
@@ -147,6 +174,8 @@ void health_final(const real* __restrict__ partial,
                               ? values[3][lane + offset] : values[3][lane];
             values[4][lane] = values[4][lane + offset] > values[4][lane]
                               ? values[4][lane + offset] : values[4][lane];
+            values[5][lane] = values[5][lane + offset] > values[5][lane]
+                              ? values[5][lane + offset] : values[5][lane];
             masks[lane] |= masks[lane + offset];
         }
         __syncthreads();
@@ -157,8 +186,9 @@ void health_final(const real* __restrict__ partial,
         result[2] = (masks[0] & 4u) ? nanf("") : values[2][0];
         result[3] = (masks[0] & 8u) ? nanf("") : values[3][0];
         result[4] = (masks[0] & 16u) ? nanf("") : values[4][0];
-        result[5] = __uint_as_float((unsigned)indices[0]);
-        result[6] = __uint_as_float((unsigned)(indices[0] >> 32));
+        result[5] = (masks[0] & 32u) ? nanf("") : values[5][0];
+        result[6] = __uint_as_float((unsigned)indices[0]);
+        result[7] = __uint_as_float((unsigned)(indices[0] >> 32));
     }
 }
 

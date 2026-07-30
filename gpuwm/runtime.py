@@ -66,6 +66,11 @@ from gpuwm.static.lambert import grids_from_projection_config
 
 
 MICROPHYSICS_TRANSITION_RECEIPT_NAME = "microphysics-transitions.json"
+FEEDBACK_PROVENANCE_RECEIPT_NAME = "feedback-provenance.json"
+FEEDBACK_EXPERIMENTAL_WARNING = (
+    "WARNING: feedback = 1 is EXPERIMENTAL and is not certified against "
+    "stock WRF yet; the certification reference is in progress."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +139,51 @@ class ExperimentRunSummary:
     microphysics_transitions: tuple[Mapping[str, object], ...] = ()
     microphysics_transition_receipt: Path | None = None
     microphysics_transition_receipt_sha256: str | None = None
+    feedback_provenance: Mapping[str, object] | None = None
+    feedback_provenance_receipt: Path | None = None
+    feedback_provenance_receipt_sha256: str | None = None
+
+
+def feedback_provenance(exp: ExperimentConfig) -> Mapping[str, object] | None:
+    """Machine-readable truth label for the experimental feedback tier."""
+    if int(exp.feedback) != 1:
+        return None
+    vertical_mapping = (
+        "shared-explicit-eta-ladder-horizontal-only"
+        if exp.vertical.eta_levels
+        else "shared-legacy-level-count-horizontal-only")
+    return {
+        "schema": "gpuwm-experimental-feedback-provenance-v1",
+        "feedback": "experimental",
+        "feedback_value": 1,
+        "stock_wrf_certification": "reference-in-progress",
+        "stock_wrf_certified": False,
+        "restriction": "wrf-v4.6.1-copy_fcn-horizontal",
+        "vertical_mapping": vertical_mapping,
+    }
+
+
+def _write_feedback_provenance_receipt(
+        outdir: Path, exp: ExperimentConfig, *, resumed: bool
+        ) -> tuple[Path | None, str | None, Mapping[str, object] | None]:
+    """Atomically stamp feedback truth into the durable run provenance."""
+    provenance = feedback_provenance(exp)
+    if provenance is None:
+        return None, None, None
+    payload = dict(provenance)
+    payload.update({
+        "experiment": exp.name,
+        "resumed": bool(resumed),
+        "domain_ids": [int(domain.grid_id) for domain in exp.domains],
+    })
+    encoded = (
+        json.dumps(payload, indent=2, sort_keys=True, allow_nan=False)
+        + "\n").encode("utf-8")
+    path = Path(outdir) / FEEDBACK_PROVENANCE_RECEIPT_NAME
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_bytes(encoded)
+    os.replace(temporary, path)
+    return path, hashlib.sha256(encoded).hexdigest(), payload
 
 
 def _write_microphysics_transition_receipt(
@@ -700,9 +750,10 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
     real = initialized.real
 
     update_diagnostics(state, cfg.hypsometric_opt)
+    domain_start_time = exp.domain_start_time(dc.grid_id)
     vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"],
-                                             exp.start_time)
-    lai = monthly_interp_to_date(static["LAI12M"], exp.start_time)
+                                             domain_start_time)
+    lai = monthly_interp_to_date(static["LAI12M"], domain_start_time)
     lat, lon = initialized.grid.latlon_mass()
     radiation = None
     if radiation_scheme_ids(cfg) == (4, 4):
@@ -758,7 +809,7 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
     landuse = initialize_landuse(
         static["LU_INDEX"], soil_type=static["SCT_DOM"],
         landmask=static["LANDMASK"], snow=soil.snow_water, xice=soil.xice,
-        valid_time=exp.start_time,
+        valid_time=domain_start_time,
         cen_lat=float(getattr(initialized.grid, "cen_lat", np.mean(lat))),
         mminlu=str(landuse_attrs["MMINLU"]),
         iswater=int(landuse_attrs["ISWATER"]),
@@ -875,7 +926,7 @@ def refl_10cm_due(outer_step: int, substep: int,
 def _global_wrf_attrs(
         grid, start_time: datetime,
         geog_selection: GeogSelection | None = None, *, domain=None,
-        coord=None) -> dict[str, object]:
+        coord=None, feedback=None) -> dict[str, object]:
     from gpuwm.io.wrfout import wrf_global_attrs
 
     landuse_attrs = (None if geog_selection is None
@@ -894,8 +945,16 @@ def _global_wrf_attrs(
     if coord is not None:
         identity.update(hybrid_opt=int(coord.hybrid_opt),
                         etac=float(coord.etac))
-    return wrf_global_attrs(
+    attrs = wrf_global_attrs(
         grid, start_time, landuse_attrs=landuse_attrs, **identity)
+    if feedback is not None:
+        attrs.update(
+            GPUWM_FEEDBACK=str(feedback["feedback"]),
+            GPUWM_FEEDBACK_VALUE=np.int32(feedback["feedback_value"]),
+            GPUWM_FEEDBACK_STOCK_WRF_CERTIFIED=np.int32(0),
+            GPUWM_FEEDBACK_CERTIFICATION=str(
+                feedback["stock_wrf_certification"]))
+    return attrs
 
 
 def _metadata_frame(grid, static: dict) -> dict[str, np.ndarray]:
@@ -916,7 +975,8 @@ def _metadata_frame(grid, static: dict) -> dict[str, np.ndarray]:
 
 def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
                       start_time: datetime, title: str, domain_id: int = 1,
-                      expect_refl_10cm: bool = True) -> Path:
+                      expect_refl_10cm: bool = True,
+                      feedback=None) -> Path:
     import cupy as cp
     from gpuwm.io.wrfout import (WrfoutWriter, state_frame,
                                  wrfout_filename)
@@ -947,7 +1007,8 @@ def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
                                                    "geog_selection",
                                                    None),
                                            domain=prepared.cfg,
-                                           coord=prepared.initial_result.coord),
+                                           coord=prepared.initial_result.coord,
+                                           feedback=feedback),
             field_schema=frame,
             # The soil axis is the selected LSM's geometry.  Omitting this
             # took WrfoutWriter's old literal-4 default, so a nine-layer
@@ -994,7 +1055,8 @@ def integrate_prepared_case(
         restart_path=None, run_seconds: float | None = None,
         history_interval_s: float | None = None,
         restart_interval_s: float | None = None, progress_callback=None,
-        health_debug: bool = False) -> RealCaseRunSummary:
+        health_debug: bool = False,
+        feedback=None) -> RealCaseRunSummary:
     """Integrate a prepared real case and write its configured outputs.
 
     Extraction of the frozen reference integration loop: intentionally free
@@ -1068,7 +1130,7 @@ def integrate_prepared_case(
         outputs.append(write_case_output(
             prepared, output_dir, start_time, start_time=start_time,
             title=output_title, domain_id=domain_id,
-            expect_refl_10cm=False))
+            expect_refl_10cm=False, feedback=feedback))
         # WRF resets the nwp_diagnostics running maxima each history
         # interval (module_diag_nwp.F:246-269); gpuwm's ratified placement
         # is immediately after the frame is durable.
@@ -1172,7 +1234,8 @@ def integrate_prepared_case(
             valid = start_time + timedelta(seconds=(outer_step + 1) * cfg.dt)
             outputs.append(write_case_output(
                 prepared, output_dir, valid, start_time=start_time,
-                title=output_title, domain_id=domain_id))
+                title=output_title, domain_id=domain_id,
+                feedback=feedback))
             # History-interval reset of the UP_HELI_MAX window (the frame
             # above snapshotted the accumulator synchronously).
             from gpuwm.core.uh_diag import reset_up_heli_max
@@ -1378,6 +1441,9 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
 
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    experimental_feedback = feedback_provenance(exp)
+    if experimental_feedback is not None:
+        print(FEEDBACK_EXPERIMENTAL_WARNING)
     _preparation_progress(progress_callback, "quarantine-wrfout")
     quarantine_orphan_wrfouts(outdir)
     if len(exp.domains) == 1:
@@ -1395,14 +1461,17 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         _preparation_progress(progress_callback, "prepare-case")
         prepared = prepare_experiment_case(
             exp, data, input_catalog=catalog, forcing_by_time=snapshots)
-        return integrate_prepared_case(
+        summary = integrate_prepared_case(
             outdir, prepared, start_time=exp.start_time,
             output_title=data.output_title, domain_id=data.output_domain,
             run_seconds=exp.run_seconds,
             history_interval_s=dc.history_interval_s,
             restart_interval_s=exp.restart_interval_s,
             restart_path=restart, progress_callback=progress_callback,
-            health_debug=health_debug)
+            health_debug=health_debug, feedback=experimental_feedback)
+        _write_feedback_provenance_receipt(
+            outdir, exp, resumed=restart is not None)
+        return summary
 
     _preparation_progress(progress_callback, "build-domain-tree")
     from gpuwm.core.model import build_experiment, execute_experiment
@@ -1445,6 +1514,9 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     transition_path, transition_sha, transitions = \
         _write_microphysics_transition_receipt(
             outdir, model, exp, resumed=restart is not None)
+    feedback_path, feedback_sha, feedback_receipt = \
+        _write_feedback_provenance_receipt(
+            outdir, exp, resumed=restart is not None)
     return ExperimentRunSummary(
         wrfout_paths=paths,
         completed_seconds=model.root.clock.elapsed_seconds,
@@ -1452,7 +1524,10 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         last_checkpoint=getattr(model, "_last_checkpoint", None),
         microphysics_transitions=transitions,
         microphysics_transition_receipt=transition_path,
-        microphysics_transition_receipt_sha256=transition_sha)
+        microphysics_transition_receipt_sha256=transition_sha,
+        feedback_provenance=feedback_receipt,
+        feedback_provenance_receipt=feedback_path,
+        feedback_provenance_receipt_sha256=feedback_sha)
 
 
 def _submit_tree_history_frame(writers, node, ticks: int) -> None:
@@ -1482,6 +1557,8 @@ def resolved_tree_config_report(exp: ExperimentConfig,
                                 data: CaseDataConfig, catalog) -> str:
     """Compact resolved report for the multi-domain run surface."""
     lines = [f"resolved experiment configuration -- {exp.name}"]
+    if exp.feedback == 1:
+        lines.append("  feedback = experimental")
     for record in data.resolved_inputs():
         lines.append(f"  input.{record.role} = {record.path}")
     lines.extend((
@@ -1495,6 +1572,7 @@ def resolved_tree_config_report(exp: ExperimentConfig,
     for dc in exp.domains:
         lines.append(
             f"  domain.d{dc.grid_id:02d} = parent={dc.parent_id} "
+            f"start={exp.domain_start_time(dc.grid_id).isoformat()} "
             f"{dc.run.nx}x{dc.run.ny} dx={dc.run.dx:g} "
             f"dt={dc.run.dt:g} history={dc.history_interval_s:g} "
             f"mp_physics={dc.run.mp_physics} "
@@ -1506,10 +1584,13 @@ def resolved_tree_config_report(exp: ExperimentConfig,
 
 
 __all__ = [
-    "ExperimentRunSummary", "MICROPHYSICS_TRANSITION_RECEIPT_NAME",
+    "ExperimentRunSummary", "FEEDBACK_EXPERIMENTAL_WARNING",
+    "FEEDBACK_PROVENANCE_RECEIPT_NAME",
+    "MICROPHYSICS_TRANSITION_RECEIPT_NAME",
     "PreparedRealCase", "RealCaseRunSummary",
     "configured_run_schedule",
-    "experiment_grid", "forcing_schedule", "forcing_snapshots",
+    "experiment_grid", "feedback_provenance",
+    "forcing_schedule", "forcing_snapshots",
     "integrate_prepared_case", "load_source_orography",
     "prepare_child_case", "prepare_experiment_case",
     "prepare_root_experiment_case", "prepare_real_case", "refl_10cm_due",

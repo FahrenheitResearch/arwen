@@ -57,6 +57,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shlex
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -159,22 +160,37 @@ GFS_MAX_FORECAST_HOUR = 384
 #: selector, same originating centre and table versions.  Verified
 #: against a live cycle before this lane was wired -- 124 records, scan
 #: 0x40, DRT 5.0, shape 6, centre 7, master table 2, local table 1,
-#: PDT 4.0, generating process 81 -- so the certified GFS mapping,
-#: bridge, and front door serve it with a source tag and nothing else.
+#: PDT 4.0, generating process 81 at f000.  The v1.1 proof corpus adds
+#: real f003/f006/f009 subsets with generating process 96; fetch declares
+#: the expected process ID per row so the bridge never infers that
+#: capability from an hour or a source name.
 #:
-#: **Analysis only.**  Every element of that verification is an f000
-#: observation.  NCEP tags the f000 analysis with forecast generating
-#: process 81 and the later GDAS forecast records with 96, and the
-#: fail-closed ``gfs_grib2_bridge`` -- which selects by exact field
-#: identity and never guesses -- is certified against the process the
-#: analysis carries (``gfs_grib2_bridge.rs``, ``validate_common``).  No
-#: end-to-end GDAS f003+ proof exists, so the source is scoped to the
-#: analysis rather than advertised past what the bridge certifies.
-#: Widening that gate is a re-certification event, not a flag.
-GDAS_MAX_FORECAST_HOUR = 0
+#: **Fetch and decode, not a front door.**  v1.0.1 scoped this source to
+#: f000 because the fail-closed ``gfs_grib2_bridge`` -- which selects by
+#: exact field identity and never guesses -- was certified only against
+#: the process the analysis carries, and it said that widening the gate
+#: would be a re-certification event rather than a flag.  That event has
+#: happened: real NOMADS f000/f003/f006/f009 subsets of
+#: ``gdas.20260729/12`` are committed under
+#: ``tests/fixtures/gdas-process-id/`` -- the last of them the published
+#: endpoint itself, so the ceiling rests on bytes and not on this
+#: constant -- all 124 messages each frozen at the envelope above, and
+#: the bridge now
+#: verifies a *declared* process ID against its certified ``{81, 96}``
+#: set (each forecast sample is also required to fail under the
+#: undeclared analysis-only policy).  So the fetch/decode span is
+#: f000..f009 again.
+#:
+#: What is still not certified is INGEST: the ``gdas`` adapter declares
+#: no field/level/cadence mapping and ``rw-wps --source gdas`` refuses.
+#: The container is the certified GFS container and the mapping is
+#: expected to be reusable wholesale, but that has not been run end to
+#: end, so no ``next:`` step here points at it.
+GDAS_MAX_FORECAST_HOUR = 9
 
-#: The GDAS forecast-hour ladder this ArWen is certified for.
-GDAS_CERTIFIED_HOURS = (0,)
+#: The GDAS forecast-hour ladder this ArWen is certified for: NOMADS
+#: publishes the assimilation cycle's short forecast hourly.
+GDAS_CERTIFIED_HOURS = tuple(range(GDAS_MAX_FORECAST_HOUR + 1))
 
 #: Sources that ride the certified GFS pgrb2.0p25 container.
 GFS_CONTAINER_SOURCES = ("gfs", "gdas")
@@ -269,6 +285,25 @@ class Area:
     def crosses_antimeridian(self) -> bool:
         return _wrap_lon(self.lon_west) > _wrap_lon_east(self.lon_east)
 
+    @property
+    def longitude_span_degrees(self) -> float:
+        """Eastward longitude width represented by the two stored edges."""
+
+        span = (self.lon_east - self.lon_west) % 360.0
+        if span == 0.0 and self.lon_east != self.lon_west:
+            return 360.0
+        return span
+
+    @property
+    def nomads_longitude_amplification(self) -> float | None:
+        """Full-band/requested-span ratio when one NOMADS box widens."""
+
+        box = self.as_nomads()
+        if (box["left_lon"] == 0.0 and box["right_lon"] == 360.0
+                and self.longitude_span_degrees < 360.0):
+            return 360.0 / self.longitude_span_degrees
+        return None
+
     def as_manifest(self) -> dict[str, float]:
         return {
             "lat_south": self.lat_south, "lon_west": self.lon_west,
@@ -287,9 +322,9 @@ class Area:
     def as_nomads(self) -> dict[str, float]:
         """NOMADS subregion in [0, 360] longitudes with left < right.
 
-        A box crossing the prime meridian cannot be expressed with
-        ``0 <= left < right <= 360``; it widens to the full longitude
-        band, which downloads more bytes but stays correct.
+        A box crossing the prime meridian cannot be expressed with one
+        ``0 <= left < right <= 360`` request; it widens to the full
+        longitude band.  The fetch path must disclose that amplification.
         """
         left = self.lon_west % 360.0
         right = self.lon_east % 360.0
@@ -394,35 +429,40 @@ def gfs_forecast_hours(hours: int, cadence: int) -> tuple[int, ...]:
 
 
 def gdas_capability_refusal(requested_hour: int) -> str:
-    """Why a GDAS request past the analysis is refused, and what to do.
+    """Why a GDAS request past f009 is refused, and what to do.
 
     Capability wording on purpose: it names what this ArWen is certified
     to serve, why the boundary is where it is, and the source that does
     cover a full forecast.  It is not a statement about GDAS itself --
-    NCEP publishes GDAS out to f009 -- it is a statement about what has
-    been proved end to end here.
+    it is a statement about what has been proved here.
     """
 
     return (
-        "GDAS is certified in this ArWen as an ANALYSIS-ONLY source: the "
-        f"f{GDAS_MAX_FORECAST_HOUR:03d} analysis, and nothing past it.  "
+        "GDAS is certified in this ArWen for fetch and decode through "
+        f"f{GDAS_MAX_FORECAST_HOUR:03d}: the assimilation cycle's "
+        "analysis and its short forecast, and nothing past it.  "
         f"f{requested_hour:03d} was requested.\n"
-        "  Why: NCEP tags the GDAS analysis and the GDAS forecast hours "
-        "with different forecast generating processes, and the "
-        "fail-closed gfs_grib2_bridge downstream selects by exact field "
-        "identity -- it is certified against the analysis tag and will "
-        "reject the rest.  Fetching hours the bridge refuses would just "
-        "move the failure later, so the refusal is here.\n"
-        "  What to do: fetch the analysis with --hours 0, or use "
-        f"--source gfs, which is certified through f{GFS_MAX_FORECAST_HOUR}.")
+        "  Why: the certified corpus is real NOMADS f000/f003/f006/f009 "
+        "subsets, and the fail-closed gfs_grib2_bridge downstream "
+        "selects by exact field identity -- it admits the declared "
+        "analysis and forecast generating processes and nothing else.  "
+        "Fetching hours the bridge has never seen would just move the "
+        "failure later, so the refusal is here.\n"
+        "  What to do: stay inside "
+        f"--hours 0..{GDAS_MAX_FORECAST_HOUR}, or use --source gfs, "
+        f"which is certified through f{GFS_MAX_FORECAST_HOUR}.")
 
 
-def gdas_forecast_hours(hours: int) -> tuple[int, ...]:
-    """The GDAS ladder: the analysis alone, or a capability refusal."""
+def gdas_forecast_hours(hours: int, cadence: int = 3) -> tuple[int, ...]:
+    """The GDAS ladder inside the certified span, or a capability refusal."""
 
-    if hours != GDAS_MAX_FORECAST_HOUR:
+    if hours > GDAS_MAX_FORECAST_HOUR:
         raise ValueError(gdas_capability_refusal(hours))
-    return GDAS_CERTIFIED_HOURS
+    if hours == 0:
+        return (0,)
+    if cadence < 1:
+        raise ValueError("--cadence must be a positive number of hours")
+    return tuple(range(0, hours + 1, cadence))
 
 
 def hrrr_forecast_hours(hours: int, cycle: datetime) -> tuple[int, ...]:
@@ -729,12 +769,12 @@ def check_prior_request(out: Path, *, source: str, cycle: datetime,
     extending the window is safe by construction.
 
     A nonempty ``out`` WITHOUT a readable manifest refuses too: with no
-    recorded request there is nothing to tie the existing files to (an
-    interrupted fetch that died before its manifest, a corrupted
-    manifest, or a directory some other tool wrote), and the per-file
-    bars are area-blind, so resuming would bless files this request
-    cannot verify.  Only a directory that is absent or empty may be
-    fetched into without a manifest.
+    recorded request there is nothing to tie the existing files to (a
+    legacy interrupted fetch from before incremental manifests, a
+    corrupted manifest, or a directory some other tool wrote), and the
+    per-file bars are area-blind, so resuming would bless files this
+    request cannot verify.  Only a directory that is absent or empty may
+    be fetched into without a manifest.
     """
 
     prior = _load_fetch_manifest(out)
@@ -742,9 +782,9 @@ def check_prior_request(out: Path, *, source: str, cycle: datetime,
         if out.is_dir() and any(out.iterdir()):
             raise ValueError(
                 f"--out {out} is not empty but carries no readable "
-                f"{FETCH_MANIFEST_NAME} (a fetch interrupted before its "
-                "manifest was written, a corrupted manifest, or files "
-                "another tool put there).  The existing files cannot be "
+                f"{FETCH_MANIFEST_NAME} (a legacy interrupted fetch, a "
+                "corrupted manifest, or files another tool put there).  "
+                "The existing files cannot be "
                 "tied to any recorded source/cycle/area, and the "
                 "per-file resume check is area-blind, so they are "
                 "UNVERIFIED for this request and will not be resumed.\n"
@@ -839,11 +879,14 @@ def fetch_gfs(*, cycle: datetime, hours: tuple[int, ...], area: Area,
     124-record selection), adds resumability (a present, envelope-valid
     subset is never re-downloaded), and writes the ``gfs-series.tsv``
     that ``rw-wps --source gfs --gfs-series`` / ``gfs_grib2_bridge``
-    consume, plus the fetch manifest.  An existing file must pass the
-    envelope walk, the exact 124-record count, AND -- when the prior
-    fetch manifest recorded its digest -- that same sha256; a swapped
-    file is never re-blessed by the area-blind count alone.  ``force``
-    moves every existing subset aside (never deletes) and re-downloads.
+    consume, plus the fetch manifest.  The series and manifest are
+    atomically refreshed after every verified forecast hour, so an
+    interrupted fetch records its complete contiguous prefix and the
+    same command resumes it.  An existing file must pass the envelope
+    walk, the exact 124-record count, AND -- when the prior fetch
+    manifest recorded its digest -- that same sha256; a swapped file is
+    never re-blessed by the area-blind count alone.  ``force`` moves
+    every existing subset aside (never deletes) and re-downloads.
     """
 
     from gpuwm.fetch_bars import resolve_bar
@@ -868,70 +911,167 @@ def fetch_gfs(*, cycle: datetime, hours: tuple[int, ...], area: Area,
                       progress=progress)
     prior_digests = _prior_manifest_digests(out)
     box = area.as_nomads()
+    longitude_amplification = area.nomads_longitude_amplification
+    longitude_note = None
+    if longitude_amplification is not None:
+        requested = (
+            f"lat {area.lat_south:g}..{area.lat_north:g}, "
+            f"lon {area.lon_west:g}..{area.lon_east:g}")
+        fetched = (
+            f"lat {box['bottom_lat']:g}..{box['top_lat']:g}, "
+            f"lon {box['left_lon']:g}..{box['right_lon']:g}")
+        longitude_note = (
+            f"requested box {requested} crosses 0 degrees longitude, "
+            "which one NOMADS [0,360] subregion cannot express; fetched "
+            f"band {fetched}, a {longitude_amplification:g}x "
+            "longitude-span amplification (compressed-byte "
+            "amplification is data-dependent)")
+        progress(f"fetch {source}: NOTE {longitude_note}")
     files: list[dict] = []
-    for hour in hours:
-        name = (f"{prefix}.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}"
-                ".subset.grib2")
-        path = out / name
-        url = transport.nomads_query(cycle, hour, model=source, **box)
-        if force and path.exists():
-            _quarantine_rejected(path, progress, f"gfs f{hour:03d}")
-        if path.exists():
-            observed = count_grib2_messages(path)
-            if observed != bar.expected:
-                raise ValueError(
-                    f"existing {name} carries {observed} GRIB2 messages, "
-                    f"expected {bar.expected}; move it aside "
-                    "and re-fetch")
-            digest = sha256_file(path)
-            recorded = prior_digests.get(name)
-            if recorded is not None and digest != recorded:
-                raise ValueError(
-                    f"existing {name} does not match the sha256 recorded "
-                    "in the prior fetch manifest, so it cannot be resumed "
-                    "for this request; pass --force-refetch to move the "
-                    "existing files aside (nothing is deleted) and "
-                    "re-download")
-            progress(f"fetch {source} f{hour:03d}: {name} exists, "
-                     f"{path.stat().st_size:,} B verified -- skipped")
-        else:
-            started = time.perf_counter()
-            transport._download(url, path)
-            observed = count_grib2_messages(path)
-            if observed != bar.expected:
-                raise ValueError(
-                    f"NOMADS returned {observed} GRIB2 messages for "
-                    f"f{hour:03d}, expected {bar.expected}; the "
-                    "upstream inventory has drifted")
-            digest = sha256_file(path)
-            progress(f"fetch {source} f{hour:03d}: {name} "
-                     f"{path.stat().st_size:,} B in "
-                     f"{time.perf_counter() - started:.1f} s")
-        files.append({
-            "name": name, "role": f"{source}-subset", "forecast_hour": hour,
-            "bytes": path.stat().st_size, "sha256": digest,
-            "url": url,
-        })
-    # Relative names: gfs_grib2_bridge resolves them against the TSV's
-    # own directory, so the fetched directory stays relocatable.
-    series = out / f"{prefix}-series.tsv"
-    _atomic_write_text(series, "".join(
-        f"{hour}\t{item['name']}\n" for hour, item in zip(hours, files)))
-    files.append({
-        "name": series.name, "role": "series", "forecast_hour": None,
-        "bytes": series.stat().st_size, "sha256": sha256_file(series),
-        "url": None,
-    })
-    payload = _manifest_payload(source=source, cycle=cycle, hours=hours,
-                                area=area, files=files)
-    payload["notes"] = (
-        "NOMADS filter subsets (south-to-north 0.25-degree grids); raw "
-        "noaa-gfs-bdp-pds S3 objects are north-to-south and are accepted "
-        "by gfs_grib2_bridge only after its declared scan-order flip")
-    payload["engine"] = "python"
-    payload["mode"] = "nomads-cgi-subset"
-    payload["record_bars"] = [bar.as_manifest()]
-    return write_fetch_manifest(out, payload)
+
+    def publish_manifest() -> Path:
+        # Relative names: gfs_grib2_bridge resolves them against the
+        # TSV's own directory, so the fetched directory stays relocatable.
+        series = out / f"{prefix}-series.tsv"
+        _atomic_write_text(series, "".join(
+            f"{item['forecast_hour']}\t{item['name']}\t"
+            f"{81 if item['forecast_hour'] == 0 else 96}\n"
+            for item in files))
+        entries = files + [{
+            "name": series.name, "role": "series", "forecast_hour": None,
+            "bytes": series.stat().st_size, "sha256": sha256_file(series),
+            "url": None,
+        }]
+        recorded_hours = tuple(
+            int(item["forecast_hour"]) for item in files)
+        payload = _manifest_payload(
+            source=source, cycle=cycle, hours=recorded_hours,
+            area=area, files=entries)
+        payload["notes"] = (
+            "NOMADS filter subsets (south-to-north 0.25-degree grids); raw "
+            "noaa-gfs-bdp-pds S3 objects are north-to-south and are "
+            "accepted by gfs_grib2_bridge only after its declared "
+            "scan-order flip")
+        payload["nomads_area"] = box
+        if longitude_note is not None:
+            payload["notes"] += f"; {longitude_note}"
+            payload["longitude_span_amplification"] = (
+                longitude_amplification)
+        payload["engine"] = "python"
+        payload["mode"] = "nomads-cgi-subset"
+        payload["record_bars"] = [bar.as_manifest()]
+        return write_fetch_manifest(out, payload)
+
+    def resume_command() -> str:
+        cadence = hours[1] - hours[0] if len(hours) > 1 else 3
+        area_arg = ",".join(format(value, "g") for value in (
+            area.lat_south, area.lon_west,
+            area.lat_north, area.lon_east))
+        command = [
+            "gpuwm", "fetch", "--source", source,
+            "--cycle", cycle.strftime("%Y-%m-%dT%H"),
+            "--hours", str(hours[-1]), "--cadence", str(cadence),
+            "--area", area_arg, "--out", str(out),
+        ]
+        if accept_inventory_change:
+            command.append("--accept-inventory-change")
+        return shlex.join(command)
+
+    current: tuple[int, str, Path, str] | None = None
+    try:
+        for hour in hours:
+            name = (f"{prefix}.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}"
+                    ".subset.grib2")
+            path = out / name
+            url = transport.nomads_query(cycle, hour, model=source, **box)
+            current = (hour, name, path, url)
+            if force and path.exists():
+                _quarantine_rejected(path, progress, f"gfs f{hour:03d}")
+            if path.exists():
+                observed = count_grib2_messages(path)
+                if observed != bar.expected:
+                    raise ValueError(
+                        f"existing {name} carries {observed} GRIB2 "
+                        f"messages, expected {bar.expected}; move it "
+                        "aside and re-fetch")
+                digest = sha256_file(path)
+                recorded = prior_digests.get(name)
+                if recorded is not None and digest != recorded:
+                    raise ValueError(
+                        f"existing {name} does not match the sha256 "
+                        "recorded in the prior fetch manifest, so it "
+                        "cannot be resumed for this request; pass "
+                        "--force-refetch to move the existing files aside "
+                        "(nothing is deleted) and re-download")
+                progress(f"fetch {source} f{hour:03d}: {name} exists, "
+                         f"{path.stat().st_size:,} B verified -- skipped")
+            else:
+                started = time.perf_counter()
+                transport._download(url, path)
+                observed = count_grib2_messages(path)
+                if observed != bar.expected:
+                    raise ValueError(
+                        f"NOMADS returned {observed} GRIB2 messages for "
+                        f"f{hour:03d}, expected {bar.expected}; the "
+                        "upstream inventory has drifted")
+                digest = sha256_file(path)
+                progress(f"fetch {source} f{hour:03d}: {name} "
+                         f"{path.stat().st_size:,} B in "
+                         f"{time.perf_counter() - started:.1f} s")
+            files.append({
+                "name": name, "role": f"{source}-subset",
+                "forecast_hour": hour, "bytes": path.stat().st_size,
+                "sha256": digest, "url": url,
+            })
+            publish_manifest()
+    except KeyboardInterrupt:
+        # The downloader atomically promotes .part only after checking the
+        # GRIB envelope.  If SIGINT arrived just after that rename but
+        # before this loop recorded the hour, apply our own full
+        # envelope/count/digest bars before admitting it to the prefix.
+        if current is not None:
+            hour, name, path, url = current
+            if path.is_file() and not any(
+                    item["name"] == name for item in files):
+                try:
+                    observed = count_grib2_messages(path)
+                    digest = sha256_file(path)
+                    recorded = prior_digests.get(name)
+                    if (observed == bar.expected
+                            and (recorded is None or digest == recorded)):
+                        files.append({
+                            "name": name, "role": f"{source}-subset",
+                            "forecast_hour": hour,
+                            "bytes": path.stat().st_size,
+                            "sha256": digest, "url": url,
+                        })
+                except (OSError, ValueError):
+                    pass
+        publish_manifest()
+        verified = (
+            ", ".join(
+                f"f{item['forecast_hour']:03d} {item['name']} "
+                f"({item['bytes']:,} B, sha256 {item['sha256']})"
+                for item in files)
+            if files else "none")
+        verified_names = {item["name"] for item in files}
+        unverified_paths = sorted(
+            path for path in out.iterdir()
+            if path.is_file()
+            and (path.name.endswith(".part")
+                 or (path.name.endswith(".grib2")
+                     and path.name not in verified_names)))
+        unverified = (
+            ", ".join(f"{path.name} ({path.stat().st_size:,} B)"
+                      for path in unverified_paths)
+            if unverified_paths else "none")
+        raise RuntimeError(
+            f"interrupted. Verified complete GRIB files on disk and "
+            f"recorded in {out / FETCH_MANIFEST_NAME}: {verified}. "
+            f"Unverified partial/incomplete GRIB files on disk (not "
+            f"recorded): {unverified}.\n"
+            f"  resume exactly with: {resume_command()}") from None
+    return out / FETCH_MANIFEST_NAME
 
 
 def author_gfs_front_door_manifest(
@@ -1047,8 +1187,23 @@ def author_gfs_front_door_manifest(
         if static_input is not None
         else f" --geog-root {default_geog_root()}")
     output_root = out.resolve() / "prepared"
-    progress(f"fetch gfs: front-door manifest {path}")
-    progress(f"fetch gfs: front-door manifest sha256 {digest}")
+    progress(f"fetch {source}: front-door manifest {path}")
+    progress(f"fetch {source}: front-door manifest sha256 {digest}")
+    if source != "gfs":
+        # A command that ends in a refusal is worse than no command.
+        # This container has exactly one certified ingest route and it
+        # is named for the product it was certified on; printing it here
+        # under another source's series would be a source-identity lie,
+        # and printing `--source {source}` would be a dead end.  See
+        # GDAS_MAX_FORECAST_HOUR above and docs/public/DATA.md.
+        progress(
+            f"fetch {source}: no ingest route -- `rw-wps --source "
+            f"{source}` refuses, because that adapter declares no "
+            "field/level/cadence mapping.  The manifest above is real "
+            "and digest-bound; what is missing is the front door, not "
+            "the data.  `rw-wps --show-source "
+            f"{source}` states the same thing in machine form.")
+        return path, digest
     progress(
         "fetch gfs: feed the GFS front door with:\n"
         f"  rw-wps --source gfs --gfs-series {roles['series']}"
@@ -2157,8 +2312,8 @@ def fetch_main(args) -> int:
     if args.hours < 1 and source != "gdas":
         raise ValueError(
             "--hours must be a positive forecast window; only "
-            "--source gdas takes --hours 0, because it is certified as "
-            "an analysis-only source")
+            "--source gdas takes --hours 0, because its f000 is an "
+            "analysis and is useful on its own")
 
     if source == "era5":
         if area is None:
@@ -2181,11 +2336,13 @@ def fetch_main(args) -> int:
                 "the NOMADS subsetter needs a subregion (fetching the "
                 "whole globe is never what an experiment needs)")
         if source == "gdas":
-            if args.cadence is not None:
+            if args.cadence is not None and args.hours == 0:
                 raise ValueError(
-                    "GDAS is certified as an analysis-only source (one "
-                    "time, f000); --cadence does not apply")
-            hours = gdas_forecast_hours(args.hours)
+                    "--hours 0 fetches the f000 analysis alone; --cadence "
+                    "does not apply to a single time")
+            hours = gdas_forecast_hours(
+                args.hours,
+                3 if args.cadence is None else args.cadence)
         else:
             cadence = args.cadence if args.cadence is not None else 3
             hours = gfs_forecast_hours(args.hours, cadence)
@@ -2282,6 +2439,16 @@ def fetch_main(args) -> int:
             static_input=args.static_input,
             static_receipt=args.static_receipt,
             manifest_out=args.manifest_out, source=source)
+    elif source == "gdas":
+        # No `next:` here on purpose.  Every step past this one ends in
+        # `rw-wps --source gdas`, which refuses; a next: that leads to a
+        # refusal is a worse experience than an honest full stop.
+        print(f"fetch {source}: the files above are verified and "
+              "digest-bound, but this ArWen has no GDAS ingest route: "
+              "`rw-wps --source gdas` refuses, because that adapter "
+              "declares no field/level/cadence mapping.  For a runnable "
+              "single-domain front door today use `--source gfs`.  See "
+              "`rw-wps --show-source gdas`.")
     else:
         print(f"fetch {source}: next: author the front-door input "
               f"manifest with `gpuwm fetch --source {source} "
@@ -2345,8 +2512,9 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
 def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
         "fetch",
-        help="download initialization/boundary data (GFS/HRRR), or "
-             "template + validate a manual ERA5 CDS retrieval")
+        help="download initialization/boundary data (GFS/HRRR), download "
+             "and decode only (GDAS -- no ingest route), or template + "
+             "validate a manual ERA5 CDS retrieval")
     parser.add_argument(
         "--source", required=True,
         choices=("gfs", "gdas", "hrrr", "era5"),
@@ -2357,8 +2525,12 @@ def register_cli(subparsers) -> None:
              "cycle from the AWS Open Data listing (gfs/hrrr only)")
     parser.add_argument(
         "--hours", type=int, default=None, metavar="N",
-        help="forecast window length: hours 0..N are fetched (gdas is "
-             "certified analysis-only, so it takes --hours 0)")
+        help="forecast window length: hours 0..N are fetched.  gdas is "
+             "certified for fetch and decode through "
+             f"f{GDAS_MAX_FORECAST_HOUR:03d} -- there is no gdas ingest "
+             "route, so those files stop at the decoder -- and it is the "
+             "one source that also accepts --hours 0, because its f000 "
+             "is an analysis")
     parser.add_argument(
         "--area", default=None, metavar="LAT0,LON0,LAT1,LON1",
         help="bounding box corners in degrees (order free); allow several "
@@ -2379,8 +2551,10 @@ def register_cli(subparsers) -> None:
              "re-run)")
     parser.add_argument(
         "--cadence", type=int, default=None, choices=(1, 3, 6),
-        help="forecast-hour cadence: gfs 1 or 3 (default 3); era5 "
-             "template 1, 3, or 6 (default 6); hrrr is hourly")
+        help="forecast-hour cadence: gfs 1 or 3 (default 3); gdas 1, 3, "
+             "or 6 (default 3, and it does not apply to --hours 0, which "
+             "is the analysis alone); era5 template 1, 3, or 6 "
+             "(default 6); hrrr is hourly")
     parser.add_argument(
         "--validate", type=Path, nargs="+", default=None, metavar="GRIB",
         help="era5 only: validate user-supplied GRIB1 file(s) against "

@@ -297,12 +297,27 @@ def test_source_label_reaches_the_renderer_invocation(monkeypatch,
 
 
 @needs_renderer
-def test_rust_engine_unknown_slug_fails_loudly(wrfout, tmp_path):
+def test_rust_engine_unknown_slug_fails_loudly(wrfout, tmp_path, capsys):
     rc = cli.main(["render", str(wrfout), "--engine", "rust",
                    "--products", "definitely_not_a_product",
                    "--out", str(tmp_path / "png")])
+    # rc 1 is `gpuwm render`'s, not the renderer's.  rw_wrfbatch exits 2 on a
+    # bad command line -- matching what matplotlib's engine costs for the same
+    # typo -- but gpuwm.rustwx collects any nonzero exit as a render failure
+    # and gpuwm.cli reports failures as 1, so the two engines agree here
+    # whichever one runs.  The pin is on the CLI's contract, so it is
+    # unchanged by the renderer's exit code.
     assert rc == 1
     assert not list((tmp_path / "png").glob("*.png"))
+    # ...and the reason reaches the user.  gpuwm.rustwx surfaces the LAST
+    # non-empty stderr line, which the renderer used to make the usage line:
+    # every arg mistake reported the same unactionable sentence.
+    reported = capsys.readouterr()
+    transcript = reported.out + reported.err
+    assert "definitely_not_a_product" in transcript, transcript
+    assert "--list-products" in transcript, transcript
+    assert not transcript.rstrip().endswith("wrfout..."), (
+        "the usage line is back as the reported cause", transcript)
 
 
 def test_engine_rust_unbuilt_is_a_documented_refusal(

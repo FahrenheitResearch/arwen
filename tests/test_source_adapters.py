@@ -9,6 +9,11 @@ import tomllib
 
 import pytest
 
+from gpuwm.physics_compat import (
+    MYNN_PROFILE_ID,
+    NOAHMP_PROFILE_ID,
+    RUC_PROFILE_ID,
+)
 from gpuwm.source_adapters import (
     AdapterStatus,
     get_source_adapter,
@@ -1416,6 +1421,62 @@ def test_cli_gfs_dry_run_routes_to_certified_internal_adapter(capsys):
     assert "--preprocess-backend cpu" in command
     assert "--preprocess-workers 8" in command
     assert "--cpu-preprocess-bridge /bundle/libgpuwm_preprocess_cpu.so" in command
+
+
+@pytest.mark.parametrize(
+    ("profile", "acknowledgement"),
+    (
+        (MYNN_PROFILE_ID, None),
+        (RUC_PROFILE_ID, None),
+        (NOAHMP_PROFILE_ID, "noahmp-host-column-throughput-v1"),
+    ),
+)
+def test_cli_gfs_accepts_every_newly_reachable_profile(
+        profile, acknowledgement, capsys):
+    arguments = [
+        "--source", "gfs",
+        "--gfs-series", "/source/gfs-series.tsv",
+        "--cycle", "2026-07-20_00:00:00",
+        "--bridge", "/bin/gfs_grib2_bridge",
+        "--wps-namelist", "/case/namelist.wps",
+        "--static-input", "/case/static.npz",
+        "--static-receipt", "/case/static-receipt.json",
+        "--experiment-config", "/case/experiment.toml",
+        "--source-sha256s", "/source/input-manifest.json",
+        "--source-sha256s-sha256", "abc123",
+        "--output-root", "/output",
+        "--physics-profile", profile,
+        "--dry-run",
+    ]
+    if acknowledgement is not None:
+        arguments[-1:-1] = [
+            "--expert-acknowledgement", acknowledgement]
+
+    assert main(arguments) == 0
+    command = capsys.readouterr().out.replace("\\", "/")
+    assert f"--physics-profile {profile}" in command
+    if acknowledgement is not None:
+        assert f"--expert-acknowledgement {acknowledgement}" in command
+
+
+def test_cli_gfs_noahmp_refuses_without_expert_acknowledgement(capsys):
+    result = main([
+        "--source", "gfs",
+        "--gfs-series", "/source/gfs-series.tsv",
+        "--cycle", "2026-07-20_00:00:00",
+        "--bridge", "/bin/gfs_grib2_bridge",
+        "--wps-namelist", "/case/namelist.wps",
+        "--static-input", "/case/static.npz",
+        "--static-receipt", "/case/static-receipt.json",
+        "--experiment-config", "/case/experiment.toml",
+        "--source-sha256s", "/source/input-manifest.json",
+        "--source-sha256s-sha256", "abc123",
+        "--output-root", "/output",
+        "--physics-profile", NOAHMP_PROFILE_ID,
+        "--dry-run",
+    ])
+    assert result == EXIT_USAGE
+    assert "noahmp-host-column-throughput-v1" in capsys.readouterr().err
 
 
 def test_cli_gfs_d06_hierarchy_routes_source_neutral_controls(capsys):

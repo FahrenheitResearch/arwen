@@ -573,6 +573,33 @@ def test_synthetic_import_resolves_and_reports(tmp_path):
     assert ("geogrid", "geog_data_path") in dropped_keys
 
 
+def test_import_accepts_real_shaped_staggered_start_columns_and_five_minute_forcing(
+        tmp_path):
+    wps = WPS_TEXT.replace(
+        "start_date = '1999-05-03_12:00:00', "
+        "'1999-05-03_12:00:00',",
+        "start_date = '1999-05-03_12:00:00', "
+        "'1999-05-03_12:05:00',").replace(
+            "interval_seconds = 21600", "interval_seconds = 300")
+    inp = INPUT_TEXT.replace(
+        " start_hour = 12, 12,",
+        " start_hour = 12, 12,\n"
+        " start_minute = 00, 05,\n"
+        " start_second = 00, 00,").replace(
+            "interval_seconds = 21600", "interval_seconds = 300")
+
+    toml_text, _report = import_namelists(
+        *_pair(tmp_path, wps=wps, inp=inp), name="staggered-five-minute")
+    resolved = tmp_path / "staggered-five-minute.toml"
+    resolved.write_text(toml_text, encoding="utf-8")
+    exp = load_experiment(resolved)
+
+    assert exp.domain_start_time(1) == datetime(1999, 5, 3, 12, 0)
+    assert exp.domain_start_time(2) == datetime(1999, 5, 3, 12, 5)
+    assert exp.domain_start_offset_exact(2) == Fraction(300)
+    assert "start_time = 1999-05-03T12:05:00" in toml_text
+
+
 def test_imported_two_domain_geometry_passes_native_hierarchy_contract(
         tmp_path):
     wps_path, input_path = _pair(tmp_path)
@@ -895,11 +922,12 @@ def test_nwp_diagnostics_maps_and_reaches_every_run_config(tmp_path):
         import_namelists(*_pair(tmp_path, inp=inp))
 
 
-def test_rejects_feedback_at_import(tmp_path):
+def test_imports_feedback_as_tree_wide_experimental_switch(tmp_path):
     """Validation runs THROUGH the schema loader at import time."""
     inp = INPUT_TEXT.replace("feedback = 0", "feedback = 1")
-    with pytest.raises(ValueError, match="one-way nesting"):
-        import_namelists(*_pair(tmp_path, inp=inp))
+    toml_text, _ = import_namelists(*_pair(tmp_path, inp=inp))
+    assert "feedback = 1" in toml_text
+    assert _load(tmp_path, toml_text).feedback == 1
 
 
 def test_rejects_two_simultaneous_horizontal_mixing_schemes(tmp_path):
@@ -940,11 +968,12 @@ def test_omitted_keys_take_wrf_registry_defaults(tmp_path):
     """Review F2: omitted namelist keys resolve to their WRF v4.6.1
     Registry defaults, never gpuwm-convenient values."""
     # feedback omitted => Registry default 1 => an implicitly TWO-WAY
-    # namelist trips the loader's rejection instead of silently
-    # importing as one-way
+    # namelist selects the experimental path instead of silently
+    # importing as one-way.  Keep smooth_option explicit here because its
+    # independent Registry default 2 remains unsupported.
     inp = INPUT_TEXT.replace(" feedback = 0,\n", "")
-    with pytest.raises(ValueError, match="one-way nesting"):
-        import_namelists(*_pair(tmp_path, inp=inp))
+    toml_text, _ = import_namelists(*_pair(tmp_path, inp=inp))
+    assert _load(tmp_path, toml_text).feedback == 1
     # smooth_option omitted => Registry default 2 => rejected loudly
     inp = INPUT_TEXT.replace(" smooth_option = 0,\n", "")
     with pytest.raises(ValueError, match="smooth_option"):

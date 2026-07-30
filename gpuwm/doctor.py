@@ -246,7 +246,7 @@ def _bridge_checks() -> list[Check]:
                 "no checkout crate and no prebuilt executable "
                 f"(searched {', '.join(str(c) for c in bridges.bridge_candidates(name))})",
                 bridges.bridge_remedy(name)
-                + f"\n# needed by: {consumer}"))
+                + f"\n  # needed by: {consumer}"))
     return checks
 
 
@@ -285,8 +285,8 @@ def _fetch_backbone_check() -> Check:
             detail + " -- gpuwm fetch falls back to the Python transport",
             bridges.install_aware_build_hint(
                 rustwx_fetch.CARGO_BUILD_HINT, "tools/rustwx")
-            + "\n# enables gpuwm fetch --engine rust: parallel range "
-            "GETs,\n# the cross-process NOMADS rate governor, and "
+            + "\n  # enables gpuwm fetch --engine rust: parallel range "
+            "GETs,\n  # the cross-process NOMADS rate governor, and "
             "--mode full-file")
     ok, evidence = rustwx_fetch.probe_fetch_bin(found)
     if not ok:
@@ -327,7 +327,7 @@ def _rust_renderer_check() -> Check:
             detail + " -- gpuwm render falls back to matplotlib",
             bridges.install_aware_build_hint(
                 rustwx.CARGO_BUILD_HINT, "tools/rustwx")
-            + "\n# enables --engine rust and makes it the default")
+            + "\n  # enables --engine rust and makes it the default")
     ok, evidence = rustwx.probe_renderer(found)
     if not ok:
         return Check(
@@ -352,9 +352,15 @@ def _cpu_library_check() -> Check:
     from gpuwm.ingest.cpu_backend import (
         CPU_BACKEND_ABI, CpuPreprocessBackend)
 
+    # The tail is a `#` block, not prose fused onto the build command.
+    # It used to read `... --offline  then copy it into <dir> or set
+    # GPUWM_CPU_PREPROCESS_BRIDGE`, which a reader pastes whole and the
+    # shell hands to cargo as arguments -- the exact failure the remedy
+    # contract exists to stop, and a node-7 field finding.
     remedy = (bridges.install_aware_build_hint(bridges.CARGO_BUILD_HINT)
-              + f"  then copy it into {bridges.default_bridge_dir()} or "
-              "set GPUWM_CPU_PREPROCESS_BRIDGE")
+              + "\n  # then copy the built library into "
+              f"{bridges.default_bridge_dir()},\n"
+              "  # or set GPUWM_CPU_PREPROCESS_BRIDGE to its full path")
     try:
         backend = CpuPreprocessBackend()
     except FileNotFoundError as error:
@@ -367,7 +373,7 @@ def _cpu_library_check() -> Check:
         return Check(
             "cpu preprocess library", "missing",
             f"found but not loadable as ABI v{CPU_BACKEND_ABI}: {error}",
-            "rebuild it: " + remedy)
+            "# rebuild it:\n" + remedy)
     path, abi = backend.path, backend.abi_version
     backend.close()
     return Check("cpu preprocess library", "verified",
@@ -401,14 +407,16 @@ def _thompson_tables_check() -> Check:
                 f"{', '.join(a.filename for a in fetchable)} not staged "
                 f"at {root} (externalized: published as a release asset, "
                 "not shipped in the package)",
-                f"gpuwm fetch-tables   (one {total_mib:.0f} MiB download, "
-                "SHA-256 verified against the packaged pins before "
-                "install; --from DIR stages offline)")
+                "gpuwm fetch-tables\n"
+                f"  # one {total_mib:.0f} MiB download, SHA-256 verified "
+                "against the\n"
+                "  # packaged pins before install; --from stages it from a\n"
+                "  # local directory instead, offline")
         return Check(
             "thompson tables", "missing", str(error),
-            REINSTALL_HINT + "; if GPUWM_THOMPSON_TABLE_ROOT is set, "
-            "point it at a byte-identical mirror of the packaged tables "
-            "or unset it")
+            REINSTALL_HINT
+            + "\n  # if GPUWM_THOMPSON_TABLE_ROOT is set, point it at a"
+            "\n  # byte-identical mirror of the packaged tables, or unset it")
     return Check(
         "thompson tables", "verified",
         f"{len(assets)} assets at {root} byte-validated (exact size + "
@@ -509,8 +517,9 @@ def _case_data_root_check() -> list[Check]:
         return [Check(
             "GPUWM_CASE_DATA_ROOT", "missing",
             f"set to {raw} but that directory does not exist",
-            "point it at the directory containing your case bundles "
-            "and WPS_GEOG")]
+            "# point GPUWM_CASE_DATA_ROOT at the directory that CONTAINS\n"
+            "  # your case bundles and WPS_GEOG -- there is no command to\n"
+            "  # print here, only your path")]
     return [
         Check("GPUWM_CASE_DATA_ROOT", "present",
               f"{root} (directory exists; its datasets are checked "
@@ -540,8 +549,8 @@ def _distribution_manifest_check() -> Check:
             name, "missing",
             f"set to {raw} but not a READY gpuwm-native-wrf-runtime-v1 "
             "document",
-            "unset it unless you are running a sealed runtime archive, "
-            "whose installer sets it correctly")
+            f"# unset {name} unless you are running a sealed runtime\n"
+            "  # archive, whose installer sets it correctly")
     declared = payload.get("payload")
     if not isinstance(declared, dict) or not declared:
         return Check(
@@ -577,8 +586,8 @@ def _distribution_manifest_check() -> Check:
             name, "missing",
             f"{path}: {len(failures)} of {len(declared)} declared "
             f"artifacts failed revalidation: {shown}{more}",
-            "re-extract the sealed runtime archive (its installer wrote "
-            "this manifest beside its artifacts), or unset the variable")
+            "# re-extract the sealed runtime archive (its installer wrote\n"
+            f"  # this manifest beside its artifacts), or unset {name}")
     return Check(
         name, "verified",
         f"{path}: READY; all {verified} declared artifacts re-hashed "
@@ -593,7 +602,8 @@ def collect_checks() -> list[Check]:
     else:
         checks.append(Check(
             "python", "missing", f"{version} is below the 3.11 floor",
-            "install Python 3.11 or newer"))
+            "# install Python 3.11 or newer -- which installer is right\n"
+            "  # here depends on how this Python was installed"))
     checks.append(_cupy_check())
     checks.append(_render_extra_check())
     checks.append(_rust_renderer_check())
@@ -607,6 +617,29 @@ def collect_checks() -> list[Check]:
     return checks
 
 
+#: Column the first remedy line starts at: ten spaces of gutter plus
+#: the ``remedy: `` label itself.  Continuation lines match it.
+_REMEDY_LABEL = "          remedy: "
+
+
+def _remedy_block(remedy: str) -> list[str]:
+    """The remedy, every physical line aligned under ``remedy:``.
+
+    Only the first line used to be indented; the rest arrived with
+    whatever leading whitespace the composer happened to give them (0,
+    2 or 4 spaces, three different composers), so a report showed
+    commands hanging at column 0 under a label at column 18 and read as
+    if the block had ended.  Both shells ignore leading whitespace, so
+    aligning the whole block costs the reader nothing on paste.
+    """
+
+    lines = remedy.splitlines() or [remedy]
+    block = [_REMEDY_LABEL + lines[0].strip()]
+    block += [" " * len(_REMEDY_LABEL) + line.strip() if line.strip() else ""
+              for line in lines[1:]]
+    return block
+
+
 def format_report(checks: list[Check]) -> str:
     lines = ["gpuwm doctor: runtime estate"]
     labels = {"verified": "ok     ", "present": "present",
@@ -615,7 +648,7 @@ def format_report(checks: list[Check]) -> str:
         lines.append(f"  {labels[check.status]} {check.name}: "
                      f"{check.detail}")
         if check.remedy:
-            lines.append(f"          remedy: {check.remedy}")
+            lines.extend(_remedy_block(check.remedy))
     gaps = sum(1 for check in checks if check.status == "missing")
     presence_only = sum(1 for check in checks if check.status == "present")
     if gaps:

@@ -15,7 +15,10 @@ import time
 from gpuwm.physics_compat import (
     SINGLE_DOMAIN_PHYSICS_PROFILES,
     MORRISON_PROFILE_ID,
+    MYNN_PROFILE_ID,
+    NOAHMP_PROFILE_ID,
     NSSL2_PROFILE_ID,
+    RUC_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     WSM6_PROFILE_ID,
 )
@@ -27,6 +30,9 @@ MAX_PIPELINE_WORKERS = 64
 
 _HRRR_COLD_START_CONTRACT = {
     WSM6_PROFILE_ID: ((), {}),
+    MYNN_PROFILE_ID: ((), {}),
+    RUC_PROFILE_ID: ((), {}),
+    NOAHMP_PROFILE_ID: ((), {}),
     THOMPSON_PROFILE_ID: (
         ("QNICE", "QNRAIN"),
         {"ni": (0.0, 0), "nr": (0.0, 0)},
@@ -252,6 +258,9 @@ def _parser() -> argparse.ArgumentParser:
         default=WSM6_PROFILE_ID,
         help="explicit GPUWM HRRR physics/runtime contract",
     )
+    parser.add_argument(
+        "--expert-acknowledgement", action="append", default=[],
+        help="registry-owned expert physics acknowledgement id; repeatable")
     parser.add_argument("--valid-time", required=True)
     parser.add_argument(
         "--forecast-start-hour", type=int, default=0,
@@ -396,6 +405,9 @@ def main(argv: list[str] | None = None) -> int:
         "--history-interval-seconds", str(args.history_interval_seconds),
         "--outdir", str(native / "preparation-report"),
     ]
+    for acknowledgement in args.expert_acknowledgement:
+        benchmark.extend((
+            "--expert-acknowledgement", acknowledgement))
     if args.prepare_workers is not None:
         benchmark.extend(("--prepare-workers", str(args.prepare_workers)))
     benchmark.extend(("--preprocess-backend", args.preprocess_backend))
@@ -432,14 +444,19 @@ def main(argv: list[str] | None = None) -> int:
         preparation_report, requested_profile=args.physics_profile)
 
     export_started = time.perf_counter()
-    _run([
+    export_command = [
         sys.executable, "-m", "gpuwm.wrf_direct",
         "--prepared-cache", str(native / "prepared-cache"),
         "--static-cache", str(static_cache),
         "--geometry-receipt", str(geometry_receipt),
         "--output", str(output / "wrf-native-input"),
         "--valid-time", model_start_time.strftime("%Y-%m-%d_%H:%M:%S"),
-    ], env)
+        "--physics-profile", args.physics_profile,
+    ]
+    for acknowledgement in args.expert_acknowledgement:
+        export_command.extend((
+            "--expert-acknowledgement", acknowledgement))
+    _run(export_command, env)
     export_seconds = time.perf_counter() - export_started
     result = {
         "status": "PASS",

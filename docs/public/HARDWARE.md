@@ -1,7 +1,8 @@
 # Hardware and VRAM sizing
 
-ArWen runs on one NVIDIA GPU with CUDA 12.x or 13.x (tested
-through 13.0). This page explains how
+ArWen runs on one NVIDIA GPU with CUDA 12.x or 13.x, field-verified
+through 13.2 driver stacks on sm_89 by two independent nodes. This
+page explains how
 the sizing model works, where its safety factor comes from, and what
 we measured on real hardware -- including the run where the estimator
 was wrong and what changed because of it.

@@ -170,6 +170,13 @@ mapping. See `docs/native-mapped-source-authoring.md`.
 The WPS namelist and experiment TOML are the joint Lambert hierarchy,
 explicit-eta, and physics authority. One-way children share the root eta grid;
 vertical refinement, moving nests, and two-way feedback fail closed.
+Mapped forcing cadence is stored as exact second offsets; it must be positive,
+uniform, and an exact integer number of root-domain steps, but it need not be a
+whole hour. Five-minute series are supported by this structural route. A
+delayed child `start_*` column is preserved in its prepared artifact and
+`wrfinput_dNN`; it must land on both a parent-step boundary and a forcing seam.
+The machine-readable namelist support report exposes these checks and their
+exact ratios.
 
 The retained real gates cover genuine ERA5 GRIB1, GFS GRIB2, and ERA5 NetCDF
 single domains plus a genuine GFS GRIB2 d01-through-d04 hierarchy. They do not certify

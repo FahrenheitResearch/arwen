@@ -94,7 +94,8 @@ def test_nested_input_catalog_preserves_era5_soilgeo_units_through_mapping(
     static_catalog = object()
     catalog = ni.NestedInputCatalog.from_source_catalog(raw, static_catalog)
     child = SimpleNamespace(
-        grid_id=2, run=SimpleNamespace(moist=True, terrain_opt=1))
+        grid_id=2, start_time=valid_time,
+        run=SimpleNamespace(moist=True, terrain_opt=1))
     grid = object()
     static = {
         "LANDMASK": np.ones((2, 2)),
@@ -409,7 +410,7 @@ def test_prepare_child_input_dispatches_hrrr_on_own_static_landmask(
         snapshots=(source,), valid_times=(valid_time,), inventory=(), files=(),
         static_catalog=static_catalog)
     child = SimpleNamespace(
-        grid_id=2,
+        grid_id=2, start_time=valid_time,
         run=SimpleNamespace(moist=True, terrain_opt=1))
     grid = object()
     landmask = np.asarray([[1.0, 1.0], [0.0, 1.0]])
@@ -521,9 +522,13 @@ def test_initialize_child_binding_order_and_soil_never_readjusted(
         # seam: the geometry a run initialises on is a decision, not a
         # default.
         sf_surface_physics=2)
+    # A parsed [[domain]] always carries a start_time -- it defaults to
+    # [experiment].start_time rather than to None -- and the snapshot the
+    # child initialises on is now chosen by it, so the stub carries one too.
+    child_start = datetime(2026, 7, 20, 6)
     child_dc = SimpleNamespace(
         grid_id=child_id, parent_id=child_id - 1, run=cfg, i_parent_start=3,
-        j_parent_start=3, parent_grid_ratio=3)
+        j_parent_start=3, parent_grid_ratio=3, start_time=child_start)
     parent_node = SimpleNamespace(cfg=SimpleNamespace(grid_id=child_id - 1))
     catalog = SimpleNamespace(inventory=("SOILGEO",), valid_times=(object(),),
                               snapshots=(object(),), files=())
@@ -534,8 +539,15 @@ def test_initialize_child_binding_order_and_soil_never_readjusted(
     monkeypatch.setattr(ni, "_child_grid", lambda *_: child_grid)
     monkeypatch.setattr(
         ni, "build_static_for_domain", lambda *_: static)
-    monkeypatch.setattr(ni, "_initial_snapshot", lambda *_: events.append(
-        "snapshot") or object())
+    def initial_snapshot(_catalog, valid_time):
+        # The delayed-child work made this lookup start_time-driven; a stub
+        # that swallowed the argument would let a regression to "first valid
+        # time" pass unnoticed.
+        assert valid_time == child_start
+        events.append("snapshot")
+        return object()
+
+    monkeypatch.setattr(ni, "_initial_snapshot", initial_snapshot)
     monkeypatch.setattr(
         ni, "geog_selection_from_catalog",
         lambda *_: SimpleNamespace(
@@ -668,7 +680,8 @@ def test_d01_only_declaration_fails_at_d02_initialization_with_domain_named(
     cfg = SimpleNamespace(
         nx=5, ny=4, nz=2, moist=True, terrain_opt=1,
         hypsometric_opt=2)
-    child_dc = SimpleNamespace(grid_id=2, parent_id=1, run=cfg)
+    child_dc = SimpleNamespace(grid_id=2, parent_id=1, run=cfg,
+                               start_time=datetime(2026, 7, 20, 6))
     parent_node = SimpleNamespace(cfg=SimpleNamespace(grid_id=1))
     catalog = SimpleNamespace(
         inventory=(), files=(), valid_times=(object(),), snapshots=(object(),))

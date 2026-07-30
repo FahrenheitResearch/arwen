@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import numpy as np
@@ -98,6 +98,41 @@ def _model():
     root.children.append(child)
     model = ExperimentState(
         root, {1: root, 2: child}, schedule, None, "fixture-fingerprint")
+    model._runtime_status = ModelRuntimeStatus()
+    model._resumed = False
+    model._resume_committed_history_grid_ids = frozenset()
+    model._scratch_arena = None
+    model._dycore_state_workspace = None
+    model._io_manager = None
+    model._last_checkpoint = None
+    return exp, model
+
+
+def _delayed_model():
+    base = load_scaffold()
+    domains = tuple(
+        replace(
+            dc, run=replace(dc.run, run_seconds=300.0),
+            start_time=(
+                base.start_time + timedelta(seconds=120)
+                if dc.grid_id == 2 else dc.start_time))
+        for dc in base.domains)
+    exp = replace(base, run_seconds=300.0, domains=domains)
+    tick_clock = resolve_clock(exp, lbc_interval_s=60)
+    schedule = build_schedule(exp, tick_clock)
+    clocks = tick_clock.clocks()
+    grids = grids_from_projection_config(exp)
+    root = DomainNode(
+        domains[0], grids[0], SimpleNamespace(elapsed_seconds=0.0),
+        clocks[1], None, [], None)
+    child = DomainNode(
+        domains[1], grids[1], SimpleNamespace(elapsed_seconds=0.0),
+        clocks[2], root, [], None)
+    child.coupler = _Coupler(child)
+    child._started = False
+    root.children.append(child)
+    model = ExperimentState(
+        root, {1: root, 2: child}, schedule, None, "delayed-fixture")
     model._runtime_status = ModelRuntimeStatus()
     model._resumed = False
     model._resume_committed_history_grid_ids = frozenset()
@@ -509,6 +544,63 @@ def test_tree_checkpoint_header_and_pending_work_refusal(monkeypatch,
                        match="explicit PERIOD_BEGIN"):
         restart.write_tree_restart(
             tmp_path, model, datetime(1982, 5, 20, 0, 2))
+
+
+def test_tree_restart_preserves_not_started_child_then_activates_at_seam(
+        monkeypatch, tmp_path):
+    exp, source = _delayed_model()
+    checkpoint_ticks = 60
+    for node in source.walk_parent_first():
+        node.clock.ticks = checkpoint_ticks
+    source.root.clock.step_count = (
+        checkpoint_ticks // source.root.clock.spec.step_ticks)
+    captured = {}
+
+    def fake_write(path, state, cfg, **kwargs):
+        path.write_bytes(b"fixture")
+        captured[cfg.grid_id] = {
+            **kwargs["tree_header"],
+            "format_version": restart.RESTART_FORMAT_VERSION,
+            "elapsed_seconds": state.elapsed_seconds,
+        }
+        return path
+
+    monkeypatch.setattr(restart, "write_restart", fake_write)
+    root_path = restart.write_tree_restart(
+        tmp_path, source, exp.start_time + timedelta(seconds=60))
+
+    assert captured[1]["domain_lifecycle"] == "STARTED"
+    assert captured[2]["domain_lifecycle"] == "NOT_STARTED"
+    assert captured[2]["nest_tables"] == "NOT_STARTED"
+    assert captured[2]["domain_start_ticks"] == 120
+    assert captured[2]["domain_start_time"] == (
+        exp.start_time + timedelta(seconds=120)).isoformat()
+
+    _fresh_exp, resumed = _delayed_model()
+    monkeypatch.setattr(
+        restart, "_validate_restart",
+        lambda path, *_args: SimpleNamespace(
+            header=captured[int(path.name.split("_d")[1][:2])]))
+    monkeypatch.setattr(
+        restart, "_apply_validated_restart", lambda *args, **kwargs: None)
+    restart.restore_tree_restart(root_path, resumed)
+
+    child = resumed.node(2)
+    assert child._started is False
+    assert child.clock.ticks == 60
+    starts = []
+    report = execute_schedule(
+        resumed.schedule,
+        clocks={node.cfg.grid_id: node.clock
+                for node in resumed.walk_parent_first()},
+        start_period=(
+            checkpoint_ticks // resumed.schedule.period_ticks),
+        started_grid_ids=(1,),
+        committed_initial_history_grid_ids=(1,),
+        on_domain_start=lambda gid, clock:
+            starts.append((gid, clock.ticks)))
+    assert starts == [(2, 120)]
+    assert report.clocks[2].step_count > 0
 
 
 def test_failed_same_time_tree_rewrite_preserves_last_complete_generation(

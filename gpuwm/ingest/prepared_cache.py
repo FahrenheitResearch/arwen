@@ -74,6 +74,17 @@ def _json_copy(value):
     return json.loads(_canonical(value))
 
 
+def prepared_domain_config_identity(domain_config) -> dict[str, object]:
+    """JSON-stable domain identity, including an ISO per-domain start."""
+    from dataclasses import asdict
+
+    document = asdict(domain_config)
+    start_time = document.get("start_time")
+    if isinstance(start_time, datetime):
+        document["start_time"] = start_time.isoformat()
+    return _json_copy(document)
+
+
 def _host(value) -> np.ndarray:
     if hasattr(value, "get"):
         value = value.get()
@@ -324,17 +335,26 @@ def prepared_cache_identity(*, bridge_manifest_sha256: str,
                             source_manifest_sha256: str,
                             static_cache_sha256: str,
                             namelist_sha256: str, domain_config,
-                            forcing_hours, source_identity) -> dict[str, object]:
+                            forcing_hours=None,
+                            forcing_offsets_seconds=None,
+                            source_identity) -> dict[str, object]:
     """Canonical identity callers must reproduce exactly on every restore."""
-    from dataclasses import asdict
-
+    if (forcing_hours is None) == (forcing_offsets_seconds is None):
+        raise ValueError(
+            "prepared cache identity requires exactly one of forcing_hours "
+            "or forcing_offsets_seconds")
+    forcing_identity = (
+        {"forcing_hours": [int(hour) for hour in forcing_hours]}
+        if forcing_hours is not None else
+        {"forcing_offsets_seconds": [
+            int(offset) for offset in forcing_offsets_seconds]})
     return _json_copy({
         "bridge_manifest_sha256": str(bridge_manifest_sha256).lower(),
         "source_manifest_sha256": str(source_manifest_sha256).lower(),
         "static_cache_sha256": str(static_cache_sha256).lower(),
         "namelist_sha256": str(namelist_sha256).lower(),
-        "domain_config": asdict(domain_config),
-        "forcing_hours": [int(hour) for hour in forcing_hours],
+        "domain_config": prepared_domain_config_identity(domain_config),
+        **forcing_identity,
         "source_identity": source_identity,
     })
 

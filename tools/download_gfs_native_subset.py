@@ -215,7 +215,9 @@ def main(argv: list[str] | None = None) -> int:
     records_tuple = tuple(records)
     series = output / "gfs-series.tsv"
     series.write_text(
-        "".join(f"{hour}\t{path}\n" for hour, path in records_tuple),
+        "".join(
+            f"{hour}\t{path}\t{81 if hour == 0 else 96}\n"
+            for hour, path in records_tuple),
         encoding="utf-8",
     )
     manifest, digest = _write_manifest(

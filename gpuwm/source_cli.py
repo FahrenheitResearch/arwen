@@ -235,6 +235,12 @@ def _parser() -> argparse.ArgumentParser:
         help="explicit single-domain GPUWM forecast physics contract",
     )
     parser.add_argument(
+        "--expert-acknowledgement",
+        action="append",
+        default=[],
+        help="registry-owned expert physics acknowledgement id; repeatable",
+    )
+    parser.add_argument(
         "--stock-wrf-namelist-input",
         type=Path,
         help=(
@@ -589,6 +595,8 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
             "--preprocess-workers": args.preprocess_workers,
             "--source-format": args.source_format,
             "--physics-profile": args.physics_profile,
+            "--expert-acknowledgement":
+                args.expert_acknowledgement or None,
             "--mapping": args.mapping,
             "--descriptor": args.descriptor,
             "--author-mapping": args.author_mapping,
@@ -707,6 +715,18 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
         or args.history_interval_seconds <= 0.0
     ):
         errors.append("--history-interval-seconds must be positive and finite")
+    if args.root_preparation is None:
+        from gpuwm.physics_compat import (
+            validate_single_domain_physics_profile,
+        )
+        try:
+            validate_single_domain_physics_profile(
+                WSM6_PROFILE_ID
+                if args.physics_profile is None else args.physics_profile,
+                expert_acknowledgements=tuple(
+                    args.expert_acknowledgement))
+        except ValueError as exc:
+            errors.append(str(exc))
     return errors
 
 
@@ -731,6 +751,7 @@ def _required_era5_args(args: argparse.Namespace) -> list[str]:
     incompatible = {
         "--source-root": args.source_root,
         "--physics-profile": args.physics_profile,
+        "--expert-acknowledgement": args.expert_acknowledgement or None,
         "--forecast-start-hour": args.forecast_start_hour,
         "--forecast-end-hour": args.forecast_end_hour,
         "--static-cache": args.static_cache,
@@ -805,7 +826,6 @@ def _required_gfs_args(args: argparse.Namespace) -> list[str]:
             "--static-input/--static-receipt or --geog-root is required")
     incompatible = {
         "--source-root": args.source_root,
-        "--physics-profile": args.physics_profile,
         "--forecast-start-hour": args.forecast_start_hour,
         "--forecast-end-hour": args.forecast_end_hour,
         "--static-cache": args.static_cache,
@@ -860,6 +880,14 @@ def _required_gfs_args(args: argparse.Namespace) -> list[str]:
                 or parsed.hour not in {0, 6, 12, 18}
             ):
                 errors.append("--cycle must be an exact 00/06/12/18 UTC GFS cycle")
+    from gpuwm.physics_compat import validate_single_domain_physics_profile
+    try:
+        validate_single_domain_physics_profile(
+            WSM6_PROFILE_ID
+            if args.physics_profile is None else args.physics_profile,
+            expert_acknowledgements=tuple(args.expert_acknowledgement))
+    except ValueError as exc:
+        errors.append(str(exc))
     return errors
 
 
@@ -873,6 +901,8 @@ def _required_twentycr_args(args: argparse.Namespace) -> list[str]:
         incompatible = {
             "--source-manifest": args.source_sha256s,
             "--physics-profile": args.physics_profile,
+            "--expert-acknowledgement":
+                args.expert_acknowledgement or None,
             "--forecast-start-hour": args.forecast_start_hour,
             "--forecast-end-hour": args.forecast_end_hour,
             "--source-manifest-sha256": args.source_sha256s_sha256,
@@ -917,6 +947,7 @@ def _required_twentycr_args(args: argparse.Namespace) -> list[str]:
     incompatible = {
         "--source-format": args.source_format,
         "--physics-profile": args.physics_profile,
+        "--expert-acknowledgement": args.expert_acknowledgement or None,
         "--forecast-start-hour": args.forecast_start_hour,
         "--forecast-end-hour": args.forecast_end_hour,
         "--mapping": args.mapping,
@@ -1016,6 +1047,7 @@ def _required_mapped_args(args: argparse.Namespace) -> list[str]:
     incompatible = {
         "--source-root": args.source_root,
         "--physics-profile": args.physics_profile,
+        "--expert-acknowledgement": args.expert_acknowledgement or None,
         "--forecast-start-hour": args.forecast_start_hour,
         "--forecast-end-hour": args.forecast_end_hour,
         "--static-cache": args.static_cache,
@@ -1162,6 +1194,9 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
     if args.cpu_preprocess_bridge is not None:
         command.extend((
             "--cpu-preprocess-bridge", str(args.cpu_preprocess_bridge)))
+    for acknowledgement in args.expert_acknowledgement:
+        command.extend((
+            "--expert-acknowledgement", acknowledgement))
     return command
 
 
@@ -1227,6 +1262,9 @@ def _gfs_command(args: argparse.Namespace) -> list[str]:
         str(args.source_sha256s_sha256),
         "--output-root",
         str(args.output_root),
+        "--physics-profile",
+        WSM6_PROFILE_ID
+        if args.physics_profile is None else args.physics_profile,
     ]
     if args.static_input is not None:
         command.extend(("--static-input", str(args.static_input)))
@@ -1236,6 +1274,9 @@ def _gfs_command(args: argparse.Namespace) -> list[str]:
         command.extend(("--geog-root", str(args.geog_root)))
     if args.hierarchy_workers is not None:
         command.extend(("--hierarchy-workers", str(args.hierarchy_workers)))
+    for acknowledgement in args.expert_acknowledgement:
+        command.extend((
+            "--expert-acknowledgement", acknowledgement))
     return command
 
 

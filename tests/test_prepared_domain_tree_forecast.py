@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import json
 from pathlib import Path
@@ -238,6 +238,9 @@ def test_exact_four_domain_thompson_nssl_plan_is_advertised_not_whitelisted(
     arbitrary_plan = runner.resolve_execution_plan(arbitrary)
     assert arbitrary_plan["plan_id"] == runner.ARBITRARY_PLAN_ID
     assert arbitrary_plan["launch_allowed"] is True
+    with pytest.raises(
+            ValueError, match="static one-way execution plan.*feedback=1"):
+        runner.resolve_execution_plan(replace(arbitrary, feedback=1))
 
 
 def test_mixed_plan_still_rejects_a_missing_real_translation_policy(

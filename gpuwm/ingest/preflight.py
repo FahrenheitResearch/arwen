@@ -805,9 +805,10 @@ def _check_temporal(exp, case_data, catalog: InputCatalog
                 f"is not a whole number of exact dt="
                 f"{dt_exact} s steps (exact ratio={ratio_exact})",
             ))
-        sample = colon_free_output_filename(dc.grid_id, start)
+        domain_start = exp.domain_start_time(dc.grid_id)
+        sample = colon_free_output_filename(dc.grid_id, domain_start)
         if ":" in sample or not sample.endswith(
-                start.strftime("%Y-%m-%d_%H_%M_%S")):
+                domain_start.strftime("%Y-%m-%d_%H_%M_%S")):
             issues.append(PreflightIssue(
                 "output-filename",
                 f"domain d{dc.grid_id:02d} output name is not full H_M_S "
@@ -820,15 +821,18 @@ def output_records(exp, domain_id: int) -> tuple[tuple[int, datetime, str], ...]
     """Resolved output step/time/name records for cadence fixture gates."""
 
     dc = exp.domain(domain_id)
+    start = exp.domain_start_time(domain_id)
+    offset = float(exp.domain_start_offset_exact(domain_id))
     cadence_steps = round(float(dc.history_interval_s) / float(dc.run.dt))
-    total = int(math.floor(float(exp.run_seconds) / dc.history_interval_s))
+    total = int(math.floor(
+        (float(exp.run_seconds) - offset) / dc.history_interval_s))
     return tuple(
         (
             index * cadence_steps,
-            exp.start_time + timedelta(seconds=index * dc.history_interval_s),
+            start + timedelta(seconds=index * dc.history_interval_s),
             colon_free_output_filename(
                 domain_id,
-                exp.start_time + timedelta(seconds=index * dc.history_interval_s),
+                start + timedelta(seconds=index * dc.history_interval_s),
             ),
         )
         for index in range(total + 1)

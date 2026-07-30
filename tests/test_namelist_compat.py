@@ -140,6 +140,66 @@ def test_six_domain_thompson_stock_export_passes_gpuwm_runtime_separate(tmp_path
     json.dumps(report, allow_nan=False)
 
 
+def _stagger_pair(tmp_path, *, child_minute: int, interval: int):
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    wps_text = wps.read_text(encoding="utf-8").replace(
+        "start_date = '2020-05-01_00:00:00', "
+        "'2020-05-01_00:00:00',",
+        "start_date = '2020-05-01_00:00:00', "
+        f"'2020-05-01_00:{child_minute:02d}:00',").replace(
+            "interval_seconds = 3600",
+            f"interval_seconds = {interval}")
+    input_text = inp.read_text(encoding="utf-8").replace(
+        " start_hour = 0, 0,",
+        " start_hour = 0, 0,\n"
+        f" start_minute = 0, {child_minute},\n"
+        " start_second = 0, 0,\n"
+        f" interval_seconds = {interval},")
+    wps.write_text(wps_text, encoding="utf-8")
+    inp.write_text(input_text, encoding="utf-8")
+    return wps, inp
+
+
+def test_support_report_claims_staggered_five_minute_timing_only_when_real(
+        tmp_path):
+    report = analyze_namelists(
+        *_stagger_pair(tmp_path, child_minute=5, interval=300))
+
+    assert report["verdict"] == "PASS"
+    assert report["required_state"]["gpuwm_runtime"]["verdict"] == "PASS"
+    assert report["timing"]["boundary_interval_seconds"] == 300
+    assert report["timing"]["root_cadence_steps_exact"] == "5"
+    assert report["timing"]["domains"][1] == {
+        "grid_id": 2,
+        "start_time": "2020-05-01T00:05:00",
+        "end_time": "2020-05-01T12:00:00",
+        "offset_seconds": 300,
+        "dt_seconds_exact": "20",
+        "parent_step_alignment": "PASS",
+        "forcing_seam_alignment": "PASS",
+    }
+
+
+def test_support_report_keeps_precise_timing_refusals(tmp_path):
+    staggered = analyze_namelists(
+        *_stagger_pair(tmp_path, child_minute=4, interval=300))
+    assert staggered["verdict"] == "PASS"
+    runtime = staggered["required_state"]["gpuwm_runtime"]
+    assert runtime["verdict"] == "FAIL"
+    assert any(
+        "d02" in reason and "offset/cadence = 4/5" in reason
+        for reason in runtime["reasons"])
+
+    cadence = analyze_namelists(
+        *_stagger_pair(tmp_path, child_minute=0, interval=310))
+    assert cadence["verdict"] == "PASS"
+    assert cadence["required_state"]["gpuwm_runtime"]["verdict"] == "FAIL"
+    assert any(
+        "whole number of root-domain steps" in reason
+        and "cadence/dt = 31/6" in reason
+        for reason in cadence["required_state"]["gpuwm_runtime"]["reasons"])
+
+
 def test_support_report_rejects_unimplemented_projection(tmp_path):
     wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
     wps.write_text(

@@ -161,6 +161,26 @@ def test_regular_source_hierarchy_preserves_root_lbc_and_full_series(
     assert result.topology_receipt["max_dom"] == 3
 
 
+def test_regular_source_hierarchy_preserves_five_minute_offsets(
+        tmp_path, monkeypatch):
+    exp, _boundaries, _initial, _snapshots = _inputs(tmp_path)
+    exp.run_seconds = 600
+    snapshots = tuple(
+        _Snapshot(exp.start_time + timedelta(seconds=offset), {
+            "SOURCE_OROGRAPHY": object(),
+        })
+        for offset in (0, 300, 600))
+    result, observed = _call(
+        tmp_path, monkeypatch, exp=exp, snapshots=snapshots,
+        forcing_hours=None, forcing_offsets_seconds=(0, 300, 600))
+
+    call = observed["initialize"]
+    assert result.boundary_interval_seconds == 300
+    assert call["forcing_hours"] is None
+    assert call["forcing_offsets_seconds"] == (0, 300, 600)
+    assert call["boundary_interval_seconds"] == 300
+
+
 @pytest.mark.parametrize("source_name", ("ERA5", "GFS"))
 def test_regular_source_hierarchy_routes_every_d01_through_d06_domain(
         tmp_path, monkeypatch, source_name):

@@ -44,13 +44,17 @@ from gpuwm.physics_compat import (  # noqa: E402
     EXPERIMENTAL_THOMPSON_ENV,
     SINGLE_DOMAIN_PHYSICS_PROFILES,
     MORRISON_PROFILE_ID,
+    MYNN_PROFILE_ID,
+    NOAHMP_PROFILE_ID,
     NSSL2_PROFILE_ID,
+    RUC_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     THOMPSON_TABLE_ROOT_ENV,
     WRF_RRTMG_TO_RTE_RRTMGP,
     WSM6_PROFILE_ID,
     single_domain_runtime_switches,
     thompson_runtime_requirements,
+    validate_single_domain_physics_profile,
 )
 from gpuwm.core.nssl2_contract import (  # noqa: E402
     CONTRACT_ID as NSSL2_CONTRACT_ID,
@@ -190,6 +194,29 @@ def runner_capabilities() -> dict[str, object]:
                 "external_table_assets": [],
                 "contract_id": NSSL2_CONTRACT_ID,
                 "resolved_fixed_preset": True,
+            },
+            MYNN_PROFILE_ID: {
+                "selector": 6,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": False,
+                "runtime_guards": [],
+            },
+            RUC_PROFILE_ID: {
+                "selector": 6,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": False,
+                "runtime_guards": [],
+            },
+            NOAHMP_PROFILE_ID: {
+                "selector": 6,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": True,
+                "expert_acknowledgement_id":
+                    "noahmp-host-column-throughput-v1",
+                "runtime_guards": [
+                    "measured column ceiling or explicit accepted budget",
+                    "glacier columns refused",
+                ],
             },
         },
         "window": {
@@ -700,6 +727,63 @@ _NATIVE_HRRR_NAMELIST_CONTRACTS = MappingProxyType({
             "diff_6th_slopeopt": 1.0,
         }),
     }),
+    MYNN_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 6.0,
+            "ra_lw_physics": 0.0,
+            "ra_sw_physics": 1.0,
+            "radt": 1.0,
+            "sf_sfclay_physics": 5.0,
+            "sf_surface_physics": 2.0,
+            "bl_pbl_physics": 5.0,
+            "cu_physics": 0.0,
+            "num_soil_layers": 4.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.08,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
+    RUC_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 6.0,
+            "ra_lw_physics": 0.0,
+            "ra_sw_physics": 1.0,
+            "radt": 1.0,
+            "sf_sfclay_physics": 91.0,
+            "sf_surface_physics": 3.0,
+            "bl_pbl_physics": 1.0,
+            "cu_physics": 0.0,
+            "num_soil_layers": 9.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.08,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
+    NOAHMP_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 6.0,
+            "ra_lw_physics": 0.0,
+            "ra_sw_physics": 1.0,
+            "radt": 1.0,
+            "sf_sfclay_physics": 91.0,
+            "sf_surface_physics": 4.0,
+            "bl_pbl_physics": 1.0,
+            "cu_physics": 0.0,
+            "num_soil_layers": 4.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.08,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
     THOMPSON_PROFILE_ID: MappingProxyType({
         "physics": MappingProxyType({
             "mp_physics": 8.0,
@@ -772,6 +856,9 @@ _NATIVE_HRRR_RUNTIME_SWITCHES = MappingProxyType({
 
 _HRRR_SOURCE_ABSENT_STATE_DEFAULTS = MappingProxyType({
     WSM6_PROFILE_ID: MappingProxyType({}),
+    MYNN_PROFILE_ID: MappingProxyType({}),
+    RUC_PROFILE_ID: MappingProxyType({}),
+    NOAHMP_PROFILE_ID: MappingProxyType({}),
     THOMPSON_PROFILE_ID: MappingProxyType({
         "ni": 0.0, "nr": 0.0,
     }),
@@ -787,6 +874,9 @@ _HRRR_SOURCE_ABSENT_STATE_DEFAULTS = MappingProxyType({
 
 _HRRR_SOURCE_ABSENT_WRF_FIELDS = MappingProxyType({
     WSM6_PROFILE_ID: (),
+    MYNN_PROFILE_ID: (),
+    RUC_PROFILE_ID: (),
+    NOAHMP_PROFILE_ID: (),
     THOMPSON_PROFILE_ID: ("QNICE", "QNRAIN"),
     MORRISON_PROFILE_ID: (
         "QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL"),
@@ -853,7 +943,9 @@ def _thompson_runtime_authority() -> dict[str, object]:
 
 
 def _validate_native_hrrr_physics_profile(
-        path: Path, profile: str = WSM6_PROFILE_ID) -> dict[str, object]:
+        path: Path, profile: str = WSM6_PROFILE_ID, *,
+        expert_acknowledgements: tuple[str, ...] = (),
+        ) -> dict[str, object]:
     """Bind the namelist to one explicit HRRR runner profile.
 
     The accepted historical input has two domains and this standalone
@@ -864,6 +956,8 @@ def _validate_native_hrrr_physics_profile(
 
     from gpuwm.namelist_import import parse_namelist
 
+    front_door_selection = validate_single_domain_physics_profile(
+        profile, expert_acknowledgements=expert_acknowledgements)
     expected_profile = _native_hrrr_profile_contract(profile)
     sections = parse_namelist(path)
     selected: dict[str, dict[str, float | bool]] = {}
@@ -948,6 +1042,7 @@ def _validate_native_hrrr_physics_profile(
     receipt = {
         "schema": "gpuwm-prepared-physics-profile-v1",
         "profile": profile,
+        "front_door_selection": front_door_selection,
         "selection": "last-or-only WRF domain value",
         "resolved": resolved,
         "validated_namelist": selected,
@@ -994,6 +1089,8 @@ def _validate_native_hrrr_physics_profile(
                 NSSL2_DEFAULT_MODE.transported_fields),
             "wrf_namelist_defaults": dict(NSSL2_WRF_NAMELIST_DEFAULTS),
         }
+    elif profile in (MYNN_PROFILE_ID, RUC_PROFILE_ID, NOAHMP_PROFILE_ID):
+        receipt["readiness"] = "IMPLEMENTED_UNVERIFIED"
     if profile in (MORRISON_PROFILE_ID, NSSL2_PROFILE_ID):
         receipt["radiation_substitution"] = {
             "contract": WRF_RRTMG_TO_RTE_RRTMGP,
@@ -1716,7 +1813,8 @@ def run(args):
         context="native HRRR initializer",
     )
     physics_profile = _validate_native_hrrr_physics_profile(
-        args.namelist_input, args.physics_profile)
+        args.namelist_input, args.physics_profile,
+        expert_acknowledgements=tuple(args.expert_acknowledgement))
     eta = np.asarray(vertical_grid.eta_levels, dtype=np.float64)
     p_top = vertical_grid.p_top
     history_interval_seconds = (
@@ -2439,7 +2537,7 @@ def run(args):
     # prepare-only return so an installed CPU fallback has no CuPy dependency.
     import gpuwm.core.dycore as dycore_module
     from gpuwm.core.clock import build_schedule, resolve_clock
-    from gpuwm.core.dycore import stability_report
+    from gpuwm.core.dycore import stability_gate_failed, stability_report
     from gpuwm.core.health import StateHealthValidator
     from gpuwm.core.model import (
         DomainNode, ExperimentState, ModelRuntimeStatus, execute_experiment)
@@ -2523,11 +2621,9 @@ def run(args):
             **report,
         }
         history.append(sample)
-        if (bool(report["nan"]) or report["cfl"] is None
-                or not math.isfinite(float(report["cfl"]))
-                or float(report["cfl"]) > MAX_HISTORY_CFL
-                or not math.isfinite(float(report["w_max"]))
-                or float(report["w_max"]) > MAX_HISTORY_W_MS):
+        if stability_gate_failed(
+                report, max_cfl=MAX_HISTORY_CFL,
+                max_w_ms=MAX_HISTORY_W_MS):
             raise FloatingPointError(
                 f"benchmark stability threshold failed: {sample}")
         refl = None
@@ -2806,6 +2902,9 @@ def _parse_args(argv=None):
         default=WSM6_PROFILE_ID,
         help="explicit GPUWM HRRR physics/runtime contract",
     )
+    parser.add_argument(
+        "--expert-acknowledgement", action="append", default=[],
+        help="registry-owned expert physics acknowledgement id; repeatable")
     parser.add_argument(
         "--valid-time", required=True,
         help="requested exact hourly HRRR cycle (YYYY-MM-DD_HH:00:00)")

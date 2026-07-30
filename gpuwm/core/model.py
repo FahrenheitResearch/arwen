@@ -96,6 +96,10 @@ class DomainNode:
     coupler: NestCoupler | None
 
     def __post_init__(self) -> None:
+        # Lifecycle state is deliberately not a dataclass field: the public
+        # structural contract remains the configured tree, while delayed
+        # activation and restart restore own this runtime-only marker.
+        self._started = True
         cfg_id = self.cfg.grid_id
         if self.cfg.run.grid_id != cfg_id:
             raise ValueError(
@@ -446,6 +450,7 @@ def build_experiment(exp, case_data) -> ExperimentState:
         cfg=root_dc, grid=prepared_root.grid,
         state=prepared_root.initial_result.state,
         clock=clocks[root_dc.grid_id], parent=None, children=[], coupler=None)
+    root._started = True
     # Davies clock bind (seam closure 2026-07-28, retires the F20
     # adjudication): the root's external Davies launches consume WRF's
     # post-increment dtbc.  WRF resets dtbc on every boundary read
@@ -489,13 +494,19 @@ def build_experiment(exp, case_data) -> ExperimentState:
             cfg=dc, grid=initialized.grid, state=initialized.state,
             clock=clocks[dc.grid_id], parent=parent,
             children=[], coupler=None)
-        node.coupler = ConcreteNestCoupler(node)
+        node.coupler = ConcreteNestCoupler(node, feedback=exp.feedback)
+        node._started = clocks[dc.grid_id].spec.start_ticks == 0
         parent.children.append(node)
         # The marker is present both before and after FORCE.  It makes the
         # restart setup fingerprint independent of rolling table contents.
         node.state._nest_restart_classification = "REBUILT"
         nodes[dc.grid_id] = node
         prepared_by_id[dc.grid_id] = prepared
+        if exp.feedback == 1 and node._started:
+            initial = FeedbackScratch()
+            node.coupler.feedback_prepare(node, initial)
+            node.coupler.feedback_commit(node)
+            node.coupler.feedback_finalize(node)
 
     built = ExperimentState(
         root=root, nodes_by_grid_id=MappingProxyType(nodes),
@@ -505,9 +516,16 @@ def build_experiment(exp, case_data) -> ExperimentState:
     # attached as non-field infrastructure, so T12/T13 consumers remain inert.
     built._scratch_arena = arena
     built._dycore_state_workspace = dycore_state_workspace
-    built._prepared_by_grid_id = MappingProxyType(prepared_by_id)
+    built._prepared_by_grid_id = prepared_by_id
     built._input_catalog = catalog
+    built._activation_context = {
+        "experiment": exp,
+        "case_data": case_data,
+        "forcing_times": forcing_times,
+        "radiation_workspace": radiation_workspace,
+    }
     built._runtime_status = ModelRuntimeStatus()
+    built._feedback_provenance = runtime.feedback_provenance(exp)
     built._resumed = False
     built._resume_committed_history_grid_ids = frozenset()
     built._io_manager = None
@@ -583,6 +601,50 @@ def execute_experiment(
     def on_period_begin(period, clocks) -> None:
         status.schedule_cursor = PERIOD_BEGIN
         status.prior_feedback_committed = True
+
+    def on_domain_start(grid_id, clock) -> None:
+        """Run the ordinary WRF-order child init at its delayed boundary."""
+        from gpuwm.core.nest import NestCoupler as ConcreteNestCoupler
+        from gpuwm.ingest.nest_init import initialize_child
+        from gpuwm.runtime import prepare_child_case
+
+        node = model.node(grid_id)
+        if node.parent is None:
+            raise RuntimeError("the root domain cannot have a delayed start")
+        if bool(node._started):
+            return
+        context = model._activation_context
+        exp = context["experiment"]
+        data = context["case_data"]
+        initialized = initialize_child(
+            node.cfg, node.parent, model._input_catalog, exp.vertical,
+            source_orography=data.source_orography,
+            scratch_arena=arena,
+            dycore_state_workspace=dycore_state_workspace,
+            sfcp_to_sfcp=data.sfcp_to_sfcp)
+        prepared = prepare_child_case(
+            initialized, node.cfg, exp=exp, data=data,
+            forcing_times=context["forcing_times"],
+            radiation_workspace=context["radiation_workspace"],
+            radiation_parent=(
+                node.parent.state.physics.radiation_callable))
+        node.grid = initialized.grid
+        node.state = initialized.state
+        node.coupler = ConcreteNestCoupler(node, feedback=exp.feedback)
+        refresh_model_time(node.state, clock)
+        node.state._nest_restart_classification = "REBUILT"
+        node._started = True
+        model._prepared_by_grid_id[grid_id] = prepared
+        if exp.feedback == 1:
+            initial = FeedbackScratch()
+            node.coupler.feedback_prepare(node, initial)
+            node.coupler.feedback_commit(node)
+            node.coupler.feedback_finalize(node)
+        if validate_state:
+            from gpuwm.core.health import StateHealthValidator
+            validators[grid_id] = StateHealthValidator(node.state)
+            validators[grid_id].require_healthy(
+                phase=f"delayed-start.d{grid_id:02d}")
 
     def on_step(grid_id, clock) -> None:
         with domain_turn(("STEP", grid_id)):
@@ -720,10 +782,14 @@ def execute_experiment(
         on_feedback_commit=on_feedback_commit,
         on_feedback_finalize=on_feedback_finalize,
         on_history=on_history, on_restart=on_restart,
+        on_domain_start=on_domain_start,
         on_period_begin=on_period_begin, on_period_end=on_period_end,
         on_period_commit=on_period_commit,
         skip_feedback_path=skip_feedback_path, clocks=clocks,
         start_period=start_period,
+        started_grid_ids=(
+            node.cfg.grid_id for node in model.walk_parent_first()
+            if bool(node._started)),
         committed_initial_history_grid_ids=(
             model._resume_committed_history_grid_ids
             if bool(model._resumed) else ()))

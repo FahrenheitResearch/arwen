@@ -2,6 +2,10 @@
   "schema": "rw-wps.descriptor.v1",
   "name": "gfs-pressure-level-grib2-native",
   "format": "grib2",
+  "adapt": {
+    "model_top_pa": 10000,
+    "soil_policy": {"kind": "identity_complete_layers"}
+  },
   "coordinates": {
     "horizontal": {"kind": "embedded_grid"},
     "vertical": {

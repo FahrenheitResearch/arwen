@@ -95,10 +95,11 @@ When piped like this, the script clones the repository into `./gpuwm`
 (set `GPUWM_REPO_URL` to clone from a fork or mirror instead).
 
 You need Python 3.11+ and git; for GPU runs, an NVIDIA card with
-CUDA 12.x/13.x (tested through 13.0: a CUDA 13.0 toolkit with a
-580-series driver works out of the box with the `cupy-cuda12x` pin,
-because minor-version compatibility plus CuPy's system-NVRTC discovery
-covers it -- measured on a Linux RTX 4070 and a 4090, 2026-07-30). The
+CUDA 12.x/13.x, field-verified through 13.2 driver stacks on sm_89 by
+two independent nodes: the toolkit works out of the box with the
+`cupy-cuda12x` pin, because minor-version compatibility plus CuPy's
+system-NVRTC discovery covers it -- measured on a Linux RTX 4070 and a
+4090, 2026-07-30. The
 manual steps, if you prefer them:
 
 POSIX:
@@ -211,7 +212,7 @@ opt-in via `--heavy`.*
 | Land surface | Noah (4-layer), Noah-MP, RUC (9-level) |
 | Radiation | RTE+RRTMGP (default); legacy RRTMG (WRF 4/4 transcription, verification tier); Dudhia SW |
 | Cumulus | Kain-Fritsch (outer domains) |
-| Data | ERA5 (CDS), GFS 0.25-deg (NOMADS), GDAS 0.25-deg analysis init (NOMADS, f000 only), HRRR (NOMADS or AWS S3, incl. a live-cycle `--wait-for` mode); fail-closed Rust GRIB bridges; `gpuwm fetch` front door. Plus an experimental, not-yet-stock-WRF-gated 20CRv3 ensemble-member route for GRIB2 files you supply yourself (no fetch route) -- see [DATA.md](docs/public/DATA.md) |
+| Data | ERA5 (CDS), GFS 0.25-deg (NOMADS), HRRR (NOMADS or AWS S3, incl. a live-cycle `--wait-for` mode) all initialize a run; GDAS 0.25-deg (NOMADS) is **fetch and decode only through f009 -- no initialization route** (`rw-wps --source gdas` refuses). Fail-closed Rust GRIB bridges; `gpuwm fetch` download front door. Plus an experimental, not-yet-stock-WRF-gated 20CRv3 ensemble-member route for GRIB2 files you supply yourself (no fetch route) -- see [DATA.md](docs/public/DATA.md) |
 | Domains | `gpuwm domain` wizard: point + card -> sized experiment TOML (16/24/32 GiB tiers) |
 | Products | `gpuwm render`, two engines: vendored Rusty Weather renderer (default when built), whose vendored catalog carries 324 entries; the runtime lister enumerates 151 of them as implicit-render candidates per file (the rest are explicit-opt-in ensemble/probabilistic families) -- reflectivity composite/1 km, surface T/Td/RH/MSLP/wind/PWAT/cloud-cover families, the 200-850 mb isobaric charts (height/temp/dewpoint/RH/absolute-vorticity + winds), CAPE/CIN/SRH/shear/STP severe suite, heavy ECAPE family (`--heavy`), and multi-hour windowed accumulations -- everything a file's stored fields prove out renders (measured on the committed 3 km UH-smoke case: 58/58 on a single frame, 238 renders / 0 failures across its four-frame store, transcripts retained in the development tree under `evidence/render-receipts/`; `--list-products` prints the per-file verdict with a field-level reason for every unavailable row), with coast/state/county basemaps and sub-hourly leads stamped; matplotlib fallback (composite reflectivity, T2, 10 m wind, accumulated precipitation); `--pair A B` composes two runs' PNGs into labeled comparison sheets |
 | Lifecycle | `check` (input + VRAM preflight), `run`, `resume`, restart checkpoints, failure capsules |
@@ -239,8 +240,9 @@ Stated plainly, up front:
   `share/module_llxy.F`, plus short GPU smoke integrations -- not
   matched-run verified. The deep matched-run validation (the 1974
   reference family) exists for northern-hemisphere Lambert only.
-- **Nesting.** One-way, static nests only. No feedback, no moving
-  nests, no vertical refinement, no adaptive time step.
+- **Nesting.** One-way, static nests only. Children may start later on an
+  exact parent-step and forcing-cadence seam. No feedback, no moving nests,
+  no vertical refinement, no adaptive time step.
 - **Precision.** The model state is FP32 (like WRF's default REAL).
   No end-to-end bit-identity with WRF is claimed anywhere; see
   [VERIFICATION.md](docs/public/VERIFICATION.md) for exactly what is
@@ -300,6 +302,7 @@ reproduce them: [VERIFICATION.md](docs/public/VERIFICATION.md).
 - [Driving stock WRF](docs/public/WRF-INTEROP.md)
 - [Install and verify](docs/install.md)
 - [CLI reference](docs/cli-reference.md)
+- [Arbitrary but verified GRIB adapters](docs/arbitrary-verified-adapters.md)
 - [Migrating from WPS](docs/migrating-from-wps.md)
 - [Community support matrix](docs/community-support-matrix.md)
 

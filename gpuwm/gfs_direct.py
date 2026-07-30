@@ -53,11 +53,17 @@ from gpuwm.native_wrf_contract import (
 from gpuwm.source_hierarchy import (
     initialize_and_export_regular_source_hierarchy,
 )
+from gpuwm.physics_compat import (
+    WSM6_PROFILE_ID,
+    validate_single_domain_physics_profile,
+)
 from gpuwm.wrf_direct import export_prepared_wrf
 
 
 INPUT_MANIFEST_SCHEMA = "gpuwm-gfs-direct-input-manifest-v1"
 BRIDGE_SCHEMA = "gpuwm-gfs-grib2-bridge-v1"
+PROOF_SCHEMA = "gpuwm-gfs-direct-wrf-proof-v3"
+LEGACY_PROOF_SCHEMA = "gpuwm-gfs-direct-wrf-proof-v2"
 _PRESSURE_LEVELS_HPA = np.asarray(
     [100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600,
      650, 700, 750, 800, 850, 900, 925, 950, 975, 1000],
@@ -352,10 +358,21 @@ def _read_series(path: Path) -> tuple[tuple[int, Path], ...]:
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
         columns = raw.split("\t")
-        if len(columns) != 2:
+        if not 2 <= len(columns) <= 3:
             raise ValueError(
-                f"GFS series line {line_number} must be HOUR<TAB>GRIB2")
+                "GFS series line "
+                f"{line_number} must be "
+                "HOUR<TAB>GRIB2[<TAB>FORECAST_PROCESS_ID]")
         hour = int(columns[0])
+        expected_process_id = int(columns[2]) if len(columns) == 3 else 81
+        if expected_process_id not in {81, 96}:
+            raise ValueError(
+                f"GFS series line {line_number} declares uncertified "
+                f"forecast process ID {expected_process_id}")
+        if hour == 0 and expected_process_id != 81:
+            raise ValueError(
+                f"GFS series line {line_number} must declare analysis "
+                "process ID 81 for f000")
         source = Path(columns[1])
         if not source.is_absolute():
             source = parent / source
@@ -593,6 +610,8 @@ def prepare_gfs_wrf(
     cpu_preprocess_bridge: Path | None = None,
     geog_root: Path | None = None,
     hierarchy_workers: int | None = None,
+    physics_profile: str = WSM6_PROFILE_ID,
+    expert_acknowledgements: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Build native GFS initial/boundary files and return the proof receipt.
 
@@ -658,6 +677,9 @@ def prepare_gfs_wrf(
 
     total_started = time.perf_counter()
     exp = load_experiment(Path(experiment_config))
+    physics_selection = validate_single_domain_physics_profile(
+        physics_profile, config=exp.root.run,
+        expert_acknowledgements=expert_acknowledgements)
     if exp.start_time != cycle_time:
         raise ValueError("GFS cycle must equal experiment start_time")
     hours = [hour for hour, _ in records]
@@ -756,6 +778,7 @@ def prepare_gfs_wrf(
         soil = preprocess_land_surface_soil(
             horizontal[0].fields,
             sf_surface_physics=int(cfg.sf_surface_physics),
+            num_soil_layers=int(cfg.num_soil_layers),
             soil_type=static["SCT_DOM"],
             deep_soil_temperature=static["TMN"], lake_mask=lake_mask,
             lake_skin_temperature=lake_skin)
@@ -909,7 +932,15 @@ def prepare_gfs_wrf(
             export_receipt = export_prepared_wrf(
                 prepared_cache, static_cache, geometry_receipt, wrf_output,
                 valid_time=times[0],
-                boundary_interval_seconds=boundary_interval_seconds)
+                boundary_interval_seconds=boundary_interval_seconds,
+                physics_profile=physics_profile,
+                expert_acknowledgements=expert_acknowledgements)
+            if (export_receipt.get("schema")
+                    != "gpuwm-native-direct-wrf-export-v3"
+                    or export_receipt.get("physics") != physics_selection):
+                raise RuntimeError(
+                    "direct-WRF export physics provenance differs from the "
+                    "selected preparation profile")
             export_seconds = time.perf_counter() - export_started
             final_manifest = _verify_input_manifest(
                 Path(input_manifest), manifest_digest, roles)
@@ -952,7 +983,7 @@ def prepare_gfs_wrf(
                 },
             }
             proof = {
-                "schema": "gpuwm-gfs-direct-wrf-proof-v2",
+                "schema": PROOF_SCHEMA,
                 "status": "READY_NOT_YET_STOCK_WRF_GATED",
                 "forcing_times": [value.isoformat() for value in times],
                 "forcing_hours": hours,
@@ -972,6 +1003,7 @@ def prepare_gfs_wrf(
                 "source_coverage": coverage_receipt,
                 "decoder_stdout": completed.stdout.strip(),
                 "prepared_cache": portable_cache_receipt,
+                "physics": physics_selection,
                 "export": export_receipt,
                 "timing_seconds": {
                     "decode": decode_seconds,
@@ -993,7 +1025,7 @@ def prepare_gfs_wrf(
 
 def prepared_forecast_next_command(
         proof: Mapping[str, object], *, output_root, experiment_config,
-        wps_namelist) -> list[str]:
+        wps_namelist, source: str = "gfs") -> list[str]:
     """The ready-to-run forecast command, hashes filled in.
 
     ``gpuwm fetch --author-front-door-manifest`` already prints the
@@ -1017,6 +1049,20 @@ def prepared_forecast_next_command(
     by naming a real directory beside the preparation.  Where a value
     genuinely cannot be resolved, this prints prose saying so instead of
     a command that cannot be run.
+
+    When the proof carries a ``gpuwm-front-door-physics-selection-v1``
+    receipt (proof v3 and later), that receipt IS what was materialized,
+    so it names the profile.  Re-deriving it from the config would be a
+    second opinion about a decision already recorded.  The config-table
+    lookup stays as the fallback for the historical v2 proof, which
+    carries no physics receipt.
+
+    ``source`` names the prepared-forecast runner's own ``--source``
+    value.  Every native front door that reaches a prepared bundle can
+    print this, and one of them printing a complete hash-bound command
+    while another printed nothing at all was a node-8 finding in its own
+    right: the 20CRv3 route ran end to end and then said nothing about
+    how to run the forecast.
     """
 
     from gpuwm.experiment import load_experiment
@@ -1035,7 +1081,13 @@ def prepared_forecast_next_command(
             f"  (cannot read {proof_path}; no next command to print)"]
     # A real, pasteable directory: a sibling of the preparation, so the
     # command works from anywhere and does not overwrite the inputs.
-    outdir = output_root / "forecast"
+    #
+    # It has to be a genuine SIBLING, not a child.  Both runners declare
+    # --prepared-root a protected input and refuse any --outdir that
+    # overlaps it in either direction, so the <root>/forecast this used
+    # to print was a command the runner rejected -- which is how a node-8
+    # pilot got a traceback out of the front door's own suggestion.
+    outdir = output_root.parent / f"{output_root.name}-forecast"
     cache = proof.get("prepared_cache")
     content = (cache.get("content_sha256")
                if isinstance(cache, Mapping) else None)
@@ -1060,11 +1112,14 @@ def prepared_forecast_next_command(
             "  (this proof carries no single prepared-cache identity "
             "because it is a multi-domain hierarchy product.)",
         ]
-    try:
-        profile = identify_single_domain_profile(
-            load_experiment(Path(experiment_config)).root.run)
-    except Exception:  # a config this process cannot load is not a command
-        profile = None
+    physics = proof.get("physics")
+    profile = physics.get("profile") if isinstance(physics, Mapping) else None
+    if not isinstance(profile, str):
+        try:
+            profile = identify_single_domain_profile(
+                load_experiment(Path(experiment_config)).root.run)
+        except Exception:  # a config this process cannot load is not a command
+            profile = None
     if profile is None:
         return lines + [
             f"  (the physics in {Path(experiment_config)} matches none of "
@@ -1075,7 +1130,7 @@ def prepared_forecast_next_command(
             "then accept it.)"]
     lines += [
         "  python tools/prepared_single_domain_forecast.py \\",
-        "      --source gfs \\",
+        f"      --source {source} \\",
         f"      --prepared-root {output_root} \\",
         f"      --proof-sha256 {proof_digest} \\",
         f"      --source-manifest-sha256 {manifest_digest} \\",
@@ -1109,6 +1164,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cpu-preprocess-bridge", type=Path)
     parser.add_argument("--geog-root", type=Path)
     parser.add_argument("--hierarchy-workers", type=int)
+    parser.add_argument(
+        "--physics-profile", default=WSM6_PROFILE_ID,
+        help="registered fixed physics template materialized in the experiment")
+    parser.add_argument(
+        "--expert-acknowledgement", action="append", default=[],
+        help="registry-owned expert acknowledgement id; repeat as needed")
     args = parser.parse_args(argv)
     proof = prepare_gfs_wrf(
         series=args.series, cycle=args.cycle, bridge=args.bridge,
@@ -1123,6 +1184,8 @@ def main(argv: list[str] | None = None) -> int:
         cpu_preprocess_bridge=args.cpu_preprocess_bridge,
         geog_root=args.geog_root,
         hierarchy_workers=args.hierarchy_workers,
+        physics_profile=args.physics_profile,
+        expert_acknowledgements=tuple(args.expert_acknowledgement),
     )
     print(json.dumps(proof, indent=2, sort_keys=True))
     for line in prepared_forecast_next_command(

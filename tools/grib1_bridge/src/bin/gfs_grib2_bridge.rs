@@ -416,6 +416,7 @@ struct Inventory {
 struct SeriesInput {
     hour: u32,
     path: PathBuf,
+    expected_forecast_process_id: u8,
 }
 
 fn sha256_bytes(data: &[u8]) -> [u8; 32] {
@@ -582,6 +583,7 @@ fn validate_common(
     message: &Grib2Message,
     cycle: &str,
     hour: u32,
+    expected_forecast_process: u8,
     allow_missing: bool,
 ) -> Result<(), Box<dyn Error>> {
     let identity = &message.identification;
@@ -605,7 +607,6 @@ fn validate_common(
         )
         .into());
     }
-    let expected_forecast_process = if hour == 0 { 81 } else { 96 };
     if message.product.template != 0
         || message.product.generating_process != 2
         || message.product.background_generating_process_id != 0
@@ -775,7 +776,12 @@ fn scan_normalized(
     Ok((values, present))
 }
 
-fn inventory(file: &Grib2File, cycle: &str, hour: u32) -> Result<Inventory, Box<dyn Error>> {
+fn inventory(
+    file: &Grib2File,
+    cycle: &str,
+    hour: u32,
+    expected_forecast_process_id: u8,
+) -> Result<Inventory, Box<dyn Error>> {
     let mut selected = Vec::with_capacity(124);
     let mut fingerprint: Option<GridFingerprint> = None;
     for spec in PRESSURE_SPECS {
@@ -790,7 +796,7 @@ fn inventory(file: &Grib2File, cycle: &str, hour: u32) -> Result<Inventory, Box<
                 },
             )?;
             let message = &file.messages[index];
-            validate_common(message, cycle, hour, false)?;
+            validate_common(message, cycle, hour, expected_forecast_process_id, false)?;
             if message.product.second_level_type != 255 {
                 return Err(format!(
                     "{} at {} Pa unexpectedly has a second fixed surface",
@@ -834,7 +840,13 @@ fn inventory(file: &Grib2File, cycle: &str, hour: u32) -> Result<Inventory, Box<
             (index, spec)
         };
         let message = &file.messages[index];
-        validate_common(message, cycle, hour, actual_spec.allow_missing)?;
+        validate_common(
+            message,
+            cycle,
+            hour,
+            expected_forecast_process_id,
+            actual_spec.allow_missing,
+        )?;
         if actual_spec.level_type == SOIL_LEVEL_TYPE {
             let expected_top = match actual_spec.level_value {
                 value if same_level(value, 0.0) => 0.1,
@@ -898,10 +910,38 @@ fn parse_series(path: &Path) -> Result<Vec<SeriesInput>, Box<dyn Error>> {
             continue;
         }
         let columns: Vec<&str> = raw.split('\t').collect();
-        if columns.len() != 2 {
-            return Err(format!("series line {} must be HOUR<TAB>GRIB2", line_index + 1).into());
+        if !matches!(columns.len(), 2 | 3) {
+            return Err(format!(
+                "series line {} must be HOUR<TAB>GRIB2[<TAB>FORECAST_PROCESS_ID]",
+                line_index + 1
+            )
+            .into());
         }
         let hour = columns[0].parse::<u32>()?;
+        // A two-column legacy row declares only the analysis process
+        // capability.  Process 96 is never inferred from the hour: it must
+        // appear explicitly in the series written by a source adapter whose
+        // forecast products have real-sample certification.
+        let expected_forecast_process_id = if columns.len() == 3 {
+            columns[2].parse::<u8>()?
+        } else {
+            81
+        };
+        if !matches!(expected_forecast_process_id, 81 | 96) {
+            return Err(format!(
+                "series line {} declares uncertified forecast process ID {}",
+                line_index + 1,
+                expected_forecast_process_id
+            )
+            .into());
+        }
+        if hour == 0 && expected_forecast_process_id != 81 {
+            return Err(format!(
+                "series line {} must declare analysis process ID 81 for f000",
+                line_index + 1
+            )
+            .into());
+        }
         let candidate = PathBuf::from(columns[1]);
         let resolved = if candidate.is_absolute() {
             candidate
@@ -918,6 +958,7 @@ fn parse_series(path: &Path) -> Result<Vec<SeriesInput>, Box<dyn Error>> {
         result.push(SeriesInput {
             hour,
             path: resolved,
+            expected_forecast_process_id,
         });
     }
     if result.len() < 2 || result[0].hour != 0 {
@@ -1103,7 +1144,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let inventories: Vec<Inventory> = inputs
         .iter()
         .zip(&loaded)
-        .map(|(input, (file, _))| inventory(file, &cycle, input.hour))
+        .map(|(input, (file, _))| {
+            inventory(file, &cycle, input.hour, input.expected_forecast_process_id)
+        })
         .collect::<Result<_, _>>()?;
     for (input, observed) in inputs.iter().zip(&inventories) {
         if observed.grid != inventories[0].grid {
@@ -1210,7 +1253,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "forecast_generating_process_ids\t{}",
             inputs
                 .iter()
-                .map(|input| format!("{}:{}", input.hour, if input.hour == 0 { 81 } else { 96 }))
+                .map(|input| { format!("{}:{}", input.hour, input.expected_forecast_process_id) })
                 .collect::<Vec<_>>()
                 .join(",")
         )?;
@@ -1391,11 +1434,12 @@ mod tests {
         // NOMADS' subregion crop is 0x40; raw noaa-gfs-bdp-pds S3 (and
         // an uncropped grib-filter request) is 0x00.  Same numbers, both
         // orders, one bridge.
-        validate_common(&valid_message(0), "2026-07-20 00:00:00", 0, false).unwrap();
+        validate_common(&valid_message(0), "2026-07-20 00:00:00", 0, 81, false).unwrap();
         validate_common(
             &north_to_south_message(0),
             "2026-07-20 00:00:00",
             0,
+            81,
             false,
         )
         .unwrap();
@@ -1411,11 +1455,15 @@ mod tests {
             &ascending_north_to_south,
             "2026-07-20 00:00:00",
             0,
+            81,
             false,
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("not a supported regular GFS grid"), "{error}");
+        assert!(
+            error.contains("not a supported regular GFS grid"),
+            "{error}"
+        );
 
         let mut descending_south_to_north = north_to_south_message(0);
         descending_south_to_north.grid.scan_mode = SOUTH_TO_NORTH_SCAN;
@@ -1423,6 +1471,7 @@ mod tests {
             &descending_south_to_north,
             "2026-07-20 00:00:00",
             0,
+            81,
             false
         )
         .is_err());
@@ -1435,7 +1484,7 @@ mod tests {
         for scan_mode in [0x80u8, 0x20, 0x10, 0x60, 0xc0, 0x50, 0x08] {
             let mut message = valid_message(0);
             message.grid.scan_mode = scan_mode;
-            let outcome = validate_common(&message, "2026-07-20 00:00:00", 0, false);
+            let outcome = validate_common(&message, "2026-07-20 00:00:00", 0, 81, false);
             assert!(
                 outcome.is_err(),
                 "scan mode 0x{scan_mode:02x} must not be accepted"
@@ -1501,6 +1550,92 @@ mod tests {
             .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
     }
 
+    fn gdas_process_fixture(name: &str) -> (Vec<u8>, Grib2File) {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/gdas-process-id")
+            .join(name);
+        let bytes = fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let file = Grib2File::from_bytes(&bytes)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        (bytes, file)
+    }
+
+    #[test]
+    fn real_gdas_forecast_corpus_certifies_only_declared_process_96() {
+        let cases = [
+            (
+                0,
+                81,
+                "nomads-gdas-20260729t12z-f000.grib2",
+                "046ff2dade6e08e921e18c0ad75dccc4e43d1f8dc47c550cfa9be9d3323d2afe",
+            ),
+            (
+                3,
+                96,
+                "nomads-gdas-20260729t12z-f003.grib2",
+                "afa3f6b83c159ae7cfb2ce9425c36aa003a8163e8edc91911c79b776b5d4919a",
+            ),
+            (
+                6,
+                96,
+                "nomads-gdas-20260729t12z-f006.grib2",
+                "581bcf5d8bce2abd39392d449013d46c52ba9b60b732b5585d6a5922eb47227c",
+            ),
+            // The published endpoint itself.  Without this row the
+            // corpus stopped at f006 while the fetch gate advertised
+            // f009, so the last certified hour rested on the ladder
+            // constant rather than on bytes.
+            (
+                9,
+                96,
+                "nomads-gdas-20260729t12z-f009.grib2",
+                "1df03c6114a039dc4ffdfe96974c216b0311834e629d5966c424805dfe0b7f5f",
+            ),
+        ];
+        for (hour, process_id, name, digest) in cases {
+            let (bytes, file) = gdas_process_fixture(name);
+            assert_eq!(hex_sha256(&bytes), digest);
+            assert_eq!(file.messages.len(), 124);
+            assert!(file.messages.iter().all(|message| {
+                let signature_matches = message.identification.center_id == 7
+                    && message.identification.master_table_version == 2
+                    && message.identification.local_table_version == 1
+                    && message.product.template == 0
+                    && message.product.generating_process == 2
+                    && message.product.background_generating_process_id == 0
+                    && message.product.forecast_generating_process_id == process_id
+                    && message.product.forecast_time == hour
+                    && message.data_rep.template == 0
+                    && message.grid.scan_mode == SOUTH_TO_NORTH_SCAN
+                    && message.grid.shape_of_earth == 6
+                    && same_level(message.grid.dx, 0.25)
+                    && same_level(message.grid.dy, 0.25);
+                signature_matches
+                    && validate_common(
+                        message,
+                        "2026-07-29 12:00:00",
+                        hour,
+                        process_id,
+                        message.bitmap.is_some(),
+                    )
+                    .is_ok()
+            }));
+
+            if process_id == 96 {
+                let refusal = validate_common(
+                    &file.messages[0],
+                    "2026-07-29 12:00:00",
+                    hour,
+                    81,
+                    file.messages[0].bitmap.is_some(),
+                )
+                .unwrap_err()
+                .to_string();
+                assert!(refusal.contains("forecast_process=96 (expected 81)"));
+            }
+        }
+    }
+
     #[test]
     fn a_flipped_raw_s3_decode_is_bit_identical_to_the_nomads_crop() {
         // This is the whole justification for accepting scan 0x00: the
@@ -1522,13 +1657,13 @@ mod tests {
         assert_eq!(cropped.grid.scan_mode, SOUTH_TO_NORTH_SCAN);
 
         // The NOMADS crop passes the whole gate, as it always has.
-        validate_common(cropped, &cropped.reference_time.to_string(), 0, false).unwrap();
+        validate_common(cropped, &cropped.reference_time.to_string(), 0, 81, false).unwrap();
 
         // The raw S3 object's ROW ORDER is now accepted -- isolate that
         // by neutralising the one gate it still trips (see below).
         let mut grid_only = global.clone();
         grid_only.data_rep.template = 0;
-        validate_common(&grid_only, &global.reference_time.to_string(), 0, false).unwrap();
+        validate_common(&grid_only, &global.reference_time.to_string(), 0, 81, false).unwrap();
 
         // ...but a raw pgrb2.0p25 object is packed with DRT 5.3
         // (complex + spatial differencing) where the NOMADS crop
@@ -1537,9 +1672,10 @@ mod tests {
         // semantics have not been proved against a real product here.
         // Accepting the scan order does not open it, and this assertion
         // exists so nobody discovers that by accident.
-        let still_refused = validate_common(global, &global.reference_time.to_string(), 0, false)
-            .unwrap_err()
-            .to_string();
+        let still_refused =
+            validate_common(global, &global.reference_time.to_string(), 0, 81, false)
+                .unwrap_err()
+                .to_string();
         assert!(
             still_refused.contains("unsupported GFS DRT 5.3"),
             "{still_refused}"
@@ -1553,8 +1689,7 @@ mod tests {
         // Where the crop sits inside the normalized global array, read
         // off the geometry rather than hardcoded -- both are now
         // south-first, so the offsets are a straight subtraction.
-        let row_offset = ((southern_latitude(&cropped.grid)
-            - southern_latitude(&global.grid))
+        let row_offset = ((southern_latitude(&cropped.grid) - southern_latitude(&global.grid))
             / global.grid.dy)
             .round() as usize;
         let column_offset =
@@ -1599,8 +1734,7 @@ mod tests {
         let (cnx, cny) = (cropped.grid.nx as usize, cropped.grid.ny as usize);
         // Storage order: row 0 is the north pole, so the crop's southern
         // row sits this far down instead.
-        let row_offset = ((northern_latitude(&global.grid)
-            - northern_latitude(&cropped.grid))
+        let row_offset = ((northern_latitude(&global.grid) - northern_latitude(&cropped.grid))
             / global.grid.dy)
             .round() as usize;
         let column_offset =
@@ -1637,12 +1771,12 @@ mod tests {
     #[test]
     fn certified_product_and_quarter_degree_grid_fail_closed() {
         let message = valid_message(0);
-        validate_common(&message, "2026-07-20 00:00:00", 0, false).unwrap();
+        validate_common(&message, "2026-07-20 00:00:00", 0, 81, false).unwrap();
 
         let mut wrong_center = message.clone();
         wrong_center.identification.center_id = 8;
         assert!(
-            validate_common(&wrong_center, "2026-07-20 00:00:00", 0, false)
+            validate_common(&wrong_center, "2026-07-20 00:00:00", 0, 81, false)
                 .unwrap_err()
                 .to_string()
                 .contains("certified operational NCEP GFS")
@@ -1651,7 +1785,7 @@ mod tests {
         let mut wrong_process = message.clone();
         wrong_process.product.forecast_generating_process_id = 82;
         assert!(
-            validate_common(&wrong_process, "2026-07-20 00:00:00", 0, false)
+            validate_common(&wrong_process, "2026-07-20 00:00:00", 0, 81, false)
                 .unwrap_err()
                 .to_string()
                 .contains("instantaneous")
@@ -1660,17 +1794,19 @@ mod tests {
         let mut forecast = message.clone();
         forecast.product.forecast_generating_process_id = 96;
         forecast.product.forecast_time = 3;
-        validate_common(&forecast, "2026-07-20 00:00:00", 3, false).unwrap();
+        validate_common(&forecast, "2026-07-20 00:00:00", 3, 96, false).unwrap();
         forecast.product.forecast_generating_process_id = 81;
-        assert!(validate_common(&forecast, "2026-07-20 00:00:00", 3, false)
-            .unwrap_err()
-            .to_string()
-            .contains("expected 96"));
+        assert!(
+            validate_common(&forecast, "2026-07-20 00:00:00", 3, 96, false)
+                .unwrap_err()
+                .to_string()
+                .contains("expected 96")
+        );
 
         let mut wrong_resolution = message.clone();
         wrong_resolution.grid.dx = 0.5;
         assert!(
-            validate_common(&wrong_resolution, "2026-07-20 00:00:00", 0, false)
+            validate_common(&wrong_resolution, "2026-07-20 00:00:00", 0, 81, false)
                 .unwrap_err()
                 .to_string()
                 .contains("regular GFS grid")
@@ -1679,7 +1815,7 @@ mod tests {
         let mut wrong_endpoint = message;
         wrong_endpoint.grid.lon2 = 251.0;
         assert!(
-            validate_common(&wrong_endpoint, "2026-07-20 00:00:00", 0, false)
+            validate_common(&wrong_endpoint, "2026-07-20 00:00:00", 0, 81, false)
                 .unwrap_err()
                 .to_string()
                 .contains("regular GFS grid")
@@ -1688,7 +1824,7 @@ mod tests {
         let mut complex_packing = valid_message(0);
         complex_packing.data_rep.template = 3;
         assert!(
-            validate_common(&complex_packing, "2026-07-20 00:00:00", 0, false)
+            validate_common(&complex_packing, "2026-07-20 00:00:00", 0, 81, false)
                 .unwrap_err()
                 .to_string()
                 .contains("unsupported GFS DRT 5.3")
@@ -1697,7 +1833,7 @@ mod tests {
         let mut oversized_packing = valid_message(0);
         oversized_packing.data_rep.bits_per_value = 64;
         assert!(
-            validate_common(&oversized_packing, "2026-07-20 00:00:00", 0, false)
+            validate_common(&oversized_packing, "2026-07-20 00:00:00", 0, 81, false)
                 .unwrap_err()
                 .to_string()
                 .contains("bits_per_value 64")

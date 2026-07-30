@@ -387,17 +387,18 @@ def _shared_vertical_coord(vertical: VerticalConfig, nz: int) -> VerticalCoord:
         eta_levels=eta)
 
 
-def _initial_snapshot(catalog):
+def _initial_snapshot(catalog, valid_time: datetime | None = None):
     snapshots = tuple(getattr(catalog, "snapshots", ()))
     valid_times = tuple(getattr(catalog, "valid_times", ()))
     if not snapshots or not valid_times:
         raise ValueError("input catalog has no decoded initial source snapshot")
+    requested = valid_times[0] if valid_time is None else valid_time
     matches = tuple(snapshot for snapshot in snapshots
-                    if snapshot.valid_time == valid_times[0])
+                    if snapshot.valid_time == requested)
     if len(matches) != 1:
         raise ValueError(
-            "input catalog has no unique snapshot at its first valid time "
-            f"{valid_times[0]!s}")
+            "input catalog has no unique snapshot at domain start_time "
+            f"{requested!s}; available valid times are {valid_times}")
     return matches[0]
 
 
@@ -659,7 +660,7 @@ def _prepare_child_input_on_grid(
     static_catalog = _static_catalog(catalog)
     static_fields = build_static_for_domain(
         grid, static_catalog, child_dc.grid_id)
-    source = _initial_snapshot(catalog)
+    source = _initial_snapshot(catalog, child_dc.start_time)
     has_invariant = "SOILGEO" in tuple(getattr(catalog, "inventory", ()))
     catalog_declaration = _catalog_source_declaration(catalog)
     declaration = (source_orography if source_orography is not None

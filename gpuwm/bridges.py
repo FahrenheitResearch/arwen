@@ -56,21 +56,47 @@ def _shell_path(*parts: str) -> str:
     return joined.replace("/", "\\") if WINDOWS_SHELL else joined
 
 
+def _parent_hops(*parts: str) -> str:
+    """The ``..`` walk that undoes ``_shell_path(*parts)``, exactly.
+
+    One ``..`` per component the ``cd`` descended, counted rather than
+    hardcoded: ``tools/rustwx`` is two, ``gpuwm/tools/rustwx`` is three,
+    and a remedy that guesses walks the reader somewhere else.
+    """
+
+    depth = sum(len([c for c in part.strip("/").split("/") if c])
+                for part in parts if part)
+    return _shell_path(*[".."] * depth)
+
+
 #: The renderer/fetch-backbone crate's path inside a checkout.  Declared
 #: here so all three artifacts share one shell-correctness rule.
 RUSTWX_CRATE_RELATIVE = "tools/rustwx"
 
 
 def cargo_build_one_liner(crate_relative: str = CRATE_RELATIVE) -> str:
-    """``cd <crate>`` + the offline build, joined the way THIS shell joins.
+    """``cd <crate>``, the offline build, and the ``cd`` back -- one line.
 
     The separator is the shell's, not a habit: ``&&`` is a parse error in
     Windows PowerShell 5.1, so there it is ``;``.
+
+    It returns to the directory it started in.  ``gpuwm doctor`` prints
+    one remedy block per gap and says they run in the order printed, so
+    a block that leaves the shell two levels down inside the crate is a
+    block that breaks the next one's relative paths -- and on a fresh
+    machine there are always several.  The tidier POSIX spelling is a
+    subshell, ``(cd X && cargo build ...)``, which the README uses; it
+    has no Windows PowerShell 5.1 equivalent (there is no subshell that
+    contains a location change there), so adopting it would give the two
+    shells different SHAPES rather than one shape with two separators.
+    The explicit ``cd`` back is honest and identical in both, and is
+    already the form the README documents for PowerShell.
     """
 
     separator = ";" if WINDOWS_SHELL else " &&"
     return (f"cd {_shell_path(crate_relative)}{separator} "
-            "cargo build --release --locked --offline")
+            f"cargo build --release --locked --offline{separator} "
+            f"cd {_parent_hops(crate_relative)}")
 
 
 #: The one-liner that builds every bridge, run from a source checkout's
@@ -138,6 +164,16 @@ def build_from_clone_hint(
     Nothing is a mixture of the two.  The measured cost of the whole
     chain is roughly two minutes on a warm machine, dominated by the
     compile.
+
+    Two properties the *sequence* needs, which no single line shows.
+    ``git clone`` fails when the directory is already there, and a
+    pip-only machine gaps every bridge at once, so doctor prints this
+    same clone six or seven times in one report: the note above it says
+    to skip the line rather than leaving the reader to read an error as
+    a failure.  And the last line walks back out of the crate, because
+    the next block starts where this one ends -- ``cd`` with no return
+    is how a paste that "runs in the order printed" stops doing so
+    after the first block.
     """
 
     lines: list[str] = []
@@ -150,21 +186,30 @@ def build_from_clone_hint(
             f"  {cargo_activation_command()}",
         ]
     lines += [
+        f"  # skip the clone if {CLONE_DIR}/ already exists -- doctor prints",
+        "  # one block per gap and they all start from the same clone, so",
+        "  # this line repeats; a second clone into it just errors.",
         f"  git clone {REPOSITORY_URL} {CLONE_DIR}",
         f"  cd {_shell_path(CLONE_DIR, crate_relative)}",
         "  cargo build --release --locked --offline",
+        "  # back out to where you started, so the next block's relative",
+        "  # paths still mean what they say.",
+        f"  cd {_parent_hops(CLONE_DIR, crate_relative)}",
     ]
     return tuple(lines)
 
 
-def sources_present() -> bool:
-    """Does this install carry the Rust sources at all?
+def sources_present(crate_relative: str = CRATE_RELATIVE) -> bool:
+    """Does this install carry the Rust sources for ``crate_relative``?
 
     False on a pip install, where every ``cd tools/...`` instruction
-    names a directory that does not exist.
+    names a directory that does not exist.  It answers about the crate
+    the caller is actually going to name: this used to answer for
+    ``tools/grib1_bridge`` whatever it was asked, so a tree carrying one
+    crate and not the other got a ``cd`` into the missing one.
     """
 
-    return crate_dir().is_dir()
+    return (_package_parent() / Path(crate_relative)).is_dir()
 
 
 def install_aware_build_hint(one_liner: str,
@@ -175,11 +220,41 @@ def install_aware_build_hint(one_liner: str,
     ``cd tools/rustwx && cargo build`` sends them to a directory that
     does not exist, which reads as a broken install rather than a
     missing step.
+
+    Neither answer carries a leading newline.  The bootstrap used to,
+    which meant every caller that wrote its own headline --
+    ``"# rebuild it:\\n" + hint`` -- printed a blank line and then a
+    command at column 0, out from under the label it belonged to.  A
+    caller that wants the hint on its own line adds the newline it is
+    asking for.
     """
 
-    if sources_present():
+    if sources_present(crate_relative):
         return one_liner
-    return "\n" + "\n".join(build_from_clone_hint(crate_relative))
+    return "\n".join(build_from_clone_hint(crate_relative))
+
+
+def install_aware_one_line_hint(one_liner: str,
+                                crate_relative: str = CRATE_RELATIVE) -> str:
+    """The same two truths, for a caller that may emit only ONE line.
+
+    ``install_aware_build_hint``'s pip answer is the whole bootstrap --
+    Rust install, PATH activation, clone, build -- and a caller bound to
+    a single physical line cannot print it.  Inlining the checkout
+    one-liner anyway is the failure this exists to avoid: it names a
+    directory a wheel install does not have.
+
+    So the honest one-line composition is a pointer.  ``gpuwm doctor``
+    already assembles the full bootstrap for this exact machine, and
+    naming it is true on every install, where ``cd tools/rustwx`` is
+    true on only some.
+    """
+
+    if sources_present(crate_relative):
+        return one_liner
+    return ("run `gpuwm doctor`, which prints the build steps for this "
+            "install (a wheel carries no Rust sources, so this one needs "
+            "a clone)")
 
 
 def default_bridge_dir() -> Path:
@@ -300,7 +375,7 @@ def artifact_remedy(*, env_var: str, filename: str, subject: str,
     if crate.is_dir():
         return (
             f"# build {subject} once, from this checkout's root:\n"
-            f"    {one_liner or CARGO_BUILD_HINT}\n"
+            f"  {one_liner or CARGO_BUILD_HINT}\n"
             f"  # that produces {built},\n"
             f"  # which gpuwm then finds on its own (or set {env_var} "
             f"to it).")
@@ -337,5 +412,6 @@ __all__ = [
     "cargo_is_installed", "crate_dir", "default_bridge_dir",
     "executable_name", "find_artifact", "find_bridge",
     "install_aware_build_hint", "rust_toolchain_install_command",
+    "install_aware_one_line_hint",
     "sources_present",
 ]

@@ -10,6 +10,8 @@ support separately and never substitutes one physics scheme for another.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime
+from fractions import Fraction
 import math
 from pathlib import Path
 from typing import Iterable
@@ -169,6 +171,56 @@ def _uniform(values: Iterable[object], location: str):
     if any(value != values[0] for value in values[1:]):
         raise ValueError(f"{location} must be uniform across domains, got {values}")
     return values[0]
+
+
+def _datetime_columns(
+        entries: dict[str, list], prefix: str, count: int,
+) -> list[datetime]:
+    parts = {
+        "year": _integers(
+            _column(entries, f"{prefix}_year", count),
+            f"&time_control/{prefix}_year"),
+        "month": _integers(
+            _column(entries, f"{prefix}_month", count),
+            f"&time_control/{prefix}_month"),
+        "day": _integers(
+            _column(entries, f"{prefix}_day", count),
+            f"&time_control/{prefix}_day"),
+        "hour": _integers(
+            _column(entries, f"{prefix}_hour", count, default=0),
+            f"&time_control/{prefix}_hour"),
+        "minute": _integers(
+            _column(entries, f"{prefix}_minute", count, default=0),
+            f"&time_control/{prefix}_minute"),
+        "second": _integers(
+            _column(entries, f"{prefix}_second", count, default=0),
+            f"&time_control/{prefix}_second"),
+    }
+    return [
+        datetime(
+            parts["year"][index], parts["month"][index],
+            parts["day"][index], parts["hour"][index],
+            parts["minute"][index], parts["second"][index])
+        for index in range(count)
+    ]
+
+
+def _wps_datetime_columns(values: list[object], count: int, location: str
+                          ) -> list[datetime]:
+    if len(values) > count:
+        raise ValueError(
+            f"{location} declares {len(values)} values but max_dom={count}")
+    expanded = list(values) + [values[-1]] * (count - len(values))
+    result = []
+    for value in expanded:
+        if not isinstance(value, str):
+            raise ValueError(f"{location} must contain WRF date strings")
+        try:
+            result.append(datetime.strptime(value, "%Y-%m-%d_%H:%M:%S"))
+        except ValueError as error:
+            raise ValueError(
+                f"{location} contains invalid WRF date {value!r}") from error
+    return result
 
 
 def _issue(code: str, location: str, message: str, action: str):
@@ -839,12 +891,170 @@ def analyze_namelists(
                 "contract.",
             ))
 
+    timing = None
+    if 1 <= max_dom <= MAX_DOMAINS:
+        try:
+            time_control = inp["time_control"]
+            starts = _datetime_columns(time_control, "start", max_dom)
+            ends = _datetime_columns(time_control, "end", max_dom)
+            wps_starts = _wps_datetime_columns(
+                share["start_date"], max_dom, "&share/start_date")
+            wps_ends = _wps_datetime_columns(
+                share["end_date"], max_dom, "&share/end_date")
+            if starts != wps_starts:
+                raise ValueError(
+                    "ordered namelist.input start columns differ from "
+                    f"namelist.wps start_date: "
+                    f"{[value.isoformat() for value in starts]} != "
+                    f"{[value.isoformat() for value in wps_starts]}")
+            if ends != wps_ends:
+                raise ValueError(
+                    "ordered namelist.input end columns differ from "
+                    "namelist.wps end_date")
+            input_interval = _value(time_control, "interval_seconds")
+            wps_interval = _value(share, "interval_seconds")
+            if input_interval is not None and input_interval != wps_interval:
+                raise ValueError(
+                    "&time_control/interval_seconds differs from "
+                    f"&share/interval_seconds: {input_interval!r} != "
+                    f"{wps_interval!r}")
+            interval = wps_interval if input_interval is None else input_interval
+            if (isinstance(interval, bool) or not isinstance(interval, int)
+                    or interval <= 0):
+                raise ValueError(
+                    "interval_seconds must be a positive integer number of "
+                    f"seconds, got {interval!r}")
+
+            time_step = _value(domains, "time_step")
+            if (isinstance(time_step, bool)
+                    or not isinstance(time_step, (int, float))
+                    or not math.isfinite(float(time_step))):
+                raise ValueError(
+                    f"&domains/time_step must be finite, got {time_step!r}")
+            root_dt = Fraction(str(time_step))
+            fract_num = _value(domains, "time_step_fract_num", 0)
+            fract_den = _value(domains, "time_step_fract_den", 1)
+            if (isinstance(fract_num, bool) or not isinstance(fract_num, int)
+                    or isinstance(fract_den, bool)
+                    or not isinstance(fract_den, int) or fract_den <= 0):
+                raise ValueError(
+                    "time_step_fract_num/time_step_fract_den must be "
+                    "integer with a positive denominator")
+            root_dt += Fraction(fract_num, fract_den)
+            if root_dt <= 0:
+                raise ValueError("resolved root time_step must be positive")
+            parents = _integers(
+                _column(domains, "parent_id", max_dom),
+                "&domains/parent_id")
+            time_ratios = _integers(
+                _column(domains, "parent_time_step_ratio", max_dom),
+                "&domains/parent_time_step_ratio")
+            dt_by_id = {1: root_dt}
+            for index in range(1, max_dom):
+                parent_id = parents[index]
+                ratio = time_ratios[index]
+                if parent_id not in dt_by_id or ratio <= 0:
+                    raise ValueError(
+                        f"d{index + 1:02d} has invalid parent/time-step ratio")
+                dt_by_id[index + 1] = dt_by_id[parent_id] / ratio
+
+            interval_fraction = Fraction(interval)
+            root_steps = interval_fraction / root_dt
+            timing_reasons = []
+            if root_steps.denominator != 1:
+                timing_reasons.append(
+                    f"boundary_interval_seconds = {interval} s is not a "
+                    "whole number of root-domain steps: d01 dt = "
+                    f"{root_dt} s exactly, cadence/dt = {root_steps}.")
+            root_start = starts[0]
+            if ends[0] <= root_start:
+                raise ValueError("d01 end time must be later than its start")
+            if any(value != ends[0] for value in ends[1:]):
+                timing_reasons.append(
+                    "gpuwm runtime requires one shared experiment end time; "
+                    f"end columns resolve to "
+                    f"{[value.isoformat() for value in ends]}.")
+            rows = []
+            for index, start in enumerate(starts):
+                grid_id = index + 1
+                offset = int((start - root_start).total_seconds())
+                parent_id = parents[index]
+                parent_alignment = "ROOT"
+                if grid_id == 1:
+                    if offset != 0:
+                        raise ValueError("d01 must define the root start time")
+                else:
+                    parent_start = starts[parent_id - 1]
+                    parent_delta = Fraction(
+                        int((start - parent_start).total_seconds()))
+                    parent_steps = parent_delta / dt_by_id[parent_id]
+                    parent_alignment = (
+                        "PASS" if parent_steps.denominator == 1 else "FAIL")
+                    if parent_delta < 0:
+                        timing_reasons.append(
+                            f"d{grid_id:02d} start {start.isoformat()} "
+                            f"precedes parent d{parent_id:02d} start "
+                            f"{parent_start.isoformat()}.")
+                    elif parent_steps.denominator != 1:
+                        timing_reasons.append(
+                            f"delayed start for d{grid_id:02d} "
+                            f"({start.isoformat()}) is not aligned to its "
+                            f"parent step boundary: d{parent_id:02d} dt = "
+                            f"{dt_by_id[parent_id]} s exactly, "
+                            "(child-parent start offset)/dt = "
+                            f"{parent_steps}.")
+                    forcing_seams = Fraction(offset, interval)
+                    if forcing_seams.denominator != 1:
+                        timing_reasons.append(
+                            f"delayed start for d{grid_id:02d} "
+                            f"({start.isoformat()}; offset {offset} s) is "
+                            "not aligned to the boundary-forcing cadence: "
+                            f"interval_seconds = {interval} s, "
+                            f"offset/cadence = {forcing_seams}.")
+                rows.append({
+                    "grid_id": grid_id,
+                    "start_time": start.isoformat(),
+                    "end_time": ends[index].isoformat(),
+                    "offset_seconds": offset,
+                    "dt_seconds_exact": str(dt_by_id[grid_id]),
+                    "parent_step_alignment": parent_alignment,
+                    "forcing_seam_alignment": (
+                        "ROOT" if grid_id == 1 else
+                        ("PASS" if Fraction(offset, interval).denominator == 1
+                         else "FAIL")),
+                })
+            gpuwm_reasons.extend(timing_reasons)
+            timing = {
+                "boundary_interval_seconds": interval,
+                "root_cadence_steps_exact": str(root_steps),
+                "constraint": (
+                    "positive uniform whole-second forcing cadence; exact "
+                    "integer root steps; each delayed child start is an "
+                    "exact parent-step boundary and forcing seam"),
+                "domains": rows,
+                "gpuwm_runtime_verdict": (
+                    "PASS" if not timing_reasons else "FAIL"),
+            }
+            by_grid = {row["grid_id"]: row for row in rows}
+            for row in domain_rows:
+                row["start_time"] = by_grid[row["grid_id"]]["start_time"]
+        except (KeyError, TypeError, ValueError) as error:
+            issues.append(_issue(
+                "INVALID_TIME_HIERARCHY",
+                "&share + &time_control + &domains",
+                str(error),
+                "Provide matching real-shaped per-domain WPS/input start and "
+                "end columns, a positive integer interval_seconds, and an "
+                "exact positive root time_step.",
+            ))
+
     return _finish_report(
         max_dom=max_dom,
         classifications=classifications,
         projection=projection,
         domains=domain_rows,
         vertical=vertical,
+        timing=timing,
         stock_domains=stock_rows,
         gpuwm_reasons=gpuwm_reasons,
         issues=issues,
@@ -853,7 +1063,7 @@ def analyze_namelists(
 
 def _finish_report(
     *, max_dom, classifications, projection, domains, vertical, stock_domains,
-    gpuwm_reasons, issues,
+    gpuwm_reasons, issues, timing=None,
 ) -> dict[str, object]:
     issue_rows = [asdict(issue) for issue in issues]
     stock_pass = not issues
@@ -868,6 +1078,7 @@ def _finish_report(
             "domains": domains,
         },
         "vertical": vertical,
+        "timing": timing,
         "required_state": {
             "stock_wrf_export": {
                 "verdict": "PASS" if stock_pass else "FAIL",

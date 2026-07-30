@@ -1,5 +1,7 @@
 """CPU-only integrity tests for the prepared real-data cache container."""
 
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
@@ -15,7 +17,8 @@ from gpuwm.ingest.prepared_cache import (
     _prepared_cache_staging_path,
     _restore_lbc_mode,
     PreparedCacheCorruptError, PreparedCacheMismatchError,
-    PreparedCacheReader, select_prepared_met_fields, write_prepared_cache,
+    PreparedCacheReader, prepared_cache_identity,
+    select_prepared_met_fields, write_prepared_cache,
 )
 from gpuwm.io.restart import STATE_SETUP_ARRAYS, STATE_SETUP_SCALARS
 
@@ -61,6 +64,25 @@ def _fixture():
         "V10": np.ones((3, 2), dtype=np.float32),
     })
     return initial, met, boundaries
+
+
+def test_prepared_identity_serializes_per_domain_start_time():
+    @dataclass(frozen=True)
+    class Domain:
+        start_time: datetime
+
+    identity = prepared_cache_identity(
+        bridge_manifest_sha256="a" * 64,
+        source_manifest_sha256="b" * 64,
+        static_cache_sha256="c" * 64,
+        namelist_sha256="d" * 64,
+        domain_config=Domain(datetime(2026, 7, 20, 0, 5)),
+        forcing_offsets_seconds=(0, 300),
+        source_identity={"adapter": "fixture"})
+
+    assert identity["domain_config"]["start_time"] == \
+        "2026-07-20T00:05:00"
+    assert identity["forcing_offsets_seconds"] == [0, 300]
 
 
 def test_nested_lbc_restore_opt_in_is_identity_bound_and_root_safe():

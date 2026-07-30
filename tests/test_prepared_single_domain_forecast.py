@@ -700,6 +700,16 @@ def _prepared_fixture(
         "array_count": 1,
         "payload_bytes": 4,
     }
+    front_door_physics = None
+    if source == "gfs" and not hierarchy:
+        acknowledgements = (
+            ("noahmp-host-column-throughput-v1",)
+            if physics_profile == runner.NOAHMP_PHYSICS_PROFILE else ()
+        )
+        front_door_physics = (
+            runner.validate_single_domain_physics_profile(
+                physics_profile, config=exp.root.run,
+                expert_acknowledgements=acknowledgements))
     proof = {
         "schema": runner._PROOF_SCHEMA[source],
         "status": "READY_NOT_YET_STOCK_WRF_GATED",
@@ -734,7 +744,10 @@ def _prepared_fixture(
         },
         "prepared_cache": cache_receipt,
         "export": {
-            "schema": "gpuwm-native-direct-wrf-export-v2",
+            "schema": (
+                "gpuwm-native-direct-wrf-export-v3"
+                if source == "gfs"
+                else "gpuwm-native-direct-wrf-export-v2"),
             "status": "READY",
             "forcing_hours": forcing_hours,
             "boundary_interval_seconds": boundary_seconds,
@@ -747,6 +760,9 @@ def _prepared_fixture(
             "source": export_source,
         },
     }
+    if front_door_physics is not None:
+        proof["physics"] = front_door_physics
+        proof["export"]["physics"] = front_door_physics
     if source == "20crv3":
         proof = {
             "schema": runner._PROOF_SCHEMA[source],
@@ -1277,6 +1293,34 @@ def test_materialized_wsm6_physics_receipt_is_canonical():
     }
 
 
+@pytest.mark.parametrize(
+    ("profile", "sfclay", "surface", "pbl", "soil_layers"),
+    (
+        (runner.MYNN_PHYSICS_PROFILE, 5, 2, 5, 4),
+        (runner.RUC_PHYSICS_PROFILE, 91, 3, 1, 9),
+        (runner.NOAHMP_PHYSICS_PROFILE, 91, 4, 1, 4),
+    ),
+)
+def test_gfs_new_front_door_families_reach_prepared_v3_preflight(
+        tmp_path, monkeypatch, profile, sfclay, surface, pbl, soil_layers):
+    fixture = _prepared_fixture(
+        tmp_path, "gfs", physics_profile=profile)
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+
+    inputs = _preflight_fixture(fixture, physics_profile=profile)
+
+    assert inputs.proof["schema"] == "gpuwm-gfs-direct-wrf-proof-v3"
+    assert inputs.proof["physics"]["profile"] == profile
+    assert inputs.proof["export"]["schema"] \
+        == "gpuwm-native-direct-wrf-export-v3"
+    assert inputs.proof["export"]["physics"] == inputs.proof["physics"]
+    resolved = inputs.physics_receipt["resolved"]
+    assert resolved["sf_sfclay_physics"] == sfclay
+    assert resolved["sf_surface_physics"] == surface
+    assert resolved["bl_pbl_physics"] == pbl
+    assert resolved["num_soil_layers"] == soil_layers
+
+
 def test_preflight_accepts_exact_nssl2_validation_candidate_and_binds_receipt(
         tmp_path, monkeypatch):
     fixture = _prepared_fixture(
@@ -1639,6 +1683,55 @@ def test_preflight_rejects_pinned_proof_drift_before_cache_restore(
             experiment_config=fixture.experiment, wps_namelist=fixture.wps,
             physics_profile=runner.PHYSICS_PROFILE,
             run_seconds=fixture.run_seconds, history_interval_seconds=3600)
+
+
+def test_gfs_v2_proof_remains_verifiable_as_its_own_schema(
+        tmp_path, monkeypatch):
+    fixture = _prepared_fixture(tmp_path, "gfs")
+    proof = json.loads(fixture.proof.read_text(encoding="utf-8"))
+    proof["schema"] = "gpuwm-gfs-direct-wrf-proof-v2"
+    proof.pop("physics")
+    proof["export"]["schema"] = "gpuwm-native-direct-wrf-export-v2"
+    proof["export"].pop("physics")
+    _write_json(fixture.proof, proof)
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+
+    inputs = _preflight_fixture(fixture)
+
+    assert inputs.proof["schema"] == "gpuwm-gfs-direct-wrf-proof-v2"
+    assert "physics" not in inputs.proof
+
+
+def test_gfs_v3_proof_requires_hash_bound_physics_selection(tmp_path):
+    fixture = _prepared_fixture(tmp_path, "gfs")
+    proof = json.loads(fixture.proof.read_text(encoding="utf-8"))
+    proof.pop("physics")
+    _write_json(fixture.proof, proof)
+
+    with pytest.raises(ValueError, match="v3 preparation proof physics"):
+        _preflight_fixture(fixture)
+
+
+def test_gfs_v3_export_must_repeat_exact_preparation_physics(
+        tmp_path, monkeypatch):
+    fixture = _prepared_fixture(tmp_path, "gfs")
+    proof = json.loads(fixture.proof.read_text(encoding="utf-8"))
+    proof["export"]["physics"]["profile"] = runner.MYNN_PHYSICS_PROFILE
+    _write_json(fixture.proof, proof)
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+
+    with pytest.raises(ValueError, match="export physics receipt differs"):
+        _preflight_fixture(fixture)
+
+
+def test_gfs_unknown_future_proof_schema_fails_closed(tmp_path):
+    fixture = _prepared_fixture(tmp_path, "gfs")
+    proof = json.loads(fixture.proof.read_text(encoding="utf-8"))
+    proof["schema"] = "gpuwm-gfs-direct-wrf-proof-v4"
+    _write_json(fixture.proof, proof)
+
+    with pytest.raises(ValueError, match="unsupported GFS preparation proof"):
+        _preflight_fixture(fixture)
 
 
 def test_preflight_rejects_resolved_wrf_contract_drift(
@@ -2056,27 +2149,23 @@ def test_clock_defaults_refuse_a_config_they_cannot_read(tmp_path):
 
 
 def test_the_stability_abort_names_the_dominant_term_and_the_remedy():
-    """PP-9: the abort quoted one `cfl` number and no remedy.
-
-    `cfl` is dt * max(u/dx, w/dz_min) over two terms three orders of
-    magnitude apart: with the certified 49-level eta profile dz_min is
-    about 14.3 m, so a tropical abort read `cfl 27.70` while its
-    horizontal Courant number was 0.15.  Nothing said "shorten dt".
-    """
+    """The abort explains the co-located term and the dt remedy."""
     run = SimpleNamespace(dt=60.0, dx=12_000.0, ztop=20_000.0)
-    state = SimpleNamespace(dz_min=14.3)
+    state = SimpleNamespace()
 
     tropical = runner._stability_diagnosis(
-        {"u_max": 29.3, "w_max": 6.62}, state, run)
-    assert "VERTICAL Courant 27.7" in tropical
-    assert "14.3 m thinnest layer" in tropical
+        {"u_max": 29.3, "w_max": 6.62, "horizontal_cfl": 0.1465,
+         "vertical_cfl": 12.4}, state, run)
+    assert "VERTICAL Courant 12.40" in tropical
+    assert "co-located" in tropical
     assert "REMEDY: retry with a lower dt" in tropical
     assert "time_step to about 15 s" in tropical
     assert "+22% wall time" in tropical
 
     # A genuine horizontal violation is named as such, not mislabelled.
     horizontal = runner._stability_diagnosis(
-        {"u_max": 4000.0, "w_max": 0.1}, state, run)
+        {"u_max": 4000.0, "w_max": 0.1, "horizontal_cfl": 20.0,
+         "vertical_cfl": 0.2}, state, run)
     assert "HORIZONTAL Courant 20.0" in horizontal
     assert "dx 12.000 km" in horizontal
     assert "REMEDY: retry with a lower dt" in horizontal

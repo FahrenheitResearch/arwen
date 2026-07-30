@@ -66,7 +66,83 @@ fn usage() -> &'static str {
 [--list-products] wrfout..."
 }
 
-fn parse_args() -> Result<Args, String> {
+/// What went wrong, and therefore what the user should be shown.
+///
+/// The three arms exist because the old single `String` channel made every
+/// failure look identical: the message, then the usage line, then exit 1 --
+/// so "unknown product 'x'" and "the store has no hours object" were
+/// reported the same way, and the usage line was the LAST stderr line, which
+/// is exactly the line `gpuwm/rustwx.py` surfaces as the reason.
+///
+/// `Help` also replaces the previous `error == usage()` string-equality
+/// test.  That test decided the exit code of `--help` by comparing the
+/// error text to the usage text, so any future error that happened to equal
+/// the usage string would have exited 0.  The observable contract is
+/// unchanged -- `--help` still prints exactly `usage()` and still exits 0,
+/// which is what `gpuwm.rustwx.probe_renderer` requires to declare the rust
+/// engine usable at all.
+enum CliError {
+    /// `--help`/`-h`: print the usage line, succeed.
+    Help,
+    /// The command line is wrong.  Message, then the usage line, exit 2 --
+    /// the code `gpuwm render`'s matplotlib engine uses for the same class
+    /// of mistake (`gpuwm/render.py` raises on an unknown product and the
+    /// CLI turns that into 2).
+    Usage(String),
+    /// The command line was fine and the work failed.  Message only: the
+    /// usage line says nothing about a store that will not open, and
+    /// printing it buries the sentence that does.
+    Failed(String),
+}
+
+impl From<String> for CliError {
+    fn from(message: String) -> Self {
+        CliError::Usage(message)
+    }
+}
+
+impl From<&str> for CliError {
+    fn from(message: &str) -> Self {
+        CliError::Usage(message.to_string())
+    }
+}
+
+/// A parsed command line.  `--list-products` with no inputs asks a question
+/// about this build, not about a store, so it does not need `--store-root`,
+/// `--out-dir` or a wrfout to answer.
+enum Invocation {
+    Batch(Box<Args>),
+    /// Print the product vocabulary and exit.
+    Catalog,
+}
+
+/// The static product vocabulary, for `--list-products` with no inputs.
+///
+/// The store-aware listing (which of these the imported frames can actually
+/// render, and why not) still needs a store and is unchanged; this answers
+/// the other question -- "what may I put in --products?" -- which is the one
+/// a user has after an unknown-product refusal.
+fn print_product_catalog() -> Result<(), CliError> {
+    let slugs = rusty_weather::render_all::known_product_slugs();
+    println!("group keywords: all, direct, derived, heavy, windowed");
+    for slug in &slugs {
+        // Deliberately NOT the `PRODUCT\t...` record the store-aware listing
+        // emits: that one is parsed by gpuwm/rustwx.py as five tab-separated
+        // fields, and a same-prefixed two-field line is a trap.
+        println!("  {slug}");
+    }
+    // Not "total=": the store-aware listing already owns that word for its
+    // own count of catalog ROWS (which includes rows no --products spelling
+    // selects).  This is the size of the --products vocabulary.
+    println!("selectable_slugs={}", slugs.len());
+    println!(
+        "pass --store-root DIR --out-dir DIR wrfout... with --list-products \
+         for per-frame availability"
+    );
+    Ok(())
+}
+
+fn parse_args() -> Result<Invocation, CliError> {
     let mut store_root = None;
     let mut out_dir = None;
     let mut products = "all".to_string();
@@ -121,22 +197,35 @@ fn parse_args() -> Result<Args, String> {
             "--source-label" => {
                 let value = raw.next().ok_or("--source-label requires a value")?;
                 if value.trim().is_empty() {
-                    return Err("--source-label must not be blank".to_string());
+                    return Err(CliError::Usage(
+                        "--source-label must not be blank".to_string(),
+                    ));
                 }
                 source_label = value.trim().to_string();
             }
             "--heavy" => heavy = true,
             "--list-products" => list_products = true,
-            "--help" | "-h" => return Err(usage().to_string()),
-            _ if arg.starts_with('-') => return Err(format!("unknown option {arg}")),
+            "--help" | "-h" => return Err(CliError::Help),
+            _ if arg.starts_with('-') => {
+                return Err(CliError::Usage(format!("unknown option {arg}")));
+            }
             _ => inputs.push(PathBuf::from(arg)),
         }
     }
 
-    if inputs.is_empty() {
-        return Err("at least one wrfout input is required".to_string());
+    // Asking what this build can render is answerable without a store, a
+    // destination or an input; demanding all three first is why the field
+    // report saw --list-products answer with the usage line.
+    if list_products && inputs.is_empty() && store_root.is_none() && out_dir.is_none() {
+        return Ok(Invocation::Catalog);
     }
-    Ok(Args {
+
+    if inputs.is_empty() {
+        return Err(CliError::Usage(
+            "at least one wrfout input is required".to_string(),
+        ));
+    }
+    Ok(Invocation::Batch(Box::new(Args {
         store_root: store_root.ok_or("--store-root is required")?,
         out_dir: out_dir.ok_or("--out-dir is required")?,
         products,
@@ -147,7 +236,48 @@ fn parse_args() -> Result<Args, String> {
         list_products,
         source_label,
         inputs,
-    })
+    })))
+}
+
+/// Refuse a command line this build cannot serve, before any file is opened.
+///
+/// Both checks used to happen deep in the work: `--products` was validated
+/// only after a full wrfout import, so a typo cost an import and then
+/// reported `No supported WRF files selected` -- the wrong sentence
+/// entirely.  A path that does not exist, or that is not a WRF file, was
+/// reported without ever naming the path.
+fn validate_request(args: &Args) -> Result<(), CliError> {
+    rusty_weather::render_all::partition_products(&args.products)
+        .map_err(|err| CliError::Usage(err.to_string()))?;
+
+    // Per-path, in the order given, so the first sentence names the first
+    // problem.  The wording matches `gpuwm/render.py`'s matplotlib engine
+    // ("{path}: unreadable wrfout ({exc})") so `--engine auto` cannot change
+    // what a script reads.
+    let mut unreadable = Vec::new();
+    for path in &args.inputs {
+        if !path.exists() {
+            unreadable.push(format!("{}: unreadable wrfout (no such file)", path.display()));
+        } else if !path.is_file() {
+            unreadable.push(format!(
+                "{}: unreadable wrfout (not a regular file)",
+                path.display()
+            ));
+        } else if !wrf_process::is_supported_wrf_file(path) {
+            unreadable.push(format!(
+                "{}: unreadable wrfout (not a raw WRF or post-processed NetCDF \
+                 file this build recognises)",
+                path.display()
+            ));
+        }
+    }
+    // Existing semantics: a mixed set renders the files that work.  Only a
+    // set with nothing usable in it is a refusal -- but it now says which
+    // paths, and why each one, instead of "No supported WRF files selected".
+    if unreadable.len() == args.inputs.len() {
+        return Err(CliError::Failed(unreadable.join("\n")));
+    }
+    Ok(())
 }
 
 /// The run's own grid identity, read from the inputs' WRF global
@@ -608,6 +738,138 @@ fn list_products(
 mod tests {
     use super::*;
 
+    /// An `Args` that is valid apart from what a test deliberately breaks.
+    fn args_for(products: &str, inputs: Vec<PathBuf>) -> Args {
+        Args {
+            store_root: PathBuf::from("store"),
+            out_dir: PathBuf::from("out"),
+            products: products.to_string(),
+            frames: None,
+            width: 1_200,
+            height: 900,
+            heavy: false,
+            list_products: false,
+            source_label: DEFAULT_SOURCE_LABEL.to_string(),
+            inputs,
+        }
+    }
+
+    fn refusal(result: Result<(), CliError>) -> (u8, String) {
+        match result {
+            Ok(()) => panic!("expected a refusal"),
+            Err(CliError::Help) => panic!("expected a refusal, got --help"),
+            Err(CliError::Usage(message)) => (EXIT_USAGE, message),
+            Err(CliError::Failed(message)) => (1, message),
+        }
+    }
+
+    #[test]
+    fn the_usage_line_keeps_the_token_the_python_probe_requires() {
+        // gpuwm.rustwx.probe_renderer declares the whole rust engine
+        // unusable -- silently dropping `--engine auto` to matplotlib --
+        // unless `--help` exits 0 with this literal in its transcript.
+        assert!(usage().starts_with("usage: rw_wrfbatch"));
+    }
+
+    #[test]
+    fn an_unknown_product_names_the_token_and_the_choices() {
+        let (code, message) = refusal(validate_request(&args_for(
+            "definitely_not_a_product",
+            vec![PathBuf::from("wrfout_d02_x.nc")],
+        )));
+        assert_eq!(code, EXIT_USAGE, "a bad command line is a usage failure");
+        assert!(
+            message.contains("definitely_not_a_product"),
+            "the refusal must name the token: {message}"
+        );
+        for choice in ["'all'", "'direct'", "'derived'", "'heavy'", "'windowed'"] {
+            assert!(
+                message.contains(choice),
+                "the refusal must name the choices, missing {choice}: {message}"
+            );
+        }
+        assert!(
+            message.contains("--list-products"),
+            "the refusal must route to the full vocabulary: {message}"
+        );
+    }
+
+    #[test]
+    fn a_product_typo_is_caught_before_any_input_is_opened() {
+        // The regression this pins: --products used to be validated only
+        // after a full wrfout import, so a typo reported "No supported WRF
+        // files selected" -- about a file, not about the typo.
+        let (_code, message) = refusal(validate_request(&args_for(
+            "not_a_product",
+            vec![PathBuf::from("no/such/path/wrfout_d01_x.nc")],
+        )));
+        assert!(
+            message.contains("not_a_product"),
+            "the product refusal must win over the missing input: {message}"
+        );
+    }
+
+    #[test]
+    fn a_missing_input_is_named_in_the_matplotlib_wording() {
+        let (code, message) = refusal(validate_request(&args_for(
+            "all",
+            vec![PathBuf::from("no/such/path/wrfout_d01_x.nc")],
+        )));
+        assert_eq!(code, 1, "a real run that cannot proceed is not a usage error");
+        assert!(message.contains("wrfout_d01_x.nc"), "{message}");
+        assert!(message.contains("unreadable wrfout"), "{message}");
+        assert!(message.contains("no such file"), "{message}");
+    }
+
+    #[test]
+    fn an_input_that_is_not_a_wrf_file_is_named() {
+        let dir = std::env::temp_dir().join("rw_wrfbatch_not_a_wrf_file");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("plain.txt");
+        std::fs::write(&path, b"not a wrfout").expect("scratch file");
+
+        let (code, message) = refusal(validate_request(&args_for("all", vec![path.clone()])));
+        assert_eq!(code, 1);
+        assert!(
+            message.contains("plain.txt"),
+            "'No supported WRF files selected' never named the file: {message}"
+        );
+        assert!(message.contains("unreadable wrfout"), "{message}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn one_usable_input_among_several_still_runs() {
+        // Existing semantics preserved: a mixed set is not a refusal.  Only
+        // a set with nothing usable in it is.
+        let dir = std::env::temp_dir().join("rw_wrfbatch_mixed_inputs");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let good = dir.join("wrfout_d02_1974-04-03_18:00:00".replace(':', "-"));
+        std::fs::write(&good, b"placeholder").expect("scratch file");
+        let bad = dir.join("plain.txt");
+        std::fs::write(&bad, b"not a wrfout").expect("scratch file");
+
+        if wrf_process::is_supported_wrf_file(&good) {
+            assert!(
+                validate_request(&args_for("all", vec![good.clone(), bad.clone()])).is_ok(),
+                "a set with one usable input must not be refused"
+            );
+        }
+
+        let _ = std::fs::remove_file(&good);
+        let _ = std::fs::remove_file(&bad);
+    }
+
+    #[test]
+    fn the_product_vocabulary_is_non_empty_and_deduplicated() {
+        let slugs = rusty_weather::render_all::known_product_slugs();
+        assert!(!slugs.is_empty(), "no product is selectable at all");
+        let mut unique = slugs.clone();
+        unique.dedup();
+        assert_eq!(unique.len(), slugs.len(), "the vocabulary repeats a slug");
+    }
+
     #[test]
     fn resolution_tokens_are_trimmed_km_or_integer_metres() {
         assert_eq!(resolution_token(3_000.0).as_deref(), Some("3km"));
@@ -704,17 +966,47 @@ mod tests {
     }
 }
 
+/// The command line is wrong.  Matches `gpuwm render`'s matplotlib engine,
+/// so the two engines agree on what a bad `--products` costs.
+const EXIT_USAGE: u8 = 2;
+
+fn dispatch() -> Result<(), CliError> {
+    match parse_args()? {
+        Invocation::Catalog => print_product_catalog(),
+        Invocation::Batch(args) => {
+            validate_request(&args)?;
+            run(*args).map_err(CliError::Failed)
+        }
+    }
+}
+
 fn main() -> ExitCode {
-    match parse_args().and_then(run) {
+    match dispatch() {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("{error}");
-            if error == usage() {
-                ExitCode::SUCCESS
-            } else {
-                eprintln!("{}", usage());
-                ExitCode::FAILURE
-            }
+        Err(CliError::Help) => {
+            // stderr and exit 0, exactly as before: gpuwm.rustwx.probe_renderer
+            // reads stdout+stderr together and requires both.
+            eprintln!("{}", usage());
+            ExitCode::SUCCESS
+        }
+        Err(CliError::Usage(message)) => {
+            // Usage line FIRST, then the sentence that names the problem --
+            // argparse's order, which is also the order matplotlib's engine
+            // prints in.  It used to be the other way round, and
+            // gpuwm/rustwx.py surfaces the LAST non-empty stderr line as the
+            // cause, so every argument mistake reached the user as the usage
+            // line with the actionable sentence scrolled off above it.
+            eprintln!("{}", usage());
+            eprintln!("{message}");
+            ExitCode::from(EXIT_USAGE)
+        }
+        Err(CliError::Failed(message)) => {
+            // No usage line.  gpuwm/rustwx.py surfaces the LAST non-empty
+            // stderr line as the reason, so appending usage() here is what
+            // made `gpuwm render` report a usage string as the cause of a
+            // store failure.
+            eprintln!("{message}");
+            ExitCode::FAILURE
         }
     }
 }

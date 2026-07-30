@@ -22,6 +22,7 @@ from gpuwm.physics_registry import (
     validate_physics_plan,
 )
 from gpuwm.physics_compat import (
+    NOAHMP_PROFILE_ID,
     SINGLE_DOMAIN_PHYSICS_PROFILES,
     single_domain_runtime_switches,
 )
@@ -70,7 +71,7 @@ def _mixed_plan() -> dict[str, object]:
 
 
 def _single_plan(template_id: str = WSM6_TEMPLATE_ID) -> dict[str, object]:
-    return {
+    plan = {
         "schema": PLAN_SCHEMA,
         "plan_id": "single-domain-proof-v1",
         "registry_sha256": registry_sha256(),
@@ -82,6 +83,10 @@ def _single_plan(template_id: str = WSM6_TEMPLATE_ID) -> dict[str, object]:
         "domains": [{"domain_id": "d01", "template_id": template_id}],
         "edges": [],
     }
+    if template_id == NOAHMP_PROFILE_ID:
+        plan["expert_acknowledgements"] = [
+            "noahmp-host-column-throughput-v1"]
+    return plan
 
 
 def _uniform_tree(template_id: str = WSM6_TEMPLATE_ID) -> dict[str, object]:
@@ -252,17 +257,19 @@ def test_registry_routes_drift_check_against_live_runner_capabilities():
     hrrr_capabilities = hrrr_runner_capabilities()
     hrrr_route = routes[hrrr_capabilities["runner"]]
     assert hrrr_route["source_ids"] == hrrr_capabilities["supported_sources"]
-    assert hrrr_route["source_template_ids"]["hrrr"] == hrrr_capabilities[
-        "physics_profile_ids"
-    ]
+    assert (
+        hrrr_route["source_template_ids"]["hrrr"]
+        + hrrr_route["expert_template_ids"]["hrrr"]
+    ) == hrrr_capabilities["physics_profile_ids"]
 
     single_capabilities = prepared_single_runner_capabilities()
     single_route = routes[single_capabilities["runner"]]
     assert single_route["source_ids"] == single_capabilities["supported_sources"]
     for source_id, source in single_capabilities["source_profiles"].items():
-        assert single_route["source_template_ids"][source_id] == source[
-            "physics_profile_ids"
-        ]
+        routed = list(single_route["source_template_ids"][source_id])
+        routed.extend(
+            single_route.get("expert_template_ids", {}).get(source_id, ()))
+        assert routed == source["physics_profile_ids"]
 
     tree_capabilities = tree_runner_capabilities()
     tree_route = routes[tree_capabilities["runner"]]

@@ -52,7 +52,7 @@ import dataclasses
 import struct
 import sys
 import types
-from datetime import datetime
+from datetime import datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
 
@@ -175,6 +175,15 @@ def _chain_experiment(tratios, *, run_seconds, history_s=60.0):
         vertical=VerticalConfig(eta_levels=(), p_top=0.0, hybrid_opt=0,
                                 etac=0.2),
         projection=None, restart_interval_s=0.0, domains=tuple(domains))
+
+
+def _with_delayed_start(exp, grid_id: int, offset_s: int):
+    domains = tuple(
+        dataclasses.replace(
+            dc, start_time=exp.start_time + timedelta(seconds=offset_s))
+        if dc.grid_id == grid_id else dc
+        for dc in exp.domains)
+    return dataclasses.replace(exp, domains=domains)
 
 
 # ---------------------------------------------------------------------------
@@ -715,6 +724,93 @@ def test_executor_dormant_feedback_and_f13_bypass():
                                                  report_a.forces)
     for gid, clock in report_b.clocks.items():
         assert clock.ticks == report_a.clocks[gid].ticks
+
+
+def test_delayed_child_starts_on_forcing_seam_without_changing_parent():
+    """A dormant child is absent from recursion and output until its seam.
+
+    Activation occurs after the parent reaches the seam, so the production
+    callback can initialize from that live parent state before the first
+    child frame and solve.
+    """
+    base = _chain_experiment((1, 3), run_seconds=300.0)
+    delayed = _with_delayed_start(base, 2, 120)
+    schedule = build_schedule(
+        delayed, resolve_clock(delayed, lbc_interval_s=60))
+    starts = []
+    history = {1: [], 2: []}
+    steps = {1: [], 2: []}
+    report = execute_schedule(
+        schedule,
+        on_domain_start=lambda gid, clock:
+            starts.append((gid, clock.ticks)),
+        on_history=lambda gid, ticks: history[gid].append(ticks),
+        on_step=lambda gid, clock: steps[gid].append(clock.ticks))
+
+    baseline_parent_steps = []
+    baseline_parent_history = []
+    execute_schedule(
+        build_schedule(base, resolve_clock(base, lbc_interval_s=60)),
+        on_step=lambda gid, clock: (
+            baseline_parent_steps.append(clock.ticks) if gid == 1 else None),
+        on_history=lambda gid, ticks: (
+            baseline_parent_history.append(ticks) if gid == 1 else None))
+
+    assert starts == [(2, 120)]
+    assert history[2][0] == 120
+    assert steps[2][0] == 120
+    assert all(tick >= 120 for tick in history[2] + steps[2])
+    assert steps[1] == baseline_parent_steps
+    assert history[1] == baseline_parent_history
+    assert report.clocks[2].step_count == 9
+
+
+def test_resume_before_delayed_child_start_activates_it_once_at_seam():
+    """A PERIOD_BEGIN checkpoint before child birth resumes the dormant
+    clock, then runs the normal activation callback at the configured seam."""
+    exp = _with_delayed_start(
+        _chain_experiment((1, 3), run_seconds=300.0), 2, 120)
+    schedule = build_schedule(exp, resolve_clock(exp, lbc_interval_s=60))
+    clocks = {spec.grid_id: schedule.clock.domain_clock(spec.grid_id)
+              for spec in schedule.clock.domains}
+    # Exact state restored from a t=60 PERIOD_BEGIN checkpoint.  The child
+    # clock was synchronized virtually but has executed no steps.
+    for clock in clocks.values():
+        clock.ticks = 60
+    clocks[1].step_count = 1
+    starts = []
+    child_history = []
+    report = execute_schedule(
+        schedule, clocks=clocks, start_period=1, started_grid_ids=(1,),
+        committed_initial_history_grid_ids=(1,),
+        on_domain_start=lambda gid, clock:
+            starts.append((gid, clock.ticks)),
+        on_history=lambda gid, ticks: (
+            child_history.append(ticks) if gid == 2 else None))
+
+    assert starts == [(2, 120)]
+    assert child_history[0] == 120
+    assert report.clocks[2].step_count == 9
+
+
+def test_subhour_boundary_cadence_and_delayed_start_constraints():
+    accepted = _with_delayed_start(
+        _chain_experiment((1, 3), run_seconds=1200.0), 2, 600)
+    clock = resolve_clock(accepted, lbc_interval_s=300)
+    assert clock.root.lbc_interval_ticks == 300
+    assert clock.domain_clock(2).spec.start_ticks == 600
+
+    not_a_forcing_seam = _with_delayed_start(
+        _chain_experiment((1, 3), run_seconds=1200.0), 2, 600)
+    with pytest.raises(ValueError, match=(
+            r"d02.*boundary-forcing cadence.*420 s.*offset/cadence = 10/7")):
+        resolve_clock(not_a_forcing_seam, lbc_interval_s=420)
+
+    with pytest.raises(ValueError, match=(
+            r"310 s.*whole number of root-domain steps.*cadence/dt = 31/6")):
+        resolve_clock(
+            _chain_experiment((1, 3), run_seconds=1200.0),
+            lbc_interval_s=310)
 
 
 def test_domain_clock_elapsed_and_dtbc_pins(bundle_clock):

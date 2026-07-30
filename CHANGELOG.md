@@ -1,5 +1,358 @@
 # Changelog
 
+## 1.1.0 (2026-07-30)
+
+### `gpuwm check` tells the truth about VRAM
+
+- **Fixed:** `gpuwm check` printed "observed peak envelope 12.98 GiB
+  exceeds the WDDM budget 11.64 GiB" and exited **0**, so every script
+  wrapping it read green out of a report whose own prose said the run
+  might not fit. That case now exits **4** -- nonzero, and distinct from
+  1 because no gate failed and the levers differ. A harder verdict still
+  wins: 1 (a leg FAILED), 2 (nothing evaluable) and 3 (`--alloc`
+  aborted) all outrank it. The warning line names the code it will exit
+  with, so the reader of the text and the reader of `echo $?` learn the
+  same thing.
+- **Fixed:** the wizard's `--card 16gb` tier reconstructed a *notional*
+  free-VRAM figure of 16.68 GiB -- more than a 16 GB card physically
+  has -- because `--budget-gib` plus the reserve is arithmetic that never
+  saw the card. `gpuwm check` gained `--vram-gib`, a ceiling and never a
+  source: a declared free figure is now clamped to the smaller of the
+  named card's capacity and a live NVML reading of it, reported as
+  `CAPPED` in text and `free_bytes_capped_to_physical_bytes` in `--json`.
+  Without `--vram-gib` nothing is clamped, because `--budget-gib` is how
+  you size for a machine that is not this one.
+- **Fixed:** `gpuwm check` sized its estimate and its observed-peak
+  envelope without knowing the card, so on a 12 GiB card it applied the
+  32 GiB machine's pool constants and the 1.75 Windows envelope factor
+  while the wizard applied the small-card constants and 1.45 -- the two
+  surfaces disagreed by 6.9 GiB on the same config. The wizard now passes
+  its card size to `check`, and `check` sizes for the card it is told
+  about.
+- **Fixed:** the wizard's flat small-card reserve was 3.0 GiB, but the
+  reserve policy `gpuwm check` actually applies charges 3.5-3.6 GiB on
+  those same 12 and 16 GiB cards -- so the wizard sized layouts against a
+  budget the preflight would never grant, and certified them anyway
+  because of the exit-code bug above. The 12 and 16 GiB tiers now reserve
+  4.0 GiB, the figure the 24 GiB tier already used.
+- **Changed, and you will see it:** put together, the four fixes above
+  mean **`gpuwm domain` emits smaller domains on the 12 and 16 GiB tiers
+  than 1.0.1 did** for the same request. Nothing about your card
+  changed; what changed is that the wizard and the preflight now size
+  against the same card, the same reserve and the same envelope factor,
+  and the answer they agree on is the smaller one. 1.0.1's larger
+  domains on those tiers were sized against a budget the preflight would
+  not have granted and a free-VRAM figure the card did not have -- and
+  the preflight said so and exited 0 anyway. The 24 and 32 GiB tiers are
+  unchanged. If you have a 1.0.1 domain that ran, it still runs; it is
+  the *suggested* size that moved.
+
+### Remedies
+
+- **Fixed, pip installs:** `gpuwm render`'s matplotlib-fallback notice
+  still ended `Build it with: cd tools/rustwx; cargo build ...` -- a
+  directory a wheel install does not carry. The 1.0.1 remedy contract
+  fixed that everywhere except here, because this call site assembled
+  its own string. It routes through the install-aware machinery now, in
+  a new one-line form: the `cargo` one-liner where the crate exists, and
+  a pointer to `gpuwm doctor` where it does not, because the honest
+  answer there is a whole bootstrap and this notice is contractually one
+  physical line.
+- **Fixed:** `bridges.sources_present()` answered for
+  `tools/grib1_bridge` no matter which crate it was asked about, so a
+  tree carrying one crate and not the other could be handed a `cd` into
+  the missing one. It now takes the crate it is asked about;
+  `install_aware_build_hint` passes it through.
+- **Fixed:** `gpuwm doctor` says its remedy blocks run "as printed, in
+  the order printed", and they did not. A `cd` into a crate never came
+  back, so the block after it resolved its relative paths somewhere
+  else; the repeated `git clone` a pip-only machine gets once per gap
+  errored on every repeat; and two remedies ended with prose fused onto
+  the end of a command line, which the shell hands to `cargo` as
+  arguments. Every block now returns to the directory it started in,
+  the clone carries a note telling you to skip it when the directory is
+  already there, and every physical line of every remedy is either a
+  command to run or a `#` comment. The claim is now enforced by a test
+  that pastes the *whole* report as one sequence, in both shells,
+  twice.
+- **Fixed:** continuation lines of a multi-line remedy were printed at
+  whatever indentation they were composed with -- 0, 2 or 4 spaces --
+  so a block could start under the `remedy:` label and then jump to
+  column 0. The whole block lines up now.
+
+### The rust renderer says what is wrong
+
+- **Fixed:** `rw_wrfbatch` answered an unknown `--products` slug, a file
+  that is not a wrfout, a path that does not exist, and a bare
+  `--list-products` with the *same* line -- its usage string -- and exit
+  1. Three of the four never named the thing that was wrong. Each now
+  names the problem: an unknown product names the token, the five group
+  keywords and where to get the full list; an unusable input names the
+  path and why, in the same wording matplotlib's engine uses
+  (`<path>: unreadable wrfout (...)`).
+- **Fixed:** a `--products` typo used to cost a full wrfout import
+  before anything checked it, and then reported `No supported WRF files
+  selected` -- about a file, not about the typo. The command line is
+  checked before any file is opened.
+- **Fixed:** the usage line was printed *after* the message, and
+  `gpuwm render` reports the renderer's last line as the cause -- so
+  every argument mistake reached you as a usage string. Usage first,
+  reason last, as argparse does it.
+- **Changed:** `rw_wrfbatch` exits **2** on a bad command line, matching
+  what the matplotlib engine costs for the same mistake. `gpuwm render`
+  still exits 1 either way, so scripts wrapping the front door see no
+  change.
+- **New:** `rw_wrfbatch --list-products` with no store, no output
+  directory and no input prints the product vocabulary you may pass to
+  `--products`. The store-aware listing -- which of those the frames you
+  imported can actually render, and why not -- is unchanged and still
+  needs a store.
+
+### Guidance catches up with the gates
+
+Every gate in this group was already right; the guidance around them
+was not, and three of the four surfaced as tracebacks.
+
+- **Fixed:** the GFS front door's own suggested `--outdir` was
+  `<prepared_root>/forecast` -- a *child* of the preparation, while both
+  prepared-forecast runners declare `--prepared-root` a protected input
+  and refuse any output directory overlapping it. The front door's own
+  next-command was therefore refused, as a raw traceback. The suggestion
+  is now a genuine sibling, `<prepared_root>-forecast`, and the
+  pasteable test no longer just looks at the printed text: it runs the
+  runner's actual guard over the printed `--outdir`.
+- **Fixed:** both runners' protected-input refusals reach the user as
+  one sentence naming the problem and a directory that works, and exit
+  2, instead of a traceback out of `claim_output_directory`.
+- **Fixed:** the 20CRv3 front door rejected the wizard's default TOML
+  with a raw `unknown table(s)/top-level key(s) ['case_data']`
+  traceback. It now checks config compatibility *before* decoding any
+  GRIB2 and refuses in one sentence that names both the incompatibility
+  (`[case_data]` declares the ERA5 config-driven run path, which this
+  door does not read) and a supported route to a config it accepts.
+- **Fixed:** the 20CRv3 front door printed no run instruction at all,
+  while the GFS door printed a complete hash-bound command -- after the
+  1932 hindcast had just run end to end. Both doors now use the same
+  printer, with `--source 20crv3`; every digest is resolved, so the
+  pasteable contract holds without a holed command.
+- `gpuwm domain` still has no `--source 20crv3` option. DATA.md's 20CRv3
+  section now states the supported config route explicitly
+  (`gpuwm domain --source gfs`, which emits no `[case_data]` table), and
+  the front door's refusal names the same route.
+
+### Any-combo front-door physics
+
+- The single-domain GFS and HRRR front doors carry the *selected*
+  registered physics profile all the way through configuration
+  materialization, preparation, native WRF export, and content-hashed
+  provenance. The exporter no longer applies a stock
+  `bl_pbl_physics=1 / sf_sfclay_physics=91 / sf_surface_physics=2`
+  identity gate when a front-door profile is supplied: it resolves each
+  selector through the physics registry and checks the component's
+  `implemented` declaration, required settings, pairings, and runtime
+  readiness rails, failing closed with a registry JSON pointer and the
+  published blocker when a component is unavailable.
+- Three profiles that were declared but unreachable are now reachable on
+  the prepared single-domain route: WSM6 + MYNN 5/5 + Noah, WSM6 +
+  YSU/MM5 + RUC LSM (with its required nine soil layers), and WSM6 +
+  YSU/MM5 + Noah-MP behind the registry-owned
+  `noahmp-host-column-throughput-v1` expert acknowledgement. **This
+  closes the 1.0.1 known issue** where the registry marked MYNN, RUC and
+  Noah-MP `reachability: template` while `--physics-profile` rejected
+  them: the two surfaces now agree, and they agree by making the schemes
+  preparable rather than by hiding them.
+- Provenance: `gpuwm-gfs-direct-wrf-proof-v2` ->
+  `-v3` and `gpuwm-native-direct-wrf-export-v2` -> `-v3`, both carrying a
+  `gpuwm-front-door-physics-selection-v1` receipt (profile, registry
+  semantic SHA-256, resolved components, selectors, complete runtime
+  settings, maturity, accepted acknowledgements). Preflight accepts v2
+  and v3 as distinct schemas and fails closed on anything else; exact
+  proof-file SHA-256 verification is unchanged for both.
+- Stock-profile export identity, stated exactly: at integration time the
+  pre-change exporter (`c16aed0e` `gpuwm/wrf_direct.py`) and this one
+  were each run against *one* identical fully specified stock-profile
+  prepared cache, static cache, geometry receipt, valid time and
+  boundary cadence, and the two artifacts came out byte-identical --
+  949,606-byte `wrfinput_d01` and 539,836-byte `wrfbdy_d01`, matching
+  SHA-256 both sides. That comparison is **not** reproducible from this
+  tree: it needed the archived base exporter and a real prepared cache,
+  neither of which the release contains, and no committed fixture
+  renders a stock export. The four digests and the exact identity inputs
+  are recorded in the internal ledger
+  `PRODUCT-V11-ANYCOMBO-20260730.md`. What the release *does* gate is
+  the surrounding contract -- v2 proofs keep their historical shape, v3
+  fails closed on absent, mismatched or future-schema physics receipts,
+  and callers that omit a profile keep the legacy stock-only exporter --
+  and that is tested (`tests/test_prepared_single_domain_forecast.py`).
+
+### `gpuwm adapt`: arbitrary but verified GRIB2 sources
+
+- New `gpuwm adapt` turns a WPS Vtable, an explicit
+  `rw-wps.descriptor.v1`, and the caller's own GRIB2 files into a
+  create-only runnable mapped adapter bundle. Its machine status is
+  `runnable_mapping_not_stock_wrf_certified` -- it never widens or
+  inherits a stock-WRF certification gate.
+- Publication is gated on a battery that runs before anything is
+  written: Vtable compilation into exact numeric GRIB2 selectors, a
+  record inventory at every valid time (complete pressure sets, bounded
+  soil selectors, no duplicates or member mixing, uniform cadence equal
+  to the declared boundary interval), exact target units/axes/location,
+  an *executable* decode of the selected records through the real GRIB2
+  decoder, soil selector parity with contiguous surface-down coverage
+  and no synthesized layers, one shared GDT 0 grid at scan `0x40`, an
+  explicit source top at or above the model top, and stable before/after
+  identity for every input and both decoder executables.
+- Documented in `docs/arbitrary-verified-adapters.md`, including the GDT
+  boundary and the runnable-versus-certified definition.
+
+### GDAS
+
+- `gfs_grib2_bridge` no longer infers forecast process 96 from
+  `hour > 0`. The generic series contract is now
+  `HOUR<TAB>GRIB2[<TAB>FORECAST_PROCESS_ID]`: a two-column legacy row
+  declares analysis process 81 only, and ID 96 must be declared
+  explicitly and stays inside the certified `{81, 96}` capability set.
+  `gpuwm fetch` writes the per-row declaration. Certified against a real
+  NOMADS proof corpus -- f000/f003/f006/f009 of `gdas.20260729/12/atmos`,
+  124 messages each, frozen at centre 7, tables 2/1, PDT 4.0, GDT 3.0 /
+  shape 6 / 0.25 degree / scan `0x40`, DRT 5.0 -- committed under
+  `tests/fixtures/gdas-process-id/`. Each forecast sample is also
+  required to fail under the undeclared analysis-only ID-81 policy. The
+  corpus includes the **endpoint** of the certified span, so f009 rests
+  on committed bytes rather than on the ladder constant.
+- With the bridge re-certified, `gpuwm fetch --source gdas` serves the
+  full **f000..f009** span again rather than 1.0.1's analysis-only
+  window. The 1.0.1 scoping existed because the bridge was certified
+  only against the analysis tag; that is the re-certification event it
+  named, and it has now happened with real samples. Past f009 still
+  refuses up front and says why.
+- **What GDAS still is not:** a front door. `rw-wps --source gdas` has
+  no ingest route and refuses. Every public surface now says so in the
+  same words -- `docs/public/DATA.md`'s opening routing summary as well
+  as its GDAS section, the README feature table, the `fetch` subcommand
+  summary, and `fetch --help`'s `--hours` and `--cadence` text, which
+  1.0.1 left describing GDAS as analysis-only. A test pins that help
+  text to the registry's own `max_forecast_hour` so the two cannot drift
+  apart again.
+- The opt-in live GDAS smoke (`GPUWM_NETWORK_TESTS=1`) now fetches the
+  hours it asserts about. It downloaded f000 alone, asserted the series
+  had exactly one row, then required that row to carry both declared
+  process IDs -- unsatisfiable by construction, so enabling it could
+  only ever fail. It fetches the whole f000..f009 ladder from a live
+  cycle and checks the census, the record bar and the declared process
+  ID on every hour.
+
+### Nests: delayed starts and sub-hour forcing
+
+- `DomainConfig` carries an optional per-domain `start_time`. The root
+  must still equal `[experiment].start_time` and an omitted child value
+  inherits it, so existing configurations are unchanged; a child may
+  start later than its parent, never before it and never outside the
+  experiment run. `gpuwm import-namelist` reads real-shaped per-domain
+  WRF `start_year..start_second` columns and writes a child `start_time`
+  only where it differs from the root.
+- The scheduler keeps a delayed child dormant while the parent advances,
+  then at its seam runs the ordinary nest initialization against live
+  parent state and begins normal stepping and output -- no child history
+  before that point, and the parent's schedule and history are
+  untouched. Restart headers carry `domain_start_time`,
+  `domain_start_ticks` and `domain_lifecycle`; a checkpoint taken before
+  the seam restores as `NOT_STARTED` and activates exactly once.
+- **The whole-hour forcing refusal is gone**, because it was never a
+  numerical requirement -- it came from representing the forcing
+  inventory as integer hours. Generic mapped hierarchies now use exact
+  `forcing_offsets_seconds` when the cadence is sub-hour. The contract
+  that IS enforced: integer-second boundary interval, an exact integer
+  number of root steps (root Davies/LBC state resets at a top-of-step
+  seam), and every delayed child start on both an exact parent-step
+  boundary and an exact global forcing seam. Refusals report the
+  offending ratio, e.g. `cadence/dt = 31/6`.
+
+### Feedback: experimental two-way nest restriction
+
+- `[experiment].feedback` accepts `1` as an **experimental** capability
+  (default remains `0`; `smooth_option` remains restricted to zero
+  because parent smoothing is unimplemented). Launch prints the
+  experimental warning, the run writes `feedback-provenance.json`, and
+  every per-domain wrfout carries `GPUWM_FEEDBACK`,
+  `GPUWM_FEEDBACK_VALUE`, `GPUWM_FEEDBACK_STOCK_WRF_CERTIFIED = 0` and
+  `GPUWM_FEEDBACK_CERTIFICATION`. Nothing is stamped at `feedback = 0`.
+- `feedback = 0` byte identity, and how to re-run it. At integration
+  time an archived pre-feedback tree (`e7bf4d88`) and the lane tip
+  (`80561c6e`) each ran the same two-domain deterministic schedule at
+  `feedback = 0`, and every serialized state byte matched -- whole-tree
+  SHA-256 `727ac476e0ebbf97a89be350a151c593e2b9447cc5d9b14fe0436d5f89e47557`,
+  with the per-domain digests recorded in the internal ledger
+  `PRODUCT-V11-FEEDBACK-20260730.md`. The release cannot re-run the base
+  half of that comparison -- it does not contain the base tree -- but it
+  no longer has to take the result on trust either: that pre-change
+  digest is now frozen in
+  `tests/test_feedback.py::test_feedback_zero_output_is_pinned_and_costs_nothing`,
+  which re-derives it from the shipped code and additionally proves the
+  dormant path is free (the same run with the feedback call path removed
+  entirely produces the identical digest, and the coupler records zero
+  transactions).
+- The transaction is schedule-owned and three-phase -- restrict `MU`
+  first, couple each remaining child prognostic into the existing nest
+  scratch arena, call WRF's own `copy_fcn` transliteration over the
+  exact registration, uncouple into the parent only on the feedback
+  rectangle, refresh parent diagnostics -- at synchronized exact-integer
+  clocks, including at a delayed child's activation seam. Restart
+  continuation is SHA-identical to an uninterrupted run.
+- Operator classes were verified against tagged WRF v4.6.1 source: mass
+  (`copy_fcn`, 16-point average at ratio 4, odd centered path at ratio
+  3), U on x-faces and V on y-faces all **match**. The masked/integer
+  class is a **documented divergence**: ArWen's authoritative
+  `nest_field_kinds` inventory contains no masked or integer feedback
+  fields, so stock WRF's `LU_INDEX`/`TSK`/`TSLB`/`SMOIS`/... restriction
+  has no ArWen counterpart. The `copy_fcnm`/`copy_fcni` kernels remain
+  present and exact for a future explicit inventory extension.
+- Every one-way consumer fails closed on a feedback-modified parent:
+  offline-child/downscale, the static source-hierarchy exporter, RW-WPS
+  stock export, and the explicitly-one-way prepared-tree runner.
+- `tools/compare_feedback_signature.py` (schema
+  `gpuwm-feedback-signature-comparison-v2`) compares a four-run
+  ArWen/WRF feedback-on/off matrix over the parent overlap with the
+  child specified zone excluded, annotating every row with operator
+  class, WRF routine, stagger, stencil and source-point count. It is
+  signature comparison, not bit or amplitude certification, and the
+  thresholds are synthetic defaults until the real reference pair is
+  run. The experimental label stands until then.
+
+### Hygiene
+
+- **Fixed, a fabricated CFL:** the shared one-readback health reduction
+  now computes `max(|w_upper| / dz_cell)` on device, with `dz_cell`
+  taken from that same cell's live `(php + phb)` geopotential faces.
+  The old formula combined global extrema, so 100 m/s aloft over its own
+  1,000 m layer reported CFL 100 against an unrelated 10 m surface
+  layer; the co-located term reports 1 and passes, while 11 m/s over the
+  actual 10 m first layer reports 11 and fails. Both single-domain
+  runners share one threshold predicate: exactly 10 passes, the first
+  representable FP32 value above 10 fails, and the independent 150 m/s
+  `w_max` and non-finite guards are unchanged.
+- **Fixed, interrupted fetches:** the GFS/GDAS fetch loop atomically
+  rewrites its series and fetch manifest after every verified hour, so
+  every published prefix contains only files that passed the full GRIB2
+  envelope walk, the resolved record-count bar, and SHA-256.
+  `KeyboardInterrupt` is now a traceback-free operational error that
+  names each verified file (hour, bytes, digest), separately names any
+  `.part` or otherwise unverified payload still on disk, and prints the
+  exact `gpuwm fetch` command to resume the original
+  cycle/window/cadence/area/output. A first-hour interrupt publishes an
+  empty request-identity manifest rather than recreating the old
+  manifestless-resume trap.
+- **Now loud:** a requested box that crosses the prime meridian cannot
+  be one NOMADS request (the CGI accepts a single `[0,360]` interval),
+  so it falls back to the full longitude band. That fallback was already
+  correct and silent; before any bytes move it now names the requested
+  box, the actual band being sent, and `360 / requested_width` as the
+  exact longitude-span amplification -- with the compressed-byte factor
+  explicitly labelled data-dependent. A 20-degree UK-style box reports
+  18x; an equal-width dateline box stays narrow and prints nothing. The
+  same area and amplification are recorded in the fetch manifest. No
+  unverified two-request stitcher was introduced.
+
 ## 1.0.1 (2026-07-30)
 
 - **Documented, not new:** the 20CRv3 ensemble-member route. The
@@ -173,6 +526,26 @@
   the domain-tree runner writes `<outdir>/evidence/progress.json` and
   the single-domain runners write `<outdir>/progress.json`. All three
   documents now state the truth for every route.
+- The single-domain CFL safety gate now reduces
+  `max(dt*|w_upper|/dz_cell)` with velocity and live geopotential
+  thickness from the same cell. It no longer combines a global
+  upper-level updraft with the unrelated thinnest surface layer.
+  Genuine thin-layer violations, non-finite geometry, the CFL 10
+  threshold, and the independent 150 m/s vertical-speed guard remain
+  fail-closed.
+- GFS/GDAS fetches now atomically refresh their series and fetch
+  manifest after every verified hour. Ctrl-C reports the exact
+  digest-bound prefix and any unverified partial file on disk, exits
+  without a Python traceback, and prints the exact resume command; a
+  good completed hour is never discarded merely because a later hour
+  was interrupted.
+- A GFS/GDAS box crossing 0 degrees longitude no longer silently widens
+  to NOMADS' full `0..360` band. The verification-preserving full-band
+  fallback now prints and manifests the requested box, fetched band,
+  and exact longitude-span amplification (while labelling compressed
+  bytes as data-dependent). Splitting remains deferred because
+  concatenating two 124-record grids is not one geometry-valid
+  124-record product.
 
 - New `gpuwm fetch-geog`: downloads and stages the nine WPS_GEOG
   static datasets the static builder opens (~1.3 GB download, ~16 GB

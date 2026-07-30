@@ -470,8 +470,17 @@ def test_the_emitted_bootstrap_is_shell_correct_on_both_platforms(
     # The clone and the build are always there, in that order, as
     # separate lines -- never joined by an operator one shell lacks.
     assert any(line.startswith("git clone ") for line in commands)
-    assert commands[-1].startswith("cargo build ")
     assert any(line.startswith("cd ") for line in commands)
+    # The build is the last thing that DOES anything, and exactly one
+    # command follows it: the walk back out of the crate, so the next
+    # remedy block starts where this one started.  (This pinned
+    # `commands[-1]` as the build, which could not tell "nothing
+    # follows" from "the return was dropped".)
+    build = commands.index(next(line for line in commands
+                                if line.startswith("cargo build ")))
+    assert build == len(commands) - 2, commands
+    assert commands[-1] == "cd " + bridges._parent_hops(
+        bridges.CLONE_DIR, bridges.CRATE_RELATIVE), commands
 
     if cargo:
         # Rust is already here; installing it again would be noise.
@@ -638,3 +647,290 @@ def test_every_conditional_remedy_branch_obeys_the_claim(
         assert remedy
         _assert_remedy_lines_are_commands_or_comments(
             remedy, windows=windows)
+
+
+# ---------------------------------------------------------------------------
+# The blocks have to COMPOSE, not merely each be well formed
+# ---------------------------------------------------------------------------
+# doctor's closing line promises a paste: every remedy above, in the
+# order printed, run as one sequence.  Line-by-line well-formedness does
+# not deliver that, and it is not what the field report failed on.  What
+# only the composition can see: a block that ends two directories inside
+# a crate, silently re-pointing every relative path in the block after
+# it; a `git clone` printed once per gap, which fails from the second
+# one on; and a build hint frozen at import for the OTHER platform,
+# which a first-token whitelist waves through.
+
+#: An absolute `cd` would anchor a block rather than return it, which
+#: this model cannot follow -- it tracks position relative to where the
+#: reader started.  Fail closed and say so rather than pass blind.
+_ABSOLUTE_PATH = re.compile(r"^(~|/|[A-Za-z]:[\\/])")
+
+
+def _shell_steps(line, *, windows):
+    """The commands one physical remedy line runs, in order.
+
+    Only `cd` and `git clone` are acted on, so the crude split is
+    enough: a `;` inside a quoted string (the PowerShell PATH
+    activation has one) yields fragments that are neither, and a shell
+    parser here would be a second implementation to keep honest.
+    """
+
+    separator = ";" if windows else "&&"
+    return [step.strip() for step in line.split(separator) if step.strip()]
+
+
+class _PastedShell:
+    """Where the paste has left the working directory, so far.
+
+    Relative to the directory the reader started in: `cd a/b` is two
+    levels down, `cd ..` is one back up, and nothing may climb above the
+    start -- the reader's own directory is not doctor's to leave.
+    """
+
+    def __init__(self):
+        self.at = []
+
+    def run(self, step):
+        if step.startswith("cd "):
+            self._cd(step[len("cd "):])
+
+    def _cd(self, argument):
+        argument = argument.strip().strip('"').strip("'")
+        assert not _ABSOLUTE_PATH.match(argument), (
+            f"absolute cd in a remedy: {argument!r}.  Anchoring that way "
+            "is defensible, but this model follows relative position; "
+            "teach it the anchor before switching.")
+        for part in re.split(r"[\\/]+", argument):
+            if part in ("", "."):
+                continue
+            if part == "..":
+                assert self.at, (
+                    "a remedy walks above the directory the reader "
+                    f"started in: cd {argument}")
+                self.at.pop()
+            else:
+                self.at.append(part)
+
+
+def _assert_the_paste_composes(remedies, *, windows):
+    """Run the whole printed sequence, in order, in a paper shell."""
+
+    shell = _PastedShell()
+    clones = []
+    for index, remedy in enumerate(remedies):
+        notes = []
+        for line in remedy.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("#"):
+                notes.append(stripped.lower())
+                continue
+            for step in _shell_steps(stripped, windows=windows):
+                if step.startswith("git clone"):
+                    assert not shell.at, (
+                        f"remedy {index} clones into {'/'.join(shell.at)} "
+                        "rather than the directory the reader started in, "
+                        "so a second block's clone lands somewhere else")
+                    assert any("skip" in note and "exist" in note
+                               for note in notes), (
+                        f"remedy {index} pastes {step!r} with nothing "
+                        "saying to skip it when the directory is already "
+                        "there -- doctor prints this same clone once per "
+                        "gap, and the second one only errors")
+                    clones.append(step)
+                shell.run(step)
+        assert not shell.at, (
+            f"remedy block {index} leaves the shell in "
+            f"{'/'.join(shell.at)}; every relative path in the block "
+            "after it then means something else")
+    return clones
+
+
+def _force_every_gap(monkeypatch, tmp_path, *, windows, shape, mode):
+    """Make collect_checks() reach a remedy on (nearly) every check.
+
+    The idiom of the branch-forcing test above, widened to the whole
+    report: on the box running these tests most of these checks return
+    `verified` with no remedy at all, which is exactly how a fused prose
+    tail lived in the CPU-library branch underneath two structural
+    tests that both claimed to cover every remedy.
+    """
+
+    import json as jsonlib
+    import sys as real_sys
+    import types
+
+    from gpuwm import bridges, rustwx, rustwx_fetch, table_assets
+    from gpuwm.core import noah as noah_core
+    from gpuwm.core import thompson_contract
+    from gpuwm.ingest import cpu_backend
+
+    root = tmp_path / shape
+    root.mkdir(parents=True, exist_ok=True)
+    if shape == "checkout":
+        for crate in ("grib1_bridge", "rustwx"):
+            (root / "tools" / crate).mkdir(parents=True, exist_ok=True)
+            (root / "tools" / crate / "Cargo.toml").write_text(
+                "[package]\n", encoding="utf-8")
+
+    # The shell under test -- and the three build hints, which are
+    # frozen at import for whichever platform is running the tests.
+    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    monkeypatch.setattr(bridges, "cargo_is_installed", lambda: False)
+    monkeypatch.setattr(bridges, "CARGO_BUILD_HINT",
+                        bridges.cargo_build_one_liner(bridges.CRATE_RELATIVE))
+    rustwx_hint = bridges.cargo_build_one_liner(bridges.RUSTWX_CRATE_RELATIVE)
+    monkeypatch.setattr(rustwx, "CARGO_BUILD_HINT", rustwx_hint)
+    monkeypatch.setattr(rustwx_fetch, "CARGO_BUILD_HINT", rustwx_hint)
+
+    monkeypatch.setattr(bridges, "_package_parent", lambda: root)
+    monkeypatch.setattr(bridges, "crate_dir",
+                        lambda: root / "tools" / "grib1_bridge")
+    monkeypatch.setattr(rustwx, "crate_dir", lambda: root / "tools" / "rustwx")
+    monkeypatch.setattr(rustwx_fetch, "crate_dir",
+                        lambda: root / "tools" / "rustwx")
+
+    # python below the floor; cupy and the render extra absent (with
+    # find_spec gone, the import probes spawn nothing).
+    monkeypatch.setattr(doctor, "sys", types.SimpleNamespace(
+        version_info=(3, 10, 4), executable=real_sys.executable))
+    monkeypatch.setattr(doctor, "find_spec", lambda name: None)
+
+    def _raise_missing(*_args, **_kwargs):
+        raise FileNotFoundError("the override names nothing on disk")
+
+    stale = tmp_path / "stale.exe"
+    if mode == "override":
+        monkeypatch.setattr(bridges, "find_bridge", _raise_missing)
+        monkeypatch.setattr(rustwx, "find_renderer", _raise_missing)
+        monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", _raise_missing)
+    elif mode == "stale":
+        monkeypatch.setattr(bridges, "find_bridge", lambda name: stale)
+        monkeypatch.setattr(doctor, "_exec_probe",
+                            lambda path: (False, "stale ABI"))
+        monkeypatch.setattr(rustwx, "find_renderer", lambda: stale)
+        monkeypatch.setattr(rustwx, "probe_renderer",
+                            lambda path: (False, "stale ABI"))
+        monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", lambda: stale)
+        monkeypatch.setattr(rustwx_fetch, "probe_fetch_bin",
+                            lambda path: (False, "stale ABI"))
+    else:
+        monkeypatch.setattr(bridges, "find_bridge", lambda name: None)
+        monkeypatch.setattr(rustwx, "find_renderer", lambda: None)
+        monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", lambda: None)
+
+    def _no_library():
+        raise FileNotFoundError("gpuwm_preprocess_cpu not found")
+
+    def _unloadable():
+        raise OSError("found, but not a loadable image")
+
+    monkeypatch.setattr(cpu_backend, "CpuPreprocessBackend",
+                        _unloadable if mode == "stale" else _no_library)
+
+    def _invalid(*_args, **_kwargs):
+        raise FileNotFoundError("qr_acr_qg_V4.dat is not where it should be")
+
+    # Thompson: the externalized-asset gap (a fetch), or everything else
+    # (a reinstall).  Both remedies are only reachable from a broken
+    # table root, which the box running the tests does not have.
+    monkeypatch.setattr(thompson_contract, "validate_table_assets", _invalid)
+    externalized = [types.SimpleNamespace(filename="freezeH2O.dat",
+                                          bytes=92 * 1024 * 1024)]
+    if mode == "absent":
+        monkeypatch.setattr(table_assets, "missing_externalized_assets",
+                            lambda where: list(externalized))
+        monkeypatch.setattr(table_assets, "classify_assets",
+                            lambda where: ([], [], list(externalized)))
+    else:
+        monkeypatch.setattr(table_assets, "missing_externalized_assets",
+                            lambda where: [])
+        monkeypatch.setattr(table_assets, "classify_assets",
+                            lambda where: ([], list(externalized), []))
+
+    monkeypatch.setattr(noah_core, "load_tables", _invalid)
+
+    # The case-data root: set to a directory that is not there, or set
+    # to one that is but carries no WPS_GEOG.
+    monkeypatch.setenv(
+        "GPUWM_CASE_DATA_ROOT",
+        str(tmp_path / "absent" if mode == "override" else root))
+
+    # The sealed-runtime manifest: not a READY document, or READY with
+    # an artifact that no longer hashes.
+    manifest = tmp_path / f"manifest-{mode}.json"
+    if mode == "absent":
+        manifest.write_text("not a json document at all", encoding="utf-8")
+    else:
+        manifest.write_text(jsonlib.dumps({
+            "schema": "gpuwm-native-wrf-runtime-v1", "status": "READY",
+            "payload": {"decoder.bin": {"bytes": 3, "sha256": "00" * 32}},
+        }), encoding="utf-8")
+    monkeypatch.setenv("GPUWM_NATIVE_DISTRIBUTION_MANIFEST", str(manifest))
+
+
+@pytest.mark.parametrize("windows", (False, True))
+@pytest.mark.parametrize("shape", ("checkout", "wheel"))
+@pytest.mark.parametrize("mode", ("absent", "stale", "override"))
+def test_the_whole_printed_report_pastes_as_one_sequence(
+        monkeypatch, tmp_path, windows, shape, mode):
+    """Every remedy doctor can print, in print order, pasted as a block.
+
+    The contract is not "each block is well formed"; it is "select the
+    lot and run it".  Four ways that was false shipped past a per-block
+    sweep: `cd tools/rustwx` left the shell in the crate so the next
+    block's `cd` went somewhere else, `git clone` came back once per
+    bridge, the CPU-library remedy fused prose onto the build command,
+    and four remedies were prose with no `#` at all.
+    """
+
+    _force_every_gap(monkeypatch, tmp_path, windows=windows, shape=shape,
+                     mode=mode)
+    checks = doctor.collect_checks()
+    remedies = [check.remedy for check in checks if check.remedy]
+    assert len(remedies) >= 12, (
+        "the sweep stopped reaching most of the report; it can only "
+        f"prove what it forces (got {len(remedies)})")
+
+    # 1. Every physical line of the whole paste, first to last.
+    _assert_remedy_lines_are_commands_or_comments(
+        "\n".join(remedies), windows=windows)
+
+    # 2. The sequence composes: no block depends on -- or damages -- the
+    #    working directory another block left behind.
+    clones = _assert_the_paste_composes(remedies, windows=windows)
+
+    # 3. And it survives being pasted twice, which is what happens when
+    #    a reader re-runs doctor and pastes the report again.
+    _assert_the_paste_composes(remedies * 2, windows=windows)
+
+    if shape == "wheel":
+        assert len(clones) >= 2, (
+            "a wheel gaps every Rust artifact at once; the clone should "
+            f"appear in several blocks: {clones}")
+        assert len(set(clones)) == 1, (
+            f"the blocks clone into different directories: {set(clones)}")
+    else:
+        assert not clones, "a checkout has the sources; cloning is noise"
+        assert any("cargo build --release --locked --offline" in remedy
+                   for remedy in remedies)
+
+    # 4. The printed report IS that paste: the whole block lines up
+    #    under `remedy:`, rather than only its first line.
+    report_lines = doctor.format_report(checks).splitlines()
+    cursor = 0
+    for check in checks:
+        if not check.remedy:
+            continue
+        printed = [line.strip() for line in check.remedy.splitlines()]
+        label = "          remedy: " + printed[0]
+        assert label in report_lines[cursor:], label
+        cursor = report_lines.index(label, cursor)
+        for offset, text in enumerate(printed[1:], start=1):
+            line = report_lines[cursor + offset]
+            assert line[:18].strip() == "" and line[18:] == text, (
+                "remedy continuation lines must line up under the label: "
+                f"{line!r}")
+        cursor += len(printed)

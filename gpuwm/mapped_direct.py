@@ -17,7 +17,7 @@ import uuid
 import numpy as np
 
 from gpuwm.core.grid import make_vertical_coord
-from gpuwm.experiment import load_experiment
+from gpuwm.experiment import load_experiment, validate_boundary_timing
 from gpuwm.ingest.horiz import interpolate_era5_to_lambert
 from gpuwm.ingest.lateral_bc import (
     attach_lateral_boundaries,
@@ -168,15 +168,26 @@ def _validate_target_contract(
             f"mapped boundary interval {boundary_interval_seconds} differs "
             f"from target contract {declared_interval}"
         )
-    if hierarchy and boundary_interval_seconds % 3600:
-        raise ValueError(
-            "mapped hierarchy export currently requires whole-hour forcing "
-            "cadence"
-        )
+    validate_boundary_timing(
+        exp, boundary_interval_seconds,
+        source=(
+            "mapped hierarchy target"
+            if hierarchy else "mapped target"))
     return {
         "status": "PASS",
         "domain_count": domain_count,
         "domain_ids": [domain.grid_id for domain in exp.domains],
+        "domain_start_times": {
+            f"d{domain.grid_id:02d}": (
+                exp.domain_start_time(domain.grid_id).isoformat()
+                if hasattr(exp, "domain_start_time")
+                else (
+                    exp.start_time
+                    if getattr(domain, "start_time", None) is None
+                    else domain.start_time
+                ).isoformat())
+            for domain in exp.domains
+        },
         "mapping_max_dom": max_dom,
         "target_vertical_levels": target_vertical_levels,
         "require_lateral_boundaries": True,
@@ -518,7 +529,12 @@ def prepare_mapped_wrf(
             ],
             "preprocessing": preprocess_receipt,
         }
-        forcing_hours = tuple(value // 3600 for value in forcing_seconds)
+        forcing_identity = (
+            {"forcing_hours": tuple(
+                value // 3600 for value in forcing_seconds)}
+            if all(value % 3600 == 0 for value in forcing_seconds)
+            else {"forcing_offsets_seconds": forcing_seconds})
+        forcing_key, forcing_axis = next(iter(forcing_identity.items()))
         if hierarchy:
             selected_workers = hierarchy_workers
             if selected_workers is None:
@@ -530,7 +546,7 @@ def prepare_mapped_wrf(
                 exp=exp,
                 grids=grids,
                 snapshots=snapshots,
-                forcing_hours=forcing_hours,
+                **forcing_identity,
                 wps_namelist=wps_namelist,
                 geog_root=geog_root,
                 source_name="RW-WPS-MAPPED",
@@ -589,7 +605,7 @@ def prepare_mapped_wrf(
                 "status": "READY_NOT_YET_STOCK_WRF_GATED",
                 "domain_count": len(exp.domains),
                 "forcing_times": [value.isoformat() for value in times],
-                "forcing_hours": list(forcing_hours),
+                forcing_key: list(forcing_axis),
                 "boundary_interval_seconds": boundary_interval_seconds,
                 "target_contract": target_contract,
                 "execution_inputs": {
@@ -647,7 +663,7 @@ def prepare_mapped_wrf(
             static_cache_sha256=static_receipt["sha256"],
             namelist_sha256=_sha256(experiment_config),
             domain_config=exp.root,
-            forcing_hours=forcing_hours,
+            **forcing_identity,
             source_identity=source_identity,
         )
         cache_started = time.perf_counter()
@@ -659,7 +675,7 @@ def prepare_mapped_wrf(
                 "source_adapter": "mapped",
                 "initial_valid_time": times[0].isoformat(),
                 "last_valid_time": times[-1].isoformat(),
-                "forcing_hours": [value // 3600 for value in forcing_seconds],
+                forcing_key: list(forcing_axis),
                 "boundary_interval_seconds": boundary_interval_seconds,
                 "composition_receipt_sha256": composition_receipt[
                     "receipt_content_sha256"
@@ -688,7 +704,7 @@ def prepare_mapped_wrf(
             "schema": PROOF_SCHEMA,
             "status": "READY_NOT_YET_STOCK_WRF_GATED",
             "forcing_times": [value.isoformat() for value in times],
-            "forcing_hours": [value // 3600 for value in forcing_seconds],
+            forcing_key: list(forcing_axis),
             "boundary_interval_seconds": boundary_interval_seconds,
             "execution_inputs": {
                 "decoders": _bound_decoder_receipts(

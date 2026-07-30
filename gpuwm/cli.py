@@ -4,6 +4,10 @@
 download with manifests, ERA5 cdsapi template + validation); the
 behavior lives in :mod:`gpuwm.fetch`.
 
+``gpuwm adapt`` compiles a WPS Vtable plus a declarative mapping descriptor,
+then verifies the caller's actual GRIB2 inventory before creating a runnable,
+explicitly non-stock-WRF-certified mapped adapter bundle.
+
 ``gpuwm static|ingest|run CONFIG`` sniffs the TOML shape: an
 ``[experiment]``/``[[domain]]`` file routes to the Phase-5 experiment
 path (schema + validation in :mod:`gpuwm.experiment`, declared inputs in
@@ -36,6 +40,7 @@ import os
 import sys
 from pathlib import Path
 
+from gpuwm.adapt import register_cli as adapt_register_cli
 from gpuwm.config import load_config
 from gpuwm.core.preflight import check_main
 from gpuwm.core.preflight import register_cli as preflight_register_cli
@@ -164,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     downscale_register_cli(sub)
     doctor_register_cli(sub)
     table_assets_register_cli(sub)
+    adapt_register_cli(sub)
     lst = sub.add_parser(
         "cases", help="list the discovered verification cases and the "
                       "entry points each one declares")
@@ -296,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _dispatch(args) -> int:
     if args.command in ("check", "fetch", "fetch-geog", "domain", "render",
-                        "downscale", "doctor", "fetch-tables"):
+                        "downscale", "doctor", "fetch-tables", "adapt"):
         return args.func(args)
 
     if args.command == "cases":

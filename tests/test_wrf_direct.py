@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import netCDF4
@@ -11,6 +12,7 @@ import pytest
 import gpuwm.wrf_direct as wrf_direct
 
 from gpuwm.wrf_direct import (
+    _direct_export_soil_geometry,
     _global_updates,
     _domain_global_attributes,
     _dimensions,
@@ -40,6 +42,10 @@ from gpuwm.wrf_direct import (
     load_domain_artifacts_manifest,
     write_domain_artifacts_manifest,
     _wrf_noah_landuse,
+)
+from gpuwm.physics_compat import (
+    MYNN_PROFILE_ID,
+    validate_single_domain_physics_profile,
 )
 from gpuwm.vertical_contract import expected_coordinate_shapes
 from gpuwm.config import RunConfig
@@ -74,6 +80,60 @@ def test_stock_wrf_export_rejects_gpuwm_mixed_microphysics_before_output(
         export_prepared_wrf_hierarchy(exp, (), output)
     assert not output.exists()
     assert not output.with_name(output.name + f".tmp-{os.getpid()}").exists()
+
+
+def test_single_domain_cli_forwards_physics_profile_and_acknowledgement(
+        tmp_path, monkeypatch, capsys):
+    observed = {}
+
+    def export(*args, **kwargs):
+        observed["args"] = args
+        observed["kwargs"] = kwargs
+        return {"status": "READY"}
+
+    monkeypatch.setattr(wrf_direct, "export_prepared_wrf", export)
+    monkeypatch.setattr(sys, "argv", [
+        "gpuwm.wrf_direct",
+        "--prepared-cache", str(tmp_path / "prepared"),
+        "--static-cache", str(tmp_path / "static.npz"),
+        "--geometry-receipt", str(tmp_path / "geometry.json"),
+        "--output", str(tmp_path / "output"),
+        "--valid-time", "2026-07-18_00:00:00",
+        "--physics-profile", MYNN_PROFILE_ID,
+        "--expert-acknowledgement", "consent-v1",
+    ])
+
+    wrf_direct.main()
+
+    assert observed["kwargs"]["physics_profile"] == MYNN_PROFILE_ID
+    assert observed["kwargs"]["expert_acknowledgements"] == ("consent-v1",)
+    assert json.loads(capsys.readouterr().out)["status"] == "READY"
+
+
+def test_hierarchy_cli_does_not_forward_single_domain_physics_options(
+        tmp_path, monkeypatch, capsys):
+    observed = {}
+
+    def export(*args, **kwargs):
+        observed["args"] = args
+        observed["kwargs"] = kwargs
+        return {"status": "READY"}
+
+    monkeypatch.setattr(
+        wrf_direct, "export_prepared_wrf_namelists", export)
+    monkeypatch.setattr(sys, "argv", [
+        "gpuwm.wrf_direct",
+        "--domain-artifacts", str(tmp_path / "domains.json"),
+        "--wps-namelist", str(tmp_path / "namelist.wps"),
+        "--namelist-input", str(tmp_path / "namelist.input"),
+        "--output", str(tmp_path / "output"),
+    ])
+
+    wrf_direct.main()
+
+    assert "physics_profile" not in observed["kwargs"]
+    assert "expert_acknowledgements" not in observed["kwargs"]
+    assert json.loads(capsys.readouterr().out)["status"] == "READY"
 
 
 def test_contract_inventory_is_frozen():
@@ -211,6 +271,53 @@ def test_global_updates_keep_stock_wrf_v4_gate_and_geometry():
     assert updates["PARENT_ID"] == 0
 
 
+def test_front_door_global_updates_carry_selected_physics():
+    geometry = {
+        "center_lat": 35.5,
+        "center_lon": -98.0,
+        "ref_lat": 35.5,
+        "truelat1": 38.5,
+        "truelat2": 38.5,
+        "stand_lon": -97.5,
+    }
+    selection = validate_single_domain_physics_profile(MYNN_PROFILE_ID)
+
+    updates = _global_updates(
+        valid_time=datetime(2026, 7, 18), nx=20, ny=16, nz=8,
+        dx=1000.0, dy=1000.0, dt=5.0, geometry=geometry,
+        physics_selection=selection)
+
+    assert updates["MP_PHYSICS"] == 6
+    assert updates["SF_SFCLAY_PHYSICS"] == 5
+    assert updates["BL_PBL_PHYSICS"] == 5
+    assert updates["SF_SURFACE_PHYSICS"] == 2
+    assert updates["RA_LW_PHYSICS"] == 0
+    assert updates["RA_SW_PHYSICS"] == 1
+    assert updates["CU_PHYSICS"] == 0
+
+
+@pytest.mark.parametrize(
+    ("surface", "layers"),
+    ((2, 4), (3, 9), (4, 4)),
+)
+def test_direct_export_soil_geometry_follows_selected_surface_scheme(
+        surface, layers):
+    depths, thicknesses = _direct_export_soil_geometry(surface, layers)
+
+    assert depths.shape == (layers,)
+    assert thicknesses.shape == (layers,)
+    assert np.all(np.diff(depths) > 0.0)
+    assert np.all(thicknesses > 0.0)
+
+
+def test_direct_export_dimensions_follow_ruc_nine_layer_state():
+    dimensions = _dimensions(
+        _load_contract()["wrfinput"], nx=31, ny=23, nz=17,
+        num_soil_layers=9)
+
+    assert dimensions["soil_layers_stag"] == 9
+
+
 @pytest.mark.parametrize("nz", [4, 17, 49, 80, 113])
 def test_direct_export_dimensions_are_derived_for_any_level_count(nz):
     contract = _load_contract()
@@ -345,6 +452,17 @@ def test_forcing_inventory_supports_six_hour_cadence():
         }
 
     assert _forcing_interval_indices(Cache(), 21_600) == [0, 1]
+
+
+def test_forcing_inventory_supports_five_minute_offsets():
+    class Cache:
+        header = {
+            "identity": {"forcing_offsets_seconds": [0, 300, 600]},
+            "arrays": {f"lbc/{index}/u/west/value": {}
+                       for index in range(2)},
+        }
+
+    assert _forcing_interval_indices(Cache(), 300) == [0, 1]
 
 
 def test_forcing_inventory_fails_closed_on_cadence_mismatch():

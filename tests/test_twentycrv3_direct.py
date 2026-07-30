@@ -192,3 +192,95 @@ def test_filename_member_retags_grib_records_without_pdt_member() -> None:
 def test_filename_member_rejects_unexpected_pdt_member() -> None:
     with pytest.raises(ValueError, match="unexpectedly encodes"):
         _bind_implicit_member(_collection("9"), "072")
+
+
+# ---------------------------------------------------------------------------
+# Front-door guidance (node-8 quartet): a refusal is a sentence, and the
+# route that ran end to end now says how to run the forecast.
+# ---------------------------------------------------------------------------
+
+def test_the_wizard_default_toml_is_refused_in_a_sentence(tmp_path, capsys):
+    """A gate that is right, worded as an instruction rather than a crash.
+
+    `gpuwm domain --source era5` (the wizard default) emits a
+    `[case_data]` table.  The native 20CRv3 front door does not read it,
+    and `experiment.build_experiment` says so -- but a node-8 pilot met
+    that as a raw traceback with no route to a config that works.
+    """
+    from gpuwm import twentycrv3_wrf
+
+    config = tmp_path / "wizard-default.toml"
+    config.write_text(
+        "[experiment]\nname = \"x\"\n\n[case_data]\nroot = \"nope\"\n",
+        encoding="utf-8")
+    argv = []
+    for flag in ("--mapping", "--composition", "--provenance", "--manifest",
+                 "--grib2-inventory", "--grib2-dump", "--wps-namelist",
+                 "--geog-root", "--output-root"):
+        argv += [flag, str(tmp_path / "unused")]
+    argv += ["--manifest-sha256", "0" * 64,
+             "--experiment-config", str(config)]
+
+    rc = twentycrv3_wrf.main(argv)
+    err = capsys.readouterr().err
+    assert rc == 2, "a config refusal fails closed"
+    assert "Traceback" not in err
+    assert err.count("\n") == 1, f"one sentence, not a stack: {err!r}"
+    # It names the incompatibility...
+    assert "[case_data]" in err
+    # ...and a supported route to a config this door accepts.
+    assert "gpuwm domain --source gfs" in err
+    assert "--experiment-config" in err
+
+
+def test_the_20crv3_front_door_prints_the_run_command_too(tmp_path):
+    """Parity with GFS: a complete hash-bound command, not silence.
+
+    The 1932 hindcast ran END TO END on shipped 1.0.1 and then printed
+    no run instruction at all, while the GFS door printed a complete
+    hash-bound command.  Same printer, same contract, `--source 20crv3`.
+    """
+    import hashlib as _hashlib
+    import json
+
+    from gpuwm.gfs_direct import prepared_forecast_next_command
+
+    root = tmp_path / "prepared"
+    root.mkdir()
+    from gpuwm.physics_compat import WSM6_PROFILE_ID
+
+    proof = {"schema": "gpuwm-mapped-direct-wrf-proof-v1",
+             "input_manifest_sha256": "a" * 64,
+             "physics": {"profile": WSM6_PROFILE_ID},
+             "prepared_cache": {"content_sha256": "b" * 64}}
+    (root / "proof.json").write_text(json.dumps(proof), encoding="utf-8")
+    proof_digest = _hashlib.sha256(
+        (root / "proof.json").read_bytes()).hexdigest()
+    config = tmp_path / "c.toml"
+    config.write_text("[experiment]\n", encoding="utf-8")
+    namelist = tmp_path / "c.namelist.wps"
+    namelist.write_text("&share\n/\n", encoding="utf-8")
+
+    lines = prepared_forecast_next_command(
+        proof, output_root=root, experiment_config=config,
+        wps_namelist=namelist, source="20crv3")
+    text = "\n".join(lines)
+    assert "--source 20crv3" in text
+    assert f"--physics-profile {WSM6_PROFILE_ID}" in text
+    assert f"--proof-sha256 {proof_digest}" in text
+    assert f"--source-manifest-sha256 {'a' * 64}" in text
+    assert f"--prepared-content-sha256 {'b' * 64}" in text
+    # No placeholders, and no holed command: every value resolved.
+    assert "<" not in text and ">" not in text
+    # The outdir is a SIBLING of the preparation, which is the only kind
+    # the runner's protected-input guard accepts.
+    assert f"--outdir {root.parent / (root.name + '-forecast')}" in text
+    # And 20crv3 really is a source that runner takes.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_sd_sources",
+        Path(__file__).resolve().parents[1] / "tools"
+        / "prepared_single_domain_forecast.py")
+    text_src = spec.origin and Path(spec.origin).read_text(encoding="utf-8")
+    assert 'SUPPORTED_SOURCES = frozenset({"gfs", "era5", "20crv3"})' \
+        in text_src

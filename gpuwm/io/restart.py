@@ -2009,6 +2009,12 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
             gid = int(node.cfg.grid_id)
             node.state.elapsed_seconds = ticks / tick_den
             bits = int(np.float32(node.clock.dtbc_fp32).view(np.uint32))
+            started = bool(getattr(node, "_started", True))
+            lifecycle = "STARTED" if started else "NOT_STARTED"
+            domain_start_time = (
+                model.schedule.clock.start_time
+                if node.cfg.start_time is None
+                else node.cfg.start_time)
             tree_header = {
                 "experiment_fingerprint": model.experiment_fingerprint,
                 "checkpoint_set_id": checkpoint_set_id,
@@ -2018,7 +2024,12 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
                 "elapsed_ticks": ticks,
                 "tick_den": tick_den,
                 "phase": PERIOD_BEGIN,
-                "nest_tables": "REBUILT",
+                "domain_start_time": domain_start_time.isoformat(),
+                "domain_start_ticks": int(node.clock.spec.start_ticks),
+                "domain_lifecycle": lifecycle,
+                "nest_tables": (
+                    "REBUILT" if started or node.parent is None
+                    else "NOT_STARTED"),
                 "dtbc_fp32_bits": bits,
             }
             base = Path(restart_filename(valid_time, f"d{gid:02d}"))
@@ -2120,9 +2131,33 @@ def restore_tree_restart(path, model) -> TreeRestartInfo:
             raise RestartMismatchError(
                 f"tree restart d{gid:02d} phase must explicitly be "
                 f"{PERIOD_BEGIN}, got {header.get('phase')!r}")
-        if header.get("nest_tables") != "REBUILT":
+        expected_start_time = (
+            model.schedule.clock.start_time
+            if node.cfg.start_time is None else node.cfg.start_time)
+        stored_start_time = header.get("domain_start_time")
+        stored_start_ticks = header.get("domain_start_ticks")
+        lifecycle = header.get("domain_lifecycle")
+        # Current-format checkpoints written before delayed starts existed
+        # can only represent the all-live-at-t0 lifecycle.  Admit that one
+        # unambiguous migration; a delayed live config still requires every
+        # new field and therefore remains fail-closed.
+        if node.clock.spec.start_ticks == 0:
+            if stored_start_time is None:
+                stored_start_time = expected_start_time.isoformat()
+            if stored_start_ticks is None:
+                stored_start_ticks = 0
+            if lifecycle is None:
+                lifecycle = "STARTED"
+        if stored_start_time != expected_start_time.isoformat():
             raise RestartMismatchError(
-                f"tree restart d{gid:02d} must classify nest tables REBUILT")
+                f"tree restart d{gid:02d} domain_start_time mismatch")
+        if stored_start_ticks != node.clock.spec.start_ticks:
+            raise RestartMismatchError(
+                f"tree restart d{gid:02d} domain_start_ticks mismatch")
+        if lifecycle not in ("STARTED", "NOT_STARTED"):
+            raise RestartMismatchError(
+                f"tree restart d{gid:02d} has invalid domain_lifecycle "
+                f"{lifecycle!r}")
         ticks = header.get("elapsed_ticks")
         den = header.get("tick_den")
         if (isinstance(ticks, bool) or not isinstance(ticks, int)
@@ -2131,6 +2166,21 @@ def restore_tree_restart(path, model) -> TreeRestartInfo:
             raise RestartMismatchError(
                 f"tree restart d{gid:02d} has invalid exact tick pair "
                 f"{(ticks, den)!r}")
+        expected_lifecycle = (
+            "STARTED" if ticks >= node.clock.spec.start_ticks
+            else "NOT_STARTED")
+        if lifecycle != expected_lifecycle:
+            raise RestartMismatchError(
+                f"tree restart d{gid:02d} lifecycle {lifecycle} disagrees "
+                f"with elapsed/start ticks ({ticks}, "
+                f"{node.clock.spec.start_ticks})")
+        expected_tables = (
+            "REBUILT" if lifecycle == "STARTED" or node.parent is None
+            else "NOT_STARTED")
+        if header.get("nest_tables") != expected_tables:
+            raise RestartMismatchError(
+                f"tree restart d{gid:02d} must classify nest tables "
+                f"{expected_tables}")
         stored_seconds = header.get("elapsed_seconds")
         if (isinstance(stored_seconds, bool)
                 or not isinstance(stored_seconds, (int, float))
@@ -2168,10 +2218,16 @@ def restore_tree_restart(path, model) -> TreeRestartInfo:
         _apply_validated_restart(validated[gid], node.state, node.cfg.run)
         clock = node.clock
         clock.ticks = ticks
-        clock.step_count = ticks // clock.spec.step_ticks
+        clock.step_count = max(
+            0, (ticks - clock.spec.start_ticks) // clock.spec.step_ticks)
         bits = headers[gid]["dtbc_fp32_bits"]
         clock.dtbc_fp32 = np.asarray(bits, dtype=np.uint32).view(np.float32)
         node.state.elapsed_seconds = ticks / tick_den
+        stored_lifecycle = headers[gid].get("domain_lifecycle")
+        node._started = (
+            True if stored_lifecycle is None
+            and node.clock.spec.start_ticks == 0
+            else stored_lifecycle == "STARTED")
         if node.parent is not None:
             node.coupler.invalidate()
 

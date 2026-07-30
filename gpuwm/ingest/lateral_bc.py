@@ -632,6 +632,57 @@ def couple_nest_field(state, field_name: str, *, out):
     return out
 
 
+def uncouple_feedback_field(state, field_name: str, coupled, reg, *,
+                            spec_zone=1):
+    """Write one restricted coupled field into the parent prognostic state.
+
+    ``coupled`` already contains ``copy_fcn`` output in the parent's field
+    geometry.  Only the exact WRF feedback rectangle is uncoupled; all cells
+    outside it remain byte-untouched.  MU is restricted directly and is not
+    accepted here, so momentum/scalar inverses always see the already
+    restricted current parent mass.
+    """
+    from gpuwm.core.nest_interp import feedback_parent_bounds
+
+    if field_name == "mu":
+        raise ValueError("feedback MU is restricted directly")
+    target_name = {"t": "thp", "ph": "php"}.get(field_name, field_name)
+    target = getattr(state, target_name, None)
+    if target is None:
+        raise ValueError(f"state has no active feedback field {field_name!r}")
+    if tuple(coupled.shape) != tuple(target.shape):
+        raise ValueError(
+            f"coupled feedback field {field_name} has shape "
+            f"{tuple(coupled.shape)}, expected {tuple(target.shape)}")
+    scalar_names = {"qv", "qc", "qr", "qi", "qs", "qg",
+                    "nr", "ni", "ns", "ng", "qh", "qndrop", "qnr",
+                    "qni", "qns", "qng", "qnh", "qnn", "qvolg", "qvolh"}
+    if field_name not in {"u", "v", "w", "t", "ph"} | scalar_names:
+        raise ValueError(f"unsupported feedback field {field_name!r}")
+    kind = {"u": 0, "v": 1, "t": 2, "ph": 3,
+            "qv": 5, "w": 6}.get(field_name, 7)
+    i_lo, i_hi, j_lo, j_hi = feedback_parent_bounds(
+        reg, spec_zone=spec_zone)
+    ni = max(0, i_hi - i_lo + 1)
+    nj = max(0, j_hi - j_lo + 1)
+    if not ni or not nj:
+        return target
+    nz, ny, nx = target.shape
+    mny, mnx = state.mup.shape
+    count = nz * nj * ni
+    kernel = get_kernel("lbc_state", "uncouple_feedback_field")
+    kernel(((count + _THREADS - 1) // _THREADS,), (_THREADS,), (
+        target, coupled, state.mub2d, state.mup, state.thb,
+        state.c1h, state.c2h, state.c1f, state.c2f,
+        state.msft, state.msfu, state.msfv,
+        np.int32(state.has_msf), np.int32(state.thb.ndim == 3),
+        np.int32(kind), np.int32(i_lo), np.int32(i_hi),
+        np.int32(j_lo), np.int32(j_hi),
+        np.int32(nz), np.int32(ny), np.int32(nx),
+        np.int32(mny), np.int32(mnx)))
+    return target
+
+
 def domain_boundary_snapshot(state) -> Mapping[str, np.ndarray]:
     """Return a float64 coupled snapshot suitable for the LBC builder."""
     return MappingProxyType({

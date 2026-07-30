@@ -699,7 +699,8 @@ def test_health_report_decodes_full_64_bit_argmax(monkeypatch):
                 words = np.array(
                     [wanted_index & 0xffffffff, wanted_index >> 32],
                     dtype=np.uint32)
-                result[5:7] = words.view(np.float32)
+                result[5] = 0.0
+                result[6:8] = words.view(np.float32)
 
         return launch
 
@@ -709,10 +710,103 @@ def test_health_report_decodes_full_64_bit_argmax(monkeypatch):
 
     assert report == {
         "u_max": 4.0, "w_max": 7.0, "th_max": 3.0,
-        "cfl": None, "nan": False,
+        "cfl": None, "horizontal_cfl": None, "vertical_cfl": None,
+        "nan": False,
         "boundary_w_max": 7.0, "interior_w_max": 5.0,
         "w_argmax": wanted_index,
     }
+
+
+def test_co_located_cfl_passes_aloft_updraft_but_catches_surface_and_threshold(
+        monkeypatch):
+    """The safety gate pairs each upper-face w with its own cell's dz."""
+
+    from gpuwm.core import constants as c
+    from gpuwm.core import dycore
+
+    class FakeState:
+        def __init__(self, w, z):
+            nz = len(z) - 1
+            self.u = np.zeros((nz, 1, 2), dtype=np.float32)
+            self.w = np.asarray(w, dtype=np.float32).reshape(nz + 1, 1, 1)
+            self.thp = np.zeros((nz, 1, 1), dtype=np.float32)
+            self.php = (
+                np.asarray(z, dtype=np.float32) * np.float32(c.G)
+            ).reshape(nz + 1, 1, 1)
+            self.phb = np.zeros(nz + 1, dtype=np.float32)
+            self.buffers = {}
+
+        def scratch(self, shape, slot):
+            return self.buffers.setdefault(
+                slot, np.zeros(shape, dtype=np.float32))
+
+    def fake_get_kernel(module, function):
+        assert module == "health"
+
+        def launch(_grid, _block, args):
+            if function == "health_partial":
+                (u, w, thp, ph, phb, partial, _nu, _nw, _nth, ncells,
+                 phb_full, _width, ny, nx, gravity) = args
+                plane = int(ny) * int(nx)
+                count = int(ncells)
+                rates = []
+                for index in range(count):
+                    level = index // plane
+                    upper = index + plane
+                    lower_base = phb[index] if int(phb_full) else phb[level]
+                    upper_base = (
+                        phb[upper] if int(phb_full) else phb[level + 1])
+                    dz = ((ph.reshape(-1)[upper] + upper_base)
+                          - (ph.reshape(-1)[index] + lower_base)) / gravity
+                    rates.append(abs(w.reshape(-1)[upper]) / dz)
+                partial.fill(0.0)
+                partial[0, :6] = [
+                    np.max(np.abs(u)), np.max(np.abs(w)),
+                    np.max(np.abs(thp)), 0.0, 0.0, max(rates),
+                ]
+                partial[0, 6:8] = np.array(
+                    [int(np.argmax(np.abs(w))), 0],
+                    dtype=np.uint32).view(np.float32)
+            else:
+                partial, result, _nblocks = args
+                result[:6] = partial[0, :6]
+                result[6:8] = partial[0, 6:8]
+
+        return launch
+
+    monkeypatch.setattr(dycore, "get_kernel", fake_get_kernel)
+    monkeypatch.setattr(dycore.cp, "asnumpy", lambda value: value)
+    run = SimpleNamespace(dt=10.0, dx=1000.0)
+
+    # 100 m/s belongs to the 1000 m upper layer.  The old global pairing
+    # fabricated CFL=100 by combining it with the unrelated 10 m layer;
+    # the co-located result is 1 and remains below the real gate.
+    aloft = dycore.stability_report(
+        FakeState([0.0, 0.0, 100.0], [0.0, 10.0, 1010.0]), run)
+    assert aloft["vertical_cfl"] == pytest.approx(1.0)
+    assert not dycore.stability_gate_failed(
+        aloft, max_cfl=10.0, max_w_ms=150.0)
+
+    # The same gate still catches an actual thin first-layer violation.
+    surface = dycore.stability_report(
+        FakeState([0.0, 11.0, 0.0], [0.0, 10.0, 1010.0]), run)
+    assert surface["vertical_cfl"] == pytest.approx(11.0)
+    assert dycore.stability_gate_failed(
+        surface, max_cfl=10.0, max_w_ms=150.0)
+
+    # Threshold continuity: equality passes; the next FP32 value fails.
+    at_limit = dycore.stability_report(
+        FakeState([0.0, 10.0, 0.0], [0.0, 10.0, 1010.0]), run)
+    assert at_limit["cfl"] == pytest.approx(10.0)
+    assert not dycore.stability_gate_failed(
+        at_limit, max_cfl=10.0, max_w_ms=150.0)
+    just_above = np.nextafter(
+        np.float32(10.0), np.float32(np.inf), dtype=np.float32)
+    above = dycore.stability_report(
+        FakeState([0.0, just_above, 0.0], [0.0, 10.0, 1010.0]), run)
+    assert above["cfl"] > 10.0
+    assert dycore.stability_gate_failed(
+        above, max_cfl=10.0, max_w_ms=150.0)
 
 
 def test_health_kernel_keeps_first_index_tie_and_nan_bits():
@@ -726,3 +820,5 @@ def test_health_kernel_keeps_first_index_tie_and_nan_bits():
     assert "health_partial" in kernel and "health_final" in kernel
     assert "unsigned long long& current_index" in kernel
     assert "indices[0] >> 32" in kernel
+    assert "fabsf(w[upper])" in kernel
+    assert "speed / dz" in kernel

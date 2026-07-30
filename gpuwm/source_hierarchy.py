@@ -137,9 +137,15 @@ def _validated_static_one_way_topology(exp, grids) -> dict[str, object]:
                 raise ValueError(
                     f"d{grid_id:02d} requires specified=false and nested=true")
         seen.add(grid_id)
+        configured_start = getattr(domain, "start_time", None)
+        domain_start = (
+            exp.domain_start_time(grid_id)
+            if hasattr(exp, "domain_start_time") else
+            (exp.start_time if configured_start is None else configured_start))
         rows.append({
             "grid_id": grid_id,
             "parent_id": parent_id,
+            "start_time": domain_start.isoformat(),
             "i_parent_start": int(domain.i_parent_start),
             "j_parent_start": int(domain.j_parent_start),
             "parent_grid_ratio": int(domain.parent_grid_ratio),
@@ -161,27 +167,45 @@ def _validated_static_one_way_topology(exp, grids) -> dict[str, object]:
 
 
 def _validated_forcing_series(
-        exp, snapshots: Sequence[object], forcing_hours: Sequence[int],
+        exp, snapshots: Sequence[object],
+        forcing_hours: Sequence[int] | None = None,
+        forcing_offsets_seconds: Sequence[int] | None = None,
 ) -> tuple[tuple[object, ...], tuple[int, ...], tuple[datetime, ...], int]:
     snapshots = tuple(snapshots)
-    hours = tuple(forcing_hours)
-    if len(snapshots) != len(hours) or len(snapshots) < 2:
+    if (forcing_hours is None) == (forcing_offsets_seconds is None):
         raise ValueError(
-            "nested source forcing requires matching snapshots/hours and at "
-            "least two boundary times")
-    if any(isinstance(hour, bool) or not isinstance(hour, int)
-           for hour in hours):
-        raise TypeError("nested source forcing hours must be integers")
-    if hours[0] != 0 or any(
-            later <= earlier for earlier, later in zip(hours, hours[1:])):
+            "nested source forcing requires exactly one of forcing_hours "
+            "or forcing_offsets_seconds")
+    legacy_hours = None if forcing_hours is None else tuple(forcing_hours)
+    if legacy_hours is not None:
+        if any(isinstance(hour, bool) or not isinstance(hour, int)
+               for hour in legacy_hours):
+            raise TypeError("nested source forcing hours must be integers")
+        offsets = tuple(hour * 3600 for hour in legacy_hours)
+        coordinate_name = "forcing hours"
+    else:
+        offsets = tuple(forcing_offsets_seconds)
+        if any(isinstance(offset, bool) or not isinstance(offset, int)
+               for offset in offsets):
+            raise TypeError(
+                "nested source forcing offsets must be integer seconds")
+        coordinate_name = "forcing offsets"
+    if len(snapshots) != len(offsets) or len(snapshots) < 2:
         raise ValueError(
-            "nested source forcing hours must begin at zero and increase")
+            "nested source forcing requires matching snapshots/offsets and "
+            "at least two boundary times")
+    if offsets[0] != 0 or any(
+            later <= earlier
+            for earlier, later in zip(offsets, offsets[1:])):
+        raise ValueError(
+            "nested source forcing offsets must begin at zero and increase")
     deltas = {
-        later - earlier for earlier, later in zip(hours, hours[1:])}
+        later - earlier
+        for earlier, later in zip(offsets, offsets[1:])}
     if len(deltas) != 1:
         raise ValueError("nested source forcing cadence must be uniform")
-    interval_hours = deltas.pop()
-    if interval_hours <= 0:
+    interval_seconds = deltas.pop()
+    if interval_seconds <= 0:
         raise ValueError("nested source forcing cadence must be positive")
 
     times = tuple(getattr(snapshot, "valid_time", None)
@@ -192,15 +216,15 @@ def _validated_forcing_series(
         raise ValueError(
             f"nested source forcing must begin at {exp.start_time}, got "
             f"{times[0]}")
-    for time_value, hour in zip(times, hours):
-        if (time_value - exp.start_time).total_seconds() != hour * 3600:
+    for time_value, offset in zip(times, offsets):
+        if (time_value - exp.start_time).total_seconds() != offset:
             raise ValueError(
-                "nested source snapshot times differ from forcing hours")
-    if hours[-1] * 3600 < exp.run_seconds:
+                f"nested source snapshot times differ from {coordinate_name}")
+    if offsets[-1] < exp.run_seconds:
         raise ValueError("nested source forcing does not cover the run")
     if len({type(snapshot) for snapshot in snapshots}) != 1:
         raise TypeError("nested source snapshots must use one adapter type")
-    return snapshots, hours, times, interval_hours * 3600
+    return snapshots, offsets, times, interval_seconds
 
 
 def _validate_source_orography(
@@ -378,7 +402,9 @@ def _spatial_coverage_receipt(
 
 def initialize_and_export_regular_source_hierarchy(
         *, exp, grids, snapshots: Sequence[object],
-        forcing_hours: Sequence[int], wps_namelist: Path, geog_root: Path,
+        forcing_hours: Sequence[int] | None = None,
+        forcing_offsets_seconds: Sequence[int] | None = None,
+        wps_namelist: Path, geog_root: Path,
         source_name: str, artifact_output: Path, wrf_output: Path,
         root_initial_result, root_met, root_soil, root_static_fields,
         root_boundaries, bridge_manifest_sha256: str,
@@ -416,8 +442,14 @@ def initialize_and_export_regular_source_hierarchy(
             "CUDA hierarchy preprocessing is deterministic only with "
             "workers=1")
 
-    snapshots, hours, times, interval = _validated_forcing_series(
-        exp, snapshots, forcing_hours)
+    snapshots, offsets, times, interval = _validated_forcing_series(
+        exp, snapshots, forcing_hours, forcing_offsets_seconds)
+    # Production ExperimentConfig carries the exact rational domain clocks.
+    # Lightweight source-adapter unit fixtures intentionally do not.
+    if hasattr(exp, "dt_exact") and hasattr(exp, "domain_start_offset_exact"):
+        from gpuwm.experiment import validate_boundary_timing
+        validate_boundary_timing(
+            exp, interval, source=f"{source_name} hierarchy forcing")
     inventory = tuple(source_inventory)
     units = dict(source_units or {})
     if "SOILGEO" in inventory and str(
@@ -462,6 +494,7 @@ def initialize_and_export_regular_source_hierarchy(
     provenance.update({
         "regular_source_adapter": source_name.lower(),
         "regular_source_forcing_times": [value.isoformat() for value in times],
+        "regular_source_forcing_offsets_seconds": list(offsets),
         "regular_source_static_catalog": static_receipt,
         "regular_source_orography": orography_receipt,
         "regular_source_coverage": source_coverage_receipt,
@@ -494,7 +527,10 @@ def initialize_and_export_regular_source_hierarchy(
         bridge_manifest_sha256=bridge_manifest_sha256,
         source_manifest_sha256=source_manifest_sha256,
         namelist_sha256=namelist_sha256,
-        forcing_hours=hours,
+        forcing_hours=(
+            tuple(forcing_hours) if forcing_hours is not None else None),
+        forcing_offsets_seconds=(
+            offsets if forcing_offsets_seconds is not None else None),
         source_identity=bound_source_identity,
         source_orography=source_orography,
         workers=workers,

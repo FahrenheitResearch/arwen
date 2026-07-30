@@ -398,11 +398,16 @@ def test_rejects_nonzero_child_spec_exp(tmp_path):
     assert exp.domain(2).run.spec_exp == 0.0
 
 
-def test_rejects_feedback_this_phase(tmp_path):
-    with pytest.raises(ValueError, match="one-way nesting"):
+def test_accepts_tree_wide_experimental_feedback_and_rejects_other_values(
+        tmp_path):
+    exp = load_experiment(_write(
+        tmp_path,
+        experiment="restart_interval_s = 0.0\nfeedback = 1"))
+    assert exp.feedback == 1
+    with pytest.raises(ValueError, match=r"feedback must be 0 .* or 1"):
         load_experiment(_write(
             tmp_path,
-            experiment="restart_interval_s = 0.0\nfeedback = 1"))
+            experiment="restart_interval_s = 0.0\nfeedback = 2"))
 
 
 def test_rejects_nonzero_smooth_option(tmp_path):
@@ -823,6 +828,18 @@ def test_rejects_non_datetime_start_time(tmp_path):
         'start_time = "1974-04-03"')
     with pytest.raises(ValueError, match="offset-free TOML datetime"):
         load_experiment(_write(tmp_path, text=text))
+
+
+def test_rejects_delayed_start_between_parent_steps_with_exact_ratio(
+        tmp_path):
+    path = _write(
+        tmp_path,
+        d02="start_time = 1974-04-03T12:00:50")
+    with pytest.raises(
+            ValueError,
+            match=(r"d02.*parent step boundary.*d01 dt = 60 s exactly.*"
+                   r"child-parent start offset.*5/6")):
+        load_experiment(path)
 
 
 # ---------------------------------------------------------------------------

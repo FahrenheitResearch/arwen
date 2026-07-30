@@ -239,6 +239,7 @@ class DomainTicks:
     bldt_ticks: int | None
     stepbl: int | None
     lbc_interval_ticks: int | None = None
+    start_ticks: int = 0
 
 
 @dataclass(frozen=True)
@@ -404,7 +405,9 @@ class DomainClock:
         (med_before_solve_io, frame/module_integrate.F:375) -- true at
         t = 0 (WRF writes the initial frame) and at every interval
         boundary on this domain's own clock."""
-        return self.ticks % self.spec.history_ticks == 0
+        return (self.ticks >= self.spec.start_ticks
+                and (self.ticks - self.spec.start_ticks)
+                % self.spec.history_ticks == 0)
 
     def history_rings_within_step(self) -> bool:
         """WRF ``Is_alarm_tstep`` for the step NOW being solved
@@ -414,7 +417,9 @@ class DomainClock:
         the reflectivity-stash position (trunk ``_refl_10cm_due``).
         Integer arithmetic only; advisory helper for T14 so the stash
         predicate is not re-derived per consumer."""
-        return ((self.ticks + self.spec.step_ticks)
+        return (self.ticks >= self.spec.start_ticks
+                and (self.ticks + self.spec.step_ticks
+                     - self.spec.start_ticks)
                 % self.spec.history_ticks == 0)
 
     def restart_due(self) -> bool:
@@ -476,6 +481,17 @@ def resolve_clock(exp: ExperimentConfig, *,
     # pure-CPU config machinery.
     from gpuwm.core.physics import _physics_interval_steps
     from gpuwm.config import radiation_enabled
+    from gpuwm.experiment import validate_boundary_timing
+
+    if lbc_interval_s is not None:
+        if (not float(lbc_interval_s).is_integer()
+                or int(lbc_interval_s) != lbc_interval_s):
+            raise ValueError(
+                f"lbc_interval_s = {lbc_interval_s!r} must be a whole "
+                "number of seconds for the boundary-forcing clock.")
+        validate_boundary_timing(
+            exp, int(lbc_interval_s),
+            source="runtime input catalog lbc_interval_s")
 
     dt_exact = {dc.grid_id: exp.dt_exact(dc.grid_id) for dc in exp.domains}
     tick_den = lcm(*(dt.denominator for dt in dt_exact.values()))
@@ -493,6 +509,12 @@ def resolve_clock(exp: ExperimentConfig, *,
     for dc in exp.domains:
         run = dc.run
         dt_ex = dt_exact[dc.grid_id]
+        start_f = exp.domain_start_offset_exact(dc.grid_id) * tick_den
+        if start_f.denominator != 1:
+            raise ValueError(
+                f"start_time for grid_id={dc.grid_id} is not a whole "
+                f"number of ticks (tick = 1/{tick_den} s).")
+        start_ticks = int(start_f)
         step_f = dt_ex * tick_den
         if step_f.denominator != 1:  # unreachable: tick_den is the LCM
             raise ValueError(
@@ -587,7 +609,8 @@ def resolve_clock(exp: ExperimentConfig, *,
             radt_ticks=radt_ticks, stepra=stepra,
             cudt_ticks=cudt_ticks, stepcu=stepcu,
             bldt_ticks=bldt_ticks, stepbl=stepbl,
-            lbc_interval_ticks=lbc_interval_ticks))
+            lbc_interval_ticks=lbc_interval_ticks,
+            start_ticks=start_ticks))
         step_by_id[dc.grid_id] = step_ticks
         fp32_by_id[dc.grid_id] = dt_fp32
 
@@ -652,6 +675,7 @@ class Schedule:
     clock: TickClock
     interior_period: tuple[Op, ...]
     final_period: tuple[Op, ...]
+    period_tables: tuple[tuple[Op, ...], ...] | None = None
 
     @property
     def period_ticks(self) -> int:
@@ -664,15 +688,16 @@ class Schedule:
     def period_ops(self, index: int) -> tuple[Op, ...]:
         if index < 0 or index >= self.periods:
             raise IndexError(f"period {index} outside 0..{self.periods - 1}")
+        if self.period_tables is not None:
+            return self.period_tables[index]
         if index == self.periods - 1:
             return self.final_period
         return self.interior_period
 
     def full_ops(self) -> Iterator[Op]:
         """Every op of the whole run, in execution order."""
-        for _ in range(self.periods - 1):
-            yield from self.interior_period
-        yield from self.final_period
+        for index in range(self.periods):
+            yield from self.period_ops(index)
 
     @staticmethod
     def op_counts(ops) -> dict[str, int]:
@@ -689,8 +714,13 @@ class Schedule:
             f"run_ticks={self.clock.run_ticks};"
             f"period_ticks={self.period_ticks};"
             f"periods={self.periods}\n".encode())
-        for label, ops in (("INTERIOR", self.interior_period),
-                           ("FINAL", self.final_period)):
+        tables = (("INTERIOR", self.interior_period),
+                  ("FINAL", self.final_period))
+        if self.period_tables is not None:
+            tables = tuple(
+                (f"PERIOD {index}", ops)
+                for index, ops in enumerate(self.period_tables))
+        for label, ops in tables:
             digest.update(f"[{label}]\n".encode())
             for op in ops:
                 digest.update(
@@ -724,12 +754,14 @@ def build_schedule(exp: ExperimentConfig,
             for dc in exp.domains}
     parent_of = {dc.grid_id: dc.parent_id for dc in exp.domains}
     step = {spec.grid_id: spec.step_ticks for spec in clock.domains}
+    starts = {spec.grid_id: spec.start_ticks for spec in clock.domains}
     head = exp.root.grid_id
     run_ticks = clock.run_ticks
 
     def expand(start_ticks: int) -> tuple[Op, ...]:
         ticks = {gid: start_ticks for gid in step}
         ops: list[Op] = []
+        active = {gid for gid in step if starts[gid] <= start_ticks}
 
         def at_stop(gid: int) -> bool:
             # domain_clockisstoptime on the tick lattice (:439-441).
@@ -740,10 +772,16 @@ def build_schedule(exp: ExperimentConfig,
                 ops.append(Op(STEP, gid, 0))            # :393
                 ticks[gid] += step[gid]                 # :396
                 for kid in kids[gid]:                   # :411-423
+                    if kid not in active:
+                        continue
                     ops.append(Op(FORCE, kid, gid))
                 for kid in kids[gid]:                   # :425-434
+                    if kid not in active:
+                        continue
                     integrate(kid, ticks[gid])
                 for kid in kids[gid]:                   # :436-453
+                    if kid not in active:
+                        continue
                     if not (at_stop(head) or at_stop(gid)
                             or at_stop(kid)):           # :439-441 (F8)
                         ops.append(Op(FEEDBACK, kid, gid))  # :443
@@ -753,7 +791,7 @@ def build_schedule(exp: ExperimentConfig,
             # feedback is RE-ISSUED here, immediately before the grid's
             # last-io check -- the loop guard above exists to avoid
             # doubling these tail calls (comment :507).
-            if gid != head:                             # :509/:511
+            if gid != head and gid in active:           # :509/:511
                 last_io = at_stop(head)                 # :513
                 walk = gid                              # :514
                 while walk != head:                     # :515-520
@@ -765,6 +803,9 @@ def build_schedule(exp: ExperimentConfig,
 
         integrate(head, start_ticks + step[head])
         boundary = start_ticks + step[head]
+        for gid in step:
+            if gid not in active:
+                ticks[gid] = boundary
         for gid, t in ticks.items():
             if t != boundary:
                 raise RuntimeError(
@@ -773,6 +814,12 @@ def build_schedule(exp: ExperimentConfig,
         return tuple(ops)
 
     periods = run_ticks // step[head]
+    if any(value for value in starts.values()):
+        tables = tuple(
+            expand(index * step[head]) for index in range(periods))
+        return Schedule(
+            clock=clock, interior_period=tables[0],
+            final_period=tables[-1], period_tables=tables)
     interior = expand(0)
     final = expand(run_ticks - step[head])
     if periods >= 3:
@@ -809,9 +856,11 @@ def execute_schedule(schedule: Schedule, *,
                      on_history=None, on_restart=None, on_lbc_reset=None,
                      on_period_begin=None, on_period_end=None,
                      on_period_commit=None,
+                     on_domain_start=None,
                      skip_feedback_path: bool = False,
                      clocks: dict[int, DomainClock] | None = None,
                      start_period: int = 0,
+                     started_grid_ids=None,
                      committed_initial_history_grid_ids=()
                      ) -> ExecutionReport:
     """Walk the flat op table with integer-tick clocks (the hot loop).
@@ -892,11 +941,28 @@ def execute_schedule(schedule: Schedule, *,
         clocks=clocks)
     period_ticks = schedule.period_ticks
     run_ticks = schedule.clock.run_ticks
-    final_index = schedule.periods - 1
-    interior = schedule.interior_period
-    final = schedule.final_period
     root_id = schedule.clock.root.grid_id
     restart_enabled = clocks[root_id].spec.restart_ticks is not None
+    if started_grid_ids is None:
+        started = {
+            gid for gid, dom in clocks.items()
+            if dom.spec.start_ticks == 0}
+    else:
+        started = {int(gid) for gid in started_grid_ids}
+    unknown_started = started - set(clocks)
+    if unknown_started:
+        raise ValueError(
+            f"started domains are not in the schedule: "
+            f"{sorted(unknown_started)}")
+    required_started = {
+        gid for gid, dom in clocks.items()
+        if dom.spec.start_ticks < start_ticks}
+    missing_started = required_started - started
+    if missing_started:
+        raise ValueError(
+            f"domains whose configured starts precede PERIOD_BEGIN "
+            f"{start_ticks} are not marked started: "
+            f"{sorted(missing_started)}")
 
     committed_initial = frozenset(int(gid)
                                   for gid in committed_initial_history_grid_ids)
@@ -909,7 +975,7 @@ def execute_schedule(schedule: Schedule, *,
 
     def emit_history(grid_id: int) -> None:
         dom = clocks[grid_id]
-        if (not dom.history_due()
+        if (grid_id not in started or not dom.history_due()
                 or last_history_ticks.get(grid_id) == dom.ticks):
             return
         last_history_ticks[grid_id] = dom.ticks
@@ -926,12 +992,17 @@ def execute_schedule(schedule: Schedule, *,
     # committed, and these initial callbacks are suppressed one domain at a
     # time.
     for gid in clocks:
+        dom = clocks[gid]
+        if (gid not in started and dom.spec.start_ticks == start_ticks):
+            if on_domain_start is not None:
+                on_domain_start(gid, dom)
+            started.add(gid)
         emit_history(gid)
 
     for period in range(start_period, schedule.periods):
         if on_period_begin is not None:
             on_period_begin(period, clocks)
-        ops = final if period == final_index else interior
+        ops = schedule.period_ops(period)
         for op in ops:
             if op.kind == STEP:
                 dom = clocks[op.grid_id]
@@ -986,6 +1057,9 @@ def execute_schedule(schedule: Schedule, *,
                                              child, parent)
         boundary = (period + 1) * period_ticks
         for gid, dom in clocks.items():
+            if gid not in started:
+                dom.ticks = boundary
+        for gid, dom in clocks.items():
             if dom.ticks != boundary:
                 raise RuntimeError(
                     f"tick-exact sync violated after period {period}: "
@@ -994,6 +1068,12 @@ def execute_schedule(schedule: Schedule, *,
         # WRF returns from the complete parent/child recursion before the
         # next boundary solve begins.  Consume every same-instant output
         # product now, while all clocks and states describe this boundary.
+        for gid, dom in clocks.items():
+            if (gid not in started
+                    and dom.spec.start_ticks == boundary):
+                if on_domain_start is not None:
+                    on_domain_start(gid, dom)
+                started.add(gid)
         for gid in clocks:
             emit_history(gid)
         if on_period_end is not None:

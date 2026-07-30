@@ -1,23 +1,31 @@
 # Getting data
 
-ArWen initializes from four public sources -- ERA5, GFS, GDAS, and
-HRRR -- through one front door, `gpuwm fetch`, plus the static
-geography tree `gpuwm fetch-geog` downloads and stages. This page
+ArWen downloads from four public sources -- ERA5, GFS, GDAS, and
+HRRR -- through one download front door, `gpuwm fetch`, plus the static
+geography tree `gpuwm fetch-geog` downloads and stages. Three of the
+four also *initialize* a run; GDAS stops at the decoder. This page
 covers each route end to end, the manifest handoff into the
 preprocessor, and honest disk numbers (all measured).
 
-Two routes to keep straight from the start:
+Three routes to keep straight from the start:
 
 - **ERA5** feeds the config-driven GPU forecast loop
   (`gpuwm check` / `run` / `resume`) through the native GRIB1 decode
   path.
-- **GFS, GDAS and HRRR** are real GRIB2 downloads that feed the `rw-wps`
+- **GFS and HRRR** are real GRIB2 downloads that feed the `rw-wps`
   native initialization front door, which emits
   `wrfinput_d0N`/`wrfbdy_d01` for unchanged stock WRF
   ([WRF-INTEROP.md](WRF-INTEROP.md)) and archives for
   [downscaling](DOWNSCALE.md). They do not feed the `[case_data]` GPU
   run path today; the domain wizard prints exactly which route your
   source gets.
+- **GDAS is fetch and decode only, f000..f009 -- it has no
+  initialization front door at all.** `gpuwm fetch --source gdas`
+  downloads verified, digest-bound GRIB2 and the certified
+  `gfs_grib2_bridge` reads it, but `rw-wps --source gdas` refuses: the
+  adapter declares no field, level, or cadence mapping, so nothing
+  downstream of the bridge accepts a GDAS series. Details, and why the
+  source is worth having anyway, are in the *GDAS* section below.
 
 Everything downstream of `fetch` is fail-closed: the Rust GRIB bridges
 validate envelopes, inventories, grids, and hashes before decoding, and
@@ -38,7 +46,8 @@ gpuwm fetch --source gfs --cycle latest --hours 24 \
   hour exists (anonymous S3 HEAD probes, newest first) -- a
   mid-publication cycle can never win.
 - Emits `gfs-series.tsv` (relative paths; the directory is relocatable)
-  and `fetch-manifest.json` with per-file SHA-256.
+  with each row's certified forecast-process ID, and
+  `fetch-manifest.json` with per-file SHA-256.
 - **Disk:** about 3.3 KB per square degree per forecast hour. Measured:
   ~83 KB/h at 5x5 degrees, ~3 MB/h at 30x30, ~16 MB/h at 60x80.
 - **Reach:** NOMADS retention is about 10 days. Older GFS cycles are
@@ -56,44 +65,74 @@ gpuwm fetch --source gfs --cycle latest --hours 24 \
   request is a pure byte-range extractor and returns the raw 5.3
   north-to-south records, so it is not a substitute for the crop.
 
-## GDAS (0.25-degree analysis, NOMADS) -- analysis-init only
+## GDAS (0.25-degree analysis cycle, NOMADS) -- fetch and decode only
 
 ```bash
+# the f000 analysis alone -- gdas is the one source that accepts --hours 0
 gpuwm fetch --source gdas --cycle 2026-07-29T12 --hours 0 \
   --area 25,-110,45,-85 --out data/gdas-analysis
+
+# or the whole certified span, f000..f009
+gpuwm fetch --source gdas --cycle 2026-07-29T12 --hours 9 --cadence 3 \
+  --area 25,-110,45,-85 --out data/gdas-cycle
 ```
+
+Both of those land verified GRIB2 on disk and stop there. Neither one
+prints an `rw-wps` next step, because there is not one.
 
 GDAS is the GFS assimilation cycle's own output, published in the
 *same* `pgrb2.0p25` container: same 0.25-degree grid, same variable and
 level codes, same 124-record census under gpuwm's selector, same centre
-and table versions. It rides the certified GFS mapping, bridge and
-front door with a source tag and nothing else, so everything in the GFS
-section above applies unchanged.
+and table versions. Fetch and the `gfs_grib2_bridge` decoder serve it
+with a source tag and nothing else, so everything in the GFS section
+above about the transport, the record bar and the packing applies
+unchanged. What does *not* carry over is the front door -- see below.
 
-**Scope: the f000 analysis, and nothing past it.** `--hours 0` is the
-only accepted window, and this is a statement about ArWen, not about
-GDAS -- NCEP publishes GDAS forecast hours out to f009. What ArWen has
-verified end to end against a live cycle is the analysis: 124 records,
-scan `0x40`, DRT 5.0, shape 6, centre 7, master table 2, local table 1,
-PDT 4.0, and the forecast generating process the analysis carries. NCEP
-tags the later GDAS forecast records with a *different* generating
-process, and the fail-closed `gfs_grib2_bridge` selects by exact field
-identity -- it is certified against the analysis tag and would reject
-the rest. So the refusal happens at `gpuwm fetch`, up front, instead of
-after a download the bridge cannot use. Asking for more says exactly
-that and points at `--source gfs`, which is certified through f384.
+**Scope: fetch and decode, f000..f009 -- there is no GDAS front door.**
+Read that as two separate statements, because they are.
+
+*Fetch and decode are certified through f009.* f000 carries analysis
+generating process ID 81; real NOMADS f003, f006 and f009 samples carry
+forecast process ID 96 -- so the endpoint of the claimed span is itself
+one of the committed files, not an extrapolation from the last one that
+is. Every one of those four files was verified
+whole -- 124 records, scan `0x40`, DRT 5.0, shape 6, centre 7, master
+table 2, local table 1, PDT 4.0 -- and the byte/signature ledger for the
+fixed samples lives under `tests/fixtures/gdas-process-id/`. The series
+*declares* the expected process ID on each row and the fail-closed
+`gfs_grib2_bridge` verifies that declaration against its certified
+`{81, 96}` capability set; it never infers process 96 from a nonzero
+hour or from a source name. Each forecast sample is also required to
+fail under the undeclared analysis-only policy. Past f009 refuses up
+front and says why.
+
+*There is no ingest route.* `rw-wps --source gdas` refuses: the adapter
+declares no field, level, or cadence mapping, so nothing downstream of
+the bridge will accept a GDAS series. The container is the certified GFS
+container and the mapping is expected to be reusable wholesale, but
+"expected to be reusable" is not a run, and ArWen does not ship a front
+door on that basis. `gpuwm fetch --source gdas` therefore prints no
+`rw-wps` next step; for a runnable single-domain front door today, use
+`--source gfs`, which is certified through f384. `rw-wps --show-source
+gdas` states the same thing in machine form -- `"runnable": false`,
+`"runner": null`, and `"pending"` for the field, level and cadence
+mappings.
 
 Otherwise the only differences are naming: files, the series TSV and the
-manifest role all carry the `gdas` stem, and the front-door manifest
-records `"model": "GDAS"`.
+manifest role all carry the `gdas` stem, and a manifest authored over a
+GDAS series records `"model": "GDAS"` -- which is a label on the bytes,
+not a route through them.
 
-**Why bother:** f000 is an *analysis* -- the assimilation system's best
-estimate of the atmosphere at that valid time -- rather than a forecast
-field carried forward by the model. For hindcast and case work, where
-the initial state is the whole point, that is the analysis-quality
-source at identical cost and through identical machinery. ArWen has not
-measured the forecast impact of the choice, so it makes no claim about
-one.
+**Why bother, given there is no front door yet:** f000 is an *analysis*
+-- the assimilation system's best estimate of the atmosphere at that
+valid time -- rather than a forecast field carried forward by the model.
+For hindcast and case work, where the initial state is the whole point,
+that is the analysis-quality source at identical cost and in a container
+ArWen's decoder already reads. Today that buys you verified, digest-bound
+GRIB2 on disk and a decoder that accepts it; the ingest route that turns
+it into `wrfinput` is roadmap, not shipped. ArWen has not measured the
+forecast impact of analysis-versus-forecast initialization either, so it
+makes no claim about one.
 
 **Antimeridian.** A `--area` longitude pair spanning more than 180
 degrees is read as the complementary box crossing 180E:
@@ -103,6 +142,23 @@ dateline, never the 340-degree box that excludes it. `--point` /
 antimeridian crops decode onto a continuous longitude axis. Boxes
 genuinely wider than 180 degrees must be requested as the full band or
 split.
+
+**Prime meridian.** The NOMADS CGI accepts one longitude interval in
+the `[0,360]` convention, so it cannot express a narrow box that crosses
+0 degrees. gpuwm currently keeps the correctness-preserving full-band
+fallback, but no longer does so silently: before downloading it prints
+the requested latitude/longitude box, the actual `0..360` fetched band,
+and `360 / requested_width` as the longitude-span amplification. It
+also records the fetched NOMADS area and amplification in
+`fetch-manifest.json`. Actual compressed-byte amplification is
+data-dependent and is labelled that way.
+
+Two independent narrow CGI responses are not a verified stitched GRIB
+product: simple concatenation would yield 248 records instead of the
+certified 124 and two incompatible grid geometries. Until a stitcher can
+re-encode one grid and pass the same envelope, exact-record-count,
+geometry, and SHA-256 contracts, the disclosed full-band result is the
+fail-closed route.
 
 **Area margin.** The front door must prove every model lake's nearest
 source-water donor lies inside the crop, and interior-continental lakes
@@ -212,6 +268,21 @@ What the route does accept:
   horizon here.
 - **One-way Lambert nests** through the packaged mapping's
   `max_dom = 4`.
+
+**The config route.** `--experiment-config` here reads
+`[experiment]`, `[shared]`, `[projection]` and `[[domain]]` only. It
+does *not* read `[case_data]`, which declares the ERA5 config-driven run
+path, so the wizard's `--source era5` default is refused (in a sentence
+naming this paragraph's remedy, not a traceback). `gpuwm domain` has no
+`--source 20crv3` option yet; emit a compatible config with
+**`gpuwm domain --source gfs`**, which writes no `[case_data]` table.
+Only the geometry and physics tables it writes are consumed here -- the
+`[fetch]` hints it also writes are inert on this route, because 20CRv3
+has no fetch route at all and you supply the files yourself.
+
+When preparation finishes, the front door prints the complete
+hash-bound `prepared_single_domain_forecast.py --source 20crv3` command
+on stderr, with every digest filled in, exactly as the GFS door does.
 
 Mapping, composition and provenance authorities are packaged, so the
 route's identity is fixed rather than assembled per run. Design and
@@ -337,15 +408,22 @@ same `record_bars`, including `inventory_change_accepted`.
 - **Resumable by design:** re-running the same command verifies and
   skips complete files; extending `--hours` fetches only the new ones
   (per-hour files are byte-identical for the same source/cycle/area).
+  GFS/GDAS atomically refresh the series and manifest after every
+  verified hour. Ctrl-C therefore exits without a Python traceback,
+  names the exact digest-bound prefix and any unverified `.part` on
+  disk, and prints the exact command that resumes those good bytes.
 - **Refuses a changed request:** a different area, cycle, or source
   into the same `--out` refuses with the exact per-field difference.
   `--force-refetch` moves the old files aside (nothing is deleted) and
   re-downloads.
 - **Refuses an unaccounted directory:** a nonempty `--out` without a
-  readable `fetch-manifest.json` (a fetch interrupted before its
-  manifest, or a corrupted one) also refuses -- the existing files
-  cannot be tied to any recorded request, so they are never resumed.
-  Fetch elsewhere or pass `--force-refetch` (quarantines, re-downloads).
+  readable `fetch-manifest.json` (files copied in by another tool, or a
+  corrupted manifest) also refuses -- the existing files cannot be tied
+  to any recorded request, so they are never resumed. Fetch elsewhere
+  or pass `--force-refetch` (quarantines, re-downloads). An interrupted
+  current-version GFS/GDAS fetch is not in this category: even a
+  first-hour interrupt publishes an empty request-identity manifest and
+  records no unverified payload.
 - Every fetch writes `fetch-manifest.json`
   (`gpuwm-fetch-manifest-v1`): source, cycle, area, and per-file
   name/role/bytes/SHA-256. Resume re-verifies existing files against
