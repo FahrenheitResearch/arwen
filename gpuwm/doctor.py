@@ -227,6 +227,16 @@ def _bridge_checks() -> list[Check]:
         if found is not None:
             ok, evidence = _exec_probe(found)
             if ok:
+                # It launches.  That was the whole check, and it is not
+                # enough: the wheel ships no Rust, so an upgrade of the
+                # Python half leaves yesterday's binaries in place, and
+                # a bridge built before a contract change still launches
+                # and still prints its usage line.  1.1.0 moved the GFS
+                # series file to three columns and doctor blessed every
+                # 1.0.1 bridge as `ok`, after which each preparation
+                # died blaming the series file gpuwm had just written.
+                ok, evidence = bridges.bridge_abi_matches(name, found)
+            if ok:
                 checks.append(Check(
                     f"bridge {name}", "verified", f"{found} -- {evidence}"))
             else:

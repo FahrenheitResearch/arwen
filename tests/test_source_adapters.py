@@ -419,6 +419,39 @@ def test_cli_refuses_unimplemented_source_before_touching_files(capsys):
     assert "stock-wrf evidence is a separate certification gate" in error
 
 
+def test_a_refusal_with_nothing_to_add_does_not_echo_its_own_status(capsys):
+    """`status=adapter_mapping_required: adapter_mapping_required`.
+
+    The reason fell back to the status value, which is already printed
+    two tokens earlier, so an adapter carrying neither a composition
+    requirement nor notes said the same thing twice -- and a doubled
+    token reads as a truncated message, which sent a node-8 pilot
+    looking for the rest of a sentence that was never there.  Fixed
+    source-agnostically: `gdas` was given real notes, but `rap` and
+    `nam` (and every adapter added later with nothing yet to say) were
+    still echoing.
+    """
+
+    for source in ("rap", "nam"):
+        assert main(["--source", source]) == EXIT_CONFIG
+        error = capsys.readouterr().err
+        first = error.splitlines()[0]
+        status = get_source_adapter(source).status.value
+        assert first == f"REFUSED source={source} status={status}"
+        assert first.count(status) == 1, first
+        # The paragraph that DOES explain the refusal is untouched.
+        assert "stock-wrf evidence is a separate certification gate" in error
+
+    # An adapter that has something to say still says it, on the same
+    # line and in the same shape.
+    assert main(["--source", "gdas"]) == EXIT_CONFIG
+    error = capsys.readouterr().err
+    assert error.splitlines()[0].startswith(
+        "REFUSED source=gdas status="
+        f"{get_source_adapter('gdas').status.value}: ")
+    assert "no ingest route and no front door" in error
+
+
 def test_cli_reports_and_refuses_uncertified_20crv3_cf_route(capsys):
     assert main(["--show-source", "20crv3-netcdf"]) == 0
     payload = json.loads(capsys.readouterr().out)

@@ -505,3 +505,56 @@ def test_feedback_zero_output_is_pinned_and_costs_nothing(monkeypatch):
         "the feedback = 0 output of this tree moved; if the change was "
         "intended, re-freeze FEEDBACK_ZERO_STATE_SHA256 and say so in "
         "the changelog, because it is an in-place-upgrade promise")
+
+
+# ---------------------------------------------------------------------------
+# V-6: feedback = 1 is a legal config value that one whole route cannot
+# prepare -- say so before the 26-second build, not after
+# ---------------------------------------------------------------------------
+
+
+def test_check_advises_on_two_way_before_the_route_refuses_it():
+    """`gpuwm check` passed feedback=1 in silence, identically to fb0.
+
+    A node-7 validation run authored a matched A/B pair differing only
+    in the feedback value, ran `gpuwm check` on the two-way half, got a
+    clean PASS and exit 0, and learned only at prepare -- after a 26 s
+    hierarchy build -- that the prepared-hierarchy route refuses two-way
+    nesting outright.  The gate is right; the silence upstream of it was
+    not.  This is an advisory and changes no exit code.
+    """
+
+    from types import SimpleNamespace
+
+    from gpuwm.core.preflight import (
+        FEEDBACK_TWO_WAY_ADVISORY, feedback_advisory,
+    )
+
+    assert feedback_advisory(SimpleNamespace(feedback=0)) is None
+    assert feedback_advisory(SimpleNamespace(feedback=1)) \
+        == FEEDBACK_TWO_WAY_ADVISORY
+    # It names the route that CAN run it and the route that cannot.
+    assert "gpuwm run" in FEEDBACK_TWO_WAY_ADVISORY
+    assert "refuses it at preparation" in FEEDBACK_TWO_WAY_ADVISORY
+    assert "experimental" in FEEDBACK_TWO_WAY_ADVISORY
+
+
+def test_the_hierarchy_refusal_names_where_two_way_is_supported():
+    """A refusal that names no alternative reads as a dead end."""
+
+    import pytest
+
+    from gpuwm.source_hierarchy import _validated_static_one_way_topology
+
+    from types import SimpleNamespace
+
+    domains = (SimpleNamespace(grid_id=1), SimpleNamespace(grid_id=2))
+    experiment = SimpleNamespace(feedback=1, domains=domains)
+
+    with pytest.raises(ValueError) as caught:
+        _validated_static_one_way_topology(
+            experiment, grids=(object(), object()))
+    message = str(caught.value)
+    assert "feedback=0" in message
+    assert "gpuwm run" in message
+    assert "not available through a prepared hierarchy" in message

@@ -85,6 +85,173 @@ def prepared_domain_config_identity(domain_config) -> dict[str, object]:
     return _json_copy(document)
 
 
+#: Identity fields added to the prepared-domain document AFTER caches
+#: carrying the older shape were already in the field, mapped to the
+#: value that means "this feature is not in use".
+#:
+#: v1.1.0 gave every domain an optional per-domain ``start_time`` for
+#: staggered nest starts.  The prepared-cache identity is compared by
+#: strict equality, and a v1.0.1 header was serialized before the field
+#: existed, so after upgrading the wheel EVERY prepared tree in the
+#: field became unrunnable -- refused with "d01 cache domain config
+#: differs from experiment", a sentence that points at the user's
+#: experiment TOML when the cause was a package upgrade.  A node-7
+#: validation run diffed the two documents: exactly one added key, and
+#: zero value differences among the eleven shared keys and ~110 run
+#: fields.
+#:
+#: Tolerating that is not weakening identity, and the narrowness is what
+#: makes it true.  A field ABSENT from the header and holding its
+#: documented default in the live configuration describes the same
+#: prepared state as a header written before the field existed: the
+#: feature is off in both.  A field absent from the header and holding a
+#: NON-default value describes a different setup and is still refused,
+#: as is any field the header carries and the live configuration
+#: contradicts.  Entries are added here deliberately, one per field, by
+#: whoever adds the field -- never by a rule that tolerates absence in
+#: general.
+DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({"start_time"})
+
+
+def undelayed_identity_defaults(experiment) -> dict[str, object]:
+    """What each tolerable field holds when its feature is NOT in use.
+
+    ``start_time`` is the only member today, and its not-in-use value is
+    not a constant: the loader resolves every domain's start, so a
+    domain with no delayed start carries the EXPERIMENT's start rather
+    than ``None``.  That is exactly the state a header written before
+    delayed starts existed describes, and it is what makes tolerating
+    the field's absence a statement about semantics rather than a
+    shrug.  A domain that really does start late holds a different
+    value, and is refused.
+    """
+
+    start = getattr(experiment, "start_time", None)
+    return {"start_time": start.isoformat()
+            if isinstance(start, datetime) else start}
+
+#: Where the writing gpuwm stamps its version in a cache header.  It
+#: sits OUTSIDE the hashed ``basis`` on purpose: the content digest of
+#: every cache written before this release must keep verifying exactly
+#: as it did, and a stamp that changed the digest would be a second
+#: upgrade break in the fix for the first one.
+CACHE_WRITER_KEY = "writer"
+
+#: What a header with no stamp tells us: it was written before stamping
+#: existed.  Naming that is the honest answer; guessing a version is not.
+UNSTAMPED_WRITER = "a release before 1.1.1 (which stamped no version)"
+
+
+def cache_writer_version(header) -> str:
+    """The gpuwm that wrote this cache header, or an honest unknown."""
+
+    writer = header.get(CACHE_WRITER_KEY) if isinstance(header, Mapping) \
+        else None
+    version = writer.get("gpuwm_version") if isinstance(writer, Mapping) \
+        else None
+    return version if isinstance(version, str) and version else UNSTAMPED_WRITER
+
+
+def compare_prepared_domain_config(cached, live, *, not_in_use=None
+                                   ) -> tuple[list[str], list[str]]:
+    """``(tolerated, differing)`` field paths between two domain identities.
+
+    ``tolerated`` are fields the live document has, the cached one does
+    not, and whose live value is the not-in-use value the caller
+    declared for them -- provably the same prepared state under a newer
+    schema.  ``differing`` is everything else, including a field the
+    CACHE carries and this build does not, which means the cache was
+    written by a newer gpuwm than this one.
+
+    ``not_in_use`` comes from :func:`undelayed_identity_defaults`.
+    Omitting it tolerates nothing: a caller that cannot say what "off"
+    means for a field is not in a position to decide the field is off.
+    """
+
+    not_in_use = {} if not_in_use is None else dict(not_in_use)
+    if not isinstance(cached, Mapping) or not isinstance(live, Mapping):
+        # Both absent is not a difference; only one of them being a
+        # document is.  Synthetic identities without a domain_config at
+        # all are a legitimate shape for callers that bind something
+        # else entirely.
+        return [], ([] if cached == live else ["domain_config"])
+    tolerated: list[str] = []
+    differing: list[str] = []
+
+    def walk(cached_node, live_node, prefix: str) -> None:
+        for key in sorted(set(cached_node) | set(live_node)):
+            path = f"{prefix}{key}"
+            if key not in cached_node:
+                if (path in DEFAULT_TOLERANT_IDENTITY_FIELDS
+                        and path in not_in_use
+                        and live_node[key] == not_in_use[path]):
+                    tolerated.append(path)
+                else:
+                    differing.append(path)
+                continue
+            if key not in live_node:
+                differing.append(path)
+                continue
+            old, new = cached_node[key], live_node[key]
+            if isinstance(old, Mapping) and isinstance(new, Mapping):
+                walk(old, new, f"{path}.")
+            elif old != new:
+                differing.append(path)
+
+    walk(cached, live, "")
+    return tolerated, differing
+
+
+def compare_prepared_identity(cached, expected, *, not_in_use=None
+                              ) -> tuple[list[str], list[str]]:
+    """``(tolerated, differing)`` between a cached and a live identity.
+
+    Only ``domain_config`` is compared default-tolerantly: it is the
+    document that grows fields as the configuration schema grows.  Every
+    other member of the identity -- the source, static, namelist and
+    bridge digests -- is a hash of bytes and stays strictly equal, so
+    nothing about what the cache was built FROM is relaxed here.
+    """
+
+    if not isinstance(cached, Mapping) or not isinstance(expected, Mapping):
+        return [], ["identity"]
+    tolerated, differing = compare_prepared_domain_config(
+        cached.get("domain_config"), expected.get("domain_config"),
+        not_in_use=not_in_use)
+    for key in sorted(set(cached) | set(expected)):
+        if key == "domain_config":
+            continue
+        if (key not in cached or key not in expected
+                or cached[key] != expected[key]):
+            differing.append(key)
+    return tolerated, differing
+
+
+def prepared_identity_refusal(*, subject: str, header, differing,
+                              re_prepare: str | None = None) -> str:
+    """One sentence naming the versions, the fields, and the way out.
+
+    "d01 cache domain config differs from experiment" was true and
+    useless: it named the experiment file, which was innocent, and never
+    mentioned that a package upgrade had changed the identity document.
+    Whatever survives the default-tolerant comparison above is a real
+    mismatch, and it says which fields and between which releases.
+    """
+
+    from gpuwm import __version__
+
+    fields = ", ".join(sorted(differing)) or "(none named)"
+    sentence = (
+        f"{subject} was prepared by {cache_writer_version(header)} and "
+        f"this is gpuwm {__version__}; these identity fields differ: "
+        f"{fields}")
+    if re_prepare:
+        return f"{sentence}.  Re-prepare it with: {re_prepare}"
+    return (f"{sentence}.  If that difference is a package upgrade rather "
+            f"than a configuration change, re-prepare the bundle with the "
+            f"front door that wrote it.")
+
+
 def _host(value) -> np.ndarray:
     if hasattr(value, "get"):
         value = value.get()
@@ -192,10 +359,18 @@ class PreparedCacheReader:
                 f"prepared cache {self.path} is not a READY "
                 f"{PREPARED_CACHE_SCHEMA} bundle")
         identity = _json_copy(expected_identity)
-        if header["identity"] != identity:
+        tolerated, differing = compare_prepared_identity(
+            header["identity"], identity)
+        if differing:
             raise PreparedCacheMismatchError(
-                "prepared cache identity differs from the requested source, "
-                "static data, configuration, namelist, or code revision")
+                prepared_identity_refusal(
+                    subject=f"prepared cache {self.path}",
+                    header=header, differing=differing))
+        #: Provenance: which identity fields this restore accepted as
+        #: schema growth rather than as a match.  Empty is the normal
+        #: case, and a caller that records it can show exactly what it
+        #: tolerated and why the state is still the state it asked for.
+        self.tolerated_identity_fields = tuple(tolerated)
         arrays = header["arrays"]
         if not isinstance(arrays, dict) or not arrays:
             raise PreparedCacheCorruptError(
@@ -540,10 +715,18 @@ def write_prepared_cache(path, *, identity, initial_result, met,
             "arrays": writer.manifest,
             "payload_bytes": writer.payload_bytes,
         }
+        from gpuwm import __version__
+
         header = {
             **basis,
             "status": "READY",
             "created_utc": datetime.now(timezone.utc).isoformat(),
+            # Outside `basis`, so the content digest of a cache means
+            # exactly what it meant before this release.  Its job is to
+            # let a refusal name the release that wrote the bundle
+            # instead of blaming the user's experiment file for a
+            # package upgrade.
+            CACHE_WRITER_KEY: {"gpuwm_version": __version__},
             "content_sha256": hashlib.sha256(
                 _canonical(basis).encode("utf-8")).hexdigest(),
         }
@@ -709,9 +892,13 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
 
 
 __all__ = [
-    "CachedInitialResult", "PREPARED_CACHE_SCHEMA",
+    "CACHE_WRITER_KEY", "CachedInitialResult",
+    "DEFAULT_TOLERANT_IDENTITY_FIELDS", "PREPARED_CACHE_SCHEMA",
     "PreparedCacheCorruptError", "PreparedCacheMismatchError",
-    "PreparedCacheReader", "RestoredPreparedCache",
-    "prepared_cache_identity", "restore_prepared_cache",
+    "PreparedCacheReader", "RestoredPreparedCache", "UNSTAMPED_WRITER",
+    "cache_writer_version", "compare_prepared_domain_config",
+    "compare_prepared_identity", "prepared_cache_identity",
+    "prepared_domain_config_identity", "prepared_identity_refusal",
+    "restore_prepared_cache",
     "select_prepared_met_fields", "write_prepared_cache",
 ]

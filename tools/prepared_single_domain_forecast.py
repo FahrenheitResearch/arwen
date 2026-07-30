@@ -121,11 +121,17 @@ PHYSICS_PROFILES = (
 )
 SUPPORTED_SOURCES = frozenset({"gfs", "era5", "20crv3"})
 _SOURCE_PHYSICS_PROFILES = MappingProxyType({
+    # RUC is deliberately absent from GFS and present on ERA5.  A
+    # GFS-initialised RUC forecast prepares in full and then dies on its
+    # first surface-temperature call with `mavail must be finite`,
+    # having advanced no model time (v1.1.1 field finding; completing
+    # that initialisation is a v1.2 item).  ERA5 and HRRR RUC were not
+    # exercised by the run that found it and are not withdrawn on the
+    # inference that they share it.
     "gfs": (
         PHYSICS_PROFILE, THOMPSON_PHYSICS_PROFILE,
         MORRISON_PHYSICS_PROFILE, NSSL2_PHYSICS_PROFILE,
         MYNN_PHYSICS_PROFILE,
-        RUC_PHYSICS_PROFILE,
         NOAHMP_PHYSICS_PROFILE),
     "era5": (
         PHYSICS_PROFILE, THOMPSON_PHYSICS_PROFILE,
@@ -178,9 +184,17 @@ _LEGACY_PROOF_SCHEMAS = {
     "20crv3": frozenset(),
 }
 _HIERARCHY_PROOF_SCHEMA = {
-    "gfs": "gpuwm-gfs-native-hierarchy-proof-v1",
+    "gfs": "gpuwm-gfs-native-hierarchy-proof-v2",
     "era5": "gpuwm-era5-native-hierarchy-proof-v1",
     "20crv3": "gpuwm-mapped-native-hierarchy-proof-v1",
+}
+_LEGACY_HIERARCHY_PROOF_SCHEMAS = {
+    # v1 predates the front-door physics receipt the v2 hierarchy proof
+    # carries and cannot be promoted to it by inference, the same rule
+    # the direct proof's v2 lives under.
+    "gfs": frozenset({"gpuwm-gfs-native-hierarchy-proof-v1"}),
+    "era5": frozenset(),
+    "20crv3": frozenset(),
 }
 _SOURCE_ADAPTER = {
     "gfs": "gfs-pgrb2-0p25-direct-v1",
@@ -1384,7 +1398,8 @@ def _resolve_prepared_layout(
                 expected / "prepared-cache", "prepared cache"),
             authority_paths=MappingProxyType({}),
         )
-    if schema != _HIERARCHY_PROOF_SCHEMA[source]:
+    if (schema != _HIERARCHY_PROOF_SCHEMA[source]
+            and schema not in _LEGACY_HIERARCHY_PROOF_SCHEMAS[source]):
         raise ValueError(
             f"unsupported {source.upper()} preparation proof schema {schema!r}")
     if len(source_exp.domains) < 2:

@@ -41,6 +41,48 @@ BRIDGE_ENV = {
 #: The bridge crate's path inside a checkout.
 CRATE_RELATIVE = "tools/grib1_bridge"
 
+#: Bridge executable -> a byte marker of the CONTRACT it speaks, which
+#: must appear in the built binary.
+#:
+#: A bridge is not "whatever executable has the right basename".  The
+#: wheel ships no Rust, so the binaries on a machine were built from
+#: some checkout at some time, and an upgrade of the Python half does
+#: not touch them.  1.1.0 changed the GFS series file from two columns
+#: to three; a 1.0.1 bridge still launched, still printed its usage
+#: diagnostic, and `gpuwm doctor` therefore reported it `ok` -- and then
+#: every preparation died with `series line 1 must be HOUR<TAB>GRIB2`,
+#: a message that blames the series file gpuwm had just written
+#: correctly.  A node-7 validation run found the cause only by diffing
+#: two git tags.
+#:
+#: Each marker is a literal the CURRENT contract compiles into the
+#: binary and the previous one did not, so a stale build fails the
+#: handshake statically -- no execution, no new bridge CLI surface, and
+#: it works on the already-built binaries a user has on disk today.
+#: This is the same mechanism `gpuwm.native_wrf_distribution` applies
+#: before sealing a distribution, applied one step earlier: at the
+#: doctor report, which is where a user looks before they burn a run.
+#:
+#: Adding a marker is part of changing a bridge contract.  Choose the
+#: literal that spells the contract out (the series grammar, the usage
+#: line naming the argument vector), never a version number, which a
+#: rebuild bumps whether or not anything changed.
+BRIDGE_ABI_MARKERS = {
+    "grib1_bridge": b"usage: grib1_bridge INPUT.grb OUTPUT_DIR",
+    "gfs_grib2_bridge": (
+        b" must be HOUR<TAB>GRIB2[<TAB>FORECAST_PROCESS_ID]"),
+    "hrrr_grib2_bridge": (
+        b"usage: hrrr_grib2_bridge WRFNAT_F00 WRFNAT_F01 SOIL_F00 "
+        b"SOIL_F01 OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START "
+        b"J_END"),
+    "grib2_inventory": (
+        b"parameter\tcenter\tsubcenter\tmaster_table_version\t"
+        b"local_table_version\tname"),
+    "grib2_dump": (
+        b"parameter\tcenter\tsubcenter\tmaster_table_version\t"
+        b"local_table_version\tlevel_type"),
+}
+
 #: True when the shell a remedy will be pasted into is Windows
 #: PowerShell rather than a POSIX shell.  Windows PowerShell 5.1 -- the
 #: in-box shell the project's own PowerShell install route reaches --
@@ -347,6 +389,37 @@ def find_bridge(name: str) -> Path | None:
     return find_artifact(BRIDGE_ENV[name], executable_name(name))
 
 
+def bridge_abi_matches(name: str, path: Path) -> tuple[bool, str]:
+    """Does the built bridge at ``path`` speak the contract gpuwm uses?
+
+    Read-only and static: it searches the binary for the marker rather
+    than adding a ``--abi`` subcommand the already-built binaries on
+    every user's disk would not have.  That is the whole point -- the
+    skew this catches is precisely a binary that predates the change,
+    and a handshake only new builds can answer would report the stale
+    ones as broken rather than as stale, or not at all.
+
+    A bridge with no declared marker answers ``True``: the absence of a
+    marker means nobody has yet named this bridge's contract, which is
+    not evidence of skew.  Fail closed on the check that IS declared,
+    never on the one that is not.
+    """
+
+    marker = BRIDGE_ABI_MARKERS.get(name)
+    if marker is None:
+        return True, "no declared contract marker for this bridge"
+    try:
+        payload = Path(path).read_bytes()
+    except OSError as error:
+        return False, f"cannot read it to check its contract: {error}"
+    if marker in payload:
+        return True, "speaks this release's contract"
+    return False, (
+        "was built from a checkout that predates this release's "
+        f"{name} contract, so it will refuse inputs gpuwm writes "
+        "correctly; rebuild it from a matching checkout")
+
+
 def artifact_remedy(*, env_var: str, filename: str, subject: str,
                     crate_relative: str = CRATE_RELATIVE,
                     one_liner: str = "") -> str:
@@ -388,11 +461,39 @@ def artifact_remedy(*, env_var: str, filename: str, subject: str,
         f"# so {subject} must be built from a clone.  About two minutes, "
         f"once:\n"
         f"{steps}\n"
-        f"  # then EITHER point gpuwm at the build:\n"
+        f"  # building it is not the same as wiring it, so finish the job:\n"
+        + install_into_default_bridge_dir(clone_built) + "\n"
+        f"  # OR, instead of copying, point gpuwm at the build in place:\n"
         f"  #   {env_var}={clone_built}\n"
-        f"  #   (relative to the directory you ran git clone in)\n"
-        f"  # OR copy the built executables into {default_bridge_dir()},\n"
-        f"  # where gpuwm looks by default.")
+        f"  #   (relative to the directory you ran git clone in)")
+
+
+def install_into_default_bridge_dir(built: str) -> str:
+    """Copy one built artifact where gpuwm looks by default: COMMANDS.
+
+    The wiring step used to be offered as two ``#`` alternatives -- copy
+    here, or export that -- and a reader who did exactly what the
+    contract promises ("every line is a command to run as printed, in
+    the order printed, or a ``#`` comment") ran the whole report and
+    still ended at six MISSING bridges, because the only step that
+    finishes the job was commented out on both branches.  A choice
+    between two alternatives is real, but one of them can be the
+    default: this is the copy, as commands, with the environment
+    variable demoted to the comment beneath it.
+
+    The destination is :func:`default_bridge_dir` spelled out in full
+    rather than through ``$HOME``/``$env:USERPROFILE``, so the path the
+    reader pastes is the path :func:`artifact_candidates` searches --
+    even on a machine whose ``HOME`` disagrees with its passwd entry,
+    which is exactly the environment a scratch-HOME validation run has.
+    """
+
+    destination = str(default_bridge_dir())
+    if WINDOWS_SHELL:
+        return (f'  New-Item -ItemType Directory -Force "{destination}"\n'
+                f'  Copy-Item "{built}" "{destination}"')
+    return (f'  mkdir -p "{destination}"\n'
+            f'  cp "{built}" "{destination}"')
 
 
 def bridge_remedy(name: str) -> str:
@@ -404,6 +505,7 @@ def bridge_remedy(name: str) -> str:
 
 
 __all__ = [
+    "BRIDGE_ABI_MARKERS", "bridge_abi_matches",
     "BRIDGE_ENV", "CARGO_BUILD_HINT", "CLONE_DIR", "CRATE_RELATIVE",
     "REPOSITORY_URL", "RUSTWX_CRATE_RELATIVE", "WINDOWS_SHELL",
     "artifact_candidates", "cargo_build_one_liner",
@@ -411,7 +513,8 @@ __all__ = [
     "build_from_clone_hint", "cargo_activation_command",
     "cargo_is_installed", "crate_dir", "default_bridge_dir",
     "executable_name", "find_artifact", "find_bridge",
-    "install_aware_build_hint", "rust_toolchain_install_command",
+    "install_aware_build_hint", "install_into_default_bridge_dir",
+    "rust_toolchain_install_command",
     "install_aware_one_line_hint",
     "sources_present",
 ]

@@ -112,9 +112,20 @@ def _validated_static_one_way_topology(exp, grids) -> dict[str, object]:
             "regular-grid hierarchy ids must be contiguous d01..dNN in "
             f"parent-before-child order, got {ids}")
     if int(getattr(exp, "feedback", -1)) != 0:
+        # The gate is right and unchanged.  What it never said is where
+        # feedback=1 IS supported, so a node-7 validation run authored a
+        # two-way config, passed `gpuwm check` clean, and learned only
+        # after a 26 s hierarchy build that this route cannot do two-way
+        # nesting at all.  A refusal that names the route that can is
+        # the difference between a dead end and a redirection.
         raise ValueError(
             "regular-grid hierarchy export supports static one-way nests "
-            "only (feedback=0)")
+            "only (feedback=0).  Experimental two-way feedback "
+            "(feedback=1) runs on the native experiment-runner route -- "
+            "`gpuwm run`, which builds its domain tree in-process from "
+            "the same experiment TOML -- and is stamped experimental "
+            "there; it is not available through a prepared hierarchy, "
+            "whose artifacts are written one-way and read one-way.")
 
     seen: set[int] = set()
     rows = []

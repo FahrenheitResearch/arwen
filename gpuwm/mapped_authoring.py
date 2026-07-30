@@ -663,7 +663,11 @@ def compile_mapping_descriptor(
     if not isinstance(fields, dict) or not fields:
         raise ValueError("descriptor.fields must be a non-empty object")
     selected_rows: list[dict[str, object]] = []
-    consumed_lines: set[int] = set()
+    # line number -> the descriptor field that claimed it.  A set was
+    # enough to detect the clash and not enough to describe it: the
+    # message could name only the Vtable line, so it read as a fault in
+    # the Vtable when both claims live in the descriptor.
+    consumed_lines: dict[int, str] = {}
     consumed_selectors: list[tuple[str, int, dict[str, object]]] = []
     for field_name, raw_field in fields.items():
         if not isinstance(field_name, str) or not field_name:
@@ -713,10 +717,15 @@ def compile_mapping_descriptor(
             row = _match_vtable_row(rows, reference, label)
             if row.line_number in consumed_lines:
                 raise ValueError(
-                    f"Vtable line {row.line_number} is assigned more than once; "
-                    "derive aliases explicitly instead"
+                    f"descriptor fields "
+                    f"{consumed_lines[row.line_number]!r} and "
+                    f"{field_name!r} both claim Vtable line "
+                    f"{row.line_number} ({row.metgrid_name}); the Vtable is "
+                    "not at fault -- one record cannot serve two fields, so "
+                    "give each field its own row or derive the alias "
+                    "explicitly"
                 )
-            consumed_lines.add(row.line_number)
+            consumed_lines[row.line_number] = field_name
             selector = _selector_from_row(
                 row,
                 str(source_format),

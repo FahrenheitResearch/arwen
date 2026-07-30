@@ -638,6 +638,210 @@ def validate_single_domain_physics_profile(
     }
 
 
+#: Route/source pairs whose declared template list this front door
+#: enforces at PREPARATION time.
+#:
+#: The registry has always published which templates each route offers
+#: each source (``runner_routes.<route>.source_template_ids.<source>``),
+#: but until now only plan validation and the GUI read it -- nothing
+#: consulted it before a preparation ran.  That is how RUC came to be
+#: selectable through the GFS front door, preparable in full, and unable
+#: to complete its first integration step.  Declaring and enforcing in
+#: two places that never met is the whole "selectable but not usable"
+#: pattern; this is the missing half.
+_ROUTE_FOR_SOURCE = {
+    "gfs": "tools.prepared_single_domain_forecast",
+}
+
+
+def offered_land_surfaces(source: str) -> frozenset[str] | None:
+    """Land-surface components this source's declared templates reach.
+
+    ``None`` where no route/source declaration is enforced here, which
+    means "this function has no opinion" and never "everything is
+    allowed": callers keep whatever other gates they already applied.
+    """
+
+    from gpuwm.physics_registry import physics_registry
+
+    route_id = _ROUTE_FOR_SOURCE.get(source)
+    if route_id is None:
+        return None
+    registry = physics_registry()
+    route = registry["runner_routes"].get(route_id)
+    if not isinstance(route, Mapping):
+        return None
+    declared = route.get("source_template_ids", {}).get(source)
+    if not isinstance(declared, list):
+        return None
+    offered = set()
+    for template_id in declared:
+        template = registry["templates"].get(template_id)
+        if isinstance(template, Mapping):
+            component = template.get("components", {}).get("land_surface")
+            if isinstance(component, str):
+                offered.add(component)
+    return frozenset(offered)
+
+
+def land_surface_component_for_selector(value) -> str | None:
+    """The registry's name for an ``sf_surface_physics`` value.
+
+    Resolved from the one selector rather than from a whole-suite
+    capability resolution, because the two answer different questions.
+    Resolving the suite can fail for a reason that has nothing to do
+    with the land surface -- the committed two-domain descriptor selects
+    a radiation spelling the registry has no option for -- and a route
+    gate that quietly skips those configurations is a gate with a hole
+    in exactly the shape of the configurations nobody has classified.
+    """
+
+    from gpuwm.physics_registry import physics_registry
+
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        selector = int(value)
+    except (TypeError, ValueError):
+        return None
+    options = physics_registry()["components"]["land_surface"]["options"]
+    for option_id, option in options.items():
+        if not isinstance(option, Mapping):
+            continue
+        selectors = option.get("selectors", {})
+        if (isinstance(selectors, Mapping)
+                and selectors.get("sf_surface_physics") == selector):
+            return option_id
+    return None
+
+
+def land_surface_route_blocker(component: str, *, source: str) -> str | None:
+    """Why ``source`` does not offer ``component``, or ``None``.
+
+    Cites the registry declaration it enforces, says what was observed
+    rather than what is suspected, and names the sources this refusal is
+    NOT speaking for -- an unexercised route is not a broken one, and
+    withdrawing it on inference would be the same error as the
+    front-door regression this release fixes, pointing the other way.
+    """
+
+    offered = offered_land_surfaces(source)
+    if offered is None or component in offered:
+        return None
+    detail = ""
+    if component == "ruc-lsm":
+        detail = (
+            "  A GFS-initialised RUC forecast prepares cleanly and then "
+            "dies on its first surface-temperature call with `mavail must "
+            "be finite`, having advanced no model time, so preparing one "
+            "spends the run to reach a refusal.  Completing the GFS "
+            "route's RUC land/soil initialisation is tracked for v1.2.  "
+            "This says nothing about RUC on the ERA5 or HRRR routes, "
+            "which still offer it and were not exercised by the run that "
+            "found this.")
+    return (
+        f"the {source.upper()} route does not offer the {component} "
+        f"land-surface component: "
+        f"gpuwm/physics_registry_v2.json#/runner_routes/"
+        f"{_ROUTE_FOR_SOURCE[source]}/source_template_ids/{source} "
+        f"declares the templates it does offer, and none of them selects "
+        f"it.{detail}")
+
+
+#: The domain-tree route's front-door physics receipt.  A DISTINCT
+#: schema from the single-domain one because it records a different
+#: decision: a tree has no single profile, it has one resolved selector
+#: set per domain, and giving both shapes one schema id would make a
+#: consumer guess which it was handed.
+MULTI_DOMAIN_SELECTION_SCHEMA = (
+    "gpuwm-front-door-physics-selection-multi-domain-v1")
+
+
+def multi_domain_physics_selection(
+        domain_settings: Mapping[int, Mapping[str, object] | object],
+        *,
+        profile: str | None = None,
+        expert_acknowledgements: tuple[str, ...] = (),
+) -> dict[str, object]:
+    """Record a domain TREE's physics.  It applies no whitelist.
+
+    The prepared single-domain forecast runner accepts a fixed list of
+    named profiles and compares an experiment's switches to one of them
+    for exact equality.  The domain-tree runner never had that list and
+    does not grow one here, in either of its two possible spellings.
+
+    Its authority is the configuration loader: every domain's selectors
+    have already passed :func:`require_ready_wrf_physics` and the WRF
+    selector schema by the time an experiment exists.  This function
+    therefore RECORDS rather than gates -- one selector set per domain,
+    because a child selects its own cumulus and its own radiation
+    cadence, so the root's answer is not the tree's answer.
+
+    It deliberately does not gate on registry component resolution
+    either, which would be the subtle version of the same mistake.  The
+    committed two-domain descriptor
+    (``configs/gfs_wrf_hierarchy_proof.toml``) selects the legacy
+    aggregate radiation spelling with radiation off -- ``ra_lw_physics``
+    and ``ra_sw_physics`` at -1 with ``ra_physics`` 0 -- which the
+    registry has no option for, so requiring resolution here would
+    refuse the project's own hierarchy configuration.  Where the
+    registry CAN name a selection it is named, because that naming is
+    worth having in provenance; where it cannot, the receipt says so and
+    carries the blocker text rather than a guess.  Naming is provenance,
+    not permission.
+
+    ``profile`` is honoured when the caller named one explicitly, and
+    then it does gate -- a gate asked for is not a gate to drop.  It
+    binds the ROOT only: the wizard's own nested emission of a shipped
+    profile turns cumulus off on the inner domains, so demanding the
+    profile of every domain would refuse the very configuration the
+    product tells a user to write.
+    """
+
+    from gpuwm.physics_registry import physics_registry, registry_sha256
+
+    registry = physics_registry()
+    selector_keys = tuple(
+        key
+        for component in registry["components"].values()
+        for key in component.get("selector_keys", ())
+    )
+    grid_ids = sorted(int(grid_id) for grid_id in domain_settings)
+    if not grid_ids:
+        raise ValueError("a domain tree has no domains to record")
+    domains: dict[str, object] = {}
+    for grid_id in grid_ids:
+        settings = domain_settings[grid_id]
+        try:
+            components = validate_physics_capabilities(settings)
+            blocker = None
+        except PhysicsCapabilityError as error:
+            components = None
+            blocker = str(error)
+        domains[str(grid_id)] = {
+            "components": components,
+            "registry_blocker": blocker,
+            "selectors": {
+                key: _selection_value(settings, key)
+                for key in selector_keys
+            },
+        }
+    if profile is not None:
+        # The root carries the named profile exactly as the single-domain
+        # door would check it, so an explicitly bound tree is refused for
+        # the same reason and in the same words.
+        validate_single_domain_physics_profile(
+            profile, config=domain_settings[grid_ids[0]],
+            expert_acknowledgements=expert_acknowledgements)
+    return {
+        "schema": MULTI_DOMAIN_SELECTION_SCHEMA,
+        "profile": profile,
+        "registry_sha256": registry_sha256(registry),
+        "domains": domains,
+        "expert_acknowledgements": sorted(set(expert_acknowledgements)),
+    }
+
+
 def thompson_runtime_requirements() -> dict[str, object]:
     """Describe the guarded evidence-runner MP8 contract (env untouched).
 
@@ -900,6 +1104,11 @@ __all__ = [
     "NOAHMP_MEASURED_SLAB_CALL_SECONDS",
     "SINGLE_DOMAIN_PHYSICS_PROFILES",
     "MORRISON_PROFILE_ID",
+    "MULTI_DOMAIN_SELECTION_SCHEMA",
+    "land_surface_component_for_selector",
+    "land_surface_route_blocker",
+    "multi_domain_physics_selection",
+    "offered_land_surfaces",
     "noahmp_expert_column_budget",
     "noahmp_projected_call_seconds",
     "NSSL2_PROFILE_ID",

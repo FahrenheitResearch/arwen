@@ -259,7 +259,12 @@ def test_prepared_cache_refuses_identity_drift_and_payload_corruption(tmp_path):
         path, identity=identity, initial_result=initial, met=met,
         boundaries=boundaries)
 
-    with pytest.raises(PreparedCacheMismatchError, match="identity differs"):
+    # The refusal names the release that wrote the cache and the exact
+    # fields, rather than asserting that something differs: the old
+    # wording sent a node-7 pilot to their experiment TOML after a
+    # package upgrade had changed the identity document.
+    with pytest.raises(PreparedCacheMismatchError,
+                       match="these identity fields differ: source"):
         PreparedCacheReader(path, expected_identity={"source": "changed"})
 
     reader = PreparedCacheReader(path, expected_identity=identity)
@@ -391,3 +396,166 @@ def test_select_prepared_met_fields_keeps_legacy_soil_only_when_required():
 
     assert "SOILT" not in selected.fields
     assert "SOILW" not in selected.fields
+
+
+# ---------------------------------------------------------------------------
+# V-12: a package upgrade must not make every existing prepared tree
+# unrunnable, and must never blame the user's experiment file for it
+# ---------------------------------------------------------------------------
+# v1.1.0 gave every domain an optional per-domain `start_time` for
+# staggered nest starts.  The prepared-cache identity is compared by
+# strict equality, and a v1.0.1 header was serialized before the field
+# existed, so after upgrading the wheel EVERY prepared tree in the field
+# refused with "d01 cache domain config differs from experiment" -- a
+# sentence naming the experiment TOML, which was innocent.  A node-7
+# validation run diffed the two documents on a real preserved 1.0.1
+# tree: eleven cached top-level keys against twelve live ones, exactly
+# one added key, and zero value differences among the eleven shared keys
+# or the ~110 `run` fields.  These tests mirror that shape.
+
+
+def _live_experiment():
+    from gpuwm.experiment import load_experiment
+
+    return load_experiment(
+        Path(__file__).parents[1] / "configs"
+        / "gfs_wrf_hierarchy_proof.toml")
+
+
+def _live_domain_identity():
+    """The live 12-key identity, from the shipped two-domain config."""
+
+    from gpuwm.ingest.prepared_cache import prepared_domain_config_identity
+
+    return prepared_domain_config_identity(_live_experiment().root)
+
+
+def _undelayed():
+    """What "no delayed start" looks like for this experiment."""
+
+    from gpuwm.ingest.prepared_cache import undelayed_identity_defaults
+
+    return undelayed_identity_defaults(_live_experiment())
+
+
+def test_a_v101_shape_header_still_binds_after_the_upgrade():
+    from gpuwm.ingest.prepared_cache import compare_prepared_domain_config
+
+    live = _live_domain_identity()
+    assert len(live) == 12 and "start_time" in live
+    cached = {key: value for key, value in live.items() if key != "start_time"}
+    assert len(cached) == 11
+
+    tolerated, differing = compare_prepared_domain_config(
+        cached, live, not_in_use=_undelayed())
+    assert differing == []
+    assert tolerated == ["start_time"]
+
+
+def test_a_field_absent_from_the_header_but_IN_USE_still_refuses():
+    """The narrowness is what makes tolerating the absence honest."""
+
+    from gpuwm.ingest.prepared_cache import compare_prepared_domain_config
+
+    live = _live_domain_identity()
+    live["start_time"] = "2026-07-20T03:00:00"
+    cached = {key: value for key, value in live.items() if key != "start_time"}
+
+    tolerated, differing = compare_prepared_domain_config(
+        cached, live, not_in_use=_undelayed())
+    assert tolerated == []
+    assert differing == ["start_time"]
+
+
+def test_a_real_configuration_change_is_still_refused():
+    """Tolerance is about absent fields, never about differing values."""
+
+    from gpuwm.ingest.prepared_cache import compare_prepared_domain_config
+
+    live = _live_domain_identity()
+    cached = {key: value for key, value in live.items() if key != "start_time"}
+    cached["run"] = {**cached["run"], "nx": int(cached["run"]["nx"]) + 1}
+
+    tolerated, differing = compare_prepared_domain_config(
+        cached, live, not_in_use=_undelayed())
+    assert tolerated == ["start_time"]
+    assert differing == ["run.nx"]
+
+
+def test_a_header_from_a_NEWER_gpuwm_is_refused_not_tolerated():
+    """Absence in the live document is skew in the other direction."""
+
+    from gpuwm.ingest.prepared_cache import compare_prepared_domain_config
+
+    live = _live_domain_identity()
+    cached = {**live, "a_field_this_build_does_not_have": 1}
+
+    tolerated, differing = compare_prepared_domain_config(
+        cached, live, not_in_use=_undelayed())
+    assert tolerated == []
+    assert differing == ["a_field_this_build_does_not_have"]
+
+
+def test_only_the_domain_config_is_default_tolerant():
+    """Every other identity member is a hash of bytes and stays strict."""
+
+    from gpuwm.ingest.prepared_cache import compare_prepared_identity
+
+    live = _live_domain_identity()
+    expected = {
+        "domain_config": live,
+        "namelist_sha256": "a" * 64,
+        "static_cache_sha256": "b" * 64,
+    }
+    cached = {
+        "domain_config": {k: v for k, v in live.items() if k != "start_time"},
+        "namelist_sha256": "a" * 64,
+        "static_cache_sha256": "b" * 64,
+    }
+    assert compare_prepared_identity(
+        cached, expected, not_in_use=_undelayed()) == (["start_time"], [])
+
+    # A missing digest is not schema growth; it is a different cache.
+    del cached["static_cache_sha256"]
+    tolerated, differing = compare_prepared_identity(
+        cached, expected, not_in_use=_undelayed())
+    assert differing == ["static_cache_sha256"]
+
+
+def test_the_refusal_names_the_versions_and_the_fields():
+    """Never again a message that blames the experiment file."""
+
+    from gpuwm import __version__
+    from gpuwm.ingest.prepared_cache import (
+        CACHE_WRITER_KEY, UNSTAMPED_WRITER, prepared_identity_refusal,
+    )
+
+    unstamped = prepared_identity_refusal(
+        subject="d01 prepared cache", header={},
+        differing=["run.nx", "start_time"])
+    assert "d01 prepared cache" in unstamped
+    assert UNSTAMPED_WRITER in unstamped
+    assert f"gpuwm {__version__}" in unstamped
+    assert "run.nx, start_time" in unstamped
+    # It never points at the experiment file for a package difference.
+    assert "differs from experiment" not in unstamped
+
+    stamped = prepared_identity_refusal(
+        subject="d01 prepared cache",
+        header={CACHE_WRITER_KEY: {"gpuwm_version": "1.0.1"}},
+        differing=["run.nx"], re_prepare="rw-wps --source gfs ...")
+    assert "prepared by 1.0.1" in stamped
+    assert "Re-prepare it with: rw-wps --source gfs ..." in stamped
+
+
+def test_a_cache_written_now_stamps_the_release_that_wrote_it():
+    """So the next schema change can say which release wrote the bundle."""
+
+    from gpuwm import __version__
+    from gpuwm.ingest.prepared_cache import (
+        CACHE_WRITER_KEY, cache_writer_version,
+    )
+
+    assert cache_writer_version({}) != __version__
+    assert cache_writer_version(
+        {CACHE_WRITER_KEY: {"gpuwm_version": __version__}}) == __version__

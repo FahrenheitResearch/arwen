@@ -22,7 +22,7 @@ from gpuwm.gfs_direct import (
     _verify_input_manifest,
 )
 from gpuwm.experiment import VerticalConfig, load_experiment
-from gpuwm.physics_compat import WSM6_PROFILE_ID
+from gpuwm.physics_compat import MORRISON_PROFILE_ID, WSM6_PROFILE_ID
 from gpuwm.ingest.grib import Era5Snapshot
 
 
@@ -592,6 +592,199 @@ def test_a_config_bound_to_no_shipped_profile_prints_prose_not_a_command(
     assert "matches none of the profiles" in text
     assert "prepared_single_domain_forecast.py" not in text
     _assert_pasteable(lines)
+
+
+def _wizard_multi_domain_config(tmp_path, profile=None):
+    """The wizard's own DEFAULT emission, with a nest: max_dom = 2.
+
+    Emitted rather than hand-written for the same reason the
+    single-domain helper is: the claim under test is that the config the
+    product tells a user to make passes the door the product tells them
+    to use, and a hand-written stand-in can only test a config nobody
+    was told to write.  With no ``--physics-profile`` this is the
+    product default suite -- Thompson MP8, Kain-Fritsch on d01 and none
+    on d02, RTE+RRTMGP -- which is deliberately NOT in the prepared
+    single-domain runner's whitelist.
+    """
+
+    from gpuwm.cli import main as cli_main
+
+    name = "default" if profile is None else profile
+    out = tmp_path / "wizard-nested" / f"{name}.toml"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    command = ["domain", "--point=39.7,-96.6", "--card", "24gb",
+               "--ladder", "12-3", "--source", "gfs",
+               "--cycle", "2026-07-29T18", "--out", str(out)]
+    if profile is not None:
+        command.extend(("--physics-profile", profile))
+    assert cli_main(command) == 0
+    return out
+
+
+def test_the_wizard_default_multi_domain_config_passes_its_own_front_door(
+        tmp_path):
+    """F21, the 1.1.0 regression: max_dom = 2 met a single-domain gate.
+
+    v1.1's any-combo work made `prepare_gfs_wrf` call
+    `validate_single_domain_physics_profile` for every configuration it
+    was given.  That whitelist belongs to the prepared SINGLE-domain
+    forecast runner -- the wizard says so in the note it prints beside
+    the file -- and the product's own default suite is deliberately not
+    in it, so the config the wizard emits BY DEFAULT could not pass the
+    GFS front door at all.  A two-domain config that prepared cleanly on
+    1.0.1 died with a raw traceback on 1.1.0.
+    """
+
+    from gpuwm.gfs_direct import front_door_physics_selection
+
+    exp = load_experiment(_wizard_multi_domain_config(tmp_path))
+    assert len(exp.domains) == 2
+
+    # This is exactly what 1.1.0 did to this config, kept here as the
+    # falsifier: the whitelist itself is right, and refusing the default
+    # suite is what it is FOR.  The defect was asking it at all.
+    with pytest.raises(ValueError, match="selected physics differs"):
+        from gpuwm.physics_compat import (
+            validate_single_domain_physics_profile,
+        )
+        validate_single_domain_physics_profile(
+            WSM6_PROFILE_ID, config=exp.root.run)
+
+    receipt = front_door_physics_selection(exp)
+    assert receipt["profile"] is None
+    # Every domain of the tree is recorded, not just the root: a child
+    # selects its own cumulus and radiation cadence.
+    assert sorted(receipt["domains"]) == ["1", "2"]
+    assert receipt["domains"]["1"]["selectors"]["cu_physics"] == 1
+    assert receipt["domains"]["2"]["selectors"]["cu_physics"] == 0
+    assert (receipt["domains"]["1"]["components"]["microphysics"]
+            == "thompson-mp8")
+    assert receipt["domains"]["1"]["components"]["cumulus"] == "kain-fritsch"
+    assert receipt["domains"]["2"]["components"]["cumulus"] == "off"
+
+
+def test_the_shipped_two_domain_proof_config_still_passes_the_front_door():
+    """The 1.0.1-shape max_dom = 2 config prepares through the gate.
+
+    `configs/gfs_wrf_hierarchy_proof.toml` is the committed two-domain
+    descriptor the hierarchy route has always used, and it is the
+    sharper case of the two: it selects the LEGACY AGGREGATE radiation
+    spelling with radiation off (`ra_lw_physics`/`ra_sw_physics` at -1,
+    `ra_physics` 0), which the registry has no option for.  So a fix
+    that merely swapped the profile whitelist for a registry-resolution
+    requirement would still refuse the project's own hierarchy config --
+    a second regression wearing the first one's clothes.  Recording is
+    not permission: the receipt names what it can and reports the
+    blocker for what it cannot, and neither answer refuses the run.
+    """
+
+    from gpuwm.gfs_direct import front_door_physics_selection
+
+    config = (Path(__file__).parents[1] / "configs"
+              / "gfs_wrf_hierarchy_proof.toml")
+    exp = load_experiment(config)
+    assert len(exp.domains) == 2
+    receipt = front_door_physics_selection(exp)
+    assert receipt["schema"] == (
+        "gpuwm-front-door-physics-selection-multi-domain-v1")
+    assert receipt["domains"]["1"]["selectors"]["mp_physics"] == 6
+    assert receipt["domains"]["1"]["components"] is None
+    assert "ra_physics" in receipt["domains"]["1"]["registry_blocker"]
+
+
+def test_the_single_domain_whitelist_still_binds_on_single_domain(tmp_path):
+    """Never widen: one domain still meets the profile whitelist.
+
+    The scoping fix must not become an escape hatch.  A single-domain
+    config carrying the product default suite is refused by the same
+    door that now lets the two-domain one through, and a single-domain
+    config bound to a shipped profile still passes.
+    """
+
+    from gpuwm.gfs_direct import front_door_physics_selection
+
+    default_suite = load_experiment(_wizard_single_domain_config_default(
+        tmp_path))
+    assert len(default_suite.domains) == 1
+    with pytest.raises(ValueError, match="selected physics differs"):
+        front_door_physics_selection(default_suite)
+
+    bound = load_experiment(_wizard_single_domain_config(tmp_path))
+    assert len(bound.domains) == 1
+    receipt = front_door_physics_selection(bound)
+    assert receipt["schema"] == "gpuwm-front-door-physics-selection-v1"
+    assert receipt["profile"] == WSM6_PROFILE_ID
+
+
+def test_an_explicit_profile_is_still_enforced_on_a_domain_tree(tmp_path):
+    """A gate the caller ASKED for is never dropped by the scoping fix.
+
+    `--physics-profile` on a multi-domain run is how a user says "bind
+    this tree to a shipped suite"; node-8 verified that route works on
+    1.1.0 and it must keep working.  It binds the ROOT -- children carry
+    their own cumulus and radiation cadence by design, so demanding the
+    profile of every domain would refuse the wizard's own nested
+    emission of that same profile.
+    """
+
+    from gpuwm.gfs_direct import front_door_physics_selection
+
+    exp = load_experiment(_wizard_multi_domain_config(
+        tmp_path, profile=MORRISON_PROFILE_ID))
+    assert len(exp.domains) == 2
+    receipt = front_door_physics_selection(
+        exp, physics_profile=MORRISON_PROFILE_ID)
+    assert receipt["profile"] == MORRISON_PROFILE_ID
+
+    with pytest.raises(ValueError, match="selected physics differs"):
+        front_door_physics_selection(exp, physics_profile=WSM6_PROFILE_ID)
+
+
+def test_a_front_door_refusal_reaches_the_user_as_a_sentence(tmp_path,
+                                                             capsys):
+    """Not a traceback.  F21's third consequence, and F19's whole point.
+
+    The gate is entered through `python -m gpuwm.gfs_direct`, whose
+    return code `rw-wps` passes straight through, so what the user sees
+    is whatever this `main` prints.  On 1.1.0 that was a stack trace.
+    """
+
+    from gpuwm.gfs_direct import main as gfs_main
+
+    config = _wizard_single_domain_config_default(tmp_path)
+    capsys.readouterr()  # the wizard's own report is not under test
+    missing = tmp_path / "series.tsv"
+    missing.write_text("0\tf000.grib2\n3\tf003.grib2\n", encoding="utf-8")
+    code = gfs_main([
+        "--series", str(missing),
+        "--cycle", "2026-07-29_18:00:00",
+        "--bridge", str(tmp_path / "absent-bridge"),
+        "--wps-namelist", str(tmp_path / "absent.namelist.wps"),
+        "--experiment-config", str(config),
+        "--input-manifest", str(tmp_path / "absent-manifest.json"),
+        "--input-manifest-sha256", "0" * 64,
+        "--output-root", str(tmp_path / "out"),
+    ])
+    assert code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    lines = [line for line in captured.err.splitlines() if line.strip()]
+    assert len(lines) == 1, captured.err
+    assert lines[0].startswith("rw-wps --source gfs: ")
+    assert "Traceback" not in captured.err
+
+
+def _wizard_single_domain_config_default(tmp_path):
+    """One domain, product default suite: no shipped profile matches it."""
+
+    from gpuwm.cli import main as cli_main
+
+    out = tmp_path / "wizard-default" / "case.toml"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    assert cli_main(["domain", "--point=39.7,-96.6", "--card", "24gb",
+                     "--ladder", "12", "--source", "gfs",
+                     "--cycle", "2026-07-29T18", "--out", str(out)]) == 0
+    return out
 
 
 def test_the_front_door_manifest_line_is_pasteable_too(tmp_path):

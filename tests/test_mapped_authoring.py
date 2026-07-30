@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from gpuwm.source_authorities import packaged_gfs_vtable
+
 from gpuwm.mapped_authoring import (
     _stable_file_snapshot,
     DESCRIPTOR_SCHEMA,
@@ -25,7 +27,7 @@ from gpuwm.mapped_source import load_mapping
 ROOT = Path(__file__).parents[1]
 GFS_MAPPING = ROOT / "configs" / "rw-wps-gfs-pressure-grib2.mapping.json"
 GFS_DESCRIPTOR = ROOT / "configs" / "rw-wps-gfs-pressure-grib2.descriptor.json"
-GFS_VTABLE = ROOT / "configs" / "Vtable.GFS.rw-wps"
+GFS_VTABLE = packaged_gfs_vtable()
 GFS_COMPOSITION = ROOT / "configs" / "rw-wps-gfs-terrain.composition.json"
 ERA5_NETCDF_MAPPING = ROOT / "configs" / "rw-wps-era5-netcdf.mapping.json"
 HRRR_VTABLE = ROOT / "tests" / "fixtures" / "Vtable.raphrrr.ambiguous"

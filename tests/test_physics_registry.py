@@ -70,13 +70,36 @@ def _mixed_plan() -> dict[str, object]:
     }
 
 
+def _source_offering(template_id: str) -> str:
+    """A source whose declared template list reaches ``template_id``.
+
+    Sources and templates are not interchangeable: v1.1.1 withdrew RUC
+    from the GFS route (a GFS-initialised RUC forecast cannot complete
+    its first step) while leaving it on ERA5, which was never exercised.
+    A helper that hardcoded one source would report that withdrawal as a
+    failure of every claim it happens to be checking.
+    """
+
+    route = physics_registry()["runner_routes"][
+        "tools.prepared_single_domain_forecast"]
+    declared = route["source_template_ids"]
+    for source_id in ("gfs", *sorted(declared)):
+        if template_id in declared.get(source_id, ()):
+            return source_id
+    for source_id, ids in route.get("expert_template_ids", {}).items():
+        if template_id in ids:
+            return source_id
+    raise AssertionError(
+        f"no source offers {template_id}; it is unreachable on this route")
+
+
 def _single_plan(template_id: str = WSM6_TEMPLATE_ID) -> dict[str, object]:
     plan = {
         "schema": PLAN_SCHEMA,
         "plan_id": "single-domain-proof-v1",
         "registry_sha256": registry_sha256(),
         "context": {
-            "source_id": "gfs",
+            "source_id": _source_offering(template_id),
             "runner_id": "tools.prepared_single_domain_forecast",
             "topology_id": "single-domain-v1",
         },

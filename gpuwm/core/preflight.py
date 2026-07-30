@@ -270,6 +270,33 @@ _WINDOWS_PLATFORM_PREFIXES = ("win", "msys")
 _WINDOWS_PLATFORM_NAMES = ("cygwin",)
 
 
+
+#: What `gpuwm check` says about an experimental two-way configuration.
+#:
+#: `feedback = 1` is a legal schema value, so a node-7 validation run
+#: authored one, got a clean PASS and exit 0 here -- output identical to
+#: the feedback=0 twin -- and discovered only at prepare, after a 26 s
+#: hierarchy build, that the prepared-hierarchy route refuses two-way
+#: nesting outright.  The refusal is correct and stays exactly as it is;
+#: what misled was the silence upstream of it.  This is an advisory, not
+#: a gate: it changes no exit code and blocks nothing.
+FEEDBACK_TWO_WAY_ADVISORY = (
+    "experimental: feedback = 1 selects two-way nest feedback, which is "
+    "stamped experimental and runs on the native experiment-runner route "
+    "(`gpuwm run`) only.  The prepared-hierarchy route -- `rw-wps` "
+    "preparation followed by the domain-tree runner -- refuses it at "
+    "preparation, so a config carrying feedback = 1 cannot be prepared "
+    "there no matter what this preflight reports."
+)
+
+
+def feedback_advisory(exp) -> str | None:
+    """The two-way advisory when it applies, else None."""
+
+    return (FEEDBACK_TWO_WAY_ADVISORY
+            if int(getattr(exp, "feedback", 0) or 0) == 1 else None)
+
+
 def platform_is_measured(platform: str | None = None) -> bool:
     """Has this platform's memory behaviour actually been observed?
 
@@ -3687,6 +3714,9 @@ def check_main(args) -> int:
                 None if budget is None else envelope_over_budget),
             "gates": gates,
         }
+        advisory = feedback_advisory(exp)
+        if advisory is not None:
+            payload["advisories"] = [advisory]
         if rail is not None:
             payload["device_rail"] = rail
         if abort is not None:
@@ -3710,6 +3740,9 @@ def check_main(args) -> int:
         print(f"gpuwm check: memory preflight for {exp.name!r} "
               f"({len(exp.domains)} domain(s); column_chunk "
               f"{estimate.column_chunk})")
+        advisory = feedback_advisory(exp)
+        if advisory is not None:
+            print(f"  {advisory}")
         for d in estimate.domains:
             cats = ", ".join(
                 f"{c} {d.category_bytes(c) / GIB:.3f}"

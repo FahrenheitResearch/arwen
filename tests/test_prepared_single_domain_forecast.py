@@ -1293,11 +1293,18 @@ def test_materialized_wsm6_physics_receipt_is_canonical():
     }
 
 
+# RUC is absent from this GFS parametrization on purpose.  It used to be
+# here, and it passed: a GFS-initialised RUC bundle really does reach the
+# v3 preflight.  What it cannot do is complete the first step of the
+# forecast that preflight clears it for -- `mavail must be finite`, at
+# model_elapsed_seconds 0.0 -- so v1.1.1 withdrew the pairing at the
+# front door rather than keep clearing a run that ends in a guard.  RUC
+# on ERA5 is exercised by test_era5_ruc_family_reaches_prepared_v3_preflight
+# below; the two together are the whole of what is claimed for it.
 @pytest.mark.parametrize(
     ("profile", "sfclay", "surface", "pbl", "soil_layers"),
     (
         (runner.MYNN_PHYSICS_PROFILE, 5, 2, 5, 4),
-        (runner.RUC_PHYSICS_PROFILE, 91, 3, 1, 9),
         (runner.NOAHMP_PHYSICS_PROFILE, 91, 4, 1, 4),
     ),
 )
@@ -1319,6 +1326,24 @@ def test_gfs_new_front_door_families_reach_prepared_v3_preflight(
     assert resolved["sf_surface_physics"] == surface
     assert resolved["bl_pbl_physics"] == pbl
     assert resolved["num_soil_layers"] == soil_layers
+
+
+def test_era5_ruc_family_reaches_prepared_v3_preflight(tmp_path, monkeypatch):
+    """RUC is withdrawn from GFS only, and this is the half that proves it.
+
+    A withdrawal that quietly took the component out of the product
+    would pass every test that merely stopped asserting it.  ERA5 still
+    offers RUC, nobody has shown that pairing to be broken, and it must
+    keep reaching the same v3 preflight the GFS one no longer does.
+    """
+    profile = runner.RUC_PHYSICS_PROFILE
+    fixture = _prepared_fixture(tmp_path, "era5", physics_profile=profile)
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+
+    inputs = _preflight_fixture(fixture, physics_profile=profile)
+    resolved = inputs.physics_receipt["resolved"]
+    assert resolved["sf_surface_physics"] == 3
+    assert resolved["num_soil_layers"] == 9
 
 
 def test_preflight_accepts_exact_nssl2_validation_candidate_and_binds_receipt(

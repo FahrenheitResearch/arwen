@@ -29,6 +29,7 @@ from gpuwm.ingest.hrrr_target import load_hrrr_target_domain
 from gpuwm.ingest.nest_init import NestedInputCatalog, ParentInitView
 from gpuwm.ingest.prepared_cache import (
     PreparedCacheReader,
+    compare_prepared_domain_config,
     prepared_domain_config_identity,
     prepared_cache_identity,
     restore_prepared_cache,
@@ -431,10 +432,21 @@ def _validated_root_preparation_binding(
         prepared_run["radt_minutes"] = prepared_run["radt"]
     if prepared_run.get("cu_physics") == 0:
         prepared_run["cudt_minutes"] = 0.0
-    if _effective_domain_config(root_domain) != effective_prepared_domain:
+    # Same rule as every other prepared-identity comparison: a field the
+    # header predates, holding its not-in-use default, is schema growth
+    # and not a trajectory difference.  Everything else still refuses.
+    live_root = _effective_domain_config(root_domain)
+    # d01 is never a delayed domain -- the delayed-start rules apply to
+    # exp.domains[1:] -- so the root's own start IS the experiment's, and
+    # that is precisely the not-in-use value a header written before the
+    # field existed describes.
+    _, differing = compare_prepared_domain_config(
+        effective_prepared_domain, live_root,
+        not_in_use={"start_time": live_root.get("start_time")})
+    if differing:
         raise ValueError(
             "native namelist d01 trajectory controls differ from the sealed "
-            "root preparation")
+            f"root preparation: {', '.join(sorted(differing))}")
 
     root_namelist_sha256 = identity.get("namelist_sha256")
     if (not isinstance(root_namelist_sha256, str)

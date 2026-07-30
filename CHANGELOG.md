@@ -1,5 +1,199 @@
 # Changelog
 
+## 1.1.1 (2026-07-30)
+
+### The GFS front door stops applying a single-domain gate to nests
+
+- **Fixed, and this is why 1.1.1 exists:** 1.1.0 made the GFS front door
+  apply the prepared **single-domain** forecast runner's physics profile
+  whitelist to **every** configuration, including multi-domain ones. A
+  `max_dom = 2` config that prepared cleanly on 1.0.1 was refused with a
+  raw `ValueError` traceback minutes after 1.1.0 shipped. Three things
+  followed from one mis-scoped call. The wizard's own note beside every
+  emitted config -- *"the multi-domain (domain-tree) runner has no such
+  whitelist and runs the suite above as written"* -- became false. The
+  product's **default** suite (Thompson MP8 + Kain-Fritsch + RTE+RRTMGP)
+  is deliberately not in that whitelist, so the config `gpuwm domain`
+  emits when nobody names a profile could not pass the GFS front door at
+  all. And the refusal arrived as a stack trace. The whitelist now gates
+  single-domain preparation only, which is the boundary the wizard was
+  describing all along.
+- **Unchanged:** a single-domain config still meets the whitelist
+  exactly as it did in 1.1.0, defaulting to the WSM6 profile when the
+  caller names none, and an explicit `--physics-profile` is still
+  enforced on either route -- a gate you asked for is not a gate to
+  drop. On a domain tree it binds the root, because the wizard's own
+  nested emission of a shipped profile turns cumulus off on the inner
+  domains. Nothing the multi-domain path refused before 1.1 is accepted
+  now.
+- **New:** the multi-domain preparation records what each domain
+  selected. `gpuwm-gfs-native-hierarchy-proof-v1` -> **`-v2`**, carrying
+  a `gpuwm-front-door-physics-selection-multi-domain-v1` receipt: one
+  selector set per domain (a child chooses its own cumulus and radiation
+  cadence), the registry's semantic SHA-256, and the registry's names
+  for each selection where it has them. Where it does not -- the
+  committed two-domain descriptor selects the legacy aggregate radiation
+  spelling with radiation off, which the registry has no option for --
+  the receipt carries the blocker text instead of a guess, and the run
+  proceeds. Naming is provenance here, not permission: requiring the
+  registry to name a tree's physics would have been the same regression
+  in better clothes. Both prepared-forecast runners accept v1 and v2 as
+  distinct schemas and never promote v1 by inference, the rule the
+  direct proof's v2 already lives under.
+- **Fixed:** every refusal `python -m gpuwm.gfs_direct` makes now reaches
+  you as one sentence and exit code **2** -- what the 20CRv3 door already
+  costs for the same class of refusal -- instead of a traceback. That
+  covers the two node-8 tracebacks on this path: the physics scoping
+  above, and a manifest hash-bound to a namelist that was since
+  re-pointed. The gates are untouched; only how they arrive is.
+
+### RUC on the GFS route refuses at preparation, not mid-forecast
+
+- **Fixed:** the RUC land-surface template was selectable through the
+  GFS front door and could not complete a forecast. It prepared cleanly
+  -- proof PASS, `land_surface: ruc-lsm`, nine soil layers, 339 MB of
+  prepared state -- and then died 2.8 s into integration with `mavail
+  must be finite`, having advanced no model time. The fail-closed guard
+  did its job and the partial output was labelled
+  `PARTIAL_NOT_RUN_PASS`, so nothing wrong was produced; what was wrong
+  was spending the whole preparation to reach a refusal. The GFS route
+  now refuses the pairing **before** any GRIB is decoded, with a
+  registry-cited blocker that names what was observed. `gpuwm domain`
+  refuses to emit the pairing at all, so the config never gets written.
+- **Scoped to the evidence, deliberately:** RUC on the **ERA5** and
+  **HRRR** routes is unchanged and still offered. It was not exercised
+  by the run that found this, and withdrawing it on the inference that
+  it shares the defect would refuse a path nobody has shown to be
+  broken. Completing the GFS route's RUC land/soil initialisation is a
+  v1.2 item, and the registry, the runner's capability declaration, and
+  the front door now say the same thing about which sources offer it.
+- **Mechanism worth knowing about:** the registry has always published
+  which templates each route offers each source, but until now only plan
+  validation and the GUI read that declaration -- nothing consulted it
+  before a preparation ran. That gap is what let "selectable" and
+  "usable" drift apart. Preparation now enforces the same declaration.
+
+### Upgrading no longer invalidates what you already prepared
+
+- **Fixed, and it affected every user with a prepared tree:** 1.1.0 gave
+  every domain an optional per-domain `start_time` for staggered nest
+  starts. The prepared-cache identity is compared by strict equality, so
+  a header written by 1.0.1 -- before the field existed -- could never
+  match again, and **every 1.0.1-era prepared tree became unrunnable
+  under 1.1.0**, refused with `d01 cache domain config differs from
+  experiment`. That sentence names the user's experiment TOML, which was
+  innocent; the cause was a package upgrade. A field diff of a real
+  preserved tree found exactly one added key and zero value differences
+  among the eleven shared keys and ~110 `run` fields.
+- **How it is fixed, and how narrowly:** a field the header does not
+  carry, whose live value means the feature is not in use, describes the
+  same prepared state as a header written before the field existed --
+  for `start_time`, a domain whose start is the experiment's start,
+  i.e. no delayed start. That case is accepted and the tolerated field
+  names are recorded in the run's provenance. Everything else still
+  refuses: a `start_time` that is genuinely late, any value that
+  differs, any field the header carries and this build does not (a cache
+  from a *newer* gpuwm), and every source/static/namelist/bridge digest,
+  which are hashes of bytes and were never relaxed.
+- **New:** cache headers now stamp the gpuwm that wrote them, outside
+  the hashed content basis so that every existing cache's digest keeps
+  verifying exactly as before. Residual mismatches now refuse with the
+  honest cause -- `prepared by <version>, this is <version>; these
+  identity fields differ: [...]` -- instead of pointing at a
+  configuration file for a package difference.
+
+### `gpuwm doctor` catches a bridge that predates the contract
+
+- **Fixed:** the wheel ships no Rust, so upgrading the Python half
+  leaves yesterday's bridge binaries in place. 1.1.0 changed the GFS
+  series file from two columns to three, and `gpuwm doctor` reported
+  every 1.0.1-era bridge `ok` because it only asked whether they
+  launched -- after which each preparation died with `series line 1 must
+  be HOUR<TAB>GRIB2`, blaming the series file gpuwm had just written
+  correctly. Each bridge now declares a marker of the contract it
+  speaks, and doctor reports a bridge that lacks it as **MISSING** with
+  the rebuild remedy. The check is static, so it works on the binaries
+  already on disk. `gpuwm.native_wrf_distribution` has applied this
+  mechanism before sealing a distribution since before 1.1; there is now
+  one table, shared, so the two surfaces cannot drift again.
+
+### `gpuwm doctor`'s bootstrap wires what it builds
+
+- **Fixed, pip installs:** pasting the whole report on a pip-only
+  machine and running every line of it left doctor still reporting six
+  MISSING bridges. Every line was honest -- the wiring step was offered
+  as two `#` alternatives, copy into `~/.gpuwm/bridges` **or** set
+  `GPUWM_<X>_BRIDGE`, because it genuinely is a choice -- but a choice
+  printed entirely in comments means "run all the commands" does not
+  close the gap the commands were for. The copy is now the printed
+  **command**, correct for the shell you are in (`mkdir -p` / `cp`;
+  `New-Item -ItemType Directory -Force` / `Copy-Item`, because Windows
+  PowerShell 5.1 has neither of the first pair), and the environment
+  variable is the `#` alternative beneath it. The destination is the
+  default bridge directory spelled out in full rather than through
+  `$HOME`, so the path you paste is the path gpuwm searches even where
+  the two disagree.
+
+### `gpuwm adapt` stops emitting a descriptor its own battery rejects
+
+- **Fixed:** `gpuwm adapt --skeleton` gave four 3-D fields their
+  **surface** counterpart's selector in addition to their own --
+  `air_temperature` claimed the 2 m row that `air_temperature_2m` also
+  claimed, and the same for relative humidity and both wind components
+  -- so filling in the scaffold honestly and running the battery got
+  `Vtable line 11 is assigned more than once`. The prefix rule that
+  correctly collects `soil_temperature_0_0.1m` under `soil_temperature`
+  was swallowing `air_temperature_2m` under `air_temperature`; it now
+  takes the **longest** matching canonical name, which separates the
+  four pairs without a hand-maintained exception list and leaves the
+  four-layer soil collection intact.
+- **Fixed:** that refusal named the Vtable and a line of it that was
+  perfectly fine. Both claims live in the **descriptor**, so the message
+  now names the descriptor and both fields that claimed the row -- which
+  matters most when, as here, the tool itself wrote the descriptor.
+- **Fixed, pip installs:** `configs/Vtable.GFS.rw-wps` -- the worked
+  example the adapt flow is documented against -- lived outside any
+  package, so the wheel never carried it and the documented command
+  named a path only a checkout has. It ships beside the 20CRv3
+  authorities now, under the same recursive package-data glob and the
+  same byte-verified contract, and `gpuwm adapt --help` prints its
+  resolved path on the install you are running. `--vtable` stays
+  required and is deliberately never defaulted: this command adapts
+  arbitrary sources, and quietly reaching for a GFS Vtable would
+  mis-map every other product.
+
+### `feedback = 1` says where it is supported, before you build
+
+- **Fixed, guidance only -- no gate changed:** `feedback = 1` is a legal
+  schema value, so a config could be authored, pass `gpuwm check` with a
+  clean exit 0 and output identical to its one-way twin, and only then
+  be refused at preparation -- after a 26 s hierarchy build -- by the
+  prepared-hierarchy route, which supports static one-way nests only.
+  `gpuwm check` now prints an advisory (and reports it under
+  `advisories` in `--json`) naming the restriction: it changes no exit
+  code and blocks nothing. And the preparation refusal now names the
+  route that *does* run experimental two-way feedback -- the native
+  experiment-runner route, `gpuwm run` -- instead of stating only what
+  it will not do.
+
+### Refusals
+
+- **Fixed:** a `--preparation-receipt-sha256` that matched nothing
+  printed `proof.json digest differs` once per accepted (file, schema)
+  pair -- three identical lines, four once the GFS hierarchy proof grew
+  a v2 -- and named neither the file it read nor the digest it found.
+  One note per file now, naming the resolved path and the observed
+  SHA-256 (or the schema it carries), plus the list of schemas that
+  would have been accepted.
+- **Fixed:** `rw-wps --source rap` printed
+  `status=adapter_mapping_required: adapter_mapping_required` -- the
+  reason fell back to the status value already on the line, and a
+  doubled token reads as a truncated message. An adapter with nothing to
+  add now says nothing rather than saying it twice. Adapters that do
+  have something to say (`gdas`'s notes, the composition family's
+  requirement) are unchanged, as is the paragraph underneath that
+  explains the refusal.
+
 ## 1.1.0 (2026-07-30)
 
 ### `gpuwm check` tells the truth about VRAM

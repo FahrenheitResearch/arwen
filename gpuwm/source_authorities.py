@@ -42,10 +42,47 @@ def twentycrv3_authorities() -> Mapping[str, Path]:
     return MappingProxyType(resolved)
 
 
+#: The GFS WPS Vtable `gpuwm adapt` documents as its worked example.
+#:
+#: It lived in `configs/`, which is not a package, so the wheel did not
+#: carry it and a pip user following the documented adapt flow was told
+#: to pass a file their install did not have.  It ships beside the
+#: 20CRv3 authorities now, under the same recursive package-data glob
+#: and the same byte contract, because it is the same kind of thing: an
+#: immutable input a front door reads, not a config anyone edits.
+_GFS_VTABLE_NAME = "Vtable.GFS.rw-wps"
+_GFS_VTABLE_SHA256 = (
+    "9e391880bd11d9eae471aea5832646b1c284861169a0fc82f43e0e78b43038b8")
+
+
+def packaged_gfs_vtable() -> Path:
+    """Resolve and byte-verify the packaged GFS WPS Vtable."""
+
+    path = (_AUTHORITY_ROOT / _GFS_VTABLE_NAME).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"packaged GFS Vtable is missing: {path}")
+    observed = hashlib.sha256(path.read_bytes()).hexdigest()
+    if observed != _GFS_VTABLE_SHA256:
+        raise RuntimeError(
+            f"packaged GFS Vtable hash differs: expected "
+            f"{_GFS_VTABLE_SHA256}, got {observed}")
+    return path
+
+
+def packaged_gfs_vtable_sha256() -> str:
+    """The immutable SHA-256 contract, without touching the filesystem."""
+
+    return _GFS_VTABLE_SHA256
+
+
 def twentycrv3_authority_sha256() -> Mapping[str, str]:
     """Return the immutable SHA-256 contract without touching the filesystem."""
 
     return _TWENTYCRV3_SHA256
 
 
-__all__ = ["twentycrv3_authorities", "twentycrv3_authority_sha256"]
+__all__ = [
+    "packaged_gfs_vtable", "packaged_gfs_vtable_sha256",
+    "twentycrv3_authorities", "twentycrv3_authority_sha256",
+]

@@ -1177,10 +1177,51 @@ def _print_geog_help() -> None:
     print("    " + ", ".join(GEOG_DATASETS))
 
 
+def _refuse_profile_its_source_cannot_prepare(profile, source) -> None:
+    """Do not emit a config the named source's front door will refuse.
+
+    The wizard prints, of a profile-bound config, that it "passes the
+    prepared single-domain forecast runner's physics guard exactly as
+    emitted".  That sentence has to stay true.  When a route withdraws a
+    component -- GFS and RUC, whose forecast cannot complete its first
+    step -- the wizard must stop offering the pairing rather than write
+    the file and let the front door refuse it later, which is the same
+    selectable-but-not-usable shape one surface earlier.
+
+    Scoped by the same registry declaration the front door enforces, so
+    the two cannot disagree, and silent for every pairing that
+    declaration still offers.
+    """
+
+    from gpuwm.physics_compat import (
+        land_surface_route_blocker, single_domain_runtime_switches,
+    )
+
+    if profile is None or source is None:
+        return
+    try:
+        component = single_domain_runtime_switches(profile).get(
+            "sf_surface_physics")
+    except (KeyError, ValueError):
+        return
+    from gpuwm.physics_compat import land_surface_component_for_selector
+
+    named = land_surface_component_for_selector(component)
+    if named is None:
+        return
+    blocker = land_surface_route_blocker(named, source=str(source))
+    if blocker is not None:
+        raise ValueError(
+            f"--physics-profile {profile} cannot be prepared with "
+            f"--source {source}: {blocker}")
+
+
 def domain_main(args) -> int:
     lat, lon = _parse_point(args.point)
     if args.card is not None and args.vram_gib is not None:
         raise ValueError("--card and --vram-gib are mutually exclusive")
+    _refuse_profile_its_source_cannot_prepare(
+        getattr(args, "physics_profile", None), args.source)
     vram_gib = (CARD_VRAM_GIB[args.card] if args.card is not None
                 else args.vram_gib if args.vram_gib is not None
                 else CARD_VRAM_GIB["24gb"])

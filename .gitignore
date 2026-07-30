@@ -27,3 +27,11 @@ tools/hrrr_grib2_bridge-*
 tools/rustwx/target/
 !tools/rustwx/vendor/**
 !tools/rustwx/assets/**
+# The two vendor negations above exist so an offline `cargo build` has
+# its crates, and they re-admit EVERYTHING under those trees -- including
+# the __pycache__ that `python -m compileall -q gpuwm tools` writes
+# beside the handful of Python scripts some crates vendor.  That is how
+# five .pyc files reached a release-branch commit.  Vendored sources
+# still ship; their bytecode does not.
+tools/grib1_bridge/vendor/**/__pycache__/
+tools/rustwx/vendor/**/__pycache__/

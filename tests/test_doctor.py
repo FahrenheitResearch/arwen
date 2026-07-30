@@ -359,6 +359,118 @@ def test_the_bridge_remedy_is_a_real_bootstrap_on_a_pip_install(
     assert commands[2].startswith("git clone ")
 
 
+def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
+        monkeypatch, tmp_path):
+    """"It launches" is not "it speaks this release's contract".
+
+    The wheel ships no Rust, so upgrading the Python half leaves
+    yesterday's binaries on disk untouched.  1.1.0 moved the GFS series
+    file from two columns to three; a 1.0.1 `gfs_grib2_bridge` still
+    launched and still printed its usage diagnostic, so doctor reported
+    it `ok` -- and then every preparation died with `series line 1 must
+    be HOUR<TAB>GRIB2`, blaming the series file gpuwm had just written
+    correctly.  A node-7 validation run found the cause by diffing two
+    git tags, which is not a diagnostic path a product may rely on.
+    """
+
+    from gpuwm import bridges
+
+    stale = tmp_path / bridges.executable_name("gfs_grib2_bridge")
+    stale.write_bytes(
+        b"a real executable, from before the contract changed: "
+        b"series line {} must be HOUR<TAB>GRIB2")
+    current = tmp_path / "current.bin"
+    current.write_bytes(
+        b"...\x00" + bridges.BRIDGE_ABI_MARKERS["gfs_grib2_bridge"])
+
+    ok, evidence = bridges.bridge_abi_matches("gfs_grib2_bridge", stale)
+    assert not ok
+    assert "predates" in evidence and "rebuild" in evidence
+    assert bridges.bridge_abi_matches("gfs_grib2_bridge", current)[0]
+
+    # And it reaches the report as a gap with a rebuild remedy, not as a
+    # green line -- which is the whole finding.
+    monkeypatch.setattr(bridges, "find_bridge",
+                        lambda name: stale if name == "gfs_grib2_bridge"
+                        else None)
+    monkeypatch.setattr(doctor, "_exec_probe",
+                        lambda path: (True, "executes"))
+    checks = {check.name: check for check in doctor._bridge_checks()}
+    skewed = checks["bridge gfs_grib2_bridge"]
+    assert skewed.status == "missing"
+    assert "predates" in skewed.detail
+    assert skewed.remedy and "cargo build" in skewed.remedy
+
+    # Every bridge gpuwm resolves declares a contract marker: an
+    # undeclared one would pass this handshake silently forever.
+    assert set(bridges.BRIDGE_ENV) == set(bridges.BRIDGE_ABI_MARKERS)
+
+
+def test_the_sealer_and_the_doctor_share_one_bridge_contract(monkeypatch):
+    """One marker table, so the two surfaces cannot drift apart.
+
+    `native_wrf_distribution` has refused stale `grib2_inventory` and
+    `grib2_dump` builds since before 1.1; that table simply did not
+    cover the GFS bridge, and doctor had no table at all.  Two copies is
+    how the series-contract change got caught at sealing time and never
+    at report time.
+    """
+
+    from gpuwm import bridges
+    from gpuwm import native_wrf_distribution
+
+    for name, marker in bridges.BRIDGE_ABI_MARKERS.items():
+        assert native_wrf_distribution._BRIDGE_ABI_MARKERS[name] is marker
+
+
+@pytest.mark.parametrize("windows", (False, True))
+def test_the_pip_bootstrap_wires_what_it_builds(monkeypatch, tmp_path,
+                                                windows):
+    """Running every command must actually close the gap it was for.
+
+    A node-8 validation run pasted the whole report on a pip-only
+    machine, ran every line of it, and doctor still reported six MISSING
+    bridges: the wiring step -- copy into the default directory, or set
+    the environment variable -- was offered as two `#` alternatives,
+    because it is a choice.  It is still a choice; the copy is now the
+    default and the environment variable the commented alternative, so
+    the literal paste finishes.
+
+    The destination is asserted to be `default_bridge_dir()` itself, not
+    a lookalike: what makes the copy work is that it lands in the exact
+    directory `artifact_candidates` searches.
+    """
+
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path)
+    monkeypatch.setattr(bridges, "crate_dir",
+                        lambda: tmp_path / "tools" / "grib1_bridge")
+    monkeypatch.setattr(bridges, "cargo_is_installed", lambda: True)
+    remedy = bridges.bridge_remedy("grib1_bridge")
+    _assert_remedy_lines_are_commands_or_comments(remedy, windows=windows)
+
+    commands = [line.strip() for line in remedy.splitlines()
+                if line.strip() and not line.strip().startswith("#")]
+    destination = str(bridges.default_bridge_dir())
+    copy_first = "Copy-Item" if windows else "cp"
+    make_first = "New-Item" if windows else "mkdir"
+    assert any(line.startswith(make_first) and f'"{destination}"' in line
+               for line in commands), commands
+    copies = [line for line in commands if line.startswith(copy_first)]
+    assert len(copies) == 1, commands
+    assert copies[-1].endswith(f'"{destination}"')
+    assert bridges.executable_name("grib1_bridge") in copies[-1]
+    # The directory is made before anything is copied into it.
+    assert (commands.index(copies[0])
+            > next(index for index, line in enumerate(commands)
+                   if line.startswith(make_first)))
+    # The environment variable survives -- demoted, not deleted: it is a
+    # genuine alternative for a reader who does not want a second copy.
+    assert f"#   {bridges.BRIDGE_ENV['grib1_bridge']}=" in remedy
+
+
 def test_the_bridge_remedy_stays_one_line_in_a_checkout(monkeypatch,
                                                         tmp_path):
     """Where the crate exists, the clone would be noise."""
@@ -411,6 +523,11 @@ def test_every_rust_remedy_is_install_aware(monkeypatch, tmp_path):
 _REMEDY_COMMANDS = frozenset({
     "pip", "python", "git", "cd", "cargo", "curl", "winget", "gpuwm",
     "bash", "sh", ".", "export", "$env:Path",
+    # The wiring step, which the pip bootstrap now RUNS rather than
+    # describing in a comment: a literal paste that builds six bridges
+    # and installs none of them left a node-8 validation run at six
+    # MISSING while every line it pasted was, technically, honest.
+    "mkdir", "cp", "New-Item", "Copy-Item",
 })
 
 #: A bare ALL-CAPS word is a placeholder the reader must expand.

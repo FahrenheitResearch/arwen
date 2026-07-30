@@ -46,7 +46,13 @@ from gpuwm.core.microphysics_transition import (  # noqa: E402
     resolve_microphysics_transition,
 )
 from gpuwm.experiment import load_experiment  # noqa: E402
-from gpuwm.ingest.prepared_cache import PreparedCacheReader  # noqa: E402
+from gpuwm.ingest.prepared_cache import (  # noqa: E402
+    PreparedCacheReader,
+    compare_prepared_domain_config,
+    prepared_domain_config_identity,
+    prepared_identity_refusal,
+    undelayed_identity_defaults,
+)
 from gpuwm.native_wrf_contract import (  # noqa: E402
     NATIVE_LANDUSE_IDENTITY,
     load_native_static_cache,
@@ -83,6 +89,16 @@ _HIERARCHY_DOCUMENTS = (
         "source": "era5",
     },
     {
+        "filename": "proof.json",
+        "schema": "gpuwm-gfs-native-hierarchy-proof-v2",
+        "status": "READY_NOT_YET_STOCK_WRF_GATED",
+        "source": "gfs",
+    },
+    {
+        # v1 predates the front-door physics receipt and therefore cannot
+        # be promoted to v2 by inference; it stays independently
+        # verifiable on its own terms, exactly as the direct proof's v2
+        # does beside v3.
         "filename": "proof.json",
         "schema": "gpuwm-gfs-native-hierarchy-proof-v1",
         "status": "READY_NOT_YET_STOCK_WRF_GATED",
@@ -377,6 +393,10 @@ class PreparedTreeInputs:
     execution_plan: Mapping[str, object]
     authority_sha256: Mapping[str, str]
     source: str
+    #: Per-domain identity fields accepted as schema growth rather
+    #: than as a match -- empty on a cache written by this release.
+    tolerated_identity_fields: Mapping[str, tuple[str, ...]] = (
+        MappingProxyType({}))
 
 
 def _domain_rows(exp) -> list[dict[str, object]]:
@@ -483,17 +503,28 @@ def _load_hierarchy_document(prepared_root: Path, expected_sha256: str):
     only which filename carries it varies.
     """
 
-    seen = []
+    # One note per FILE, not per (file, schema) candidate.  Several
+    # sources write `proof.json`, and the GFS entry alone now has two
+    # accepted schemas, so appending per candidate printed
+    # `proof.json digest differs` once for each -- three or four
+    # identical lines saying nothing about which file was read or what
+    # its digest actually was.
+    seen: dict[str, str] = {}
     for entry in _HIERARCHY_DOCUMENTS:
         candidate = prepared_root / entry["filename"]
         if not candidate.is_file():
             continue
-        if _sha256(candidate) != expected_sha256:
-            seen.append(f"{entry['filename']} digest differs")
+        observed = _sha256(candidate)
+        if observed != expected_sha256:
+            seen[entry["filename"]] = (
+                f"{candidate} has sha256 {observed}")
             continue
         document = _json_object(candidate, "preparation document")
         if document.get("schema") != entry["schema"]:
-            seen.append(f"{entry['filename']} schema {document.get('schema')!r}")
+            seen.setdefault(
+                entry["filename"],
+                f"{candidate} carries schema "
+                f"{document.get('schema')!r}")
             continue
         if document.get("status") != entry["status"]:
             raise ValueError(
@@ -501,12 +532,19 @@ def _load_hierarchy_document(prepared_root: Path, expected_sha256: str):
                 f"{entry['status']} {entry['source']} hierarchy"
             )
         return candidate, document, entry["source"]
+    looked_for = ", ".join(
+        sorted({e["filename"] for e in _HIERARCHY_DOCUMENTS}))
+    if not seen:
+        raise ValueError(
+            f"prepared root {prepared_root} carries none of the documents a "
+            f"hierarchy preparation writes ({looked_for}), so nothing there "
+            f"can match --preparation-receipt-sha256 {expected_sha256}")
     raise ValueError(
-        "prepared root carries no recognized hierarchy document matching "
-        "--preparation-receipt-sha256; looked for "
-        + ", ".join(sorted({e["filename"] for e in _HIERARCHY_DOCUMENTS}))
-        + (f" ({'; '.join(seen)})" if seen else "")
-    )
+        f"prepared root {prepared_root} carries no hierarchy document "
+        f"matching --preparation-receipt-sha256 {expected_sha256}; "
+        + "; ".join(seen[name] for name in sorted(seen))
+        + ".  Accepted schemas: "
+        + ", ".join(sorted({e["schema"] for e in _HIERARCHY_DOCUMENTS})))
 
 
 def _hierarchy_valid_time(document) -> str:
@@ -750,6 +788,11 @@ def preflight_prepared_tree(
     bundles = []
     common_source_identity = None
     forcing_hours = None
+    # Which identity fields each domain's cache was accepted WITHOUT,
+    # because they postdate the header and hold their not-in-use
+    # default.  Normally empty; recorded either way, so a run on an
+    # upgraded install can show exactly what it tolerated.
+    tolerated_identity: dict[str, list[str]] = {}
     for domain, grid, embedded_receipt in zip(exp.domains, grids, domain_receipts):
         label = f"d{int(domain.grid_id):02d}"
         bundle = _require_directory(
@@ -773,8 +816,24 @@ def preflight_prepared_tree(
         identity = header.get("identity")
         if not isinstance(identity, dict):
             raise ValueError(f"{label} cache identity is missing")
-        if identity.get("domain_config") != _strict_json(asdict(domain)):
-            raise ValueError(f"{label} cache domain config differs from experiment")
+        # Default-tolerant, and only on the document that grows fields
+        # as the configuration schema grows.  v1.1.0 added a per-domain
+        # `start_time` for staggered nest starts, which made every
+        # v1.0.1-era prepared tree unrunnable under a strict-equality
+        # check -- refused with a sentence that named the user's
+        # experiment file, when the cause was a package upgrade.
+        tolerated_fields, differing_fields = compare_prepared_domain_config(
+            identity.get("domain_config"),
+            prepared_domain_config_identity(domain),
+            not_in_use=undelayed_identity_defaults(exp))
+        if differing_fields:
+            raise ValueError(prepared_identity_refusal(
+                subject=f"{label} prepared cache", header=header,
+                differing=differing_fields,
+                re_prepare=(
+                    "the front door that wrote this tree, against this "
+                    "experiment config")))
+        tolerated_identity[label] = list(tolerated_fields)
         for key, expected in authority.items():
             if identity.get(key) != expected:
                 raise ValueError(f"{label} cache {key} differs from preparation")
@@ -876,6 +935,9 @@ def preflight_prepared_tree(
         execution_plan=execution_plan,
         authority_sha256=authority_hashes,
         source=prepared_source,
+        tolerated_identity_fields=MappingProxyType({
+            label: tuple(names)
+            for label, names in tolerated_identity.items()}),
     )
 
 

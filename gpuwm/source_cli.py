@@ -1262,10 +1262,14 @@ def _gfs_command(args: argparse.Namespace) -> list[str]:
         str(args.source_sha256s_sha256),
         "--output-root",
         str(args.output_root),
-        "--physics-profile",
-        WSM6_PROFILE_ID
-        if args.physics_profile is None else args.physics_profile,
     ]
+    if args.physics_profile is not None:
+        # Passed only when the caller NAMED one.  Substituting the WSM6
+        # default here made "no profile given" indistinguishable from
+        # "WSM6 requested" one process later, which is how a domain tree
+        # -- a route with no profile whitelist at all -- came to be
+        # measured against a single-domain profile it never asked for.
+        command.extend(("--physics-profile", args.physics_profile))
     if args.static_input is not None:
         command.extend(("--static-input", str(args.static_input)))
         command.extend(("--static-receipt", str(args.static_receipt)))
@@ -1643,11 +1647,19 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
 
     if not adapter.runnable:
-        reason = (
-            adapter.composition_requirement or adapter.notes or adapter.status.value
-        )
+        # A reason, or nothing.  The status is already on the line, so
+        # falling back to it produced `status=adapter_mapping_required:
+        # adapter_mapping_required` -- an echo that reads as a truncated
+        # message and is still what `rap` and `nam` print.  Source-
+        # agnostic on purpose: the adapters that say something useful
+        # (gdas grew `notes`, the composition family has
+        # `composition_requirement`) are unchanged, and any adapter that
+        # has nothing to add stops pretending it does.
+        reason = adapter.composition_requirement or adapter.notes
         print(
-            f"REFUSED source={adapter.source_id} status={adapter.status.value}: {reason}",
+            f"REFUSED source={adapter.source_id} "
+            f"status={adapter.status.value}"
+            + (f": {reason}" if reason else ""),
             file=sys.stderr,
         )
         print(

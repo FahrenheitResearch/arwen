@@ -55,6 +55,9 @@ from gpuwm.source_hierarchy import (
 )
 from gpuwm.physics_compat import (
     WSM6_PROFILE_ID,
+    land_surface_component_for_selector,
+    land_surface_route_blocker,
+    multi_domain_physics_selection,
     validate_single_domain_physics_profile,
 )
 from gpuwm.wrf_direct import export_prepared_wrf
@@ -64,6 +67,12 @@ INPUT_MANIFEST_SCHEMA = "gpuwm-gfs-direct-input-manifest-v1"
 BRIDGE_SCHEMA = "gpuwm-gfs-grib2-bridge-v1"
 PROOF_SCHEMA = "gpuwm-gfs-direct-wrf-proof-v3"
 LEGACY_PROOF_SCHEMA = "gpuwm-gfs-direct-wrf-proof-v2"
+#: The multi-domain product.  v2 adds the front-door physics receipt the
+#: v3 single-domain proof already carried; v1 documents written by 1.1.0
+#: and earlier stay independently verifiable and are never promoted to
+#: v2 by inference, exactly as the direct proof's v2 is not.
+HIERARCHY_PROOF_SCHEMA = "gpuwm-gfs-native-hierarchy-proof-v2"
+LEGACY_HIERARCHY_PROOF_SCHEMA = "gpuwm-gfs-native-hierarchy-proof-v1"
 _PRESSURE_LEVELS_HPA = np.asarray(
     [100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600,
      650, 700, 750, 800, 850, 900, 925, 950, 975, 1000],
@@ -593,6 +602,93 @@ def _prepare_output_root_parent(output_root: Path) -> Path:
     return parent
 
 
+def front_door_physics_selection(
+        exp,
+        *,
+        physics_profile: str | None = None,
+        expert_acknowledgements: tuple[str, ...] = (),
+) -> dict[str, object]:
+    """The front door's physics gate, scoped by DOMAIN COUNT.
+
+    One door, two routes, and the routes have never had the same
+    physics contract.  The prepared SINGLE-domain forecast runner
+    accepts a fixed list of named profiles and compares an experiment's
+    switches to one of them for exact equality; the multi-domain
+    (domain-tree) runner has no such list and runs the selected suite as
+    written.  ``gpuwm domain`` prints that boundary in the note beside
+    every config it emits.
+
+    v1.1.0 lost the boundary: the any-combo work made this door call
+    :func:`validate_single_domain_physics_profile` for every
+    configuration, so the whitelist bound at the front door instead of
+    at the runner that owns it.  Three things followed, all of them
+    field-observed -- a two-domain config that prepared cleanly on 1.0.1
+    was refused; the product default suite is deliberately not in the
+    whitelist, so the config the wizard emits BY DEFAULT could not pass
+    at all; and the refusal arrived as a stack trace.
+
+    Nothing is widened, and nothing new is refused either.  A single
+    domain meets the whitelist exactly as it did in 1.1.0, defaulting to
+    WSM6 when the caller named no profile.  A domain tree keeps the
+    authority it already had -- the configuration loader's WRF selector
+    schema and readiness rails, which every domain passed before an
+    experiment existed -- and now records what it selected, per domain,
+    in a receipt the proof carries.  An explicitly named profile is
+    still enforced on either route, because a gate the caller ASKED for
+    is not a gate to drop.
+    """
+
+    if len(exp.domains) == 1:
+        selection = validate_single_domain_physics_profile(
+            WSM6_PROFILE_ID if physics_profile is None else physics_profile,
+            config=exp.root.run,
+            expert_acknowledgements=expert_acknowledgements)
+        _refuse_unoffered_land_surface(
+            {1: selection.get("selectors")})
+        return selection
+    selection = multi_domain_physics_selection(
+        {int(domain.grid_id): domain.run for domain in exp.domains},
+        profile=physics_profile,
+        expert_acknowledgements=expert_acknowledgements)
+    _refuse_unoffered_land_surface({
+        int(grid_id): domain.get("selectors")
+        for grid_id, domain in selection["domains"].items()})
+    return selection
+
+
+def _refuse_unoffered_land_surface(selectors_by_domain) -> None:
+    """Refuse a land-surface component this route does not offer.
+
+    Preparation time, before any GRIB is decoded: the registry has long
+    declared which templates this route offers this source, and nothing
+    consulted that declaration before a run.  RUC was therefore
+    selectable here, prepared in full -- proof PASS, nine soil layers,
+    339 MB of state -- and then died on its first surface-temperature
+    call having advanced no model time.  A refusal that arrives after
+    the preparation is a refusal that costs the preparation.
+
+    Both routes of this front door are checked, because both build
+    their surface state from the same GFS initialisation and both reach
+    the same cold start.  The refusal names only this source; see
+    :func:`land_surface_route_blocker` for why it speaks for no other.
+    """
+
+    for grid_id in sorted(selectors_by_domain):
+        selectors = selectors_by_domain[grid_id]
+        if not isinstance(selectors, Mapping):
+            continue
+        component = land_surface_component_for_selector(
+            selectors.get("sf_surface_physics"))
+        if component is None:
+            # A selector the registry has no option for is refused by
+            # the configuration schema long before this door, so there
+            # is nothing here for this gate to add.
+            continue
+        blocker = land_surface_route_blocker(component, source="gfs")
+        if blocker is not None:
+            raise ValueError(f"d{grid_id:02d}: {blocker}")
+
+
 def prepare_gfs_wrf(
     *,
     series: Path,
@@ -610,7 +706,7 @@ def prepare_gfs_wrf(
     cpu_preprocess_bridge: Path | None = None,
     geog_root: Path | None = None,
     hierarchy_workers: int | None = None,
-    physics_profile: str = WSM6_PROFILE_ID,
+    physics_profile: str | None = None,
     expert_acknowledgements: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Build native GFS initial/boundary files and return the proof receipt.
@@ -677,8 +773,8 @@ def prepare_gfs_wrf(
 
     total_started = time.perf_counter()
     exp = load_experiment(Path(experiment_config))
-    physics_selection = validate_single_domain_physics_profile(
-        physics_profile, config=exp.root.run,
+    physics_selection = front_door_physics_selection(
+        exp, physics_profile=physics_profile,
         expert_acknowledgements=expert_acknowledgements)
     if exp.start_time != cycle_time:
         raise ValueError("GFS cycle must equal experiment start_time")
@@ -863,9 +959,10 @@ def prepare_gfs_wrf(
                     raise ValueError(
                         "GFS adapter implementation changed during preparation")
                 proof = {
-                    "schema": "gpuwm-gfs-native-hierarchy-proof-v1",
+                    "schema": HIERARCHY_PROOF_SCHEMA,
                     "status": "READY_NOT_YET_STOCK_WRF_GATED",
                     "domain_count": len(exp.domains),
+                    "physics": physics_selection,
                     "forcing_times": [value.isoformat() for value in times],
                     "forcing_hours": hours,
                     "boundary_interval_seconds": boundary_interval_seconds,
@@ -933,7 +1030,11 @@ def prepare_gfs_wrf(
                 prepared_cache, static_cache, geometry_receipt, wrf_output,
                 valid_time=times[0],
                 boundary_interval_seconds=boundary_interval_seconds,
-                physics_profile=physics_profile,
+                # The RESOLVED profile, not the caller's argument: the
+                # single-domain route defaults to WSM6 when nobody named
+                # one, and the exporter must be handed the same profile
+                # the gate just checked or its receipt cannot match.
+                physics_profile=physics_selection["profile"],
                 expert_acknowledgements=expert_acknowledgements)
             if (export_receipt.get("schema")
                     != "gpuwm-native-direct-wrf-export-v3"
@@ -1165,28 +1266,43 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--geog-root", type=Path)
     parser.add_argument("--hierarchy-workers", type=int)
     parser.add_argument(
-        "--physics-profile", default=WSM6_PROFILE_ID,
-        help="registered fixed physics template materialized in the experiment")
+        "--physics-profile", default=None,
+        help="registered fixed physics template materialized in the "
+             "experiment; the single-domain route defaults to "
+             f"{WSM6_PROFILE_ID} and a domain tree, which has no profile "
+             "whitelist, defaults to the suite the config selects")
     parser.add_argument(
         "--expert-acknowledgement", action="append", default=[],
         help="registry-owned expert acknowledgement id; repeat as needed")
     args = parser.parse_args(argv)
-    proof = prepare_gfs_wrf(
-        series=args.series, cycle=args.cycle, bridge=args.bridge,
-        wps_namelist=args.wps_namelist, static_input=args.static_input,
-        static_receipt=args.static_receipt,
-        experiment_config=args.experiment_config,
-        input_manifest=args.input_manifest,
-        input_manifest_sha256=args.input_manifest_sha256,
-        output_root=args.output_root,
-        preprocess_backend=args.preprocess_backend,
-        preprocess_workers=args.preprocess_workers,
-        cpu_preprocess_bridge=args.cpu_preprocess_bridge,
-        geog_root=args.geog_root,
-        hierarchy_workers=args.hierarchy_workers,
-        physics_profile=args.physics_profile,
-        expert_acknowledgements=tuple(args.expert_acknowledgement),
-    )
+    try:
+        proof = prepare_gfs_wrf(
+            series=args.series, cycle=args.cycle, bridge=args.bridge,
+            wps_namelist=args.wps_namelist, static_input=args.static_input,
+            static_receipt=args.static_receipt,
+            experiment_config=args.experiment_config,
+            input_manifest=args.input_manifest,
+            input_manifest_sha256=args.input_manifest_sha256,
+            output_root=args.output_root,
+            preprocess_backend=args.preprocess_backend,
+            preprocess_workers=args.preprocess_workers,
+            cpu_preprocess_bridge=args.cpu_preprocess_bridge,
+            geog_root=args.geog_root,
+            hierarchy_workers=args.hierarchy_workers,
+            physics_profile=args.physics_profile,
+            expert_acknowledgements=tuple(args.expert_acknowledgement),
+        )
+    except (ValueError, OSError) as error:
+        # Every gate this door applies is a refusal, and a refusal is a
+        # sentence.  A pilot met three of these as stack traces -- a
+        # missing input, a manifest bound to a different namelist, and
+        # the mis-scoped physics whitelist this release fixes -- and a
+        # traceback tells nobody which of their inputs to change.  The
+        # gates themselves are untouched: only how they reach the reader
+        # is.  RC 2 is what the 20CRv3 door already costs for the same
+        # class of refusal, and `rw-wps` passes it straight through.
+        print(f"rw-wps --source gfs: {error}.", file=sys.stderr)
+        return 2
     print(json.dumps(proof, indent=2, sort_keys=True))
     for line in prepared_forecast_next_command(
             proof, output_root=args.output_root,

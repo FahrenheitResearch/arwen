@@ -477,7 +477,13 @@ def test_preflight_refuses_an_unrecognized_hierarchy_document(tmp_path, monkeypa
     preparation["schema"] = "gpuwm-some-other-hierarchy-v9"
     receipt.write_text(json.dumps(preparation), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="no recognized hierarchy document"):
+    # The refusal names the file it read and the schema it found -- the
+    # old wording repeated "proof.json digest differs" once per accepted
+    # (file, schema) pair and named neither.
+    with pytest.raises(
+            ValueError,
+            match=r"no hierarchy document matching .*receipt\.json carries "
+                  r"schema 'gpuwm-some-other-hierarchy-v9'"):
         runner.preflight_prepared_tree(
             prepared_root=prepared,
             preparation_receipt_sha256=_sha(receipt),
@@ -516,7 +522,7 @@ def test_preflight_binds_every_domain_and_detects_identity_drift(tmp_path, monke
     header = json.loads(header_path.read_text(encoding="utf-8"))
     header["identity"]["domain_config"]["parent_id"] = 99
     header_path.write_text(json.dumps(header), encoding="utf-8")
-    with pytest.raises(ValueError, match="d02 cache domain config differs"):
+    with pytest.raises(ValueError, match="d02 prepared cache was prepared by .*fields differ: parent_id"):
         runner.preflight_prepared_tree(
             prepared_root=prepared,
             preparation_receipt_sha256=_sha(receipt),

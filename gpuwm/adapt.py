@@ -972,12 +972,59 @@ _CANONICAL_FIELDS = (
 )
 
 
+def _canonical_field_names() -> tuple[str, ...]:
+    return tuple(name for name, _units, _axes, _location in _CANONICAL_FIELDS)
+
+
+def _packaged_vtable_hint() -> str:
+    """Where the shipped GFS Vtable actually is on THIS install.
+
+    The example lived in `configs/`, which is not a package, so the
+    wheel did not carry it and the documented flow named a path only a
+    checkout has.  It ships now; printing the resolved path means a pip
+    user does not have to know where a wheel puts package data.
+    """
+
+    from gpuwm.source_authorities import packaged_gfs_vtable
+
+    try:
+        return str(packaged_gfs_vtable())
+    except (OSError, RuntimeError) as error:
+        return f"(this install cannot resolve it: {error})"
+
+
+def _skeleton_owner(description: str, names) -> str | None:
+    """Which canonical field a Vtable row belongs to: the LONGEST match.
+
+    The prefix rule exists for multi-layer rows -- ``soil_temperature``
+    has to collect ``soil_temperature_0_0.1m`` through
+    ``soil_temperature_1.0_2.0m``.  Applied without a tie-break it also
+    collects ``air_temperature_2m`` under ``air_temperature``, which is
+    how the generator came to hand four 3-D fields their surface
+    counterpart's selector as well as their own and emit a descriptor
+    its own battery refused.
+
+    Longest-match settles it, and settles it by the same rule for every
+    field rather than by a list of the four exceptions anyone happened
+    to notice: a row that exactly names a canonical field belongs to
+    that field, and a row that prefixes two of them belongs to the more
+    specific one.
+    """
+
+    owner = None
+    for name in names:
+        if description == name or description.startswith(name + "_"):
+            if owner is None or len(name) > len(owner):
+                owner = name
+    return owner
+
+
 def _skeleton_reference(rows, field_name: str) -> list[dict[str, object]]:
+    names = _canonical_field_names()
     candidates = [
         row
         for row in rows
-        if row.description == field_name
-        or row.description.startswith(field_name + "_")
+        if _skeleton_owner(row.description, names) == field_name
     ]
     if not candidates:
         return [{"metgrid_name": "REPLACE_WITH_EXACT_VTABLE_NAME"}]
@@ -1134,7 +1181,11 @@ def register_cli(subparsers) -> None:
         required=True,
         type=Path,
         metavar="VTABLE",
-        help="11-column WPS Vtable selector authority",
+        help="11-column WPS Vtable selector authority. Required, and "
+             "never defaulted: this command adapts arbitrary sources, and "
+             "quietly reaching for a GFS Vtable would mis-map every other "
+             "product. A worked GFS example installs with the package -- "
+             f"{_packaged_vtable_hint()}",
     )
     parser.add_argument(
         "--skeleton",

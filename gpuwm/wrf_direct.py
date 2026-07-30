@@ -34,7 +34,12 @@ import netCDF4
 import numpy as np
 
 from gpuwm.core import constants as _model_constants
-from gpuwm.ingest.prepared_cache import prepared_domain_config_identity
+from gpuwm.ingest.prepared_cache import (
+    compare_prepared_domain_config,
+    prepared_domain_config_identity,
+    prepared_identity_refusal,
+    undelayed_identity_defaults,
+)
 from gpuwm.static.lambert import LambertGrid, grids_from_projection_config
 from gpuwm.static.projection import (MAP_PROJ_CHARS, WRF_MAP_PROJ_CODES,
                                      projection_class)
@@ -1419,10 +1424,17 @@ def _prepared_domain_context(artifact: PreparedDomainArtifacts, domain,
     cache = PreparedCache(artifact.prepared_cache)
     identity = cache.header["identity"]
     expected_domain = prepared_domain_config_identity(domain)
-    if identity.get("domain_config") != expected_domain:
-        raise ValueError(
-            f"d{domain.grid_id:02d} prepared cache is not bound to the "
-            "namelist-derived domain configuration")
+    # Default-tolerant on fields that postdate the header, strict on
+    # everything else: a package upgrade that adds an unused identity
+    # field must not make an existing prepared bundle unreadable, and a
+    # field carrying a real value must still bind.
+    _, differing = compare_prepared_domain_config(
+        identity.get("domain_config"), expected_domain,
+        not_in_use=undelayed_identity_defaults(exp))
+    if differing:
+        raise ValueError(prepared_identity_refusal(
+            subject=f"d{domain.grid_id:02d} prepared cache",
+            header=cache.header, differing=differing))
     cfg = identity["domain_config"]["run"]
     try:
         stock_wrf_physics_inventory(cfg.get("mp_physics"))

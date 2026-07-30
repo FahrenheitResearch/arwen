@@ -27,6 +27,7 @@ import tempfile
 from typing import Any
 
 from gpuwm import __version__
+from gpuwm.bridges import BRIDGE_ABI_MARKERS as _SHARED_BRIDGE_ABI_MARKERS
 
 
 RUNTIME_SCHEMA = "gpuwm-native-wrf-runtime-v1"
@@ -85,14 +86,13 @@ _BRIDGE_USAGE_MARKERS = {
 # A stale bridge without ``member`` previously passed the usage-only check and
 # then failed after a distribution had already been built and installed.
 _BRIDGE_ABI_MARKERS = {
-    "grib2_inventory": (
-        b"parameter\tcenter\tsubcenter\tmaster_table_version\t"
-        b"local_table_version\tname"
-    ),
-    "grib2_dump": (
-        b"parameter\tcenter\tsubcenter\tmaster_table_version\t"
-        b"local_table_version\tlevel_type"
-    ),
+    # The GRIB bridges' markers live in gpuwm.bridges, because
+    # `gpuwm doctor` applies the same handshake one step earlier -- at
+    # the report a user reads before burning a preparation run, rather
+    # than at the sealing of a distribution.  Two copies is how the
+    # gfs_grib2_bridge series-contract change came to be caught here and
+    # not there.
+    **dict(_SHARED_BRIDGE_ABI_MARKERS),
     # The fetch record is a JSON ABI rather than a tabular one, but the
     # failure mode is identical: a stale rw_fetch that still prints its
     # usage line while emitting a record missing, say, ``mode_reason``

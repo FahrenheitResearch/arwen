@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from gpuwm.source_authorities import packaged_gfs_vtable
+
 from gpuwm import adapt
 from gpuwm.adapt import author_adapter, build_composition, verify_grib2_inputs
 from gpuwm.cli import main
@@ -15,7 +17,7 @@ from gpuwm.mapped_authoring import compile_mapping_descriptor
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VTABLE = ROOT / "configs" / "Vtable.GFS.rw-wps"
+VTABLE = packaged_gfs_vtable()
 DESCRIPTOR = ROOT / "configs" / "rw-wps-gfs-pressure-grib2.descriptor.json"
 ACTUAL_GRIB = (
     ROOT
@@ -329,3 +331,144 @@ def test_adapt_skeleton_generator_is_create_only_and_review_required(
                 str(output),
             ]
         )
+
+
+# ---------------------------------------------------------------------------
+# V-9: the skeleton generator emitted a descriptor its own battery rejects
+# ---------------------------------------------------------------------------
+
+
+def test_the_skeleton_never_assigns_one_vtable_line_to_two_fields():
+    """`gpuwm adapt: Vtable line 11 is assigned more than once`.
+
+    A node-7 validation run filled in every REPLACE_WITH_* placeholder
+    the skeleton emitted, declared the 21 isobaric levels actually in
+    the GRIB, and had the battery refuse the result -- because the
+    generator had given four 3-D fields their SURFACE counterpart's
+    selector as well as their own.  `air_temperature` claimed the 2 m
+    row that `air_temperature_2m` also claimed, and the same for
+    relative humidity and both wind components.  The data is not
+    ambiguous; the prefix rule that collects `soil_temperature_0_0.1m`
+    under `soil_temperature` was swallowing `air_temperature_2m` under
+    `air_temperature`.
+
+    A generator whose output its own validator rejects is worse than no
+    generator: the user cannot tell which of the two is wrong.
+    """
+    from collections import defaultdict
+
+    from gpuwm.adapt import descriptor_skeleton
+
+    vtable = packaged_gfs_vtable()
+    skeleton = descriptor_skeleton(vtable)
+
+    claimed = defaultdict(list)
+    for field_name, spec in skeleton["fields"].items():
+        for reference in spec.get("vtable_selectors", ()):
+            claimed[reference.get("metgrid_name")].append(field_name)
+    doubled = {
+        name: sorted(fields)
+        for name, fields in claimed.items() if len(fields) > 1
+    }
+    assert doubled == {}, doubled
+
+    # And the separation is right, not merely non-overlapping: the 3-D
+    # field takes the isobaric row and the 2 m/10 m field takes its own.
+    for three_d, surface in (
+        ("air_temperature", "air_temperature_2m"),
+        ("relative_humidity", "relative_humidity_2m"),
+        ("eastward_wind", "eastward_wind_10m"),
+        ("northward_wind", "northward_wind_10m"),
+    ):
+        names = {
+            field: {
+                reference["metgrid_name"]
+                for reference in skeleton["fields"][field]["vtable_selectors"]
+            }
+            for field in (three_d, surface)
+        }
+        assert names[three_d] and names[surface]
+        assert not (names[three_d] & names[surface]), names
+        assert all(
+            not name.endswith(("_2m_0", "_10m_0"))
+            for name in names[three_d]), names[three_d]
+
+    # The multi-layer prefix rule the exclusion must not break: four soil
+    # layers still collect under one canonical field.
+    soil = skeleton["fields"]["soil_temperature"]["vtable_selectors"]
+    assert len(soil) == 4, soil
+
+
+def test_a_descriptor_fault_is_not_reported_as_a_vtable_fault(tmp_path):
+    """The message pointed the reader at the wrong file.
+
+    `Vtable line 11 is assigned more than once` names the Vtable, and
+    line 11 of the Vtable was fine -- the double assignment was in the
+    descriptor, which in the node-7 case the tool itself had written.
+    """
+    import pytest as _pytest
+
+    from gpuwm.adapt import descriptor_skeleton
+    from gpuwm.mapped_authoring import compile_mapping_descriptor
+
+    vtable = packaged_gfs_vtable()
+    skeleton = dict(descriptor_skeleton(vtable))
+    fields = dict(skeleton["fields"])
+    # Re-introduce exactly the defect that shipped.
+    fields["air_temperature"] = {
+        **fields["air_temperature"],
+        "vtable_selectors": list(
+            fields["air_temperature"]["vtable_selectors"])
+        + list(fields["air_temperature_2m"]["vtable_selectors"]),
+    }
+    skeleton["fields"] = fields
+    written = tmp_path / "descriptor.json"
+    written.write_text(json.dumps(skeleton), encoding="utf-8")
+
+    with _pytest.raises(ValueError) as caught:
+        compile_mapping_descriptor(written, vtable_path=vtable)
+    message = str(caught.value)
+    assert "descriptor" in message
+    assert "air_temperature" in message and "air_temperature_2m" in message
+
+
+def test_the_gfs_vtable_ships_in_the_wheel():
+    """A pip user must have the file the documented flow tells them to pass.
+
+    It lived in `configs/`, which is not a package, so setuptools never
+    carried it: `gpuwm adapt --vtable configs/Vtable.GFS.rw-wps` named a
+    path that exists only in a checkout, while `gpuwm adapt` is exactly
+    the surface a wheel-only user reaches for.  It ships beside the
+    20CRv3 authorities now, under the same recursive package-data glob
+    and the same byte contract.
+    """
+    import hashlib
+    import tomllib
+
+    from gpuwm.source_authorities import (
+        packaged_gfs_vtable, packaged_gfs_vtable_sha256,
+    )
+
+    path = packaged_gfs_vtable()
+    assert path.is_file()
+    assert hashlib.sha256(path.read_bytes()).hexdigest() \
+        == packaged_gfs_vtable_sha256()
+
+    # Inside the package, and matched by a declared package-data glob --
+    # resolving on this machine is a checkout property, not a wheel one.
+    package_root = Path(adapt.__file__).resolve().parent
+    relative = path.relative_to(package_root)
+    assert relative.parts[0] == "authorities"
+
+    pyproject = tomllib.loads(
+        (Path(__file__).parents[1] / "pyproject.toml").read_text(
+            encoding="utf-8"))
+    globs = pyproject["tool"]["setuptools"]["package-data"]["gpuwm"]
+    assert any(
+        relative.match(pattern) or relative.as_posix().startswith(
+            pattern.split("**")[0])
+        for pattern in globs), (relative.as_posix(), globs)
+
+    # And it is the real thing, not a stub: the parser reads it and the
+    # skeleton generator produces a descriptor from it.
+    assert len(adapt.parse_wps_vtable(path)) >= 20

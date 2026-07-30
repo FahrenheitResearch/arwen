@@ -256,7 +256,11 @@ def test_exactly_one_template_selects_ruc_and_no_route_overrides_it():
 RUC_TEMPLATE_ID = "wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1"
 #: The sources whose initializers reach RUC's own soil ingest.  ``20crv3`` is
 #: the MAPPED path and is deliberately absent; see the test below.
-RUC_TEMPLATE_SOURCES = ("era5", "gfs")
+#: Sources whose declared template list still reaches RUC.  v1.1.1
+#: withdrew "gfs": a GFS-initialised RUC forecast prepares in full and
+#: then cannot complete its first step (see the V-1 tests at the end of
+#: this file).  ERA5 keeps it because nobody has shown it to be broken.
+RUC_TEMPLATE_SOURCES = ("era5",)
 
 
 def _single_domain_ruc_plan(source_id: str) -> dict:
@@ -593,3 +597,100 @@ def test_the_width_rail_covers_noahmp_and_not_ruc() -> None:
         "the readiness authority did not refuse Noah-MP past its measured "
         f"ceiling, so the RUC result above is not evidence of anything: "
         f"{noahmp}")
+
+
+# ---------------------------------------------------------------------------
+# V-1: RUC is selectable on the GFS route and cannot complete a forecast
+# ---------------------------------------------------------------------------
+# A node-7 validation run selected the RUC template through the GFS front
+# door.  It PREPARED cleanly -- proof PASS, `land_surface: ruc-lsm`, nine
+# soil layers, 339 MB of prepared state -- and then died 2.8 s into
+# integration with `mavail must be finite`, at
+# gpuwm/core/ruc.py:_horizontal_float_field on the first surface-temperature
+# call, with `model_elapsed_seconds: 0.0`.  It never advanced a step.
+#
+# The fail-closed guard did its job and the partial output was labelled
+# PARTIAL_NOT_RUN_PASS, so nothing garbage was produced.  But selectable
+# and unusable is the pattern this project refuses to ship: the refusal
+# belongs at preparation, before anyone spends the prepare run to find out.
+
+
+def test_the_gfs_route_is_deliberately_not_offered_ruc():
+    """Both halves, as the mapped-source test above does it.
+
+    The route list must omit it, AND the front door must actually refuse
+    -- a declaration nothing enforces is how RUC came to be preparable
+    on this route in the first place.
+    """
+    from gpuwm.physics_registry import physics_registry
+
+    registry = physics_registry()
+    single = registry["runner_routes"]["tools.prepared_single_domain_forecast"]
+    assert RUC_TEMPLATE_ID not in single["source_template_ids"]["gfs"], (
+        "the GFS route lists the RUC template, but a GFS-initialised RUC "
+        "forecast cannot complete its first step")
+
+
+def test_the_gfs_front_door_refuses_ruc_at_preparation(tmp_path):
+    """Before the prepare run, not 2.8 seconds into the forecast."""
+    import dataclasses
+
+    import pytest as _pytest
+
+    from gpuwm.experiment import load_experiment
+    from gpuwm.gfs_direct import front_door_physics_selection
+
+    config = (Path(__file__).parents[1] / "configs"
+              / "gfs_wrf_hierarchy_proof.toml")
+    baseline = load_experiment(config)
+
+    from gpuwm.physics_compat import single_domain_runtime_switches
+
+    # The RUC template's OWN switches, so the only thing under test is
+    # the route gate.  Hand-picking `sf_surface_physics = 3` on top of a
+    # descriptor written for Noah trips an unrelated capability blocker
+    # first and proves nothing about this gate.
+    switches = single_domain_runtime_switches(RUC_TEMPLATE_ID)
+
+    def _with_ruc(exp):
+        domains = tuple(
+            dataclasses.replace(domain, run=dataclasses.replace(
+                domain.run, **{
+                    name: value for name, value in switches.items()
+                    if hasattr(domain.run, name)}))
+            for domain in exp.domains)
+        return dataclasses.replace(exp, domains=domains)
+
+    # The tree route, which resolves selectors rather than a profile.
+    with _pytest.raises(ValueError, match="RUC"):
+        front_door_physics_selection(_with_ruc(baseline))
+
+    # And the single-domain route, which names the template.
+    single = dataclasses.replace(baseline, domains=baseline.domains[:1])
+    with _pytest.raises(ValueError, match="RUC") as caught:
+        front_door_physics_selection(
+            _with_ruc(single), physics_profile=RUC_TEMPLATE_ID)
+    message = str(caught.value)
+    # It cites the declaration it enforces, names what was observed, and
+    # says which sources are NOT being spoken for.
+    assert "physics_registry_v2.json#/runner_routes/" in message
+    assert "mavail" in message
+    assert "ERA5" in message and "HRRR" in message
+
+
+def test_era5_and_hrrr_ruc_are_left_alone_because_they_are_untested():
+    """Untested is not the same as broken, and must not be gated as if.
+
+    Node 7 exercised RUC through the GFS door only.  Gating ERA5 or HRRR
+    on the inference that they share the defect would refuse paths no
+    one has shown to be broken -- the same mistake, in the other
+    direction, as the F21 regression this release exists to fix.
+    """
+    from gpuwm.physics_registry import physics_registry
+
+    registry = physics_registry()
+    routes = registry["runner_routes"]
+    era5 = routes["tools.prepared_single_domain_forecast"]
+    assert RUC_TEMPLATE_ID in era5["source_template_ids"]["era5"]
+    hrrr = routes["tools.hrrr_single_domain_benchmark"]
+    assert RUC_TEMPLATE_ID in hrrr["source_template_ids"]["hrrr"]
