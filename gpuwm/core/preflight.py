@@ -3767,14 +3767,19 @@ def check_main(args) -> int:
               f"   TIER 3 device-footprint projection: "
               f"{_format_bytes(estimate.footprint_projection_bytes)}")
         widest = kernel_local_memory_bytes(exp)
+        # Kept out of the f-string: a line break inside an f-string
+        # expression is PEP 701 (Python 3.12+) syntax, and the supported
+        # floor is 3.11 -- the 1.2.0 release workflow failed on exactly
+        # this line before any wheel was published.
+        remeasured_bytes = (estimate.alloc_estimate_bytes + widest
+                            + CUDA_CONTEXT_BYTES
+                            + reserve.retention_residual_bytes)
         print(f"  NON-POOL: CUDA context "
               f"{_format_bytes(CUDA_CONTEXT_BYTES)} + local-memory backing "
               f"store {_format_bytes(widest)} "
               f"({len(physics_kernel_modules(exp))} kernel modules selected)"
               f"; RE-MEASURED device-footprint projection "
-              f"{_format_bytes(estimate.alloc_estimate_bytes + widest
-                               + CUDA_CONTEXT_BYTES
-                               + reserve.retention_residual_bytes)}"
+              f"{_format_bytes(remeasured_bytes)}"
               " (the TIER 3 line above is the retired zero-step probe model)")
         family = envelope_platform(vram_gib=card_total_gib)
         if family == "windows":

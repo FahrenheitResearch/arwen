@@ -1,4 +1,13 @@
-# Changelog
+﻿# Changelog
+## 1.2.1 (2026-07-30)
+
+The 1.2.0 release workflow stopped at its test gate before any wheel
+reached PyPI: `gpuwm/core/preflight.py` carried an f-string expression
+broken across a line break, which Python 3.12 accepts and the supported
+3.11 floor rejects. 1.2.1 is 1.2.0 with that statement rewritten in
+3.11-compatible form and the whole tree compile-checked under 3.11.
+No other change.
+
 
 ## 1.2.0 (2026-07-30)
 
@@ -1300,8 +1309,8 @@ was not, and three of the four surfaced as tracebacks.
   slug, so a directory holding several nests cannot pair a 3 km panel
   against a 333 m one. Sheet names gain the domain
   (`d02-3km_sbcape-pair.png`); the panel labels are unchanged.
-- Plot subtitles gain the grid spacing the file declares -- `Δx 3 km`
-  at and above a kilometre, `Δx 111 m` below it -- on both engines and
+- Plot subtitles gain the grid spacing the file declares -- `Î”x 3 km`
+  at and above a kilometre, `Î”x 111 m` below it -- on both engines and
   on all four rust render lanes (direct, derived, heavy, windowed).
 - Locally-imported runs are labelled **ArWen** instead of the GDEX
   fetch source inherited from the `wrf` store-model identity, which

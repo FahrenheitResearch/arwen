@@ -1,10 +1,10 @@
-[build-system]
+﻿[build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "1.2.0"
+version = "1.2.1"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 license = { file = "LICENSE" }
