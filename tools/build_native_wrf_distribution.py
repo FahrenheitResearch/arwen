@@ -336,6 +336,7 @@ def build_distribution(args: argparse.Namespace) -> dict[str, object]:
         "grib2_dump": args.grib2_dump.resolve(),
         "gfs_grib2_bridge": args.gfs_bridge.resolve(),
         "hrrr_grib2_bridge": args.hrrr_bridge.resolve(),
+        "rw_fetch": args.rw_fetch.resolve(),
     }
     bridge_build_identity = {}
     for bridge_name in BRIDGE_NAMES:
@@ -438,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--grib2-dump", type=Path, required=True)
     parser.add_argument("--gfs-bridge", type=Path, required=True)
     parser.add_argument("--hrrr-bridge", type=Path, required=True)
+    parser.add_argument("--rw-fetch", type=Path, required=True)
     parser.add_argument("--cpu-backend", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--archive", type=Path, required=True)

@@ -75,7 +75,6 @@ from gpuwm.native_wrf_contract import (  # noqa: E402
 )
 from gpuwm.supervisor import atomic_write_json  # noqa: E402
 from gpuwm.physics_compat import (  # noqa: E402
-    EXPERIMENTAL_THOMPSON_ENV,
     MORRISON_PROFILE_ID,
     MYNN_PROFILE_ID,
     NSSL2_PROFILE_ID,
@@ -86,6 +85,7 @@ from gpuwm.physics_compat import (  # noqa: E402
     WSM6_PROFILE_ID,
     single_domain_runtime_switches,
     thompson_runtime_requirements,
+    thompson_table_root,
 )
 from gpuwm.source_authorities import twentycrv3_authority_sha256  # noqa: E402
 from gpuwm.wrf_physics_inventory import (  # noqa: E402
@@ -691,6 +691,28 @@ def _non_physics_descriptor_sha256(raw: Mapping[str, object]) -> str:
         _without_materialized_physics(raw))).encode("ascii")).hexdigest()
 
 
+def _experiment_tables(raw: Mapping[str, object]) -> dict[str, object]:
+    """The [experiment]/[[domain]] view ``build_experiment`` accepts.
+
+    ``[fetch]`` is an advisory acquisition-hints table that ``gpuwm
+    domain`` writes into every config it emits, and that ``gpuwm check``
+    and ``rw-wps`` both accept -- but the materializer used to hand the
+    raw dict straight to ``build_experiment``, which refused it with
+    ``unknown table(s) ['fetch']``.  The wizard's own output was
+    therefore rejected by the one step that has to run BEFORE the front
+    door.  Split it off exactly as the CLI loaders do, validating it on
+    the way past rather than ignoring it.
+    """
+
+    tables = dict(raw)
+    fetch_table = tables.pop("fetch", None)
+    if fetch_table is not None:
+        from gpuwm.fetch import validate_fetch_hints
+        validate_fetch_hints(fetch_table, source="materialized experiment")
+    tables.pop("case_data", None)
+    return tables
+
+
 def _render_materialized_experiment(
         base_text: str, *, source: str, profile: str,
 ) -> tuple[str, object, dict[str, object]]:
@@ -698,7 +720,8 @@ def _render_materialized_experiment(
 
     switches = _profile_runtime_switches(source, profile)
     base_raw = tomllib.loads(base_text)
-    build_experiment(base_raw, source="base named-source experiment")
+    build_experiment(_experiment_tables(base_raw),
+                     source="base named-source experiment")
     header = re.compile(
         r"^\s*(\[\[|\[)([A-Za-z0-9_.-]+)(\]\]|\])\s*(?:#.*)?$")
     assignment = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*=")
@@ -754,7 +777,8 @@ def _render_materialized_experiment(
     rendered = "\n".join(output) + "\n"
     rendered_raw = tomllib.loads(rendered)
     rendered_exp = build_experiment(
-        rendered_raw, source="materialized named-source experiment")
+        _experiment_tables(rendered_raw),
+        source="materialized named-source experiment")
     base_non_physics = _non_physics_descriptor_sha256(base_raw)
     generated_non_physics = _non_physics_descriptor_sha256(rendered_raw)
     if generated_non_physics != base_non_physics:
@@ -893,6 +917,44 @@ def _strict_json(value):
     return value
 
 
+def _stability_diagnosis(sample: Mapping[str, object], state, run) -> str:
+    """Say which Courant term tripped, and that dt is the remedy.
+
+    ``cfl`` in the health report is ``dt * max(u_max/dx, w_max/dz_min)``
+    -- one number over two very different terms.  With the certified
+    49-level eta profile ``dz_min`` is about 14.3 m, so the vertical term
+    dominates by three orders of magnitude and the horizontal one is
+    never close: a measured tropical abort read ``cfl 27.70`` with a
+    horizontal Courant number of 0.15.  Printing the single number sent
+    a first-time user reading dycore.py to find out what it meant, with
+    nothing anywhere saying the time step was the fix.
+    """
+
+    dt = float(run.dt)
+    dz_min = getattr(state, "dz_min", None) or float(run.ztop)
+    u_max = float(sample.get("u_max", float("nan")))
+    w_max = float(sample.get("w_max", float("nan")))
+    horizontal = dt * u_max / float(run.dx)
+    vertical = dt * w_max / float(dz_min)
+    if vertical >= horizontal:
+        term = (f"VERTICAL Courant {vertical:.2f} (w_max {w_max:.2f} m/s "
+                f"over the {dz_min:.1f} m thinnest layer)")
+    else:
+        term = (f"HORIZONTAL Courant {horizontal:.2f} (u_max {u_max:.2f} "
+                f"m/s over dx {float(run.dx) / 1000:.3f} km)")
+    suggested = max(1.0, dt / 4.0)
+    return (
+        f"{term} dominates at time_step {dt:g} s "
+        f"(horizontal {horizontal:.2f}, vertical {vertical:.2f}); "
+        f"REMEDY: retry with a lower dt -- set time_step to about "
+        f"{suggested:g} s in the experiment TOML and re-run the front "
+        "door (the config is hash-bound to it).  Shortening the step is "
+        "cheaper than the step count suggests: radiation and cumulus "
+        "are called on wall-clock intervals, so a 4x shorter step "
+        "measured +22% wall time, not 4x"
+    )
+
+
 def _atomic_json(path: Path, payload) -> None:
     atomic_write_json(Path(path), _strict_json(payload))
 
@@ -948,16 +1010,17 @@ def _require_directory(path: Path, label: str) -> Path:
 def _validated_thompson_runtime_contract() -> dict[str, object]:
     """Bind the guarded MP8 runtime to exact WRF tables and source bytes."""
 
-    if os.environ.get(EXPERIMENTAL_THOMPSON_ENV) != "1":
-        raise ValueError(
-            f"{THOMPSON_PHYSICS_PROFILE} requires "
-            f"{EXPERIMENTAL_THOMPSON_ENV}=1")
-    raw_root = os.environ.get(THOMPSON_TABLE_ROOT_ENV)
-    if not raw_root:
-        raise ValueError(
-            f"{THOMPSON_PHYSICS_PROFILE} requires "
-            f"{THOMPSON_TABLE_ROOT_ENV}")
-    root = _require_directory(Path(raw_root), "Thompson table root")
+    # The two process-environment gates that used to stand here predate
+    # the packaging promotion: the classic tables ship as package data,
+    # `gpuwm fetch-tables` stages the externalized one, and `gpuwm
+    # doctor` byte-validates all four.  Requiring the env vars on top
+    # made mp8 fail twice at runtime on a machine doctor had just called
+    # clean, with neither variable documented.  thompson_table_root()
+    # honours GPUWM_THOMPSON_TABLE_ROOT as an override and falls back to
+    # the packaged directory; either way the assets are re-validated
+    # byte for byte below, which is the check that ever mattered.
+    root = _require_directory(
+        Path(thompson_table_root()), "Thompson table root")
     assets = validate_thompson_table_assets(root)
     if tuple(assets) != tuple(THOMPSON_CLASSIC_TABLE_ASSETS):
         raise ValueError("validated Thompson assets differ from the classic contract")
@@ -993,9 +1056,12 @@ def _validated_thompson_runtime_contract() -> dict[str, object]:
         "wrf_reference_commit": THOMPSON_WRF_REFERENCE_COMMIT,
         "transported_fields": list(THOMPSON_TRANSPORTED_SPECIES),
         "guard": {
-            "experimental_runtime_environment": EXPERIMENTAL_THOMPSON_ENV,
-            "experimental_runtime_value": "1",
+            # Retired: the enable gate.  What remains is the resolution
+            # rule and the byte validation that always did the work.
             "table_root_environment": THOMPSON_TABLE_ROOT_ENV,
+            "table_root_source": (
+                "environment override" if os.environ.get(
+                    THOMPSON_TABLE_ROOT_ENV) else "packaged default"),
         },
         "table_authority": {
             **table_identity,
@@ -1047,12 +1113,11 @@ def _verify_thompson_runtime_environment(
     contract = physics_receipt.get("thompson_contract")
     table = contract.get("table_authority") if isinstance(contract, Mapping) else None
     expected_root = table.get("root") if isinstance(table, Mapping) else None
-    raw_root = os.environ.get(THOMPSON_TABLE_ROOT_ENV)
-    actual_root = str(Path(raw_root).resolve()) if raw_root else None
-    if (os.environ.get(EXPERIMENTAL_THOMPSON_ENV) != "1"
-            or actual_root != expected_root):
+    actual_root = str(Path(thompson_table_root()).resolve())
+    if actual_root != expected_root:
         raise RuntimeError(
-            "Thompson runtime guard/table root changed after preflight")
+            "Thompson table root changed between preflight and run: "
+            f"preflight resolved {expected_root}, now {actual_root}")
 
 
 def claim_output_directory(
@@ -2844,7 +2909,9 @@ def run_prepared_forecast(
                 or not math.isfinite(float(report["w_max"]))
                 or float(report["w_max"]) > 150.0):
             raise FloatingPointError(
-                f"prepared forecast stability threshold failed: {sample}")
+                "prepared forecast stability threshold failed: "
+                + _stability_diagnosis(sample, current.state, current.cfg.run)
+                + f"; sample {sample}")
         refl = _consume_due_native_refl_10cm(
             current.state, ticks, consume_refl_10cm)
         writers.submit(current, ticks, refl_field=refl)
@@ -3063,6 +3130,62 @@ def _positive_finite_seconds(value: str) -> float:
     return seconds
 
 
+def _clock_defaults(experiment_config: Path) -> tuple[float, float]:
+    """The run length and history cadence the experiment already declares.
+
+    ``--run-seconds`` and ``--history-interval-seconds`` are validated to
+    equal these exactly -- the experiment TOML is hash-bound, so no other
+    value can ever be accepted.  Requiring the user to retype them bought
+    nothing and cost a wasted cycle to anyone who tried to shorten a
+    retry.  They are optional now and default to what the file says; when
+    supplied, the exact-match guard is unchanged.
+    """
+
+    raw = tomllib.loads(Path(experiment_config).read_text(encoding="utf-8"))
+    experiment = raw.get("experiment")
+    domains = raw.get("domain")
+    if not isinstance(experiment, Mapping) or not isinstance(domains, list):
+        raise ValueError(
+            f"{experiment_config} is not an [experiment]/[[domain]] TOML, "
+            "so --run-seconds and --history-interval-seconds cannot be "
+            "defaulted from it; pass them explicitly")
+    roots = [d for d in domains
+             if isinstance(d, Mapping) and int(d.get("grid_id", 0)) == 1]
+    if len(roots) != 1:
+        raise ValueError(
+            f"{experiment_config} does not declare exactly one grid_id 1 "
+            "domain; pass --run-seconds and --history-interval-seconds "
+            "explicitly")
+    try:
+        return (float(experiment["run_seconds"]),
+                float(roots[0]["history_interval_s"]))
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(
+            f"{experiment_config} declares no usable run_seconds / d01 "
+            "history_interval_s; pass --run-seconds and "
+            "--history-interval-seconds explicitly") from error
+
+
+def _resolve_clock_arguments(args) -> None:
+    """Fill omitted clock flags from the hash-bound experiment TOML."""
+
+    if args.run_seconds is not None \
+            and args.history_interval_seconds is not None:
+        return
+    run_seconds, history_interval_seconds = _clock_defaults(
+        args.experiment_config)
+    if args.run_seconds is None:
+        args.run_seconds = run_seconds
+        print(f"prepared forecast: --run-seconds defaulted to "
+              f"{run_seconds:g} from {args.experiment_config}",
+              file=sys.stderr)
+    if args.history_interval_seconds is None:
+        args.history_interval_seconds = history_interval_seconds
+        print(f"prepared forecast: --history-interval-seconds defaulted to "
+              f"{history_interval_seconds:g} from {args.experiment_config}",
+              file=sys.stderr)
+
+
 def _parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", choices=sorted(SUPPORTED_SOURCES), required=True)
@@ -3078,10 +3201,15 @@ def _parse_args(argv=None):
     parser.add_argument("--wps-namelist", type=Path, required=True)
     parser.add_argument(
         "--physics-profile", choices=PHYSICS_PROFILES, required=True)
-    parser.add_argument("--run-seconds", type=float, required=True)
+    parser.add_argument(
+        "--run-seconds", type=float, default=None,
+        help=("forecast length; must equal the hash-bound experiment's "
+              "run_seconds, and defaults to it when omitted"))
     parser.add_argument(
         "--history-interval-seconds", type=_positive_finite_seconds,
-        required=True)
+        default=None,
+        help=("history cadence; must equal the hash-bound experiment's d01 "
+              "history_interval_s, and defaults to it when omitted"))
     parser.add_argument("--io-mode", choices=("history",), required=True)
     parser.add_argument("--outdir", type=Path, required=True)
     return parser.parse_args(argv)
@@ -3132,6 +3260,7 @@ def main(argv=None) -> int:
         }, sort_keys=True))
         return 0
     args = _parse_args(argv)
+    _resolve_clock_arguments(args)
     outdir = claim_output_directory(
         args.outdir, protected_roots=(args.prepared_root,))
     started = time.perf_counter()

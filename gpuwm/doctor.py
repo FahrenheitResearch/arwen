@@ -12,8 +12,10 @@ sha256-validates the packaged Thompson tables with the same routine the
 model uses at launch, parses the Noah/landuse tables with the model's
 own parsers, and requires each WPS_GEOG dataset's ``index`` file.  No
 cargo builds, no CUDA context (importing CuPy allocates no device), no
-network.  Every gap prints the exact copy-pasteable remedy instead of
-letting the user meet a raw traceback three commands later.
+network.  Every gap prints a remedy whose every line is either a
+command that runs as printed in this platform's own shell or a ``#``
+comment -- never prose fused onto a command -- instead of letting the
+user meet a raw traceback three commands later.
 
 Statuses distinguish what was proven: ``verified`` means the deep check
 ran and passed; ``present`` is reserved for the few items where nothing
@@ -36,17 +38,28 @@ import sys
 
 from gpuwm import bridges
 from gpuwm import rustwx
+from gpuwm import rustwx_fetch
 
-#: The pip extras exactly as the README installs them.
-GPU_EXTRA_HINT = "pip install 'gpuwm[gpu]'   (or: pip install cupy-cuda12x)"
-RENDER_EXTRA_HINT = ("pip install 'gpuwm[render]'   "
-                     "(wrf-rust + matplotlib)")
+# The pip extras exactly as the README installs them.
+#
+# Each hint is a command first and explanation second, on separate
+# lines, because a remedy is read under stress and pasted whole: the
+# parenthetical that used to trail the command on the same line --
+# `pip install 'gpuwm[gpu]'   (or: pip install cupy-cuda12x)` -- is a
+# shell error the moment anyone does the obvious thing with it.
+GPU_EXTRA_HINT = ("pip install 'gpuwm[gpu]'\n"
+                  "  # or, without the extra: pip install cupy-cuda12x")
+RENDER_EXTRA_HINT = ("pip install 'gpuwm[render]'\n"
+                     "  # installs wrf-rust + matplotlib")
 GEOG_HINT = (
-    "download the NCAR WPS geographical data (\"highest resolution "
-    "mandatory fields\", ~29 GB unpacked) and place it at "
-    "$GPUWM_CASE_DATA_ROOT/WPS_GEOG or pass --geog-root explicitly")
-REINSTALL_HINT = ("the installed package is incomplete; reinstall with "
-                  "`pip install -e .` from a clone (or a rebuilt wheel)")
+    "gpuwm fetch-geog\n"
+    "  # downloads the nine required WPS_GEOG datasets (~1.3 GB\n"
+    "  # compressed, ~16 GB unpacked) into $GPUWM_CASE_DATA_ROOT/WPS_GEOG,\n"
+    "  # or --root DIR.  Resumable, SHA-256-verified, re-run safe.")
+REINSTALL_HINT = (
+    "pip install -e .\n"
+    "  # the installed package is incomplete; reinstall from a clone\n"
+    "  # (or from a rebuilt wheel)")
 
 #: Bridge executables the real-data routes launch, with the consumer
 #: that fails without each one.
@@ -83,19 +96,35 @@ def _sha256(path: Path) -> str:
 # Python packages: actual imports, in a subprocess
 # ---------------------------------------------------------------------------
 
-def _import_probe(module: str) -> tuple[bool, str]:
+def _import_probe(module: str,
+                  distribution: str | None = None) -> tuple[bool, str]:
     """Actually import ``module`` in a subprocess; (ok, evidence).
 
     ``find_spec`` alone lies green for a package whose install is broken
     (ABI mismatch, missing native dependency, half-removed dist-info).
     The subprocess keeps a failing import from poisoning this process
     and allocates nothing beyond the import itself.
+
+    The version reported is the *installed distribution's*, read from
+    package metadata, falling back to the module's ``__version__``
+    attribute.  A module attribute is whatever the author last edited by
+    hand and can lag the release it shipped in -- a field report had
+    doctor announcing wrf-rust 0.2.34 on a machine with 0.2.35
+    installed, which is the wrong number to hand someone debugging a
+    version-sensitive problem.  ``distribution`` is the pip name when it
+    differs from the import name (``wrf`` is installed as ``wrf-rust``).
     """
 
     if find_spec(module) is None:
         return False, "not installed"
-    code = (f"import {module} as m; import sys; "
-            "sys.stdout.write(str(getattr(m, '__version__', 'imported')))")
+    code = (
+        "import sys, importlib.metadata as md\n"
+        f"import {module} as m\n"
+        "try:\n"
+        f"    version = md.version({(distribution or module)!r})\n"
+        "except Exception:\n"
+        "    version = str(getattr(m, '__version__', 'imported'))\n"
+        "sys.stdout.write(version)\n")
     try:
         probe = subprocess.run(
             [sys.executable, "-c", code], capture_output=True, text=True,
@@ -125,7 +154,7 @@ def _cupy_check() -> Check:
 
 
 def _render_extra_check() -> Check:
-    results = {"wrf-rust": _import_probe("wrf"),
+    results = {"wrf-rust": _import_probe("wrf", "wrf-rust"),
                "matplotlib": _import_probe("matplotlib")}
     broken = {name: evidence for name, (ok, evidence) in results.items()
               if not ok}
@@ -190,8 +219,9 @@ def _bridge_checks() -> list[Check]:
         except FileNotFoundError as error:
             checks.append(Check(
                 f"bridge {name}", "missing", str(error),
-                f"fix {bridges.BRIDGE_ENV[name]} to name the built "
-                "executable, or unset it and "
+                f"# {bridges.BRIDGE_ENV[name]} names a missing "
+                "executable: point it at a real build, or unset it "
+                "and build one --\n"
                 + bridges.bridge_remedy(name)))
             continue
         if found is not None:
@@ -202,21 +232,69 @@ def _bridge_checks() -> list[Check]:
             else:
                 checks.append(Check(
                     f"bridge {name}", "missing", f"{found} -- {evidence}",
-                    f"rebuild it: {bridges.CARGO_BUILD_HINT}   "
-                    f"[needed by: {consumer}]"))
+                    f"# rebuild it -- needed by: {consumer}\n"
+                    + bridges.install_aware_build_hint(
+                        bridges.CARGO_BUILD_HINT)))
         elif crate.is_file():
             checks.append(Check(
                 f"bridge {name}", "missing",
                 f"not built yet (checkout crate: {crate.parent})",
-                f"{bridges.CARGO_BUILD_HINT}   [needed by: {consumer}]"))
+                f"# needed by: {consumer}\n{bridges.CARGO_BUILD_HINT}"))
         else:
             checks.append(Check(
                 f"bridge {name}", "missing",
                 "no checkout crate and no prebuilt executable "
                 f"(searched {', '.join(str(c) for c in bridges.bridge_candidates(name))})",
                 bridges.bridge_remedy(name)
-                + f"\n    [needed by: {consumer}]"))
+                + f"\n# needed by: {consumer}"))
     return checks
+
+
+def _fetch_backbone_check() -> Check:
+    """The vendored Rust fetch backbone: probe-execute, not stat().
+
+    ``gpuwm fetch --engine auto`` routes HRRR through this binary
+    exactly when the check passes.  A missing one is not a gap in the
+    estate -- the stdlib Python transport is the documented, always
+    available fallback -- so an unbuilt backbone is ``info`` rather than
+    ``missing``.  A binary that *exists* but reports a different
+    fetch-record ABI is a different matter: that one fails after the
+    download rather than before it, so it is reported ``missing``.
+    """
+
+    name = f"fetch backbone {rustwx_fetch.FETCH_NAME} (rust download engine)"
+    try:
+        found = rustwx_fetch.find_fetch_bin()
+    except FileNotFoundError as error:
+        return Check(
+            name, "missing", str(error),
+            f"# {rustwx_fetch.FETCH_ENV} names a missing executable: "
+            "point it at a real build, or unset it and build one --\n"
+            + rustwx_fetch.fetch_remedy())
+    if found is None:
+        crate = rustwx_fetch.crate_dir() / "Cargo.toml"
+        if crate.is_file():
+            detail = f"not built yet (checkout crate: {crate.parent})"
+        else:
+            detail = (
+                "no checkout crate and no prebuilt executable (searched "
+                + ", ".join(str(c)
+                            for c in rustwx_fetch.fetch_candidates()) + ")")
+        return Check(
+            name, "info",
+            detail + " -- gpuwm fetch falls back to the Python transport",
+            bridges.install_aware_build_hint(
+                rustwx_fetch.CARGO_BUILD_HINT, "tools/rustwx")
+            + "\n# enables gpuwm fetch --engine rust: parallel range "
+            "GETs,\n# the cross-process NOMADS rate governor, and "
+            "--mode full-file")
+    ok, evidence = rustwx_fetch.probe_fetch_bin(found)
+    if not ok:
+        return Check(
+            name, "missing", f"{found} -- {evidence}",
+            "# rebuild it:\n" + bridges.install_aware_build_hint(
+                rustwx_fetch.CARGO_BUILD_HINT, "tools/rustwx"))
+    return Check(name, "verified", f"{found} -- {evidence}")
 
 
 def _rust_renderer_check() -> Check:
@@ -234,8 +312,9 @@ def _rust_renderer_check() -> Check:
     except FileNotFoundError as error:
         return Check(
             name, "missing", str(error),
-            f"fix {rustwx.RENDERER_ENV} to name the built executable, "
-            "or unset it and " + rustwx.renderer_remedy())
+            f"# {rustwx.RENDERER_ENV} names a missing executable: "
+            "point it at a real build, or unset it and build one --\n"
+            + rustwx.renderer_remedy())
     if found is None:
         crate = rustwx.crate_dir() / "Cargo.toml"
         if crate.is_file():
@@ -246,13 +325,15 @@ def _rust_renderer_check() -> Check:
         return Check(
             name, "info",
             detail + " -- gpuwm render falls back to matplotlib",
-            rustwx.CARGO_BUILD_HINT + "   [enables --engine rust and "
-            "makes it the default]")
+            bridges.install_aware_build_hint(
+                rustwx.CARGO_BUILD_HINT, "tools/rustwx")
+            + "\n# enables --engine rust and makes it the default")
     ok, evidence = rustwx.probe_renderer(found)
     if not ok:
         return Check(
             name, "missing", f"{found} -- {evidence}",
-            f"rebuild it: {rustwx.CARGO_BUILD_HINT}")
+            "# rebuild it:\n" + bridges.install_aware_build_hint(
+                rustwx.CARGO_BUILD_HINT, "tools/rustwx"))
     basemap = rustwx.basemap_dir()
     if os.environ.get("RUSTWX_BASEMAP_DIR") or os.environ.get(
             "RUSTWX_ASSETS_DIR"):
@@ -271,7 +352,7 @@ def _cpu_library_check() -> Check:
     from gpuwm.ingest.cpu_backend import (
         CPU_BACKEND_ABI, CpuPreprocessBackend)
 
-    remedy = (bridges.CARGO_BUILD_HINT
+    remedy = (bridges.install_aware_build_hint(bridges.CARGO_BUILD_HINT)
               + f"  then copy it into {bridges.default_bridge_dir()} or "
               "set GPUWM_CPU_PREPROCESS_BRIDGE")
     try:
@@ -358,35 +439,18 @@ def _noah_tables_check() -> Check:
 # Data roots
 # ---------------------------------------------------------------------------
 
-def _case_data_root_check() -> list[Check]:
+def _geog_tree_checks(geog: Path) -> list[Check]:
+    """Check one staged WPS_GEOG tree, wherever it was resolved from."""
+
     from gpuwm.domain_wizard import GEOG_DATASETS
 
-    raw = os.environ.get("GPUWM_CASE_DATA_ROOT")
-    if not raw:
-        return [Check(
-            "GPUWM_CASE_DATA_ROOT", "info",
-            "not set.  Layout when you set it: the root is the directory "
-            "that CONTAINS your case bundles and (by default) WPS_GEOG -- "
-            "configs reference ${GPUWM_CASE_DATA_ROOT}/<bundle>/... and "
-            "geog_root defaults to ${GPUWM_CASE_DATA_ROOT}/WPS_GEOG")]
-    root = Path(raw)
-    if not root.is_dir():
-        return [Check(
-            "GPUWM_CASE_DATA_ROOT", "missing",
-            f"set to {raw} but that directory does not exist",
-            "point it at the directory containing your case bundles "
-            "and WPS_GEOG")]
-    checks = [Check(
-        "GPUWM_CASE_DATA_ROOT", "present",
-        f"{root} (directory exists; its datasets are checked "
-        "individually below)")]
-    geog = root / "WPS_GEOG"
+    checks: list[Check] = []
     if not geog.is_dir():
-        checks.append(Check(
+        return [Check(
             "WPS_GEOG", "missing",
-            f"{geog} does not exist (the default geog_root)",
-            GEOG_HINT))
-        return checks
+            f"{geog} does not exist (the default geog_root).  Nothing "
+            "that builds static fields can run without it",
+            GEOG_HINT)]
     absent = sorted(name for name in GEOG_DATASETS
                     if not (geog / name).is_dir())
     unindexed = sorted(
@@ -410,6 +474,49 @@ def _case_data_root_check() -> list[Check]:
             f"{geog} carries all {len(GEOG_DATASETS)} required datasets, "
             "each with its WPS index file"))
     return checks
+
+
+def _case_data_root_check() -> list[Check]:
+    """The case-data root AND the static geography under it.
+
+    v1.0.0 returned a single ``info`` when GPUWM_CASE_DATA_ROOT was
+    unset and never looked for WPS_GEOG at all, so doctor printed "no
+    gaps; every check verified" on a machine with zero static geography
+    -- contradicting the README, which says doctor requires each
+    dataset's index file, and greenlighting a box on which nothing
+    downstream could run.  An unset variable is not an excuse to skip
+    the check: ``fetch-geog`` and every config default resolve to the
+    same place through :func:`gpuwm.geog_assets.default_geog_root`, so
+    doctor looks exactly there.
+    """
+
+    from gpuwm.geog_assets import default_geog_root
+
+    raw = os.environ.get("GPUWM_CASE_DATA_ROOT")
+    if not raw:
+        return [
+            Check(
+                "GPUWM_CASE_DATA_ROOT", "info",
+                "not set.  Layout when you set it: the root is the "
+                "directory that CONTAINS your case bundles and (by "
+                "default) WPS_GEOG -- configs reference "
+                "${GPUWM_CASE_DATA_ROOT}/<bundle>/... and geog_root "
+                "defaults to ${GPUWM_CASE_DATA_ROOT}/WPS_GEOG"),
+            *_geog_tree_checks(default_geog_root()),
+        ]
+    root = Path(raw)
+    if not root.is_dir():
+        return [Check(
+            "GPUWM_CASE_DATA_ROOT", "missing",
+            f"set to {raw} but that directory does not exist",
+            "point it at the directory containing your case bundles "
+            "and WPS_GEOG")]
+    return [
+        Check("GPUWM_CASE_DATA_ROOT", "present",
+              f"{root} (directory exists; its datasets are checked "
+              "individually below)"),
+        *_geog_tree_checks(root / "WPS_GEOG"),
+    ]
 
 
 def _distribution_manifest_check() -> Check:
@@ -490,6 +597,7 @@ def collect_checks() -> list[Check]:
     checks.append(_cupy_check())
     checks.append(_render_extra_check())
     checks.append(_rust_renderer_check())
+    checks.append(_fetch_backbone_check())
     checks.extend(_bridge_checks())
     checks.append(_cpu_library_check())
     checks.append(_thompson_tables_check())
@@ -511,8 +619,15 @@ def format_report(checks: list[Check]) -> str:
     gaps = sum(1 for check in checks if check.status == "missing")
     presence_only = sum(1 for check in checks if check.status == "present")
     if gaps:
-        lines.append(f"gpuwm doctor: {gaps} gap(s); every remedy above "
-                     "is copy-pasteable.")
+        # Not "every remedy is copy-pasteable": a remedy can be a
+        # sequence of steps, and on a pip install the bridge remedy is a
+        # clone-and-build rather than a single line.  Claiming one line
+        # when six were printed is the kind of small lie that costs the
+        # reader their trust in the other five.
+        lines.append(
+            f"gpuwm doctor: {gaps} gap(s).  Every remedy line above is "
+            "either a command to run as printed, in the order printed, "
+            "or a '#' comment.")
     elif presence_only:
         lines.append(f"gpuwm doctor: no gaps ({presence_only} check(s) "
                      "presence-only as labeled, the rest verified).")

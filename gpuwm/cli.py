@@ -44,6 +44,7 @@ from gpuwm.domain_wizard import register_cli as domain_register_cli
 from gpuwm.downscale import register_cli as downscale_register_cli
 from gpuwm.experiment import is_experiment_toml
 from gpuwm.fetch import register_cli as fetch_register_cli
+from gpuwm.geog_assets import register_cli as geog_register_cli
 from gpuwm.ingest.preflight import register_cli as ingest_register_cli
 from gpuwm.render import register_cli as render_register_cli
 from gpuwm.table_assets import register_cli as table_assets_register_cli
@@ -64,6 +65,58 @@ _REAL_CASES = cases.CaseMapping(cases.CONFIG)
 #: None = unbounded on that side.  Resolved through the registry rather
 #: than through ``_CASES`` so a stubbed runner cannot relax a real gate.
 _GATES = cases.GateMapping()
+
+
+#: Flags whose value is a signed coordinate or coordinate list.
+#:
+#: argparse treats any token starting with ``-`` as an option string
+#: unless it matches its own negative-number matcher,
+#: ``^-\d+$|^-\d*\.\d+$``.  ``-33.87,151.21`` has a comma in it and so
+#: does not match, which made every southern- or western-hemisphere
+#: value fail with ``expected one argument`` -- exactly the worldwide
+#: story the product leads with, and every documented example was CONUS
+#: with a positive latitude, so the failure was invisible until someone
+#: pointed the wizard at Sydney.
+_COORDINATE_FLAGS = frozenset({"--point", "--area"})
+
+
+def _looks_like_coordinates(value: str) -> bool:
+    """A leading-minus token that is entirely comma-separated numbers."""
+
+    if not value.startswith("-"):
+        return False
+    fields = value.split(",")
+    if not 1 <= len(fields) <= 4:
+        return False
+    try:
+        for field in fields:
+            float(field)
+    except ValueError:
+        return False
+    return True
+
+
+def _join_negative_coordinates(argv: list[str]) -> list[str]:
+    """Rewrite ``--point -33.87,151.21`` as ``--point=-33.87,151.21``.
+
+    Only a coordinate flag immediately followed by an all-numeric
+    leading-minus token is joined, so nothing else about option parsing
+    changes and ``--point --help`` still errors the way it should.
+    """
+
+    joined: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        following = argv[index + 1] if index + 1 < len(argv) else None
+        if (token in _COORDINATE_FLAGS and following is not None
+                and _looks_like_coordinates(following)):
+            joined.append(f"{token}={following}")
+            index += 2
+            continue
+        joined.append(token)
+        index += 1
+    return joined
 
 
 def _failing_gate(case: str, metrics: dict) -> str | None:
@@ -105,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
         func=lambda args: args.ingest_preflight_handler(args)
         or check_main(args))
     fetch_register_cli(sub)
+    geog_register_cli(sub)
     domain_register_cli(sub)
     render_register_cli(sub)
     downscale_register_cli(sub)
@@ -196,7 +250,8 @@ def main(argv: list[str] | None = None) -> int:
                           "(default, unchanged output) or the exact "
                           "legacy-RRTMG port (fails closed at physics "
                           "setup until its compute kernels land)")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_join_negative_coordinates(
+        list(sys.argv[1:] if argv is None else argv)))
 
     try:
         return _dispatch(args)
@@ -226,21 +281,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"gpuwm {args.command}: {error}", file=sys.stderr)
         return 2
     except RuntimeError as error:
-        if args.command == "fetch":
-            # fetch's RuntimeErrors are operational outcomes with a
-            # stated remedy (no complete latest cycle on the mirrors; a
-            # --wait-for window that timed out with its resume story),
-            # not programming errors.  Scoped to fetch: elsewhere a
-            # RuntimeError (including CUDA runtime failures) must keep
-            # its traceback.
-            print(f"gpuwm fetch: {error}", file=sys.stderr)
+        if args.command in ("fetch", "fetch-geog"):
+            # fetch/fetch-geog RuntimeErrors are operational outcomes
+            # with a stated remedy (no complete latest cycle on the
+            # mirrors; a --wait-for window that timed out with its
+            # resume story; a download that must be re-run to resume),
+            # not programming errors.  Scoped to the fetch commands:
+            # elsewhere a RuntimeError (including CUDA runtime
+            # failures) must keep its traceback.
+            print(f"gpuwm {args.command}: {error}", file=sys.stderr)
             return 2
         raise
 
 
 def _dispatch(args) -> int:
-    if args.command in ("check", "fetch", "domain", "render", "downscale",
-                        "doctor", "fetch-tables"):
+    if args.command in ("check", "fetch", "fetch-geog", "domain", "render",
+                        "downscale", "doctor", "fetch-tables"):
         return args.func(args)
 
     if args.command == "cases":

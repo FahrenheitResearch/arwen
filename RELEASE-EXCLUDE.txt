@@ -3,7 +3,7 @@
 #
 # These paths are development-campaign records -- lead/controller
 # handoffs, phase plans, machine-specific runbooks -- several of which
-# carry developer-absolute paths (C:\Users\...), contradicting the
+# bake a per-user home directory into a shipped file, contradicting the
 # release builder's own "no developer-specific absolute paths" bar and
 # confusing a stranger about what the product is (acceptance finding
 # F13, PRODUCT-V1-ACCEPTANCE-20260729).
@@ -12,6 +12,13 @@
 # nothing listed here is deleted from the development tree.  One path or
 # glob per line, relative to the repository root; lines starting with
 # '#' are comments.
+#
+# Exclusion is only half the job.  A manifest cannot name the file that
+# grows a machine path next, so work/build_release_snapshot.py scans
+# every staged text file for one and FAILs the build; see
+# MACHINE_PATH_MARKERS there.  Adding a path here is the escape hatch
+# for a file that is genuinely not worth scrubbing -- never the first
+# resort.
 
 # Campaign handoffs and internal project history (developer paths inside).
 docs/gpuwm-controller-handoff.md
@@ -39,6 +46,29 @@ docs/ports/wrf-rrtm-dudhia-status.md
 handoffs/**
 evidence/**
 work/**
+
+# Campaign ensemble harness.  Every entry point needs a privately-built
+# WRF oracle (wrf.exe/real.exe at pinned SHAs), a private reference
+# bundle, and the campaign's own case directory, none of which a public
+# reader has or can obtain -- so the scripts are unrunnable outside the
+# campaign and carry its case naming and machine layout.  Its test goes
+# with it; nothing else in the tree imports tools.n5s.
+tools/n5s/**
+tests/test_n5s_toolchain.py
+
+# NOT excluded, deliberately: tools/data/knob_survey_lanes.jsonl.  It
+# looked like internal campaign output, but tools/build_registry.py
+# reads it to regenerate gpuwm/physics_registry_v2.json and
+# tests/test_build_registry.py asserts that regeneration reproduces the
+# shipped file byte for byte.  Dropping it would trade a reproducibility
+# proof for a hygiene win, so the one developer path inside it was
+# scrubbed instead.
+
+# A generated `sha256sum` receipt whose second column is one machine's
+# absolute paths into a private reference bundle.  The hashes it pins
+# are reproduced by tools/rrtmg_wrf461_oracle/sw_build.sh, which writes
+# this file; nothing reads it.
+tools/rrtmg_wrf461_oracle/sw_fixtures/sw-oracle-sha256sums.txt
 
 # Externalized large asset: GitHub rejects plain blobs over 100 MiB, so
 # this 243 MiB table is published as a GitHub release asset instead of

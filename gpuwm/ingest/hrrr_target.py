@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Mapping
 
 import numpy as np
@@ -176,6 +177,22 @@ class HrrrTargetDomain:
             self.dy_m,
             self.nx + 1,
             self.ny + 1,
+        )
+
+    def contract_cfg(self) -> SimpleNamespace:
+        """The domain configuration ``native_geometry_contract`` expects.
+
+        Every producer and every verifier of an HRRR geometry document goes
+        through this, so the two sides cannot describe the same target with
+        different keys.
+        """
+
+        return SimpleNamespace(
+            nx=self.nx,
+            ny=self.ny,
+            nz=self.nz,
+            dx=self.dx_m,
+            dy=self.dy_m,
         )
 
     def to_payload(self) -> dict[str, object]:

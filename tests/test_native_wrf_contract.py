@@ -26,6 +26,7 @@ from gpuwm.native_wrf_contract import (
 from gpuwm.experiment import load_experiment
 from gpuwm.static.lambert import LambertGrid
 from gpuwm.wrf_direct import _load_static_geometry_receipt
+from tools.hrrr_build_native_static import native_static_geometry
 from tools.write_hrrr_native_geometry_receipt import (
     write_hrrr_native_geometry_receipt,
 )
@@ -157,6 +158,83 @@ def test_hrrr_static_conversion_round_trips_with_explicit_target(tmp_path):
 
     assert written["geometry"] == observed
     assert observed_digest == digest
+
+
+def _sealed_hrrr_static(tmp_path, target, geometry):
+    """A minimal PASS static receipt carrying one geometry document."""
+
+    static_path = tmp_path / "native-static.npz"
+    np.savez(static_path, HGT_M=np.zeros((target.ny, target.nx)))
+    rich_path = tmp_path / "hrrr-static.json"
+    rich_path.write_text(json.dumps({
+        "schema": "gpuwm-native-hrrr-static-v2",
+        "status": "PASS",
+        "target_domain": target.to_payload(),
+        "target_domain_sha256": target.identity_sha256(),
+        "geometry": geometry,
+        "cache": {
+            "path": static_path.name,
+            "bytes": static_path.stat().st_size,
+            "sha256": hashlib.sha256(static_path.read_bytes()).hexdigest(),
+        },
+    }))
+    spec_path = tmp_path / "domain.json"
+    spec_path.write_text(json.dumps(target.to_payload()))
+    return static_path, rich_path, spec_path
+
+
+def test_hrrr_static_builder_geometry_is_accepted_by_its_own_verifier(tmp_path):
+    """The producer's sealed document must satisfy the consumer's contract.
+
+    v1.0.0 wrote the two independently; the builder omitted ``map_proj`` and
+    the receipt equality check therefore failed for every HRRR area a user
+    could build, with no user-side workaround.
+    """
+
+    target = HrrrTargetDomain(
+        name="tiny-contract-fixture", map_proj="lambert",
+        nx=14, ny=13, nz=9, dx_m=3000.0, dy_m=3000.0,
+        ref_lat=35.0, ref_lon=-97.0, truelat1=30.0,
+        truelat2=60.0, stand_lon=-97.0, time_step_seconds=15)
+    geometry = native_static_geometry(target)
+    assert geometry["map_proj"] == "lambert"
+
+    static_path, rich_path, spec_path = _sealed_hrrr_static(
+        tmp_path, target, geometry)
+    written = write_hrrr_native_geometry_receipt(
+        static_cache=static_path,
+        hrrr_static_receipt=rich_path,
+        output=tmp_path / "native-geometry.json",
+        domain_spec=spec_path,
+    )
+
+    assert written["geometry"] == geometry
+    # json round-trip too: the sealed document is read back from disk.
+    assert json.loads(rich_path.read_text())["geometry"] == geometry
+
+
+def test_hrrr_geometry_receipt_still_refuses_a_key_short_document(tmp_path):
+    """The equality guard stays strict; the fix was on the producer's side."""
+
+    target = HrrrTargetDomain(
+        name="tiny-contract-fixture", map_proj="lambert",
+        nx=14, ny=13, nz=9, dx_m=3000.0, dy_m=3000.0,
+        ref_lat=35.0, ref_lon=-97.0, truelat1=30.0,
+        truelat2=60.0, stand_lon=-97.0, time_step_seconds=15)
+    geometry = native_static_geometry(target)
+    v100_shape = {k: v for k, v in geometry.items() if k != "map_proj"}
+
+    static_path, rich_path, spec_path = _sealed_hrrr_static(
+        tmp_path, target, v100_shape)
+    output = tmp_path / "native-geometry.json"
+    with pytest.raises(ValueError, match="geometry differs from its target"):
+        write_hrrr_native_geometry_receipt(
+            static_cache=static_path,
+            hrrr_static_receipt=rich_path,
+            output=output,
+            domain_spec=spec_path,
+        )
+    assert not output.exists()
 
 
 def _complete_native_static(grid):

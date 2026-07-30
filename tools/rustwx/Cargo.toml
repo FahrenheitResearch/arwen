@@ -18,6 +18,7 @@ members = [
     "crates/rustwx-products",
     "crates/rustwx-render",
     "crates/rusty-weather",
+    "crates/rw-fetch",
     "crates/rw-ingest",
     "crates/rw-store",
     "crates/rw-wrfbatch",

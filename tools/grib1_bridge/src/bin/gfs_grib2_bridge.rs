@@ -4,7 +4,7 @@
 //! coordinates.  The complete series is inventoried before an output path is
 //! created, and publication is an atomic directory rename.
 
-use grib_core::grib2::{unpack_message, Grib2File, Grib2Message, GridDefinition};
+use grib_core::grib2::{flip_rows, unpack_message, Grib2File, Grib2Message, GridDefinition};
 use std::env;
 use std::error::Error;
 use std::fs::{self, File};
@@ -652,10 +652,31 @@ fn validate_common(
         .into());
     }
     let grid = &message.grid;
+    // Two row orders are legal here, and only two.  The NOMADS
+    // grib-filter `subregion` crop re-encodes south-to-north (0x40);
+    // the raw noaa-gfs-bdp-pds S3 objects -- and, as it happens, an
+    // uncropped grib-filter request, which is a pure byte-range
+    // extractor -- carry the WMO-default north-to-south (0x00).  They
+    // are the same numbers in the opposite order: a flipped raw-S3
+    // decode is bit-identical to the NOMADS-crop decode of the same
+    // cycle and fields (proved by tests/test_gfs_scan_order.py against
+    // a committed matched pair).  Row order is normalized once, on
+    // decode, so everything downstream still sees exactly one form.
+    // Every other scan mode -- i-negative, j-consecutive, alternating
+    // rows -- stays fail-closed.
+    let south_to_north = grid.scan_mode == SOUTH_TO_NORTH_SCAN;
+    let north_to_south = grid.scan_mode == NORTH_TO_SOUTH_SCAN;
+    // lat1 is the first stored row either way, so the span it must
+    // close runs with the scan direction.
+    let latitude_span = if south_to_north {
+        grid.lat1 + (grid.ny - 1) as f64 * grid.dy
+    } else {
+        grid.lat1 - (grid.ny - 1) as f64 * grid.dy
+    };
     if grid.template != 0
         || grid.nx < 2
         || grid.ny < 2
-        || grid.scan_mode != 0x40
+        || !(south_to_north || north_to_south)
         || grid.shape_of_earth != 6
         || grid.resolution_flags != 0x30
         || grid.num_data_points as u64 != grid.nx as u64 * grid.ny as u64
@@ -667,14 +688,91 @@ fn validate_common(
         || !grid.dy.is_finite()
         || !same_level(grid.dx, 0.25)
         || !same_level(grid.dy, 0.25)
-        || !same_level(grid.lat2, grid.lat1 + (grid.ny - 1) as f64 * grid.dy)
+        || !same_level(grid.lat2, latitude_span)
         || !same_level(grid.lon2, grid.lon1 + (grid.nx - 1) as f64 * grid.dx)
     {
-        return Err(
-            format!("field is not a supported south-to-north regular GFS grid: {grid:?}").into(),
-        );
+        return Err(format!(
+            "field is not a supported regular GFS grid (scan mode must be \
+             0x40 south-to-north or 0x00 north-to-south): {grid:?}"
+        )
+        .into());
     }
     Ok(())
+}
+
+/// The scan mode this bridge emits, and the one NOMADS crops carry:
+/// +i, +j, i-consecutive -- row 0 is the southernmost.
+const SOUTH_TO_NORTH_SCAN: u8 = 0x40;
+
+/// The WMO default the raw S3 objects carry: +i, -j, i-consecutive --
+/// row 0 is the northernmost.  Accepted, then flipped on decode.
+const NORTH_TO_SOUTH_SCAN: u8 = 0x00;
+
+/// Southernmost latitude of a validated grid, whichever way it scans.
+fn southern_latitude(grid: &GridDefinition) -> f64 {
+    if grid.scan_mode == SOUTH_TO_NORTH_SCAN {
+        grid.lat1
+    } else {
+        grid.lat2
+    }
+}
+
+/// Northernmost latitude of a validated grid.
+fn northern_latitude(grid: &GridDefinition) -> f64 {
+    if grid.scan_mode == SOUTH_TO_NORTH_SCAN {
+        grid.lat2
+    } else {
+        grid.lat1
+    }
+}
+
+/// Reverse the row order of a boolean mask, matching [`flip_rows`].
+fn flip_mask_rows(mask: &mut [bool], nx: usize, ny: usize) {
+    if nx == 0 || ny < 2 || mask.len() != nx * ny {
+        return;
+    }
+    for row in 0..ny / 2 {
+        let (head, tail) = mask.split_at_mut((ny - 1 - row) * nx);
+        head[row * nx..row * nx + nx].swap_with_slice(&mut tail[..nx]);
+    }
+}
+
+/// Decode one message into this bridge's canonical south-to-north
+/// row-major order, with its missing-value mask in the same order.
+///
+/// `unpack_message` deliberately preserves storage order (matching
+/// ecCodes), so the flip belongs here rather than in the decoder.  The
+/// bitmap is indexed by the same flat position as the values, so it has
+/// to travel with them or a north-to-south field would attribute its
+/// missing cells to the wrong rows.
+fn scan_normalized(
+    message: &Grib2Message,
+) -> Result<(Vec<f64>, Option<Vec<bool>>), Box<dyn Error>> {
+    let nx = message.grid.nx as usize;
+    let ny = message.grid.ny as usize;
+    let mut values = unpack_message(message)?;
+    let mut present = message.bitmap.clone();
+    if message.grid.scan_mode == NORTH_TO_SOUTH_SCAN {
+        if values.len() != nx * ny {
+            return Err(format!(
+                "cannot normalize scan order: decoded {} values for a {nx}x{ny} grid",
+                values.len()
+            )
+            .into());
+        }
+        flip_rows(&mut values, nx, ny);
+        if let Some(mask) = present.as_mut() {
+            if mask.len() != nx * ny {
+                return Err(format!(
+                    "cannot normalize scan order: bitmap has {} cells for a {nx}x{ny} grid",
+                    mask.len()
+                )
+                .into());
+            }
+            flip_mask_rows(mask, nx, ny);
+        }
+    }
+    Ok((values, present))
 }
 
 fn inventory(file: &Grib2File, cycle: &str, hour: u32) -> Result<Inventory, Box<dyn Error>> {
@@ -850,7 +948,7 @@ fn write_field(
     writer: &mut BufWriter<File>,
     spec: FieldSpec,
 ) -> Result<(usize, usize, f64, f64), Box<dyn Error>> {
-    let values = unpack_message(message)?;
+    let (values, present) = scan_normalized(message)?;
     let expected = message.grid.nx as usize * message.grid.ny as usize;
     if values.len() != expected {
         return Err(format!(
@@ -878,11 +976,13 @@ fn write_field(
             minimum = minimum.min(value);
             maximum = maximum.max(value);
         } else if value.is_nan() {
-            let bitmap_missing = message
-                .bitmap
+            // `present` travels in the same row order as `values`, so a
+            // north-to-south field's missing cells stay on their own
+            // rows through the flip.
+            let bitmap_missing = present
                 .as_ref()
                 .and_then(|bitmap| bitmap.get(value_index))
-                .map(|present| !*present)
+                .map(|cell| !*cell)
                 .unwrap_or(false);
             if !spec.allow_missing || !bitmap_missing {
                 return Err(format!(
@@ -939,7 +1039,7 @@ fn decoded_f32_bits(
     let [field] = selected.as_slice() else {
         return Err(format!("invariant field {name} is not unique").into());
     };
-    let values = unpack_message(&file.messages[field.index])?;
+    let (values, _) = scan_normalized(&file.messages[field.index])?;
     values
         .into_iter()
         .map(|value| {
@@ -1073,9 +1173,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
         writeln!(gate, "nx\t{}", first_message.grid.nx)?;
         writeln!(gate, "ny\t{}", first_message.grid.ny)?;
-        writeln!(gate, "lat1\t{}", first_message.grid.lat1)?;
+        // Normalized geometry: lat1 is the southernmost row of the
+        // emitted arrays whichever way the source scanned, matching the
+        // south-to-north output contract and the ascending latitude axis
+        // gpuwm/gfs_direct.py builds from these four numbers.
+        writeln!(gate, "lat1\t{}", southern_latitude(&first_message.grid))?;
         writeln!(gate, "lon1\t{}", first_message.grid.lon1)?;
-        writeln!(gate, "lat2\t{}", first_message.grid.lat2)?;
+        writeln!(gate, "lat2\t{}", northern_latitude(&first_message.grid))?;
         writeln!(gate, "lon2\t{}", first_message.grid.lon2)?;
         writeln!(gate, "dx\t{}", first_message.grid.dx)?;
         writeln!(gate, "dy\t{}", first_message.grid.dy)?;
@@ -1084,7 +1188,20 @@ fn main() -> Result<(), Box<dyn Error>> {
             "num_data_points\t{}",
             first_message.grid.num_data_points
         )?;
-        writeln!(gate, "scan_mode\t0x{:02x}", first_message.grid.scan_mode)?;
+        // The scan mode of the ARRAYS THIS BRIDGE WROTE, always
+        // south-to-north; `source_scan_mode` records what arrived, so a
+        // receipt still says whether a flip happened.
+        writeln!(gate, "scan_mode\t0x{SOUTH_TO_NORTH_SCAN:02x}")?;
+        writeln!(
+            gate,
+            "source_scan_mode\t0x{:02x}",
+            first_message.grid.scan_mode
+        )?;
+        writeln!(
+            gate,
+            "scan_order_normalized\t{}",
+            first_message.grid.scan_mode != SOUTH_TO_NORTH_SCAN
+        )?;
         writeln!(gate, "originating_center\t7")?;
         writeln!(gate, "master_table_version\t2")?;
         writeln!(gate, "local_table_version\t1")?;
@@ -1257,6 +1374,250 @@ mod tests {
             bitmap: None,
             raw_data: Vec::new(),
         }
+    }
+
+    /// The same 2x2 field as `valid_message`, published the other way
+    /// up: `lat1` is the northern edge and the rows run south.
+    fn north_to_south_message(parameter_number: u8) -> Grib2Message {
+        let mut message = valid_message(parameter_number);
+        message.grid.scan_mode = NORTH_TO_SOUTH_SCAN;
+        message.grid.lat1 = 20.25;
+        message.grid.lat2 = 20.0;
+        message
+    }
+
+    #[test]
+    fn both_published_scan_orders_are_accepted() {
+        // NOMADS' subregion crop is 0x40; raw noaa-gfs-bdp-pds S3 (and
+        // an uncropped grib-filter request) is 0x00.  Same numbers, both
+        // orders, one bridge.
+        validate_common(&valid_message(0), "2026-07-20 00:00:00", 0, false).unwrap();
+        validate_common(
+            &north_to_south_message(0),
+            "2026-07-20 00:00:00",
+            0,
+            false,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_latitude_span_that_contradicts_the_scan_direction_fails_closed() {
+        // 0x00 with an ascending span, and 0x40 with a descending one:
+        // each declares a row order its own endpoints deny.
+        let mut ascending_north_to_south = valid_message(0);
+        ascending_north_to_south.grid.scan_mode = NORTH_TO_SOUTH_SCAN;
+        let error = validate_common(
+            &ascending_north_to_south,
+            "2026-07-20 00:00:00",
+            0,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("not a supported regular GFS grid"), "{error}");
+
+        let mut descending_south_to_north = north_to_south_message(0);
+        descending_south_to_north.grid.scan_mode = SOUTH_TO_NORTH_SCAN;
+        assert!(validate_common(
+            &descending_south_to_north,
+            "2026-07-20 00:00:00",
+            0,
+            false
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn every_other_scan_mode_still_fails_closed() {
+        // i-negative, j-consecutive, alternating rows, and combinations:
+        // none of these are a row flip away from the output contract.
+        for scan_mode in [0x80u8, 0x20, 0x10, 0x60, 0xc0, 0x50, 0x08] {
+            let mut message = valid_message(0);
+            message.grid.scan_mode = scan_mode;
+            let outcome = validate_common(&message, "2026-07-20 00:00:00", 0, false);
+            assert!(
+                outcome.is_err(),
+                "scan mode 0x{scan_mode:02x} must not be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn the_latitude_helpers_report_the_true_edges_either_way() {
+        let south_up = valid_message(0);
+        assert_eq!(southern_latitude(&south_up.grid), 20.0);
+        assert_eq!(northern_latitude(&south_up.grid), 20.25);
+        let north_up = north_to_south_message(0);
+        assert_eq!(southern_latitude(&north_up.grid), 20.0);
+        assert_eq!(northern_latitude(&north_up.grid), 20.25);
+    }
+
+    #[test]
+    fn the_mask_flip_tracks_the_value_flip_exactly() {
+        // The bitmap is indexed by the same flat position as the values,
+        // so the two must move together or a north-to-south field would
+        // attribute its missing cells to the wrong rows.
+        let (nx, ny) = (3usize, 4usize);
+        let mut values: Vec<f64> = (0..(nx * ny)).map(|value| value as f64).collect();
+        let mut mask: Vec<bool> = (0..(nx * ny)).map(|index| index % 3 == 0).collect();
+        flip_rows(&mut values, nx, ny);
+        flip_mask_rows(&mut mask, nx, ny);
+        for (position, value) in values.iter().enumerate() {
+            assert_eq!(
+                mask[position],
+                (*value as usize) % 3 == 0,
+                "mask and values disagree at {position}"
+            );
+        }
+        // Row order really did reverse.
+        assert_eq!(&values[..nx], &[9.0, 10.0, 11.0]);
+    }
+
+    #[test]
+    fn the_mask_flip_leaves_degenerate_shapes_alone() {
+        let mut single = vec![true];
+        flip_mask_rows(&mut single, 1, 1);
+        assert_eq!(single, vec![true]);
+        let mut mismatched = vec![true, false];
+        flip_mask_rows(&mut mismatched, 3, 4);
+        assert_eq!(mismatched, vec![true, false]);
+    }
+
+    /// The two committed fixtures: the same GFS field, same cycle, from
+    /// the two publishers, in the two row orders.
+    ///
+    /// * `s3-raw-tmp2m-...` -- one message lifted by `.idx` byte range
+    ///   from `noaa-gfs-bdp-pds`: global 1440x721, `scan 0x00`, `lat1`
+    ///   the north pole.
+    /// * `nomads-crop-...` -- the NOMADS grib-filter `subregion` crop of
+    ///   the same object over 30..40N, 260..270E: 41x41, `scan 0x40`,
+    ///   `lat1` the southern edge.
+    fn scan_order_fixture(name: &str) -> Grib2File {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/gfs-scan-order")
+            .join(name);
+        Grib2File::open(path.to_str().expect("fixture path is UTF-8"))
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+    }
+
+    #[test]
+    fn a_flipped_raw_s3_decode_is_bit_identical_to_the_nomads_crop() {
+        // This is the whole justification for accepting scan 0x00: the
+        // two publishers carry the same numbers in opposite row order,
+        // so normalizing the order is lossless.  Compared as raw f64
+        // bit patterns, not with a tolerance -- an epsilon here would
+        // hide exactly the re-encoding difference worth knowing about.
+        let raw = scan_order_fixture("s3-raw-tmp2m-20260729t18z-f000.grib2");
+        let crop = scan_order_fixture("nomads-crop-20260729t18z-f000.grib2");
+        let global = &raw.messages[0];
+        assert_eq!(global.grid.scan_mode, NORTH_TO_SOUTH_SCAN);
+        let cropped = crop
+            .messages
+            .iter()
+            .find(|message| {
+                message.product.level_type == 103 && same_level(message.product.level_value, 2.0)
+            })
+            .expect("the crop carries TMP at 2 m above ground");
+        assert_eq!(cropped.grid.scan_mode, SOUTH_TO_NORTH_SCAN);
+
+        // The NOMADS crop passes the whole gate, as it always has.
+        validate_common(cropped, &cropped.reference_time.to_string(), 0, false).unwrap();
+
+        // The raw S3 object's ROW ORDER is now accepted -- isolate that
+        // by neutralising the one gate it still trips (see below).
+        let mut grid_only = global.clone();
+        grid_only.data_rep.template = 0;
+        validate_common(&grid_only, &global.reference_time.to_string(), 0, false).unwrap();
+
+        // ...but a raw pgrb2.0p25 object is packed with DRT 5.3
+        // (complex + spatial differencing) where the NOMADS crop
+        // re-encodes to 5.0, and that gate is a separate, deliberate
+        // refusal with its own bar: complex-packing missing-value
+        // semantics have not been proved against a real product here.
+        // Accepting the scan order does not open it, and this assertion
+        // exists so nobody discovers that by accident.
+        let still_refused = validate_common(global, &global.reference_time.to_string(), 0, false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            still_refused.contains("unsupported GFS DRT 5.3"),
+            "{still_refused}"
+        );
+
+        let (global_values, _) = scan_normalized(global).unwrap();
+        let (crop_values, _) = scan_normalized(cropped).unwrap();
+        let (gnx, gny) = (global.grid.nx as usize, global.grid.ny as usize);
+        let (cnx, cny) = (cropped.grid.nx as usize, cropped.grid.ny as usize);
+
+        // Where the crop sits inside the normalized global array, read
+        // off the geometry rather than hardcoded -- both are now
+        // south-first, so the offsets are a straight subtraction.
+        let row_offset = ((southern_latitude(&cropped.grid)
+            - southern_latitude(&global.grid))
+            / global.grid.dy)
+            .round() as usize;
+        let column_offset =
+            ((cropped.grid.lon1 - global.grid.lon1) / global.grid.dx).round() as usize;
+        assert!(row_offset + cny <= gny && column_offset + cnx <= gnx);
+
+        let mut compared = 0usize;
+        for row in 0..cny {
+            for column in 0..cnx {
+                let expected = global_values[(row_offset + row) * gnx + column_offset + column];
+                let observed = crop_values[row * cnx + column];
+                assert_eq!(
+                    observed.to_bits(),
+                    expected.to_bits(),
+                    "row {row} column {column}: crop {observed} != flipped raw {expected}"
+                );
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, cnx * cny);
+        assert_eq!(compared, 41 * 41);
+    }
+
+    #[test]
+    fn the_raw_s3_fixture_would_be_upside_down_without_the_flip() {
+        // A negative control for the test above: comparing the crop
+        // against the *unflipped* storage order must fail, or the
+        // comparison proves nothing about row order.
+        let raw = scan_order_fixture("s3-raw-tmp2m-20260729t18z-f000.grib2");
+        let crop = scan_order_fixture("nomads-crop-20260729t18z-f000.grib2");
+        let global = &raw.messages[0];
+        let cropped = crop
+            .messages
+            .iter()
+            .find(|message| {
+                message.product.level_type == 103 && same_level(message.product.level_value, 2.0)
+            })
+            .unwrap();
+        let stored = unpack_message(global).unwrap();
+        let (crop_values, _) = scan_normalized(cropped).unwrap();
+        let gnx = global.grid.nx as usize;
+        let (cnx, cny) = (cropped.grid.nx as usize, cropped.grid.ny as usize);
+        // Storage order: row 0 is the north pole, so the crop's southern
+        // row sits this far down instead.
+        let row_offset = ((northern_latitude(&global.grid)
+            - northern_latitude(&cropped.grid))
+            / global.grid.dy)
+            .round() as usize;
+        let column_offset =
+            ((cropped.grid.lon1 - global.grid.lon1) / global.grid.dx).round() as usize;
+        let mismatches = (0..cny)
+            .flat_map(|row| (0..cnx).map(move |column| (row, column)))
+            .filter(|(row, column)| {
+                stored[(row_offset + row) * gnx + column_offset + column].to_bits()
+                    != crop_values[row * cnx + column].to_bits()
+            })
+            .count();
+        assert!(
+            mismatches > cnx * cny / 2,
+            "an unflipped comparison should disagree almost everywhere, saw \
+             {mismatches} mismatches of {}",
+            cnx * cny
+        );
     }
 
     #[test]

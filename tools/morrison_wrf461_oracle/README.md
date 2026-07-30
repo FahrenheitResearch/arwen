@@ -12,7 +12,7 @@ From WSL:
 ```bash
 build_dir=$(mktemp -d)
 tools/morrison_wrf461_oracle/build.sh \
-  /home/drew/wrf-stock-v461-gate-20260721 "$build_dir"
+  "$WRF_TREE" "$build_dir"
 ```
 
 The linked reference is compiled at `-O0`. The build fails if its undefined

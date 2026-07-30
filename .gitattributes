@@ -15,3 +15,4 @@ gpuwm/physics_registry_v2.json text eol=lf
 tools/rustwx/vendor/** -text
 tools/rustwx/crates/** -text
 tools/rustwx/assets/** -text
+tests/fixtures/**/*.grib2 -text

@@ -1,0 +1,27 @@
+# ArWen's fetch backbone: a thin CLI over the download stack already
+# vendored at ../../vendor/wx-core (parallel whole-file range GETs, .idx
+# coalescing, the cross-process NOMADS rate governor, the disk cache)
+# plus the rustwx-models URL algebra for 23 models.  Every dependency
+# already exists in this workspace's `cargo vendor` closure, so the bin
+# builds with --locked --offline like every other vendored artifact.
+
+[package]
+name = "rw-fetch"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rw_fetch"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+rustwx-core = { path = "../rustwx-core" }
+rustwx-models = { path = "../rustwx-models" }
+wx-core = { path = "../../vendor/wx-core", default-features = false, features = ["network"] }

@@ -5,6 +5,7 @@ from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
+import re
 
 import numpy as np
 import pytest
@@ -21,6 +22,7 @@ from gpuwm.gfs_direct import (
     _verify_input_manifest,
 )
 from gpuwm.experiment import VerticalConfig, load_experiment
+from gpuwm.physics_compat import WSM6_PROFILE_ID
 from gpuwm.ingest.grib import Era5Snapshot
 
 
@@ -380,3 +382,201 @@ def test_implementation_hashes_no_longer_demand_the_sealed_manifest(
     assert "gpuwm/gfs_direct.py" in hashes
     assert "distribution/repo_only_paths.json" in hashes
     assert "distribution/manifest.json" not in hashes
+
+
+def test_output_root_parent_is_created_instead_of_tracebacking(tmp_path):
+    """PP-10: an absent --output-root parent was a bare traceback.
+
+    The bridge stages its scratch space in the PARENT of --output-root so
+    the result can be renamed into place on one filesystem.  An absent
+    parent surfaced as `FileNotFoundError: .../gpuwm-gfs-bridge-4g0c7np7`
+    about 40 s into the work -- after --dry-run had passed cleanly -- in
+    a product that is otherwise exemplary about naming the remedy.
+    """
+    from gpuwm.gfs_direct import _prepare_output_root_parent
+
+    output_root = tmp_path / "out" / "miami-init"
+    assert not output_root.parent.exists()
+    parent = _prepare_output_root_parent(output_root)
+    assert parent == output_root.parent
+    assert parent.is_dir()
+    # The output root itself stays create-only: only its parent is made.
+    assert not output_root.exists()
+    # Idempotent.
+    assert _prepare_output_root_parent(output_root) == parent
+
+    # A parent path that is a FILE is a refusal with a stated remedy,
+    # not a traceback from tempfile.
+    blocked = tmp_path / "afile" / "init"
+    blocked.parent.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(NotADirectoryError, match="parent"):
+        _prepare_output_root_parent(blocked)
+
+
+def test_the_front_door_prints_the_forecast_command_it_already_knows(tmp_path):
+    """B-2: the runner needed six hashes the user extracted by hand.
+
+    `gpuwm fetch --author-front-door-manifest` prints the complete
+    rw-wps line with its digest filled in and is the most-praised thing
+    in both pilots.  The front door printed nothing at all -- it dumped
+    42 KB of proof.json and stopped -- so every user grepped
+    `content_sha256` out of the JSON themselves.  Every value below was
+    already in this process.
+    """
+    import json
+    from gpuwm.gfs_direct import prepared_forecast_next_command
+
+    root = tmp_path / "miami-init"
+    root.mkdir()
+    proof = {
+        "input_manifest_sha256": "a" * 64,
+        "prepared_cache": {"content_sha256": "b" * 64},
+    }
+    (root / "proof.json").write_text(json.dumps(proof), encoding="utf-8")
+    proof_digest = hashlib.sha256(
+        (root / "proof.json").read_bytes()).hexdigest()
+
+    config = _wizard_single_domain_config(tmp_path)
+    namelist = tmp_path / "x.namelist.wps"
+    namelist.write_text("&share\n/\n", encoding="utf-8")
+
+    lines = prepared_forecast_next_command(
+        proof, output_root=root, experiment_config=config,
+        wps_namelist=namelist)
+    text = "\n".join(lines)
+    assert "tools/prepared_single_domain_forecast.py" in text
+    assert f"--proof-sha256 {proof_digest}" in text
+    assert f"--source-manifest-sha256 {'a' * 64}" in text
+    assert f"--prepared-content-sha256 {'b' * 64}" in text
+    assert "--run-seconds" not in text.split("(")[0]  # no longer required
+    assert "default to the hash-bound experiment" in text
+    # The two values v1.0.0 left the user to work out are filled in.
+    assert f"--physics-profile {WSM6_PROFILE_ID}" in text
+    assert f"--outdir {root / 'forecast'}" in text
+    _assert_pasteable(lines)
+
+    # A multi-domain hierarchy proof has no prepared-cache identity, so
+    # it names the OTHER runner -- and prints that runner's WHOLE
+    # command rather than a fragment: it binds the experiment config by
+    # digest too, and this process can read it.
+    hierarchy = prepared_forecast_next_command(
+        {"schema": "gpuwm-gfs-native-hierarchy-proof-v1"},
+        output_root=root, experiment_config=config, wps_namelist=namelist)
+    hierarchy_text = "\n".join(hierarchy)
+    assert "prepared_domain_tree_forecast.py" in hierarchy_text
+    assert f"--preparation-receipt-sha256 {proof_digest}" in hierarchy_text
+    assert f"--experiment-config-sha256 {_digest(config)}" in hierarchy_text
+    assert f"--outdir {root / 'forecast'}" in hierarchy_text
+    _assert_pasteable(hierarchy)
+
+
+#: A bare ALL-CAPS token is how v1.0.0 spelled "you work this one out"
+#: (`--outdir OUTPUT_DIR`, `--geog-root WPS_GEOG_DIR`).
+_PLACEHOLDER_WORD = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
+
+
+def _assert_pasteable(lines) -> None:
+    """No printed command line may carry an unresolved placeholder.
+
+    Deliberately mechanical: a command line is one that starts a shell
+    invocation or continues one, and on such a line an angle bracket or
+    a bare ALL-CAPS token means the user must edit before pasting --
+    which is the whole failure.  Parenthesised prose is exempt; it is
+    not a command and never claimed to be.
+    """
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("("):
+            continue
+        looks_like_command = (
+            stripped.startswith(("python ", "rw-wps ", "gpuwm ", "cargo ",
+                                 "git ", "bash ", "--"))
+            or stripped.endswith("\\"))
+        if not looks_like_command:
+            continue
+        assert "<" not in stripped and ">" not in stripped, (
+            f"unresolved placeholder in a printed command: {line!r}")
+        for token in stripped.rstrip("\\").split():
+            assert not _PLACEHOLDER_WORD.match(token), (
+                f"unresolved ALL-CAPS placeholder {token!r} in: {line!r}")
+
+
+def _wizard_single_domain_config(tmp_path):
+    """A config the prepared-forecast runner would actually accept.
+
+    Emitted by the wizard rather than hand-written, because the point of
+    resolving the profile is that both sides read the same table.
+    """
+
+    from gpuwm.cli import main as cli_main
+
+    out = tmp_path / "wizard" / "case.toml"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    assert cli_main(["domain", "--point=39.7,-96.6", "--card", "24gb",
+                     "--ladder", "12", "--source", "gfs",
+                     "--physics-profile", WSM6_PROFILE_ID,
+                     "--cycle", "2026-07-29T18", "--out", str(out)]) == 0
+    return out
+
+
+def test_a_config_bound_to_no_shipped_profile_prints_prose_not_a_command(
+        tmp_path):
+    """The honest gap: say so; never print a command that cannot run."""
+
+    import json
+    from gpuwm.gfs_direct import prepared_forecast_next_command
+
+    root = tmp_path / "init"
+    root.mkdir()
+    proof = {"input_manifest_sha256": "a" * 64,
+             "prepared_cache": {"content_sha256": "b" * 64}}
+    (root / "proof.json").write_text(json.dumps(proof), encoding="utf-8")
+
+    # A shipped proof descriptor: single-domain and valid, but its
+    # physics predate the profiles and match none of them.
+    lines = prepared_forecast_next_command(
+        proof, output_root=root,
+        experiment_config=Path("configs/gfs_wrf_direct_proof.toml"),
+        wps_namelist=Path("configs/gfs_wrf_direct_proof.namelist.wps"))
+    text = "\n".join(lines)
+    assert "matches none of the profiles" in text
+    assert "prepared_single_domain_forecast.py" not in text
+    _assert_pasteable(lines)
+
+
+def test_the_front_door_manifest_line_is_pasteable_too(tmp_path):
+    """`gpuwm fetch --author-front-door-manifest` prints a command too.
+
+    It carried `--output-root OUTPUT_DIR` and `--geog-root
+    WPS_GEOG_DIR`: the same defect, on the line both pilots praised
+    most.
+    """
+
+    from gpuwm import fetch
+
+    out = tmp_path / "gfs"
+    out.mkdir()
+    (out / "gfs-series.tsv").write_text("0\tf000.grib2\n", encoding="utf-8")
+    (out / "f000.grib2").write_bytes(b"GRIB")
+    (out / fetch.FETCH_MANIFEST_NAME).write_text(json.dumps({
+        "schema": fetch.FETCH_MANIFEST_SCHEMA,
+        "source": "gfs", "cycle": "2026-07-29T18:00:00Z",
+        "forecast_hours": [0],
+        "files": [{"name": "f000.grib2", "role": "gfs-subset",
+                   "forecast_hour": 0}],
+    }), encoding="utf-8")
+    bridge = tmp_path / "gfs_grib2_bridge"
+    bridge.write_bytes(b"stand-in")
+    namelist = tmp_path / "x.namelist.wps"
+    namelist.write_text("&share\n/\n", encoding="utf-8")
+    config = tmp_path / "x.toml"
+    config.write_text("[experiment]\n", encoding="utf-8")
+
+    said: list[str] = []
+    fetch.author_gfs_front_door_manifest(
+        out=out, bridge=bridge, wps_namelist=namelist,
+        experiment_config=config, progress=said.append)
+    printed = [line for text in said for line in text.splitlines()]
+    assert any("rw-wps --source gfs" in line for line in printed)
+    _assert_pasteable(printed)

@@ -380,6 +380,37 @@ def single_domain_runtime_switches(profile: str) -> dict[str, object]:
         ) from None
 
 
+def identify_single_domain_profile(run_config) -> str | None:
+    """Which shipped profile a run config's switches ARE, or ``None``.
+
+    The inverse of :func:`single_domain_runtime_switches`, and the reason
+    it lives beside it: a printed next-command has to name the
+    ``--physics-profile`` the prepared-forecast runner will accept, and
+    the only honest way to know is to ask the same table the runner's
+    guard asks.  A second copy of this comparison somewhere else is how
+    a printed command drifts into being wrong.
+
+    Returns ``None`` when the config matches no profile exactly -- a
+    hand-authored suite, or a profile this ArWen does not ship -- which
+    the caller must report rather than guess around.  Ambiguity cannot
+    arise (no two profiles share a switch set), but if it ever did,
+    ``None`` is the answer: two names for one config is not an answer.
+    """
+
+    matched = [
+        profile for profile in SINGLE_DOMAIN_PHYSICS_PROFILES
+        if all(getattr(run_config, name, _MISSING) == value
+               for name, value in
+               single_domain_runtime_switches(profile).items())
+    ]
+    return matched[0] if len(matched) == 1 else None
+
+
+#: Sentinel for :func:`identify_single_domain_profile`: a config that
+#: lacks a switch entirely never matches a profile that pins it.
+_MISSING = object()
+
+
 def thompson_runtime_requirements() -> dict[str, object]:
     """Describe the guarded evidence-runner MP8 contract (env untouched).
 
@@ -656,6 +687,7 @@ __all__ = [
     "WSM6_PROFILE_ID",
     "WRF_RRTMG_TO_RTE_RRTMGP",
     "WRF_RRTMG_TO_RTE_RRTMGP_V1",
+    "identify_single_domain_profile",
     "packaged_thompson_table_root",
     "pending_wrf_physics_components",
     "thompson_table_root",

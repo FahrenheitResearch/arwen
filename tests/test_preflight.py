@@ -1436,10 +1436,12 @@ def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     WDDM budget -- WITHOUT changing any gate or exit code, because the
     enforced numbers remain the itemized estimate and the measured legs.
     """
+    monkeypatch.setattr(pf.sys, "platform", "win32")
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100",
                      "--json"])
     payload = json.loads(capsys.readouterr().out)
     assert rc == 0
+    assert payload["observed_peak_envelope_platform"] == "windows"
     assert payload["observed_peak_envelope_factor"] == 1.75
     assert payload["observed_peak_envelope_bytes"] == int(
         payload["footprint_projection_bytes"] * 1.75)
@@ -1451,7 +1453,7 @@ def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "OBSERVED PEAK ENVELOPE (x1.75 footprint)" in out
+    assert "OBSERVED PEAK ENVELOPE (x1.75 footprint, windows factor" in out
     assert "1.746x its footprint projection" in out
     assert "WARNING: observed peak envelope" not in out
 
@@ -1482,6 +1484,121 @@ def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     payload = json.loads(capsys.readouterr().out)
     assert payload["budget_bytes"] is None
     assert payload["observed_peak_envelope_exceeds_budget"] is None
+
+
+def test_peak_envelope_factor_is_platform_conditional():
+    """WDDM is what 1.75 models, and Linux does not have it.
+
+    Two instrumented Linux RTX 4090 pilots (2026-07-30) measured
+    machine-wide peaks of 0.84x and 0.79x the footprint projection, so
+    applying the Windows envelope there sold users roughly half the grid
+    their cards could hold.
+    """
+    assert pf.PEAK_ENVELOPE_FACTORS == {"windows": 1.75,
+                                        "windows-small": 1.45,
+                                        "linux": 1.45}
+    assert pf.OBSERVED_PEAK_OVER_FOOTPRINT == 1.75
+
+    for name in ("win32", "cygwin", "msys"):
+        assert pf.envelope_platform(name) == "windows"
+        assert pf.peak_envelope_factor(name) == 1.75
+    # WSL and Linux containers report `linux` too, which is the point.
+    for name in ("linux", "linux2"):
+        assert pf.envelope_platform(name) == "linux"
+        assert pf.peak_envelope_factor(name) == 1.45
+
+    footprint = 11_310_000_000
+    assert pf.observed_peak_envelope_bytes(
+        footprint, platform="win32") == int(footprint * 1.75)
+    assert pf.observed_peak_envelope_bytes(
+        footprint, platform="linux") == int(footprint * 1.45)
+
+
+def test_an_unmeasured_platform_takes_the_conservative_accounting():
+    """v1.0.0 gave every non-Windows name the Linux (optimistic) numbers.
+
+    Only two platforms have measurements: Windows/WDDM (with Cygwin and
+    MSYS, the same driver under another shell) and Linux (which is also
+    what WSL and Linux containers report).  Everything else -- Darwin,
+    a BSD, a name that does not exist yet -- was silently priced with
+    the envelope that omits 4.12 GiB of fixed constants, on no evidence
+    at all.  Fail-open is the wrong direction here: the Linux numbers
+    are three runs on two Linux cards, not a default.
+    """
+
+    for name in ("darwin", "freebsd13", "sunos5", "emscripten"):
+        assert not pf.platform_is_measured(name)
+        assert pf.envelope_platform(name) == "windows"
+        assert pf.peak_envelope_factor(name) == 1.75
+        assert pf.platform_projection_constants(name) == (
+            pf.pool_retention_residual_bytes(), pf.PROBE_DEVICE_OVERHEAD_BYTES)
+        # ...and the substitution is announced, naming the platform.
+        note = pf.unknown_platform_note(name)
+        assert note is not None and name in note
+        assert "no VRAM measurements" in note
+
+        # The small-card experiment is not extended to it: that tier is
+        # an experiment about WDDM, and an unmeasured platform is not
+        # the place to run a second experiment on top of the first.
+        assert pf.envelope_platform(name, vram_gib=8.0) == "windows"
+
+    for name in ("win32", "cygwin", "msys", "linux", "linux2"):
+        assert pf.platform_is_measured(name)
+        assert pf.unknown_platform_note(name) is None
+
+
+def test_the_projection_constants_are_platform_conditional_too():
+    """The 1.75 multiplier was only half of it.
+
+    ``pool_retention_residual_bytes`` (2.73 GiB) and
+    ``PROBE_DEVICE_OVERHEAD_BYTES`` (1.39 GiB) are grid-independent
+    Windows-pool constants.  At the wizard's smallest layout they are
+    4.12 GiB of a 5.38 GiB projection -- 77% -- so no smaller grid could
+    ever fit a 12 GiB card, whose GPU then sat 66% idle.  None of the
+    three instrumented Linux runs showed them.
+    """
+    windows = pf.platform_projection_constants("win32")
+    assert windows == (pf.pool_retention_residual_bytes(),
+                       pf.PROBE_DEVICE_OVERHEAD_BYTES)
+    assert sum(windows) / GIB == pytest.approx(4.12, abs=0.02)
+    assert pf.platform_projection_constants("linux") == (0, 0)
+
+    # On Linux the projection is the itemized alloc estimate, and the
+    # envelope over it clears the worst measured peak/alloc ratio.
+    for alloc_gib, measured_gib in ((7.20, 9.54), (7.29, 8.99),
+                                    (3.51, 4.04)):
+        envelope = pf.observed_peak_envelope_bytes(
+            int(alloc_gib * GIB), platform="linux")
+        assert measured_gib * GIB < envelope, (alloc_gib, measured_gib)
+
+
+def test_check_cli_prints_the_linux_envelope_factor_when_on_linux(
+        capsys, monkeypatch):
+    """`gpuwm check` must say which platform factor it applied."""
+
+    monkeypatch.setattr(pf.sys, "platform", "linux")
+    rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100",
+                     "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert payload["observed_peak_envelope_platform"] == "linux"
+    assert payload["observed_peak_envelope_factor"] == 1.45
+    assert payload["observed_peak_envelope_basis"] == (
+        "measured-preliminary, 3 runs")
+    assert payload["observed_peak_envelope_bytes"] == int(
+        payload["footprint_projection_bytes"] * 1.45)
+    # And the projection itself dropped the two Windows-pool constants.
+    assert payload["footprint_projection_bytes"] == payload[
+        "alloc_estimate_bytes"]
+    assert payload["reserve_components"]["retention_residual_bytes"] >= 0
+
+    rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert ("OBSERVED PEAK ENVELOPE (x1.45 footprint, linux factor; "
+            "measured-preliminary, 3 runs)") in out
+    assert "1.15x to 1.32x the itemized alloc estimate" in out
+    assert "1.746x its footprint projection" not in out
 
 
 def test_check_cli_legacy_config_wraps(capsys):

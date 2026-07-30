@@ -11,7 +11,7 @@ transcription directly.
 
 Authorities:
   * WRF v4.6.1 share/module_llxy.F at the pinned gate tree
-    /home/drew/wrf-stock-v461-gate-20260721 (commit
+    (a pinned WRF v4.6.1 checkout; set WRF_TREE) (commit
     d66e442fccc04111067e29274c9f9eaccc3cef28); llij/ijll/set_* for
     Lambert (both hemispheres), Mercator, and polar stereographic.
   * WPS v4.6.0 geogrid/src/process_tile_module.F get_map_factor and
@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -37,11 +38,16 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 FIXTURE_DIR = REPO / "tests" / "data" / "llxy_oracle"
 
-WSL_SOURCE = "/home/drew/wrf-stock-v461-gate-20260721/share/module_llxy.F"
+WRF_TREE = os.environ.get("WRF_TREE", "<wrf-v4.6.1>")
+WSL_SOURCE = f"{WRF_TREE}/share/module_llxy.F"
+#: What the fixture header records: the tree identity is the commit
+#: and the sha256 below, never one machine's directory layout.
+SOURCE_LABEL = "<wrf-v4.6.1>/share/module_llxy.F"
 SOURCE_SHA256 = ("0c777e66ffbb0602479cadcc0ab484769a140c4cb2b3e9a8f757597"
                  "086f0c76b")
 WRF_COMMIT = "d66e442fccc04111067e29274c9f9eaccc3cef28"
-WPS_PROCESS_TILE = "/home/drew/WRF_BUILD/WPS/geogrid/src/process_tile_module.F"
+WPS_PROCESS_TILE = os.environ.get(
+    "WPS_TREE", "<wps-v4.6.0>") + "/geogrid/src/process_tile_module.F"
 WPS_PROCESS_TILE_SHA256 = ("ef546e2747987948f1aa681566936713fffa6c2cf2542a80"
                            "4540033bf9b479c2")
 
@@ -207,7 +213,7 @@ def main() -> int:
 
     header = "\n".join([
         "# llxy_wrf461_fixture.csv -- WRF v4.6.1 map projection oracle",
-        f"# source: {WSL_SOURCE}",
+        f"# source: {SOURCE_LABEL}",
         f"# source_sha256: {SOURCE_SHA256}",
         f"# wrf_commit: {WRF_COMMIT} (tag v4.6.1)",
         "# map_factor/rotang authority: WPS v4.6.0 "

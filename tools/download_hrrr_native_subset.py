@@ -47,6 +47,38 @@ SURFACE_FIELDS = (
 SOIL_DEPTHS = ("0", "0.01", "0.04", "0.1", "0.3", "0.6", "1", "1.6", "3")
 HYBRID_LEVEL = re.compile(r"([1-9]|[1-4][0-9]|50) hybrid level")
 
+#: Index short names that denote the same physical record.
+#:
+#: Providers do not always agree on a field's short name.  NOMADS spells
+#: HRRR hybrid cloud water ``CLWMR``; AWS S3 spells the same record
+#: ``CLMR``, and has done as far back as 2025.  That is a **naming**
+#: difference, not an inventory difference: same role, same count, same
+#: bytes.  Treating it as drift would hard-fail a whole transport over a
+#: spelling, so the role is what the selection keys on and either
+#: spelling satisfies it.  A change in the record *count* remains the
+#: loud ``--accept-inventory-change`` gate -- alias tolerance never
+#: silently absorbs a field appearing or disappearing.
+FIELD_ALIASES = {
+    "CLMR": ("CLMR", "CLWMR"),
+}
+
+
+def field_spellings(role: str) -> tuple[str, ...]:
+    """Every index short name accepted for canonical field ``role``."""
+
+    return FIELD_ALIASES.get(role, (role,))
+
+
+class IndexInventoryError(ValueError):
+    """The published index does not carry the expected inventory.
+
+    Raised only for inventory disagreements -- a missing hybrid level, a
+    surface field that is absent or duplicated, a record count that has
+    moved.  It is distinct from a transport error so ``gpuwm fetch`` can
+    tell "this host publishes something we do not recognise" (try the
+    next host) from "the network failed" (retry this one).
+    """
+
 #: One published wrfnat atmosphere subset carries exactly the 11 hybrid
 #: fields on all 50 levels plus the 11 surface/near-surface records (561).
 #: Single source for the completeness bar: the index selection below and
@@ -55,6 +87,40 @@ ATMOSPHERE_RECORD_COUNT = 50 * len(HYBRID_FIELDS) + len(SURFACE_FIELDS)
 #: One published soil subset carries TSOIL + SOILW at the nine RUC level
 #: depths of the wrfprs file (18).
 SOIL_RECORD_COUNT = 2 * len(SOIL_DEPTHS)
+
+#: HRRR publishes an accumulated twin of several surface fields --
+#: ``WEASD:surface:0-1 hr acc fcst`` sits beside the instantaneous
+#: ``WEASD:surface`` -- and the native bridge selects only the
+#: instantaneous one.  Both the index selection below and the Rust
+#: fetch backbone's exact selectors filter on this substring.
+ACCUMULATION_EXCLUSION = "acc fcst"
+
+#: Soil level strings exactly as the ``.idx`` spells them.
+SOIL_LEVELS = tuple(f"{depth}-{depth} m below ground" for depth in SOIL_DEPTHS)
+
+
+def atmosphere_selectors() -> tuple[str, ...]:
+    """The exact ``VAR:LEVEL`` selectors of the atmosphere subset.
+
+    Same tables the index selection above walks, spelled as the
+    ``rw_fetch`` backbone's ``--var-pattern`` wants them, so the Python
+    and Rust transports cannot drift apart on what a native HRRR subset
+    contains.
+    """
+
+    return tuple(
+        [f"{'|'.join(field_spellings(name))}:{level} hybrid level"
+         for name in HYBRID_FIELDS for level in range(1, 51)]
+        + [f"{'|'.join(field_spellings(variable))}:{level}"
+           for variable, level in SURFACE_FIELDS])
+
+
+def soil_selectors() -> tuple[str, ...]:
+    """The exact ``VAR:LEVEL`` selectors of the soil subset."""
+
+    return tuple(f"{'|'.join(field_spellings(variable))}:{level}"
+                 for variable in ("TSOIL", "SOILW")
+                 for level in SOIL_LEVELS)
 
 
 @dataclass(frozen=True)
@@ -159,15 +225,32 @@ def _parse_index(payload: bytes, object_bytes: int) -> tuple[IndexRow, ...]:
     return tuple(rows)
 
 
-def _atmosphere_selection(rows: tuple[IndexRow, ...]) -> tuple[int, ...]:
+def _atmosphere_selection(
+    rows: tuple[IndexRow, ...],
+    *, expected_count: int | None = ATMOSPHERE_RECORD_COUNT,
+) -> tuple[int, ...]:
+    """Indices of the atmosphere records, refusing an inexact inventory.
+
+    ``expected_count=None`` keeps the structural checks -- every hybrid
+    field on every one of the fifty levels, every surface field exactly
+    once -- but drops the total-count clause, so a caller that has
+    explicitly accepted an upstream inventory change can proceed and
+    then record the live count.  The structural checks are never
+    optional: a missing level is incompleteness, not a change.
+    """
+
     selected = []
     levels = {name: set() for name in HYBRID_FIELDS}
+    #: index short name -> canonical role, expanded through FIELD_ALIASES
+    roles = {spelling: role for role in HYBRID_FIELDS
+             for spelling in field_spellings(role)}
     surfaces = {key: 0 for key in SURFACE_FIELDS}
     for index, row in enumerate(rows):
         match = HYBRID_LEVEL.fullmatch(row.level)
-        if row.variable in levels and match is not None:
+        role = roles.get(row.variable)
+        if role is not None and match is not None:
             level = int(match.group(1))
-            levels[row.variable].add(level)
+            levels[role].add(level)
             selected.append(index)
             continue
         key = (row.variable, row.level)
@@ -178,14 +261,25 @@ def _atmosphere_selection(rows: tuple[IndexRow, ...]) -> tuple[int, ...]:
     bad_levels = {name: sorted(values) for name, values in levels.items()
                   if values != expected_levels}
     bad_surfaces = {str(key): count for key, count in surfaces.items() if count != 1}
-    if bad_levels or bad_surfaces or len(selected) != ATMOSPHERE_RECORD_COUNT:
-        raise ValueError(
+    drifted = (expected_count is not None
+               and len(selected) != expected_count)
+    if bad_levels or bad_surfaces or drifted:
+        raise IndexInventoryError(
             "HRRR atmosphere index lacks the exact native bridge inventory: "
-            f"levels={bad_levels}, surfaces={bad_surfaces}, count={len(selected)}")
+            f"levels={bad_levels}, surfaces={bad_surfaces}, "
+            f"count={len(selected)} (expected {expected_count})"
+            + ("; if the provider has announced this inventory change, "
+               "re-run gpuwm fetch with --accept-inventory-change"
+               if drifted and not (bad_levels or bad_surfaces) else ""))
     return tuple(selected)
 
 
-def _soil_selection(rows: tuple[IndexRow, ...]) -> tuple[int, ...]:
+def _soil_selection(
+    rows: tuple[IndexRow, ...],
+    *, expected_count: int | None = SOIL_RECORD_COUNT,
+) -> tuple[int, ...]:
+    """Indices of the soil records; see :func:`_atmosphere_selection`."""
+
     expected = {
         (variable, f"{depth}-{depth} m below ground")
         for variable in ("TSOIL", "SOILW") for depth in SOIL_DEPTHS
@@ -198,10 +292,15 @@ def _soil_selection(rows: tuple[IndexRow, ...]) -> tuple[int, ...]:
             counts[key] += 1
             selected.append(index)
     bad = {str(key): count for key, count in counts.items() if count != 1}
-    if bad or len(selected) != SOIL_RECORD_COUNT:
-        raise ValueError(
+    drifted = expected_count is not None and len(selected) != expected_count
+    if bad or drifted:
+        raise IndexInventoryError(
             "HRRR pressure-file index lacks the exact soil inventory: "
-            f"records={bad}, count={len(selected)}")
+            f"records={bad}, count={len(selected)} "
+            f"(expected {expected_count})"
+            + ("; if the provider has announced this inventory change, "
+               "re-run gpuwm fetch with --accept-inventory-change"
+               if drifted and not bad else ""))
     return tuple(selected)
 
 
@@ -258,6 +357,7 @@ def _download_range(
 def _download_subset(
     *, url: str, index_url: str, index_path: Path, destination: Path,
     kind: str, workers: int, retries: int,
+    expected_count: int | None = -1,
 ) -> dict[str, object]:
     if destination.exists():
         raise FileExistsError(f"refusing to replace existing subset: {destination}")
@@ -267,9 +367,13 @@ def _download_subset(
     index_payload, index_headers = _request_bytes(index_url)
     _publish_exact(index_path, index_payload)
     rows = _parse_index(index_payload, object_bytes)
+    if expected_count == -1:
+        expected_count = (ATMOSPHERE_RECORD_COUNT if kind == "atmosphere"
+                          else SOIL_RECORD_COUNT)
     selected = (
-        _atmosphere_selection(rows) if kind == "atmosphere"
-        else _soil_selection(rows)
+        _atmosphere_selection(rows, expected_count=expected_count)
+        if kind == "atmosphere"
+        else _soil_selection(rows, expected_count=expected_count)
     )
     ranges = _coalesce(rows, selected, object_bytes)
     staging = Path(tempfile.mkdtemp(
@@ -332,6 +436,7 @@ def _download_subset(
 
 def _download_product(
     request: ProductRequest, *, workers: int, retries: int,
+    expected_count: int | None = -1,
 ) -> dict[str, object]:
     return _download_subset(
         url=request.url,
@@ -341,6 +446,7 @@ def _download_product(
         kind=request.kind,
         workers=workers,
         retries=retries,
+        expected_count=expected_count,
     )
 
 

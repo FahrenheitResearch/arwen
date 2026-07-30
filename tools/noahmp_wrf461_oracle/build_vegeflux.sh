@@ -3,7 +3,7 @@
 #
 # Usage:  build_vegeflux.sh <wrf-tree> <workdir> [optlevel] [leaf]
 #
-#   <wrf-tree>  pinned WRF checkout, e.g. /home/drew/wrf-stock-v461-gate-20260721
+#   <wrf-tree>  pinned WRF checkout, e.g. $HOME/wrf-stock-v461-gate-20260721
 #               commit d66e442fccc04111067e29274c9f9eaccc3cef28
 #               sha256(phys/module_sf_noahmplsm.F) =
 #                 bd592a5b7db29000e715250e3a7c779ffb5e0dcc356f6b5a7d9e1c9f69c55282

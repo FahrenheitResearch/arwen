@@ -8,8 +8,9 @@ invalid scientific configuration.
 This page covers the native preprocessor CLI. The `gpuwm domain` wizard is
 documented in docs/public/FIRST-LIGHT.md: it works worldwide, auto-selecting
 Lambert conformal, Mercator, or polar stereographic from the point latitude
-(`--projection` overrides), with ladders `12`, `12-3`, `12-3-1`,
-`12-3-1-0.5`, or `auto`.
+(`--projection` overrides), with presets `12`, `12-3`, `12-3-1`,
+`12-3-1-0.5`, or `auto`, and a custom form `--root-dx KM --chain
+R1,R2,...` for any other root spacing and integer refinement chain.
 
 ## Inventory and validation
 

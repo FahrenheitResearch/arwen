@@ -108,11 +108,11 @@ disposable WSL copy; the bundle stays read-only.
 ```bash
 set -euo pipefail
 
-SRC=/mnt/c/Users/drew/Downloads/WRF_1974_MP55_reference_bundle/WRF_source_v4.6.1_group
+SRC="${WRF_SOURCE_ROOT:?path to WRF_source_v4.6.1_group in the read-only reference bundle}"
 BUILD="$HOME/wrf-oracle-build"
-REPO=/mnt/c/Users/drew/gpuwm
+REPO="${GPUWM_REPO:?path to this checkout}"
 
-test "$(readlink -f "$SRC")" = "/mnt/c/Users/drew/Downloads/WRF_1974_MP55_reference_bundle/WRF_source_v4.6.1_group"
+test "$(basename "$(readlink -f "$SRC")")" = "WRF_source_v4.6.1_group"
 ```
 
 To make a fresh copy, `BUILD` must not exist:
@@ -173,7 +173,7 @@ pristine SHAs before another attempt:
 
 ```bash
 set -euo pipefail
-SRC=/mnt/c/Users/drew/Downloads/WRF_1974_MP55_reference_bundle/WRF_source_v4.6.1_group
+SRC="${WRF_SOURCE_ROOT:?path to WRF_source_v4.6.1_group in the read-only reference bundle}"
 BUILD="$HOME/wrf-oracle-build"
 FORCE_SHA=aaef43f69eb810809eb890688b840ce894aea9ae1ae99f8266e4fa8c3b9f5518
 SOLVE_SHA=e42df5d7db4b6ec4a3b8e2f228a8ec8f9a4c426656093bfcebe58a8de6c3e8f4
@@ -251,8 +251,8 @@ and date strings in place.  This is case setup, not a reference dataset.
 ```bash
 set -euo pipefail
 BUILD="$HOME/wrf-oracle-build"
-REPO=/mnt/c/Users/drew/gpuwm
-BUNDLE=/mnt/c/Users/drew/Downloads/WRF_1974_MP55_reference_bundle
+REPO="${GPUWM_REPO:?path to this checkout}"
+BUNDLE="${WRF_REFERENCE_BUNDLE:?path to the read-only reference bundle}"
 CASE="$BUILD/n1p5-case"
 
 test ! -e "$CASE"
@@ -307,7 +307,7 @@ export GPUWM_WRF_ORACLE_DUMP="$DUMP"
 grep -q 'GPUWM N1.5 dump: .* tables=128' wrf.log
 grep -q 'SUCCESS COMPLETE WRF' wrf.log
 test -s "$DUMP"
-EXPECTED_DUMP_SHA="$(tr -d ' \r\n' < /mnt/c/Users/drew/gpuwm/tools/wrf_instrumented/n1p5-dump.sha256)"
+EXPECTED_DUMP_SHA="$(tr -d ' \r\n' < "$REPO/tools/wrf_instrumented/n1p5-dump.sha256")"
 ACTUAL_DUMP_SHA="$(sha256sum "$DUMP" | awk '{print $1}')"
 printf 'N1.5 dump SHA-256: %s\n' "$ACTUAL_DUMP_SHA"
 test "$EXPECTED_DUMP_SHA" = "$ACTUAL_DUMP_SHA" || {

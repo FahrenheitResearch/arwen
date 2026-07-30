@@ -13,6 +13,7 @@ wrap-aware (W > E) fetch boxes instead of refusals.
 """
 from __future__ import annotations
 
+from fractions import Fraction
 import os
 
 import tomllib
@@ -118,6 +119,165 @@ def test_antimeridian_footprint_emits_wrapping_fetch_box(tmp_path):
     from gpuwm.fetch import parse_area
     area = parse_area(raw["fetch"]["area"])
     assert area.crosses_antimeridian
+
+
+def test_negative_coordinates_parse_in_both_forms(tmp_path, capsys):
+    """`--point -33.87,151.21` must work, not just `--point=-33.87,...`.
+
+    argparse reads a leading `-` as an option prefix unless the token
+    matches its negative-number regex, which a `lat,lon` pair never
+    does.  Every documented example was a positive CONUS latitude, so
+    the whole southern hemisphere failed with "expected one argument"
+    -- on the release whose headline claim is worldwide forecasts.
+    """
+    from gpuwm.cli import _join_negative_coordinates
+
+    assert _join_negative_coordinates(
+        ["domain", "--point", "-33.87,151.21"]
+    ) == ["domain", "--point=-33.87,151.21"]
+    assert _join_negative_coordinates(
+        ["fetch", "--area", "-58.58,119.65,-8.38,-177.23"]
+    ) == ["fetch", "--area=-58.58,119.65,-8.38,-177.23"]
+    # Positive values and non-coordinate flags are left exactly alone.
+    assert _join_negative_coordinates(
+        ["domain", "--point", "35.3,-97.5", "--hours", "6"]
+    ) == ["domain", "--point", "35.3,-97.5", "--hours", "6"]
+    # A following token that is not all-numeric stays an option string,
+    # so `--point --help` still errors the way it should.
+    assert _join_negative_coordinates(
+        ["domain", "--point", "--help"]
+    ) == ["domain", "--point", "--help"]
+
+    sydney = tmp_path / "spaced"
+    sydney.mkdir()
+    out = sydney / "area.toml"
+    rc = cli_main(["domain", "--point", "-33.87,151.21", "--card", "24gb",
+                   "--ladder", "12", "--source", "gfs",
+                   "--cycle", "2026-07-29T18", "--out", str(out)])
+    assert rc == 0, capsys.readouterr()
+    raw = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert raw["projection"]["ref_lat"] == pytest.approx(-33.87)
+    assert raw["projection"]["map_proj"] == "lambert"
+    # Hemisphere-correct: southern standard parallels.
+    assert raw["projection"]["truelat1"] < 0.0
+    assert raw["projection"]["truelat2"] < 0.0
+    # And the printed next: line is pasteable -- negative area in = form.
+    printed = capsys.readouterr().out
+    assert "--area=-" in printed
+
+
+def test_point_refusal_names_the_equals_form(tmp_path, capsys):
+    rc, _ = _run_wizard(tmp_path, point="35.3")
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--point=-33.87,151.21" in err
+
+
+def test_cycle_latest_resolves_instead_of_contradicting_itself(
+        tmp_path, capsys, monkeypatch):
+    """v1.0.0: "--cycle 'latest' must be YYYY-MM-DDTHH (UTC) or 'latest'".
+
+    Worse than self-contradictory: the documented order is
+    wizard-then-fetch, so nothing told a user which cycle was current
+    and they had to run a throwaway fetch to find out.  The resolver
+    already existed.
+    """
+    import gpuwm.fetch as fetch_module
+    from datetime import datetime
+
+    resolved = datetime(2026, 7, 29, 18)
+    calls = []
+
+    def fake_resolve(source, last_hour, **kwargs):
+        calls.append((source, last_hour))
+        return resolved
+
+    monkeypatch.setattr(fetch_module, "resolve_latest_cycle", fake_resolve)
+    rc, out = _run_wizard(tmp_path, source="gfs", cycle="latest",
+                          ladder="12")
+    printed = capsys.readouterr().out
+    assert rc == 0, printed
+    assert calls == [("gfs", 6)]
+    assert "--cycle latest resolved to 2026-07-29T18Z" in printed
+    raw = tomllib.loads(out.read_text(encoding="utf-8"))
+    # The emitted config records the resolved time, never the query.
+    assert raw["experiment"]["start_time"] == resolved
+    assert raw["fetch"]["cycle"] == "2026-07-29T18"
+    assert "--cycle 2026-07-29T18" in printed
+
+
+def test_cycle_latest_is_refused_for_era5_with_a_reason(tmp_path, capsys):
+    rc, _ = _run_wizard(tmp_path, source="era5", cycle="latest")
+    _assert_refused(capsys, "reanalysis with weeks of latency", rc)
+
+
+def test_tropical_points_get_the_halved_root_clock(tmp_path, capsys):
+    """|lat| < 25 emits 2.5 s/km, with the reason in the file.
+
+    A 12 km Mercator domain at Manila on the wizard's own 60 s clock
+    destabilised at +1 h (vertical Courant 27.7 against the ~14.3 m
+    first eta layer); the same domain at a shorter step completed 6 h.
+    """
+    from gpuwm.domain_wizard import (ROOT_TIME_STEP_S,
+                                     TROPICAL_ROOT_TIME_STEP_S,
+                                     root_time_step_s)
+
+    assert TROPICAL_ROOT_TIME_STEP_S * 2 == ROOT_TIME_STEP_S
+    assert root_time_step_s(14.6) == TROPICAL_ROOT_TIME_STEP_S
+    assert root_time_step_s(-14.6) == TROPICAL_ROOT_TIME_STEP_S
+    assert root_time_step_s(24.99) == TROPICAL_ROOT_TIME_STEP_S
+    assert root_time_step_s(25.0) == ROOT_TIME_STEP_S
+    assert root_time_step_s(-33.87) == ROOT_TIME_STEP_S
+
+    rc, out = _run_wizard(tmp_path / "manila", point="14.6,120.98",
+                          source="gfs", cycle="2026-07-29T18")
+    assert rc == 0, capsys.readouterr()
+    text = out.read_text(encoding="utf-8")
+    raw = tomllib.loads(text)
+    assert raw["domain"][0]["time_step"] == TROPICAL_ROOT_TIME_STEP_S
+    assert "TROPICAL CLOCK" in text
+    assert "VERTICAL" in text
+    # The chain still derives exactly, and the config still loads.
+    exp = experiment_from_text(text, source=str(out))
+    assert exp.root.time_step == TROPICAL_ROOT_TIME_STEP_S
+    assert float(exp.dt_exact(2)) == TROPICAL_ROOT_TIME_STEP_S / 4
+
+    # A mid-latitude point is untouched by all of this.
+    rc, out = _run_wizard(tmp_path / "kansas", point="39.7,-96.6",
+                          source="gfs", cycle="2026-07-29T18")
+    assert rc == 0
+    text = out.read_text(encoding="utf-8")
+    assert tomllib.loads(text)["domain"][0]["time_step"] == ROOT_TIME_STEP_S
+    assert "TROPICAL CLOCK" not in text
+
+
+def test_polar_fetch_box_stays_clear_of_the_pole(tmp_path, capsys):
+    """PP-11: the wizard suggested `--area ...,90.00,...` for Tromso.
+
+    The README refuses domains touching a pole; suggesting a forcing box
+    whose top edge IS the pole, with no comment, contradicts it -- and
+    `gpuwm fetch` accepted the box and downloaded 89 MB.
+    """
+    from gpuwm.domain_wizard import MAX_FETCH_ABS_LAT, POLE_CLEARANCE_DEG
+
+    assert 0.0 < POLE_CLEARANCE_DEG < 1.0
+    assert MAX_FETCH_ABS_LAT == pytest.approx(90.0 - POLE_CLEARANCE_DEG)
+
+    rc, out = _run_wizard(tmp_path, point="69.65,18.96", source="gfs",
+                          cycle="2026-07-29T18")
+    printed = capsys.readouterr().out
+    assert rc == 0, printed
+    raw = tomllib.loads(out.read_text(encoding="utf-8"))
+    south, west, north, east = (
+        float(v) for v in raw["fetch"]["area"].split(","))
+    assert abs(north) <= MAX_FETCH_ABS_LAT + 1e-9
+    assert abs(south) <= MAX_FETCH_ABS_LAT + 1e-9
+    assert north < 90.0 and south > -90.0
+    # This particular point clamps, so it must say so rather than
+    # silently handing over a box it refuses elsewhere.
+    assert "clear of the pole" in printed
+    from gpuwm.fetch import parse_area
+    parse_area(raw["fetch"]["area"])  # still a valid fetch box
 
 
 def test_pole_containing_domain_refused(tmp_path, capsys):
@@ -252,10 +412,11 @@ def test_fit_fills_card_budget(tmp_path, card):
     assert rc == 0
     text = out.read_text(encoding="utf-8")
     exp = experiment_from_text(text, source=str(out))
-    estimate = estimate_experiment(exp, forcing_interval_seconds=21600.0)
-    envelope = observed_peak_envelope_bytes(
-        estimate.footprint_projection_bytes)
     vram = CARD_VRAM_GIB[card]
+    estimate = estimate_experiment(exp, forcing_interval_seconds=21600.0,
+                                   vram_gib=vram)
+    envelope = observed_peak_envelope_bytes(
+        estimate.footprint_projection_bytes, vram_gib=vram)
     budget = int((vram - vram_reserve_gib(vram)) * GIB)
     assert envelope <= budget
     # The bisection must actually spend the budget, not stop at the floor.
@@ -267,6 +428,130 @@ def test_fit_fills_card_budget(tmp_path, card):
         assert exp.dx_exact(dc.grid_id) == exp.dx_exact(1) / np.prod(
             [d.parent_grid_ratio for d in exp.domains
              if 1 < d.grid_id <= dc.grid_id], dtype=int)
+
+
+def test_the_wizard_budgets_with_the_platform_envelope_factor(
+        tmp_path, capsys, monkeypatch):
+    """Same card, same ladder: Linux gets a bigger grid than Windows.
+
+    The 1.75 envelope models WDDM.  Two instrumented Linux 4090 pilots
+    (node 1: 19.80 GiB predicted vs 8.32 GiB actual; node 2: 19.94 vs
+    9.0) showed the peak landing at or below the raw footprint there, so
+    the wizard must price Linux at the measured-preliminary 1.15 and say
+    which factor it applied.
+    """
+    import gpuwm.core.preflight as pf
+
+    monkeypatch.setattr(pf.sys, "platform", "win32")
+    rc, out = _run_wizard(tmp_path / "win", card="24gb")
+    windows_out = capsys.readouterr().out
+    assert rc == 0
+    windows_exp = experiment_from_text(
+        out.read_text(encoding="utf-8"), source=str(out))
+    assert "x 1.75 observed peak envelope" in windows_out
+    assert "envelope factor: windows (measured, 1 WDDM run)" in windows_out
+
+    monkeypatch.setattr(pf.sys, "platform", "linux")
+    rc, out = _run_wizard(tmp_path / "lin", card="24gb")
+    linux_out = capsys.readouterr().out
+    assert rc == 0
+    linux_exp = experiment_from_text(
+        out.read_text(encoding="utf-8"), source=str(out))
+    assert "x 1.45 observed peak envelope" in linux_out
+    assert ("envelope factor: linux (measured-preliminary, 3 runs)"
+            in linux_out)
+
+    windows_cells = windows_exp.root.run.nx * windows_exp.root.run.ny
+    linux_cells = linux_exp.root.run.nx * linux_exp.root.run.ny
+    assert linux_cells > windows_cells
+
+    # Each still fits its own platform's budget, measured by the
+    # estimator -- which now itemizes differently per platform too, so
+    # each config has to be re-priced under the platform that built it.
+    vram = CARD_VRAM_GIB["24gb"]
+    budget = int((vram - vram_reserve_gib(vram)) * GIB)
+    for exp, platform in ((windows_exp, "win32"), (linux_exp, "linux")):
+        monkeypatch.setattr(pf.sys, "platform", platform)
+        estimate = estimate_experiment(exp, forcing_interval_seconds=21600.0)
+        envelope = observed_peak_envelope_bytes(
+            estimate.footprint_projection_bytes, platform=platform)
+        assert envelope <= budget, platform
+        assert envelope >= 0.8 * budget, platform
+
+
+@pytest.mark.parametrize("ladder", sorted(LADDER_RATIOS))
+def test_windows_12gib_is_an_experimental_tier_not_a_refusal(
+        tmp_path, capsys, monkeypatch, ladder):
+    """A 12 GiB Windows card sizes, and says exactly what it is doing.
+
+    The refusal it replaces was not "your card is too small": at the
+    minimum layout, 4.12 GiB of the 5.4 GiB projection was calibration
+    constants measured on a 32 GiB 5090 running campaign-scale work.  A
+    reduced fixed reserve and the Linux envelope let the card be sized;
+    the pioneer warning is the price, and the calibration ask is how it
+    stops being experimental.
+    """
+    import gpuwm.core.preflight as pf
+
+    monkeypatch.setattr(pf.sys, "platform", "win32")
+    rc, out = _run_wizard(tmp_path / ladder, card="12gb", ladder=ladder)
+    assert rc == 0, ladder
+    printed = capsys.readouterr().out
+
+    assert "x 1.45 observed peak envelope" in printed
+    assert ("envelope factor: windows-small (EXPERIMENTAL, no measurements "
+            "on this card class)") in printed
+    # The honest pioneer warning, in full.
+    assert "EXPERIMENTAL: 12 GiB is at or below the 12 GiB Windows " \
+           "small-card threshold" in printed
+    assert "calibrated from ONE much larger machine" in printed
+    assert "reduced 1.5 GiB reserve" in printed
+    assert "Worst case is paging (slow) or a clean out-of-memory failure" \
+           in printed
+    assert "Neither corrupts a forecast" in printed
+    assert "Please report your measured peak" in printed
+    assert "gpuwm check <config>" in printed
+
+    # And the emitted config really fits the experimental accounting.
+    exp = experiment_from_text(out.read_text(encoding="utf-8"),
+                               source=str(out))
+    estimate = estimate_experiment(exp, forcing_interval_seconds=21600.0,
+                                   vram_gib=12.0)
+    envelope = observed_peak_envelope_bytes(
+        estimate.footprint_projection_bytes, vram_gib=12.0)
+    assert envelope <= int((12.0 - vram_reserve_gib(12.0)) * GIB)
+
+
+def test_windows_16gib_and_up_keep_the_conservative_accounting(
+        tmp_path, capsys, monkeypatch):
+    """The experimental tier is bounded to small cards, by size only."""
+    import gpuwm.core.preflight as pf
+
+    monkeypatch.setattr(pf.sys, "platform", "win32")
+    rc, _ = _run_wizard(tmp_path / "sixteen", card="16gb")
+    assert rc == 0
+    printed = capsys.readouterr().out
+    assert "x 1.75 observed peak envelope" in printed
+    assert "envelope factor: windows (measured, 1 WDDM run)" in printed
+    assert "EXPERIMENTAL" not in printed
+
+    # The accounting seam itself, without going through the wizard: the
+    # 5090-derived pool constants come back the moment the card is big
+    # enough to afford them, and stay for a caller that names no card
+    # (`gpuwm check`, which measures free VRAM, not capacity).
+    assert pf.envelope_platform("win32", 12.0) == "windows-small"
+    assert pf.envelope_platform("win32", 11.0) == "windows-small"
+    assert pf.envelope_platform("win32", 16.0) == "windows"
+    assert pf.envelope_platform("win32", None) == "windows"
+    assert pf.envelope_platform("linux", 12.0) == "linux"
+    assert pf.peak_envelope_factor("win32", 12.0) == 1.45
+    assert pf.peak_envelope_factor("win32", 16.0) == 1.75
+    assert pf.platform_projection_constants("win32", 12.0) == (
+        0, pf.WINDOWS_SMALL_CARD_RESERVE_BYTES)
+    assert pf.platform_projection_constants("win32", 16.0) == (
+        pf.pool_retention_residual_bytes(), pf.PROBE_DEVICE_OVERHEAD_BYTES)
+    assert pf.platform_projection_constants("win32", None) == (
+        pf.pool_retention_residual_bytes(), pf.PROBE_DEVICE_OVERHEAD_BYTES)
 
 
 def test_auto_picks_deepest_ladder_on_32gb(tmp_path):
@@ -306,11 +591,16 @@ def test_wizard_default_suite_is_the_registered_default_template(tmp_path):
     for comp_id, opt_id in template["components"].items():
         selectors.update(
             registry["components"][comp_id]["options"][opt_id]["selectors"])
-    # The registry speaks WRF's lw/sw pair; the wizard emits the modern
-    # combined selector for the same 4/4 = RTE+RRTMGP route.
-    assert selectors.pop("ra_lw_physics") == 4
-    assert selectors.pop("ra_sw_physics") == 4
-    assert root.ra_physics == 4
+    # The wizard now emits the registry's OWN lw/sw pair rather than the
+    # legacy combined selector.  Both resolve to (4, 4) = RTE+RRTMGP, but
+    # only the pair form can compare equal to the shipped runner
+    # profiles, which are written the same way -- v1.0.0's combined form
+    # made every wizard config fail the prepared-forecast profile guard.
+    from gpuwm.config import radiation_scheme_ids
+    assert selectors.pop("ra_lw_physics") == root.ra_lw_physics == 4
+    assert selectors.pop("ra_sw_physics") == root.ra_sw_physics == 4
+    assert root.ra_physics == 0
+    assert radiation_scheme_ids(root) == (4, 4)
     # Kain-Fritsch on the 12 km root only; every nest runs cumulus off.
     assert root.cu_physics == selectors.pop("cu_physics") == 1
     assert all(dc.run.cu_physics == 0 for dc in exp.domains[1:])
@@ -535,3 +825,272 @@ def test_fetch_area_applies_and_clamps_the_margin():
     from gpuwm.fetch import Area
     assert Area(wrapped[0], wrapped[1], wrapped[2],
                 wrapped[3]).crosses_antimeridian
+
+
+# ---------------------------------------------------------------------------
+# Custom ladders: --root-dx / --chain alongside the presets.
+# ---------------------------------------------------------------------------
+
+def test_chain_and_root_dx_parsing_and_refusals():
+    from gpuwm.domain_wizard import (MAX_CHAIN_DEPTH, MAX_CHAIN_RATIO,
+                                     MAX_ROOT_DX_KM, MIN_CHAIN_RATIO,
+                                     MIN_ROOT_DX_KM, ROOT_DX_M,
+                                     parse_chain, parse_custom_ladder)
+
+    assert parse_chain("4,3,3") == (4, 3, 3)
+    assert parse_chain(" 4 , 3 ") == (4, 3)
+    assert parse_chain("") == ()
+    with pytest.raises(ValueError, match="not an integer"):
+        parse_chain("4,3.5")
+    with pytest.raises(ValueError, match="outside"):
+        parse_chain(str(MAX_CHAIN_RATIO + 1))
+    with pytest.raises(ValueError, match="outside"):
+        parse_chain(str(MIN_CHAIN_RATIO - 1))
+    with pytest.raises(ValueError, match="limit is"):
+        parse_chain(",".join(["2"] * (MAX_CHAIN_DEPTH + 1)))
+
+    # A preset run stays a preset run.
+    assert parse_custom_ladder(
+        root_dx_km=None, chain=None, ladder="auto") is None
+    assert parse_custom_ladder(
+        root_dx_km=None, chain=None, ladder="12-3") is None
+    # Either flag alone switches to the custom form.
+    assert parse_custom_ladder(
+        root_dx_km=3.0, chain=None, ladder="auto") == (3000.0, ())
+    assert parse_custom_ladder(
+        root_dx_km=None, chain="4", ladder="auto") == (ROOT_DX_M, (4,))
+    with pytest.raises(ValueError, match="cannot be combined"):
+        parse_custom_ladder(root_dx_km=3.0, chain="4", ladder="12-3")
+    for bad in (MIN_ROOT_DX_KM / 2, MAX_ROOT_DX_KM * 2):
+        with pytest.raises(ValueError, match="--root-dx"):
+            parse_custom_ladder(root_dx_km=bad, chain="4", ladder="auto")
+
+
+def test_custom_ladder_3km_to_750m_emits_and_checks(tmp_path, capsys):
+    """Drew's r4 case: an arbitrary root dx with an integer ratio.
+
+    Validated by the same estimator fit loop, the same experiment
+    loader, and the same `gpuwm check` the presets go through.
+    """
+    out = tmp_path / "r4.toml"
+    rc = cli_main(["domain", "--point=35.3,-97.5", "--card", "24gb",
+                   "--root-dx", "3", "--chain", "4", "--source", "gfs",
+                   "--cycle", "2026-07-29T18", "--hours", "6",
+                   "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert rc == 0, printed
+    assert "gpuwm check: PASS (rc 0)" in printed
+
+    text = out.read_text(encoding="utf-8")
+    exp = experiment_from_text(text, source=str(out))
+    assert [float(exp.dx_exact(d.grid_id)) for d in exp.domains] == [
+        3000.0, 750.0]
+    # 5 s/km at 35 N: 15 s root, exactly quartered on the nest.
+    assert exp.root.time_step == 15
+    assert float(exp.dt_exact(2)) == 15 / 4
+    # The companion namelist.wps agrees through the real grid builders.
+    wps = out.parent / "r4.namelist.wps"
+    assert " dx = 3000," in wps.read_text(encoding="utf-8")
+    from_wps = grids_from_wps_namelist(wps)
+    from_toml = grids_from_projection_config(load_experiment(out))
+    assert len(from_wps) == len(from_toml) == 2
+    for a, b in zip(from_wps, from_toml):
+        lat_a, lon_a = a.latlon_mass()
+        lat_b, lon_b = b.latlon_mass()
+        assert a.dx == b.dx
+        np.testing.assert_allclose(lat_a, lat_b, rtol=0, atol=1e-9)
+        np.testing.assert_allclose(lon_a, lon_b, rtol=0, atol=1e-9)
+
+
+def test_custom_ladder_deep_chain_reaches_the_hundred_metre_scale(
+        tmp_path, capsys):
+    out = tmp_path / "deep.toml"
+    rc = cli_main(["domain", "--point=35.3,-97.5", "--card", "32gb",
+                   "--root-dx", "3", "--chain", "3,3,3", "--source", "gfs",
+                   "--cycle", "2026-07-29T18", "--hours", "3",
+                   "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert rc == 0, printed
+    assert "gpuwm check: PASS (rc 0)" in printed
+
+    exp = experiment_from_text(out.read_text(encoding="utf-8"),
+                               source=str(out))
+    dxs = [float(exp.dx_exact(d.grid_id)) for d in exp.domains]
+    assert len(dxs) == 4
+    assert dxs[0] == 3000.0
+    assert dxs[-1] == pytest.approx(3000.0 / 27, rel=1e-12)
+    assert 110.0 < dxs[-1] < 112.0
+    # Exact rational clock all the way down: 15 s / 27.
+    assert exp.root.time_step == 15
+    assert exp.dt_exact(4) == Fraction(15, 27)
+
+
+def test_the_gray_zone_advisory_warns_and_never_refuses(tmp_path, capsys):
+    from gpuwm.domain_wizard import (GRAY_ZONE_DX_KM, _SHARED_CERTIFIED,
+                                     gray_zone_advisory)
+
+    # Above the gray zone: silent.
+    assert gray_zone_advisory([12.0, 3.0, 1.0], _SHARED_CERTIFIED) == []
+    # PBL scheme off: the overlap it warns about does not exist.
+    assert gray_zone_advisory(
+        [3.0, 0.75], {**_SHARED_CERTIFIED, "bl_pbl_physics": 0}) == []
+
+    lines = gray_zone_advisory([3.0, 0.75, 0.25], _SHARED_CERTIFIED)
+    assert len(lines) == 1, "one honest sentence, not a lecture"
+    assert "GRAY ZONE" in lines[0]
+    assert "2 domain(s)" in lines[0]
+    assert "finest 250 m" in lines[0]
+    assert "SASE" in lines[0]
+    assert f"below {GRAY_ZONE_DX_KM:g} km" in lines[0]
+
+    # End to end it is an advisory: rc 0, in the file and on stdout.
+    out = tmp_path / "gray.toml"
+    rc = cli_main(["domain", "--point=35.3,-97.5", "--card", "24gb",
+                   "--root-dx", "3", "--chain", "4", "--source", "gfs",
+                   "--cycle", "2026-07-29T18", "--hours", "6",
+                   "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert rc == 0
+    assert "advisory: GRAY ZONE" in printed
+    assert "finest 750 m" in printed
+    assert "GRAY ZONE" in out.read_text(encoding="utf-8")
+
+
+def test_the_deepest_preset_also_declares_its_gray_zone(tmp_path, capsys):
+    """12-3-1-0.5 lands at 500 m; the advisory is not custom-only."""
+    out = tmp_path / "preset.toml"
+    rc = cli_main(["domain", "--point=35.3,-97.5", "--card", "32gb",
+                   "--ladder", "12-3-1-0.5", "--source", "gfs",
+                   "--cycle", "2026-07-29T18", "--hours", "3",
+                   "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert rc == 0, printed
+    assert "advisory: GRAY ZONE" in printed
+    assert "finest 500 m" in printed
+
+
+def test_custom_root_dx_in_the_tropics_keeps_an_exact_half_second(
+        tmp_path, capsys):
+    out = tmp_path / "trop.toml"
+    rc = cli_main(["domain", "--point=14.6,120.98", "--card", "24gb",
+                   "--root-dx", "3", "--chain", "4", "--source", "gfs",
+                   "--cycle", "2026-07-29T18", "--hours", "6",
+                   "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert rc == 0, printed
+    text = out.read_text(encoding="utf-8")
+    raw = tomllib.loads(text)
+    # 2.5 s/km at 3 km = 7.5 s -> WRF's exact rational clock keys.
+    assert raw["domain"][0]["time_step"] == 7
+    assert raw["domain"][0]["time_step_fract_num"] == 1
+    assert raw["domain"][0]["time_step_fract_den"] == 2
+    exp = experiment_from_text(text, source=str(out))
+    assert exp.dt_exact(1) == Fraction(15, 2)
+    assert exp.dt_exact(2) == Fraction(15, 8)
+    assert "TROPICAL CLOCK" in text
+
+
+# ---------------------------------------------------------------------------
+# The documented GFS -> GPU route: physics representation and honesty.
+# ---------------------------------------------------------------------------
+
+def test_emitted_radiation_uses_the_representation_the_guard_compares(
+        tmp_path, capsys):
+    """v1.0.0's wizard config could never pass the runner's guard.
+
+    Every shipped profile writes radiation as the split pair
+    (`ra_physics = 0` + `ra_lw_physics`/`ra_sw_physics`); the wizard
+    wrote the legacy combined `ra_physics = 4`.  Both resolve to (4, 4),
+    the guard even printed that both sides resolved to (4, 4), and it
+    rejected them anyway because it compares the raw switch dicts.
+    """
+    from gpuwm.config import radiation_scheme_ids
+
+    rc, out = _run_wizard(tmp_path, ladder="12", source="gfs",
+                          cycle="2026-07-29T18")
+    capsys.readouterr()
+    assert rc == 0
+    raw = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert raw["shared"]["ra_physics"] == 0
+    assert raw["shared"]["ra_lw_physics"] == 4
+    assert raw["shared"]["ra_sw_physics"] == 4
+    exp = experiment_from_text(out.read_text(encoding="utf-8"),
+                               source=str(out))
+    assert radiation_scheme_ids(exp.root.run) == (4, 4)
+
+
+@pytest.mark.parametrize("profile", [
+    "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+    "thompson-mp8-ysu-mm5-noah-validation-v1",
+    "wsm6-ysu-mm5-noah-no-radiation-v1",
+])
+def test_physics_profile_configs_pass_the_runner_guard_as_emitted(
+        tmp_path, capsys, profile):
+    """--physics-profile emits a config the prepared runner accepts.
+
+    Not "nearly accepts": this is the runner's own validator, run over
+    the exact bytes the wizard wrote, with no hand edits -- the loop
+    that cost node 2 three full 200 s front-door cycles to escape.
+    """
+    import tools.prepared_single_domain_forecast as runner
+
+    out = tmp_path / f"{profile[:12]}.toml"
+    rc = cli_main(["domain", "--point=35.3,-97.5", "--card", "24gb",
+                   "--ladder", "12", "--source", "gfs",
+                   "--physics-profile", profile,
+                   "--cycle", "2026-07-29T18", "--hours", "6",
+                   "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert rc == 0, printed
+    assert "passes the prepared single-domain forecast runner's" in printed
+
+    exp = load_experiment(out)
+    validation = runner._validate_profile_switches(
+        exp, source="gfs", profile=profile)
+    assert validation["profile"] == profile
+    # And the whole physics gate, not just the switch comparison.
+    runner._validate_physics(exp, profile, exp.run_seconds,
+                             float(exp.root.history_interval_s),
+                             source="gfs")
+    # The file states, in words, what it will actually run.
+    text = out.read_text(encoding="utf-8")
+    assert "# PHYSICS:" in text
+    assert profile in text
+
+
+def test_the_default_suite_says_out_loud_that_the_single_door_refuses_it(
+        tmp_path, capsys):
+    """Never silent: name the gap and what each alternative really runs.
+
+    A pilot read the profiles' `ra_physics: 0` as "radiation off" and
+    reported that the GFS route runs radiation-off silently.  Three of
+    the six profiles do run reduced physics -- and three run full
+    RTE+RRTMGP -- so the raw switch is exactly the wrong thing to show
+    anyone.  The wizard prints the resolved behaviour in words instead.
+    """
+    from gpuwm.domain_wizard import (WIZARD_PHYSICS_PROFILES,
+                                     physics_summary,
+                                     prepared_route_physics_notice)
+
+    rc, _ = _run_wizard(tmp_path, ladder="12", source="gfs",
+                        cycle="2026-07-29T18")
+    printed = capsys.readouterr().out
+    assert rc == 0
+    assert "no shipped runner profile matches it" in printed
+    assert "it will refuse this file" in printed
+    assert "The multi-domain (domain-tree) runner has no such whitelist" \
+        in printed
+    for profile in WIZARD_PHYSICS_PROFILES:
+        assert profile in printed
+
+    # Words, never the raw switch: full-physics profiles must not read
+    # as "off", and reduced ones must not read as full.
+    full = physics_summary("morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1")
+    assert "longwave RTE+RRTMGP, shortwave RTE+RRTMGP" in full
+    assert "Kain-Fritsch cumulus" in full
+    reduced = physics_summary("thompson-mp8-ysu-mm5-noah-validation-v1")
+    assert "longwave OFF, shortwave Dudhia" in reduced
+    assert "NO cumulus parameterization" in reduced
+
+    # ERA5 does not go through that door, so it gets no such notice.
+    assert prepared_route_physics_notice(None, "era5") == []

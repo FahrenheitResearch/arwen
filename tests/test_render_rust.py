@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import datetime
 import struct
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -64,13 +65,14 @@ def _frame(seed: int) -> dict:
     }
 
 
-def _write_wrfout(path, stamps):
+def _write_wrfout(path, stamps, *, grid_id=2, dx=1000.0):
     grid = SimpleNamespace(truelat1=38.5, truelat2=39.5, stand_lon=-96.5,
                            ref_lat=39.0, ref_lon=-96.5)
     attrs = wrf_global_attrs(
-        grid, datetime.datetime(1974, 4, 3, 18), grid_id=2, parent_id=1,
-        i_parent_start=5, j_parent_start=5, parent_grid_ratio=3, dt=6.0)
-    with WrfoutWriter(path, nx=_NX, ny=_NY, nz=_NZ, dx=1000.0, dy=1000.0,
+        grid, datetime.datetime(1974, 4, 3, 18), grid_id=grid_id,
+        parent_id=max(grid_id - 1, 1), i_parent_start=5, j_parent_start=5,
+        parent_grid_ratio=3, dt=6.0)
+    with WrfoutWriter(path, nx=_NX, ny=_NY, nz=_NZ, dx=dx, dy=dx,
                       global_attrs=attrs) as writer:
         for index, stamp in enumerate(stamps):
             writer.write_frame(stamp, _frame(seed=7 + index))
@@ -94,6 +96,22 @@ def wrfout_hourly(tmp_path_factory):
         tmp_path_factory.mktemp("render-rust-hourly") /
         "wrfout_d02_1974-04-03_18-00-00.nc",
         ("1974-04-03_18:00:00", "1974-04-03_19:00:00"))
+
+
+@pytest.fixture(scope="module")
+def wrfout_hourly_d03(tmp_path_factory):
+    """The SAME init and the same whole-hour frames, one nest down.
+
+    Sub-kilometre spacing (333 m), so its resolution token exercises the
+    integer-metre branch while its lead/valid times are identical to
+    ``wrfout_hourly``'s -- everything the old filename carried.
+    """
+
+    return _write_wrfout(
+        tmp_path_factory.mktemp("render-rust-hourly-d03") /
+        "wrfout_d03_1974-04-03_18-00-00.nc",
+        ("1974-04-03_18:00:00", "1974-04-03_19:00:00"),
+        grid_id=3, dx=333.3333)
 
 
 def _png_size(path) -> tuple[int, int]:
@@ -158,6 +176,124 @@ def test_rust_engine_maps_shared_product_names(wrfout, tmp_path):
     assert any("2m_temperature" in name for name in produced)
     for png in out.glob("*.png"):
         assert _png_size(png) == (800, 600)
+
+
+# ---------------------------------------------------------------------------
+# Domain + resolution tokens: two domains at one lead must not collide
+# ---------------------------------------------------------------------------
+
+@needs_renderer
+def test_two_domains_at_one_lead_do_not_overwrite_each_other(
+        wrfout_hourly, wrfout_hourly_d03, tmp_path):
+    """The data-loss bug this token exists to prevent.
+
+    Two nests of one run share model, init cycle, and forecast hour.  On
+    the whole-hour axis nothing else distinguished them, so the second
+    domain's PNG landed on the first domain's path and one of the two
+    forecasts vanished with no error, no warning, and an exit code of 0.
+    """
+
+    out = tmp_path / "png"
+    rc = cli.main(["render", str(wrfout_hourly), str(wrfout_hourly_d03),
+                   "--engine", "rust", "--products", "refl",
+                   "--timeidx", "0", "--out", str(out)])
+    assert rc == 0
+    produced = sorted(p.name for p in out.glob("*.png"))
+    assert len(produced) == 2, (
+        "two domains at one lead collapsed to one file", produced)
+    assert any("_d02-1km_" in name for name in produced), produced
+    assert any("_d03-333m_" in name for name in produced), produced
+    # Both survive as real images, not one truncated overwrite.
+    for png in out.glob("*.png"):
+        assert png.stat().st_size > 5_000, png.name
+
+
+@needs_renderer
+def test_domain_and_resolution_token_on_the_exact_time_axis(
+        wrfout, tmp_path):
+    """The sub-hourly axis carries the same token as the whole-hour one."""
+
+    out = tmp_path / "png"
+    rc = cli.main(["render", str(wrfout), "--engine", "rust",
+                   "--products", "refl", "--out", str(out)])
+    assert rc == 0
+    produced = sorted(p.name for p in out.glob("*.png"))
+    assert len(produced) == 2, produced
+    for name in produced:
+        assert "_d02-1km_" in name, name
+        assert "native_grid" not in name, name
+
+
+@needs_renderer
+def test_unknown_domain_identity_keeps_the_native_grid_token(
+        tmp_path):
+    """No GRID_ID, no wrfout_dNN name: the token degrades, never guesses.
+
+    A file whose domain identity cannot be established keeps the
+    renderer's generic ``native_grid`` slug rather than being labelled
+    ``d01`` on no evidence.
+    """
+
+    grid = SimpleNamespace(truelat1=38.5, truelat2=39.5, stand_lon=-96.5,
+                           ref_lat=39.0, ref_lon=-96.5)
+    attrs = wrf_global_attrs(grid, datetime.datetime(1974, 4, 3, 18),
+                             dt=6.0)
+    assert "GRID_ID" not in attrs
+    path = tmp_path / "some_model_output.nc"
+    with WrfoutWriter(path, nx=_NX, ny=_NY, nz=_NZ, dx=1000.0,
+                      dy=1000.0, global_attrs=attrs) as writer:
+        writer.write_frame(_STAMPS[0], _frame(seed=21))
+    out = tmp_path / "png"
+    rc = cli.main(["render", str(path), "--engine", "rust",
+                   "--products", "refl", "--out", str(out)])
+    assert rc == 0
+    produced = [p.name for p in out.glob("*.png")]
+    assert produced, "the anonymous-domain file rendered nothing"
+    for name in produced:
+        assert "native_grid" in name, name
+
+
+def test_source_label_reaches_the_renderer_invocation(monkeypatch,
+                                                      tmp_path):
+    """A locally imported run is not a GDEX fetch, and a stock-WRF file
+    is not ours: both are one flag away from being labelled honestly."""
+
+    import subprocess
+
+    from gpuwm import render as render_module
+
+    seen: list[list[str]] = []
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def spy(command, **kwargs):
+        seen.append([str(part) for part in command])
+        return Result()
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    monkeypatch.setattr("gpuwm.rustwx.find_renderer",
+                        lambda: tmp_path / "rw_wrfbatch.exe")
+    monkeypatch.setattr("gpuwm.rustwx.probe_renderer",
+                        lambda path: (True, "stubbed"))
+
+    render_module.render_wrfouts_rust(
+        [tmp_path / "wrfout_d02_x.nc"], products="composite_reflectivity",
+        timeidx=0, outdir=tmp_path / "png", size=(800, 600))
+    assert seen, "no renderer invocation was made"
+    command = seen[-1]
+    assert "--source-label" in command
+    assert command[command.index("--source-label") + 1] == "ArWen"
+
+    seen.clear()
+    render_module.render_wrfouts_rust(
+        [tmp_path / "wrfout_d02_x.nc"], products="composite_reflectivity",
+        timeidx=0, outdir=tmp_path / "png", size=(800, 600),
+        source_label="WRF-ARW 4.6.1")
+    command = seen[-1]
+    assert command[command.index("--source-label") + 1] == "WRF-ARW 4.6.1"
 
 
 @needs_renderer
@@ -343,15 +479,15 @@ def _pair_dirs(tmp_path):
     right = tmp_path / "run-b"
     left.mkdir()
     right.mkdir()
-    # Rust-engine naming: the slug after _native_grid_ is the pair key,
-    # so differing run prefixes still pair.
-    _tiny_png(left / "rustwx_wrf_19740403_12z_f003_native_grid_sbcape.png")
-    _tiny_png(right / "rustwx_wrf_19740403_15z_f006_native_grid_sbcape.png")
+    # Rust-engine naming: domain token + slug after the _fNNN_ lead
+    # marker is the pair key, so differing run prefixes still pair.
+    _tiny_png(left / "rustwx_wrf_19740403_12z_f003_d02-3km_sbcape.png")
+    _tiny_png(right / "rustwx_wrf_19740403_15z_f006_d02-3km_sbcape.png")
     # matplotlib naming pairs by identical stems.
-    _tiny_png(left / "t2_d02_1974-04-03_18-00-00.png")
-    _tiny_png(right / "t2_d02_1974-04-03_18-00-00.png")
+    _tiny_png(left / "t2_d02-3km_1974-04-03_18-00-00.png")
+    _tiny_png(right / "t2_d02-3km_1974-04-03_18-00-00.png")
     # Unmatched product must not produce a sheet.
-    _tiny_png(left / "rustwx_wrf_19740403_12z_f003_native_grid_mlcin.png")
+    _tiny_png(left / "rustwx_wrf_19740403_12z_f003_d02-3km_mlcin.png")
     return left, right
 
 
@@ -362,8 +498,8 @@ def test_pair_composes_common_products(tmp_path, capsys):
                    "--out", str(out)])
     assert rc == 0
     sheets = sorted(p.name for p in out.glob("*.png"))
-    assert sheets == ["sbcape-pair.png",
-                      "t2_d02_1974-04-03_18-00-00-pair.png"]
+    assert sheets == ["d02-3km_sbcape-pair.png",
+                      "t2_d02-3km_1974-04-03_18-00-00-pair.png"]
     manifest = (out / "manifest.tsv").read_text(encoding="utf-8")
     assert manifest.startswith("product\tleft\tright\tpair\n")
     assert "sbcape" in manifest
@@ -373,13 +509,40 @@ def test_pair_composes_common_products(tmp_path, capsys):
         assert width > 1_000 and height > 100, sheet.name
 
 
+def test_pair_keys_keep_the_domain_so_nests_do_not_cross_pair(tmp_path):
+    """Two nests of one run in one directory must not pair with each
+    other -- a 3 km panel beside a 333 m panel compares nothing."""
+
+    from gpuwm.pair_compose import product_name
+
+    assert product_name(
+        Path("rustwx_wrf_19740403_12z_f003_d02-3km_sbcape")
+    ) == "d02-3km_sbcape"
+    assert product_name(
+        Path("rustwx_wrf_19740403_12z_f003_d03-333m_sbcape")
+    ) == "d03-333m_sbcape"
+    # The pre-token naming still keys the same way it always did.
+    assert product_name(
+        Path("rustwx_wrf_19740403_12z_f003_native_grid_sbcape")
+    ) == "native_grid_sbcape"
+    # The exact-time suffix rides along, as before.
+    assert product_name(
+        Path("rustwx_wrf_19740403_12z_f000_d02-1km_sbcape_valid_"
+             "19740403_183000z_lead_000h30m00s")
+    ) == "d02-1km_sbcape_valid_19740403_183000z_lead_000h30m00s"
+    # A matplotlib name has no lead marker; the stem is the key.
+    assert product_name(
+        Path("t2_d02-1km_1974-04-03_18-00-00")
+    ) == "t2_d02-1km_1974-04-03_18-00-00"
+
+
 def test_pair_with_no_common_products_is_exit_2(tmp_path, capsys):
     left = tmp_path / "a"
     right = tmp_path / "b"
     left.mkdir()
     right.mkdir()
-    _tiny_png(left / "rustwx_wrf_x_native_grid_sbcape.png")
-    _tiny_png(right / "rustwx_wrf_x_native_grid_mucape.png")
+    _tiny_png(left / "rustwx_wrf_19740403_12z_f000_d02-1km_sbcape.png")
+    _tiny_png(right / "rustwx_wrf_19740403_12z_f000_d02-1km_mucape.png")
     rc = cli.main(["render", "--pair", str(left), str(right),
                    "--out", str(tmp_path / "pairs")])
     assert rc == 2

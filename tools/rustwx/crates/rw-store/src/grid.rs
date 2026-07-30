@@ -1007,10 +1007,12 @@ mod tests {
     /// is south or north. Run with:
     /// `cargo test -p rw-store real_hrrr_grid -- --ignored --nocapture`
     #[test]
-    #[ignore = "requires the real store at C:/Users/drew/rusty-weather/store"]
+    #[ignore = "requires a real ingested store; set RW_STORE_ROOT"]
     fn real_hrrr_grid_row_order() {
-        let path = Path::new("C:/Users/drew/rusty-weather/store/hrrr/20260608_00z/grid.rwg");
-        let grid = GridFile::open(path).expect("real grid.rwg readable");
+        let root = std::env::var("RW_STORE_ROOT")
+            .expect("set RW_STORE_ROOT to an ingested store root");
+        let path = PathBuf::from(root).join("hrrr/20260608_00z/grid.rwg");
+        let grid = GridFile::open(&path).expect("real grid.rwg readable");
         let (nx, ny) = (grid.nx, grid.ny);
         let first = grid.lat[0];
         let last = grid.lat[(ny - 1) * nx];

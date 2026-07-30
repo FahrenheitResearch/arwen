@@ -5,7 +5,9 @@
 #
 #   ./build_radiation.sh [WRF_TREE] [OUTDIR]
 #
-# WRF_TREE defaults to the pinned gate tree; OUTDIR defaults to
+# WRF_TREE must be the pinned WRF v4.6.1 gate checkout (commit
+# d66e442fccc04111067e29274c9f9eaccc3cef28); pass it as $1 or export
+# WRF_TREE.  OUTDIR defaults to
 # gpuwm/data/noahmp/oracle relative to the repository root.
 #
 # Must run under a glibc toolchain: the fixture's transcendental values are
@@ -15,7 +17,7 @@ set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
-WRF=${1:-/home/drew/wrf-stock-v461-gate-20260721}
+WRF=${1:-${WRF_TREE:?pass the pinned WRF v4.6.1 checkout as $1, or export WRF_TREE}}
 OUT=${2:-$REPO/gpuwm/data/noahmp/oracle}
 WORK=${NOAHMP_RAD_WORK:-/tmp/noahmp-radiation-oracle}
 

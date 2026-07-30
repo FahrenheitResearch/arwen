@@ -18,7 +18,8 @@ import os
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRATCH = r"C:\Users\drew\.claude\jobs\fea7a141\tmp\cloud_seams"
+SCRATCH = os.environ.get(
+    "SNOW_PROBE_SCRATCH", os.path.join(HERE, "scratch", "cloud_seams"))
 
 f32 = np.float32
 

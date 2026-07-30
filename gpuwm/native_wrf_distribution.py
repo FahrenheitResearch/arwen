@@ -37,6 +37,11 @@ BRIDGE_NAMES = (
     "grib2_dump",
     "gfs_grib2_bridge",
     "hrrr_grib2_bridge",
+    # Built from tools/rustwx, not tools/grib1_bridge -- the vendored
+    # wx-core download stack and its offline vendor closure live there.
+    # The distribution takes every bridge by explicit path, so the two
+    # cargo workspaces cost nothing here beyond two build commands.
+    "rw_fetch",
 )
 CPU_BACKEND_LIBRARY = "libgpuwm_preprocess_cpu.so"
 WINDOWS_CPU_BACKEND_LIBRARY = "gpuwm_preprocess_cpu.dll"
@@ -72,6 +77,7 @@ _BRIDGE_USAGE_MARKERS = {
     "grib2_dump": "usage: grib2_dump",
     "gfs_grib2_bridge": "usage: gfs_grib2_bridge",
     "hrrr_grib2_bridge": "usage: hrrr_grib2_bridge",
+    "rw_fetch": "usage: rw_fetch",
 }
 # The generic GRIB2 pair is an internal tabular ABI, not just any executable
 # with the right basename and usage string.  These adjacent-column markers
@@ -86,6 +92,16 @@ _BRIDGE_ABI_MARKERS = {
     "grib2_dump": (
         b"parameter\tcenter\tsubcenter\tmaster_table_version\t"
         b"local_table_version\tlevel_type"
+    ),
+    # The fetch record is a JSON ABI rather than a tabular one, but the
+    # failure mode is identical: a stale rw_fetch that still prints its
+    # usage line while emitting a record missing, say, ``mode_reason``
+    # would pass a usage-only probe and then break the manifest author
+    # after a distribution had already been built and installed.
+    "rw_fetch": (
+        b"gpuwm-rw-fetch-record-v1\tmode\tmode_reason\tsource\tgrib_url\t"
+        b"idx_url\tidx_sha256\tidx_record_count\tselected_record_count\t"
+        b"ranges\tsha256"
     ),
 }
 

@@ -61,6 +61,8 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from gpuwm import fetch_bars
+
 
 FETCH_MANIFEST_SCHEMA = "gpuwm-fetch-manifest-v1"
 FETCH_MANIFEST_NAME = "fetch-manifest.json"
@@ -112,6 +114,36 @@ HRRR_NOMADS_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod"
 #: Approximate NOMADS retention (hours).  Older cycles live on S3 only.
 HRRR_NOMADS_RETENTION_HOURS = 48
 HRRR_TRANSPORTS = ("auto", "nomads", "s3")
+
+#: Which downloader moves the bytes.  ``rust`` is the vendored
+#: ``rw_fetch`` backbone (16 MiB parallel range GETs, ``.idx``
+#: coalescing, the cross-process NOMADS rate governor, a disk cache);
+#: ``python`` is the stdlib ``urllib`` transport in :mod:`tools`, which
+#: stays as the always-available fallback.  ``auto`` uses the backbone
+#: when it is built and the Python transport when it is not.
+FETCH_ENGINES = ("auto", "rust", "python")
+
+#: ``--transport`` picks the *host*; ``--mode`` picks the *byte
+#: transport*, which is a separate axis: whether to pull the whole
+#: object or only the ``.idx``-selected byte ranges out of it.  ``auto``
+#: is the probe rule -- object present, and its ``.idx`` absent,
+#: malformed, or provably shorter than the object => take the whole
+#: file.  No time constants are involved; both named modes are
+#: first-class and either can be forced.
+FETCH_MODES = ("auto", "full-file", "idx-subset")
+
+#: ``gpuwm fetch --transport`` host names to ``rw_fetch --source``
+#: registry names.  Same two hosts, different vocabularies: ArWen has
+#: said ``s3`` since before there was a registry, and rustwx calls the
+#: same bucket ``aws``.
+RW_FETCH_SOURCES = {"nomads": "nomads", "s3": "aws"}
+
+#: ``rw_fetch --model``/``--product`` for each HRRR product ArWen wants.
+RW_FETCH_HRRR_PRODUCTS = {"atmosphere": "nat", "soil": "prs"}
+
+#: ``rw_fetch --product`` for the raw GFS object.
+RW_FETCH_GFS_PRODUCT = "pgrb2.0p25"
+
 #: ``--wait-for`` polling cadence ceiling (seconds between probe rounds).
 HRRR_WAIT_POLL_SECONDS = 30
 #: ``--wait-for`` default patience: 90 min covers a live HRRR cycle's
@@ -120,10 +152,43 @@ HRRR_WAIT_TIMEOUT_DEFAULT_MINUTES = 90.0
 
 GFS_CYCLE_HOURS = (0, 6, 12, 18)
 GFS_MAX_FORECAST_HOUR = 384
+
+#: GDAS is the GFS assimilation cycle's own output, in the *same*
+#: pgrb2.0p25 container: same 0.25-degree regular lat/lon grid, same
+#: variable and level codes, same 124-record census under the certified
+#: selector, same originating centre and table versions.  Verified
+#: against a live cycle before this lane was wired -- 124 records, scan
+#: 0x40, DRT 5.0, shape 6, centre 7, master table 2, local table 1,
+#: PDT 4.0, generating process 81 -- so the certified GFS mapping,
+#: bridge, and front door serve it with a source tag and nothing else.
+#:
+#: **Analysis only.**  Every element of that verification is an f000
+#: observation.  NCEP tags the f000 analysis with forecast generating
+#: process 81 and the later GDAS forecast records with 96, and the
+#: fail-closed ``gfs_grib2_bridge`` -- which selects by exact field
+#: identity and never guesses -- is certified against the process the
+#: analysis carries (``gfs_grib2_bridge.rs``, ``validate_common``).  No
+#: end-to-end GDAS f003+ proof exists, so the source is scoped to the
+#: analysis rather than advertised past what the bridge certifies.
+#: Widening that gate is a re-certification event, not a flag.
+GDAS_MAX_FORECAST_HOUR = 0
+
+#: The GDAS forecast-hour ladder this ArWen is certified for.
+GDAS_CERTIFIED_HOURS = (0,)
+
+#: Sources that ride the certified GFS pgrb2.0p25 container.
+GFS_CONTAINER_SOURCES = ("gfs", "gdas")
+
+#: gpuwm source name -> S3 object prefix and directory stem.
+GFS_CONTAINER_PREFIX = {"gfs": "gfs", "gdas": "gdas"}
 #: One NOMADS-subset GFS pgrb2.0p25 file carries exactly the 124 records
 #: the fail-closed ``gfs_grib2_bridge`` selects (21 pressure levels x
 #: {GHT, T, RH, U, V} + 11 surface/near-surface + 8 soil-layer records).
-GFS_SUBSET_RECORD_COUNT = 124
+#: This is now the **certified tripwire** rather than the bar itself:
+#: the bar applied to a download is derived from the live inventory, and
+#: a disagreement with this constant is a loud, explicitly acknowledged
+#: re-certification event.  See :mod:`gpuwm.fetch_bars`.
+GFS_SUBSET_RECORD_COUNT = fetch_bars.CERTIFIED_RECORD_BARS["gfs"]
 
 #: Approximate HRRR CONUS domain coverage (Lambert grid corners, outward
 #: bound).  Requests outside this box cannot be served by HRRR at all, so
@@ -308,8 +373,9 @@ def parse_cycle(raw: str, source: str) -> datetime:
         raise ValueError(
             f"--cycle {raw!r} must be YYYY-MM-DDTHH (UTC) or 'latest'"
         ) from error
-    if source == "gfs" and cycle.hour not in GFS_CYCLE_HOURS:
-        raise ValueError("GFS cycles run at 00/06/12/18 UTC only")
+    if source in GFS_CONTAINER_SOURCES and cycle.hour not in GFS_CYCLE_HOURS:
+        raise ValueError(
+            f"{source.upper()} cycles run at 00/06/12/18 UTC only")
     return cycle
 
 
@@ -325,6 +391,38 @@ def gfs_forecast_hours(hours: int, cadence: int) -> tuple[int, ...]:
         raise ValueError(
             f"--hours exceeds the GFS f{GFS_MAX_FORECAST_HOUR} horizon")
     return tuple(range(0, hours + 1, cadence))
+
+
+def gdas_capability_refusal(requested_hour: int) -> str:
+    """Why a GDAS request past the analysis is refused, and what to do.
+
+    Capability wording on purpose: it names what this ArWen is certified
+    to serve, why the boundary is where it is, and the source that does
+    cover a full forecast.  It is not a statement about GDAS itself --
+    NCEP publishes GDAS out to f009 -- it is a statement about what has
+    been proved end to end here.
+    """
+
+    return (
+        "GDAS is certified in this ArWen as an ANALYSIS-ONLY source: the "
+        f"f{GDAS_MAX_FORECAST_HOUR:03d} analysis, and nothing past it.  "
+        f"f{requested_hour:03d} was requested.\n"
+        "  Why: NCEP tags the GDAS analysis and the GDAS forecast hours "
+        "with different forecast generating processes, and the "
+        "fail-closed gfs_grib2_bridge downstream selects by exact field "
+        "identity -- it is certified against the analysis tag and will "
+        "reject the rest.  Fetching hours the bridge refuses would just "
+        "move the failure later, so the refusal is here.\n"
+        "  What to do: fetch the analysis with --hours 0, or use "
+        f"--source gfs, which is certified through f{GFS_MAX_FORECAST_HOUR}.")
+
+
+def gdas_forecast_hours(hours: int) -> tuple[int, ...]:
+    """The GDAS ladder: the analysis alone, or a capability refusal."""
+
+    if hours != GDAS_MAX_FORECAST_HOUR:
+        raise ValueError(gdas_capability_refusal(hours))
+    return GDAS_CERTIFIED_HOURS
 
 
 def hrrr_forecast_hours(hours: int, cycle: datetime) -> tuple[int, ...]:
@@ -352,9 +450,18 @@ def _head_ok(url: str) -> bool:
         return False
 
 
-def gfs_object_url(cycle: datetime, hour: int) -> str:
-    return (f"{GFS_S3_BASE}/gfs.{cycle:%Y%m%d}/{cycle:%H}/atmos/"
-            f"gfs.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}")
+def gfs_object_url(cycle: datetime, hour: int, source: str = "gfs") -> str:
+    """The raw S3 object URL for one ``pgrb2.0p25`` forecast hour.
+
+    Used for availability probes and for reading the live index behind
+    the record-count bar -- not for the payload, which comes through the
+    NOMADS grib-filter crop (the raw objects are complex-packed; see
+    ``tests/fixtures/gfs-scan-order/README.md``).
+    """
+
+    prefix = GFS_CONTAINER_PREFIX[source]
+    return (f"{GFS_S3_BASE}/{prefix}.{cycle:%Y%m%d}/{cycle:%H}/atmos/"
+            f"{prefix}.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}")
 
 
 def _hrrr_transport_base(transport: str) -> str:
@@ -374,6 +481,47 @@ def hrrr_object_url(cycle: datetime, hour: int, product: str,
             f"hrrr.t{cycle:%H}z.{product}f{hour:02d}.grib2")
 
 
+def cycle_probe_urls(source: str, cycle: datetime,
+                     last_hour: int) -> tuple[str, ...]:
+    """The objects whose existence proves one cycle covers ``last_hour``."""
+
+    if source in GFS_CONTAINER_SOURCES:
+        return (gfs_object_url(cycle, last_hour, source),)
+    if source == "hrrr":
+        return (hrrr_object_url(cycle, last_hour, "wrfnat"),
+                hrrr_object_url(cycle, last_hour, "wrfprs"))
+    raise ValueError(
+        "cycle completeness probes are only meaningful for gfs/gdas/hrrr")
+
+
+def require_published_cycle(source: str, cycle: datetime, last_hour: int, *,
+                            now: datetime | None = None,
+                            probe=_head_ok, progress=print) -> None:
+    """Refuse a NAMED cycle the mirrors have not finished publishing.
+
+    ``--cycle 2026-07-30T00`` an hour before that cycle exists used to
+    produce twenty lines of ``urllib.error.HTTPError: HTTP Error 404``
+    from inside the downloader -- in a product that names the remedy for
+    almost everything else.  The probe is the same one ``--cycle latest``
+    already runs; the only new thing is running it before we start
+    downloading, and saying which cycle IS complete.
+    """
+
+    urls = cycle_probe_urls(source, cycle, last_hour)
+    if all(probe(url) for url in urls):
+        return
+    try:
+        newest = resolve_latest_cycle(source, last_hour, now=now, probe=probe)
+        remedy = (f"the newest complete {source.upper()} cycle covering "
+                  f"f{last_hour:03d} is {newest:%Y-%m-%dT%H}Z -- pass that, "
+                  "or --cycle latest to resolve it automatically")
+    except (RuntimeError, ValueError) as error:
+        remedy = f"and no complete cycle could be resolved either ({error})"
+    raise RuntimeError(
+        f"{source.upper()} cycle {cycle:%Y-%m-%dT%H}Z is not published "
+        f"through f{last_hour:03d} yet; {remedy}")
+
+
 def resolve_latest_cycle(source: str, last_hour: int, *,
                          now: datetime | None = None,
                          probe=_head_ok) -> datetime:
@@ -390,24 +538,23 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
 
     if now is None:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-    if source == "gfs":
+    if source in GFS_CONTAINER_SOURCES:
         step = timedelta(hours=6)
         candidate = now.replace(
             minute=0, second=0, microsecond=0,
             hour=max(h for h in GFS_CYCLE_HOURS if h <= now.hour))
         candidates = tuple(candidate - i * step for i in range(9))
-        urls = {cycle: (gfs_object_url(cycle, last_hour),)
+        urls = {cycle: cycle_probe_urls(source, cycle, last_hour)
                 for cycle in candidates}
     elif source == "hrrr":
         candidate = now.replace(minute=0, second=0, microsecond=0)
         candidates = tuple(candidate - timedelta(hours=i) for i in range(13))
-        urls = {cycle: (hrrr_object_url(cycle, last_hour, "wrfnat"),
-                        hrrr_object_url(cycle, last_hour, "wrfprs"))
+        urls = {cycle: cycle_probe_urls(source, cycle, last_hour)
                 for cycle in candidates}
     else:
         raise ValueError(
-            "--cycle latest is only meaningful for gfs/hrrr; ERA5 is a "
-            "reanalysis published with a delay of several days")
+            "--cycle latest is only meaningful for gfs/gdas/hrrr; ERA5 is "
+            "a reanalysis published with a delay of several days")
     if source == "hrrr":
         from gpuwm.hrrr_forecast import hrrr_cycle_horizon
         candidates = tuple(cycle for cycle in candidates
@@ -415,7 +562,7 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
     for cycle in candidates:
         if all(probe(url) for url in urls[cycle]):
             return cycle
-    span = "48 h" if source == "gfs" else "12 h"
+    span = "48 h" if source in GFS_CONTAINER_SOURCES else "12 h"
     raise RuntimeError(
         f"no complete {source.upper()} cycle covering f{last_hour:03d} was "
         f"found on AWS S3 within the last {span}; pass an explicit --cycle")
@@ -646,8 +793,45 @@ def _manifest_payload(*, source: str, cycle: datetime,
 # GFS
 # ---------------------------------------------------------------------------
 
+def gfs_derived_record_bar(cycle: datetime, *, progress=print,
+                           opener=None, source: str = "gfs") -> int | None:
+    """How many records the GFS selection yields in the live inventory.
+
+    The NOMADS CGI subset has no index of its own -- it *is* the subset
+    -- so the live inventory is the ``.idx`` of the corresponding full
+    ``pgrb2.0p25`` object on S3, and the bar is the count of records in
+    it whose ``(variable, level)`` the CGI query asks for.  Both sides
+    come from the same declaration in
+    :mod:`tools.download_gfs_native_subset`, so there is no second table
+    to drift.
+
+    Returns ``None`` when the index cannot be read; the caller then
+    stands the certified constant in and says so.  A transient S3 blip
+    must not stop a fetch whose own record count is checked anyway.
+    """
+
+    from gpuwm.fetch_bars import count_index_selection, nomads_selector_pairs
+    from tools import download_gfs_native_subset as transport
+
+    url = f"{gfs_object_url(cycle, 0, source)}.idx"
+    request = Request(url, headers={"User-Agent": _USER_AGENT})
+    try:
+        with (opener or urlopen)(request, timeout=120) as response:
+            text = response.read().decode("utf-8", errors="replace")
+    except (HTTPError, URLError, OSError, ValueError) as error:
+        progress(f"fetch {source}: could not read the live inventory at "
+                 f"{url} ({error}); the certified record bar stands in")
+        return None
+    return count_index_selection(text, nomads_selector_pairs(
+        transport.NOMADS_VARIABLES, transport.NOMADS_LEVELS,
+        transport.PRESSURE_LEVELS_HPA))
+
+
 def fetch_gfs(*, cycle: datetime, hours: tuple[int, ...], area: Area,
-              out: Path, progress=print, force: bool = False) -> Path:
+              out: Path, progress=print, force: bool = False,
+              accept_inventory_change: bool = False,
+              derived_bar=gfs_derived_record_bar,
+              source: str = "gfs") -> Path:
     """Download the exact GFS pgrb2.0p25 subset series into ``out``.
 
     Reuses the certified NOMADS query builder and downloader in
@@ -662,24 +846,42 @@ def fetch_gfs(*, cycle: datetime, hours: tuple[int, ...], area: Area,
     moves every existing subset aside (never deletes) and re-downloads.
     """
 
+    from gpuwm.fetch_bars import resolve_bar
     from tools import download_gfs_native_subset as transport
 
+    if source not in GFS_CONTAINER_SOURCES:
+        raise ValueError(f"fetch_gfs serves {GFS_CONTAINER_SOURCES}, not "
+                         f"{source!r}")
+    # The capability boundary sits here as well as at the CLI: a caller
+    # reaching the library directly must hit the same refusal.
+    if source == "gdas":
+        beyond = [hour for hour in hours if hour > GDAS_MAX_FORECAST_HOUR]
+        if beyond:
+            raise ValueError(gdas_capability_refusal(beyond[0]))
+    prefix = GFS_CONTAINER_PREFIX[source]
     out.mkdir(parents=True, exist_ok=True)
+    # One record bar for the whole request: the selection is
+    # instantaneous fields only, so its census does not vary by hour.
+    bar = resolve_bar("gfs", derived_bar(cycle, progress=progress,
+                                        source=source),
+                      accept_inventory_change=accept_inventory_change,
+                      progress=progress)
     prior_digests = _prior_manifest_digests(out)
     box = area.as_nomads()
     files: list[dict] = []
     for hour in hours:
-        name = f"gfs.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}.subset.grib2"
+        name = (f"{prefix}.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}"
+                ".subset.grib2")
         path = out / name
-        url = transport.nomads_query(cycle, hour, **box)
+        url = transport.nomads_query(cycle, hour, model=source, **box)
         if force and path.exists():
             _quarantine_rejected(path, progress, f"gfs f{hour:03d}")
         if path.exists():
             observed = count_grib2_messages(path)
-            if observed != GFS_SUBSET_RECORD_COUNT:
+            if observed != bar.expected:
                 raise ValueError(
                     f"existing {name} carries {observed} GRIB2 messages, "
-                    f"expected {GFS_SUBSET_RECORD_COUNT}; move it aside "
+                    f"expected {bar.expected}; move it aside "
                     "and re-fetch")
             digest = sha256_file(path)
             recorded = prior_digests.get(name)
@@ -690,29 +892,29 @@ def fetch_gfs(*, cycle: datetime, hours: tuple[int, ...], area: Area,
                     "for this request; pass --force-refetch to move the "
                     "existing files aside (nothing is deleted) and "
                     "re-download")
-            progress(f"fetch gfs f{hour:03d}: {name} exists, "
+            progress(f"fetch {source} f{hour:03d}: {name} exists, "
                      f"{path.stat().st_size:,} B verified -- skipped")
         else:
             started = time.perf_counter()
             transport._download(url, path)
             observed = count_grib2_messages(path)
-            if observed != GFS_SUBSET_RECORD_COUNT:
+            if observed != bar.expected:
                 raise ValueError(
                     f"NOMADS returned {observed} GRIB2 messages for "
-                    f"f{hour:03d}, expected {GFS_SUBSET_RECORD_COUNT}; the "
+                    f"f{hour:03d}, expected {bar.expected}; the "
                     "upstream inventory has drifted")
             digest = sha256_file(path)
-            progress(f"fetch gfs f{hour:03d}: {name} "
+            progress(f"fetch {source} f{hour:03d}: {name} "
                      f"{path.stat().st_size:,} B in "
                      f"{time.perf_counter() - started:.1f} s")
         files.append({
-            "name": name, "role": "gfs-subset", "forecast_hour": hour,
+            "name": name, "role": f"{source}-subset", "forecast_hour": hour,
             "bytes": path.stat().st_size, "sha256": digest,
             "url": url,
         })
     # Relative names: gfs_grib2_bridge resolves them against the TSV's
     # own directory, so the fetched directory stays relocatable.
-    series = out / "gfs-series.tsv"
+    series = out / f"{prefix}-series.tsv"
     _atomic_write_text(series, "".join(
         f"{hour}\t{item['name']}\n" for hour, item in zip(hours, files)))
     files.append({
@@ -720,12 +922,15 @@ def fetch_gfs(*, cycle: datetime, hours: tuple[int, ...], area: Area,
         "bytes": series.stat().st_size, "sha256": sha256_file(series),
         "url": None,
     })
-    payload = _manifest_payload(source="gfs", cycle=cycle, hours=hours,
+    payload = _manifest_payload(source=source, cycle=cycle, hours=hours,
                                 area=area, files=files)
     payload["notes"] = (
         "NOMADS filter subsets (south-to-north 0.25-degree grids); raw "
-        "noaa-gfs-bdp-pds S3 objects are north-to-south and are rejected "
-        "by the fail-closed gfs_grib2_bridge")
+        "noaa-gfs-bdp-pds S3 objects are north-to-south and are accepted "
+        "by gfs_grib2_bridge only after its declared scan-order flip")
+    payload["engine"] = "python"
+    payload["mode"] = "nomads-cgi-subset"
+    payload["record_bars"] = [bar.as_manifest()]
     return write_fetch_manifest(out, payload)
 
 
@@ -734,6 +939,7 @@ def author_gfs_front_door_manifest(
         experiment_config: Path, static_input: Path | None = None,
         static_receipt: Path | None = None,
         manifest_out: Path | None = None,
+        source: str = "gfs",
         progress=print) -> tuple[Path, str]:
     """Write the exact input manifest the GFS front door verifies.
 
@@ -750,11 +956,15 @@ def author_gfs_front_door_manifest(
     ``--source-manifest``/``--source-manifest-sha256`` wants verbatim.
     """
 
+    if source not in GFS_CONTAINER_SOURCES:
+        raise ValueError(
+            f"the GFS front door serves {GFS_CONTAINER_SOURCES}, not "
+            f"{source!r}")
     prior = _load_fetch_manifest(out)
-    if prior is None or prior.get("source") != "gfs":
+    if prior is None or prior.get("source") != source:
         raise ValueError(
             f"{out / FETCH_MANIFEST_NAME} is not a completed "
-            "`gpuwm fetch --source gfs` output; run the fetch first "
+            f"`gpuwm fetch --source {source}` output; run the fetch first "
             "(the front-door manifest binds the fetched cycle and "
             "forecast-hour inventory)")
     if (static_input is None) != (static_receipt is None):
@@ -774,12 +984,14 @@ def author_gfs_front_door_manifest(
             or not all(isinstance(hour, int) for hour in hours)):
         raise ValueError(
             f"fetch manifest in {out} lacks a forecast-hour inventory")
+    prefix = GFS_CONTAINER_PREFIX[source]
     subset_names = {
         item.get("forecast_hour"): item.get("name")
         for item in prior.get("files", ())
-        if isinstance(item, dict) and item.get("role") == "gfs-subset"}
+        if isinstance(item, dict)
+        and item.get("role") == f"{source}-subset"}
     roles: dict[str, Path] = {
-        "series": out / "gfs-series.tsv",
+        "series": out / f"{prefix}-series.tsv",
         "bridge": Path(bridge),
         "wps_namelist": Path(wps_namelist),
         "experiment_config": Path(experiment_config),
@@ -792,7 +1004,7 @@ def author_gfs_front_door_manifest(
         if not isinstance(name, str):
             raise ValueError(
                 f"fetch manifest in {out} lists forecast hour {hour} "
-                "without a gfs-subset file entry")
+                f"without a {source}-subset file entry")
         roles[f"grib-f{hour:03d}"] = out / name
     missing = sorted(
         f"{role}: {path}" for role, path in roles.items()
@@ -804,7 +1016,10 @@ def author_gfs_front_door_manifest(
     payload = {
         "schema": GFS_FRONT_DOOR_MANIFEST_SCHEMA,
         "source": {
-            "model": "GFS",
+            # The front door verifies schema, roles and digests, not the
+            # model string, so the tag is provenance: which container
+            # this series came out of, in one place a receipt can read.
+            "model": source.upper(),
             "product": "pgrb2.0p25",
             "cycle": cycle.strftime("%Y-%m-%dT%H:%M:%SZ"),
         },
@@ -818,10 +1033,20 @@ def author_gfs_front_door_manifest(
     _atomic_write_text(
         path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
     digest = sha256_file(path)
+    # Pasteable exactly as printed: no placeholder a user has to fill
+    # in, because every value is already known here.  The geography root
+    # is the one gpuwm reads everywhere else (and `gpuwm fetch-geog`
+    # stages into by default); the output root is a sibling of the
+    # download, so the line runs from any directory and does not write
+    # into the inputs.
+    from gpuwm.geog_assets import default_geog_root
+
     static_args = (
         f" --static-input {static_input}"
         f" --static-receipt {static_receipt}"
-        if static_input is not None else " --geog-root WPS_GEOG_DIR")
+        if static_input is not None
+        else f" --geog-root {default_geog_root()}")
+    output_root = out.resolve() / "prepared"
     progress(f"fetch gfs: front-door manifest {path}")
     progress(f"fetch gfs: front-door manifest sha256 {digest}")
     progress(
@@ -833,7 +1058,7 @@ def author_gfs_front_door_manifest(
         f" --experiment-config {experiment_config}"
         f" --source-manifest {path}"
         f" --source-manifest-sha256 {digest}"
-        f"{static_args} --output-root OUTPUT_DIR")
+        f"{static_args} --output-root {output_root}")
     return path, digest
 
 
@@ -859,6 +1084,67 @@ def _prior_manifest_digests(out: Path) -> dict[str, str]:
                 if isinstance(item.get("name"), str)
                 and isinstance(item.get("sha256"), str)}
     except (ValueError, TypeError, AttributeError):
+        return {}
+
+
+def _prior_manifest_records(out: Path) -> dict[str, int]:
+    """``name -> GRIB2 message count`` from an existing fetch manifest.
+
+    The resume bar has to know what a file was *supposed* to contain,
+    and since the probe rule can land either a subset or a whole object
+    the certified subset count is no longer that answer on its own.  A
+    manifest written before this key existed simply yields nothing here
+    and the caller falls back to the certified constant, so old fetch
+    directories still resume.
+    """
+
+    path = out / FETCH_MANIFEST_NAME
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return {item["name"]: item["records"]
+                for item in payload.get("files", ())
+                if isinstance(item.get("name"), str)
+                and isinstance(item.get("records"), int)}
+    except (ValueError, TypeError, AttributeError):
+        return {}
+
+
+def _prior_manifest_bars(out: Path) -> dict[str, object]:
+    """``kind -> RecordBar`` reconstructed from an existing manifest.
+
+    A resume that finds every file already present downloads nothing and
+    therefore resolves no bars -- and the manifest it republishes was
+    being written from an empty map, so ``record_bars`` came out ``[]``
+    and an ``inventory_change_accepted: true`` from the original fetch
+    vanished.  DATA promises that acceptance stays recorded, and the
+    directory's files really were fetched under that bar, so the prior
+    bars seed this run's map and any kind actually re-resolved replaces
+    its own entry.
+
+    A malformed or foreign manifest yields nothing, exactly as the digest
+    and record maps above do: worst case the provenance is no worse than
+    it is today.
+    """
+
+    from gpuwm.fetch_bars import RecordBar
+
+    path = out / FETCH_MANIFEST_NAME
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        bars: dict[str, object] = {}
+        for item in payload.get("record_bars", ()):
+            kind = item["kind"]
+            bars[kind] = RecordBar(
+                kind=kind, expected=int(item["expected"]),
+                certified=int(item["certified"]),
+                derived=None if item.get("derived") is None
+                else int(item["derived"]))
+        return bars
+    except (ValueError, TypeError, AttributeError, KeyError):
         return {}
 
 
@@ -904,6 +1190,39 @@ def _quarantine_rejected(dest: Path, progress, label: str) -> None:
              f"{aside.name}")
 
 
+def _quarantine_inventory_payload(dest: Path, out: Path, entry: dict,
+                                  progress, label: str) -> str:
+    """Set aside a payload the record bar is about to refuse.
+
+    Returns the sentence the refusal prints about the disk.  Two things
+    have to be true afterwards: no unverified GRIB is left where a
+    consumer would read it as a fetch product, and the message says
+    where the bytes went -- nothing is ever deleted, so an operator who
+    accepts the change keeps the evidence of what arrived.
+
+    The ``.idx`` the backbone kept beside the object goes with it: it is
+    the very index whose census disagreed, and it is what a later
+    ordinary run would otherwise resume against.
+    """
+
+    moved: list[str] = []
+    for path in (dest, out / entry["idx_name"] if entry.get("idx_name")
+                 else None):
+        if path is None or not path.is_file():
+            continue
+        aside = path.with_name(f"{path.name}.inventory-change-"
+                               f"{time.time_ns()}")
+        os.replace(path, aside)
+        moved.append(aside.name)
+    if not moved:
+        return "Nothing was left on disk."
+    progress(f"fetch {label}: quarantined {', '.join(moved)}")
+    return (f"The transfer had already completed, so the payload is on "
+            f"disk; it has been moved aside as {', '.join(moved)} in "
+            f"{out} and no manifest was written, so nothing downstream "
+            f"will read it as a fetch product.  Nothing was deleted.")
+
+
 def _validate_hrrr_area(area: Area) -> None:
     if (area.lat_south < HRRR_CONUS_LAT[0]
             or area.lat_north > HRRR_CONUS_LAT[1]
@@ -914,6 +1233,251 @@ def _validate_hrrr_area(area: Area) -> None:
             f"(lat {HRRR_CONUS_LAT[0]}..{HRRR_CONUS_LAT[1]}, "
             f"lon {HRRR_CONUS_LON[0]}..{HRRR_CONUS_LON[1]}); "
             "use --source gfs for domains outside CONUS")
+
+
+def resolve_fetch_engine(requested: str, *, progress=print
+                         ) -> tuple[str, Path | None]:
+    """Resolve ``--engine`` to ``('rust', binary)`` or ``('python', None)``.
+
+    ``rust`` is explicit and fails loudly when the backbone is not
+    built; ``auto`` prefers it silently when it is there and falls
+    through to the Python transport with one line of explanation when it
+    is not.  ``python`` never looks.
+    """
+
+    if requested not in FETCH_ENGINES:
+        raise ValueError(f"unknown fetch engine {requested!r}; expected one "
+                         f"of {FETCH_ENGINES}")
+    if requested == "python":
+        return "python", None
+
+    from gpuwm import rustwx_fetch
+
+    binary = rustwx_fetch.find_fetch_bin()
+    if binary is None:
+        if requested == "rust":
+            raise ValueError(
+                "--engine rust needs the vendored fetch backbone, which is "
+                f"not built.\n  {rustwx_fetch.fetch_remedy()}")
+        return "python", None
+    ok, evidence = rustwx_fetch.probe_fetch_bin(binary)
+    if not ok:
+        if requested == "rust":
+            raise ValueError(f"--engine rust: {binary} -- {evidence}")
+        progress(f"fetch: the rust backbone at {binary} is unusable "
+                 f"({evidence}); using the Python transport")
+        return "python", None
+    return "rust", binary
+
+
+def _rw_fetch_hrrr(*, binary: Path, cycle: datetime, hour: int, kind: str,
+                   host: str, mode: str, out: Path,
+                   cache_dir: Path | None, progress) -> dict:
+    """One HRRR product through the Rust backbone; returns its record.
+
+    The backbone names each object after the URL it came from, so the
+    atmosphere lands under the name ArWen already uses and only the soil
+    product -- carved out of ``wrfprs`` -- needs renaming afterwards.
+    """
+
+    from tools import download_hrrr_native_subset as range_transport
+    from gpuwm import rustwx_fetch
+
+    selectors = (range_transport.atmosphere_selectors() if kind == "atmosphere"
+                 else range_transport.soil_selectors())
+    patterns = out / f".rw-fetch-{kind}-f{hour:02d}.selectors"
+    rustwx_fetch.write_pattern_file(patterns, selectors)
+    try:
+        record = rustwx_fetch.run_fetch(
+            binary, model="hrrr", date=f"{cycle:%Y%m%d}", cycle=cycle.hour,
+            hours=(hour,), product=RW_FETCH_HRRR_PRODUCTS[kind],
+            source=RW_FETCH_SOURCES[host], mode=mode, out=out,
+            pattern_file=patterns,
+            exclusions=(range_transport.ACCUMULATION_EXCLUSION,),
+            cache_dir=cache_dir, keep_idx=True)
+    except RuntimeError as error:
+        # A selector that matches nothing is this host publishing an
+        # inventory we do not recognise, not a network fault; the caller
+        # may legitimately try the next host.
+        if "matched no index record" in str(error):
+            raise range_transport.IndexInventoryError(str(error)) from error
+        raise
+    finally:
+        patterns.unlink(missing_ok=True)
+    if len(record["files"]) != 1:
+        raise RuntimeError(
+            f"rw_fetch returned {len(record['files'])} files for one "
+            "forecast hour")
+    entry = record["files"][0]
+    progress(f"fetch hrrr f{hour:02d} {kind}: {entry['name']} "
+             f"{entry['bytes']:,} B in {entry['wall_seconds']:.1f} s "
+             f"({entry['source']}, {entry['mode']} -- "
+             f"{entry['mode_reason']})")
+    return entry
+
+
+def _expand_selector(selector: str):
+    """``A|B:LEVEL`` -> ``[('A', 'LEVEL'), ('B', 'LEVEL')]``.
+
+    The alternation is how one selector covers two provider spellings of
+    the same record (``CLMR`` on AWS, ``CLWMR`` on NOMADS).
+    """
+
+    variable, _, level = selector.partition(":")
+    return [(spelling.strip(), level if _ else None)
+            for spelling in variable.split("|")]
+
+
+def count_selectors_in_index(index_text: str, selectors: tuple[str, ...],
+                             exclusion: str | None = None) -> int:
+    """How many ``.idx`` records the exact ``VAR:LEVEL`` selectors take.
+
+    Exact on both columns, and skipping any line carrying ``exclusion``
+    -- the same rule the Rust backbone applies, so the derived bar and
+    the transfer agree by construction.
+    """
+
+    wanted = {f"{spelling}:{level}" if level is not None else spelling
+              for selector in selectors
+              for spelling, level in _expand_selector(selector)}
+    matched = 0
+    for line in index_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if exclusion is not None and exclusion in stripped:
+            continue
+        fields = stripped.rstrip(":").split(":")
+        if len(fields) < 6:
+            continue
+        if f"{fields[3]}:{fields[4]}" in wanted:
+            matched += 1
+    return matched
+
+
+def _hrrr_derived_bar(entry: dict, *, kind: str, out: Path) -> int | None:
+    """The live selection count behind one Rust HRRR transfer.
+
+    In ``idx-subset`` mode the backbone selected the records itself and
+    reports how many.  In ``full-file`` mode nothing was selected -- the
+    whole object landed -- so the selection census is recomputed from
+    the index the backbone kept beside it, but **only** when that index
+    was proven to cover the whole object.  A short index is exactly why
+    the full file was taken; counting a selection out of it would report
+    a deficit that is an artefact of the index, not of the data.  With
+    no complete index the bar cannot be derived; the certified constant
+    stands in, :func:`gpuwm.fetch_bars.resolve_bar` says so, and the
+    fail-closed ``hrrr_grib2_bridge`` remains the completeness gate --
+    it selects by exact field identity and refuses a file whose
+    inventory it cannot satisfy.
+    """
+
+    if entry["mode"] == "idx-subset":
+        return entry.get("selected_record_count")
+    if entry.get("probe", {}).get("idx_covers_object") is not True:
+        return None
+    index_name = entry.get("idx_name")
+    if not index_name:
+        return None
+    index_path = out / index_name
+    if not index_path.is_file():
+        return None
+    from tools import download_hrrr_native_subset as range_transport
+
+    selectors = (range_transport.atmosphere_selectors() if kind == "atmosphere"
+                 else range_transport.soil_selectors())
+    return count_selectors_in_index(
+        index_path.read_text(encoding="utf-8"), selectors,
+        range_transport.ACCUMULATION_EXCLUSION)
+
+
+def _download_one_hrrr_product(
+        *, engine: str, engine_bin: Path | None, mode: str,
+        cycle: datetime, hour: int, kind: str, host: str, url: str,
+        dest: Path, dest_name: str, source_name: str, out: Path,
+        label: str, cache_dir: Path | None, workers: int, retries: int,
+        bar_kind: str, certified: int, accept_inventory_change: bool,
+        progress):
+    """Download one HRRR product from one host; ``(bar, url)``.
+
+    Raises
+    :class:`tools.download_hrrr_native_subset.IndexInventoryError` when
+    *this host's* published index does not carry the expected inventory,
+    which the caller answers by trying the next host.
+    """
+
+    from gpuwm.fetch_bars import resolve_bar
+    from tools import download_hrrr_native_subset as range_transport
+
+    if engine == "rust":
+        entry = _rw_fetch_hrrr(
+            binary=engine_bin, cycle=cycle, hour=hour, kind=kind,
+            host=host, mode=mode, out=out, cache_dir=cache_dir,
+            progress=progress)
+        url = entry["grib_url"]
+        landed = out / entry["name"]
+        if landed != dest:
+            # Only the soil product needs renaming: it is carved out of
+            # wrfprs and ArWen files it under its own name.
+            os.replace(landed, dest)
+        # The census can only be read after the object has landed, so a
+        # tripped tripwire here refuses AFTER a payload exists.  Quarantine
+        # it first, then let the refusal say what is actually on disk --
+        # the alternative is a manifestless directory the next ordinary
+        # run also refuses, under a message swearing nothing was
+        # downloaded.
+        bar = resolve_bar(
+            bar_kind, _hrrr_derived_bar(entry, kind=kind, out=out),
+            accept_inventory_change=accept_inventory_change,
+            progress=progress,
+            on_refusal=lambda: _quarantine_inventory_payload(
+                dest, out, entry, progress, f"hrrr {label}"))
+        if entry["mode"] == "idx-subset":
+            expected_messages: int | None = bar.expected
+        else:
+            # The whole object landed: its census is the index's record
+            # count, not the selection's.
+            expected_messages = (
+                entry.get("probe", {}).get("idx_record_count") or None)
+        observed = count_grib2_messages(dest)
+        if expected_messages is not None and observed != expected_messages:
+            _quarantine_rejected(dest, progress, f"hrrr {label}")
+            raise ValueError(
+                f"downloaded {dest_name} carries {observed} GRIB2 messages, "
+                f"expected {expected_messages} ({entry['mode']} transfer); "
+                "the file has been moved aside, nothing was deleted")
+        return bar, url
+
+    request = range_transport.ProductRequest(
+        url=url,
+        index_url=url + ".idx",
+        index_path=out / f"{source_name}.idx",
+        destination=dest,
+        kind=kind,
+    )
+    # The selection itself is the derivation here: with the count clause
+    # left on, an inventory change is refused inside the transport with
+    # a message naming exactly what moved; with it accepted, the live
+    # selection count becomes the bar.
+    range_transport._download_product(
+        request, workers=workers, retries=retries,
+        expected_count=None if accept_inventory_change else certified)
+    observed = count_grib2_messages(dest)
+    # An unaccepted change is normally refused inside the transport,
+    # before any range GET.  Should one ever reach here the payload has
+    # landed, so this refusal quarantines it and tells the truth too.
+    bar = resolve_bar(bar_kind, observed,
+                      accept_inventory_change=accept_inventory_change,
+                      progress=progress,
+                      on_refusal=lambda: _quarantine_inventory_payload(
+                          dest, out, {"idx_name": f"{source_name}.idx"},
+                          progress, f"hrrr {label}"))
+    if observed != bar.expected:
+        raise ValueError(
+            f"downloaded {dest_name} carries {observed} GRIB2 messages, "
+            f"expected {bar.expected}; the upstream .idx inventory has "
+            "drifted")
+    return bar, url
 
 
 def _wait_for_hrrr_product(*, cycle: datetime, hour: int, product: str,
@@ -957,7 +1521,11 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
                wait: bool = False,
                wait_timeout_s: float = HRRR_WAIT_TIMEOUT_DEFAULT_MINUTES * 60,
                probe=None, sleeper=time.sleep,
-               clock=time.monotonic) -> Path:
+               clock=time.monotonic,
+               engine: str = "python", engine_bin: Path | None = None,
+               mode: str = "auto", cache_dir: Path | None = None,
+               accept_inventory_change: bool = False,
+               transport_fallback: tuple[str, ...] = ()) -> Path:
     """Byte-range download the native HRRR subset series into ``out``.
 
     Reuses the proven ``.idx`` selection/range transport in
@@ -982,12 +1550,45 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
     prefix -- so a re-run of the same command resumes instead of
     refusing -- and a ``RuntimeError`` reports exactly what was and was
     not fetched.
+
+    ``engine`` selects the downloader: ``'python'`` is the stdlib
+    byte-range transport in :mod:`tools.download_hrrr_native_subset`,
+    ``'rust'`` the vendored ``rw_fetch`` backbone (parallel range GETs,
+    the cross-process NOMADS rate governor, a disk cache).  ``mode`` is
+    the byte transport the backbone uses -- under ``'auto'`` a lagging
+    or short ``.idx`` lands the **whole** object instead of a subset,
+    which is bigger on disk and still exactly what
+    ``hrrr_grib2_bridge`` wants, because that bridge selects by field
+    identity rather than by file size.
+
+    ``transport_fallback`` lists further hosts to try, in order, when
+    the chosen one publishes an index whose inventory this ArWen does
+    not recognise.  The two hosts do **not** publish identical index
+    vocabularies -- see ``download_hrrr_native_subset.FIELD_ALIASES`` --
+    and a host that has genuinely changed something is a reason to move
+    on with an explanation rather than to abort a fetch the other host
+    can serve.  Network faults remain the transport's own to retry.
     """
 
+    from gpuwm.fetch_bars import resolve_bar
     from tools import download_hrrr_native_subset as range_transport
 
+    if engine not in FETCH_ENGINES or engine == "auto":
+        raise ValueError(
+            "fetch_hrrr needs a resolved engine ('rust' or 'python'); the "
+            "CLI resolves 'auto' first via resolve_fetch_engine")
+    if mode not in FETCH_MODES:
+        raise ValueError(f"unknown fetch mode {mode!r}; expected one of "
+                         f"{FETCH_MODES}")
+    if engine == "rust" and engine_bin is None:
+        raise ValueError("engine 'rust' needs the resolved rw_fetch binary")
+    bar_kinds = {"atmosphere": "hrrr-atmosphere", "soil": "hrrr-soil"}
     expected_counts = {"atmosphere": range_transport.ATMOSPHERE_RECORD_COUNT,
                        "soil": range_transport.SOIL_RECORD_COUNT}
+    # Seeded, not empty: a completed resume downloads nothing and would
+    # otherwise republish record_bars as [], erasing an accepted
+    # inventory change the directory's files really were fetched under.
+    bars: dict[str, object] = {}
     candidates = (("nomads", "s3") if transport == "auto"
                   else (transport,))
     for name in candidates:
@@ -1005,6 +1606,8 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
         _validate_hrrr_area(area)
     out.mkdir(parents=True, exist_ok=True)
     prior_digests = _prior_manifest_digests(out)
+    prior_records = _prior_manifest_records(out)
+    bars.update(_prior_manifest_bars(out))
     deadline = clock() + wait_timeout_s
     files: list[dict] = []
     complete_hours: list[int] = []
@@ -1028,6 +1631,10 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
             "(idx subsetting selects records, not areas); NOMADS and S3 "
             "serve byte-identical files, so per-file transports may mix "
             "across resumed runs without weakening the digest bars")
+        payload["engine"] = engine
+        payload["mode"] = mode
+        payload["record_bars"] = [
+            bar.as_manifest() for bar in bars.values()]
         return write_fetch_manifest(out, payload)
 
     for hour in hours:
@@ -1038,7 +1645,10 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
                 ("atmosphere", atmosphere, atmosphere, "wrfnat"),
                 ("soil", pressure, soil, "wrfprs")):
             dest = out / dest_name
-            expected = expected_counts[kind]
+            # A prior full-file transfer recorded its own census; only
+            # fall back to the certified subset count when the manifest
+            # predates that key.
+            expected = prior_records.get(dest_name, expected_counts[kind])
             label = f"f{hour:02d} {kind}"
             digest = None
             if dest.exists() and not force:
@@ -1079,24 +1689,47 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
                             "re-running the same command resumes the "
                             "verified files and extends the window.")
                     chosen = found
-                url = hrrr_object_url(cycle, hour, product,
-                                      transport=chosen)
-                request = range_transport.ProductRequest(
-                    url=url,
-                    index_url=url + ".idx",
-                    index_path=out / f"{source_name}.idx",
-                    destination=dest,
-                    kind=kind,
-                )
+                # Hosts do not publish identical index vocabularies (see
+                # download_hrrr_native_subset.FIELD_ALIASES), so a host
+                # whose inventory this ArWen does not recognise is a
+                # reason to move to the next one with an explanation --
+                # not to abort a fetch the other host can serve.
+                attempts = (chosen,) + tuple(
+                    host for host in transport_fallback if host != chosen)
                 started = time.perf_counter()
-                range_transport._download_product(
-                    request, workers=workers, retries=retries)
-                observed = count_grib2_messages(dest)
-                if observed != expected:
-                    raise ValueError(
-                        f"downloaded {dest_name} carries {observed} GRIB2 "
-                        f"messages, expected {expected}; the upstream "
-                        ".idx inventory has drifted")
+                for position, host in enumerate(attempts):
+                    remaining = attempts[position + 1:]
+                    chosen = host
+                    url = hrrr_object_url(cycle, hour, product,
+                                          transport=host)
+                    try:
+                        bar, url = _download_one_hrrr_product(
+                            engine=engine, engine_bin=engine_bin, mode=mode,
+                            cycle=cycle, hour=hour, kind=kind, host=host,
+                            url=url, dest=dest, dest_name=dest_name,
+                            source_name=source_name, out=out, label=label,
+                            cache_dir=cache_dir, workers=workers,
+                            retries=retries, bar_kind=bar_kinds[kind],
+                            certified=expected_counts[kind],
+                            accept_inventory_change=accept_inventory_change,
+                            progress=progress)
+                    except range_transport.IndexInventoryError as error:
+                        if not remaining:
+                            raise
+                        # The refused host's .idx is already on disk and
+                        # the next host's will differ; move it aside so
+                        # the byte-identity guard has a clean slate.
+                        stale = out / f"{source_name}.idx"
+                        if stale.is_file():
+                            _quarantine_rejected(
+                                stale, progress, f"hrrr {label} index")
+                        progress(
+                            f"fetch hrrr {label}: {host} publishes an index "
+                            f"this ArWen does not recognise ({error}); "
+                            f"falling back to {remaining[0]}")
+                        continue
+                    bars[bar_kinds[kind]] = bar
+                    break
                 digest = sha256_file(dest)
                 progress(f"fetch hrrr {label}: {dest_name} "
                          f"{dest.stat().st_size:,} B in "
@@ -1106,6 +1739,7 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
                 "name": dest_name, "role": kind, "forecast_hour": hour,
                 "bytes": dest.stat().st_size, "sha256": digest,
                 "url": url, "transport": chosen,
+                "records": count_grib2_messages(dest),
             })
         complete_hours.append(hour)
     return publish_manifest(hours)
@@ -1449,6 +2083,8 @@ def fetch_main(args) -> int:
                 ("--transport", args.transport),
                 ("--wait-for", args.wait_for or None),
                 ("--wait-timeout-minutes", args.wait_timeout_minutes),
+                ("--engine", args.engine),
+                ("--mode", args.mode),
             ) if value is not None)
         if hrrr_only:
             raise ValueError(
@@ -1465,12 +2101,12 @@ def fetch_main(args) -> int:
         "--manifest-out": args.manifest_out,
     }
     if args.author_front_door_manifest:
-        if source != "gfs":
+        if source not in GFS_CONTAINER_SOURCES:
             raise ValueError(
-                "--author-front-door-manifest applies to --source gfs "
-                "only (the HRRR front door consumes the fetched "
-                "SHA256SUMS directly; its handoff line is printed after "
-                "every HRRR fetch)")
+                "--author-front-door-manifest applies to --source "
+                f"{'/'.join(GFS_CONTAINER_SOURCES)} only (the HRRR front "
+                "door consumes the fetched SHA256SUMS directly; its "
+                "handoff line is printed after every HRRR fetch)")
         required = ("--bridge", "--wps-namelist", "--experiment-config")
         absent = [flag for flag in required if author_roles[flag] is None]
         if absent or args.out is None:
@@ -1497,7 +2133,7 @@ def fetch_main(args) -> int:
             experiment_config=args.experiment_config,
             static_input=args.static_input,
             static_receipt=args.static_receipt,
-            manifest_out=args.manifest_out)
+            manifest_out=args.manifest_out, source=source)
         return 0
     if source == "era5" and args.validate:
         expected = None
@@ -1516,8 +2152,13 @@ def fetch_main(args) -> int:
             "era5 --validate mode, and gfs --author-front-door-manifest "
             "on an already-fetched --out, which needs neither --cycle "
             "nor --hours)")
-    if args.hours < 1:
-        raise ValueError("--hours must be a positive forecast window")
+    if args.hours < 0:
+        raise ValueError("--hours cannot be negative")
+    if args.hours < 1 and source != "gdas":
+        raise ValueError(
+            "--hours must be a positive forecast window; only "
+            "--source gdas takes --hours 0, because it is certified as "
+            "an analysis-only source")
 
     if source == "era5":
         if area is None:
@@ -1533,25 +2174,35 @@ def fetch_main(args) -> int:
             area=area, out=args.out, cadence=cadence)
         return 0
 
-    if source == "gfs":
+    if source in GFS_CONTAINER_SOURCES:
         if area is None:
             raise ValueError(
-                "gfs fetch requires --area or --point --radius-km: the "
-                "NOMADS subsetter needs a subregion (fetching the whole "
-                "globe is never what an experiment needs)")
-        cadence = args.cadence if args.cadence is not None else 3
-        hours = gfs_forecast_hours(args.hours, cadence)
+                f"{source} fetch requires --area or --point --radius-km: "
+                "the NOMADS subsetter needs a subregion (fetching the "
+                "whole globe is never what an experiment needs)")
+        if source == "gdas":
+            if args.cadence is not None:
+                raise ValueError(
+                    "GDAS is certified as an analysis-only source (one "
+                    "time, f000); --cadence does not apply")
+            hours = gdas_forecast_hours(args.hours)
+        else:
+            cadence = args.cadence if args.cadence is not None else 3
+            hours = gfs_forecast_hours(args.hours, cadence)
         if args.cycle == "latest":
-            cycle = resolve_latest_cycle("gfs", hours[-1])
-            print(f"fetch gfs: latest complete cycle is "
+            cycle = resolve_latest_cycle(source, hours[-1])
+            print(f"fetch {source}: latest complete cycle is "
                   f"{cycle:%Y-%m-%dT%H}Z")
         else:
             cycle = parse_cycle(args.cycle, source)
+            require_published_cycle(source, cycle, hours[-1])
         if not args.force_refetch:
-            check_prior_request(args.out, source="gfs", cycle=cycle,
+            check_prior_request(args.out, source=source, cycle=cycle,
                                 area=area)
-        manifest = fetch_gfs(cycle=cycle, hours=hours, area=area,
-                             out=args.out, force=args.force_refetch)
+        manifest = fetch_gfs(
+            cycle=cycle, hours=hours, area=area, out=args.out,
+            force=args.force_refetch, source=source,
+            accept_inventory_change=args.accept_inventory_change)
     elif source == "hrrr":
         if args.cadence is not None:
             raise ValueError("HRRR is hourly; --cadence does not apply")
@@ -1562,6 +2213,19 @@ def fetch_main(args) -> int:
                 and args.wait_timeout_minutes <= 0:
             raise ValueError("--wait-timeout-minutes must be positive")
         transport = args.transport if args.transport is not None else "auto"
+        mode = args.mode if args.mode is not None else "auto"
+        # Only an unpinned request may wander between hosts; an operator
+        # who named --transport gets that host or an error.
+        transport_fallback = (
+            tuple(HRRR_TRANSPORTS[1:]) if transport == "auto" else ())
+        engine, engine_bin = resolve_fetch_engine(
+            args.engine if args.engine is not None else "auto")
+        if engine == "python" and mode != "auto":
+            raise ValueError(
+                f"--mode {mode} needs the rust fetch backbone: the Python "
+                "transport only does .idx range subsets.  Build the "
+                "backbone (cd tools/rustwx && cargo build --release "
+                "--locked --offline) or drop --mode.")
         if args.cycle == "latest":
             if args.wait_for:
                 # Wait mode wants the cycle currently PUBLISHING, so the
@@ -1577,6 +2241,8 @@ def fetch_main(args) -> int:
                       f"{cycle:%Y-%m-%dT%H}Z")
         else:
             cycle = parse_cycle(args.cycle, source)
+            require_published_cycle(
+                source, cycle, hrrr_forecast_hours(args.hours, cycle)[-1])
         hours = hrrr_forecast_hours(args.hours, cycle)
         if not args.force_refetch:
             check_prior_request(args.out, source="hrrr", cycle=cycle,
@@ -1589,10 +2255,17 @@ def fetch_main(args) -> int:
         timeout_minutes = (args.wait_timeout_minutes
                            if args.wait_timeout_minutes is not None
                            else HRRR_WAIT_TIMEOUT_DEFAULT_MINUTES)
-        manifest = fetch_hrrr(cycle=cycle, hours=hours, area=area,
-                              out=args.out, force=args.force_refetch,
-                              transport=transport, wait=args.wait_for,
-                              wait_timeout_s=timeout_minutes * 60.0)
+        print(f"fetch hrrr: engine {engine}"
+              + (f" ({engine_bin})" if engine_bin is not None else "")
+              + (f", mode {mode}" if engine == "rust" else ""))
+        manifest = fetch_hrrr(
+            cycle=cycle, hours=hours, area=area, out=args.out,
+            force=args.force_refetch, transport=transport,
+            wait=args.wait_for, wait_timeout_s=timeout_minutes * 60.0,
+            engine=engine, engine_bin=engine_bin, mode=mode,
+            cache_dir=args.cache_dir,
+            accept_inventory_change=args.accept_inventory_change,
+            transport_fallback=transport_fallback)
     else:
         raise ValueError(f"unknown fetch source {source!r}")
     print(f"fetch {source}: manifest {manifest}")
@@ -1608,10 +2281,10 @@ def fetch_main(args) -> int:
             experiment_config=args.experiment_config,
             static_input=args.static_input,
             static_receipt=args.static_receipt,
-            manifest_out=args.manifest_out)
+            manifest_out=args.manifest_out, source=source)
     else:
-        print("fetch gfs: next: author the front-door input manifest "
-              "with `gpuwm fetch --source gfs "
+        print(f"fetch {source}: next: author the front-door input "
+              f"manifest with `gpuwm fetch --source {source} "
               f"--author-front-door-manifest --out {args.out} "
               "--bridge GFS_GRIB2_BRIDGE_EXE --wps-namelist NAMELIST_WPS "
               "--experiment-config EXPERIMENT_TOML`")
@@ -1626,7 +2299,7 @@ FETCH_HINT_KEYS = frozenset({
     "source", "cycle", "hours", "area", "point", "radius_km", "out",
     "cadence",
 })
-_FETCH_HINT_SOURCES = ("gfs", "hrrr", "era5")
+_FETCH_HINT_SOURCES = ("gfs", "gdas", "hrrr", "era5")
 
 
 def validate_fetch_hints(table: dict, *, source: str) -> None:
@@ -1659,6 +2332,14 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
             raise ValueError(
                 f"{key} = {value!r} in [fetch] of {source} must be a "
                 "scalar (string or number)")
+    # A hint table that advertises a fetch this ArWen would refuse is a
+    # rotten hint: catch it at config load, in the same words the CLI
+    # would use, rather than at the download.
+    if table["source"] == "gdas":
+        hours = table.get("hours")
+        if isinstance(hours, (int, float)) and hours > GDAS_MAX_FORECAST_HOUR:
+            raise ValueError(
+                f"[fetch] of {source}: {gdas_capability_refusal(int(hours))}")
 
 
 def register_cli(subparsers) -> None:
@@ -1667,7 +2348,8 @@ def register_cli(subparsers) -> None:
         help="download initialization/boundary data (GFS/HRRR), or "
              "template + validate a manual ERA5 CDS retrieval")
     parser.add_argument(
-        "--source", required=True, choices=("gfs", "hrrr", "era5"),
+        "--source", required=True,
+        choices=("gfs", "gdas", "hrrr", "era5"),
         help="public data source")
     parser.add_argument(
         "--cycle", default=None, metavar="YYYY-MM-DDTHH|latest",
@@ -1675,7 +2357,8 @@ def register_cli(subparsers) -> None:
              "cycle from the AWS Open Data listing (gfs/hrrr only)")
     parser.add_argument(
         "--hours", type=int, default=None, metavar="N",
-        help="forecast window length: hours 0..N are fetched")
+        help="forecast window length: hours 0..N are fetched (gdas is "
+             "certified analysis-only, so it takes --hours 0)")
     parser.add_argument(
         "--area", default=None, metavar="LAT0,LON0,LAT1,LON1",
         help="bounding box corners in degrees (order free); allow several "
@@ -1727,6 +2410,36 @@ def register_cli(subparsers) -> None:
         help="move every existing file in --out aside (nothing is "
              "deleted) and re-download; required when re-fetching a "
              "different area/cycle into the same --out")
+    parser.add_argument(
+        "--engine", default=None, choices=FETCH_ENGINES,
+        help="hrrr only: which downloader moves the bytes.  'rust' is "
+             "the vendored rw_fetch backbone (16 MiB parallel range "
+             "GETs, .idx coalescing, the cross-process NOMADS rate "
+             "governor, a disk cache); 'python' is the stdlib transport "
+             "and always works; 'auto' (default) uses the backbone when "
+             "it is built")
+    parser.add_argument(
+        "--mode", default=None, choices=FETCH_MODES,
+        help="hrrr --engine rust only: the byte transport, a separate "
+             "axis from --transport's choice of host.  'auto' (default) "
+             "is the probe rule -- if the object is there and its .idx "
+             "is absent, malformed, or provably shorter than the "
+             "object, the whole file is taken; there are no time "
+             "constants in it.  'full-file' and 'idx-subset' force "
+             "either transport, and 'idx-subset' refuses rather than "
+             "silently degrading when the index cannot carry it")
+    parser.add_argument(
+        "--cache-dir", type=Path, default=None, metavar="DIR",
+        help="hrrr --engine rust only: wx-core disk cache root, keyed "
+             "by URL and byte range, so a re-run or an overlapping "
+             "window re-reads bytes instead of re-downloading them")
+    parser.add_argument(
+        "--accept-inventory-change", action="store_true",
+        help="proceed when the live provider inventory yields a "
+             "different record count than this ArWen was certified "
+             "against.  Without it such a mismatch is a refusal naming "
+             "both counts; with it the live count becomes the bar and "
+             "the fetch manifest records the acceptance")
     front = parser.add_argument_group(
         "GFS front-door manifest authoring",
         "gfs only: write the gpuwm-gfs-direct-input-manifest-v1 document "
@@ -1779,6 +2492,8 @@ __all__ = [
     "gfs_suggested_fetch_margin_deg",
     "hrrr_forecast_hours", "hrrr_object_url", "parse_area", "parse_cycle",
     "read_grib1_records", "register_cli", "resolve_hrrr_transport",
+    "cycle_probe_urls",
+    "require_published_cycle",
     "resolve_latest_cycle",
     "sha256_file", "validate_era5_files", "write_era5_request",
     "write_fetch_manifest",

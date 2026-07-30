@@ -62,7 +62,7 @@ leaf that calls `EXP`/`LOG`/`**` inside a soil- or snow-layer loop, check
 ## 1. Prerequisites
 
 ```
-WSL, gfortran 13.3.0, pinned tree /home/drew/wrf-stock-v461-gate-20260721
+WSL, gfortran 13.3.0, a pinned WRF v4.6.1 checkout ($WRF_TREE below)
   (commit d66e442fccc04111067e29274c9f9eaccc3cef28)
 sha256(phys/module_sf_noahmplsm.F)
   = bd592a5b7db29000e715250e3a7c779ffb5e0dcc356f6b5a7d9e1c9f69c55282
@@ -235,7 +235,7 @@ Extend `check_branch_coverage` with an assertion for each branch you listed.
 ```bash
 cd <worktree-root>
 bash tools/noahmp_wrf461_oracle/build_leaves.sh \
-     /home/drew/wrf-stock-v461-gate-20260721 /home/drew/nmp-leaves
+     "$WRF_TREE" /tmp/nmp-leaves
 ```
 
 The script fails closed, in this order: pristine hash, patch hash, patch
@@ -243,8 +243,8 @@ applies, patched hash, `check_visibility_patch.py`, compile, run, validate.
 On success copy the two CSVs into the repo and re-pin them:
 
 ```bash
-cp /home/drew/nmp-leaves/noahmp-leaves.csv \
-   /home/drew/nmp-leaves/noahmp-leaves-discrimination.csv \
+cp /tmp/nmp-leaves/noahmp-leaves.csv \
+   /tmp/nmp-leaves/noahmp-leaves-discrimination.csv \
    gpuwm/data/noahmp/oracle/
 sha256sum gpuwm/data/noahmp/oracle/noahmp-leaves*.csv
 ```
@@ -259,7 +259,7 @@ Only needed if you changed the patch (section 2b), but it is cheap:
 
 ```bash
 bash tools/noahmp_wrf461_oracle/build_visibility_crosscheck.sh \
-     /home/drew/wrf-stock-v461-gate-20260721 /home/drew/nmp-xcheck
+     "$WRF_TREE" /tmp/nmp-xcheck
 ```
 
 It compiles the pristine and patched modules and requires **every function

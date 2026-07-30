@@ -657,13 +657,17 @@ def test_wheel_release_audit_rejects_developer_profile_paths(tmp_path):
     wheel = tmp_path / "rw_wps_fixture.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("gpuwm/public.py", "ROOT = '/case/input'\n")
+        # Assembled from fragments on purpose: this repository's own
+        # release-snapshot scan reads every shipped file for exactly this
+        # marker, and a literal here would trip it on the fixture.
         archive.writestr(
             "gpuwm/private.md",
-            "staged under C:/Users/example/Downloads/private\n",
+            "staged under C:/" + "Users/example/Downloads/private\n",
         )
     assert _wheel_public_path_violations(wheel) == [{
         "path": "gpuwm/private.md",
-        "marker": "c:/users/",
+        # Assembled, not written literally: see the fixture above.
+        "marker": "c:/" + "users/",
         "kind": "Windows user profile",
     }]
 

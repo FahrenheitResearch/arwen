@@ -13,14 +13,16 @@ the shape of the path will not.
 ## 0. What you need
 
 - Python 3.11+, a Rust toolchain (`cargo`), git.
-- For the GPU forecast loop: an NVIDIA card with CUDA 12.x and the
+- For the GPU forecast loop: an NVIDIA card with CUDA 12.x/13.x
+  (tested through 13.0) and the
   `[gpu]` extra (CuPy). 8 GiB VRAM is enough for a first single-domain
   run; nest ladders are sized to your card in step 2.
 - Disk: budget several GB. In the acceptance transcript the whole tree
   (venvs, data, outputs) reached 7.6 GB, dominated by hourly output
   frames at ~198 MB each.
-- Static geography: a staged NCAR WPS_GEOG tree (~29 GB unpacked,
-  one-time download; see [DATA.md](DATA.md#static-geography-wps_geog)).
+- Static geography: the WPS_GEOG tree, staged by `gpuwm fetch-geog`
+  (~1.3 GB one-time download, ~16 GB unpacked; see
+  [DATA.md](DATA.md#static-geography-wps_geog)).
 
 ## 1. Install (measured: under 2 minutes with a warm cache)
 
@@ -33,7 +35,8 @@ the shape of the path will not.
 | `cargo build --release --locked --offline` in `tools/rustwx` (the production render engine; `--no-render` skips it) | 67 s from clean (measured 2026-07-29, same box; vendored workspace, no network) |
 | `gpuwm doctor` | seconds |
 
-One command does all of it -- `./install.sh` (POSIX) or `.\install.ps1`
+One command does all of it -- `bash install.sh` (POSIX; the universal
+form, mode-bit independent) or `.\install.ps1`
 (PowerShell) from the checkout root: venv, `[gpu,render]` extras, the
 offline Rust builds (the `tools/grib1_bridge` GRIB bridges and the
 `tools/rustwx` render engine; `--no-render` / `-NoRender` skips the
@@ -48,6 +51,7 @@ git clone https://github.com/FahrenheitResearch/arwen gpuwm && cd gpuwm
 python -m venv .venv && source .venv/bin/activate
 python -m pip install -e '.[gpu,render]'
 gpuwm fetch-tables
+gpuwm fetch-geog       # WPS_GEOG static tree: ~1.3 GB down, ~16 GB unpacked
 (cd tools/grib1_bridge && cargo build --release --locked --offline)
 (cd tools/rustwx && cargo build --release --locked --offline)
 gpuwm doctor
@@ -60,6 +64,7 @@ git clone https://github.com/FahrenheitResearch/arwen gpuwm; cd gpuwm
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 python -m pip install -e '.[gpu,render]'
 gpuwm fetch-tables
+gpuwm fetch-geog       # WPS_GEOG static tree: ~1.3 GB down, ~16 GB unpacked
 cd tools\grib1_bridge; cargo build --release --locked --offline; cd ..\..
 cd tools\rustwx; cargo build --release --locked --offline; cd ..\..
 gpuwm doctor
@@ -82,7 +87,7 @@ gpuwm domain --point 35.3,-97.5 --card 24gb --cycle 1999-05-03T12 \
 
 The wizard centers a nest ladder on your point and bisects the grid
 sizes through the real VRAM estimator until the projected machine peak
-fits your card's budget. Output on the 24 GB tier:
+fits your card's budget. Output on the 24 GB tier (Windows):
 
 ```
   domain    dx        mass grid      dt         resident
@@ -92,16 +97,46 @@ fits your card's budget. Output on the 24 GB tier:
   d04      0.500 km   288 x 236       5/2 s     1.74 GiB
   itemized alloc estimate 7.17 GiB; footprint projection 11.29 GiB
     x 1.75 observed peak envelope = 19.75 GiB
+    envelope factor: windows (measured, 1 WDDM run)
   budget 20.00 GiB (24 GiB card - 4 GiB reserve); headroom 0.25 GiB
 ```
+
+The same command on Linux prints `x 1.45 observed peak envelope` over a
+projection that drops two Windows-only pool constants, and sizes a much
+larger grid -- roughly one card tier's worth. Three instrumented Linux
+runs measured the true peak at 1.15-1.32x the itemized alloc estimate,
+against a Windows model that predicted 2.1x it
+([HARDWARE.md](HARDWARE.md)). `--card 12gb` is a Linux tier for exactly
+this reason.
 
 It emits the experiment TOML, a matching `namelist.wps`, and prints the
 exact `gpuwm fetch` command for the data it needs. `--ladder` picks the
 depth (`12`, `12-3`, `12-3-1`, `12-3-1-0.5`, or `auto`; the
 single-domain `12` ladder emits `restart_interval_s = 0`, the portable
 prepared-forecast contract); `--vram-gib N` covers cards between the
-named tiers. How the sizing model works and where the 1.75 factor
-comes from: [HARDWARE.md](HARDWARE.md).
+named tiers (`--card 12gb|16gb|24gb|32gb`). How the sizing model works and where each platform's
+envelope factor comes from: [HARDWARE.md](HARDWARE.md).
+
+The presets are shortcuts, not the whole product. `--root-dx KM` and
+`--chain R1,R2,...` build any ladder from an arbitrary root spacing and
+a chain of integer refinement ratios, sized by the same estimator fit
+loop and validated by the same `gpuwm check`:
+
+```bash
+gpuwm domain --point=35.3,-97.5 --card 24gb \
+    --root-dx 3 --chain 4 ...          # 3 km -> 750 m
+gpuwm domain --point=35.3,-97.5 --card 32gb \
+    --root-dx 3 --chain 3,3,3 ...      # 3 km -> 1 km -> 333 m -> 111 m
+```
+
+Root `dt` follows the same convention at any spacing (5 s per km, 2.5
+in the tropics) and is carried exactly, including half seconds, through
+WRF's rational clock keys. When any domain lands below 1 km with a 1-D
+PBL scheme active the wizard prints a **gray-zone advisory** -- not a
+refusal -- into both the file and stdout: below that spacing the largest
+boundary-layer eddies are partly resolved by the dynamics while the PBL
+scheme parameterizes them as if they were not, and the proper tool at
+those scales is a 3-D turbulence closure (SASE, planned).
 
 The wizard works worldwide: it picks the projection from your point's
 latitude -- Mercator below 25 degrees, hemisphere-correct Lambert
@@ -142,7 +177,68 @@ GFS/HRRR data feeds `rw-wps`, the native initialization front door
 fields, decode, and initialization on the deterministic Rust CPU
 backend), which emits `wrfinput_d01..dNN` + `wrfbdy_d01`. Those files
 drive unchanged stock WRF ([WRF-INTEROP.md](WRF-INTEROP.md)) and the
-downscale tool; the config-driven GPU loop below runs from ERA5 today.
+downscale tool. The config-driven `gpuwm run` loop in section 5 below
+runs from ERA5 only -- **GFS and HRRR reach the GPU through a different
+runner, documented in section 3a.**
+
+## 3a. GFS -> GPU forecast: the complete route
+
+`gpuwm run` refuses a GFS config by design (no `[case_data]` table).
+The GPU forecast for a prepared GFS product is launched by a runner
+under `tools/`, and **the order below matters**: the runner binds the
+experiment config into the prepared cache, so materializing the physics
+*after* preprocessing means preprocessing again.
+
+Three first-time-user pilots ran this route on rented Linux 4090s and
+4070s on 2026-07-30; the ordering, the flags, and the timings are
+theirs.
+
+```bash
+# 1. Size the domain.  --physics-profile emits a config the runner
+#    accepts as written; without it you get the product default suite,
+#    which the SINGLE-domain runner refuses (the wizard says so, and
+#    lists what every profile actually runs).
+gpuwm domain --point=35.3,-97.5 --card 24gb --ladder 12     --source gfs --cycle latest --hours 6     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --out configs/myarea.toml
+
+# 2. Materialize the exact physics authority.  BEFORE rw-wps, not after.
+python tools/prepared_single_domain_forecast.py --materialize-authorities     --source gfs     --base-experiment-config configs/myarea.toml     --base-wps-namelist configs/myarea.namelist.wps     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --output-directory work/myarea-authority
+
+# 3. Fetch, then author the front-door manifest.  Step 3 prints the
+#    complete rw-wps command with its digest already filled in.
+gpuwm fetch --source gfs --cycle <RESOLVED> --hours 6     --area=<THE BOX THE WIZARD PRINTED> --out data/myarea
+gpuwm fetch --source gfs --author-front-door-manifest --out data/myarea     --bridge tools/grib1_bridge/target/release/gfs_grib2_bridge     --wps-namelist work/myarea-authority/namelist.wps     --experiment-config work/myarea-authority/experiment.toml
+
+# 4. Run the front door (paste the line step 3 printed, plus these).
+rw-wps ... --geog-root $GPUWM_CASE_DATA_ROOT/WPS_GEOG     --output-root out/myarea-init
+
+# 5. Run the forecast.  rw-wps finishes by printing THIS command with
+#    all three digests filled in -- copy it rather than retyping.
+python tools/prepared_single_domain_forecast.py     --source gfs --prepared-root out/myarea-init     --proof-sha256 <printed> --source-manifest-sha256 <printed>     --prepared-content-sha256 <printed>     --experiment-config work/myarea-authority/experiment.toml     --wps-namelist work/myarea-authority/namelist.wps     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --io-mode history --outdir out/myarea-run
+
+# 6. Render.
+gpuwm render out/myarea-run/wrfout/<frame> --out out/myarea-png
+```
+
+Measured on a Linux RTX 4070 12 GB (node 3, GFS 2026-07-29 18Z, single
+domain 342x272x49 at 12 km):
+
+| stage | wall |
+|---|---:|
+| `gpuwm fetch` (3 files, 42.2 MB) | 50.3 s |
+| `--materialize-authorities` | < 1 s |
+| `rw-wps` (30-arcsec static + decode + init, 48 CPU cores) | 2 m 52 s |
+| GPU forecast, 6 simulated hours, 2160 steps at dt 10 s | **523 s** |
+| `gpuwm render` (4 products, 1 frame) | 21.8 s |
+
+**Multi-domain** products go to `tools/prepared_domain_tree_forecast.py`
+instead, which takes `--prepared-root` + `--preparation-receipt-sha256`
+and has no physics-profile whitelist -- it runs the wizard's default
+suite as written. `rw-wps` names whichever runner applies to the proof
+it just wrote, with the digests filled in.
+
+**Watch progress** at `<outdir>/evidence/progress.json` (domain tree) or
+`<outdir>/progress.json` (single domain), not the `run-progress.json`
+that section 5's config-driven route writes.
 
 ## 4. Preflight (measured: 9.2 s)
 
@@ -179,7 +275,10 @@ While it runs:
   newest durable output frame, newest checkpoint. It is rewritten
   atomically through the run. Do not watch a redirected stdout -- it is
   block-buffered and can stay empty until exit while the run is
-  healthy.
+  healthy. This filename belongs to the config-driven `gpuwm run`
+  route only; the `tools/` runners of section 3 write
+  `<outdir>/evidence/progress.json` (domain tree) or
+  `<outdir>/progress.json` (single domain).
 - On failure the supervisor writes `failure-capsule.json` beside it
   with the exception, the step, and the state needed to report or
   resume.
@@ -211,6 +310,14 @@ unavailable.
 Charts draw coast/state/county basemaps, and sub-hourly output
 cadences are stamped exactly (`valid_..._lead_003h30m00s`) in filename
 and subtitle.  The first line of output names the engine in use.
+
+Every filename carries the domain and its resolution
+(`..._d02-3km_composite_reflectivity_...`; sub-kilometre nests read as
+`_d05-111m_`), so several nests of one run render into one directory
+without colliding, and the plot subtitle carries the same spacing as
+`Δx 3 km`.  Plots are labelled **ArWen**; pass `--source-label` when
+rendering wrfout files this model did not produce, so the sheet does
+not claim them.
 
 Without that build, the matplotlib fallback renders four products per
 frame -- composite reflectivity (NWS color scale), 2 m temperature,

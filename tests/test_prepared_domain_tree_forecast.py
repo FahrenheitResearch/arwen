@@ -521,3 +521,41 @@ def test_preflight_binds_every_domain_and_detects_identity_drift(tmp_path, monke
             experiment_config_sha256=_sha(config),
         )
 
+
+
+def test_the_tree_runner_uses_the_shared_radiation_workspace_predicate():
+    """A local restatement of the predicate killed legacy-RRTMG trees.
+
+    `any(radiation_scheme_ids == (4, 4))` is also true for the LEGACY
+    RRTMG variant, which runs one domain at a time and holds no
+    persistent workspace -- so the tree runner allocated one the
+    preflight had not priced and died on the memory-ledger drift guard,
+    "shared radiation allocation differs from preflight".  That is the
+    exact failure `uses_modern_rrtmgp_workspace`'s docstring predicts,
+    which is the argument for calling it rather than restating it.
+    """
+    import inspect
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from gpuwm.core.model import uses_modern_rrtmgp_workspace
+    from gpuwm.config import radiation_scheme_ids
+    from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY
+
+    source = Path(
+        inspect.getfile(runner)).read_text(encoding="utf-8")
+    assert "if uses_modern_rrtmgp_workspace(exp)" in source, (
+        "the tree runner must ask the shared helper")
+    assert "if any(radiation_scheme_ids(domain.run) == (4, 4)" not in source
+
+    # And the two predicates genuinely disagree on a legacy-RRTMG tree,
+    # which is why the restatement was a bug rather than a duplicate.
+    def _exp(variant):
+        domains = [SimpleNamespace(run=SimpleNamespace(
+            ra_physics=0, ra_lw_physics=4, ra_sw_physics=4,
+            ra_rrtmg_variant=variant))]
+        return SimpleNamespace(domains=domains)
+
+    legacy = _exp(RRTMG_VARIANT_LEGACY)
+    assert all(radiation_scheme_ids(d.run) == (4, 4) for d in legacy.domains)
+    assert uses_modern_rrtmgp_workspace(legacy) is False

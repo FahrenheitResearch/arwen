@@ -755,6 +755,8 @@ fn prepare_non_ecape_hour(
                 output_height: request.output_height,
                 png_compression: request.png_compression,
                 place_label_overlay: None,
+                subtitle_left_suffix: None,
+                subtitle_right_override: None,
             };
             Some(Arc::new(prepare_hrrr_windowed_batch_with_context(
                 &windowed_request,
@@ -1037,6 +1039,8 @@ fn run_prepared_non_ecape_domain(
             output_height: request.output_height,
             png_compression: request.png_compression,
             place_label_overlay: request.place_label_overlay.clone(),
+            subtitle_left_suffix: None,
+            subtitle_right_override: None,
         });
 
     let lane_result = run_fanout3(

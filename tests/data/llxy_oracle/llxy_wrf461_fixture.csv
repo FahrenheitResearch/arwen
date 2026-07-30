@@ -1,5 +1,5 @@
 # llxy_wrf461_fixture.csv -- WRF v4.6.1 map projection oracle
-# source: /home/drew/wrf-stock-v461-gate-20260721/share/module_llxy.F
+# source: <wrf-v4.6.1>/share/module_llxy.F
 # source_sha256: 0c777e66ffbb0602479cadcc0ab484769a140c4cb2b3e9a8f757597086f0c76b
 # wrf_commit: d66e442fccc04111067e29274c9f9eaccc3cef28 (tag v4.6.1)
 # map_factor/rotang authority: WPS v4.6.0 geogrid/src/process_tile_module.F get_map_factor:1735-1876 get_rotang:1920-2067

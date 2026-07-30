@@ -34,13 +34,9 @@ def _sha256(path: Path) -> str:
 
 
 def _target_cfg(target: HrrrTargetDomain) -> SimpleNamespace:
-    return SimpleNamespace(
-        nx=target.nx,
-        ny=target.ny,
-        nz=target.nz,
-        dx=target.dx_m,
-        dy=target.dy_m,
-    )
+    # One definition, shared with the static builder that seals the document
+    # this module verifies.
+    return target.contract_cfg()
 
 
 def write_hrrr_native_geometry_receipt(

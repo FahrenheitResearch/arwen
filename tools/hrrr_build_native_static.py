@@ -12,6 +12,7 @@ import time
 
 import numpy as np
 
+from gpuwm.native_wrf_contract import native_geometry_contract
 from gpuwm.static.build import GeogSelection, build_static
 from gpuwm.static.lambert import LambertGrid
 from gpuwm.ingest.hrrr_target import (
@@ -34,6 +35,23 @@ def benchmark_grid(target: HrrrTargetDomain | None = None) -> LambertGrid:
 
     target = target or HrrrTargetDomain.legacy_500x500()
     return target.grid()
+
+
+def native_static_geometry(
+        target: HrrrTargetDomain,
+        grid: LambertGrid | None = None,
+) -> dict[str, object]:
+    """The geometry document sealed into the HRRR static receipt.
+
+    This goes through the shared contract rather than restating it, because
+    ``tools/write_hrrr_native_geometry_receipt.py`` compares the sealed
+    document to ``native_geometry_contract`` for exact equality.  v1.0.0 had
+    the two written out independently and they drifted by one key
+    (``map_proj``), which failed every new HRRR area.
+    """
+
+    grid = target.grid() if grid is None else grid
+    return native_geometry_contract(grid, target.contract_cfg())
 
 
 def sha256_file(path: Path) -> str:
@@ -177,7 +195,6 @@ def main() -> None:
             "lai", "albedo", "snow_albedo", "soil_temperature"):
         index = selection.path(name) / "index"
         index_hashes[str(index.resolve())] = sha256_file(index)
-    lat, lon = grid.latlon_mass()
     legacy_mode = args.domain_spec is None
     receipt = {
         "schema": (
@@ -185,18 +202,7 @@ def main() -> None:
             else "gpuwm-native-hrrr-static-v2"),
         "status": "PASS",
         "method": "gpuwm.static.build.build_static; no WPS/geogrid executable",
-        "geometry": {
-            "mass_shape": [target.ny, target.nx], "nz": target.nz,
-            "dx_m": target.dx_m, "dy_m": target.dy_m,
-            "ref_lat": target.ref_lat, "ref_lon": target.ref_lon,
-            "truelat1": target.truelat1,
-            "truelat2": target.truelat2,
-            "stand_lon": target.stand_lon,
-            "center_lat": float(grid.cen_lat),
-            "center_lon": float(grid.cen_lon),
-            "lat_range": [float(lat.min()), float(lat.max())],
-            "lon_range": [float(lon.min()), float(lon.max())],
-        },
+        "geometry": native_static_geometry(target, grid),
         "target_domain": target.to_payload(),
         "target_domain_sha256": target.identity_sha256(),
         "hrrr_source_coverage": source_window.to_dict(),

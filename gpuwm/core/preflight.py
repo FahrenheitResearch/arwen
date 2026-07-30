@@ -90,6 +90,7 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
@@ -171,26 +172,243 @@ N0_GATE_METRICS = ("alloc_fits_wddm_budget", "alloc_measured_le_estimate",
 
 #: Observed machine-peak envelope factor over the footprint projection.
 #:
-#: The Thompson 12-18Z matched rerun (2026-07-28, the only multi-domain run
-#: with whole-run machine-wide VRAM sampling; receipts in
-#: docs/thompson-rematch-20260728.md and the campaign handoff) measured a
-#: true machine peak of 29,004 MiB = 30,412,898,304 B against this
-#: estimator's footprint projection of 17,416,429,288 B -- a ratio of
-#: 1.7462.  The projection misses CuPy pool retention across the run and
-#: output/checkpoint write transients, so it under-projects the number the
-#: WDDM budget actually confronts.  The single observation is rounded UP to
-#: 1.75 (an envelope must not under-round); it is presented as an OBSERVED
-#: envelope, not a model, and it deliberately does not change any gate:
-#: the enforced numbers remain the itemized estimate and the measured
-#: --alloc legs.  Re-derive from the next machine-peak-instrumented run
-#: rather than tuning it.
-OBSERVED_PEAK_OVER_FOOTPRINT = 1.75
+#: WINDOWS / WDDM -- 1.75.  The Thompson 12-18Z matched rerun (2026-07-28,
+#: the only multi-domain Windows run with whole-run machine-wide VRAM
+#: sampling; receipts in docs/thompson-rematch-20260728.md and the campaign
+#: handoff) measured a true machine peak of 29,004 MiB = 30,412,898,304 B
+#: against this estimator's footprint projection of 17,416,429,288 B -- a
+#: ratio of 1.7462.  The projection misses CuPy pool retention across the
+#: run and output/checkpoint write transients, so under WDDM it
+#: under-projects the number the budget actually confronts.  The single
+#: observation is rounded UP to 1.75 (an envelope must not under-round).
+#:
+#: LINUX -- 1.45 over the ITEMIZED ALLOC ESTIMATE, measured-preliminary.
+#:
+#: Three independent first-run pilots (2026-07-30) instrumented the
+#: machine-wide peak across whole forecasts with nvidia-smi sampling:
+#:
+#:   ======  =====  ==========  ===========  ==========  ==========
+#:   node    card   alloc est.  footprint    machine pk  pk / alloc
+#:   ======  =====  ==========  ===========  ==========  ==========
+#:   node 1  4090   7.20 GiB    11.31 GiB    9.54 GiB    1.32
+#:   node 2  4090   7.29 GiB    11.39 GiB    8.99 GiB    1.23
+#:   node 3  4070   3.51 GiB     4.90 GiB    4.04 GiB    1.15
+#:   ======  =====  ==========  ===========  ==========  ==========
+#:
+#: Two things follow, and the second is the important one.
+#:
+#: 1. The peak lands at 0.79-0.82x the FOOTPRINT PROJECTION, not 1.75x.
+#: 2. The footprint projection itself is wrong on Linux, because the two
+#:    grid-independent constants it adds to the alloc estimate --
+#:    ``pool_retention_residual_bytes`` (2.73 GiB) and
+#:    ``PROBE_DEVICE_OVERHEAD_BYTES`` (1.39 GiB) -- are Windows-pool
+#:    artifacts that did not appear in any of the three measurements.
+#:    At node 3's refused 60x48 minimum layout they were 4.12 GiB of a
+#:    5.38 GiB projection: 77% of the floor was constants, which is why
+#:    shrinking the grid could not help and a 12 GiB card could not be
+#:    sized at all while its GPU sat 66% idle.
+#:
+#: So on Linux the projection IS the itemized alloc estimate (see
+#: :func:`platform_projection_constants`), and this factor is the
+#: envelope over THAT.  1.45 clears the worst of the three observations
+#: (1.32) by 10%.  Three runs on two card models are still not a
+#: calibration: re-derive rather than tune.  Receipts:
+#: ARWEN-NODE1-4090-PILOT-20260730.md,
+#: ARWEN-NODE2-4090-CUDA128-WORLDWIDE-20260730.md,
+#: ARWEN-NODE3-4070-12GB-FLOOR-20260730.md.
+#:
+#: Both are presented as OBSERVED envelopes, not models, and neither
+#: changes any gate: the enforced numbers remain the itemized estimate and
+#: the measured --alloc legs.
+#: WINDOWS, SMALL CARDS -- 1.45, EXPERIMENTAL and calibrated on nothing.
+#:
+#: The 1.75 factor and the 4.12 GiB of projection constants beside it both
+#: come from ONE machine: a 32 GiB RTX 5090 running campaign-scale
+#: multi-domain forecasts.  On a 12 GiB Windows card those constants are
+#: 34% of the whole card before a single grid cell is allocated, and the
+#: wizard refused every ladder -- not because the model did not fit, but
+#: because an accounting term measured somewhere else did.  Refusing to
+#: size a card gpuwm can probably run is a worse failure than sizing it
+#: optimistically, because the optimistic failure mode here is bounded:
+#: WDDM pages, or the allocation fails cleanly.  Neither corrupts a
+#: forecast.
+#:
+#: So a small Windows card is priced like Linux -- the itemized alloc
+#: estimate under the 1.45 envelope -- plus ONE reduced fixed reserve
+#: (:data:`WINDOWS_SMALL_CARD_RESERVE_BYTES`) standing in for the WDDM
+#: residency the pool never sees.  It is a pioneer tier: see
+#: :func:`windows_small_card_advisory` for what users are asked to send
+#: back, which is the only thing that will turn this into a measurement.
+PEAK_ENVELOPE_FACTORS = {"windows": 1.75, "windows-small": 1.45,
+                         "linux": 1.45}
+
+#: How much evidence each factor rests on, printed beside the number.
+PEAK_ENVELOPE_BASIS = {
+    "windows": "measured, 1 WDDM run",
+    "windows-small": "EXPERIMENTAL, no measurements on this card class",
+    "linux": "measured-preliminary, 3 runs",
+}
+
+#: Windows cards at or below this size take the experimental accounting.
+WINDOWS_SMALL_CARD_MAX_GIB = 12.0
+
+#: The single fixed reserve replacing the 5090-derived pool constants on
+#: a small Windows card: WDDM residency the CuPy pool never accounts for.
+#: A round 1.5 GiB, chosen to be smaller than the 4.12 GiB it replaces and
+#: larger than the 0.43 GiB CUDA context alone -- itself a guess, and the
+#: single most valuable number for a pioneer to send back.
+WINDOWS_SMALL_CARD_RESERVE_BYTES = 3 * GIB // 2
+
+#: Retained name for the WDDM factor (the original single-platform value).
+OBSERVED_PEAK_OVER_FOOTPRINT = PEAK_ENVELOPE_FACTORS["windows"]
 
 
-def observed_peak_envelope_bytes(footprint_projection_bytes: int) -> int:
+#: The platform names this accounting has evidence for.  ``linux``
+#: covers WSL and Linux containers, which report ``linux`` too.
+_LINUX_PLATFORMS = ("linux",)
+_WINDOWS_PLATFORM_PREFIXES = ("win", "msys")
+_WINDOWS_PLATFORM_NAMES = ("cygwin",)
+
+
+def platform_is_measured(platform: str | None = None) -> bool:
+    """Has this platform's memory behaviour actually been observed?
+
+    Windows (including Cygwin and MSYS, which run on WDDM) and Linux
+    have measurements behind them.  Nothing else does.
+    """
+
+    name = sys.platform if platform is None else str(platform)
+    return (name.startswith(_WINDOWS_PLATFORM_PREFIXES)
+            or name in _WINDOWS_PLATFORM_NAMES
+            or name.startswith(_LINUX_PLATFORMS))
+
+
+def unknown_platform_note(platform: str | None = None) -> str | None:
+    """One line for a platform with no measurements, else ``None``."""
+
+    name = sys.platform if platform is None else str(platform)
+    if platform_is_measured(name):
+        return None
+    return (
+        f"note: platform {name!r} has no VRAM measurements behind it "
+        f"(only Windows and Linux do), so the conservative Windows/WDDM "
+        f"accounting is applied -- it may size a smaller domain than "
+        f"this machine can run.")
+
+
+def envelope_platform(platform: str | None = None,
+                      vram_gib: float | None = None) -> str:
+    """Which envelope family applies: ``windows``, ``windows-small``, or
+    ``linux``.
+
+    PLATFORM defaults to :data:`sys.platform`.
+
+    Two platforms have measurements: Windows -- with Cygwin and MSYS,
+    which are the same WDDM driver under a different shell -- and Linux,
+    which is also what WSL and Linux containers report.  Anything else
+    is a platform nobody has measured, and it takes the **conservative**
+    (Windows) accounting rather than the optimistic one.
+
+    That is a change from v1.0.0, which returned ``linux`` for every
+    non-Windows name and so quietly priced an unknown platform with the
+    envelope that omits 4.12 GiB of fixed constants.  Fail-open on an
+    unsupported platform is the wrong direction: the Linux numbers are
+    not a default, they are three runs on two Linux cards.  Callers
+    should print :func:`unknown_platform_note` beside the sizing so the
+    substitution is visible rather than silent.
+
+    VRAM_GIB is the *card* size, and only a caller that knows it -- the
+    domain wizard, sizing for a named card -- can select the experimental
+    small-Windows tier.  Callers that do not pass it (``gpuwm check``
+    among them, which measures free VRAM rather than card size) keep
+    today's conservative Windows accounting exactly.  An unknown
+    platform does NOT reach ``windows-small``: that tier is an
+    experiment about WDDM on a small card, and a platform nobody has
+    measured is not the place to run a second experiment.
+    """
+
+    name = sys.platform if platform is None else str(platform)
+    if name.startswith(_LINUX_PLATFORMS):
+        return "linux"
+    if not (name.startswith(_WINDOWS_PLATFORM_PREFIXES)
+            or name in _WINDOWS_PLATFORM_NAMES):
+        return "windows"
+    small = (vram_gib is not None and math.isfinite(float(vram_gib))
+             and float(vram_gib) <= WINDOWS_SMALL_CARD_MAX_GIB)
+    return "windows-small" if small else "windows"
+
+
+def peak_envelope_factor(platform: str | None = None,
+                         vram_gib: float | None = None) -> float:
+    """The machine-peak envelope factor this platform's evidence supports."""
+
+    return PEAK_ENVELOPE_FACTORS[envelope_platform(platform, vram_gib)]
+
+
+def platform_projection_constants(
+        platform: str | None = None,
+        vram_gib: float | None = None) -> tuple[int, int]:
+    """``(retention_residual, device_overhead)`` for the projection.
+
+    Both are grid-independent constants calibrated on one Windows/5090
+    fixture, and neither showed up in any of the three instrumented
+    Linux runs -- whose peaks tracked the itemized alloc estimate to
+    within 1.15-1.32x.  Adding 4.12 GiB of Windows pool accounting to a
+    Linux projection is not conservatism, it is a wrong number: it put
+    the 12 GiB tier out of reach entirely.  Zero on Linux, unchanged on
+    Windows; the platform envelope factor carries the margin either way.
+
+    A small Windows card takes neither: one reduced fixed reserve
+    (:data:`WINDOWS_SMALL_CARD_RESERVE_BYTES`) stands in for both, because
+    the 5090-derived pair is a third of such a card before any grid
+    exists.  Experimental -- see :data:`PEAK_ENVELOPE_FACTORS`.
+    """
+
+    family = envelope_platform(platform, vram_gib)
+    if family == "windows":
+        return pool_retention_residual_bytes(), PROBE_DEVICE_OVERHEAD_BYTES
+    if family == "windows-small":
+        return 0, WINDOWS_SMALL_CARD_RESERVE_BYTES
+    return 0, 0
+
+
+def windows_small_card_advisory(vram_gib: float) -> tuple[str, ...]:
+    """The pioneer warning for an experimentally-sized Windows card.
+
+    Says plainly that the accounting is extrapolated from one much larger
+    machine, what the worst case is (and that it is not corruption), and
+    exactly what measurement would replace the guess.
+    """
+
+    return (
+        f"EXPERIMENTAL: {vram_gib:g} GiB is at or below the "
+        f"{WINDOWS_SMALL_CARD_MAX_GIB:g} GiB Windows small-card threshold, "
+        "and this layout was sized with experimental accounting.",
+        "  Windows/WDDM memory accounting in gpuwm is calibrated from ONE "
+        "much larger machine (a 32 GiB RTX 5090 running campaign-scale "
+        "forecasts); its 4.12 GiB of fixed pool constants would consume a "
+        "third of this card before a single grid cell, so a reduced "
+        f"{WINDOWS_SMALL_CARD_RESERVE_BYTES / GIB:.1f} GiB reserve and the "
+        f"Linux {PEAK_ENVELOPE_FACTORS['windows-small']:.2f} envelope were "
+        "used instead.",
+        "  Worst case is paging (slow) or a clean out-of-memory failure "
+        "before or during the run. Neither corrupts a forecast, and "
+        "neither damages anything.",
+        "  Please report your measured peak so this stops being a guess: "
+        "run the forecast, then send the peak line from "
+        "`gpuwm check <config>` together with the config file and your "
+        "card model.")
+
+
+def observed_peak_envelope_bytes(
+        footprint_projection_bytes: int,
+        *, platform: str | None = None,
+        vram_gib: float | None = None,
+) -> int:
     """The empirical machine-peak envelope for a footprint projection."""
 
-    return int(footprint_projection_bytes * OBSERVED_PEAK_OVER_FOOTPRINT)
+    return int(footprint_projection_bytes
+               * peak_envelope_factor(platform, vram_gib))
 
 
 # ---------------------------------------------------------------------------
@@ -2477,7 +2695,8 @@ class ExperimentMemoryEstimate:
     column_chunk: int
     headroom: float = ALLOCATOR_HEADROOM
     retention_residual_bytes: int = field(default=0)
-    device_overhead_bytes: int = PROBE_DEVICE_OVERHEAD_BYTES
+    device_overhead_bytes: int = field(
+        default_factory=lambda: platform_projection_constants()[1])
 
     @property
     def resident_bytes(self) -> int:
@@ -2566,6 +2785,7 @@ def estimate_experiment(
         exp: ExperimentConfig, *,
         column_chunk: int | None = None,
         forcing_interval_seconds: float = DEFAULT_FORCING_INTERVAL_SECONDS,
+        vram_gib: float | None = None,
 ) -> ExperimentMemoryEstimate:
     """Sum the per-domain itemizations; count the lru_cache-shared
     k-distribution tables ONCE (rrtmgp.py:324/:436 -- baseline behavior,
@@ -2633,8 +2853,11 @@ def estimate_experiment(
             if uses_arena else 0),
         uses_shared_dycore_state_workspace=uses_arena,
         column_chunk=column_chunk,
-        retention_residual_bytes=(pool_retention_residual_bytes()
-                                  if uses_rrtmgp else 0),
+        retention_residual_bytes=(
+            platform_projection_constants(vram_gib=vram_gib)[0]
+            if uses_rrtmgp else 0),
+        device_overhead_bytes=platform_projection_constants(
+            vram_gib=vram_gib)[1],
     )
 
 
@@ -3192,6 +3415,10 @@ def check_main(args) -> int:
     with the estimate-side legs and the abort reason.
     """
     exp = _load_experiment_any(args.config)
+    #: Whether the free-VRAM figure below was measured off the device or
+    #: derived from a declared --budget-gib.  Printed, because the two
+    #: must never wear the same label.
+    free_source = "measured"
     # Read the card BEFORE anything in this process touches CUDA, so the
     # other-process residency the rail must respect is not inflated by our
     # own context (which the reserve already carries).
@@ -3247,13 +3474,20 @@ def check_main(args) -> int:
         measured_used = None
         free = None
         if args.budget_gib is not None:
-            # CPU-mode measured budget: caller supplies the measured free
-            # VRAM; the reserve still applies on top.
+            # CPU-mode DECLARED budget: the caller states the budget and
+            # the reserve is added back to recover a notional free
+            # figure.  It is arithmetic, not a measurement, and it must
+            # never print under the same label as one -- the wizard's
+            # inline check reported "measured free 19.31 GiB" on a
+            # machine with 11.44 GiB free, which is exactly the kind of
+            # number a user then trusts.
             free = int(args.budget_gib * GIB) + reserve.reserve_bytes
+            free_source = "declared (--budget-gib)"
         else:
             try:
                 import cupy as cp
                 free = int(cp.cuda.runtime.memGetInfo()[0])
+                free_source = "measured"
             except Exception:
                 free = None
         gates = evaluate_alloc_gates(
@@ -3314,7 +3548,10 @@ def check_main(args) -> int:
             "held_projection_bytes": estimate.held_projection_bytes,
             "footprint_projection_bytes":
                 estimate.footprint_projection_bytes,
-            "observed_peak_envelope_factor": OBSERVED_PEAK_OVER_FOOTPRINT,
+            "observed_peak_envelope_platform": envelope_platform(),
+            "observed_peak_envelope_factor": peak_envelope_factor(),
+            "observed_peak_envelope_basis":
+                PEAK_ENVELOPE_BASIS[envelope_platform()],
             "observed_peak_envelope_bytes": observed_peak_envelope_bytes(
                 estimate.footprint_projection_bytes),
             "reserve_bytes": reserve.reserve_bytes,
@@ -3331,7 +3568,9 @@ def check_main(args) -> int:
             "cuda_context_bytes": CUDA_CONTEXT_BYTES,
             "kernel_local_memory_bytes": kernel_local_memory_bytes(exp),
             "kernel_modules": sorted(physics_kernel_modules(exp)),
-            "measured_free_bytes": free, "budget_bytes": budget,
+            "measured_free_bytes": free,
+            "free_bytes_source": free_source,
+            "budget_bytes": budget,
             "observed_peak_envelope_exceeds_budget": (
                 None if budget is None
                 else observed_peak_envelope_bytes(
@@ -3396,19 +3635,31 @@ def check_main(args) -> int:
               " (the TIER 3 line above is the retired zero-step probe model)")
         envelope = observed_peak_envelope_bytes(
             estimate.footprint_projection_bytes)
+        family = envelope_platform()
+        if family == "windows":
+            provenance = (
+                "the one machine-peak-instrumented Windows run (Thompson "
+                "rematch 2026-07-28) peaked at 1.746x its footprint "
+                "projection machine-wide (CuPy pool retention + write "
+                "transients the projection does not model), so expect true "
+                "peak VRAM near this envelope, not the projection")
+        else:
+            provenance = (
+                "no WDDM here, and no Windows pool constants in the "
+                "projection either: three instrumented Linux runs "
+                "(2026-07-30, two 4090s and a 4070) peaked at 1.15x to "
+                "1.32x the itemized alloc estimate machine-wide, so this "
+                "factor is a margin over the measurements rather than a "
+                "multiplier stacked on top of them")
         print(f"  OBSERVED PEAK ENVELOPE "
-              f"(x{OBSERVED_PEAK_OVER_FOOTPRINT:.2f} footprint): "
-              f"{_format_bytes(envelope)} -- the one machine-peak-"
-              f"instrumented run (Thompson rematch 2026-07-28) peaked at "
-              f"1.746x its footprint projection machine-wide (CuPy pool "
-              f"retention + write transients the projection does not "
-              f"model), so expect true peak VRAM near this envelope, "
-              f"not the projection.")
+              f"(x{peak_envelope_factor():.2f} footprint, {family} factor; "
+              f"{PEAK_ENVELOPE_BASIS[family]}): "
+              f"{_format_bytes(envelope)} -- {provenance}.")
         print(f"  reserve {reserve.reserve_bytes / GIB:.2f} GiB "
               f"(retention {reserve.retention_residual_bytes / GIB:.2f} + "
               f"overhead {reserve.device_overhead_bytes / GIB:.2f} + "
               f"external {reserve.external_margin_bytes / GIB:.2f}); "
-              f"measured free {_format_bytes(free)}; budget "
+              f"{free_source} free {_format_bytes(free)}; budget "
               f"{_format_bytes(budget)}")
         if rail is not None:
             print(f"  DEVICE RAIL {_format_bytes(rail['rail_bytes'])} "
@@ -3537,5 +3788,7 @@ __all__ = [
     "shared_dycore_state_workspace_shapes",
     "shared_scratch_arena_aliases", "shared_scratch_arena_bytes",
     "shared_scratch_arena_shapes", "state_array_shapes",
+    "WINDOWS_SMALL_CARD_MAX_GIB", "WINDOWS_SMALL_CARD_RESERVE_BYTES",
+    "windows_small_card_advisory",
     "ysu_output_transient_shapes",
 ]

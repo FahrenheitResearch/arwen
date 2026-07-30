@@ -1662,6 +1662,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rw-fetch"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rustwx-core",
+ "rustwx-models",
+ "serde",
+ "serde_json",
+ "sha2",
+ "wx-core 0.3.9",
+]
+
+[[package]]
 name = "rw-ingest"
 version = "0.1.0"
 dependencies = [

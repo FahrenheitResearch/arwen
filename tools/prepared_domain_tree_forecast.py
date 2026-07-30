@@ -913,20 +913,27 @@ def _runtime_source_identity() -> Mapping[str, object]:
 
 
 def _verify_thompson_assets(exp) -> None:
+    """Byte-validate the mp8 tables wherever they resolve from.
+
+    The two process-environment gates this used to demand
+    (GPUWM_EXPERIMENTAL_THOMPSON_MP8=1 and an explicit
+    GPUWM_THOMPSON_TABLE_ROOT) predate the packaging promotion: the
+    canonical WRF v4.6.1 classic tables now ship as package data,
+    `gpuwm fetch-tables` stages the externalized one, and `gpuwm doctor`
+    byte-validates all four and reports no gaps.  Demanding the env vars
+    anyway meant mp8 -- the wizard's own default at the time -- failed
+    twice at runtime, on a machine doctor had just declared clean, with
+    neither variable named anywhere in the docs.  What actually
+    protected anything was the validation below, and it still runs on
+    every launch.
+    """
+
     if not any(domain.run.mp_physics == 8 for domain in exp.domains):
         return
-    from gpuwm.physics_compat import (
-        EXPERIMENTAL_THOMPSON_ENV,
-        THOMPSON_TABLE_ROOT_ENV,
-    )
+    from gpuwm.physics_compat import thompson_table_root
     from gpuwm.core.thompson_contract import validate_table_assets
 
-    if os.environ.get(EXPERIMENTAL_THOMPSON_ENV) != "1":
-        raise RuntimeError(f"MP8 requires {EXPERIMENTAL_THOMPSON_ENV}=1")
-    root = os.environ.get(THOMPSON_TABLE_ROOT_ENV)
-    if not root:
-        raise RuntimeError(f"MP8 requires {THOMPSON_TABLE_ROOT_ENV}")
-    validate_table_assets(Path(root))
+    validate_table_assets(Path(thompson_table_root()))
 
 
 def _rebind_rebuilt_state(state, workspace) -> None:
@@ -966,6 +973,7 @@ def run_prepared_tree(
         ModelRuntimeStatus,
         SharedRRTMGPChunkWorkspace,
         execute_experiment,
+        uses_modern_rrtmgp_workspace,
     )
     from gpuwm.core.nest import NestCoupler
     from gpuwm.core.preflight import estimate_experiment
@@ -1005,11 +1013,20 @@ def run_prepared_tree(
     started = time.perf_counter()
     arena = build_shared_scratch_arena(exp.domains)
     rebuilt = build_shared_dycore_state_workspace(exp.domains)
+    # The shared helper, never a local restatement of the predicate: the
+    # persistent workspace exists only for the MODERN RTE+RRTMGP
+    # adapter, and `any(radiation_scheme_ids == (4, 4))` is also true for
+    # the legacy-RRTMG variant, which runs one domain at a time and holds
+    # no workspace at all.  estimate_experiment() knows the difference,
+    # so a tree run under legacy RRTMG allocated a workspace the
+    # preflight had not priced and died on the memory-ledger drift guard
+    # ("shared radiation allocation differs from preflight") -- exactly
+    # the failure uses_modern_rrtmgp_workspace's docstring predicts.
     radiation_workspace = (
         SharedRRTMGPChunkWorkspace(
             nz=exp.root.run.nz, column_chunk=exp.column_chunk, p_top=exp.vertical.p_top
         )
-        if any(radiation_scheme_ids(domain.run) == (4, 4) for domain in exp.domains)
+        if uses_modern_rrtmgp_workspace(exp)
         else None
     )
     if arena.nbytes != estimate.scratch_arena_bytes:

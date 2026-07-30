@@ -72,8 +72,12 @@ with `gpuwm doctor`. Re-running either script is safe: an existing
 
 ```bash
 git clone https://github.com/FahrenheitResearch/arwen gpuwm && cd gpuwm
-./install.sh            # PowerShell: .\install.ps1
+bash install.sh         # PowerShell: .\install.ps1
 ```
+
+`bash install.sh` is the universal form and works regardless of how
+your checkout landed the file's mode bit. `./install.sh` works too;
+if it ever answers `Permission denied`, use the `bash` form above.
 
 The same scripts also run standalone -- POSIX:
 
@@ -90,8 +94,12 @@ iwr -useb https://raw.githubusercontent.com/FahrenheitResearch/arwen/main/instal
 When piped like this, the script clones the repository into `./gpuwm`
 (set `GPUWM_REPO_URL` to clone from a fork or mirror instead).
 
-You need Python 3.11+ and git; for GPU runs, an NVIDIA card with CUDA
-12.x. The manual steps, if you prefer them:
+You need Python 3.11+ and git; for GPU runs, an NVIDIA card with
+CUDA 12.x/13.x (tested through 13.0: a CUDA 13.0 toolkit with a
+580-series driver works out of the box with the `cupy-cuda12x` pin,
+because minor-version compatibility plus CuPy's system-NVRTC discovery
+covers it -- measured on a Linux RTX 4070 and a 4090, 2026-07-30). The
+manual steps, if you prefer them:
 
 POSIX:
 
@@ -101,6 +109,7 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[gpu,render]'
 gpuwm fetch-tables
+gpuwm fetch-geog       # WPS_GEOG static tree: ~1.3 GB down, ~16 GB unpacked
 (cd tools/grib1_bridge && cargo build --release --locked --offline)
 (cd tools/rustwx && cargo build --release --locked --offline)
 gpuwm doctor
@@ -114,10 +123,21 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e '.[gpu,render]'
 gpuwm fetch-tables
+gpuwm fetch-geog       # WPS_GEOG static tree: ~1.3 GB down, ~16 GB unpacked
 cd tools\grib1_bridge; cargo build --release --locked --offline; cd ..\..
 cd tools\rustwx; cargo build --release --locked --offline; cd ..\..
 gpuwm doctor
 ```
+
+**A plain `pip install gpuwm` is not enough to read weather data.** The
+wheel ships no compiled Rust, and every GRIB decode -- ERA5, GFS, GDAS,
+HRRR, 20CRv3 -- goes through the fail-closed Rust bridges in
+`tools/grib1_bridge`, which exist only in a clone. So a pip-only
+install can size domains and read documentation, and will refuse every
+real data source until you clone this repository and run the one
+`cargo build` above (about two minutes). `gpuwm doctor` prints the
+whole sequence, including the rustup line when `cargo` is missing.
+Shipping prebuilt bridges in the wheel is not yet done.
 
 `[gpu]` installs CuPy (required by `gpuwm check`/`run` and the sizing
 wizard); `[render]` installs the pinned `wrf-rust` package for
@@ -159,7 +179,9 @@ gpuwm render out/myarea/wrfout_d01_* --out out/myarea/png
 Live progress is `run-progress.json` in the output directory (atomic,
 schema `gpuwm.run-progress/v1`); restart checkpoints are written every
 `restart_interval_s` and `gpuwm resume` continues from the newest valid
-one.
+one.  The `tools/` runners write a different file: the domain-tree
+route writes `<outdir>/evidence/progress.json` and the single-domain
+runners write `<outdir>/progress.json`.
 
 ## What the output looks like
 
@@ -189,7 +211,7 @@ opt-in via `--heavy`.*
 | Land surface | Noah (4-layer), Noah-MP, RUC (9-level) |
 | Radiation | RTE+RRTMGP (default); legacy RRTMG (WRF 4/4 transcription, verification tier); Dudhia SW |
 | Cumulus | Kain-Fritsch (outer domains) |
-| Data | ERA5 (CDS), GFS 0.25-deg (NOMADS), HRRR (NOMADS or AWS S3, incl. a live-cycle `--wait-for` mode); fail-closed Rust GRIB bridges; `gpuwm fetch` front door |
+| Data | ERA5 (CDS), GFS 0.25-deg (NOMADS), GDAS 0.25-deg analysis init (NOMADS, f000 only), HRRR (NOMADS or AWS S3, incl. a live-cycle `--wait-for` mode); fail-closed Rust GRIB bridges; `gpuwm fetch` front door. Plus an experimental, not-yet-stock-WRF-gated 20CRv3 ensemble-member route for GRIB2 files you supply yourself (no fetch route) -- see [DATA.md](docs/public/DATA.md) |
 | Domains | `gpuwm domain` wizard: point + card -> sized experiment TOML (16/24/32 GiB tiers) |
 | Products | `gpuwm render`, two engines: vendored Rusty Weather renderer (default when built), whose vendored catalog carries 324 entries; the runtime lister enumerates 151 of them as implicit-render candidates per file (the rest are explicit-opt-in ensemble/probabilistic families) -- reflectivity composite/1 km, surface T/Td/RH/MSLP/wind/PWAT/cloud-cover families, the 200-850 mb isobaric charts (height/temp/dewpoint/RH/absolute-vorticity + winds), CAPE/CIN/SRH/shear/STP severe suite, heavy ECAPE family (`--heavy`), and multi-hour windowed accumulations -- everything a file's stored fields prove out renders (measured on the committed 3 km UH-smoke case: 58/58 on a single frame, 238 renders / 0 failures across its four-frame store, transcripts retained in the development tree under `evidence/render-receipts/`; `--list-products` prints the per-file verdict with a field-level reason for every unavailable row), with coast/state/county basemaps and sub-hourly leads stamped; matplotlib fallback (composite reflectivity, T2, 10 m wind, accumulated precipitation); `--pair A B` composes two runs' PNGs into labeled comparison sheets |
 | Lifecycle | `check` (input + VRAM preflight), `run`, `resume`, restart checkpoints, failure capsules |
@@ -226,12 +248,18 @@ Stated plainly, up front:
 - **No data assimilation.** Cold starts from public analyses only; no
   observation ingest, no cycling, no ensemble machinery.
 - **Data routes.** All three sources drive ArWen GPU forecasts; they
-  differ only in which door they use. ERA5 uses the config door
-  (`[case_data]` in the experiment TOML, read directly by
-  `gpuwm run`). GFS and HRRR use the preprocessor door: `rw-wps`
-  converts them to `wrfinput`/`wrfbdy`, which then drive ArWen runs,
-  unchanged stock WRF, and `gpuwm downscale`. The wizard prints the
-  exact next command for whichever source you pick.
+  differ in which door they use AND in which command runs the
+  forecast. ERA5 uses the config door: `[case_data]` in the experiment
+  TOML, read directly by `gpuwm run`. GFS and HRRR use the preprocessor
+  door: `rw-wps` converts them to `wrfinput`/`wrfbdy`, which drive
+  unchanged stock WRF and `gpuwm downscale` -- and which reach the
+  ArWen GPU loop through
+  `tools/prepared_single_domain_forecast.py` (one domain) or
+  `tools/prepared_domain_tree_forecast.py` (a nest ladder), **not**
+  through `gpuwm run`, which refuses a config with no `[case_data]`
+  table. The complete GFS command sequence, in the order that works,
+  is [FIRST-LIGHT.md § 3a](docs/public/FIRST-LIGHT.md). Each step
+  prints the next one with its digests filled in.
   HRRR remains CONUS (Lambert) only; worldwide points use GFS or ERA5,
   both global.
 - **Verification depth.** One case (3 April 1974, ERA5, four domains to

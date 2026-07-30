@@ -55,7 +55,8 @@ cannot shift even in principle.  Do not "harmonise" the two without
 regenerating every fixture built from whichever file changes.
 
 Provenance of the input file (checked by this script before anything else):
-    tree   /home/drew/wrf-stock-v461-gate-20260721 (WSL)
+    tree   wrf-stock-v461-gate-20260721 (WSL; a pinned WRF v4.6.1
+           checkout -- the commit and sha256 below are the identity)
     commit d66e442fccc04111067e29274c9f9eaccc3cef28
     sha256 bd592a5b7db29000e715250e3a7c779ffb5e0dcc356f6b5a7d9e1c9f69c55282
 

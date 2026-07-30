@@ -3,9 +3,11 @@
 The wizard emits a complete ``[experiment]``/``[projection]``/``[shared]``/
 ``[[domain]]`` TOML centered on ``--point``, with grid dimensions chosen so
 the itemized VRAM estimate (:func:`gpuwm.core.preflight.estimate_experiment`)
-times the observed 1.75 machine-peak envelope factor
-(:data:`gpuwm.core.preflight.OBSERVED_PEAK_OVER_FOOTPRINT`) fits the
-requested card's budget.  Nothing here is a new model of anything: the
+times the observed machine-peak envelope factor for this platform
+(:func:`gpuwm.core.preflight.peak_envelope_factor` -- 1.75 on Windows/WDDM,
+1.45 on Linux and on the experimental small-Windows tier) fits the
+requested card's budget.  Nothing here is a new
+model of anything: the
 physics/dynamics block is the product's default suite (the four-domain
 reference configuration's selections with the microphysics slot on
 Thompson mp8, the model-validated matched-run scheme), the projection
@@ -15,7 +17,8 @@ memory arithmetic is the existing preflight estimator called in-process.
 
 Honesty contract (terrain/static story): gpuwm builds static fields from a
 locally staged NCAR WPS_GEOG tree (nine fixed dataset directories -- see
-``GEOG_DATASETS``); nothing downloads it.  Forcing data for the
+``GEOG_DATASETS``); ``gpuwm fetch-geog`` downloads and stages it.
+Forcing data for the
 config-driven ``gpuwm check``/``run`` front door is decoded by the native
 GRIB1 route, i.e. ERA5 today.  GFS/HRRR downloads (``gpuwm fetch``) feed
 the ``rw-wps``/``gpuwm-wrf-init`` native initialization front door, which
@@ -29,15 +32,30 @@ Sizing conventions (all documented, none silent):
 * VRAM budget = card capacity minus a flat reserve (3 GiB at 16, 4 GiB at
   24, 6 GiB at 32+) covering WDDM/driver/CUDA-context residency and the
   observed near-capacity instability ceiling of consumer cards.
-* Fit criterion: ``footprint_projection_bytes * 1.75 <= budget`` -- the
-  estimator's own observed peak envelope (the 1.75 was measured against
-  the footprint projection, which contains the itemized alloc estimate
-  plus the calibrated retention/overhead terms).  This is exactly the
-  quantity ``gpuwm check`` warns about, so a wizard-emitted config
-  passes ``gpuwm check`` with zero warnings, and it is deliberately
-  stricter than the enforced ``estimate <= budget`` gate.
+* Fit criterion: ``footprint_projection_bytes * envelope <= budget`` --
+  the estimator's own observed peak envelope, measured against the
+  footprint projection (which contains the itemized alloc estimate plus
+  the calibrated retention/overhead terms).  The envelope factor is
+  platform-conditional because WDDM is what it models: 1.75 on Windows,
+  1.45 on Linux (see ``PEAK_ENVELOPE_FACTORS`` for both receipts).  A
+  Windows card at or below
+  :data:`~gpuwm.core.preflight.WINDOWS_SMALL_CARD_MAX_GIB` takes the
+  EXPERIMENTAL third family instead -- the Linux envelope over the alloc
+  estimate plus one reduced fixed reserve, because the 5090-derived pool
+  constants are a third of such a card before any grid exists -- and
+  every sizing that uses it prints the pioneer warning.  This
+  is exactly the quantity ``gpuwm check`` warns about, so a
+  wizard-emitted config passes ``gpuwm check`` with zero warnings, and it
+  is deliberately stricter than the enforced ``estimate <= budget`` gate.
 * Root time step: the certified real-data convention, 5 s per km of grid
-  spacing (60 s at 12 km); children divide down the ratio chain exactly.
+  spacing (60 s at 12 km), halved inside the tropics; children divide
+  down the ratio chain exactly, and a half-second root clock is carried
+  exactly through WRF's rational clock keys.
+* Ladders: the presets in ``LADDER_RATIOS``, or ``--root-dx`` +
+  ``--chain`` for an arbitrary root spacing and integer refinement
+  chain.  Both go through the same fit loop, loader, and ``gpuwm
+  check``; a chain reaching below 1 km with a 1-D PBL scheme active
+  earns a gray-zone advisory (never a refusal).
 """
 
 from __future__ import annotations
@@ -47,20 +65,28 @@ import os
 import shutil
 import tomllib
 from datetime import datetime
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
 
-from gpuwm.core.preflight import (GIB, OBSERVED_PEAK_OVER_FOOTPRINT,
-                                  estimate_experiment,
-                                  observed_peak_envelope_bytes)
+from gpuwm.core.preflight import (GIB, PEAK_ENVELOPE_BASIS,
+                                  envelope_platform, estimate_experiment,
+                                  observed_peak_envelope_bytes,
+                                  peak_envelope_factor,
+                                  unknown_platform_note,
+                                  windows_small_card_advisory)
 from gpuwm.experiment import ExperimentConfig, build_experiment
 from gpuwm.fetch import parse_cycle
+from gpuwm.physics_compat import (MORRISON_PROFILE_ID, MYNN_PROFILE_ID,
+                                  NSSL2_PROFILE_ID, RUC_PROFILE_ID,
+                                  THOMPSON_PROFILE_ID, WSM6_PROFILE_ID,
+                                  single_domain_runtime_switches)
 from gpuwm.static.projection import (WRF_MAP_PROJ_CODES, _wrap180,
                                      projection_class)
 
 #: Card tiers -> total VRAM (GiB).  ``--vram-gib`` accepts anything else.
-CARD_VRAM_GIB = {"16gb": 16.0, "24gb": 24.0, "32gb": 32.0}
+CARD_VRAM_GIB = {"12gb": 12.0, "16gb": 16.0, "24gb": 24.0, "32gb": 32.0}
 
 #: Nest ladders: dx chain in km (root fixed at 12 km) -> parent grid/time
 #: ratios.  Ratios follow the certified 12->3->1 chain (4, 3); the 500 m
@@ -76,6 +102,23 @@ _LADDERS_DEEPEST_FIRST = ("12-3-1-0.5", "12-3-1", "12-3")
 ROOT_DX_M = 12000.0
 #: Certified real-data clock convention: 60 s at 12 km = 5 s per km.
 ROOT_TIME_STEP_S = 60
+
+#: Halved root clock (2.5 s per km) for domains inside the tropics.
+#:
+#: The stability gate is a VERTICAL Courant number against the thinnest
+#: model layer, and the certified 49-level eta profile's first layer is
+#: about 14.3 m, so it trips at w_max > 10 * 14.3 / dt.  A tropical
+#: Mercator domain at Manila (14.6 N) on the wizard's own 60 s clock
+#: reached w_max 6.62 m/s and aborted at +1 h; the same domain at 15 s
+#: kept w_max at 1.5-3.0 m/s and completed 6 h, which says most of that
+#: 6.62 m/s was numerical rather than atmospheric.  Convection is
+#: deeper and more continuous at low latitude, so the 5 s/km rule of
+#: thumb (WRF's own 6*dx_km agrees with it) is not conservative enough
+#: there.  Halving is the cheapest possible remedy: radiation and
+#: cumulus are called on wall-clock intervals, so 4x the steps cost
+#: node 2 only +22% wall time (490 s vs 400 s for the same 6 h).
+#: Receipt: ARWEN-NODE2-4090-CUDA128-WORLDWIDE-20260730.md, PP-9.
+TROPICAL_ROOT_TIME_STEP_S = 30
 
 #: Parent rows a child boundary must clear: spec_bdy_width + blend_width
 #: (both 5, the emitted [experiment] values; gpuwm/experiment.py enforces).
@@ -112,6 +155,31 @@ MERCATOR_MAX_LAT, LAMBERT_MAX_LAT = 25.0, 60.0
 #: lat-lon source interpolation and static-tile windowing are not
 #: pole-capable (genuine limit, not a projection-math one).
 _POLE_CLEARANCE_CELLS = 2.0
+
+#: Degrees of latitude the SUGGESTED FORCING BOX keeps clear of a pole.
+#:
+#: The refusal above guards the domain footprint, but the fetch hint is
+#: the footprint plus a margin, and clamping that at exactly +-90 made
+#: the wizard print `--area 42.93,-45.56,90.00,83.48` for Tromso: a top
+#: edge sitting on the very singularity the README says is refused, with
+#: no comment.  `gpuwm fetch` accepted it and downloaded 89 MB.  The
+#: same 2-cell clearance the domain refusal enforces, expressed as
+#: degrees of meridian at the root dx, keeps the suggestion honest.
+def pole_clearance_deg(root_dx_m: float = ROOT_DX_M) -> float:
+    """The forcing box's pole clearance in degrees, at this root dx."""
+
+    return _POLE_CLEARANCE_CELLS * float(root_dx_m) / 111_195.0
+
+
+def max_fetch_abs_lat(root_dx_m: float = ROOT_DX_M) -> float:
+    """The most poleward latitude a suggested forcing box will name."""
+
+    return 90.0 - pole_clearance_deg(root_dx_m)
+
+
+POLE_CLEARANCE_DEG = pole_clearance_deg()
+#: The most poleward latitude the suggested forcing box will name.
+MAX_FETCH_ABS_LAT = max_fetch_abs_lat()
 
 #: Degrees of forcing margin beyond the root domain for the fetch hint.
 #: ERA5 needs only interpolation-halo coverage; HRRR files are CONUS-wide
@@ -175,21 +243,15 @@ _PACKAGED_VTABLE = Path(__file__).parent / "data" / "vtables" / \
 #: diffusion/damping/acoustic settings.  Morrison (10) stays fully
 #: selectable at its registry maturity label; its morr_rimed_ice knob is
 #: Morrison-only and is deliberately absent here.
-_SHARED_CERTIFIED = {
+_SHARED_GRID_AND_DYNAMICS = {
     "nz": 49, "ztop": 20000.0, "p_top": 10000.0,
     "eta_levels": _ETA_LEVELS,
     "hybrid_opt": 2, "etac": 0.2, "base_temp": 290.0,
-    "time_step_sound": 4, "epssm": 0.5, "emdiv": 0.01,
+    "time_step_sound": 4, "emdiv": 0.01,
     "hypsometric_opt": 2, "h_sca_adv_order": 5, "smdiv": 0.1,
-    "top_lid": False, "moist": True, "moist_cq": True,
-    "mp_physics": 8, "moist_adv_opt": 1,
-    "km_opt": 4, "diff_6th_opt": 2, "diff_6th_slopeopt": 1,
+    "moist_adv_opt": 1,
     "w_damping": 1, "damp_opt": 3, "zdamp": 5000.0, "dampcoef": 0.2,
     "khdif": 0.0, "kvdif": 0.0, "spec_zone": 1, "relax_zone": 4,
-    "terrain_opt": 1,
-    "sf_sfclay_physics": 91, "sf_surface_physics": 2,
-    "bl_pbl_physics": 1, "ra_physics": 4,
-    "wrf_rrtmg_compatibility": "wrf-rrtmg-4-4-to-rte-rrtmgp-v1",
     "bldt": 0.0,
     # WRF nwp_diagnostics: wizard runs are convective forecasts whose
     # audience reads UH products, so the UP_HELI_MAX running-max
@@ -197,20 +259,175 @@ _SHARED_CERTIFIED = {
     "nwp_diagnostics": 1,
 }
 
+#: Physics switches the ROOT domain carries rather than ``[shared]``.
+_PER_DOMAIN_PHYSICS = ("radt", "cu_physics", "cudt_minutes",
+                       "diff_6th_factor")
+
+#: The wizard's default physics: the registry's DEFAULT_TEMPLATE_ID
+#: suite (Thompson MP8 + YSU + MM5 + Noah + Kain-Fritsch + RTE+RRTMGP),
+#: kept as a product decision.  ``None`` means "not one of the shipped
+#: single-domain runner profiles" -- see DEFAULT_SUITE_PHYSICS.
+DEFAULT_PHYSICS_PROFILE = None
+
+#: The default suite's physics switches, in the registry's OWN radiation
+#: representation.
+#:
+#: v1.0.0 wrote ``ra_physics = 4`` (the legacy combined selector) while
+#: every shipped profile -- and the physics registry -- writes the split
+#: pair ``ra_physics = 0`` + ``ra_lw_physics = 4`` + ``ra_sw_physics =
+#: 4``.  The two are semantically identical, and
+#: ``radiation_scheme_ids`` resolves both to (4, 4), but the runner's
+#: guard compares the raw switch dicts, so no wizard-emitted config
+#: could ever pass it.  Emitting the split form is the fix at the
+#: source, and it also removes a real misreading hazard: a pilot report
+#: read the profiles' ``ra_physics: 0`` as "radiation off" when three of
+#: those profiles run RTE+RRTMGP on both streams.
+DEFAULT_SUITE_PHYSICS = {
+    "moist": True, "moist_cq": True, "mp_physics": 8, "top_lid": False,
+    "epssm": 0.5, "wrf_rrtmg_compatibility":
+        "wrf-rrtmg-4-4-to-rte-rrtmgp-v1",
+    "ra_physics": 0, "ra_lw_physics": 4, "ra_sw_physics": 4,
+    "sf_sfclay_physics": 91, "sf_surface_physics": 2,
+    "bl_pbl_physics": 1, "terrain_opt": 1,
+    "km_opt": 4, "diff_6th_opt": 2, "diff_6th_slopeopt": 1,
+    # Per-domain (root values; nests override in _domain_tables).
+    "radt": 12.0, "cu_physics": 1, "cudt_minutes": 5.0,
+    "diff_6th_factor": _DIFF6_FACTORS[0],
+}
+
+#: The profiles the prepared single-domain forecast runner accepts for
+#: gfs/era5, in the order the help lists them.
+WIZARD_PHYSICS_PROFILES = (
+    MORRISON_PROFILE_ID,
+    NSSL2_PROFILE_ID,
+    THOMPSON_PROFILE_ID,
+    WSM6_PROFILE_ID,
+    MYNN_PROFILE_ID,
+    RUC_PROFILE_ID,
+)
+
+
+def _radiation_words(switches: dict) -> str:
+    """Plain language for what a profile's radiation switches DO.
+
+    ``ra_physics = 0`` beside ``ra_lw_physics = 4`` means RTE+RRTMGP
+    longwave, not "radiation off" -- a reading that has already been got
+    wrong once in a pilot report, because the split and legacy
+    representations look alike and only one of them is the truth.  The
+    wizard therefore never prints the raw switches without the words.
+    """
+
+    names = {0: "OFF", 1: "Dudhia", 4: "RTE+RRTMGP"}
+    lw = int(switches.get("ra_lw_physics", -1))
+    sw = int(switches.get("ra_sw_physics", -1))
+    if (lw, sw) == (-1, -1):
+        lw = sw = int(switches.get("ra_physics", 0))
+    return (f"longwave {names.get(lw, lw)}, "
+            f"shortwave {names.get(sw, sw)}")
+
+
+def prepared_route_physics_notice(profile: str | None,
+                                  source: str) -> list[str]:
+    """Say -- out loud -- what the single-domain GFS/HRRR door will run.
+
+    The prepared SINGLE-domain forecast runner accepts only the shipped
+    profiles and compares an experiment's switches to them for exact
+    equality.  The product default suite is not one of them, so a user
+    on that route must pick a profile, and picking the wrong one quietly
+    changes the science: three of the six run no cumulus and shortwave
+    Dudhia with longwave OFF.  Never silent -- name every option and
+    what it actually runs, at emit time, before anyone spends three
+    minutes of preprocessing to find out.
+    """
+
+    if source not in ("gfs", "hrrr"):
+        return []
+    if profile is not None:
+        return [
+            "note: this config is bound to a shipped profile, so it "
+            "passes the prepared single-domain forecast runner's "
+            "physics guard exactly as emitted."
+        ]
+    lines = [
+        "NOTE -- physics on the prepared single-domain route: the "
+        "default suite above is the product default, but the prepared "
+        "SINGLE-domain forecast runner accepts only the profiles below "
+        "and compares switches for exact equality, so it will refuse "
+        "this file.  The multi-domain (domain-tree) runner has no such "
+        "whitelist and runs the suite above as written.",
+        "  Re-emit with --physics-profile <id> to get a config that "
+        "passes as emitted.  What each one ACTUALLY runs:",
+    ]
+    for candidate in WIZARD_PHYSICS_PROFILES:
+        lines.append(f"    {physics_summary(candidate)}")
+    return lines
+
+
+def profile_switches(profile: str | None) -> dict:
+    """Every physics switch for PROFILE, or for the default suite."""
+
+    if profile is None:
+        return dict(DEFAULT_SUITE_PHYSICS)
+    return single_domain_runtime_switches(profile)
+
+
+def physics_summary(profile: str | None) -> str:
+    """One line naming what the emitted suite actually runs."""
+
+    switches = profile_switches(profile)
+    cumulus = ("Kain-Fritsch cumulus" if switches["cu_physics"]
+               else "NO cumulus parameterization")
+    label = profile if profile is not None else (
+        "product default suite (no shipped runner profile matches it)")
+    return (f"{label}: mp_physics {switches['mp_physics']}, "
+            f"{_radiation_words(switches)} (radt "
+            f"{float(switches['radt']):g} min), {cumulus}, "
+            f"bl_pbl_physics {switches['bl_pbl_physics']}, "
+            f"sf_surface_physics {switches['sf_surface_physics']}")
+
+
+def shared_physics(profile: str | None) -> dict:
+    """The ``[shared]`` block for one physics suite.
+
+    A named profile is taken from :mod:`gpuwm.physics_compat`, never
+    restated here: the prepared single-domain forecast runner compares
+    an experiment's switches to that same registry for exact equality,
+    so an emitted config passes its guard by construction.
+    """
+
+    switches = profile_switches(profile)
+    for key in _PER_DOMAIN_PHYSICS:
+        switches.pop(key, None)
+    return {**_SHARED_GRID_AND_DYNAMICS, **switches}
+
+
+#: The default suite's [shared] block.
+_SHARED_CERTIFIED = shared_physics(DEFAULT_PHYSICS_PROFILE)
+
 
 class DomainFitError(ValueError):
     """The requested ladder cannot fit the requested card."""
 
 
+#: Appended to every --point parse refusal: the one form that cannot be
+#: mis-parsed no matter how the shell or argparse feels about a leading
+#: minus sign.
+_POINT_FORM_HINT = (
+    " -- southern and western points are ordinary here; both "
+    "'--point -33.87,151.21' and '--point=-33.87,151.21' are accepted")
+
+
 def _parse_point(raw: str) -> tuple[float, float]:
     parts = raw.split(",")
     if len(parts) != 2:
-        raise ValueError("--point must be lat,lon in decimal degrees")
+        raise ValueError("--point must be lat,lon in decimal degrees"
+                         + _POINT_FORM_HINT)
     try:
         lat, lon = (float(part) for part in parts)
     except ValueError as error:
         raise ValueError(
-            "--point must be lat,lon in decimal degrees") from error
+            "--point must be lat,lon in decimal degrees"
+            + _POINT_FORM_HINT) from error
     if not (math.isfinite(lat) and math.isfinite(lon)):
         raise ValueError("--point coordinates must be finite")
     if not -90.0 <= lat <= 90.0:
@@ -226,6 +443,38 @@ def _parse_point(raw: str) -> tuple[float, float]:
         raise ValueError(
             f"--point longitude {lon:g} must lie within [-180, 180]")
     return lat, lon
+
+
+def _resolve_cycle(raw: str, *, source: str, hours: int) -> datetime:
+    """Parse ``--cycle``, resolving ``latest`` the way ``fetch`` does.
+
+    v1.0.0 refused ``--cycle latest`` here with a message that said
+    ``latest`` was allowed, and since the documented order is
+    wizard-then-fetch there was nothing to tell a user which cycle was
+    current -- they had to run a throwaway fetch first.  The resolver
+    already existed; the wizard now calls it, and says what it picked.
+    """
+
+    if raw.strip().lower() != "latest":
+        return parse_cycle(raw, source)
+    if source == "era5":
+        raise ValueError(
+            "--cycle latest is not available for --source era5: ERA5 is a "
+            "reanalysis with weeks of latency, so name the analysis time "
+            "you want as YYYY-MM-DDTHH (UTC)")
+    from gpuwm.fetch import resolve_latest_cycle
+    try:
+        cycle = resolve_latest_cycle(source, hours)
+    except (RuntimeError, OSError) as error:
+        raise ValueError(
+            f"--cycle latest could not be resolved for {source}: {error}"
+            " -- the resolver probes the public mirrors, so this needs "
+            "network access; pass an explicit YYYY-MM-DDTHH (UTC) cycle "
+            "instead") from error
+    print(f"gpuwm domain: --cycle latest resolved to "
+          f"{cycle:%Y-%m-%dT%H}Z (newest complete {source} cycle "
+          f"covering f{hours:03d})")
+    return cycle
 
 
 def _even(value: float) -> int:
@@ -261,23 +510,71 @@ def _radt_minutes(dx_m: float) -> float:
     return max(1.0, dx_m / 1000.0)
 
 
+def seconds_per_km(ref_lat: float) -> Fraction:
+    """The clock convention that applies at REF_LAT, in s per km of dx.
+
+    5 s/km outside the tropics, halved to 2.5 s/km inside them -- see
+    :data:`TROPICAL_ROOT_TIME_STEP_S` for the measurement behind it.
+    """
+
+    tropical = abs(float(ref_lat)) < MERCATOR_MAX_LAT
+    return Fraction(5, 2) if tropical else Fraction(5)
+
+
+def root_time_step_s(ref_lat: float,
+                     root_dx_m: float = ROOT_DX_M) -> Fraction:
+    """The exact root clock for a domain centred at REF_LAT.
+
+    Returns a :class:`~fractions.Fraction`: an arbitrary ``--root-dx``
+    in the tropics can land on a half second (3 km -> 7.5 s), which the
+    WRF rational clock keys represent exactly.
+    """
+
+    return seconds_per_km(ref_lat) * Fraction(float(root_dx_m)) / 1000
+
+
+def _clock_keys(dt: Fraction) -> dict[str, int]:
+    """WRF's rational clock keys for an exact root time step."""
+
+    whole = dt.numerator // dt.denominator
+    remainder = dt - whole
+    keys = {"time_step": int(whole)}
+    if remainder:
+        keys["time_step_fract_num"] = remainder.numerator
+        keys["time_step_fract_den"] = remainder.denominator
+    return keys
+
+
 def _domain_tables(dims: list[tuple[int, int]],
-                   ratios: tuple[int, ...]) -> list[dict]:
-    """[[domain]] table dicts (centered children, certified cadences)."""
+                   ratios: tuple[int, ...],
+                   *, time_step: Fraction | int = ROOT_TIME_STEP_S,
+                   root_dx_m: float = ROOT_DX_M,
+                   profile: str | None = DEFAULT_PHYSICS_PROFILE
+                   ) -> list[dict]:
+    """[[domain]] table dicts (centered children, certified cadences).
+
+    The ROOT's radiation/cumulus/diffusion cadences come from the shipped
+    physics profile, so the emitted d01 satisfies the prepared-forecast
+    runner's exact-equality guard at any --root-dx.  Nests keep the
+    certified ladder's depth-varying values: the multi-domain runner has
+    no profile whitelist, and refining the radiation cadence with the
+    grid is the point of the ladder.
+    """
+    root_physics = {key: profile_switches(profile)[key]
+                    for key in _PER_DOMAIN_PHYSICS}
     tables = []
-    dx = ROOT_DX_M
+    dx = float(root_dx_m)
     for index, (nx, ny) in enumerate(dims):
         if index == 0:
             table = {
                 "grid_id": 1, "parent_id": 0, "i_parent_start": 1,
                 "j_parent_start": 1, "parent_grid_ratio": 1,
                 "parent_time_step_ratio": 1, "nx": nx, "ny": ny,
-                "time_step": ROOT_TIME_STEP_S, "dx": ROOT_DX_M,
+                **_clock_keys(Fraction(time_step)),
+                "dx": float(root_dx_m),
                 "specified": True, "nested": False,
                 "history_interval_s": 3600.0,
-                "radt": _radt_minutes(dx), "cu_physics": 1,
-                "cudt_minutes": 5.0,
-                "diff_6th_factor": _DIFF6_FACTORS[0],
+                **root_physics,
             }
         else:
             ratio = ratios[index - 1]
@@ -329,8 +626,9 @@ def _render_table(name: str, entries: dict, array_of_tables: bool = False,
     return "\n".join(lines) + "\n"
 
 
-def _ladder_dx_km(ratios: tuple[int, ...]) -> list[float]:
-    chain = [ROOT_DX_M / 1000.0]
+def _ladder_dx_km(ratios: tuple[int, ...],
+                  root_dx_m: float = ROOT_DX_M) -> list[float]:
+    chain = [float(root_dx_m) / 1000.0]
     for ratio in ratios:
         chain.append(chain[-1] / ratio)
     return chain
@@ -378,23 +676,130 @@ def _projection_entries(lat: float, lon: float,
         "lambert, mercator, polar)")
 
 
-def _root_grid(projection: dict, nx: int, ny: int):
+#: Bounds on a custom root dx (km).  Wide, because the point of
+#: --root-dx is that the presets are not the whole product; narrow
+#: enough that a typo (metres for kilometres, say) is caught.
+MIN_ROOT_DX_KM, MAX_ROOT_DX_KM = 0.05, 200.0
+#: Bounds on one custom nest ratio.  WRF's own guidance is odd ratios of
+#: 3 or 5; 2 and 4 are routine here, and beyond 8 the interpolation
+#: stencil and the boundary blend stop being defensible in one step.
+MIN_CHAIN_RATIO, MAX_CHAIN_RATIO = 2, 8
+#: Most nests a custom chain may declare (the presets go to 4 domains).
+MAX_CHAIN_DEPTH = 8
+
+
+def parse_chain(raw: str) -> tuple[int, ...]:
+    """``"4,3,3"`` -> ``(4, 3, 3)``; each entry an integer nest ratio."""
+
+    text = str(raw).strip()
+    if not text:
+        return ()
+    ratios = []
+    for field in text.split(","):
+        field = field.strip()
+        try:
+            ratio = int(field)
+        except ValueError:
+            raise ValueError(
+                f"--chain entry {field!r} is not an integer; --chain is a "
+                "comma-separated list of whole nest ratios, e.g. "
+                "--chain 4,3,3") from None
+        if not MIN_CHAIN_RATIO <= ratio <= MAX_CHAIN_RATIO:
+            raise ValueError(
+                f"--chain ratio {ratio} is outside "
+                f"[{MIN_CHAIN_RATIO}, {MAX_CHAIN_RATIO}]; refine in more "
+                "steps rather than one large one")
+        ratios.append(ratio)
+    if len(ratios) > MAX_CHAIN_DEPTH:
+        raise ValueError(
+            f"--chain declares {len(ratios)} nests; the limit is "
+            f"{MAX_CHAIN_DEPTH}")
+    return tuple(ratios)
+
+
+def parse_custom_ladder(*, root_dx_km, chain, ladder: str):
+    """``(root_dx_m, ratios)`` for a custom ladder, or None for a preset.
+
+    ``--root-dx``/``--chain`` are the general form of ``--ladder``: an
+    arbitrary root spacing and an arbitrary chain of integer refinement
+    ratios.  Everything downstream -- the estimator fit loop, the
+    clearance and cadence rules in the real experiment loader, the
+    projection math, ``gpuwm check`` -- is the same code the presets go
+    through, so a custom ladder is validated exactly as strictly.
+    """
+
+    if root_dx_km is None and chain is None:
+        return None
+    if ladder != "auto":
+        raise ValueError(
+            "--ladder is a preset chain and cannot be combined with "
+            "--root-dx / --chain; drop --ladder to use the custom form")
+    root_km = (ROOT_DX_M / 1000.0 if root_dx_km is None
+               else float(root_dx_km))
+    if not math.isfinite(root_km) \
+            or not MIN_ROOT_DX_KM <= root_km <= MAX_ROOT_DX_KM:
+        raise ValueError(
+            f"--root-dx {root_km:g} km is outside "
+            f"[{MIN_ROOT_DX_KM:g}, {MAX_ROOT_DX_KM:g}] km")
+    ratios = parse_chain("" if chain is None else chain)
+    return root_km * 1000.0, ratios
+
+
+#: Grid spacing (km) below which a 1-D PBL parameterization and resolved
+#: convection overlap -- the "terra incognita" / gray zone.
+GRAY_ZONE_DX_KM = 1.0
+
+
+def gray_zone_advisory(chain_km, shared: dict) -> list[str]:
+    """One honest sentence when a domain lands in the PBL gray zone.
+
+    Advisory, never a refusal: sub-kilometre nests are exactly what this
+    product is for, and people will run them.  But a 1-D column PBL
+    scheme assumes the whole boundary-layer eddy spectrum is
+    subgrid-scale, and below about 1 km the largest eddies are partly
+    resolved, so the scheme and the dynamics do the same transport
+    twice.  Saying so once, in the file and on stdout, is the honest
+    thing; refusing would be wrong, and silence would be worse.
+    """
+
+    if not shared.get("bl_pbl_physics"):
+        return []
+    below = [dx for dx in chain_km if dx < GRAY_ZONE_DX_KM]
+    if not below:
+        return []
+    finest = min(below)
+    return [
+        f"GRAY ZONE: {len(below)} domain(s) refine below "
+        f"{GRAY_ZONE_DX_KM:g} km (finest {finest * 1000:.0f} m) with the "
+        f"1-D PBL scheme bl_pbl_physics = {shared['bl_pbl_physics']} "
+        "active, so boundary-layer eddies are partly resolved by the "
+        "dynamics and simultaneously parameterized as if they were not; "
+        "the proper tool at these scales is a 3-D turbulence closure "
+        "(SASE, planned), and until then treat sub-kilometre PBL "
+        "structure as indicative rather than quantitative.",
+    ]
+
+
+def _root_grid(projection: dict, nx: int, ny: int,
+               root_dx_m: float = ROOT_DX_M):
     cls = projection_class(projection["map_proj"])
     return cls(
         ref_lat=projection["ref_lat"], ref_lon=projection["ref_lon"],
         truelat1=projection["truelat1"], truelat2=projection["truelat2"],
-        stand_lon=projection["stand_lon"], dx=ROOT_DX_M, dy=ROOT_DX_M,
+        stand_lon=projection["stand_lon"],
+        dx=float(root_dx_m), dy=float(root_dx_m),
         e_we=nx + 1, e_sn=ny + 1)
 
 
-def _pole_clearance_refusal(projection: dict, nx: int, ny: int) -> None:
+def _pole_clearance_refusal(projection: dict, nx: int, ny: int,
+                            root_dx_m: float = ROOT_DX_M) -> None:
     """Refuse a root footprint that contains (or nearly touches) the
     projection pole -- a genuine pipeline limit (lat-lon source
     interpolation and static windowing are not pole-capable), not a
     projection-math one.  Mercator never reaches a pole."""
     if projection["map_proj"] == "mercator":
         return
-    grid = _root_grid(projection, nx, ny)
+    grid = _root_grid(projection, nx, ny, root_dx_m)
     pole_lat = 90.0 if projection["truelat1"] >= 0.0 else -90.0
     px, py = (float(v) for v in grid.latlon_to_ij(
         pole_lat, projection["stand_lon"]))
@@ -403,7 +808,7 @@ def _pole_clearance_refusal(projection: dict, nx: int, ny: int) -> None:
             and 0.5 - margin <= py <= grid.e_sn - 0.5 + margin):
         raise ValueError(
             f"the fitted root domain ({nx} x {ny} mass points at "
-            f"{ROOT_DX_M / 1000:g} km) contains or touches the "
+            f"{float(root_dx_m) / 1000:g} km) contains or touches the "
             f"{'north' if pole_lat > 0 else 'south'} pole; lat-lon "
             "source interpolation and static-tile windowing are not "
             "pole-capable -- move --point away from the pole or choose "
@@ -411,7 +816,9 @@ def _pole_clearance_refusal(projection: dict, nx: int, ny: int) -> None:
 
 
 def _fetch_area(projection: dict, nx: int, ny: int,
-                margin_deg: float = _FETCH_MARGIN_DEG
+                margin_deg: float = _FETCH_MARGIN_DEG,
+                *, notes: list[str] | None = None,
+                root_dx_m: float = ROOT_DX_M
                 ) -> tuple[float, float, float, float]:
     """Forcing bbox (S, W, N, E) = root corners + margin, worldwide.
 
@@ -427,7 +834,7 @@ def _fetch_area(projection: dict, nx: int, ny: int,
     width exceeds 180 degrees would be read back by
     :func:`gpuwm.fetch.parse_area` as the complementary
     antimeridian-crossing box (the wrong crop, silently)."""
-    lat_c, lon_c = _root_grid(projection, nx, ny).latlon_c()
+    lat_c, lon_c = _root_grid(projection, nx, ny, root_dx_m).latlon_c()
     center = float(projection["ref_lon"])
     lon_u = center + np.asarray(
         _wrap180(np.asarray(lon_c, dtype=float) - center))
@@ -439,8 +846,23 @@ def _fetch_area(projection: dict, nx: int, ny: int,
             "degrees of longitude; boxes wider than 180 degrees cannot "
             "be served as a single source crop -- shrink the "
             "configuration or move --point equatorward")
-    lat_s = max(-90.0, float(lat_c.min()) - margin_deg)
-    lat_n = min(90.0, float(lat_c.max()) + margin_deg)
+    # Pole-clear, not pole-touching: the box a user is handed must not
+    # name the singularity the pipeline refuses (see POLE_CLEARANCE_DEG).
+    pole_clear = max_fetch_abs_lat(root_dx_m)
+    lat_s = max(-pole_clear, float(lat_c.min()) - margin_deg)
+    lat_n = min(pole_clear, float(lat_c.max()) + margin_deg)
+    if notes is not None:
+        for edge, raw, clamped in (
+                ("south", float(lat_c.min()) - margin_deg, lat_s),
+                ("north", float(lat_c.max()) + margin_deg, lat_n)):
+            if raw != clamped:
+                notes.append(
+                    f"the suggested forcing box's {edge} edge was clamped "
+                    f"from {raw:.2f} to {clamped:.2f} to stay "
+                    f"{pole_clearance_deg(root_dx_m):.2f} deg clear of the pole: "
+                    "lat-lon source interpolation and static-tile "
+                    "windowing are not pole-capable, so a box touching "
+                    "the pole is not a box the pipeline can honour")
     lon_w = float(_wrap180(float(lon_u.min()) - margin_deg))
     lon_e = float(_wrap180(float(lon_u.max()) + margin_deg))
     if lon_e == -180.0:
@@ -462,7 +884,9 @@ def _relative_or_absolute(path: Path, base: Path) -> str:
 def render_config(*, name: str, start_time: datetime, hours: int,
                   projection: dict, dims: list[tuple[int, int]],
                   ratios: tuple[int, ...],
-                  fetch_hints: dict, case_data: dict | None) -> str:
+                  fetch_hints: dict, case_data: dict | None,
+                  root_dx_m: float = ROOT_DX_M,
+                  profile: str | None = DEFAULT_PHYSICS_PROFILE) -> str:
     """The emitted TOML text (the exact bytes the wizard validates)."""
     experiment = {
         "name": name, "start_time": start_time,
@@ -472,23 +896,48 @@ def render_config(*, name: str, start_time: datetime, hours: int,
         # prepared-forecast contract requires restart_interval_s = 0.
         "restart_interval_s": 0.0 if not ratios else 3600.0,
     }
-    shared = dict(_SHARED_CERTIFIED)
+    shared = shared_physics(profile)
     shared["map_proj"] = WRF_MAP_PROJ_CODES[projection["map_proj"]]
-    parts = [
+    time_step = root_time_step_s(projection["ref_lat"], root_dx_m)
+    chain_km = _ladder_dx_km(ratios, root_dx_m)
+    header = (
         "# Emitted by `gpuwm domain` -- point "
         f"{projection['ref_lat']:g},{projection['ref_lon']:g}, ladder "
-        f"{'-'.join(f'{v:g}' for v in _ladder_dx_km(ratios))} km.\n"
-        "# Physics/dynamics are the product's default suite (Thompson mp8 "
-        "in the certified\n"
-        "# real-data set; Morrison mp10 stays selectable); child dx/dt "
-        "derive\n"
-        "# exactly from the parent chain and are never hand-typed "
-        "(gpuwm/experiment.py).\n",
+        f"{'-'.join(f'{v:g}' for v in chain_km)} km.\n"
+        f"# PHYSICS: {physics_summary(profile)}.\n"
+        "# Taken verbatim from gpuwm.physics_compat, so this file passes "
+        "the prepared-\n"
+        "# forecast runner's profile guard as emitted.  Child dx/dt derive "
+        "exactly from\n"
+        "# the parent chain and are never hand-typed "
+        "(gpuwm/experiment.py).\n")
+    per_km = seconds_per_km(projection["ref_lat"])
+    if per_km != 5:
+        header += (
+            f"# TROPICAL CLOCK: |lat| < {MERCATOR_MAX_LAT:g}, so "
+            f"time_step is {float(time_step):g} s "
+            f"({float(per_km):g} s per km), half the "
+            f"{float(time_step) * 2:g} s\n"
+            "# the 5 s/km convention would give at this dx.  The "
+            "stability gate is a VERTICAL\n"
+            "# Courant number against the ~14.3 m first eta layer; "
+            "tropical convection\n"
+            "# destabilised a measured 12 km Mercator domain at 60 s and "
+            "was comfortably\n"
+            "# stable at a shorter step, for +22% wall time (radiation "
+            "and cumulus are\n"
+            "# called on wall-clock intervals, so extra dynamics steps "
+            "are cheap).\n")
+    for line in gray_zone_advisory(chain_km, shared):
+        header += f"# {line}\n"
+    parts = [
+        header,
         _render_table("experiment", experiment),
         _render_table("projection", projection),
         _render_table("shared", shared),
     ]
-    for table in _domain_tables(dims, ratios):
+    for table in _domain_tables(dims, ratios, time_step=time_step,
+                                root_dx_m=root_dx_m, profile=profile):
         parts.append(_render_table("domain", table, array_of_tables=True))
     parts.append(_render_table(
         "fetch", fetch_hints,
@@ -515,16 +964,27 @@ def experiment_from_text(text: str, *, source: str) -> ExperimentConfig:
     return build_experiment(raw, source=source)
 
 
-def fit_ladder(*, ladder: str, budget_bytes: int, hours: int,
+def fit_ladder(*, ladder: str | None = None, budget_bytes: int, hours: int,
                start_time: datetime, projection: dict, source: str,
-               name: str) -> tuple[list[tuple[int, int]], ExperimentConfig]:
-    """Largest centered layout whose estimate x 1.75 fits the budget.
+               name: str, ratios: tuple[int, ...] | None = None,
+               root_dx_m: float = ROOT_DX_M,
+               profile: str | None = DEFAULT_PHYSICS_PROFILE,
+               vram_gib: float | None = None,
+               ) -> tuple[list[tuple[int, int]], ExperimentConfig]:
+    """Largest centered layout whose peak envelope fits the budget.
 
     Bisects a continuous scale factor; every candidate is validated by the
     real experiment loader (clearance, cadence, ratio rules) and priced by
     the real estimator -- the wizard owns no memory arithmetic of its own.
+    A custom ``--root-dx``/``--chain`` goes through this same loop, so a
+    hand-specified ladder is validated and sized exactly like a preset.
     """
-    ratios = LADDER_RATIOS[ladder]
+    if (ladder is None) == (ratios is None):
+        raise ValueError("fit_ladder takes exactly one of ladder / ratios")
+    if ratios is None:
+        ratios = LADDER_RATIOS[ladder]
+    label = ladder if ladder is not None else "-".join(
+        f"{v:g}" for v in _ladder_dx_km(ratios, root_dx_m))
     interval = SOURCE_FORCING_INTERVAL_S[source]
 
     def candidate(scale: float):
@@ -532,23 +992,42 @@ def fit_ladder(*, ladder: str, budget_bytes: int, hours: int,
         text = render_config(
             name=name, start_time=start_time, hours=hours,
             projection=projection, dims=dims, ratios=ratios,
-            fetch_hints={"source": source}, case_data=None)
-        exp = experiment_from_text(text, source=f"<candidate {ladder}>")
+            fetch_hints={"source": source}, case_data=None,
+            root_dx_m=root_dx_m, profile=profile)
+        exp = experiment_from_text(text, source=f"<candidate {label}>")
         estimate = estimate_experiment(
-            exp, forcing_interval_seconds=interval)
+            exp, forcing_interval_seconds=interval, vram_gib=vram_gib)
         envelope = observed_peak_envelope_bytes(
-            estimate.footprint_projection_bytes)
+            estimate.footprint_projection_bytes, vram_gib=vram_gib)
         return dims, exp, envelope
 
     dims, exp, envelope = candidate(_MIN_SCALE)
     if envelope > budget_bytes:
+        # Say WHY it does not fit.  "your card is too small" is what the
+        # bare number reads as, and at the minimum layout it is usually
+        # not true: the grid-independent projection constants dominate,
+        # so shrinking further cannot help and the user needs to know
+        # that rather than go hunting for a smaller ladder.
+        floor = estimate_experiment(
+            exp, forcing_interval_seconds=interval, vram_gib=vram_gib)
+        constants = (floor.retention_residual_bytes
+                     + floor.device_overhead_bytes)
+        share = (100.0 * constants / floor.footprint_projection_bytes
+                 if floor.footprint_projection_bytes else 0.0)
+        detail = (
+            f"the model itself wants {floor.alloc_estimate_bytes / GIB:.2f} "
+            f"GiB at this layout; the other "
+            f"{constants / GIB:.2f} GiB ({share:.0f}% of the projection) "
+            "is grid-independent calibration constants, so a smaller grid "
+            "cannot help")
         raise DomainFitError(
-            f"ladder {ladder} does not fit a {budget_bytes / GIB:.1f} GiB "
+            f"ladder {label} does not fit a {budget_bytes / GIB:.1f} GiB "
             f"budget even at the minimum layout ({dims[0][0]}x{dims[0][1]} "
             f"root): footprint projection x "
-            f"{OBSERVED_PEAK_OVER_FOOTPRINT:.2f} = "
-            f"{envelope / GIB:.2f} GiB; choose a shallower --ladder or a "
-            "larger card")
+            f"{peak_envelope_factor(vram_gib=vram_gib):.2f} "
+            f"({envelope_platform(vram_gib=vram_gib)} envelope) "
+            f"= {envelope / GIB:.2f} GiB.  {detail}; choose a shallower "
+            "ladder or a larger card")
     lo, hi = _MIN_SCALE, _MAX_SCALE
     best = (dims, exp)
     for _ in range(36):
@@ -575,7 +1054,8 @@ def _write_atomic(path: Path, text: str) -> None:
 
 
 def render_wps_namelist(projection: dict, dims: list[tuple[int, int]],
-                        ratios: tuple[int, ...]) -> str:
+                        ratios: tuple[int, ...],
+                        root_dx_m: float = ROOT_DX_M) -> str:
     """Minimal namelist.wps matching the TOML bit-for-bit.
 
     The config-driven pipeline reads only geog_data_res/max_dom from it,
@@ -583,7 +1063,7 @@ def render_wps_namelist(projection: dict, dims: list[tuple[int, int]],
     layout key against the [projection]/[[domain]] tables, so the emitted
     pair must agree exactly.
     """
-    tables = _domain_tables(dims, ratios)
+    tables = _domain_tables(dims, ratios, root_dx_m=root_dx_m)
 
     def csv(values):
         return ", ".join(str(v) for v in values) + ","
@@ -602,8 +1082,8 @@ def render_wps_namelist(projection: dict, dims: list[tuple[int, int]],
         f" e_we              = {csv(t['nx'] + 1 for t in tables)}\n"
         f" e_sn              = {csv(t['ny'] + 1 for t in tables)}\n"
         f" geog_data_res     = {csv(chr(39) + 'default' + chr(39) for _ in tables)}\n"
-        f" dx = {ROOT_DX_M:g},\n"
-        f" dy = {ROOT_DX_M:g},\n"
+        f" dx = {float(root_dx_m):g},\n"
+        f" dy = {float(root_dx_m):g},\n"
         f" map_proj = '{projection['map_proj']}',\n"
         f" ref_lat   = {projection['ref_lat']!r},\n"
         f" ref_lon   = {projection['ref_lon']!r},\n"
@@ -623,7 +1103,7 @@ def _default_name(lat: float, lon: float) -> str:
 def _print_sizing_table(exp: ExperimentConfig, estimate,
                         budget_bytes: int, vram_gib: float) -> None:
     envelope = observed_peak_envelope_bytes(
-        estimate.footprint_projection_bytes)
+        estimate.footprint_projection_bytes, vram_gib=vram_gib)
     print("sizing (itemized preflight estimator, in-process):")
     print("  domain    dx        mass grid      dt         resident")
     for dc, dom in zip(exp.domains, estimate.domains):
@@ -634,14 +1114,25 @@ def _print_sizing_table(exp: ExperimentConfig, estimate,
         print(f"  d{dc.grid_id:02d}     {float(dx_km):6.3f} km  "
               f"{dc.run.nx:4d} x {dc.run.ny:<4d}   {dt_text:>8}   "
               f"{dom.resident_bytes / GIB:6.2f} GiB")
+    family = envelope_platform(vram_gib=vram_gib)
     print(f"  itemized alloc estimate "
           f"{estimate.alloc_estimate_bytes / GIB:.2f} GiB; footprint "
           f"projection {estimate.footprint_projection_bytes / GIB:.2f} "
-          f"GiB  x {OBSERVED_PEAK_OVER_FOOTPRINT:.2f} observed peak "
+          f"GiB  x {peak_envelope_factor(vram_gib=vram_gib):.2f} observed peak "
           f"envelope = {envelope / GIB:.2f} GiB")
+    print(f"    envelope factor: {family} "
+          f"({PEAK_ENVELOPE_BASIS[family]})")
+    # An unmeasured platform gets the conservative accounting, which is
+    # a substitution the user has to be able to see.
+    platform_note = unknown_platform_note()
+    if platform_note is not None:
+        print(f"    {platform_note}")
     print(f"  budget {budget_bytes / GIB:.2f} GiB "
           f"({vram_gib:g} GiB card - {vram_reserve_gib(vram_gib):g} GiB "
           f"reserve); headroom {(budget_bytes - envelope) / GIB:.2f} GiB")
+    if family == "windows-small":
+        for line in windows_small_card_advisory(vram_gib):
+            print(line)
 
 
 def _missing_case_inputs(out: Path, case_data: dict) -> list[str]:
@@ -671,9 +1162,9 @@ def _missing_case_inputs(out: Path, case_data: dict) -> list[str]:
 
 def _print_geog_help() -> None:
     print("  static geography: gpuwm reads a locally staged NCAR WPS_GEOG "
-          "tree (no downloader exists).  The geog_root directory must "
-          "contain these dataset directories from the standard "
-          "high-resolution mandatory-fields download:")
+          "tree; `gpuwm fetch-geog` downloads and stages it (~1.3 GB "
+          "compressed, ~16 GB unpacked, resumable).  The geog_root "
+          "directory must contain these dataset directories:")
     print("    " + ", ".join(GEOG_DATASETS))
 
 
@@ -693,50 +1184,71 @@ def domain_main(args) -> int:
     budget = int(budget_gib * GIB)
     if args.hours < 1:
         raise ValueError("--hours must be at least 1")
-    start_time = parse_cycle(args.cycle, args.source)
+    start_time = _resolve_cycle(
+        args.cycle, source=args.source, hours=args.hours)
     name = args.name or _default_name(lat, lon)
     projection = _projection_entries(
         lat, lon, getattr(args, 'projection', 'auto'))
     out: Path = args.out
 
-    ladders = ([args.ladder] if args.ladder != "auto"
-               else list(_LADDERS_DEEPEST_FIRST))
-    chosen = None
-    for ladder in ladders:
-        try:
-            dims, _ = fit_ladder(
-                ladder=ladder, budget_bytes=budget, hours=args.hours,
-                start_time=start_time, projection=projection,
-                source=args.source, name=name)
-        except DomainFitError as error:
-            if args.ladder != "auto":
-                raise
-            print(f"ladder {ladder}: {error}")
-            continue
-        chosen = (ladder, dims)
-        break
-    if chosen is None:
-        raise DomainFitError(
-            "no ladder fits the requested card; even the shallowest "
-            f"ladder's smallest layout exceeds the {budget_gib:.1f} GiB "
-            "budget")
-    ladder, dims = chosen
-    ratios = LADDER_RATIOS[ladder]
+    profile = getattr(args, "physics_profile", DEFAULT_PHYSICS_PROFILE)
+    custom = parse_custom_ladder(
+        root_dx_km=getattr(args, "root_dx", None),
+        chain=getattr(args, "chain", None),
+        ladder=args.ladder)
+    if custom is not None:
+        root_dx_m, ratios = custom
+        dims, _ = fit_ladder(
+            ratios=ratios, root_dx_m=root_dx_m, budget_bytes=budget,
+            hours=args.hours, start_time=start_time,
+            projection=projection, source=args.source, name=name,
+            profile=profile, vram_gib=vram_gib)
+        ladder = "-".join(f"{v:g}" for v in _ladder_dx_km(ratios, root_dx_m))
+    else:
+        root_dx_m = ROOT_DX_M
+        ladders = ([args.ladder] if args.ladder != "auto"
+                   else list(_LADDERS_DEEPEST_FIRST))
+        chosen = None
+        for candidate_ladder in ladders:
+            try:
+                dims, _ = fit_ladder(
+                    ladder=candidate_ladder, budget_bytes=budget,
+                    hours=args.hours, start_time=start_time,
+                    projection=projection, source=args.source, name=name,
+                    profile=profile, vram_gib=vram_gib)
+            except DomainFitError as error:
+                if args.ladder != "auto":
+                    raise
+                print(f"ladder {candidate_ladder}: {error}")
+                continue
+            chosen = (candidate_ladder, dims)
+            break
+        if chosen is None:
+            raise DomainFitError(
+                "no ladder fits the requested card; even the shallowest "
+                f"ladder's smallest layout exceeds the {budget_gib:.1f} GiB "
+                "budget")
+        ladder, dims = chosen
+        ratios = LADDER_RATIOS[ladder]
     # Genuine-limit refusal first (its message names the real problem;
     # a pole-containing footprint would otherwise also trip the
     # 180-degree fetch-span refusal below with a less useful message).
-    _pole_clearance_refusal(projection, *dims[0])
+    _pole_clearance_refusal(projection, *dims[0], root_dx_m)
 
     # Fetch hints from the fitted root footprint.  The default data
     # directory lives beside the emitted TOML so the declared forcing
     # paths stay short and the config directory stays relocatable.
+    area_notes: list[str] = []
     area = _fetch_area(projection, *dims[0],
-                       margin_deg=_fetch_margin_deg(args.source))
+                       margin_deg=_fetch_margin_deg(args.source),
+                       notes=area_notes, root_dx_m=root_dx_m)
     cadence = _SOURCE_CADENCE_H.get(args.source)
     data_dir = (Path(args.data_dir) if args.data_dir
                 else out.parent / "data" / name)
     fetch_hints = {
-        "source": args.source, "cycle": args.cycle,
+        # The RESOLVED cycle, never the literal "latest": the emitted
+        # config is a record of one start time, not of a query.
+        "source": args.source, "cycle": start_time.strftime("%Y-%m-%dT%H"),
         "hours": (args.hours if cadence is None else
                   max(cadence, math.ceil(args.hours / cadence) * cadence)),
         "area": ",".join(f"{v:.2f}" for v in area),
@@ -776,14 +1288,16 @@ def domain_main(args) -> int:
     text = render_config(
         name=name, start_time=start_time, hours=args.hours,
         projection=projection, dims=dims, ratios=ratios,
-        fetch_hints=fetch_hints, case_data=case_data)
+        fetch_hints=fetch_hints, case_data=case_data,
+        root_dx_m=root_dx_m, profile=profile)
     # Round-trip the exact bytes through the real loader before writing.
     exp = experiment_from_text(text, source=str(out))
     estimate = estimate_experiment(
         exp,
-        forcing_interval_seconds=SOURCE_FORCING_INTERVAL_S[args.source])
+        forcing_interval_seconds=SOURCE_FORCING_INTERVAL_S[args.source],
+        vram_gib=vram_gib)
     envelope = observed_peak_envelope_bytes(
-        estimate.footprint_projection_bytes)
+        estimate.footprint_projection_bytes, vram_gib=vram_gib)
     if envelope > budget:
         raise DomainFitError(
             "internal fit regression: emitted config's envelope "
@@ -792,7 +1306,8 @@ def domain_main(args) -> int:
 
     _write_atomic(out, text)
     wps_path = out.parent / f"{out.stem}.namelist.wps"
-    _write_atomic(wps_path, render_wps_namelist(projection, dims, ratios))
+    _write_atomic(wps_path, render_wps_namelist(
+        projection, dims, ratios, root_dx_m=root_dx_m))
     written = [out, wps_path]
     if args.source == "era5" and args.vtable is None:
         if vtable_path.exists():
@@ -805,15 +1320,35 @@ def domain_main(args) -> int:
             written.append(vtable_path)
 
     print(f"gpuwm domain: {name!r} at ({lat:g}, {lon:g}), ladder {ladder} "
-          f"({'-'.join(f'{v:g}' for v in _ladder_dx_km(ratios))} km), "
+          f"({'-'.join(f'{v:g}' for v in _ladder_dx_km(ratios, root_dx_m))} km), "
           f"card {vram_gib:g} GiB")
     _print_sizing_table(exp, estimate, budget, vram_gib)
     for path in written:
         print(f"wrote {path}")
+    # The printed command must be pasteable as-is from THIS directory.
+    # A relative data path that climbs out of the cwd silently targets
+    # the wrong place when pasted from anywhere else, so it is printed
+    # resolved; the TOML keeps the relative form for relocatability.
+    printed_out = fetch_hints["out"]
+    if printed_out.startswith("../") or args.data_dir:
+        printed_out = _posix(Path(data_dir).resolve())
+    # `--area=-58.58,...` -- the "=" form is what a leading minus needs
+    # in every argument parser, including shells' own.
+    area_flag = (f"--area={fetch_hints['area']}"
+                 if fetch_hints["area"].startswith("-")
+                 else f"--area {fetch_hints['area']}")
     print("next: gpuwm fetch "
-          f"--source {args.source} --cycle {args.cycle} "
-          f"--hours {fetch_hints['hours']} --area {fetch_hints['area']} "
-          f"--out {fetch_hints['out']}")
+          f"--source {args.source} --cycle {fetch_hints['cycle']} "
+          f"--hours {fetch_hints['hours']} {area_flag} "
+          f"--out {printed_out}")
+    for note in area_notes:
+        print(f"note: {note}")
+    print(f"physics: {physics_summary(profile)}")
+    for line in prepared_route_physics_notice(profile, args.source):
+        print(line)
+    for note in gray_zone_advisory(
+            _ladder_dx_km(ratios, root_dx_m), shared_physics(profile)):
+        print(f"advisory: {note}")
 
     # ---- final step: gpuwm check, honestly ---------------------------
     if case_data is None:
@@ -864,7 +1399,10 @@ def register_cli(subparsers) -> None:
                              "point on earth; the projection is "
                              "auto-selected from |lat| (<25 Mercator, "
                              "25-60 Lambert conformal, >60 polar "
-                             "stereographic) unless --projection is set")
+                             "stereographic) unless --projection is set. "
+                             "Negative (southern/western) values work in "
+                             "both forms: --point -33.87,151.21 and "
+                             "--point=-33.87,151.21")
     parser.add_argument("--projection", default="auto",
                         choices=("auto", "lambert", "mercator", "polar"),
                         help="map projection override (default: auto by "
@@ -882,8 +1420,30 @@ def register_cli(subparsers) -> None:
                         help="total VRAM in GiB (alternative to --card)")
     parser.add_argument("--ladder", default="auto",
                         choices=(*LADDER_RATIOS, "auto"),
-                        help="nest dx chain in km; auto picks the deepest "
-                             "ladder that fits the card")
+                        help="preset nest dx chain in km; auto picks the "
+                             "deepest preset that fits the card.  For "
+                             "anything else use --root-dx / --chain")
+    parser.add_argument("--physics-profile", default=None,
+                        choices=WIZARD_PHYSICS_PROFILES,
+                        help="shipped physics suite to emit; taken verbatim "
+                             "from the registry the prepared-forecast "
+                             "runner validates against, so the emitted "
+                             "config passes its guard as written.  Read "
+                             "the names: the *-no-radiation-* and "
+                             "*-validation-* profiles run reduced physics "
+                             "(default: full RTE+RRTMGP + Kain-Fritsch)")
+    parser.add_argument("--root-dx", type=float, default=None,
+                        metavar="KM",
+                        help="custom root grid spacing in km "
+                             f"[{MIN_ROOT_DX_KM:g}, {MAX_ROOT_DX_KM:g}]; "
+                             "use with --chain instead of --ladder")
+    parser.add_argument("--chain", default=None, metavar="R1,R2,...",
+                        help="custom nest refinement ratios, integers in "
+                             f"[{MIN_CHAIN_RATIO}, {MAX_CHAIN_RATIO}] "
+                             "(e.g. --root-dx 3 --chain 4 for 3 km -> "
+                             "750 m); omit for a single domain at "
+                             "--root-dx.  Sized by the same estimator fit "
+                             "loop as the presets")
     parser.add_argument("--hours", type=int, default=6, metavar="N",
                         help="forecast length (run_seconds = N*3600)")
     parser.add_argument("--source", default="era5",
@@ -891,8 +1451,12 @@ def register_cli(subparsers) -> None:
                         help="forcing source for the [fetch] hints and "
                              "(era5) the [case_data] declarations")
     parser.add_argument("--cycle", required=True,
-                        metavar="YYYY-MM-DDTHH",
-                        help="start time (UTC) = the forcing cycle")
+                        metavar="YYYY-MM-DDTHH|latest",
+                        help="start time (UTC) = the forcing cycle; "
+                             "'latest' probes the public mirrors for the "
+                             "newest complete gfs/hrrr cycle covering "
+                             "--hours and prints what it picked (needs "
+                             "network; era5 must name an explicit time)")
     parser.add_argument("--out", type=Path, required=True, metavar="TOML",
                         help="emitted experiment TOML path")
     parser.add_argument("--data-dir", default=None, metavar="DIR",
@@ -916,8 +1480,12 @@ def register_cli(subparsers) -> None:
 
 
 __all__ = [
-    "CARD_VRAM_GIB", "DomainFitError", "GEOG_DATASETS", "LADDER_RATIOS",
-    "ROOT_DX_M", "ROOT_TIME_STEP_S", "domain_main", "experiment_from_text",
-    "fit_ladder", "register_cli", "render_config", "render_wps_namelist",
-    "vram_reserve_gib",
+    "CARD_VRAM_GIB", "DomainFitError", "GEOG_DATASETS", "GRAY_ZONE_DX_KM",
+    "LADDER_RATIOS", "MAX_FETCH_ABS_LAT", "POLE_CLEARANCE_DEG",
+    "ROOT_DX_M", "ROOT_TIME_STEP_S", "TROPICAL_ROOT_TIME_STEP_S",
+    "domain_main", "experiment_from_text", "fit_ladder",
+    "gray_zone_advisory", "max_fetch_abs_lat", "parse_chain",
+    "parse_custom_ladder", "pole_clearance_deg", "register_cli",
+    "render_config", "render_wps_namelist", "root_time_step_s",
+    "seconds_per_km", "vram_reserve_gib",
 ]

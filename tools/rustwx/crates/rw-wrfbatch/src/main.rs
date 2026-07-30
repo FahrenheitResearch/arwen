@@ -8,6 +8,16 @@
 //! is selectable by stored slot (`--frames N`), and the work limits are
 //! sized to the request instead of the GUI's one-hour click ceilings --
 //! which is what lets exact-time (sub-hourly) imports render every frame.
+//!
+//! It also stamps the run's own identity onto every output.  The upstream
+//! filename carried model, init cycle, forecast hour, and the generic
+//! `native_grid` slug -- which is identical for every nest of one run, so
+//! rendering two domains at one lead into one directory silently
+//! overwrote one forecast with the other.  The inputs' `GRID_ID` and `DX`
+//! become a `d02-3km` domain token in the slug position, and the same
+//! spacing appears as `Δx 3 km` in the plot subtitle.  Provenance is the
+//! local model (`--source-label`, default `ArWen`) rather than the GDEX
+//! source inherited from the `wrf` store-model identity.
 
 #[path = "grib_import.rs"]
 mod grib_import;
@@ -30,6 +40,12 @@ use rusty_weather::batch_render::{
 };
 use wrf_process::{WrfProcessMessage, WrfProcessOptions, spawn_process_paths};
 
+/// Provenance label for a locally-imported run.  The store model slug is
+/// `wrf`, whose only registered fetch source is GDEX -- a label this lane
+/// never fetched from.  `--source-label` renames it for stock-WRF files,
+/// which ArWen did not produce and must not claim.
+const DEFAULT_SOURCE_LABEL: &str = "ArWen";
+
 #[derive(Debug)]
 struct Args {
     store_root: PathBuf,
@@ -40,12 +56,14 @@ struct Args {
     height: u32,
     heavy: bool,
     list_products: bool,
+    source_label: String,
     inputs: Vec<PathBuf>,
 }
 
 fn usage() -> &'static str {
     "usage: rw_wrfbatch --store-root DIR --out-dir DIR [--products all|SLUGS] \
-[--frames all|N] [--width N] [--height N] [--heavy] [--list-products] wrfout..."
+[--frames all|N] [--width N] [--height N] [--heavy] [--source-label TEXT] \
+[--list-products] wrfout..."
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -57,6 +75,7 @@ fn parse_args() -> Result<Args, String> {
     let mut height = 900u32;
     let mut heavy = false;
     let mut list_products = false;
+    let mut source_label = DEFAULT_SOURCE_LABEL.to_string();
     let mut inputs = Vec::new();
     let mut raw = std::env::args().skip(1);
 
@@ -99,6 +118,13 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|err| format!("invalid --height: {err}"))?;
             }
+            "--source-label" => {
+                let value = raw.next().ok_or("--source-label requires a value")?;
+                if value.trim().is_empty() {
+                    return Err("--source-label must not be blank".to_string());
+                }
+                source_label = value.trim().to_string();
+            }
             "--heavy" => heavy = true,
             "--list-products" => list_products = true,
             "--help" | "-h" => return Err(usage().to_string()),
@@ -119,8 +145,115 @@ fn parse_args() -> Result<Args, String> {
         height,
         heavy,
         list_products,
+        source_label,
         inputs,
     })
+}
+
+/// The run's own grid identity, read from the inputs' WRF global
+/// attributes: the nest number (`GRID_ID`, else a `wrfout_dNN` filename)
+/// and the horizontal spacing (`DX`, metres).
+#[derive(Debug, Default, PartialEq)]
+struct GridIdentity {
+    domain: Option<String>,
+    spacing_m: Option<f64>,
+}
+
+/// One identity for the whole invocation, or nothing.
+///
+/// Several inputs import into ONE store and render as one run, so a
+/// per-file token would be a lie on the shared output. Inputs that
+/// disagree therefore yield no token at all: the generic `native_grid`
+/// slug is honest about a mixed run in a way that `d02` would not be.
+fn grid_identity(inputs: &[PathBuf]) -> GridIdentity {
+    let mut identity: Option<GridIdentity> = None;
+    for path in inputs {
+        let found = file_grid_identity(path);
+        match &identity {
+            None => identity = Some(found),
+            Some(first) if *first == found => {}
+            Some(_) => return GridIdentity::default(),
+        }
+    }
+    identity.unwrap_or_default()
+}
+
+fn file_grid_identity(path: &std::path::Path) -> GridIdentity {
+    let file = wrf_core::WrfFile::open(path).ok();
+    let domain = file
+        .as_ref()
+        .and_then(|file| file.global_attr_i32("GRID_ID").ok())
+        .and_then(domain_token_from_id)
+        .or_else(|| domain_token_from_filename(path));
+    let spacing_m = file
+        .as_ref()
+        .and_then(|file| file.global_attr_f64("DX").ok())
+        .filter(|value| value.is_finite() && *value > 0.0);
+    GridIdentity { domain, spacing_m }
+}
+
+fn domain_token_from_id(grid_id: i32) -> Option<String> {
+    (1..=99).contains(&grid_id).then(|| format!("d{grid_id:02}"))
+}
+
+/// `wrfout_d02_1974-04-03_18:00:00` -> `d02`, for files whose `GRID_ID`
+/// is absent (idealized and hand-built wrfouts).
+fn domain_token_from_filename(path: &std::path::Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let rest = name.strip_prefix("wrfout_d")?;
+    let digits: String = rest.chars().take(2).collect();
+    if digits.len() != 2 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("d{digits}"))
+}
+
+/// `3km`, `1.5km`, `333m` -- the resolution half of the output token.
+/// Sub-kilometre nests read as integer metres because `0.333km` is a
+/// worse label for a 333 m nest than `333m` is.
+fn resolution_token(spacing_m: f64) -> Option<String> {
+    let (value, unit) = spacing_parts(spacing_m)?;
+    Some(format!("{value}{unit}"))
+}
+
+/// `Δx 3 km`, `Δx 333 m` -- the same number, spelled for the subtitle.
+fn spacing_subtitle(spacing_m: f64) -> Option<String> {
+    let (value, unit) = spacing_parts(spacing_m)?;
+    Some(format!("\u{0394}x {value} {unit}"))
+}
+
+fn spacing_parts(spacing_m: f64) -> Option<(String, &'static str)> {
+    if !spacing_m.is_finite() || spacing_m <= 0.0 {
+        return None;
+    }
+    let metres = spacing_m.round();
+    if metres >= 1_000.0 {
+        Some((trimmed_number(spacing_m / 1_000.0), "km"))
+    } else {
+        Some((format!("{metres:.0}"), "m"))
+    }
+}
+
+/// Three decimals at most, with the trailing zeros dropped: `3`, `1.5`,
+/// `1.333`.
+fn trimmed_number(value: f64) -> String {
+    let text = format!("{value:.3}");
+    let trimmed = text.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// The slug that replaces `native_grid` in every output filename:
+/// `d02-3km`, or `d02` when the file declares no usable `DX`.
+fn native_domain_slug(identity: &GridIdentity) -> Option<String> {
+    let domain = identity.domain.as_ref()?;
+    match identity.spacing_m.and_then(resolution_token) {
+        Some(resolution) => Some(format!("{domain}-{resolution}")),
+        None => Some(domain.clone()),
+    }
 }
 
 fn run(args: Args) -> Result<(), String> {
@@ -128,6 +261,12 @@ fn run(args: Args) -> Result<(), String> {
         heavy_ecape: args.heavy,
         ..WrfProcessOptions::default()
     };
+    // Read before the import consumes the paths: the domain token and the
+    // subtitle spacing come from the inputs' own global attributes, never
+    // from the store (rw-store v1 retains no grid-spacing metadata).
+    let identity = grid_identity(&args.inputs);
+    let domain_slug = native_domain_slug(&identity);
+    let spacing = identity.spacing_m.and_then(spacing_subtitle);
     let task = spawn_process_paths(args.inputs, args.store_root.clone(), options);
     let import = loop {
         match task
@@ -249,6 +388,9 @@ fn run(args: Args) -> Result<(), String> {
         product_spec,
         out_dir: args.out_dir,
         domain: BatchRenderDomain::NativeGrid,
+        native_domain_slug: domain_slug,
+        subtitle_spacing: spacing,
+        source_label: Some(args.source_label),
         date_yyyymmdd: None,
         cycle_utc: None,
         source: None,
@@ -460,6 +602,106 @@ fn list_products(
         .join(" ");
     println!("CATALOG total={} {summary}", rows.len());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolution_tokens_are_trimmed_km_or_integer_metres() {
+        assert_eq!(resolution_token(3_000.0).as_deref(), Some("3km"));
+        assert_eq!(resolution_token(12_000.0).as_deref(), Some("12km"));
+        assert_eq!(resolution_token(1_000.0).as_deref(), Some("1km"));
+        // A 3:1 nest of a 12 km parent, twice over.
+        assert_eq!(resolution_token(1_333.3333).as_deref(), Some("1.333km"));
+        assert_eq!(resolution_token(1_500.0).as_deref(), Some("1.5km"));
+        // Sub-kilometre reads as metres, not as 0.111 km.
+        assert_eq!(resolution_token(111.1111).as_deref(), Some("111m"));
+        assert_eq!(resolution_token(500.0).as_deref(), Some("500m"));
+        assert_eq!(resolution_token(250.0).as_deref(), Some("250m"));
+        // The boundary rounds before it chooses a unit.
+        assert_eq!(resolution_token(999.6).as_deref(), Some("1km"));
+        assert_eq!(resolution_token(999.4).as_deref(), Some("999m"));
+        // Nothing usable is never guessed at.
+        assert_eq!(resolution_token(0.0), None);
+        assert_eq!(resolution_token(-3_000.0), None);
+        assert_eq!(resolution_token(f64::NAN), None);
+    }
+
+    #[test]
+    fn spacing_subtitles_spell_the_same_number() {
+        assert_eq!(spacing_subtitle(3_000.0).as_deref(), Some("\u{0394}x 3 km"));
+        assert_eq!(
+            spacing_subtitle(1_333.3333).as_deref(),
+            Some("\u{0394}x 1.333 km")
+        );
+        assert_eq!(spacing_subtitle(111.1111).as_deref(), Some("\u{0394}x 111 m"));
+        assert_eq!(spacing_subtitle(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn domain_tokens_come_from_grid_id_then_the_filename() {
+        assert_eq!(domain_token_from_id(2).as_deref(), Some("d02"));
+        assert_eq!(domain_token_from_id(11).as_deref(), Some("d11"));
+        assert_eq!(domain_token_from_id(0), None);
+        assert_eq!(domain_token_from_id(-1), None);
+
+        let named = PathBuf::from("/runs/wrfout_d03_1974-04-03_18:00:00");
+        assert_eq!(domain_token_from_filename(&named).as_deref(), Some("d03"));
+        let anonymous = PathBuf::from("/runs/model_output.nc");
+        assert_eq!(domain_token_from_filename(&anonymous), None);
+        let truncated = PathBuf::from("/runs/wrfout_d");
+        assert_eq!(domain_token_from_filename(&truncated), None);
+    }
+
+    #[test]
+    fn the_slug_pairs_domain_with_resolution_and_degrades_honestly() {
+        let full = GridIdentity {
+            domain: Some("d02".to_string()),
+            spacing_m: Some(3_000.0),
+        };
+        assert_eq!(native_domain_slug(&full).as_deref(), Some("d02-3km"));
+
+        // DX absent: the domain still separates the nests, which is the
+        // whole point of the token.
+        let no_spacing = GridIdentity {
+            domain: Some("d02".to_string()),
+            spacing_m: None,
+        };
+        assert_eq!(native_domain_slug(&no_spacing).as_deref(), Some("d02"));
+
+        // Domain absent: no token at all -- `native_grid` is honest about
+        // an unidentified grid in a way that `d01` would not be.
+        let no_domain = GridIdentity {
+            domain: None,
+            spacing_m: Some(3_000.0),
+        };
+        assert_eq!(native_domain_slug(&no_domain), None);
+    }
+
+    #[test]
+    fn disagreeing_inputs_yield_no_token() {
+        // Two nests imported into ONE store render as one run, so no
+        // single token can be true of the output.  Filenames alone are
+        // enough to reach the disagreement branch.
+        let mixed = [
+            PathBuf::from("wrfout_d02_1974-04-03_18:00:00"),
+            PathBuf::from("wrfout_d03_1974-04-03_18:00:00"),
+        ];
+        assert_eq!(grid_identity(&mixed), GridIdentity::default());
+        assert_eq!(native_domain_slug(&grid_identity(&mixed)), None);
+
+        let agreeing = [
+            PathBuf::from("wrfout_d02_1974-04-03_18:00:00"),
+            PathBuf::from("wrfout_d02_1974-04-03_19:00:00"),
+        ];
+        assert_eq!(
+            grid_identity(&agreeing).domain.as_deref(),
+            Some("d02"),
+            "one domain across several files keeps its token"
+        );
+    }
 }
 
 fn main() -> ExitCode {

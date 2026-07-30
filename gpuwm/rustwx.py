@@ -32,7 +32,9 @@ import os
 import subprocess
 from pathlib import Path
 
-from gpuwm.bridges import default_bridge_dir, executable_name
+from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
+                           cargo_build_one_liner, default_bridge_dir,
+                           executable_name)
 
 #: Environment variable naming a prebuilt renderer executable.
 RENDERER_ENV = "GPUWM_RW_WRFBATCH"
@@ -40,9 +42,10 @@ RENDERER_ENV = "GPUWM_RW_WRFBATCH"
 #: Executable base name of the vendored batch renderer.
 RENDERER_NAME = "rw_wrfbatch"
 
-#: The one-liner that builds the renderer from a source clone.
-CARGO_BUILD_HINT = (
-    "cd tools/rustwx && cargo build --release --locked --offline")
+#: The one-liner that builds the renderer, from a checkout root.
+#: Shell-correct for this platform: Windows PowerShell 5.1 cannot
+#: parse ``&&``.
+CARGO_BUILD_HINT = cargo_build_one_liner(RUSTWX_CRATE_RELATIVE)
 
 _PROBE_TIMEOUT_S = 20
 
@@ -95,15 +98,18 @@ def find_renderer() -> Path | None:
 
 
 def renderer_remedy() -> str:
-    """The exact copy-pasteable remedy for a missing renderer."""
+    """The remedy for a missing renderer, true for THIS install.
 
-    filename = executable_name(RENDERER_NAME)
-    return (
-        "build the renderer once from a source clone of this repository:\n"
-        f"    {CARGO_BUILD_HINT}\n"
-        f"  then EITHER set {RENDERER_ENV}=<clone>/tools/rustwx/target/"
-        f"release/{filename}\n"
-        f"  OR copy the built executable into {default_bridge_dir()}")
+    Delegates rather than repeating the shape a third time: this copy is
+    what kept a ``<clone>`` placeholder and an "exact copy-pasteable"
+    claim after the bridge copy stopped making either.
+    """
+
+    return artifact_remedy(
+        env_var=RENDERER_ENV, filename=executable_name(RENDERER_NAME),
+        subject="the rust render engine",
+        crate_relative=RUSTWX_CRATE_RELATIVE,
+        one_liner=CARGO_BUILD_HINT)
 
 
 def renderer_env() -> dict[str, str]:
@@ -202,8 +208,9 @@ def list_products(renderer: Path, wrfout: Path, *, store_root: Path,
 
 def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
                  out_dir: Path, products: str, frames: str,
-                 width: int, height: int,
-                 heavy: bool = False) -> tuple[list[Path], list[str]]:
+                 width: int, height: int, heavy: bool = False,
+                 source_label: str | None = None,
+                 ) -> tuple[list[Path], list[str]]:
     """Render one wrfout file into ``out_dir``; (written, failures).
 
     One invocation per file with its own store root, exactly like the
@@ -224,6 +231,8 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
     ]
     if heavy:
         command.append("--heavy")
+    if source_label:
+        command.extend(("--source-label", source_label))
     command.append(str(wrfout))
     try:
         result = subprocess.run(

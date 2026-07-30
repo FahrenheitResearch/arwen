@@ -191,6 +191,40 @@ suite runs Thompson with the legacy RRTMG engine
 (`ra_rrtmg_variant = "rrtmg_legacy"`) to mirror the CPU reference
 exactly ([VERIFICATION.md](VERIFICATION.md)).
 
+## Which suites each data route can actually prepare
+
+Selectable is not the same as preparable, and the difference is
+route-dependent. State of play in v1.0.1, plainly:
+
+| route | what it can prepare |
+|---|---|
+| ERA5 config door (`[case_data]` -> `gpuwm run`) | the registry-admitted combinations |
+| GFS / HRRR preprocessor door (`rw-wps`) | **YSU (1) + MM5 surface layer (91) + Noah (2) only** |
+
+The GFS/HRRR restriction is not a science limit, it is a plumbing one:
+the front door unconditionally runs the stock-WRF exporter on its way
+out, and that exporter hard-requires `bl_pbl_physics = 1`,
+`sf_sfclay_physics = 91`, `sf_surface_physics = 2` because those are the
+combinations whose `wrfinput`/`wrfbdy` have been accepted by unchanged
+WRF v4.6.1. So **MYNN, RUC and Noah-MP are selectable but not
+preparable through the GFS/HRRR route today**, even though the GPU model
+runs all of them: the prepared cache binds the configuration bitwise, so
+there is no workaround short of the ERA5 door.
+
+That is a bug, not a design, and it is the first item of the next
+release: the exporter requirement belongs to callers who actually want
+stock-WRF output, not to everyone who wants an ArWen forecast. Until
+then this page says so rather than letting a user discover it after
+preprocessing.
+
+The prepared SINGLE-domain forecast runner adds a second, separate
+restriction: it accepts only the shipped `--physics-profile` values and
+compares switches for exact equality. `gpuwm domain --physics-profile`
+emits a config that passes that guard as written, and the wizard prints
+what each profile actually runs -- three of the six run full RTE+RRTMGP
+with Kain-Fritsch, three run longwave OFF with Dudhia shortwave and no
+cumulus. Read the names. The multi-domain runner has no whitelist.
+
 ## Namelist import substitutions
 
 `gpuwm import-namelist` maps exactly three unimplemented WRF selections

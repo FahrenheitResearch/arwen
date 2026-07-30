@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Mapping
@@ -545,6 +546,36 @@ def _load_bridge_snapshots(
     return tuple(snapshots)
 
 
+def _prepare_output_root_parent(output_root: Path) -> Path:
+    """Make sure the directory that will hold --output-root exists.
+
+    The bridge's scratch space is a TemporaryDirectory in the PARENT of
+    ``--output-root`` -- so it can be renamed into place on the same
+    filesystem -- and an absent parent surfaced as a bare
+    ``FileNotFoundError`` traceback about a random ``gpuwm-gfs-bridge-*``
+    name, roughly 40 s into the work, after --dry-run had passed
+    cleanly.  Creating the parent is what every user did by hand
+    (``mkdir -p``); doing it here keeps the create-only guarantee on
+    ``--output-root`` itself, which is the directory that matters.
+    """
+
+    parent = output_root.parent
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise NotADirectoryError(
+            f"cannot create the parent directory of --output-root "
+            f"{output_root}: {error}.  The GFS bridge stages its scratch "
+            f"space in {parent} so it can be renamed into place on one "
+            "filesystem; choose an --output-root whose parent is writable"
+        ) from error
+    if not parent.is_dir():
+        raise NotADirectoryError(
+            f"the parent of --output-root {output_root} is not a "
+            f"directory: {parent}")
+    return parent
+
+
 def prepare_gfs_wrf(
     *,
     series: Path,
@@ -601,6 +632,7 @@ def prepare_gfs_wrf(
         raise PermissionError("GFS Rust bridge is not executable")
     if Path(output_root).exists():
         raise FileExistsError(f"refusing to overwrite {output_root}")
+    _prepare_output_root_parent(Path(output_root))
     manifest = _verify_input_manifest(
         Path(input_manifest), input_manifest_sha256, roles)
     manifest_digest = input_manifest_sha256.lower()
@@ -959,6 +991,105 @@ def prepare_gfs_wrf(
             raise
 
 
+def prepared_forecast_next_command(
+        proof: Mapping[str, object], *, output_root, experiment_config,
+        wps_namelist) -> list[str]:
+    """The ready-to-run forecast command, hashes filled in.
+
+    ``gpuwm fetch --author-front-door-manifest`` already prints the
+    complete ``rw-wps`` line with its digest filled in, and it is the
+    single most-praised thing in the pilots.  Nothing did the equivalent
+    here: the front door finished by dumping 42 KB of proof.json to
+    stdout and printing no next step at all, so every user hand-extracted
+    three SHA-256 values -- one of them only findable by grepping the
+    JSON for ``content_sha256`` -- before they could start a forecast.
+
+    Everything below is already known to this process.  Emitted on
+    stderr so the proof document on stdout stays machine-readable.
+
+    **Every line printed as a command must run when pasted, exactly as
+    printed.**  v1.0.0 printed ``--physics-profile <the profile this
+    config was materialized for>`` and ``--outdir OUTPUT_DIR``: two
+    placeholders in a command whose entire value was that a user did not
+    have to reconstruct it, and the second one is a shell metacharacter
+    error rather than an honest gap.  Both are resolved here -- the
+    profile by asking the same table the runner's guard asks, the outdir
+    by naming a real directory beside the preparation.  Where a value
+    genuinely cannot be resolved, this prints prose saying so instead of
+    a command that cannot be run.
+    """
+
+    from gpuwm.experiment import load_experiment
+    from gpuwm.physics_compat import identify_single_domain_profile
+
+    output_root = Path(output_root)
+    proof_path = output_root / "proof.json"
+    lines = [
+        "",
+        "rw-wps: preparation complete.  Run the forecast with:",
+    ]
+    try:
+        proof_digest = _sha256(proof_path)
+    except OSError:
+        return lines + [
+            f"  (cannot read {proof_path}; no next command to print)"]
+    # A real, pasteable directory: a sibling of the preparation, so the
+    # command works from anywhere and does not overwrite the inputs.
+    outdir = output_root / "forecast"
+    cache = proof.get("prepared_cache")
+    content = (cache.get("content_sha256")
+               if isinstance(cache, Mapping) else None)
+    manifest_digest = proof.get("input_manifest_sha256")
+    if not isinstance(content, str) or not isinstance(manifest_digest, str):
+        # The multi-domain hierarchy product.  Its runner binds the
+        # experiment config by digest too, so the full command is
+        # printable here rather than a fragment the user completes.
+        config_path = Path(experiment_config)
+        try:
+            config_digest = _sha256(config_path)
+        except OSError:
+            return lines + [
+                f"  (cannot read {config_path}; no next command to print)"]
+        return lines + [
+            "  python tools/prepared_domain_tree_forecast.py \\",
+            f"      --prepared-root {output_root} \\",
+            f"      --preparation-receipt-sha256 {proof_digest} \\",
+            f"      --experiment-config {config_path} \\",
+            f"      --experiment-config-sha256 {config_digest} \\",
+            f"      --io-mode history --outdir {outdir}",
+            "  (this proof carries no single prepared-cache identity "
+            "because it is a multi-domain hierarchy product.)",
+        ]
+    try:
+        profile = identify_single_domain_profile(
+            load_experiment(Path(experiment_config)).root.run)
+    except Exception:  # a config this process cannot load is not a command
+        profile = None
+    if profile is None:
+        return lines + [
+            f"  (the physics in {Path(experiment_config)} matches none of "
+            "the profiles the prepared single-domain runner accepts, so "
+            "no runnable command can be printed for it.  Re-emit the "
+            "config with `gpuwm domain --physics-profile <id>` -- "
+            "`gpuwm domain --help` lists the ids -- and the runner will "
+            "then accept it.)"]
+    lines += [
+        "  python tools/prepared_single_domain_forecast.py \\",
+        "      --source gfs \\",
+        f"      --prepared-root {output_root} \\",
+        f"      --proof-sha256 {proof_digest} \\",
+        f"      --source-manifest-sha256 {manifest_digest} \\",
+        f"      --prepared-content-sha256 {content} \\",
+        f"      --experiment-config {Path(experiment_config)} \\",
+        f"      --wps-namelist {Path(wps_namelist)} \\",
+        f"      --physics-profile {profile} \\",
+        f"      --io-mode history --outdir {outdir}",
+        "  (--run-seconds and --history-interval-seconds default to the "
+        "hash-bound experiment; the runner refuses any other value.)",
+    ]
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--series", type=Path, required=True)
@@ -994,6 +1125,11 @@ def main(argv: list[str] | None = None) -> int:
         hierarchy_workers=args.hierarchy_workers,
     )
     print(json.dumps(proof, indent=2, sort_keys=True))
+    for line in prepared_forecast_next_command(
+            proof, output_root=args.output_root,
+            experiment_config=args.experiment_config,
+            wps_namelist=args.wps_namelist):
+        print(line, file=sys.stderr)
     return 0
 
 

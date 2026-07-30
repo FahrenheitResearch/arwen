@@ -359,7 +359,8 @@ def test_grib2_message_count_walks_envelopes_exactly(tmp_path):
 # HRRR fetch: product set, manifest, checksums, resume, area gate
 # ---------------------------------------------------------------------------
 
-def _fake_hrrr_product(request, *, workers, retries):
+def _fake_hrrr_product(request, *, workers, retries,
+                       expected_count=-1):
     # The real record cardinalities: an undersized fake would trip the
     # completeness bar fetch_hrrr now applies to fresh downloads too.
     request.destination.write_bytes(_grib2_stream(
@@ -373,9 +374,11 @@ def test_fetch_hrrr_downloads_wrfnat_and_soil_products(tmp_path,
                                                        monkeypatch):
     seen = []
 
-    def product(request, *, workers, retries):
+    def product(request, *, workers, retries, expected_count=-1):
         seen.append(request)
-        return _fake_hrrr_product(request, workers=workers, retries=retries)
+        return _fake_hrrr_product(request, workers=workers,
+                                  retries=retries,
+                                  expected_count=expected_count)
 
     monkeypatch.setattr(hrrr_transport, "_download_product", product)
     out = tmp_path / "hrrr"
@@ -443,9 +446,11 @@ def test_fetch_hrrr_redownloads_boundary_truncated_existing_file(
 
     downloaded = []
 
-    def product(request, *, workers, retries):
+    def product(request, *, workers, retries, expected_count=-1):
         downloaded.append(request.destination.name)
-        return _fake_hrrr_product(request, workers=workers, retries=retries)
+        return _fake_hrrr_product(request, workers=workers,
+                                  retries=retries,
+                                  expected_count=expected_count)
 
     monkeypatch.setattr(hrrr_transport, "_download_product", product)
     lines: list[str] = []
@@ -486,9 +491,11 @@ def test_fetch_hrrr_redownloads_on_prior_manifest_digest_mismatch(
 
     downloaded = []
 
-    def product(request, *, workers, retries):
+    def product(request, *, workers, retries, expected_count=-1):
         downloaded.append(request.destination.name)
-        return _fake_hrrr_product(request, workers=workers, retries=retries)
+        return _fake_hrrr_product(request, workers=workers,
+                                  retries=retries,
+                                  expected_count=expected_count)
 
     monkeypatch.setattr(hrrr_transport, "_download_product", product)
     lines: list[str] = []
@@ -900,7 +907,7 @@ def test_front_door_author_flag_contracts(tmp_path, capsys):
         err = capsys.readouterr().err
         assert needle in err and "Traceback" not in err
 
-    refused("--source gfs only",
+    refused("--source gfs/gdas only",
             ["fetch", "--source", "hrrr", "--cycle", "2026-07-28T05",
              "--hours", "2", "--out", str(tmp_path),
              "--author-front-door-manifest"])
@@ -925,7 +932,7 @@ def test_cli_fetch_hrrr_prints_the_front_door_handoff(tmp_path,
     monkeypatch.setattr(
         hrrr_transport, "_download_product", _fake_hrrr_product)
     out = tmp_path / "hrrr"
-    rc = cli.main(["fetch", "--source", "hrrr", "--cycle",
+    rc = cli.main(["fetch", "--source", "hrrr", "--engine", "python", "--cycle",
                    "2026-07-28T05", "--hours", "1", "--transport", "s3",
                    "--out", str(out)])
     assert rc == 0
@@ -1020,9 +1027,11 @@ def test_fetch_hrrr_nomads_transport_keeps_the_contracts(tmp_path,
     host differs, and the manifest records it per file."""
     seen = []
 
-    def product(request, *, workers, retries):
+    def product(request, *, workers, retries, expected_count=-1):
         seen.append(request)
-        return _fake_hrrr_product(request, workers=workers, retries=retries)
+        return _fake_hrrr_product(request, workers=workers,
+                                  retries=retries,
+                                  expected_count=expected_count)
 
     monkeypatch.setattr(hrrr_transport, "_download_product", product)
     out = tmp_path / "hrrr"
@@ -1118,9 +1127,11 @@ def test_fetch_hrrr_wait_downloads_hours_as_they_publish(tmp_path,
     })
     downloaded = []
 
-    def product(request, *, workers, retries):
+    def product(request, *, workers, retries, expected_count=-1):
         downloaded.append(request.url)
-        return _fake_hrrr_product(request, workers=workers, retries=retries)
+        return _fake_hrrr_product(request, workers=workers,
+                                  retries=retries,
+                                  expected_count=expected_count)
 
     monkeypatch.setattr(hrrr_transport, "_download_product", product)
     out = tmp_path / "hrrr"
@@ -1201,9 +1212,11 @@ def test_fetch_hrrr_wait_times_out_honestly_and_resumes(tmp_path,
     schedule[("wrfprs", 1, "nomads")] = live.now
     downloaded = []
 
-    def product(request, *, workers, retries):
+    def product(request, *, workers, retries, expected_count=-1):
         downloaded.append(request.destination.name)
-        return _fake_hrrr_product(request, workers=workers, retries=retries)
+        return _fake_hrrr_product(request, workers=workers,
+                                  retries=retries,
+                                  expected_count=expected_count)
 
     monkeypatch.setattr(hrrr_transport, "_download_product", product)
     lines: list[str] = []
@@ -1255,7 +1268,7 @@ def test_cli_fetch_hrrr_auto_resolves_the_transport_once(tmp_path,
     monkeypatch.setattr(
         hrrr_transport, "_download_product", _fake_hrrr_product)
     out = tmp_path / "hrrr"
-    rc = cli.main(["fetch", "--source", "hrrr", "--cycle",
+    rc = cli.main(["fetch", "--source", "hrrr", "--engine", "python", "--cycle",
                    "2026-07-28T05", "--hours", "1", "--out", str(out)])
     assert rc == 0
     assert calls["args"] == (datetime(2026, 7, 28, 5), "auto", 1)
@@ -1271,7 +1284,7 @@ def test_cli_fetch_hrrr_wait_timeout_is_an_orderly_exit(tmp_path,
     with a resume story -- exit 2 and the message, never a traceback."""
     monkeypatch.setattr(fetch, "_head_ok", lambda url: False)
     out = tmp_path / "hrrr"
-    rc = cli.main(["fetch", "--source", "hrrr", "--cycle",
+    rc = cli.main(["fetch", "--source", "hrrr", "--engine", "python", "--cycle",
                    "2026-07-28T05", "--hours", "1", "--out", str(out),
                    "--wait-for", "--wait-timeout-minutes", "0.005"])
     assert rc == 2
@@ -1297,3 +1310,46 @@ def test_live_latest_hrrr_index_is_a_canonical_noaa_index():
         first = response.read(4096).decode("ascii").splitlines()[0]
     sequence, offset, _rest = first.split(":", 2)
     assert (sequence, offset) == ("1", "0")
+
+
+def test_a_named_incomplete_cycle_refuses_with_the_complete_one(monkeypatch):
+    """Node-3 #7: 20 lines of raw urllib.HTTPError for an early cycle.
+
+    `--cycle 2026-07-30T00` an hour before that cycle exists dumped a
+    traceback from inside the downloader, in a product that names the
+    remedy for almost everything else.  The completeness probe already
+    existed for `--cycle latest`; it just never ran for a named one.
+    """
+    from datetime import datetime
+    import gpuwm.fetch as fetch_module
+
+    now = datetime(2026, 7, 30, 1, 30)
+    published = datetime(2026, 7, 29, 18)
+    complete = {
+        url for url in fetch_module.cycle_probe_urls("gfs", published, 6)}
+
+    def probe(url):
+        # Only cycles at or before 18Z on the 29th exist.
+        return any(url.startswith(u[:u.rindex("/")]) and u == url
+                   for u in complete) or _older(url)
+
+    def _older(url):
+        for back in range(1, 9):
+            older = published - timedelta(hours=6 * back)
+            if url in fetch_module.cycle_probe_urls("gfs", older, 6):
+                return True
+        return False
+
+    from datetime import timedelta
+    # A published cycle passes silently.
+    fetch_module.require_published_cycle(
+        "gfs", published, 6, now=now, probe=probe)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        fetch_module.require_published_cycle(
+            "gfs", datetime(2026, 7, 30, 0), 6, now=now, probe=probe)
+    message = str(excinfo.value)
+    assert "2026-07-30T00Z is not published through f006 yet" in message
+    assert "newest complete GFS cycle" in message
+    assert "2026-07-29T18Z" in message
+    assert "--cycle latest" in message

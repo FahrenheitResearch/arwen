@@ -320,6 +320,10 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         '_surface_array': 1,
     },
     'gpuwm/core/thompson.py': {},
+    # UP_HELI_MAX's every-step maximum runs entirely inside the caller's
+    # persistent slots -- the scanner finds no bare allocation, and this
+    # empty row is the assertion of that, not an unfilled placeholder.
+    'gpuwm/core/uh_diag.py': {},
     'gpuwm/core/wsm6.py': {},
     'gpuwm/core/ysu.py': {
         # The precedent this rule follows and the reason it is a ratchet

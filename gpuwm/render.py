@@ -20,6 +20,16 @@ Two engines render:
 side-by-side comparison sheets (:mod:`gpuwm.pair_compose`) -- either
 engine's output pairs.
 
+Every output filename carries a domain + resolution token
+(:func:`domain_token`: ``d02-3km``, sub-kilometre nests as ``d05-111m``)
+read from the file's own ``GRID_ID`` and ``DX``.  Without it two nests
+of one run share every other filename component and the second render
+at a lead silently overwrote the first -- a forecast lost with no error
+and an exit code of 0.  The same spacing appears in the plot subtitle
+as ``Δx 3 km``, and plots are labelled with the model that produced
+them (``--source-label``, default ``ArWen``) rather than the GDEX fetch
+source the rust engine's ``wrf`` store identity inherits.
+
 Every derived quantity comes from the mandated ``wrf`` package (pip
 distribution ``wrf-rust``): destaggering, earth-rotation, and unit
 conversion are ``wrf.getvar`` calls, never local formulas.  When a file
@@ -72,6 +82,12 @@ _PRECIP_LEVELS = (0.1, 1.0, 2.5, 5.0, 10.0, 15.0, 20.0, 25.0,
 
 _WRFOUT_DOMAIN = re.compile(r"wrfout_(d\d{2})")
 
+#: Provenance label for locally-imported runs.  The rust engine inherits
+#: a GDEX fetch source from its ``wrf`` store-model identity, which this
+#: lane never fetched from; ``--source-label`` renames it for stock-WRF
+#: files, which ArWen did not produce and must not claim.
+DEFAULT_SOURCE_LABEL = "ArWen"
+
 
 def _import_wrf():
     try:
@@ -92,17 +108,131 @@ def _pyplot():
     return plt
 
 
-def _domain_tag(path: Path) -> str:
-    """``d0X`` for output names: GRID_ID attribute, else the filename."""
+#: The slug an output carries when the file's domain identity cannot be
+#: established.  Spelled exactly as the rust engine spells it
+#: (``rw-wrfbatch``'s ``native_grid``): a reader comparing two engines'
+#: outputs should not have to learn two words for one fact.
+NATIVE_GRID_SLUG = "native_grid"
+
+
+def _domain_tag(path: Path) -> str | None:
+    """``d0X`` when the file PROVES its domain, else ``None``.
+
+    Deliberately the same rule ``rw-wrfbatch::file_grid_identity`` uses,
+    in the same precedence: the ``GRID_ID`` global attribute when it is a
+    plausible domain number, otherwise a ``wrfout_dNN`` filename,
+    otherwise nothing.  Two engines that degrade differently are two
+    behaviours to document and one of them will be wrong.
+
+    ``None`` is the whole point of the change.  This used to return
+    ``"d01"`` for a file carrying neither piece of evidence, which
+    labelled an anonymous input as the parent domain on no evidence at
+    all -- and, because the token is what separates one nest's output
+    filenames from another's, let two anonymous inputs at one valid time
+    overwrite each other in exactly the silence this release exists to
+    end.
+    """
+
     try:
         import netCDF4
         with netCDF4.Dataset(path) as ds:
             if "GRID_ID" in ds.ncattrs():
-                return f"d{int(ds.getncattr('GRID_ID')):02d}"
+                grid_id = int(ds.getncattr("GRID_ID"))
+                # The rust side accepts 1..=99; anything else is not a
+                # domain number and is treated as no evidence.
+                if 1 <= grid_id <= 99:
+                    return f"d{grid_id:02d}"
     except Exception:
         pass
     match = _WRFOUT_DOMAIN.search(path.name)
-    return match.group(1) if match else "d01"
+    return match.group(1) if match else None
+
+
+def _grid_spacing_m(path: Path) -> float | None:
+    """The file's own ``DX`` in metres, or None when it declares none."""
+
+    try:
+        import netCDF4
+        with netCDF4.Dataset(path) as ds:
+            if "DX" not in ds.ncattrs():
+                return None
+            spacing = float(ds.getncattr("DX"))
+    except Exception:
+        return None
+    if not np.isfinite(spacing) or spacing <= 0.0:
+        return None
+    return spacing
+
+
+def _spacing_parts(spacing_m: float | None) -> tuple[str, str] | None:
+    """``(value, unit)`` for a grid spacing: ``('3', 'km')``/``('333', 'm')``.
+
+    At and above a kilometre the number is trimmed kilometres (a 3:1 nest
+    of a 12 km parent is ``1.333 km``); below it, integer metres, because
+    ``0.333 km`` is a worse label for a 333 m nest than ``333 m`` is.
+    """
+
+    if spacing_m is None:
+        return None
+    metres = round(float(spacing_m))
+    if metres >= 1_000:
+        value = f"{spacing_m / 1_000.0:.3f}".rstrip("0").rstrip(".")
+        return (value or "0"), "km"
+    return f"{metres:d}", "m"
+
+
+def resolution_token(spacing_m: float | None) -> str | None:
+    """``3km``/``333m`` -- the resolution half of the filename token."""
+
+    parts = _spacing_parts(spacing_m)
+    return None if parts is None else f"{parts[0]}{parts[1]}"
+
+
+def spacing_label(spacing_m: float | None) -> str | None:
+    """``Δx 3 km`` -- the same number, spelled for the plot title."""
+
+    parts = _spacing_parts(spacing_m)
+    return None if parts is None else f"Δx {parts[0]} {parts[1]}"
+
+
+def domain_token(domain: str | None, spacing_m: float | None) -> str:
+    """``d02-3km`` -- the filename token that separates a run's nests.
+
+    Two nests of one run share every other filename component (product,
+    valid time, and on the rust engine model/cycle/lead as well), so
+    without this the second domain rendered at a lead silently
+    overwrites the first.
+
+    The three degradation steps are ``rw-wrfbatch::native_domain_slug``'s,
+    exactly: identity plus a usable ``DX`` gives ``d02-3km``; identity
+    without one gives a bare ``d02``, because the domain alone still
+    separates the nests, which is the token's whole job; and no identity
+    gives :data:`NATIVE_GRID_SLUG` with no resolution appended -- a
+    resolution is not an identity, and pretending otherwise is how
+    ``d01`` got printed on files that never claimed to be d01.
+    """
+
+    if domain is None:
+        return NATIVE_GRID_SLUG
+    resolution = resolution_token(spacing_m)
+    return domain if resolution is None else f"{domain}-{resolution}"
+
+
+def plot_context(domain: str | None, spacing_m: float | None, stamp: str,
+                 source_label: str) -> str:
+    """The second title line every matplotlib product carries.
+
+    Mirrors the rust engine's subtitle: grid identity, the spacing the
+    file declares, the valid time, and who produced the forecast.
+    """
+
+    segments = [domain_token(domain, spacing_m)]
+    spacing = spacing_label(spacing_m)
+    if spacing is not None:
+        segments.append(spacing)
+    segments.append(f"valid {stamp}")
+    segments.append(source_label)
+    return " | ".join(segments)
 
 
 def _figure(plt, lat, lon):
@@ -131,7 +261,7 @@ def _finish(fig, axis, mappable, *, title: str, cbar_label: str,
     fig.savefig(out_png, dpi=dpi)
 
 
-def _render_refl(wf, timeidx, lat, lon, *, plt, wrf, stamp, domain,
+def _render_refl(wf, timeidx, lat, lon, *, plt, wrf, context,
                  out_png: Path, dpi: int) -> None:
     from matplotlib.colors import BoundaryNorm, ListedColormap
 
@@ -146,13 +276,13 @@ def _render_refl(wf, timeidx, lat, lon, *, plt, wrf, stamp, domain,
                            shading="auto")
     _finish(fig, axis, mesh,
             title=f"composite reflectivity (column-max REFL_10CM)\n"
-                  f"{domain} valid {stamp}",
+                  f"{context}",
             cbar_label="composite dBZ", out_png=out_png, dpi=dpi,
             ticks=_NWS_LEVELS[::2])
     plt.close(fig)
 
 
-def _render_t2(wf, timeidx, lat, lon, *, plt, wrf, stamp, domain,
+def _render_t2(wf, timeidx, lat, lon, *, plt, wrf, context,
                out_png: Path, dpi: int) -> None:
     t2 = np.asarray(wrf.getvar(wf, "t2", timeidx=timeidx, units="degC"))
     fig, axis = _figure(plt, lat, lon)
@@ -160,12 +290,12 @@ def _render_t2(wf, timeidx, lat, lon, *, plt, wrf, stamp, domain,
     # ticks left to matplotlib; the data range sets the limits.
     mesh = axis.pcolormesh(lon, lat, t2, cmap="RdYlBu_r", shading="auto")
     _finish(fig, axis, mesh,
-            title=f"2 m temperature\n{domain} valid {stamp}",
+            title=f"2 m temperature\n{context}",
             cbar_label="deg C", out_png=out_png, dpi=dpi)
     plt.close(fig)
 
 
-def _render_wind10(wf, timeidx, lat, lon, *, plt, wrf, stamp, domain,
+def _render_wind10(wf, timeidx, lat, lon, *, plt, wrf, context,
                    out_png: Path, dpi: int) -> None:
     try:
         # Earth-rotated components (needs SINALPHA/COSALPHA in the file);
@@ -196,13 +326,13 @@ def _render_wind10(wf, timeidx, lat, lon, *, plt, wrf, stamp, domain,
                u_barb[sub], v_barb[sub], length=5.5,
                linewidth=0.6, color="#222222")
     _finish(fig, axis, mesh,
-            title=f"10 m wind ({rotation} barbs)\n{domain} valid {stamp}",
+            title=f"10 m wind ({rotation} barbs)\n{context}",
             cbar_label=f"10 m wind speed ({speed_units})",
             out_png=out_png, dpi=dpi)
     plt.close(fig)
 
 
-def _render_precip(wf, timeidx, lat, lon, *, plt, wrf, stamp, domain,
+def _render_precip(wf, timeidx, lat, lon, *, plt, wrf, context,
                    out_png: Path, dpi: int) -> None:
     from matplotlib.colors import BoundaryNorm
 
@@ -231,7 +361,7 @@ def _render_precip(wf, timeidx, lat, lon, *, plt, wrf, stamp, domain,
                            shading="auto")
     _finish(fig, axis, mesh,
             title=f"accumulated precipitation (RAINC + RAINNC)\n"
-                  f"{domain} valid {stamp}",
+                  f"{context}",
             cbar_label="mm since simulation start", out_png=out_png,
             dpi=dpi, ticks=_PRECIP_LEVELS)
     plt.close(fig)
@@ -343,7 +473,9 @@ def _stamp_for_filename(stamp: str) -> str:
 
 def render_wrfouts(paths, *, products: tuple[str, ...],
                    timeidx: int | None, outdir: Path,
-                   dpi: int = 150) -> tuple[list[Path], list[str]]:
+                   dpi: int = 150,
+                   source_label: str = DEFAULT_SOURCE_LABEL,
+                   ) -> tuple[list[Path], list[str]]:
     """Render every requested product/frame; return (written, failures).
 
     A missing input variable fails that one product/frame with a recorded
@@ -355,6 +487,8 @@ def render_wrfouts(paths, *, products: tuple[str, ...],
     plt = _pyplot()
     written: list[Path] = []
     failures: list[str] = []
+    #: output path -> the input that claimed it, this invocation.
+    claims: dict[Path, Path] = {}
     for path in (Path(p) for p in paths):
         try:
             wrffile = wrf.WrfFile(str(path))
@@ -363,6 +497,8 @@ def render_wrfouts(paths, *, products: tuple[str, ...],
             failures.append(f"{path}: unreadable wrfout ({exc})")
             continue
         domain = _domain_tag(path)
+        spacing_m = _grid_spacing_m(path)
+        token = domain_token(domain, spacing_m)
         if timeidx is None:
             indices = range(len(stamps))
         elif timeidx >= len(stamps):
@@ -391,14 +527,32 @@ def render_wrfouts(paths, *, products: tuple[str, ...],
                 center = float(lon_values[tuple(
                     s // 2 for s in lon_values.shape)])
                 lon = center + ((lon - center + 180.0) % 360.0 - 180.0)
+            context = plot_context(domain, spacing_m, stamp, source_label)
             for product in products:
                 out_png = outdir / (
-                    f"{product}_{domain}_{_stamp_for_filename(stamp)}.png")
+                    f"{product}_{token}_{_stamp_for_filename(stamp)}.png")
+                # The token separates nests, but it cannot separate two
+                # inputs it could not identify: both are `native_grid`.
+                # Refusing the second is the same call this release made
+                # for named nests -- an overwrite that reports success
+                # is the failure, not the collision.
+                claimed = claims.get(out_png)
+                if claimed is not None and claimed != path:
+                    failures.append(
+                        f"{path}[{index}] {product}: would overwrite "
+                        f"{out_png.name}, already rendered from "
+                        f"{claimed}.  Both inputs resolve to the same "
+                        f"output name because neither declares a "
+                        f"distinguishable domain identity (GRID_ID or a "
+                        f"wrfout_dNN filename).  Render them into "
+                        f"separate --out directories, or give the files "
+                        f"their GRID_ID.")
+                    continue
+                claims[out_png] = path
                 try:
                     PRODUCTS[product](
                         wrffile, index, lat, lon, plt=plt, wrf=wrf,
-                        stamp=stamp, domain=domain, out_png=out_png,
-                        dpi=dpi)
+                        context=context, out_png=out_png, dpi=dpi)
                 except Exception as exc:
                     failures.append(f"{path}[{index}] {product}: {exc}")
                     continue
@@ -478,8 +632,9 @@ def list_products_main(args: argparse.Namespace, engine: str) -> int:
 
 def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
                         outdir: Path, size: tuple[int, int],
-                        heavy: bool = False) -> tuple[list[Path],
-                                                      list[str]]:
+                        heavy: bool = False,
+                        source_label: str = DEFAULT_SOURCE_LABEL,
+                        ) -> tuple[list[Path], list[str]]:
     """Render via the vendored Rusty Weather engine; (written, failures).
 
     One renderer invocation per wrfout file, each with its own scratch
@@ -508,7 +663,7 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
             file_written, file_failures = rustwx.run_renderer(
                 renderer, path, store_root=store, out_dir=outdir,
                 products=products, frames=frames, width=width,
-                height=height, heavy=heavy)
+                height=height, heavy=heavy, source_label=source_label)
         finally:
             _remove_scratch_store(store)
         written.extend(file_written)
@@ -573,6 +728,36 @@ def _resolve_engine(requested: str) -> tuple[str, str]:
     return "matplotlib", f"rust renderer unusable: {evidence}"
 
 
+#: How many products each engine can draw, for the fallback notice.
+#: The rust catalog's 151 is its implicit-render candidate count on a
+#: typical wrfout; the matplotlib engine has the four shared products.
+_RUST_CATALOG_PRODUCTS = 151
+
+
+def fallback_notice(engine: str, why: str) -> str | None:
+    """ONE line saying the matplotlib fallback is in use, and why.
+
+    Silence here cost a pilot a whole session: four products came out,
+    they looked right, and nothing said the 151-product rust catalog was
+    simply not installed.  A fallback that does not announce itself is
+    indistinguishable from the real thing until someone counts.
+
+    One line, and it carries everything needed to act on it: the engine
+    actually used, the products available against the rust catalog, and
+    the exact build command.  The multi-line remedy belongs to ``gpuwm
+    doctor``; a notice that scrolls is a notice that gets skimmed.
+    """
+
+    if engine != "matplotlib" or why == "requested":
+        return None
+    from gpuwm import rustwx
+
+    return (f"render: engine matplotlib -- rust render engine not "
+            f"available ({why}); {len(PRODUCTS)} of the rust catalog's "
+            f"{_RUST_CATALOG_PRODUCTS} products are renderable. Build it "
+            f"with: {rustwx.CARGO_BUILD_HINT}")
+
+
 def _pair_main(args: argparse.Namespace) -> int:
     try:
         from gpuwm.pair_compose import compose_pairs
@@ -619,6 +804,9 @@ def render_main(args: argparse.Namespace) -> int:
     except (ValueError, RuntimeError, FileNotFoundError) as exc:
         print(f"render: {exc}", file=sys.stderr)
         return 2
+    notice = fallback_notice(engine, why)
+    if notice is not None:
+        print(notice, file=sys.stderr)
     if args.list_products:
         return list_products_main(args, engine)
     print(f"render: engine {engine} ({why})")
@@ -626,14 +814,16 @@ def render_main(args: argparse.Namespace) -> int:
         try:
             written, failures = render_wrfouts_rust(
                 args.wrfout, products=rust_products, timeidx=timeidx,
-                outdir=args.out, size=size, heavy=args.heavy)
+                outdir=args.out, size=size, heavy=args.heavy,
+                source_label=args.source_label)
         except RuntimeError as exc:
             print(f"render: {exc}", file=sys.stderr)
             return 2
     else:
         written, failures = render_wrfouts(
             args.wrfout, products=products, timeidx=timeidx,
-            outdir=args.out, dpi=args.dpi)
+            outdir=args.out, dpi=args.dpi,
+            source_label=args.source_label)
     for failure in failures:
         print(f"render FAIL: {failure}", file=sys.stderr)
     print(f"render: {len(written)} file(s) -> {args.out}")
@@ -676,6 +866,12 @@ def register_cli(subparsers) -> None:
         "--size", default="1200x900", metavar="WxH",
         help="output pixels, rust engine (default 1200x900)")
     parser.add_argument(
+        "--source-label", default=DEFAULT_SOURCE_LABEL, metavar="TEXT",
+        help="model/provenance label stamped on every plot (default "
+             f"{DEFAULT_SOURCE_LABEL}); set it when rendering wrfout "
+             "files this model did not produce, so the sheet does not "
+             "claim them")
+    parser.add_argument(
         "--heavy", action="store_true",
         help="rust engine: also compute the heavy ECAPE product family "
              "at import (SBECAPE/SBNCAPE/SBECIN, ECAPE SCP/EHI/...; "
@@ -702,7 +898,9 @@ def register_cli(subparsers) -> None:
     return parser
 
 
-__all__ = ["PRODUCTS", "RUST_PRODUCT_ALIASES", "WRF_PACKAGE_REQUIREMENT",
-           "list_products_main", "parse_products", "parse_products_rust",
-           "parse_size", "parse_timeidx", "register_cli", "render_main",
-           "render_wrfouts", "render_wrfouts_rust"]
+__all__ = ["DEFAULT_SOURCE_LABEL", "PRODUCTS", "RUST_PRODUCT_ALIASES",
+           "WRF_PACKAGE_REQUIREMENT", "domain_token", "list_products_main",
+           "parse_products", "parse_products_rust", "parse_size",
+           "parse_timeidx", "plot_context", "register_cli", "render_main",
+           "render_wrfouts", "render_wrfouts_rust", "resolution_token",
+           "spacing_label"]

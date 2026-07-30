@@ -8,6 +8,8 @@ doctor describes.  Everything here is CPU-only and read-only.
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 import gpuwm.cli as cli
@@ -269,3 +271,370 @@ def test_report_and_exit_code_distinguish_verified_from_present():
     assert rc_present == 0
     checks.append(doctor.Check("gap", "missing", "absent", "install it"))
     assert "MISSING" in doctor.format_report(checks)
+
+
+def test_doctor_reports_absent_geography_even_with_the_root_unset(
+        tmp_path, monkeypatch, capsys):
+    """P5: doctor said "no gaps" on a machine with zero static geography.
+
+    v1.0.0 returned a single `info` when GPUWM_CASE_DATA_ROOT was unset
+    and never looked for WPS_GEOG at all -- contradicting the README,
+    which says doctor requires each dataset's index file, and
+    greenlighting a box on which nothing downstream could run.  The
+    default root resolves with or without the variable, so the check
+    does too.
+    """
+    import gpuwm.doctor as doctor_module
+    from gpuwm.geog_assets import default_geog_root
+
+    monkeypatch.delenv("GPUWM_CASE_DATA_ROOT", raising=False)
+    monkeypatch.setattr(doctor_module, "default_case_data_root",
+                        lambda: tmp_path / "absent", raising=False)
+    monkeypatch.setattr("gpuwm.case_data.default_case_data_root",
+                        lambda: tmp_path / "absent")
+    assert not default_geog_root().is_dir()
+
+    checks = doctor_module._case_data_root_check()
+    by_name = {c.name: c for c in checks}
+    assert by_name["GPUWM_CASE_DATA_ROOT"].status == "info"
+    geog = by_name["WPS_GEOG"]
+    assert geog.status == "missing", (
+        "an absent WPS_GEOG tree is a gap, not silence")
+    assert "gpuwm fetch-geog" in (geog.remedy or "")
+    assert "Nothing" in geog.detail
+
+    # And a complete tree at the SAME default location verifies.
+    staged = tmp_path / "absent" / "WPS_GEOG"
+    from gpuwm.domain_wizard import GEOG_DATASETS
+    for name in GEOG_DATASETS:
+        (staged / name).mkdir(parents=True)
+        (staged / name / "index").write_text("type=continuous\n",
+                                             encoding="ascii")
+    checks = doctor_module._case_data_root_check()
+    by_name = {c.name: c for c in checks}
+    assert by_name["WPS_GEOG"].status == "verified"
+
+
+# ---------------------------------------------------------------------------
+# Remedies have to be true for the install that prints them
+# ---------------------------------------------------------------------------
+
+def test_the_bridge_remedy_is_a_real_bootstrap_on_a_pip_install(
+        monkeypatch, tmp_path):
+    """A pip machine has no `tools/grib1_bridge` to cd into.
+
+    The wheel ships no Rust, so on a pip-only install NOTHING decodes
+    GRIB -- and all six bridge remedies said `cd tools/grib1_bridge &&
+    cargo build`, naming a directory that does not exist, with no
+    repository URL anywhere in the output.  A first-time user reads
+    that as a broken install.
+    """
+
+    from gpuwm import bridges
+
+    # site-packages: no crate anywhere under the package parent, which
+    # is the single root every artifact path is resolved from.
+    monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path)
+    monkeypatch.setattr(bridges, "crate_dir",
+                        lambda: tmp_path / "tools" / "grib1_bridge")
+    monkeypatch.setattr(bridges, "cargo_is_installed", lambda: True)
+    remedy = bridges.bridge_remedy("grib1_bridge")
+    assert bridges.REPOSITORY_URL in remedy
+    assert f"git clone {bridges.REPOSITORY_URL}" in remedy
+    assert "cargo build --release --locked --offline" in remedy
+    # It says WHY, so the reader knows this is a missing step and not a
+    # broken package.
+    assert "no Rust sources" in remedy
+    # And it does not send them to a directory that is not there.
+    assert "cd tools/grib1_bridge" not in remedy
+
+    # Without cargo, the toolchain install leads -- as a bare command
+    # under a `#` comment that explains it, never as a labelled string.
+    monkeypatch.setattr(bridges, "cargo_is_installed", lambda: False)
+    lines = [line.strip() for line in bridges.build_from_clone_hint()]
+    assert lines[0].startswith("# Rust is not on PATH")
+    commands = [line for line in lines if not line.startswith("#")]
+    assert commands[0] == bridges.rust_toolchain_install_command()
+    assert commands[1] == bridges.cargo_activation_command()
+    assert commands[2].startswith("git clone ")
+
+
+def test_the_bridge_remedy_stays_one_line_in_a_checkout(monkeypatch,
+                                                        tmp_path):
+    """Where the crate exists, the clone would be noise."""
+
+    from gpuwm import bridges
+
+    crate = tmp_path / "tools" / "grib1_bridge"
+    crate.mkdir(parents=True)
+    monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path)
+    monkeypatch.setattr(bridges, "crate_dir", lambda: crate)
+    remedy = bridges.bridge_remedy("grib1_bridge")
+    assert bridges.CARGO_BUILD_HINT in remedy
+    assert "git clone" not in remedy
+    # ...and it names the real destination rather than a <clone> the
+    # reader has to expand.
+    assert "<" not in remedy and ">" not in remedy
+    assert str(crate / "target" / "release") in remedy
+
+
+def test_every_rust_remedy_is_install_aware(monkeypatch, tmp_path):
+    """The renderer and fetch backbone live in tools/rustwx, also absent."""
+
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path)
+    monkeypatch.setattr(bridges, "crate_dir", lambda: tmp_path / "absent")
+    monkeypatch.setattr(bridges, "cargo_is_installed", lambda: True)
+    hint = bridges.install_aware_build_hint(
+        bridges.cargo_build_one_liner(bridges.RUSTWX_CRATE_RELATIVE),
+        bridges.RUSTWX_CRATE_RELATIVE)
+    assert "git clone" in hint
+    assert bridges._shell_path(
+        bridges.CLONE_DIR, bridges.RUSTWX_CRATE_RELATIVE) in hint
+
+
+# ---------------------------------------------------------------------------
+# The bootstrap has to BE a bootstrap, not a description of one
+# ---------------------------------------------------------------------------
+# The previous test here only checked that the word "copy-pasteable" had
+# left the closing line.  It never read a remedy, so it passed while the
+# emitted bootstrap contained `install Rust: winget ... (or
+# https://rustup.rs)` -- prose fused to a command -- omitted the cargo
+# activation a freshly-installed toolchain needs in the current shell,
+# and joined the Windows build with `&&`, which Windows PowerShell 5.1
+# cannot parse.  These assert the structure instead.
+
+#: Every command a remedy is allowed to start a line with.  A whitelist,
+#: not a heuristic: `install Rust: winget ...` fails it on the first
+#: token, and so does `then EITHER set ...`.
+_REMEDY_COMMANDS = frozenset({
+    "pip", "python", "git", "cd", "cargo", "curl", "winget", "gpuwm",
+    "bash", "sh", ".", "export", "$env:Path",
+})
+
+#: A bare ALL-CAPS word is a placeholder the reader must expand.
+_PLACEHOLDER_WORD = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
+
+
+def _assert_remedy_lines_are_commands_or_comments(remedy, *, windows):
+    """EVERY line: a command that runs as printed, or a `#` comment.
+
+    No exemptions -- not even the first line.  The closing report
+    claims this of every remedy, so a headline sentence must be a
+    `#` comment, never bare prose fused into a paste.
+    """
+
+    lines = remedy.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        assert "<" not in stripped and ">" not in stripped, (
+            f"placeholder in remedy line {index}: {line!r}")
+        if stripped.startswith("#"):
+            continue
+        first = stripped.split()[0]
+        assert first in _REMEDY_COMMANDS, (
+            f"remedy line {index} is neither a command nor a '#' comment "
+            f"(first token {first!r}): {line!r}")
+        for token in stripped.split():
+            assert not _PLACEHOLDER_WORD.match(token.rstrip(",.")), (
+                f"unexpanded placeholder {token!r} in: {line!r}")
+        if windows:
+            assert "&&" not in stripped, (
+                f"Windows PowerShell 5.1 cannot parse '&&': {line!r}")
+
+
+@pytest.mark.parametrize("windows", (False, True))
+@pytest.mark.parametrize("cargo", (False, True))
+def test_the_emitted_bootstrap_is_shell_correct_on_both_platforms(
+        monkeypatch, tmp_path, windows, cargo):
+    """The real assertion: parse what doctor would actually print."""
+
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    monkeypatch.setattr(bridges, "cargo_is_installed", lambda: cargo)
+    # A pip install: no crate anywhere.
+    monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path)
+    monkeypatch.setattr(bridges, "crate_dir",
+                        lambda: tmp_path / "tools" / "grib1_bridge")
+
+    remedy = bridges.bridge_remedy("grib1_bridge")
+    _assert_remedy_lines_are_commands_or_comments(remedy, windows=windows)
+
+    lines = [line.strip() for line in bridges.build_from_clone_hint()]
+    commands = [line for line in lines if not line.startswith("#")]
+
+    # The clone and the build are always there, in that order, as
+    # separate lines -- never joined by an operator one shell lacks.
+    assert any(line.startswith("git clone ") for line in commands)
+    assert commands[-1].startswith("cargo build ")
+    assert any(line.startswith("cd ") for line in commands)
+
+    if cargo:
+        # Rust is already here; installing it again would be noise.
+        assert not any("rustup" in line for line in lines)
+        return
+
+    # Rust is absent: install it, THEN make it usable in this shell,
+    # and only then call cargo.  A bootstrap that installs cargo and
+    # immediately fails to find it is the whole complaint.
+    activation = bridges.cargo_activation_command()
+    assert activation in commands, commands
+    first_cargo = next(i for i, line in enumerate(commands)
+                       if line.startswith("cargo "))
+    assert commands.index(activation) < first_cargo, (
+        f"cargo is called before it is on PATH: {commands}")
+    if windows:
+        assert activation.startswith("$env:Path")
+    else:
+        assert activation == '. "$HOME/.cargo/env"'
+
+
+def test_the_invalid_override_branches_emit_install_aware_remedies(
+        monkeypatch, tmp_path):
+    """doctor's `fix ENV ... or unset it and <remedy>` paths.
+
+    Both called the old install-unaware helpers, which kept `<clone>`
+    placeholders and told a pip-only install to enter a relative
+    `tools/rustwx` it does not have.
+    """
+
+    from gpuwm import bridges, rustwx, rustwx_fetch
+
+    monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path)
+    monkeypatch.setattr(bridges, "crate_dir",
+                        lambda: tmp_path / "tools" / "grib1_bridge")
+    monkeypatch.setattr(bridges, "cargo_is_installed", lambda: True)
+
+    for remedy in (rustwx.renderer_remedy(), rustwx_fetch.fetch_remedy()):
+        assert "<clone>" not in remedy
+        assert bridges.REPOSITORY_URL in remedy, (
+            "a pip install has no tools/rustwx to cd into; the remedy "
+            "must start from the clone")
+        _assert_remedy_lines_are_commands_or_comments(
+            remedy, windows=bridges.WINDOWS_SHELL)
+
+
+def test_every_remedy_doctor_can_print_obeys_the_closing_claim():
+    """The closing line makes a claim about EVERY remedy.  Check them all.
+
+    Including the non-Rust ones: the pip-extra and fetch-geog hints used
+    to trail a parenthetical on the command line itself.
+    """
+
+    from gpuwm import bridges, doctor
+
+    for check in doctor.collect_checks():
+        if not check.remedy:
+            continue
+        _assert_remedy_lines_are_commands_or_comments(
+            check.remedy, windows=bridges.WINDOWS_SHELL)
+
+    for hint in (doctor.GPU_EXTRA_HINT, doctor.RENDER_EXTRA_HINT,
+                 doctor.GEOG_HINT, doctor.REINSTALL_HINT):
+        _assert_remedy_lines_are_commands_or_comments(
+            hint, windows=bridges.WINDOWS_SHELL)
+        assert hint.splitlines()[0].split()[0] in _REMEDY_COMMANDS
+
+
+def test_the_closing_line_states_what_it_can_prove():
+    """No "copy-pasteable", and no unqualified "runs as printed"."""
+
+    from gpuwm.doctor import Check, format_report
+
+    text = format_report([
+        Check("bridge grib1_bridge", "missing", "not built",
+              "build it:\n  cargo build --release --locked --offline")])
+    assert "copy-pasteable" not in text
+    # The claim now names the two line kinds it actually guarantees.
+    assert "either a command" in text and "'#' comment" in text
+
+
+@pytest.mark.parametrize("windows", (False, True))
+def test_every_conditional_remedy_branch_obeys_the_claim(
+        monkeypatch, tmp_path, windows):
+    """Force the branches collect_checks() cannot reach on a dev box.
+
+    On a machine with the checkout present and the binaries built,
+    collect_checks() never assembles the consumer-note, rebuild or
+    invalid-override remedies -- which is exactly how `[needed by:]`
+    trailers and `fix ENV ...` headlines survived the first structural
+    test.  Each branch assembles its remedy differently; force every
+    one and hold it to the same contract.
+    """
+
+    from gpuwm import bridges, doctor, rustwx, rustwx_fetch
+
+    checkout = tmp_path / "checkout"
+    (checkout / "tools" / "grib1_bridge").mkdir(parents=True)
+    (checkout / "tools" / "grib1_bridge" / "Cargo.toml").write_text(
+        "[package]\n", encoding="utf-8")
+    (checkout / "tools" / "rustwx").mkdir(parents=True)
+    (checkout / "tools" / "rustwx" / "Cargo.toml").write_text(
+        "[package]\n", encoding="utf-8")
+    pip_shape = tmp_path / "pipshape"
+    pip_shape.mkdir()
+
+    def _missing(*_args, **_kwargs):
+        raise FileNotFoundError("ENV_VAR points at nothing on disk")
+
+    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    monkeypatch.setattr(bridges, "cargo_is_installed", lambda: False)
+
+    remedies = []
+    for shape in (checkout, pip_shape):
+        monkeypatch.setattr(bridges, "_package_parent", lambda s=shape: s)
+        monkeypatch.setattr(
+            bridges, "crate_dir",
+            lambda s=shape: s / "tools" / "grib1_bridge")
+        monkeypatch.setattr(
+            rustwx, "crate_dir", lambda s=shape: s / "tools" / "rustwx")
+        monkeypatch.setattr(
+            rustwx_fetch, "crate_dir",
+            lambda s=shape: s / "tools" / "rustwx")
+
+        # Branch: the override env var names a missing executable.
+        monkeypatch.setattr(bridges, "find_bridge", _missing)
+        remedies += [c.remedy for c in doctor._bridge_checks() if c.remedy]
+        monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", _missing)
+        remedies.append(doctor._fetch_backbone_check().remedy)
+        monkeypatch.setattr(rustwx, "find_renderer", _missing)
+        remedies.append(doctor._rust_renderer_check().remedy)
+
+        # Branch: found on disk but fails its ABI probe -> rebuild.
+        monkeypatch.setattr(
+            bridges, "find_bridge", lambda name: tmp_path / "stale.exe")
+        monkeypatch.setattr(
+            doctor, "_exec_probe", lambda path: (False, "stale ABI"))
+        remedies += [c.remedy for c in doctor._bridge_checks() if c.remedy]
+        monkeypatch.setattr(
+            rustwx_fetch, "find_fetch_bin",
+            lambda: tmp_path / "stale.exe")
+        monkeypatch.setattr(
+            rustwx_fetch, "probe_fetch_bin",
+            lambda path: (False, "stale ABI"))
+        remedies.append(doctor._fetch_backbone_check().remedy)
+        monkeypatch.setattr(
+            rustwx, "find_renderer", lambda: tmp_path / "stale.exe")
+        monkeypatch.setattr(
+            rustwx, "probe_renderer", lambda path: (False, "stale ABI"))
+        remedies.append(doctor._rust_renderer_check().remedy)
+
+        # Branch: nothing built at all (crate present or pip shape).
+        monkeypatch.setattr(bridges, "find_bridge", lambda name: None)
+        remedies += [c.remedy for c in doctor._bridge_checks() if c.remedy]
+        monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", lambda: None)
+        remedies.append(doctor._fetch_backbone_check().remedy)
+        monkeypatch.setattr(rustwx, "find_renderer", lambda: None)
+        remedies.append(doctor._rust_renderer_check().remedy)
+
+    assert len([r for r in remedies if r]) >= 16, (
+        "branch coverage collapsed; a doctor branch stopped emitting "
+        f"its remedy (got {len(remedies)})")
+    for remedy in remedies:
+        assert remedy
+        _assert_remedy_lines_are_commands_or_comments(
+            remedy, windows=windows)

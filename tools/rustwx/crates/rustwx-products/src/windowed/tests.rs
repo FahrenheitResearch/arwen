@@ -148,6 +148,8 @@ fn windowed_render_request_uses_modern_map_chrome() {
         output_height: 900,
         png_compression: PngCompressionMode::Default,
         place_label_overlay: None,
+        subtitle_left_suffix: None,
+        subtitle_right_override: None,
     };
     let projected = ProjectedMap {
         projected_x: vec![0.0, 1.0, 0.0, 1.0],
@@ -242,6 +244,8 @@ fn windowed_render_request_labels_fixed_window_instead_of_requested_end_hour() {
         output_height: 900,
         png_compression: PngCompressionMode::Default,
         place_label_overlay: None,
+        subtitle_left_suffix: None,
+        subtitle_right_override: None,
     };
     let projected = ProjectedMap {
         projected_x: vec![0.0, 1.0, 0.0, 1.0],

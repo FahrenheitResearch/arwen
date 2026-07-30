@@ -157,7 +157,8 @@ def _bind_test_thompson_runtime(tmp_path: Path, monkeypatch):
                 raise ValueError(f"test Thompson table drift: {asset.filename}")
         return assets
 
-    monkeypatch.setenv(runner.EXPERIMENTAL_THOMPSON_ENV, "1")
+    # The enable gate is retired; the table root stays overridable so a
+    # test can point the byte validation at its own fixture set.
     monkeypatch.setenv(runner.THOMPSON_TABLE_ROOT_ENV, str(root))
     monkeypatch.setattr(runner, "THOMPSON_CLASSIC_TABLE_ASSETS", assets)
     monkeypatch.setattr(runner, "validate_thompson_table_assets", validate)
@@ -1474,25 +1475,38 @@ def test_wsm6_profile_rejects_thompson_cache_before_restore(
             run_seconds=fixture.run_seconds, history_interval_seconds=3600)
 
 
-def test_thompson_profile_requires_guard_and_unchanged_table_root(
-        tmp_path, monkeypatch):
+def test_thompson_runs_without_the_retired_enable_gate(tmp_path, monkeypatch):
+    """mp8 no longer demands GPUWM_EXPERIMENTAL_THOMPSON_MP8=1.
+
+    The gate predated the packaging promotion: the classic tables ship
+    as package data and `gpuwm doctor` byte-validates all four.  Keeping
+    it meant the wizard's own default microphysics failed twice at
+    runtime on a machine doctor had just called clean, with neither
+    variable named in any document.  The table-root binding, which is
+    what actually protected anything, is unchanged.
+    """
     runtime = _bind_test_thompson_runtime(tmp_path, monkeypatch)
+    monkeypatch.delenv("GPUWM_EXPERIMENTAL_THOMPSON_MP8", raising=False)
     fixture = _prepared_fixture(
         tmp_path, "gfs", physics_profile=runner.THOMPSON_PHYSICS_PROFILE)
     exp = load_experiment(fixture.experiment)
     receipt = runner._validate_physics(
         exp, runner.THOMPSON_PHYSICS_PROFILE, exp.run_seconds, 3600)
+    guard = receipt["thompson_contract"]["guard"]
+    assert "experimental_runtime_environment" not in guard
+    assert guard["table_root_source"] == "environment override"
+    # And with no override at all, the packaged directory resolves.
+    monkeypatch.delenv(runner.THOMPSON_TABLE_ROOT_ENV)
+    from gpuwm.physics_compat import (packaged_thompson_table_root,
+                                      thompson_table_root)
+    assert Path(thompson_table_root()) == packaged_thompson_table_root()
 
-    monkeypatch.delenv(runner.EXPERIMENTAL_THOMPSON_ENV)
-    with pytest.raises(ValueError, match=runner.EXPERIMENTAL_THOMPSON_ENV):
-        runner._validate_physics(
-            exp, runner.THOMPSON_PHYSICS_PROFILE, exp.run_seconds, 3600)
-
-    monkeypatch.setenv(runner.EXPERIMENTAL_THOMPSON_ENV, "1")
+    monkeypatch.setenv(runner.THOMPSON_TABLE_ROOT_ENV, str(runtime.root))
     changed = tmp_path / "other-tables"
     changed.mkdir()
     monkeypatch.setenv(runner.THOMPSON_TABLE_ROOT_ENV, str(changed))
-    with pytest.raises(RuntimeError, match="changed after preflight"):
+    with pytest.raises(RuntimeError,
+                       match="changed between preflight and run"):
         runner._verify_thompson_runtime_environment(receipt)
     assert receipt["thompson_contract"]["table_authority"]["root"] == str(
         runtime.root)
@@ -1962,3 +1976,139 @@ def test_cli_accepts_explicit_guarded_thompson_profile():
     ])
 
     assert args.physics_profile == runner.THOMPSON_PHYSICS_PROFILE
+
+
+# ---------------------------------------------------------------------------
+# First-time-user papercuts from the 2026-07-30 Linux pilots.
+# ---------------------------------------------------------------------------
+
+def _wizard_config(tmp_path):
+    """A real wizard-emitted single-domain TOML (not a hand-built stub)."""
+    from gpuwm.cli import main as cli_main
+
+    out = tmp_path / "area.toml"
+    rc = cli_main(["domain", "--point=25.76,-80.19", "--card", "24gb",
+                   "--ladder", "12", "--source", "gfs",
+                   "--cycle", "2026-07-29T18", "--hours", "6",
+                   "--out", str(out)])
+    assert rc == 0
+    return out
+
+
+def test_clock_flags_default_to_the_hash_bound_experiment(tmp_path, capsys):
+    """PP-15: flags that can hold only one value must not be required.
+
+    --run-seconds and --history-interval-seconds are validated to equal
+    the hash-bound experiment exactly, so requiring the user to retype
+    them bought nothing -- and cost a wasted cycle to anyone who tried
+    to shorten a retry and was told the values must match.
+    """
+    config = _wizard_config(tmp_path)
+    capsys.readouterr()
+
+    run_seconds, cadence = runner._clock_defaults(config)
+    exp = load_experiment(config)
+    assert run_seconds == float(exp.run_seconds)
+    assert cadence == float(exp.root.history_interval_s)
+
+    args = SimpleNamespace(
+        experiment_config=config, run_seconds=None,
+        history_interval_seconds=None)
+    runner._resolve_clock_arguments(args)
+    assert args.run_seconds == run_seconds
+    assert args.history_interval_seconds == cadence
+    noted = capsys.readouterr().err
+    assert "--run-seconds defaulted to" in noted
+    assert "--history-interval-seconds defaulted to" in noted
+
+    # Explicit values are left exactly alone (and stay subject to the
+    # unchanged exact-match guard downstream).
+    explicit = SimpleNamespace(
+        experiment_config=config, run_seconds=1.0,
+        history_interval_seconds=2.0)
+    runner._resolve_clock_arguments(explicit)
+    assert (explicit.run_seconds, explicit.history_interval_seconds) == (
+        1.0, 2.0)
+    assert capsys.readouterr().err == ""
+
+
+def test_clock_flags_are_optional_in_the_parser(tmp_path):
+    config = _wizard_config(tmp_path)
+    args = runner._parse_args([
+        "--source", "gfs", "--prepared-root", str(tmp_path / "prep"),
+        "--proof-sha256", "0" * 64,
+        "--source-manifest-sha256", "1" * 64,
+        "--prepared-content-sha256", "2" * 64,
+        "--experiment-config", str(config),
+        "--wps-namelist", str(config.with_suffix(".namelist.wps")),
+        "--physics-profile", next(iter(runner.PHYSICS_PROFILES)),
+        "--io-mode", "history", "--outdir", str(tmp_path / "run"),
+    ])
+    assert args.run_seconds is None
+    assert args.history_interval_seconds is None
+
+
+def test_clock_defaults_refuse_a_config_they_cannot_read(tmp_path):
+    bad = tmp_path / "not-an-experiment.toml"
+    bad.write_text("[nothing]\nhere = 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="pass them explicitly"):
+        runner._clock_defaults(bad)
+
+
+def test_the_stability_abort_names_the_dominant_term_and_the_remedy():
+    """PP-9: the abort quoted one `cfl` number and no remedy.
+
+    `cfl` is dt * max(u/dx, w/dz_min) over two terms three orders of
+    magnitude apart: with the certified 49-level eta profile dz_min is
+    about 14.3 m, so a tropical abort read `cfl 27.70` while its
+    horizontal Courant number was 0.15.  Nothing said "shorten dt".
+    """
+    run = SimpleNamespace(dt=60.0, dx=12_000.0, ztop=20_000.0)
+    state = SimpleNamespace(dz_min=14.3)
+
+    tropical = runner._stability_diagnosis(
+        {"u_max": 29.3, "w_max": 6.62}, state, run)
+    assert "VERTICAL Courant 27.7" in tropical
+    assert "14.3 m thinnest layer" in tropical
+    assert "REMEDY: retry with a lower dt" in tropical
+    assert "time_step to about 15 s" in tropical
+    assert "+22% wall time" in tropical
+
+    # A genuine horizontal violation is named as such, not mislabelled.
+    horizontal = runner._stability_diagnosis(
+        {"u_max": 4000.0, "w_max": 0.1}, state, run)
+    assert "HORIZONTAL Courant 20.0" in horizontal
+    assert "dx 12.000 km" in horizontal
+    assert "REMEDY: retry with a lower dt" in horizontal
+
+
+def test_the_materializer_accepts_the_wizard_s_own_advisory_fetch_table(
+        tmp_path):
+    """Node-3 #2: `unknown table(s)/top-level key(s) ['fetch']`.
+
+    The wizard writes that advisory table into every config it emits,
+    and `gpuwm check` and `rw-wps` both accept it -- only the
+    materializer, which handed the raw dict to build_experiment, did
+    not.  Materialization has to run BEFORE the front door, so this
+    rejected the wizard's own output at the first step of the route.
+    """
+    config = _wizard_config(tmp_path)
+    base = config.read_text(encoding="utf-8")
+    assert "[fetch]" in base
+
+    rendered, exp, receipt = runner._render_materialized_experiment(
+        base, source="gfs",
+        profile="morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1")
+    # Preserved verbatim, not silently dropped: it is provenance.
+    assert "[fetch]" in rendered
+    assert receipt["profile_validation"]["profile"] == (
+        "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1")
+    assert (receipt["base_non_physics_descriptor_sha256"]
+            == receipt["generated_non_physics_descriptor_sha256"])
+
+    # A malformed [fetch] table is still refused rather than ignored.
+    broken = base.replace('source = "gfs"', 'source = "not-a-source"')
+    with pytest.raises(ValueError):
+        runner._render_materialized_experiment(
+            broken, source="gfs",
+            profile="morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1")

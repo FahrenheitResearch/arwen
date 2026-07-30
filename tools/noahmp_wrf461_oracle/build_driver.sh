@@ -4,7 +4,7 @@
 #
 # Usage:  build_driver.sh <wrf-tree> <workdir> [optlevel]
 #
-#   <wrf-tree>  pinned WRF checkout, e.g. /home/drew/wrf-stock-v461-gate-20260721
+#   <wrf-tree>  pinned WRF checkout, e.g. $HOME/wrf-stock-v461-gate-20260721
 #               commit d66e442fccc04111067e29274c9f9eaccc3cef28
 #   <workdir>   scratch directory (created if absent)
 #   [optlevel]  "noopt" (default) builds at -O0 and is the fixture

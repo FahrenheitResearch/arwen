@@ -224,7 +224,9 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
     flat near-capacity reserve.  The fit criterion applies the allocator
     headroom and the observed peak envelope to the child's itemized
     resident+transient subtotal -- a conservative standalone-domain
-    reading of the experiment path's ``footprint x 1.75 <= budget`` gate.
+    reading of the experiment path's ``footprint x envelope <= budget``
+    gate, with the platform-conditional envelope factor
+    (:func:`gpuwm.core.preflight.peak_envelope_factor`).
     """
     from gpuwm.core.preflight import (
         ALLOCATOR_HEADROOM, GIB, estimate_domain,

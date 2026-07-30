@@ -70,17 +70,42 @@ def _forecast_hours(raw: str) -> tuple[int, ...]:
     return hours
 
 
+#: The NCEP models this selector serves, keyed by gpuwm source name.
+#:
+#: GDAS is the GFS assimilation cycle's own output: the *same*
+#: ``pgrb2.0p25`` container -- 0.25-degree regular lat/lon, the same
+#: variable and level codes, the same 124-record census under this
+#: selector, the same originating centre and table versions -- published
+#: under a different directory and grib-filter script.  Verified against
+#: a live cycle: 124 records, scan 0x40, DRT 5.0, shape 6, centre 7,
+#: master table 2, local table 1, PDT 4.0, generating process 81.  Only
+#: the naming and the forecast horizon differ, so the certified GFS
+#: mapping, bridge and front door serve it unchanged.
+NOMADS_MODELS = {
+    "gfs": {"script": "filter_gfs_0p25.pl", "prefix": "gfs"},
+    "gdas": {"script": "filter_gdas_0p25.pl", "prefix": "gdas"},
+}
+
+
 def nomads_query(
         cycle: datetime, forecast_hour: int, *, left_lon: float,
         right_lon: float, bottom_lat: float, top_lat: float,
+        model: str = "gfs",
 ) -> str:
     if not 0.0 <= left_lon < right_lon <= 360.0:
         raise ValueError("GFS subset longitudes must increase within [0, 360]")
     if not -90.0 <= bottom_lat < top_lat <= 90.0:
         raise ValueError("GFS subset latitudes must increase within [-90, 90]")
+    try:
+        spec = NOMADS_MODELS[model]
+    except KeyError:
+        raise ValueError(
+            f"unknown NOMADS model {model!r}; expected one of "
+            f"{sorted(NOMADS_MODELS)}") from None
+    prefix = spec["prefix"]
     hour = cycle.strftime("%H")
     parameters: list[tuple[str, str]] = [
-        ("file", f"gfs.t{hour}z.pgrb2.0p25.f{forecast_hour:03d}"),
+        ("file", f"{prefix}.t{hour}z.pgrb2.0p25.f{forecast_hour:03d}"),
         ("subregion", ""),
         ("leftlon", format(left_lon, "g")),
         ("rightlon", format(right_lon, "g")),
@@ -92,9 +117,10 @@ def nomads_query(
     parameters.extend((name, "on") for name in NOMADS_LEVELS)
     parameters.extend((name, "on") for name in NOMADS_VARIABLES)
     parameters.append((
-        "dir", f"/gfs.{cycle:%Y%m%d}/{hour}/atmos",
+        "dir", f"/{prefix}.{cycle:%Y%m%d}/{hour}/atmos",
     ))
-    return "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?" + urlencode(parameters)
+    return ("https://nomads.ncep.noaa.gov/cgi-bin/" + spec["script"] + "?"
+            + urlencode(parameters))
 
 
 def _download(url: str, destination: Path, *, retries: int = 5) -> None:

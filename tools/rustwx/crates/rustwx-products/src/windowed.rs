@@ -483,6 +483,14 @@ pub struct HrrrWindowedBatchRequest {
     pub png_compression: PngCompressionMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place_label_overlay: Option<PlaceLabelOverlay>,
+    /// Appended to the time subtitle (`| Δx 3 km`).  A suffix rather than
+    /// an override because this lane's lead label names the accumulation
+    /// window, which only the product itself can compose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle_left_suffix: Option<String>,
+    /// Replaces the `source: <fetch source>` provenance line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle_right_override: Option<String>,
 }
 
 impl HrrrWindowedBatchRequest {
@@ -1157,6 +1165,8 @@ fn sampling_windowed_request(
         output_height: OUTPUT_HEIGHT,
         png_compression: PngCompressionMode::Default,
         place_label_overlay: None,
+        subtitle_left_suffix: None,
+        subtitle_right_override: None,
     }
 }
 
@@ -1819,14 +1829,23 @@ fn build_windowed_render_request(
     render_request.height = request.output_height;
     render_request.title = Some(static_title_with_suffix(computed.title.clone()));
     let hour_label = windowed_display_hour_label(product, &computed.metadata, forecast_hour);
-    render_request.subtitle_left = Some(model_time_subtitle_with_lead_label(
+    let subtitle_left = model_time_subtitle_with_lead_label(
         model,
         date_yyyymmdd,
         cycle_utc,
         forecast_hour,
         hour_label,
-    ));
-    render_request.subtitle_right = Some(source_subtitle(source));
+    );
+    render_request.subtitle_left = Some(match request.subtitle_left_suffix.as_deref() {
+        Some(suffix) => format!("{subtitle_left} | {suffix}"),
+        None => subtitle_left,
+    });
+    render_request.subtitle_right = Some(
+        request
+            .subtitle_right_override
+            .clone()
+            .unwrap_or_else(|| source_subtitle(source)),
+    );
     render_request.chrome_scale = static_chrome_scale();
     render_request.supersample_factor = static_supersample_factor();
     render_request.supersample_sharpen = static_supersample_sharpen();

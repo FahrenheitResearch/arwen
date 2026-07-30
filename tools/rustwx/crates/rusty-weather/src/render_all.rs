@@ -174,6 +174,13 @@ pub struct StoreRenderConfig {
     /// Source stamped into provenance subtitles (the store does not record
     /// the fetch source).
     pub source: SourceId,
+    /// Grid spacing appended to the time subtitle (`Δx 3 km`).  The store
+    /// carries no spacing metadata, so this is the importer's reading of
+    /// the source file's own `DX`.
+    pub subtitle_spacing: Option<String>,
+    /// Provenance label displacing [`Self::source`] in the subtitle, for
+    /// runs that were produced locally rather than fetched.
+    pub source_label: Option<String>,
     pub domain: DomainSpec,
     pub out_dir: PathBuf,
     pub contour_mode: NativeContourRenderMode,
@@ -201,16 +208,37 @@ struct HourPresentation {
     subtitle_left: Option<String>,
 }
 
+/// `source: ArWen` -- the provenance line for a run nothing fetched.
+fn source_subtitle_override(config: &StoreRenderConfig) -> Option<String> {
+    config
+        .source_label
+        .as_deref()
+        .map(|label| format!("source: {label}"))
+}
+
 fn hour_presentation(
     config: &StoreRenderConfig,
     storage_slot: u16,
     exact_time: Option<RwsExactTime>,
 ) -> Result<HourPresentation, Box<dyn std::error::Error>> {
     let Some(exact) = exact_time else {
+        // The whole-hour axis has no bespoke subtitle; it only needs one
+        // built here when a spacing segment has to be appended to it.
+        let subtitle_left = config.subtitle_spacing.as_deref().map(|spacing| {
+            format!(
+                "{} | {spacing}",
+                rustwx_products::shared_context::model_time_subtitle(
+                    config.model,
+                    &config.date_yyyymmdd,
+                    config.cycle_utc,
+                    storage_slot,
+                )
+            )
+        });
         return Ok(HourPresentation {
             forecast_hour: storage_slot,
             output_suffix: None,
-            subtitle_left: None,
+            subtitle_left,
         });
     };
 
@@ -245,6 +273,10 @@ fn hour_presentation(
     } else {
         format!(":{:02}", valid.5)
     };
+    let spacing_tail = match config.subtitle_spacing.as_deref() {
+        Some(spacing) => format!(" | {spacing}"),
+        None => String::new(),
+    };
     Ok(HourPresentation {
         forecast_hour,
         output_suffix: Some(format!(
@@ -252,7 +284,7 @@ fn hour_presentation(
             valid.0, valid.1, valid.2, valid.3, valid.4, valid.5
         )),
         subtitle_left: Some(format!(
-            "Init {init} {:02}Z | +{lead_hours:03}:{lead_minutes:02}{lead_tail} | Valid {:02}/{:02} {:02}:{:02}{valid_tail}Z | {}",
+            "Init {init} {:02}Z | +{lead_hours:03}:{lead_minutes:02}{lead_tail} | Valid {:02}/{:02} {:02}:{:02}{valid_tail}Z | {}{spacing_tail}",
             config.cycle_utc,
             valid.1,
             valid.2,
@@ -344,7 +376,7 @@ pub fn render_hour_products(
             place_label_overlay: config.place_label_overlay.clone(),
             output_suffix: presentation.output_suffix.clone(),
             subtitle_left_override: presentation.subtitle_left.clone(),
-            subtitle_right_override: None,
+            subtitle_right_override: source_subtitle_override(config),
         };
         let outcome = store_render::render_direct_recipes_from_store(
             store,
@@ -391,7 +423,7 @@ pub fn render_hour_products(
             place_label_overlay: config.place_label_overlay.clone(),
             output_suffix: presentation.output_suffix.clone(),
             subtitle_left_override: presentation.subtitle_left.clone(),
-            subtitle_right_override: None,
+            subtitle_right_override: source_subtitle_override(config),
         };
         let outcome = store_render::render_derived_recipes_from_store(
             store,
@@ -461,6 +493,11 @@ pub fn render_windowed_products(
         output_height: config.output_height,
         png_compression: config.png_compression,
         place_label_overlay: config.place_label_overlay.clone(),
+        // The windowed lane composes its own lead label (the window, not
+        // a forecast hour), so the spacing rides as a suffix rather than
+        // replacing the whole line.
+        subtitle_left_suffix: config.subtitle_spacing.clone(),
+        subtitle_right_override: source_subtitle_override(config),
     };
     let grids: Vec<StoreWindowedGrid> = outcome
         .grids
@@ -504,6 +541,81 @@ pub fn render_windowed_products(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn presentation_config(
+        subtitle_spacing: Option<&str>,
+        source_label: Option<&str>,
+    ) -> StoreRenderConfig {
+        StoreRenderConfig {
+            model: ModelId::WrfGdex,
+            date_yyyymmdd: "19740403".to_string(),
+            cycle_utc: 18,
+            source: SourceId::Gdex,
+            subtitle_spacing: subtitle_spacing.map(str::to_string),
+            source_label: source_label.map(str::to_string),
+            domain: DomainSpec::new("d02-1km", (-98.0, -95.0, 38.0, 40.0)),
+            out_dir: PathBuf::from("out"),
+            contour_mode: Default::default(),
+            native_fill_level_multiplier: 1,
+            output_width: 1_200,
+            output_height: 900,
+            png_compression: PngCompressionMode::Fast,
+            place_label_overlay: None,
+        }
+    }
+
+    #[test]
+    fn whole_hour_subtitles_gain_the_spacing_segment() {
+        // Without a spacing there is nothing to say, and the products
+        // crate keeps composing the line itself (override stays None).
+        let plain = presentation_config(None, None);
+        assert!(
+            hour_presentation(&plain, 3, None)
+                .unwrap()
+                .subtitle_left
+                .is_none()
+        );
+
+        let spaced = presentation_config(Some("\u{0394}x 1 km"), None);
+        assert_eq!(
+            hour_presentation(&spaced, 3, None).unwrap().subtitle_left,
+            Some("Init 04/03 18Z | F003 | Valid 04/03 21Z | WRF | \u{0394}x 1 km".to_string())
+        );
+    }
+
+    #[test]
+    fn exact_time_subtitles_gain_the_same_segment() {
+        let spaced = presentation_config(Some("\u{0394}x 333 m"), None);
+        // 1974-04-03 18:30:00Z, half an hour after an 18Z initialization.
+        let exact = RwsExactTime::new(1_800, 134_245_800);
+        let presentation = hour_presentation(&spaced, 0, Some(exact)).unwrap();
+        let subtitle = presentation.subtitle_left.unwrap();
+        assert!(
+            subtitle.ends_with(" | \u{0394}x 333 m"),
+            "spacing must ride at the end of the exact-time line: {subtitle}"
+        );
+        assert!(subtitle.starts_with("Init 04/03 18Z | +000:30 | Valid "), "{subtitle}");
+        // The exact-time suffix is untouched by the spacing segment.
+        assert_eq!(
+            presentation.output_suffix.as_deref(),
+            Some("valid_19740403_183000z_lead_000h30m00s")
+        );
+    }
+
+    #[test]
+    fn the_source_label_displaces_the_inherited_fetch_source() {
+        // A locally imported run was never fetched from GDEX; saying so
+        // is the whole point of the label.
+        assert_eq!(
+            source_subtitle_override(&presentation_config(None, Some("ArWen"))),
+            Some("source: ArWen".to_string())
+        );
+        // Absent a label the lane keeps the model's registered source.
+        assert_eq!(
+            source_subtitle_override(&presentation_config(None, None)),
+            None
+        );
+    }
 
     #[test]
     fn products_keywords_pull_the_catalogs() {

@@ -9,10 +9,12 @@ byte-for-byte in the campaign receipts) generalized to any two runs:
 labels and title come from the caller or default to the directory
 names, never to any particular experiment's wording.
 
-Matching key: the product slug after the renderer's ``_native_grid_``
-filename marker when present (the rust engine's naming), else the whole
-file stem (the matplotlib engine's naming, where identical product/
-domain/valid-time stems pair naturally).
+Matching key: everything after the rust engine's ``_fNNN_`` lead marker
+-- the domain token and the product slug together -- else the whole file
+stem (the matplotlib engine's naming, where identical product/domain/
+valid-time stems pair naturally).  The domain stays *in* the key on
+purpose: a directory can now hold several nests of one run, and pairing
+a 3 km panel against a 333 m one would be a comparison of nothing.
 
 Pillow is the only dependency -- it ships with the ``[render]`` extra
 (matplotlib depends on it), and no science is performed here: pixels
@@ -21,19 +23,22 @@ are pasted, never recomputed.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
-#: The rust renderer's filename marker; everything after it is the slug.
-PREFIX_MARKER = "_native_grid_"
+#: The rust renderer's forecast-hour marker.  Everything before it is the
+#: run's identity (model, init date, cycle), which two compared runs are
+#: expected to differ in; everything after it -- domain token and product
+#: slug -- is what has to match.
+LEAD_MARKER = re.compile(r"^rustwx_.+?_f\d{3}_")
 
 
 def product_name(path: Path) -> str:
     """Pairing key for one rendered PNG."""
 
     name = path.stem
-    if PREFIX_MARKER not in name:
-        return name
-    return name.split(PREFIX_MARKER, 1)[1]
+    match = LEAD_MARKER.match(name)
+    return name[match.end():] if match else name
 
 
 def _load_font(size: int, *, bold: bool = False):
@@ -149,4 +154,4 @@ def compose_pairs(left_dir: Path, right_dir: Path, out_dir: Path, *,
     return sheets
 
 
-__all__ = ["PREFIX_MARKER", "compose_pairs", "product_name"]
+__all__ = ["LEAD_MARKER", "compose_pairs", "product_name"]

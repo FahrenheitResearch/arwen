@@ -1,16 +1,17 @@
 # Getting data
 
-ArWen initializes from three public sources -- ERA5, GFS, and HRRR --
-through one front door, `gpuwm fetch`, plus a user-staged static
-geography tree. This page covers each route end to end, the manifest
-handoff into the preprocessor, and honest disk numbers (all measured).
+ArWen initializes from four public sources -- ERA5, GFS, GDAS, and
+HRRR -- through one front door, `gpuwm fetch`, plus the static
+geography tree `gpuwm fetch-geog` downloads and stages. This page
+covers each route end to end, the manifest handoff into the
+preprocessor, and honest disk numbers (all measured).
 
 Two routes to keep straight from the start:
 
 - **ERA5** feeds the config-driven GPU forecast loop
   (`gpuwm check` / `run` / `resume`) through the native GRIB1 decode
   path.
-- **GFS and HRRR** are real GRIB2 downloads that feed the `rw-wps`
+- **GFS, GDAS and HRRR** are real GRIB2 downloads that feed the `rw-wps`
   native initialization front door, which emits
   `wrfinput_d0N`/`wrfbdy_d01` for unchanged stock WRF
   ([WRF-INTEROP.md](WRF-INTEROP.md)) and archives for
@@ -41,8 +42,58 @@ gpuwm fetch --source gfs --cycle latest --hours 24 \
 - **Disk:** about 3.3 KB per square degree per forecast hour. Measured:
   ~83 KB/h at 5x5 degrees, ~3 MB/h at 30x30, ~16 MB/h at 60x80.
 - **Reach:** NOMADS retention is about 10 days. Older GFS cycles are
-  not fetchable today (the raw S3 archive stores north-to-south grids
-  the fail-closed bridge rejects by design).
+  not fetchable today, and the reason is now narrower than it was.
+  `gfs_grib2_bridge` accepts *both* published row orders -- the
+  grib-filter crop's south-to-north `0x40` and the raw archive's
+  north-to-south `0x00` -- and normalizes to one on decode, proved
+  bit-identical against a committed matched pair
+  (`tests/fixtures/gfs-scan-order/`). What still blocks the raw S3
+  archive is **packing**, not row order: those objects use GRIB2
+  template 5.3 (complex + spatial differencing) where the crop
+  re-encodes to 5.0, and the bridge admits only 5.0 until
+  complex-packing missing-value semantics have an independent
+  real-product proof. Also worth knowing: an *uncropped* grib-filter
+  request is a pure byte-range extractor and returns the raw 5.3
+  north-to-south records, so it is not a substitute for the crop.
+
+## GDAS (0.25-degree analysis, NOMADS) -- analysis-init only
+
+```bash
+gpuwm fetch --source gdas --cycle 2026-07-29T12 --hours 0 \
+  --area 25,-110,45,-85 --out data/gdas-analysis
+```
+
+GDAS is the GFS assimilation cycle's own output, published in the
+*same* `pgrb2.0p25` container: same 0.25-degree grid, same variable and
+level codes, same 124-record census under gpuwm's selector, same centre
+and table versions. It rides the certified GFS mapping, bridge and
+front door with a source tag and nothing else, so everything in the GFS
+section above applies unchanged.
+
+**Scope: the f000 analysis, and nothing past it.** `--hours 0` is the
+only accepted window, and this is a statement about ArWen, not about
+GDAS -- NCEP publishes GDAS forecast hours out to f009. What ArWen has
+verified end to end against a live cycle is the analysis: 124 records,
+scan `0x40`, DRT 5.0, shape 6, centre 7, master table 2, local table 1,
+PDT 4.0, and the forecast generating process the analysis carries. NCEP
+tags the later GDAS forecast records with a *different* generating
+process, and the fail-closed `gfs_grib2_bridge` selects by exact field
+identity -- it is certified against the analysis tag and would reject
+the rest. So the refusal happens at `gpuwm fetch`, up front, instead of
+after a download the bridge cannot use. Asking for more says exactly
+that and points at `--source gfs`, which is certified through f384.
+
+Otherwise the only differences are naming: files, the series TSV and the
+manifest role all carry the `gdas` stem, and the front-door manifest
+records `"model": "GDAS"`.
+
+**Why bother:** f000 is an *analysis* -- the assimilation system's best
+estimate of the atmosphere at that valid time -- rather than a forecast
+field carried forward by the model. For hindcast and case work, where
+the initial state is the whole point, that is the analysis-quality
+source at identical cost and through identical machinery. ArWen has not
+measured the forecast impact of the choice, so it makes no claim about
+one.
 
 **Antimeridian.** A `--area` longitude pair spanning more than 180
 degrees is read as the complementary box crossing 180E:
@@ -95,15 +146,26 @@ gpuwm fetch --source hrrr --cycle 2026-07-28T00 --hours 18 \
   `hrrr_grib2_bridge` inventory. Existing files must pass the same
   record-count and manifest-digest bar as fresh downloads; failures
   are quarantined aside, never deleted.
-- Two hosts serve byte-identical files and indexes: the NOMADS
-  production mirror (roughly the newest 48 h, where each hour
-  publishes first) and the full `noaa-hrrr-bdp-pds` S3 archive.
-  `--transport auto` (default) probes NOMADS for the requested window
-  and falls back to S3; `nomads`/`s3` force a host. The manifest
-  records each file's transport, and a directory fetched over one host
-  resumes over the other. (NOMADS' grib-filter scripts cover only the
-  2-D `wrfsfc` file, so subsetting stays `.idx` byte ranges on both
-  hosts.)
+- Two hosts serve byte-identical GRIB **files**: the NOMADS production
+  mirror (roughly the newest 48 h, where each hour publishes first) and
+  the full `noaa-hrrr-bdp-pds` S3 archive. `--transport auto` (default)
+  probes NOMADS for the requested window and falls back to S3;
+  `nomads`/`s3` force a host. The manifest records each file's
+  transport, and a directory fetched over one host resumes over the
+  other. (NOMADS' grib-filter scripts cover only the 2-D `wrfsfc` file,
+  so subsetting stays `.idx` byte ranges on both hosts.)
+- **Their `.idx` indexes are not byte-identical, and the difference is
+  in the field names.** NOMADS spells hybrid cloud water `CLWMR`; S3
+  spells the same record `CLMR`, and has since at least 2025. gpuwm
+  treats that as an alias -- one role, either spelling, same record
+  count -- so both hosts satisfy the same 561/18 contract. A change in
+  the record *count* is a different matter and still stops the fetch
+  until you pass `--accept-inventory-change`. If a host publishes an
+  inventory gpuwm genuinely does not recognise, `--transport auto` says
+  so and moves to the other host instead of failing the run; a pinned
+  `--transport` reports the mismatch and stops. Full-file transfers
+  (`--engine rust --mode full-file`) never read index field names at
+  all, so they are immune to this whole class of divergence.
 - `--wait-for` is the live-cycle mode: hours are downloaded in order
   as they publish (polling at most every 30 s), so `rw-wps` can start
   on the early hours before the cycle finishes publishing. On timeout
@@ -118,6 +180,43 @@ gpuwm fetch --source hrrr --cycle 2026-07-28T00 --hours 18 \
 - The fetch prints the complete front-door handoff line
   (`--source-manifest SHA256SUMS --source-manifest-sha256 <digest>`).
 - **Disk:** roughly 0.4 GB per forecast hour; ~8 GB for f00..f18.
+
+## 20CRv3 (ensemble members, you supply the files)
+
+An **experimental, runnable** route for NOAA-CIRES-DOE Twentieth Century
+Reanalysis version 3 ensemble members. It is not certified: the route is
+not yet accepted by unchanged stock WRF (that gate is pending), and it
+certifies neither other 20CR products, nor arbitrary members mixed in
+one run, nor a larger domain count than the mapping's `max_dom = 4`.
+
+**There is no fetch route, and this one is not self-serve.** You supply
+the member GRIB2 files. Obtaining every-member 20CRv3 GRIB2 typically
+requires access to the NOAA-CIRES-DOE 20CRv3 archive holdings -- for
+instance through the project's own collaboration channels -- rather than
+an ordinary download; the publicly downloadable 20CRv3 products are
+ensemble **mean/spread NetCDF**, which are *not* inputs to this route.
+(A separate NetCDF-CF adapter exists for that family and is
+synthetic-gated with no public WRF runner; it does not inherit this
+route's evidence.)
+
+What the route does accept:
+
+- **One exact member**, bound by a filename-plus-hash manifest --
+  `gpuwm ... --source 20crv3 --author-input-manifest FILE --author-only`
+  writes that manifest from the files you point `--source-root` at, and
+  the run refuses anything whose name or SHA-256 differs. Mixed member
+  labels in one run are rejected.
+- **Paired pressure-level and surface analyses** at a uniform
+  three-hour cadence. 20CRv3 publishes analyses at successive valid
+  times rather than forecast lead hours, so there is no forecast
+  horizon here.
+- **One-way Lambert nests** through the packaged mapping's
+  `max_dom = 4`.
+
+Mapping, composition and provenance authorities are packaged, so the
+route's identity is fixed rather than assembled per run. Design and
+implemented slice:
+[docs/native-20crv3-source-adapter-spec.md](../native-20crv3-source-adapter-spec.md).
 
 ## ERA5 (reanalysis, Copernicus CDS)
 
@@ -154,6 +253,85 @@ not at initialization.
 - `--cycle latest` is rejected for ERA5 (reanalysis latency is weeks);
   ERA5 is the route for historical cases.
 
+## Transports: who moves the bytes, and how
+
+Three independent choices, and it is worth keeping them apart.
+
+**Which downloader** -- `--engine auto|rust|python` (HRRR).
+`python` is the stdlib byte-range transport; it always works and needs
+nothing built. `rust` is `rw_fetch`, a binary built once from the
+vendored `tools/rustwx` workspace, which brings machinery worth having
+on a 700 MB object:
+
+- **16 MiB parallel range GETs** for whole-file transfers -- one serial
+  TCP stream becomes tens.
+- **`.idx` range coalescing** -- a 561-record selection collapses from
+  561 requests to a handful.
+- **A cross-process NOMADS rate governor.** A lock file and shared
+  state enforce a 2.5-second minimum gap between NOMADS requests and a
+  node-wide cooldown when NOMADS' over-rate-limit response is
+  recognised -- shared across *every* process on the machine that uses
+  it, so two concurrent fetches cooperate instead of racing each other
+  into an IP block.
+- **A disk cache** keyed by URL and byte range, so a re-run or an
+  overlapping window re-reads bytes instead of re-downloading them
+  (`--cache-dir`).
+
+`auto` (the default) uses it when it is built and falls back to Python
+when it is not. Build it with
+`cd tools/rustwx && cargo build --release --locked --offline`; `gpuwm
+doctor` reports whether it is there and usable.
+
+**Which host** -- `--transport auto|nomads|s3` (HRRR). See the HRRR
+section: both serve byte-identical GRIB files, `auto` prefers NOMADS
+for recent cycles and falls back to S3.
+
+**How much of the object** -- `--mode auto|full-file|idx-subset`
+(HRRR, `--engine rust`). This is the byte transport, not the host.
+
+`auto` is a **probe**, and deliberately has no time constants in it.
+Before transferring anything, gpuwm reads the last message named by the
+`.idx`, learns its declared length from its own GRIB2 header, and asks
+the origin for exactly one byte more than that message occupies. If the
+origin returns the message and nothing else, the index provably ends
+where the object ends and a range subset is safe. If it returns one
+extra byte, the object carries records the index never mentions -- an
+index published mid-write -- and the **whole file** is taken instead.
+Absent index, malformed index, or a coverage question that cannot be
+answered: whole file. The whole file is always correct; a subset built
+on a short index would be silently, invisibly incomplete.
+
+`full-file` and `idx-subset` force either transport. `idx-subset`
+*refuses* rather than quietly degrading when the index cannot carry it
+-- an operator who asked for a subset should hear that it was not
+possible.
+
+A full-file HRRR hour is the complete `wrfnat`/`wrfprs` object, about
+0.7 GB instead of 0.1 GB, and `hrrr_grib2_bridge` consumes it
+unchanged: that bridge selects by exact field identity, not by file
+size. Full files also never read index field *names*, which makes them
+immune to the provider-spelling divergence described under HRRR above.
+
+**Record counts.** Every download is checked against a record count
+derived from the live provider inventory, with the count this ArWen was
+certified against (124 GFS/GDAS, 561 + 18 HRRR) retained as a
+tripwire. Agreement is silent. Disagreement names both numbers and
+stops -- an upstream inventory change is a re-certification event, not
+a transient error -- until you pass `--accept-inventory-change`, which
+makes the live count the bar and records the acceptance in the fetch
+manifest. Field *renames* that leave the count intact are handled as
+aliases and do not trip this.
+
+Where the bar can only be read *after* a transfer -- the Rust HRRR
+backbone reports a census from the index it kept beside the object it
+just wrote -- the refusal says so and quarantines what landed: the GRIB
+and its `.idx` are renamed `*.inventory-change-<ns>`, no manifest is
+written, and the message names the files and the directory. Nothing is
+deleted, so if you then accept the change the evidence of what arrived
+is still there. The acceptance itself survives resuming: re-running the
+command on a complete directory downloads nothing and republishes the
+same `record_bars`, including `inventory_change_accepted`.
+
 ## Fetch semantics common to all sources (worth knowing)
 
 - **Resumable by design:** re-running the same command verifies and
@@ -173,27 +351,118 @@ not at initialization.
   name/role/bytes/SHA-256. Resume re-verifies existing files against
   the manifest's recorded SHA-256 as well as the per-file record bars.
 
+## Which physics each route can prepare
+
+The GFS and HRRR preprocessor door can prepare **YSU + MM5 surface
+layer + Noah only** -- its stock-WRF exporter hard-requires that
+combination, and the prepared cache binds the configuration bitwise, so
+MYNN, RUC and Noah-MP are selectable but not preparable through those
+routes today. ERA5's config door has no such restriction. Details and
+the fix plan: [PHYSICS.md](PHYSICS.md#which-suites-each-data-route-can-actually-prepare).
+
 ## Static geography (WPS_GEOG)
 
-Terrain, land use, and soil come from the standard NCAR WPS
-geographical dataset. Nothing downloads it for you, and this is the
-one large one-time download:
+Terrain, land use, soil texture, vegetation fraction, LAI, albedo,
+snow albedo, and deep-soil temperature come from the standard NCAR WPS
+geographical dataset -- nine dataset directories the static builder
+opens (global coverage, so any domain works). One command downloads
+and stages all of it:
 
-1. Download the "highest resolution mandatory fields" WPS_GEOG archive
-   from NCAR (~29 GB unpacked).
-2. Stage it so these nine directories sit under one root:
-   `topo_gmted2010_30s`, `modis_landuse_20class_30s_with_lakes`,
-   `soiltype_top_30s`, `soiltype_bot_30s`, `greenfrac_fpar_modis`,
-   `lai_modis_10m`, `albedo_modis`, `maxsnowalb_modis`,
-   `soiltemp_1deg`.
-3. Point `--geog-root` at that root, or set `GPUWM_CASE_DATA_ROOT` so
-   it resolves as `${GPUWM_CASE_DATA_ROOT}/WPS_GEOG`.
+```bash
+gpuwm fetch-geog
+```
 
-Any area the global tree covers works; `gpuwm check` verifies the
-exact tiles your footprint intersects (presence and hashes) before
-anything expensive runs. Static fields arrive at 30 arcsec regardless
-of nest spacing; no VAR_SSO/orographic-drag, urban-fraction, or
-lake-depth datasets are produced in this release.
+- Stages into `$GPUWM_CASE_DATA_ROOT/WPS_GEOG` (exactly the tree
+  `gpuwm doctor` checks and wizard configs reference); `--root DIR`
+  overrides.
+- **Size:** ~1.3 GB download, ~16 GB unpacked. `--list` previews the
+  per-dataset table (and what is already staged) without touching the
+  network; `--datasets NAME,NAME` stages a subset.
+- **Resumable and idempotent:** an interrupted download resumes from
+  its byte offset; a staged, valid dataset is never re-downloaded;
+  re-running the command is always safe.
+- **Verified:** every archive must match its packaged size + SHA-256
+  pin before extraction, every extracted dataset must carry a parsing
+  WPS `index` file (the same bar `gpuwm doctor` applies), and a local
+  `geog-fetch-manifest.json` records the observed hashes for future
+  re-verification.
+
+Two hosts serve byte-identical archives:
+
+- `--source hf` (default): the ArWen mirror at
+  `huggingface.co/datasets/deepguess/wps-geog-arwen` -- a
+  verbatim, attribution-carrying copy of the NCAR per-dataset
+  tarballs, republished for CDN bandwidth.
+- `--source ncar`: upstream NCAR (`www2.mmm.ucar.edu`, a single server
+  -- expect it to be slow at times). `--bundle` fetches NCAR's whole
+  `geog_high_res_mandatory.tar.gz` (**2.77 GB** compressed --
+  2,772,782,816 B, measured 2026-07-30 -- ~29 GB unpacked) instead of the per-dataset tarballs and extracts only what
+  you asked for; it is the fallback when per-dataset tarballs are
+  unavailable.
+
+**Integrity, honestly stated.** NCAR publishes no checksums for these
+archives. The pins gpuwm enforces were computed from a TLS download
+from UCAR on 2026-07-29 (sizes independently confirmed against the
+server's own Content-Length headers, contents byte-compared against an
+independently staged reference tree); the mirror republishes exactly
+those pinned bytes. So a mirror download is verified end-to-end
+against the pins, while *first-download* trust in the NCAR route
+ultimately rests on TLS to UCAR -- there is nothing upstream to pin
+against. If NCAR ever republishes an archive, the pin mismatch refuses
+loudly; `--allow-upstream-drift` accepts the new bytes within a size
+sanity band and records them as unpinned in the local manifest.
+
+### Manual alternative (exact URLs)
+
+Everything `fetch-geog` does can be done by hand. Download from
+NCAR's WPS geographical data page
+(<https://www2.mmm.ucar.edu/wrf/users/download/get_sources_wps_geog.html>),
+tarballs under `https://www2.mmm.ucar.edu/wrf/src/wps_files/`:
+
+| dataset directory | tarball | download size |
+|---|---|---|
+| `topo_gmted2010_30s` | `topo_gmted2010_30s.tar.bz2` | 174 MiB |
+| `modis_landuse_20class_30s_with_lakes` | `modis_landuse_20class_30s_with_lakes.tar.bz2` | 31 MiB |
+| `soiltype_top_30s` | `soiltype_top_30s.tar.bz2` | 1.6 MiB |
+| `soiltype_bot_30s` | `soiltype_bot_30s.tar.bz2` | 1.8 MiB |
+| `greenfrac_fpar_modis` | `greenfrac_fpar_modis.tar.bz2` | 945 MiB |
+| `lai_modis_10m` | `lai_modis_10m.tar.bz2` | 2.5 MiB |
+| `albedo_modis` | `albedo_modis.tar.bz2` | 74 MiB |
+| `maxsnowalb_modis` | `maxsnowalb_modis.tar.bz2` | 4.2 MiB |
+| `soiltemp_1deg` | `soiltemp_1deg.tar.bz2` | 30 KiB |
+
+Untar each into one root so the nine directories sit side by side
+(each tarball already contains its directory), then point
+`--geog-root` at that root or set `GPUWM_CASE_DATA_ROOT` so it
+resolves as `${GPUWM_CASE_DATA_ROOT}/WPS_GEOG`. Each dataset
+directory must contain its WPS `index` file.
+
+### Provenance and attribution
+
+The WPS geographical datasets are assembled and distributed by
+NCAR/UCAR for the WRF ecosystem (no license or citation text is
+attached to the download page). Underlying sources:
+
+| dataset | contents | ultimate source |
+|---|---|---|
+| `topo_gmted2010_30s` | 30-arc-sec terrain elevation | USGS/NGA GMTED2010 (Danielson & Gesch 2011, USGS OFR 2011-1073); U.S. public domain |
+| `modis_landuse_20class_30s_with_lakes` | Noah-modified 20-category IGBP land use + inland lakes | NASA MODIS (MCD12Q1-derived); NASA data are free and open |
+| `soiltype_top_30s`, `soiltype_bot_30s` | 16-category top-/bottom-layer soil texture | hybrid STATSGO (USDA, public domain) + FAO Digital Soil Map of the World |
+| `greenfrac_fpar_modis` | monthly green-vegetation-fraction climatology | NASA MODIS FPAR |
+| `lai_modis_10m` | monthly leaf-area-index climatology (10 arc-min) | NASA MODIS |
+| `albedo_modis` | monthly surface albedo climatology | NASA MODIS |
+| `maxsnowalb_modis` | maximum snow albedo | MODIS-derived (Barlage et al. 2005) |
+| `soiltemp_1deg` | 1-degree annual-mean deep-soil temperature | climatology distributed with WPS; NCAR's pages do not state the ultimate source |
+
+If you publish work built on these fields, credit NCAR/UCAR's WPS
+geographical data distribution and the underlying providers (USGS for
+GMTED2010; NASA for the MODIS-derived fields).
+
+`gpuwm check` verifies the exact tiles your footprint intersects
+(presence and hashes) before anything expensive runs. Static fields
+arrive at 30 arcsec regardless of nest spacing; no
+VAR_SSO/orographic-drag, urban-fraction, or lake-depth datasets are
+produced in this release.
 
 ### `GPUWM_CASE_DATA_ROOT` layout
 
@@ -212,7 +481,7 @@ $GPUWM_CASE_DATA_ROOT/
 
 | item | size | when |
 |---|---|---|
-| WPS_GEOG static tree | ~29 GB | once |
+| WPS_GEOG static tree (`gpuwm fetch-geog`) | ~1.3 GB download, ~16 GB unpacked (full NCAR `--bundle`: ~29 GB unpacked) | once |
 | GFS subsets | ~3.3 KB/deg2/h (e.g. ~3 MB/h at 30x30 deg) | per case |
 | HRRR subsets | ~0.4 GB/h (~8 GB for f00..f18) | per case |
 | ERA5 retrieval | tens of MB per valid time (regional box) | per case |

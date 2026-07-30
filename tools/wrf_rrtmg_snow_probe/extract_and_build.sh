@@ -6,7 +6,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-auth=/mnt/c/Users/drew/Downloads/WRF_1974_MP55_reference_bundle/WRF_source_v4.6.1_group
+auth="${WRF_SOURCE_ROOT:?export WRF_SOURCE_ROOT=<path>/WRF_source_v4.6.1_group (the read-only v4.6.1 authority)}"
 sw="$auth/phys/module_ra_rrtmg_sw.F"
 
 expect_sha=447345d2658cd370e6bc97ff2ab582a5d12b84adffc58f72a938b353e017987e

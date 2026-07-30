@@ -83,6 +83,19 @@ pub struct BatchRenderRequest {
     pub product_spec: String,
     pub out_dir: PathBuf,
     pub domain: BatchRenderDomain,
+    /// Slug written into every output filename in place of the generic
+    /// `native_grid`, for [`BatchRenderDomain::NativeGrid`] runs whose
+    /// caller knows the grid's identity (a WRF nest's `d02-3km`).  One
+    /// run's nests are otherwise indistinguishable in the filename --
+    /// same model, same cycle, same forecast hour -- and the second
+    /// domain rendered at a lead overwrites the first.
+    pub native_domain_slug: Option<String>,
+    /// Grid spacing appended to the plot's time subtitle (`Δx 3 km`).
+    pub subtitle_spacing: Option<String>,
+    /// Provenance label for the subtitle, replacing the store model's
+    /// registered fetch source.  A locally-imported run was never
+    /// fetched from anywhere.
+    pub source_label: Option<String>,
     /// Optional label overrides for nonstandard/local run names.
     pub date_yyyymmdd: Option<String>,
     pub cycle_utc: Option<u8>,
@@ -111,6 +124,9 @@ impl BatchRenderRequest {
             product_spec: product_slug.into(),
             out_dir: out_dir.into(),
             domain: BatchRenderDomain::NativeGrid,
+            native_domain_slug: None,
+            subtitle_spacing: None,
+            source_label: None,
             date_yyyymmdd: None,
             cycle_utc: None,
             source: None,
@@ -482,7 +498,12 @@ pub fn run_batch_render(
             }
         };
 
-        let domain = resolve_render_domain(&request.domain, &store, &mut native_domain)?;
+        let domain = resolve_render_domain(
+            &request.domain,
+            request.native_domain_slug.as_deref(),
+            &store,
+            &mut native_domain,
+        )?;
         let config = render_config(&request, model, &cycle, source, domain);
 
         for (kind, slug) in &per_hour {
@@ -554,7 +575,12 @@ pub fn run_batch_render(
         });
         match store {
             Ok(store) => {
-                let domain = resolve_render_domain(&request.domain, &store, &mut native_domain)?;
+                let domain = resolve_render_domain(
+                    &request.domain,
+                    request.native_domain_slug.as_deref(),
+                    &store,
+                    &mut native_domain,
+                )?;
                 let config = render_config(&request, model, &cycle, source, domain);
                 for slug in &product_request.windowed {
                     emit(BatchRenderEvent::ItemStarted {
@@ -754,6 +780,8 @@ fn render_config(
         date_yyyymmdd: cycle.date_yyyymmdd.clone(),
         cycle_utc: cycle.hour_utc,
         source,
+        subtitle_spacing: request.subtitle_spacing.clone(),
+        source_label: request.source_label.clone(),
         domain,
         out_dir: request.out_dir.clone(),
         contour_mode: Default::default(),
@@ -938,13 +966,18 @@ fn explicit_domain(domain: &BatchRenderDomain) -> Result<DomainSpec, String> {
 
 fn resolve_render_domain(
     requested: &BatchRenderDomain,
+    native_slug: Option<&str>,
     store: &StoreFieldSource,
     native_cache: &mut Option<DomainSpec>,
 ) -> Result<DomainSpec, String> {
     match requested {
         BatchRenderDomain::NativeGrid => {
             if native_cache.is_none() {
-                *native_cache = Some(native_grid_domain(store)?);
+                let mut domain = native_grid_domain(store)?;
+                if let Some(slug) = native_slug {
+                    domain.slug = safe_slug(slug, "native_grid");
+                }
+                *native_cache = Some(domain);
             }
             native_cache
                 .clone()
@@ -1019,12 +1052,16 @@ fn dedup(values: &mut Vec<String>) {
     values.retain(|value| seen.insert(value.clone()));
 }
 
+/// A domain slug is only ever a filename *component* (never a path
+/// element), so `.` is admissible and load-bearing: a 3:1 nest of a 12 km
+/// parent is 1.333 km, and `d03-1_333km` would read as a typo.  Every
+/// separator character still collapses to `_`.
 fn safe_slug(value: &str, fallback: &str) -> String {
     let slug = value
         .trim()
         .chars()
         .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
                 character
             } else {
                 '_'
