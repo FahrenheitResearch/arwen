@@ -51,6 +51,43 @@ _STATE_ORDER = ("template", "component-override", "expert-template",
 _ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_mynn_ruc_and_noahmp_templates_follow_existing_lsm_routes():
+    """Expose the pairings without broadening either LSM's source contract."""
+    registry = physics_registry()
+    ruc_id = "wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1"
+    mynn_ruc_id = (
+        "wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1")
+    noahmp_id = (
+        "wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1")
+    mynn_noahmp_id = (
+        "wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1")
+
+    for template_id, lsm in (
+            (mynn_ruc_id, "ruc-lsm"), (mynn_noahmp_id, "noah-mp")):
+        assert registry["templates"][template_id]["components"] | {
+            "microphysics": "wsm6-mp6",
+            "pbl": "mynn",
+            "surface_layer": "mynn",
+            "land_surface": lsm,
+        } == registry["templates"][template_id]["components"]
+    assert not any(
+        "differs from wsm6-ysu-mm5-noah-no-radiation-v1 in exactly ONE"
+        in warning
+        for warning in registry["templates"][mynn_ruc_id]["warnings"]
+    )
+
+    for lsm in ("ruc-lsm", "noah-mp"):
+        required = registry["components"]["land_surface"]["options"][lsm][
+            "constraints"]["requires_components"]["surface_layer"]
+        assert "mynn" in required
+
+    for route in registry["runner_routes"].values():
+        for declared in route.get("source_template_ids", {}).values():
+            assert (ruc_id in declared) == (mynn_ruc_id in declared)
+        for declared in route.get("expert_template_ids", {}).values():
+            assert (noahmp_id in declared) == (mynn_noahmp_id in declared)
+
+
 def _computed_states(registry: dict) -> dict[tuple[str, str], str]:
     """Recompute every option's reachability from templates and routes.
 
@@ -366,7 +403,7 @@ def test_the_gate_fails_when_an_expert_template_loses_its_acknowledgement():
     shipped = validate_physics_plan({
         **plan,
         "registry_sha256": registry_sha256(),
-        "expert_acknowledgements": [
+        "acknowledgements": [
             physics_registry()["runner_routes"][
                 "tools.prepared_domain_tree_forecast"][
                     "expert_acknowledgement_id"]],

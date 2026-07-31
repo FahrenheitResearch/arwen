@@ -62,6 +62,7 @@ from gpuwm.core import noahmp_libm as _libm
 
 F = np.float32
 _U32 = 0xFFFFFFFF
+MAX_RADIATION_LAYERS = 128
 
 # ---------------------------------------------------------------------------
 # Section 0 -- glibc 2.39 FP32 libm (logf, expf, powf).
@@ -3943,7 +3944,7 @@ def gpu_rtrnmc(nlayers, istart, iend, iout, pz, semiss, ncbands, cldfmc,
     import cupy as cp
     gpu_preflight()
     nl = int(nlayers)
-    assert nl <= 128, "rlw_rtrn_march RLW_MAXLAY"
+    assert nl <= MAX_RADIATION_LAYERS, "rlw_rtrn_march RLW_MAXLAY"
     if (istart, iend, iout) != (1, 16, 0):
         raise NotImplementedError("istart/iend/iout fixed to 1/16/0")
 
@@ -4417,7 +4418,7 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
             "read undefined inflag/iceflag/liqflag (documented divergence)")
     nl = int(nlay)
     ncol = int(ncol)
-    assert nl <= 128, "rlw_rtrn_march RLW_MAXLAY"
+    assert nl <= MAX_RADIATION_LAYERS, "rlw_rtrn_march RLW_MAXLAY"
     chunk = int(column_chunk) if column_chunk else LW_BATCH_COLUMN_CHUNK
     if chunk < 1:
         raise ValueError("column_chunk must be >= 1")

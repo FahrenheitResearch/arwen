@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "1.2.3"
+version = "1.3.0"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -32,6 +32,12 @@ gpu = ["cupy-cuda12x>=13.0"]
 render = ["wrf-rust==0.2.35"]
 geog = ["rasterio>=1.3", "pyproj>=3.6"]
 dev = ["pytest>=8.0"]
+# The two extras a person running a forecast on their own card needs,
+# under one name, so the quickstart is one pip line instead of a choice
+# between two that most readers want both of. Deliberately NOT geog:
+# that extra pulls rasterio/pyproj for authoring static tiles, which is
+# a different job from running the model.
+all = ["gpuwm[gpu]", "gpuwm[render]"]
 
 [project.scripts]
 gpuwm = "gpuwm.cli:main"

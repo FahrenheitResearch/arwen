@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 import hashlib
 import json
 from pathlib import Path
@@ -72,6 +72,10 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
     assert nssl2["readiness"] == "VALIDATION_CANDIDATE"
     assert nssl2["explicit_expert_consent_required"] is False
     assert nssl2["resolved_fixed_preset"] is True
+    legacy = payload["physics_profiles"][
+        runner.NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE]
+    assert legacy["readiness"] == "VALIDATION_CANDIDATE"
+    assert legacy["radiation_solver"] == "legacy RRTMG"
     twentycr_wsm6 = payload["physics_profiles"][
         runner.TWENTYCRV3_WSM6_PHYSICS_PROFILE]
     assert twentycr_wsm6["readiness"] == "IMPLEMENTED_UNVERIFIED"
@@ -1139,6 +1143,7 @@ def test_20crv3_implemented_unverified_profile_retains_hash_bound_cadence(
         runner.THOMPSON_PHYSICS_PROFILE,
         runner.MORRISON_PHYSICS_PROFILE,
         runner.NSSL2_PHYSICS_PROFILE,
+        runner.NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE,
     ),
 )
 def test_20crv3_materialized_profiles_reach_exact_prepared_preflight(
@@ -2226,3 +2231,181 @@ def test_the_materializer_accepts_the_wizard_s_own_advisory_fetch_table(
         runner._render_materialized_experiment(
             broken, source="gfs",
             profile="morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1")
+
+
+# ---------------------------------------------------------------------------
+# F3: the GFS source manifest this release's own fetch authors
+# ---------------------------------------------------------------------------
+#
+# `1f0fc039 feat(fetch): the GFS ladder follows the case's model top` added
+# `pressure_levels_hpa`/`top_pressure_pa` to the front-door manifest's `source`
+# object.  This runner demanded that object be EXACTLY {model, product, cycle},
+# so it refused every manifest v1.3.0's `gpuwm fetch` writes -- every GFS
+# single-domain forecast on the release, not just one physics suite.
+#
+# The fixture rule applies: the manifest below is authored by the fetch lane's
+# own writer over the captured NOMADS inventory in tests/fixtures/gfs-inventory,
+# never hand-written here.  Nothing is downloaded.
+
+_GFS_FETCH_CYCLE = datetime(2026, 7, 28, 6)
+_GFS_FETCH_AREA = "30,-100,40,-90"
+
+
+def _authored_gfs_front_door_manifest(
+        tmp_path: Path, monkeypatch, *, top_pressure_pa: float | None = None,
+) -> dict:
+    """One real front-door manifest, written by `gpuwm fetch` itself."""
+
+    import gpuwm.fetch as fetch
+    from tools import download_gfs_native_subset as gfs_transport
+
+    index_text = (ROOT / "tests" / "fixtures" / "gfs-inventory"
+                  / "gfs.t12z.pgrb2.0p25.f000.idx").read_text(encoding="ascii")
+    real_levels = gfs_transport.available_levels_from_index(index_text)
+
+    def _grib2(messages: int) -> bytes:
+        one = (b"GRIB" + b"\x00\x00" + b"\x00" + b"\x02"
+               + (20).to_bytes(8, "big") + b"7777")
+        return one * messages
+
+    def download(url, destination, **_kw):
+        from urllib.parse import parse_qsl, urlsplit
+        query = dict(parse_qsl(urlsplit(url).query, keep_blank_values=True))
+        count = len([key for key in query
+                     if key.startswith("lev_") and key.endswith("_mb")])
+        destination.write_bytes(
+            _grib2(gfs_transport.record_count_for_levels(count)))
+
+    monkeypatch.setattr(gfs_transport, "_download", download)
+    out = tmp_path / "gfs"
+    fetch.fetch_gfs(
+        cycle=_GFS_FETCH_CYCLE, hours=(0, 3),
+        area=fetch.parse_area(_GFS_FETCH_AREA), out=out,
+        progress=lambda line: None,
+        derived_bar=lambda cycle, **kw: fetch.gfs_derived_record_bar(
+            cycle, index_text=index_text, levels_hpa=kw.get("levels_hpa"),
+            progress=lambda line: None),
+        available_levels=lambda cycle, **kw: real_levels,
+        top_pressure_pa=top_pressure_pa)
+    for name in ("bridge", "namelist.wps", "experiment.toml"):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    path, _digest = fetch.author_gfs_front_door_manifest(
+        out=out, bridge=tmp_path / "bridge",
+        wps_namelist=tmp_path / "namelist.wps",
+        experiment_config=tmp_path / "experiment.toml",
+        progress=lambda line: None)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _experiment_stub(*, start_time, p_top_pa: float):
+    return SimpleNamespace(
+        start_time=start_time, vertical=SimpleNamespace(p_top=p_top_pa))
+
+
+def test_the_runner_accepts_the_manifest_this_release_s_fetch_authors(
+        tmp_path, monkeypatch):
+    """F3: the producing lane's real output, through the consuming lane."""
+
+    manifest = _authored_gfs_front_door_manifest(
+        tmp_path, monkeypatch, top_pressure_pa=5000.0)
+
+    # The producer really does write the level provenance -- this test is
+    # worthless if the manifest happens not to carry the added keys.
+    identity = manifest["source"]
+    assert sorted(identity) == [
+        "cycle", "model", "pressure_levels_hpa", "product", "top_pressure_pa"]
+    assert len(identity["pressure_levels_hpa"]) == 23
+    assert identity["top_pressure_pa"] == 5000.0
+
+    roles, receipt = runner._manifest_file_specs(
+        "gfs", manifest,
+        _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=5000.0))
+
+    assert {"series", "bridge", "wps_namelist", "experiment_config",
+            "grib-f000", "grib-f003"} == set(roles)
+    assert receipt["identity"] == {
+        "model": "GFS", "product": "pgrb2.0p25",
+        "cycle": "2026-07-28T06:00:00Z"}
+    # Routed, not ignored: the ladder reaches the receipt and the derived
+    # source top is the one the vertical contract is entitled to.
+    assert receipt["pressure_levels_hpa"] == identity["pressure_levels_hpa"]
+    assert receipt["source_top_pressure_pa"] == 5000.0
+    assert receipt["experiment_p_top_pa"] == 5000.0
+
+
+def test_the_runner_still_refuses_a_manifest_from_a_different_cycle(
+        tmp_path, monkeypatch):
+    """The control: identity stays three keys, compared strictly."""
+
+    manifest = _authored_gfs_front_door_manifest(
+        tmp_path, monkeypatch, top_pressure_pa=5000.0)
+    other_cycle = _GFS_FETCH_CYCLE + timedelta(hours=6)
+
+    with pytest.raises(ValueError, match="identity differs from the experiment"):
+        runner._manifest_file_specs(
+            "gfs", manifest,
+            _experiment_stub(start_time=other_cycle, p_top_pa=5000.0))
+
+    for key in ("model", "product"):
+        wrong = json.loads(json.dumps(manifest))
+        wrong["source"][key] = "something-else"
+        with pytest.raises(ValueError,
+                           match="identity differs from the experiment"):
+            runner._manifest_file_specs(
+                "gfs", wrong,
+                _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=5000.0))
+
+
+def test_the_runner_enumerates_the_manifest_identity_rather_than_ignoring_it(
+        tmp_path, monkeypatch):
+    """An unknown `source` field is a refusal, not a silently dropped key."""
+
+    manifest = _authored_gfs_front_door_manifest(
+        tmp_path, monkeypatch, top_pressure_pa=5000.0)
+    manifest["source"]["invented_by_nobody"] = 1
+
+    with pytest.raises(ValueError, match="unsupported field"):
+        runner._manifest_file_specs(
+            "gfs", manifest,
+            _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=5000.0))
+
+
+def test_the_runner_holds_the_level_ladder_to_the_vertical_contract(
+        tmp_path, monkeypatch):
+    """The level fields are validated where they matter, not just carried.
+
+    A 50 hPa fetch cannot serve a 10 hPa model top, and the producing
+    lane's own validator is what says so -- the same function
+    `gpuwm/gfs_direct.py` calls before the bridge runs.
+    """
+
+    manifest = _authored_gfs_front_door_manifest(
+        tmp_path, monkeypatch, top_pressure_pa=5000.0)
+
+    with pytest.raises(ValueError, match="reaching 5000 Pa"):
+        runner._manifest_file_specs(
+            "gfs", manifest,
+            _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=1000.0))
+
+    broken = json.loads(json.dumps(manifest))
+    broken["source"]["top_pressure_pa"] = 1234.0
+    with pytest.raises(ValueError, match="pressure ladder tops out"):
+        runner._manifest_file_specs(
+            "gfs", broken,
+            _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=1000.0))
+
+
+def test_a_manifest_without_the_ladder_still_means_the_certified_top(
+        tmp_path, monkeypatch):
+    """Roots prepared before `1f0fc039` keep working, unchanged."""
+
+    manifest = _authored_gfs_front_door_manifest(tmp_path, monkeypatch)
+    for key in ("pressure_levels_hpa", "top_pressure_pa"):
+        manifest["source"].pop(key)
+
+    _roles, receipt = runner._manifest_file_specs(
+        "gfs", manifest,
+        _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=10000.0))
+
+    assert receipt["pressure_levels_hpa"] is None
+    assert receipt["source_top_pressure_pa"] == 10000.0

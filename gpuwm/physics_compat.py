@@ -20,6 +20,8 @@ import os
 from types import MappingProxyType
 from typing import Mapping
 
+from gpuwm.explain import layered
+
 
 # Exact token emitted into imported gpuwm configurations when WRF's legacy
 # RRTMG 4/4 pair is intentionally routed to gpuwm's modern RTE+RRTMGP
@@ -78,6 +80,9 @@ RRTMG_VARIANT_LEGACY = "rrtmg_legacy"
 def rrtmg_variant(cfg) -> str:
     """The 4/4 implementation selector, tolerant of pre-field configs."""
 
+    if isinstance(cfg, Mapping):
+        return str(cfg.get(
+            "ra_rrtmg_variant", RRTMG_VARIANT_RTE_RRTMGP))
     return str(getattr(cfg, "ra_rrtmg_variant", RRTMG_VARIANT_RTE_RRTMGP))
 
 
@@ -240,6 +245,9 @@ MORRISON_PROFILE_ID = (
 NSSL2_PROFILE_ID = (
     "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1"
 )
+NSSL2_LEGACY_RRTMG_PROFILE_ID = (
+    "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1"
+)
 #: The MYNN 5/5 suite, which differs from :data:`WSM6_PROFILE_ID` in exactly
 #: two selectors (``bl_pbl_physics`` 1 -> 5 and ``sf_sfclay_physics`` 91 -> 5).
 #: It is a peer profile rather than an expert one because it RUNS at production
@@ -256,12 +264,20 @@ MYNN_PROFILE_ID = "wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1"
 #: 16.8 wall seconds per simulated minute at d04's 360,000 columns snow-free
 #: and 65.7 fully snow-covered, measured at that width, not extrapolated.
 RUC_PROFILE_ID = "wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1"
+#: HRRR's operational suite class: MYNN surface/PBL with the RUC LSM.
+MYNN_RUC_PROFILE_ID = (
+    "wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1"
+)
 #: The Noah-MP fixed template remains expert-only because its component is
 #: implemented but has no GPUWM/WRF forecast-trajectory comparison.  The
 #: registry owns the acknowledgement id and warnings; callers must not
 #: duplicate them as a profile-name special case.
 NOAHMP_PROFILE_ID = (
     "wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1"
+)
+#: The MYNN 5/5 counterpart of the expert Noah-MP template.
+MYNN_NOAHMP_PROFILE_ID = (
+    "wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1"
 )
 #: Every fixed single-domain template the front door can validate.  Expert
 #: templates remain in this discovery tuple: selection is accepted by the
@@ -272,9 +288,12 @@ SINGLE_DOMAIN_PHYSICS_PROFILES = (
     THOMPSON_PROFILE_ID,
     MORRISON_PROFILE_ID,
     NSSL2_PROFILE_ID,
+    NSSL2_LEGACY_RRTMG_PROFILE_ID,
     MYNN_PROFILE_ID,
     RUC_PROFILE_ID,
+    MYNN_RUC_PROFILE_ID,
     NOAHMP_PROFILE_ID,
+    MYNN_NOAHMP_PROFILE_ID,
 )
 
 # Complete runtime products shared by every source-specific single-domain
@@ -284,6 +303,18 @@ SINGLE_DOMAIN_PHYSICS_PROFILES = (
 # may materialize these switches into a case-specific experiment descriptor,
 # but they must not reinterpret or partially apply them.
 _SINGLE_DOMAIN_RUNTIME_SWITCHES = MappingProxyType({
+    MYNN_NOAHMP_PROFILE_ID: MappingProxyType({
+        "moist": True, "moist_cq": False, "mp_physics": 6,
+        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
+        "wsm6_hail_opt": 0, "ra_physics": 0,
+        "ra_lw_physics": 0, "ra_sw_physics": 1, "radt": 1.0,
+        "wrf_rrtmg_compatibility": "none",
+        "sf_sfclay_physics": 5, "sf_surface_physics": 4,
+        "bl_pbl_physics": 5, "cu_physics": 0, "cudt_minutes": 0.0,
+        "num_soil_layers": 4, "terrain_opt": 1,
+        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
+        "diff_6th_slopeopt": 1,
+    }),
     NOAHMP_PROFILE_ID: MappingProxyType({
         "moist": True, "moist_cq": False, "mp_physics": 6,
         "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
@@ -311,6 +342,18 @@ _SINGLE_DOMAIN_RUNTIME_SWITCHES = MappingProxyType({
         "wrf_rrtmg_compatibility": "none",
         "sf_sfclay_physics": 91, "sf_surface_physics": 3,
         "bl_pbl_physics": 1, "cu_physics": 0, "cudt_minutes": 0.0,
+        "num_soil_layers": 9, "terrain_opt": 1,
+        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
+        "diff_6th_slopeopt": 1,
+    }),
+    MYNN_RUC_PROFILE_ID: MappingProxyType({
+        "moist": True, "moist_cq": False, "mp_physics": 6,
+        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
+        "wsm6_hail_opt": 0, "ra_physics": 0,
+        "ra_lw_physics": 0, "ra_sw_physics": 1, "radt": 1.0,
+        "wrf_rrtmg_compatibility": "none",
+        "sf_sfclay_physics": 5, "sf_surface_physics": 3,
+        "bl_pbl_physics": 5, "cu_physics": 0, "cudt_minutes": 0.0,
         "num_soil_layers": 9, "terrain_opt": 1,
         "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
         "diff_6th_slopeopt": 1,
@@ -345,6 +388,7 @@ _SINGLE_DOMAIN_RUNTIME_SWITCHES = MappingProxyType({
         "wsm6_hail_opt": 0, "ra_physics": 0,
         "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
         "wrf_rrtmg_compatibility": WRF_RRTMG_TO_RTE_RRTMGP,
+        "ra_rrtmg_variant": RRTMG_VARIANT_RTE_RRTMGP,
         "sf_sfclay_physics": 91, "sf_surface_physics": 2,
         "bl_pbl_physics": 1, "cu_physics": 1, "cudt_minutes": 5.0,
         "num_soil_layers": 4, "terrain_opt": 1,
@@ -357,6 +401,20 @@ _SINGLE_DOMAIN_RUNTIME_SWITCHES = MappingProxyType({
         "wsm6_hail_opt": 0, "ra_physics": 0,
         "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
         "wrf_rrtmg_compatibility": WRF_RRTMG_TO_RTE_RRTMGP,
+        "ra_rrtmg_variant": RRTMG_VARIANT_RTE_RRTMGP,
+        "sf_sfclay_physics": 91, "sf_surface_physics": 2,
+        "bl_pbl_physics": 1, "cu_physics": 1, "cudt_minutes": 5.0,
+        "num_soil_layers": 4, "terrain_opt": 1,
+        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.12,
+        "diff_6th_slopeopt": 1,
+    }),
+    NSSL2_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
+        "moist": True, "moist_cq": True, "mp_physics": 18,
+        "top_lid": False, "epssm": 0.5, "morr_rimed_ice": 1,
+        "wsm6_hail_opt": 0, "ra_physics": 0,
+        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
+        "wrf_rrtmg_compatibility": WRF_RRTMG_LEGACY,
+        "ra_rrtmg_variant": RRTMG_VARIANT_LEGACY,
         "sf_sfclay_physics": 91, "sf_surface_physics": 2,
         "bl_pbl_physics": 1, "cu_physics": 1, "cudt_minutes": 5.0,
         "num_soil_layers": 4, "terrain_opt": 1,
@@ -430,6 +488,60 @@ class PhysicsCapabilityError(ValueError):
     """A selector combination has no executable registry capability."""
 
 
+ACK_FLAG_SOURCE = "--ack"
+ACK_TOML_SOURCE = "[experiment].acknowledgements"
+
+
+def acknowledgement_delivery(
+        *,
+        flag: tuple[str, ...] = (),
+        toml: tuple[str, ...] = (),
+) -> tuple[tuple[str, ...], dict[str, list[str]]]:
+    """Merge acknowledgement delivery and retain its exact provenance."""
+
+    delivered: dict[str, set[str]] = {}
+    for source, values in (
+        (ACK_FLAG_SOURCE, flag),
+        (ACK_TOML_SOURCE, toml),
+    ):
+        for value in values:
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"{source} acknowledgement IDs must be non-empty strings")
+            delivered.setdefault(value, set()).add(source)
+    return (
+        tuple(sorted(delivered)),
+        {
+            value: sorted(sources)
+            for value, sources in sorted(delivered.items())
+        },
+    )
+
+
+def _acknowledgement_receipt(
+        acknowledged: set[str],
+        required: set[str],
+        provenance: Mapping[str, object] | None,
+) -> tuple[list[str], dict[str, list[str]]]:
+    used = sorted(acknowledged & required)
+    sources: dict[str, list[str]] = {}
+    for acknowledgement in used:
+        raw = None if provenance is None else provenance.get(acknowledgement)
+        if isinstance(raw, (list, tuple)) and all(
+                isinstance(value, str) for value in raw):
+            sources[acknowledgement] = sorted(set(raw))
+        else:
+            sources[acknowledgement] = ["api"]
+    return used, sources
+
+
+def _ack_instruction(acknowledgement: str) -> str:
+    return (
+        f"--ack {acknowledgement} or "
+        f'acknowledgements = ["{acknowledgement}"]'
+    )
+
+
 def _selection_value(settings: Mapping[str, object] | object, name: str):
     if isinstance(settings, Mapping):
         return settings.get(name)
@@ -446,17 +558,10 @@ def _registry_pointer(component_id: str, option_id: str | None = None) -> str:
     return pointer
 
 
-def validate_physics_capabilities(
+def _resolve_physics_component_options(
         settings: Mapping[str, object] | object,
-) -> dict[str, str]:
-    """Resolve selectors to implemented registry components, fail closed.
-
-    This check deliberately knows no source id and no profile id.  It answers
-    only whether the selected component implementations and their couplings
-    exist.  The returned mapping is component id -> option id and is suitable
-    for comparing a named template after capability has been established.
-    """
-
+) -> tuple[dict[str, str], dict[str, Mapping[str, object]]]:
+    """Resolve implemented component options from selectors only."""
     from gpuwm.physics_registry import physics_registry
 
     registry = physics_registry()
@@ -498,6 +603,22 @@ def validate_physics_capabilities(
                 f"{blocker or 'component is declared unimplemented'}")
         resolved[component_id] = option_id
         options_by_component[component_id] = option
+    return resolved, options_by_component
+
+
+def validate_physics_capabilities(
+        settings: Mapping[str, object] | object,
+) -> dict[str, str]:
+    """Resolve selectors to implemented registry components, fail closed.
+
+    This check deliberately knows no source id and no profile id.  It answers
+    only whether the selected component implementations and their couplings
+    exist.  The returned mapping is component id -> option id and is suitable
+    for comparing a named template after capability has been established.
+    """
+
+    resolved, options_by_component = _resolve_physics_component_options(
+        settings)
 
     for component_id, option in options_by_component.items():
         constraints = option.get("constraints", {})
@@ -551,11 +672,158 @@ def validate_physics_capabilities(
     return resolved
 
 
+class PhysicsVerticalPreflightError(ValueError):
+    """Resolved physics cannot execute on the requested vertical grid."""
+
+
+def validate_resolved_physics_vertical_levels(
+        settings: Mapping[str, object] | object, *,
+        p_top: float | None = None,
+) -> dict[str, object]:
+    """Aggregate component-owned first-call vertical bounds.
+
+    ``p_top=None`` performs the RunConfig-only checks.  Experiment
+    preparation calls again with its authoritative model-top pressure so the
+    radiation adapters can include their WRF above-model cap layers.
+    """
+
+    resolved, _ = _resolve_physics_component_options(settings)
+    raw_nz = _selection_value(settings, "nz")
+    if isinstance(raw_nz, bool):
+        raise PhysicsVerticalPreflightError("nz must be an integer")
+    try:
+        nz = int(raw_nz)
+    except (TypeError, ValueError):
+        raise PhysicsVerticalPreflightError(
+            f"nz must be an integer, got {raw_nz!r}") from None
+
+    checks: list[dict[str, object]] = []
+    violations: list[str] = []
+
+    def bounded(
+            label: str,
+            bounds: tuple[int | None, int | None],
+    ) -> None:
+        minimum, maximum = bounds
+        checks.append({
+            "component": label,
+            "model_levels": nz,
+            "minimum": minimum,
+            "maximum": maximum,
+        })
+        below = minimum is not None and nz < minimum
+        above = maximum is not None and nz > maximum
+        if below or above:
+            if minimum is None:
+                wording = f"nz <= {maximum}"
+            elif maximum is None:
+                wording = f"nz >= {minimum}"
+            else:
+                wording = f"{minimum} <= nz <= {maximum}"
+            violations.append(f"{label} requires {wording}, got nz={nz}")
+
+    from gpuwm.physics_vertical_contract import (
+        KESSLER_VERTICAL_LEVEL_BOUNDS,
+        KF_VERTICAL_LEVEL_BOUNDS,
+        MAX_LEGACY_LONGWAVE_LAYERS,
+        MAX_LEGACY_SHORTWAVE_LAYERS,
+        MAX_RRTMGP_LAYERS,
+        MORRISON_VERTICAL_LEVEL_BOUNDS,
+        MYNN_VERTICAL_LEVEL_BOUNDS,
+        NSSL2_VERTICAL_LEVEL_BOUNDS,
+        THOMPSON_VERTICAL_LEVEL_BOUNDS,
+        WSM6_VERTICAL_LEVEL_BOUNDS,
+        legacy_radiation_layer_counts,
+        rrtmgp_above_model_layer_counts,
+    )
+
+    if resolved.get("pbl") == "mynn":
+        bounded("MYNN PBL", MYNN_VERTICAL_LEVEL_BOUNDS)
+    if resolved.get("cumulus") == "kain-fritsch":
+        bounded("Kain-Fritsch cumulus", KF_VERTICAL_LEVEL_BOUNDS)
+
+    microphysics = resolved.get("microphysics")
+    if microphysics == "kessler-mp1":
+        bounded("Kessler microphysics", KESSLER_VERTICAL_LEVEL_BOUNDS)
+    elif microphysics == "wsm6-mp6":
+        bounded("WSM6 microphysics", WSM6_VERTICAL_LEVEL_BOUNDS)
+    elif microphysics == "thompson-mp8":
+        bounded("Thompson microphysics", THOMPSON_VERTICAL_LEVEL_BOUNDS)
+    elif microphysics == "morrison-mp10":
+        bounded("Morrison microphysics", MORRISON_VERTICAL_LEVEL_BOUNDS)
+    elif microphysics == "nssl2-mp18":
+        bounded("NSSL-2 microphysics", NSSL2_VERTICAL_LEVEL_BOUNDS)
+
+    if resolved.get("radiation") in {
+            "rte-rrtmgp", "rte-rrtmgp-legacy-aggregate"}:
+        top_pressure = 0.0 if p_top is None else float(p_top)
+        if rrtmg_variant(settings) == RRTMG_VARIANT_LEGACY:
+            lw_layers, sw_layers = legacy_radiation_layer_counts(
+                nz, top_pressure)
+            checks.extend((
+                {
+                    "component": "legacy RRTMG longwave",
+                    "model_levels": nz,
+                    "above_model_layers": lw_layers - nz,
+                    "total_layers": lw_layers,
+                    "maximum": MAX_LEGACY_LONGWAVE_LAYERS,
+                },
+                {
+                    "component": "legacy RRTMG shortwave",
+                    "model_levels": nz,
+                    "above_model_layers": sw_layers - nz,
+                    "total_layers": sw_layers,
+                    "maximum": MAX_LEGACY_SHORTWAVE_LAYERS,
+                },
+            ))
+            if lw_layers > MAX_LEGACY_LONGWAVE_LAYERS:
+                violations.append(
+                    "legacy RRTMG longwave requires model plus cap layers "
+                    f"<= {MAX_LEGACY_LONGWAVE_LAYERS}, got {nz}+"
+                    f"{lw_layers - nz}={lw_layers}")
+            if sw_layers > MAX_LEGACY_SHORTWAVE_LAYERS:
+                violations.append(
+                    "legacy RRTMG shortwave requires model plus wrapper "
+                    f"layers <= {MAX_LEGACY_SHORTWAVE_LAYERS}, got {nz}+"
+                    f"{sw_layers - nz}={sw_layers}")
+        else:
+            lw_upper, sw_upper = rrtmgp_above_model_layer_counts(
+                top_pressure)
+            for kind, upper in (("longwave", lw_upper),
+                                ("shortwave", sw_upper)):
+                total = nz + upper
+                checks.append({
+                    "component": f"RTE+RRTMGP {kind}",
+                    "model_levels": nz,
+                    "above_model_layers": upper,
+                    "total_layers": total,
+                    "maximum": MAX_RRTMGP_LAYERS,
+                })
+                if total > MAX_RRTMGP_LAYERS:
+                    violations.append(
+                        f"RTE+RRTMGP {kind} requires model plus cap layers "
+                        f"<= {MAX_RRTMGP_LAYERS}, got "
+                        f"{nz}+{upper}={total}")
+
+    if violations:
+        raise PhysicsVerticalPreflightError(
+            "resolved physics vertical preflight failed:\n  - "
+            + "\n  - ".join(violations))
+    return {
+        "schema": "gpuwm-resolved-physics-vertical-preflight-v1",
+        "model_levels": nz,
+        "p_top_pa": p_top,
+        "resolved_components": dict(sorted(resolved.items())),
+        "checks": checks,
+    }
+
+
 def validate_single_domain_physics_profile(
         profile: str,
         *,
         config: Mapping[str, object] | object | None = None,
         expert_acknowledgements: tuple[str, ...] = (),
+        acknowledgement_provenance: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Validate one named template through registry/runtime capabilities.
 
@@ -609,22 +877,27 @@ def validate_single_domain_physics_profile(
     acknowledged = set(expert_acknowledgements)
     missing = sorted(set(required_acknowledgements) - acknowledged)
     if missing:
-        citations = {
-            acknowledgement: [
-                "gpuwm/physics_registry_v2.json#/runner_routes/"
-                + route_id
-                for route_id in required_acknowledgements[acknowledgement]
-            ]
-            for acknowledgement in missing
+        selectors = {
+            key: _selection_value(selected_settings, key)
+            for component in registry["components"].values()
+            for key in component.get("selector_keys", ())
         }
+        tuple_text = ", ".join(
+            f"{key}={selectors[key]!r}" for key in sorted(selectors))
+        acknowledgement = missing[0]
         raise PhysicsCapabilityError(
-            f"expert physics acknowledgement required: {citations}")
+            f"d01 resolved physics tuple ({tuple_text}) selects expert "
+            f"profile {profile!r}; add "
+            f"{_ack_instruction(acknowledgement)} to proceed")
 
     selectors = {
         key: _selection_value(selected_settings, key)
         for component in registry["components"].values()
         for key in component.get("selector_keys", ())
     }
+    used, provenance = _acknowledgement_receipt(
+        acknowledged, set(required_acknowledgements),
+        acknowledgement_provenance)
     return {
         "schema": "gpuwm-front-door-physics-selection-v1",
         "profile": profile,
@@ -632,8 +905,8 @@ def validate_single_domain_physics_profile(
         "components": resolved_components,
         "selectors": selectors,
         "resolved": expected,
-        "expert_acknowledgements": sorted(
-            acknowledged & set(required_acknowledgements)),
+        "acknowledgements": used,
+        "acknowledgement_provenance": provenance,
         "maturity": template.get("maturity"),
     }
 
@@ -671,8 +944,12 @@ def offered_land_surfaces(source: str) -> frozenset[str] | None:
     route = registry["runner_routes"].get(route_id)
     if not isinstance(route, Mapping):
         return None
-    declared = route.get("source_template_ids", {}).get(source)
-    if not isinstance(declared, list):
+    declared = []
+    for route_key in ("source_template_ids", "expert_template_ids"):
+        values = route.get(route_key, {}).get(source)
+        if isinstance(values, list):
+            declared.extend(values)
+    if not declared:
         return None
     offered = set()
     for template_id in declared:
@@ -762,33 +1039,23 @@ def multi_domain_physics_selection(
         *,
         profile: str | None = None,
         expert_acknowledgements: tuple[str, ...] = (),
+        acknowledgement_provenance: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    """Record a domain TREE's physics.  It applies no whitelist.
+    """Record and govern a domain tree's resolved physics tuple.
 
     The prepared single-domain forecast runner accepts a fixed list of
     named profiles and compares an experiment's switches to one of them
     for exact equality.  The domain-tree runner never had that list and
     does not grow one here, in either of its two possible spellings.
 
-    Its authority is the configuration loader: every domain's selectors
-    have already passed :func:`require_ready_wrf_physics` and the WRF
-    selector schema by the time an experiment exists.  This function
-    therefore RECORDS rather than gates -- one selector set per domain,
-    because a child selects its own cumulus and its own radiation
-    cadence, so the root's answer is not the tree's answer.
-
-    It deliberately does not gate on registry component resolution
-    either, which would be the subtle version of the same mistake.  The
-    committed two-domain descriptor
-    (``configs/gfs_wrf_hierarchy_proof.toml``) selects the legacy
-    aggregate radiation spelling with radiation off -- ``ra_lw_physics``
-    and ``ra_sw_physics`` at -1 with ``ra_physics`` 0 -- which the
-    registry has no option for, so requiring resolution here would
-    refuse the project's own hierarchy configuration.  Where the
-    registry CAN name a selection it is named, because that naming is
-    worth having in provenance; where it cannot, the receipt says so and
-    carries the blocker text rather than a guess.  Naming is provenance,
-    not permission.
+    Every domain has already passed the executable selector checks.  This
+    second gate asks a different, registry-owned governance question about
+    the complete resolved component tuple.  The tuple is compared with the
+    union of registry-declared tree templates and component overrides across
+    every source, so source identity can neither admit nor refuse it.
+    Registry-normal tuples are unchanged, expert-template tuples retain their
+    published acknowledgement, and a tuple outside the declared union needs
+    the authority-level acknowledgement named in the refusal.
 
     ``profile`` is honoured when the caller named one explicitly, and
     then it does gate -- a gate asked for is not a gate to drop.  It
@@ -810,6 +1077,7 @@ def multi_domain_physics_selection(
     if not grid_ids:
         raise ValueError("a domain tree has no domains to record")
     domains: dict[str, object] = {}
+    acknowledged = set(expert_acknowledgements)
     for grid_id in grid_ids:
         settings = domain_settings[grid_id]
         try:
@@ -818,9 +1086,32 @@ def multi_domain_physics_selection(
         except PhysicsCapabilityError as error:
             components = None
             blocker = str(error)
+        governance = {
+            "state": "unresolved",
+            "required_acknowledgement": None,
+            "acknowledged": False,
+        }
+        if components is not None:
+            state, required = _tree_tuple_registry_governance(
+                registry, components)
+            governance = {
+                "state": state,
+                "required_acknowledgement": required,
+                "acknowledged": (
+                    required is None or required in acknowledged),
+            }
+            if required is not None and required not in acknowledged:
+                tuple_text = ", ".join(
+                    f"{key}={_selection_value(settings, key)!r}"
+                    for key in sorted(selector_keys))
+                raise PhysicsCapabilityError(
+                    f"d{grid_id:02d} resolved physics tuple "
+                    f"({tuple_text}) has registry reachability {state!r}; "
+                    f"add {_ack_instruction(required)} to proceed")
         domains[str(grid_id)] = {
             "components": components,
             "registry_blocker": blocker,
+            "governance": governance,
             "selectors": {
                 key: _selection_value(settings, key)
                 for key in selector_keys
@@ -832,14 +1123,140 @@ def multi_domain_physics_selection(
         # the same reason and in the same words.
         validate_single_domain_physics_profile(
             profile, config=domain_settings[grid_ids[0]],
-            expert_acknowledgements=expert_acknowledgements)
+            expert_acknowledgements=expert_acknowledgements,
+            acknowledgement_provenance=acknowledgement_provenance)
+    used, provenance = _acknowledgement_receipt(
+        acknowledged, acknowledged, acknowledgement_provenance)
     return {
         "schema": MULTI_DOMAIN_SELECTION_SCHEMA,
         "profile": profile,
         "registry_sha256": registry_sha256(registry),
         "domains": domains,
-        "expert_acknowledgements": sorted(set(expert_acknowledgements)),
+        "acknowledgements": used,
+        "acknowledgement_provenance": provenance,
     }
+
+
+def _tree_tuple_registry_governance(
+        registry: Mapping[str, object],
+        selected: Mapping[str, str],
+) -> tuple[str, str | None]:
+    """Resolve a complete tuple without consulting source identity."""
+
+    components = registry.get("components", {})
+    templates = registry.get("templates", {})
+    routes = registry.get("runner_routes", {})
+    if (
+        not isinstance(components, Mapping)
+        or not isinstance(templates, Mapping)
+        or not isinstance(routes, Mapping)
+    ):
+        raise PhysicsCapabilityError(
+            "physics registry lacks tuple reachability declarations")
+
+    def key(value: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
+        return tuple(sorted(value.items()))
+
+    normal: set[tuple[tuple[str, str], ...]] = set()
+    expert: dict[tuple[tuple[str, str], ...], set[str]] = {}
+
+    for route in routes.values():
+        if (
+            not isinstance(route, Mapping)
+            or route.get("implemented") is not True
+            or route.get("mode") != "experiment-per-domain"
+        ):
+            continue
+        override_components = [
+            value for value in route.get(
+                "allowed_component_overrides", ())
+            if isinstance(value, str)
+        ]
+        option_sets: dict[str, tuple[str, ...]] = {}
+        for component_id in override_components:
+            component = components.get(component_id)
+            options = (
+                component.get("options", {})
+                if isinstance(component, Mapping) else {}
+            )
+            option_sets[component_id] = tuple(sorted(
+                option_id
+                for option_id, option in options.items()
+                if isinstance(option_id, str)
+                and isinstance(option, Mapping)
+                and option.get("implemented") is True
+            ))
+
+        def variants(template_id: str):
+            template = templates.get(template_id)
+            base = (
+                template.get("components", {})
+                if isinstance(template, Mapping) else {}
+            )
+            if not isinstance(base, Mapping):
+                return
+            candidates = [dict(base)]
+            for component_id, option_ids in option_sets.items():
+                expanded = []
+                for candidate in candidates:
+                    for option_id in option_ids:
+                        expanded.append({
+                            **candidate, component_id: option_id})
+                candidates = expanded
+            yield from candidates
+
+        source_template_ids = route.get("source_template_ids", {})
+        if isinstance(source_template_ids, Mapping):
+            normal_ids = {
+                template_id
+                for declared in source_template_ids.values()
+                if isinstance(declared, list)
+                for template_id in declared
+                if isinstance(template_id, str)
+            }
+            for template_id in normal_ids:
+                normal.update(key(candidate)
+                              for candidate in variants(template_id))
+
+        expert_template_ids = route.get("expert_template_ids", {})
+        acknowledgement = route.get("expert_acknowledgement_id")
+        if (
+            isinstance(expert_template_ids, Mapping)
+            and isinstance(acknowledgement, str)
+        ):
+            expert_ids = {
+                template_id
+                for declared in expert_template_ids.values()
+                if isinstance(declared, list)
+                for template_id in declared
+                if isinstance(template_id, str)
+            }
+            for template_id in expert_ids:
+                for candidate in variants(template_id):
+                    expert.setdefault(key(candidate), set()).add(
+                        acknowledgement)
+
+    selected_key = key(selected)
+    if selected_key in normal:
+        return "registry-reachable", None
+    if selected_key in expert:
+        acknowledgements = sorted(expert[selected_key])
+        if len(acknowledgements) != 1:
+            raise PhysicsCapabilityError(
+                "registry expert tuple publishes ambiguous acknowledgements "
+                f"{acknowledgements}")
+        return "registry-expert-template", acknowledgements[0]
+    authority = registry.get("authority", {})
+    acknowledgement = (
+        authority.get(
+            "unnamed_tree_outside_reachability_acknowledgement_id")
+        if isinstance(authority, Mapping) else None
+    )
+    if not isinstance(acknowledgement, str) or not acknowledgement:
+        raise PhysicsCapabilityError(
+            "registry does not publish the unnamed-tree outside-"
+            "reachability acknowledgement setting")
+    return "outside-registry-declared-reachability", acknowledgement
 
 
 def thompson_runtime_requirements() -> dict[str, object]:
@@ -925,28 +1342,74 @@ def noahmp_projected_call_seconds(columns: int) -> float:
 
 @dataclass(frozen=True)
 class PhysicsPortBlocker:
-    """One coupled physics component requested before it is executable."""
+    """One coupled physics component requested before it is executable.
+
+    ``missing`` has been an ordered tuple since it was written: element
+    zero states the RULE -- the admitted configuration, which is also
+    the thing to change -- and the elements after it explain the
+    mechanism that makes the rule necessary.  ``action_count`` names
+    where that boundary falls instead of leaving it to a reader (or a
+    formatter) to infer, because one blocker breaks the pattern: the
+    Noah-MP column budget's second element is the remedy, an
+    environment variable to set, and burying a remedy behind a flag is
+    the one thing this layering must never do.
+    """
 
     component: str
     selectors: tuple[tuple[str, int], ...]
     missing: tuple[str, ...]
+    #: How many leading ``missing`` elements are the action half.
+    action_count: int = 1
+
+    def _selected(self) -> str:
+        return ", ".join(f"{key}={value}" for key, value in self.selectors)
 
     def format(self) -> str:
-        selected = ", ".join(f"{key}={value}" for key, value in self.selectors)
-        return f"{self.component} ({selected}): " + "; ".join(self.missing)
+        """The whole blocker on one line -- rule and mechanism together.
+
+        Unchanged, and still the text the namelist importer's port
+        receipt embeds: this is the full statement, and every consumer
+        that wants all of it keeps getting all of it.
+        """
+
+        return f"{self.component} ({self._selected()}): " + "; ".join(
+            self.missing)
+
+    def action(self) -> str:
+        """The rule and any remedy: what a reader has to change."""
+
+        return f"{self.component} ({self._selected()}): " + "; ".join(
+            self.missing[:self.action_count])
+
+    def why(self) -> str:
+        """The mechanism behind the rule; ``""`` when none was written."""
+
+        return "; ".join(self.missing[self.action_count:])
 
 
 class UnsupportedPhysicsSuiteError(ValueError):
-    """A requested WRF suite contains one or more unfinished components."""
+    """A requested WRF suite contains one or more unfinished components.
+
+    The message is layered (:mod:`gpuwm.explain`): every blocker's rule
+    prints by default, and the mechanism paragraphs -- which coupling
+    writes over which diagnostic, which oracle fixtures exist -- follow
+    ``--explain``.  Both halves live in this one string, so anything
+    reading ``str(error)`` still sees the complete receipt; only the CLI
+    print boundary chooses.
+    """
 
     def __init__(self, blockers: tuple[PhysicsPortBlocker, ...]):
         if not blockers:
             raise ValueError("UnsupportedPhysicsSuiteError needs blockers")
         self.blockers = blockers
-        details = "\n".join(f"  - {item.format()}" for item in blockers)
-        super().__init__(
+        actions = "\n".join(f"  - {item.action()}" for item in blockers)
+        reasons = "\n".join(f"  - {item.component}: {item.why()}"
+                            for item in blockers if item.why())
+        super().__init__(layered(
             "requested WRF physics suite is not executable in gpuwm yet; "
-            "no substitutions were applied:\n" + details)
+            "no substitutions were applied:\n" + actions,
+            ("why these pairings are refused:\n" + reasons) if reasons
+            else ""))
 
 
 def pending_wrf_physics_components(
@@ -1007,40 +1470,6 @@ def pending_wrf_physics_components(
                 "tree is nine-level and the CUDA leaves index a "
                 "__constant__ real ruc_soil_layer_depth[9]",
             )))
-    if sf_surface_physics == 3 and sf_sfclay_physics == 5:
-        # The same shape as the Noah-MP/MYNN refusal below, and for the same
-        # reason: MYNN's surface layer diagnoses T2/Q2/TH2 itself, and RUC
-        # brings its OWN 2-m diagnostic (SFCDIAGS_RUCLSM) which would
-        # overwrite MYNN's with a differently-derived one.  Nobody has
-        # measured that pair.
-        blockers.append(PhysicsPortBlocker(
-            component="MYNN surface layer with RUC",
-            selectors=(("sf_sfclay_physics", 5),
-                       ("sf_surface_physics", 3)),
-            missing=(
-                "RUC is admitted with the MM5 surface layer only "
-                "(sf_sfclay_physics 1 or 91)",
-                "RUC runs SFCDIAGS_RUCLSM after the LSM and MYNN diagnoses "
-                "T2/Q2/TH2 itself, so the pair has two 2-m diagnostics and "
-                "the second silently wins",
-            )))
-    if sf_surface_physics == 4 and sf_sfclay_physics == 5:
-        # The registry blocks this pair at plan time through
-        # requires_components; this is the runtime half of the same refusal,
-        # so the two authorities cannot disagree.  It is not a "MYNN is
-        # broken" statement: MYNN's surface layer diagnoses T2/Q2/TH2 itself
-        # and supplies UST/HFX/QFX, all of which Noah-MP also writes, so the
-        # pair is a coupling nobody has measured.
-        blockers.append(PhysicsPortBlocker(
-            component="MYNN surface layer with Noah-MP",
-            selectors=(("sf_sfclay_physics", 5),
-                       ("sf_surface_physics", 4)),
-            missing=(
-                "Noah-MP is admitted with the MM5 surface layer only "
-                "(sf_sfclay_physics 1 or 91)",
-                "MYNN diagnoses T2/Q2/TH2 in place of SFCDIAGS and supplies "
-                "UST/HFX/QFX, which Noah-MP's own write-back overwrites",
-            )))
     if sf_surface_physics == 4 and columns is not None:
         # The one blocker here that is about GRID WIDTH rather than a missing
         # branch.  Noah-MP is fully ported and bitwise, and since the slab
@@ -1068,7 +1497,12 @@ def pending_wrf_physics_components(
                     f"count you accept to run beyond the measured width",
                     "raising the budget makes nothing faster -- it records "
                     "that the projection above was read and accepted",
-                )))
+                ),
+                # The projection AND the environment variable that
+                # accepts it are both the action here: a reader told
+                # only that the width is unmeasured, without the switch
+                # that admits it, has been refused with no way forward.
+                action_count=2))
     if sf_surface_physics == 4 and num_soil_layers != 4:
         # Noah-MP itself is no longer refused: it has a dispatch row, a
         # driver, a cold start, restart identity and output.  What is still
@@ -1097,7 +1531,9 @@ def require_ready_wrf_physics(**selection: int) -> None:
 
 __all__ = [
     "EXPERIMENTAL_THOMPSON_ENV",
+    "MYNN_NOAHMP_PROFILE_ID",
     "MYNN_PROFILE_ID",
+    "MYNN_RUC_PROFILE_ID",
     "NOAHMP_PROFILE_ID",
     "NOAHMP_EXPERT_COLUMN_BUDGET_ENV",
     "NOAHMP_MEASURED_COLUMN_CEILING",
@@ -1115,6 +1551,7 @@ __all__ = [
     "RUC_PROFILE_ID",
     "PhysicsPortBlocker",
     "PhysicsCapabilityError",
+    "PhysicsVerticalPreflightError",
     "RRTMG_VARIANT_LEGACY",
     "RRTMG_VARIANT_RTE_RRTMGP",
     "THOMPSON_PROFILE_ID",
@@ -1136,5 +1573,6 @@ __all__ = [
     "single_domain_runtime_switches",
     "thompson_runtime_requirements",
     "validate_physics_capabilities",
+    "validate_resolved_physics_vertical_levels",
     "validate_single_domain_physics_profile",
 ]

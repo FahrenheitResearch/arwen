@@ -14,6 +14,7 @@ from gpuwm.physics_compat import (
     MYNN_PROFILE_ID,
     NOAHMP_PROFILE_ID,
     RUC_PROFILE_ID,
+    WSM6_PROFILE_ID,
 )
 from gpuwm.source_adapters import (
     AdapterStatus,
@@ -417,7 +418,15 @@ def test_cli_refuses_unimplemented_source_before_touching_files(capsys):
     assert main(["--source", "gdas"]) == EXIT_CONFIG
     error = capsys.readouterr().err
     assert "REFUSED source=gdas" in error
-    assert "stock-wrf evidence is a separate certification gate" in error
+    # The refusal and the adapter's own reason print by default; the
+    # certification-gate paragraph is the mechanism half.
+    assert "stock-wrf evidence is a separate certification gate" not in error
+    assert "--explain" in error
+
+    assert main(["--source", "gdas", "--explain"]) == EXIT_CONFIG
+    explained = capsys.readouterr().err
+    assert "REFUSED source=gdas" in explained
+    assert "stock-wrf evidence is a separate certification gate" in explained
 
 
 def test_a_refusal_with_nothing_to_add_does_not_echo_its_own_status(capsys):
@@ -440,8 +449,12 @@ def test_a_refusal_with_nothing_to_add_does_not_echo_its_own_status(capsys):
         status = get_source_adapter(source).status.value
         assert first == f"REFUSED source={source} status={status}"
         assert first.count(status) == 1, first
-        # The paragraph that DOES explain the refusal is untouched.
-        assert "stock-wrf evidence is a separate certification gate" in error
+        # The paragraph that DOES explain the refusal is untouched --
+        # one flag away, and word for word what it always said.
+        assert "--explain" in error
+        assert main(["--source", source, "--explain"]) == EXIT_CONFIG
+        explained = capsys.readouterr().err
+        assert "stock-wrf evidence is a separate certification gate"             in explained
 
     # An adapter that has something to say still says it, on the same
     # line and in the same shape.
@@ -1544,13 +1557,13 @@ def test_cli_gfs_accepts_every_newly_reachable_profile(
     ]
     if acknowledgement is not None:
         arguments[-1:-1] = [
-            "--expert-acknowledgement", acknowledgement]
+            "--ack", acknowledgement]
 
     assert main(arguments) == 0
     command = capsys.readouterr().out.replace("\\", "/")
     assert f"--physics-profile {profile}" in command
     if acknowledgement is not None:
-        assert f"--expert-acknowledgement {acknowledgement}" in command
+        assert f"--ack {acknowledgement}" in command
 
 
 def test_cli_gfs_noahmp_refuses_without_expert_acknowledgement(capsys):
@@ -1571,6 +1584,54 @@ def test_cli_gfs_noahmp_refuses_without_expert_acknowledgement(capsys):
     ])
     assert result == EXIT_USAGE
     assert "noahmp-host-column-throughput-v1" in capsys.readouterr().err
+
+
+@pytest.mark.gpu
+# ^ not for device work: `gpuwm domain` requires the CuPy runtime for its
+#   sizing estimator, so this CLI-level test needs the GPU estate the CI
+#   runner does not have.  It evades the import-cupy auto-marker because
+#   the requirement is inside the CLI it invokes.  The TOML-acknowledgement
+#   acceptance logic itself is covered CPU-only by the registry/plan tests.
+def test_cli_gfs_accepts_noahmp_acknowledgement_from_experiment_toml(
+        tmp_path, capsys):
+    from gpuwm.cli import main as gpuwm_main
+
+    experiment = tmp_path / "experiment.toml"
+    assert gpuwm_main([
+        "domain", "--point=39.7,-96.6", "--card", "24gb",
+        "--ladder", "12", "--source", "gfs",
+        "--physics-profile", WSM6_PROFILE_ID,
+        "--cycle", "2026-07-29T18", "--out", str(experiment),
+    ]) == 0
+    rendered = experiment.read_text(encoding="utf-8").replace(
+        "[experiment]\n",
+        '[experiment]\nacknowledgements = '
+        '["noahmp-host-column-throughput-v1"]\n',
+        1,
+    )
+    experiment.write_text(rendered, encoding="utf-8")
+    capsys.readouterr()
+
+    result = main([
+        "--source", "gfs",
+        "--gfs-series", "/source/gfs-series.tsv",
+        "--cycle", "2026-07-20_00:00:00",
+        "--bridge", "/bin/gfs_grib2_bridge",
+        "--wps-namelist", "/case/namelist.wps",
+        "--static-input", "/case/static.npz",
+        "--static-receipt", "/case/static-receipt.json",
+        "--experiment-config", str(experiment),
+        "--source-sha256s", "/source/input-manifest.json",
+        "--source-sha256s-sha256", "abc123",
+        "--output-root", "/output",
+        "--physics-profile", NOAHMP_PROFILE_ID,
+        "--dry-run",
+    ])
+
+    assert result == 0
+    command = capsys.readouterr().out.replace("\\", "/")
+    assert f"--physics-profile {NOAHMP_PROFILE_ID}" in command
+    assert "--ack" not in command
 
 
 def test_cli_gfs_d06_hierarchy_routes_source_neutral_controls(capsys):

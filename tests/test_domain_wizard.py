@@ -446,7 +446,7 @@ def test_the_wizard_budgets_with_the_platform_envelope_factor(
     import gpuwm.core.preflight as pf
 
     monkeypatch.setattr(pf.sys, "platform", "win32")
-    rc, out = _run_wizard(tmp_path / "win", card="24gb")
+    rc, out = _run_wizard(tmp_path / "win", "--explain", card="24gb")
     windows_out = capsys.readouterr().out
     assert rc == 0
     windows_exp = experiment_from_text(
@@ -455,7 +455,7 @@ def test_the_wizard_budgets_with_the_platform_envelope_factor(
     assert "envelope factor: windows (measured, 1 WDDM run)" in windows_out
 
     monkeypatch.setattr(pf.sys, "platform", "linux")
-    rc, out = _run_wizard(tmp_path / "lin", card="24gb")
+    rc, out = _run_wizard(tmp_path / "lin", "--explain", card="24gb")
     linux_out = capsys.readouterr().out
     assert rc == 0
     linux_exp = experiment_from_text(
@@ -497,7 +497,8 @@ def test_windows_12gib_is_an_experimental_tier_not_a_refusal(
     import gpuwm.core.preflight as pf
 
     monkeypatch.setattr(pf.sys, "platform", "win32")
-    rc, out = _run_wizard(tmp_path / ladder, card="12gb", ladder=ladder)
+    rc, out = _run_wizard(tmp_path / ladder, "--explain", card="12gb",
+                          ladder=ladder)
     assert rc == 0, ladder
     printed = capsys.readouterr().out
 
@@ -531,7 +532,7 @@ def test_windows_16gib_and_up_keep_the_conservative_accounting(
     import gpuwm.core.preflight as pf
 
     monkeypatch.setattr(pf.sys, "platform", "win32")
-    rc, _ = _run_wizard(tmp_path / "sixteen", card="16gb")
+    rc, _ = _run_wizard(tmp_path / "sixteen", "--explain", card="16gb")
     assert rc == 0
     printed = capsys.readouterr().out
     assert "x 1.75 observed peak envelope" in printed
@@ -580,7 +581,7 @@ def test_wizard_default_suite_is_the_registered_default_template(tmp_path):
     must not ride along on a Thompson default."""
     from gpuwm.physics_registry import DEFAULT_TEMPLATE_ID, physics_registry
 
-    rc, out = _run_wizard(tmp_path)
+    rc, out = _run_wizard(tmp_path, "--explain")
     assert rc == 0
     text = out.read_text(encoding="utf-8")
     exp = experiment_from_text(text, source=str(out))
@@ -627,11 +628,20 @@ def test_emitted_era5_config_round_trips(tmp_path, capsys):
                           ladder="12-3-1")
     assert rc == 0
     printed = capsys.readouterr().out
-    # Forcing is not on disk yet: the wizard defers the composed check
-    # and prints the exact follow-up command + the geog story.
-    assert "gpuwm check: deferred" in printed
+    # Forcing is not on disk yet.  By default the deferral is not a
+    # stanza of its own -- it is step 2 of the next-steps block, with
+    # the exact follow-up command and the note that it waits on step 1.
+    assert "gpuwm check: deferred" not in printed
     assert "gpuwm check" in printed and "--budget-gib" in printed
-    assert "WPS_GEOG" in printed
+    assert "after the fetch lands" in printed
+
+    # --explain restores the inventory and the geog story, verbatim.
+    rc, _ = _run_wizard(tmp_path, "--explain", "--geog-root", str(geog),
+                        ladder="12-3-1")
+    assert rc == 0
+    explained = capsys.readouterr().out
+    assert "gpuwm check: deferred" in explained
+    assert "WPS_GEOG" in explained
 
     raw = tomllib.loads(out.read_text(encoding="utf-8"))
     assert raw["fetch"]["source"] == "era5"
@@ -1009,7 +1019,7 @@ def test_emitted_radiation_uses_the_representation_the_guard_compares(
     """
     from gpuwm.config import radiation_scheme_ids
 
-    rc, out = _run_wizard(tmp_path, ladder="12", source="gfs",
+    rc, out = _run_wizard(tmp_path, "--explain", ladder="12", source="gfs",
                           cycle="2026-07-29T18")
     capsys.readouterr()
     assert rc == 0
@@ -1040,7 +1050,7 @@ def test_physics_profile_configs_pass_the_runner_guard_as_emitted(
     out = tmp_path / f"{profile[:12]}.toml"
     rc = cli_main(["domain", "--point=35.3,-97.5", "--card", "24gb",
                    "--ladder", "12", "--source", "gfs",
-                   "--physics-profile", profile,
+                   "--physics-profile", profile, "--explain",
                    "--cycle", "2026-07-29T18", "--hours", "6",
                    "--out", str(out)])
     printed = capsys.readouterr().out
@@ -1075,7 +1085,7 @@ def test_the_default_suite_says_out_loud_that_the_single_door_refuses_it(
                                      physics_summary,
                                      prepared_route_physics_notice)
 
-    rc, _ = _run_wizard(tmp_path, ladder="12", source="gfs",
+    rc, _ = _run_wizard(tmp_path, "--explain", ladder="12", source="gfs",
                         cycle="2026-07-29T18")
     printed = capsys.readouterr().out
     assert rc == 0
@@ -1097,3 +1107,126 @@ def test_the_default_suite_says_out_loud_that_the_single_door_refuses_it(
 
     # ERA5 does not go through that door, so it gets no such notice.
     assert prepared_route_physics_notice(None, "era5") == []
+
+
+# ---------------------------------------------------------------------------
+# Output layering: the wizard's default is one screen ending in the
+# next-steps block, and --explain restores every word of the long form.
+#
+# The field exhibit this pins: a first-run ERA5 wizard printed 20 lines
+# whose correct `gpuwm fetch` command sat at line 15, under a gray-zone
+# advisory and above a nine-name dataset inventory, and the user's
+# public verdict was "still can't get it working".  The commands were
+# right; they were not findable.
+# ---------------------------------------------------------------------------
+
+#: What a first run may print before the reader has to scroll.  Not a
+#: style preference: the exhibit's wall was 20 lines and the block that
+#: matters is the last four, so the cap is what keeps the whole thing on
+#: one screen alongside a shell prompt.
+WIZARD_DEFAULT_LINE_CAP = 14
+
+
+@pytest.mark.parametrize("explain", [False, True])
+def test_wizard_output_is_layered_and_the_default_fits_a_screen(
+        tmp_path, capsys, explain):
+    """Terse by default, complete under --explain -- both, every time."""
+
+    extra = ("--explain",) if explain else ()
+    rc, out = _run_wizard(tmp_path, *extra, ladder="12-3-1-0.5",
+                          card="24gb", source="era5")
+    printed = capsys.readouterr().out
+    assert rc == 0
+    lines = printed.splitlines()
+
+    if explain:
+        # Every word that moved is back, in its original wording.
+        assert "sizing (itemized preflight estimator, in-process):" in printed
+        assert "observed peak envelope" in printed
+        assert "envelope factor:" in printed
+        assert "gpuwm check: deferred" in printed
+        assert "static geography:" in printed
+        assert "treat sub-kilometre PBL structure as indicative" in printed
+    else:
+        assert len(lines) <= WIZARD_DEFAULT_LINE_CAP, printed
+        # The advisory still fires -- it is shortened, not dropped.
+        assert "GRAY ZONE" in printed
+        assert "treat sub-kilometre PBL structure as indicative" \
+            not in printed
+        # One sizing line, carrying the numbers that decide whether it runs.
+        assert "sizing (itemized" not in printed
+        assert "peak envelope" in printed and "headroom" in printed
+        # And the way back to everything above.
+        assert "--explain" in printed
+
+
+def test_wizard_ends_with_three_numbered_commands_and_nothing_after(
+        tmp_path, capsys):
+    """The last thing on screen is the only thing asking for an action.
+
+    Nothing prints after step 3.  The exhibit's failure was a correct
+    next command with more output beneath it, which reads as "and then
+    this happened" rather than "do this".
+    """
+
+    rc, out = _run_wizard(tmp_path, ladder="12-3", source="era5")
+    printed = capsys.readouterr().out
+    assert rc == 0
+    lines = [line for line in printed.splitlines() if line.strip()]
+
+    block = lines[lines.index("next:"):]
+    # Exactly three numbered steps, in order, and nothing numbered four.
+    numbered = [line for line in block if line.lstrip()[:2] in
+                ("1.", "2.", "3.", "4.")]
+    assert len(numbered) == 3
+    assert numbered[0].startswith("  1. gpuwm fetch ")
+    assert numbered[1].startswith("  2. gpuwm check ")
+    assert numbered[2].startswith("  3. gpuwm run ")
+    # Step 3 is the last line of output.  Anything after it competes
+    # with the one thing the reader is being asked to do.
+    assert lines[-1] == numbered[2]
+    # Step 2 carries the deferral instead of a stanza of its own.
+    assert "after the fetch lands" in numbered[1]
+
+
+def test_the_era5_next_block_names_the_missing_cds_key_only_when_missing(
+        tmp_path, capsys, monkeypatch):
+    """A first-run pointer that is a pointer, and only when it is true.
+
+    Presence of ``~/.cdsapirc`` is the one prerequisite of the ERA5
+    route that lives entirely outside this project, and without it the
+    failure arrives several commands later as a cdsapi exception.  A
+    line that printed whether or not the key was there would be noise
+    on every subsequent run, so it is gated on the file.
+    """
+
+    from gpuwm import fetch
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(fetch.Path, "home", staticmethod(lambda: home))
+
+    rc, _ = _run_wizard(tmp_path / "no-key", source="era5")
+    absent = capsys.readouterr().out
+    assert rc == 0
+    assert "Copernicus CDS key" in absent
+    assert str(home / fetch.CDSAPIRC_NAME) in absent
+
+    (home / fetch.CDSAPIRC_NAME).write_text("url: x\nkey: y\n")
+    rc, _ = _run_wizard(tmp_path / "with-key", source="era5")
+    present = capsys.readouterr().out
+    assert rc == 0
+    assert "Copernicus CDS key" not in present
+    # The fetch step itself is unchanged either way.
+    assert "1. gpuwm fetch --source era5" in present
+
+
+def test_a_gfs_wizard_run_gets_no_era5_credential_line(tmp_path, capsys):
+    """The pointer belongs to the route that needs it, and to no other."""
+
+    rc, _ = _run_wizard(tmp_path, ladder="12", source="gfs",
+                        cycle="2026-07-29T18")
+    printed = capsys.readouterr().out
+    assert rc == 0
+    assert "Copernicus CDS key" not in printed
+    assert "1. gpuwm fetch --source gfs" in printed

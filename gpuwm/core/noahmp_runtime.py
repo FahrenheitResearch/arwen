@@ -100,6 +100,10 @@ from gpuwm.core.noahmp_thermal_gpu import (evaluate_phasechange_calls,
 from gpuwm.core.noahmp_sflx_pre_gpu import evaluate_sflx_pre_calls
 from gpuwm.core.noahmp_vegeflux_gpu import evaluate_vege_flux_calls
 from gpuwm.core.noahmp_water_gpu import evaluate_water_calls
+from gpuwm.core.surface_forcing import (
+    SurfacePrecipitationForcing,
+    noahmp_six_precipitation_rates,
+)
 
 #: How many land columns are staged before their paused leaves are batched.
 #: The bound is memory, not arithmetic: every staged column holds one live
@@ -329,37 +333,14 @@ NOAHMP_DIAGNOSTICS_2D = (
 
 #: Restrictions the option-identity schema has no field for.  Publishing
 #: these is not documentation: it is the difference between a user who knows
-#: the precipitation partition is coarser than WRF's and a user who finds out
-#: from a snow field.  Each entry is (name, what gpuwm does, why it differs).
+#: the remaining runtime restrictions a user must see before a forecast.
+#: Each entry is (name, what gpuwm does, why it differs).
 NOAHMP_RUNTIME_RESTRICTIONS: tuple[tuple[str, str, str], ...] = (
     (
-        "precipitation_partition",
-        "PRCPCONV=0, PRCPSHCV=0, PRCPGRPL=0, PRCPHAIL=0, "
-        "PRCPNONC=RAINBL/DT, PRCPSNOW=SR*RAINBL/DT",
-        "module_sf_noahmpdrv.F:776-796 has two partitions and picks on "
-        "PRESENT(MP_RAINC..MP_HAIL).  WRF's own surface driver passes all "
-        "six (module_surface_driver.F:3180-3181), so WRF takes the first "
-        "branch and gpuwm takes the second.  gpuwm's LSM seam carries only "
-        "RAINBL and SR, exactly as its Noah path does.  Under opt_snf=1 "
-        "FPICE comes from SFCTMP rather than from the frozen fraction, so "
-        "the visible consequence is in ATM's convective/large-scale split "
-        "(QPRECC/QPRECL) feeding canopy interception, not in the rain/snow "
-        "phase.",
-    ),
-    (
-        "cosz_evaluation_time",
-        "COSZ is evaluated at the surface-call time from the domain's own "
-        "solar geometry, with no offset",
-        "WRF hands noahmplsm the COSZEN array the radiation driver last "
-        "wrote (module_surface_driver.F:3127), which carries radconst's "
-        "half-radiation-interval offset and is stale between radiation "
-        "calls.  gpuwm has no COSZEN carrier on the surface seam, so the "
-        "value is recomputed here.  The divergence is bounded by "
-        "radt/2 + (steps since the last radiation call) * dt.",
-    ),
-    (
         "glacier_columns",
-        "a column whose VEGTYP equals ISICE_TABLE raises",
+        "a post-static pre-forecast scan refuses any active land column "
+        "whose VEGTYP equals ISICE_TABLE; the runtime check remains a "
+        "backstop",
         "module_sf_noahmpdrv.F:1043-1150 routes it to NOAHMP_GLACIER "
         "(module_sf_noahmp_glacier.F, 3,080 lines), which is not ported.  "
         "Falling through to NOAHMP_SFLX would run a vegetated land model on "
@@ -440,6 +421,35 @@ NOAHMP_RUNTIME_RESTRICTIONS: tuple[tuple[str, str, str], ...] = (
 
 class NoahmpGlacierColumnError(NotImplementedError):
     """A column reached the glacier entry point, which is not ported."""
+
+
+def guard_noahmp_glacier_columns(fields, params: "NoahmpRuntimeParameters"):
+    """Refuse Noah-MP glacier columns before forecast state can advance.
+
+    WRF v4.6.1 ``module_sf_noahmpdrv.F:1043`` routes these columns to
+    ``NOAHMP_GLACIER``.  That solver is out of scope; running ``NOAHMP_SFLX``
+    would be a different surface.  Sea-ice/open-water columns are excluded
+    with the same masks as the runtime driver.
+    """
+    import cupy as cp
+
+    xice = cp.asarray(fields["xice"])
+    xland = cp.asarray(fields["xland"])
+    vegtyp = cp.asarray(fields["ivgtyp"])
+    active_land = ((xice < np.float32(XICE_THRESHOLD))
+                   & (xland < np.float32(1.5)))
+    offending = active_land & (vegtyp == int(params.land_use.isice))
+    if not bool(cp.any(offending)):
+        return
+    flat = int(cp.argmax(offending.reshape(-1)).item())
+    j, i = (int(value) for value in np.unravel_index(
+        flat, tuple(int(value) for value in offending.shape)))
+    category = int(vegtyp[j, i].item())
+    raise NoahmpGlacierColumnError(
+        "post-static Noah-MP glacier guard: first offending active land "
+        f"cell is (j={j}, i={i}), VEGTYP={category}=ISICE_TABLE. "
+        "NOAHMP_GLACIER is not ported; porting it is the follow-up that "
+        "removes this guard.")
 
 
 class NoahmpRuntimeParameters:
@@ -750,6 +760,8 @@ def noahmp_lsm_step(
     *,
     params: NoahmpRuntimeParameters,
     geometry: NoahmpSolarGeometry,
+    precipitation: SurfacePrecipitationForcing,
+    coszen,
     dt: float,
     dx: float,
     dzs,
@@ -800,10 +812,13 @@ def noahmp_lsm_step(
     # digest gate in tests/test_noahmp_runtime.py is what says the two paths
     # are the same function.
     if _slab_path_selected():
-        return _lsm_step_slab(
+        census = _lsm_step_slab(
             fields, atmosphere, params=params, geometry=geometry,
+            precipitation=precipitation, coszen=coszen,
             dt=dt, dx=dx, dzs=dzs, itimestep=itimestep,
             elapsed_seconds=elapsed_seconds)
+        _noahmp_post_lsm_diagnostics(fields, params=params)
+        return census
 
     # ---- host slab -------------------------------------------------------
     names_2d = (
@@ -840,7 +855,8 @@ def noahmp_lsm_step(
     if nsoil != NSOIL:
         raise ValueError(f"Noah-MP is four-layer only, got nsoil={nsoil}")
 
-    cosz = geometry.cosz(elapsed_seconds)
+    cosz = np.ascontiguousarray(
+        cp.asnumpy(cp.asarray(coszen, dtype=cp.float32)))
     if cosz.shape != (ny, nx):
         raise ValueError(
             "Noah-MP solar geometry must match the domain grid, got "
@@ -896,10 +912,15 @@ def noahmp_lsm_step(
     q_ml_2d = qv / (np.float32(1.0) + qv)
     z_ml_2d = np.float32(0.5) * dz1
     p_ml_2d = (p_int1 + p_int0) * np.float32(0.5)
-    prcp_2d = host["rainbl"] / dt32f
-    # :787-796, the branch WRF takes when the caller omits the six optional
-    # MP_* rates.  See NOAHMP_RUNTIME_RESTRICTIONS.
-    prcpsnow_2d = host["sr"] * prcp_2d
+    host_precipitation = SurfacePrecipitationForcing(**{
+        name: np.ascontiguousarray(cp.asnumpy(cp.asarray(
+            getattr(precipitation, name), dtype=cp.float32)))
+        for name in SurfacePrecipitationForcing.__dataclass_fields__
+    })
+    # :776-786, the branch WRF-ARW takes because surface_driver passes all
+    # six MP_* accumulations.
+    precip_rates = noahmp_six_precipitation_rates(
+        host["rainbl"], host["sr"], host_precipitation, dt32f, arrays=np)
     fvgmax_2d = host["shdmax"] / np.float32(100.0)
     # :1030-1031.  CO2_TABLE / O2_TABLE are the MPTABLE global partial-
     # pressure fractions; these products are the only place the driver
@@ -1001,12 +1022,12 @@ def noahmp_lsm_step(
             "qc": undefined32,
             "soldn": host["swdown"][j, i],
             "lwdn": host["glw"][j, i],
-            "prcpconv": zero32,
-            "prcpnonc": prcp_2d[j, i],
-            "prcpshcv": zero32,
-            "prcpsnow": prcpsnow_2d[j, i],
-            "prcpgrpl": zero32,
-            "prcphail": zero32,
+            "prcpconv": precip_rates["prcpconv"][j, i],
+            "prcpnonc": precip_rates["prcpnonc"][j, i],
+            "prcpshcv": precip_rates["prcpshcv"][j, i],
+            "prcpsnow": precip_rates["prcpsnow"][j, i],
+            "prcpgrpl": precip_rates["prcpgrpl"][j, i],
+            "prcphail": precip_rates["prcphail"][j, i],
             "tbot": host["tmn"][j, i],
             "co2air": co2air_2d[j, i],
             "o2air": o2air_2d[j, i],
@@ -1053,7 +1074,90 @@ def noahmp_lsm_step(
         fields[name][...] = cp.asarray(host[name])
     for name, array in host_3d.items():
         fields[name][...] = cp.asarray(array)
+    _noahmp_post_lsm_diagnostics(fields, params=params)
     return census
+
+
+def _noahmp_post_lsm_diagnostics(fields, *,
+                                  params: NoahmpRuntimeParameters) -> None:
+    """WRF v4.6.1 Noah-MP's post-LSM ``T2/TH2/Q2`` ownership.
+
+    ``SFCLAY_mynn`` (and the MM5 surface layers) diagnose the three fields
+    before the land-surface call.  WRF does not retain those values under
+    ``CASE (NOAHMPSCHEME)``: ``module_surface_driver.F:3333-3370`` first
+    invalidates all three and then unconditionally replaces them.
+
+    Water and full sea ice use the guarded flux diagnostic at :3344-3355.
+    Urban and partial-ice categories take Noah-MP's bare-ground values at
+    :3357-3365.  Every other land category blends Noah-MP's vegetation and
+    bare-ground diagnostics with ``FVEGXY`` at :3366-3369.  The urban-model
+    overwrites following that block are outside ArWen's admitted
+    ``sf_urban_physics=0`` identity.
+
+    This routine deliberately writes only ``t2``, ``th2`` and ``q2``.
+    Noah-MP's driver write-back owns land ``TSK/HFX/QFX/LH/QSFC/ZNT`` but has
+    no ``UST/CHS/CHS2/CQS2/FLHC/FLQC`` argument
+    (``module_surface_driver.F:3127-3181``); those exchange arrays therefore
+    remain the surface layer's output exactly as they do in WRF.
+    """
+    import cupy as cp
+
+    f32 = np.float32
+    identity = params.land_use
+    vegtyp = fields["ivgtyp"].astype(cp.int32, copy=False)
+    xice = fields["xice"]
+
+    water_or_full_ice = (
+        (vegtyp == int(identity.iswater))
+        | ((vegtyp == int(identity.isice))
+           & (xice >= f32(XICE_THRESHOLD)))
+    )
+    urban_categories = cp.asarray(
+        np.asarray((identity.isurban, *identity.lcz), dtype=np.int32))
+    urban_or_partial_ice = (
+        cp.isin(vegtyp, urban_categories)
+        | ((vegtyp == int(identity.isice))
+           & (xice < f32(XICE_THRESHOLD)))
+    )
+
+    rho = fields["psfc"] / (f32(287.0) * fields["tsk"])
+    q_guard = fields["cqs2"] < f32(1.0e-5)
+    t_guard = fields["chs2"] < f32(1.0e-5)
+    safe_cqs2 = cp.where(q_guard, f32(1.0), fields["cqs2"])
+    safe_chs2 = cp.where(t_guard, f32(1.0), fields["chs2"])
+    q_flux = cp.where(
+        q_guard,
+        fields["qsfc"],
+        fields["qsfc"] - fields["qfx"] / (rho * safe_cqs2),
+    ).astype(cp.float32)
+    t_flux = cp.where(
+        t_guard,
+        fields["tsk"],
+        fields["tsk"] - fields["hfx"]
+        / (rho * f32(1004.5) * safe_chs2),
+    ).astype(cp.float32)
+
+    fveg = fields["fvegxy"]
+    t_land = (
+        fveg * fields["t2mvxy"]
+        + (f32(1.0) - fveg) * fields["t2mbxy"]
+    ).astype(cp.float32)
+    q_land = (
+        fveg * fields["q2mvxy"]
+        + (f32(1.0) - fveg) * fields["q2mbxy"]
+    ).astype(cp.float32)
+    t_nonwater = cp.where(
+        urban_or_partial_ice, fields["t2mbxy"], t_land)
+    q_nonwater = cp.where(
+        urban_or_partial_ice, fields["q2mbxy"], q_land)
+    fields["t2"][...] = cp.where(
+        water_or_full_ice, t_flux, t_nonwater).astype(cp.float32)
+    fields["q2"][...] = cp.where(
+        water_or_full_ice, q_flux, q_nonwater).astype(cp.float32)
+    fields["th2"][...] = (
+        fields["t2"]
+        * cp.power(f32(1.0e5) / fields["psfc"], f32(287.0 / 1004.5))
+    ).astype(cp.float32)
 
 
 def _lsm_step_slab(
@@ -1062,6 +1166,8 @@ def _lsm_step_slab(
     *,
     params: NoahmpRuntimeParameters,
     geometry: NoahmpSolarGeometry,
+    precipitation: SurfacePrecipitationForcing,
+    coszen,
     dt: float,
     dx: float,
     dzs,
@@ -1116,7 +1222,7 @@ def _lsm_step_slab(
     p_int0 = _forcing("p_interface", 0)
     p_int1 = _forcing("p_interface", 1)
 
-    cosz = cp.asarray(geometry.cosz(elapsed_seconds))
+    cosz = cp.ascontiguousarray(cp.asarray(coszen, dtype=cp.float32))
     if cosz.shape != (ny, nx):
         raise ValueError(
             "Noah-MP solar geometry must match the domain grid, got "
@@ -1164,8 +1270,8 @@ def _lsm_step_slab(
     q_ml = qv / (one + qv)
     z_ml = half * dz1
     p_ml = (p_int1 + p_int0) * half
-    prcp = fields["rainbl"] / dt32f
-    prcpsnow = fields["sr"] * prcp
+    precip_rates = noahmp_six_precipitation_rates(
+        fields["rainbl"], fields["sr"], precipitation, dt32f, arrays=cp)
     fvgmax = fields["shdmax"] / np.float32(100.0)
     co2air = co2_fraction * p_ml
     o2air = o2_fraction * p_ml
@@ -1222,7 +1328,13 @@ def _lsm_step_slab(
         "lat": latitude, "shdmax": fvgmax, "uu": u, "vv": v,
         "zlvl": z_ml, "co2air": co2air, "o2air": o2air, "dz8w": dz1,
         "psfc": p_int0, "sfcprs": p_ml, "sfctmp": temperature, "q2": q_ml,
-        "prcpnonc": prcp, "prcpsnow": prcpsnow, "cosz": cosz,
+        "prcpconv": precip_rates["prcpconv"],
+        "prcpnonc": precip_rates["prcpnonc"],
+        "prcpshcv": precip_rates["prcpshcv"],
+        "prcpsnow": precip_rates["prcpsnow"],
+        "prcpgrpl": precip_rates["prcpgrpl"],
+        "prcphail": precip_rates["prcphail"],
+        "cosz": cosz,
     }
     gather_3d = {
         "smc": fields["smois"], "sh2o": fields["sh2o"],
@@ -1252,8 +1364,7 @@ def _lsm_step_slab(
 
         zeros = cp.zeros(m, dtype=cp.float32)
         chunk.update({
-            "acc_ssoil": zeros, "prcpconv": zeros, "prcpshcv": zeros,
-            "prcpgrpl": zeros, "prcphail": zeros,
+            "acc_ssoil": zeros,
             "julian": cp.full(m, julian32, dtype=cp.float32),
             "dt": cp.full(m, dt32f, dtype=cp.float32),
             "dx": cp.full(m, dx32f, dtype=cp.float32),
@@ -1531,6 +1642,7 @@ __all__ = [
     "NoahmpSolarGeometry",
     "UNDEFINED_VALUE",
     "XICE_THRESHOLD",
+    "guard_noahmp_glacier_columns",
     "noahmp_cold_start",
     "noahmp_lsm_step",
     "year_length",

@@ -18,6 +18,7 @@ import numpy as np
 _TPB = 32
 #: Unspecialized ``KF_KMAX`` in ``kernels/kf.cu`` and the ceiling on nz.
 _KMAX = 128
+VERTICAL_LEVEL_BOUNDS = (8, _KMAX)
 DTYPE = np.float32
 
 
@@ -45,8 +46,10 @@ def kernel_capacity(nz: int) -> int:
     ``kernels/kf.cu``), which is why this is exact and not tiered.
     """
     nz = int(nz)
-    if nz < 8 or nz > _KMAX:
-        raise ValueError(f"KF requires 8 <= nz <= {_KMAX}, got {nz}")
+    minimum, maximum = VERTICAL_LEVEL_BOUNDS
+    if nz < minimum or nz > maximum:
+        raise ValueError(
+            f"KF requires {minimum} <= nz <= {maximum}, got {nz}")
     return nz
 
 
@@ -153,8 +156,10 @@ def launch_kf(u, v, temperature, qv, qc, pressure, exner, dz, w, *,
     if len(shape) != 3:
         raise ValueError(f"temperature must have shape (nz,ny,nx), got {shape}")
     nz, ny, nx = shape
-    if nz < 8 or nz > _KMAX:
-        raise ValueError(f"KF requires 8 <= nz <= {_KMAX}, got {nz}")
+    minimum, maximum = VERTICAL_LEVEL_BOUNDS
+    if nz < minimum or nz > maximum:
+        raise ValueError(
+            f"KF requires {minimum} <= nz <= {maximum}, got {nz}")
     for name, array in columns.items():
         if (not isinstance(array, cp.ndarray) or array.shape != shape
                 or array.dtype != DTYPE or not array.flags.c_contiguous):

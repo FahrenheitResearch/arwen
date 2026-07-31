@@ -68,15 +68,21 @@ _LONGITUDE = -100.0
 
 def _build(*, nx: int = 8, ny: int = 6, nz: int = 40, vegtyp: int = _GRASSLAND,
            soiltyp: int = _LOAM, water_columns: int = 2, snow_mm: float = 0.0,
-           snow_depth_m: float = 0.0):
+           snow_depth_m: float = 0.0, xice=0.0, radiation=None,
+           ra_physics: int = 0, radt_minutes: float = 12.0,
+           mp_physics: int = 6, sf_sfclay_physics: int = 1,
+           bl_pbl_physics: int = 1):
     from gpuwm.core.grid import make_base_state, make_vertical_coord
     from gpuwm.core.moist import init_moist_balanced
     from gpuwm.core.physics import initialize_physics
 
     cfg = RunConfig(nx=nx, ny=ny, nz=nz, dx=3000.0, dy=3000.0, ztop=16000.0,
                     dt=12.0, run_seconds=0.0, time_step_sound=4, moist=True,
-                    mp_physics=6, sf_sfclay_physics=1,
-                    sf_surface_physics=4, bl_pbl_physics=1, bldt=0.0)
+                    mp_physics=mp_physics,
+                    sf_sfclay_physics=sf_sfclay_physics,
+                    sf_surface_physics=4,
+                    bl_pbl_physics=bl_pbl_physics, bldt=0.0,
+                    ra_physics=ra_physics, radt_minutes=radt_minutes)
 
     def theta(z):
         z = np.asarray(z, np.float64)
@@ -120,9 +126,9 @@ def _build(*, nx: int = 8, ny: int = 6, nz: int = 40, vegtyp: int = _GRASSLAND,
         ivgtyp=np.where(land, vegtyp, 17),
         isltyp=np.where(land, soiltyp, _WATER_SOIL),
         vegfra=60.0, tmn=288.0, swdown=700.0, glw=340.0, pblh=500.0,
-        snow=snow_mm, snow_depth=snow_depth_m,
+        snow=snow_mm, snow_depth=snow_depth_m, xice=xice,
         noahmp_start_time=_START, noahmp_latitude=latitude,
-        noahmp_longitude=longitude)
+        noahmp_longitude=longitude, radiation=radiation)
     return state, cfg, driver
 
 
@@ -455,6 +461,88 @@ def test_the_vram_preflight_counts_the_noahmp_arrays():
         assert shapes[f"fields/{name}"] == (NSNOW + 4, noah.ny, noah.nx), name
 
 
+@requires_gpu
+def test_noahmp_coszen_is_carried_at_radiation_cadence_and_species_are_threaded(
+        monkeypatch):
+    """The surface sees the last radiation COSZEN and all six ARW amounts."""
+    from gpuwm.core import physics
+    from gpuwm.core.physics import RadiationResult
+    from gpuwm.core.surface_forcing import (
+        SURFACE_PRECIPITATION_FIELD_NAMES,
+    )
+
+    radiation_calls = []
+
+    def radiation(**kwargs):
+        state = kwargs["state"]
+        radiation_calls.append(float(state.elapsed_seconds))
+        nz, ny, nx = state.p.shape
+        zeros = cp.zeros((nz, ny, nx), cp.float32)
+        value = cp.float32(0.25 if len(radiation_calls) == 1 else 0.75)
+        return RadiationResult(
+            zeros, zeros, cp.full((ny, nx), 700.0, cp.float32),
+            cp.full((ny, nx), 340.0, cp.float32),
+            coszen=cp.full((ny, nx), value, cp.float32))
+
+    state, cfg, driver = _build(
+        nx=4, ny=2, water_columns=1, radiation=radiation,
+        ra_physics=90, radt_minutes=1.0)
+    species_values = {
+        "rain_convective": 0.1,
+        "rain_nonconvective": 0.2,
+        "rain_shallow_convective": 0.3,
+        "snow_nonconvective": 0.4,
+        "graupel_nonconvective": 0.5,
+        "hail_nonconvective": 0.6,
+    }
+    for member, value in species_values.items():
+        driver.fields[SURFACE_PRECIPITATION_FIELD_NAMES[member]][...] = \
+            cp.float32(value)
+    seen = []
+
+    def capture(_fields, _atmosphere, *, precipitation, coszen, **_kwargs):
+        seen.append((
+            cp.asnumpy(coszen).copy(),
+            {name: cp.asnumpy(getattr(precipitation, name)).copy()
+             for name in species_values},
+        ))
+        return {"land": 6, "water": 2, "sea_ice": 0}
+
+    monkeypatch.setattr(physics, "noahmp_lsm_step", capture)
+    driver.compute(state, cfg)
+    state.elapsed_seconds = 12.0
+    driver.compute(state, cfg)
+    state.elapsed_seconds = 60.0
+    driver.compute(state, cfg)
+
+    assert radiation_calls == [0.0, 60.0]
+    np.testing.assert_array_equal(seen[0][0], np.full((2, 4), 0.25,
+                                                      np.float32))
+    np.testing.assert_array_equal(seen[1][0], seen[0][0])
+    np.testing.assert_array_equal(seen[2][0], np.full((2, 4), 0.75,
+                                                      np.float32))
+    for member, value in species_values.items():
+        np.testing.assert_array_equal(
+            seen[0][1][member], np.full((2, 4), value, np.float32))
+        np.testing.assert_array_equal(
+            seen[1][1][member], np.zeros((2, 4), np.float32))
+
+
+@requires_gpu
+def test_radiation_free_noahmp_seeds_coszen_at_wrfs_half_interval():
+    from gpuwm.core.dudhia import wrf_solar_geometry
+
+    _state, cfg, driver = _build(nx=4, ny=2, water_columns=1)
+    expected, _ = wrf_solar_geometry(
+        _START,
+        np.full((2, 4), _LATITUDE, np.float64),
+        np.full((2, 4), _LONGITUDE, np.float64),
+        hour_offset_seconds=0.5 * cfg.radt_minutes * 60.0)
+    np.testing.assert_array_equal(
+        cp.asnumpy(driver.fields["coszen"]),
+        np.asarray(expected, np.float32))
+
+
 # ---------------------------------------------------------------------------
 # forecasting
 # ---------------------------------------------------------------------------
@@ -602,13 +690,19 @@ def test_the_parameter_handle_cache_is_not_mutated_by_a_column():
 
 @requires_gpu
 def test_a_glacier_column_is_refused_rather_than_run_as_vegetation():
-    """NOAHMP_GLACIER is not ported.  NOAHMP_SFLX is not a substitute."""
-    from gpuwm.core.dycore import step
+    """The post-static guard names the first active land glacier at init."""
     from gpuwm.core.noahmp_runtime import NoahmpGlacierColumnError
 
-    state, cfg, driver = _build(nx=6, ny=4, vegtyp=_ICE)
-    with pytest.raises(NoahmpGlacierColumnError, match="ISICE_TABLE"):
-        step(state, cfg)
+    vegetation = np.full((4, 6), _GRASSLAND)
+    vegetation[0, 0] = _ICE
+    vegetation[1, 2] = _ICE
+    xice = np.zeros((4, 6))
+    xice[0, 0] = 1.0  # sea ice is not an active Noah-MP land column
+    with pytest.raises(
+            NoahmpGlacierColumnError,
+            match=r"first offending active land cell is \(j=1, i=2\).*"
+                  r"VEGTYP=15=ISICE_TABLE"):
+        _build(nx=6, ny=4, vegtyp=vegetation, xice=xice)
 
 
 # ---------------------------------------------------------------------------

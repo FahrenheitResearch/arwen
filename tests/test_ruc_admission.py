@@ -203,7 +203,7 @@ def test_no_initializer_calls_the_noah_soil_ingest_directly() -> None:
     assert physics.count("ruc_cold_start(") == 1
 
 
-def test_exactly_one_template_selects_ruc_and_no_route_overrides_it():
+def test_exactly_the_ratified_templates_select_ruc_and_no_route_overrides_it():
     """Selectable is a property of the templates and routes, so read those.
 
     This test used to assert that NO template selected RUC, and that was the
@@ -223,9 +223,9 @@ def test_exactly_one_template_selects_ruc_and_no_route_overrides_it():
     selecting = sorted(
         template_id for template_id, template in registry["templates"].items()
         if template["components"].get("land_surface") == "ruc-lsm")
-    assert selecting == [RUC_TEMPLATE_ID], (
-        f"the RUC templates are {selecting}; exactly one is expected, and a "
-        "second would need its own evidence rather than inheriting this one's")
+    assert selecting == sorted([MYNN_RUC_TEMPLATE_ID, RUC_TEMPLATE_ID]), (
+        f"the RUC templates are {selecting}; exactly the MM5/YSU and "
+        "WRF-owned MYNN/MYNN pairings are expected")
 
     overriding = sorted(
         route_id for route_id, route in registry["runner_routes"].items()
@@ -254,6 +254,9 @@ def test_exactly_one_template_selects_ruc_and_no_route_overrides_it():
 # object exists somewhere in the JSON.
 
 RUC_TEMPLATE_ID = "wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1"
+MYNN_RUC_TEMPLATE_ID = (
+    "wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1"
+)
 #: The sources whose initializers reach RUC's own soil ingest.  ``20crv3`` is
 #: the MAPPED path and is deliberately absent; see the test below.
 #: Sources whose declared template list still reaches RUC.  v1.1.1
@@ -491,6 +494,7 @@ def _land_surface_call(n: int) -> None:
         _land_values(n), dt=12.0, ktau=2, zs=_PARAMS.zs,
         ivgtyp=np.full(n, _GRASSLAND, np.int32),
         isltyp=np.full(n, _LOAM, np.int32),
+        em_core=0,
         ilnb=DEFINED_ILNB, ilnb_chain=False,
         c1sn=C1SN, c2sn=C2SN, isncovr_opt=ISNCOVR_OPT,
         mminlu=_PARAMS.dataset_identifier, parameters=_PARAMS.bundle)
@@ -704,8 +708,10 @@ def test_the_gfs_front_door_refuses_ruc_at_preparation(tmp_path):
         return dataclasses.replace(exp, domains=domains)
 
     # The tree route, which resolves selectors rather than a profile.
-    with _pytest.raises(ValueError, match="RUC"):
+    with _pytest.raises(
+            ValueError, match="outside-registry-declared-reachability") as tree:
         front_door_physics_selection(_with_ruc(baseline))
+    assert "expert-tuple-v1" in str(tree.value)
 
     # And the single-domain route, which names the template.
     single = dataclasses.replace(baseline, domains=baseline.domains[:1])

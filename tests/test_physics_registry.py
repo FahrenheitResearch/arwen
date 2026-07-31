@@ -22,8 +22,12 @@ from gpuwm.physics_registry import (
     validate_physics_plan,
 )
 from gpuwm.physics_compat import (
+    MYNN_NOAHMP_PROFILE_ID,
+    NSSL2_LEGACY_RRTMG_PROFILE_ID,
+    NSSL2_PROFILE_ID,
     NOAHMP_PROFILE_ID,
     SINGLE_DOMAIN_PHYSICS_PROFILES,
+    identify_single_domain_profile,
     single_domain_runtime_switches,
 )
 from gpuwm.source_cli import EXIT_CONFIG, main
@@ -106,8 +110,8 @@ def _single_plan(template_id: str = WSM6_TEMPLATE_ID) -> dict[str, object]:
         "domains": [{"domain_id": "d01", "template_id": template_id}],
         "edges": [],
     }
-    if template_id == NOAHMP_PROFILE_ID:
-        plan["expert_acknowledgements"] = [
+    if template_id in (NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID):
+        plan["acknowledgements"] = [
             "noahmp-host-column-throughput-v1"]
     return plan
 
@@ -273,6 +277,100 @@ def test_runner_routes_match_live_source_and_topology_contracts():
     }
 
 
+@pytest.mark.parametrize("source_id", ("hrrr", "era5", "gfs", "20crv3"))
+def test_real_source_mp_off_requires_explicit_moist_carrier(source_id):
+    plan = _uniform_tree()
+    plan["context"]["source_id"] = source_id
+    for domain in plan["domains"]:
+        domain["components"] = {"microphysics": "off"}
+
+    refused = validate_physics_plan(plan)
+    assert refused["launchable"] is False
+    errors = [
+        error for error in refused["errors"]
+        if error["code"] == (
+            "real-source-mp-off-requires-explicit-moist")
+    ]
+    assert [error["path"] for error in errors] == [
+        "domains[0].parameters.moist",
+        "domains[1].parameters.moist",
+    ]
+    assert all("allocates qv/qc/qr carrier fields" in error["message"]
+               for error in errors)
+    assert all("does not synthesize analyzed clouds" in error["message"]
+               for error in errors)
+    assert all("source-absent cloud mass stays exact zero"
+               in error["message"] for error in errors)
+
+    for domain in plan["domains"]:
+        domain["parameters"] = {"moist": True}
+    admitted = validate_physics_plan(plan)
+    assert admitted["launchable"] is True, admitted["errors"]
+    assert all(domain["settings"]["moist"] is True
+               for domain in admitted["resolved_domains"])
+
+
+def test_unnamed_tree_tuple_governance_uses_registry_reachability_only():
+    from gpuwm.physics_compat import (
+        PhysicsCapabilityError,
+        multi_domain_physics_selection,
+    )
+
+    normal = single_domain_runtime_switches(WSM6_TEMPLATE_ID)
+    receipt = multi_domain_physics_selection({1: normal, 2: normal})
+    assert {
+        domain["governance"]["state"]
+        for domain in receipt["domains"].values()
+    } == {"registry-reachable"}
+    assert receipt["acknowledgements"] == []
+    assert receipt["acknowledgement_provenance"] == {}
+
+    outside = {**normal, "bl_pbl_physics": 0}
+    with pytest.raises(PhysicsCapabilityError) as caught:
+        multi_domain_physics_selection({1: outside, 2: outside})
+    message = str(caught.value)
+    assert "d01 resolved physics tuple" in message
+    assert "bl_pbl_physics=0" in message
+    assert "outside-registry-declared-reachability" in message
+    assert (
+        '--ack expert-tuple-v1 or acknowledgements = ["expert-tuple-v1"]'
+        in message
+    )
+
+    acknowledged = multi_domain_physics_selection(
+        {1: outside, 2: outside},
+        expert_acknowledgements=("expert-tuple-v1",),
+    )
+    assert {
+        domain["governance"]["state"]
+        for domain in acknowledged["domains"].values()
+    } == {"outside-registry-declared-reachability"}
+    assert all(domain["governance"]["acknowledged"]
+               for domain in acknowledged["domains"].values())
+
+
+def test_unnamed_tree_expert_template_retains_its_specific_acknowledgement():
+    from gpuwm.physics_compat import (
+        PhysicsCapabilityError,
+        multi_domain_physics_selection,
+    )
+
+    expert = single_domain_runtime_switches(NOAHMP_PROFILE_ID)
+    with pytest.raises(
+            PhysicsCapabilityError,
+            match="noahmp-host-column-throughput-v1"):
+        multi_domain_physics_selection({1: expert, 2: expert})
+
+    receipt = multi_domain_physics_selection(
+        {1: expert, 2: expert},
+        expert_acknowledgements=("noahmp-host-column-throughput-v1",),
+    )
+    assert {
+        domain["governance"]["state"]
+        for domain in receipt["domains"].values()
+    } == {"registry-expert-template"}
+
+
 def test_registry_routes_drift_check_against_live_runner_capabilities():
     registry = physics_registry()
     routes = registry["runner_routes"]
@@ -410,6 +508,20 @@ def test_v2_templates_preserve_every_existing_v1_runtime_switch(template_id):
         assert resolved[key] == value
 
 
+@pytest.mark.parametrize(
+    "template_id",
+    (NSSL2_PROFILE_ID, NSSL2_LEGACY_RRTMG_PROFILE_ID),
+)
+def test_nssl2_radiation_profiles_have_distinct_exact_identities(template_id):
+    from types import SimpleNamespace
+
+    switches = single_domain_runtime_switches(template_id)
+    assert identify_single_domain_profile(SimpleNamespace(**switches)) == (
+        template_id)
+    assert switches["ra_rrtmg_variant"] in {
+        "rte-rrtmgp", "rrtmg_legacy"}
+
+
 def test_implemented_unverified_maturity_warns_but_never_blocks():
     registry = physics_registry()
     option = registry["components"]["microphysics"]["options"]["wsm6-mp6"]
@@ -498,7 +610,7 @@ def test_noahmp_is_implemented_and_warns_rather_than_blocking():
     per 360,000-column call (2026-07-27, twice, one RTX 5090 -- the figure
     that retired the host-era "6.4 ms per land column" scaling blocker),
     that glacier columns are refused, that sea ice has no energy balance,
-    and that the precipitation partition is coarser than WRF's.
+    and that the WRF six-rate and carried-COSZEN seams are active.
 
     The pinned figures are the ones
     ``gpuwm/core/noahmp_runtime.py`` ``NOAHMP_RUNTIME_RESTRICTIONS``
@@ -523,7 +635,8 @@ def test_noahmp_is_implemented_and_warns_rather_than_blocking():
     assert "7.3-8.2 wall seconds per simulated minute" in text
     assert "GLACIER columns are REFUSED" in text
     assert "no sea-ice surface energy balance" in text
-    assert "PRECIPITATION PARTITION is coarser" in text
+    assert "SIX-RATE precipitation seam is active" in text
+    assert "COSZEN is a radiation-driver carrier" in text
     assert "MEASURED INERT" in text
     # Every knob the option pins must be an implemented knob: an implemented
     # option may not pin one nothing reads.
@@ -534,12 +647,12 @@ def test_noahmp_is_implemented_and_warns_rather_than_blocking():
         assert parameter_is_implemented(declared[name]), name
 
 
-def test_noahmp_is_admitted_with_the_mm5_surface_layer_only():
-    """The registry half of the runtime refusal in gpuwm/physics_compat.py."""
+def test_noahmp_is_admitted_with_mm5_or_the_coupled_mynn_suite():
+    """The registry and runtime authorities expose the same pairings."""
     option = physics_registry()["components"]["land_surface"]["options"][
         "noah-mp"]
     assert option["constraints"]["requires_components"] == {
-        "surface_layer": ["revised-mm5", "classic-mm5"]}
+        "surface_layer": ["revised-mm5", "classic-mm5", "mynn"]}
 
 
 def test_selecting_only_half_of_mynn_blocks_on_the_reciprocal_dependency():

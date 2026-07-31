@@ -3,9 +3,9 @@
 Only the option identities represented by
 ``gpuwm.core.mynn_surface.mynn_surface_layer_default`` are implemented here --
 every defined ``isftcflx`` over water, with ``iz0tlnd=0``.
-This module is independently testable, but it does not admit
-``sf_sfclay_physics=5``: MYNN surface-layer and PBL selectors are intentionally
-coupled and remain fail-closed until both kernels and their driver wiring pass.
+The surface-layer and PBL selectors remain a coupled MYNN 5/5 suite.  WRF's
+surface driver also pairs that suite with Noah, RUC and Noah-MP; the constants
+below make the exact exchange-field staging at those LSM seams explicit.
 """
 
 from __future__ import annotations
@@ -38,6 +38,28 @@ MYNN_SURFACE_OUTPUTS = (
     # column and the new value must persist into the next step.
     "znt",
 )
+
+#: Fields MYNN stages for RUC and RUC leaves intact.  LSMRUC has FLHC/FLQC as
+#: ``INTENT(IN)`` and no UST/CHS2/CQS2 argument (module_sf_ruclsm.F:219-230);
+#: the surface driver recomputes CHS from FLHC after the call.
+MYNN_RUC_EXCHANGE_HANDOFF = (
+    "ust", "flhc", "flqc", "chs2", "cqs2",
+)
+
+#: Fields MYNN stages for Noah-MP and NOAHMPSCHEME never receives, so MYNN
+#: retains ownership through the land-surface call
+#: (module_surface_driver.F:3127-3181).
+MYNN_NOAHMP_EXCHANGE_HANDOFF = (
+    "ust", "chs", "chs2", "cqs2", "flhc", "flqc",
+)
+
+#: Both LSMs overwrite these values after MYNN has run.  The actual writers
+#: also update scheme-specific state such as QSFC/ZNT.
+MYNN_LSM_FLUX_WRITEBACK = ("tsk", "hfx", "qfx", "lh")
+
+#: Final 2-m ownership belongs to SFCDIAGS_RUCLSM or Noah-MP's category/fraction
+#: post-pass, not to MYNN's earlier diagnosis.
+MYNN_POST_LSM_2M_WRITEBACK = ("t2", "q2", "th2")
 
 
 @dataclass
@@ -241,6 +263,10 @@ def mynn_surface_layer(
 
 
 __all__ = [
+    "MYNN_LSM_FLUX_WRITEBACK",
+    "MYNN_NOAHMP_EXCHANGE_HANDOFF",
+    "MYNN_POST_LSM_2M_WRITEBACK",
+    "MYNN_RUC_EXCHANGE_HANDOFF",
     "MYNN_SURFACE_INPUTS",
     "MYNN_SURFACE_OUTPUTS",
     "MynnSurfaceResult",

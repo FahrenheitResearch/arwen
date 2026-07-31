@@ -28,6 +28,9 @@ MORRISON_TEMPLATE_ID = "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1"
 NSSL2_TEMPLATE_ID = (
     "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1"
 )
+NSSL2_LEGACY_RRTMG_TEMPLATE_ID = (
+    "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1"
+)
 
 #: The registered template whose suite `gpuwm domain` emits by default
 #: (product decision, 2026-07-29): Thompson mp8 in the certified
@@ -188,6 +191,8 @@ def _empty_validation(
         "plan_sha256": plan_hash,
         "plan_id": None,
         "context": None,
+        "acknowledgements": [],
+        "acknowledgement_provenance": {},
         "resolved_domains": [],
         "asset_requirements": [],
     }
@@ -603,12 +608,12 @@ def validate_physics_plan(
     # rather than a no-op, and consent without an expert template is reported
     # too (it means the plan and the route disagree about what is being run).
     acknowledged: set[str] = set()
-    plan_acknowledgements = plan.get("expert_acknowledgements", [])
+    plan_acknowledgements = plan.get("acknowledgements", [])
     if not isinstance(plan_acknowledgements, list):
         errors.append(
             _issue(
                 "expert-acknowledgements-type",
-                "expert_acknowledgements",
+                "acknowledgements",
                 "must be a JSON array of route acknowledgement ids",
             )
         )
@@ -618,7 +623,7 @@ def validate_physics_plan(
             errors.append(
                 _issue(
                     "expert-acknowledgement-id",
-                    f"expert_acknowledgements[{index}]",
+                    f"acknowledgements[{index}]",
                     "must be a non-empty string",
                 )
             )
@@ -627,13 +632,18 @@ def validate_physics_plan(
             errors.append(
                 _issue(
                     "unknown-expert-acknowledgement",
-                    f"expert_acknowledgements[{index}]",
+                    f"acknowledgements[{index}]",
                     f"runner {runner_id!r} does not publish acknowledgement "
                     f"{value!r}",
                 )
             )
             continue
         acknowledged.add(value)
+    result["acknowledgements"] = sorted(acknowledged)
+    result["acknowledgement_provenance"] = {
+        value: ["physics-plan.acknowledgements"]
+        for value in sorted(acknowledged)
+    }
 
     asset_domains: dict[str, tuple[dict[str, object], list[str]]] = {}
     domain_template_ids: list[str] = []
@@ -700,7 +710,7 @@ def validate_physics_plan(
                                 f"{base_path}.template_id",
                                 f"template {template_id!r} is an expert-only "
                                 f"template; the plan must carry "
-                                f"expert_acknowledgements "
+                                f"acknowledgements "
                                 f"[{route_expert_acknowledgement!r}]",
                             )
                         )
@@ -1177,6 +1187,28 @@ def validate_physics_plan(
                             )
                         )
 
+        if (
+            isinstance(route, dict)
+            and route.get("requires_moist_real_initialization") is True
+            and resolved_components.get("microphysics") == "off"
+            and domain_parameters.get("moist") is not True
+        ):
+            errors.append(
+                _issue(
+                    "real-source-mp-off-requires-explicit-moist",
+                    f"{base_path}.parameters.moist",
+                    "microphysics off on this real-source route requires "
+                    "an explicit per-domain parameter moist=true. That "
+                    "setting allocates qv/qc/qr carrier fields while "
+                    "microphysics remains off; it does not synthesize "
+                    "analyzed clouds, so source-absent cloud mass stays "
+                    "exact zero. Native HRRR is still refused at "
+                    "preparation because MP off cannot faithfully retain "
+                    "its analyzed QC/QR/QI/QS/QG and no radiation-only "
+                    "analyzed-cloud carrier is implemented.",
+                )
+            )
+
         resolved_domains.append(
             {
                 "domain_id": domain_id,
@@ -1348,6 +1380,7 @@ def load_physics_plan(path: str | Path) -> object:
 __all__ = [
     "DEFAULT_TEMPLATE_ID",
     "MORRISON_TEMPLATE_ID",
+    "NSSL2_LEGACY_RRTMG_TEMPLATE_ID",
     "NSSL2_TEMPLATE_ID",
     "PLAN_SCHEMA",
     "REGISTRY_SCHEMA",

@@ -103,17 +103,42 @@ def test_doctor_reports_missing_bridges_with_the_cargo_line(monkeypatch,
     assert "GPUWM_GFS_GRIB2_BRIDGE" in gfs.remedy
 
 
-def test_doctor_cli_exit_codes_and_report_shape(monkeypatch, capsys):
-    rc_healthy_or_not = cli.main(["doctor"])
+@pytest.mark.parametrize("explain", [False, True])
+def test_doctor_cli_exit_codes_and_report_shape(monkeypatch, capsys,
+                                                explain):
+    """Both layers report the same estate, and neither changes the code.
+
+    The report shape is now a gate keyed on ``--explain``, so it is
+    tested at both of its values.  What each layer owes the reader
+    differs -- the terse one owes a next command per gap, the full one
+    owes the pasteable remedy block -- but the FINDING and the exit
+    code are the same, and that is the property a reader relies on when
+    they re-run with the flag after seeing a gap.
+    """
+
+    argv = ["doctor", "--explain"] if explain else ["doctor"]
+    rc_healthy_or_not = cli.main(argv)
     out = capsys.readouterr().out
-    assert "gpuwm doctor: runtime estate" in out
+    if explain:
+        assert "gpuwm doctor: runtime estate" in out
+    else:
+        assert out.startswith("gpuwm doctor\n")
+        # The default layer must always name the way to the other one.
+        assert "--explain" in out
     assert rc_healthy_or_not in (0, 1)
 
     monkeypatch.setattr(doctor, "find_spec", lambda name: None)
-    rc = cli.main(["doctor"])
+    rc = cli.main(argv)
     assert rc == 1
     out = capsys.readouterr().out
-    assert "MISSING" in out and "remedy:" in out
+    assert "MISSING" in out
+    if explain:
+        # The whole pasteable block, exactly where it always was.
+        assert "remedy:" in out
+    else:
+        # One line per gap, each naming THE command that closes it.
+        assert "remedy:" not in out
+        assert "-> pip install 'gpuwm[gpu]'" in out
 
 
 def test_doctor_explains_the_case_data_root_layout(monkeypatch, capsys):

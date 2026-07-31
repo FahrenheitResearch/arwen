@@ -777,19 +777,14 @@ def _tendency_flag_identity_cuda(
     flag_qnbca: bool,
     flag_ozone: bool,
 ) -> None:
-    """Device-side twin of :func:`gpuwm.core.mynn_pbl._tendency_flag_identity`.
-
-    That function's docstring carries the FLAG_QS disclosure: WRF sets the flag
-    for every snow-bearing microphysics, this lane refuses it, the CUDA driver
-    substitutes a zero column at the ``mym_condensation`` call below, and the
-    measured deviation is bounded there.  Kept as one statement in one place
-    so the two lanes cannot disagree about it.
-    """
+    """Device-side twin of :func:`gpuwm.core.mynn_pbl._tendency_flag_identity`."""
 
     if flag_qc is not True or flag_qi is not True:
         raise ValueError("MYNN tendency lane requires FLAG_QC and FLAG_QI")
+    if type(flag_qs) is not bool:
+        raise TypeError("MYNN tendency lane requires FLAG_QS boolean")
     for name, flag in (
-        ("FLAG_QS", flag_qs), ("FLAG_QNC", flag_qnc), ("FLAG_QNI", flag_qni),
+        ("FLAG_QNC", flag_qnc), ("FLAG_QNI", flag_qni),
         ("FLAG_QNWFA", flag_qnwfa), ("FLAG_QNIFA", flag_qnifa),
         ("FLAG_QNBCA", flag_qnbca), ("FLAG_OZONE", flag_ozone),
     ):
@@ -1379,7 +1374,7 @@ def mynn_bl_driver_cuda(
         raise ValueError("MYNN driver delt must be positive and finite")
 
     # module_bl_mynn.F:1240-1242: qs and sqs are both replaced by a zero
-    # column, so snow never enters the tendency solve.  These four are the
+    # column in the tendency solve.  These four are the
     # constant-zero feeds: no kernel writes them, every reader requires them
     # to be zero, and mynn_pbl_scratch keeps them out of the poison set and
     # out of the arena for exactly that reason.  ``kzero`` is a separate
@@ -1462,14 +1457,14 @@ def mynn_bl_driver_cuda(
     scalars["rmol"] = rmol
 
     # ---- module_bl_mynn.F:1104-1112 subgrid condensation -----------------
-    # DEVIATION, the same one the CPU driver carries: WRF passes the real sqs
-    # at :1106 whenever FLAG_QS is set, which is every snow-bearing
-    # microphysics.  See _tendency_flag_identity for the bound.
+    # WRF :1104-1106 selects the real snow column under FLAG_QS and kzero
+    # otherwise.
     condensed = mynn_condensation_default_cuda(
         {
             "dz": layers["dz"], "zw": zw, "th": layers["th"], "thl": thl,
             "qw": sqw, "qv": layers["sqv"], "qc": layers["sqc"],
-            "qi": layers["sqi"], "qs": kzero, "p": layers["p"],
+            "qi": layers["sqi"],
+            "qs": layers["sqs"] if flag_qs else kzero, "p": layers["p"],
             "exner": layers["exner"], "tsq": layers["tsq"],
             "qsq": layers["qsq"], "cov": layers["cov"], "sh": layers["sh"],
             "el": layers["el"], "rstoch": zero_column,
@@ -1596,6 +1591,7 @@ def mynn_bl_driver_cuda(
         bl_mynn_edmf=bl_mynn_edmf,
         bl_mynn_edmf_mom=bl_mynn_edmf_mom,
         bl_mynn_mixscalars=bl_mynn_mixscalars,
+        flag_qs=flag_qs,
         scratch=work,
     )
 

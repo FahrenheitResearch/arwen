@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from collections.abc import MutableMapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import hashlib
 from time import perf_counter
 
 import numpy as np
@@ -72,6 +73,49 @@ def _host(value) -> np.ndarray:
     if hasattr(value, "get"):
         value = value.get()
     return np.asarray(value, dtype=np.float64)
+
+
+HRRR_ANALYZED_HYDROMETEORS = ("QC", "QR", "QI", "QS", "QG")
+
+# WRF v4.6.1, commit d66e442fccc04111067e29274c9f9eaccc3cef28:
+# Registry/Registry.EM_COMMON:3015 gives Kessler only moist:qv,qc,qr.
+# dyn_em/module_initialize_real.F:1859-1977 separately interpolates QR/QC/
+# QI/QS/QG only after finding each P_Q* in the active num_moist package.
+# Thus real.exe retains HRRR QC/QR for Kessler and deliberately does not
+# carry analyzed QI/QS/QG into a scheme whose Registry package lacks them.
+WRF_REAL_KESSLER_FROZEN_POLICY = {
+    "policy": "discard-source-species-absent-from-active-moist-package",
+    "wrf_version": "v4.6.1",
+    "wrf_commit": "d66e442fccc04111067e29274c9f9eaccc3cef28",
+    "registry_citation": "Registry/Registry.EM_COMMON:3015",
+    "real_citation": "dyn_em/module_initialize_real.F:1859-1977",
+}
+
+
+def array_correspondence_fingerprint(value) -> dict[str, object]:
+    """Return the byte/mask/extrema identity used by init receipts.
+
+    The checksum covers exactly the contiguous array bytes.  Shape and dtype
+    are separate fields, and the nonzero mask is independently packed and
+    hashed so an all-zero replacement cannot masquerade as analyzed mass.
+    """
+
+    if hasattr(value, "get"):
+        value = value.get()
+    array = np.ascontiguousarray(np.asarray(value))
+    if array.size == 0:
+        raise ValueError("cannot fingerprint an empty correspondence array")
+    mask = np.packbits(
+        np.ravel(array != 0.0), bitorder="little")
+    return {
+        "shape": list(array.shape),
+        "dtype": str(array.dtype),
+        "sha256": hashlib.sha256(array.tobytes(order="C")).hexdigest(),
+        "nonzero_mask_sha256": hashlib.sha256(mask.tobytes()).hexdigest(),
+        "nonzero_count": int(np.count_nonzero(array)),
+        "minimum": float(np.min(array)),
+        "maximum": float(np.max(array)),
+    }
 
 
 def _saturation_mixing_ratio_serial(temperature, pressure,
@@ -959,6 +1003,9 @@ class RealInitResult:
     #: The hypsometric_opt the geopotential/base construction was keyed on;
     #: hydrostatic_residual grades the state against the same operator.
     hypsometric_opt: int = 1
+    #: Immutable source/interpolated/state correspondence for native HRRR
+    #: analyzed hydrometeors.  Other real-source routes carry an empty map.
+    hydrometeor_initialization: dict[str, object] = field(default_factory=dict)
 
 
 def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
@@ -979,7 +1026,11 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     The pressure-level/RH lane requires TT, RH, GHT, UU, VV, PSFC, T2,
     exactly one of D2 or RH2, U10, and V10.  Native HRRR requires
     per-column PRES, SPFH, RH, and Q2, and for
-    WSM6/Thompson/Morrison requires analyzed QC/QR/QI/QS/QG.  Classic
+    WSM6/Thompson/Morrison/NSSL-2 requires analyzed QC/QR/QI/QS/QG.
+    Kessler requires the same decoded inventory, retains QC/QR, and records
+    WRF-real's explicit active-moist-package discard of QI/QS/QG.  MP off is
+    refused because it cannot faithfully retain the five analyzed species.
+    Classic
     Thompson's source-absent QNICE/QNRAIN moments are initialized to exact
     zero, matching real.exe, while the five analyzed HRRR mass categories are
     retained.  WRF's default
@@ -1044,10 +1095,16 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         raise ValueError(
             "use_sh_qv=True requires PRES, SPFH, and Q2 forcing")
     if has_specific_humidity:
+        if cfg.mp_physics == 0:
+            raise ValueError(
+                "native HRRR preparation with mp_physics=0 is refused: "
+                "the MP-off state cannot faithfully retain analyzed "
+                "QC/QR/QI/QS/QG, and a radiation-only analyzed-cloud "
+                "carrier is out of scope")
         required = ("TT", "PRES", "SPFH", "GHT", "UU", "VV", "PSFC",
                     "T2", "Q2", "U10", "V10")
-        if cfg.mp_physics in (6, 8, 10):
-            required += ("QC", "QR", "QI", "QS", "QG")
+        if cfg.mp_physics in (1, 6, 8, 10, 18):
+            required += HRRR_ANALYZED_HYDROMETEORS
     else:
         surface_rh_markers = tuple(
             name for name in ("D2", "RH2") if name in snapshot.fields)
@@ -1090,8 +1147,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     mass_shape = (nsource, cfg.ny, cfg.nx)
     mass_names = ["TT", "GHT"]
     mass_names += (["PRES", "SPFH"] if has_specific_humidity else ["RH"])
-    if cfg.mp_physics in (6, 8, 10) and has_specific_humidity:
-        mass_names += ["QC", "QR", "QI", "QS", "QG"]
+    if cfg.mp_physics in (1, 6, 8, 10, 18) and has_specific_humidity:
+        mass_names += list(HRRR_ANALYZED_HYDROMETEORS)
     if any(fields[name].shape != mass_shape for name in mass_names):
         raise ValueError(
             f"mass-field shapes do not match levels and mass grid: {mass_names}")
@@ -1329,7 +1386,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         interp_in_logp=True, extrap="constant")
 
     hydrometeors = {}
-    if has_specific_humidity and cfg.mp_physics in (6, 8, 10):
+    hydrometeor_initialization: dict[str, object] = {}
+    if has_specific_humidity and cfg.mp_physics in (1, 6, 8, 10, 18):
         # WRF's hydrometeor vert_interp calls use var_type='Q' with
         # linear_interp and no dedicated surface analysis.  The metgrid
         # surface pseudo-level is therefore zero; setting vboundb above the
@@ -1337,7 +1395,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         zero_surface = backend_xp.zeros(
             (cfg.ny, cfg.nx), dtype=backend_xp.float32)
         invalid_source = []
-        for name in ("QC", "QR", "QI", "QS", "QG"):
+        for name in HRRR_ANALYZED_HYDROMETEORS:
             source_value = preprocess.float32(fields[name])
             if (not bool(backend_xp.isfinite(source_value).all())
                     or bool((source_value < 0.0).any())):
@@ -1346,7 +1404,16 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             raise ValueError(
                 "mapped HRRR hydrometeor forcing is non-finite or negative: "
                 f"{invalid_source}")
-        for name in ("QC", "QR", "QI", "QS", "QG"):
+        source_fingerprints = {
+            name: array_correspondence_fingerprint(
+                preprocess.float32(fields[name]))
+            for name in HRRR_ANALYZED_HYDROMETEORS
+        }
+        retained_names = (
+            ("QC", "QR") if cfg.mp_physics == 1
+            else HRRR_ANALYZED_HYDROMETEORS
+        )
+        for name in retained_names:
             value = mass_vertical_plan.apply(
                 backend_ordered_levels(fields[name]),
                 zero_surface,
@@ -1357,6 +1424,25 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 raise ValueError(
                     f"interpolated HRRR hydrometeor {name} is invalid")
             hydrometeors[name] = value
+        discarded = {}
+        if cfg.mp_physics == 1:
+            discarded = {
+                name: {
+                    "source": source_fingerprints[name],
+                    **WRF_REAL_KESSLER_FROZEN_POLICY,
+                }
+                for name in ("QI", "QS", "QG")
+            }
+        hydrometeor_initialization = {
+            "schema": "gpuwm-real-hydrometeor-correspondence-v1",
+            "source": "native-hrrr-horizontal-decoder-output",
+            "mp_physics": int(cfg.mp_physics),
+            "decoded_source_species": source_fingerprints,
+            "retained_correspondence": {
+                name: name.lower() for name in retained_names
+            },
+            "discarded_source_species": discarded,
+        }
 
     alpha = _moist_specific_volume(
         theta_h, qv_h, total_pressure_h,
@@ -1385,16 +1471,15 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     mark_timing("fp32_geopotential_split_and_upload")
     state.qv[...] = state_xp.asarray(qv_h, dtype=state_xp.float32)
     if hydrometeors:
-        state.qc[...] = state_xp.asarray(
-            hydrometeors["QC"], dtype=state_xp.float32)
-        state.qr[...] = state_xp.asarray(
-            hydrometeors["QR"], dtype=state_xp.float32)
-        state.qi[...] = state_xp.asarray(
-            hydrometeors["QI"], dtype=state_xp.float32)
-        state.qs[...] = state_xp.asarray(
-            hydrometeors["QS"], dtype=state_xp.float32)
-        state.qg[...] = state_xp.asarray(
-            hydrometeors["QG"], dtype=state_xp.float32)
+        for source_name, value in hydrometeors.items():
+            getattr(state, source_name.lower())[...] = state_xp.asarray(
+                value, dtype=state_xp.float32)
+        hydrometeor_initialization["initialized_state_species"] = {
+            state_name: array_correspondence_fingerprint(
+                getattr(state, state_name))
+            for state_name in hydrometeor_initialization[
+                "retained_correspondence"].values()
+        }
         if cfg.mp_physics == 8:
             # HRRR provides the shared five WRF mass species but not classic
             # Thompson's Registry scalar QNICE/QNRAIN fields.  Pin real.exe's
@@ -1420,7 +1505,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         total_pressure=total_pressure_h, total_geopotential=total_phi,
         total_specific_volume=alpha,
         integrated_moisture_pressure=intq,
-        hypsometric_opt=cfg.hypsometric_opt)
+        hypsometric_opt=cfg.hypsometric_opt,
+        hydrometeor_initialization=hydrometeor_initialization)
 
 
 def source_orography_from_catalog(catalog, grid, *,

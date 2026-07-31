@@ -90,32 +90,30 @@ FOUR_DOMAIN_CONFIG = REPO_ROOT / "configs" / "real74_4dom.toml"
 #: report names the column budget (the 180 remaining ``lsm4`` refusals are
 #: 60 MYNN/Noah-MP pair, 60 MYNN half-suite, 40 LSM-without-surface-layer
 #: and 20 km_opt=4/pbl0, every one predating the budget).
-WORST_MEASURED_COUNT = 601
-#: The worst combination(s).  A four-way tie, and the shape of the tie is
-#: the finding: Noah-MP under YSU with Kain-Fritsch carries the widest
-#: inventory in the tree (+49 per domain over the same suite with no LSM,
-#: which measures 552).  sf_sfclay_physics 1 vs 91 and km_opt 1 vs 4 still
-#: do not change the inventory.  The previous eight-way tie at 570 (MYNN
-#: 5/5 with lsm0/lsm2, RUC under YSU) is now second.
+#
+#: Re-measured 2026-07-30 after the WRF-owned MYNN/RUC and MYNN/Noah-MP
+#: pairings became selectable: 396 measured rows, 756 refusals, and 632 at
+#: root 260.  The 31-descriptor increase is RUC's retained MYNN fractional
+#: sea-ice surface-layer result, which is required for WRF's post-LSM blend.
+#: Headroom remains 392 descriptors under the unchanged 1024 ceiling.
+WORST_MEASURED_COUNT = 632
+#: The worst combination(s).  MYNN/RUC with Kain-Fritsch is widest; km_opt
+#: does not change the inventory.
 WORST_SELECTIONS = frozenset({
-    "mp18-lsm4-pbl1-sfclay1-cu1-km1", "mp18-lsm4-pbl1-sfclay1-cu1-km4",
-    "mp18-lsm4-pbl1-sfclay91-cu1-km1", "mp18-lsm4-pbl1-sfclay91-cu1-km4",
+    "mp18-lsm3-pbl5-sfclay5-cu1-km1",
+    "mp18-lsm3-pbl5-sfclay5-cu1-km4",
 })
-#: The worst combination, per domain.  The root is about 38% of a child:
+#: The worst combination, per domain.  The root is about 41% of a child:
 #: a child carries 196 ``nest.scratch`` rolling/SINT descriptors plus 178
 #: ``lbc`` descriptors for the rolling boundary its FORCE attaches, and the
-#: root carries 2 packed LBC descriptors instead -- 229 - 2 + 196 + 178 = 601.
-WORST_ROOT_COUNT = 229
-WORST_CHILD_COUNT = 601
+#: root carries 2 packed LBC descriptors instead -- 260 - 2 + 196 + 178 = 632.
+WORST_ROOT_COUNT = 260
+WORST_CHILD_COUNT = 632
 
-#: An early-warning band, not the cap.  601 of 1024 leaves 423.  The largest
-#: single LSM admission measured here is Noah-MP at +49 per domain (552 ->
-#: 601 against the same suite with no LSM; RUC is +18, Noah +0), so three
-#: more admissions of Noah-MP's size would be needed to reach 768.  The
-#: band is NOT recalibrated to the new peak: it exists to fire while there
-#: is still room to decide.  2026-07-27: Noah-MP returned to the sweep when
-#: its column ceiling moved to the slab path's measured 360,000, exactly
-#: the event the previous revision of this comment predicted.
+#: An early-warning band, not the cap.  632 of 1024 leaves 392.  The current
+#: peak includes the 31 retained fractional-sea-ice descriptors used only by
+#: the MYNN/RUC WRF ownership sequence.  The band is NOT recalibrated to the
+#: new peak: it exists to fire while there is still room to decide.
 #: Tightening only -- raising this number is not a way to make a failure pass.
 EARLY_WARNING_COUNT = 768
 
@@ -190,7 +188,7 @@ def test_worst_selectable_count_is_the_recorded_measurement(
         f"the worst-case combination set changed to {sorted(peaks)}")
 
 
-def test_the_peak_rose_because_noahmp_became_selectable_again(
+def test_noahmp_slice_includes_the_wrf_owned_mynn_pairing(
         four_domain_census):
     """Why 570 became 601 again, as a gate rather than as a comment.
 
@@ -220,13 +218,19 @@ def test_the_peak_rose_because_noahmp_became_selectable_again(
     measures a uniform 12 rows per MP across {0, 1, 6, 8, 10, 18} where
     the 2026-07-27 census had five MP values, and the worst-count peak is
     unchanged at 601 (pinned by the test above).
+
+    Re-pinned later on 2026-07-30: 72 -> 96.  The WRF-owned MYNN/Noah-MP
+    pairing adds four rows per MP (cu 0/1 x km_opt 1/4) and retires exactly
+    the corresponding 24 pairing refusals.  The remaining 192 refusals are
+    the unchanged surface-layer-off, MYNN half-suite, and PBL-off diffusion
+    gates.
     """
     report = four_domain_census
     lsm4_rows = [row for row in report["rows"]
                  if row["sf_surface_physics"] == 4]
-    assert len(lsm4_rows) == 72, (
-        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 72 the "
-        "2026-07-30 census recorded; re-run the census and re-pin")
+    assert len(lsm4_rows) == 96, (
+        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 96 the "
+        "2026-07-30 MYNN-pairing census recorded; re-run and re-pin")
     budget_refusals = [entry["selection"] for entry in report["rejected"]
                        if "Noah-MP column budget" in entry["reason"]]
     assert not budget_refusals, (
@@ -235,11 +239,10 @@ def test_the_peak_rose_because_noahmp_became_selectable_again(
         f"{budget_refusals[:5]}")
     refused = [entry for entry in report["rejected"]
                if "-lsm4-" in entry["selection"]]
-    assert len(refused) == 216, (
-        f"{len(refused)} lsm4 refusals against the 216 pre-budget ones "
-        "recorded on 2026-07-30 (72 MYNN/Noah-MP pair, 72 MYNN half-suite, "
-        "48 LSM-without-surface-layer, 24 km_opt=4/pbl0 -- the 2026-07-27 "
-        "180 scaled uniformly by the v1.1 MP expansion, 5 -> 6 values)")
+    assert len(refused) == 192, (
+        f"{len(refused)} lsm4 refusals against the 192 recorded after "
+        "retiring the 24 MYNN/Noah-MP pairing refusals (120 MYNN "
+        "half-suite, 48 LSM-without-surface-layer, 24 km_opt=4/pbl0)")
 
 
 def test_worst_selectable_count_stays_inside_the_early_warning_band(

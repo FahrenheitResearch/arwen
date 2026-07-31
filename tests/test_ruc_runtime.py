@@ -88,7 +88,10 @@ def _build(*, nx: int = 8, ny: int = 6, nz: int = 40, vegtyp: int = _GRASSLAND,
            soiltyp: int = _LOAM, water_columns: int = 2,
            ice_rows: int = 0, snow_mm: float = 0.0,
            snow_depth_m: float = 0.0, soil_moisture: float = 0.28,
-           frozen: bool = False, dt: float = 12.0):
+           frozen: bool = False, dt: float = 12.0, radiation=None,
+           ra_physics: int = 0, radt_minutes: float = 12.0,
+           mp_physics: int = 6, sf_sfclay_physics: int = 1,
+           bl_pbl_physics: int = 1):
     """One RUC forecast configuration.
 
     ``frozen=True`` swaps the whole column for a subfreezing one -- a 268 K
@@ -105,9 +108,11 @@ def _build(*, nx: int = 8, ny: int = 6, nz: int = 40, vegtyp: int = _GRASSLAND,
 
     cfg = RunConfig(nx=nx, ny=ny, nz=nz, dx=3000.0, dy=3000.0, ztop=16000.0,
                     dt=dt, run_seconds=0.0, time_step_sound=4, moist=True,
-                    mp_physics=6, sf_sfclay_physics=1,
+                    mp_physics=mp_physics,
+                    sf_sfclay_physics=sf_sfclay_physics,
                     sf_surface_physics=3, num_soil_layers=_NSOIL,
-                    bl_pbl_physics=1, bldt=0.0)
+                    bl_pbl_physics=bl_pbl_physics, bldt=0.0,
+                    ra_physics=ra_physics, radt_minutes=radt_minutes)
 
     def theta(z):
         z = np.asarray(z, np.float64)
@@ -166,7 +171,8 @@ def _build(*, nx: int = 8, ny: int = 6, nz: int = 40, vegtyp: int = _GRASSLAND,
         vegfra=60.0, tmn=270.0 if frozen else 288.0,
         swdown=120.0 if frozen else 700.0,
         glw=220.0 if frozen else 340.0, pblh=500.0,
-        xice=xice, snow=snow_mm, snow_depth=snow_depth_m)
+        xice=xice, snow=snow_mm, snow_depth=snow_depth_m,
+        radiation=radiation)
     return state, cfg, driver
 
 
@@ -394,10 +400,11 @@ def test_out_of_identity_configurations_are_refused_before_the_run():
     with pytest.raises(ValueError, match="RUC is admitted at "
                                          "num_soil_layers=9 only"):
         validate_run_config(RunConfig(**{**base, "num_soil_layers": 6}))
-    # And the MYNN pairing, which would give the run two 2-m diagnostics.
-    with pytest.raises(ValueError, match="MYNN surface layer with RUC"):
-        validate_run_config(RunConfig(**{**base, "sf_sfclay_physics": 5,
-                                         "bl_pbl_physics": 5}))
+    # MYNN's first diagnosis is intentionally overwritten by
+    # SFCDIAGS_RUCLSM under WRF's ownership sequence, so the coupled 5/5
+    # suite is now an admitted RUC identity.
+    validate_run_config(RunConfig(**{
+        **base, "sf_sfclay_physics": 5, "bl_pbl_physics": 5}))
 
 
 @requires_gpu
@@ -578,6 +585,120 @@ def test_water_columns_take_the_water_arm_and_sea_ice_takes_its_own():
         np.full((2, cfg.nx - 2), SEAICE_ALBEDO_DEFAULT, np.float32))
     assert float(cp.asnumpy(driver.fields["xice"])[ice].min()) >= \
         XICE_THRESHOLD
+
+
+@requires_gpu
+def test_lakemask_bypasses_ruc_while_a_neighboring_land_column_runs():
+    """WRF's EM_CORE lake GOTO leaves the RUC column state untouched."""
+    from gpuwm.core import physics
+    from gpuwm.core.ruc_runtime import ruc_lsm_step
+    from gpuwm.core.surface_forcing import SurfacePrecipitationForcing
+
+    state, cfg, driver = _build(nx=4, ny=2, water_columns=0)
+    driver.fields["lakemask"][...] = cp.float32(0.0)
+    driver.fields["lakemask"][0, 0] = cp.float32(1.0)
+    atmosphere = physics._prepare_atmosphere(state)
+    driver._run_sfclay(atmosphere, cfg)
+    names = ("tsk", "smois", "sh2o", "canwat", "snow")
+    before = {name: driver.fields[name].copy() for name in names}
+    census = ruc_lsm_step(
+        driver.fields, atmosphere,
+        params=driver.ruc_params,
+        precipitation=SurfacePrecipitationForcing.from_fields(driver.fields),
+        dt=cfg.dt, itimestep=1, mosaic_lu=cfg.mosaic_lu,
+        mosaic_soil=cfg.mosaic_soil, flag_sm_adj=cfg.flag_sm_adj,
+        spp_lsm=cfg.spp_lsm)
+
+    for name in names:
+        cp.testing.assert_array_equal(
+            driver.fields[name][..., 0, 0], before[name][..., 0, 0])
+    assert any(not bool(cp.array_equal(
+        driver.fields[name][..., 0, 1], before[name][..., 0, 1]))
+               for name in names)
+    assert census == {"land": 7, "water": 0, "lake": 1, "sea_ice": 0}
+
+
+@requires_gpu
+def test_fractional_sea_ice_reblends_two_distinct_xice_values():
+    """The full-ice TSK returned by RUC is retained and WRF-reblended."""
+    from gpuwm.core.diagnostics import update_diagnostics
+    from tools.surface_forcing_wrf461_oracle.transcribe_surface_forcing import (
+        ruc_fractional_post,
+    )
+
+    state, cfg, driver = _build(nx=4, ny=1, water_columns=0)
+    xice = np.array([0.55, 0.75], np.float32)
+    driver.fields["xice"][0, :2] = cp.asarray(xice)
+    driver.fields["ivgtyp"][0, :2] = _ICE
+    driver.fields["tsk_save"][0, :2] = cp.asarray(
+        np.array([263.0, 266.0], np.float32))
+    driver.fields["tsk_sea"][0, :2] = cp.asarray(
+        np.array([275.0, 278.0], np.float32))
+    driver.fields["tsk"][0, :2] = cp.asarray(ruc_fractional_post(
+        ice=cp.asnumpy(driver.fields["tsk_save"][0, :2]),
+        sea=cp.asnumpy(driver.fields["tsk_sea"][0, :2]), xice=xice))
+    ice_albedo = np.array([0.62, 0.68], np.float32)
+    ice_emiss = np.array([0.96, 0.97], np.float32)
+    driver.fields["albedo"][0, :2] = cp.asarray(ruc_fractional_post(
+        ice=ice_albedo, sea=np.float32(0.08), xice=xice))
+    driver.fields["emiss"][0, :2] = cp.asarray(ruc_fractional_post(
+        ice=ice_emiss, sea=np.float32(0.98), xice=xice))
+
+    update_diagnostics(state)
+    driver.compute(state, cfg)
+    expected = ruc_fractional_post(
+        ice=cp.asnumpy(driver.fields["tsk_save"][0, :2]),
+        sea=cp.asnumpy(driver.fields["tsk_sea"][0, :2]), xice=xice)
+    np.testing.assert_array_equal(
+        cp.asnumpy(driver.fields["tsk"][0, :2]), expected)
+
+
+@requires_gpu
+def test_ruc_consumes_radiation_time_gsw_unchanged_between_calls(
+        monkeypatch):
+    """Live SWDOWN/albedo changes cannot rewrite the carried GSW."""
+    from gpuwm.core import physics
+    from gpuwm.core.physics import RadiationResult
+
+    radiation_calls = []
+
+    def radiation(**kwargs):
+        state = kwargs["state"]
+        radiation_calls.append(float(state.elapsed_seconds))
+        nz, ny, nx = state.p.shape
+        zeros = cp.zeros((nz, ny, nx), cp.float32)
+        value = cp.float32(111.0 if len(radiation_calls) == 1 else 222.0)
+        return RadiationResult(
+            zeros, zeros, cp.full((ny, nx), 700.0, cp.float32),
+            cp.full((ny, nx), 340.0, cp.float32),
+            gsw=cp.full((ny, nx), value, cp.float32))
+
+    state, cfg, driver = _build(
+        nx=4, ny=2, water_columns=1, dt=10.0,
+        radiation=radiation, ra_physics=90, radt_minutes=1.0)
+    seen = []
+
+    def capture(fields, _atmosphere, **_kwargs):
+        seen.append(cp.asnumpy(fields["gsw"]).copy())
+        return {"land": 6, "water": 2, "lake": 0, "sea_ice": 0}
+
+    monkeypatch.setattr(physics, "ruc_lsm_step", capture)
+    driver.compute(state, cfg)
+    driver.fields["swdown"][...] = cp.float32(900.0)
+    driver.fields["albedo"][...] = cp.float32(0.9)
+    state.elapsed_seconds = 10.0
+    driver.compute(state, cfg)
+    state.elapsed_seconds = 60.0
+    driver.compute(state, cfg)
+
+    assert radiation_calls == [0.0, 60.0]
+    np.testing.assert_array_equal(seen[0], np.full((2, 4), 111.0,
+                                                   np.float32))
+    np.testing.assert_array_equal(seen[1], seen[0])
+    assert not np.array_equal(
+        seen[1], np.full((2, 4), 900.0 * (1.0 - 0.9), np.float32))
+    np.testing.assert_array_equal(seen[2], np.full((2, 4), 222.0,
+                                                   np.float32))
 
 
 @requires_gpu
@@ -836,6 +957,7 @@ def test_ilnb_is_defined_rather_than_inherited_from_the_previous_column():
             values, dt=60.0, ktau=2, zs=params.zs,
             ivgtyp=np.full(nx, _GRASSLAND, np.int32),
             isltyp=np.full(nx, _LOAM, np.int32),
+            em_core=0,
             ilnb=DEFINED_ILNB, ilnb_chain=chain,
             c1sn=C1SN, c2sn=C2SN, isncovr_opt=ISNCOVR_OPT,
             mminlu=params.dataset_identifier, parameters=params.bundle)

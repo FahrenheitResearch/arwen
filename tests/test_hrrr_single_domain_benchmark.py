@@ -1,6 +1,7 @@
 """Native HRRR single-domain benchmark controller regressions."""
 
 import dataclasses
+from datetime import datetime
 import json
 from types import SimpleNamespace
 
@@ -14,13 +15,19 @@ from gpuwm.ingest.hrrr_target import HrrrTargetDomain
 from gpuwm.ingest.prepared_cache import prepared_cache_identity
 from gpuwm.physics_compat import (
     MORRISON_PROFILE_ID,
+    MYNN_NOAHMP_PROFILE_ID,
     MYNN_PROFILE_ID,
+    MYNN_RUC_PROFILE_ID,
     NOAHMP_PROFILE_ID,
+    NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
     RUC_PROFILE_ID,
+    SINGLE_DOMAIN_PHYSICS_PROFILES,
     THOMPSON_PROFILE_ID,
+    WRF_RRTMG_LEGACY,
     WRF_RRTMG_TO_RTE_RRTMGP,
     WSM6_PROFILE_ID,
+    single_domain_runtime_switches,
 )
 from tools.hrrr_single_domain_benchmark import (
     _PreprocessWorkerBudget, _boundary_mapping_targets, _experiment,
@@ -57,8 +64,9 @@ def test_hrrr_runner_capability_query_is_side_effect_free_without_run_args(
     assert payload["supported_sources"] == ["hrrr"]
     assert payload["physics_profile_ids"] == [
         WSM6_PROFILE_ID, THOMPSON_PROFILE_ID, MORRISON_PROFILE_ID,
-        NSSL2_PROFILE_ID, MYNN_PROFILE_ID, RUC_PROFILE_ID,
-        NOAHMP_PROFILE_ID]
+        NSSL2_PROFILE_ID, NSSL2_LEGACY_RRTMG_PROFILE_ID,
+        MYNN_PROFILE_ID, RUC_PROFILE_ID,
+        MYNN_RUC_PROFILE_ID, NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID]
     assert payload["report_schema"] == "gpuwm-native-hrrr-benchmark-v2"
     assert payload["window"]["maximum_source_forecast_hour"] == 48
     assert payload["window"]["maximum_run_seconds"] == 172_800
@@ -98,10 +106,15 @@ def test_hrrr_runner_capability_query_is_side_effect_free_without_run_args(
     assert nssl2["selector"] == 18
     assert nssl2["readiness"] == "VALIDATION_CANDIDATE"
     assert nssl2["explicit_expert_consent_required"] is False
+    legacy = payload["physics_profiles"][NSSL2_LEGACY_RRTMG_PROFILE_ID]
+    assert legacy["readiness"] == "VALIDATION_CANDIDATE"
+    assert legacy["radiation_solver"] == "legacy RRTMG"
     assert nssl2["resolved_fixed_preset"] is True
     assert payload["physics_profiles"][MYNN_PROFILE_ID]["readiness"] \
         == "IMPLEMENTED_UNVERIFIED"
     assert payload["physics_profiles"][RUC_PROFILE_ID]["readiness"] \
+        == "IMPLEMENTED_UNVERIFIED"
+    assert payload["physics_profiles"][MYNN_RUC_PROFILE_ID]["readiness"] \
         == "IMPLEMENTED_UNVERIFIED"
     noahmp = payload["physics_profiles"][NOAHMP_PROFILE_ID]
     assert noahmp["explicit_expert_consent_required"] is True
@@ -453,8 +466,8 @@ def test_f00_and_boundary_mapping_forward_explicit_target_radius(monkeypatch):
         for report in boundary_report["sides"].values())
 
 
-@pytest.mark.parametrize("nz", [4, 17, 49, 80, 113])
-def test_native_hrrr_experiment_threads_arbitrary_explicit_vertical_grid(nz):
+@pytest.mark.parametrize("nz", [4, 17, 49, 80])
+def test_native_hrrr_experiment_threads_admitted_explicit_vertical_grid(nz):
     target = dataclasses.replace(HrrrTargetDomain.legacy_500x500(), nz=nz)
     vertical = VerticalConfig(
         eta_levels=tuple(float(value)
@@ -628,7 +641,9 @@ def test_native_hrrr_fixed_physics_profile_rejects_missing_control(tmp_path):
     (
         (MYNN_PROFILE_ID, 5, 2, 5, 4),
         (RUC_PROFILE_ID, 91, 3, 1, 9),
+        (MYNN_RUC_PROFILE_ID, 5, 3, 5, 9),
         (NOAHMP_PROFILE_ID, 91, 4, 1, 4),
+        (MYNN_NOAHMP_PROFILE_ID, 5, 4, 5, 4),
     ),
 )
 def test_native_hrrr_new_front_door_families_prepare_exact_profile(
@@ -640,7 +655,7 @@ def test_native_hrrr_new_front_door_families_prepare_exact_profile(
         num_soil_layers=soil_layers)
     acknowledgements = (
         ("noahmp-host-column-throughput-v1",)
-        if profile == NOAHMP_PROFILE_ID else ()
+        if profile in (NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID) else ()
     )
 
     receipt = _validate_native_hrrr_physics_profile(
@@ -719,8 +734,9 @@ def test_native_hrrr_real74_suite_profiles_bind_exact_namelist_and_runtime(
         "ra_physics": 0,
         "ra_lw_physics": 4,
         "ra_sw_physics": 4,
-        "radt": 12.0,
-        "wrf_rrtmg_compatibility": WRF_RRTMG_TO_RTE_RRTMGP,
+            "radt": 12.0,
+            "wrf_rrtmg_compatibility": WRF_RRTMG_TO_RTE_RRTMGP,
+            "ra_rrtmg_variant": "rte-rrtmgp",
         "sf_sfclay_physics": 91,
         "sf_surface_physics": 2,
         "bl_pbl_physics": 1,
@@ -757,6 +773,94 @@ def test_native_hrrr_morrison_profile_rejects_rimed_ice_drift(tmp_path):
         path, mp_physics=10, full_real74_suite=True, morr_rimed_ice=0)
     with pytest.raises(ValueError, match="morr_rimed_ice.*must be 1"):
         _validate_native_hrrr_physics_profile(path, MORRISON_PROFILE_ID)
+
+
+def test_native_hrrr_nssl2_legacy_profile_binds_exact_solver_identity(
+        tmp_path):
+    path = tmp_path / "namelist.input"
+    _write_native_physics_namelist(
+        path, mp_physics=18, full_real74_suite=True)
+
+    receipt = _validate_native_hrrr_physics_profile(
+        path, NSSL2_LEGACY_RRTMG_PROFILE_ID)
+
+    assert receipt["readiness"] == "VALIDATION_CANDIDATE"
+    assert receipt["resolved"]["wrf_rrtmg_compatibility"] == WRF_RRTMG_LEGACY
+    assert receipt["resolved"]["ra_rrtmg_variant"] == "rrtmg_legacy"
+    assert receipt["radiation_identity"] == {
+        "contract": WRF_RRTMG_LEGACY,
+        "requested_wrf_scheme_ids": [4, 4],
+        "resolved_gpuwm_scheme_ids": [4, 4],
+        "resolved_gpuwm_solver": "legacy RRTMG",
+    }
+    assert "radiation_substitution" not in receipt
+
+
+def _profile_experiment(profile: str):
+    """One HRRR experiment per profile, on a grid every profile accepts.
+
+    nz=12 clears the Kain-Fritsch (>=8) and MYNN (>=5) vertical floors, so
+    a refusal below is about the switch forward and nothing else.
+    """
+
+    nz = 12
+    vertical = VerticalConfig(
+        eta_levels=tuple(float(value)
+                         for value in np.linspace(1.0, 0.0, nz + 1)),
+        p_top=5000.0, hybrid_opt=2, etac=0.2)
+    target = dataclasses.replace(HrrrTargetDomain.legacy_500x500(), nz=nz)
+    return _experiment(
+        vertical, run_seconds=3600.0, target=target,
+        physics_profile=profile)
+
+
+@pytest.mark.parametrize("profile", sorted(SINGLE_DOMAIN_PHYSICS_PROFILES))
+def test_the_hrrr_experiment_forwards_every_switch_its_profile_declares(
+        profile):
+    """The forwarded set covers the profile's whole declared switch set.
+
+    F1: ``_experiment`` copied ``wrf_rrtmg_compatibility`` and dropped
+    ``ra_rrtmg_variant``, so the ratified
+    ``nssl2-...-rrtmg-legacy-...-v1`` profile -- declared for the HRRR
+    route and offered in this runner's ``--physics-profile`` choices --
+    could not be built at all: the RunConfig kept the ``"rte-rrtmgp"``
+    default and the paired-switch validator refused it in 0.7 s.  Its RTE
+    sibling built only because its declared value equalled that default,
+    which is exactly why a single-profile test would not have caught this.
+    Parametrizing over every shipped profile kills the class.
+    """
+
+    switches = single_domain_runtime_switches(profile)
+    run = _profile_experiment(profile).root.run
+
+    missing = sorted(set(switches) - set(hrrr_runner._PROFILE_SWITCH_HOMES))
+    assert missing == []
+    observed = {name: getattr(run, name, "<absent from RunConfig>")
+                for name in switches}
+    assert observed == switches
+
+
+def test_the_hrrr_switch_forward_refuses_a_profile_switch_it_has_no_home_for(
+):
+    """A profile that grows a switch fails loudly, not silently."""
+
+    raw = {"shared": {}, "domain": [{}]}
+    with pytest.raises(ValueError, match="no declared home"):
+        hrrr_runner._forward_profile_switches(
+            raw, {"ra_rrtmg_variant": "rrtmg_legacy",
+                  "some_future_switch": 1})
+
+
+def test_the_hrrr_route_builds_the_ratified_legacy_rrtmg_profile():
+    """The exact instance F1 reported, and its RTE sibling beside it."""
+
+    legacy = _profile_experiment(NSSL2_LEGACY_RRTMG_PROFILE_ID).root.run
+    rte = _profile_experiment(NSSL2_PROFILE_ID).root.run
+
+    assert legacy.wrf_rrtmg_compatibility == WRF_RRTMG_LEGACY
+    assert legacy.ra_rrtmg_variant == "rrtmg_legacy"
+    assert rte.wrf_rrtmg_compatibility == WRF_RRTMG_TO_RTE_RRTMGP
+    assert rte.ra_rrtmg_variant == "rte-rrtmgp"
 
 
 def test_native_hrrr_nssl2_profile_rejects_surrounding_suite_drift(tmp_path):
@@ -864,38 +968,242 @@ def test_native_hrrr_profile_preserves_explicit_vertical_hybrid_option(
     assert exp.root.run.hybrid_opt == hybrid_opt
 
 
+class _ReferenceVerticalPlan:
+    def __init__(self, source, surface, target):
+        self.source = np.asarray(source, dtype=np.float32)
+        self.surface = np.asarray(surface, dtype=np.float32)
+        self.target = np.asarray(target, dtype=np.float32)
+
+    def apply(self, field, surface_value, **options):
+        from gpuwm.verify.npref import np_wrf_real_vert_interp
+
+        options.pop("values_are_finite", None)
+        return np.asarray(np_wrf_real_vert_interp(
+            field, surface_value, self.source, self.surface, self.target,
+            **options), dtype=np.float32)
+
+
+class _ReferencePreprocessBackend:
+    """Independent CPU implementation of the production preprocessing ABI."""
+
+    name = "cpu-reference-test"
+    array_module = np
+
+    @staticmethod
+    def float32(value):
+        return np.asarray(value, dtype=np.float32)
+
+    @staticmethod
+    def regular_plan(*args, **kwargs):
+        raise AssertionError("regular horizontal preprocessing is unused here")
+
+    masked_nearest = regular_plan
+    rotate_earth_to_grid = regular_plan
+    era5_rh_to_water = regular_plan
+
+    @staticmethod
+    def prepare_wrf_vertical(source, surface, target):
+        return _ReferenceVerticalPlan(source, surface, target)
+
+    @staticmethod
+    def receipt():
+        return {"backend": "cpu-reference-test"}
+
+
+def _decoded_native_hrrr_initialization(mp_physics, *, analyzed_species=None):
+    """Drive decoded native fields through real initialization, never a fake state.
+
+    ``analyzed_species`` selects which of QC/QR/QI/QS/QG carry mass in the
+    decoded source.  It defaults to all five; passing a subset (or none)
+    reproduces the meteorologically empty analysis the reopening battery hit,
+    where four of five species had nothing to retain and the retention gate
+    could not fire.
+    """
+
+    from gpuwm.config import RunConfig
+    from gpuwm.core.grid import make_vertical_coord
+    from gpuwm.ingest.horiz import HorizontalSnapshot
+    from gpuwm.ingest.real import initialize_real
+
+    ny, nx, nz = 2, 3, 8
+    levels = np.array(
+        [100.0, 300.0, 500.0, 700.0, 850.0, 1000.0],
+        dtype=np.float64)
+    pressure = np.broadcast_to(
+        levels[:, None, None] * 100.0, (levels.size, ny, nx)).copy()
+    temperature = np.broadcast_to(
+        215.0 + 75.0 * (pressure / 100000.0) ** 0.22,
+        pressure.shape).copy()
+    height = np.broadcast_to(
+        -7900.0 * np.log(pressure / 100000.0), pressure.shape).copy()
+    level_index = np.arange(levels.size, dtype=np.float32)[:, None, None]
+    row_index = np.arange(ny, dtype=np.float32)[None, :, None]
+    column_index = np.arange(nx, dtype=np.float32)[None, None, :]
+    carried = (("QC", "QR", "QI", "QS", "QG") if analyzed_species is None
+               else tuple(analyzed_species))
+    analyzed = {}
+    for species_index, name in enumerate(("QC", "QR", "QI", "QS", "QG"), 1):
+        if name not in carried:
+            analyzed[name] = np.zeros(pressure.shape, dtype=np.float32)
+            continue
+        value = np.asarray(
+            species_index * 1.0e-6
+            * (1.0 + level_index + 0.25 * row_index
+               + 0.125 * column_index),
+            dtype=np.float32)
+        value[0, 0, 0] = np.float32(0.0)
+        analyzed[name] = value
+    fields = {
+        "PRES": pressure.astype(np.float32),
+        "SPFH": np.full(pressure.shape, 0.004, dtype=np.float32),
+        "TT": temperature.astype(np.float32),
+        "GHT": height.astype(np.float32),
+        "UU": np.full((levels.size, ny, nx + 1), 8.0, dtype=np.float32),
+        "VV": np.full((levels.size, ny + 1, nx), -2.0, dtype=np.float32),
+        "PSFC": np.full((ny, nx), 100000.0, dtype=np.float32),
+        "T2": np.full((ny, nx), 289.0, dtype=np.float32),
+        "Q2": np.full((ny, nx), 0.004, dtype=np.float32),
+        "U10": np.full((ny, nx + 1), 7.0, dtype=np.float32),
+        "V10": np.full((ny + 1, nx), -1.0, dtype=np.float32),
+        **analyzed,
+    }
+    snapshot = HorizontalSnapshot(
+        valid_time=datetime(2026, 7, 20, 6),
+        levels_hpa=levels,
+        fields=fields,
+    )
+    cfg = RunConfig(
+        nx=nx, ny=ny, nz=nz, dx=12000.0, dy=12000.0,
+        ztop=18000.0, dt=30.0, run_seconds=60.0,
+        hybrid_opt=2, etac=0.2, moist=True, terrain_opt=1,
+        mp_physics=mp_physics,
+    )
+    eta = np.linspace(1.0, 0.0, nz + 1)
+    terrain = np.zeros((ny, nx), dtype=np.float64)
+    return initialize_real(
+        snapshot, cfg,
+        make_vertical_coord(
+            nz, hybrid_opt=2, etac=0.2, eta_levels=eta),
+        terrain,
+        source_orography=terrain,
+        p_top=10000.0,
+        use_sh_qv=True,
+        preprocess_backend=_ReferencePreprocessBackend(),
+        state_backend="cpu",
+    )
+
+
+@pytest.mark.parametrize(
+    ("mp_physics", "retained", "discarded"),
+    (
+        (6, {"QC", "QR", "QI", "QS", "QG"}, set()),
+        (18, {"QC", "QR", "QI", "QS", "QG"}, set()),
+        (1, {"QC", "QR"}, {"QI", "QS", "QG"}),
+    ),
+)
+def test_native_hrrr_hydrometeor_admission_is_scheme_aware(
+        mp_physics, retained, discarded):
+    result = _decoded_native_hrrr_initialization(mp_physics)
+    evidence = result.hydrometeor_initialization
+    assert set(evidence["retained_correspondence"]) == retained
+    assert set(evidence["discarded_source_species"]) == discarded
+    assert set(evidence["decoded_source_species"]) == {
+        "QC", "QR", "QI", "QS", "QG"}
+    assert all(
+        evidence["initialized_state_species"][state_name][
+            "nonzero_count"] > 0
+        for state_name in evidence["retained_correspondence"].values()
+    )
+    if mp_physics == 1:
+        assert getattr(result.state, "qi", None) is None
+        for policy in evidence["discarded_source_species"].values():
+            assert policy["policy"] == (
+                "discard-source-species-absent-from-active-moist-package")
+            assert policy["wrf_commit"] == (
+                "d66e442fccc04111067e29274c9f9eaccc3cef28")
+
+
+def test_the_retention_receipt_states_when_it_proved_nothing():
+    """The battery's vacuous-receipt lesson, bound to the producer.
+
+    The first NSSL/RTE probe passed this receipt on a domain where four of
+    five analyzed species were identically zero: the gate is ``source
+    nonzero > 0 and live nonzero == 0 -> raise``, so it could not fire, and
+    the receipt did not say so.  A green receipt on that domain was not
+    evidence that B-H1 was fixed -- it would have passed with the fix
+    reverted for QR/QI/QS/QG.  Now the receipt grades its own evidence.
+    """
+
+    # A cloud-free analysis: nothing to retain for any species.
+    empty = _decoded_native_hrrr_initialization(18, analyzed_species=())
+    receipt = _initial_hrrr_microphysics_receipt(
+        empty.state, NSSL2_PROFILE_ID, empty.hydrometeor_initialization)
+    assert receipt["retention_evidence_summary"]["strength"] == "VACUOUS"
+    assert receipt["retention_evidence_summary"]["vacuous_species"] == [
+        "QC", "QG", "QI", "QR", "QS"]
+    assert receipt["retention_evidence_summary"]["proven_species"] == []
+    assert "proves nothing" in \
+        receipt["retention_evidence_summary"]["statement"]
+    for species in ("QC", "QG", "QI", "QR", "QS"):
+        evidence = receipt["retention_evidence"][species]
+        assert evidence["strength"] == "VACUOUS"
+        assert evidence["source_nonzero_count"] == 0
+        assert "not proven" in evidence["reason"]
+
+    # The battery's actual Ohio domain: QC alone carried mass.
+    partial = _decoded_native_hrrr_initialization(
+        18, analyzed_species=("QC",))
+    receipt = _initial_hrrr_microphysics_receipt(
+        partial.state, NSSL2_PROFILE_ID, partial.hydrometeor_initialization)
+    summary = receipt["retention_evidence_summary"]
+    assert summary["strength"] == "PARTIALLY_VACUOUS"
+    assert summary["proven_species"] == ["QC"]
+    assert summary["vacuous_species"] == ["QG", "QI", "QR", "QS"]
+    assert receipt["retention_evidence"]["QC"]["strength"] == "PROVEN"
+
+    # The control: a real analysis on all five species is PROVEN, so the
+    # VACUOUS verdict is a discriminator and not a constant.
+    full = _decoded_native_hrrr_initialization(18)
+    receipt = _initial_hrrr_microphysics_receipt(
+        full.state, NSSL2_PROFILE_ID, full.hydrometeor_initialization)
+    assert receipt["retention_evidence_summary"]["strength"] == "PROVEN"
+    assert receipt["retention_evidence_summary"]["vacuous_species"] == []
+    assert all(
+        evidence["strength"] == "PROVEN"
+        and evidence["source_nonzero_count"] > 0
+        and evidence["state_nonzero_count"] > 0
+        for evidence in receipt["retention_evidence"].values())
+
+
+def test_native_hrrr_mp_off_refuses_unfaithful_analyzed_cloud_state():
+    with pytest.raises(
+            ValueError,
+            match="cannot faithfully retain analyzed QC/QR/QI/QS/QG"):
+        _decoded_native_hrrr_initialization(0)
+
+
 def test_hrrr_thompson_initialization_requires_mass_and_exact_zero_numbers():
-    shape = (3, 2, 4)
-    state = SimpleNamespace(**{
-        name: np.full(shape, index * 1.0e-6, dtype=np.float32)
-        for index, name in enumerate(("qc", "qr", "qi", "qs", "qg"), 1)
-    })
-    state.ni = np.zeros(shape, dtype=np.float32)
-    state.nr = np.zeros(shape, dtype=np.float32)
-    receipt = _initial_hrrr_microphysics_receipt(state, THOMPSON_PROFILE_ID)
+    result = _decoded_native_hrrr_initialization(8)
+    state = result.state
+    receipt = _initial_hrrr_microphysics_receipt(
+        state, THOMPSON_PROFILE_ID, result.hydrometeor_initialization)
     assert receipt["state_number_fields"] == {
         "ni": {"all_exact_zero": True},
         "nr": {"all_exact_zero": True},
     }
     state.nr.flat[0] = np.float32(1.0)
     with pytest.raises(ValueError, match="number moment nr must initialize"):
-        _initial_hrrr_microphysics_receipt(state, THOMPSON_PROFILE_ID)
-
-
-def _analyzed_hrrr_mass_state(shape=(3, 2, 4)):
-    return SimpleNamespace(**{
-        name: np.full(shape, index * 1.0e-6, dtype=np.float32)
-        for index, name in enumerate(("qc", "qr", "qi", "qs", "qg"), 1)
-    })
+        _initial_hrrr_microphysics_receipt(
+            state, THOMPSON_PROFILE_ID,
+            result.hydrometeor_initialization)
 
 
 def test_hrrr_morrison_initialization_receipts_every_source_absent_moment():
-    state = _analyzed_hrrr_mass_state()
-    for name in ("nc", "nr", "ni", "ns", "ng"):
-        setattr(state, name, np.zeros((3, 2, 4), dtype=np.float32))
+    result = _decoded_native_hrrr_initialization(10)
+    state = result.state
 
     receipt = _initial_hrrr_microphysics_receipt(
-        state, MORRISON_PROFILE_ID)
+        state, MORRISON_PROFILE_ID, result.hydrometeor_initialization)
 
     assert receipt["source_absent_wrf_fields"] == [
         "QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL"]
@@ -910,21 +1218,21 @@ def test_hrrr_morrison_initialization_receipts_every_source_absent_moment():
 
     state.ng.flat[0] = np.float32(1.0)
     with pytest.raises(ValueError, match="source-absent state ng"):
-        _initial_hrrr_microphysics_receipt(state, MORRISON_PROFILE_ID)
+        _initial_hrrr_microphysics_receipt(
+            state, MORRISON_PROFILE_ID,
+            result.hydrometeor_initialization)
 
 
 def test_hrrr_nssl2_initialization_receipts_zero_state_and_background_ccn():
-    state = _analyzed_hrrr_mass_state()
+    result = _decoded_native_hrrr_initialization(18)
+    state = result.state
     zero_fields = (
         "qh", "qndrop", "qnr", "qni", "qns", "qng", "qnh",
         "qvolg", "qvolh",
     )
-    for name in zero_fields:
-        setattr(state, name, np.zeros((3, 2, 4), dtype=np.float32))
-    state.qnn = np.full(
-        (3, 2, 4), np.float32(408163264.0), dtype=np.float32)
 
-    receipt = _initial_hrrr_microphysics_receipt(state, NSSL2_PROFILE_ID)
+    receipt = _initial_hrrr_microphysics_receipt(
+        state, NSSL2_PROFILE_ID, result.hydrometeor_initialization)
 
     exact = receipt["state_source_absent_fields"]
     assert set(exact) == {*zero_fields, "qnn"}
@@ -943,7 +1251,9 @@ def test_hrrr_nssl2_initialization_receipts_zero_state_and_background_ccn():
     state.qnn.flat[0] = np.nextafter(
         np.float32(408163264.0), np.float32(np.inf), dtype=np.float32)
     with pytest.raises(ValueError, match="source-absent state qnn"):
-        _initial_hrrr_microphysics_receipt(state, NSSL2_PROFILE_ID)
+        _initial_hrrr_microphysics_receipt(
+            state, NSSL2_PROFILE_ID,
+            result.hydrometeor_initialization)
 
 
 @pytest.mark.parametrize(
@@ -958,24 +1268,32 @@ def test_hrrr_nssl2_initialization_receipts_zero_state_and_background_ccn():
 )
 def test_real_domain_state_cold_start_satisfies_profile_receipt(
         profile, expected_fields):
-    from gpuwm.core.state import DomainState
+    mp_physics = 10 if profile == MORRISON_PROFILE_ID else 18
+    result = _decoded_native_hrrr_initialization(mp_physics)
 
-    target = dataclasses.replace(
-        HrrrTargetDomain.legacy_500x500(), nx=16, ny=16, nz=4)
-    vertical = VerticalConfig(
-        eta_levels=(1.0, 0.75, 0.5, 0.25, 0.0),
-        p_top=5000.0,
-        hybrid_opt=2,
-        etac=0.2,
-    )
-    cfg = _experiment(
-        vertical, run_seconds=3600.0, target=target,
-        physics_profile=profile).root.run
-    state = DomainState(cfg, array_module=np)
-
-    receipt = _initial_hrrr_microphysics_receipt(state, profile)
+    receipt = _initial_hrrr_microphysics_receipt(
+        result.state, profile, result.hydrometeor_initialization)
 
     assert set(receipt["state_source_absent_fields"]) == expected_fields
     assert receipt["state_source_absent_fields"].get(
         "qnn", {"expected_float32": 0.0})["expected_float32"] in (
             0.0, 408163264.0)
+
+
+def test_hrrr_receipt_rejects_zeroed_state_and_pre_fix_mp18_behavior():
+    result = _decoded_native_hrrr_initialization(18)
+    state = result.state
+    _initial_hrrr_microphysics_receipt(
+        state, NSSL2_PROFILE_ID, result.hydrometeor_initialization)
+
+    for name in ("qc", "qr", "qi", "qs", "qg"):
+        getattr(state, name)[...] = np.float32(0.0)
+    with pytest.raises(ValueError, match="source-to-state correspondence"):
+        _initial_hrrr_microphysics_receipt(
+            state, NSSL2_PROFILE_ID, result.hydrometeor_initialization)
+
+    # Regression anchor for the old mp_physics not-in-(6,8,10) path: it
+    # produced the same all-zero MP18 state and no source correspondence.
+    with pytest.raises(ValueError, match="lacks decoded-source"):
+        _initial_hrrr_microphysics_receipt(
+            state, NSSL2_PROFILE_ID, None)

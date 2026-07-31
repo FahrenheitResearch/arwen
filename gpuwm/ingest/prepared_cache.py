@@ -494,6 +494,7 @@ class CachedInitialResult:
     base: object
     surface_pressure: np.ndarray
     surface_qv: np.ndarray
+    hydrometeor_initialization: Mapping[str, object]
 
 
 @dataclass(frozen=True)
@@ -707,6 +708,8 @@ def write_prepared_cache(path, *, identity, initial_result, met,
             "surface_fields": surface_names,
             "lbc": lbc_metadata,
             "setup_fingerprint": setup_fingerprint(initial_result.state),
+            "hydrometeor_initialization": _json_copy(
+                getattr(initial_result, "hydrometeor_initialization", {})),
         }
         basis = {
             "schema": PREPARED_CACHE_SCHEMA,
@@ -870,7 +873,9 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
     result = CachedInitialResult(
         state=state, coord=coord, base=base,
         surface_pressure=reader.read_array("result/surface_pressure"),
-        surface_qv=reader.read_array("result/surface_qv"))
+        surface_qv=reader.read_array("result/surface_qv"),
+        hydrometeor_initialization=MappingProxyType(
+            metadata.get("hydrometeor_initialization", {})))
     receipt = {
         "schema": PREPARED_CACHE_SCHEMA,
         "status": "RESTORED",

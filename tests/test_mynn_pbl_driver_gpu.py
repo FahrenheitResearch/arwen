@@ -104,9 +104,16 @@ def test_device_driver_stays_within_the_measured_leaf_residue(step):
     """
 
     _, values, initflag, delt = _driver_step(step)
-    host = mynn_bl_driver(values, initflag=initflag, delt=delt)
+    # Preserve the historical four-column ULP ratchet unchanged.  The new
+    # snow-only column has its own WRF-facing gate below; folding a new
+    # population into these measured maxima would redefine them.
+    values = {name: np.asarray(value)[:4].copy()
+              for name, value in values.items()}
+    host = mynn_bl_driver(
+        values, initflag=initflag, delt=delt, flag_qs=True,
+    )
     device = mynn_bl_driver_cuda(
-        _device(values), initflag=initflag, delt=delt)
+        _device(values), initflag=initflag, delt=delt, flag_qs=True)
 
     for name, budget in _PROFILE_BUDGET.items():
         worst = _worst(device[name], host[name])
@@ -120,6 +127,27 @@ def test_device_driver_stays_within_the_measured_leaf_residue(step):
             np.asarray(host[name], dtype=np.int32).reshape(-1),
             err_msg=name,
         )
+
+
+@requires_gpu
+def test_device_driver_supplies_snow_within_the_existing_wrf_leaf_budgets():
+    """The production driver reads sqs and retains the existing WRF budgets."""
+
+    blocks, values, initflag, delt = _driver_step(2)
+    supplied = mynn_bl_driver_cuda(
+        _device(values), initflag=initflag, delt=delt, flag_qs=True)
+    withheld = mynn_bl_driver_cuda(
+        _device(values), initflag=initflag, delt=delt, flag_qs=False)
+    index = DRIVER_CASES.index("snow_anvil")
+    changed = 0
+    for name in ("qc_bl", "qi_bl", "cldfra_bl"):
+        want = np.asarray(
+            [np.float32(row[name]) for row in blocks[index]], dtype=np.float32)
+        assert _worst(supplied[name][index], want) <= _PROFILE_BUDGET[name]
+        got = cp.asnumpy(supplied[name][index])
+        without = cp.asnumpy(withheld[name][index])
+        changed += int(np.count_nonzero(got != without))
+    assert changed > 0
 
 
 @requires_gpu
@@ -217,7 +245,7 @@ def test_device_driver_state_actually_advances():
 
     _, values, initflag, delt = _driver_step(2)
     device = mynn_bl_driver_cuda(
-        _device(values), initflag=initflag, delt=delt)
+        _device(values), initflag=initflag, delt=delt, flag_qs=True)
     before = np.asarray(values["qke"], dtype=np.float32)
     after = cp.asnumpy(device["qke"])
     assert after.shape == before.shape
@@ -241,8 +269,7 @@ def test_device_driver_refuses_a_nondefault_identity():
                 device_values, initflag=0, delt=delt, **{knob: bad})
     with pytest.raises(ValueError, match="restart"):
         mynn_bl_driver_cuda(device_values, initflag=0, delt=delt, restart=True)
-    with pytest.raises(ValueError, match="FLAG_QS"):
-        mynn_bl_driver_cuda(device_values, initflag=0, delt=delt, flag_qs=True)
+    mynn_bl_driver_cuda(device_values, initflag=0, delt=delt, flag_qs=True)
     with pytest.raises(TypeError, match="initflag"):
         mynn_bl_driver_cuda(device_values, initflag=0.0, delt=delt)
     missing = dict(device_values)

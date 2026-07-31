@@ -27,6 +27,11 @@ from gpuwm.physics_compat import (
     WRF_RRTMG_TO_RTE_RRTMGP,
     WRF_RRTMG_TO_RTE_RRTMGP_V1,
 )
+from gpuwm.core.mynn_radiation import (
+    merge_mynn_bl_clouds,
+    mynn_bl_cloud_active,
+    wrf_itimestep,
+)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "rrtmgp"
 DTYPE = np.float32
@@ -100,6 +105,7 @@ def snow_treatment_for_compatibility(token: str) -> str:
 # applied directly to gpuwm's model top).
 RRTMGP_TOA_PRESSURE_PA = 1.005183574463
 WRF_LW_UPPER_DELTA_P_PA = 400.0
+MAX_RADIATION_LAYERS = 128
 
 # module_ra_rrtmg_lw.F:11904-11932.  Pressures are hPa.  The table is the
 # weighted standard-atmosphere mean used by WRF to temperature its 4-hPa
@@ -205,10 +211,11 @@ def _extend_above_model_profile(
     lw_upper, sw_upper = rrtmgp_above_model_layer_counts(
         p_top, pressure_floor=pressure_floor)
     upper_nlay = lw_upper if kind == "lw" else sw_upper
-    if model_nlay + upper_nlay > 128:
+    if model_nlay + upper_nlay > MAX_RADIATION_LAYERS:
         raise ValueError(
-            "RRTMGP CUDA RTE supports at most 128 layers including the "
-            f"above-model column; got {model_nlay + upper_nlay}")
+            "RRTMGP CUDA RTE supports at most "
+            f"{MAX_RADIATION_LAYERS} layers including the above-model "
+            f"column; got {model_nlay + upper_nlay}")
     if validate_top and not bool(xp.allclose(
             plev[:, -1], DTYPE(p_top), rtol=DTYPE(0.0),
             atol=DTYPE(max(1.0e-3, abs(float(p_top)) * 2.0e-7)))):
@@ -1868,6 +1875,20 @@ class RRTMGPRadiation:
         ice_active = scheme in ("wsm6", "thompson", "morrison", "nssl")
         cldfra = cal_cldfra1(qv, qc_cols, qi_cols, qs_cols, tlay, play,
                              f_qc=True, f_qi=ice_active, f_qs=ice_active)
+        active_bl = mynn_bl_cloud_active(
+            getattr(cfg, "bl_pbl_physics", 0), getattr(cfg, "icloud_bl", 0))
+        qc_bl = self._columns(fields["qc_bl"]) if active_bl else None
+        qi_bl = self._columns(fields["qi_bl"]) if active_bl else None
+        cldfra_bl = (
+            self._columns(fields["cldfra_bl"]) if active_bl else None)
+        qc_cols, qi_cols, cldfra = merge_mynn_bl_clouds(
+            qc_cols, qi_cols, cldfra, qc_bl=qc_bl, qi_bl=qi_bl,
+            cldfra_bl=cldfra_bl,
+            bl_pbl_physics=getattr(cfg, "bl_pbl_physics", 0),
+            icloud_bl=getattr(cfg, "icloud_bl", 0),
+            itimestep=(wrf_itimestep(state.elapsed_seconds, cfg.dt)
+                       if active_bl else 1),
+        )
         ncol = play.shape[0]
         if full_validation:
             # Validate the caller-supplied model column before constructing
@@ -2142,7 +2163,7 @@ class RRTMGPRadiation:
 
         result = _fluxes_to_radiation(
             lw_up, lw_dn, sw_up, sw_dn, plev, exner, ny=ny, nx=nx,
-            validate=full_validation)
+            coszen=mu_raw, validate=full_validation)
         self.update_count += 1
         return result
 
@@ -2263,7 +2284,7 @@ def _require_plausible_radii_um(**fields):
 
 
 def _fluxes_to_radiation(lw_up, lw_dn, sw_up, sw_dn, plev, exner, *,
-                         ny, nx, validate=True):
+                         ny, nx, coszen=None, validate=True):
     """Map bottom-to-top broadband column fluxes into the radiation slot."""
     import cupy as cp
     from gpuwm.core import constants
@@ -2298,7 +2319,11 @@ def _fluxes_to_radiation(lw_up, lw_dn, sw_up, sw_dn, plev, exner, *,
         rthratenlw=theta_heating(lw_up, lw_dn),
         rthratensw=theta_heating(sw_up, sw_dn),
         swdown=cp.ascontiguousarray(sw_dn[:, 0].reshape(ny, nx)),
-        glw=cp.ascontiguousarray(lw_dn[:, 0].reshape(ny, nx)))
+        glw=cp.ascontiguousarray(lw_dn[:, 0].reshape(ny, nx)),
+        gsw=cp.ascontiguousarray(
+            (sw_dn[:, 0] - sw_up[:, 0]).reshape(ny, nx)),
+        coszen=(None if coszen is None else cp.ascontiguousarray(
+            cp.asarray(coszen, dtype=DTYPE).reshape(ny, nx))))
 
 
 def _interpolation_metadata(tables: GasTables, play, tlay, *,

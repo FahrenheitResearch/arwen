@@ -91,6 +91,8 @@ def _cpu_wsm6_diagnostics_driver(monkeypatch, *, dt=60.0):
         graupelnc=zeros(), graupelncv=zeros())
     driver.microphysics_updates = 0
     driver._pending_rainbl = zeros()
+    driver.ruc_params = None
+    driver.noahmp_params = None
     return physics, driver, MicrophysicsDiagnostics, shape
 
 
@@ -1147,6 +1149,63 @@ def test_nssl_complete_diagnostics_drive_noah_frpcpn(monkeypatch):
 
 @pytest.mark.gpu
 @requires_gpu
+@pytest.mark.parametrize(
+    ("mp_physics", "has_frozen", "has_hail"),
+    [(1, False, False), (6, True, False), (8, True, False),
+     (10, True, False), (18, True, True)],
+)
+def test_every_microphysics_selector_writes_the_species_surface_seam(
+        mp_physics, has_frozen, has_hail):
+    """The real selector contracts populate the persistent ARW forcing."""
+    import cupy as cp
+
+    from gpuwm.core.microphysics import MicrophysicsDiagnostics
+
+    _state, cfg, driver = _full_state(
+        mp_physics=mp_physics, sf_surface_physics=4,
+        bl_pbl_physics=0,
+        radiation_start_time=datetime(2026, 7, 1, 18),
+        radiation_latitude=40.0, radiation_longitude=-100.0)
+    shape = (cfg.ny, cfg.nx)
+    values = {
+        "rainnc": 2.0, "rainncv": 0.4, "sr": 0.75,
+        "snownc": 0.3, "snowncv": 0.3,
+        "graupelnc": 0.2, "graupelncv": 0.2,
+        "hailnc": 0.1, "hailncv": 0.1,
+    }
+    supported = {"rainnc", "rainncv", "sr"}
+    if has_frozen:
+        supported.update(
+            {"snownc", "snowncv", "graupelnc", "graupelncv"})
+    if has_hail:
+        supported.update({"hailnc", "hailncv"})
+
+    if mp_physics == 18:
+        for name in supported:
+            getattr(driver.microphysics, name)[...] = cp.float32(values[name])
+        diagnostics = MicrophysicsDiagnostics(**{
+            name: getattr(driver.microphysics, name) for name in supported
+        })
+    else:
+        diagnostics = MicrophysicsDiagnostics(**{
+            name: cp.full(shape, values[name], cp.float32)
+            for name in supported
+        })
+    driver.accept_microphysics(diagnostics)
+
+    expected = {
+        "surface_rainncv": 0.4,
+        "surface_snowncv": 0.3 if has_frozen else 0.0,
+        "surface_graupelncv": 0.2 if has_frozen else 0.0,
+        "surface_hailncv": 0.1 if has_hail else 0.0,
+    }
+    for name, value in expected.items():
+        cp.testing.assert_array_equal(
+            driver.fields[name], cp.full(shape, value, cp.float32))
+
+
+@pytest.mark.gpu
+@requires_gpu
 def test_kessler_liquid_sr_overrides_cold_temperature_in_noah(monkeypatch):
     """WRF passes Kessler's SR=0 to Noah even when cold rain is present."""
     import cupy as cp
@@ -1222,10 +1281,8 @@ def test_ysu_seam_receives_full_similarity_denominators(monkeypatch):
 
 @pytest.mark.gpu
 @requires_gpu
-def test_prepare_atmosphere_feeds_state_cloud_ice_to_the_seams():
-    """Morrison states expose prognostic qi to PBL/radiation (the audit's
-    "YSU qi seam": the driver used to zero-fill qi unconditionally);
-    ice-free states keep the zero scratch."""
+def test_prepare_atmosphere_feeds_frozen_state_species_to_the_seams():
+    """Prognostic qi/qs reach PBL and radiation; absent species stay zero."""
     import cupy as cp
     from gpuwm.core.physics import _prepare_atmosphere
 
@@ -1233,11 +1290,16 @@ def test_prepare_atmosphere_feeds_state_cloud_ice_to_the_seams():
     assert getattr(state, "qi", None) is None
     zero_qi = _prepare_atmosphere(state)["qi"]
     assert not bool(zero_qi.any())
+    zero_qs = _prepare_atmosphere(state)["qs"]
+    assert not bool(zero_qs.any())
 
     state.qi = cp.full(state.p.shape, cp.float32(2.0e-5))
-    got = _prepare_atmosphere(state)["qi"]
-    assert got is state.qi
-    assert bool(got.any())
+    state.qs = cp.full(state.p.shape, cp.float32(3.0e-5))
+    got = _prepare_atmosphere(state)
+    assert got["qi"] is state.qi
+    assert got["qs"] is state.qs
+    assert bool(got["qi"].any())
+    assert bool(got["qs"].any())
 
 
 @pytest.mark.gpu

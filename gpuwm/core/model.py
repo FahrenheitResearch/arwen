@@ -300,7 +300,7 @@ def experiment_fingerprint(exp, catalog) -> str:
     forcing provenance, and every other experiment field remain bound.
     """
     experiment = _jsonable(exp)
-    for name in ("run_seconds", "restart_interval_s"):
+    for name in ("run_seconds", "restart_interval_s", "acknowledgements"):
         experiment.pop(name, None)
     for domain in experiment.get("domains", ()):
         domain.pop("history_interval_s", None)

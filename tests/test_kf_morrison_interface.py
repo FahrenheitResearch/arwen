@@ -253,6 +253,10 @@ def test_custom_warm_rain_attachment_requires_energy_defined_phase_closure(
         "rqscuten": np.full(shape, 11.0, dtype=np.float32),
     }
     driver = object.__new__(PhysicsDriver)
+    # This focused clock fixture bypasses __init__; optional LSM parameter
+    # bundles were added later and are absent for this Morrison-only path.
+    driver.ruc_params = None
+    driver.noahmp_params = None
     driver.fields = {}
     driver.cu_rates = {name: np.zeros(shape, dtype=np.float32)
                        for name in rates}
@@ -299,6 +303,8 @@ def test_nca_expiry_preserves_current_rk_copy_but_zeros_morrison_rates(
     shape = (2, 1, 1)
     surface = (1, 1)
     driver = object.__new__(PhysicsDriver)
+    driver.ruc_params = None
+    driver.noahmp_params = None
     driver.cu_pratec = np.zeros(surface, dtype=np.float32)
     driver.rainc = np.zeros(surface, dtype=np.float32)
     driver._pending_rainbl = np.zeros(surface, dtype=np.float32)

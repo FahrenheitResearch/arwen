@@ -444,7 +444,8 @@ DRIVER_SERIALIZED_ATTRS = frozenset({
 #: minor-loop count are deterministic functions of the resolved
 #: ``mp_physics`` and ``dt`` configuration and are rebuilt with the driver.
 DRIVER_REBUILT_ATTRS = frozenset({
-    "state", "sfclay_result", "mynn_sfclay_result", "noah_params",
+    "state", "sfclay_result", "mynn_sfclay_result",
+    "mynn_sfclay_sea_result", "noah_params",
     # Selector-value -> runner-method receipt, re-resolved from the resumed
     # RunConfig by PhysicsDriver.__init__ (the config fingerprint already
     # binds the selector values themselves).
@@ -1620,6 +1621,17 @@ def _driver_manifest(driver) -> dict[str, object]:
                 f"sfclay_result.{field.name} does not alias "
                 f"fields[{field.name!r}]: the in-place surface-field "
                 "restore depends on that aliasing")
+    for attribute, suffix in (
+            ("mynn_sfclay_result", ""),
+            ("mynn_sfclay_sea_result", "_sea")):
+        result = getattr(driver, attribute)
+        for field in (() if result is None else dataclasses.fields(result)):
+            key = f"{field.name}{suffix}"
+            if driver.fields.get(key) is not getattr(result, field.name):
+                raise RestartManifestError(
+                    f"{attribute}.{field.name} does not alias fields[{key!r}]: "
+                    "the in-place MYNN surface-field restore depends on that "
+                    "aliasing")
     _callable_state_check(driver.radiation_callable,
                           RADIATION_CALLABLE_ARRAYS,
                           RADIATION_CALLABLE_CONTAINERS, "radiation")

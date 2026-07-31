@@ -58,6 +58,7 @@ from gpuwm.source_hierarchy import (
 )
 from gpuwm.physics_compat import (
     WSM6_PROFILE_ID,
+    acknowledgement_delivery,
     land_surface_component_for_selector,
     land_surface_route_blocker,
     multi_domain_physics_selection,
@@ -729,29 +730,36 @@ def front_door_physics_selection(
     whitelist, so the config the wizard emits BY DEFAULT could not pass
     at all; and the refusal arrived as a stack trace.
 
-    Nothing is widened, and nothing new is refused either.  A single
-    domain meets the whitelist exactly as it did in 1.1.0, defaulting to
-    WSM6 when the caller named no profile.  A domain tree keeps the
-    authority it already had -- the configuration loader's WRF selector
-    schema and readiness rails, which every domain passed before an
-    experiment existed -- and now records what it selected, per domain,
-    in a receipt the proof carries.  An explicitly named profile is
-    still enforced on either route, because a gate the caller ASKED for
-    is not a gate to drop.
+    A single domain meets the whitelist exactly as it did in 1.1.0,
+    defaulting to WSM6 when the caller named no profile.  An unnamed
+    domain tree is governed by the registry reachability of each complete
+    resolved component tuple: declared tuples proceed unchanged, while an
+    outside tuple must carry the explicit expert acknowledgement named by
+    :func:`multi_domain_physics_selection`.  That capability decision is
+    source-neutral.  The per-domain receipt records both the selectors and
+    their governance result.  An explicitly named profile is still
+    enforced on either route, because a gate the caller asked for remains
+    binding.
     """
 
+    acknowledgements, provenance = acknowledgement_delivery(
+        flag=expert_acknowledgements,
+        toml=getattr(exp, "acknowledgements", ()),
+    )
     if len(exp.domains) == 1:
         selection = validate_single_domain_physics_profile(
             WSM6_PROFILE_ID if physics_profile is None else physics_profile,
             config=exp.root.run,
-            expert_acknowledgements=expert_acknowledgements)
+            expert_acknowledgements=acknowledgements,
+            acknowledgement_provenance=provenance)
         _refuse_unoffered_land_surface(
             {1: selection.get("selectors")})
         return selection
     selection = multi_domain_physics_selection(
         {int(domain.grid_id): domain.run for domain in exp.domains},
         profile=physics_profile,
-        expert_acknowledgements=expert_acknowledgements)
+        expert_acknowledgements=acknowledgements,
+        acknowledgement_provenance=provenance)
     _refuse_unoffered_land_surface({
         int(grid_id): domain.get("selectors")
         for grid_id, domain in selection["domains"].items()})
@@ -810,6 +818,7 @@ def prepare_gfs_wrf(
     hierarchy_workers: int | None = None,
     physics_profile: str | None = None,
     expert_acknowledgements: tuple[str, ...] = (),
+    stock_wrf_export: bool = True,
 ) -> dict[str, object]:
     """Build native GFS initial/boundary files and return the proof receipt.
 
@@ -817,6 +826,17 @@ def prepare_gfs_wrf(
     experiment declares children.  The existing public single-domain CLI is
     unchanged; source-neutral public hierarchy configuration is owned by the
     higher-level integration layer.
+
+    ``stock_wrf_export`` asks the DOMAIN-TREE route for the bonus
+    unchanged-WRF file set beside the forecast it prepares.  It defaults
+    to True, so a tree whose root the exporter can represent publishes
+    exactly what it always published.  A tree it cannot represent no
+    longer fails: the export is refused, by name, in the proof's export
+    slot, and the forecast preparation completes -- which physics a tree
+    may run belongs to the registry and the acknowledgement gate, not to
+    a downstream file-format contract.  Pass False to skip the export
+    outright.  The single-domain route is unaffected: there the export IS
+    the product, and it takes the profile-aware branch anyway.
     """
 
     cycle_time = datetime.strptime(cycle, "%Y-%m-%d_%H:%M:%S")
@@ -1060,6 +1080,8 @@ def prepare_gfs_wrf(
                     },
                     artifact_manifest_reference=(
                         "../hierarchy-artifacts/domain-artifacts.json"),
+                    stock_wrf_export=(
+                        "optional" if stock_wrf_export else "off"),
                 )
                 hierarchy_seconds = time.perf_counter() - hierarchy_started
                 final_manifest = _verify_input_manifest(
@@ -1147,7 +1169,10 @@ def prepare_gfs_wrf(
                 # one, and the exporter must be handed the same profile
                 # the gate just checked or its receipt cannot match.
                 physics_profile=physics_selection["profile"],
-                expert_acknowledgements=expert_acknowledgements)
+                expert_acknowledgements=tuple(
+                    physics_selection["acknowledgements"]),
+                acknowledgement_provenance=physics_selection[
+                    "acknowledgement_provenance"])
             if (export_receipt.get("schema")
                     != "gpuwm-native-direct-wrf-export-v3"
                     or export_receipt.get("physics") != physics_selection):
@@ -1249,6 +1274,33 @@ def _arg(value) -> str:
     """
 
     return shlex.quote(str(value).replace("\\", "/"))
+
+
+def stock_wrf_export_notice(proof: Mapping[str, object]) -> list[str]:
+    """Say plainly when the bonus stock-WRF export did not happen.
+
+    The forecast preparation succeeded either way -- that is the point of
+    the layering -- but a user who expected ``wrf-native-input/`` has to
+    be told it is not there and why, in the same sentence form every
+    other refusal on this door uses.  A READY export prints nothing.
+    """
+
+    export = proof.get("wrf_manifest")
+    if not isinstance(export, Mapping):
+        return []
+    status = export.get("status")
+    if status in (None, "READY"):
+        return []
+    if status == "NOT_REQUESTED":
+        return ["", "rw-wps --source gfs: no stock-WRF export was requested; "
+                    "the prepared forecast is complete."]
+    return [
+        "",
+        "rw-wps --source gfs: the prepared forecast is complete, but the "
+        f"bonus stock-WRF export was refused: {export.get('reason')}.",
+        "  The domain tree itself is unaffected -- run the forecast "
+        "command below.",
+    ]
 
 
 def prepared_forecast_next_command(
@@ -1399,8 +1451,13 @@ def main(argv: list[str] | None = None) -> int:
              f"{WSM6_PROFILE_ID} and a domain tree, which has no profile "
              "whitelist, defaults to the suite the config selects")
     parser.add_argument(
-        "--expert-acknowledgement", action="append", default=[],
+        "--ack", action="append", default=[],
         help="registry-owned expert acknowledgement id; repeat as needed")
+    parser.add_argument(
+        "--no-stock-wrf-export", dest="stock_wrf_export",
+        action="store_false", default=True,
+        help="prepare the forecast only, and do not attempt the bonus "
+             "unchanged-WRF wrfinput/wrfbdy export of a domain tree")
     args = parser.parse_args(argv)
     try:
         proof = prepare_gfs_wrf(
@@ -1417,7 +1474,8 @@ def main(argv: list[str] | None = None) -> int:
             geog_root=args.geog_root,
             hierarchy_workers=args.hierarchy_workers,
             physics_profile=args.physics_profile,
-            expert_acknowledgements=tuple(args.expert_acknowledgement),
+            expert_acknowledgements=tuple(args.ack),
+            stock_wrf_export=args.stock_wrf_export,
         )
     except (ValueError, OSError) as error:
         # Every gate this door applies is a refusal, and a refusal is a
@@ -1431,6 +1489,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"rw-wps --source gfs: {error}.", file=sys.stderr)
         return 2
     print(json.dumps(proof, indent=2, sort_keys=True))
+    for line in stock_wrf_export_notice(proof):
+        print(line, file=sys.stderr)
     for line in prepared_forecast_next_command(
             proof, output_root=args.output_root,
             experiment_config=args.experiment_config,

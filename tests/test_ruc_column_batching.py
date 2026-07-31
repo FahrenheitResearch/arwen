@@ -121,7 +121,7 @@ def _columns(n: int, *, snow: bool, water: int = 0, ice: int = 0, seed: int = 0)
 def _run(values, ivgtyp, isltyp, *, ktau=2, chain=False, dt=12.0):
     return ruc_land_surface_step(
         values, dt=dt, ktau=ktau, zs=_PARAMS.zs, ivgtyp=ivgtyp,
-        isltyp=isltyp, ilnb=DEFINED_ILNB, ilnb_chain=chain, c1sn=C1SN,
+        isltyp=isltyp, em_core=0, ilnb=DEFINED_ILNB, ilnb_chain=chain, c1sn=C1SN,
         c2sn=C2SN, isncovr_opt=ISNCOVR_OPT,
         mminlu=_PARAMS.dataset_identifier, parameters=_PARAMS.bundle)
 

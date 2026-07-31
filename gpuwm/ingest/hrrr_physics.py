@@ -150,7 +150,10 @@ def initialize_prepared_physics(
         mminlu=str(landuse_attrs["MMINLU"]),
         iswater=int(landuse_attrs["ISWATER"]),
         islake=int(landuse_attrs["ISLAKE"]),
-        isice=int(landuse_attrs["ISICE"]), fractional_seaice=True)
+        isice=int(landuse_attrs["ISICE"]), fractional_seaice=True,
+        # real.exe's landmask/soil-category reconciliation decides a
+        # disagreeing column from its soil temperature, then its SST.
+        soil_temperature=fields["TSLB"], sst=fields.get("SST"))
     vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], valid_time)
     lai = monthly_interp_to_date(static["LAI12M"], valid_time)
     lat, lon = grid.latlon_mass()
@@ -162,6 +165,7 @@ def initialize_prepared_physics(
         ivgtyp=static["LU_INDEX"], isltyp=static["SCT_DOM"],
         vegfra=vegfra, tmn=fields["TMN"], xice=fields["SEAICE"],
         snow=fields["SNOW"], snow_depth=fields["SNOWH"],
+        sst=fields.get("SST", fields["TSK"]),
         radiation_start_time=valid_time, radiation_latitude=lat,
         radiation_longitude=lon)
     driver.fields["snoalb"][...] = cp.asarray(

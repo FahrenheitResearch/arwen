@@ -3,7 +3,7 @@
 
 Unlike the leaf validators this one does not assert bitwise equality on every
 field.  The warm step is bitwise everywhere; the cold step is bitwise on three
-of four columns, and the fourth carries an open, named residue.  See
+of five columns, and the two deep-cloud columns carry an open, named residue. See
 ``ULP_BUDGET`` for the measurement and what has been ruled out.
 """
 
@@ -26,6 +26,7 @@ from gpuwm.core.mynn_pbl import (
 
 EXPECTED_CASES = (
     "convective_land", "marine_cumulus", "stable_land", "cloudy_deep",
+    "snow_anvil",
 )
 NZ = 30
 NSTEP = 2
@@ -40,7 +41,10 @@ STATE_IN["qc_bl"] = "qc_bl_in"
 STATE_IN["qi_bl"] = "qi_bl_in"
 STATE_IN["cldfra_bl"] = "cldfra_bl_in"
 
-LAYER_CSV = {"sqv": "sqv3d", "sqc": "sqc3d", "sqi": "sqi3d", "tk": "t3d"}
+LAYER_CSV = {
+    "sqv": "sqv3d", "sqc": "sqc3d", "sqi": "sqi3d", "sqs": "sqs3d",
+    "tk": "t3d",
+}
 #: Output names that differ from the WRF 3-D array names.
 OUTPUT_CSV = {"el": "el_pbl", "sh": "sh3d", "sm": "sm3d"}
 
@@ -57,9 +61,9 @@ INT_OUTPUTS = ("kpbl", "ktop_plume")
 #:
 #: Step 2 -- the warm start, which is what a running model spends all its time
 #: doing -- is bitwise on every field of every column, and so are three of the
-#: four columns on step 1.  The whole residue below lives in the fourth
-#: column, ``cloudy_deep``, on the cold start, and it is an *open* defect, not
-#: a transcendental floor:
+#: five columns on step 1.  The residue below lives in the two deep-cloud
+#: columns, ``cloudy_deep`` and ``snow_anvil``, on the cold start, and it is
+#: an *open* defect, not a transcendental floor:
 #:
 #: * ``pblh``, ``kpbl``, ``rmol``, ``qc_bl``, ``qi_bl``, ``cldfra_bl``,
 #:   ``maxwidth``, ``maxmf``, ``ztop_plume``, ``ktop_plume`` and ``dozone``
@@ -70,13 +74,14 @@ INT_OUTPUTS = ("kpbl", "ktop_plume")
 #: * a standalone Fortran reproduction of the driver body
 #:   (``get_pblh`` + ``scale_aware`` + ``mym_initialize`` + ``mym_condensation``
 #:   + ``DMP_mf`` + ``mym_turbulence``, same inputs, same order) agrees with
-#:   this port bit for bit on all four columns -- including ``el``, ``sm``,
+#:   this port bit for bit on all four original columns -- including ``el``, ``sm``,
 #:   ``sh``, ``dfm`` and ``dfh`` on ``cloudy_deep``.
 #:
 #: So neither the leaves nor the assembly as this port sequences them can
 #: account for it: something the real ``mynn_bl_driver`` does on the cold-start
 #: path is not reproduced, and it only shows on the column carrying resolved
-#: condensate.  These numbers are the measured worst case so a regression
+#: condensate.  These numbers are the measured worst case across both columns
+#: so a regression
 #: still trips; they are not a licence.
 ULP_BUDGET: dict[tuple[int, str], int] = {
     (1, "rublten"): 34917581,
@@ -151,7 +156,9 @@ def main(path: str) -> None:
         )
         initflag = int(blocks[0][0]["initflag"])
         delt = np.float32(blocks[0][0]["delt"])
-        actual = mynn_bl_driver(values, initflag=initflag, delt=delt)
+        actual = mynn_bl_driver(
+            values, initflag=initflag, delt=delt, flag_qs=True,
+        )
 
         step_summary: dict[str, int] = {}
         for name in PROFILE_OUTPUTS:

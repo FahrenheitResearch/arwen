@@ -23,6 +23,14 @@ ran and passed; ``present`` is reserved for the few items where nothing
 deeper than existence can honestly be checked (and says so); ``missing``
 is a gap with a remedy; ``info`` is context.
 
+The report is layered (:mod:`gpuwm.explain`).  By default every finding
+is one line -- status, subject, and THE command that closes it -- and
+adjacent findings that share a remedy fold into one, because a fresh pip
+install gaps every Rust artifact at once and six identical remedies read
+as six problems.  ``--explain`` prints what this module always printed:
+the evidence behind each check and the whole pasteable remedy block,
+verbatim.  Nothing was shortened; the long form moved one flag away.
+
 Exit status: 0 when nothing actionable is missing, 1 otherwise.
 """
 
@@ -40,6 +48,7 @@ import sys
 from gpuwm import bridges
 from gpuwm import rustwx
 from gpuwm import rustwx_fetch
+from gpuwm.explain import explain_enabled
 
 # The pip extras exactly as the README installs them.
 #
@@ -77,12 +86,86 @@ _PROBE_TIMEOUT_S = 30
 
 @dataclass(frozen=True)
 class Check:
-    """One doctor line: verified/present/MISSING/info plus the remedy."""
+    """One doctor line: verified/present/MISSING/info plus the remedy.
+
+    Four fields carry the report; three more carry its *layering*.
+
+    ``detail`` and ``remedy`` are the full text -- the evidence and the
+    whole pasteable remedy block -- and ``--explain`` prints them
+    unchanged.  ``brief`` and ``action`` are the same finding at one
+    line: the short evidence token, and THE single command to run.
+    They are declared here rather than sliced out of ``detail`` and
+    ``remedy`` by a parser, because most remedy blocks open with a ``#``
+    comment and several have no command in them at all (an unset
+    ``GPUWM_CASE_DATA_ROOT`` needs a path only the reader knows).  A
+    parser would have had to guess, and a guessed next command is the
+    one thing this report cannot afford to get wrong.
+
+    ``group`` lets the terse report fold repeats: a pip install gaps
+    five bridges at once and prints ``gpuwm fetch-bridges`` five times,
+    which reads as five problems.  Grouping is a *presentation* of the
+    same five checks -- ``--explain`` and ``--json`` still carry each
+    one by name.
+    """
 
     name: str
     status: str  # "verified" | "present" | "missing" | "info"
     detail: str
     remedy: str | None = None
+    #: The single next command, or a short imperative when there is no
+    #: command to print.  ``None`` for a check with nothing to do.
+    action: str | None = None
+    #: Short evidence for the one-line form; ``None`` prints the name
+    #: alone, which is the right answer for a check whose only news is
+    #: that it passed.
+    brief: str | None = None
+    #: Fold key for the terse report; ``None`` never folds.
+    group: str | None = None
+
+
+#: Terse-report fold keys.  Both name a crate, because that is what
+#: makes the members share one remedy: everything under
+#: ``tools/grib1_bridge`` is staged (or built) together, and so is
+#: everything under ``tools/rustwx``.
+_GROUP_BRIDGES = "bridges"
+_GROUP_ENGINES = "rust engines"
+
+#: The two ``gpuwm setup`` steps, by the command each one runs.  Doctor
+#: names ``gpuwm setup`` in its summary exactly when it would otherwise
+#: print more than one of these, which is the definition of a fresh
+#: install: the wrapper is a shorter true answer than the list.
+SETUP_ACTIONS = ("gpuwm fetch-bridges", "gpuwm fetch-tables")
+
+
+def _short(text: str, limit: int = 64) -> str:
+    """One line of at most ``limit`` characters, ellipsis when cut.
+
+    The terse report shows evidence, not the whole finding: a failed
+    import's last traceback line can be any length, and a line that
+    wraps three times is the wall this report exists to stop being.  The
+    untruncated text is one flag away and the ellipsis says so.
+    """
+
+    flat = " ".join(str(text).split())
+    return flat if len(flat) <= limit else flat[:limit - 3].rstrip() + "..."
+
+
+def _build_action(crate_relative: str = bridges.CRATE_RELATIVE) -> str:
+    """THE single next command for a missing Rust artifact, here.
+
+    Three installs, three true one-liners.  In a checkout it is the
+    cargo build.  On a wheel with a bundle published for this platform
+    it is the download.  On a wheel without one the honest answer is
+    that there is no single command -- it is a clone and a build -- so
+    the action is the flag that prints those steps rather than a
+    fabricated one-liner naming a directory this install does not have.
+    """
+
+    if bridges.sources_present(crate_relative):
+        return bridges.cargo_build_one_liner(crate_relative)
+    if bridges.prebuilt_bundle_offer() is not None:
+        return "gpuwm fetch-bridges"
+    return "gpuwm doctor --explain"
 
 
 def _sha256(path: Path) -> str:
@@ -144,14 +227,17 @@ def _cupy_check() -> Check:
     ok, evidence = _import_probe("cupy")
     if ok:
         return Check("cupy (GPU runtime)", "verified",
-                     f"imported in a subprocess (cupy {evidence})")
+                     f"imported in a subprocess (cupy {evidence})",
+                     brief=f"cupy {evidence}")
     if evidence == "not installed":
         return Check(
             "cupy (GPU runtime)", "missing",
             "not installed -- gpuwm check/run and the domain wizard's "
             "sizing estimator need it; fetch/import-namelist/render "
-            "do not", GPU_EXTRA_HINT)
-    return Check("cupy (GPU runtime)", "missing", evidence, GPU_EXTRA_HINT)
+            "do not", GPU_EXTRA_HINT,
+            action="pip install 'gpuwm[gpu]'", brief="not installed")
+    return Check("cupy (GPU runtime)", "missing", evidence, GPU_EXTRA_HINT,
+                 action="pip install 'gpuwm[gpu]'", brief=_short(evidence))
 
 
 def _render_extra_check() -> Check:
@@ -163,16 +249,20 @@ def _render_extra_check() -> Check:
         versions = ", ".join(
             f"{name} {evidence}" for name, (_, evidence) in results.items())
         return Check("render extra (wrf-rust + matplotlib)", "verified",
-                     f"imported in subprocesses ({versions})")
+                     f"imported in subprocesses ({versions})",
+                     brief=_short(versions))
     if all(evidence == "not installed" for evidence in broken.values()):
         return Check(
             "render extra (wrf-rust + matplotlib)", "missing",
             f"{' and '.join(sorted(broken))} not installed -- gpuwm "
-            "render needs the render extra", RENDER_EXTRA_HINT)
+            "render needs the render extra", RENDER_EXTRA_HINT,
+            action="pip install 'gpuwm[render]'",
+            brief=f"{' and '.join(sorted(broken))} not installed")
     detail = "; ".join(f"{name}: {evidence}"
                        for name, evidence in sorted(broken.items()))
     return Check("render extra (wrf-rust + matplotlib)", "missing",
-                 detail, RENDER_EXTRA_HINT)
+                 detail, RENDER_EXTRA_HINT,
+                 action="pip install 'gpuwm[render]'", brief=_short(detail))
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +313,11 @@ def _bridge_checks() -> list[Check]:
                 f"# {bridges.BRIDGE_ENV[name]} names a missing "
                 "executable: point it at a real build, or unset it "
                 "and build one --\n"
-                + bridges.bridge_remedy(name)))
+                + bridges.bridge_remedy(name),
+                action=f"unset {bridges.BRIDGE_ENV[name]}, or point it "
+                       "at a real build",
+                brief=f"{bridges.BRIDGE_ENV[name]} names a missing file",
+                group=_GROUP_BRIDGES))
             continue
         if found is not None:
             ok, evidence = _exec_probe(found)
@@ -239,26 +333,33 @@ def _bridge_checks() -> list[Check]:
                 ok, evidence = bridges.bridge_abi_matches(name, found)
             if ok:
                 checks.append(Check(
-                    f"bridge {name}", "verified", f"{found} -- {evidence}"))
+                    f"bridge {name}", "verified", f"{found} -- {evidence}",
+                    brief=_short(evidence), group=_GROUP_BRIDGES))
             else:
                 checks.append(Check(
                     f"bridge {name}", "missing", f"{found} -- {evidence}",
                     f"# this one has to be replaced -- needed by: "
                     f"{consumer}\n"
                     + bridges.install_aware_build_hint(
-                        bridges.CARGO_BUILD_HINT)))
+                        bridges.CARGO_BUILD_HINT),
+                    action=_build_action(), brief=_short(evidence),
+                    group=_GROUP_BRIDGES))
         elif crate.is_file():
             checks.append(Check(
                 f"bridge {name}", "missing",
                 f"not built yet (checkout crate: {crate.parent})",
-                f"# needed by: {consumer}\n{bridges.CARGO_BUILD_HINT}"))
+                f"# needed by: {consumer}\n{bridges.CARGO_BUILD_HINT}",
+                action=bridges.CARGO_BUILD_HINT, brief="not built yet",
+                group=_GROUP_BRIDGES))
         else:
             checks.append(Check(
                 f"bridge {name}", "missing",
                 "no checkout crate and no prebuilt executable "
                 f"(searched {', '.join(str(c) for c in bridges.bridge_candidates(name))})",
                 bridges.bridge_remedy(name)
-                + f"\n  # needed by: {consumer}"))
+                + f"\n  # needed by: {consumer}",
+                action=_build_action(), brief="not staged",
+                group=_GROUP_BRIDGES))
     return checks
 
 
@@ -282,7 +383,11 @@ def _fetch_backbone_check() -> Check:
             name, "missing", str(error),
             f"# {rustwx_fetch.FETCH_ENV} names a missing executable: "
             "point it at a real build, or unset it and build one --\n"
-            + rustwx_fetch.fetch_remedy())
+            + rustwx_fetch.fetch_remedy(),
+            action=f"unset {rustwx_fetch.FETCH_ENV}, or point it at a "
+                   "real build",
+            brief=f"{rustwx_fetch.FETCH_ENV} names a missing file",
+            group=_GROUP_ENGINES)
     if found is None:
         crate = rustwx_fetch.crate_dir() / "Cargo.toml"
         if crate.is_file():
@@ -299,14 +404,20 @@ def _fetch_backbone_check() -> Check:
                 rustwx_fetch.CARGO_BUILD_HINT, "tools/rustwx")
             + "\n  # enables gpuwm fetch --engine rust: parallel range "
             "GETs,\n  # the cross-process NOMADS rate governor, and "
-            "--mode full-file")
+            "--mode full-file",
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="not built; gpuwm fetch uses the Python transport",
+            group=_GROUP_ENGINES)
     ok, evidence = rustwx_fetch.probe_fetch_bin(found)
     if not ok:
         return Check(
             name, "missing", f"{found} -- {evidence}",
             "# it has to be replaced:\n" + bridges.install_aware_build_hint(
-                rustwx_fetch.CARGO_BUILD_HINT, "tools/rustwx"))
-    return Check(name, "verified", f"{found} -- {evidence}")
+                rustwx_fetch.CARGO_BUILD_HINT, "tools/rustwx"),
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief=_short(evidence), group=_GROUP_ENGINES)
+    return Check(name, "verified", f"{found} -- {evidence}",
+                 brief=_short(evidence), group=_GROUP_ENGINES)
 
 
 def _rust_renderer_check() -> Check:
@@ -326,7 +437,11 @@ def _rust_renderer_check() -> Check:
             name, "missing", str(error),
             f"# {rustwx.RENDERER_ENV} names a missing executable: "
             "point it at a real build, or unset it and build one --\n"
-            + rustwx.renderer_remedy())
+            + rustwx.renderer_remedy(),
+            action=f"unset {rustwx.RENDERER_ENV}, or point it at a real "
+                   "build",
+            brief=f"{rustwx.RENDERER_ENV} names a missing file",
+            group=_GROUP_ENGINES)
     if found is None:
         crate = rustwx.crate_dir() / "Cargo.toml"
         if crate.is_file():
@@ -339,13 +454,18 @@ def _rust_renderer_check() -> Check:
             detail + " -- gpuwm render falls back to matplotlib",
             bridges.install_aware_build_hint(
                 rustwx.CARGO_BUILD_HINT, "tools/rustwx")
-            + "\n  # enables --engine rust and makes it the default")
+            + "\n  # enables --engine rust and makes it the default",
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="not built; gpuwm render uses matplotlib",
+            group=_GROUP_ENGINES)
     ok, evidence = rustwx.probe_renderer(found)
     if not ok:
         return Check(
             name, "missing", f"{found} -- {evidence}",
             "# it has to be replaced:\n" + bridges.install_aware_build_hint(
-                rustwx.CARGO_BUILD_HINT, "tools/rustwx"))
+                rustwx.CARGO_BUILD_HINT, "tools/rustwx"),
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief=_short(evidence), group=_GROUP_ENGINES)
     # Ask the question the renderer answers, in the renderer's own
     # order.  Probing gpuwm's checkout path alone reported "NO basemap
     # assets found" on every pip install -- including the ones where
@@ -362,7 +482,10 @@ def _rust_renderer_check() -> Check:
         basemap_note = f"basemaps {basemap} (RUSTWX_* environment override)"
     else:
         basemap_note = f"basemaps {basemap}"
-    return Check(name, "verified", f"{found} -- {evidence}; {basemap_note}")
+    return Check(name, "verified", f"{found} -- {evidence}; {basemap_note}",
+                 brief=("built; no basemap assets" if basemap is None
+                        else "built, with basemap assets"),
+                 group=_GROUP_ENGINES)
 
 
 def _cpu_library_check() -> Check:
@@ -385,16 +508,22 @@ def _cpu_library_check() -> Check:
             "cpu preprocess library", "missing",
             "gpuwm_preprocess_cpu shared library not found "
             "(--preprocess-backend cpu needs it; the CUDA backend does "
-            f"not): {error}", remedy)
+            f"not): {error}", remedy,
+            action=_build_action(), brief="not staged",
+            group=_GROUP_BRIDGES)
     except (OSError, RuntimeError, AttributeError) as error:
         return Check(
             "cpu preprocess library", "missing",
             f"found but not loadable as ABI v{CPU_BACKEND_ABI}: {error}",
-            "# it has to be replaced:\n" + remedy)
+            "# it has to be replaced:\n" + remedy,
+            action=_build_action(),
+            brief=f"not loadable as ABI v{CPU_BACKEND_ABI}",
+            group=_GROUP_BRIDGES)
     path, abi = backend.path, backend.abi_version
     backend.close()
     return Check("cpu preprocess library", "verified",
-                 f"{path} loaded via ctypes, ABI v{abi}")
+                 f"{path} loaded via ctypes, ABI v{abi}",
+                 brief=f"ABI v{abi}", group=_GROUP_BRIDGES)
 
 
 # ---------------------------------------------------------------------------
@@ -428,17 +557,22 @@ def _thompson_tables_check() -> Check:
                 f"  # one {total_mib:.0f} MiB download, SHA-256 verified "
                 "against the\n"
                 "  # packaged pins before install; --from stages it from a\n"
-                "  # local directory instead, offline")
+                "  # local directory instead, offline",
+                action="gpuwm fetch-tables",
+                brief=f"{len(fetchable)} externalized table(s) not staged "
+                      f"({total_mib:.0f} MiB)")
         return Check(
             "thompson tables", "missing", str(error),
             REINSTALL_HINT
             + "\n  # if GPUWM_THOMPSON_TABLE_ROOT is set, point it at a"
-            "\n  # byte-identical mirror of the packaged tables, or unset it")
+            "\n  # byte-identical mirror of the packaged tables, or unset it",
+            action="pip install -e .", brief=_short(str(error)))
     return Check(
         "thompson tables", "verified",
         f"{len(assets)} assets at {root} byte-validated (exact size + "
         f"SHA-256, {sum(asset.bytes for asset in assets):,} B), the same "
-        "validation every mp8 run performs at load")
+        "validation every mp8 run performs at load",
+        brief=f"{len(assets)} assets byte-validated")
 
 
 def _noah_tables_check() -> Check:
@@ -451,13 +585,15 @@ def _noah_tables_check() -> Check:
     except Exception as error:  # any parse/read failure is the finding
         return Check("noah tables", "missing",
                      f"packaged tables failed to parse: {error}",
-                     REINSTALL_HINT)
+                     REINSTALL_HINT, action="pip install -e .",
+                     brief=_short(f"failed to parse: {error}"))
     return Check(
         "noah tables", "verified",
         "VEGPARM/SOILPARM/GENPARM parsed by the SOIL_VEG_GEN_PARM "
         f"transcription ({tables.lucats} vegetation / {tables.slcats} "
         f"soil categories); LANDUSE.TBL parsed ({landuse.lucats} "
-        "categories)")
+        "categories)",
+        brief="VEGPARM/SOILPARM/GENPARM/LANDUSE parsed")
 
 
 # ---------------------------------------------------------------------------
@@ -492,7 +628,8 @@ def _geog_tree_checks(geog: Path) -> list[Check]:
             "WPS_GEOG", "missing",
             f"{geog} does not exist (the default geog_root).  Nothing "
             "that builds static fields can run without it",
-            GEOG_HINT)]
+            GEOG_HINT, action="gpuwm fetch-geog",
+            brief=f"{geog} does not exist")]
     absent = sorted(name for name in GEOG_DATASETS
                     if not (geog / name).is_dir())
     unindexed = sorted(
@@ -509,12 +646,15 @@ def _geog_tree_checks(geog: Path) -> list[Check]:
                 f"partial download): {', '.join(unindexed)}")
         checks.append(Check(
             "WPS_GEOG", "missing", f"{geog}: " + "; ".join(problems),
-            GEOG_HINT))
+            GEOG_HINT, action="gpuwm fetch-geog",
+            brief=f"{len(absent) + len(unindexed)} of "
+                  f"{len(GEOG_DATASETS)} dataset(s) absent or unindexed"))
     else:
         checks.append(Check(
             "WPS_GEOG", "verified",
             f"{geog} carries all {len(GEOG_DATASETS)} required datasets, "
-            "each with its WPS index file"))
+            "each with its WPS index file",
+            brief=f"all {len(GEOG_DATASETS)} datasets indexed"))
     return checks
 
 
@@ -543,7 +683,9 @@ def _case_data_root_check() -> list[Check]:
                 "directory that CONTAINS your case bundles and (by "
                 "default) WPS_GEOG -- configs reference "
                 "${GPUWM_CASE_DATA_ROOT}/<bundle>/... and geog_root "
-                "defaults to ${GPUWM_CASE_DATA_ROOT}/WPS_GEOG"),
+                "defaults to ${GPUWM_CASE_DATA_ROOT}/WPS_GEOG",
+                brief=f"not set; geog_root defaults to "
+                      f"{default_geog_root()}"),
             *_geog_tree_checks(default_geog_root()),
         ]
     root = Path(raw)
@@ -553,11 +695,13 @@ def _case_data_root_check() -> list[Check]:
             f"set to {raw} but that directory does not exist",
             "# point GPUWM_CASE_DATA_ROOT at the directory that CONTAINS\n"
             "  # your case bundles and WPS_GEOG -- there is no command to\n"
-            "  # print here, only your path")]
+            "  # print here, only your path",
+            action="point GPUWM_CASE_DATA_ROOT at an existing directory",
+            brief=f"set to {raw}, which does not exist")]
     return [
         Check("GPUWM_CASE_DATA_ROOT", "present",
               f"{root} (directory exists; its datasets are checked "
-              "individually below)"),
+              "individually below)", brief=str(root)),
         *_geog_tree_checks(root / "WPS_GEOG"),
     ]
 
@@ -570,7 +714,8 @@ def _distribution_manifest_check() -> Check:
             name, "info",
             "not set (normal for source clones and pip installs; only "
             "sealed runtime archives set it to bind their decoder "
-            "inventory)")
+            "inventory)",
+            brief="not set (normal for clones and pip installs)")
     path = Path(raw)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -584,14 +729,17 @@ def _distribution_manifest_check() -> Check:
             f"set to {raw} but not a READY gpuwm-native-wrf-runtime-v1 "
             "document",
             f"# unset {name} unless you are running a sealed runtime\n"
-            "  # archive, whose installer sets it correctly")
+            "  # archive, whose installer sets it correctly",
+            action=f"unset {name}",
+            brief="not a READY gpuwm-native-wrf-runtime-v1 document")
     declared = payload.get("payload")
     if not isinstance(declared, dict) or not declared:
         return Check(
             name, "present",
             f"{path}: READY schema, but the manifest declares no "
             "per-artifact hashes, so only its schema and status could be "
-            "checked (presence-only)")
+            "checked (presence-only)",
+            brief="READY, but declares no per-artifact hashes")
     root = path.resolve().parent
     failures: list[str] = []
     verified = 0
@@ -621,23 +769,31 @@ def _distribution_manifest_check() -> Check:
             f"{path}: {len(failures)} of {len(declared)} declared "
             f"artifacts failed revalidation: {shown}{more}",
             "# re-extract the sealed runtime archive (its installer wrote\n"
-            f"  # this manifest beside its artifacts), or unset {name}")
+            f"  # this manifest beside its artifacts), or unset {name}",
+            action="re-extract the sealed runtime archive, or unset "
+                   f"{name}",
+            brief=f"{len(failures)} of {len(declared)} artifacts failed "
+                  "revalidation")
     return Check(
         name, "verified",
         f"{path}: READY; all {verified} declared artifacts re-hashed "
-        "and match")
+        "and match",
+        brief=f"READY; {verified} artifacts re-hashed")
 
 
 def collect_checks() -> list[Check]:
     checks: list[Check] = []
     version = ".".join(str(v) for v in sys.version_info[:3])
     if sys.version_info >= (3, 11):
-        checks.append(Check("python", "verified", f"{version} (>= 3.11)"))
+        checks.append(Check("python", "verified", f"{version} (>= 3.11)",
+                            brief=f"{version} (>= 3.11)"))
     else:
         checks.append(Check(
             "python", "missing", f"{version} is below the 3.11 floor",
             "# install Python 3.11 or newer -- which installer is right\n"
-            "  # here depends on how this Python was installed"))
+            "  # here depends on how this Python was installed",
+            action="install Python 3.11 or newer",
+            brief=f"{version} is below the 3.11 floor"))
     checks.append(_cupy_check())
     checks.append(_render_extra_check())
     checks.append(_rust_renderer_check())
@@ -654,6 +810,12 @@ def collect_checks() -> list[Check]:
 #: Column the first remedy line starts at: ten spaces of gutter plus
 #: the ``remedy: `` label itself.  Continuation lines match it.
 _REMEDY_LABEL = "          remedy: "
+
+#: Status -> the label both reports print.  One vocabulary, so a reader
+#: who runs the terse form and then ``--explain`` is reading the same
+#: four words in the same column.
+_LABELS = {"verified": "ok     ", "present": "present",
+           "missing": "MISSING", "info": "info   "}
 
 
 def _remedy_block(remedy: str) -> list[str]:
@@ -675,11 +837,17 @@ def _remedy_block(remedy: str) -> list[str]:
 
 
 def format_report(checks: list[Check]) -> str:
+    """The full report: every finding's evidence and whole remedy block.
+
+    This is what ``gpuwm doctor --explain`` prints, unchanged from when
+    it was the only thing doctor printed.  The remedy blocks in
+    particular are not summarized anywhere: they are the text a reader
+    pastes, and a paraphrase of a command is not a command.
+    """
+
     lines = ["gpuwm doctor: runtime estate"]
-    labels = {"verified": "ok     ", "present": "present",
-              "missing": "MISSING", "info": "info   "}
     for check in checks:
-        lines.append(f"  {labels[check.status]} {check.name}: "
+        lines.append(f"  {_LABELS[check.status]} {check.name}: "
                      f"{check.detail}")
         if check.remedy:
             lines.extend(_remedy_block(check.remedy))
@@ -703,13 +871,93 @@ def format_report(checks: list[Check]) -> str:
     return "\n".join(lines)
 
 
+def _fold(checks: list[Check]) -> list[tuple[Check, int]]:
+    """Collapse runs of same-status, same-group, same-action checks.
+
+    A pip install gaps every Rust artifact at once, and the untidy
+    consequence is six identical ``-> gpuwm fetch-bridges`` lines that
+    read as six separate problems needing six separate fixes.  Folding
+    is presentation only: the fold is keyed on the three things that
+    make two lines say the same thing, and each member survives intact
+    in ``--explain`` and ``--json``.
+
+    Only ADJACENT checks fold, so the report keeps the order
+    :func:`collect_checks` chose -- a group interrupted by an unrelated
+    check stays two entries rather than silently reordering the report.
+    """
+
+    folded: list[tuple[Check, int]] = []
+    for check in checks:
+        if folded and check.group is not None:
+            last, count = folded[-1]
+            if (last.group == check.group and last.status == check.status
+                    and last.action == check.action):
+                folded[-1] = (last, count + 1)
+                continue
+        folded.append((check, 1))
+    return folded
+
+
+def _setup_summary(gaps: list[Check]) -> str | None:
+    """``gpuwm setup`` as the next step, when it is genuinely shorter.
+
+    Named only when more than one gap would be closed by it -- which is
+    what a fresh install looks like from here.  A single gap already
+    printed its own one command above; sending that reader to a wrapper
+    that runs two steps to fix one is longer, not shorter.
+    """
+
+    wanted = {check.action for check in gaps
+              if check.action in SETUP_ACTIONS}
+    if len(wanted) < 2:
+        return None
+    return ("gpuwm setup runs " + " then ".join(
+        action for action in SETUP_ACTIONS if action in wanted)
+        + " in order.")
+
+
+def format_brief(checks: list[Check]) -> str:
+    """The default report: one line per finding, and the next command.
+
+    Everything :func:`format_report` prints is still true and still
+    reachable; this is the same findings at the width of a glance.  The
+    rule for each line is what a reader in a hurry needs: the status,
+    what it is about, and -- when there is something to do -- the single
+    command that does it.
+    """
+
+    lines = ["gpuwm doctor"]
+    for check, count in _fold(checks):
+        name = check.name if count == 1 else f"{check.group} ({count})"
+        line = f"  {_LABELS[check.status]} {name}"
+        if count == 1 and check.brief:
+            line += f": {check.brief}"
+        if check.action:
+            line += f"  -> {check.action}"
+        lines.append(line)
+    gaps = [check for check in checks if check.status == "missing"]
+    if gaps:
+        summary = f"gpuwm doctor: {len(gaps)} gap(s)."
+        setup = _setup_summary(gaps)
+        if setup:
+            summary += " " + setup
+        lines.append(summary)
+    else:
+        lines.append("gpuwm doctor: no gaps.")
+    lines.append("Run `gpuwm doctor --explain` for the full remedy for "
+                 "each line, with the evidence behind it.")
+    return "\n".join(lines)
+
+
 def doctor_main(args) -> int:
     checks = collect_checks()
     if getattr(args, "json", False):
         print(json.dumps(
             [check.__dict__ for check in checks], indent=2))
-    else:
+    elif explain_enabled(args):
         print(format_report(checks))
+    else:
+        print(format_brief(checks))
     return 1 if any(check.status == "missing" for check in checks) else 0
 
 
@@ -719,12 +967,13 @@ def register_cli(subparsers) -> None:
         help="verify the runtime estate for real (subprocess imports of "
              "cupy/wrf/matplotlib, bridge probe executions, ctypes load "
              "of the CPU library, table hash/parse validation, WPS_GEOG "
-             "index files) and print the exact remedy for each gap")
+             "index files) and print one line per item with the command "
+             "that closes each gap (--explain for the full remedies)")
     parser.add_argument("--json", action="store_true",
                         help="emit the checks as JSON")
     parser.set_defaults(func=doctor_main)
     return parser
 
 
-__all__ = ["Check", "collect_checks", "doctor_main", "format_report",
-           "register_cli"]
+__all__ = ["Check", "SETUP_ACTIONS", "collect_checks", "doctor_main",
+           "format_brief", "format_report", "register_cli"]

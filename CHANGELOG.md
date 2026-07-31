@@ -1,4 +1,166 @@
 # Changelog
+## 1.3.0 (2026-07-31)
+
+Ten couplings that in 1.2.x produced silently non-WRF forcing are
+implemented from WRF v4.6.1 source transcription, the MYNN surface
+layer pairs with the RUC and Noah-MP land models, HRRR analyses
+initialize NSSL-2 with their hydrometeors retained, and a
+hand-authored physics tuple outside the registry's ratified set -- one
+that is otherwise complete and executable -- can be run with one short
+acknowledgement. The command surface answers first: `gpuwm doctor` and
+the domain wizard print one line per finding with the full prose one
+flag away, and `gpuwm setup` stages a fresh install in one command.
+
+### Changed forecasts
+
+Configurations using MYNN, RUC, Noah-MP, or NSSL-2 produce different
+trajectories than 1.2.x where their forcing or initialization follows
+WRF in 1.3.0:
+
+- MYNN receives the real snow mixing ratio when the microphysics
+  carries one (WRF `FLAG_QS`); its boundary-layer cloud fields
+  (`QC_BL`/`QI_BL`/`CLDFRA_BL`) are consumed by all three radiation
+  implementations with WRF's `icloud_bl=1` merge semantics.
+- RUC runs WRF-ARW's per-species precipitation partition (rain, snow,
+  graupel reach the soil model separately), the lake bypass, the
+  fractional sea-ice deblend/reblend, and radiation-time `GSW`.
+- Noah-MP receives all six WRF precipitation rates and the radiation
+  driver's carried `COSZEN` instead of a per-call recomputation;
+  glacier columns are refused before the forecast starts rather than
+  mid-run.
+- NSSL-2 initialized from a native HRRR analysis starts from the five
+  retained analyzed species whichever radiation implementation is
+  selected, RTE included; in 1.2.x those fields started from zero.
+- NSSL-2 with legacy RRTMG activates ice and snow cloud optics, as WRF
+  does; the 1.2.x exclusion was not WRF-faithful.
+- Coastal native-HRRR domains where the analysis landmask disagrees
+  with RUC's soil-category requirements are reconciled from the
+  evidence in the analysis, or refused before the run starts with the
+  points named; in 1.2.x this route crashed inside the RUC soil model.
+
+The four certified profiles (WSM6+Dudhia, Thompson+Dudhia,
+Morrison+RTE, NSSL+RTE on Noah/YSU/MM5) are byte-identical to 1.2.x:
+their two-step trajectory hashes are pinned in the suite and did not
+move through any of these changes.
+
+### MYNN surface pairings
+
+In 1.3.0, `sf_sfclay_physics = 5` pairs with `sf_surface_physics = 3`
+(RUC) and `4` (Noah-MP), following the write-back ownership sequence
+of WRF's surface driver: which component owns the fluxes, exchange
+coefficients, and 2-m diagnostics at each point in the step is
+transcribed from `phys/module_surface_driver.F`, tested against
+independent source transcription, and proven with short GPU
+integrations of both pairings. The WRF namelist importer admits a
+complete MYNN 5/5 stack (`bl_pbl_physics = 5` with
+`sf_sfclay_physics = 5`) paired with any ported microphysics scheme,
+where 1.2.x admitted it only with WSM6. The MYNN half-suite refusals
+(MYNN surface without MYNN PBL, and the reverse) remain.
+
+### HRRR analyzed hydrometeors
+
+In 1.3.0, native HRRR preparation retains analyzed QC/QR/QI/QS/QG for
+NSSL-2 (in 1.2.x only WSM6/Thompson/Morrison), retains QC/QR for
+Kessler under WRF real.exe's Registry policy with the frozen species
+accounted in a receipt, and refuses microphysics-off with a statement
+of what cannot be represented. The preparation receipt binds decoded
+source to initialized state per species -- byte hashes, nonzero masks,
+extrema -- and states its own evidentiary strength: a species with no
+source mass is reported VACUOUS, not proven. An independent check
+exists outside this repository: WRF's own real.exe, run on the same
+source bytes, initializes the five species with nonzero-cell counts
+within 0.06% of this route's.
+
+### Expert acknowledgement for unratified tuples
+
+A hand-authored domain tree whose resolved physics tuple falls outside
+the registry's declared reachability -- but is otherwise complete and
+executable -- refuses with the exact line to add, instead of silently
+running or silently failing at first call. Acknowledging is one
+repeatable flag, `--ack expert-tuple-v1`, or one configuration line,
+`acknowledgements = ["expert-tuple-v1"]` under `[experiment]`. The
+receipt records which IDs were used and how they were supplied. The
+acknowledgement is a provenance gate, not a bypass: component
+availability, half-suite coupling, soil and land-model compatibility,
+geometry, vertical bounds, and runtime-budget refusals all still
+apply, and an acknowledged tuple that fails one of them refuses with
+that check's own message. The stock-WRF export is layered the same
+way: a physics tuple outside the exporter's stock coverage refuses
+the export by name while the forecast itself prepares, and
+`--no-stock-wrf-export` skips the export with a NOT_REQUESTED
+receipt. Registry-ratified tuples run without acknowledgement, and
+two joined the ratified set: Noah-MP on GFS as an expert template
+(the runner already advertised it), and NSSL-2 with legacy RRTMG as a
+fixed profile at validation-candidate maturity, buildable end to end
+on both the GFS and native HRRR routes -- the runner builds its
+configuration from the profile's complete declared switch inventory,
+and a profile switch without a declared forwarding home is a named
+refusal.
+
+### Refusals moved to where they can be read
+
+Scheme vertical limits (MYNN needs nz >= 5, Kain-Fritsch 8..128, WSM6
+2..80, the radiation implementations' layer caps, and the rest) are
+checked at configuration validation and preparation, naming the
+component and both bounds -- in 1.2.x a first-timestep abort.
+Microphysics-off plans on real-data routes are decided by the plan
+validator, which states what a moist-but-scheme-less state holds,
+instead of being deferred to source initialization.
+
+### A command surface that answers first
+
+`gpuwm doctor` prints one line per finding -- status, subject, the one
+command that closes it -- and folds repeats that share a remedy; the
+full evidence and pasteable remedy blocks are unchanged under
+`--explain` (byte-identical to 1.2.x's output, held by a golden
+fixture). The domain wizard ends with a numbered three-command block
+and nothing after it. `gpuwm setup` runs `fetch-bridges` and
+`fetch-tables` with one status line each; geography stays opt-in
+(`--with-geog`, size printed first). `pip install gpuwm[all]` installs
+the GPU and render extras together. Scripts that parsed doctor's
+default text should use `--json`, which is unchanged and complete. The
+HRRR decoder's air-gapped build invokes Cargo from the crate-local
+directory so the vendored-source configuration is discovered; building
+the bridge without network access works from a bare checkout, where in
+1.2.x it could fail to find the vendored crates.
+
+### Fixed
+
+- 1.2.3 cannot complete a prepared GFS single-domain forecast: its
+  fetch writes front-door manifests carrying pressure-ladder
+  provenance (`pressure_levels_hpa`, `top_pressure_pa`) that its own
+  runner refuses as an identity mismatch. The 1.3.0 runner compares
+  manifest identity strictly on model, product, and cycle; validates
+  the declared ladder through the fetch lane's own validator against
+  the experiment's model top; and records
+  `input.source_manifest_identity` in the run report. An unknown
+  `source` field is still a refusal, never a silently dropped key.
+
+### Evidence and its edges
+
+Every reopened coupling passed preparation, a real GPU integration,
+and its receipts on GFS and/or native HRRR data, and matched WRF
+v4.6.1 reference runs are banked for trajectory comparison. The
+reference runs' retained forcing bytes match the ArWen-side inputs by
+hash, with two recorded exceptions: the WRF-side HRRR preparation
+added the MSLMA field, fetched by byte range from the same archive
+objects and hash-recorded; and the WPS static-geography trees on the
+two preparation hosts are not identical. Four edges are stated rather
+than implied:
+
+- The Dudhia-shortwave radiation selector (`ra_lw_physics = 0`,
+  `ra_sw_physics = 1`) has no exact WRF counterpart -- WRF's longwave
+  selector has no "off" -- so its reference runs bracket the
+  configuration between RRTM-longwave and radiation-off.
+- Trajectory comparison against WRF is incomplete, so no combination
+  is described as WRF-equivalent in this release. Maturity labels
+  state what each combination has passed.
+- HRRR with Kessler: the preparation retention policy above exists,
+  but no registry template or profile admits the pairing in 1.3.0;
+  its front-door admission is deferred.
+- Checkpoint/restart content sealing (tracked internally as K-02)
+  remains open and out of scope for 1.3.0.
+
 ## 1.2.3 (2026-07-30)
 
 The 1.2.2 workflow stopped at its test gate on two defects the ubuntu
@@ -415,6 +577,82 @@ history files unchanged.
   that crate shared version 0.3.9 and only one carried the governor; a
   dependency-graph reorder can no longer swap in the governorless copy
   under the same version string.
+
+## Unreleased — physics reopening battery fixes
+
+### The documented HRRR front door was dead, and the suite could not see it
+
+- **Fixed:** `tools/prepare_hrrr_wrf.py` demanded receipt schema
+  `gpuwm-hrrr-microphysics-initialization-v1` while
+  `tools/hrrr_single_domain_benchmark.py` had moved to `v2`, so a fully
+  successful preparation still raised `RuntimeError: HRRR preparation
+  omitted deterministic cold-start evidence` -- for all seven profiles,
+  taking the `gpuwm.wrf_direct` stock-WRF export and every
+  `--root-preparation` tree with it. The consumer now validates the
+  **fields**: the QC/QR/QI/QS/QG partition, the per-species
+  decoded-source and initialized-state fingerprints, and the retention
+  claim each species makes about itself.
+- **Older schemas are deliberately not accepted.** `main` runs the
+  producer itself and reads back the `report.json` that invocation just
+  wrote, so an older receipt cannot reach this consumer and accepting one
+  would widen the gate for a case that cannot occur.
+- **The test shape was the defect.** `tests/test_prepare_hrrr_wrf.py`
+  built the receipt it wanted instead of consuming the producer's, so the
+  two were never bound to one schema constant. It now runs the real
+  producer -- decoded native fields through `initialize_real`, then
+  through the same `_initial_hrrr_microphysics_receipt` the benchmark
+  binds into `report.json` -- so a future schema bump breaks the consumer
+  the moment it lands.
+
+### A receipt now states its own evidentiary strength
+
+- The analyzed-hydrometeor retention gate is one-sided (`source nonzero
+  > 0 and live nonzero == 0 -> raise`), so on a cloud-free analysis it
+  cannot fire and a green receipt proves nothing. Each species is now
+  recorded `PROVEN` or `VACUOUS` with the counts behind the verdict, and
+  the domain carries a `retention_evidence_summary`. No threshold is
+  invented for "negligible" beyond exact zero; the numbers an acceptance
+  harness would need to impose one are published instead. Schema
+  `gpuwm-hrrr-microphysics-initialization-v3`.
+
+### RUC no longer meets a land column carrying water soil
+
+- **Fixed:** a land column with `SOILTYP = 14` reached the RUC cold start
+  and produced a non-finite `MAVAIL`, killing native HRRR RUC on its
+  first surface call with zero model time advanced. WRF never lets that
+  column exist: `dyn_em/module_initialize_real.F:3608-3650` reconciles it
+  at `real.exe` time -- to land (`IVGTYP 5`, `ISLTYP 8`) from its soil
+  temperature, to water from its SST, and to
+  `wrf_error_fatal('mismatch_landmask_ivgtyp')` with neither -- and RUC
+  assumes that without re-verifying it (`soilvegin`,
+  `phys/module_sf_ruclsm.F:6973-6984`, has no `else` for `isltyp == 14`,
+  so the column keeps zeroed soil parameters and `:913` evaluates
+  `0./0.`). `gpuwm/core/landuse.py`, the transcription of that same cold
+  start, now performs the reconciliation, which fixes every source at one
+  seam rather than clamping a NaN where WRF has no clamp.
+
+### MYNN is reachable with something other than WSM6
+
+- `gpuwm import-namelist` had no mapping for `bl_pbl_physics = 5`, so the
+  MYNN suite was expressible only through the one fixed profile that pins
+  `mp_physics = 6`. The readiness authority already admitted the coupled
+  5/5 pair and the dispatch already ran it; only the importer lagged. No
+  gate is widened -- the half-suite, MYNN+RUC and MYNN+Noah-MP refusals
+  are unchanged and pinned by tests.
+
+### The air-gapped Rust build
+
+- **Fixed, and the cause was not a missing crate.** Cargo finds the
+  crates.io -> `vendor/crates-io` replacement in the crate's own
+  `.cargo/config.toml` by walking up from the **working directory**,
+  never from `--manifest-path`, so a build driven from the repository
+  root bypasses the vendored registry and resolves against crates.io.
+  `tools/prepare_hrrr_wrf.py`'s decoder auto-build,
+  `tools/prepare_hrrr_500_native.sh` and `docs/benchmark.md` now `cd`
+  into the crate as README/`install.sh`/`install.ps1`/CONTRIBUTING always
+  did. A new test refuses any shipped build site that reaches a vendored
+  workspace through `--manifest-path`, and checks every locked external
+  package is actually vendored.
 
 ## 1.1.2 (2026-07-30)
 

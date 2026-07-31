@@ -26,8 +26,11 @@ It refuses to overwrite its JSON output.
 Build the CPU library first, then run from the same clean source tree:
 
 ```bash
-cargo build --manifest-path tools/grib1_bridge/Cargo.toml \
-  --release --locked --offline
+# cd into the crate: cargo finds the vendored-registry replacement in
+# tools/grib1_bridge/.cargo/config.toml by walking up from the working
+# directory, so a --manifest-path build from the repository root resolves
+# against crates.io and cannot build air-gapped.
+(cd tools/grib1_bridge && cargo build --release --locked --offline)
 
 python tools/benchmark_preprocess_backends.py \
   --decoded /evidence/gfs/decoded \

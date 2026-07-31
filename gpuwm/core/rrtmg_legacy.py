@@ -77,15 +77,37 @@ from pathlib import Path
 
 import numpy as np
 
+from gpuwm.core.mynn_radiation import (
+    merge_mynn_bl_clouds,
+    mynn_bl_cloud_active,
+    wrf_itimestep,
+)
+
 from gpuwm.core import rrtmg_legacy_prep as _prep
 from gpuwm.core import rrtmg_lw as _lw
 from gpuwm.core import rrtmg_mcica as _mcica
 from gpuwm.core import rrtmg_sw as _sw
 
-__all__ = ["ParentOzoneProvider", "RRTMGLegacyRadiation",
-           "legacy_radiation_vram_bytes", "radconst", "calc_coszen"]
+__all__ = [
+    "MAX_LONGWAVE_LAYERS", "MAX_SHORTWAVE_LAYERS",
+    "ParentOzoneProvider", "RRTMGLegacyRadiation",
+    "legacy_radiation_layer_counts", "legacy_radiation_vram_bytes",
+    "radconst", "calc_coszen",
+]
 
 F = np.float32
+MAX_LONGWAVE_LAYERS = _lw.MAX_RADIATION_LAYERS
+MAX_SHORTWAVE_LAYERS = _sw.MAX_RADIATION_LAYERS
+
+
+def legacy_radiation_layer_counts(
+        nz: int, p_top: float) -> tuple[int, int]:
+    """Return exact first-call legacy RRTMG ``(LW, SW)`` layer counts."""
+
+    return (
+        int(_prep.compute_lw_nlayers(int(nz) + 1, float(p_top))),
+        int(nz) + 1,
+    )
 
 #: WRF share/module_model_constants.F: piconst (default REAL) and the
 #: compile-time parameter folds DEGRAD = piconst/180., DPD = 360./365.
@@ -211,6 +233,20 @@ _MP_DECLARES_RADII = {
     10: False,   # Morrison two-moment: NOT in WRF's use_mp_re list
     18: True,    # NSSL 2-moment (nssl_2moment_on=1)
 }
+
+_LEGACY_ICE_ACTIVE_MICROPHYSICS = frozenset((6, 8, 10, 18))
+
+
+def legacy_ice_active(mp_physics: int) -> bool:
+    """WRF Registry ``F_QI``/``F_QS`` membership for ``cal_cldfra1``."""
+
+    return int(mp_physics) in _LEGACY_ICE_ACTIVE_MICROPHYSICS
+
+
+def legacy_radius_meters(effective_radius_microns):
+    """Apply the RRTMG wrapper's micron-to-meter conversion exactly once."""
+
+    return (effective_radius_microns * F(1.0e-6)).astype(np.float32)
 
 
 def _r512(nbytes):
@@ -696,19 +732,20 @@ class RRTMGLegacyRadiation:
                     "rrtmg_legacy needs p_top (constructor argument or "
                     "state.p_top) to build WRF's Cavallo buffer layers")
             p_top = float(declared)
-        nlayers = int(_prep.compute_lw_nlayers(nz + 1, p_top))
-        if nlayers > 128:
+        nlayers, sw_layers = legacy_radiation_layer_counts(nz, p_top)
+        if nlayers > MAX_LONGWAVE_LAYERS:
             raise ValueError(
-                f"LW nlayers={nlayers} exceeds the batched engine's 128-"
-                "layer bound (rlw_rtrn_march RLW_MAXLAY)")
-        if nz + 1 > self._cuda_sw.max_nlay + 1:
+                f"LW nlayers={nlayers} exceeds the batched engine's "
+                f"{MAX_LONGWAVE_LAYERS}-layer bound "
+                "(rlw_rtrn_march RLW_MAXLAY)")
+        if sw_layers > MAX_SHORTWAVE_LAYERS:
             raise ValueError(
-                f"SW nlay={nz + 1} exceeds the CUDA SW engine's "
-                f"{self._cuda_sw.max_nlay + 1}-layer bound (RSW_MAXLAY)")
+                f"SW nlay={sw_layers} exceeds the CUDA SW engine's "
+                f"{MAX_SHORTWAVE_LAYERS}-layer bound (RSW_MAXLAY)")
 
         mp_physics = int(getattr(cfg, "mp_physics", 0))
         warm_rain = mp_physics == 1
-        ice_active = mp_physics in (6, 8, 10)
+        ice_active = legacy_ice_active(mp_physics)
         sf_surface_physics = int(getattr(cfg, "sf_surface_physics", 2))
 
         # ---- host column packing (pure data movement) -----------------
@@ -770,7 +807,7 @@ class RRTMGLegacyRadiation:
                     "radii silently")
             eff_um = self._cols(value, nz)
             self._validate_radii_micron(name, eff_um, moist[q])
-            radii[key] = (eff_um * F(1.0e-6)).astype(np.float32)
+            radii[key] = legacy_radius_meters(eff_um)
             has_req[name] = 1
 
         surf = {name: self._flat(fields[name])
@@ -790,6 +827,26 @@ class RRTMGLegacyRadiation:
             cp.asarray(moist["qi"]), cp.asarray(moist["qs"]),
             cp.asarray(t3d), cp.asarray(p3d),
             f_qc=True, f_qi=ice_active, f_qs=ice_active))
+        active_bl = mynn_bl_cloud_active(
+            getattr(cfg, "bl_pbl_physics", 0), getattr(cfg, "icloud_bl", 0))
+        if active_bl:
+            # Absent species share ``zeros_cols`` above.  The WRF merge writes
+            # QC/QI only, so give those two the same independent storage real
+            # Registry moist arrays have before applying it.
+            moist["qc"] = moist["qc"].copy()
+            moist["qi"] = moist["qi"].copy()
+        qc_bl = self._cols(fields["qc_bl"], nz) if active_bl else None
+        qi_bl = self._cols(fields["qi_bl"], nz) if active_bl else None
+        cldfra_bl = (
+            self._cols(fields["cldfra_bl"], nz) if active_bl else None)
+        moist["qc"], moist["qi"], cldfra = merge_mynn_bl_clouds(
+            moist["qc"], moist["qi"], cldfra,
+            qc_bl=qc_bl, qi_bl=qi_bl, cldfra_bl=cldfra_bl,
+            bl_pbl_physics=getattr(cfg, "bl_pbl_physics", 0),
+            icloud_bl=getattr(cfg, "icloud_bl", 0),
+            itimestep=(wrf_itimestep(state.elapsed_seconds, cfg.dt)
+                       if active_bl else 1),
+        )
 
         # ---- calendar / solar (dossier sections 4, 9.1) ---------------
         valid_time = (self.start_time
@@ -942,4 +999,6 @@ class RRTMGLegacyRadiation:
             rthratenlw=self._grid3(rthratenlw, nz, ny, nx),
             rthratensw=self._grid3(rthratensw, nz, ny, nx),
             swdown=self._grid2(swdown, ny, nx),
-            glw=self._grid2(glw, ny, nx))
+            glw=self._grid2(glw, ny, nx),
+            gsw=self._grid2(gsw, ny, nx),
+            coszen=self._grid2(coszen, ny, nx))

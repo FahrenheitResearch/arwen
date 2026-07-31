@@ -252,3 +252,40 @@ def test_a_citation_that_stopped_resolving_is_replaced() -> None:
     assert replacement is not None
     assert replacement != "gpuwm/core/kernels"
     assert reads_knob(replacement, "km_opt")
+
+
+def test_gfs_noahmp_is_declared_expert_with_its_existing_discipline() -> None:
+    registry = physics_registry()
+    route = registry["runner_routes"]["tools.prepared_single_domain_forecast"]
+    noahmp = "wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1"
+
+    assert noahmp in route["expert_template_ids"]["gfs"]
+    assert route["expert_acknowledgement_id"] == (
+        "noahmp-host-column-throughput-v1")
+    assert noahmp not in route["source_template_ids"]["gfs"]
+
+
+def test_ratified_nssl2_legacy_profile_follows_every_base_route() -> None:
+    registry = physics_registry()
+    base = (
+        "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-"
+        "validation-candidate-v1")
+    legacy = (
+        "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-"
+        "validation-candidate-v1")
+    template = registry["templates"][legacy]
+
+    assert template["maturity"] == "validation-candidate"
+    assert template["parameters"]["wrf_rrtmg_compatibility"] == (
+        "wrf-rrtmg-4-4-legacy-v1")
+    assert template["parameters"]["ra_rrtmg_variant"] == "rrtmg_legacy"
+    for route in registry["runner_routes"].values():
+        for source, declared in route.get("source_template_ids", {}).items():
+            assert (legacy in declared) == (base in declared), source
+
+
+def test_deferred_hrrr_kessler_profile_remains_undeclared() -> None:
+    registry = physics_registry()
+    assert all(
+        template["components"].get("microphysics") != "kessler-mp1"
+        for template in registry["templates"].values())

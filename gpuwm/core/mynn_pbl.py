@@ -2023,42 +2023,22 @@ def _tendency_flag_identity(
     flag_qnbca: bool,
     flag_ozone: bool,
 ) -> None:
-    """Reject any species-flag combination outside the admitted identity.
+    """Admit WRF's snow flag and reject every still-unported species flag.
 
-    ``FLAG_QS`` is the one refusal here that a real WRF configuration hits.
-    ``module_pbl_driver.F:877`` sets ``flag_qs`` from the registry-generated
-    ``F_QS`` and ``:1715`` hands it to ``mynnedmf_wrapper_run``; ``F_QS`` is
-    ``.TRUE.`` for every moist package that carries a snow species, i.e.
-    ``mp_physics`` 6 (WSM6), 8 (Thompson), 10 (Morrison) and 18 (NSSL
-    2-moment) -- every microphysics gpuwm implements except Kessler and off.
-    So this raise is not an exotic branch: it is what a user selecting MYNN
-    would hit if the runtime forwarded the flag.  It does not, and that is the
-    deviation: :func:`mynn_bl_driver` substitutes a zero column for ``qs``
-    (see the ``kzero`` argument at the ``mym_condensation`` call) and the flag
-    never reaches this check, so the run is silently WRF-with-no-snow rather
-    than refused.
-
-    The physical scope in v4.6.1 is narrow but not empty.  Snow is
-    ``kzero``-substituted into ``mynn_tendencies`` at ``:1240-1242``, left out
-    of ``sqw`` and ``thl`` at ``:758`` and ``:1008``, and its tridiagonal mix
-    is hard-disabled at ``:4618``.  The single live read is the ``rh_hack`` at
-    ``:3872-3873``, ``if ((qi(k)+qs(k))>1.e-9 .and. zagl>pblh2)``.  Because
-    ``qi`` and ``qs`` reach that branch only through the sum, the deviation is
-    exactly zero wherever cloud ice above the PBL top already exceeds 1e-9 --
-    measured on WRF's own ``ice_anvil_water`` oracle row -- and total where
-    snow is the only frozen species there, which is the settling-into-low-RH
-    case the hack exists for: ``CLDFRA_BL`` moves by up to 1.00, ``QI_BL`` by
-    2.1e-5 kg/kg, and ``Vt``/``Vq`` switch between the cloudy and clear forms,
-    carrying it into ``mym_turbulence``'s buoyancy flux and into ``DMP_mf``.
-    ``tests/test_mynn_pbl.py::test_the_withheld_snow_species_deviation_is_bounded``
-    is the standing measurement; the registry publishes the restriction under
-    ``components.pbl.options.mynn.extensions.supplied_moisture_species``.
+    WRF derives ``FLAG_QS`` from Registry ``F_QS`` and sets it for
+    ``mp_physics`` 6, 8, 10, and 18.  The flag enables the real snow column in
+    ``mym_condensation``.  WRF still passes ``kzero`` to
+    ``mynn_tendencies`` (``module_bl_mynn.F:1240-1242``), where snow mixing is
+    also hard-disabled at ``:4618``; consequently either boolean value is
+    valid here and does not alter the tendency solve itself.
     """
 
     if flag_qc is not True or flag_qi is not True:
         raise ValueError("MYNN tendency lane requires FLAG_QC and FLAG_QI")
+    if type(flag_qs) is not bool:
+        raise TypeError("MYNN tendency lane requires FLAG_QS boolean")
     for name, flag in (
-        ("FLAG_QS", flag_qs), ("FLAG_QNC", flag_qnc), ("FLAG_QNI", flag_qni),
+        ("FLAG_QNC", flag_qnc), ("FLAG_QNI", flag_qni),
         ("FLAG_QNWFA", flag_qnwfa), ("FLAG_QNIFA", flag_qnifa),
         ("FLAG_QNBCA", flag_qnbca), ("FLAG_OZONE", flag_ozone),
     ):
@@ -3349,7 +3329,8 @@ def mynn_phih(zet: object) -> np.float32:
 
 #: What the driver needs from the host, per column and per level.
 MYNN_DRIVER_LAYER_INPUTS = (
-    "dz", "u", "v", "w", "th", "sqv", "sqc", "sqi", "p", "exner", "rho", "tk",
+    "dz", "u", "v", "w", "th", "sqv", "sqc", "sqi", "sqs", "p", "exner",
+    "rho", "tk",
 )
 #: One value per column.
 MYNN_DRIVER_SCALAR_INPUTS = (
@@ -3436,7 +3417,8 @@ def mynn_bl_driver(
     ``bl_mynn_mixqt=0``, ``icloud_bl=1``, ``closure=2.6``,
     ``bl_mynn_tkeadvect`` false, ``tke_budget=0``, ``spp_pbl=0``,
     ``mix_chem`` false, ``restart``/``cycling`` false, ``FLAG_QC``/``FLAG_QI``
-    true and every other species flag false.  Three module parameters do the
+    true, ``FLAG_QS`` either Registry-derived boolean value, and every other
+    species flag false.  Three module parameters do the
     rest of the pruning: ``bl_mynn_topdown=0`` (``:328``) kills
     ``topdown_cloudrad`` and pins ``TKEprodTD`` to zero,
     ``bl_mynn_edmf_dd=0`` (``:330``) kills ``DDMF_JPL`` and pins every
@@ -3510,7 +3492,8 @@ def mynn_bl_driver(
     zero_interface = np.zeros((ncol, nz + 1), dtype=np.float32)
     zw = _driver_zw(layers["dz"], nz)
     # module_bl_mynn.F:1240-1242: the driver replaces both qs and sqs with a
-    # zero column, so snow never enters the tendency solve.
+    # zero column in the tendency solve.  Condensation separately receives
+    # the real sqs below when FLAG_QS is true.
     kzero = zero_column.copy()
 
     if initflag > 0:
@@ -3624,17 +3607,14 @@ def mynn_bl_driver(
     scalars["rmol"] = rmol
 
     # ---- module_bl_mynn.F:1104-1112 subgrid condensation -----------------
-    # DEVIATION.  WRF hands mym_condensation the real sqs here (:1106); this
-    # is the only place v4.6.1 reads snow at all.  Passing kzero is correct
-    # for FLAG_QS false and wrong for FLAG_QS true, which is what WRF sets
-    # under WSM6/Thompson/Morrison/NSSL.  _tendency_flag_identity documents
-    # and bounds it; nothing here can detect the case, because the runtime
-    # never forwards a flag.
+    # WRF :1104-1106 selects the real snow column under FLAG_QS and kzero
+    # otherwise.  This is snow's live MYNN v4.6.1 consumer.
     condensed = mynn_condensation_default(
         {
             "dz": layers["dz"], "zw": zw, "th": layers["th"], "thl": thl,
             "qw": sqw, "qv": layers["sqv"], "qc": layers["sqc"],
-            "qi": layers["sqi"], "qs": kzero, "p": layers["p"],
+            "qi": layers["sqi"],
+            "qs": layers["sqs"] if flag_qs else kzero, "p": layers["p"],
             "exner": layers["exner"], "tsq": layers["tsq"],
             "qsq": layers["qsq"], "cov": layers["cov"], "sh": layers["sh"],
             "el": layers["el"], "rstoch": zero_column,
@@ -3765,6 +3745,7 @@ def mynn_bl_driver(
         bl_mynn_edmf=bl_mynn_edmf,
         bl_mynn_edmf_mom=bl_mynn_edmf_mom,
         bl_mynn_mixscalars=bl_mynn_mixscalars,
+        flag_qs=flag_qs,
     )
     exchange = mynn_retrieve_exchange_coeffs({
         "dz": layers["dz"], "dfm": turbulence["dfm"],

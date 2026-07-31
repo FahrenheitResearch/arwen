@@ -555,14 +555,17 @@ same.  `rhosnf`, `precipfr` and `snowfallac` are declared `intent(out)` at
 them as such.  `:1109-1141` (`wb`, `waterbudget`, `acwaterbudget`) and
 `:906-908` are dead and are not transcribed.
 
-**Not transcribed, and why.**  The `EM_CORE==1` precipitation partition
-(`:618-652`), SPP and the lake bypass are absent from the pinned
-`-DEM_CORE=0` object every RUC fixture is built against.  `mosaic_lu==1` is
-rejected, so the irrigation block at `:984-1009` -- gated on the same flag that
-`ruc_surface_parameters` is fail-closed on -- is unreachable.  `myj=.true.` is
+**ARW additions after the historical driver fixture.**  The `EM_CORE==1`
+precipitation partition (`:618-652`) and lake bypass are transcribed in the
+forecast path and independently checked by the surface-forcing source probe.
+The old whole-driver fixture remains an explicit `em_core=0` replay because
+that is how it was compiled. SPP is still absent because its stochastic
+`pattern_spp_lsm`/`field_sf` state is not ported. `mosaic_lu==1` is rejected,
+so the irrigation block at `:984-1009` -- gated on the same flag that
+`ruc_surface_parameters` is fail-closed on -- is unreachable. `myj=.true.` is
 rejected because `ruc_soil_step` and `ruc_snow_soil_step` are, which makes
-`:681-682` unreachable; that arm is transcribed but carries a comment saying it
-is unverified.
+`:681-682` unreachable; that arm is transcribed but carries a comment saying
+it is unverified.
 
 **Uninitialised reads.**  `SFCTMP`'s `ilnb` (`:1385`) carries the previous
 COLUMN's snow-layer count inside the driver loop; `ruc_land_surface_step`

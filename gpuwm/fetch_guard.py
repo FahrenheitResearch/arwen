@@ -41,6 +41,8 @@ import threading
 import time
 from typing import Any
 
+from gpuwm.explain import layered
+
 #: How long a losing writer waits for the holder before refusing.
 DEFAULT_LOCK_TIMEOUT_S = 600.0
 
@@ -223,15 +225,16 @@ class OutputLock:
         self._held = False
 
     def _busy(self, waited: float) -> FetchLockBusy:
-        return FetchLockBusy(
+        return FetchLockBusy(layered(
             f"another gpuwm fetch is writing {self.target} "
             f"({describe_holder(self.path)}) and this run waited "
-            f"{waited:g} s for it.  Two writers in one output directory "
-            "can publish a receipt that describes the other one's bytes, "
-            "so this run refuses rather than interleave.\n"
+            f"{waited:g} s for it.\n"
             "  remedy: wait for the other run to finish, fetch into a "
             f"different --out, or raise {LOCK_TIMEOUT_ENV} if the other "
-            "run is expected to take longer.")
+            "run is expected to take longer.",
+            "  why: two writers in one output directory can publish a "
+            "receipt that describes the other one's bytes, so this run "
+            "refuses rather than interleave."))
 
     def acquire(self) -> "OutputLock":
         key_lock = _key_lock(self._key)

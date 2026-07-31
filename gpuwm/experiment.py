@@ -84,7 +84,7 @@ _GUARD_DEFAULTS = {
 _EXPERIMENT_KEYS = frozenset({
     "name", "start_time", "run_seconds", "feedback", "smooth_option",
     "blend_width", "spec_bdy_width", "restart_interval_s",
-    "column_chunk",
+    "column_chunk", "acknowledgements",
 })
 _EXPERIMENT_REQUIRED = ("name", "start_time", "run_seconds",
                         "restart_interval_s")
@@ -367,6 +367,7 @@ class ExperimentConfig:
     restart_interval_s: float
     domains: tuple[DomainConfig, ...]
     column_chunk: int = DEFAULT_COLUMN_CHUNK
+    acknowledgements: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.feedback not in (0, 1):
@@ -383,6 +384,16 @@ class ExperimentConfig:
             raise ValueError(
                 "column_chunk must be a positive integer number of "
                 f"radiation columns, got {self.column_chunk!r}.")
+        if (
+            not isinstance(self.acknowledgements, tuple)
+            or any(
+                not isinstance(value, str) or not value.strip()
+                for value in self.acknowledgements
+            )
+        ):
+            raise ValueError(
+                "acknowledgements must be a tuple of non-empty ids, got "
+                f"{self.acknowledgements!r}.")
 
     @property
     def root(self) -> DomainConfig:
@@ -767,6 +778,18 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     column_chunk = _positive_int(
         "experiment", "column_chunk",
         exp.get("column_chunk", DEFAULT_COLUMN_CHUNK), source)
+    raw_acknowledgements = exp.get("acknowledgements", [])
+    if not isinstance(raw_acknowledgements, list):
+        raise ValueError(
+            f"acknowledgements in [experiment] of {source} must be an array "
+            f"of non-empty ids, got {raw_acknowledgements!r}.")
+    acknowledgements: list[str] = []
+    for index, value in enumerate(raw_acknowledgements):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"acknowledgements[{index}] in [experiment] of {source} "
+                f"must be a non-empty string, got {value!r}.")
+        acknowledgements.append(value)
 
     # ---- [projection] ------------------------------------------------
     projection = None
@@ -1255,7 +1278,14 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         feedback=feedback, smooth_option=smooth_option,
         blend_width=blend_width, spec_bdy_width=spec_bdy_width,
         restart_interval_s=restart_interval_s, domains=tuple(domains),
-        column_chunk=column_chunk)
+        column_chunk=column_chunk,
+        acknowledgements=tuple(acknowledgements))
+    from gpuwm.physics_compat import (
+        validate_resolved_physics_vertical_levels,
+    )
+    for domain in experiment.domains:
+        validate_resolved_physics_vertical_levels(
+            domain.run, p_top=experiment.vertical.p_top)
     _assert_derived_copies(experiment, source)
     return experiment
 

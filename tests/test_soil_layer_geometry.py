@@ -267,12 +267,19 @@ def test_vram_preflight_sizes_soil_from_the_resolved_count():
     # RUC name -- an addition from somewhere else would show up here as an
     # unaccounted slot rather than being absorbed into a total.
     from gpuwm.core.ruc_runtime import (RUC_DIAGNOSTICS_2D, RUC_STATE_2D,
-                                        RUC_STATE_3D)
+                                        RUC_STATE_3D,
+                                        RUC_FRACTIONAL_SEAICE_FIELDS)
+    from gpuwm.core.surface_forcing import SURFACE_PRECIPITATION_FIELDS
 
     added = set(ruc) - set(noah)
     assert not set(noah) - set(ruc), "RUC dropped a Noah array"
-    assert added == {f"fields/{name}" for name in
-                     (*RUC_STATE_2D, *RUC_STATE_3D, *RUC_DIAGNOSTICS_2D)}
+    assert added == {
+        f"fields/{name}" for name in (
+            *RUC_STATE_2D, *RUC_STATE_3D, *RUC_DIAGNOSTICS_2D,
+            *RUC_FRACTIONAL_SEAICE_FIELDS,
+            *SURFACE_PRECIPITATION_FIELDS, "gsw",
+        )
+    }
     for name in RUC_STATE_3D:
         assert ruc[f"fields/{name}"] == (
             ruc_contract.NUM_SOIL_LAYERS, _NY, _NX), name
@@ -281,11 +288,17 @@ def test_vram_preflight_sizes_soil_from_the_resolved_count():
     deeper_soil = 4 * len(soil_slots) * extra_layers * _NY * _NX
     ruc_2d = 4 * (len(RUC_STATE_2D) + len(RUC_DIAGNOSTICS_2D)) * _NY * _NX
     ruc_3d = 4 * len(RUC_STATE_3D) * ruc_contract.NUM_SOIL_LAYERS * _NY * _NX
+    arw_surface_seams = 4 * (
+        len(RUC_FRACTIONAL_SEAICE_FIELDS)
+        + len(SURFACE_PRECIPITATION_FIELDS) + 1
+    ) * _NY * _NX
     assert deeper_soil == 960_000
     assert ruc_2d == 768_000
     assert ruc_3d == 864_000
+    assert arw_surface_seams == 1_152_000
     assert (_physics_bytes(ruc) - _physics_bytes(noah)
-            == deeper_soil + ruc_2d + ruc_3d == 2_592_000)
+            == deeper_soil + ruc_2d + ruc_3d + arw_surface_seams
+            == 3_744_000)
 
 
 def test_the_nine_layer_preflight_estimate_is_larger_end_to_end():
@@ -304,7 +317,9 @@ def test_the_nine_layer_preflight_estimate_is_larger_end_to_end():
             history_interval_s=3600.0, run=cfg, time_step=15)
 
     from gpuwm.core.ruc_runtime import (RUC_DIAGNOSTICS_2D, RUC_STATE_2D,
-                                        RUC_STATE_3D)
+                                        RUC_STATE_3D,
+                                        RUC_FRACTIONAL_SEAICE_FIELDS)
+    from gpuwm.core.surface_forcing import SURFACE_PRECIPITATION_FIELDS
 
     noah = estimate_domain(domain(_cfg(2, 4)))
     ruc = estimate_domain(domain(_cfg(3, 9)))
@@ -316,7 +331,11 @@ def test_the_nine_layer_preflight_estimate_is_larger_end_to_end():
     expected_delta = (
         4 * 4 * extra_layers * _NY * _NX
         + 4 * (len(RUC_STATE_2D) + len(RUC_DIAGNOSTICS_2D)) * _NY * _NX
-        + 4 * len(RUC_STATE_3D) * ruc_contract.NUM_SOIL_LAYERS * _NY * _NX)
+        + 4 * len(RUC_STATE_3D) * ruc_contract.NUM_SOIL_LAYERS * _NY * _NX
+        + 4 * (
+            len(RUC_FRACTIONAL_SEAICE_FIELDS)
+            + len(SURFACE_PRECIPITATION_FIELDS) + 1
+        ) * _NY * _NX)
     assert (ruc.category_bytes("physics") - noah.category_bytes("physics")
             == expected_delta)
     # Resident, because all of it is persistent physics state: it must land in

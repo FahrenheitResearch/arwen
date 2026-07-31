@@ -298,6 +298,17 @@ _MP_MAP = {
 _BL_MAP = {
     0: (0, "none", "none"),
     1: (1, "YSU", "YSU"),
+    # The coupled MYNN 5/5 suite.  Two of the three legs the comment below
+    # requires were already in place -- physics_compat admits the pair and
+    # PHYSICS_SLOT_DISPATCH runs it, which is what the shipped MYNN fixed
+    # profile forecasts with.  Only the importer leg lagged, so MYNN was
+    # reachable at mp_physics=6 and nowhere else: pairing it with Thompson,
+    # Morrison or NSSL had no front door at all.  Adding the map entry
+    # widens no gate -- require_ready_wrf_physics still previews the whole
+    # suite below and refuses every pairing it refused before.  (The
+    # RUC/Noah-MP pairing refusals named in an earlier version of this
+    # comment were retired by the surface-driver ownership port.)
+    5: (5, "MYNN2.5", "MYNN"),
     11: (1, "Shin-Hong", "YSU"),
 }
 _RA_LW_MAP = {
@@ -317,8 +328,8 @@ _RA_SW_MAP = {
 #: here rather than produce an unrunnable config.  Admitting a scheme means
 #: widening these together with its physics_compat row and its
 #: PHYSICS_SLOT_DISPATCH row -- never one of the three alone.
-_SFCLAY_ALLOWED = {0, 1, 91}
-_SFSFC_ALLOWED = {0, 2}
+_SFCLAY_ALLOWED = {0, 1, 5, 91}
+_SFSFC_ALLOWED = {0, 2, 3, 4}
 _CU_ALLOWED = {0, 1}
 
 
@@ -1480,6 +1491,22 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                    f"no gpuwm mapping (implemented: "
                    f"{sorted(_SFSFC_ALLOWED)})."
                    + _port_receipt(sf_surface_physics=sfsfc))
+    from gpuwm.config import validated_soil_layer_count
+
+    resolved_soil_layers = validated_soil_layer_count(sfsfc)
+    requested_soil_layers = ph.take("num_soil_layers")
+    if requested_soil_layers is not None and any(
+            int(value) != resolved_soil_layers
+            for value in requested_soil_layers):
+        raise _err(
+            "physics", "num_soil_layers", requested_soil_layers,
+            f"must be {resolved_soil_layers} for sf_surface_physics="
+            f"{sfsfc}; gpuwm does not silently overwrite a requested soil "
+            "geometry")
+    fix(
+        "physics", "num_soil_layers", requested_soil_layers,
+        resolved_soil_layers,
+        f"validated soil geometry for sf_surface_physics={sfsfc}")
     cu_values = ph.col("cu_physics", max_dom)
     if cu_values is None:
         raise _err(
@@ -1511,8 +1538,6 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                                      "ingest catalog"),
             ("do_radar_ref", "REFL_10CM is a gpuwm output product "
                              "(evaluated at output time, PROVENANCE D2)"),
-            ("num_soil_layers", "Noah is 4-layer; pinned by the soil "
-                                "ingest"),
     ):
         drop("physics", key, ph.take(key), reason)
     urban = ph.take("sf_urban_physics")
@@ -1854,6 +1879,8 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         f"bl_pbl_physics = {bl_pbl_physics}",
         f"ra_physics = {ra_physics}",
     ]
+    if resolved_soil_layers != 4:
+        lines.append(f"num_soil_layers = {resolved_soil_layers}")
     for key, value in (("no_mp_heating", no_mp_heating),
                        ("mp_tend_lim", mp_tend_lim),
                        ("ysu_topdown_pblmix", ysu_topdown_pblmix),

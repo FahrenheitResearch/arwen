@@ -58,16 +58,22 @@ from gpuwm.core.noahmp_runtime import (
     NSNOW as NOAHMP_NSNOW,
     NoahmpRuntimeParameters,
     NoahmpSolarGeometry,
+    guard_noahmp_glacier_columns,
     noahmp_cold_start,
     noahmp_lsm_step,
 )
 from gpuwm.core.ruc_runtime import (
     RUC_DIAGNOSTICS_2D,
+    RUC_FRACTIONAL_SEAICE_FIELDS,
     RUC_STATE_2D,
     RUC_STATE_3D,
     RucRuntimeParameters,
     ruc_cold_start,
     ruc_lsm_step,
+)
+from gpuwm.core.surface_forcing import (
+    SURFACE_PRECIPITATION_FIELDS,
+    SurfacePrecipitationForcing,
 )
 from gpuwm.core.mynn_pbl_runtime import (
     MYNN_PBL_DIAGNOSTICS_2D,
@@ -77,7 +83,7 @@ from gpuwm.core.mynn_pbl_runtime import (
     validate_mynn_tendencies,
 )
 from gpuwm.core.sfclay import (SFCLAY_OUTPUTS, SFClayResult,
-                               launch_sfclay)
+                               launch_sfclay, sfclay)
 from gpuwm.core.state import DTYPE, DomainState
 from gpuwm.core.ysu import launch_ysu
 from gpuwm.ingest.soil import NOAH_LAYER_THICKNESS_M
@@ -197,10 +203,13 @@ PHYSICS_SLOT_DISPATCH: dict[str, dict[int, str | None]] = {
     },
 }
 
-#: Land-surface schemes after which WRF's surface driver calls SFCDIAGS
-#: (module_surface_driver.F:2983-3000).  This is a per-scheme decision, not
-#: a property of "an LSM ran": MYNN's surface layer diagnoses T2/Q2/TH2
-#: itself, so a future scheme must be added here explicitly.
+#: Land-surface schemes after which WRF's surface driver calls the ordinary
+#: ``SFCDIAGS`` (module_surface_driver.F:2983-2998).  RUC instead calls
+#: ``SFCDIAGS_RUCLSM`` in :func:`ruc_lsm_step`; Noah-MP unconditionally
+#: selects its water/ice flux diagnostic or its own vegetation/bare-ground
+#: 2-m fields in :func:`noahmp_lsm_step`.  This is a per-scheme decision, not
+#: a property of "an LSM ran", and all three post-LSM paths overwrite the
+#: surface layer's earlier T2/Q2/TH2 exactly where WRF does.
 LAND_SURFACE_SFCDIAGS_SCHEMES = frozenset({2})
 
 
@@ -484,6 +493,12 @@ class RadiationResult:
     rthratensw: cp.ndarray
     swdown: cp.ndarray
     glw: cp.ndarray
+    # WRF radiation-driver carriers.  GSW is absorbed surface shortwave
+    # evaluated with radiation-time albedo; COSZEN includes radconst's
+    # half-radiation-interval hour-angle offset.  Optional defaults retain the
+    # attachment API for schemes whose surface consumer needs neither.
+    gsw: cp.ndarray | None = None
+    coszen: cp.ndarray | None = None
 
 
 @dataclass
@@ -739,6 +754,11 @@ def _prepare_atmosphere(state: DomainState) -> dict[str, cp.ndarray]:
     else:
         qi = state.scratch((nz, ny, nx), "physics_qi")
         qi[...] = 0.0
+    if getattr(state, "qs", None) is not None:
+        qs = state.qs
+    else:
+        qs = state.scratch((nz, ny, nx), "physics_qs")
+        qs[...] = 0.0
     # WRF phy_prep's physics density is (1 + qv) / ALT
     # (module_big_step_utilities_em.F:4856), not the virtual-temperature
     # ideal-gas reconstruction.  MYNN's surface layer consumes this exact
@@ -747,7 +767,7 @@ def _prepare_atmosphere(state: DomainState) -> dict[str, cp.ndarray]:
     return {"theta": theta, "temperature": temperature, "pressure": pressure,
             "p_interface": p_interface, "exner": exner, "u": u, "v": v,
             "z_interface": z_interface, "dz": dz, "qv": qv, "qc": qc,
-            "qi": qi, "rho": rho}
+            "qi": qi, "qs": qs, "rho": rho}
 
 
 class PhysicsDriver:
@@ -766,6 +786,14 @@ class PhysicsDriver:
                 name: fields[name] for name in MYNN_SURFACE_OUTPUTS
             })
             if cfg.sf_sfclay_physics == 5 else None
+        )
+        self.mynn_sfclay_sea_result = (
+            MynnSurfaceResult(**{
+                name: fields[f"{name}_sea"]
+                for name in MYNN_SURFACE_OUTPUTS
+            })
+            if (cfg.sf_sfclay_physics == 5
+                and cfg.sf_surface_physics == 3) else None
         )
         self.noah_params = noah_params
         # Noah-MP's parameter bundle and solar geometry are separate
@@ -1041,6 +1069,16 @@ class PhysicsDriver:
             raise ValueError("microphysics SR must be within [0, 1]")
         self._pending_rainbl += cp.maximum(
             accepted.rainncv, DTYPE(0.0))
+        if self.ruc_params is not None or self.noahmp_params is not None:
+            f = self.fields
+            f["surface_rainncv"] += cp.maximum(
+                accepted.rainncv, DTYPE(0.0))
+            for diagnostic, carrier in (
+                    (accepted.snowncv, "surface_snowncv"),
+                    (accepted.graupelncv, "surface_graupelncv"),
+                    (accepted.hailncv, "surface_hailncv")):
+                if diagnostic is not None:
+                    f[carrier] += cp.maximum(diagnostic, DTYPE(0.0))
         self.microphysics_updates += 1
 
     def _run_radiation(self, atmosphere: Mapping[str, cp.ndarray],
@@ -1063,6 +1101,20 @@ class PhysicsDriver:
             state, cfg, rtheta=self.rthratenlw + self.rthratensw)
         self.fields["swdown"][...] = swdown
         self.fields["glw"][...] = glw
+        if "gsw" in self.fields:
+            if result.gsw is None:
+                raise ValueError(
+                    "RUC requires radiation-time GSW from the radiation "
+                    "callable")
+            self.fields["gsw"][...] = _checked_array(
+                result.gsw, (ny, nx), "radiation GSW")
+        if "coszen" in self.fields:
+            if result.coszen is None:
+                raise ValueError(
+                    "Noah-MP requires carried COSZEN from the radiation "
+                    "callable")
+            self.fields["coszen"][...] = _checked_array(
+                result.coszen, (ny, nx), "radiation COSZEN")
 
     def _run_cumulus(self, atmosphere: Mapping[str, cp.ndarray],
                       state: DomainState, cfg: RunConfig) -> None:
@@ -1135,6 +1187,9 @@ class PhysicsDriver:
                 # Convective rain also wets the surface (RAINBL, WRF
                 # module_surface_driver.F:1566) on the legacy contract.
                 self._pending_rainbl += cp.maximum(increment, DTYPE(0.0))
+                if self.ruc_params is not None or self.noahmp_params is not None:
+                    self.fields["surface_raincv"] += cp.maximum(
+                        increment, DTYPE(0.0))
             return
         if result.pratec is None:
             raise ValueError(
@@ -1217,6 +1272,9 @@ class PhysicsDriver:
         # accept_microphysics.  Final-review MAJOR: Noah previously never
         # saw KF rain at all.
         self._pending_rainbl += cp.maximum(self.cu_pratec, DTYPE(0.0)) * dt
+        if self.ruc_params is not None or self.noahmp_params is not None:
+            self.fields["surface_raincv"] += cp.maximum(
+                self.cu_pratec, DTYPE(0.0)) * dt
         active = self.cu_nca > DTYPE(0.0)
         # Fortran NINT rounds half away from zero; NCA > 0 in this branch,
         # so floor(x + 0.5) is exact NINT.
@@ -1299,6 +1357,55 @@ class PhysicsDriver:
                 raise ValueError("MYNN surface layer requires at least 2 levels")
             itimestep = int(np.floor(
                 float(self.state.elapsed_seconds) / cfg.dt + 0.5)) + 1
+            ice_component = (
+                (f["xice"] >= DTYPE(0.5)) & (f["xice"] <= DTYPE(1.0))
+                if self.ruc_params is not None else
+                cp.zeros_like(f["xice"], dtype=cp.bool_)
+            )
+            # RUC's admitted identity has FRACTIONAL_SEAICE enabled.  WRF
+            # enters MYNN_SEAICE_WRAPPER unconditionally under that switch,
+            # even when this particular slab has no active ice cells.
+            fractional_ruc = self.mynn_sfclay_sea_result is not None
+            tsk_local = f["tsk"]
+            if fractional_ruc:
+                # module_surface_driver.F:5402-5421, 5465-5482: the second
+                # MYNN call starts from the exact inout fields that existed
+                # before the ice call.  The ``*_sea`` arrays are therefore
+                # hold buffers first and output staging second.
+                for name in MYNN_SURFACE_OUTPUTS:
+                    f[f"{name}_sea"][...] = f[name]
+                # get_local_ice_tsk :7158-7204.  Under the pinned
+                # tice2tsk_if2cold=.false. identity, MYNN's first call sees
+                # the ice component diagnosed from grid-cell TSK and SST.
+                # RUC later sees TSK_SAVE instead; those are deliberately
+                # different WRF ownership paths, especially on step one.
+                sst = cp.maximum(f["tsk_sea"], DTYPE(271.4))
+                if itimestep <= 3:
+                    warm = sst > DTYPE(273.0)
+                    sst = cp.where(
+                        warm & (f["xice"] >= DTYPE(0.6)),
+                        DTYPE(271.4),
+                        cp.where(
+                            warm & (f["xice"] >= DTYPE(0.4)),
+                            DTYPE(273.0),
+                            cp.where(
+                                warm & (f["xice"] >= DTYPE(0.2))
+                                & (sst > DTYPE(275.0)),
+                                DTYPE(275.0),
+                                cp.where(
+                                    warm & (sst > DTYPE(278.0)),
+                                    DTYPE(278.0), sst))))
+                f["tsk_sea"][...] = cp.where(
+                    ice_component, sst, f["tsk_sea"])
+                denominator = cp.where(
+                    ice_component, f["xice"], DTYPE(1.0))
+                diagnosed_ice = cp.maximum(
+                    (f["tsk"]
+                     - (DTYPE(1.0) - f["xice"]) * f["tsk_sea"])
+                    / denominator,
+                    DTYPE(221.4))
+                tsk_local = cp.where(
+                    ice_component, diagnosed_ice, f["tsk"]).astype(DTYPE)
             if itimestep == 1:
                 # module_sf_mynn.F:329-337.  SFCLAY_mynn seeds UST/MOL/QSFC
                 # and qstar from the lowest model level before the column
@@ -1310,6 +1417,16 @@ class PhysicsDriver:
                     ust=f["ust"], mol=f["mol"], qsfc=f["qsfc"],
                     qstar=f["qstar"],
                 )
+                if fractional_ruc:
+                    # MYNN_SEAICE_WRAPPER calls SFCLAY_mynn a second time;
+                    # its one-based first-step block therefore runs on the
+                    # open-water inouts too.
+                    seed_mynn_surface_first_step(
+                        atmosphere["u"][0], atmosphere["v"][0],
+                        atmosphere["qv"][0],
+                        ust=f["ust_sea"], mol=f["mol_sea"],
+                        qsfc=f["qsfc_sea"], qstar=f["qstar_sea"],
+                    )
             inputs = {
                 "u1": atmosphere["u"][0],
                 "v1": atmosphere["v"][0],
@@ -1322,7 +1439,10 @@ class PhysicsDriver:
                 "v2": atmosphere["v"][1],
                 "dz2": atmosphere["dz"][1],
                 "psfc": atmosphere["p_interface"][0],
-                "tsk": f["tsk"],
+                # get_local_ice_tsk supplies this diagnosed ice component to
+                # MYNN.  RUC separately consumes TSK_SAVE and rebuilds the
+                # blended TSK after its call.
+                "tsk": tsk_local,
                 "pblh": f["pblh"],
                 "mavail": f["mavail"],
                 "hfx": f["hfx"],
@@ -1339,15 +1459,99 @@ class PhysicsDriver:
                 itimestep=itimestep,
                 isfflx=1,
             )
+            if fractional_ruc:
+                # module_surface_driver.F:5441-5506.  Force the second call
+                # to open water only on fractional-ice cells and preserve the
+                # original grid values elsewhere.
+                f["tsk_sea"][...] = cp.where(
+                    ice_component,
+                    cp.maximum(f["tsk_sea"], DTYPE(271.4)),
+                    f["tsk_sea"])
+                f["znt_sea"][...] = cp.where(
+                    ice_component, DTYPE(1.0e-4), f["znt_sea"])
+                sea_inputs = {
+                    **inputs,
+                    "tsk": cp.where(
+                        ice_component, f["tsk_sea"], inputs["tsk"]),
+                    "pblh": f["pblh"],
+                    "mavail": cp.where(
+                        ice_component, DTYPE(1.0), f["mavail"]),
+                    "hfx": f["hfx_sea"],
+                    "qfx": f["qfx_sea"],
+                    "znt": f["znt_sea"],
+                    "qsfc": f["qsfc_sea"],
+                    "ust": f["ust_sea"],
+                    "xland": cp.where(
+                        ice_component, DTYPE(2.0), f["xland"]),
+                }
+                # REGIME is the one shared actual argument in both WRF calls
+                # (:5429, :5491), so the second call starts from the first
+                # call's value rather than from the pre-wrapper hold set.
+                f["regime_sea"][...] = f["regime"]
+                launch_mynn_surface_layer(
+                    sea_inputs, f["mol_sea"], f["ustm_sea"],
+                    self.mynn_sfclay_sea_result,
+                    dx=cfg.dx, itimestep=itimestep, isfflx=1,
+                )
+
+                # :5508-5554.  These diagnostics become grid-cell values
+                # immediately.  The flux/exchange fields marked "wait" in
+                # WRF remain as ice plus staged sea components until RUC's
+                # post-LSM reblend at :3543-3562.
+                one_minus_ice = DTYPE(1.0) - f["xice"]
+                for name in (
+                        "br", "gz1oz0", "mol", "psih", "psim", "rmol",
+                        "ust", "wspd", "zol", "ch", "cd", "cda", "ck",
+                        "cka", "q2", "t2", "th2", "u10", "ustm", "v10"):
+                    blended = (
+                        f[name] * f["xice"]
+                        + one_minus_ice * f[f"{name}_sea"]
+                    ).astype(DTYPE)
+                    f[name][...] = cp.where(
+                        ice_component, blended, f[name])
+                # The open-water call's REGIME value is the last writer.
+                f["regime"][...] = cp.where(
+                    ice_component, f["regime_sea"], f["regime"])
             return
         launch_sfclay(
             atmosphere["u"][0], atmosphere["v"][0],
             atmosphere["temperature"][0], atmosphere["qv"][0],
             atmosphere["pressure"][0], atmosphere["dz"][0],
-            atmosphere["p_interface"][0], f["tsk"], f["pblh"],
-            f["mavail"], f["xland"], f["lakemask"], self.sfclay_result,
-            option=option, dx=cfg.dx,
+            atmosphere["p_interface"][0],
+            (cp.where(
+                (f["xice"] >= DTYPE(0.5)) & (f["xice"] <= DTYPE(1.0)),
+                f["tsk_save"], f["tsk"]).astype(DTYPE)
+             if self.ruc_params is not None else f["tsk"]),
+            f["pblh"], f["mavail"], f["xland"], f["lakemask"],
+            self.sfclay_result, option=option, dx=cfg.dx,
             isftcflx=cfg.isftcflx, iz0tlnd=cfg.iz0tlnd)
+        if self.ruc_params is not None:
+            ice_component = ((f["xice"] >= DTYPE(0.5))
+                             & (f["xice"] <= DTYPE(1.0)))
+            if bool(cp.any(ice_component)):
+                # WRF's SFCLAY*_SEAICE_WRAPPER runs the same surface layer
+                # over the open-water component and retains these values for
+                # module_surface_driver.F:3543-3562's post-LSM blend.
+                sea = sfclay(
+                    atmosphere["u"][0], atmosphere["v"][0],
+                    atmosphere["temperature"][0], atmosphere["qv"][0],
+                    atmosphere["pressure"][0], atmosphere["dz"][0],
+                    atmosphere["p_interface"][0], f["tsk_sea"],
+                    f["znt_sea"], f["pblh"],
+                    cp.ones_like(f["mavail"]), cp.full_like(f["xland"], 2.0),
+                    qsfc=f["qsfc_sea"], zol=f["zol_sea"],
+                    ust=f["ust_sea"], mol=f["mol_sea"],
+                    hfx=f["hfx_sea"], qfx=f["qfx_sea"],
+                    lakemask=cp.zeros_like(f["lakemask"]),
+                    option=option, dx=cfg.dx,
+                    isftcflx=cfg.isftcflx, iz0tlnd=cfg.iz0tlnd)
+                for name in (
+                        "znt", "ust", "mol", "zol", "flhc", "flqc", "cpm",
+                        "cqs2", "chs2", "chs", "qsfc", "qgh", "hfx", "qfx",
+                    "lh"):
+                    carrier = f"{name}_sea"
+                    f[carrier][...] = cp.where(
+                        ice_component, getattr(sea, name), f[carrier])
 
     def _run_noah(self, atmosphere: Mapping[str, cp.ndarray],
                   cfg: RunConfig, itimestep: int) -> None:
@@ -1407,6 +1611,7 @@ class PhysicsDriver:
         f["rainbl"] += self._pending_rainbl
         self.last_ruc_census = ruc_lsm_step(
             f, atmosphere, params=self.ruc_params,
+            precipitation=SurfacePrecipitationForcing.from_fields(f),
             dt=self.bldt_seconds, itimestep=itimestep,
             mosaic_lu=cfg.mosaic_lu, mosaic_soil=cfg.mosaic_soil,
             flag_sm_adj=cfg.flag_sm_adj, spp_lsm=cfg.spp_lsm)
@@ -1417,6 +1622,7 @@ class PhysicsDriver:
                     "outside its admitted identity")
         f["rainbl"][...] = 0.0
         self._pending_rainbl[...] = 0.0
+        SurfacePrecipitationForcing.from_fields(f).clear()
 
     def _run_noahmp(self, atmosphere: Mapping[str, cp.ndarray],
                     cfg: RunConfig, itimestep: int) -> None:
@@ -1444,6 +1650,8 @@ class PhysicsDriver:
         self.last_noahmp_census = noahmp_lsm_step(
             f, atmosphere,
             params=self.noahmp_params, geometry=self.noahmp_geometry,
+            precipitation=SurfacePrecipitationForcing.from_fields(f),
+            coszen=f["coszen"],
             dt=self.bldt_seconds, dx=cfg.dx,
             dzs=self.noahmp_soil_thickness_m, itimestep=itimestep,
             elapsed_seconds=float(self.state.elapsed_seconds),
@@ -1477,6 +1685,7 @@ class PhysicsDriver:
                     "its admitted identity")
         f["rainbl"][...] = 0.0
         self._pending_rainbl[...] = 0.0
+        SurfacePrecipitationForcing.from_fields(f).clear()
 
     def _refresh_surface_diagnostics(self) -> None:
         """Transcribe WRF v4.6.1 SFCDIAGS for the supported Noah path.
@@ -1566,6 +1775,7 @@ class PhysicsDriver:
         out = mynn_pbl_step(
             atmosphere, f, w=self.state.w, dx=cfg.dx,
             delt=self.bldt_seconds, itimestep=itimestep,
+            mp_physics=cfg.mp_physics,
             # The domain state is what makes MYNN's working set a set of
             # priced scratch slots instead of ~46 kB of pool churn per
             # column per step; see gpuwm/core/mynn_pbl_scratch.py.
@@ -1753,7 +1963,7 @@ def initialize_physics(
         state: DomainState, cfg: RunConfig, *, landmask=1.0, tsk=300.0,
         soil_temperature=285.0, soil_moisture=0.30, liquid_moisture=None,
         ivgtyp=10, isltyp=6, vegfra=50.0, tmn=285.0, xice=0.0, snow=0.0,
-        snow_depth=0.0,
+        snow_depth=0.0, sst=None,
         swdown=0.0, glw=300.0, pblh=0.0, mavail=1.0,
         landuse=None,
         noah_params=None, radiation=None, cumulus=None,
@@ -1906,6 +2116,17 @@ def initialize_physics(
         "snow": _as_2d(snow, shape, "snow"),
         "snowh": _as_2d(snow_depth, shape, "snow_depth"),
     }
+    if int(cfg.sf_surface_physics) in (3, 4):
+        for name in SURFACE_PRECIPITATION_FIELDS:
+            f[name] = cp.zeros(shape, dtype=DTYPE)
+    if int(cfg.sf_surface_physics) == 3:
+        # GSW is updated only at radiation cadence and consumed by RUC
+        # unchanged between those calls.
+        f["gsw"] = cp.zeros(shape, dtype=DTYPE)
+    if int(cfg.sf_surface_physics) == 4:
+        # COSZEN has the same radiation cadence.  A radiation-free in-process
+        # run receives a single correctly offset initialization below.
+        f["coszen"] = cp.zeros(shape, dtype=DTYPE)
     n_soil = soil_layer_count(cfg)
     f["smois"] = _as_soil(soil_moisture, shape, "soil_moisture",
                           layers=n_soil)
@@ -1929,6 +2150,18 @@ def initialize_physics(
     for name in SFCLAY_OUTPUTS:
         f[name] = cp.ascontiguousarray(sf_initial.get(
             name, cp.zeros(shape, dtype=DTYPE)))
+    if int(cfg.sf_surface_physics) == 3:
+        # module_physics_init.F:3126-3131 initializes TSK_SAVE from TSK.
+        # The open-water component comes from SST when the ingest carries it;
+        # otherwise the already repaired surface temperature is WRF's
+        # no-SST fallback.
+        f["tsk_save"] = cp.ascontiguousarray(f["tsk"].copy())
+        f["tsk_sea"] = _as_2d(
+            tsk if sst is None else sst, shape, "sst")
+        for name in ("znt", "ust", "mol", "zol", "flhc", "flqc", "cpm",
+                     "cqs2", "chs2", "chs", "qsfc", "qgh", "hfx", "qfx",
+                     "lh"):
+            f[f"{name}_sea"] = cp.ascontiguousarray(f[name].copy())
     # MYNN shares most of the legacy surface-driver arrays.  Allocate only
     # its selected scheme's additional persistent/inout diagnostics; carrying
     # these fields in every MM5/Noah run silently changes restart inventory
@@ -1940,6 +2173,16 @@ def initialize_physics(
                     f[name] = cp.ascontiguousarray(f["ust"].copy())
                 else:
                     f[name] = cp.zeros(shape, dtype=DTYPE)
+        if int(cfg.sf_surface_physics) == 3:
+            # MYNN_SEAICE_WRAPPER's automatic ``*_SEA`` arrays are retained
+            # between the two surface calls and RUC's post-call reblend.
+            # Keeping the full second result persistent makes this allocation
+            # visible to preflight; only WRF's named wait fields survive the
+            # LSM seam, while the rest are wrapper-local blend operands.
+            for name in MYNN_SURFACE_OUTPUTS:
+                carrier = f"{name}_sea"
+                if carrier not in f:
+                    f[carrier] = cp.ascontiguousarray(f[name].copy())
     result = SFClayResult(**{name: f[name] for name in SFCLAY_OUTPUTS})
 
     defaults = {
@@ -2066,6 +2309,21 @@ def initialize_physics(
                 latitude, "__cuda_array_interface__") else latitude,
             cp.asnumpy(cp.asarray(longitude)) if hasattr(
                 longitude, "__cuda_array_interface__") else longitude)
+        guard_noahmp_glacier_columns(f, noahmp_params)
+        if not radiation_active:
+            # WRF's COSZEN is a radiation-driver carrier.  With radiation
+            # disabled there is no future writer, so seed the carrier once at
+            # the same half-interval hour angle a due radiation call uses.
+            from gpuwm.core.dudhia import wrf_solar_geometry
+            interval = _physics_interval_seconds(
+                cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes,
+                _model_clock_dt(cfg))
+            coszen, _ = wrf_solar_geometry(
+                noahmp_geometry.start_time,
+                noahmp_geometry.latitude_deg,
+                noahmp_geometry.longitude_deg,
+                hour_offset_seconds=0.5 * interval)
+            f["coszen"][...] = cp.asarray(coszen, dtype=DTYPE)
 
     driver = PhysicsDriver(state, cfg, f, result, noah_params,
                            radiation=radiation, cumulus=cumulus,

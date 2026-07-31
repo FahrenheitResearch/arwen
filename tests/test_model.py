@@ -191,6 +191,9 @@ def test_experiment_fingerprint_allows_only_schedule_extension_fields():
 
     assert experiment_fingerprint(exp, catalog) == \
         experiment_fingerprint(extended, catalog)
+    assert experiment_fingerprint(exp, catalog) == experiment_fingerprint(
+        replace(exp, acknowledgements=("expert-tuple-v1", "site-v2")),
+        catalog)
     assert experiment_fingerprint(exp, catalog) != experiment_fingerprint(
         replace(extended, blend_width=extended.blend_width + 1), catalog)
 

@@ -521,104 +521,74 @@ def test_default_condensation_is_bitwise_identical_to_unmodified_wrf():
     np.testing.assert_array_equal(actual["cldfra"][:, -1], 0.0)
 
 
-def test_the_withheld_snow_species_deviation_is_bounded():
-    """Measure what the driver's ``qs -> kzero`` substitution costs vs WRF.
+def test_the_snow_species_path_is_exact_against_the_wrf_driver_oracle():
+    """A WRF snow-only column must reproduce MYNN's cloud diagnostics exactly."""
 
-    ``mynn_bl_driver`` passes a zero column where WRF passes ``sqs``
-    (``module_bl_mynn.F:1106``), and ``_tendency_flag_identity`` refuses
-    ``flag_qs=True`` outright -- but WRF sets that flag from ``moist(P_QS)``
-    (``module_pbl_driver.F:877`` / ``:1715``), which is true under WSM6,
-    Thompson, Morrison and NSSL 2-moment.  So the deviation is live for every
-    realistic MYNN configuration, and its size has to be a measurement rather
-    than an adjective.
+    from gpuwm.core.mynn_pbl_runtime import mynn_flag_qs
 
-    The measurement needs no new fixture.  In ``mym_condensation`` CASE(2) --
-    the whole admitted identity -- ``qi`` and ``qs`` are read in exactly one
-    expression, ``qi(k)+qs(k)`` at ``:3872-3873``.  Moving a column's frozen
-    water from ``qi`` into ``qs`` therefore cannot change WRF's answer, which
-    lets the recorded ``ice_anvil_water`` row stand as WRF's reference for a
-    snow-only column.  Step 1 proves that; step 2 zeroes ``qs`` and measures.
-
-    Result: where snow coexists with cloud ice above the PBL top the deviation
-    is exactly zero, because ``qi`` alone already clears the ``1e-9``
-    threshold.  Where snow is the ONLY frozen species there -- snow settling
-    into a low-RH layer, the case WRF's own comment says the hack exists for --
-    the deviation is total, and it does not stay in the cloud diagnostic:
-    ``Vq`` moves by 2.6e3 and ``Vt`` by 0.21, and both feed
-    ``mym_turbulence``'s buoyancy flux and ``DMP_mf``.
-    """
-    _, fields = _condensation_oracle()
-    inputs = _condensation_inputs(fields)
-    ice = CONDENSATION_CASES.index("ice_anvil_water")
-    assert float(inputs["qi"][ice].max()) > 1.0e-5
-
-    # Step 1.  qi and qs are interchangeable in CASE(2), so this must be WRF.
-    snow_only = {name: value.copy() for name, value in inputs.items()}
-    snow_only["qs"] = inputs["qs"] + inputs["qi"]
-    snow_only["qi"] = np.zeros_like(inputs["qi"])
-    wrf = mynn_condensation_default(snow_only)
-    for name in ("qc_bl", "qi_bl", "cldfra"):
-        np.testing.assert_array_equal(wrf[name], fields[name], err_msg=name)
-    for name in ("vt", "vq"):
-        np.testing.assert_array_equal(
-            wrf[name], fields[f"{name}_after"], err_msg=name)
-
-    # Step 2.  Zeroing qs is what the driver assembly does; this is the gap.
-    port_inputs = {name: value.copy() for name, value in snow_only.items()}
-    port_inputs["qs"] = np.zeros_like(snow_only["qs"])
-    port = mynn_condensation_default(port_inputs)
-    gap = {name: np.abs(wrf[name].astype(np.float64)
-                        - port[name].astype(np.float64))
-           for name in ("cldfra", "qc_bl", "qi_bl", "vt", "vq")}
-    # Every other oracle column carries no frozen water at all, so the gap has
-    # to be identically zero there: that is what makes the ice column's row a
-    # measurement of qs and not of something else that moved.
-    others = [c for c in range(len(CONDENSATION_CASES)) if c != ice]
-    for name, value in gap.items():
-        np.testing.assert_array_equal(value[others], 0.0, err_msg=name)
-    # A whole overcast layer, not a rounding difference.
-    assert float(gap["cldfra"][ice].max()) == 1.0
-    np.testing.assert_array_equal(wrf["cldfra"][ice].max(), 1.0)
-    assert float(port["cldfra"][ice].max()) == 0.0
-    assert 2.0e-5 < float(gap["qi_bl"][ice].max()) < 2.2e-5
-    np.testing.assert_array_equal(gap["qc_bl"][ice], 0.0)
-    # Vt/Vq are inputs to mym_turbulence and DMP_mf, so this is the part that
-    # says the deviation is not confined to a diagnostic.
-    assert 0.2 < float(gap["vt"][ice].max()) < 0.23
-    assert float(gap["vq"][ice].max()) > 1.0e3
-
-    # Sensitivity: snow alone above a dry column's PBL top, no cloud ice.
-    dry = CONDENSATION_CASES.index("dry_land")
-    measured = []
-    for amount in (1.0e-8, 1.0e-7, 1.0e-6, 1.0e-5, 1.0e-4):
-        with_snow = {name: value.copy() for name, value in inputs.items()}
-        with_snow["qs"] = np.full_like(inputs["qs"], np.float32(amount))
-        with_snow["qi"] = np.zeros_like(inputs["qi"])
-        without = {name: value.copy() for name, value in with_snow.items()}
-        without["qs"] = np.zeros_like(with_snow["qs"])
-        supplied = mynn_condensation_default(with_snow)
-        withheld = mynn_condensation_default(without)
-        np.testing.assert_array_equal(withheld["cldfra"][dry], 0.0)
-        measured.append(float(supplied["cldfra"][dry].max()))
-    # Rises monotonically with the snow amount and saturates at overcast.
-    assert measured == sorted(measured)
-    np.testing.assert_allclose(
-        measured, [0.0318, 0.0893, 0.2937, 0.9787, 1.0], atol=5.0e-4)
+    for mp_physics in (6, 18):
+        for step in (1, 2):
+            blocks, values, initflag, delt = _driver_step(step)
+            index = DRIVER_CASES.index("snow_anvil")
+            assert np.max(values["sqs"][index]) > np.float32(1.0e-5)
+            np.testing.assert_array_equal(values["sqi"][index], 0.0)
+            actual = mynn_bl_driver(
+                values, initflag=initflag, delt=delt,
+                flag_qs=mynn_flag_qs(mp_physics),
+            )
+            for name in ("qc_bl", "qi_bl", "cldfra_bl"):
+                want = np.asarray(
+                    [np.float32(row[name]) for row in blocks[index]],
+                    dtype=np.float32,
+                )
+                np.testing.assert_array_equal(
+                    actual[name][index], want, err_msg=name,
+                )
 
 
-def test_the_registry_publishes_the_withheld_snow_species():
-    """The restriction is part of the option identity, not only a docstring.
+@pytest.mark.parametrize(
+    ("mp_physics", "expected"),
+    ((0, False), (1, False), (6, True), (8, True), (10, True), (18, True)),
+)
+def test_mynn_flag_qs_matches_wrf_registry_packages(mp_physics, expected):
+    """Exercise multiple selectors on both sides of WRF Registry ``F_QS``."""
 
-    A user picking MYNN in a front end sees the registry, not this module, so
-    an undisclosed species restriction is an undisclosed deviation.
-    """
+    from gpuwm.core.mynn_pbl_runtime import mynn_flag_qs
+
+    assert mynn_flag_qs(mp_physics) is expected
+
+
+@pytest.mark.parametrize("mp_physics", (0, 1))
+def test_mp_off_and_kessler_withhold_snow_from_the_mynn_driver(mp_physics):
+    """Both FLAG_QS-false packages must behave as though sqs were zero."""
+
+    from gpuwm.core.mynn_pbl_runtime import mynn_flag_qs
+
+    _, values, initflag, delt = _driver_step(2)
+    supplied = mynn_bl_driver(
+        values, initflag=initflag, delt=delt,
+        flag_qs=mynn_flag_qs(mp_physics),
+    )
+    without_snow = {name: value.copy() for name, value in values.items()}
+    without_snow["sqs"][...] = 0.0
+    withheld = mynn_bl_driver(
+        without_snow, initflag=initflag, delt=delt,
+        flag_qs=mynn_flag_qs(mp_physics),
+    )
+    for name in ("qc_bl", "qi_bl", "cldfra_bl"):
+        np.testing.assert_array_equal(supplied[name], withheld[name])
+
+
+def test_the_registry_publishes_the_mynn_snow_species_contract():
+    """The WRF-derived species contract is visible to front ends."""
     from gpuwm.physics_registry import physics_registry
 
     option = physics_registry()["components"]["pbl"]["options"]["mynn"]
     species = option["extensions"]["supplied_moisture_species"]
-    assert species["supplied"] == ["qv", "qc", "qi"]
-    assert "qs" in species["withheld"]
-    assert species["affected_microphysics_selectors"] == [6, 8, 10, 18]
+    assert species["supplied"] == ["qv", "qc", "qi", "qs"]
+    assert "qs" not in species["withheld"]
+    assert species["flag_qs_true_microphysics_selectors"] == [6, 8, 10, 18]
+    assert species["flag_qs_false_microphysics_selectors"] == [0, 1]
     # Every microphysics option gpuwm implements must be classified, and the
     # split must match the moist packages: WRF's F_QS is true exactly for the
     # packages that carry qs.
@@ -626,17 +596,9 @@ def test_the_registry_publishes_the_withheld_snow_species():
     live = {int(option_["selectors"]["mp_physics"])
             for option_ in microphysics.values()
             if option_.get("implemented") is True}
-    classified = (set(species["affected_microphysics_selectors"])
-                  | set(species["unaffected_microphysics_selectors"]))
+    classified = (set(species["flag_qs_true_microphysics_selectors"])
+                  | set(species["flag_qs_false_microphysics_selectors"]))
     assert live == classified, (live, classified)
-    warning = [text for text in option["warnings"]
-               if "DEVIATION from WRF" in text]
-    assert len(warning) == 1
-    text = warning[0]
-    for required in ("mp_physics 6", "Thompson", "Morrison", "NSSL",
-                     "module_bl_mynn.F:3872-3873", "CLDFRA_BL",
-                     "mym_turbulence"):
-        assert required in text, required
 
 
 def test_condensation_oracle_can_discriminate_the_moisture_variance():
@@ -950,8 +912,10 @@ def test_tendencies_reject_mass_flux_and_nondefault_knobs():
             mynn_tendencies_nomf(inputs, **{knob: bad})
     with pytest.raises(ValueError, match="FLAG_QC and FLAG_QI"):
         mynn_tendencies_nomf(inputs, flag_qc=False)
-    with pytest.raises(ValueError, match="FLAG_QS"):
-        mynn_tendencies_nomf(inputs, flag_qs=True)
+    baseline = mynn_tendencies_nomf(inputs)
+    with_snow_flag = mynn_tendencies_nomf(inputs, flag_qs=True)
+    for name in baseline:
+        np.testing.assert_array_equal(with_snow_flag[name], baseline[name])
     with pytest.raises(ValueError, match="FLAG_OZONE"):
         mynn_tendencies_nomf(inputs, flag_ozone=True)
     forced = {name: array.copy() for name, array in inputs.items()}
@@ -1828,10 +1792,12 @@ STFUNC_ORACLE = ORACLE.with_name("stfunc.csv")
 DRIVER_ORACLE = ORACLE.with_name("driver.csv")
 DRIVER_CASES = (
     "convective_land", "marine_cumulus", "stable_land", "cloudy_deep",
+    "snow_anvil",
 )
 DRIVER_NZ = 30
 DRIVER_LAYER_CSV = {
-    "sqv": "sqv3d", "sqc": "sqc3d", "sqi": "sqi3d", "tk": "t3d",
+    "sqv": "sqv3d", "sqc": "sqc3d", "sqi": "sqi3d", "sqs": "sqs3d",
+    "tk": "t3d",
 }
 DRIVER_OUTPUT_CSV = {"el": "el_pbl", "sh": "sh3d", "sm": "sm3d"}
 DRIVER_PROFILE_OUTPUTS = (
@@ -1840,7 +1806,7 @@ DRIVER_PROFILE_OUTPUTS = (
     "sh", "sm", "qc_bl", "qi_bl", "cldfra_bl",
 )
 #: Fields the cold start reproduces bitwise on *every* column, including the
-#: one that carries the open residue.  Keeping them separate is what makes
+#: two that carry the open residue.  Keeping them separate is what makes
 #: the residue a bounded island instead of a blanket tolerance.
 DRIVER_COLD_EXACT = (
     "dozone", "qc_bl", "qi_bl", "cldfra_bl",
@@ -1948,7 +1914,7 @@ def _driver_step(step: int):
 
 
 def test_driver_warm_step_is_bitwise_identical_to_unmodified_wrf():
-    """initflag=0 -- what a running model actually does -- on all 4 columns.
+    """initflag=0 -- what a running model actually does -- on all five columns.
 
     Every profile the driver writes back, every column diagnostic, and both
     integer indices, at max_ulp 0 against a direct ``mynn_bl_driver`` call.
@@ -1956,7 +1922,9 @@ def test_driver_warm_step_is_bitwise_identical_to_unmodified_wrf():
 
     blocks, values, initflag, delt = _driver_step(2)
     assert initflag == 0
-    actual = mynn_bl_driver(values, initflag=initflag, delt=delt)
+    actual = mynn_bl_driver(
+        values, initflag=initflag, delt=delt, flag_qs=True,
+    )
     for name in DRIVER_PROFILE_OUTPUTS:
         key = DRIVER_OUTPUT_CSV.get(name, name)
         want = np.asarray(
@@ -1984,19 +1952,21 @@ def test_driver_warm_step_is_bitwise_identical_to_unmodified_wrf():
         )
 
 
-def test_driver_cold_start_is_bitwise_on_three_of_four_columns():
+def test_driver_cold_start_is_bitwise_on_three_of_five_columns():
     """initflag=1 runs the mym_initialize cold start.
 
-    Three of the four columns are bitwise on every field.  The fourth,
-    ``cloudy_deep``, carries an open residue that first appears in
-    ``mym_turbulence``'s ``el``/``sh``/``sm``; it is bounded in
+    Three of the five columns are bitwise on every field.  ``cloudy_deep`` and
+    ``snow_anvil`` carry an open residue that first appears in
+    ``mym_turbulence``'s ``el``/``sh``/``sm``; they are bounded in
     :func:`test_driver_cold_start_residue_is_confined_and_bounded` rather than
     hidden behind a tolerance here.
     """
 
     blocks, values, initflag, delt = _driver_step(1)
     assert initflag == 1
-    actual = mynn_bl_driver(values, initflag=initflag, delt=delt)
+    actual = mynn_bl_driver(
+        values, initflag=initflag, delt=delt, flag_qs=True,
+    )
     for index, case in enumerate(DRIVER_CASES):
         if case not in DRIVER_COLD_EXACT_CASES:
             continue
@@ -2015,8 +1985,8 @@ def test_driver_cold_start_is_bitwise_on_three_of_four_columns():
 def test_driver_cold_start_residue_is_confined_and_bounded():
     """Name the island: which column, which fields, how far.
 
-    The cold-start residue lives entirely in ``cloudy_deep``.  Everything
-    upstream of ``mym_turbulence`` on that column -- ``pblh``, ``kpbl``,
+    The cold-start residue lives entirely in the two deep-cloud columns.
+    Everything upstream of ``mym_turbulence`` on those columns -- ``pblh``, ``kpbl``,
     ``rmol``, ``qc_bl``, ``qi_bl``, ``cldfra_bl``, ``maxwidth``, ``maxmf``,
     ``ztop_plume``, ``ktop_plume`` -- is still bitwise, which is what says the
     assembly, ``get_pblh``, ``scale_aware``, ``mym_initialize``,
@@ -2025,22 +1995,9 @@ def test_driver_cold_start_residue_is_confined_and_bounded():
     """
 
     blocks, values, initflag, delt = _driver_step(1)
-    actual = mynn_bl_driver(values, initflag=initflag, delt=delt)
-    index = DRIVER_CASES.index("cloudy_deep")
-    for name in DRIVER_COLD_EXACT:
-        key = DRIVER_OUTPUT_CSV.get(name, name)
-        want = np.asarray(
-            [np.float32(row[key]) for row in blocks[index]], dtype=np.float32
-        )
-        np.testing.assert_array_equal(
-            np.asarray(actual[name], dtype=np.float32)[index], want,
-            err_msg=name,
-        )
-    for name in ("pblh", "rmol", "maxwidth", "maxmf", "ztop_plume"):
-        assert np.float32(actual[name][index]) \
-            == np.float32(blocks[index][0][name]), name
-    for name in ("kpbl", "ktop_plume"):
-        assert int(actual[name][index]) == int(blocks[index][0][name]), name
+    actual = mynn_bl_driver(
+        values, initflag=initflag, delt=delt, flag_qs=True,
+    )
     # The measured worst case, field by field.  A regression trips this.
     budgets = {
         "rublten": 34917581, "rvblten": 34571878, "rthblten": 1867304141,
@@ -2049,22 +2006,43 @@ def test_driver_cold_start_residue_is_confined_and_bounded():
         "tsq": 3387398, "qsq": 21682734, "cov": 2782383, "el": 25193,
         "sh": 3346336, "sm": 2120151,
     }
-    for name, budget in budgets.items():
-        key = DRIVER_OUTPUT_CSV.get(name, name)
-        want = np.asarray(
-            [np.float32(row[key]) for row in blocks[index]], dtype=np.float32
+    for case in ("cloudy_deep", "snow_anvil"):
+        index = DRIVER_CASES.index(case)
+        for name in DRIVER_COLD_EXACT:
+            key = DRIVER_OUTPUT_CSV.get(name, name)
+            want = np.asarray(
+                [np.float32(row[key]) for row in blocks[index]],
+                dtype=np.float32,
+            )
+            np.testing.assert_array_equal(
+                np.asarray(actual[name], dtype=np.float32)[index], want,
+                err_msg=f"{case}/{name}",
+            )
+        for name in ("pblh", "rmol", "maxwidth", "maxmf", "ztop_plume"):
+            assert np.float32(actual[name][index]) \
+                == np.float32(blocks[index][0][name]), f"{case}/{name}"
+        for name in ("kpbl", "ktop_plume"):
+            assert int(actual[name][index]) == int(
+                blocks[index][0][name]), f"{case}/{name}"
+        for name, budget in budgets.items():
+            key = DRIVER_OUTPUT_CSV.get(name, name)
+            want = np.asarray(
+                [np.float32(row[key]) for row in blocks[index]],
+                dtype=np.float32,
+            )
+            got = np.asarray(actual[name], dtype=np.float32)[index]
+            _assert_within_ulp(got, want, budget, f"{case}/{name}")
+        # el is where it enters, and it enters small: a relative difference
+        # below 2e-3, not a structural break.
+        want_el = np.asarray(
+            [np.float32(row["el_pbl"]) for row in blocks[index]],
+            dtype=np.float32,
         )
-        got = np.asarray(actual[name], dtype=np.float32)[index]
-        _assert_within_ulp(got, want, budget, f"cloudy_deep/{name}")
-    # el is where it enters, and it enters small: a relative difference of
-    # 1.6e-3, not a structural break.
-    want_el = np.asarray(
-        [np.float32(row["el_pbl"]) for row in blocks[index]], dtype=np.float32
-    )
-    got_el = np.asarray(actual["el"], dtype=np.float32)[index]
-    relative = np.abs(got_el.astype(np.float64) - want_el.astype(np.float64))
-    relative /= np.maximum(np.abs(want_el.astype(np.float64)), 1.0e-30)
-    assert relative.max() < 2.0e-3, relative.max()
+        got_el = np.asarray(actual["el"], dtype=np.float32)[index]
+        relative = np.abs(
+            got_el.astype(np.float64) - want_el.astype(np.float64))
+        relative /= np.maximum(np.abs(want_el.astype(np.float64)), 1.0e-30)
+        assert relative.max() < 2.0e-3, (case, relative.max())
 
 
 def test_driver_rejects_nondefault_knobs_and_shape_drift():
@@ -2079,8 +2057,7 @@ def test_driver_rejects_nondefault_knobs_and_shape_drift():
         mynn_bl_driver(values, initflag=0, delt=delt, restart=True)
     with pytest.raises(ValueError, match="mix_chem"):
         mynn_bl_driver(values, initflag=0, delt=delt, mix_chem=True)
-    with pytest.raises(ValueError, match="FLAG_QS"):
-        mynn_bl_driver(values, initflag=0, delt=delt, flag_qs=True)
+    mynn_bl_driver(values, initflag=0, delt=delt, flag_qs=True)
     with pytest.raises(TypeError, match="initflag"):
         mynn_bl_driver(values, initflag=0.0, delt=delt)
     missing = dict(values)
@@ -2107,21 +2084,23 @@ def test_driver_cold_start_actually_discards_the_incoming_state():
 
     blocks, values, _, delt = _driver_step(1)
     assert np.any(values["qke"] != 0.0) and np.any(values["el"] != 0.0)
-    baseline = mynn_bl_driver(values, initflag=1, delt=delt)
+    baseline = mynn_bl_driver(values, initflag=1, delt=delt, flag_qs=True)
     perturbed = {name: np.asarray(value).copy()
                  for name, value in values.items()}
     for name in ("qke", "tsq", "qsq", "cov", "el", "sh", "sm", "qc_bl",
                  "cldfra_bl"):
         perturbed[name] = perturbed[name] + np.float32(0.25)
-    cold = mynn_bl_driver(perturbed, initflag=1, delt=delt)
+    cold = mynn_bl_driver(perturbed, initflag=1, delt=delt, flag_qs=True)
     for name in ("rublten", "rthblten", "qke", "el", "cldfra_bl"):
         np.testing.assert_array_equal(
             baseline[name], cold[name], err_msg=f"cold/{name}"
         )
     _, warm_values, _, _ = _driver_step(2)
-    warm = mynn_bl_driver(warm_values, initflag=0, delt=delt)
+    warm = mynn_bl_driver(warm_values, initflag=0, delt=delt, flag_qs=True)
     warm_perturbed = {name: np.asarray(value).copy()
                       for name, value in warm_values.items()}
     warm_perturbed["qke"] = warm_perturbed["qke"] + np.float32(0.25)
-    moved = mynn_bl_driver(warm_perturbed, initflag=0, delt=delt)
+    moved = mynn_bl_driver(
+        warm_perturbed, initflag=0, delt=delt, flag_qs=True,
+    )
     assert not np.array_equal(warm["qke"], moved["qke"])

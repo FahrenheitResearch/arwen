@@ -108,15 +108,15 @@ before relying on any of these over unusual surfaces):
   ignoring this is listed per field in the registry. Frozen-ground
   infiltration on simultaneously-frozen-and-melting columns differs
   through CUDA vs glibc `expf`/`powf` (water redistributed, not lost).
-- **Noah-MP:** glacier columns are refused (not silently skipped); sea
-  ice takes WRF's own skip; the precipitation partition is coarser than
-  WRF's six-rate interface (RAINBL + SR only).
-- **RUC:** implements the `EM_CORE==0` precipitation-partition arm --
-  the arm with oracle evidence -- where WRF-ARW compiles the other one;
-  visible in graupel-bearing convection. WRF's own uninitialized-`ilnb`
-  read on thin snow (a real WRF defect: the value depends on grid
-  traversal order) is *not* reproduced; ArWen passes the defined
-  one-layer answer and documents the divergence.
+- **Noah-MP:** glacier columns are refused during post-static
+  initialization (not silently skipped); sea ice takes WRF's own skip.
+  The WRF six-rate precipitation partition and radiation-cadence COSZEN
+  carrier are active.
+- **RUC:** uses WRF-ARW's `EM_CORE==1` species partition, lake bypass,
+  fractional-sea-ice pre/post blend, and radiation-cadence GSW carrier.
+  WRF's own uninitialized-`ilnb` read on thin snow (a real WRF defect:
+  the value depends on grid traversal order) is *not* reproduced; ArWen
+  passes the defined one-layer answer and documents the divergence.
 
 ## Radiation (`ra_lw_physics` / `ra_sw_physics`)
 

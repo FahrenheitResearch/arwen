@@ -78,10 +78,14 @@ from gpuwm.core.preflight import (GIB, PEAK_ENVELOPE_BASIS,
                                   unknown_platform_note,
                                   windows_small_card_advisory)
 from gpuwm.experiment import ExperimentConfig, build_experiment
+from gpuwm.explain import explain_enabled
 from gpuwm.fetch import parse_cycle
 from gpuwm.physics_compat import (MORRISON_PROFILE_ID, MYNN_PROFILE_ID,
-                                  NSSL2_PROFILE_ID, RUC_PROFILE_ID,
-                                  THOMPSON_PROFILE_ID, WSM6_PROFILE_ID,
+                                  MYNN_RUC_PROFILE_ID,
+                                  NSSL2_LEGACY_RRTMG_PROFILE_ID,
+                                  NSSL2_PROFILE_ID,
+                                  RUC_PROFILE_ID, THOMPSON_PROFILE_ID,
+                                  WSM6_PROFILE_ID,
                                   single_domain_runtime_switches)
 from gpuwm.static.projection import (WRF_MAP_PROJ_CODES, _wrap180,
                                      projection_class)
@@ -310,10 +314,12 @@ DEFAULT_SUITE_PHYSICS = {
 WIZARD_PHYSICS_PROFILES = (
     MORRISON_PROFILE_ID,
     NSSL2_PROFILE_ID,
+    NSSL2_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     WSM6_PROFILE_ID,
     MYNN_PROFILE_ID,
     RUC_PROFILE_ID,
+    MYNN_RUC_PROFILE_ID,
 )
 
 
@@ -1122,6 +1128,28 @@ def _default_name(lat: float, lon: float) -> str:
             .replace(".", "p"))
 
 
+def sizing_summary(exp: ExperimentConfig, estimate, budget_bytes: int,
+                   vram_gib: float) -> str:
+    """The whole sizing verdict on one line: what fits, in what.
+
+    The itemized table -- per-domain dx, mass grid, dt, resident bytes,
+    the envelope factor and its measurement basis -- is nine lines of
+    real accounting that belongs in front of anyone tuning a ladder.
+    It is not what the reader of a first run needs, and it was the top
+    of the wall the field exhibit opened with.  So the numbers that
+    decide whether this config runs at all stay, and the derivation
+    moves to ``--explain``.
+    """
+
+    envelope = observed_peak_envelope_bytes(
+        estimate.footprint_projection_bytes, vram_gib=vram_gib)
+    return (f"sizing: {len(exp.domains)} domain(s); alloc "
+            f"{estimate.alloc_estimate_bytes / GIB:.2f} GiB, peak "
+            f"envelope {envelope / GIB:.2f} GiB of a "
+            f"{budget_bytes / GIB:.2f} GiB budget "
+            f"({(budget_bytes - envelope) / GIB:.2f} GiB headroom)")
+
+
 def _print_sizing_table(exp: ExperimentConfig, estimate,
                         budget_bytes: int, vram_gib: float) -> None:
     envelope = observed_peak_envelope_bytes(
@@ -1180,6 +1208,27 @@ def _missing_case_inputs(out: Path, case_data: dict) -> list[str]:
             if not (root / dataset).is_dir():
                 missing.append(f"geog_root dataset {dataset}")
     return missing
+
+
+def gray_zone_headline(chain_km, shared: dict) -> list[str]:
+    """The gray-zone advisory's first clause: the finding, no mechanism.
+
+    The full :func:`gray_zone_advisory` sentence is four printed lines
+    of correct and load-bearing science, and it is what the emitted
+    config carries in its header comment -- permanently, where it is
+    read next to the settings it is about.  On stdout it was competing
+    with the one line the reader needed, so stdout gets the finding and
+    ``--explain`` (and the file itself) keep the reasoning.
+
+    Derived from the same call, never a second transcription of the
+    numbers: a headline that could disagree with the advisory would be
+    worse than no headline.
+    """
+
+    full = gray_zone_advisory(chain_km, shared)
+    if not full:
+        return []
+    return [full[0].split(", so ", 1)[0] + "."]
 
 
 def _print_geog_help() -> None:
@@ -1382,12 +1431,17 @@ def domain_main(args) -> int:
             shutil.copyfile(_PACKAGED_VTABLE, vtable_path)
             written.append(vtable_path)
 
+    explain = explain_enabled(args)
     print(f"gpuwm domain: {name!r} at ({lat:g}, {lon:g}), ladder {ladder} "
           f"({'-'.join(f'{v:g}' for v in _ladder_dx_km(ratios, root_dx_m))} km), "
           f"card {vram_gib:g} GiB")
-    _print_sizing_table(exp, estimate, budget, vram_gib)
-    for path in written:
-        print(f"wrote {path}")
+    if explain:
+        _print_sizing_table(exp, estimate, budget, vram_gib)
+    else:
+        print(sizing_summary(exp, estimate, budget, vram_gib))
+    print(f"wrote {out}"
+          + (f" (+ {', '.join(p.name for p in written[1:])})"
+             if len(written) > 1 else ""))
     # The printed command must be pasteable as-is from THIS directory.
     # A relative data path that climbs out of the cwd silently targets
     # the wrong place when pasted from anywhere else, so it is printed
@@ -1400,30 +1454,51 @@ def domain_main(args) -> int:
     area_flag = (f"--area={fetch_hints['area']}"
                  if fetch_hints["area"].startswith("-")
                  else f"--area {fetch_hints['area']}")
-    print("next: gpuwm fetch "
-          f"--source {args.source} --cycle {fetch_hints['cycle']} "
-          f"--hours {fetch_hints['hours']} {area_flag} "
-          f"--out {_printed_path(printed_out)}")
+    fetch_command = ("gpuwm fetch "
+                     f"--source {args.source} --cycle {fetch_hints['cycle']} "
+                     f"--hours {fetch_hints['hours']} {area_flag} "
+                     f"--out {_printed_path(printed_out)}")
+    check_command = (f"gpuwm check {_printed_path(out)} "
+                     f"--budget-gib {budget_gib:g} --vram-gib {vram_gib:g}")
+    run_command = f"gpuwm run {_printed_path(out)}"
+
     for note in area_notes:
         print(f"note: {note}")
     print(f"physics: {physics_summary(profile)}")
-    for line in prepared_route_physics_notice(profile, args.source):
-        print(line)
-    for note in gray_zone_advisory(
-            _ladder_dx_km(ratios, root_dx_m), shared_physics(profile)):
-        print(f"advisory: {note}")
+    chain_km = _ladder_dx_km(ratios, root_dx_m)
+    shared = shared_physics(profile)
+    if explain:
+        for line in prepared_route_physics_notice(profile, args.source):
+            print(line)
+        for note in gray_zone_advisory(chain_km, shared):
+            print(f"advisory: {note}")
+    else:
+        # The headline says what was found; the emitted config carries
+        # the whole advisory in its header comment either way, so the
+        # reasoning is never only one flag away -- it is also in the
+        # file, next to the settings it is about.
+        for note in gray_zone_headline(chain_km, shared):
+            print(f"advisory: {note}")
 
-    # ---- final step: gpuwm check, honestly ---------------------------
+    # ---- gpuwm check, where it can honestly run ----------------------
+    #
+    # Run it BEFORE the next-steps block rather than after.  The block
+    # is the last thing printed, on purpose: the field exhibit's whole
+    # failure was a correct next command with output after it, which
+    # reads as "and then this other thing happened" rather than "do
+    # this".
+    deferred: list[str] = []
     if case_data is None:
-        print(
-            f"note: fetched {args.source.upper()} GRIB2 feeds the "
-            "rw-wps/gpuwm-wrf-init native initialization front door, not "
-            "the [case_data] run path (the config-driven route decodes "
-            "native GRIB1 = ERA5 today); this TOML's "
-            "[experiment]/[[domain]]/[projection] tables are what that "
-            "front door consumes.  `gpuwm check` validates the geometry "
-            "and memory preflight for this file; the native front door "
-            "validates its own inputs.")
+        if explain:
+            print(
+                f"note: fetched {args.source.upper()} GRIB2 feeds the "
+                "rw-wps/gpuwm-wrf-init native initialization front door, "
+                "not the [case_data] run path (the config-driven route "
+                "decodes native GRIB1 = ERA5 today); this TOML's "
+                "[experiment]/[[domain]]/[projection] tables are what "
+                "that front door consumes.  `gpuwm check` validates the "
+                "geometry and memory preflight for this file; the native "
+                "front door validates its own inputs.")
         from gpuwm.cli import main as cli_main
         # The card size travels with the budget: --budget-gib alone lets
         # check re-derive a notional free larger than the whole card.
@@ -1434,25 +1509,75 @@ def domain_main(args) -> int:
                   "the wizard does not certify this file", flush=True)
             return rc
         print("gpuwm check: PASS (rc 0)")
-        return 0
-    missing = _missing_case_inputs(out, case_data)
-    if missing:
-        print("gpuwm check: deferred -- declared inputs not on disk yet:")
-        for item in missing:
-            print(f"  missing {item}")
-        print(f"  after fetching, run: gpuwm check {_printed_path(out)} "
-              f"--budget-gib {budget_gib:g} --vram-gib {vram_gib:g}")
-        _print_geog_help()
-        return 0
-    from gpuwm.cli import main as cli_main
-    rc = cli_main(["check", str(out), "--budget-gib", f"{budget_gib:g}",
-                   "--vram-gib", f"{vram_gib:g}"])
-    if rc != 0:
-        print(f"gpuwm check FAILED (rc {rc}) on the emitted config; the "
-              "wizard does not certify this file", flush=True)
-        return rc
-    print("gpuwm check: PASS (rc 0)")
+    else:
+        deferred = _missing_case_inputs(out, case_data)
+        if deferred:
+            # Not a stanza of its own.  "gpuwm check: deferred" followed
+            # by an indented inventory reads as a failure report in the
+            # middle of a success, which is how the field exhibit's
+            # reader met it.  What it actually means is "step 2 comes
+            # after step 1", and that is where it now says it.
+            if explain:
+                print("gpuwm check: deferred -- declared inputs not on "
+                      "disk yet:")
+                for item in deferred:
+                    print(f"  missing {item}")
+                _print_geog_help()
+        else:
+            from gpuwm.cli import main as cli_main
+            rc = cli_main(["check", str(out), "--budget-gib",
+                           f"{budget_gib:g}", "--vram-gib", f"{vram_gib:g}"])
+            if rc != 0:
+                print(f"gpuwm check FAILED (rc {rc}) on the emitted "
+                      "config; the wizard does not certify this file",
+                      flush=True)
+                return rc
+            print("gpuwm check: PASS (rc 0)")
+
+    _print_next_steps(fetch_command, check_command, run_command,
+                      source=args.source, deferred=bool(deferred),
+                      explain=explain)
     return 0
+
+
+def _print_next_steps(fetch_command: str, check_command: str,
+                      run_command: str, *, source: str, deferred: bool,
+                      explain: bool) -> None:
+    """The last thing the wizard prints: three commands, in order.
+
+    Three, numbered, and nothing after them.  Everything above this
+    block is a report on what was just written; this block is the only
+    part that asks the reader to do something, and the field exhibit
+    showed what happens when it is not visually distinct -- the correct
+    ``gpuwm fetch`` line sat at line 15 of 20 and the reader concluded
+    the tool did not work.
+
+    The ERA5 route earns one extra line, and only when it is true: the
+    Copernicus API needs a personal key file that nothing in this
+    project can create, and its absence otherwise surfaces as a cdsapi
+    exception with nothing pointing back here.  ``gpuwm fetch --source
+    era5`` already prints the full five-step procedure; this names the
+    prerequisite at the moment the reader is deciding what to run.
+    """
+
+    if not explain:
+        # Before the block, never after it: the numbered steps are the
+        # last thing on the screen, so the eye lands on step 1.
+        print("Re-run with --explain for the sizing table, the physics "
+              "notes and the full advisories.")
+    print("")
+    print("next:")
+    print(f"  1. {fetch_command}")
+    if source == "era5":
+        from gpuwm.fetch import cds_credentials_path, cds_credentials_present
+
+        if not cds_credentials_present():
+            print(f"     ERA5 needs a Copernicus CDS key first: no "
+                  f"{cds_credentials_path()} yet -- the fetch above "
+                  "prints the account and key steps.")
+    print(f"  2. {check_command}"
+          + ("   # after the fetch lands" if deferred else ""))
+    print(f"  3. {run_command}")
 
 
 def register_cli(subparsers) -> None:

@@ -286,6 +286,8 @@ def test_trusted_mp18_acceptance_uses_alias_checks_without_reductions(
     driver.microphysics = result
     driver._pending_rainbl = np.zeros(surface, dtype=np.float32)
     driver.microphysics_updates = 0
+    driver.ruc_params = None
+    driver.noahmp_params = None
 
     def forbidden(*args, **kwargs):
         raise AssertionError("trusted MP18 acceptance performed a reduction")

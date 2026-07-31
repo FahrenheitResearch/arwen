@@ -678,7 +678,7 @@ def test_nssl2_maps_first_class_without_substitution(tmp_path):
     assert not any(item.key == "mp_physics" for item in report.substitutions)
 
 
-def test_target_thompson_mynn_ruc_suite_fails_with_complete_receipt(tmp_path):
+def test_target_thompson_mynn_ruc_suite_imports_without_substitution(tmp_path):
     inp = INPUT_TEXT.replace("mp_physics = 55, 55",
                              "mp_physics = 8, 8").replace(
         "sf_sfclay_physics = 91, 91",
@@ -688,20 +688,17 @@ def test_target_thompson_mynn_ruc_suite_fails_with_complete_receipt(tmp_path):
         "bl_pbl_physics = 11, 11",
         "bl_pbl_physics = 5, 5").replace(
         " bldt = 0, 0,", " num_soil_layers = 9,\n bldt = 0, 0,")
-    with pytest.raises(ValueError) as caught:
-        import_namelists(*_pair(tmp_path, inp=inp), name="friend_suite")
-    text = str(caught.value)
-    assert "no substitutions were applied" in text
-    # ``num_soil_layers=9`` stood in this list until RUC was admitted at nine
-    # layers, and "Thompson" stood in it until mp8 was promoted to a
-    # first-class scheme with packaged tables (product decision, product/v1
-    # packaging lane 2026-07-28); asserting either now would be asserting a
-    # refusal that has been lifted.  What still refuses this namelist is the
-    # MYNN/RUC pair -- RUC runs SFCDIAGS_RUCLSM after the LSM and MYNN
-    # diagnoses T2/Q2/TH2 itself -- so the tokens naming the surviving
-    # reason remain.
-    for token in ("MYNN", "RUC", "two 2-m diagnostics"):
-        assert token in text
+    toml_text, report = import_namelists(
+        *_pair(tmp_path, inp=inp), name="friend_suite")
+    output = tmp_path / "friend-suite.toml"
+    output.write_text(toml_text, encoding="utf-8")
+    cfg = load_experiment(output).root.run
+    assert (cfg.mp_physics, cfg.sf_sfclay_physics,
+            cfg.sf_surface_physics, cfg.bl_pbl_physics,
+            cfg.num_soil_layers) == (8, 5, 3, 5, 9)
+    assert [item.key for item in report.substitutions] == [
+        "ra_lw_physics/ra_sw_physics"
+    ]
 
 
 def test_split_radiation_imports_natively_and_refuses_the_unported_half(

@@ -25,24 +25,21 @@ def _cfg(**overrides) -> RunConfig:
     return RunConfig(**values)
 
 
-def test_full_target_reports_every_remaining_coupled_component():
-    """The target suite's receipt, after the mp8 promotion.
+def test_full_target_mynn_ruc_pair_has_no_remaining_blocker():
+    """The target suite's receipt after the ownership port.
 
     MYNN no longer appears because 5/5 runs, "RUC land-surface model" no
     longer appears because RUC runs, and "Thompson microphysics" no longer
     appears because mp8 is first-class now that the canonical classic
     tables ship as package data (product decision, product/v1 packaging
     lane 2026-07-28 -- the byte validation moved to table load, it did not
-    disappear).  What survives is the MYNN/RUC PAIR.
+    disappear).  The MYNN/RUC pair is now admitted because WRF's ordered
+    RUC write-back and SFCDIAGS_RUCLSM ownership are explicit.
     """
     blockers = pending_wrf_physics_components(
         mp_physics=8, sf_sfclay_physics=5, bl_pbl_physics=5,
         sf_surface_physics=3, num_soil_layers=9)
-    assert [item.component for item in blockers] == [
-        "MYNN surface layer with RUC",
-    ]
-    assert blockers[0].selectors == (
-        ("sf_sfclay_physics", 5), ("sf_surface_physics", 3))
+    assert blockers == ()
 
     # RUC's own refusals, each reported with the selector pair that caused it.
     six = pending_wrf_physics_components(
@@ -85,6 +82,12 @@ def test_a_mynn_half_suite_is_the_only_mynn_refusal_left():
     assert pending_wrf_physics_components(
         mp_physics=6, sf_sfclay_physics=5, bl_pbl_physics=5,
         sf_surface_physics=2, num_soil_layers=4) == ()
+    assert pending_wrf_physics_components(
+        mp_physics=6, sf_sfclay_physics=5, bl_pbl_physics=5,
+        sf_surface_physics=3, num_soil_layers=9) == ()
+    assert pending_wrf_physics_components(
+        mp_physics=6, sf_sfclay_physics=5, bl_pbl_physics=5,
+        sf_surface_physics=4, num_soil_layers=4) == ()
     for surface, pbl in ((5, 1), (91, 5), (1, 5), (5, 0)):
         blockers = pending_wrf_physics_components(
             mp_physics=6, sf_sfclay_physics=surface, bl_pbl_physics=pbl,
@@ -94,28 +97,18 @@ def test_a_mynn_half_suite_is_the_only_mynn_refusal_left():
             ("sf_sfclay_physics", surface), ("bl_pbl_physics", pbl))
 
 
-def test_target_runconfig_fails_once_without_substitution():
-    """The target suite still fails once, for the one surviving reason.
+def test_target_runconfig_is_admitted_without_substitution():
+    """The target MYNN/RUC suite validates directly.
 
     RUC at nine layers is admitted, mp8 is first-class (packaged tables;
     the promotion is the same product decision documented in
-    ``test_full_target_reports_every_remaining_coupled_component``), so
-    neither contributes a token any more.  What still refuses this suite
-    is the MYNN/RUC PAIR: RUC runs SFCDIAGS_RUCLSM after the LSM and MYNN
-    diagnoses T2/Q2/TH2 itself, so the pair has two 2-m diagnostics and
-    the second silently wins.  One receipt, and no substitution.
+    ``test_full_target_mynn_ruc_pair_has_no_remaining_blocker``), and the
+    surface-driver ownership port makes the MYNN/RUC pair first-class.
     """
-    cfg = _cfg(moist=True, mp_physics=8, sf_sfclay_physics=5,
+    cfg = _cfg(nz=5, moist=True, mp_physics=8, sf_sfclay_physics=5,
                bl_pbl_physics=5, sf_surface_physics=3,
                num_soil_layers=9)
-    with pytest.raises(UnsupportedPhysicsSuiteError) as caught:
-        validate_run_config(cfg)
-    text = str(caught.value)
-    assert "no substitutions were applied" in text
-    for token in ("MYNN", "RUC", "two 2-m diagnostics"):
-        assert token in text
-    assert [item.component for item in caught.value.blockers] == [
-        "MYNN surface layer with RUC"]
+    assert validate_run_config(cfg) is cfg
 
     # The nine-layer geometry is admitted; SIX is what is still refused, and
     # that receipt must name the count so a user is not left guessing.

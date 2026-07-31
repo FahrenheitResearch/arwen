@@ -118,23 +118,22 @@ would have had to implement each branch.
 | `mosaic_lu` | 0 | dead-proved. `ruc_surface_parameters` is fail-closed on SOILVEGIN's mosaic arms, and LSMRUC's irrigation block (`:984-1009`) is gated on the same `mosaic_lu==1`, so it is unreachable wherever SOILVEGIN is. |
 | `mosaic_soil` | 0 | the `soilctop`/`nscat` half of the same refusal. |
 | `flag_sm_adj` | 0 | no consumer. `share/module_soil_pre.F:2063` reads it inside `init_soil_ruc`, i.e. in real.exe, to adjust a Noah-derived RUC soil state — gpuwm's RUC soil ingest (`gpuwm/ingest/ruc_soil.py`) is `init_soil_3_real`, which never reads it. |
-| `spp_lsm` | 0 | not expressible. `LSMRUC:446-450` assigns `rstoch` from `pattern_spp_lsm`, an OPTIONAL argument that exists only under `#if (EM_CORE==1)`, and the pinned object is EM_CORE==0. |
+| `spp_lsm` | 0 | not ported. The ARW/`EM_CORE==1` surface path is active, but `LSMRUC:446-450` additionally needs the stochastic `pattern_spp_lsm`/`field_sf` inputs and their restart contract when this knob is nonzero. |
 
 RUC's namelist surface is only four knobs, which is precisely why the
 interesting restrictions are the ones with **no** namelist field.
 
 ## Restrictions the schema has no field for
 
-All 25 are data, in `gpuwm.core.ruc_runtime.RUC_RUNTIME_RESTRICTIONS`, and
-each carries what gpuwm does and why it differs. The five most consequential:
+The remaining restrictions are data in
+`gpuwm.core.ruc_runtime.RUC_RUNTIME_RESTRICTIONS`; each carries what gpuwm
+does and why it differs. The most consequential:
 
-* **`precipitation_partition_is_the_EM_CORE==0_ARM`** — LSMRUC has two
-  precipitation partitions and `#if (EM_CORE==1)` picks the other one
-  (`:618-652`), which takes `rainncv`/`snowncv`/`graupelncv` separately.
-  **WRF-ARW is built with EM_CORE==1, so a stock ARW run does not take the arm
-  gpuwm implements.** Every RUC oracle fixture in the tree was generated at
-  EM_CORE==0, so the ported arm is the one with evidence behind it and the
-  other has none.
+* **The WRF-ARW surface seam is active** — `EM_CORE==1` consumes
+  `rainncv`/`snowncv`/`graupelncv` at `:618-652`; the lake bypass at
+  `:823-826`, fractional-sea-ice pre/post blend in
+  `module_surface_driver.F:3461-3577`, and radiation-cadence GSW carrier are
+  also wired. The historical `EM_CORE==0` oracle remains explicit-only.
 * **`RUC_soil_ingest_is_wired_but_RUC_is_not_a_registry_profile`** —
   formerly `there_is_no_RUC_SOIL_INGEST`.  The remap exists
   (`gpuwm/ingest/ruc_soil.py`, max_ulp 0) and is wired: the shared
@@ -1703,5 +1702,6 @@ been awkward even if the first had gone the other way.
   and not a performance one.
 * `isncovr_opt` 1 and 3 are transcribed and still **not** oracle-verified;
   the pinned object compiles 2.
-* The EM_CORE==0 precipitation partition, the binary `SR` proxy and the
-  doubled `SFCEVP` are all unchanged and all still published.
+* The binary `SR` proxy outside the supported microphysics family and the
+  doubled `SFCEVP` are unchanged and still published. WRF-ARW's
+  `EM_CORE==1` species partition is now the forecast default.

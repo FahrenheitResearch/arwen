@@ -1237,9 +1237,23 @@ def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
         union.update(dict.fromkeys(MYNN_PBL_DIAGNOSTICS_2D))
         union.update(dict.fromkeys(MYNN_PBL_DIAGNOSTICS_INT_2D))
     if cfg is not None and int(cfg.sf_surface_physics) == 3:
-        from gpuwm.core.ruc_runtime import RUC_DIAGNOSTICS_2D, RUC_STATE_2D
+        from gpuwm.core.ruc_runtime import (
+            RUC_DIAGNOSTICS_2D, RUC_FRACTIONAL_SEAICE_FIELDS, RUC_STATE_2D,
+        )
+        from gpuwm.core.surface_forcing import SURFACE_PRECIPITATION_FIELDS
         union.update(dict.fromkeys(RUC_STATE_2D))
         union.update(dict.fromkeys(RUC_DIAGNOSTICS_2D))
+        union.update(dict.fromkeys(RUC_FRACTIONAL_SEAICE_FIELDS))
+        if int(cfg.sf_sfclay_physics) == 5:
+            # MYNN_SEAICE_WRAPPER performs a full second surface call.  WRF
+            # keeps most results as automatic locals and exposes only the
+            # wait-for-LSM subset; ArWen retains the full result so the GPU
+            # launch allocates nothing outside this preflight inventory.
+            from gpuwm.core.mynn_sfclay import MYNN_SURFACE_OUTPUTS
+            union.update(dict.fromkeys(
+                f"{name}_sea" for name in MYNN_SURFACE_OUTPUTS))
+        union.update(dict.fromkeys(SURFACE_PRECIPITATION_FIELDS))
+        union["gsw"] = None
     if cfg is not None and int(cfg.sf_surface_physics) == 4:
         from gpuwm.core.noahmp_runtime import (
             NOAHMP_DIAGNOSTICS_2D, NOAHMP_STATE_2D, NOAHMP_STATE_INT_2D,
@@ -1247,6 +1261,9 @@ def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
         union.update(dict.fromkeys(NOAHMP_STATE_2D))
         union.update(dict.fromkeys(NOAHMP_STATE_INT_2D))
         union.update(dict.fromkeys(NOAHMP_DIAGNOSTICS_2D))
+        from gpuwm.core.surface_forcing import SURFACE_PRECIPITATION_FIELDS
+        union.update(dict.fromkeys(SURFACE_PRECIPITATION_FIELDS))
+        union["coszen"] = None
     return tuple(union)
 
 
@@ -1624,6 +1641,7 @@ def scratch_slot_registry(cfg: RunConfig, *,
             slots.update(physics_dry_qv=m, physics_dry_qc=m)
         if cfg.mp_physics not in (6, 8, 10, 18):
             slots["physics_qi"] = m                 # physics.py:395
+            slots["physics_qs"] = m                 # physics.py:400
     if int(cfg.bl_pbl_physics) == 5:
         # MYNN's whole working set, declared in
         # gpuwm/core/mynn_pbl_scratch.py.  Before it was declared the solver
@@ -1954,7 +1972,7 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "post-scheme temperature preparation is assigned after the final "
         "condensation hook and before the reflectivity launch"),
     ScratchSlotLifetime(
-        ("physics_qtot", "physics_qi"), "write_before_read",
+        ("physics_qtot", "physics_qi", "physics_qs"), "write_before_read",
         "gpuwm/core/physics.py:387-414",
         "physics preparation explicitly zeroes these arrays before reads"),
     ScratchSlotLifetime(

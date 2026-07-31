@@ -406,8 +406,18 @@ def test_dudhia_cuda_production_adapter_smoke():
     assert result.rthratensw.shape == (nz, ny, nx)
     assert result.swdown.shape == (ny, nx)
     assert result.glw is fields["glw"]
+    assert result.gsw.shape == (ny, nx)
+    assert result.coszen.shape == (ny, nx)
     assert bool(cp.all(cp.isfinite(result.rthratensw)))
     assert bool(cp.all(cp.isfinite(result.swdown)))
+    assert bool(cp.all(cp.isfinite(result.gsw)))
+    expected_coszen, _ = wrf_solar_geometry(
+        datetime(1974, 4, 3, 18, 0),
+        np.full((ny, nx), 39.0, np.float32),
+        np.full((ny, nx), -87.0, np.float32),
+        hour_offset_seconds=0.5 * 12.0 * 60.0)
+    cp.testing.assert_array_equal(
+        result.coszen, cp.asarray(expected_coszen, cp.float32))
     assert bool(cp.all(result.rthratenlw == 0.0))
     assert bool(cp.all(result.glw == cp.float32(311.0)))
     assert float(cp.max(result.rthratensw).get()) > 0.0

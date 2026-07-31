@@ -213,13 +213,13 @@ SLOT_TENDENCY_ZERO = _layers("mynn_pbl_tendency_zero",
 
 # --- the wrapper's column staging (mynn_pbl_runtime) ----------------------
 #: ``mynnedmf_wrapper_run`` transposes ``(nz, ny, nx)`` fields into column
-#: batches.  Doing that at full width allocated 25 arrays of ``ny * nx``
+#: batches.  Doing that at full width allocated 27 arrays of ``ny * nx``
 #: columns per step -- 1,682.3 MiB at the d04 nest, on top of the solver's
 #: own working set and equally invisible to the preflight.  Staged one chunk
 #: at a time these are bounded and priced like everything else.
 MYNN_PBL_STAGE_LAYERS = (
     "dz", "u", "v", "w", "th", "p", "exner", "rho", "tk",
-    "qv", "qc", "qi", "sqv", "sqc", "sqi",
+    "qv", "qc", "qi", "qs", "sqv", "sqc", "sqi", "sqs",
     "qke", "tsq", "qsq", "cov", "el", "sh", "sm",
     "qc_bl", "qi_bl", "cldfra_bl",
 )

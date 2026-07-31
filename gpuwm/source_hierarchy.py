@@ -430,6 +430,7 @@ def initialize_and_export_regular_source_hierarchy(
         root_metadata: Mapping[str, object] | None = None,
         input_provenance: Mapping[str, object] | None = None,
         artifact_manifest_reference: str | None = None,
+        stock_wrf_export: str = "required",
 ) -> RegularSourceHierarchyResult:
     """Feed a prepared GFS/ERA5 root and verified child inputs to the join.
 
@@ -437,6 +438,10 @@ def initialize_and_export_regular_source_hierarchy(
     forcing time.  This function verifies that series, binds all domain
     geometry/static inputs, and performs the existing atomic native-artifact
     plus unchanged-WRF export transaction.
+
+    ``stock_wrf_export`` is passed straight through to
+    :func:`gpuwm.native_hierarchy.initialize_and_export_native_hierarchy`;
+    see :data:`gpuwm.native_hierarchy.STOCK_WRF_EXPORT_MODES`.
     """
 
     grids = tuple(grids)
@@ -553,6 +558,7 @@ def initialize_and_export_regular_source_hierarchy(
         root_metadata=root_metadata,
         input_provenance=provenance,
         artifact_manifest_reference=artifact_manifest_reference,
+        stock_wrf_export=stock_wrf_export,
     )
     return RegularSourceHierarchyResult(
         hierarchy=hierarchy,

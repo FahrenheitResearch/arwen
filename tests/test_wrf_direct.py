@@ -38,6 +38,8 @@ from gpuwm.wrf_direct import (
     _write_wrfinput,
     PreparedCache,
     PreparedDomainArtifacts,
+    StockWrfExportUnsupported,
+    export_prepared_wrf,
     export_prepared_wrf_hierarchy,
     load_domain_artifacts_manifest,
     write_domain_artifacts_manifest,
@@ -76,10 +78,68 @@ def test_stock_wrf_export_rejects_gpuwm_mixed_microphysics_before_output(
         SimpleNamespace(grid_id=2, parent_id=1, run=child),
     ))
     output = tmp_path / "stock-wrf"
-    with pytest.raises(ValueError, match="GPUWM extension.*not stock-WRF"):
+    with pytest.raises(StockWrfExportUnsupported,
+                       match="GPUWM extension.*not stock-WRF") as refusal:
         export_prepared_wrf_hierarchy(exp, (), output)
+    # Typed, so a caller preparing a FORECAST can tell this apart from a
+    # corrupt cache; and it names the deltas as data, not only as prose.
+    assert isinstance(refusal.value, ValueError)
+    assert refusal.value.unsupported == {"mp_physics": (18, 8)}
     assert not output.exists()
     assert not output.with_name(output.name + f".tmp-{os.getpid()}").exists()
+
+
+def _minimal_prepared_cache(root: Path, run: dict) -> Path:
+    """The smallest cache header the export gate reads before it refuses."""
+
+    root.mkdir(parents=True)
+    header = {
+        "schema": "gpuwm-prepared-real-cache-v1",
+        "status": "READY",
+        "identity": {"domain_config": {"run": run}},
+        "metadata": {"user": {}},
+        "arrays": {},
+        "payload_bytes": 0,
+    }
+    header["content_sha256"] = hashlib.sha256(
+        _canonical({key: header[key] for key in (
+            "schema", "identity", "metadata", "arrays", "payload_bytes")}
+        ).encode("utf-8")).hexdigest()
+    (root / "header.json").write_text(
+        json.dumps(header, indent=2, sort_keys=True), encoding="utf-8")
+    return root
+
+
+def test_the_profile_free_export_gate_keeps_its_exact_v2_stock_slice(tmp_path):
+    """F2 fixes the LAYERING; this pins the gate's CONTENT, unchanged.
+
+    The compatibility branch -- the one the hierarchy root export takes,
+    because it supplies no profile -- still demands bl_pbl_physics=1,
+    sf_sfclay_physics=91 and sf_surface_physics=2, and still writes
+    nothing when it refuses.  The message is the one the probes quoted
+    verbatim.
+    """
+
+    cache = _minimal_prepared_cache(tmp_path / "prepared", {
+        "mp_physics": 6, "hybrid_opt": 2, "hypsometric_opt": 2,
+        "specified": True, "nested": False, "spec_bdy_width": 5,
+        # The MYNN tree the probes drove: registry-reachable, and refused.
+        "bl_pbl_physics": 5, "sf_sfclay_physics": 5, "sf_surface_physics": 2,
+    })
+    output = tmp_path / "wrf-native-input"
+
+    with pytest.raises(StockWrfExportUnsupported) as refusal:
+        export_prepared_wrf(
+            cache, tmp_path / "static.npz", tmp_path / "geometry.json",
+            output, valid_time=datetime(2026, 7, 29, 6))
+
+    assert str(refusal.value) == (
+        "unsupported direct-export configuration: "
+        "{'bl_pbl_physics': (5, 1), 'sf_sfclay_physics': (5, 91)}")
+    assert refusal.value.unsupported == {
+        "bl_pbl_physics": (5, 1), "sf_sfclay_physics": (5, 91)}
+    assert not output.exists()
+    assert not list(tmp_path.glob("wrf-native-input.tmp-*"))
 
 
 def test_single_domain_cli_forwards_physics_profile_and_acknowledgement(
@@ -100,7 +160,7 @@ def test_single_domain_cli_forwards_physics_profile_and_acknowledgement(
         "--output", str(tmp_path / "output"),
         "--valid-time", "2026-07-18_00:00:00",
         "--physics-profile", MYNN_PROFILE_ID,
-        "--expert-acknowledgement", "consent-v1",
+        "--ack", "consent-v1",
     ])
 
     wrf_direct.main()

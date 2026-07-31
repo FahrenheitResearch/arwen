@@ -139,12 +139,88 @@ def _integer_categories(value, shape: tuple[int, int], name: str) -> np.ndarray:
     return np.ascontiguousarray(rounded, dtype=np.int32)
 
 
+def _top_soil_level(value, shape: tuple[int, int], name: str):
+    """The first soil level of a ``(nsoil, ny, nx)`` profile, or ``None``."""
+
+    if value is None:
+        return None
+    array = np.asarray(value, dtype=np.float64)
+    if array.ndim == 3:
+        if array.shape[0] < 1:
+            raise ValueError(f"{name} carries no soil levels")
+        array = array[0]
+    return _surface_field(array, shape, name, np.float64)
+
+
+def _reconcile_landmask_soil_category(
+        ivgtyp: np.ndarray, soil: np.ndarray, land: np.ndarray, *,
+        iswater: int, isoilwater: int,
+        soil_temperature, sst, shape: tuple[int, int]) -> np.ndarray:
+    """Transcribe ``dyn_em/module_initialize_real.F:3608-3650``.
+
+    real.exe's final "let us make sure (again) that the landmask and the
+    veg/soil categories match" pass, which every ``surface_input_source``
+    reaches.  A column whose land/water sense disagrees with its soil
+    category is never run as it stands: with a real soil temperature it
+    becomes land (``IVGTYP 5``, ``ISLTYP 8`` -- the source's "forcing
+    artificial silty clay loam"), with a real SST it becomes water, and
+    with neither WRF calls ``wrf_error_fatal('mismatch_landmask_ivgtyp')``.
+
+    RUC LSM relies on this and never re-verifies it.  ``soilvegin``
+    (``phys/module_sf_ruclsm.F:6973``) has no ``else`` for ``isltyp == 14``,
+    so a land column carrying water soil leaves it with ``ref == qmin == 0``
+    and ``:913`` evaluates ``0./0.`` into ``MAVAIL``.  Reconciling here --
+    where real.exe reconciles -- is what keeps that unreachable, rather
+    than clamping a NaN downstream where WRF has no such clamp.
+
+    Only the land-carrying-water-soil arm is reachable from this function:
+    ``land`` is derived from ``IVGTYP`` by the caller and water columns have
+    already had ``ISLTYP`` forced to ``isoilwater``.  The water arm is
+    transcribed anyway, because the source states both.
+
+    Returns the recomputed land mask; ``ivgtyp`` and ``soil`` are updated
+    in place.
+    """
+
+    mismatch = ((land & (soil == int(isoilwater)))
+                | (~land & (soil != int(isoilwater))))
+    if not np.any(mismatch):
+        return land
+    top_soil = _top_soil_level(soil_temperature, shape, "soil_temperature")
+    surface_sea = (None if sst is None
+                   else _surface_field(sst, shape, "sst", np.float64))
+    warm_soil = (np.zeros(shape, dtype=bool) if top_soil is None
+                 else np.asarray(top_soil > 1.0))
+    warm_sea = (np.zeros(shape, dtype=bool) if surface_sea is None
+                else np.asarray(surface_sea > 1.0))
+    to_land = mismatch & warm_soil
+    to_water = mismatch & ~warm_soil & warm_sea
+    unresolved = mismatch & ~to_land & ~to_water
+    if np.any(unresolved):
+        rows, columns = np.nonzero(unresolved)
+        j, i = int(rows[0]), int(columns[0])
+        raise ValueError(
+            "mismatch_landmask_ivgtyp: "
+            f"{int(unresolved.sum())} column(s) disagree between land mask "
+            f"and soil category with no soil temperature above 1 K and no "
+            f"SST above 1 K to resolve them (first at j={j}, i={i}: "
+            f"land={bool(land[j, i])}, IVGTYP={int(ivgtyp[j, i])}, "
+            f"ISLTYP={int(soil[j, i])}, ISWATER={int(iswater)}); "
+            "dyn_em/module_initialize_real.F:3631-3641 aborts here")
+    ivgtyp[to_land] = 5
+    soil[to_land] = 8
+    ivgtyp[to_water] = int(iswater)
+    soil[to_water] = int(isoilwater)
+    return ivgtyp != int(iswater)
+
+
 def initialize_landuse(
         lu_index, *, soil_type, landmask, snow, xice,
         valid_time, cen_lat: float, mminlu: str, iswater: int,
         islake: int, isice: int, isoilwater: int = 14,
         isoilice: int = 16,
         fractional_seaice: bool = False,
+        soil_temperature=None, sst=None,
         tbl_dir: Path | None = None) -> LanduseInitialization:
     """Transcribe the WRF real-data/``landuse_init`` cold-start contract.
 
@@ -152,6 +228,14 @@ def initialize_landuse(
     always has a fixed seasonal state for a run: winter is day <105 or >288
     in the Northern Hemisphere, with the selection reversed south of the
     equator.  ``usemonalb`` is deliberately false, matching real74.
+
+    ``soil_temperature`` (a ``(nsoil, ny, nx)`` profile; its top level is
+    the one WRF reads) and ``sst`` are the evidence real.exe's final
+    landmask/category reconciliation uses -- see
+    :func:`_reconcile_landmask_soil_category`.  They are optional because
+    not every caller has them; a caller that omits them and then presents a
+    mismatched column gets WRF's third arm, the refusal, because there is
+    nothing left to decide the column with.
 
     Timestep-one SMOIS/TSLB/SMCREL initialization over water and sea ice is
     intentionally outside this function and remains a separate porting
@@ -186,6 +270,9 @@ def initialize_landuse(
     # before physics_init.  The associated SMOIS/SH2O/TSLB rewrite remains
     # intentionally out of scope here.
     soil = np.where(seaice, int(isoilice), soil).astype(np.int32)
+    land = _reconcile_landmask_soil_category(
+        ivgtyp, soil, land, iswater=iswater, isoilwater=isoilwater,
+        soil_temperature=soil_temperature, sst=sst, shape=shape)
 
     if np.any(ivgtyp < 1) or np.any(ivgtyp > table.lucats):
         bad = int(ivgtyp[(ivgtyp < 1) | (ivgtyp > table.lucats)][0])

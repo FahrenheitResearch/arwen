@@ -15,8 +15,11 @@ import time
 from gpuwm.physics_compat import (
     SINGLE_DOMAIN_PHYSICS_PROFILES,
     MORRISON_PROFILE_ID,
+    MYNN_NOAHMP_PROFILE_ID,
     MYNN_PROFILE_ID,
+    MYNN_RUC_PROFILE_ID,
     NOAHMP_PROFILE_ID,
+    NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
     RUC_PROFILE_ID,
     THOMPSON_PROFILE_ID,
@@ -31,8 +34,10 @@ MAX_PIPELINE_WORKERS = 64
 _HRRR_COLD_START_CONTRACT = {
     WSM6_PROFILE_ID: ((), {}),
     MYNN_PROFILE_ID: ((), {}),
+    MYNN_RUC_PROFILE_ID: ((), {}),
     RUC_PROFILE_ID: ((), {}),
     NOAHMP_PROFILE_ID: ((), {}),
+    MYNN_NOAHMP_PROFILE_ID: ((), {}),
     THOMPSON_PROFILE_ID: (
         ("QNICE", "QNRAIN"),
         {"ni": (0.0, 0), "nr": (0.0, 0)},
@@ -66,10 +71,26 @@ _HRRR_COLD_START_CONTRACT = {
         },
     ),
 }
+_HRRR_COLD_START_CONTRACT[NSSL2_LEGACY_RRTMG_PROFILE_ID] = (
+    _HRRR_COLD_START_CONTRACT[NSSL2_PROFILE_ID])
 
 
-def _run(command: list[str], env: dict[str, str]) -> None:
-    subprocess.run(command, check=True, cwd=REPO, env=env)
+def _run(command: list[str], env: dict[str, str],
+         cwd: Path | None = None) -> None:
+    subprocess.run(command, check=True, cwd=REPO if cwd is None else cwd,
+                   env=env)
+
+
+#: The vendored decoder workspace.  Its ``.cargo/config.toml`` is what
+#: replaces crates.io with ``vendor/crates-io``, and cargo discovers that
+#: file by walking UP from the working directory -- never from
+#: ``--manifest-path``.  Building this crate from the repository root
+#: therefore bypasses the vendored registry entirely and resolves against
+#: crates.io, which on an air-gapped box fails with ``no matching package
+#: named '<crate>' found; location searched: crates.io index``.  Every
+#: documented build (README, install.sh, install.ps1, CONTRIBUTING) already
+#: ``cd``s here; this one now does too.
+BRIDGE_CRATE = REPO / "tools" / "grib1_bridge"
 
 
 def _decoder(env: dict[str, str]) -> Path:
@@ -78,13 +99,12 @@ def _decoder(env: dict[str, str]) -> Path:
         path = Path(requested).resolve()
     else:
         name = "hrrr_grib2_bridge.exe" if os.name == "nt" else "hrrr_grib2_bridge"
-        path = REPO / "tools" / "grib1_bridge" / "target" / "release" / name
+        path = BRIDGE_CRATE / "target" / "release" / name
         if not path.is_file():
             _run([
-                "cargo", "build", "--release", "--manifest-path",
-                str(REPO / "tools" / "grib1_bridge" / "Cargo.toml"),
+                "cargo", "build", "--release", "--locked", "--offline",
                 "--bin", "hrrr_grib2_bridge",
-            ], env)
+            ], env, cwd=BRIDGE_CRATE)
     if not path.is_file():
         raise FileNotFoundError(f"HRRR decoder is missing: {path}")
     return path
@@ -196,6 +216,105 @@ def _validated_worker_receipts(
             pipeline_worker_receipt)
 
 
+#: The receipt schema this wrapper's own producer emits.  It is a single
+#: constant rather than a set because ``main`` never validates a stored
+#: artifact: it runs ``tools/hrrr_single_domain_benchmark.py --prepare-only``
+#: itself (below) and reads back the ``report.json`` that invocation just
+#: wrote, from the same source tree.  An older-schema receipt therefore
+#: cannot reach this consumer, and accepting one would only widen the gate
+#: for a case that does not exist.  A prepared cache restored from an older
+#: tree does not change that: the benchmark recomputes this receipt from the
+#: restored state on every run, so the schema is always the running code's.
+HRRR_INITIALIZATION_SCHEMA = "gpuwm-hrrr-microphysics-initialization-v3"
+
+#: Every hydrometeor species the native HRRR analysis decodes.  The producer
+#: must account for each of them exactly once, as either retained (mapped to
+#: a state field) or discarded under a source-bound WRF-real policy.
+_HRRR_DECODED_SOURCE_SPECIES = ("QC", "QR", "QI", "QS", "QG")
+
+_HRRR_FINGERPRINT_KEYS = frozenset({
+    "shape", "dtype", "sha256", "nonzero_mask_sha256", "nonzero_count",
+    "minimum", "maximum",
+})
+
+
+def _validated_retention_evidence(
+        initialization: dict[str, object]) -> dict[str, object]:
+    """Bind the producer's analyzed-hydrometeor correspondence evidence.
+
+    Validated as fields, not as a version string: the species partition, the
+    per-species decoded-source and initialized-state fingerprints, and the
+    self-declared evidentiary strength of each retention claim.  Vacuity is
+    reported, never refused -- a cloud-free analysis is a legitimate
+    preparation, and it is the receipt's job to say that its retention claim
+    for that species was not earned.
+    """
+
+    correspondence = initialization.get("source_to_state_correspondence")
+    discarded = initialization.get("discarded_source_species")
+    masses = initialization.get("state_mass_fields")
+    evidence = initialization.get("retention_evidence")
+    summary = initialization.get("retention_evidence_summary")
+    if (initialization.get("source_mass_fields")
+            != list(_HRRR_DECODED_SOURCE_SPECIES)
+            or not isinstance(correspondence, dict)
+            or not isinstance(discarded, dict)
+            or not isinstance(masses, dict)
+            or not isinstance(evidence, dict)
+            or not isinstance(summary, dict)
+            or set(correspondence) | set(discarded)
+            != set(_HRRR_DECODED_SOURCE_SPECIES)
+            or set(correspondence) & set(discarded)
+            or set(evidence) != set(correspondence)
+            or not correspondence):
+        raise RuntimeError(
+            "HRRR preparation omitted analyzed-hydrometeor correspondence "
+            "evidence")
+    vacuous = []
+    for source_name, state_name in sorted(correspondence.items()):
+        mass = masses.get(state_name)
+        species = evidence[source_name]
+        if (not isinstance(state_name, str)
+                or not isinstance(mass, dict)
+                or not _HRRR_FINGERPRINT_KEYS <= set(mass)
+                or mass.get("decoded_source_field") != source_name
+                or not isinstance(mass.get("decoded_source"), dict)
+                or not _HRRR_FINGERPRINT_KEYS <= set(mass["decoded_source"])
+                or not isinstance(species, dict)
+                or species.get("state_field") != state_name
+                or species.get("strength") not in ("PROVEN", "VACUOUS")
+                or int(species.get("source_nonzero_count", -1)) < 0
+                or int(species.get("state_nonzero_count", -1)) < 0):
+            raise RuntimeError(
+                "HRRR preparation omitted analyzed-hydrometeor "
+                "correspondence evidence")
+        source_nonzero = int(species["source_nonzero_count"])
+        # The producer's strength claim has to follow from its own numbers.
+        if (species["strength"] == "PROVEN") != (source_nonzero > 0):
+            raise RuntimeError(
+                "HRRR preparation analyzed-hydrometeor retention strength "
+                f"for {source_name} contradicts its own source mass count")
+        if (source_nonzero != int(mass["decoded_source"]["nonzero_count"])
+                or int(species["state_nonzero_count"])
+                != int(mass["nonzero_count"])):
+            raise RuntimeError(
+                "HRRR preparation analyzed-hydrometeor retention evidence "
+                f"for {source_name} disagrees with its own fingerprints")
+        if source_nonzero > 0 and int(mass["nonzero_count"]) == 0:
+            raise RuntimeError(
+                "HRRR preparation lost every nonzero analyzed "
+                f"{source_name} on the way into state.{state_name}")
+        if species["strength"] == "VACUOUS":
+            vacuous.append(source_name)
+    if (summary.get("vacuous_species") != vacuous
+            or summary.get("strength") not in (
+                "PROVEN", "PARTIALLY_VACUOUS", "VACUOUS")):
+        raise RuntimeError(
+            "HRRR preparation analyzed-hydrometeor retention summary "
+            "disagrees with its per-species evidence")
+    return summary
+
+
 def _validated_physics_receipt(
         preparation_report: dict[str, object], *,
         requested_profile: str) -> dict[str, object]:
@@ -211,8 +330,7 @@ def _validated_physics_receipt(
     expected_wrf_fields, expected_state_fields = \
         _HRRR_COLD_START_CONTRACT[requested_profile]
     if (not isinstance(initialization, dict)
-            or initialization.get("schema")
-            != "gpuwm-hrrr-microphysics-initialization-v1"
+            or initialization.get("schema") != HRRR_INITIALIZATION_SCHEMA
             or initialization.get("source_absent_wrf_fields")
             != list(expected_wrf_fields)
             or not isinstance(
@@ -221,6 +339,7 @@ def _validated_physics_receipt(
             != set(expected_state_fields)):
         raise RuntimeError(
             "HRRR preparation omitted deterministic cold-start evidence")
+    _validated_retention_evidence(initialization)
     for name, (expected_float32, expected_uint32_bits) \
             in expected_state_fields.items():
         observed = initialization["state_source_absent_fields"][name]
@@ -259,7 +378,7 @@ def _parser() -> argparse.ArgumentParser:
         help="explicit GPUWM HRRR physics/runtime contract",
     )
     parser.add_argument(
-        "--expert-acknowledgement", action="append", default=[],
+        "--ack", action="append", default=[],
         help="registry-owned expert physics acknowledgement id; repeatable")
     parser.add_argument("--valid-time", required=True)
     parser.add_argument(
@@ -405,9 +524,8 @@ def main(argv: list[str] | None = None) -> int:
         "--history-interval-seconds", str(args.history_interval_seconds),
         "--outdir", str(native / "preparation-report"),
     ]
-    for acknowledgement in args.expert_acknowledgement:
-        benchmark.extend((
-            "--expert-acknowledgement", acknowledgement))
+    for acknowledgement in args.ack:
+        benchmark.extend(("--ack", acknowledgement))
     if args.prepare_workers is not None:
         benchmark.extend(("--prepare-workers", str(args.prepare_workers)))
     benchmark.extend(("--preprocess-backend", args.preprocess_backend))
@@ -453,9 +571,8 @@ def main(argv: list[str] | None = None) -> int:
         "--valid-time", model_start_time.strftime("%Y-%m-%d_%H:%M:%S"),
         "--physics-profile", args.physics_profile,
     ]
-    for acknowledgement in args.expert_acknowledgement:
-        export_command.extend((
-            "--expert-acknowledgement", acknowledgement))
+    for acknowledgement in args.ack:
+        export_command.extend(("--ack", acknowledgement))
     _run(export_command, env)
     export_seconds = time.perf_counter() - export_started
     result = {

@@ -8400,6 +8400,80 @@ RUC_DRIVER_COLUMN_FORCING = (
     "vegfra",
 )
 
+#: Optional arguments compiled into WRF's ARW (``EM_CORE==1``) LSMRUC
+#: interface.  They are required when ``em_core=1`` and absent from the
+#: retained explicit ``em_core=0`` oracle path.
+RUC_DRIVER_ARW_FORCING = (
+    "rainncv",
+    "snowncv",
+    "graupelncv",
+    "lakemask",
+)
+
+
+def _ruc_arw_precipitation_partition(
+        rainbl, rainncv, snowncv, graupelncv, frzfrac, tabs, timestep):
+    """WRF v4.6.1 ``module_sf_ruclsm.F:618-652`` in FP32 arrays."""
+    zero = np.float32(0.0)
+    one = np.float32(1.0)
+    resolved_liquid = (rainncv * (one - frzfrac)).astype(np.float32)
+    resolved_frozen = (rainncv * frzfrac).astype(np.float32)
+    convective = (rainbl - rainncv).astype(np.float32)
+    mixed_cold = ((frzfrac > zero) & (tabs < np.float32(273.0)))
+    cold = tabs < np.float32(273.0)
+    convective_liquid = np.where(
+        mixed_cold,
+        np.maximum(
+            zero, convective * (one - frzfrac)).astype(np.float32),
+        np.where(cold, zero, np.maximum(zero, convective)),
+    ).astype(np.float32)
+    convective_frozen = np.where(
+        mixed_cold,
+        np.maximum(zero, convective * frzfrac),
+        np.where(cold, np.maximum(zero, convective), zero),
+    ).astype(np.float32)
+    prcpms = (((resolved_liquid + convective_liquid)
+               / timestep).astype(np.float32)
+              * np.float32(1.0e-3)).astype(np.float32)
+    newsnms = (((resolved_frozen + convective_frozen)
+                / timestep).astype(np.float32)
+               * np.float32(1.0e-3)).astype(np.float32)
+    frozen_total = (resolved_frozen + convective_frozen).astype(np.float32)
+    falling = frozen_total > zero
+    denominator = np.where(
+        falling, frozen_total, one).astype(np.float32)
+    snowrat = np.where(
+        falling,
+        np.minimum(
+            one, np.maximum(zero, snowncv / denominator)),
+        zero,
+    ).astype(np.float32)
+    grauprat = np.where(
+        falling,
+        np.minimum(
+            one, np.maximum(zero, graupelncv / denominator)),
+        zero,
+    ).astype(np.float32)
+    icerat = np.where(
+        falling,
+        np.minimum(
+            one,
+            np.maximum(
+                zero,
+                (resolved_frozen - snowncv - graupelncv) / denominator,
+            ),
+        ),
+        zero,
+    ).astype(np.float32)
+    curat = np.where(
+        falling,
+        np.minimum(
+            one, np.maximum(zero, convective_frozen / denominator)),
+        zero,
+    ).astype(np.float32)
+    return prcpms, newsnms, snowrat, grauprat, icerat, curat
+
+
 #: Every two-dimensional ``intent(inout)``/``intent(out)`` argument, in the
 #: order WRF declares them.  ``vegfra`` is declared ``intent(inout)`` at
 #: ``:236`` but ``SOILVEGIN`` takes it ``intent(in)`` (``:6560``) and no line
@@ -8576,6 +8650,8 @@ def ruc_land_surface_step(
     ivgtyp,
     isltyp,
     myj: bool = False,
+    em_core: int = 1,
+    lakemodel: int = 0,
     frpcpn: bool = True,
     rdlai2d: bool = False,
     mosaic_lu: int = 0,
@@ -8603,13 +8679,11 @@ def ruc_land_surface_step(
     ported -- :func:`ruc_surface_temperature_step` and the leaves under it --
     so the body here is orchestration, not new physics.
 
-    **Configuration.**  ``EM_CORE==0``, which is how every RUC fixture in
-    ``gpuwm/data/ruc/oracle`` is compiled.  Under ``EM_CORE==1`` WRF
-    partitions precipitation from ``rainncv``/``snowncv``/``graupelncv``
-    (``:618-652``) instead of from ``rainbl`` and ``frzfrac`` (``:654-660``),
-    and adds SPP perturbation arrays and a lake bypass.  None of those three
-    arms is in the pinned object, so none is transcribed here; ``frpcpn``
-    selects between ``:654-660`` and ``:664-673`` only.
+    **Configuration.**  ``em_core=1`` selects the WRF-ARW precipitation
+    partition (``:618-652``) and lake bypass (``:823-826``).
+    ``em_core=0`` is retained only as an explicit oracle-compatibility path
+    for the historical ``gpuwm/data/ruc/oracle`` fixture; the forecast
+    runtime always selects ARW.
 
     ``mosaic_lu`` and ``mosaic_soil`` must be 0.  That is not an extra
     restriction: :func:`ruc_surface_parameters` is fail-closed on
@@ -8739,6 +8813,12 @@ def ruc_land_surface_step(
         raise ValueError("RUC driver lane supports myj=False only")
     if type(frpcpn) is not bool:
         raise TypeError("frpcpn must be bool")
+    if type(em_core) is not int or em_core not in (0, 1):
+        raise ValueError("RUC driver em_core must be 0 or 1")
+    if type(lakemodel) is not int or lakemodel not in (0, 1):
+        raise ValueError("RUC driver lakemodel must be 0 or 1")
+    if em_core == 0 and lakemodel:
+        raise ValueError("RUC lakemodel is available only under em_core=1")
     if type(rdlai2d) is not bool:
         raise TypeError("rdlai2d must be bool")
     if type(ktau) is not int or ktau < 1:
@@ -8796,6 +8876,12 @@ def ruc_land_surface_step(
     ]
     if missing:
         raise TypeError(f"missing RUC driver inputs: {', '.join(missing)}")
+    if em_core == 1:
+        missing_arw = [name for name in RUC_DRIVER_ARW_FORCING
+                       if name not in values]
+        if missing_arw:
+            raise TypeError(
+                "missing RUC ARW driver inputs: " + ", ".join(missing_arw))
 
     shape: tuple[int, ...] | None = None
     profiles: dict[str, np.ndarray] = {}
@@ -8826,6 +8912,15 @@ def ruc_land_surface_step(
             dtype=np.float32,
             copy=True,
         )
+    if em_core == 1:
+        for name in RUC_DRIVER_ARW_FORCING:
+            columns[name] = np.array(
+                _horizontal_float_field(
+                    values[name], horizontal_shape, name, arrays=arrays
+                ).reshape(ncolumn),
+                dtype=np.float32,
+                copy=True,
+            )
     vegetation_category = _horizontal_integer_field(
         ivgtyp, horizontal_shape, "ivgtyp", arrays=arrays
     ).reshape(ncolumn)
@@ -8929,35 +9024,46 @@ def ruc_land_surface_step(
     conflx = (columns["z3d"] * np.float32(0.5)).astype(np.float32)
     rho = columns["rho3d"]
 
-    # ``:612-673`` precipitation partition (EM_CORE==0 arms only).
+    # ``:612-673`` precipitation partition.  ARW is EM_CORE==1.
     grauprat = np.zeros(ncolumn, dtype=np.float32)
     icerat = np.zeros(ncolumn, dtype=np.float32)
     curat = np.zeros(ncolumn, dtype=np.float32)
-    rate = (
-        (columns["rainbl"] / timestep).astype(np.float32) * np.float32(1.0e-3)
-    ).astype(np.float32)
     if frpcpn:
-        prcpms = (
-            rate * (np.float32(1) - columns["frzfrac"]).astype(np.float32)
-        ).astype(np.float32)
-        newsnms = (rate * columns["frzfrac"]).astype(np.float32)
-        # ``:657``.  Guarded rather than clipped: where ``newsnms`` is zero
-        # WRF does not evaluate the quotient AT ALL, and ``prcpms`` may be
-        # zero with it, so 0/0 is not a value being discarded -- it is a
-        # division the source never performs.  The denominator is forced to
-        # one there so no NaN is created; the selected arm is untouched.
-        total = (newsnms + prcpms).astype(np.float32)
-        falling = newsnms != zero
-        snowrat = np.where(
-            falling,
-            np.minimum(
-                one,
-                (newsnms / np.where(falling, total, one).astype(np.float32)
-                 ).astype(np.float32),
-            ),
-            zero,
-        ).astype(np.float32)
+        if em_core == 1:
+            # :618-652.  Do not reconstruct these species from SR: the
+            # microphysics writers supplied their own surface increments.
+            (prcpms, newsnms, snowrat, grauprat,
+             icerat, curat) = _ruc_arw_precipitation_partition(
+                 columns["rainbl"], columns["rainncv"],
+                 columns["snowncv"], columns["graupelncv"],
+                 columns["frzfrac"], tabs, timestep)
+        else:
+            rate = (
+                (columns["rainbl"] / timestep).astype(np.float32)
+                * np.float32(1.0e-3)
+            ).astype(np.float32)
+            prcpms = (
+                rate * (one - columns["frzfrac"]).astype(np.float32)
+            ).astype(np.float32)
+            newsnms = (rate * columns["frzfrac"]).astype(np.float32)
+            # :657.  WRF does not evaluate the quotient when newsnms is zero.
+            total = (newsnms + prcpms).astype(np.float32)
+            falling = newsnms != zero
+            snowrat = np.where(
+                falling,
+                np.minimum(
+                    one,
+                    (newsnms / np.where(
+                        falling, total, one).astype(np.float32)
+                     ).astype(np.float32),
+                ),
+                zero,
+            ).astype(np.float32)
     else:
+        rate = (
+            (columns["rainbl"] / timestep).astype(np.float32)
+            * np.float32(1.0e-3)
+        ).astype(np.float32)
         frozen = tabs <= freezing
         prcpms = np.where(frozen, zero, rate).astype(np.float32)
         newsnms = np.where(frozen, rate, zero).astype(np.float32)
@@ -9043,8 +9149,13 @@ def ruc_land_surface_step(
     # humidity test.  These columns take WRF's ``CYCLE``: nothing below the
     # branch runs for them, which is why every later write is masked to
     # ``land``.
-    water = columns["xland"] - np.float32(1.5) >= zero
-    land = ~water
+    raw_water = columns["xland"] - np.float32(1.5) >= zero
+    lake = ((columns["lakemask"] == one)
+            if em_core == 1 and lakemodel == 1
+            else np.zeros(ncolumn, dtype=bool))
+    # :823-826 jumps to label 2999 before either the water or land arm.
+    water = raw_water & ~lake
+    land = ~(raw_water | lake)
     patmb = (columns["p8w"] * np.float32(1.0e-2)).astype(np.float32)
     if np.any(water):
         columns["smavail"][water] = one
@@ -9229,7 +9340,7 @@ def ruc_land_surface_step(
         # the chain is off, and a water column then ``CYCLE``s before
         # assigning anything -- so a trailing water column leaves the
         # returned ``ilnb`` at the seed, not at the last land answer.
-        if not ilnb_chain and bool(water[ncolumn - 1]):
+        if not ilnb_chain and bool(water[ncolumn - 1] | lake[ncolumn - 1]):
             carried_ilnb = ilnb_seed
 
         soilm1d[:, run] = np.asarray(surface_step.soilm1d, dtype=np.float32)
@@ -9394,6 +9505,7 @@ def ruc_land_surface_step(
 
 
 __all__ += [
+    "RUC_DRIVER_ARW_FORCING",
     "RUC_DRIVER_COLUMN_FORCING",
     "RUC_SFCTMP_HOST_LEAVES",
     "RUC_SFCTMP_HOST_STAGES",

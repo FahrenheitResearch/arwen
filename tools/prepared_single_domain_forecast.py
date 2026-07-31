@@ -76,12 +76,16 @@ from gpuwm.native_wrf_contract import (  # noqa: E402
 from gpuwm.supervisor import atomic_write_json  # noqa: E402
 from gpuwm.physics_compat import (  # noqa: E402
     MORRISON_PROFILE_ID,
+    MYNN_NOAHMP_PROFILE_ID,
     MYNN_PROFILE_ID,
+    MYNN_RUC_PROFILE_ID,
     NOAHMP_PROFILE_ID,
+    NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
     RUC_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     THOMPSON_TABLE_ROOT_ENV,
+    WRF_RRTMG_LEGACY,
     WRF_RRTMG_TO_RTE_RRTMGP,
     WSM6_PROFILE_ID,
     single_domain_runtime_switches,
@@ -106,18 +110,24 @@ TWENTYCRV3_WSM6_PHYSICS_PROFILE = (
 THOMPSON_PHYSICS_PROFILE = THOMPSON_PROFILE_ID
 MORRISON_PHYSICS_PROFILE = MORRISON_PROFILE_ID
 NSSL2_PHYSICS_PROFILE = NSSL2_PROFILE_ID
+NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE = NSSL2_LEGACY_RRTMG_PROFILE_ID
 RUC_PHYSICS_PROFILE = RUC_PROFILE_ID
+MYNN_RUC_PHYSICS_PROFILE = MYNN_RUC_PROFILE_ID
 MYNN_PHYSICS_PROFILE = MYNN_PROFILE_ID
 NOAHMP_PHYSICS_PROFILE = NOAHMP_PROFILE_ID
+MYNN_NOAHMP_PHYSICS_PROFILE = MYNN_NOAHMP_PROFILE_ID
 PHYSICS_PROFILES = (
     PHYSICS_PROFILE,
     TWENTYCRV3_WSM6_PHYSICS_PROFILE,
     THOMPSON_PHYSICS_PROFILE,
     MORRISON_PHYSICS_PROFILE,
     NSSL2_PHYSICS_PROFILE,
+    NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE,
     MYNN_PHYSICS_PROFILE,
     RUC_PHYSICS_PROFILE,
+    MYNN_RUC_PHYSICS_PROFILE,
     NOAHMP_PHYSICS_PROFILE,
+    MYNN_NOAHMP_PHYSICS_PROFILE,
 )
 SUPPORTED_SOURCES = frozenset({"gfs", "era5", "20crv3"})
 _SOURCE_PHYSICS_PROFILES = MappingProxyType({
@@ -131,17 +141,20 @@ _SOURCE_PHYSICS_PROFILES = MappingProxyType({
     "gfs": (
         PHYSICS_PROFILE, THOMPSON_PHYSICS_PROFILE,
         MORRISON_PHYSICS_PROFILE, NSSL2_PHYSICS_PROFILE,
+        NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE,
         MYNN_PHYSICS_PROFILE,
-        NOAHMP_PHYSICS_PROFILE),
+        NOAHMP_PHYSICS_PROFILE, MYNN_NOAHMP_PHYSICS_PROFILE),
     "era5": (
         PHYSICS_PROFILE, THOMPSON_PHYSICS_PROFILE,
         MORRISON_PHYSICS_PROFILE, NSSL2_PHYSICS_PROFILE,
+        NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE,
         MYNN_PHYSICS_PROFILE,
-        RUC_PHYSICS_PROFILE),
+        RUC_PHYSICS_PROFILE, MYNN_RUC_PHYSICS_PROFILE),
     "20crv3": (
         TWENTYCRV3_WSM6_PHYSICS_PROFILE, PHYSICS_PROFILE,
         THOMPSON_PHYSICS_PROFILE, MORRISON_PHYSICS_PROFILE,
-        NSSL2_PHYSICS_PROFILE, MYNN_PHYSICS_PROFILE),
+        NSSL2_PHYSICS_PROFILE, NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE,
+        MYNN_PHYSICS_PROFILE),
 })
 _TWENTYCRV3_WSM6_RUNTIME_SWITCHES = MappingProxyType({
     "moist": True, "moist_cq": False, "mp_physics": 6,
@@ -159,7 +172,7 @@ _MATERIALIZED_PHYSICS_KEYS = frozenset({
     "moist", "moist_cq", "mp_physics", "top_lid", "epssm",
     "morr_rimed_ice", "wsm6_hail_opt", "ra_physics",
     "ra_lw_physics", "ra_sw_physics", "radt", "radt_minutes",
-    "wrf_rrtmg_compatibility", "sf_sfclay_physics",
+    "wrf_rrtmg_compatibility", "ra_rrtmg_variant", "sf_sfclay_physics",
     "sf_surface_physics", "bl_pbl_physics", "cu_physics",
     "cudt_minutes", "num_soil_layers", "terrain_opt", "km_opt",
     "diff_6th_opt", "diff_6th_factor", "diff_6th_slopeopt",
@@ -334,6 +347,16 @@ def runner_capabilities() -> dict[str, object]:
             "contract_id": NSSL2_CONTRACT_ID,
             "resolved_fixed_preset": True,
         },
+        NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE: {
+            "selector": NSSL2_MP_PHYSICS,
+            "readiness": "VALIDATION_CANDIDATE",
+            "explicit_expert_consent_required": False,
+            "runtime_guards": [],
+            "external_table_assets": [],
+            "contract_id": NSSL2_CONTRACT_ID,
+            "radiation_solver": "legacy RRTMG",
+            "resolved_fixed_preset": True,
+        },
         MYNN_PHYSICS_PROFILE: {
             # Same microphysics selector as PHYSICS_PROFILE: what this profile
             # selects is the coupled MYNN 5/5 surface-layer/PBL pair, and
@@ -363,6 +386,18 @@ def runner_capabilities() -> dict[str, object]:
                 "RUC LSM runs with its nine-layer soil state but has no "
                 "gpuwm/WRF forecast trajectory comparison"),
         },
+        MYNN_RUC_PHYSICS_PROFILE: {
+            "selector": 6,
+            "readiness": "IMPLEMENTED_UNVERIFIED",
+            "explicit_expert_consent_required": False,
+            "explicit_profile_selection_required": True,
+            "runtime_guards": [],
+            "external_table_assets": [],
+            "resolved_fixed_preset": True,
+            "warning": (
+                "MYNN/MYNN/RUC follows WRF's ownership sequence but has no "
+                "gpuwm/WRF forecast trajectory comparison"),
+        },
         NOAHMP_PHYSICS_PROFILE: {
             "selector": 6,
             "readiness": "IMPLEMENTED_UNVERIFIED_EXPERT",
@@ -377,6 +412,21 @@ def runner_capabilities() -> dict[str, object]:
             "warning": (
                 "Noah-MP runs on the device but has no gpuwm/WRF forecast "
                 "trajectory comparison"),
+        },
+        MYNN_NOAHMP_PHYSICS_PROFILE: {
+            "selector": 6,
+            "readiness": "IMPLEMENTED_UNVERIFIED_EXPERT",
+            "explicit_expert_consent_required": True,
+            "explicit_profile_selection_required": True,
+            "runtime_guards": [
+                "measured 360,000-column ceiling or explicit expert budget",
+                "glacier columns refused",
+            ],
+            "external_table_assets": [],
+            "resolved_fixed_preset": True,
+            "warning": (
+                "MYNN/MYNN/Noah-MP follows WRF's ownership sequence but has "
+                "no gpuwm/WRF forecast trajectory comparison"),
         },
     }
     return {
@@ -534,6 +584,11 @@ class PreparedForecastInputs:
     boundary_interval_seconds: int
     physics_receipt: Mapping[str, object]
     export_source_receipt: Mapping[str, object]
+    #: The bound source-manifest identity plus the fetch level provenance
+    #: it carries, for sources that publish one (GFS today).  Recorded so
+    #: an acceptance harness can read back WHICH pressure ladder the run's
+    #: inputs came off, rather than inferring it from a constant.
+    source_manifest_receipt: Mapping[str, object] | None
     file_sha256: Mapping[str, str]
     authority_paths: Mapping[str, Path]
     source_domain_count: int
@@ -681,6 +736,9 @@ def _profile_readiness(source: str, profile: str) -> tuple[str, str | None]:
                 "runtime"),
             NSSL2_PHYSICS_PROFILE: (
                 "; NSSL-2 MP18 also remains a validation candidate"),
+            NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE: (
+                "; NSSL-2 MP18 plus legacy RRTMG remains a validation "
+                "candidate"),
         }.get(profile, "")
         return "IMPLEMENTED_UNVERIFIED", (
             "this 20CRv3 GPU forecast profile has no public acceptance gate"
@@ -690,7 +748,10 @@ def _profile_readiness(source: str, profile: str) -> tuple[str, str | None]:
             "Thompson MP8 remains an experimental table-bound runtime")
     if profile == MORRISON_PHYSICS_PROFILE:
         return "MODEL_VALIDATED_RUNTIME_PROFILE", None
-    if profile == NSSL2_PHYSICS_PROFILE:
+    if profile in (
+            NSSL2_PHYSICS_PROFILE,
+            NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE,
+    ):
         return "VALIDATION_CANDIDATE", (
             "NSSL-2 MP18 is implemented but remains a validation candidate")
     if profile == MYNN_PHYSICS_PROFILE:
@@ -699,7 +760,10 @@ def _profile_readiness(source: str, profile: str) -> tuple[str, str | None]:
     if profile == RUC_PHYSICS_PROFILE:
         return "IMPLEMENTED_UNVERIFIED", (
             "RUC LSM has no gpuwm/WRF forecast trajectory comparison")
-    if profile == NOAHMP_PHYSICS_PROFILE:
+    if profile == MYNN_RUC_PHYSICS_PROFILE:
+        return "IMPLEMENTED_UNVERIFIED", (
+            "MYNN/MYNN/RUC has no gpuwm/WRF forecast trajectory comparison")
+    if profile in (NOAHMP_PHYSICS_PROFILE, MYNN_NOAHMP_PHYSICS_PROFILE):
         return "IMPLEMENTED_UNVERIFIED_EXPERT", (
             "Noah-MP has no gpuwm/WRF forecast trajectory comparison and "
             "retains its registry-owned expert acknowledgement")
@@ -1419,6 +1483,21 @@ def _resolve_prepared_layout(
         "hierarchy artifact manifest")
     hierarchy_receipt_path = _require_file(
         hierarchy_root / "receipt.json", "hierarchy artifact receipt")
+    # This route runs d01 of a prepared hierarchy THROUGH the unchanged-WRF
+    # file set, so the export is a genuine input here and its absence is a
+    # refusal.  Say which absence it is: a preparation whose export was
+    # refused on representability, or never requested, is a complete
+    # forecast that this particular runner cannot serve -- and the domain
+    # tree runner can.  A bare "file not found" sent users looking for a
+    # broken preparation that is not broken.
+    export_slot = proof.get("wrf_manifest")
+    if isinstance(export_slot, Mapping) \
+            and export_slot.get("status") not in (None, "READY"):
+        raise ValueError(
+            "this hierarchy preparation published no stock-WRF file set "
+            f"({export_slot.get('status')}: {export_slot.get('reason')}); "
+            "the prepared domain tree is complete -- run it with "
+            "tools/prepared_domain_tree_forecast.py")
     wrf_manifest_path = _require_file(
         prepared_root / "wrf-native-input" / "manifest.json",
         "hierarchy direct-WRF manifest")
@@ -1638,11 +1717,87 @@ def _twentycrv3_manifest_file_specs(
     return normalized
 
 
+#: The three fields that ARE the GFS cycle identity.  Bound strictly: a
+#: manifest authored for another cycle is refused before any GPU setup.
+_GFS_MANIFEST_IDENTITY_KEYS = ("model", "product", "cycle")
+
+#: The fetch provenance a GFS front-door manifest's ``source`` object may
+#: also carry: the pressure ladder the fetch actually took and the source
+#: top it implies.  `gpuwm fetch` began writing these in `1f0fc039` so the
+#: preparation lane's vertical contract could stop assuming a 100 hPa
+#: constant, and `gpuwm/gfs_direct.py` reads them BEFORE the bridge runs.
+#: They are real provenance, not identity -- a deeper fetch changes them
+#: and changes nothing about which cycle the document names -- so folding
+#: them into the identity comparison is what refused every manifest this
+#: release's own fetch authors.  Enumerated rather than ignored: a field
+#: nobody here knows about is still a refusal.
+_GFS_MANIFEST_LEVEL_KEYS = ("pressure_levels_hpa", "top_pressure_pa")
+
+
+def _gfs_manifest_source_receipt(
+        manifest: Mapping[str, object], exp) -> dict[str, object]:
+    """Bind the GFS cycle identity; validate and record the level ladder.
+
+    The identity comparison binds ``model``/``product``/``cycle`` and
+    compares those three exactly.  The level fields are routed to the
+    contract they serve instead: ``gfs_direct._manifest_source_top_pa`` is
+    the producing lane's own validator -- it refuses an unreadable or
+    non-certified ladder and cross-checks the declared top against it --
+    and the resulting source top is held to the same rule the vertical
+    contract applies, that the source atmosphere must reach at least as
+    high as the requested model top.  Using the producer's validator is
+    deliberate: two readers of one document that disagree about it is the
+    defect this function exists to close.
+    """
+
+    from gpuwm.gfs_direct import _manifest_source_top_pa
+
+    identity = manifest.get("source")
+    if not isinstance(identity, dict):
+        raise ValueError("GFS source manifest carries no source identity")
+    known = set(_GFS_MANIFEST_IDENTITY_KEYS) | set(_GFS_MANIFEST_LEVEL_KEYS)
+    unknown = sorted(set(identity) - known)
+    if unknown:
+        raise ValueError(
+            f"GFS source manifest identity carries unsupported field(s) "
+            f"{unknown}")
+    bound = {key: identity.get(key) for key in _GFS_MANIFEST_IDENTITY_KEYS}
+    expected = {
+        "model": "GFS",
+        "product": "pgrb2.0p25",
+        "cycle": exp.start_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    if bound != expected:
+        raise ValueError(
+            "GFS source manifest identity differs from the experiment cycle")
+    # Absent levels mean a directory fetched by an older ArWen, whose only
+    # possible ladder is the certified 100 hPa one; the validator returns
+    # that constant, which is exactly what the preparation assumed.
+    source_top_pa = _manifest_source_top_pa(manifest)
+    p_top_pa = float(exp.vertical.p_top)
+    if source_top_pa > p_top_pa:
+        raise ValueError(
+            f"GFS source manifest records a fetch reaching {source_top_pa:g} "
+            f"Pa but the experiment requests p_top {p_top_pa:g} Pa")
+    levels = identity.get("pressure_levels_hpa")
+    return {
+        "schema": "gpuwm-gfs-source-manifest-identity-v1",
+        "identity": bound,
+        "pressure_levels_hpa": (
+            [float(level) for level in levels]
+            if isinstance(levels, list) else None),
+        "source_top_pressure_pa": source_top_pa,
+        "experiment_p_top_pa": p_top_pa,
+    }
+
+
 def _manifest_file_specs(
         source: str, manifest: Mapping[str, object], exp,
-) -> dict[str, dict[str, object]]:
+) -> tuple[dict[str, dict[str, object]], Mapping[str, object] | None]:
+    """Normalized role specs, plus the GFS source receipt when there is one."""
+
     if source == "20crv3":
-        return _twentycrv3_manifest_file_specs(manifest)
+        return _twentycrv3_manifest_file_specs(manifest), None
     expected_schema = _SOURCE_SCHEMA[source]
     expected_keys = {"schema", "files", "source"} if source == "gfs" \
         else {"schema", "files"}
@@ -1690,14 +1845,7 @@ def _manifest_file_specs(
             parsed_hours.append(int(suffix))
         if len(parsed_hours) < 2 or len(set(parsed_hours)) != len(parsed_hours):
             raise ValueError("GFS manifest requires at least two unique GRIB hours")
-        expected_source = {
-            "model": "GFS",
-            "product": "pgrb2.0p25",
-            "cycle": exp.start_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        }
-        if manifest.get("source") != expected_source:
-            raise ValueError(
-                "GFS source manifest identity differs from the experiment cycle")
+        return normalized, _gfs_manifest_source_receipt(manifest, exp)
     else:
         required = common | {"grib", "vtable"}
         optional = {"static_input", "static_receipt", "source_orography"}
@@ -1708,7 +1856,7 @@ def _manifest_file_specs(
         static_pair = {"static_input", "static_receipt"} & set(normalized)
         if static_pair not in (set(), {"static_input", "static_receipt"}):
             raise ValueError("ERA5 source manifest static roles are incomplete")
-    return normalized
+    return normalized, None
 
 
 def _validate_profile_switches(
@@ -1733,9 +1881,14 @@ def _validate_profile_switches(
         THOMPSON_PHYSICS_PROFILE: "guarded Thompson MP8 profile",
         MORRISON_PHYSICS_PROFILE: "Morrison MP10 runtime profile",
         NSSL2_PHYSICS_PROFILE: "NSSL-2 validation-candidate profile",
+        NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE: (
+            "NSSL-2 + legacy RRTMG validation-candidate profile"),
         MYNN_PHYSICS_PROFILE: "MYNN 5/5 implemented-unverified profile",
         RUC_PHYSICS_PROFILE: "RUC LSM implemented-unverified profile",
+        MYNN_RUC_PHYSICS_PROFILE: (
+            "MYNN 5/5 + RUC implemented-unverified profile"),
         NOAHMP_PHYSICS_PROFILE: "Noah-MP expert profile",
+        MYNN_NOAHMP_PHYSICS_PROFILE: "MYNN 5/5 + Noah-MP expert profile",
     }
     for domain in domains:
         cfg = domain.run
@@ -1813,7 +1966,10 @@ def _validate_physics(
             "morr_rimed_ice": 1,
             "rimed_ice_category": "hail",
         }
-    elif profile == NSSL2_PHYSICS_PROFILE:
+    elif profile in (
+            NSSL2_PHYSICS_PROFILE,
+            NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE,
+    ):
         receipt["nssl2_contract"] = {
             "selector": NSSL2_MP_PHYSICS,
             "contract_id": NSSL2_CONTRACT_ID,
@@ -1823,12 +1979,20 @@ def _validate_physics(
             "transported_fields": list(NSSL2_DEFAULT_MODE.transported_fields),
             "wrf_namelist_defaults": dict(NSSL2_WRF_NAMELIST_DEFAULTS),
         }
-        receipt["radiation_substitution"] = {
-            "contract": WRF_RRTMG_TO_RTE_RRTMGP,
-            "requested_wrf_scheme_ids": [4, 4],
-            "resolved_gpuwm_scheme_ids": [4, 4],
-            "resolved_gpuwm_solver": "RTE+RRTMGP",
-        }
+        if profile == NSSL2_PHYSICS_PROFILE:
+            receipt["radiation_substitution"] = {
+                "contract": WRF_RRTMG_TO_RTE_RRTMGP,
+                "requested_wrf_scheme_ids": [4, 4],
+                "resolved_gpuwm_scheme_ids": [4, 4],
+                "resolved_gpuwm_solver": "RTE+RRTMGP",
+            }
+        else:
+            receipt["radiation_identity"] = {
+                "contract": WRF_RRTMG_LEGACY,
+                "requested_wrf_scheme_ids": [4, 4],
+                "resolved_gpuwm_scheme_ids": [4, 4],
+                "resolved_gpuwm_solver": "legacy RRTMG",
+            }
     if profile == MORRISON_PHYSICS_PROFILE:
         receipt["radiation_substitution"] = {
             "contract": WRF_RRTMG_TO_RTE_RRTMGP,
@@ -1852,14 +2016,20 @@ def _validate_front_door_physics_proof(
     selected = proof.get("physics")
     if not isinstance(selected, dict):
         raise ValueError("GFS v3 preparation proof physics receipt is missing")
-    acknowledgements = selected.get("expert_acknowledgements")
+    acknowledgements = selected.get("acknowledgements")
+    acknowledgement_provenance = selected.get(
+        "acknowledgement_provenance")
     if (not isinstance(acknowledgements, list)
             or any(not isinstance(value, str) for value in acknowledgements)):
         raise ValueError(
-            "GFS v3 preparation proof expert acknowledgements are malformed")
+            "GFS v3 preparation proof acknowledgements are malformed")
+    if not isinstance(acknowledgement_provenance, dict):
+        raise ValueError(
+            "GFS v3 preparation proof acknowledgement provenance is malformed")
     expected = validate_single_domain_physics_profile(
         profile, config=cfg,
-        expert_acknowledgements=tuple(acknowledgements))
+        expert_acknowledgements=tuple(acknowledgements),
+        acknowledgement_provenance=acknowledgement_provenance)
     if selected != expected:
         raise ValueError(
             "GFS v3 preparation proof physics selection differs from the "
@@ -2563,7 +2733,8 @@ def preflight_prepared_forecast(
     physics_receipt["execution_plan"] = _execution_plan_receipt(
         source_exp=source_exp, executed_exp=exp, profile=physics_profile,
         history_interval_seconds=history_interval_seconds)
-    manifest_files = _manifest_file_specs(source, manifest, source_exp)
+    manifest_files, source_manifest_receipt = _manifest_file_specs(
+        source, manifest, source_exp)
     mapped_paths: Mapping[str, Path] = MappingProxyType({})
     mapped_authority: Mapping[str, object] | None = None
     source_member: str | None = None
@@ -2844,6 +3015,9 @@ def preflight_prepared_forecast(
         boundary_interval_seconds=boundary_interval_seconds,
         physics_receipt=MappingProxyType(physics_receipt),
         export_source_receipt=export_source_receipt,
+        source_manifest_receipt=(
+            None if source_manifest_receipt is None
+            else MappingProxyType(dict(source_manifest_receipt))),
         file_sha256=file_sha256, authority_paths=authority_paths,
         source_domain_count=len(source_exp.domains),
         source_member=source_member,
@@ -3208,6 +3382,9 @@ def run_prepared_forecast(
             "source_member": inputs.source_member,
             "proof_sha256": inputs.file_sha256["proof"],
             "source_manifest_sha256": inputs.file_sha256["source_manifest"],
+            "source_manifest_identity": (
+                None if inputs.source_manifest_receipt is None
+                else dict(inputs.source_manifest_receipt)),
             "prepared_content_sha256": inputs.cache_reader.content_sha256,
             "prepared_header_sha256": inputs.file_sha256["cache_header"],
             "static_cache_sha256": inputs.file_sha256["static"],

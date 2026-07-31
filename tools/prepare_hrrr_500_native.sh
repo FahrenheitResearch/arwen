@@ -50,9 +50,13 @@ fi
 if [[ -z "$decoder" ]]; then
     decoder="$repo/tools/grib1_bridge/target/release/hrrr_grib2_bridge"
     if [[ ! -x "$decoder" ]]; then
-        cargo build --release \
-            --manifest-path "$repo/tools/grib1_bridge/Cargo.toml" \
-            --bin hrrr_grib2_bridge
+        # cd, not --manifest-path: cargo finds the crate's
+        # .cargo/config.toml (the vendored-registry replacement) by walking
+        # up from the working directory, so a --manifest-path build from
+        # elsewhere resolves against crates.io and cannot build offline.
+        ( cd "$repo/tools/grib1_bridge" \
+          && cargo build --release --locked --offline \
+                --bin hrrr_grib2_bridge )
     fi
 fi
 

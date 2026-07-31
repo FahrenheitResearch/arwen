@@ -87,6 +87,10 @@ IMPLEMENTED: dict[str, dict] = {
     "ysu_topdown_pblmix": {"type": "integer", "enum": [0, 1], "default": 1},
     # radiation
     "swrad_scat": {"type": "number", "minimum": 0.0, "default": 1.0},
+    "ra_rrtmg_variant": {
+        "type": "string",
+        "enum": ["rte-rrtmgp", "rrtmg_legacy"],
+        "default": "rte-rrtmgp"},
     # surface layer -- newly ported this pass
     "isftcflx": {"type": "integer", "enum": [0, 1, 2], "default": 0},
     "iz0tlnd": {"type": "integer", "enum": [0, 1, 2], "default": 0},
@@ -114,7 +118,11 @@ TIGHTEN: dict[str, dict] = {
     # a NEW plan may set, which is the current token only.
     "wrf_rrtmg_compatibility": {
         "type": "string",
-        "enum": ["none", "wrf-rrtmg-4-4-to-rte-rrtmgp-v2"],
+        "enum": [
+            "none",
+            "wrf-rrtmg-4-4-to-rte-rrtmgp-v2",
+            "wrf-rrtmg-4-4-legacy-v1",
+        ],
         "default": "none"},
     "km_opt": {"type": "integer", "enum": [1, 4], "default": 1},
     "diff_6th_opt": {"type": "integer", "enum": [0, 1, 2], "default": 0},
@@ -401,6 +409,182 @@ NEST_COLUMNS: dict[str, list[dict]] = {
 }
 
 
+def _surface_coupling_warnings(registry: dict) -> None:
+    """Replace the v1.1 surface-seam restrictions retired in v1.2."""
+    land = registry["components"]["land_surface"]["options"]
+    noahmp = land["noah-mp"]["warnings"]
+    noahmp[4] = (
+        "WRF's SIX-RATE precipitation seam is active. The surface driver "
+        "carries convective, nonconvective, shallow-convective, snow, "
+        "graupel and hail accumulations from their real writers, and "
+        "noahmplsm takes module_sf_noahmpdrv.F:776-789's PRESENT(MP_*) "
+        "branch including PRCPOTHR.")
+    noahmp[5] = (
+        "COSZEN is a radiation-driver carrier. Noah-MP consumes the last "
+        "radiation call's value unchanged between calls, including radconst's "
+        "half-radiation-interval hour-angle offset. A radiation-free run "
+        "still binds start time and latitude/longitude and seeds the same "
+        "offset value once.")
+    noahmp[8] = (
+        "MYNN surface-layer pairing is admitted as the coupled MYNN 5/5 "
+        "suite. WRF v4.6.1 runs MYNN first, then NOAHMP_SFLX overwrites "
+        "TSK/HFX/QFX/LH on its active land columns while leaving "
+        "UST/CHS/CHS2/CQS2/FLHC/FLQC with MYNN. The surface-driver post-pass "
+        "unconditionally replaces MYNN's T2/Q2/TH2 with Noah-MP's "
+        "water/urban/vegetated diagnostics before MYNN PBL consumes them. "
+        "The source transcription and writer-order tests are in "
+        "tools/mynn_surface_pairing_wrf461_oracle and "
+        "tests/test_mynn_surface_pairing_ownership.py.")
+    noahmp_option = land["noah-mp"]
+    noahmp_option["constraints"]["requires_components"]["surface_layer"] = [
+        "revised-mm5", "classic-mm5", "mynn"]
+    noahmp_option["extensions"]["mynn_surface_ownership"] = {
+        "surface_layer_writes_first": [
+            "ust", "hfx", "qfx", "chs", "chs2", "cqs2", "flhc", "flqc",
+            "t2", "q2", "th2"],
+        "lsm_overwrites": ["tsk", "hfx", "qfx", "lh"],
+        "lsm_preserves": [
+            "ust", "chs", "chs2", "cqs2", "flhc", "flqc"],
+        "post_lsm_overwrites": ["t2", "q2", "th2"],
+        "wrf_source": (
+            "phys/module_surface_driver.F:3127-3181,3324-3370; "
+            "phys/module_sf_noahmpdrv.F:1206-1207,1223-1285"),
+    }
+
+    ruc = land["ruc-lsm"]["warnings"]
+    ruc[3] = (
+        "WRF-ARW's EM_CORE==1 surface couplings are active: LSMRUC consumes "
+        "RAINNCV/SNOWNCV/GRAUPELNCV, LAKEMASK bypasses the column core, "
+        "fractional sea ice is deblended before and reblended after the call, "
+        "and GSW is carried from radiation cadence. The historical EM_CORE=0 "
+        "oracle replay remains explicit-only; independent source "
+        "transcription probes cover the ARW seam.")
+    ruc[9] = (
+        "Mosaic land-use and soil remain fail-closed at 0, spp_lsm at 0 and "
+        "flag_sm_adj at 0. Also pinned rather than configurable: "
+        "XICE_THRESHOLD=0.5, seaice_albedo_default=0.65, isncovr_opt=2, "
+        "c1sn=0.026, c2sn=21.0, myj=False and rdlai2d=False. "
+        "FRACTIONAL_SEAICE follows WRF's enabled pre/post coupling.")
+    ruc[8] = (
+        "Admitted at num_soil_layers=9 with revised MM5, classic MM5 or the "
+        "coupled MYNN 5/5 suite. Under MYNN, WRF v4.6.1 runs the surface "
+        "layer first; LSMRUC then overwrites TSK/HFX/QFX/LH, preserves "
+        "UST/FLHC/FLQC/CHS2/CQS2, and the driver recomputes CHS from FLHC. "
+        "SFCDIAGS_RUCLSM unconditionally replaces MYNN's T2/Q2/TH2 before "
+        "MYNN PBL consumes the post-LSM fields. This is HRRR's operational "
+        "MYNN/MYNN/RUC pairing class. The source transcription and "
+        "writer-order tests are in tools/mynn_surface_pairing_wrf461_oracle "
+        "and tests/test_mynn_surface_pairing_ownership.py.")
+    ruc_option = land["ruc-lsm"]
+    ruc_option["constraints"]["requires_components"]["surface_layer"] = [
+        "revised-mm5", "classic-mm5", "mynn"]
+    ruc_option["extensions"]["mynn_surface_ownership"] = {
+        "surface_layer_writes_first": [
+            "ust", "hfx", "qfx", "chs", "chs2", "cqs2", "flhc", "flqc",
+            "t2", "q2", "th2"],
+        "lsm_overwrites": ["tsk", "hfx", "qfx", "lh"],
+        "lsm_preserves": ["ust", "flhc", "flqc", "chs2", "cqs2"],
+        "post_lsm_overwrites": ["chs", "t2", "q2", "th2"],
+        "wrf_source": (
+            "phys/module_surface_driver.F:3500-3528,3579-3592; "
+            "phys/module_sf_ruclsm.F:219-230,284-303"),
+    }
+
+    registry["parameters"]["spp_lsm"]["warnings"][0] = (
+        "Only spp_lsm=0 is honoured. The ARW/EM_CORE==1 surface path is "
+        "ported, but its stochastic pattern_spp_lsm and field_sf inputs are "
+        "not; enabling spp_lsm would require that separate stochastic state "
+        "and restart contract. Validation and the RUC runtime both refuse a "
+        "nonzero value.")
+
+    route_text = (
+        "The Noah-MP glacier refusal and sea-ice skip still apply. Its "
+        "six-rate precipitation seam and radiation-cadence COSZEN carrier "
+        "now follow WRF v4.6.1.")
+    for route in (
+            "tools.hrrr_single_domain_benchmark",
+            "tools.prepared_domain_tree_forecast",
+            "tools.prepared_single_domain_forecast"):
+        registry["runner_routes"][route]["expert_warnings"][2] = route_text
+
+    template = registry["templates"][
+        "wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1"]
+    template["warnings"][0] = (
+        "EXPERT ONLY. The throughput reason this template was originally "
+        "gated on is retired: the whole column runs on the device and is "
+        "bitwise against the scalar authority. It stays expert-only because "
+        "no gpuwm/WRF forecast trajectory comparison exists. Dudhia supplies "
+        "the carried COSZEN at radiation cadence; a radiation-free Noah-MP "
+        "run instead seeds that carrier once from explicit geometry.")
+
+    templates = registry["templates"]
+    mynn_noah = templates[
+        "wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1"]
+    mynn_ruc_id = (
+        "wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1")
+    mynn_ruc = copy.deepcopy(templates[
+        "wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1"])
+    mynn_ruc["components"]["pbl"] = "mynn"
+    mynn_ruc["components"]["surface_layer"] = "mynn"
+    mynn_ruc["label"] = (
+        "WSM6 + MYNN PBL + MYNN surface layer + RUC LSM + Dudhia SW "
+        "(HRRR pairing)")
+    inherited_ruc_warnings = [
+        warning for warning in mynn_ruc["warnings"]
+        if not warning.startswith("This template differs from ")
+    ]
+    mynn_ruc["warnings"] = [
+        mynn_noah["warnings"][0],
+        (
+            "This is the HRRR operational pairing class. WRF owns its "
+            "write-back sequence explicitly: MYNN surface first, RUC "
+            "flux/state write-back second, CHS and SFCDIAGS_RUCLSM last. "
+            "It is offered only on routes where the established RUC template "
+            "is already reachable; its nine-layer ingest and source "
+            "restrictions are unchanged."),
+        *inherited_ruc_warnings,
+    ]
+    templates[mynn_ruc_id] = mynn_ruc
+
+    mynn_noahmp_id = (
+        "wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1")
+    mynn_noahmp = copy.deepcopy(template)
+    mynn_noahmp["components"]["pbl"] = "mynn"
+    mynn_noahmp["components"]["surface_layer"] = "mynn"
+    mynn_noahmp["label"] = (
+        "WSM6 + MYNN PBL + MYNN surface layer + Noah-MP + Dudhia SW "
+        "(expert only)")
+    mynn_noahmp["warnings"] = [
+        mynn_noah["warnings"][0],
+        (
+            "EXPERT ONLY. WRF owns the write-back sequence explicitly: MYNN "
+            "surface first, Noah-MP flux/state write-back second, and the "
+            "Noah-MP category/fraction 2-m diagnostic post-pass last. The "
+            "existing Noah-MP glacier, sea-ice and validation-status warnings "
+            "still apply."),
+        *mynn_noahmp["warnings"],
+    ]
+    templates[mynn_noahmp_id] = mynn_noahmp
+
+    # Pairing reachability follows each LSM's established source discipline:
+    # neither land-surface model becomes a broad component override.
+    for route in registry["runner_routes"].values():
+        for declared in route.get("source_template_ids", {}).values():
+            if (
+                "wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1"
+                in declared
+                and mynn_ruc_id not in declared
+            ):
+                declared.append(mynn_ruc_id)
+        for declared in route.get("expert_template_ids", {}).values():
+            if (
+                "wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1"
+                in declared
+                and mynn_noahmp_id not in declared
+            ):
+                declared.append(mynn_noahmp_id)
+
+
 def _unimplemented_specs(known: set[str]) -> dict[str, dict]:
     """Knobs the survey found in WRF that no GPUWM component honors."""
     lanes = []
@@ -439,6 +623,7 @@ def _unimplemented_specs(known: set[str]) -> dict[str, dict]:
 
 def build(registry: dict) -> dict:
     """Apply this pass's tables to ``registry`` in place and return it."""
+    _surface_coupling_warnings(registry)
     params = registry["parameters"]
     # Citations are read before the tables overwrite the specs that carry
     # them, so a verified citation survives a spec being tightened.
@@ -494,6 +679,106 @@ def build(registry: dict) -> dict:
         "templates.per_domain_overrides is indexed by depth below the tree "
         "root and carries values transcribed from verified runs; nominal_dx_m "
         "is provenance for display and is never a resolved setting.")
+
+    # WRF v4.6.1 module_pbl_driver.F:873-878 derives FLAG_QS from Registry
+    # F_QS.  module_bl_mynn_wrapper.F:452-475 converts the real snow field to
+    # specific units, and module_bl_mynn.F:1104-1106 supplies it to
+    # mym_condensation.  Radiation then consumes the previous interval's
+    # carried MYNN clouds at module_radiation_driver.F:1403-1429.
+    mynn = registry["components"]["pbl"]["options"]["mynn"]
+    mynn["extensions"]["supplied_moisture_species"] = {
+        "supplied": ["qv", "qc", "qi", "qs"],
+        "withheld": ["qnc", "qni", "qnwfa", "qnifa", "qnbca", "o3"],
+        "flag_qs_true_microphysics_selectors": [6, 8, 10, 18],
+        "flag_qs_false_microphysics_selectors": [0, 1],
+        "wrf_flag_source": (
+            "phys/module_pbl_driver.F:873-878 derives flag_qs from F_QS; "
+            "Registry.EM_COMMON declares qs for mp_physics 6, 8, 10 and 18"),
+        "wrf_live_consumer": (
+            "phys/module_bl_mynn.F:1104-1106 passes real sqs to "
+            "mym_condensation when FLAG_QS is true; mynn_tendencies still "
+            "receives kzero at :1240-1242, matching WRF"),
+    }
+    mynn["extensions"]["radiation_cloud_merge"] = {
+        "activation": "bl_pbl_physics=5 and icloud_bl>0",
+        "ordering": (
+            "radiation precedes PBL and consumes the previous interval's "
+            "carried QC_BL/QI_BL/CLDFRA_BL"),
+        "wrf_source": "phys/module_radiation_driver.F:1403-1429",
+        "implementations": ["dudhia-shortwave", "rte-rrtmgp", "rrtmg-legacy"],
+    }
+    mynn["warnings"] = [
+        warning for warning in mynn["warnings"]
+        if not warning.startswith("DEVIATION from WRF, affecting MYNN PBL")
+    ]
+    template = registry["templates"][
+        "wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1"]
+    template["warnings"] = [
+        warning.replace(
+            "the CUDA-versus-CPU ULP spread and the withheld snow species",
+            "the CUDA-versus-CPU ULP spread; the WRF FLAG_QS snow path and "
+            "previous-interval radiation cloud merge are coupled")
+        for warning in template["warnings"]
+    ]
+    registry["authority"]["real_source_moisture_contract"] = (
+        "runner_routes.<runner>.requires_moist_real_initialization declares "
+        "that every source on the route enters gpuwm.ingest.real and therefore "
+        "requires a moist state even when microphysics is off. The plan must "
+        "then set moist=true explicitly; a component default cannot make that "
+        "source-preparation decision for the user.")
+    nssl2_id = (
+        "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-"
+        "validation-candidate-v1")
+    nssl2_legacy_id = (
+        "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-"
+        "validation-candidate-v1")
+    nssl2_legacy = copy.deepcopy(registry["templates"][nssl2_id])
+    nssl2_legacy["label"] = (
+        "NSSL-2 + YSU + classic MM5 + Noah + KF + legacy RRTMG")
+    nssl2_legacy["maturity"] = "validation-candidate"
+    nssl2_legacy["parameters"]["wrf_rrtmg_compatibility"] = (
+        "wrf-rrtmg-4-4-legacy-v1")
+    nssl2_legacy["parameters"]["ra_rrtmg_variant"] = "rrtmg_legacy"
+    nssl2_legacy["warnings"] = [
+        "Ratified fixed NSSL-2 plus exact WRF v4.6.1 legacy RRTMG profile; "
+        "the NSSL-2 trajectory remains validation-candidate maturity."
+    ]
+    registry["templates"][nssl2_legacy_id] = nssl2_legacy
+    for route in registry["runner_routes"].values():
+        for declared in route.get("source_template_ids", {}).values():
+            if nssl2_id in declared:
+                if nssl2_legacy_id in declared:
+                    declared.remove(nssl2_legacy_id)
+                declared.insert(declared.index(nssl2_id) + 1, nssl2_legacy_id)
+
+    # Owner-ratified declaration: the GFS runner has always advertised this
+    # profile and retains the existing Noah-MP route acknowledgement.
+    gfs_route = registry["runner_routes"][
+        "tools.prepared_single_domain_forecast"]
+    gfs_expert = gfs_route.setdefault(
+        "expert_template_ids", {}).setdefault("gfs", [])
+    noahmp_id = "wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1"
+    if noahmp_id not in gfs_expert:
+        gfs_expert.append(noahmp_id)
+
+    registry["authority"][
+        "unnamed_tree_outside_reachability_acknowledgement_id"
+    ] = "expert-tuple-v1"
+    registry["authority"]["unnamed_tree_reachability_contract"] = (
+        "An unnamed domain tree resolves each domain's complete component "
+        "tuple against the union of registry-declared experiment-per-domain "
+        "template, component-override, and expert-template reachability. "
+        "Normal tuples proceed unchanged; expert-template tuples require the "
+        "route's expert acknowledgement; a tuple outside that union requires "
+        "the authority-level acknowledgement id. This is a tuple capability "
+        "check and never uses source identity.")
+    registry["authority"]["v1_launch_behavior_changed"] = True
+    for route_id in (
+            "tools.hrrr_single_domain_benchmark",
+            "tools.prepared_domain_tree_forecast",
+            "tools.prepared_single_domain_forecast"):
+        registry["runner_routes"][route_id][
+            "requires_moist_real_initialization"] = True
     return registry
 
 

@@ -100,15 +100,15 @@ instead of silently ignored.
 
 ## Restrictions the identity schema has no field for
 
-MYNN shipped an undisclosed `FLAG_QS` restriction. These are the Noah-MP
-equivalents, and all ten are published three times: in
-`gpuwm.core.noahmp_runtime.NOAHMP_RUNTIME_RESTRICTIONS` as data, in the
-registry option's `warnings` for a user's picker, and here.
+The remaining divergences and guard are published in
+`gpuwm.core.noahmp_runtime.NOAHMP_RUNTIME_RESTRICTIONS`, in the registry
+option's warnings, and here. The first two rows are completed WRF couplings,
+retained in this table as positive contracts.
 
 | restriction | what gpuwm does | why it differs |
 |---|---|---|
-| precipitation partition | `PRCPNONC = RAINBL/DT`, `PRCPSNOW = SR*RAINBL/DT`, the other four rates zero | `module_sf_noahmpdrv.F:776-796` picks on `PRESENT(MP_RAINC..MP_HAIL)`; WRF's own surface driver passes all six (`module_surface_driver.F:3180-3181`), so WRF takes the first branch and gpuwm takes the second. gpuwm's LSM seam carries only RAINBL and SR, exactly as its Noah path does. Under `opt_snf=1` FPICE comes from SFCTMP, so the visible consequence is in ATM's convective/large-scale split feeding canopy interception, not in the rain/snow phase. |
-| COSZ evaluation time | evaluated at the surface-call time, no offset | WRF hands `noahmplsm` the COSZEN the radiation driver last wrote, which carries radconst's half-radiation-interval offset and is stale between radiation calls. Bounded by `radt/2 + (steps since the last radiation call)*dt`. |
+| precipitation partition | carries and supplies `PRCPCONV`, `PRCPNONC`, `PRCPSHCV`, `PRCPSNOW`, `PRCPGRPL`, and `PRCPHAIL` | Matches `module_sf_noahmpdrv.F:776-789`, including the `PRCPOTHR` residual. |
+| COSZ evaluation time | consumes the last radiation call's carried COSZEN | Matches WRF radiation cadence and radconst's half-radiation-interval offset. A radiation-free run seeds the carrier once from explicit geometry. |
 | glacier columns | **raise** | `module_sf_noahmp_glacier.F` (3,080 lines) is not ported and `NOAHMP_SFLX` is not a substitute. |
 | sea-ice columns | WRF's skip (`SH2O=1`, `XLAI=0.01`) | This is what WRF does. Listed because it means a Noah-MP run has **no sea-ice surface energy balance**: TSK/HFX/QFX over sea ice keep whatever the surface layer left. |
 | `XICE_THRESHOLD` | pinned 0.5 | gpuwm has no configuration field for WRF's namelist value. |
@@ -433,13 +433,11 @@ gate's sensitivity is demonstrated rather than asserted.
       fixture scaffolding, and they are what makes step 1 expensive to write.
    `TSNOSOI` and `PHASECHANGE` are already `__device__` cores with `__global__`
    fixture-packing wrappers over them, so that item is done.
-3. **The six-way precipitation partition**, which needs the LSM seam to carry
-   the per-interval convective/snow/graupel/hail split rather than RAINBL+SR.
-4. **Glacier columns**, which currently raise.
-5. **Sea-ice surface energy balance**, which does not exist under any LSM here.
-6. **`soiltstep > 0`**, which needs the ten ACC_* carriers allocated and
+3. **Glacier columns**, which currently raise.
+4. **Sea-ice surface energy balance**, which does not exist under any LSM here.
+5. **`soiltstep > 0`**, which needs the ten ACC_* carriers allocated and
    restart-bound.
-7. **The health-descriptor ceiling.** `MAX_HEALTH_FIELDS = 1024` and
+6. **The health-descriptor ceiling.** `MAX_HEALTH_FIELDS = 1024` and
    `collect_state_fields` auto-walks `driver.fields`, so Noah-MP adds 49
    descriptors per domain. A four-domain Noah-MP nest is therefore about 196
    descriptors above whatever the same nest costs under Noah; the plan

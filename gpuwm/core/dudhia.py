@@ -19,6 +19,11 @@ from datetime import datetime, timedelta
 import numpy as np
 
 from gpuwm.core import constants as c
+from gpuwm.core.mynn_radiation import (
+    merge_mynn_bl_clouds,
+    mynn_bl_cloud_active,
+    wrf_itimestep,
+)
 
 
 # module_ra_sw.F:298-308.  The Fortran DATA statement fills the first
@@ -301,6 +306,22 @@ class DudhiaShortwaveRadiation:
         qi = self._state_field(state, "qi", atmosphere["qi"])
         qs = self._state_field(state, "qs", zero)
         qg = self._state_field(state, "qg", zero)
+        qc_cols = self._top_down(qc)
+        qi_cols = self._top_down(qi)
+        active_bl = mynn_bl_cloud_active(
+            getattr(cfg, "bl_pbl_physics", 0), getattr(cfg, "icloud_bl", 0))
+        qc_bl = self._top_down(fields["qc_bl"]) if active_bl else None
+        qi_bl = self._top_down(fields["qi_bl"]) if active_bl else None
+        cldfra_bl = (
+            self._top_down(fields["cldfra_bl"]) if active_bl else None)
+        qc_cols, qi_cols, _ = merge_mynn_bl_clouds(
+            qc_cols, qi_cols, None, qc_bl=qc_bl, qi_bl=qi_bl,
+            cldfra_bl=cldfra_bl,
+            bl_pbl_physics=getattr(cfg, "bl_pbl_physics", 0),
+            icloud_bl=getattr(cfg, "icloud_bl", 0),
+            itimestep=(wrf_itimestep(state.elapsed_seconds, cfg.dt)
+                       if active_bl else 1),
+        )
 
         from gpuwm.core.physics import (
             RadiationResult, _model_clock_dt, _physics_interval_seconds)
@@ -312,11 +333,11 @@ class DudhiaShortwaveRadiation:
         mu, solcon = wrf_solar_geometry(
             valid_time, self.latitude_deg, self.longitude_deg,
             hour_offset_seconds=0.5 * interval)
-        heating_top, swdown, _gsw = dudhia_shortwave_columns(
+        heating_top, swdown, gsw = dudhia_shortwave_columns(
             self._top_down(temperature),
             self._top_down(atmosphere["pressure"]),
-            self._top_down(atmosphere["qv"]), self._top_down(qc),
-            self._top_down(qr), self._top_down(qi), self._top_down(qs),
+            self._top_down(atmosphere["qv"]), qc_cols,
+            self._top_down(qr), qi_cols, self._top_down(qs),
             self._top_down(qg), self._top_down(atmosphere["dz"]),
             mu.reshape(-1), cp.asarray(fields["albedo"]).reshape(-1),
             solcon=solcon, exner=self._top_down(atmosphere["exner"]),
@@ -325,7 +346,9 @@ class DudhiaShortwaveRadiation:
             heating_top[:, ::-1].reshape(ny, nx, nz).transpose(2, 0, 1))
         result = RadiationResult(
             rthratenlw=cp.zeros_like(heating), rthratensw=heating,
-            swdown=swdown.reshape(ny, nx), glw=fields["glw"])
+            swdown=swdown.reshape(ny, nx), glw=fields["glw"],
+            gsw=gsw.reshape(ny, nx),
+            coszen=cp.asarray(mu, dtype=cp.float32).reshape(ny, nx))
         self.update_count += 1
         return result
 

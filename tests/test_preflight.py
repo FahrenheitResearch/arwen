@@ -325,6 +325,7 @@ def test_scratch_registry_feature_matrix(d01_cfg):
         RunConfig(**_TINY, sf_sfclay_physics=1))
     assert dry_phys["physics_dry_qv"] == (4, 6, 8)
     assert dry_phys["physics_qi"] == (4, 6, 8)
+    assert dry_phys["physics_qs"] == (4, 6, 8)
 
 
 def test_nwp_diagnostics_prices_exactly_the_uh_planes(d01_cfg):
@@ -2465,6 +2466,46 @@ def test_the_recorded_local_frames_match_the_driver():
 # whole file gpu -- and a pricing gate that only runs where a device happens
 # to be present is the exact blindness the allocation ratchet was moved out
 # of test_mynn_pbl_scratch.py to escape.  Nothing below opens a device.
+
+@pytest.mark.parametrize("land_surface,nsoil", [(3, 9), (4, 4)])
+def test_mynn_lsm_pairings_price_the_union_of_both_components(
+        land_surface, nsoil):
+    """The newly reachable tuples cannot shed either side's persistent state."""
+    from gpuwm.core.mynn_pbl_runtime import MYNN_PBL_STATE_3D
+    from gpuwm.core.mynn_sfclay import MYNN_SURFACE_OUTPUTS
+
+    cfg = RunConfig(
+        nx=8, ny=6, nz=12, dx=1000.0, dy=1000.0, ztop=12000.0,
+        dt=5.0, run_seconds=0.0, time_step_sound=4, moist=True,
+        mp_physics=6, sf_sfclay_physics=5, bl_pbl_physics=5,
+        sf_surface_physics=land_surface, num_soil_layers=nsoil)
+    shapes = pf.physics_array_shapes(cfg)
+    for name in MYNN_SURFACE_OUTPUTS:
+        assert shapes[f"fields/{name}"] == (cfg.ny, cfg.nx)
+    for name in MYNN_PBL_STATE_3D:
+        assert shapes[f"fields/{name}"] == (cfg.nz, cfg.ny, cfg.nx)
+
+    if land_surface == 3:
+        from gpuwm.core.ruc_runtime import RUC_STATE_2D, RUC_STATE_3D
+        for name in MYNN_SURFACE_OUTPUTS:
+            assert shapes[f"fields/{name}_sea"] == (cfg.ny, cfg.nx)
+        for name in RUC_STATE_2D:
+            assert shapes[f"fields/{name}"] == (cfg.ny, cfg.nx)
+        for name in RUC_STATE_3D:
+            assert shapes[f"fields/{name}"] == (nsoil, cfg.ny, cfg.nx)
+    else:
+        from gpuwm.core.noahmp_runtime import (
+            NOAHMP_STATE_2D, NOAHMP_STATE_SNOWSOIL_3D,
+            NOAHMP_STATE_SNOW_3D, NSNOW,
+        )
+        for name in NOAHMP_STATE_2D:
+            assert shapes[f"fields/{name}"] == (cfg.ny, cfg.nx)
+        for name in NOAHMP_STATE_SNOW_3D:
+            assert shapes[f"fields/{name}"] == (NSNOW, cfg.ny, cfg.nx)
+        for name in NOAHMP_STATE_SNOWSOIL_3D:
+            assert shapes[f"fields/{name}"] == (
+                NSNOW + nsoil, cfg.ny, cfg.nx)
+
 
 def test_preflight_prices_the_bound_the_runtime_launches_with():
     """The transient term reads the runtime's own constants, by name.

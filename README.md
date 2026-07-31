@@ -58,6 +58,48 @@ product PNGs took 2.6 s (first-time-user acceptance transcript,
 
 ## Install
 
+```bash
+pip install 'gpuwm[all]'   # gpu + render extras
+gpuwm setup                # prebuilt Rust decoders + the externalized physics tables
+```
+
+`gpuwm setup` runs `gpuwm fetch-bridges` then `gpuwm fetch-tables`,
+verifies every artifact against the SHA-256 pins packaged in the wheel,
+and finishes with the `gpuwm doctor` summary. It is re-run safe: what
+is already staged and pin-valid is verified and skipped. The ~16 GB
+WPS_GEOG static tree is not part of it -- `gpuwm setup --with-geog`
+opts in and prints the size before anything downloads, or run
+`gpuwm fetch-geog` later.
+
+Then a first forecast:
+
+```bash
+# 1. Size a nest ladder to your card. Ends by printing the exact
+#    fetch/check/run commands for what it just wrote.
+gpuwm domain --point 35.3,-97.5 --card 24gb --cycle 1999-05-03T12 \
+  --hours 6 --out configs/myarea.toml
+
+# 2. Get data (the wizard printed this line with the area filled in)
+gpuwm fetch --source gfs --cycle ... --area ... --out data/myarea
+
+# 3. Initialize. GFS/HRRR go through the native front door; ERA5 runs
+#    straight from the config.
+rw-wps --source gfs ...
+
+# 4. Run
+gpuwm run configs/myarea.toml --outdir out/myarea
+```
+
+`gpuwm doctor` prints one line per item with the command that closes
+each gap; `gpuwm doctor --explain` prints the full remedy block for
+each, with the evidence behind it. Every command in this project takes
+`--explain` and means the same thing by it.
+
+The longer path -- the install scripts, the manual steps, and what each
+piece is -- is below.
+
+### The install scripts
+
 One command from the checkout root. `install.sh` / `install.ps1`
 create `.venv`, install the `[gpu,render]` extras, stage the
 externalized Thompson tables (`gpuwm fetch-tables`: a one-time
@@ -138,6 +180,13 @@ Two commands close that gap:
 
 ```bash
 pip install gpuwm
+gpuwm setup             # runs both fetch steps below, then the doctor summary
+```
+
+`gpuwm setup` is a wrapper over the two commands, which still stand on
+their own:
+
+```bash
 gpuwm fetch-bridges     # prebuilt decoders, renderer and fetch backbone
 gpuwm fetch-tables      # the two externalized Thompson tables
 gpuwm doctor            # what is still missing, and the command for each

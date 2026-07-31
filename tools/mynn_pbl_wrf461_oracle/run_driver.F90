@@ -1,7 +1,7 @@
 program run_mynn_bl_driver_oracle
   ! Dump module_bl_mynn.F:360-1453 (mynn_bl_driver) from the unmodified pinned
   ! WRF v4.6.1 physics module.  This is the assembled scheme, not a leaf: the
-  ! harness hands it a four-column block and lets the driver do the column
+  ! harness hands it a five-column block and lets the driver do the column
   ! extraction, the flux construction, the call ordering and the write-back.
   !
   ! Two calls are made over the same atmosphere.  The first has initflag=1,
@@ -15,8 +15,8 @@ program run_mynn_bl_driver_oracle
   ! bl_mynn_edmf_mom=1, bl_mynn_edmf_tke=0, bl_mynn_mixscalars=0,
   ! bl_mynn_output=0, bl_mynn_cloudmix=1, bl_mynn_mixqt=0, icloud_bl=1,
   ! closure=2.6, bl_mynn_tkeadvect=.false., tke_budget=0, spp_pbl=0,
-  ! mix_chem=.false., restart=.false., cycling=.false., FLAG_QC/FLAG_QI true
-  ! and every other species flag false.
+  ! mix_chem=.false., restart=.false., cycling=.false.,
+  ! FLAG_QC/FLAG_QI/FLAG_QS true and every other species flag false.
   !
   ! Note on Sh3D/Sm3D: WRF declares them intent(out) at :511 and then reads
   ! them back at :952 on every step after the first.  With gfortran and an
@@ -27,7 +27,7 @@ program run_mynn_bl_driver_oracle
   use module_bl_mynn, only: mynn_bl_driver
   implicit none
 
-  integer, parameter :: ncol = 4, nz = 30
+  integer, parameter :: ncol = 5, nz = 30
   integer, parameter :: ids = 1, ide = ncol + 1, jds = 1, jde = 2
   integer, parameter :: kds = 1, kde = nz + 1
   integer, parameter :: ims = 1, ime = ncol, jms = 1, jme = 1
@@ -37,7 +37,8 @@ program run_mynn_bl_driver_oracle
   integer, parameter :: nchem = 1, kdvel = 1, ndvel = 1
   integer, parameter :: nstep = 2
   character(len=32), parameter :: names(ncol) = [character(len=32) :: &
-      'convective_land', 'marine_cumulus', 'stable_land', 'cloudy_deep']
+      'convective_land', 'marine_cumulus', 'stable_land', 'cloudy_deep', &
+      'snow_anvil']
   character(len=1024) :: output_path
   integer :: c, k, s, unit
 
@@ -98,7 +99,7 @@ program run_mynn_bl_driver_oracle
   logical, parameter :: rrfs_sd = .false., smoke_dbg = .false.
   logical, parameter :: flag_qc = .true., flag_qi = .true.
   logical, parameter :: flag_qnc = .false., flag_qni = .false.
-  logical, parameter :: flag_qs = .false., flag_qnwfa = .false.
+  logical, parameter :: flag_qs = .true., flag_qnwfa = .false.
   logical, parameter :: flag_qnifa = .false., flag_qnbca = .false.
   logical, parameter :: flag_ozone = .false.
   integer, parameter :: tke_budget = 0, bl_mynn_cloudpdf = 2
@@ -116,7 +117,8 @@ program run_mynn_bl_driver_oracle
   end if
   open(newunit=unit, file=trim(output_path), status='new', action='write')
   write(unit, '(A)') 'case,step,k,initflag,delt,dx,znt,xland,ts,qsfc,ps,' // &
-      'ust,ch,hfx,qfx,wspd,uoce,voce,dz,u,v,w,th,sqv3d,sqc3d,sqi3d,p,' //    &
+      'ust,ch,hfx,qfx,wspd,uoce,voce,dz,u,v,w,th,sqv3d,sqc3d,sqi3d,' //      &
+      'sqs3d,p,' //                                                          &
       'exner,rho,t3d,qke_in,tsq_in,qsq_in,cov_in,el_in,sh_in,sm_in,' //      &
       'qc_bl_in,qi_bl_in,cldfra_bl_in,pblh_in,kpbl_in,rmol_in,rublten,' //   &
       'rvblten,rthblten,rqvblten,rqcblten,rqiblten,dozone,exch_h,' //        &
@@ -124,7 +126,7 @@ program run_mynn_bl_driver_oracle
       'pblh,kpbl,rmol,maxwidth,maxmf,ztop_plume,ktop_plume'
 
   delt = 20.0
-  ! ---- atmosphere: four columns, one block ----------------------------
+  ! ---- atmosphere: five columns, one block ----------------------------
   do c = 1, ncol
     dz1 = 50.0
     dzslope = 15.0
@@ -177,6 +179,17 @@ program run_mynn_bl_driver_oracle
       dx(c) = 1000.0
       dz1 = 30.0
       dzslope = 12.0
+    case (5)
+      ! Same deep column, but snow is the only resolved frozen species above
+      ! the inversion.  This isolates FLAG_QS in mym_condensation's rh_hack.
+      hfx(c) = 220.0
+      qfx(c) = 1.6e-4
+      qsurf = 0.0165
+      zinv = 2000.0
+      ts(c) = 303.0
+      dx(c) = 1000.0
+      dz1 = 30.0
+      dzslope = 12.0
     end select
     zw = 0.0
     do k = 1, nz
@@ -194,15 +207,18 @@ program run_mynn_bl_driver_oracle
       end if
       sqc3d(c, k) = 0.0
       sqi3d(c, k) = 0.0
-      if (c == 4) then
+      sqs3d(c, k) = 0.0
+      if (c == 4 .or. c == 5) then
         if (zm > 300.0 .and. zm < 1000.0) then
           sqc3d(c, k) = max(2.4e-4 - abs(zm - 650.0) * 3.0e-7, 5.0e-6)
         end if
-        if (zm > 2400.0) then
+        if (c == 4 .and. zm > 2400.0) then
           sqi3d(c, k) = max(4.0e-5 - (zm - 2600.0) * 8.0e-9, 3.0e-6)
         end if
+        if (c == 5 .and. zm > 2400.0) then
+          sqs3d(c, k) = max(4.0e-5 - (zm - 2600.0) * 8.0e-9, 3.0e-6)
+        end if
       end if
-      sqs3d(c, k) = 0.0
       t3d(c, k) = th(c, k) * exner(c, k)
       rho(c, k) = p(c, k) / (287.0 * t3d(c, k))
       u(c, k) = 3.0 + 0.0015 * zm
@@ -349,11 +365,12 @@ program run_mynn_bl_driver_oracle
       do k = 1, nz
         write(unit, '(A,",",I0,",",I0,",",I0)', advance='no')              &
             trim(names(c)), s, k, initflag
-        write(unit, '(37(",",ES24.16E3))', advance='no')                   &
+        write(unit, '(38(",",ES24.16E3))', advance='no')                   &
             delt, dx(c), znt(c), xland(c), ts(c), qsfc(c), ps(c), ust(c),  &
             ch(c), hfx(c), qfx(c), wspd(c), uoce(c), voce(c), dz(c, k),    &
             u(c, k), v(c, k), w(c, k), th(c, k), sqv3d(c, k),              &
-            sqc3d(c, k), sqi3d(c, k), p(c, k), exner(c, k), rho(c, k),     &
+            sqc3d(c, k), sqi3d(c, k), sqs3d(c, k), p(c, k), exner(c, k),   &
+            rho(c, k),                                                       &
             t3d(c, k), qke_in(c, k), tsq_in(c, k), qsq_in(c, k),           &
             cov_in(c, k), el_in(c, k), sh_in(c, k), sm_in(c, k),           &
             qcbl_in(c, k), qibl_in(c, k), cfbl_in(c, k), pblh_in(c)

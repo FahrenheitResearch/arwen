@@ -80,6 +80,10 @@ _REGISTRY_ONLY_CODES = frozenset({
     "graph-setting-constraint",
     "nonuniform-base-template",
     "parameter-route",
+    # This asks whether a real-source plan explicitly opted into a moist
+    # carrier while MP is off.  RunConfig sees only the resolved boolean and
+    # cannot distinguish an explicit parameter from the registry default.
+    "real-source-mp-off-requires-explicit-moist",
     "template-route",
     "transition-required-setting",
     # An unimplemented option is refused BEFORE its selectors are projected:
@@ -184,7 +188,7 @@ def _single_domain_plan(registry: dict, runner_id: str, source_id: str,
         "edges": [],
     }
     if acknowledgements:
-        plan["expert_acknowledgements"] = list(acknowledgements)
+        plan["acknowledgements"] = list(acknowledgements)
     return plan
 
 
@@ -213,7 +217,7 @@ def _tree_plan(registry: dict, runner_id: str, source_id: str,
         "edges": [{"parent_domain_id": "d01", "child_domain_id": "d02"}],
     }
     if acknowledgements:
-        plan["expert_acknowledgements"] = list(acknowledgements)
+        plan["acknowledgements"] = list(acknowledgements)
     return plan
 
 

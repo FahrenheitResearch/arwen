@@ -603,7 +603,10 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         mminlu=str(landuse_attrs["MMINLU"]),
         iswater=int(landuse_attrs["ISWATER"]),
         islake=int(landuse_attrs["ISLAKE"]),
-        isice=int(landuse_attrs["ISICE"]))
+        isice=int(landuse_attrs["ISICE"]),
+        # real.exe's landmask/soil-category reconciliation decides a
+        # disagreeing column from its soil temperature, then its SST.
+        soil_temperature=soil.soil_temperature)
     driver = initialize_physics(
         state, cfg, landuse=landuse, tsk=soil.tsk,
         soil_temperature=soil.soil_temperature,
@@ -612,6 +615,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         ivgtyp=static["LU_INDEX"], isltyp=static["SCT_DOM"],
         vegfra=vegfra, tmn=soil.deep_soil_temperature,
         xice=soil.xice, snow=soil.snow_water, snow_depth=soil.snow_depth,
+        sst=soil_fields.get("SST", soil.tsk),
         radiation=radiation,
         radiation_start_time=start_time, radiation_latitude=lat,
         radiation_longitude=lon)
@@ -822,7 +826,10 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
         mminlu=str(landuse_attrs["MMINLU"]),
         iswater=int(landuse_attrs["ISWATER"]),
         islake=int(landuse_attrs["ISLAKE"]),
-        isice=int(landuse_attrs["ISICE"]))
+        isice=int(landuse_attrs["ISICE"]),
+        # real.exe's landmask/soil-category reconciliation decides a
+        # disagreeing column from its soil temperature, then its SST.
+        soil_temperature=soil.soil_temperature)
     driver = initialize_physics(
         state, cfg, landuse=landuse, tsk=soil.tsk,
         soil_temperature=soil.soil_temperature,

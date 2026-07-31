@@ -63,6 +63,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from gpuwm import fetch_bars, fetch_guard
+from gpuwm.explain import layered
 from gpuwm.nomads_governor import paced_urlopen
 
 
@@ -438,20 +439,24 @@ def gdas_capability_refusal(requested_hour: int) -> str:
     it is a statement about what has been proved here.
     """
 
-    return (
+    # Already written in the two halves this project now layers
+    # everywhere: `What to do` is the action, `Why` is the mechanism.
+    # Composing them with `layered` only changes which one prints
+    # first and which one waits for the flag.
+    return layered(
         "GDAS is certified in this ArWen for fetch and decode through "
         f"f{GDAS_MAX_FORECAST_HOUR:03d}: the assimilation cycle's "
         "analysis and its short forecast, and nothing past it.  "
         f"f{requested_hour:03d} was requested.\n"
+        "  What to do: stay inside "
+        f"--hours 0..{GDAS_MAX_FORECAST_HOUR}, or use --source gfs, "
+        f"which is certified through f{GFS_MAX_FORECAST_HOUR}.",
         "  Why: the certified corpus is real NOMADS f000/f003/f006/f009 "
         "subsets, and the fail-closed gfs_grib2_bridge downstream "
         "selects by exact field identity -- it admits the declared "
         "analysis and forecast generating processes and nothing else.  "
         "Fetching hours the bridge has never seen would just move the "
-        "failure later, so the refusal is here.\n"
-        "  What to do: stay inside "
-        f"--hours 0..{GDAS_MAX_FORECAST_HOUR}, or use --source gfs, "
-        f"which is certified through f{GFS_MAX_FORECAST_HOUR}.")
+        "failure later, so the refusal is here.")
 
 
 def gdas_forecast_hours(hours: int, cadence: int = 3) -> tuple[int, ...]:
@@ -798,17 +803,19 @@ def check_prior_request(out: Path, *, source: str, cycle: datetime,
     prior = _load_fetch_manifest(out)
     if prior is None:
         if out.is_dir() and any(out.iterdir()):
-            raise ValueError(
+            raise ValueError(layered(
                 f"--out {out} is not empty but carries no readable "
-                f"{FETCH_MANIFEST_NAME} (a legacy interrupted fetch, a "
-                "corrupted manifest, or files another tool put there).  "
-                "The existing files cannot be "
-                "tied to any recorded source/cycle/area, and the "
-                "per-file resume check is area-blind, so they are "
-                "UNVERIFIED for this request and will not be resumed.\n"
+                f"{FETCH_MANIFEST_NAME}, so its files are UNVERIFIED for "
+                "this request and will not be resumed.\n"
                 "  remedy: fetch into a different --out, or pass "
                 "--force-refetch to move the existing files aside "
-                "(nothing is deleted) and re-download this request.")
+                "(nothing is deleted) and re-download this request.",
+                "  why: a missing manifest is a legacy interrupted fetch, "
+                "a corrupted manifest, or files another tool put there.  "
+                "The existing files cannot be tied to any recorded "
+                "source/cycle/area, and the per-file resume check is "
+                "area-blind, so resuming onto them would publish a "
+                "receipt describing bytes nobody recorded."))
         return
     requested = {
         "source": source,
@@ -821,14 +828,16 @@ def check_prior_request(out: Path, *, source: str, cycle: datetime,
         f"with {existing[key]!r}"
         for key in requested if requested[key] != existing[key]]
     if differences:
-        raise ValueError(
-            f"--out {out} already holds a fetch for a different request, "
-            "and the per-file resume check cannot tell the difference "
-            "(a subset file passes its record-count bar for any area):\n"
+        raise ValueError(layered(
+            f"--out {out} already holds a fetch for a different request:\n"
             + "\n".join(differences)
             + "\n  remedy: fetch into a different --out, or pass "
             "--force-refetch to move the existing files aside (nothing "
-            "is deleted) and re-download this request.")
+            "is deleted) and re-download this request.",
+            "  why: the per-file resume check cannot tell the difference "
+            "-- a subset file passes its record-count bar for any area -- "
+            "so resuming would silently mix two requests' bytes under one "
+            "manifest."))
 
 
 def _manifest_payload(*, source: str, cycle: datetime,
@@ -1386,6 +1395,37 @@ def author_gfs_front_door_manifest(
         f" --static-receipt {printed(static_receipt)}"
         if static_input is not None
         else f" --geog-root {printed(default_geog_root())}")
+
+    # --physics-profile, when this config HAS one the front door names.
+    #
+    # It is spelled "optional" in rw-wps' own help and is not: absent,
+    # `gpuwm.source_cli` substitutes WSM6_PROFILE_ID and then compares
+    # the experiment's physics against that, so a pasted command with no
+    # profile refuses every config except a wsm6-no-radiation one.  The
+    # command this function prints is the one FIRST-LIGHT.md section 3a
+    # tells a reader to paste, and its own worked example uses the
+    # Morrison profile -- so the documented chain failed at this step
+    # for exactly the case it documents.  Found by running it.
+    #
+    # Derived through the same authority the front door asks
+    # (`identify_single_domain_profile`), so this cannot name a profile
+    # the runner would then reject.  A config matching no shipped
+    # profile adds nothing: the front door prints its own explanation of
+    # that case after preparation, and inventing a flag here would only
+    # move the refusal earlier without making it truer.
+    profile_arg = ""
+    try:
+        from gpuwm.experiment import load_experiment
+        from gpuwm.physics_compat import identify_single_domain_profile
+
+        matched = identify_single_domain_profile(
+            load_experiment(Path(experiment_config)).root.run)
+        if matched is not None:
+            profile_arg = f" --physics-profile {matched}"
+    except Exception:
+        # A config this process cannot load is not a reason to withhold
+        # the rest of a correct command.
+        profile_arg = ""
     output_root = out.resolve() / "prepared"
     progress(f"fetch {source}: front-door manifest {path}")
     progress(f"fetch {source}: front-door manifest sha256 {digest}")
@@ -1413,7 +1453,8 @@ def author_gfs_front_door_manifest(
         f" --experiment-config {printed(experiment_config)}"
         f" --source-manifest {printed(path)}"
         f" --source-manifest-sha256 {digest}"
-        f"{static_args} --output-root {printed(output_root)}")
+        f"{profile_arg}{static_args} "
+        f"--output-root {printed(output_root)}")
     return path, digest
 
 
@@ -2311,6 +2352,40 @@ def era5_request_template(*, cycle: datetime, hours: int, area: Area,
                     "era5-combined.grib"),
         "validate": "gpuwm fetch --source era5 --validate era5-combined.grib",
     }
+
+
+#: Where cdsapi reads the personal CDS key, exactly as
+#: :data:`ERA5_INSTRUCTIONS` step 1 tells the reader to write it.  Named
+#: once so the instruction and the check cannot come to disagree about
+#: which file they are talking about.
+CDSAPIRC_NAME = ".cdsapirc"
+
+
+def cds_credentials_path() -> Path:
+    """The ``~/.cdsapirc`` cdsapi would read on this machine."""
+
+    return Path.home() / CDSAPIRC_NAME
+
+
+def cds_credentials_present() -> bool:
+    """Is a CDS key file in place?  Existence only -- never read.
+
+    The ERA5 route is the one front door whose first step happens
+    outside gpuwm entirely, and the failure mode it produces is a
+    cdsapi exception several commands later with nothing pointing back
+    at the missing file.  Answering "is it there" costs a ``stat`` and
+    lets the wizard say so while the reader is still deciding what to
+    run next.
+
+    Presence, not validity: a key's correctness is the CDS server's
+    verdict to give, and guessing at its format here would produce
+    confident wrong advice about a file this project does not own.
+    """
+
+    try:
+        return cds_credentials_path().is_file()
+    except OSError:
+        return False
 
 
 ERA5_INSTRUCTIONS = """\

@@ -49,10 +49,12 @@ from gpuwm.doctor import register_cli as doctor_register_cli
 from gpuwm.domain_wizard import register_cli as domain_register_cli
 from gpuwm.downscale import register_cli as downscale_register_cli
 from gpuwm.experiment import is_experiment_toml
+from gpuwm.explain import add_explain_flag, explain_enabled, render
 from gpuwm.fetch import register_cli as fetch_register_cli
 from gpuwm.geog_assets import register_cli as geog_register_cli
 from gpuwm.ingest.preflight import register_cli as ingest_register_cli
 from gpuwm.render import register_cli as render_register_cli
+from gpuwm.setup_cli import register_cli as setup_register_cli
 from gpuwm.table_assets import register_cli as table_assets_register_cli
 from gpuwm.verify import cases
 
@@ -151,7 +153,28 @@ _CONFIG_HELP = (
     "RunConfig naming a registered case is also accepted.")
 
 
-def main(argv: list[str] | None = None) -> int:
+def _layer(error: BaseException, args) -> str:
+    """One refusal, at the layer this invocation asked for.
+
+    The pointer names the command the reader just ran, so re-running it
+    with ``--explain`` is a copy of their own last line plus one word --
+    never a different command they then have to reconstruct.
+    """
+
+    return render(str(error), explain=explain_enabled(args),
+                  command=f"gpuwm {args.command}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """The whole gpuwm command surface, assembled.
+
+    Split out of :func:`main` so the parser can be inspected without
+    running anything.  The layering convention needs that: `--explain`
+    is swept onto every subcommand here, and the test that keeps the
+    sweep honest has to be able to enumerate the subcommands rather
+    than transcribe a list that goes stale the next time one is added.
+    """
+
     parser = argparse.ArgumentParser(
         prog="gpuwm", description="GPU-native WRF-ARW-like weather model.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -171,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     doctor_register_cli(sub)
     table_assets_register_cli(sub)
     bridge_assets_register_cli(sub)
+    setup_register_cli(sub)
     adapt_register_cli(sub)
     lst = sub.add_parser(
         "cases", help="list the discovered verification cases and the "
@@ -258,6 +282,21 @@ def main(argv: list[str] | None = None) -> int:
                           "(default, unchanged output) or the exact "
                           "legacy-RRTMG port (fails closed at physics "
                           "setup until its compute kernels land)")
+    # ONE layering convention, registered in ONE place, after every
+    # registrar has run.  Every subcommand takes --explain, so the
+    # pointer the refusal boundary appends -- "run gpuwm <command>
+    # --explain for the reason" -- is true whichever command the reader
+    # was running.  A per-command opt-in would have made that pointer a
+    # lie exactly on the commands nobody remembered to opt in.
+    # `add_explain_flag` is idempotent because two registrars share a
+    # parser (check, run, resume).
+    for subcommand_parser in sub.choices.values():
+        add_explain_flag(subcommand_parser)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(_join_negative_coordinates(
         list(sys.argv[1:] if argv is None else argv)))
 
@@ -292,7 +331,14 @@ def main(argv: list[str] | None = None) -> int:
         # programming errors: print the message, exit 2 (argparse's
         # usage-error convention), no traceback -- uniformly, for every
         # subcommand.
-        print(f"gpuwm {args.command}: {error}", file=sys.stderr)
+        #
+        # THE refusal print boundary.  A message composed with
+        # gpuwm.explain.layered carries both halves; here is where one
+        # of them is chosen.  An unlayered message passes through
+        # unchanged, so this is a no-op for the refusals that are
+        # already one sentence -- which is most of them.
+        print(f"gpuwm {args.command}: "
+              + _layer(error, args), file=sys.stderr)
         return 2
     except RuntimeError as error:
         if args.command in ("fetch", "fetch-geog"):
@@ -303,7 +349,8 @@ def main(argv: list[str] | None = None) -> int:
             # not programming errors.  Scoped to the fetch commands:
             # elsewhere a RuntimeError (including CUDA runtime
             # failures) must keep its traceback.
-            print(f"gpuwm {args.command}: {error}", file=sys.stderr)
+            print(f"gpuwm {args.command}: "
+                  + _layer(error, args), file=sys.stderr)
             return 2
         raise
 
@@ -311,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
 def _dispatch(args) -> int:
     if args.command in ("check", "fetch", "fetch-geog", "domain", "render",
                         "downscale", "doctor", "fetch-tables",
-                        "fetch-bridges", "adapt"):
+                        "fetch-bridges", "setup", "adapt"):
         return args.func(args)
 
     if args.command == "cases":
@@ -356,7 +403,8 @@ def _dispatch(args) -> int:
             # uniform CLI refusal boundary, never a traceback.  Observed
             # live against a WRF-Runner-generated namelist pair carrying
             # ra_lw_physics=1 (2026-07-30 interop verification).
-            print(f"gpuwm import-namelist: {error}", file=sys.stderr)
+            print("gpuwm import-namelist: " + _layer(error, args),
+                  file=sys.stderr)
             return 2
         if args.output is not None:
             args.output.parent.mkdir(parents=True, exist_ok=True)

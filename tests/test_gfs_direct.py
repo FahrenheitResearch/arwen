@@ -23,7 +23,12 @@ from gpuwm.gfs_direct import (
 )
 from gpuwm.bridges import decode_failure_message
 from gpuwm.experiment import VerticalConfig, load_experiment
-from gpuwm.physics_compat import MORRISON_PROFILE_ID, WSM6_PROFILE_ID
+from gpuwm.physics_compat import (
+    MORRISON_PROFILE_ID,
+    NOAHMP_PROFILE_ID,
+    WSM6_PROFILE_ID,
+    single_domain_runtime_switches,
+)
 from gpuwm.ingest.grib import Era5Snapshot
 
 
@@ -739,6 +744,81 @@ def test_the_single_domain_whitelist_still_binds_on_single_domain(tmp_path):
     assert receipt["profile"] == WSM6_PROFILE_ID
 
 
+def _noahmp_experiment(exp, acknowledgements=()):
+    run = dataclasses.replace(
+        exp.root.run,
+        **single_domain_runtime_switches(NOAHMP_PROFILE_ID),
+    )
+    root = dataclasses.replace(exp.root, run=run)
+    return dataclasses.replace(
+        exp, domains=(root,), acknowledgements=tuple(acknowledgements))
+
+
+@pytest.mark.parametrize(
+    ("flag", "toml", "sources"),
+    (
+        (("noahmp-host-column-throughput-v1",), (), ["--ack"]),
+        ((), ("noahmp-host-column-throughput-v1",),
+         ["[experiment].acknowledgements"]),
+        (("noahmp-host-column-throughput-v1",),
+         ("noahmp-host-column-throughput-v1",),
+         ["--ack", "[experiment].acknowledgements"]),
+    ),
+)
+def test_ack_delivery_unions_flag_and_toml_with_source_provenance(
+        tmp_path, flag, toml, sources):
+    from gpuwm.gfs_direct import front_door_physics_selection
+
+    exp = _noahmp_experiment(
+        load_experiment(_wizard_single_domain_config(tmp_path)), toml)
+    receipt = front_door_physics_selection(
+        exp, physics_profile=NOAHMP_PROFILE_ID,
+        expert_acknowledgements=flag)
+
+    assert receipt["acknowledgements"] == [
+        "noahmp-host-column-throughput-v1"]
+    assert receipt["acknowledgement_provenance"] == {
+        "noahmp-host-column-throughput-v1": sources}
+
+
+@pytest.mark.parametrize("delivery", ("flag", "toml"))
+def test_wrong_ack_id_refuses_with_the_exact_two_short_forms(
+        tmp_path, delivery):
+    from gpuwm.gfs_direct import front_door_physics_selection
+
+    toml = ("wrong-id-v2",) if delivery == "toml" else ()
+    flag = ("wrong-id-v2",) if delivery == "flag" else ()
+    exp = _noahmp_experiment(
+        load_experiment(_wizard_single_domain_config(tmp_path)), toml)
+    with pytest.raises(ValueError) as caught:
+        front_door_physics_selection(
+            exp, physics_profile=NOAHMP_PROFILE_ID,
+            expert_acknowledgements=flag)
+    message = str(caught.value)
+    assert "\n" not in message
+    assert "d01 resolved physics tuple (" in message
+    assert (
+        "--ack noahmp-host-column-throughput-v1 or "
+        'acknowledgements = ["noahmp-host-column-throughput-v1"]'
+        in message
+    )
+
+
+@pytest.mark.parametrize("delivery", ("flag", "toml", "both"))
+def test_registry_reachable_tuple_is_unaffected_by_ack_delivery(
+        tmp_path, delivery):
+    from gpuwm.gfs_direct import front_door_physics_selection
+
+    flag = ("irrelevant-v1",) if delivery in ("flag", "both") else ()
+    toml = ("irrelevant-v2",) if delivery in ("toml", "both") else ()
+    exp = dataclasses.replace(
+        load_experiment(_wizard_single_domain_config(tmp_path)),
+        acknowledgements=toml)
+    receipt = front_door_physics_selection(
+        exp, expert_acknowledgements=flag)
+    assert receipt["profile"] == WSM6_PROFILE_ID
+
+
 def test_an_explicit_profile_is_still_enforced_on_a_domain_tree(tmp_path):
     """A gate the caller ASKED for is never dropped by the scoping fix.
 
@@ -966,3 +1046,117 @@ def test_every_printed_path_in_the_forecast_command_is_shell_parseable(
     assert prepared_root == str(root).replace("\\", "/"), prepared_root
     config_arg = argv[argv.index("--experiment-config") + 1]
     assert " " in config_arg and Path(config_arg).is_file(), config_arg
+
+
+# ---------------------------------------------------------------------------
+# F2: the export request reaches the adapter from both front doors
+# ---------------------------------------------------------------------------
+
+def _gfs_front_door_args(extra: list[str]):
+    from gpuwm import source_cli
+
+    return source_cli._parser().parse_args([
+        "--source", "gfs",
+        "--gfs-series", "series.tsv",
+        "--cycle", "2026-07-29_06:00:00",
+        "--bridge", "bridge.exe",
+        "--wps-namelist", "namelist.wps",
+        "--experiment-config", "experiment.toml",
+        "--source-manifest", "manifest.json",
+        "--source-manifest-sha256", "a" * 64,
+        "--output-root", "prep",
+        "--geog-root", "geog",
+        *extra,
+    ])
+
+
+def test_the_gfs_front_door_forwards_the_export_request_only_when_declined():
+    """`rw-wps` passes the flag through; the default prints nothing extra."""
+
+    from gpuwm import source_cli
+
+    default = source_cli._gfs_command(_gfs_front_door_args([]))
+    declined = source_cli._gfs_command(
+        _gfs_front_door_args(["--no-stock-wrf-export"]))
+
+    assert "--no-stock-wrf-export" not in default
+    assert "--no-stock-wrf-export" in declined
+    assert source_cli._required_gfs_args(
+        _gfs_front_door_args(["--no-stock-wrf-export"])) == []
+    # The default has to be FALSY, not True-meaning-"export": every
+    # inventory action on this parser refuses to be combined with any
+    # namespace entry that is not None/False, so a flag defaulting to True
+    # breaks `--validate-hrrr-domain` and its siblings for every caller.
+    assert _gfs_front_door_args([]).no_stock_wrf_export is False
+    assert source_cli._active_action_arguments(
+        _gfs_front_door_args([]),
+        allowed=frozenset({"no_stock_wrf_export"})) == \
+        source_cli._active_action_arguments(
+            _gfs_front_door_args([]), allowed=frozenset())
+
+
+def test_the_export_request_is_a_gfs_route_flag_and_says_so_elsewhere():
+    from gpuwm import source_cli
+
+    args = _gfs_front_door_args(["--no-stock-wrf-export"])
+    for validator in (source_cli._required_era5_args,
+                      source_cli._required_twentycr_args,
+                      source_cli._required_mapped_args,
+                      source_cli._required_hrrr_args):
+        errors = validator(args)
+        assert any("--no-stock-wrf-export" in error for error in errors), \
+            validator.__name__
+
+
+def test_the_gfs_adapter_cli_carries_the_export_request_to_the_preparation(
+        monkeypatch, tmp_path, capsys):
+    from gpuwm import gfs_direct
+
+    observed = {}
+
+    def prepare(**kwargs):
+        observed.update(kwargs)
+        return {"schema": "test", "wrf_manifest": {"status": "READY"}}
+
+    monkeypatch.setattr(gfs_direct, "prepare_gfs_wrf", prepare)
+    monkeypatch.setattr(
+        gfs_direct, "prepared_forecast_next_command",
+        lambda *_a, **_k: [])
+    base = [
+        "--series", "series.tsv", "--cycle", "2026-07-29_06:00:00",
+        "--bridge", "bridge.exe", "--wps-namelist", "namelist.wps",
+        "--experiment-config", "experiment.toml",
+        "--input-manifest", "manifest.json",
+        "--input-manifest-sha256", "a" * 64,
+        "--output-root", str(tmp_path / "prep"),
+    ]
+
+    assert gfs_direct.main(base) == 0
+    assert observed["stock_wrf_export"] is True
+
+    assert gfs_direct.main(base + ["--no-stock-wrf-export"]) == 0
+    assert observed["stock_wrf_export"] is False
+    capsys.readouterr()
+
+
+def test_the_front_door_says_plainly_when_the_bonus_export_did_not_happen():
+    """A user who expected wrf-native-input/ is told, in one sentence."""
+
+    from gpuwm.gfs_direct import stock_wrf_export_notice
+
+    assert stock_wrf_export_notice({"wrf_manifest": {"status": "READY"}}) == []
+    assert stock_wrf_export_notice({}) == []
+
+    refused = stock_wrf_export_notice({"wrf_manifest": {
+        "status": "REFUSED",
+        "reason": "unsupported direct-export configuration: "
+                  "{'bl_pbl_physics': (5, 1)}"}})
+    assert any("bonus stock-WRF export was refused" in line
+               for line in refused)
+    assert any("'bl_pbl_physics': (5, 1)" in line for line in refused)
+    assert any("run the forecast command below" in line for line in refused)
+
+    skipped = stock_wrf_export_notice(
+        {"wrf_manifest": {"status": "NOT_REQUESTED"}})
+    assert any("no stock-WRF export was requested" in line
+               for line in skipped)

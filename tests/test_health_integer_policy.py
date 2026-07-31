@@ -61,8 +61,9 @@ _NX, _NY, _NZ = 3, 2, 8
 #: sf_surface_physics, bl_pbl_physics) triples that are BOTH routed by
 #: PHYSICS_SLOT_DISPATCH and accepted by validate_run_config at this
 #: checkout.  Pinned so a sweep that silently shrank cannot pass by
-#: measuring less.
-_ROUTED_COMBINATIONS = 19
+#: measuring less.  Re-measured 2026-07-30: the WRF-owned MYNN/RUC and
+#: MYNN/Noah-MP pairings increase the admitted matrix from 19 to 21.
+_ROUTED_COMBINATIONS = 21
 
 #: Every int32 descriptor the routed cross-product actually produces.
 _INT32_DESCRIPTORS = frozenset({
@@ -231,7 +232,7 @@ def _mynn_config():
 
 
 def _noahmp_config():
-    """The Noah-MP selector.  MM5 surface layer: MYNN + Noah-MP is refused."""
+    """The Noah-MP selector under its original MM5/YSU profile."""
     return _config(sf_surface_physics=4, sf_sfclay_physics=1,
                    bl_pbl_physics=1)
 

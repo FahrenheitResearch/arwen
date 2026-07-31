@@ -71,7 +71,8 @@ from collections.abc import Mapping
 
 import numpy as np
 
-from gpuwm.core.ruc import (RUC_DRIVER_COLUMN_FORCING,
+from gpuwm.core.ruc import (RUC_DRIVER_ARW_FORCING,
+                            RUC_DRIVER_COLUMN_FORCING,
                             RUC_DRIVER_COLUMN_STATE,
                             RUC_DRIVER_PROFILE_STATE,
                             RUC_SNOW_COVER_OPTION,
@@ -80,6 +81,7 @@ from gpuwm.core.ruc import (RUC_DRIVER_COLUMN_FORCING,
 from gpuwm.core.ruc_contract import (NUM_SOIL_LAYERS,
                                      RUC_PACKAGE_STATE_FIELDS,
                                      RUC_SOIL_LEVELS_M)
+from gpuwm.core.surface_forcing import SurfacePrecipitationForcing
 
 #: The vegetation dataset identifier gpuwm's land-use ingest produces, and the
 #: only one this runner is exercised at.  ``gpuwm.core.ruc`` maps it to
@@ -146,6 +148,41 @@ RUC_STATE_3D = ("smfr3d", "keepfr3dflag")
 RUC_DIAGNOSTICS_2D = ("ruc_infiltr", "ruc_smelt", "ruc_runoff1",
                       "ruc_runoff2")
 
+#: Ice and open-water components carried by WRF's fractional-sea-ice
+#: surface-layer wrapper and consumed by the RUC post-call reblend.
+RUC_FRACTIONAL_SEAICE_FIELDS = (
+    "tsk_save", "tsk_sea", "znt_sea", "ust_sea", "mol_sea", "zol_sea",
+    "flhc_sea", "flqc_sea", "cpm_sea",
+    "cqs2_sea", "chs2_sea", "chs_sea", "qsfc_sea", "qgh_sea",
+    "hfx_sea", "qfx_sea", "lh_sea",
+)
+
+
+def _ruc_fractional_deblend(
+        blended, sea_value, xice, ice_component, *, arrays):
+    """WRF v4.6.1 ``module_surface_driver.F:3468-3470``."""
+    xp = arrays
+    one = np.float32(1.0)
+    denominator = xp.where(
+        ice_component, xice, np.float32(1.0))
+    return xp.where(
+        ice_component,
+        (blended - (one - xice) * np.float32(sea_value)) / denominator,
+        blended,
+    ).astype(xp.float32)
+
+
+def _ruc_fractional_reblend(
+        ice_value, sea_value, xice, ice_component, *, arrays):
+    """WRF v4.6.1 ``module_surface_driver.F:3535-3572``."""
+    xp = arrays
+    return xp.where(
+        ice_component,
+        ice_value * xice + (np.float32(1.0) - xice) * sea_value,
+        ice_value,
+    ).astype(xp.float32)
+
+
 #: gpuwm's 2-D field name -> the ``LSMRUC`` argument it binds.  Every name on
 #: the right is in :data:`gpuwm.core.ruc.RUC_DRIVER_COLUMN_STATE`.  The four
 #: renames are WRF's own: the surface driver passes ``albedo`` as ``alb``,
@@ -210,26 +247,6 @@ RUC_MEASURED_LIVE_CARRIERS: tuple[str, ...] = (
 #: at hour three of a forecast.
 RUC_RUNTIME_RESTRICTIONS: tuple[tuple[str, str, str], ...] = (
     (
-        "precipitation_partition_is_the_EM_CORE==0_ARM",
-        "PRECIPITATION reaches RUC as RAINBL (mm accumulated since the last "
-        "surface call) plus the frozen fraction SR, and the phase split is "
-        "module_sf_ruclsm.F:654-660: snowrat=rainbl*frzfrac, "
-        "prcpms=(rainbl-snowratio)/dt/1000, with grauprat and icerat "
-        "identically zero.",
-        "This is the single most consequential restriction in the port and "
-        "it is not a namelist knob.  LSMRUC has TWO precipitation "
-        "partitions and #if (EM_CORE==1) picks the other one (:618-652), "
-        "which takes rainncv, snowncv and graupelncv separately and derives "
-        "snowrat/grauprat/icerat from the microphysics' own species.  WRF-ARW "
-        "IS built with EM_CORE==1, so a stock ARW run does NOT take the arm "
-        "gpuwm implements.  Every RUC oracle fixture in "
-        "gpuwm/data/ruc/oracle was generated at EM_CORE==0, so the ported "
-        "arm is the one with evidence behind it; the other has none.  The "
-        "visible consequence is in graupel-bearing convection, where WRF "
-        "sends RUC a separate graupel rate that raises new-snow density "
-        "through rhonewsn and gpuwm sends none.",
-    ),
-    (
         "RUC_soil_ingest_is_wired_but_RUC_is_not_a_registry_profile",
         "The nine-level TSLB/SMOIS a RUC run starts from comes from "
         "gpuwm.ingest.ruc_soil: preprocess_land_surface_soil is the one "
@@ -253,16 +270,6 @@ RUC_RUNTIME_RESTRICTIONS: tuple[tuple[str, str, str], ...] = (
         "(see below).",
     ),
     (
-        "moisture_species_supplied",
-        "QV3D and QC3D only, from the model's own qv and qc.  A dry state "
-        "supplies zeros for both through the physics scratch arrays.",
-        "That is WRF's contract for LSMRUC itself -- it declares no other "
-        "species -- so it is not a divergence at the call.  It IS a "
-        "divergence in combination with the entry above: under EM_CORE==1 "
-        "WRF also hands RUC snowncv and graupelncv, so the frozen species "
-        "reach the LSM through the precipitation arm gpuwm does not take.",
-    ),
-    (
         "no_stochastic_perturbations",
         "spp_lsm=0 and no rstochcol / field_sf arrays are constructed.",
         "The SPP perturbation region is EM_CORE==1-only in LSMRUC and the "
@@ -277,34 +284,6 @@ RUC_RUNTIME_RESTRICTIONS: tuple[tuple[str, str, str], ...] = (
         "mosaic arms, and LSMRUC's irrigation block (:984-1009) is gated on "
         "the same mosaic_lu==1, so the irrigation block is unreachable "
         "wherever SOILVEGIN is.  Neither is transcribed.",
-    ),
-    (
-        "no_lake_bypass",
-        "Lake columns are run as whatever their land-use category says.",
-        "LSMRUC's lakemodel/lakemask bypass (:585-590) is EM_CORE==1-only "
-        "and absent from the pinned object.  gpuwm carries a lakemask but "
-        "RUC does not read it.",
-    ),
-    (
-        "no_fractional_sea_ice",
-        "FRACTIONAL_SEAICE==0.  The sea-ice ALBEDO/EMISS/TSK de-blending "
-        "before the call (module_surface_driver.F:3461-3499) and the "
-        "re-blending after it (:3529-3577) are not transcribed.  The "
-        "unconditional ALBBCK = 0.65 sea-ice override at :3453-3459 IS.",
-        "gpuwm has no fractional sea-ice state, and the de-blend divides by "
-        "XICE.  A column is land, water or fully ice.",
-    ),
-    (
-        "gsw_uses_the_live_albedo",
-        "GSW = SWDOWN*(1-ALBEDO) is evaluated at the surface-call time from "
-        "the albedo RUC itself last wrote.",
-        "WRF builds GSW in the radiation driver "
-        "(module_radiation_driver.F:3660) and the surface driver forwards "
-        "whatever that left, so WRF's GSW carries the albedo from the last "
-        "RADIATION call, not the last LSM call.  RUC updates ALBEDO every "
-        "surface call (snow cover), so the two differ by the albedo drift "
-        "over at most radt.  gpuwm's choice is the fresher of the two; it "
-        "is a divergence either way and is recorded as one.",
     ),
     (
         "p8w_is_the_layer_mid_pressure",
@@ -637,6 +616,7 @@ def ruc_lsm_step(
     atmosphere: Mapping[str, object],
     *,
     params: RucRuntimeParameters,
+    precipitation: SurfacePrecipitationForcing,
     dt: float,
     itimestep: int,
     mosaic_lu: int,
@@ -646,11 +626,10 @@ def ruc_lsm_step(
 ) -> dict[str, int]:
     """One ``CASE (RUCLSMSCHEME)`` arm.  Mutates ``fields`` in place.
 
-    Returns a small census -- land, water and sea-ice column counts -- so a
-    test can tell "RUC ran" apart from "RUC ran on any land".  The counts are
-    reconstructed from the same masks the driver dispatches on
-    (``module_sf_ruclsm.F:824`` and ``:851``); RUC skips nothing, so they sum
-    to the whole grid.
+    Returns a small census -- land, water, lake and sea-ice column counts --
+    so a test can tell "RUC ran" apart from "RUC ran on any land".  The
+    counts are reconstructed from the same masks the driver dispatches on
+    (``module_sf_ruclsm.F:823-826``, ``:828`` and ``:855``).
     """
     import cupy as cp
 
@@ -690,8 +669,10 @@ def ruc_lsm_step(
 
     names_2d = tuple(RUC_STATE_BINDING) + (
         "swdown", "glw", "chs", "chs2", "cqs2", "flqc", "flhc", "cpm",
+        "qgh",
         "albbck", "xland", "xice", "tmn", "shdmin", "shdmax", "vegfra",
         "rainbl", "sr", "ivgtyp", "isltyp", "psfc", "t2", "th2", "q2",
+        "lakemask", "gsw", *RUC_FRACTIONAL_SEAICE_FIELDS,
         *RUC_DIAGNOSTICS_2D)
     # The surface slab STAYS ON THE CARD.  It used to be copied down here
     # field by field, driven through a host driver and copied back, which at
@@ -710,6 +691,16 @@ def ruc_lsm_step(
     device["albbck"] = cp.where(
         ice, np.float32(SEAICE_ALBEDO_DEFAULT), device["albbck"]
     ).astype(cp.float32)
+    ice_component = ice & (device["xice"] <= np.float32(1.0))
+    ice_fraction = device["xice"]
+    # module_surface_driver.F:3461-3473.  The static optics are grid-cell
+    # blends; LSMRUC must receive the full ice component.
+    device["albedo"] = _ruc_fractional_deblend(
+        device["albedo"], 0.08, ice_fraction, ice_component, arrays=cp)
+    device["emiss"] = _ruc_fractional_deblend(
+        device["emiss"], 0.98, ice_fraction, ice_component, arrays=cp)
+    device["tsk"] = cp.where(
+        ice_component, device["tsk_save"], device["tsk"]).astype(cp.float32)
 
     temperature = cp.ascontiguousarray(atmosphere["temperature"][0])
     qv = cp.ascontiguousarray(atmosphere["qv"][0])
@@ -718,21 +709,22 @@ def ruc_lsm_step(
     dz1 = cp.ascontiguousarray(atmosphere["dz"][0])
     # :3506 -- p_phy, the layer MID pressure, into an argument named p8w.
     p_mid = cp.ascontiguousarray(atmosphere["pressure"][0])
-    # module_radiation_driver.F:3660.  RUC takes ABSORBED shortwave.
-    gsw = (device["swdown"] * (np.float32(1.0) - device["albedo"])).astype(
-        cp.float32)
-
     values = {
         # forcing
         "z3d": dz1, "p8w": p_mid, "t3d": temperature, "qv3d": qv,
         "qc3d": qc, "rho3d": rho,
         "rainbl": device["rainbl"], "frzfrac": device["sr"],
-        "glw": device["glw"], "gsw": gsw, "chs": device["chs"],
+        "glw": device["glw"], "gsw": device["gsw"], "chs": device["chs"],
         "flqc": device["flqc"], "flhc": device["flhc"],
         "albbck": device["albbck"], "xland": device["xland"],
         "xice": device["xice"], "tbot": device["tmn"],
         "shdmin": device["shdmin"], "shdmax": device["shdmax"],
         "vegfra": device["vegfra"],
+        # WRF-ARW/EM_CORE==1 precipitation and lake arguments.
+        "rainncv": precipitation.rain_nonconvective,
+        "snowncv": precipitation.snow_nonconvective,
+        "graupelncv": precipitation.graupel_nonconvective,
+        "lakemask": device["lakemask"],
     }
     for name, argument in RUC_STATE_BINDING.items():
         values[argument] = device[name]
@@ -740,7 +732,8 @@ def ruc_lsm_step(
         values[argument] = device_3d[name]
     missing = [name for name in (RUC_DRIVER_PROFILE_STATE
                                  + RUC_DRIVER_COLUMN_STATE
-                                 + RUC_DRIVER_COLUMN_FORCING)
+                                 + RUC_DRIVER_COLUMN_FORCING
+                                 + RUC_DRIVER_ARW_FORCING)
                if name not in values]
     if missing:
         # A binding table that drifts from the driver's contract is exactly
@@ -753,7 +746,7 @@ def ruc_lsm_step(
     result = ruc_land_surface_step(
         values, dt=float(dt), ktau=int(itimestep), zs=params.zs,
         ivgtyp=device["ivgtyp"], isltyp=device["isltyp"],
-        myj=False, frpcpn=True, rdlai2d=False,
+        myj=False, em_core=1, lakemodel=1, frpcpn=True, rdlai2d=False,
         mosaic_lu=int(mosaic_lu), mosaic_soil=int(mosaic_soil),
         iswater=params.iswater, isice=params.isice,
         xice_threshold=float(XICE_THRESHOLD),
@@ -775,6 +768,26 @@ def ruc_lsm_step(
                         ("ruc_runoff2", result.runoff2)):
         device[name] = cp.ascontiguousarray(
             cp.asarray(local, dtype=cp.float32))
+
+    # module_surface_driver.F:3530-3577.  LSMRUC returns full ice values;
+    # rebuild the grid-cell blend from the open-water component captured by
+    # the fractional surface-layer wrapper.  TSK_SAVE remains ice-only.
+    device["albedo"] = _ruc_fractional_reblend(
+        device["albedo"], np.float32(0.08), ice_fraction, ice_component,
+        arrays=cp)
+    device["emiss"] = _ruc_fractional_reblend(
+        device["emiss"], np.float32(0.98), ice_fraction, ice_component,
+        arrays=cp)
+    for name in ("flhc", "flqc", "cpm", "cqs2", "chs2", "chs",
+                 "qsfc", "qgh", "hfx", "qfx", "lh"):
+        device[name] = _ruc_fractional_reblend(
+            device[name], device[f"{name}_sea"], ice_fraction,
+            ice_component, arrays=cp)
+    device["tsk_save"] = cp.where(
+        ice_component, device["tsk"], device["tsk_save"]).astype(cp.float32)
+    device["tsk"] = _ruc_fractional_reblend(
+        device["tsk"], device["tsk_sea"], ice_fraction, ice_component,
+        arrays=cp)
 
     # :3580-3585.  CQS and CHS are REBUILT from the post-call MAVAIL, and the
     # CHS overwrite persists -- it is the value the next scheme to read CHS
@@ -814,10 +827,14 @@ def ruc_lsm_step(
     for name, array in device_3d.items():
         fields[name][...] = array
 
-    water = device["xland"] - np.float32(1.5) >= np.float32(0.0)
-    seaice = (~water) & (device["xice"] >= np.float32(XICE_THRESHOLD))
-    return {"land": int(cp.count_nonzero(~water & ~seaice)),
+    lake = device["lakemask"] == np.float32(1.0)
+    water = ((device["xland"] - np.float32(1.5) >= np.float32(0.0))
+             & ~lake)
+    seaice = (~water & ~lake) & (
+        device["xice"] >= np.float32(XICE_THRESHOLD))
+    return {"land": int(cp.count_nonzero(~water & ~seaice & ~lake)),
             "water": int(cp.count_nonzero(water)),
+            "lake": int(cp.count_nonzero(lake)),
             "sea_ice": int(cp.count_nonzero(seaice))}
 
 
@@ -949,6 +966,7 @@ __all__ = [
     "RUC_MEASURED_INERT_CARRIERS",
     "RUC_MEASURED_LIVE_CARRIERS",
     "RUC_DIAGNOSTICS_2D",
+    "RUC_FRACTIONAL_SEAICE_FIELDS",
     "RUC_PACKAGE_STATE_FIELDS",
     "RUC_PROFILE_BINDING",
     "RUC_RUNTIME_RESTRICTIONS",

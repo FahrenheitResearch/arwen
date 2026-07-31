@@ -78,6 +78,77 @@ _CANONICAL_SURFACE_FIELDS = frozenset({
 })
 
 
+class StockWrfExportUnsupported(ValueError):
+    """The prepared state is outside what the stock-WRF export represents.
+
+    Every refusal in this module that means "gpuwm can run this, but the
+    unchanged-WRF file set cannot represent it" raises this rather than a
+    bare ``ValueError``: mixed-domain microphysics, a microphysics
+    selector with no WRF Registry inventory, and the physics slice the
+    profile-free compatibility branch requires.
+
+    It exists so a caller can tell export-representability apart from
+    everything else that can go wrong here.  A caller whose product IS
+    the export re-raises it and is unchanged.  A caller that is merely
+    PREPARING a forecast catches it, records the refusal, and proceeds --
+    which physics a domain tree may run is a decision the registry and
+    the acknowledgement gate own, and answering it a second time from a
+    downstream file-format contract is how a registry-reachable,
+    explicitly acknowledged, profile-bound MYNN tree came to be
+    unrunnable from any shipped GFS front door.
+
+    ``unsupported`` carries the named per-selector deltas
+    (``{selector: (observed, required)}``) when there are any, so the
+    refusal a user reads names what to change.
+    """
+
+    def __init__(self, message: str, *,
+                 unsupported: Mapping[str, object] | None = None) -> None:
+        super().__init__(message)
+        self.unsupported = dict(unsupported or {})
+
+
+HIERARCHY_EXPORT_SCHEMA = "gpuwm-native-direct-wrf-hierarchy-export-v1"
+
+#: The three states a hierarchy export can be in.  ``READY`` is a real
+#: manifest with a ``files`` inventory; the other two are documents that
+#: occupy the same slot and answer the same question -- did this
+#: preparation publish unchanged-WRF inputs, and if not, why -- so no
+#: consumer has to distinguish "absent" from "refused" by guessing.
+STOCK_WRF_EXPORT_STATUSES = ("READY", "NOT_REQUESTED", "REFUSED")
+
+
+def stock_wrf_export_not_requested() -> dict[str, object]:
+    """The export slot for a preparation that never asked for an export."""
+
+    return {
+        "schema": HIERARCHY_EXPORT_SCHEMA,
+        "status": "NOT_REQUESTED",
+        "reason": "the caller did not request a stock-WRF export",
+    }
+
+
+def stock_wrf_export_refused(
+        error: StockWrfExportUnsupported) -> dict[str, object]:
+    """The export slot for an export refused on representability.
+
+    The message is the export gate's own, unchanged -- it already names
+    the selector deltas -- and ``unsupported`` repeats them as data so a
+    receipt reader does not have to parse prose.  Tuples are flattened to
+    lists so this document equals its own JSON round trip.
+    """
+
+    return {
+        "schema": HIERARCHY_EXPORT_SCHEMA,
+        "status": "REFUSED",
+        "reason": str(error),
+        "unsupported": {
+            name: (list(value) if isinstance(value, tuple) else value)
+            for name, value in error.unsupported.items()
+        },
+    }
+
+
 def _direct_export_soil_geometry(
         sf_surface_physics: int, num_soil_layers: int,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -1555,10 +1626,13 @@ def export_prepared_wrf_hierarchy(
         transition = resolve_microphysics_transition(
             by_id[domain.parent_id].run, domain.run)
         if transition.mixed:
-            raise ValueError(
+            raise StockWrfExportUnsupported(
                 "mixed-domain microphysics is a GPUWM extension and is not "
                 "stock-WRF exportable; choose one uniform stock-WRF "
-                "mp_physics selector explicitly")
+                "mp_physics selector explicitly",
+                unsupported={"mp_physics": (
+                    int(domain.run.mp_physics),
+                    int(by_id[domain.parent_id].run.mp_physics))})
 
     pairs = _validated_hierarchy(exp, tuple(domain_artifacts))
     expected_grids = tuple(grids_from_projection_config(exp))
@@ -1661,7 +1735,7 @@ def export_prepared_wrf_hierarchy(
             if "forcing_offsets_seconds" in root_manifest
             else "forcing_hours")
         manifest = {
-            "schema": "gpuwm-native-direct-wrf-hierarchy-export-v1",
+            "schema": HIERARCHY_EXPORT_SCHEMA,
             "status": "READY",
             "valid_time": _date_text(valid_time),
             "boundary_interval_seconds": boundary_interval_seconds,
@@ -1753,6 +1827,8 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
                         overwrite: bool = False,
                         physics_profile: str | None = None,
                         expert_acknowledgements: Sequence[str] = (),
+                        acknowledgement_provenance: Mapping[
+                            str, object] | None = None,
                         ) -> dict[str, object]:
     cache = PreparedCache(Path(prepared_cache))
     static_path = Path(static_cache)
@@ -1773,13 +1849,16 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
 
         physics_selection = validate_single_domain_physics_profile(
             physics_profile, config=cfg,
-            expert_acknowledgements=tuple(expert_acknowledgements))
+            expert_acknowledgements=tuple(expert_acknowledgements),
+            acknowledgement_provenance=acknowledgement_provenance)
     try:
         physics_inventory = stock_wrf_physics_inventory(
             cfg.get("mp_physics"))
     except (TypeError, ValueError) as error:
-        raise ValueError(
-            f"unsupported direct-export microphysics: {error}") from None
+        raise StockWrfExportUnsupported(
+            f"unsupported direct-export microphysics: {error}",
+            unsupported={"mp_physics": (cfg.get("mp_physics"), None)},
+        ) from None
     contract_bundle = _physics_contract_bundle(
         _load_contract(), physics_inventory.mp_physics)
     required = {
@@ -1803,7 +1882,9 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
                 for name, expected in required.items()
                 if cfg.get(name) != expected}
     if mismatch:
-        raise ValueError(f"unsupported direct-export configuration: {mismatch}")
+        raise StockWrfExportUnsupported(
+            f"unsupported direct-export configuration: {mismatch}",
+            unsupported=mismatch)
     interval_indices = _forcing_interval_indices(
         cache, boundary_interval_seconds)
     _forcing_offsets, forcing_key = _forcing_offsets_from_identity(identity)
@@ -1963,7 +2044,7 @@ def main() -> None:
         "--physics-profile",
         help="registered fixed physics template carried by the prepared cache")
     parser.add_argument(
-        "--expert-acknowledgement", action="append", default=[],
+        "--ack", action="append", default=[],
         help="registry-owned expert acknowledgement id; repeat as needed")
     args = parser.parse_args()
     valid_time = (datetime.strptime(args.valid_time, "%Y-%m-%d_%H:%M:%S")
@@ -1978,8 +2059,7 @@ def main() -> None:
             ("--static-cache", args.static_cache),
             ("--geometry-receipt", args.geometry_receipt),
             ("--physics-profile", args.physics_profile),
-            ("--expert-acknowledgement",
-             args.expert_acknowledgement or None),
+            ("--ack", args.ack or None),
         ) if value is not None]
         if missing or incompatible:
             parser.error(
@@ -2011,7 +2091,10 @@ def main() -> None:
             boundary_interval_seconds=args.boundary_interval_seconds,
             overwrite=args.overwrite,
             physics_profile=args.physics_profile,
-            expert_acknowledgements=tuple(args.expert_acknowledgement))
+            expert_acknowledgements=tuple(args.ack),
+            acknowledgement_provenance={
+                value: ["--ack"] for value in args.ack
+            })
     print(json.dumps(manifest, indent=2, sort_keys=True))
 
 

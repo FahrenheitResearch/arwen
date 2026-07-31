@@ -3455,13 +3455,14 @@ void mynn_driver_exchange_columns(
 // ===========================================================================
 
 // :453-475.  WRF hands the PBL mixing ratios; MYNN wants specific values.
-// The same (1 + qv) divides all three, so a caller cannot use a per-species
+// The same (1 + qv) divides all four, so a caller cannot use a per-species
 // denominator by accident.
 extern "C" __global__
 void mynn_wrapper_to_specific(
     const real* __restrict__ qv, const real* __restrict__ qc,
-    const real* __restrict__ qi, real* __restrict__ sqv,
-    real* __restrict__ sqc, real* __restrict__ sqi, int count)
+    const real* __restrict__ qi, const real* __restrict__ qs,
+    real* __restrict__ sqv, real* __restrict__ sqc,
+    real* __restrict__ sqi, real* __restrict__ sqs, int count)
 {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= count) return;
@@ -3469,6 +3470,7 @@ void mynn_wrapper_to_specific(
     sqv[index] = MYNN_DIV(qv[index], denominator);
     sqc[index] = MYNN_DIV(qc[index], denominator);
     sqi[index] = MYNN_DIV(qi[index], denominator);
+    sqs[index] = MYNN_DIV(qs[index], denominator);
 }
 
 // :587-607.  The moisture tendencies and the subgrid cloud water come back

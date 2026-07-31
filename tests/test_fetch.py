@@ -1038,6 +1038,57 @@ def test_front_door_manifest_feeds_the_gfs_verifier_unedited(
     assert verified["schema"] == gfs_direct.INPUT_MANIFEST_SCHEMA
 
 
+@pytest.mark.gpu  # `gpuwm domain` sizes against CuPy, like the ack test
+def test_front_door_command_carries_the_profile_the_config_matches(
+        tmp_path, monkeypatch, capsys):
+    """The printed rw-wps line names --physics-profile when it can.
+
+    rw-wps spells the flag optional, but absent it substitutes
+    WSM6_PROFILE_ID and compares the experiment's physics against THAT,
+    so a pasted command with no profile refuses every config except a
+    wsm6 one -- including the Morrison worked example FIRST-LIGHT.md
+    itself walks through.  Found by running the documented chain end to
+    end; the profile is derived through the same authority the front
+    door asks (identify_single_domain_profile), so the printed command
+    can never name a profile the runner would then reject.
+    """
+    from gpuwm.cli import main as cli_main
+    from gpuwm.experiment import load_experiment
+    from gpuwm.physics_compat import (MORRISON_PROFILE_ID,
+                                      identify_single_domain_profile)
+
+    monkeypatch.setattr(gfs_transport, "_download", _fake_gfs_download)
+    out = tmp_path / "gfs"
+    assert cli.main(["fetch", "--source", "gfs", "--cycle",
+                     "2026-07-28T06", "--hours", "3", "--area",
+                     "30,-100,40,-90", "--out", str(out)]) == 0
+
+    config = tmp_path / "profiled" / "case.toml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    assert cli_main(["domain", "--point=39.7,-96.6", "--card", "24gb",
+                     "--ladder", "12", "--source", "gfs",
+                     "--cycle", "2026-07-28T06",
+                     "--physics-profile", MORRISON_PROFILE_ID,
+                     "--out", str(config)]) == 0
+    # Guard against a vacuous pass: the emitted config must genuinely
+    # resolve to the shipped profile before the printed line is judged.
+    matched = identify_single_domain_profile(
+        load_experiment(config).root.run)
+    assert matched == MORRISON_PROFILE_ID
+
+    bridge = tmp_path / "gfs_grib2_bridge.exe"
+    bridge.write_bytes(b"MZ fake bridge payload")
+    capsys.readouterr()
+    rc = cli.main([
+        "fetch", "--source", "gfs", "--out", str(out),
+        "--author-front-door-manifest", "--bridge", str(bridge),
+        "--wps-namelist", str(config.with_suffix(".namelist.wps")),
+        "--experiment-config", str(config)])
+    assert rc == 0
+    printed = capsys.readouterr().out
+    assert f"--physics-profile {MORRISON_PROFILE_ID}" in printed
+
+
 def test_front_door_author_only_mode_converts_an_existing_fetch(
         tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(gfs_transport, "_download", _fake_gfs_download)

@@ -107,7 +107,6 @@ class AnalyticClearSkyRadiation:
 
     def __call__(self, *, atmosphere, fields, state, cfg):
         """Return a radiation-slot result at the state's current time."""
-        del fields, cfg
         elapsed = float(state.elapsed_seconds)
         theta = atmosphere["theta"]
         pressure = atmosphere["pressure"]
@@ -124,6 +123,19 @@ class AnalyticClearSkyRadiation:
         swdown, glw = analytic_clear_sky_forcing(
             valid_time, self.latitude_deg, self.longitude_deg, temperature,
             atmosphere["qv"][0], pressure[0])
+        # The analytic flux remains this adapter's approximation, but the
+        # surface carrier follows WRF's radiation-clock geometry: only the
+        # hour angle is shifted by half the radiation interval.
+        from gpuwm.core.dudhia import wrf_solar_geometry
+        from gpuwm.core.physics import (
+            _model_clock_dt, _physics_interval_seconds)
+        radt_minutes = cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes
+        interval = _physics_interval_seconds(
+            radt_minutes, _model_clock_dt(cfg))
+        coszen, _ = wrf_solar_geometry(
+            valid_time, self.latitude_deg, self.longitude_deg,
+            hour_offset_seconds=0.5 * interval)
+        gsw = swdown * (cp.float32(1.0) - fields["albedo"])
 
         # Imported lazily to keep the generic result contract in physics.py
         # without creating a module-import cycle.
@@ -133,7 +145,9 @@ class AnalyticClearSkyRadiation:
             rthratenlw=zero_heating,
             rthratensw=zero_heating,
             swdown=swdown,
-            glw=glw)
+            glw=glw,
+            gsw=gsw,
+            coszen=coszen)
         self.update_count += 1
         return result
 

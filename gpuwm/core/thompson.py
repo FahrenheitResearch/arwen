@@ -16,6 +16,7 @@ from gpuwm.core.state import DTYPE
 _COLUMN_TPB = 32
 _SHALLOW_KMAX = 64
 _KMAX = 256
+VERTICAL_LEVEL_BOUNDS = (2, _KMAX)
 
 
 def _arrays_overlap(left, right) -> bool:

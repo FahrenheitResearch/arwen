@@ -2600,6 +2600,7 @@ def _lsmruc_call(field, case):
         "ivgtyp": np.asarray([int(field["ivgtyp"][0, case])], dtype=np.int32),
         "isltyp": np.asarray([int(field["isltyp"][0, case])], dtype=np.int32),
         "myj": bool(field["myj"][0, case]),
+        "em_core": 0,
         "frpcpn": bool(field["frpcpn"][0, case]),
         "rdlai2d": bool(field["rdlai2d"][0, case]),
         "mosaic_lu": int(field["mosaic_lu"][0, case]),
@@ -2792,6 +2793,10 @@ def test_lsmruc_rejects_the_configurations_its_leaves_do_not_support():
     bad["zs"] = np.linspace(0.0, 2.0, 9).astype(np.float32)
     with pytest.raises(ValueError):
         ruc_land_surface_step(values, **bad)
+    arw_default = dict(keywords)
+    del arw_default["em_core"]
+    with pytest.raises(TypeError, match="missing RUC ARW driver inputs"):
+        ruc_land_surface_step(values, **arw_default)
 
 
 def test_lsmruc_does_not_mutate_caller_arrays():

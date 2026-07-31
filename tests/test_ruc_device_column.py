@@ -68,7 +68,7 @@ _PRODUCTION_D04_COLUMNS = 600 * 600
 def _run(values, ivgtyp, isltyp, *, ktau=2, leaves=None, stages=None, dt=12.0):
     return ruc_land_surface_step(
         values, dt=dt, ktau=ktau, zs=_PARAMS.zs, ivgtyp=ivgtyp,
-        isltyp=isltyp, ilnb=DEFINED_ILNB, ilnb_chain=False, c1sn=C1SN,
+        isltyp=isltyp, em_core=0, ilnb=DEFINED_ILNB, ilnb_chain=False, c1sn=C1SN,
         c2sn=C2SN, isncovr_opt=ISNCOVR_OPT,
         mminlu=_PARAMS.dataset_identifier, parameters=_PARAMS.bundle,
         leaves=leaves, stages=stages)
@@ -418,6 +418,7 @@ def _resident(values, ivgtyp, isltyp, *, ktau=2, dt=12.0):
     return ruc_land_surface_step(
         _to_device(values), dt=dt, ktau=ktau, zs=_PARAMS.zs,
         ivgtyp=cp.asarray(ivgtyp), isltyp=cp.asarray(isltyp),
+        em_core=0,
         ilnb=DEFINED_ILNB, ilnb_chain=False, c1sn=C1SN, c2sn=C2SN,
         isncovr_opt=ISNCOVR_OPT, mminlu=_PARAMS.dataset_identifier,
         parameters=_PARAMS.bundle,
@@ -581,6 +582,7 @@ def test_the_resident_driver_refuses_the_ilnb_chain() -> None:
         ruc_land_surface_step(
             _to_device(values), dt=12.0, ktau=2, zs=_PARAMS.zs,
             ivgtyp=cp.asarray(ivgtyp), isltyp=cp.asarray(isltyp),
+            em_core=0,
             ilnb=DEFINED_ILNB, ilnb_chain=True, c1sn=C1SN, c2sn=C2SN,
             isncovr_opt=ISNCOVR_OPT, mminlu=_PARAMS.dataset_identifier,
             parameters=_PARAMS.bundle,

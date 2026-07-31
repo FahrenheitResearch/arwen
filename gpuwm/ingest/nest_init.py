@@ -634,7 +634,8 @@ def _updated_real_result(original: RealInitResult,
         total_geopotential=_host(state.phb + state.php),
         total_specific_volume=_host(state.alt),
         integrated_moisture_pressure=original.integrated_moisture_pressure,
-        hypsometric_opt=original.hypsometric_opt)
+        hypsometric_opt=original.hypsometric_opt,
+        hydrometeor_initialization=original.hydrometeor_initialization)
 
 
 def _prepare_child_input_on_grid(

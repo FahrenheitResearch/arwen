@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 from gpuwm import __version__
+from gpuwm.explain import add_explain_flag, explain_enabled
 from gpuwm.source_adapters import (
     AdapterStatus,
     get_source_adapter,
@@ -49,6 +50,10 @@ def _parser() -> argparse.ArgumentParser:
         action="version",
         version=f"RW-WPS {__version__}",
     )
+    # The same --explain the gpuwm CLI registers on every subcommand.
+    # rw-wps is a separate entry point with its own parser, so it needs
+    # the flag declared here -- one convention, two front doors.
+    add_explain_flag(parser)
     inventory = parser.add_argument_group("inventory")
     inventory.add_argument(
         "--list-sources",
@@ -235,7 +240,7 @@ def _parser() -> argparse.ArgumentParser:
         help="explicit single-domain GPUWM forecast physics contract",
     )
     parser.add_argument(
-        "--expert-acknowledgement",
+        "--ack",
         action="append",
         default=[],
         help="registry-owned expert physics acknowledgement id; repeatable",
@@ -322,6 +327,17 @@ def _parser() -> argparse.ArgumentParser:
         help="tab-separated HOUR and GFS GRIB2 path inventory",
     )
     gfs.add_argument("--cycle", help="GFS cycle in YYYY-MM-DD_HH:MM:SS form")
+    # store_true with a falsy default, not store_false/default=True:
+    # `_active_action_arguments` reads every non-None, non-False namespace
+    # entry as a supplied argument, so a flag whose DEFAULT is True makes
+    # `--validate-hrrr-domain` and its siblings believe the caller combined
+    # them with something.  Same shape as --author-only for the same reason.
+    gfs.add_argument(
+        "--no-stock-wrf-export",
+        action="store_true",
+        help="prepare the forecast only, and do not attempt the bonus "
+             "unchanged-WRF wrfinput/wrfbdy export of a domain tree",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -595,8 +611,7 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
             "--preprocess-workers": args.preprocess_workers,
             "--source-format": args.source_format,
             "--physics-profile": args.physics_profile,
-            "--expert-acknowledgement":
-                args.expert_acknowledgement or None,
+            "--ack": args.ack or None,
             "--mapping": args.mapping,
             "--descriptor": args.descriptor,
             "--author-mapping": args.author_mapping,
@@ -675,6 +690,7 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
         "--grib2-inventory": args.grib2_inventory,
         "--grib2-dump": args.grib2_dump,
         "--hierarchy-workers": args.hierarchy_workers,
+        "--no-stock-wrf-export": args.no_stock_wrf_export or None,
     }
     errors.extend(
         f"{flag} is not used by --source hrrr"
@@ -724,7 +740,7 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
                 WSM6_PROFILE_ID
                 if args.physics_profile is None else args.physics_profile,
                 expert_acknowledgements=tuple(
-                    args.expert_acknowledgement))
+                    args.ack))
         except ValueError as exc:
             errors.append(str(exc))
     return errors
@@ -751,7 +767,7 @@ def _required_era5_args(args: argparse.Namespace) -> list[str]:
     incompatible = {
         "--source-root": args.source_root,
         "--physics-profile": args.physics_profile,
-        "--expert-acknowledgement": args.expert_acknowledgement or None,
+        "--ack": args.ack or None,
         "--forecast-start-hour": args.forecast_start_hour,
         "--forecast-end-hour": args.forecast_end_hour,
         "--static-cache": args.static_cache,
@@ -779,6 +795,7 @@ def _required_era5_args(args: argparse.Namespace) -> list[str]:
         "--provenance": args.provenance,
         "--grib2-inventory": args.grib2_inventory,
         "--grib2-dump": args.grib2_dump,
+        "--no-stock-wrf-export": args.no_stock_wrf_export or None,
     }
     errors.extend(
         f"{flag} is not used by --source era5"
@@ -880,12 +897,29 @@ def _required_gfs_args(args: argparse.Namespace) -> list[str]:
                 or parsed.hour not in {0, 6, 12, 18}
             ):
                 errors.append("--cycle must be an exact 00/06/12/18 UTC GFS cycle")
-    from gpuwm.physics_compat import validate_single_domain_physics_profile
+    from gpuwm.physics_compat import (
+        acknowledgement_delivery,
+        validate_single_domain_physics_profile,
+    )
+    toml_acknowledgements = ()
+    if args.experiment_config is not None:
+        config_path = Path(args.experiment_config)
+        if config_path.is_file():
+            try:
+                from gpuwm.experiment import load_experiment
+                toml_acknowledgements = load_experiment(
+                    config_path).acknowledgements
+            except (OSError, ValueError):
+                # The direct front door owns the full experiment diagnostic.
+                # Do not replace it with an acknowledgement side-effect here.
+                pass
+    acknowledgements, _ = acknowledgement_delivery(
+        flag=tuple(args.ack), toml=toml_acknowledgements)
     try:
         validate_single_domain_physics_profile(
             WSM6_PROFILE_ID
             if args.physics_profile is None else args.physics_profile,
-            expert_acknowledgements=tuple(args.expert_acknowledgement))
+            expert_acknowledgements=acknowledgements)
     except ValueError as exc:
         errors.append(str(exc))
     return errors
@@ -901,8 +935,7 @@ def _required_twentycr_args(args: argparse.Namespace) -> list[str]:
         incompatible = {
             "--source-manifest": args.source_sha256s,
             "--physics-profile": args.physics_profile,
-            "--expert-acknowledgement":
-                args.expert_acknowledgement or None,
+            "--ack": args.ack or None,
             "--forecast-start-hour": args.forecast_start_hour,
             "--forecast-end-hour": args.forecast_end_hour,
             "--source-manifest-sha256": args.source_sha256s_sha256,
@@ -947,7 +980,7 @@ def _required_twentycr_args(args: argparse.Namespace) -> list[str]:
     incompatible = {
         "--source-format": args.source_format,
         "--physics-profile": args.physics_profile,
-        "--expert-acknowledgement": args.expert_acknowledgement or None,
+        "--ack": args.ack or None,
         "--forecast-start-hour": args.forecast_start_hour,
         "--forecast-end-hour": args.forecast_end_hour,
         "--mapping": args.mapping,
@@ -978,6 +1011,7 @@ def _required_twentycr_args(args: argparse.Namespace) -> list[str]:
         "--source-orography": args.source_orography,
         "--source-orography-variable": args.source_orography_variable,
         "--domain-source-orography": args.domain_source_orography,
+        "--no-stock-wrf-export": args.no_stock_wrf_export or None,
     }
     errors.extend(
         f"{flag} is not used by --source 20crv3"
@@ -1047,7 +1081,7 @@ def _required_mapped_args(args: argparse.Namespace) -> list[str]:
     incompatible = {
         "--source-root": args.source_root,
         "--physics-profile": args.physics_profile,
-        "--expert-acknowledgement": args.expert_acknowledgement or None,
+        "--ack": args.ack or None,
         "--forecast-start-hour": args.forecast_start_hour,
         "--forecast-end-hour": args.forecast_end_hour,
         "--static-cache": args.static_cache,
@@ -1069,6 +1103,7 @@ def _required_mapped_args(args: argparse.Namespace) -> list[str]:
         "--domain-source-orography": args.domain_source_orography,
         "--gfs-series": args.gfs_series,
         "--cycle": args.cycle,
+        "--no-stock-wrf-export": args.no_stock_wrf_export or None,
     }
     errors.extend(
         f"{flag} is not used by --source mapped"
@@ -1194,9 +1229,8 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
     if args.cpu_preprocess_bridge is not None:
         command.extend((
             "--cpu-preprocess-bridge", str(args.cpu_preprocess_bridge)))
-    for acknowledgement in args.expert_acknowledgement:
-        command.extend((
-            "--expert-acknowledgement", acknowledgement))
+    for acknowledgement in args.ack:
+        command.extend(("--ack", acknowledgement))
     return command
 
 
@@ -1270,6 +1304,8 @@ def _gfs_command(args: argparse.Namespace) -> list[str]:
         # -- a route with no profile whitelist at all -- came to be
         # measured against a single-domain profile it never asked for.
         command.extend(("--physics-profile", args.physics_profile))
+    if args.no_stock_wrf_export:
+        command.append("--no-stock-wrf-export")
     if args.static_input is not None:
         command.extend(("--static-input", str(args.static_input)))
         command.extend(("--static-receipt", str(args.static_receipt)))
@@ -1278,9 +1314,8 @@ def _gfs_command(args: argparse.Namespace) -> list[str]:
         command.extend(("--geog-root", str(args.geog_root)))
     if args.hierarchy_workers is not None:
         command.extend(("--hierarchy-workers", str(args.hierarchy_workers)))
-    for acknowledgement in args.expert_acknowledgement:
-        command.extend((
-            "--expert-acknowledgement", acknowledgement))
+    for acknowledgement in args.ack:
+        command.extend(("--ack", acknowledgement))
     return command
 
 
@@ -1693,13 +1728,22 @@ def main(argv: list[str] | None = None) -> int:
             + (f": {reason}" if reason else ""),
             file=sys.stderr,
         )
-        print(
-            "A readable GRIB/NetCDF product is not treated as a complete WRF state. "
-            "This adapter must declare field, level, cadence, and missing-state "
-            "policies before it can run; unchanged stock-wrf evidence is a "
-            "separate certification gate.",
-            file=sys.stderr,
-        )
+        # The mechanism paragraph, on the project's one layering
+        # convention: the line above already named the source, the
+        # status and the adapter's own reason, which is what a reader
+        # acts on.  This says why the bar is where it is, and waits to
+        # be asked.
+        if explain_enabled(args):
+            print(
+                "A readable GRIB/NetCDF product is not treated as a complete WRF state. "
+                "This adapter must declare field, level, cadence, and missing-state "
+                "policies before it can run; unchanged stock-wrf evidence is a "
+                "separate certification gate.",
+                file=sys.stderr,
+            )
+        else:
+            print("  (run rw-wps --explain for why this bar exists)",
+                  file=sys.stderr)
         return EXIT_CONFIG
 
     runners = {

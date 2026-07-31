@@ -383,7 +383,10 @@ def run(args) -> dict[str, object]:
         valid_time=valid_time, cen_lat=float(attrs["CEN_LAT"]),
         mminlu=str(attrs["MMINLU"]), iswater=int(attrs["ISWATER"]),
         islake=int(attrs["ISLAKE"]), isice=int(attrs["ISICE"]),
-        fractional_seaice=True)
+        fractional_seaice=True,
+        # real.exe's landmask/soil-category reconciliation decides a
+        # disagreeing column from its soil temperature, then its SST.
+        soil_temperature=soil.soil_temperature)
     vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], valid_time)
     lai = monthly_interp_to_date(static["LAI12M"], valid_time)
     lat, lon = grid.latlon_mass()

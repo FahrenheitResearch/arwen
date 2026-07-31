@@ -173,12 +173,25 @@ def test_a_gdas_request_past_the_certified_span_refuses_up_front(tmp_path,
     err = capsys.readouterr().err
     # Says what IS certified, and that f012 is not it.
     assert "f009" in err and "f012" in err
-    # ...says why the boundary is where it is...
-    assert "gfs_grib2_bridge" in err
-    # ...and says what to reach for instead.
+    # ...and says what to reach for instead, at the default width,
+    # because a remedy never moves behind a flag.
     assert "--hours 0..9" in err
     assert "--source gfs" in err
+    # The mechanism -- which binary selects by exact field identity --
+    # is one flag away, and the refusal says so.
+    assert "gfs_grib2_bridge" not in err
+    assert "--explain" in err
     # Nothing was created, because nothing was attempted.
+    assert not out.exists()
+
+    rc = cli.main(["fetch", "--source", "gdas", "--cycle", "2026-07-29T12",
+                   "--hours", "12", "--area", "30,-100,40,-90",
+                   "--out", str(out), "--explain"])
+    assert rc == 2
+    explained = capsys.readouterr().err
+    # ...says why the boundary is where it is, in its original wording.
+    assert "gfs_grib2_bridge" in explained
+    assert "--hours 0..9" in explained
     assert not out.exists()
 
 

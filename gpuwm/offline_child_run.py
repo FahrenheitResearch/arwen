@@ -227,7 +227,10 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
         valid_time=start_time, cen_lat=float(np.mean(lat)),
         mminlu=str(identity["MMINLU"]), iswater=int(identity["ISWATER"]),
         islake=int(identity["ISLAKE"]), isice=int(identity["ISICE"]),
-        isoilwater=int(identity["ISOILWATER"]))
+        isoilwater=int(identity["ISOILWATER"]),
+        # real.exe's landmask/soil-category reconciliation decides a
+        # disagreeing column from its soil temperature, then its SST.
+        soil_temperature=fields["TSLB"], sst=fields.get("SST"))
     driver = initialize_physics(
         child, cfg, landuse=landuse, tsk=fields["TSK"],
         soil_temperature=fields["TSLB"], soil_moisture=fields["SMOIS"],

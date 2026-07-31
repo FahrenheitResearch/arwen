@@ -306,6 +306,7 @@ def _call_arguments(
         "dt": float(field["dt"][0, case]),
         "ktau": int(field["ktau"][0, case]),
         "myj": bool(field["myj"][0, case]),
+        "em_core": 0,
         "frpcpn": bool(field["frpcpn"][0, case]),
         "rdlai2d": bool(field["rdlai2d"][0, case]),
         "mosaic_lu": int(field["mosaic_lu"][0, case]),

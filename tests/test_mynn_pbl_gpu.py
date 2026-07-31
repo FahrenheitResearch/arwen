@@ -550,8 +550,12 @@ def test_mynn_tendencies_cuda_reject_mass_flux_and_nondefault_knobs():
             mynn_tendencies_nomf_cuda(inputs, **{knob: bad})
     with pytest.raises(ValueError, match="FLAG_QC and FLAG_QI"):
         mynn_tendencies_nomf_cuda(inputs, flag_qc=False)
-    with pytest.raises(ValueError, match="FLAG_QS"):
-        mynn_tendencies_nomf_cuda(inputs, flag_qs=True)
+    baseline = mynn_tendencies_nomf_cuda(inputs)
+    with_snow_flag = mynn_tendencies_nomf_cuda(inputs, flag_qs=True)
+    for name in vars(baseline):
+        cp.testing.assert_array_equal(
+            getattr(with_snow_flag, name), getattr(baseline, name),
+        )
     forced = dict(inputs)
     forced["s_awthl"] = forced["s_awthl"] + 1.0
     with pytest.raises(ValueError, match="s_awthl"):

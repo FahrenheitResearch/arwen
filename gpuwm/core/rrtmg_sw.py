@@ -91,6 +91,7 @@ NMOL = 7
 JPBAND = 29
 JPB1, JPB2 = 16, 29
 RRSW_SCON = F(1.36822e+03)
+MAX_RADIATION_LAYERS = 64
 
 NG_BAND = (16,) * 14                                   # ng(16:29)
 NSPA = (9, 9, 9, 9, 1, 9, 9, 1, 9, 1, 0, 1, 9, 1)      # nspa(16:29)
@@ -2891,7 +2892,7 @@ class CudaSW:
         self.module.compile()
         self.tab_gpu = cp.asarray(packed)
         self.ngb_gpu = cp.asarray(np.asarray(tab.ngb, dtype=np.int32))
-        self.max_nlay = 63   # RSW_MAXLAY - 1 in the .cu
+        self.max_nlay = MAX_RADIATION_LAYERS - 1
 
     def _k(self, name):
         return self.module.get_function(name)

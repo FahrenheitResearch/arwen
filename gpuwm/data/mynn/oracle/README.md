@@ -293,28 +293,32 @@ worst case 80 and 84 ULP. Substituting the host `atanf` through `ctypes`
 drives all four numbers to zero, which is the evidence for the diagnosis.
 
 `driver.csv` pins `mynn_bl_driver` (`module_bl_mynn.F:360-1453`) itself —
-the assembled scheme, not a leaf. A four-column block is handed to the
+the assembled scheme, not a leaf. A five-column block is handed to the
 unmodified driver twice over the same atmosphere: first with
 `initflag=1`, which runs the `mym_initialize` cold start at `:658-857`,
 then with `initflag=0` consuming the state the first call produced. Both
 the incoming and the outgoing state are recorded per step, so each step
 reproduces from its own rows. The columns are convective land, marine
 cumulus (ocean current, water `GET_PBLH` branch), stable land (`DMP_mf`
-deactivates: `ktop_plume=0`, `maxmf=0`) and a deep cloudy column with
-resolved liquid and ice on a 1 km grid. Option identity is the WRF
+deactivates: `ktop_plume=0`, `maxmf=0`), a deep cloudy column with
+resolved liquid and ice on a 1 km grid, and `snow_anvil`, the same deep
+column with snow as its only frozen species. `FLAG_QS=.TRUE.` on the WRF
+call and every row records `sqs3d`, so this fixture exercises the live
+`mym_condensation` snow path directly. Option identity is otherwise the WRF
 registry default for `bl_pbl_physics=5`. Harness SHA-256
-`90b54a4a37488b769544b1c3bb8c77c4f556da7eb1b173086000a3b309a2d644`;
-the 379,055-byte CSV SHA-256
-`f4ebad55d44b66f775cd1262d47d503b229f478c85ca0bc7e4e5c4694441bcaa`.
+`8668f0c74168c34730bffabe5656693f209ebad5dc3a1a9dd1f3f92e32c18a03`;
+the 481,133-byte CSV SHA-256
+`f608d456eaa21878491985c3ed4d5bde70896b452f3eb9b71076d6466fdbf955`.
 
 Result, measured and not rounded off:
 
 - **step 2, the warm start, is bitwise on every field of every column** —
   all 19 profiles the driver writes back, `pblh`, `rmol`, `maxwidth`,
   `maxmf`, `ztop_plume`, and both integer indices;
-- step 1 is bitwise on three of the four columns;
-- the fourth, `cloudy_deep`, carries an **open residue**. It is still
-  bitwise there on `pblh`, `kpbl`, `rmol`, `qc_bl`, `qi_bl`,
+- step 1 is bitwise on three of the five columns;
+- the two deep-cloud columns, `cloudy_deep` and `snow_anvil`, carry an
+  **open residue**. They are still bitwise on `pblh`, `kpbl`, `rmol`,
+  `qc_bl`, `qi_bl`,
   `cldfra_bl`, `maxwidth`, `maxmf`, `ztop_plume`, `ktop_plume` and
   `dozone`; the divergence first appears in `el`/`sh`/`sm`, i.e. in
   `mym_turbulence`'s output, at 1.6e-3 relative, and everything
@@ -324,32 +328,28 @@ That residue is not a transcendental floor and is not accounted for. A
 standalone Fortran reproduction of the driver body — `get_pblh`,
 `scale_aware`, `mym_initialize`, `mym_condensation`, `DMP_mf`,
 `mym_turbulence`, same inputs, same order — agrees with the port bit for
-bit on all four columns, including `el`, `sm`, `sh`, `dfm` and `dfh` on
+bit on all four original columns, including `el`, `sm`, `sh`, `dfm` and `dfh` on
 `cloudy_deep`. So neither the leaves nor the sequencing as the port
 implements it can explain it: something the real `mynn_bl_driver` does on
 the cold-start path is not being reproduced, and it only surfaces on the
-column carrying resolved condensate. The budgets in
+columns carrying resolved condensate. The budgets in
 `tools/mynn_pbl_wrf461_oracle/validate_driver_oracle.py` are the measured
 worst case so a regression still trips; they are not permission.
 
 `driver.csv` is the first fixture in this directory that exercises the
-scheme end to end. It still does not admit `bl_pbl_physics=5`: the
-runtime selector, the restart identity and the GPU driver are absent.
+scheme end to end. The runtime and GPU-driver gates consume this fixture;
+the remaining validation limitation is the already-published absence of a
+full ArWen/WRF forecast-trajectory comparison for `bl_pbl_physics=5`.
 
-**Coverage gap: no snow.** `run_driver.F90:101` pins `flag_qs = .false.`
-and `:205` zeroes `sqs3d`, so no row of `driver.csv` carries a snow
-mixing ratio. That is why the port's `qs -> kzero` substitution at the
-`mym_condensation` call cannot be replaced by the real `sqs` under this
-fixture: there is nothing to check the plumbing against. WRF sets
-`FLAG_QS` for `mp_physics` 6, 8, 10 and 18, so this is a gap against every
-snow-bearing microphysics rather than against an exotic option. The
-deviation it leaves is measured — against WRF's own `condensation.csv`
-row, which *does* carry snow — in
-`tests/test_mynn_pbl.py::test_the_withheld_snow_species_deviation_is_bounded`,
-and the restriction is published in the physics registry. Closing it needs
-one new driver-oracle case with `flag_qs = .true.` and a nonzero `sqs3d`;
-adding the plumbing first would be a fidelity claim with no oracle behind
-it.
+**Snow coverage closed.** `run_driver.F90` now pins `flag_qs = .true.` and
+the `snow_anvil` rows carry nonzero `sqs3d` with zero `sqi3d` above the
+inversion. `test_the_snow_species_path_is_exact_against_the_wrf_driver_oracle`
+in `tests/test_mynn_pbl.py` requires `QC_BL`, `QI_BL`, and `CLDFRA_BL` to
+match the unmodified WRF driver bit for bit on both the cold and warm calls.
+WRF source SHA-256 is
+`7fde5fc9d9760c106a400416feb127e5b18f6ba6f03b8aaf0ac8f2c1af2766e2`
+for `module_bl_mynn.F`; the source tree is tag v4.6.1 at commit
+`d66e442fccc04111067e29274c9f9eaccc3cef28`.
 
 `surface-layer-water.csv` and `surface-layer-water-leaf.csv` pin the
 over-water `ISFTCFLX` branches. Both come from

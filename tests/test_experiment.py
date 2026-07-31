@@ -115,6 +115,34 @@ def test_load_synthetic_two_domain(tmp_path):
     assert exp.column_chunk == 3125
 
 
+def test_experiment_acknowledgements_are_a_first_class_repeatable_list(
+        tmp_path):
+    exp = load_experiment(_write(
+        tmp_path,
+        experiment=(
+            "restart_interval_s = 0.0\n"
+            'acknowledgements = ["expert-tuple-v1", "site-policy-v2"]'
+        ),
+    ))
+    assert exp.acknowledgements == ("expert-tuple-v1", "site-policy-v2")
+
+
+@pytest.mark.parametrize(
+    "literal",
+    ('"expert-tuple-v1"', '["expert-tuple-v1", 7]', '[""]'),
+)
+def test_experiment_acknowledgements_refuse_non_list_or_non_ids(
+        tmp_path, literal):
+    with pytest.raises(ValueError, match="acknowledgements"):
+        load_experiment(_write(
+            tmp_path,
+            experiment=(
+                "restart_interval_s = 0.0\n"
+                f"acknowledgements = {literal}"
+            ),
+        ))
+
+
 def test_loads_explicit_mp8_to_mp18_domain_transition(tmp_path, monkeypatch):
     monkeypatch.setenv("GPUWM_EXPERIMENTAL_THOMPSON_MP8", "1")
     monkeypatch.setenv("GPUWM_THOMPSON_TABLE_ROOT", str(tmp_path))

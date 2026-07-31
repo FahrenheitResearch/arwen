@@ -29,6 +29,7 @@ _CELL_TPB = 64
 _COLUMN_TPB = 32
 _SHALLOW_KMAX = 64
 _KMAX = 256
+VERTICAL_LEVEL_BOUNDS = (2, _KMAX)
 
 
 def launch_morrison(theta, qv, qc, qr, qi, qs, qg,
@@ -60,10 +61,11 @@ def launch_morrison(theta, qv, qc, qr, qi, qs, qg,
     if len(shape) != 3:
         raise ValueError(f"Morrison fields must be 3-D, got {shape}")
     nz, ny, nx = shape
-    if nz > _KMAX:
-        raise ValueError(f"nz={nz} exceeds MORR_KMAX={_KMAX}")
-    if nz < 2:
-        raise ValueError("Morrison requires nz >= 2")
+    minimum, maximum = VERTICAL_LEVEL_BOUNDS
+    if nz > maximum:
+        raise ValueError(f"nz={nz} exceeds MORR_KMAX={maximum}")
+    if nz < minimum:
+        raise ValueError(f"Morrison requires nz >= {minimum}")
     if not np.isfinite(dt) or dt <= 0.0:
         raise ValueError(f"dt must be finite and positive, got {dt}")
     rimed = rimed_ice_constants(morr_rimed_ice)

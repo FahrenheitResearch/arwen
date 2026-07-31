@@ -87,6 +87,7 @@ from gpuwm.physics_compat import thompson_table_root as _thompson_table_root
 
 _TPB = 64          # threads per block (one thread per column)
 _KMAX = 256        # matches KESS_KMAX in kernels/kessler.cu
+KESSLER_VERTICAL_LEVEL_BOUNDS = (None, _KMAX)
 
 # ---------------------------------------------------------------------------
 # WRF specified-zone ring exclusion (solve_em.F:3618-3639)
@@ -356,9 +357,10 @@ def launch_kessler(t, qv, qc, qr, rho, pii, z, dz8w, rainnc, rainncv,
     accumulated / per-call surface rain in mm.
     """
     nz, ny, nx = t.shape
-    if nz > _KMAX:
+    if nz > KESSLER_VERTICAL_LEVEL_BOUNDS[1]:
         raise ValueError(f"nz={nz} exceeds the Kessler kernel's per-thread "
-                         f"column storage KESS_KMAX={_KMAX}")
+                         "column storage KESS_KMAX="
+                         f"{KESSLER_VERTICAL_LEVEL_BOUNDS[1]}")
     kern = get_kernel("kessler", "kessler_column")
     blocks = (ny * nx + _TPB - 1) // _TPB
     kern((blocks,), (_TPB,),

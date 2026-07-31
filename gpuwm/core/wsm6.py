@@ -26,12 +26,15 @@ from gpuwm.core.state import DTYPE, DomainState
 _COLUMN_TPB = 32
 _SHALLOW_KMAX = 64
 _KMAX = 80
+VERTICAL_LEVEL_BOUNDS = (2, _KMAX)
 
 
 def _kernel_capacity(nz: int) -> int:
     """Return the smallest compiled WSM6 local-array tier for ``nz``."""
-    if not 2 <= nz <= _KMAX:
-        raise ValueError(f"WSM6 requires 2 <= nz <= {_KMAX}, got {nz}")
+    minimum, maximum = VERTICAL_LEVEL_BOUNDS
+    if not minimum <= nz <= maximum:
+        raise ValueError(
+            f"WSM6 requires {minimum} <= nz <= {maximum}, got {nz}")
     return _SHALLOW_KMAX if nz <= _SHALLOW_KMAX else _KMAX
 
 

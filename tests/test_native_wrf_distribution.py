@@ -452,6 +452,9 @@ def test_standalone_python_project_excludes_forecast_executor(tmp_path):
     # gpuwm.geog_assets, which stages the tree, rather than from the
     # domain wizard, which imports the CUDA front door.
     assert "gpuwm/doctor.py" in files
+    # The resolved-scheme vertical preflight ships with preprocessing:
+    # rw-wps must refuse an nz a selected component cannot run.
+    assert "gpuwm/physics_vertical_contract.py" in files
     assert "tools/hrrr_state_proof.py" not in files
     assert "tools/hrrr_two_domain_forecast.py" not in files
     assert "LICENSE" in files

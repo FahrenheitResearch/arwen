@@ -18,6 +18,7 @@ from gpuwm.core.state import DTYPE
 
 _SHALLOW_KMAX = 64
 _KMAX = 256
+VERTICAL_LEVEL_BOUNDS = (3, _KMAX)
 _COLUMN_TPB = 64
 
 
@@ -527,9 +528,10 @@ def launch_cloud_interior_renucleation(
         raise ValueError(
             f"NSSL cloud-interior fields must be 3-D, got {shape}")
     nz, ny, nx = shape
-    if nz < 3:
+    if nz < VERTICAL_LEVEL_BOUNDS[0]:
         raise ValueError(
-            f"NSSL cloud-interior renucleation requires nz >= 3, got {nz}")
+            "NSSL cloud-interior renucleation requires nz >= "
+            f"{VERTICAL_LEVEL_BOUNDS[0]}, got {nz}")
     try:
         step = float(dt_s)
     except (TypeError, ValueError) as exc:

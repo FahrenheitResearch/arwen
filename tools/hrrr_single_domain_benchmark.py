@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 import traceback
+from collections.abc import Mapping
 from types import MappingProxyType, SimpleNamespace
 
 import numpy as np
@@ -44,12 +45,16 @@ from gpuwm.physics_compat import (  # noqa: E402
     EXPERIMENTAL_THOMPSON_ENV,
     SINGLE_DOMAIN_PHYSICS_PROFILES,
     MORRISON_PROFILE_ID,
+    MYNN_NOAHMP_PROFILE_ID,
     MYNN_PROFILE_ID,
+    MYNN_RUC_PROFILE_ID,
     NOAHMP_PROFILE_ID,
+    NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
     RUC_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     THOMPSON_TABLE_ROOT_ENV,
+    WRF_RRTMG_LEGACY,
     WRF_RRTMG_TO_RTE_RRTMGP,
     WSM6_PROFILE_ID,
     single_domain_runtime_switches,
@@ -195,7 +200,23 @@ def runner_capabilities() -> dict[str, object]:
                 "contract_id": NSSL2_CONTRACT_ID,
                 "resolved_fixed_preset": True,
             },
+            NSSL2_LEGACY_RRTMG_PROFILE_ID: {
+                "selector": NSSL2_MP_PHYSICS,
+                "readiness": "VALIDATION_CANDIDATE",
+                "explicit_expert_consent_required": False,
+                "runtime_guards": [],
+                "external_table_assets": [],
+                "contract_id": NSSL2_CONTRACT_ID,
+                "radiation_solver": "legacy RRTMG",
+                "resolved_fixed_preset": True,
+            },
             MYNN_PROFILE_ID: {
+                "selector": 6,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": False,
+                "runtime_guards": [],
+            },
+            MYNN_RUC_PROFILE_ID: {
                 "selector": 6,
                 "readiness": "IMPLEMENTED_UNVERIFIED",
                 "explicit_expert_consent_required": False,
@@ -208,6 +229,17 @@ def runner_capabilities() -> dict[str, object]:
                 "runtime_guards": [],
             },
             NOAHMP_PROFILE_ID: {
+                "selector": 6,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": True,
+                "expert_acknowledgement_id":
+                    "noahmp-host-column-throughput-v1",
+                "runtime_guards": [
+                    "measured column ceiling or explicit accepted budget",
+                    "glacier columns refused",
+                ],
+            },
+            MYNN_NOAHMP_PROFILE_ID: {
                 "selector": 6,
                 "readiness": "IMPLEMENTED_UNVERIFIED",
                 "explicit_expert_consent_required": True,
@@ -746,6 +778,25 @@ _NATIVE_HRRR_NAMELIST_CONTRACTS = MappingProxyType({
             "diff_6th_slopeopt": 1.0,
         }),
     }),
+    MYNN_RUC_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 6.0,
+            "ra_lw_physics": 0.0,
+            "ra_sw_physics": 1.0,
+            "radt": 1.0,
+            "sf_sfclay_physics": 5.0,
+            "sf_surface_physics": 3.0,
+            "bl_pbl_physics": 5.0,
+            "cu_physics": 0.0,
+            "num_soil_layers": 9.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.08,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
     RUC_PROFILE_ID: MappingProxyType({
         "physics": MappingProxyType({
             "mp_physics": 6.0,
@@ -774,6 +825,25 @@ _NATIVE_HRRR_NAMELIST_CONTRACTS = MappingProxyType({
             "sf_sfclay_physics": 91.0,
             "sf_surface_physics": 4.0,
             "bl_pbl_physics": 1.0,
+            "cu_physics": 0.0,
+            "num_soil_layers": 4.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.08,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
+    MYNN_NOAHMP_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 6.0,
+            "ra_lw_physics": 0.0,
+            "ra_sw_physics": 1.0,
+            "radt": 1.0,
+            "sf_sfclay_physics": 5.0,
+            "sf_surface_physics": 4.0,
+            "bl_pbl_physics": 5.0,
             "cu_physics": 0.0,
             "num_soil_layers": 4.0,
         }),
@@ -857,8 +927,10 @@ _NATIVE_HRRR_RUNTIME_SWITCHES = MappingProxyType({
 _HRRR_SOURCE_ABSENT_STATE_DEFAULTS = MappingProxyType({
     WSM6_PROFILE_ID: MappingProxyType({}),
     MYNN_PROFILE_ID: MappingProxyType({}),
+    MYNN_RUC_PROFILE_ID: MappingProxyType({}),
     RUC_PROFILE_ID: MappingProxyType({}),
     NOAHMP_PROFILE_ID: MappingProxyType({}),
+    MYNN_NOAHMP_PROFILE_ID: MappingProxyType({}),
     THOMPSON_PROFILE_ID: MappingProxyType({
         "ni": 0.0, "nr": 0.0,
     }),
@@ -875,8 +947,10 @@ _HRRR_SOURCE_ABSENT_STATE_DEFAULTS = MappingProxyType({
 _HRRR_SOURCE_ABSENT_WRF_FIELDS = MappingProxyType({
     WSM6_PROFILE_ID: (),
     MYNN_PROFILE_ID: (),
+    MYNN_RUC_PROFILE_ID: (),
     RUC_PROFILE_ID: (),
     NOAHMP_PROFILE_ID: (),
+    MYNN_NOAHMP_PROFILE_ID: (),
     THOMPSON_PROFILE_ID: ("QNICE", "QNRAIN"),
     MORRISON_PROFILE_ID: (
         "QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL"),
@@ -887,13 +961,18 @@ _HRRR_SOURCE_ABSENT_WRF_FIELDS = MappingProxyType({
 
 
 def _native_hrrr_profile_contract(profile: str) -> dict[str, object]:
-    if profile not in _NATIVE_HRRR_NAMELIST_CONTRACTS:
+    contract_profile = (
+        NSSL2_PROFILE_ID
+        if profile == NSSL2_LEGACY_RRTMG_PROFILE_ID
+        else profile
+    )
+    if contract_profile not in _NATIVE_HRRR_NAMELIST_CONTRACTS:
         raise ValueError(
             f"unsupported native HRRR physics profile {profile!r}")
     return {
         section: dict(fields)
         for section, fields in _NATIVE_HRRR_NAMELIST_CONTRACTS[
-            profile].items()
+            contract_profile].items()
     }
 
 
@@ -957,7 +1036,10 @@ def _validate_native_hrrr_physics_profile(
     from gpuwm.namelist_import import parse_namelist
 
     front_door_selection = validate_single_domain_physics_profile(
-        profile, expert_acknowledgements=expert_acknowledgements)
+        profile, expert_acknowledgements=expert_acknowledgements,
+        acknowledgement_provenance={
+            value: ["--ack"] for value in expert_acknowledgements
+        })
     expected_profile = _native_hrrr_profile_contract(profile)
     sections = parse_namelist(path)
     selected: dict[str, dict[str, float | bool]] = {}
@@ -996,7 +1078,7 @@ def _validate_native_hrrr_physics_profile(
                     f"&{section_name}/{key}: selected last-domain value "
                     f"must be {expected_text}, got {raw!r}")
             selected[section_name][key] = actual
-    if profile == NSSL2_PROFILE_ID:
+    if profile in (NSSL2_PROFILE_ID, NSSL2_LEGACY_RRTMG_PROFILE_ID):
         physics_section = sections["physics"]
         nssl_values: dict[str, int | float] = {}
         selector_names = {
@@ -1038,7 +1120,13 @@ def _validate_native_hrrr_physics_profile(
     resolved = _native_hrrr_runtime_switches(profile)
     resolved["radiation_scheme_ids"] = [
         resolved["ra_lw_physics"], resolved["ra_sw_physics"]]
-    source_absent_defaults = _HRRR_SOURCE_ABSENT_STATE_DEFAULTS[profile]
+    contract_profile = (
+        NSSL2_PROFILE_ID
+        if profile == NSSL2_LEGACY_RRTMG_PROFILE_ID
+        else profile
+    )
+    source_absent_defaults = _HRRR_SOURCE_ABSENT_STATE_DEFAULTS[
+        contract_profile]
     receipt = {
         "schema": "gpuwm-prepared-physics-profile-v1",
         "profile": profile,
@@ -1052,11 +1140,12 @@ def _validate_native_hrrr_physics_profile(
                 "WRF-Q linear pressure interpolation with zero surface "
                 "pseudo-level; retain analyzed nonnegative FP32 masses"),
             "source_absent_fields": list(
-                _HRRR_SOURCE_ABSENT_WRF_FIELDS[profile]),
+                _HRRR_SOURCE_ABSENT_WRF_FIELDS[contract_profile]),
             # Backward-compatible narrow view retained for Thompson/older
             # receipt consumers; source_absent_fields is the full inventory.
             "source_absent_number_fields": [
-                name for name in _HRRR_SOURCE_ABSENT_WRF_FIELDS[profile]
+                name for name in _HRRR_SOURCE_ABSENT_WRF_FIELDS[
+                    contract_profile]
                 if name.startswith("QN")
             ],
             "source_absent_state_defaults_fp32": dict(
@@ -1077,7 +1166,7 @@ def _validate_native_hrrr_physics_profile(
             "morr_rimed_ice": 1,
             "rimed_ice_category": "hail",
         }
-    elif profile == NSSL2_PROFILE_ID:
+    elif profile in (NSSL2_PROFILE_ID, NSSL2_LEGACY_RRTMG_PROFILE_ID):
         receipt["readiness"] = "VALIDATION_CANDIDATE"
         receipt["nssl2_contract"] = {
             "selector": NSSL2_MP_PHYSICS,
@@ -1089,7 +1178,9 @@ def _validate_native_hrrr_physics_profile(
                 NSSL2_DEFAULT_MODE.transported_fields),
             "wrf_namelist_defaults": dict(NSSL2_WRF_NAMELIST_DEFAULTS),
         }
-    elif profile in (MYNN_PROFILE_ID, RUC_PROFILE_ID, NOAHMP_PROFILE_ID):
+    elif profile in (
+            MYNN_PROFILE_ID, MYNN_RUC_PROFILE_ID, RUC_PROFILE_ID,
+            NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID):
         receipt["readiness"] = "IMPLEMENTED_UNVERIFIED"
     if profile in (MORRISON_PROFILE_ID, NSSL2_PROFILE_ID):
         receipt["radiation_substitution"] = {
@@ -1098,7 +1189,81 @@ def _validate_native_hrrr_physics_profile(
             "resolved_gpuwm_scheme_ids": [4, 4],
             "resolved_gpuwm_solver": "RTE+RRTMGP",
         }
+    elif profile == NSSL2_LEGACY_RRTMG_PROFILE_ID:
+        receipt["radiation_identity"] = {
+            "contract": WRF_RRTMG_LEGACY,
+            "requested_wrf_scheme_ids": [4, 4],
+            "resolved_gpuwm_scheme_ids": [4, 4],
+            "resolved_gpuwm_solver": "legacy RRTMG",
+        }
     return receipt
+
+
+#: Where every switch a shipped physics profile declares has to land in
+#: the experiment payload :func:`_experiment` builds: ``"shared"`` for the
+#: hierarchy-wide ``[shared]`` table, ``"domain"`` for the root
+#: ``[[domain]]`` table.
+#:
+#: This map exists because the literal payload below is not a contract.
+#: ``ra_rrtmg_variant`` was added to the RRTMG-paired profile rows and
+#: nothing here forwarded it, so a ``RunConfig`` built on this route kept
+#: the ``"rte-rrtmgp"`` default; the paired-switch validator in
+#: ``gpuwm/config.py`` then refused the ratified legacy-RRTMG profile in
+#: 0.7 s while its RTE sibling built fine purely because that sibling's
+#: declared value happened to EQUAL the default.  A profile that grows a
+#: switch this map does not name is now a named refusal here rather than
+#: a silent default three layers down.
+_PROFILE_SWITCH_HOMES = MappingProxyType({
+    "bl_pbl_physics": "shared",
+    "cu_physics": "shared",
+    "cudt_minutes": "shared",
+    "diff_6th_factor": "domain",
+    "diff_6th_opt": "shared",
+    "diff_6th_slopeopt": "shared",
+    "epssm": "shared",
+    "km_opt": "shared",
+    "moist": "shared",
+    "moist_cq": "shared",
+    "morr_rimed_ice": "shared",
+    "mp_physics": "shared",
+    "num_soil_layers": "shared",
+    "ra_lw_physics": "shared",
+    "ra_physics": "shared",
+    "ra_rrtmg_variant": "shared",
+    "ra_sw_physics": "shared",
+    "radt": "domain",
+    "sf_sfclay_physics": "shared",
+    "sf_surface_physics": "shared",
+    "terrain_opt": "shared",
+    "top_lid": "shared",
+    "wrf_rrtmg_compatibility": "shared",
+    "wsm6_hail_opt": "shared",
+})
+
+
+def _forward_profile_switches(
+        raw: dict[str, object], switches: Mapping[str, object]) -> None:
+    """Carry EVERY switch the selected profile declares into ``raw``.
+
+    The literal payload in :func:`_experiment` documents the common ones;
+    this makes the forward complete.  Profiles do not all declare the same
+    switch set (only the RRTMG-paired rows carry ``ra_rrtmg_variant``), so
+    the forward is driven by the selected profile's own inventory rather
+    than by a hand-maintained list that can fall behind it.
+    """
+
+    shared = raw["shared"]
+    domain = raw["domain"][0]
+    unmapped = sorted(set(switches) - set(_PROFILE_SWITCH_HOMES))
+    if unmapped:
+        raise ValueError(
+            "the native HRRR experiment builder has no declared home for "
+            f"physics-profile switch(es) {unmapped}; add them to "
+            "_PROFILE_SWITCH_HOMES so they reach the RunConfig instead of "
+            "silently taking its default")
+    for name, value in switches.items():
+        target = shared if _PROFILE_SWITCH_HOMES[name] == "shared" else domain
+        target[name] = value
 
 
 def _experiment(
@@ -1184,6 +1349,7 @@ def _experiment(
             "spec_exp": 0.0,
         }],
     }
+    _forward_profile_switches(raw, switches)
     return build_experiment(
         raw, f"programmatic:native-HRRR:{target.identity_sha256()}")
 
@@ -1217,16 +1383,65 @@ def _validate_resolved_hrrr_profile(exp, receipt: dict[str, object]) -> None:
 
 
 def _initial_hrrr_microphysics_receipt(
-        state, profile: str) -> dict[str, object]:
-    """Gate and record analyzed mass plus exact scheme cold-start state."""
+        state, profile: str,
+        initialization: object = None) -> dict[str, object]:
+    """Gate source-to-state mass identity plus exact scheme cold start.
+
+    The emitted receipt also states its own evidentiary strength.  The
+    retention gate is one-sided -- it can only fire when the decoded source
+    carried nonzero mass -- so on a cloud-free analysis it passes without
+    checking anything.  ``retention_evidence`` marks each such species
+    VACUOUS and ``retention_evidence_summary`` says so for the domain, so a
+    green receipt can never be mistaken for proof it did not earn.
+    """
+
+    from gpuwm.ingest.real import array_correspondence_fingerprint
 
     def scalar(value):
         if hasattr(value, "get"):
             value = value.get()
         return np.asarray(value).item()
 
+    if not isinstance(initialization, Mapping):
+        raise ValueError(
+            "native HRRR analyzed hydrometeor receipt lacks decoded-source "
+            "to initialized-state correspondence evidence")
+    if initialization.get("schema") != (
+            "gpuwm-real-hydrometeor-correspondence-v1"):
+        raise ValueError(
+            "native HRRR analyzed hydrometeor correspondence schema is "
+            "missing or unsupported")
+    source_species = initialization.get("decoded_source_species")
+    correspondence = initialization.get("retained_correspondence")
+    initialized_species = initialization.get("initialized_state_species")
+    discarded = initialization.get("discarded_source_species")
+    if (
+        not isinstance(source_species, Mapping)
+        or not isinstance(correspondence, Mapping)
+        or not isinstance(initialized_species, Mapping)
+        or not isinstance(discarded, Mapping)
+    ):
+        raise ValueError(
+            "native HRRR hydrometeor correspondence evidence is incomplete")
+    expected_source = {"QC", "QR", "QI", "QS", "QG"}
+    if set(source_species) != expected_source:
+        raise ValueError(
+            "native HRRR decoded hydrometeor receipt must bind exactly "
+            f"{sorted(expected_source)}, got {sorted(source_species)}")
+    if (
+        set(correspondence) | set(discarded) != expected_source
+        or set(correspondence) & set(discarded)
+    ):
+        raise ValueError(
+            "native HRRR hydrometeor policy does not account for every "
+            "decoded source species")
+
     masses = {}
-    for name in ("qc", "qr", "qi", "qs", "qg"):
+    retention_evidence = {}
+    for source_name, name in sorted(correspondence.items()):
+        if not isinstance(name, str):
+            raise ValueError(
+                f"native HRRR correspondence for {source_name} is invalid")
         value = getattr(state, name, None)
         if value is None:
             raise ValueError(
@@ -1237,13 +1452,94 @@ def _initial_hrrr_microphysics_receipt(
         if not finite or minimum < 0.0 or not math.isfinite(maximum):
             raise ValueError(
                 f"native HRRR analyzed hydrometeor {name} is invalid")
+        live = array_correspondence_fingerprint(value)
+        expected_live = initialized_species.get(name)
+        if live != expected_live:
+            raise ValueError(
+                "native HRRR analyzed hydrometeor source-to-state "
+                f"correspondence failed for {source_name}->{name}: "
+                "initialized state checksum, nonzero mask, or extrema "
+                "changed")
+        source = source_species.get(source_name)
+        if not isinstance(source, Mapping):
+            raise ValueError(
+                f"native HRRR decoded-source fingerprint {source_name} "
+                "is missing")
+        for key in (
+                "sha256", "nonzero_mask_sha256", "nonzero_count",
+                "minimum", "maximum"):
+            if key not in source:
+                raise ValueError(
+                    f"native HRRR decoded-source fingerprint {source_name} "
+                    f"omits {key}")
+        if (
+            not math.isfinite(float(source["minimum"]))
+            or not math.isfinite(float(source["maximum"]))
+            or float(source["minimum"]) < 0.0
+        ):
+            raise ValueError(
+                f"native HRRR decoded-source {source_name} extrema are "
+                "invalid")
+        if (
+            int(source["nonzero_count"]) > 0
+            and int(live["nonzero_count"]) == 0
+        ):
+            raise ValueError(
+                "native HRRR analyzed hydrometeor source-to-state "
+                f"correspondence lost all nonzero mass for "
+                f"{source_name}->{name}")
+        if maximum > float(source["maximum"]) * (1.0 + 4.0e-7):
+            raise ValueError(
+                f"native HRRR initialized {name} maximum exceeds decoded "
+                f"{source_name} maximum")
         masses[name] = {
-            "minimum": minimum,
-            "maximum": maximum,
-            "nonzero": bool(scalar((value != 0.0).any())),
+            **live,
+            "decoded_source_field": source_name,
+            "decoded_source": source,
         }
+        # The retention gate above is `source nonzero > 0 and live nonzero
+        # == 0 -> raise`.  Against a cloud-free analysis it cannot fire, so
+        # a green receipt for that species proves nothing.  The receipt says
+        # so itself rather than leaving the reader to notice: a species whose
+        # decoded source carried no nonzero mass is recorded VACUOUS.  No
+        # threshold is invented for "negligible" beyond exact zero -- the
+        # counts and extrema that would let an acceptance harness impose one
+        # are published here instead.
+        source_nonzero = int(source["nonzero_count"])
+        state_nonzero = int(live["nonzero_count"])
+        retention_evidence[source_name] = {
+            "state_field": name,
+            "strength": (
+                "PROVEN" if source_nonzero > 0 else "VACUOUS"),
+            "reason": (
+                "decoded source carried nonzero mass and the initialized "
+                "state retained it"
+                if source_nonzero > 0 else
+                "decoded source carried no nonzero mass: the retention "
+                "gate had nothing to check and this species is not proven"),
+            "source_nonzero_count": source_nonzero,
+            "source_maximum": float(source["maximum"]),
+            "state_nonzero_count": state_nonzero,
+            "state_maximum": maximum,
+        }
+    for source_name, policy in sorted(discarded.items()):
+        if (
+            not isinstance(policy, Mapping)
+            or policy.get("source") != source_species[source_name]
+            or policy.get("policy") != (
+                "discard-source-species-absent-from-active-moist-package")
+            or not isinstance(policy.get("wrf_commit"), str)
+            or not isinstance(policy.get("registry_citation"), str)
+            or not isinstance(policy.get("real_citation"), str)
+        ):
+            raise ValueError(
+                f"native HRRR discarded source species {source_name} lacks "
+                "a source-bound WRF-real policy receipt")
     try:
-        defaults = _HRRR_SOURCE_ABSENT_STATE_DEFAULTS[profile]
+        defaults = _HRRR_SOURCE_ABSENT_STATE_DEFAULTS[
+            NSSL2_PROFILE_ID
+            if profile == NSSL2_LEGACY_RRTMG_PROFILE_ID
+            else profile]
     except KeyError:
         raise ValueError(
             f"unsupported native HRRR physics profile {profile!r}") from None
@@ -1292,18 +1588,51 @@ def _initial_hrrr_microphysics_receipt(
         number_policy = (
             "exact-zero Morrison QNRAIN/QNICE/QNSNOW/QNGRAUPEL; "
             "runtime-diagnosed nc begins at exact zero")
-    elif profile == NSSL2_PROFILE_ID:
+    elif profile in (NSSL2_PROFILE_ID, NSSL2_LEGACY_RRTMG_PROFILE_ID):
         number_policy = (
             "exact-zero NSSL number moments except WRF default predicted "
             "CCN qnn=408163264.0 # kg-1")
     else:
         number_policy = "not applicable"
+    vacuous = sorted(
+        name for name, evidence in retention_evidence.items()
+        if evidence["strength"] == "VACUOUS")
+    proven = sorted(
+        name for name, evidence in retention_evidence.items()
+        if evidence["strength"] == "PROVEN")
+    if not proven:
+        overall = "VACUOUS"
+    elif vacuous:
+        overall = "PARTIALLY_VACUOUS"
+    else:
+        overall = "PROVEN"
     return {
-        "schema": "gpuwm-hrrr-microphysics-initialization-v1",
+        "schema": "gpuwm-hrrr-microphysics-initialization-v3",
         "source_mass_fields": ["QC", "QR", "QI", "QS", "QG"],
         "state_mass_fields": masses,
+        "source_to_state_correspondence": dict(sorted(correspondence.items())),
+        "retention_evidence": dict(sorted(retention_evidence.items())),
+        "retention_evidence_summary": {
+            "strength": overall,
+            "proven_species": proven,
+            "vacuous_species": vacuous,
+            "statement": (
+                "every retained species carried nonzero decoded source mass"
+                if overall == "PROVEN" else
+                "no retained species carried nonzero decoded source mass: "
+                "this receipt proves nothing about analyzed-hydrometeor "
+                "retention on this domain"
+                if overall == "VACUOUS" else
+                "retention is proven only for "
+                f"{', '.join(proven)}; {', '.join(vacuous)} had no nonzero "
+                "decoded source mass and are not proven"),
+        },
+        "discarded_source_species": dict(discarded),
         "source_absent_wrf_fields": list(
-            _HRRR_SOURCE_ABSENT_WRF_FIELDS[profile]),
+            _HRRR_SOURCE_ABSENT_WRF_FIELDS[
+                NSSL2_PROFILE_ID
+                if profile == NSSL2_LEGACY_RRTMG_PROFILE_ID
+                else profile]),
         "source_absent_state_policy": (
             "profile-defined exact FP32 WRF-real-style cold start"),
         "state_source_absent_fields": exact_fields,
@@ -1814,7 +2143,7 @@ def run(args):
     )
     physics_profile = _validate_native_hrrr_physics_profile(
         args.namelist_input, args.physics_profile,
-        expert_acknowledgements=tuple(args.expert_acknowledgement))
+        expert_acknowledgements=tuple(args.ack))
     eta = np.asarray(vertical_grid.eta_levels, dtype=np.float64)
     p_top = vertical_grid.p_top
     history_interval_seconds = (
@@ -2441,7 +2770,8 @@ def run(args):
     preprocess_worker_budget_receipt = preprocess_worker_budget.receipt()
     physics_profile["hrrr_initialization"] = (
         _initial_hrrr_microphysics_receipt(
-            root_result.state, args.physics_profile))
+            root_result.state, args.physics_profile,
+            getattr(root_result, "hydrometeor_initialization", None)))
 
     if args.prepare_only:
         if prepared_cache_receipt is None:
@@ -2903,7 +3233,7 @@ def _parse_args(argv=None):
         help="explicit GPUWM HRRR physics/runtime contract",
     )
     parser.add_argument(
-        "--expert-acknowledgement", action="append", default=[],
+        "--ack", action="append", default=[],
         help="registry-owned expert physics acknowledgement id; repeatable")
     parser.add_argument(
         "--valid-time", required=True,

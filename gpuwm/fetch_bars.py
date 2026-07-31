@@ -27,6 +27,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from gpuwm.explain import layered
+
 #: The record counts this ArWen was certified against.  Each is the
 #: exact inventory its fail-closed bridge selects; see
 #: ``tools/grib1_bridge/src/bin/{gfs,hrrr}_grib2_bridge.rs``.
@@ -146,17 +148,17 @@ def resolve_bar(kind: str, derived: int | None, *,
     if not accept_inventory_change:
         disposition = (NOTHING_DOWNLOADED if on_refusal is None
                        else str(on_refusal()))
-        raise ValueError(
+        raise ValueError(layered(
             f"{headline}\n"
-            f"  {disposition}  A changed inventory is a "
-            f"re-certification event, not a transient error: the "
-            f"fail-closed bridge downstream selects by exact field "
-            f"identity and will reject a file whose census it does not "
-            f"recognise.\n"
+            f"  {disposition}\n"
             f"  remedy: confirm the change against the provider's "
             f"announcement, then re-run with {ACCEPT_FLAG} to fetch "
             f"against the live count of {derived} and record the "
-            f"acceptance in the manifest.")
+            f"acceptance in the manifest.",
+            "  why: a changed inventory is a re-certification event, not "
+            "a transient error -- the fail-closed bridge downstream "
+            "selects by exact field identity and will reject a file "
+            "whose census it does not recognise."))
     progress(f"{headline}  Proceeding with {derived} because "
              f"{ACCEPT_FLAG} was given; the manifest records the "
              f"acceptance.")

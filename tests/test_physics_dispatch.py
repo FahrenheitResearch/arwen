@@ -276,8 +276,8 @@ def test_noah_sfcdiags_is_scheme_specific():
     (dict(sf_sfclay_physics=91, sf_surface_physics=3, num_soil_layers=6),
      "RUC soil geometry"),
     (dict(sf_sfclay_physics=5, bl_pbl_physics=5, sf_surface_physics=3,
-          num_soil_layers=9),
-     "MYNN surface layer with RUC"),
+          num_soil_layers=6, nz=5),
+     "RUC soil geometry"),
 ])
 def test_in_port_schemes_fail_closed_with_a_port_receipt(overrides, component):
     with pytest.raises(UnsupportedPhysicsSuiteError) as caught:
@@ -321,7 +321,8 @@ def test_a_mynn_half_suite_is_still_refused(overrides):
 
 def test_the_coupled_mynn_suite_is_admitted():
     """The negative control for the row above: 5/5 must NOT raise."""
-    validate_run_config(_cfg(sf_sfclay_physics=5, bl_pbl_physics=5))
+    validate_run_config(_cfg(
+        sf_sfclay_physics=5, bl_pbl_physics=5, nz=5))
 
 
 def test_noahmp_is_admitted_at_four_soil_layers_and_only_there():

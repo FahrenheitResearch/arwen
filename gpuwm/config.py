@@ -11,6 +11,7 @@ from gpuwm.physics_compat import (
     WRF_RRTMG_LEGACY,
     WRF_RRTMG_SUBSTITUTION_TOKENS,
     require_ready_wrf_physics,
+    validate_resolved_physics_vertical_levels,
 )
 from collections.abc import Mapping as _Mapping
 from importlib import import_module as _import_module
@@ -353,9 +354,9 @@ NOAHMP_OPTION_IDENTITY_EVIDENCE: dict[str, tuple[object, str]] = {
     "opt_rad": (3, "fixture; gap = 1 - FVEG"),
     "opt_alb": (2, "fixture; CLASS.  SNOWALB_BATS is not transcribed -- "
                    "unmeasured"),
-    "opt_snf": (1, "fixture; Jordan91.  This is why the coarse "
-                   "precipitation partition below is survivable: FPICE "
-                   "comes from SFCTMP, not from the frozen fraction"),
+    "opt_snf": (1, "fixture; Jordan91. FPICE comes from SFCTMP while the "
+                   "driver separately supplies WRF's six precipitation "
+                   "rates"),
     "opt_tbot": (2, "fixture; Noah lower boundary at ZBOT"),
     "opt_stc": (1, "fixture; semi-implicit snow/soil temperature"),
     "opt_gla": (1, "declared only.  Every glacier column RAISES "
@@ -443,10 +444,8 @@ RUC_OPTION_IDENTITY_EVIDENCE: dict[str, tuple[object, str]] = {
                        "ingest for it to adjust, so the knob is pinned at 0 "
                        "to keep it that way rather than accepted and "
                        "ignored"),
-    "spp_lsm": (0, "not expressible; LSMRUC:446-450 assigns rstoch from "
-                   "pattern_spp_lsm, an OPTIONAL argument that exists only "
-                   "under #if (EM_CORE==1), and the pinned object is "
-                   "EM_CORE==0"),
+    "spp_lsm": (0, "not ported; the ARW path needs pattern_spp_lsm and "
+                   "field_sf stochastic inputs plus their restart contract"),
 }
 
 #: The enforced form of the table above: field -> the only accepted value.
@@ -1100,4 +1099,5 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "positive-definite transport limiter; use the monotonic "
             "diff_6th_opt=2."
         )
+    validate_resolved_physics_vertical_levels(cfg)
     return cfg

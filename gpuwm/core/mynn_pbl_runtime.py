@@ -67,6 +67,18 @@ MYNN_PBL_DIAGNOSTICS_2D = ("maxwidth", "maxmf", "ztop_plume")
 MYNN_PBL_DIAGNOSTICS_INT_2D = ("ktop_plume",)
 
 _TPB = 128
+#: Full MYNN wrapper call requires the lowest five model levels.
+VERTICAL_LEVEL_BOUNDS = (5, None)
+
+#: WRF Registry packages whose moist state declares ``F_QS``.  The PBL
+#: driver forwards that generated flag at ``module_pbl_driver.F:873-878``.
+MYNN_SNOW_MICROPHYSICS = frozenset((6, 8, 10, 18))
+
+
+def mynn_flag_qs(mp_physics: int) -> bool:
+    """Return WRF v4.6.1's Registry-derived ``FLAG_QS`` for ``mp_physics``."""
+
+    return int(mp_physics) in MYNN_SNOW_MICROPHYSICS
 
 
 #: Layer inputs the driver reads straight out of ``atmosphere``, paired with
@@ -77,6 +89,7 @@ _ATMOSPHERE_LAYERS = (
     ("dz", "dz"), ("u", "u"), ("v", "v"), ("th", "theta"),
     ("p", "pressure"), ("exner", "exner"), ("rho", "rho"),
     ("tk", "temperature"), ("qv", "qv"), ("qc", "qc"), ("qi", "qi"),
+    ("qs", "qs"),
 )
 #: Per-column inputs that are contiguous prefixes of a ``(ny, nx)`` field and
 #: therefore need no staging buffer at all: a chunk of one is a contiguous
@@ -101,6 +114,7 @@ def mynn_pbl_step(
     dx: float,
     delt: float,
     itimestep: int,
+    mp_physics: int,
     state=None,
     column_chunk: int | None = None,
     **options,
@@ -131,8 +145,10 @@ def mynn_pbl_step(
         raise ValueError("MYNN PBL itimestep is one-based and starts at 1")
     theta = atmosphere["theta"]
     nz, ny, nx = theta.shape
-    if nz < 5:
-        raise ValueError("MYNN PBL requires at least 5 vertical levels")
+    if nz < VERTICAL_LEVEL_BOUNDS[0]:
+        raise ValueError(
+            f"MYNN PBL requires at least {VERTICAL_LEVEL_BOUNDS[0]} "
+            "vertical levels")
     ncol = ny * nx
     if w.shape[0] < nz:
         raise ValueError("MYNN PBL needs w on the lower interface of each "
@@ -185,16 +201,17 @@ def mynn_pbl_step(
         blocks = (count + _TPB - 1) // _TPB
         get_kernel("mynn_pbl", "mynn_wrapper_to_specific")(
             (blocks,), (_TPB,),
-            (stage["qv"], stage["qc"], stage["qi"],
-             stage["sqv"], stage["sqc"], stage["sqi"], np.int32(count)),
+            (stage["qv"], stage["qc"], stage["qi"], stage["qs"],
+             stage["sqv"], stage["sqc"], stage["sqi"], stage["sqs"],
+             np.int32(count)),
         )
 
         spacing = work.one(SLOT_STAGE_DX, (n,))
         spacing[...] = DTYPE(dx)
         zeros_column = work.one(SLOT_ZERO_COLUMN, (n,))
         values = {name: stage[name] for name in
-                  ("dz", "u", "v", "w", "th", "sqv", "sqc", "sqi", "p",
-                   "exner", "rho", "tk")}
+                  ("dz", "u", "v", "w", "th", "sqv", "sqc", "sqi", "sqs",
+                   "p", "exner", "rho", "tk")}
         for solver_name in _STATE_FIELD:
             values[solver_name] = stage[solver_name]
         values["dx"] = spacing
@@ -206,8 +223,10 @@ def mynn_pbl_step(
             values[name] = flat_columns[name][lo:hi]
         values["kpbl"] = flat_kpbl[lo:hi]
 
-        out = mynn_bl_driver_cuda(values, initflag=initflag,
-                                  delt=DTYPE(delt), scratch=work, **options)
+        out = mynn_bl_driver_cuda(
+            values, initflag=initflag, delt=DTYPE(delt), scratch=work,
+            flag_qs=mynn_flag_qs(mp_physics), **options,
+        )
 
         # --- module_bl_mynn_wrapper.F:587-607 specific -> mixing ratio -----
         get_kernel("mynn_pbl", "mynn_wrapper_from_specific")(
@@ -271,7 +290,9 @@ def validate_mynn_tendencies(out: Mapping[str, cp.ndarray]) -> None:
 __all__ = [
     "MYNN_PBL_DIAGNOSTICS_2D",
     "MYNN_PBL_DIAGNOSTICS_INT_2D",
+    "MYNN_SNOW_MICROPHYSICS",
     "MYNN_PBL_STATE_3D",
+    "mynn_flag_qs",
     "mynn_pbl_step",
     "validate_mynn_tendencies",
 ]

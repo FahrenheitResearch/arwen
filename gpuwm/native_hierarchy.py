@@ -13,12 +13,46 @@ from gpuwm.native_domain_artifacts import (
     NativeHierarchyArtifactBuild,
     write_native_hierarchy_artifacts,
 )
-from gpuwm.wrf_direct import export_prepared_wrf_hierarchy
+from gpuwm.wrf_direct import (
+    StockWrfExportUnsupported,
+    export_prepared_wrf_hierarchy,
+    stock_wrf_export_not_requested,
+    stock_wrf_export_refused,
+)
+
+#: What a caller may ask of the stock-WRF export leg of this join.
+#:
+#: ``"required"``  the export is part of the caller's product; a refusal
+#:                 on export-representability propagates and fails the
+#:                 whole preparation.
+#: ``"optional"``  the caller is preparing a FORECAST and the export is a
+#:                 bonus product.  A refusal is recorded in the export
+#:                 slot -- with the gate's own message and its named
+#:                 selector deltas -- and the preparation proceeds.
+#: ``"off"``       no export is attempted at all.
+#:
+#: The distinction exists because this join used to call the exporter
+#: unconditionally, so `export_prepared_wrf`'s profile-free compatibility
+#: branch -- which requires the v2 stock slice bl_pbl_physics=1,
+#: sf_sfclay_physics=91, sf_surface_physics=2 of the tree ROOT -- decided
+#: which domain trees could be prepared on the GFS route at all.  It
+#: overruled registry reachability, an accepted `expert-tuple-v1`
+#: acknowledgement and an explicitly named shipped profile alike: the only
+#: preparable root was YSU + classic-MM5 + Noah, which is exactly what the
+#: one shipped hierarchy config happens to be, which is why nothing caught
+#: it.  Nothing about the gate's CONTENT changes here -- the export still
+#: refuses what it always refused, and still writes no file when it does.
+STOCK_WRF_EXPORT_MODES = ("required", "optional", "off")
 
 
 @dataclass(frozen=True)
 class NativeHierarchyExportResult:
-    """Completed native hierarchy artifacts plus unchanged-WRF products."""
+    """Completed native hierarchy artifacts plus unchanged-WRF products.
+
+    ``wrf_manifest`` is the export slot: a READY manifest with a ``files``
+    inventory when the export ran, otherwise the NOT_REQUESTED/REFUSED
+    document that says why it did not.
+    """
 
     artifacts: NativeHierarchyArtifactBuild
     wrf_manifest: Mapping[str, object]
@@ -47,6 +81,7 @@ def initialize_and_export_native_hierarchy(
         root_metadata: Mapping[str, object] | None = None,
         input_provenance: Mapping[str, object] | None = None,
         artifact_manifest_reference: str | None = None,
+        stock_wrf_export: str = "required",
 ) -> NativeHierarchyExportResult:
     """Prepare children in parallel, join artifacts, and emit WRF files.
 
@@ -55,8 +90,18 @@ def initialize_and_export_native_hierarchy(
     mapping is launched concurrently with an explicit worker budget, then
     finalized at parent barriers before the atomic artifact tree and final
     ``wrfinput_d01..dNN``/``wrfbdy_d01`` directory are written.
+
+    ``stock_wrf_export`` says what that last step is worth to the caller;
+    see :data:`STOCK_WRF_EXPORT_MODES`.  It defaults to ``"required"``,
+    the behaviour every caller had when the export was an unconditional
+    call, so opting into the softer modes is a decision a source adapter
+    makes explicitly rather than one it inherits.
     """
 
+    if stock_wrf_export not in STOCK_WRF_EXPORT_MODES:
+        raise ValueError(
+            f"stock_wrf_export must be one of {list(STOCK_WRF_EXPORT_MODES)}, "
+            f"got {stock_wrf_export!r}")
     if root_node.state is not root_initial_result.state:
         raise ValueError(
             "root node and root initial result do not share the same state")
@@ -113,11 +158,25 @@ def initialize_and_export_native_hierarchy(
         "native_artifact_manifest_sha256": artifact_build.receipt[
             "manifest"]["sha256"],
     })
-    wrf_manifest = export_prepared_wrf_hierarchy(
-        exp, artifact_build.artifacts, wrf_output,
-        valid_time=exp.start_time,
-        boundary_interval_seconds=boundary_interval_seconds,
-        input_provenance=provenance)
+    if stock_wrf_export == "off":
+        wrf_manifest = stock_wrf_export_not_requested()
+    else:
+        try:
+            wrf_manifest = export_prepared_wrf_hierarchy(
+                exp, artifact_build.artifacts, wrf_output,
+                valid_time=exp.start_time,
+                boundary_interval_seconds=boundary_interval_seconds,
+                input_provenance=provenance)
+        except StockWrfExportUnsupported as error:
+            if stock_wrf_export == "required":
+                raise
+            # The forecast is already prepared: `artifact_build` above is
+            # the complete, verified hierarchy the GPU runner consumes.
+            # Only the unchanged-WRF file set cannot represent this
+            # physics, so only that is refused.  The exporter cleans up
+            # its own staging on any failure, so `wrf_output` stays
+            # absent rather than half-written.
+            wrf_manifest = stock_wrf_export_refused(error)
     timings["direct_stock_wrf_export"] = time.perf_counter() - started
     timings["total"] = sum(timings.values())
     return NativeHierarchyExportResult(
@@ -128,5 +187,6 @@ def initialize_and_export_native_hierarchy(
 
 __all__ = [
     "NativeHierarchyExportResult",
+    "STOCK_WRF_EXPORT_MODES",
     "initialize_and_export_native_hierarchy",
 ]
