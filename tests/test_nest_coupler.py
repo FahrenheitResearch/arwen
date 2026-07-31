@@ -656,6 +656,13 @@ def test_gpu_mp8_to_mp18_force_canonicalizes_every_missing_parent_field():
     assert receipt["current_process_coverage_complete"] is True
     assert receipt["first_parent_ticks"] == 3
     assert receipt["last_parent_ticks"] == 3
+    processing = receipt["per_species_processing_counts"]
+    assert len(processing) == sum(
+        receipt["species_action_counts"].values())
+    assert all(item["initialization_count"] == 0 for item in processing)
+    assert all(item["lateral_forcing_count"] == 1 for item in processing)
+    assert all(item["total_edge_processing_count"] == 1
+               for item in processing)
 
 
 @requires_gpu

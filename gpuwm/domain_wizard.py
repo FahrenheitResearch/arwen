@@ -379,6 +379,115 @@ def prepared_route_physics_notice(profile: str | None,
     return lines
 
 
+#: Longitude span, in degrees, past which the sized fetch box gets a word
+#: said about it.
+#:
+#: Not a limit and not a refusal: the sizer's job is to use the card it
+#: was given, and on a 32 GiB card one 12 km domain legally fills it --
+#: an owner's first emission covered 91 degrees of latitude and 152 of
+#: longitude with 0.00 GiB of headroom, which is correct arithmetic and
+#: an absurd first run.  The number below is a "that is bigger than you
+#: probably meant" threshold, chosen so a continental domain (the
+#: documented examples run 60-80 degrees of longitude at 24 GiB) passes
+#: without comment.
+_WIDE_FOOTPRINT_DEGREES = 90.0
+
+
+def _area_span_degrees(area: str) -> tuple[float, float] | None:
+    """``(lat_span, lon_span)`` for a ``S,W,N,E`` box, or None."""
+
+    parts = str(area).split(",")
+    if len(parts) != 4:
+        return None
+    try:
+        south, west, north, east = (float(value) for value in parts)
+    except ValueError:
+        return None
+    lon = east - west
+    if lon < 0:
+        lon += 360.0
+    return north - south, lon
+
+
+def oversized_footprint_advisory(area: str) -> list[str]:
+    """Say when the sized domain fills the card rather than the map.
+
+    An advisory, never a refusal, and it changes no sizing: the layout
+    is already chosen by the time this runs.  What it changes is whether
+    a first-time reader learns that the hemisphere-wide fetch box they
+    are about to download is a consequence of their card's size and a
+    single flag away from something smaller.
+    """
+
+    spans = _area_span_degrees(area)
+    if spans is None:
+        return []
+    lat_span, lon_span = spans
+    if lon_span < _WIDE_FOOTPRINT_DEGREES:
+        return []
+    return [
+        f"this domain was sized to fill your card: the fetch box spans "
+        f"{lon_span:.0f} degrees of longitude and {lat_span:.0f} of "
+        f"latitude, which is a large download and a large run.  Pass "
+        f"--vram-gib N (or --card 12gb) for a smaller domain; nothing "
+        f"here is wrong, it is just bigger than a first run usually "
+        f"wants."]
+
+
+def final_step_command(out: "Path", *, source: str, profile: str | None,
+                       domain_count: int, data_dir: str,
+                       case_data: dict | None) -> str:
+    """Step 3 of the closing block: the command that actually runs THIS file.
+
+    It used to be ``gpuwm run <config>`` for every source, and for GFS
+    and HRRR that is a command which refuses by design -- ``gpuwm run``
+    executes the ``[case_data]`` config-driven route, which is ERA5's.
+    A reader who follows a numbered list to a refusal has been told the
+    tool is broken by the tool itself; an owner met exactly that on
+    1.3.0.  So the last step names the route the emitted file is on:
+
+    * a ``[case_data]`` config (ERA5): ``gpuwm run`` -- unchanged;
+    * a single-domain GFS config bound to a shipped profile:
+      ``gpuwm go``, which runs the whole documented chain including the
+      fetch above, so it is pointed at that download;
+    * anything else on the native route: the chain in FIRST-LIGHT 3a,
+      naming the runner that applies, because no single command
+      finishes those today.
+    """
+
+    printed = _printed_path(out)
+    if case_data is not None:
+        return f"gpuwm run {printed}"
+    if source == "gfs" and domain_count == 1 and profile is not None:
+        return (f"gpuwm go {printed} --data-dir {_printed_path(data_dir)}"
+                "   # authority, front door, forecast and render, in order")
+    if domain_count > 1:
+        return (
+            "# this is a " + str(domain_count) + "-domain tree, which the "
+            "single-domain chain does not run.\n"
+            "#   prepare it with rw-wps, then:\n"
+            "#   python -m gpuwm.prepared_domain_tree_forecast "
+            "--prepared-root ... --preparation-receipt-sha256 ...\n"
+            "#   the full sequence is docs/public/FIRST-LIGHT.md "
+            "section 3a")
+    if source == "hrrr":
+        return (
+            "# HRRR reaches the GPU through the native front door, not "
+            "`gpuwm run`\n"
+            "#   (which is the ERA5 [case_data] route) and not `gpuwm go` "
+            "(whose\n"
+            "#   last stage accepts gfs/era5/20crv3): follow "
+            "docs/public/FIRST-LIGHT.md\n"
+            "#   section 3a, substituting the HRRR front door.")
+    return (
+        "# this config matches no shipped runner profile, so the "
+        "single-domain\n"
+        "#   forecast runner refuses it as emitted.  Re-emit with "
+        "--physics-profile <id>\n"
+        "#   (`gpuwm domain --help` lists them) to get a file `gpuwm go` "
+        "runs end to end.")
+
+
 def profile_switches(profile: str | None) -> dict:
     """Every physics switch for PROFILE, or for the default suite."""
 
@@ -689,7 +798,10 @@ def _projection_entries(lat: float, lon: float,
         }
     raise ValueError(
         f"--projection {map_proj!r} is not implemented (choices: auto, "
-        "lambert, mercator, polar)")
+        "lambert, mercator, polar). Regular/rotated latitude-longitude "
+        "needs angular dx/dy rather than metre spacing and WRF's "
+        "global/pole polar filter; rotated grids also need "
+        "pole_lat/pole_lon state and the map_proj == 6 curvature branch.")
 
 
 #: Bounds on a custom root dx (km).  Wide, because the point of
@@ -914,8 +1026,17 @@ def render_config(*, name: str, start_time: datetime, hours: int,
                   ratios: tuple[int, ...],
                   fetch_hints: dict, case_data: dict | None,
                   root_dx_m: float = ROOT_DX_M,
-                  profile: str | None = DEFAULT_PHYSICS_PROFILE) -> str:
-    """The emitted TOML text (the exact bytes the wizard validates)."""
+                  profile: str | None = DEFAULT_PHYSICS_PROFILE,
+                  interactive: bool = False) -> str:
+    """The emitted TOML text (the exact bytes the wizard validates).
+
+    ``interactive`` records WHICH front door authored the file -- the
+    prompt session or the flags -- in the header the file already
+    carries.  Both doors produce the same config for the same answers,
+    so this is provenance rather than a difference: it tells whoever
+    reads the file later how the numbers in it were arrived at, which
+    is the question asked of an emitted file nobody remembers writing.
+    """
     experiment = {
         "name": name, "start_time": start_time,
         "run_seconds": float(hours * 3600), "feedback": 0,
@@ -929,7 +1050,9 @@ def render_config(*, name: str, start_time: datetime, hours: int,
     time_step = root_time_step_s(projection["ref_lat"], root_dx_m)
     chain_km = _ladder_dx_km(ratios, root_dx_m)
     header = (
-        "# Emitted by `gpuwm domain` -- point "
+        "# Emitted by `gpuwm domain`"
+        + (" (interactive session)" if interactive else "")
+        + " -- point "
         f"{projection['ref_lat']:g},{projection['ref_lon']:g}, ladder "
         f"{'-'.join(f'{v:g}' for v in chain_km)} km.\n"
         f"# PHYSICS: {physics_summary(profile)}.\n"
@@ -1401,7 +1524,8 @@ def domain_main(args) -> int:
         name=name, start_time=start_time, hours=args.hours,
         projection=projection, dims=dims, ratios=ratios,
         fetch_hints=fetch_hints, case_data=case_data,
-        root_dx_m=root_dx_m, profile=profile)
+        root_dx_m=root_dx_m, profile=profile,
+        interactive=getattr(args, "interactive", False))
     # Round-trip the exact bytes through the real loader before writing.
     exp = experiment_from_text(text, source=str(out))
     estimate = estimate_experiment(
@@ -1460,10 +1584,15 @@ def domain_main(args) -> int:
                      f"--out {_printed_path(printed_out)}")
     check_command = (f"gpuwm check {_printed_path(out)} "
                      f"--budget-gib {budget_gib:g} --vram-gib {vram_gib:g}")
-    run_command = f"gpuwm run {_printed_path(out)}"
+    run_command = final_step_command(
+        out, source=args.source, profile=profile,
+        domain_count=len(dims), data_dir=printed_out,
+        case_data=case_data)
 
     for note in area_notes:
         print(f"note: {note}")
+    for note in oversized_footprint_advisory(fetch_hints["area"]):
+        print(f"advisory: {note}")
     print(f"physics: {physics_summary(profile)}")
     chain_km = _ladder_dx_km(ratios, root_dx_m)
     shared = shared_physics(profile)
@@ -1577,7 +1706,13 @@ def _print_next_steps(fetch_command: str, check_command: str,
                   "prints the account and key steps.")
     print(f"  2. {check_command}"
           + ("   # after the fetch lands" if deferred else ""))
-    print(f"  3. {run_command}")
+    # Step 3 is a command for most configs and a short route note for
+    # the ones no single command finishes; either way it is indented
+    # into the numbered block rather than trailing off the end of it.
+    lines = run_command.split("\n")
+    print(f"  3. {lines[0]}")
+    for line in lines[1:]:
+        print(f"     {line}")
 
 
 def register_cli(subparsers) -> None:
@@ -1676,8 +1811,9 @@ __all__ = [
     "CARD_VRAM_GIB", "DomainFitError", "GEOG_DATASETS", "GRAY_ZONE_DX_KM",
     "LADDER_RATIOS", "MAX_FETCH_ABS_LAT", "POLE_CLEARANCE_DEG",
     "ROOT_DX_M", "ROOT_TIME_STEP_S", "TROPICAL_ROOT_TIME_STEP_S",
-    "domain_main", "experiment_from_text", "fit_ladder",
-    "gray_zone_advisory", "max_fetch_abs_lat", "parse_chain",
+    "domain_main", "experiment_from_text", "final_step_command",
+    "fit_ladder", "gray_zone_advisory", "max_fetch_abs_lat",
+    "oversized_footprint_advisory", "parse_chain",
     "parse_custom_ladder", "pole_clearance_deg", "register_cli",
     "render_config", "render_wps_namelist", "root_time_step_s",
     "seconds_per_km", "vram_reserve_gib",

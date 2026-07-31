@@ -63,7 +63,23 @@ _NX, _NY, _NZ = 3, 2, 8
 #: checkout.  Pinned so a sweep that silently shrank cannot pass by
 #: measuring less.  Re-measured 2026-07-30: the WRF-owned MYNN/RUC and
 #: MYNN/Noah-MP pairings increase the admitted matrix from 19 to 21.
-_ROUTED_COMBINATIONS = 21
+#:
+#: Re-measured again 2026-07-30 for the v1.3.1 wave: 21 -> 33.  The
+#: combination lane made WRF v4.6.1's own PBL/surface-layer table the
+#: admission authority and it admits three pairings ArWen used to refuse
+#: under the (too broad) "MYNN half suite" story:
+#:
+#:   (bl_pbl=0, sf_sfclay=5)   PBL off with MYNN surface
+#:   (bl_pbl=5, sf_sfclay=1)   MYNN PBL with revised MM5 surface
+#:   (bl_pbl=5, sf_sfclay=91)  MYNN PBL with classic MM5 surface
+#:
+#: Each is legal for all four routed land-surface values {0, 2, 3, 4},
+#: so the admitted set grows by exactly 3 x 4 = 12.  The complement is
+#: unchanged and still accounts for the whole 4 x 4 x 3 = 48 product:
+#: 11 refusals with the surface layer off (its one admitted member is
+#: the all-off (0, 0, 0)), plus the 4 remaining WRF-fatal
+#: (bl_pbl=1, sf_sfclay=5) rows -- 15 refused, 33 admitted.
+_ROUTED_COMBINATIONS = 33
 
 #: Every int32 descriptor the routed cross-product actually produces.
 _INT32_DESCRIPTORS = frozenset({

@@ -31,6 +31,7 @@ from gpuwm.domain_wizard import (CARD_VRAM_GIB, LADDER_RATIOS,
                                  vram_reserve_gib)
 from gpuwm.experiment import load_experiment
 from gpuwm.fetch import validate_fetch_hints
+from gpuwm.physics_compat import MORRISON_PROFILE_ID
 from gpuwm.ingest.grib import parse_vtable
 from gpuwm.static.lambert import (grids_from_projection_config,
                                   grids_from_wps_namelist)
@@ -1230,3 +1231,135 @@ def test_a_gfs_wizard_run_gets_no_era5_credential_line(tmp_path, capsys):
     assert rc == 0
     assert "Copernicus CDS key" not in printed
     assert "1. gpuwm fetch --source gfs" in printed
+
+
+# ---------------------------------------------------------------------------
+# The closing block names the route the emitted file is actually on
+# ---------------------------------------------------------------------------
+
+def _emit(tmp_path, capsys, *extra, source="gfs", name="area"):
+    """Emit one config through the real CLI; return its printed output."""
+
+    out = tmp_path / f"{name}.toml"
+    rc = cli_main(["domain", "--point=35.3,-97.5", "--source", source,
+                   "--cycle", "2026-07-29T18", "--hours", "6",
+                   "--card", "12gb", "--out", str(out), *extra])
+    assert rc == 0
+    return out, capsys.readouterr().out
+
+
+def test_a_gfs_emission_never_points_at_gpuwm_run(tmp_path, capsys):
+    """The bug an owner hit on 1.3.0, in the shape it hit him.
+
+    ``gpuwm run`` executes the ``[case_data]`` config-driven route,
+    which is ERA5's; it refuses a GFS config by design and says so.  The
+    closing block used to print it for every source, so following the
+    numbered list to the end produced a refusal -- the tool telling its
+    own user it was broken.  The block branches on the source now.
+    """
+
+    out, printed = _emit(
+        tmp_path, capsys, "--ladder", "12", "--physics-profile",
+        MORRISON_PROFILE_ID)
+    block = printed.split("next:")[-1]
+    assert "gpuwm run " not in block
+    assert f"gpuwm go {_posix(out)}" in block
+
+
+def test_the_gfs_emission_the_block_names_passes_gos_plan_reader(
+        tmp_path, capsys):
+    """What it names is not merely different -- it is accepted."""
+
+    from gpuwm.go_cli import plan_from_config
+
+    out, printed = _emit(
+        tmp_path, capsys, "--ladder", "12", "--physics-profile",
+        MORRISON_PROFILE_ID)
+    assert "gpuwm go " in printed.split("next:")[-1]
+    plan = plan_from_config(out)
+    assert plan["profile"] == MORRISON_PROFILE_ID
+    assert plan["source"] == "gfs"
+
+
+def test_an_era5_emission_still_points_at_gpuwm_run(tmp_path, capsys):
+    """ERA5 is the route `gpuwm run` exists for; nothing changed there."""
+
+    out, printed = _emit(tmp_path, capsys, "--ladder", "12", source="era5")
+    assert f"gpuwm run {_posix(out)}" in printed.split("next:")[-1]
+
+
+def test_an_hrrr_emission_names_the_front_door_not_a_refusing_command(
+        tmp_path, capsys):
+    """HRRR reaches neither `gpuwm run` nor `gpuwm go`; say which route."""
+
+    _, printed = _emit(tmp_path, capsys, "--ladder", "12", source="hrrr",
+                       name="hrrr-area")
+    block = printed.split("next:")[-1]
+    assert "gpuwm run " not in block
+    assert "gpuwm go " not in block
+    assert "FIRST-LIGHT.md" in block
+
+
+def test_a_tree_emission_names_the_tree_runner(tmp_path, capsys):
+    """A ladder `gpuwm go` will not drive says so, with the runner."""
+
+    _, printed = _emit(tmp_path, capsys, "--ladder", "12-3", "--name",
+                       "treecase")
+    block = printed.split("next:")[-1]
+    assert "gpuwm run " not in block
+    assert "gpuwm go " not in block
+    assert "prepared_domain_tree_forecast" in block
+
+
+def test_a_profileless_gfs_emission_says_why_go_would_refuse_it(
+        tmp_path, capsys):
+    """No shipped profile is the OTHER reason the chain would stop."""
+
+    _, printed = _emit(tmp_path, capsys, "--ladder", "12")
+    block = printed.split("next:")[-1]
+    assert "gpuwm run " not in block
+    assert "--physics-profile" in block
+
+
+def _posix(path) -> str:
+    return str(path).replace("\\", "/")
+
+
+# ---------------------------------------------------------------------------
+# The advisory for a domain sized to the card rather than to the weather
+# ---------------------------------------------------------------------------
+
+def test_a_card_filling_footprint_gets_an_advisory_not_a_refusal():
+    """An owner's 32 GiB emission spanned 152 degrees of longitude.
+
+    Legal arithmetic -- the sizer's job is to use the card it was given
+    -- and an absurd first run.  This says so once, names the flag that
+    makes it smaller, and refuses nothing.
+    """
+
+    from gpuwm.domain_wizard import oversized_footprint_advisory
+
+    wide = oversized_footprint_advisory("-6.39,-159.63,73.19,-35.37")
+    assert len(wide) == 1
+    assert "--vram-gib" in wide[0]
+    assert "124 degrees of longitude" in wide[0]
+
+    # A continental domain is not remarkable and gets no line.
+    assert oversized_footprint_advisory("6.24,-135.55,63.02,-59.45") == []
+    # Nor is a shape this function cannot read a reason to say anything.
+    assert oversized_footprint_advisory("not-a-box") == []
+
+
+def test_the_advisory_reaches_the_terminal_on_a_large_card(tmp_path,
+                                                           capsys):
+    """Emitted for real, at the size that provoked it."""
+
+    out = tmp_path / "wide.toml"
+    assert cli_main(["domain", "--point=35.3,-97.5", "--source", "gfs",
+                     "--cycle", "2026-07-29T18", "--hours", "6",
+                     "--ladder", "12", "--vram-gib", "32.00",
+                     "--physics-profile", MORRISON_PROFILE_ID,
+                     "--out", str(out)]) == 0
+    printed = capsys.readouterr().out
+    assert "advisory: this domain was sized to fill your card" in printed
+    assert "gpuwm domain: FAIL" not in printed

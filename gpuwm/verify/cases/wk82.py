@@ -523,11 +523,9 @@ def run(outdir=None) -> dict:
     from gpuwm.core.grid import make_base_state, make_vertical_coord
     from gpuwm.config import validate_run_config
 
-    # This historical idealized case has no PBL.  WRF therefore runs
-    # vertical_diffusion_2 alongside km_opt=4; gpuwm has not implemented
-    # that vertical stress/surface-flux branch.  Reject before allocating a
-    # 168x168x60 GPU state instead of publishing gates from an incomplete
-    # operator.  The shipped real74 configs remain supported (PBL is on).
+    # This idealized case has no PBL, so km_opt=4 selects the ported WRF
+    # vertical_diffusion_2 stresses and surface-flux branch in addition to
+    # horizontal Smagorinsky diffusion.
     cfg = validate_run_config(default_config())
     coord = make_vertical_coord(cfg.nz)
     base = make_base_state(coord, lambda z: wk82_sounding(z)[0],

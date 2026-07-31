@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -12,6 +14,41 @@ import cupy as cp
 
 def _host(array):
     return np.ascontiguousarray(cp.asnumpy(array))
+
+
+@requires_gpu
+def test_runconfig_isfflx_reaches_both_mynn_surface_calls_and_changes_fluxes(
+        monkeypatch):
+    """The config value reaches the live ice and sea-component launches."""
+    import gpuwm.core.physics as physics_module
+    from gpuwm.core.physics import _prepare_atmosphere
+    from test_ruc_runtime import _build
+
+    real = physics_module.launch_mynn_surface_layer
+    observed = {}
+    for value in (0, 1):
+        state, cfg, driver = _build(
+            nx=4, ny=2, nz=12, water_columns=0, ice_rows=1,
+            mp_physics=6, sf_sfclay_physics=5, bl_pbl_physics=5)
+        cfg = replace(cfg, isfflx=value)
+        atmosphere = _prepare_atmosphere(state)
+        calls = []
+
+        def capture(*args, **kwargs):
+            calls.append(kwargs["isfflx"])
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(
+            physics_module, "launch_mynn_surface_layer", capture)
+        driver._run_sfclay(atmosphere, cfg)
+        assert calls == [value, value]
+        observed[value] = (
+            _host(driver.fields["hfx"]),
+            _host(driver.fields["qfx"]),
+        )
+
+    assert not np.array_equal(observed[0][0], observed[1][0])
+    assert not np.array_equal(observed[0][1], observed[1][1])
 
 
 def _capture_mynn_pbl_inputs(driver, atmosphere, cfg, monkeypatch):

@@ -58,7 +58,8 @@ from gpuwm.config import RunConfig  # noqa: E402
 from gpuwm.physics_registry import physics_registry  # noqa: E402
 
 #: Knobs GPUWM reads from the experiment schema rather than from RunConfig.
-EXPERIMENT_SCHEMA_PARAMETERS = frozenset({"p_top", "blend_width", "co2_vmr"})
+EXPERIMENT_SCHEMA_PARAMETERS = frozenset({
+    "p_top", "blend_width", "co2_vmr", "feedback"})
 
 #: Nodes whose first statement may be a docstring.
 _DOCSTRING_OWNERS = (

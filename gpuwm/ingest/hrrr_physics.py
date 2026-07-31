@@ -14,6 +14,7 @@ from types import MappingProxyType, SimpleNamespace
 import numpy as np
 
 from gpuwm.config import soil_layer_count
+from gpuwm.core.noah import noah_initial_snow_albedo
 from gpuwm.ingest.hrrr_surface import surface_fields_to_device
 
 
@@ -169,7 +170,10 @@ def initialize_prepared_physics(
         radiation_start_time=valid_time, radiation_latitude=lat,
         radiation_longitude=lon)
     driver.fields["snoalb"][...] = cp.asarray(
-        static["SNOALB"] / 100.0, dtype=cp.float32)
+        noah_initial_snow_albedo(
+            static["SNOALB"], static["LU_INDEX"], driver.noah_params,
+            rdmaxalb=cfg.rdmaxalb),
+        dtype=cp.float32)
     driver.fields["lai"][...] = cp.asarray(lai, dtype=cp.float32)
     driver.fields["shdmin"][...] = cp.asarray(
         100.0 * static["GREENFRAC"].min(axis=0), dtype=cp.float32)

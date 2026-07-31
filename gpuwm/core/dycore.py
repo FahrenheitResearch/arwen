@@ -692,6 +692,61 @@ def launch_wrf_smag2d_hd(state: DomainState, cfg: RunConfig, f, xk, tend,
         grid, (_TPB, 1, 1), tuple(common + payload + tail))
 
 
+def launch_wrf_smag2d_vertical(
+        state: DomainState, cfg: RunConfig, km, *,
+        ru, rv, rw, rth, rqv, time_t: bool) -> None:
+    """Add WRF v4.6.1 ``vertical_diffusion_2`` for PBL-off km_opt=4.
+
+    ``smag2d_km`` defines ``xkmv=xkmh`` and ``xkhv=0`` for this option, so
+    only u/v/w have interior vertical stresses.  The explicit ``isfflx=1``
+    wall stress, sensible-heat flux, and water-vapour flux are nevertheless
+    active and use the surface driver's held USTM/HFX/QFX fields.  A
+    surface-layer-free LES supplies cold-zero fields, exactly the no-writer
+    WRF state.
+    """
+    nz, ny, nx = km.shape
+    common = _wrf_smag_grid_args(state, cfg, time_t=time_t)
+    tail = [np.int32(nz), np.int32(ny), np.int32(nx),
+            np.int32(state.phb.ndim == 3),
+            np.int32(_boundary_x(cfg)), np.int32(_boundary_y(cfg))]
+    launches = (
+        ("wrf_smag_vd_u", ru, (nx + 1, ny, nz)),
+        ("wrf_smag_vd_v", rv, (nx, ny + 1, nz)),
+        ("wrf_smag_vd_w", rw, (nx, ny, nz + 1)),
+    )
+    for name, tendency, (nxs, nys, nlev) in launches:
+        grid = ((nxs + _TPB - 1) // _TPB, nys, nlev)
+        get_kernel("smag2d", name)(
+            grid, (_TPB, 1, 1), tuple(common + [km, tendency] + tail))
+
+    fields = (
+        state.physics.fields
+        if state.physics is not None and hasattr(state.physics, "fields")
+        else {}
+    )
+    active = int(
+        cfg.sf_sfclay_physics != 0
+        and all(name in fields for name in ("ustm", "hfx", "qfx")))
+    dummy = state.mup0
+    ustm = fields.get("ustm", dummy)
+    hfx = fields.get("hfx", dummy)
+    qfx = fields.get("qfx", dummy)
+    for name, tendency, nxs, nys in (
+            ("wrf_smag_surface_u", ru, nx + 1, ny),
+            ("wrf_smag_surface_v", rv, nx, ny + 1)):
+        grid = ((nxs + _TPB - 1) // _TPB, nys, 1)
+        get_kernel("smag2d", name)(
+            grid, (_TPB, 1, 1),
+            tuple(common + [ustm, np.int32(active), tendency] + tail))
+    scalar_grid = ((nx + _TPB - 1) // _TPB, ny, 1)
+    get_kernel("smag2d", "wrf_smag_surface_scalars")(
+        scalar_grid, (_TPB, 1, 1),
+        tuple(common + [
+            hfx, qfx, np.int32(active), rth,
+            rqv if rqv is not None else rth,
+        ] + tail))
+
+
 def _smag2d_specs(state: DomainState, km, kh, *, time_t: bool = False):
     """(field, tend-or-None, K, c1, c2, scratch slot, stagger) rows for the
     km_opt=4 package: momentum takes K_m, scalars (WRF ``theta - T0`` and
@@ -753,6 +808,23 @@ def _compute_wrf_smag_tendencies(state: DomainState, cfg: RunConfig,
                              time_t=time_t,
                              full_theta=(slot == "smag_rth"))
         _zero_open_strips(buf, cfg, 1)
+    if cfg.bl_pbl_physics == 0:
+        buffers = {
+            slot: state.scratch(f.shape, slot)
+            for f, _tend, _xk, _c1, _c2, slot, _stag in specs
+        }
+        launch_wrf_smag2d_vertical(
+            state, cfg, km,
+            ru=buffers["smag_ru"],
+            rv=buffers["smag_rv"],
+            rw=buffers["smag_rw"],
+            rth=buffers["smag_rth"],
+            rqv=buffers.get("smag_rqv"),
+            time_t=time_t,
+        )
+        for f, _tend, _xk, _c1, _c2, slot, _stag in specs:
+            _zero_open_strips(
+                buffers[slot], cfg, 1)
 
 
 def prepare_fixed_tendencies(state: DomainState, cfg: RunConfig) -> None:
@@ -1631,13 +1703,6 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
         raise ValueError(
             "km_opt=4 selects WRF Smagorinsky mixing; khdif/kvdif are "
             "constant-K controls for km_opt=1 and cannot also be active")
-    if cfg.km_opt == 4 and cfg.bl_pbl_physics == 0:
-        raise NotImplementedError(
-            "km_opt=4 with bl_pbl_physics=0 is not yet supported: WRF "
-            "diff_opt=2 also runs vertical_diffusion_2 when the PBL is "
-            "off (using xkmv=xkmh for the u/v/w stress terms), and gpuwm "
-            "does not yet implement that vertical operator and its surface-"
-            "flux policy")
     if cfg.mp_physics != 0 and getattr(state, "h_diabatic", None) is None:
         raise ValueError(
             f"mp_physics={cfg.mp_physics} requires cfg.moist=True: the "

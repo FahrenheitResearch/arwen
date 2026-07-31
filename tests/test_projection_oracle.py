@@ -330,7 +330,9 @@ def test_projection_class_dispatch():
     assert projection_class("polar") is PolarStereoGrid
     for cls in (LambertGrid, MercatorGrid, PolarStereoGrid):
         assert issubclass(cls, ProjectedGrid)
-    with pytest.raises(NotImplementedError, match="lat-lon"):
+    with pytest.raises(
+            NotImplementedError,
+            match=r"angular dx/dy.*polar filter.*map_proj == 6"):
         projection_class("lat-lon")
 
 

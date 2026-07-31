@@ -217,6 +217,9 @@ def test_support_report_rejects_unimplemented_projection(tmp_path):
     assert "Lambert conformal, Mercator, and polar stereographic" \
         in issue["message"]
     assert "rejected rather than approximated" in issue["action"]
+    assert "angular dx/dy" in issue["action"]
+    assert "polar filter" in issue["action"]
+    assert "map_proj == 6" in issue["action"]
 
 
 def test_support_report_accepts_mercator_geometry(tmp_path):

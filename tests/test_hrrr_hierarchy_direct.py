@@ -213,13 +213,37 @@ def test_public_gate_accepts_generic_parent_ordered_easy_physics_slice():
                               generic.domains[1], generic.domains[3])), target)
     with pytest.raises(ValueError, match="one-way"):
         _supported_hierarchy_slice(replace(_native(), feedback=1), target)
+    # A mixed WSM6 -> Morrison edge that names no transition policy.
+    #
+    # This used to refuse as "unsupported mixed": before v1.3.1 the only
+    # admitted mixed edge was Thompson -> NSSL.  The nest-edge lane
+    # admits all 20 ordered mixed edges now, and the refusal moved from
+    # "the pair is unsupported" to "the pair needs its policy named" --
+    # which is the stronger statement, because a silent default is what
+    # a cross-scheme translation must never have.  The gate is not
+    # weakened: the same hierarchy still fails closed.
     drifted = replace(
         _native(), domains=(
             _native().domains[0],
             replace(_native().domains[1], run=replace(
                 _native().domains[1].run, mp_physics=10))))
-    with pytest.raises(ValueError, match="unsupported mixed"):
+    with pytest.raises(ValueError,
+                       match="requires explicit nest_microphysics_transition"):
         _supported_hierarchy_slice(drifted, target)
+
+    # ...and naming it, with the moist/CQ contract the transition also
+    # requires on both domains, admits the same tree.  That is the other
+    # half of the contract, and it is what makes the refusal above a
+    # named gate rather than a blanket one.
+    admitted = replace(
+        _native(), domains=(
+            replace(_native().domains[0], run=replace(
+                _native().domains[0].run, moist=True, moist_cq=True)),
+            replace(_native().domains[1], run=replace(
+                _native().domains[1].run, mp_physics=10,
+                moist=True, moist_cq=True,
+                nest_microphysics_transition="mp-edge-mass-diagnosed-v1"))))
+    _supported_hierarchy_slice(admitted, target)
 
 
 def test_public_gate_admits_explicit_thompson_to_nssl_tree_without_consent():

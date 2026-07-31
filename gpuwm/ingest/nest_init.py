@@ -46,7 +46,7 @@ from gpuwm.core.grid import BaseState, VerticalCoord, make_vertical_coord
 from gpuwm.core.nest_interp import (adjust_tempqv, blend_terrain,
                                     register_nest, sint)
 from gpuwm.core.microphysics_transition import (
-    launch_mp8_to_mp18_parent_field,
+    launch_microphysics_edge_parent_field,
     resolve_microphysics_transition,
     transition_handles_field,
     transition_parent_field_shape,
@@ -1137,8 +1137,8 @@ def parent_only_init(child_dc: DomainConfig,
                     "parent transition field exceeds F16 arena capacity")
             backing = transition_backing.reshape(-1)[:count].reshape(
                 parent_shape)
-            launch_mp8_to_mp18_parent_field(
-                parent, name, out=backing, coupled=False)
+            launch_microphysics_edge_parent_field(
+                transition, parent, name, out=backing, coupled=False)
             sint(backing, registrations[stagger], out=target)
         elif source is not None and not (
                 transition.mixed and name == "h_diabatic"):
@@ -1149,6 +1149,8 @@ def parent_only_init(child_dc: DomainConfig,
     # heating must begin at zero rather than inheriting Thompson's closure.
     if transition.mixed and child.h_diabatic is not None:
         child.h_diabatic[...] = 0.0
+    if transition.mixed:
+        child._microphysics_transition_init_count = 1
 
     # WRF start_domain seeds the RK time-t copies from the interpolated state.
     for current, initial in (

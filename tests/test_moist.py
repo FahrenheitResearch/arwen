@@ -483,10 +483,9 @@ def test_wk82_sounding_matches_wrf_tabulation():
 # Task 10: moist Kessler bubble integration case (pre-supercell shakeout)
 # ---------------------------------------------------------------------------
 
-def test_moist_bubble_case_rejects_incomplete_no_pbl_operator():
-    """The old Kessler gate used km_opt=4 without WRF vertical mixing."""
-    from gpuwm.verify.cases.moist_bubble import run
+def test_moist_bubble_case_admits_complete_no_pbl_operator():
+    from gpuwm.config import validate_run_config
+    from gpuwm.verify.cases.moist_bubble import default_config
 
-    with pytest.raises(NotImplementedError,
-                       match=r"km_opt=4.*bl_pbl_physics=0.*vertical"):
-        run()
+    cfg = validate_run_config(default_config())
+    assert cfg.km_opt == 4 and cfg.bl_pbl_physics == 0

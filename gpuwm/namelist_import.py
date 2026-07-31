@@ -1083,9 +1083,18 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     # ---- &geogrid projection ---------------------------------------------
     map_proj = str(geo.scalar("map_proj", "lambert")).lower()
     if map_proj not in ("lambert", "mercator", "polar"):
+        blocker = (
+            " Regular/rotated latitude-longitude needs angular dx/dy "
+            "rather than metre spacing and WRF's global/pole polar filter; "
+            "rotated grids also need pole_lat/pole_lon state and the "
+            "map_proj == 6 curvature branch."
+            if map_proj.replace("_", "-") in {
+                "lat-lon", "latlon", "regular-ll", "rotated-lat-lon",
+                "rotated-ll",
+            } else "")
         raise _err("geogrid", "map_proj", map_proj,
                    "implemented projections: 'lambert', 'mercator', "
-                   "'polar'.")
+                   f"'polar'.{blocker}")
     ref_lat = float(geo.required("ref_lat"))
     ref_lon = float(geo.required("ref_lon"))
     truelat1 = float(geo.required("truelat1"))
@@ -1232,6 +1241,26 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     ysu_topdown_pblmix = _optional_scalar_int(
         "ysu_topdown_pblmix", (0, 1),
         "must be 0 or 1 (top-down radiation-driven PBL mixing).")
+    isfflx = _optional_scalar_int(
+        "isfflx", (0, 1),
+        "must be 0 (surface heat/moisture fluxes off) or 1 (on); WRF "
+        "value 2 also needs gpuwm's unported prescribed-flux/diffusion "
+        "forcing path.")
+    if isfflx == 1:
+        fix(
+            "physics", "isfflx", [1], 1,
+            "the established surface heat/moisture-flux-on value")
+        isfflx = None
+    use_mp_re = _optional_scalar_int(
+        "use_mp_re", (0, 1),
+        "must be 0 (legacy-RRTMG calculated radii) or 1 (use the WRF "
+        "microphysics scheme table).")
+    if use_mp_re == 1:
+        fix(
+            "physics", "use_mp_re", [1], 1,
+            "the established WRF microphysics effective-radius scheme-table "
+            "value")
+        use_mp_re = None
     isftcflx = _optional_scalar_int(
         "isftcflx", (0, 1, 2),
         "must be 0 (standard MM5 water-point roughness), 1 (Garratt), or "
@@ -1242,6 +1271,17 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         "0.1).")
     usemonalb = _optional_scalar_bool("usemonalb")
     rdlai2d = _optional_scalar_bool("rdlai2d")
+    rdmaxalb = _optional_scalar_bool("rdmaxalb")
+    seaice_albedo_default_values = ph.take("seaice_albedo_default")
+    seaice_albedo_default = None
+    if seaice_albedo_default_values is not None:
+        seaice_albedo_default = float(seaice_albedo_default_values[0])
+        if (not math.isfinite(seaice_albedo_default)
+                or not 0.0 <= seaice_albedo_default <= 1.0):
+            raise _err(
+                "physics", "seaice_albedo_default",
+                seaice_albedo_default_values,
+                "must be a finite albedo fraction in [0, 1].")
     opt_thcnd = _optional_scalar_int(
         "opt_thcnd", (1, 2),
         "must be 1 (Johansen soil thermal conductivity) or 2 "
@@ -1255,10 +1295,6 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             ("swint_opt", 0,
              "shortwave interpolation between radt calls is not "
              "implemented; radiation is recomputed on the radt cadence"),
-            ("use_mp_re", 1,
-             "microphysics effective radii reach radiation per WRF's "
-             "use_mp_re=1 scheme table (module_physics_init.F:985-1024); "
-             "the climatological-radius 0 branch is not ported"),
             ("gwd_opt", 0, "no gravity-wave-drag scheme is implemented"),
             ("sf_lake_physics", 0, "no lake model is implemented"),
             ("shcu_physics", 0,
@@ -1376,6 +1412,13 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             f"rrtmg_variant='{RRTMG_VARIANT_LEGACY}' requires the WRF "
             "namelist to request ra_lw_physics = ra_sw_physics = 4 "
             f"(RRTMG); got {lw_wrf[0]}/{sw_wrf[0]}")
+    if use_mp_re == 0 and not legacy_rrtmg:
+        raise _err(
+            "physics", "use_mp_re", [use_mp_re],
+            "use_mp_re=0 is implemented only by the exact legacy-RRTMG "
+            "wrapper; the selected radiation adapter has no equivalent "
+            "calculated-radius branch.")
+    o3input = None
     if (ra_lw_physics, ra_sw_physics) == (4, 4):
         wrf_rrtmg_compatibility = (
             WRF_RRTMG_LEGACY if legacy_rrtmg else WRF_RRTMG_TO_RTE_RRTMGP)
@@ -1428,11 +1471,12 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
 
     if (ra_lw_physics, ra_sw_physics) == (4, 4):
         # RRTMG-family radiation options, ratified with fail-closed ranges.
-        # Both 4/4 adapters implement exactly one combination -- McICA
-        # maximum-random overlap (cldovrlp=2) with constant decorrelation
-        # (idcor=0), CAM climatological ozone (o3input=2), the analytic
+        # Both 4/4 adapters implement McICA maximum-random overlap
+        # (cldovrlp=2), constant decorrelation (idcor=0), analytic
         # year-dependent well-mixed gases (ghg_input=0), and no aerosol
-        # (aer_opt=0).  Any other request would be a silent WRF semantic
+        # (aer_opt=0).  Legacy RRTMG additionally implements the wrapper's
+        # O3DATA branch (o3input=0); both variants retain CAM climatology
+        # (o3input=2).  Any other request would be a silent WRF semantic
         # change, so an explicit other value refuses instead of importing.
         # Absent keys keep the established import result byte-identical
         # (the shipped RTE+RRTMGP configurations must not change).  NOTE
@@ -1443,6 +1487,23 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         # reproduced here -- that limit is documented rather than guessed
         # at from an absent key.
         adapter_label = ("legacy RRTMG" if legacy_rrtmg else "RTE+RRTMGP")
+        raw_o3input = ph.take("o3input")
+        if raw_o3input is not None:
+            value = int(_uniform("physics", "o3input", raw_o3input))
+            admitted = (0, 2) if legacy_rrtmg else (2,)
+            if value not in admitted:
+                raise _err(
+                    "physics", "o3input", raw_o3input,
+                    f"gpuwm's {adapter_label} adapter implements "
+                    f"o3input values {admitted}; o3input=0 belongs to the "
+                    "legacy wrapper's O3DATA branch.")
+            if value == 2:
+                fix(
+                    "physics", "o3input", raw_o3input, 2,
+                    f"the established CAM-climatology value in the "
+                    f"{adapter_label} adapter")
+            else:
+                o3input = value
         for key, supported, why in (
                 ("cldovrlp", 2,
                  "McICA maximum-random overlap is the only implemented "
@@ -1450,9 +1511,6 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                 ("idcor", 0,
                  "constant 2500 m decorrelation is the only implemented "
                  "choice (inert at cldovrlp=2)"),
-                ("o3input", 2,
-                 "CAM climatological ozone is the only implemented ozone "
-                 "source"),
                 ("ghg_input", 0,
                  "the analytic year-dependent well-mixed gas formulas are "
                  "the only implemented GHG source (no CAMtr file reader)"),
@@ -1491,6 +1549,23 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                    f"no gpuwm mapping (implemented: "
                    f"{sorted(_SFSFC_ALLOWED)})."
                    + _port_receipt(sf_surface_physics=sfsfc))
+    if (seaice_albedo_default is not None
+            and seaice_albedo_default != 0.65 and sfsfc != 3):
+        raise _err(
+            "physics", "seaice_albedo_default",
+            [seaice_albedo_default],
+            "a nondefault value is implemented only by RUC LSM "
+            "(sf_surface_physics=3).")
+    if rdmaxalb is False and sfsfc != 2:
+        raise _err(
+            "physics", "rdmaxalb", [rdmaxalb],
+            "rdmaxalb=false is implemented by Noah LSMINIT and requires "
+            "sf_surface_physics=2.")
+    if isfflx == 0 and sfclay == 0:
+        raise _err(
+            "physics", "isfflx", [isfflx],
+            "isfflx=0 has no consumer when sf_sfclay_physics=0; gpuwm "
+            "implements the gate in its MM5 and MYNN surface layers.")
     from gpuwm.config import validated_soil_layer_count
 
     resolved_soil_layers = validated_soil_layer_count(sfsfc)
@@ -1523,15 +1598,6 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     cudt = [float(v) for v in ph.col("cudt", max_dom, 0)]
     radt = [float(v) for v in ph.col("radt", max_dom, 0)]
     bldt = float(_uniform("physics", "bldt", ph.col("bldt", max_dom, 0)))
-    isfflx = ph.take("isfflx")
-    if isfflx is not None and any(int(value) != 1 for value in isfflx):
-        raise _err(
-            "physics", "isfflx", isfflx,
-            "only isfflx=1 (surface heat/moisture fluxes on) is "
-            "implemented; disabled or hybrid flux policies are not "
-            "silently substituted.")
-    fix("physics", "isfflx", isfflx, 1,
-        "gpuwm surface heat/moisture fluxes are active (WRF isfflx=1)")
     for key, reason in (
             ("ifsnow", "Noah snow physics is always active"),
             ("surface_input_source", "surface fields come from the "
@@ -1604,13 +1670,6 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                    "refuses to run); gpuwm will not invent a mixing "
                    "scheme for you.")
     km_opt = int(_uniform("dynamics", "km_opt", km_opt_col))
-    if km_opt == 4 and bl_pbl_physics == 0:
-        raise _err(
-            "dynamics", "km_opt/bl_pbl_physics",
-            (km_opt, bl_pbl_physics),
-            "unsupported: WRF diff_opt=2 runs vertical_diffusion_2 when "
-            "km_opt=4 and the PBL is off; gpuwm has not implemented that "
-            "vertical u/v/w stress operator or its surface-flux policy.")
     diff_opt = dyn.col("diff_opt", max_dom)
     if diff_opt is not None and any(int(v) != 2 for v in diff_opt):
         raise _err("dynamics", "diff_opt", diff_opt,
@@ -1884,11 +1943,17 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     for key, value in (("no_mp_heating", no_mp_heating),
                        ("mp_tend_lim", mp_tend_lim),
                        ("ysu_topdown_pblmix", ysu_topdown_pblmix),
+                       ("isfflx", isfflx),
                        ("isftcflx", isftcflx),
                        ("iz0tlnd", iz0tlnd),
                        ("usemonalb", usemonalb),
                        ("rdlai2d", rdlai2d),
                        ("opt_thcnd", opt_thcnd),
+                       ("o3input", o3input),
+                       ("use_mp_re", use_mp_re),
+                       ("seaice_albedo_default",
+                        seaice_albedo_default),
+                       ("rdmaxalb", rdmaxalb),
                        ("nwp_diagnostics", nwp_diagnostics)):
         if value is not None:
             lines.append(f"{key} = {_fmt(value)}")

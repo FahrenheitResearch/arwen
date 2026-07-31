@@ -249,9 +249,21 @@ class ProjectionConfig:
 
     def __post_init__(self):
         if self.map_proj not in _MAP_PROJ_WRF_CODES:
+            normalized = self.map_proj.lower().replace("_", "-")
+            latlon = normalized in {
+                "lat-lon", "latlon", "regular-ll", "rotated-lat-lon",
+                "rotated-ll",
+            }
+            blocker = (
+                " Regular/rotated latitude-longitude needs angular dx/dy "
+                "rather than metre spacing and WRF's global/pole polar "
+                "filter; rotated grids also need pole_lat/pole_lon state "
+                "and the map_proj == 6 curvature branch."
+                if latlon else "")
             raise ValueError(
                 f"map_proj = {self.map_proj!r} is not supported "
-                "(implemented: 'lambert', 'mercator', 'polar').")
+                "(implemented: 'lambert', 'mercator', 'polar')."
+                f"{blocker}")
         for key, lo, hi in (("ref_lat", -90.0, 90.0),
                             ("truelat1", -90.0, 90.0),
                             ("truelat2", -90.0, 90.0),

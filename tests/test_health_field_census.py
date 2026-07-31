@@ -95,6 +95,12 @@ FOUR_DOMAIN_CONFIG = REPO_ROOT / "configs" / "real74_4dom.toml"
 #: pairings became selectable: 396 measured rows, 756 refusals, and 632 at
 #: root 260.  The 31-descriptor increase is RUC's retained MYNN fractional
 #: sea-ice surface-layer result, which is required for WRF's post-LSM blend.
+#:
+#: Re-measured again 2026-07-30 after the complete WRF v4.6.1 pairing
+#: table replaced the reciprocal half-suite and PBL-off diffusion gates:
+#: 792 measured rows, 360 refusals, and the same 632/root-260 peak.  The
+#: remaining refusals are 288 WRF-fatal pairing rows plus 72 active-LSM
+#: rows whose surface exchange fields have no ArWen writer.
 #: Headroom remains 392 descriptors under the unchanged 1024 ceiling.
 WORST_MEASURED_COUNT = 632
 #: The worst combination(s).  MYNN/RUC with Kain-Fritsch is widest; km_opt
@@ -188,7 +194,7 @@ def test_worst_selectable_count_is_the_recorded_measurement(
         f"the worst-case combination set changed to {sorted(peaks)}")
 
 
-def test_noahmp_slice_includes_the_wrf_owned_mynn_pairing(
+def test_noahmp_slice_matches_the_current_wrf_authority(
         four_domain_census):
     """Why 570 became 601 again, as a gate rather than as a comment.
 
@@ -224,13 +230,22 @@ def test_noahmp_slice_includes_the_wrf_owned_mynn_pairing(
     the corresponding 24 pairing refusals.  The remaining 192 refusals are
     the unchanged surface-layer-off, MYNN half-suite, and PBL-off diffusion
     gates.
+
+    Re-pinned for Lane C: 96 -> 192 measured and 192 -> 96 refused.
+    WRF's complete 12-cell PBL/surface-layer table admits MYNN PBL with
+    revised/classic MM5 surface layers and PBL-off with every represented
+    surface layer, while vertical_diffusion_2 retires the km_opt=4/PBL-off
+    rail.  The 96 remaining lsm4 refusals are exactly 72 WRF-fatal pairing
+    rows and 24 ArWen structural surface-layer-off rows.
     """
     report = four_domain_census
+    assert len(report["rows"]) == 792
+    assert len(report["rejected"]) == 360
     lsm4_rows = [row for row in report["rows"]
                  if row["sf_surface_physics"] == 4]
-    assert len(lsm4_rows) == 96, (
-        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 96 the "
-        "2026-07-30 MYNN-pairing census recorded; re-run and re-pin")
+    assert len(lsm4_rows) == 192, (
+        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 192 the "
+        "Lane C WRF-authority census recorded; re-run and re-pin")
     budget_refusals = [entry["selection"] for entry in report["rejected"]
                        if "Noah-MP column budget" in entry["reason"]]
     assert not budget_refusals, (
@@ -239,10 +254,10 @@ def test_noahmp_slice_includes_the_wrf_owned_mynn_pairing(
         f"{budget_refusals[:5]}")
     refused = [entry for entry in report["rejected"]
                if "-lsm4-" in entry["selection"]]
-    assert len(refused) == 192, (
-        f"{len(refused)} lsm4 refusals against the 192 recorded after "
-        "retiring the 24 MYNN/Noah-MP pairing refusals (120 MYNN "
-        "half-suite, 48 LSM-without-surface-layer, 24 km_opt=4/pbl0)")
+    assert len(refused) == 96, (
+        f"{len(refused)} lsm4 refusals against the 96 recorded by Lane C "
+        "(72 WRF-fatal PBL/surface-layer rows and 24 active-LSM rows "
+        "without an ArWen surface-exchange writer)")
 
 
 def test_worst_selectable_count_stays_inside_the_early_warning_band(

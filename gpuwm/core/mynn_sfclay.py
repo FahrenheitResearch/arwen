@@ -3,7 +3,7 @@
 Only the option identities represented by
 ``gpuwm.core.mynn_surface.mynn_surface_layer_default`` are implemented here --
 every defined ``isftcflx`` over water, with ``iz0tlnd=0``.
-The surface-layer and PBL selectors remain a coupled MYNN 5/5 suite.  WRF's
+The surface-layer and PBL selectors follow WRF's own compatibility table. WRF's
 surface driver also pairs that suite with Noah, RUC and Noah-MP; the constants
 below make the exact exchange-field staging at those LSM seams explicit.
 """

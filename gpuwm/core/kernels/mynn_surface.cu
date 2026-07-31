@@ -3,7 +3,7 @@
 // This is the CUDA transcription of module_sf_mynn.F:SFCLAY1D_mynn for the
 // pinned option identities: every defined isftcflx over water, with
 // iz0tlnd=0, spp_pbl=0 and psi_opt=0.  One thread handles one independent
-// horizontal column.  The coupled MYNN 5/5 runtime selector remains
+// horizontal column.  The MYNN surface-layer runtime selector remains
 // fail-closed until the PBL kernel and full driver coupling pass their
 // separate WRF oracles.
 

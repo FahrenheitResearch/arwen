@@ -16,6 +16,7 @@ import pytest
 
 from conftest import requires_gpu
 from gpuwm.ingest.grib import Era5Snapshot
+from gpuwm.ingest.preprocess_backend import _rotate_earth_to_grid_cpu
 from gpuwm.ingest.horiz import (
     _canonical_psfc_bilinear,
     _WPS_FULL_CHAIN,
@@ -31,6 +32,7 @@ from gpuwm.ingest.horiz import (
     wps_masked_field_interpolate,
 )
 from gpuwm.static.lambert import LambertGrid, grids_from_wps_namelist
+from gpuwm.static.projection import MercatorGrid, PolarStereoGrid
 from gpuwm.verify.npref import (
     era5_rh_to_water_np,
     interpolate_regular_np,
@@ -329,6 +331,62 @@ def test_wrf_wind_rotation_reference_round_trip():
     ue, ve = rotate_grid_to_earth_np(ug, vg, sina, cosa)
     np.testing.assert_allclose(ue, u, rtol=0.0, atol=5.0e-16)
     np.testing.assert_allclose(ve, v, rtol=0.0, atol=5.0e-16)
+
+
+@pytest.mark.parametrize(
+    "grid",
+    [
+        MercatorGrid(1.3, 103.8, 1.3, 1.3, 103.8,
+                     40_000.0, 40_000.0, 8, 7),
+        MercatorGrid(-17.8, 178.5, -17.8, -17.8, 178.5,
+                     40_000.0, 40_000.0, 8, 7),
+        PolarStereoGrid(64.8, -147.7, 64.8, 64.8, -147.7,
+                        40_000.0, 40_000.0, 8, 7),
+        PolarStereoGrid(-77.85, 166.7, -71.0, -71.0, 166.7,
+                        40_000.0, 40_000.0, 8, 7),
+    ],
+    ids=("mercator-north", "mercator-south",
+         "polar-north", "polar-south"),
+)
+@pytest.mark.parametrize(
+    "earth_wind",
+    [(7.25, -3.5), (-4.75, 8.125)],
+    ids=("southeastward", "northwestward"),
+)
+def test_new_projection_wind_rotation_both_directions(grid, earth_wind):
+    """GFS/ERA5 earth basis -> model grid basis -> uvmet earth basis.
+
+    The source routes call the CPU/GPU equivalent of
+    ``_rotate_earth_to_grid_cpu``.  wrf-rust's uvmet path consumes the
+    stored SINALPHA/COSALPHA and applies the inverse below.  Exercise both
+    projections, both hemispheres (hence multiple latitude bands), and two
+    non-axis-aligned wind directions.
+    """
+    sina, cosa = grid.rotation_m()
+    assert np.unique(grid.latlon_mass()[0]).size > 1
+    if isinstance(grid, MercatorGrid):
+        assert np.all(sina == 0.0) and np.all(cosa == 1.0)
+    else:
+        assert np.max(np.abs(sina)) > 0.0
+
+    ue = np.full(sina.shape, earth_wind[0], dtype=np.float32)
+    ve = np.full(sina.shape, earth_wind[1], dtype=np.float32)
+    ug, vg = _rotate_earth_to_grid_cpu(ue, ve, sina, cosa)
+
+    sina32 = np.asarray(sina, dtype=np.float32)
+    cosa32 = np.asarray(cosa, dtype=np.float32)
+    np.testing.assert_array_equal(
+        ug, np.asarray(ue * cosa32 + ve * sina32, dtype=np.float32))
+    np.testing.assert_array_equal(
+        vg, np.asarray(ve * cosa32 - ue * sina32, dtype=np.float32))
+
+    # Earth-relative inverse used by WRF diagnostics/uvmet.  Unit-norm
+    # rotation fields are stored at FP32 in wrfout, so the two-rounding
+    # round trip has a small FP32 tolerance rather than a byte identity.
+    ue_back = np.asarray(ug * cosa32 - vg * sina32, dtype=np.float32)
+    ve_back = np.asarray(vg * cosa32 + ug * sina32, dtype=np.float32)
+    np.testing.assert_allclose(ue_back, ue, rtol=2.0e-7, atol=1.0e-6)
+    np.testing.assert_allclose(ve_back, ve, rtol=2.0e-7, atol=1.0e-6)
 
 
 def test_lambert_rotation_uses_task4_mass_sinalpha_cosalpha():

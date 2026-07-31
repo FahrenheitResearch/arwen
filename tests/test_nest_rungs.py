@@ -66,20 +66,13 @@ def test_n2a_n2b_config_schedule_and_field_inventories_are_pinned():
         "identity_oracle"
 
 
-def test_n2_identity_scaffold_rejects_incomplete_no_pbl_operator():
-    """Both ratio-1 domains inherited WK82's unsupported mixing branch."""
+def test_n2_identity_scaffold_admits_complete_no_pbl_operator():
+    """Both ratio-1 domains inherit the complete WRF PBL-off mixing path."""
     from gpuwm.config import validate_run_config
-    from gpuwm.verify.cases.nest_ideal_r1_moist import build_case
 
     exp = load_identity(variant="n2b")
     for domain in exp.domains:
-        with pytest.raises(
-                NotImplementedError,
-                match=r"km_opt=4.*bl_pbl_physics=0.*vertical"):
-            validate_run_config(domain.run)
-    with pytest.raises(NotImplementedError,
-                       match=r"km_opt=4.*bl_pbl_physics=0.*vertical"):
-        build_case()
+        assert validate_run_config(domain.run).bl_pbl_physics == 0
 
 
 def test_identity_executable_history_cadence_covers_every_sync_tick():

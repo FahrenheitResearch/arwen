@@ -940,17 +940,19 @@ def test_mixed_parent_only_init_reuses_flat_force_slot_and_resets_heating(
             "qvolh"))
     }
 
-    def translate(_state, name, *, out, coupled):
+    def translate(_contract, _state, name, *, out, coupled):
         assert coupled is False
         out.fill(field_value[name])
         return out
 
     monkeypatch.setattr(ni, "sint", cpu_sint)
-    monkeypatch.setattr(ni, "launch_mp8_to_mp18_parent_field", translate)
+    monkeypatch.setattr(
+        ni, "launch_microphysics_edge_parent_field", translate)
     monkeypatch.setattr(ni, "update_diagnostics", lambda *_: None)
 
     result = ni.parent_only_init(child_dc, parent_node)
     state = result.state
+    assert state._microphysics_transition_init_count == 1
     expected_capacity = max(
         3 * 12 * 12, 3 * 12 * 13, 3 * 13 * 12, 4 * 12 * 12)
     assert state._scratch["nest_parent_field"].shape == (expected_capacity,)

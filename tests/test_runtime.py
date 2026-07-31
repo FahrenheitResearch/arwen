@@ -616,8 +616,16 @@ def test_single_domain_implicit_trace_gases_keep_experiment_column_chunk(
             for name in ("snoalb", "albbck", "lai", "shdmin", "shdmax",
                          "psfc", "t2", "q2", "th2", "u10", "v10")
         }
+        # ``noah_params`` is part of what the real driver returns, and
+        # ``gpuwm/runtime.py`` reads it to initialize SNOALB (the knob
+        # lane's ported ``rdmaxalb`` branch, WRF
+        # module_sf_noahdrv.F:1902-1903).  ``None`` is the production
+        # constructor's own default and is what this fixture's
+        # ``rdmaxalb=True`` path uses -- that branch keeps the supplied
+        # geogrid percentage and never reads the VEGPARM table.
         state.physics = SimpleNamespace(
-            radiation_callable=radiation, fields=fields)
+            radiation_callable=radiation, fields=fields,
+            noah_params=None)
         return state.physics
 
     monkeypatch.setattr(physics, "initialize_physics", fake_initialize_physics)

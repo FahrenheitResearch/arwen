@@ -282,6 +282,32 @@ def pack_params(t: NoahTables) -> NoahParams:
                       lutype=t.lutype, sltype=t.sltype)
 
 
+def noah_initial_snow_albedo(
+        geogrid_percent, ivgtyp, params: NoahParams, *, rdmaxalb: bool):
+    """Transcribe ``module_sf_noahdrv.F:1902-1904``'s LSMINIT choice.
+
+    ``rdmaxalb=True`` keeps the supplied geogrid SNOALB percentage.  False
+    replaces it with VEGPARM's MAXALB percentage for the one-based vegetation
+    category.  The returned fraction is what gpuwm's Noah kernel consumes.
+    """
+    supplied = np.asarray(geogrid_percent, dtype=np.float64)
+    categories = np.asarray(ivgtyp)
+    if supplied.shape != categories.shape:
+        raise ValueError(
+            "SNOALB and IVGTYP shapes differ at Noah initialization")
+    if bool(rdmaxalb):
+        selected = supplied
+    else:
+        if (not np.issubdtype(categories.dtype, np.integer)
+                or np.any(categories < 1)
+                or np.any(categories > params.lucats)):
+            raise ValueError(
+                "IVGTYP is outside the Noah VEGPARM category table")
+        selected = params.veg[categories.astype(np.int64) - 1,
+                              VEG_COLS.index("maxalb")]
+    return np.asarray(selected * 0.01, dtype=np.float32)
+
+
 # ---------------------------------------------------------------------------
 # LSMINIT soil-liquid-water helper (CPU, float64)
 # ---------------------------------------------------------------------------

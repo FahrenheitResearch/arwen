@@ -481,15 +481,15 @@ def test_a_physics_refusal_keeps_its_rule_and_defers_its_mechanism():
     message = str(error_info.value)
 
     terse = explain.render(message, explain=False, command="gpuwm run")
-    assert "MYNN half-suite" in terse
-    assert "admitted only as the coupled pair" in terse
+    assert "WRF v4.6.1 PBL/surface-layer compatibility" in terse
+    assert "WRF v4.6.1 refuses this pairing" in terse
     assert "no substitutions were applied" in terse
     # The mechanism waits to be asked for.
-    assert "in place of SFCDIAGS" not in terse
+    assert "phys/module_physics_init.F:" not in terse
     assert "gpuwm run --explain" in terse
 
     full = explain.render(message, explain=True, command="gpuwm run")
-    assert "in place of SFCDIAGS" in full
+    assert "phys/module_physics_init.F:3213-3219,3699-3701" in full
 
 
 def test_the_noahmp_budget_remedy_is_never_behind_the_flag():

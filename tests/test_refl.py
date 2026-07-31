@@ -302,6 +302,15 @@ def test_refl_stash_has_no_trajectory_or_restart_reader():
     # The offline downscale child (gpuwm downscale) consumes at its own
     # emit_output history seam -- added by the STEP14 downscale lane, which
     # missed this pin; recorded and admitted by the STEP17 lane.
+    #
+    # The prepared single-domain forecast runner joined this set in
+    # v1.3.1 without changing one line of its own: it has always consumed
+    # the handoff at its wrfout assembly, and it used to live at
+    # tools/prepared_single_domain_forecast.py, outside the gpuwm/ tree
+    # this grep walks.  Moving its substance into the package (so a pip
+    # install can run a forecast) made an existing reader visible to the
+    # pin rather than adding a new one.  It is the third wrfout producer
+    # and belongs here on exactly the same grounds as gpuwm/runtime.py.
     consume_hits = {
         path.relative_to(repo).as_posix()
         for path in gpuwm.rglob("*.py")
@@ -310,6 +319,7 @@ def test_refl_stash_has_no_trajectory_or_restart_reader():
     assert consume_hits == {
         "gpuwm/core/refl.py", "gpuwm/runtime.py",
         "gpuwm/offline_child_run.py",
+        "gpuwm/prepared_single_domain_forecast.py",
         "gpuwm/verify/cases/nest_ideal_common.py",
         "gpuwm/verify/cases/real74_n5s.py",
     }
@@ -631,8 +641,7 @@ def test_make_reflectivity_map_is_optional_and_renders(tmp_path):
         make_reflectivity_map(bare, tmp_path / "maps")
 
 
-def test_wk82_reflectivity_gate_rejects_incomplete_no_pbl_operator():
-    """A reflectivity envelope cannot validate an incomplete dynamics run."""
+def test_wk82_reflectivity_gate_admits_complete_no_pbl_operator():
     from dataclasses import replace
 
     import gpuwm.verify.cases.wk82 as wk82
@@ -640,6 +649,5 @@ def test_wk82_reflectivity_gate_rejects_incomplete_no_pbl_operator():
 
     cfg = replace(wk82.default_config(), mp_physics=10,
                   run_seconds=5400.0)
-    with pytest.raises(NotImplementedError,
-                       match=r"km_opt=4.*bl_pbl_physics=0.*vertical"):
-        validate_run_config(cfg)
+    admitted = validate_run_config(cfg)
+    assert admitted.km_opt == 4 and admitted.bl_pbl_physics == 0

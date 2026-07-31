@@ -16,10 +16,11 @@ lines (grid-wide GSW/RTHRATENSW zeroing and ``SWDOWN = GSW/(1-ALBEDO)``,
 call must run the device McICA twin and the batched CUDA engines, never
 the NumPy compute chain.
 
-The only implemented option combination (dossier section 1) is pinned
-here and fails closed on anything else: ``icloud=1``, ``cldovrlp=2``
-(McICA maximum-random), ``idcor=0``, ``o3input=2``, ``ghg_input=0``,
-``aer_opt=0``, ``swint_opt=0``.
+The implemented option envelope (dossier section 1) is pinned here and
+fails closed on anything else: ``icloud=1``, ``cldovrlp=2`` (McICA
+maximum-random), ``idcor=0``, ``o3input in {0, 2}``, ``ghg_input=0``,
+``aer_opt=0``, ``swint_opt=0``.  ``o3input=0`` selects the wrapper's
+O3DATA branch; ``o3input=2`` selects CAM climatology.
 
 Night contract (dossier section 3): the driver-level zeroing is realized
 by allocating RTHRATENSW/GSW as zeros and writing only day columns; the
@@ -117,7 +118,7 @@ _DPD = F(F(360.0) / F(365.0))
 
 #: The pinned WRF option combination this adapter implements (dossier
 #: section 1).  A config carrying any other explicit value fails closed.
-_PINNED_OPTIONS = {"icloud": 1, "cldovrlp": 2, "idcor": 0, "o3input": 2,
+_PINNED_OPTIONS = {"icloud": 1, "cldovrlp": 2, "idcor": 0,
                    "ghg_input": 0, "aer_opt": 0, "swint_opt": 0}
 
 
@@ -233,6 +234,21 @@ _MP_DECLARES_RADII = {
     10: False,   # Morrison two-moment: NOT in WRF's use_mp_re list
     18: True,    # NSSL 2-moment (nssl_2moment_on=1)
 }
+
+
+def legacy_scheme_declares_radii(mp_physics, use_mp_re):
+    """WRF v4.6.1's ``use_mp_re`` gate around its scheme table."""
+    table_declares = _MP_DECLARES_RADII.get(int(mp_physics))
+    if table_declares is None:
+        raise NotImplementedError(
+            f"mp_physics={int(mp_physics)} has no has_req* entry in the "
+            "WRF v4.6.1 use_mp_re scheme table carried by the legacy RRTMG "
+            "adapter; extend _MP_DECLARES_RADII from "
+            "module_physics_init.F:985-1024 rather than guessing")
+    value = int(use_mp_re)
+    if value not in (0, 1):
+        raise ValueError(f"use_mp_re must be 0 or 1, got {use_mp_re!r}")
+    return bool(value) and table_declares
 
 _LEGACY_ICE_ACTIVE_MICROPHYSICS = frozenset((6, 8, 10, 18))
 
@@ -517,7 +533,8 @@ class RRTMGLegacyRadiation:
     """
 
     def __init__(self, start_time, latitude_deg, longitude_deg, *,
-                 p_top=None, column_chunk=None, ozone_parent=None):
+                 p_top=None, column_chunk=None, ozone_parent=None,
+                 o3input=2):
         if not isinstance(start_time, datetime):
             raise TypeError("radiation_start_time must be a datetime")
         self.start_time = start_time
@@ -528,6 +545,11 @@ class RRTMGLegacyRadiation:
         self.latitude_deg = np.ascontiguousarray(lat)
         self.longitude_deg = np.ascontiguousarray(lon)
         self.p_top = None if p_top is None else float(p_top)
+        self.o3input = int(o3input)
+        if self.o3input not in (0, 2):
+            raise ValueError(
+                "legacy RRTMG implements o3input=0 (wrapper O3DATA) and "
+                f"o3input=2 (CAM climatology), got {o3input!r}")
         if column_chunk is not None and int(column_chunk) < 1:
             raise ValueError("column_chunk must be positive")
         self.column_chunk = None if column_chunk is None \
@@ -537,6 +559,10 @@ class RRTMGLegacyRadiation:
                 "ozone_parent must be a callable provider (e.g. "
                 "ParentOzoneProvider) returning the child-grid o33d "
                 "columns, or None on the root domain")
+        if self.o3input == 0 and ozone_parent is not None:
+            raise ValueError(
+                "o3input=0 constructs ozone inside the legacy wrapper and "
+                "must not receive a parent o3rad provider")
         self._ozone_provider = ozone_parent
         #: the most recent o33d field (nz, ny, nx) host float32, retained
         #: so child domains can interpolate it (WRF's root-compute +
@@ -562,7 +588,13 @@ class RRTMGLegacyRadiation:
                 "ra_rrtmg_variant='rrtmg_legacy' is selected but the "
                 "packaged RRTMG_SW_DATA coefficients cannot be "
                 f"loaded/built: {exc}") from exc
-        if self._ozone_provider is None:
+        if self.o3input == 0:
+            # O3DATA is evaluated independently inside lwrad/swrad prep and
+            # does not read the CAM climatology or parent-routed o3rad field.
+            self._ozone = None
+            self._ozone_climo = None
+            self._ozone_lat_interp = None
+        elif self._ozone_provider is None:
             # Root routing: the climatology chain runs here (WRF: o3rad
             # is evaluated on id==1 only).  The latitude interpolation is
             # WRF's oznini-time work, cached once per domain.
@@ -639,13 +671,8 @@ class RRTMGLegacyRadiation:
             RRTMG_LEGACY_ABOVE_ATMOSPHERE_POLICY,
             RRTMG_LEGACY_LW_ALGORITHM_IDENTITY,
             RRTMG_LEGACY_SW_ALGORITHM_IDENTITY)
-        # Constant pins only -- importing wrf_ozone performs no file I/O;
-        # a child adapter still never CALLS its climatology chain.
-        from gpuwm.ingest.wrf_ozone import (OZONE_LAT_SHA256,
-                                            OZONE_PLEV_SHA256,
-                                            OZONE_SHA256)
         from gpuwm.physics_compat import WRF_RRTMG_LEGACY
-        return {
+        identity = {
             "algorithm": (f"lw={RRTMG_LEGACY_LW_ALGORITHM_IDENTITY};"
                           f"sw={RRTMG_LEGACY_SW_ALGORITHM_IDENTITY}"),
             "algorithms": {
@@ -659,23 +686,32 @@ class RRTMGLegacyRadiation:
             "permuteseed_sw": int(_mcica.SW_PERMUTESEED),
             "icld": 2,
             "idcor": 0,
-            "o3input": 2,
+            "o3input": self.o3input,
             "ghg_input": 0,
             "aer_opt": 0,
             "column_chunk": self.column_chunk,
             "p_top": self.p_top,
-            "ozone_routing": ("parent-interpolated"
-                              if self._ozone_provider is not None
-                              else "root-climatology"),
-            "ozone_assets": {
-                "ozone.formatted": OZONE_SHA256,
-                "ozone_lat.formatted": OZONE_LAT_SHA256,
-                "ozone_plev.formatted": OZONE_PLEV_SHA256,
-            },
+            "ozone_routing": (
+                "wrapper-o3data" if self.o3input == 0 else
+                ("parent-interpolated"
+                 if self._ozone_provider is not None
+                 else "root-climatology")),
             "statics_assets": {
                 "rrtmg_lw_statics.npz": RRTMG_LW_STATICS_SHA256,
             },
         }
+        if self.o3input == 2:
+            # Constant pins only -- importing wrf_ozone performs no file I/O;
+            # a child adapter still never CALLS its climatology chain.
+            from gpuwm.ingest.wrf_ozone import (OZONE_LAT_SHA256,
+                                                OZONE_PLEV_SHA256,
+                                                OZONE_SHA256)
+            identity["ozone_assets"] = {
+                "ozone.formatted": OZONE_SHA256,
+                "ozone_lat.formatted": OZONE_LAT_SHA256,
+                "ozone_plev.formatted": OZONE_PLEV_SHA256,
+            }
+        return identity
 
     # ------------------------------------------------------------------
     def _check_pins(self, cfg):
@@ -687,6 +723,12 @@ class RRTMGLegacyRadiation:
                     f"rrtmg_legacy implements only {name}={pinned} "
                     f"(dossier section 1); got {name}={value!r} -- no "
                     "silent option substitution is applied")
+        requested_o3input = int(getattr(cfg, "o3input", 2))
+        if requested_o3input != self.o3input:
+            raise ValueError(
+                f"adapter was constructed for o3input={self.o3input} but "
+                f"the run config requests o3input={requested_o3input}; rebuild "
+                "the adapter so its asset/routing identity matches")
 
     def _validate_radii_micron(self, name, eff_um, q):
         """Reject meter-scale radii state (dossier section 11 caveat)."""
@@ -779,13 +821,8 @@ class RRTMGLegacyRadiation:
         # reach cldprmc's [5,140] wrf_error_fatal.  Presence-based
         # detection reproduced exactly that fatal on a real Morrison
         # forecast (integration finding, 2026-07-27).
-        scheme_declares = _MP_DECLARES_RADII.get(int(mp_physics))
-        if scheme_declares is None:
-            raise NotImplementedError(
-                f"mp_physics={int(mp_physics)} has no has_req* entry in "
-                "the WRF v4.6.1 use_mp_re scheme table carried by the "
-                "legacy RRTMG adapter; extend _MP_DECLARES_RADII from "
-                "module_physics_init.F:985-1024 rather than guessing")
+        scheme_declares = legacy_scheme_declares_radii(
+            mp_physics, getattr(cfg, "use_mp_re", 1))
         radii = {}
         has_req = {}
         for name, key, q in (("effc", "re_cloud", "qc"),
@@ -870,7 +907,12 @@ class RRTMGLegacyRadiation:
                              declin)
 
         # ---- o33d: WRF's root-compute + parent->child routing ----------
-        if self._ozone_provider is not None:
+        if self.o3input == 0:
+            # The wrapper ignores o33d in this mode and builds O3DATA from
+            # pressure and latitude.  Shape-correct zeros retain one batch
+            # contract for both modes.
+            o33d = np.zeros((ncol, nz), np.float32)
+        elif self._ozone_provider is not None:
             o33d = np.asarray(self._ozone_provider(), np.float32)
             if o33d.shape != (ncol, nz):
                 raise ValueError(
@@ -883,12 +925,14 @@ class RRTMGLegacyRadiation:
                                          ozmixt)
         # Retain for child domains (their providers read this field, so a
         # nest's ozone updates exactly when its parent's does).
-        self._o33d_grid = np.ascontiguousarray(
-            o33d.reshape(ny, nx, nz).transpose(2, 0, 1))
+        self._o33d_grid = (
+            None if self.o3input == 0 else np.ascontiguousarray(
+                o33d.reshape(ny, nx, nz).transpose(2, 0, 1)))
 
         shared = dict(
             icloud=1, warm_rain=warm_rain, cldovrlp=2, idcor=0,
-            o3input=2, has_reqc=has_req["effc"], has_reqi=has_req["effi"],
+            o3input=self.o3input,
+            has_reqc=has_req["effc"], has_reqi=has_req["effi"],
             has_reqs=has_req["effs"], f_qc=f_flags["qc"],
             f_qr=f_flags["qr"], f_qi=f_flags["qi"], f_qs=f_flags["qs"],
             f_qg=f_flags["qg"], yr=yr, julian=julian,

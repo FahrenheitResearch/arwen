@@ -52,7 +52,11 @@ _SUPPORTED_PHYSICS = {
     "ra_sw_physics": 1,
     "cu_physics": 0,
 }
-_SUPPORTED_MICROPHYSICS = frozenset({6, 8, 10, 18})
+# WRF v4.6.1 Registry/Registry.EM_COMMON:3015 declares Kessler's
+# qv/qc/qr package.  Native-HRRR initialization retains QC/QR and produces
+# an explicit discard receipt for the source-only frozen species before this
+# direct hierarchy path sees the state.
+_SUPPORTED_MICROPHYSICS = frozenset({1, 6, 8, 10, 18})
 _DOMAIN_PREPARATION_OVERRIDES = frozenset({
     "cu_physics", "cudt_minutes", "radt", "radt_minutes", "bldt",
     "diff_6th_factor", "epssm", "spec_exp", "mp_physics", "moist",

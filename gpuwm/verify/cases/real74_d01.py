@@ -380,10 +380,8 @@ def build_forcing(run_seconds=1800.0):
     import netCDF4
     from gpuwm.config import validate_run_config
 
-    # ``config`` is the retired dynamics-only Task-8 path.  With PBL off,
-    # WRF's km_opt=4 branch also needs vertical_diffusion_2, which gpuwm has
-    # not implemented.  The production phase3_config and every shipped
-    # real74 TOML explicitly enable PBL and remain supported.
+    # ``config`` is the dynamics-only Task-8 path.  With PBL off, WRF's
+    # km_opt=4 branch also selects the now-ported vertical_diffusion_2.
     cfg = validate_run_config(config(run_seconds))
     grid = grids_from_wps_namelist(BUNDLE / "namelists" / "namelist.wps")[0]
     with netCDF4.Dataset(BUNDLE / "geo_em" / "geo_em.d01.nc") as ds:

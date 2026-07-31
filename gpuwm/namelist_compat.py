@@ -369,8 +369,11 @@ def analyze_namelists(
                 f"map_proj={raw_projection!r}; RW-WPS implements Lambert "
                 "conformal, Mercator, and polar stereographic geometry.",
                 "Use map_proj='lambert', 'mercator', or 'polar'. "
-                "Latitude/longitude (and other) inputs are rejected "
-                "rather than approximated.",
+                "Regular/rotated latitude-longitude is rejected rather "
+                "than approximated: it needs angular dx/dy rather than "
+                "metre spacing and WRF's global/pole polar filter; rotated "
+                "grids also need pole_lat/pole_lon state and the "
+                "map_proj == 6 curvature branch.",
             ))
         else:
             # Mercator ignores truelat2/stand_lon and polar

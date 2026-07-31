@@ -636,13 +636,11 @@ def test_morrison_public_dispatch_allocates_two_moment_state():
     assert float(state.scratch((cfg.ny, cfg.nx), "mp_rainnc").min()) >= 0.0
 
 
-def test_wk82_morrison_gate_rejects_incomplete_no_pbl_operator():
-    """Morrison cannot make the legacy horizontal-only WK82 gate valid."""
+def test_wk82_morrison_gate_admits_complete_no_pbl_operator():
     from gpuwm.config import validate_run_config
     from gpuwm.verify.cases import wk82
 
     cfg = replace(wk82.default_config(), mp_physics=10,
                   run_seconds=3600.0)
-    with pytest.raises(NotImplementedError,
-                       match=r"km_opt=4.*bl_pbl_physics=0.*vertical"):
-        validate_run_config(cfg)
+    admitted = validate_run_config(cfg)
+    assert admitted.km_opt == 4 and admitted.bl_pbl_physics == 0

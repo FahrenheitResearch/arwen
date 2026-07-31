@@ -280,11 +280,5 @@ def test_the_20crv3_front_door_prints_the_run_command_too(tmp_path):
         root.parent / (root.name + "-forecast")).replace("\\", "/")
     assert f"--outdir {expected_outdir}" in text
     # And 20crv3 really is a source that runner takes.
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "_sd_sources",
-        Path(__file__).resolve().parents[1] / "tools"
-        / "prepared_single_domain_forecast.py")
-    text_src = spec.origin and Path(spec.origin).read_text(encoding="utf-8")
-    assert 'SUPPORTED_SOURCES = frozenset({"gfs", "era5", "20crv3"})' \
-        in text_src
+    from gpuwm import prepared_single_domain_forecast as runner
+    assert runner.SUPPORTED_SOURCES == frozenset({"gfs", "era5", "20crv3"})

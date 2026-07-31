@@ -53,6 +53,7 @@ from gpuwm.case_data import CaseDataConfig
 from gpuwm.config import (DEFAULT_COLUMN_CHUNK, RunConfig,
                           radiation_scheme_ids, soil_layer_count)
 from gpuwm.core.grid import make_vertical_coord
+from gpuwm.core.noah import noah_initial_snow_albedo
 from gpuwm.experiment import ExperimentConfig, VerticalConfig
 from gpuwm.ingest.grib import cached_era5_forcing
 from gpuwm.ingest.horiz import interpolate_era5_to_lambert
@@ -583,7 +584,8 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
                     "'rte-rrtmgp'")
             from gpuwm.core.rrtmg_legacy import RRTMGLegacyRadiation
             radiation = RRTMGLegacyRadiation(
-                start_time, lat, lon, p_top=vertical.p_top)
+                start_time, lat, lon, p_top=vertical.p_top,
+                o3input=cfg.o3input)
         else:
             # Construct the experiment-configured adapter for both
             # trace-gas policies: an explicit override and the dated
@@ -621,7 +623,10 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         radiation_longitude=lon)
     import cupy as cp
     driver.fields["snoalb"][...] = cp.asarray(
-        static["SNOALB"] / 100.0, dtype=cp.float32)
+        noah_initial_snow_albedo(
+            static["SNOALB"], static["LU_INDEX"], driver.noah_params,
+            rdmaxalb=cfg.rdmaxalb),
+        dtype=cp.float32)
     driver.fields["lai"][...] = cp.asarray(lai, dtype=cp.float32)
     driver.fields["shdmin"][...] = cp.asarray(
         100.0 * static["GREENFRAC"].min(axis=0), dtype=cp.float32)
@@ -776,7 +781,7 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
             # root-compute + parent->child ozone routing.  The parent
             # adapter is mandatory -- a per-nest climatology evaluation
             # would diverge from WRF on d02+ (never fall back silently).
-            if radiation_parent is None:
+            if radiation_parent is None and cfg.o3input == 2:
                 raise ValueError(
                     "ra_rrtmg_variant='rrtmg_legacy' on child domain "
                     f"grid_id={dc.grid_id} requires radiation_parent= "
@@ -804,8 +809,10 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
             radiation = RRTMGLegacyRadiation(
                 exp.start_time, lat, lon,
                 p_top=float(state.p_top),
-                ozone_parent=ParentOzoneProvider(radiation_parent,
-                                                 registration))
+                ozone_parent=(
+                    ParentOzoneProvider(radiation_parent, registration)
+                    if cfg.o3input == 2 else None),
+                o3input=cfg.o3input)
         else:
             overrides = ({"co2": data.co2_vmr}
                          if data.co2_vmr is not None else None)
@@ -841,7 +848,10 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
         radiation=radiation, radiation_start_time=exp.start_time,
         radiation_latitude=lat, radiation_longitude=lon)
     driver.fields["snoalb"][...] = cp.asarray(
-        static["SNOALB"] / 100.0, dtype=cp.float32)
+        noah_initial_snow_albedo(
+            static["SNOALB"], static["LU_INDEX"], driver.noah_params,
+            rdmaxalb=cfg.rdmaxalb),
+        dtype=cp.float32)
     driver.fields["lai"][...] = cp.asarray(lai, dtype=cp.float32)
     driver.fields["shdmin"][...] = cp.asarray(
         100.0 * static["GREENFRAC"].min(axis=0), dtype=cp.float32)

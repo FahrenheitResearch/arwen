@@ -1383,7 +1383,7 @@ def prepared_forecast_next_command(
             return lines + [
                 f"  (cannot read {config_path}; no next command to print)"]
         return lines + [
-            "  python tools/prepared_domain_tree_forecast.py \\",
+            "  python -m gpuwm.prepared_domain_tree_forecast \\",
             f"      --prepared-root {_arg(output_root)} \\",
             f"      --preparation-receipt-sha256 {proof_digest} \\",
             f"      --experiment-config {_arg(config_path)} \\",
@@ -1409,7 +1409,7 @@ def prepared_forecast_next_command(
             "`gpuwm domain --help` lists the ids -- and the runner will "
             "then accept it.)"]
     lines += [
-        "  python tools/prepared_single_domain_forecast.py \\",
+        "  python -m gpuwm.prepared_single_domain_forecast \\",
         f"      --source {source} \\",
         f"      --prepared-root {_arg(output_root)} \\",
         f"      --proof-sha256 {proof_digest} \\",

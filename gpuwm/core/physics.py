@@ -1457,7 +1457,7 @@ class PhysicsDriver:
                 inputs, f["mol"], f["ustm"], self.mynn_sfclay_result,
                 dx=cfg.dx,
                 itimestep=itimestep,
-                isfflx=1,
+                isfflx=cfg.isfflx,
             )
             if fractional_ruc:
                 # module_surface_driver.F:5441-5506.  Force the second call
@@ -1491,7 +1491,7 @@ class PhysicsDriver:
                 launch_mynn_surface_layer(
                     sea_inputs, f["mol_sea"], f["ustm_sea"],
                     self.mynn_sfclay_sea_result,
-                    dx=cfg.dx, itimestep=itimestep, isfflx=1,
+                    dx=cfg.dx, itimestep=itimestep, isfflx=cfg.isfflx,
                 )
 
                 # :5508-5554.  These diagnostics become grid-cell values
@@ -1524,7 +1524,19 @@ class PhysicsDriver:
              if self.ruc_params is not None else f["tsk"]),
             f["pblh"], f["mavail"], f["xland"], f["lakemask"],
             self.sfclay_result, option=option, dx=cfg.dx,
+            isfflx=bool(cfg.isfflx),
             isftcflx=cfg.isftcflx, iz0tlnd=cfg.iz0tlnd)
+        if cfg.km_opt == 4 and cfg.bl_pbl_physics == 0:
+            # module_sf_sfclay.F:799-803 and the corresponding revised-MM5
+            # path update UST and USTM from the same PSIX, but USTM uses the
+            # wind magnitude without the convective-velocity correction.
+            wspdi = cp.sqrt(
+                atmosphere["u"][0] * atmosphere["u"][0]
+                + atmosphere["v"][0] * atmosphere["v"][0])
+            f["ustm"][...] = (
+                DTYPE(0.5) * f["ustm"]
+                + DTYPE(0.5) * DTYPE(0.4) * wspdi / f["fm"]
+            ).astype(DTYPE)
         if self.ruc_params is not None:
             ice_component = ((f["xice"] >= DTYPE(0.5))
                              & (f["xice"] <= DTYPE(1.0)))
@@ -1544,6 +1556,7 @@ class PhysicsDriver:
                     hfx=f["hfx_sea"], qfx=f["qfx_sea"],
                     lakemask=cp.zeros_like(f["lakemask"]),
                     option=option, dx=cfg.dx,
+                    isfflx=bool(cfg.isfflx),
                     isftcflx=cfg.isftcflx, iz0tlnd=cfg.iz0tlnd)
                 for name in (
                         "znt", "ust", "mol", "zol", "flhc", "flqc", "cpm",
@@ -2039,7 +2052,8 @@ def initialize_physics(
                 radiation = RRTMGLegacyRadiation(
                     radiation_start_time, radiation_latitude,
                     radiation_longitude,
-                    p_top=getattr(state, "p_top", None))
+                    p_top=getattr(state, "p_top", None),
+                    o3input=cfg.o3input)
             else:
                 from gpuwm.core.rrtmgp import RRTMGPRadiation
                 radiation = RRTMGPRadiation(
@@ -2183,6 +2197,13 @@ def initialize_physics(
                 carrier = f"{name}_sea"
                 if carrier not in f:
                     f[carrier] = cp.ascontiguousarray(f[name].copy())
+    elif cfg.km_opt == 4 and cfg.bl_pbl_physics == 0:
+        # WRF Registry state USTM is the friction velocity without SFCLAY's
+        # convective-wind correction.  vertical_diffusion_2 consumes USTM,
+        # not UST, when diff_opt=2 runs with the PBL off.  Keep it scoped to
+        # that newly admitted path so established YSU inventories and
+        # certified-profile bytes remain unchanged.
+        f["ustm"] = cp.zeros(shape, dtype=DTYPE)
     result = SFClayResult(**{name: f[name] for name in SFCLAY_OUTPUTS})
 
     defaults = {
@@ -2284,7 +2305,8 @@ def initialize_physics(
     # different bundle object over the same bytes, not Noah's bundle reused.
     ruc_params = None
     if int(cfg.sf_surface_physics) == 3:
-        ruc_params = RucRuntimeParameters()
+        ruc_params = RucRuntimeParameters(
+            seaice_albedo_default=cfg.seaice_albedo_default)
 
     noahmp_params = None
     noahmp_geometry = None

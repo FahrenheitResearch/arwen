@@ -1076,21 +1076,13 @@ def test_real_init_cpu_backend_handles_hrrr_hydrometeor_inventory(
                 cp.asnumpy(state.nr), np.zeros(state.nr.shape, np.float32))
 
 
-def test_retired_real74_d01_30min_gate_rejects_incomplete_no_pbl_operator():
-    """The old dynamics-only acceptance path cannot claim WRF km_opt=4.
-
-    That path disabled PBL physics and therefore lacks WRF's required
-    ``vertical_diffusion_2`` contribution.  Keep the former 30-minute entry
-    point as an explicit rejection contract; the phase3 configuration is the
-    supported real74 production path and retains PBL physics.
-    """
+def test_real74_d01_30min_gate_admits_complete_no_pbl_operator():
     from gpuwm.config import validate_run_config
-    from gpuwm.verify.cases.real74_d01 import (build_forcing,
-                                               phase3_config)
+    from gpuwm.verify.cases.real74_d01 import config, phase3_config
 
-    with pytest.raises(NotImplementedError,
-                       match=r"km_opt=4.*bl_pbl_physics=0.*vertical"):
-        build_forcing(run_seconds=1800.0)
+    legacy = validate_run_config(config(run_seconds=1800.0))
+    assert legacy.km_opt == 4
+    assert legacy.bl_pbl_physics == 0
 
     supported = validate_run_config(phase3_config(run_seconds=1800.0))
     assert supported.km_opt == 4

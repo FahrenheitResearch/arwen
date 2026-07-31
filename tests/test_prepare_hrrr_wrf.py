@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 from gpuwm.physics_compat import (
+    KESSLER_PROFILE_ID,
     MORRISON_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
@@ -48,6 +49,7 @@ from test_hrrr_single_domain_benchmark import (
 #: The microphysics option each fixed profile pins, so the producer runs the
 #: scheme whose cold start the consumer is about to validate.
 _PROFILE_MICROPHYSICS = {
+    KESSLER_PROFILE_ID: 1,
     WSM6_PROFILE_ID: 6,
     THOMPSON_PROFILE_ID: 8,
     MORRISON_PROFILE_ID: 10,
@@ -198,6 +200,7 @@ def test_public_wrapper_accepts_64_decoder_workers_independent_of_native_budget(
 @pytest.mark.parametrize(
     "physics_profile",
     (
+        KESSLER_PROFILE_ID,
         WSM6_PROFILE_ID,
         THOMPSON_PROFILE_ID,
         MORRISON_PROFILE_ID,

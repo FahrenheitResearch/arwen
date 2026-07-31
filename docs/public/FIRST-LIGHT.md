@@ -184,10 +184,29 @@ runner, documented in section 3a.**
 ## 3a. GFS -> GPU forecast: the complete route
 
 `gpuwm run` refuses a GFS config by design (no `[case_data]` table).
-The GPU forecast for a prepared GFS product is launched by a runner
-under `tools/`, and **the order below matters**: the runner binds the
-experiment config into the prepared cache, so materializing the physics
-*after* preprocessing means preprocessing again.
+
+**The short version is one command.** `gpuwm go` runs the whole chain
+below -- authority, fetch, front-door manifest, rw-wps, forecast,
+render -- carrying each stage's digests to the next instead of asking
+you to copy them, and printing a heartbeat while the long stages work:
+
+```bash
+gpuwm domain --point=35.3,-97.5 --card 24gb --ladder 12 \
+  --source gfs --cycle latest --hours 6 \
+  --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1 \
+  --out configs/myarea.toml
+gpuwm go configs/myarea.toml
+```
+
+Bare `gpuwm domain` at a terminal asks four questions and supplies both
+of those flags for you, so its emitted config is a `gpuwm go` config.
+`gpuwm go --dry-run` prints the six commands, filled in, without
+running them. The long form below is what `go` runs, stage by stage;
+read it when a stage refuses, or when you want to change one.
+
+**The order matters**: the runner binds the experiment config into the
+prepared cache, so materializing the physics *after* preprocessing
+means preprocessing again.
 
 Three first-time-user pilots ran this route on rented Linux 4090s and
 4070s on 2026-07-30; the ordering, the flags, and the timings are
@@ -201,7 +220,7 @@ theirs.
 gpuwm domain --point=35.3,-97.5 --card 24gb --ladder 12     --source gfs --cycle latest --hours 6     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --out configs/myarea.toml
 
 # 2. Materialize the exact physics authority.  BEFORE rw-wps, not after.
-python tools/prepared_single_domain_forecast.py --materialize-authorities     --source gfs     --base-experiment-config configs/myarea.toml     --base-wps-namelist configs/myarea.namelist.wps     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --output-directory work/myarea-authority
+python -m gpuwm.prepared_single_domain_forecast --materialize-authorities     --source gfs     --base-experiment-config configs/myarea.toml     --base-wps-namelist configs/myarea.namelist.wps     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --output-directory work/myarea-authority
 
 # 3. Fetch, then author the front-door manifest.  Step 3 prints the
 #    complete rw-wps command with its digest already filled in.
@@ -213,7 +232,7 @@ rw-wps ... --geog-root $GPUWM_CASE_DATA_ROOT/WPS_GEOG     --output-root out/myar
 
 # 5. Run the forecast.  rw-wps finishes by printing THIS command with
 #    all three digests filled in -- copy it rather than retyping.
-python tools/prepared_single_domain_forecast.py     --source gfs --prepared-root out/myarea-init     --proof-sha256 <printed> --source-manifest-sha256 <printed>     --prepared-content-sha256 <printed>     --experiment-config work/myarea-authority/experiment.toml     --wps-namelist work/myarea-authority/namelist.wps     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --io-mode history --outdir out/myarea-run
+python -m gpuwm.prepared_single_domain_forecast     --source gfs --prepared-root out/myarea-init     --proof-sha256 <printed> --source-manifest-sha256 <printed>     --prepared-content-sha256 <printed>     --experiment-config work/myarea-authority/experiment.toml     --wps-namelist work/myarea-authority/namelist.wps     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --io-mode history --outdir out/myarea-run
 
 # 6. Render.
 gpuwm render out/myarea-run/wrfout/<frame> --out out/myarea-png
@@ -230,7 +249,7 @@ domain 342x272x49 at 12 km):
 | GPU forecast, 6 simulated hours, 2160 steps at dt 10 s | **523 s** |
 | `gpuwm render` (4 products, 1 frame) | 21.8 s |
 
-**Multi-domain** products go to `tools/prepared_domain_tree_forecast.py`
+**Multi-domain** products go to `python -m gpuwm.prepared_domain_tree_forecast`
 instead, which takes `--prepared-root` + `--preparation-receipt-sha256`
 and has no physics-profile whitelist -- it runs the wizard's default
 suite as written. `rw-wps` names whichever runner applies to the proof

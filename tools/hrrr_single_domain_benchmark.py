@@ -43,6 +43,7 @@ from gpuwm.ingest.hrrr_target import (  # noqa: E402
 )
 from gpuwm.physics_compat import (  # noqa: E402
     EXPERIMENTAL_THOMPSON_ENV,
+    KESSLER_PROFILE_ID,
     SINGLE_DOMAIN_PHYSICS_PROFILES,
     MORRISON_PROFILE_ID,
     MYNN_NOAHMP_PROFILE_ID,
@@ -177,6 +178,15 @@ def runner_capabilities() -> dict[str, object]:
                 "readiness": "SUPPORTED_RUNNER_PROFILE",
                 "explicit_expert_consent_required": False,
                 "runtime_guards": [],
+            },
+            KESSLER_PROFILE_ID: {
+                "selector": 1,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": False,
+                "runtime_guards": [],
+                "source_scope": ["hrrr"],
+                "frozen_species_policy": (
+                    "retain QC/QR; discard source QI/QS/QG with a receipt"),
             },
             THOMPSON_PROFILE_ID: {
                 "selector": 8,
@@ -759,6 +769,24 @@ _NATIVE_HRRR_NAMELIST_CONTRACTS = MappingProxyType({
             "diff_6th_slopeopt": 1.0,
         }),
     }),
+    KESSLER_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 1.0,
+            "ra_lw_physics": 0.0,
+            "ra_sw_physics": 1.0,
+            "radt": 1.0,
+            "sf_sfclay_physics": 91.0,
+            "sf_surface_physics": 2.0,
+            "bl_pbl_physics": 1.0,
+            "cu_physics": 0.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.08,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
     MYNN_PROFILE_ID: MappingProxyType({
         "physics": MappingProxyType({
             "mp_physics": 6.0,
@@ -926,6 +954,7 @@ _NATIVE_HRRR_RUNTIME_SWITCHES = MappingProxyType({
 
 _HRRR_SOURCE_ABSENT_STATE_DEFAULTS = MappingProxyType({
     WSM6_PROFILE_ID: MappingProxyType({}),
+    KESSLER_PROFILE_ID: MappingProxyType({}),
     MYNN_PROFILE_ID: MappingProxyType({}),
     MYNN_RUC_PROFILE_ID: MappingProxyType({}),
     RUC_PROFILE_ID: MappingProxyType({}),
@@ -946,6 +975,7 @@ _HRRR_SOURCE_ABSENT_STATE_DEFAULTS = MappingProxyType({
 
 _HRRR_SOURCE_ABSENT_WRF_FIELDS = MappingProxyType({
     WSM6_PROFILE_ID: (),
+    KESSLER_PROFILE_ID: (),
     MYNN_PROFILE_ID: (),
     MYNN_RUC_PROFILE_ID: (),
     RUC_PROFILE_ID: (),
@@ -1179,7 +1209,8 @@ def _validate_native_hrrr_physics_profile(
             "wrf_namelist_defaults": dict(NSSL2_WRF_NAMELIST_DEFAULTS),
         }
     elif profile in (
-            MYNN_PROFILE_ID, MYNN_RUC_PROFILE_ID, RUC_PROFILE_ID,
+            KESSLER_PROFILE_ID, MYNN_PROFILE_ID, MYNN_RUC_PROFILE_ID,
+            RUC_PROFILE_ID,
             NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID):
         receipt["readiness"] = "IMPLEMENTED_UNVERIFIED"
     if profile in (MORRISON_PROFILE_ID, NSSL2_PROFILE_ID):

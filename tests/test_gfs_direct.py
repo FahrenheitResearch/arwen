@@ -458,7 +458,12 @@ def test_the_front_door_prints_the_forecast_command_it_already_knows(tmp_path):
         proof, output_root=root, experiment_config=config,
         wps_namelist=namelist)
     text = "\n".join(lines)
-    assert "tools/prepared_single_domain_forecast.py" in text
+    # The module form, not a script path under tools/: what this line
+    # prints has to be runnable by a reader who pip-installed the wheel
+    # and has no checkout.  (tools/ still carries a delegating entry
+    # point for the spelling older transcripts use.)
+    assert "python -m gpuwm.prepared_single_domain_forecast" in text
+    assert "tools/prepared_single_domain_forecast.py" not in text
     assert f"--proof-sha256 {proof_digest}" in text
     assert f"--source-manifest-sha256 {'a' * 64}" in text
     assert f"--prepared-content-sha256 {'b' * 64}" in text
@@ -481,7 +486,7 @@ def test_the_front_door_prints_the_forecast_command_it_already_knows(tmp_path):
         {"schema": "gpuwm-gfs-native-hierarchy-proof-v1"},
         output_root=root, experiment_config=config, wps_namelist=namelist)
     hierarchy_text = "\n".join(hierarchy)
-    assert "prepared_domain_tree_forecast.py" in hierarchy_text
+    assert "python -m gpuwm.prepared_domain_tree_forecast" in hierarchy_text
     assert f"--preparation-receipt-sha256 {proof_digest}" in hierarchy_text
     assert f"--experiment-config-sha256 {_digest(config)}" in hierarchy_text
     assert f"--outdir {_printed(outdir)}" in hierarchy_text
@@ -510,19 +515,11 @@ def _assert_runner_accepts_printed_outdir(text, *, prepared_root,
     overlaps it, so the suggestion produced a traceback.
     """
 
-    import importlib.util
-    import sys as _sys
+    from gpuwm import prepared_domain_tree_forecast as module
 
     printed = [line.split("--outdir ", 1)[1].strip()
                for line in text.splitlines() if "--outdir " in line]
     assert printed, "no --outdir was printed"
-    spec = importlib.util.spec_from_file_location(
-        "_tree_runner_guard",
-        Path(__file__).resolve().parents[1] / "tools"
-        / "prepared_domain_tree_forecast.py")
-    module = importlib.util.module_from_spec(spec)
-    _sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
     protected = ((Path(prepared_root), Path(config)) if config is not None
                  else (Path(prepared_root),))
     for candidate in printed:

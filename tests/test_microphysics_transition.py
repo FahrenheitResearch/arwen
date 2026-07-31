@@ -10,8 +10,11 @@ import pytest
 
 from gpuwm.config import RunConfig, validate_run_config
 from gpuwm.core.microphysics_transition import (
+    EDGE_MATRIX_POLICY,
     MP8_TO_MP18_POLICY,
+    PORTED_MP_PHYSICS,
     SAME_SCHEME_POLICY,
+    launch_microphysics_edge_parent_field,
     launch_mp8_to_mp18_parent_field,
     resolve_microphysics_transition,
 )
@@ -84,14 +87,62 @@ def test_transition_identity_binds_field_map_and_normalizes_newlines(
         transition._canonical_source_sha256(crlf)
 
 
-def test_unvalidated_and_reverse_mixed_edges_fail_closed():
-    with pytest.raises(ValueError, match="unsupported mixed"):
+def test_all_twenty_mixed_edges_require_their_explicit_policy():
+    resolved = []
+    for source in PORTED_MP_PHYSICS:
+        for target in PORTED_MP_PHYSICS:
+            policy = (
+                SAME_SCHEME_POLICY if source == target
+                else MP8_TO_MP18_POLICY if (source, target) == (8, 18)
+                else EDGE_MATRIX_POLICY
+            )
+            contract = resolve_microphysics_transition(
+                _run(source),
+                _run(target, nested=True, transition=policy),
+            )
+            assert contract.mixed is (source != target)
+            resolved.append((source, target))
+    assert len(resolved) == 25
+
+    with pytest.raises(ValueError, match="requires explicit"):
         resolve_microphysics_transition(
             _run(18),
             _run(8, nested=True, transition=MP8_TO_MP18_POLICY),
         )
-    with pytest.raises(ValueError, match="unsupported mixed"):
-        resolve_microphysics_transition(_run(6), _run(18, nested=True))
+    with pytest.raises(ValueError, match="ported selectors"):
+        resolve_microphysics_transition(
+            _run(18),
+            _run(55, nested=True, transition=EDGE_MATRIX_POLICY),
+        )
+
+
+def test_species_receipts_cover_mapped_defaulted_diagnosed_and_dropped():
+    wsm_to_morr = resolve_microphysics_transition(
+        _run(6), _run(10, nested=True, transition=EDGE_MATRIX_POLICY))
+    rows = [dict(row) for row in wsm_to_morr.species_actions()]
+    assert {
+        "mapped": 5, "defaulted": 1, "diagnosed": 4, "dropped": 1,
+    } == wsm_to_morr.receipt()["species_action_counts"]
+    assert any(row["source_field"] == "qg"
+               and row["action"] == "dropped" for row in rows)
+    assert any(row["target_field"] == "qg"
+               and row["action"] == "defaulted" for row in rows)
+
+    nssl_to_morr = resolve_microphysics_transition(
+        _run(18), _run(10, nested=True, transition=EDGE_MATRIX_POLICY))
+    assert nssl_to_morr.mass_source("qg") == "qh"
+    nssl_rows = [dict(row) for row in nssl_to_morr.species_actions()]
+    assert any(row["source_field"] == "qg"
+               and row["action"] == "dropped" for row in nssl_rows)
+    assert sum(row["action"] == "dropped" for row in nssl_rows) == 10
+
+    graupel_morr_parent = replace(_run(10), morr_rimed_ice=0)
+    graupel_morr_child = replace(
+        _run(6, nested=True, transition=EDGE_MATRIX_POLICY),
+        wsm6_hail_opt=0)
+    compatible = resolve_microphysics_transition(
+        graupel_morr_parent, graupel_morr_child)
+    assert compatible.mass_source("qg") == "qg"
 
 
 def test_transition_selector_validation_is_domain_scoped():
@@ -100,6 +151,82 @@ def test_transition_selector_validation_is_domain_scoped():
     with pytest.raises(ValueError, match="must be 'same-scheme-only'"):
         validate_run_config(replace(
             _run(18, nested=True), nest_microphysics_transition="unknown"))
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize(
+    ("source_mp", "target_mp", "moment_fields"),
+    [
+        (6, 10, ("nr", "ni", "ns")),
+        (10, 8, ("nr", "ni")),
+    ],
+)
+def test_generic_two_moment_targets_diagnose_positive_finite_numbers(
+        source_mp, target_mp, moment_fields):
+    import cupy as cp
+
+    shape = (2, 3, 4)
+    parent = SimpleNamespace(
+        alt=cp.full(shape, cp.float32(0.8)),
+        mub2d=cp.full(shape[1:], cp.float32(90000.0)),
+        mup=cp.full(shape[1:], cp.float32(100.0)),
+        c1h=cp.asarray([0.8, 0.6], dtype=cp.float32),
+        c2h=cp.asarray([1.0, 2.0], dtype=cp.float32),
+        qv=cp.full(shape, cp.float32(0.008)),
+        qc=cp.full(shape, cp.float32(2.0e-5)),
+        qr=cp.full(shape, cp.float32(3.0e-5)),
+        qi=cp.full(shape, cp.float32(4.0e-5)),
+        qs=cp.full(shape, cp.float32(5.0e-5)),
+        qg=cp.full(shape, cp.float32(6.0e-5)),
+    )
+    contract = resolve_microphysics_transition(
+        _run(source_mp),
+        _run(target_mp, nested=True, transition=EDGE_MATRIX_POLICY),
+    )
+    for field in moment_fields:
+        actual = cp.empty(shape, dtype=cp.float32)
+        launch_microphysics_edge_parent_field(
+            contract, parent, field, out=actual, coupled=False)
+        assert bool(cp.isfinite(actual).all())
+        assert bool((actual > 0.0).all())
+    cp.cuda.Stream.null.synchronize()
+
+
+@pytest.mark.gpu
+def test_morrison_hail_to_nssl_diagnoses_hail_number_and_volume():
+    import cupy as cp
+
+    shape = (2, 2, 3)
+    parent = SimpleNamespace(
+        alt=cp.full(shape, cp.float32(0.8)),
+        mub2d=cp.full(shape[1:], cp.float32(90000.0)),
+        mup=cp.zeros(shape[1:], dtype=cp.float32),
+        c1h=cp.asarray([0.8, 0.6], dtype=cp.float32),
+        c2h=cp.asarray([1.0, 2.0], dtype=cp.float32),
+        qv=cp.full(shape, cp.float32(0.008)),
+        qc=cp.full(shape, cp.float32(2.0e-5)),
+        qr=cp.full(shape, cp.float32(3.0e-5)),
+        qi=cp.full(shape, cp.float32(4.0e-5)),
+        qs=cp.full(shape, cp.float32(5.0e-5)),
+        qg=cp.full(shape, cp.float32(9.0e-5)),
+    )
+    contract = resolve_microphysics_transition(
+        _run(10),
+        _run(18, nested=True, transition=EDGE_MATRIX_POLICY),
+    )
+    outputs = {}
+    for field in ("qg", "qh", "qng", "qnh", "qvolg", "qvolh"):
+        outputs[field] = cp.empty(shape, dtype=cp.float32)
+        launch_microphysics_edge_parent_field(
+            contract, parent, field, out=outputs[field], coupled=False)
+    cp.testing.assert_array_equal(outputs["qg"], 0.0)
+    cp.testing.assert_array_equal(outputs["qng"], 0.0)
+    cp.testing.assert_array_equal(outputs["qvolg"], 0.0)
+    cp.testing.assert_array_equal(outputs["qh"], parent.qg)
+    assert bool((outputs["qnh"] > 0.0).all())
+    cp.testing.assert_array_equal(
+        outputs["qvolh"], parent.qg / cp.float32(900.0))
+    cp.cuda.Stream.null.synchronize()
 
 
 @pytest.mark.gpu

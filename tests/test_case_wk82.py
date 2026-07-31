@@ -64,16 +64,10 @@ def test_wk82_exports_boundary_flux_closure_gate():
     assert wk82.GATES["mass_closure_residual_max"] == (None, 1.0e-5)
 
 
-def test_wk82_supercell_benchmark_rejects_incomplete_no_pbl_operator():
-    """The retired WK82 gate may not bless horizontal-only km_opt=4.
+def test_wk82_supercell_benchmark_admits_complete_no_pbl_operator():
+    """The WK82 LES identity now carries WRF's complete vertical operator."""
+    from gpuwm.config import validate_run_config
+    from gpuwm.verify.cases.wk82 import default_config
 
-    With PBL disabled, WRF v4.6.1 also runs vertical_diffusion_2.  Until
-    gpuwm implements those u/v/w stresses and their surface-flux policy, the
-    former two-hour benchmark is an explicit rejection contract.  Shipped
-    real74 TOMLs and the phase3 case remain supported because PBL is on.
-    """
-    from gpuwm.verify.cases.wk82 import run
-
-    with pytest.raises(NotImplementedError,
-                       match=r"km_opt=4.*bl_pbl_physics=0.*vertical"):
-        run()
+    cfg = validate_run_config(default_config())
+    assert cfg.km_opt == 4 and cfg.bl_pbl_physics == 0

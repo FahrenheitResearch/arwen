@@ -349,6 +349,27 @@ def test_rrtmg_option_keys_are_ratified_with_failclosed_ranges(tmp_path):
             import_namelists(wps2, inp3, name="synth")
 
 
+def test_legacy_import_emits_o3data_and_calculated_radii_modes(tmp_path):
+    import test_namelist_import as tni
+    from gpuwm.experiment import load_experiment
+    from gpuwm.namelist_import import import_namelists
+
+    requested = tni.INPUT_TEXT.replace(
+        "&physics\n",
+        "&physics\n o3input = 0,\n use_mp_re = 0,\n")
+    wps, inp = tni._pair(tmp_path, inp=requested)
+    text, _ = import_namelists(
+        wps, inp, name="legacy-options",
+        rrtmg_variant=RRTMG_VARIANT_LEGACY)
+    assert "o3input = 0" in text
+    assert "use_mp_re = 0" in text
+    path = tmp_path / "legacy-options.toml"
+    path.write_text(text)
+    exp = load_experiment(path)
+    assert {domain.run.o3input for domain in exp.domains} == {0}
+    assert {domain.run.use_mp_re for domain in exp.domains} == {0}
+
+
 def test_imported_legacy_toml_round_trips_and_constructs(tmp_path,
                                                          monkeypatch):
     _require_gpu()

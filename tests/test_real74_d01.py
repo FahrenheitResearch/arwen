@@ -23,20 +23,14 @@ requires_bundle = pytest.mark.skipif(
 )
 
 
-def test_legacy_physics_off_real74_rejects_but_phase3_is_supported():
-    """Only the retired Task-8 config lacks WRF vertical km_opt=4 mixing."""
+def test_legacy_physics_off_real74_and_phase3_are_supported():
     from gpuwm.config import validate_run_config
-    from gpuwm.verify.cases.real74_d01 import (build_forcing, config,
-                                               phase3_config)
+    from gpuwm.verify.cases.real74_d01 import config, phase3_config
 
-    with pytest.raises(NotImplementedError,
-                       match=r"km_opt=4.*bl_pbl_physics=0.*vertical"):
-        validate_run_config(config())
+    les = validate_run_config(config())
+    assert les.km_opt == 4 and les.bl_pbl_physics == 0
     supported = validate_run_config(phase3_config())
     assert supported.km_opt == 4 and supported.bl_pbl_physics == 1
-    with pytest.raises(NotImplementedError,
-                       match=r"km_opt=4.*bl_pbl_physics=0.*vertical"):
-        build_forcing()
 
 
 def _synthetic_real_frame(nz, ny, nx):

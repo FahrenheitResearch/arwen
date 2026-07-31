@@ -1,0 +1,321 @@
+"""The short version of ``gpuwm domain``, for a person at a terminal.
+
+``gpuwm domain`` takes three required flags, so typing it bare answers
+with argparse's usage dump and exit 2.  That is the correct answer to a
+script and the wrong one to a person: the owner's reaction to it was
+"so we don't have an easier way of doing it?".  There is now.  On a
+terminal, bare ``gpuwm domain`` asks four questions and runs.
+
+Two rules shape everything here.
+
+**The prompts collect values; they do not build anything.**  A session
+produces an ordinary ``argv`` list of the same flags a user could have
+typed, and that list goes through the same parser into the same
+:func:`gpuwm.domain_wizard.domain_main`.  There is no second sizing
+path, no second validator, and no way for the two front doors to drift
+into emitting different files -- the equivalence is by construction
+rather than by a test that has to keep noticing.  The session also
+prints the command it assembled, so the flag form is learned by using
+the short one.
+
+**Interactivity is layered exactly like verbosity.**  A hidden prompt
+that a CI job can block on is a worse failure than a usage error, so
+the prompt session requires BOTH stdin and stdout to be terminals.
+Redirected, piped, or under a scheduler, bare ``gpuwm domain`` keeps
+today's behaviour to the letter: usage on stderr, exit 2.  Any flag at
+all also means the caller knows what they want, and the old path runs
+untouched.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+#: The sources the wizard accepts, in the order the prompt offers them.
+#: GFS leads because it is the only one of the three that a new install
+#: can fetch with no account and no manual step: HRRR is CONUS-only and
+#: ERA5 needs a personal Copernicus key.  The flag default stays era5 --
+#: changing it would edit every documented example -- so this is a
+#: default for the person who did not state a preference, not a change
+#: of the project's default.
+SOURCES = ("gfs", "hrrr", "era5")
+DEFAULT_SOURCE = "gfs"
+
+#: Default forecast length, matching ``--hours``.
+DEFAULT_HOURS = 6
+
+#: Where the emitted TOML goes when the reader just presses Enter.
+DEFAULT_OUT_DIR = "configs"
+
+#: The nest ladder a bare session emits: one 12 km domain.
+#:
+#: The flag default is ``auto``, which takes the deepest ladder that
+#: fits the card -- four domains down to 500 m on a large one.  That is
+#: the right default for someone who asked for a ladder; it is the wrong
+#: one here, because ``gpuwm go`` drives the SINGLE-domain runner and
+#: refuses a tree, so the short front door was emitting a file the other
+#: new front door would not take.  Two features that do not compose is
+#: not a feature.
+#:
+#: This is exactly the shape ``docs/public/FIRST-LIGHT.md`` section 3a's
+#: worked first run uses (``--ladder 12``), so the short path now emits
+#: the documented first run rather than a private variant of it.  A
+#: reader who wants nests passes ``--ladder``, which -- like any flag --
+#: takes the non-interactive path with its own ``auto`` default intact.
+DEFAULT_LADDER = "12"
+
+#: The physics a bare session emits, per source.
+#:
+#: Without one the wizard emits the product default suite, which is not
+#: one of the shipped runner profiles, so the prepared single-domain
+#: runner refuses it and ``gpuwm go`` refuses it earlier and says so.
+#: The short front door therefore names a profile, and names the
+#: strongest one its source offers: ``morrison-mp10-...`` is the only
+#: ``model-validated`` template in the registry that all three of these
+#: sources' routes declare, and it is FIRST-LIGHT section 3a's own
+#: worked example.
+#:
+#: ``tests/test_domain_interactive.py`` re-derives every entry from the
+#: generated registry -- offered by that source's route, and
+#: model-validated -- so this table cannot quietly outlive the facts it
+#: is quoting.
+DEFAULT_PHYSICS_PROFILE_BY_SOURCE = {
+    "gfs": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+    "hrrr": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+    "era5": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+}
+
+
+def default_physics_profile(source: str) -> str:
+    """The profile a bare session emits for ``source``."""
+
+    return DEFAULT_PHYSICS_PROFILE_BY_SOURCE[source.lower()]
+
+
+class PromptAborted(Exception):
+    """The reader stopped the session (Ctrl-C, or stdin reached EOF)."""
+
+
+def is_interactive(argv: list[str], *, stdin=None, stdout=None) -> bool:
+    """Should ``argv`` start a prompt session?
+
+    Exactly ``["domain"]`` -- one token, no flags.  ``gpuwm domain
+    --explain`` is a caller who has started stating what they want, and
+    answering that with questions would be a surprise; it takes the
+    usage error it has always taken.
+
+    Both streams must be terminals.  stdin alone is not enough: a run
+    whose output is piped into a file or a log is a run nobody is
+    watching, and prompting into that pipe hangs a job on a question no
+    one will ever see.
+    """
+
+    if argv != ["domain"]:
+        return False
+    stdin = sys.stdin if stdin is None else stdin
+    stdout = sys.stdout if stdout is None else stdout
+    try:
+        return bool(stdin.isatty() and stdout.isatty())
+    except (AttributeError, ValueError):
+        # A closed or substituted stream that cannot answer is not a
+        # terminal.  Fail toward the non-interactive path, which is the
+        # one that cannot hang.
+        return False
+
+
+def _ask(prompt: str, default: str | None, validate) -> str:
+    """Ask until the answer validates; return the accepted raw string.
+
+    ``validate`` raises ``ValueError`` with the message the reader
+    should see.  Re-prompting rather than exiting is the whole point of
+    a prompt: a typo in the fourth answer must not throw away the first
+    three.
+
+    EOF is not a typo -- it means there is no one there (a closed pipe,
+    a Ctrl-D) -- so it aborts instead of looping forever on a stream
+    that will never produce another line.
+    """
+
+    label = f"{prompt} [{default}]: " if default is not None else f"{prompt}: "
+    while True:
+        try:
+            raw = input(label).strip()
+        except EOFError as error:
+            raise PromptAborted("stdin closed") from error
+        except KeyboardInterrupt as error:
+            raise PromptAborted("interrupted") from error
+        if not raw and default is not None:
+            raw = default
+        if not raw:
+            print("  (this one has no default -- a value is needed)")
+            continue
+        try:
+            validate(raw)
+        except ValueError as error:
+            print(f"  {error}")
+            continue
+        return raw
+
+
+def _validate_point(raw: str) -> None:
+    from gpuwm.domain_wizard import _parse_point
+
+    _parse_point(raw)
+
+
+def _validate_source(raw: str) -> None:
+    if raw.lower() not in SOURCES:
+        raise ValueError(f"source must be one of {', '.join(SOURCES)}")
+
+
+def _cycle_validator(source: str):
+    """A cycle validator bound to the source, because the rules differ.
+
+    ``latest`` resolves for GFS and HRRR and is refused for ERA5 -- a
+    reanalysis with weeks of latency has no "latest" to probe.  Catching
+    that here, while the reader is still typing, is better than
+    accepting it and failing after the point and hours are already
+    collected.
+    """
+
+    def validate(raw: str) -> None:
+        from gpuwm.fetch import parse_cycle
+
+        if raw.strip().lower() == "latest":
+            if source == "era5":
+                raise ValueError(
+                    "era5 is a reanalysis with weeks of latency, so there "
+                    "is no 'latest' to probe -- name the analysis time as "
+                    "YYYY-MM-DDTHH (UTC)")
+            return
+        parse_cycle(raw, source)
+
+    return validate
+
+
+def _validate_hours(raw: str) -> None:
+    try:
+        hours = int(raw)
+    except ValueError as error:
+        raise ValueError("forecast hours must be a whole number") from error
+    if hours < 1:
+        raise ValueError("forecast hours must be at least 1")
+
+
+def _validate_out(raw: str) -> None:
+    if not raw.strip():
+        raise ValueError("an output path is needed")
+
+
+def detected_vram_gib() -> float | None:
+    """Physical VRAM of the card, or None when nothing can be read.
+
+    Reuses the estimator's own NVML capacity probe -- the one that is
+    deliberately answerable without standing up a CUDA context -- so the
+    prompt session asks the same authority the memory preflight will ask
+    later, rather than introducing a second opinion about the card.
+
+    None is a real answer and is handled by the caller: a machine whose
+    GPU cannot be read gets the documented ``--card`` default, and is
+    told so.
+    """
+
+    try:
+        from gpuwm.core.preflight import device_physical_total_bytes
+
+        total = device_physical_total_bytes()
+    except Exception:
+        return None
+    if not total or total <= 0:
+        return None
+    return total / (1024 ** 3)
+
+
+def _default_out_path(lat: float, lon: float) -> str:
+    from gpuwm.domain_wizard import _default_name
+
+    return str(Path(DEFAULT_OUT_DIR) / f"{_default_name(lat, lon)}.toml")
+
+
+def collect(*, printer=print) -> list[str]:
+    """Run the prompt session; return the ``argv`` it assembled.
+
+    The returned list is exactly what the reader could have typed.
+    Nothing else in this module knows how to build a config, and this
+    function knows nothing about projections, ladders or budgets.
+    """
+
+    from gpuwm.domain_wizard import _parse_point
+
+    printer("gpuwm domain: no arguments, so here is the short version.")
+    printer("Enter accepts the default in [brackets].  Ctrl-C stops.")
+    printer("")
+
+    point = _ask("  center point, lat,lon", None, _validate_point)
+    lat, lon = _parse_point(point)
+
+    source = _ask("  source (gfs/hrrr/era5)", DEFAULT_SOURCE,
+                  _validate_source).lower()
+    if source == "era5":
+        from gpuwm.fetch import cds_credentials_path, cds_credentials_present
+
+        if not cds_credentials_present():
+            printer(f"  note: era5 needs a Copernicus CDS key and there is "
+                    f"no {cds_credentials_path()} yet; gfs and hrrr need "
+                    "no account.")
+
+    cycle_default = None if source == "era5" else "latest"
+    cycle = _ask("  cycle, YYYY-MM-DDTHH or latest", cycle_default,
+                 _cycle_validator(source))
+
+    hours = _ask("  forecast hours", str(DEFAULT_HOURS), _validate_hours)
+    out = _ask("  output file", _default_out_path(lat, lon), _validate_out)
+
+    profile = default_physics_profile(source)
+    argv = ["domain", f"--point={point}", "--source", source,
+            "--cycle", cycle, "--hours", str(int(hours)),
+            "--ladder", DEFAULT_LADDER, "--physics-profile", profile,
+            "--out", out]
+    # Said out loud, because these two are the only answers the session
+    # supplied that the reader did not: a default that changes what runs
+    # has to be visible at the moment it is chosen, not discovered in
+    # the emitted file.
+    printer(f"  ladder: {DEFAULT_LADDER} km, one domain -- the shape "
+            "`gpuwm go` runs end to end (pass --ladder for nests).")
+    printer(f"  physics: {profile} (pass --physics-profile for another).")
+
+    vram = detected_vram_gib()
+    if vram is not None:
+        argv += ["--vram-gib", f"{vram:.2f}"]
+        printer(f"  card: {vram:.2f} GiB detected, used as the budget.")
+    else:
+        # Not a failure: the flag path's own default applies, and the
+        # reader is told which number is about to size their domain
+        # rather than discovering it in the sizing line.
+        from gpuwm.domain_wizard import CARD_VRAM_GIB
+
+        printer(f"  card: no GPU readable, assuming "
+                f"{CARD_VRAM_GIB['24gb']:g} GiB (pass --card or "
+                "--vram-gib to state it).")
+    return argv
+
+
+def printable_command(argv: list[str]) -> str:
+    """The assembled session as a command line the reader can re-run.
+
+    Printed before the run so the short path teaches the long one: the
+    second time, this is the line to paste.
+    """
+
+    import shlex
+
+    return "gpuwm " + " ".join(shlex.quote(token) for token in argv)
+
+
+__all__ = [
+    "DEFAULT_HOURS", "DEFAULT_LADDER", "DEFAULT_OUT_DIR",
+    "DEFAULT_PHYSICS_PROFILE_BY_SOURCE", "DEFAULT_SOURCE", "SOURCES",
+    "PromptAborted", "collect", "default_physics_profile",
+    "detected_vram_gib", "is_interactive", "printable_command",
+]

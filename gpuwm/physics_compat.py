@@ -21,6 +21,12 @@ from types import MappingProxyType
 from typing import Mapping
 
 from gpuwm.explain import layered
+from gpuwm.wrf461_compatibility import (
+    PBL_OPTIONS,
+    SURFACE_LAYER_OPTIONS,
+    WRFVerdict,
+    pbl_surface_layer_verdict,
+)
 
 
 # Exact token emitted into imported gpuwm configurations when WRF's legacy
@@ -238,6 +244,11 @@ NOAHMP_MEASURED_SLAB_CALL_SECONDS = (0.202, 0.227)
 # bare WRF selector: selecting ``mp_physics=8`` must not silently inherit the
 # fixed WSM6 runner configuration.
 WSM6_PROFILE_ID = "wsm6-ysu-mm5-noah-no-radiation-v1"
+#: The native-HRRR warm-rain profile.  WRF v4.6.1
+#: ``Registry/Registry.EM_COMMON:3015`` declares Kessler's qv/qc/qr package.
+#: The profile is admitted only with the end-to-end HRRR probe and its
+#: source-frozen-species discard receipt.
+KESSLER_PROFILE_ID = "kessler-mp1-ysu-mm5-noah-dudhia-v1"
 THOMPSON_PROFILE_ID = "thompson-mp8-ysu-mm5-noah-validation-v1"
 MORRISON_PROFILE_ID = (
     "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1"
@@ -285,6 +296,7 @@ MYNN_NOAHMP_PROFILE_ID = (
 #: fail closed before preparation if consent or an implementation is absent.
 SINGLE_DOMAIN_PHYSICS_PROFILES = (
     WSM6_PROFILE_ID,
+    KESSLER_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     MORRISON_PROFILE_ID,
     NSSL2_PROFILE_ID,
@@ -303,6 +315,18 @@ SINGLE_DOMAIN_PHYSICS_PROFILES = (
 # may materialize these switches into a case-specific experiment descriptor,
 # but they must not reinterpret or partially apply them.
 _SINGLE_DOMAIN_RUNTIME_SWITCHES = MappingProxyType({
+    KESSLER_PROFILE_ID: MappingProxyType({
+        "moist": True, "moist_cq": False, "mp_physics": 1,
+        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
+        "wsm6_hail_opt": 0, "ra_physics": 0,
+        "ra_lw_physics": 0, "ra_sw_physics": 1, "radt": 1.0,
+        "wrf_rrtmg_compatibility": "none",
+        "sf_sfclay_physics": 91, "sf_surface_physics": 2,
+        "bl_pbl_physics": 1, "cu_physics": 0, "cudt_minutes": 0.0,
+        "num_soil_layers": 4, "terrain_opt": 1,
+        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
+        "diff_6th_slopeopt": 1,
+    }),
     MYNN_NOAHMP_PROFILE_ID: MappingProxyType({
         "moist": True, "moist_cq": False, "mp_physics": 6,
         "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
@@ -1186,6 +1210,28 @@ def _tree_tuple_registry_governance(
                 and isinstance(option, Mapping)
                 and option.get("implemented") is True
             ))
+        allowed_component_options = route.get(
+            "allowed_component_options", {})
+        if isinstance(allowed_component_options, Mapping):
+            for component_id, option_ids in allowed_component_options.items():
+                if not (
+                    isinstance(component_id, str)
+                    and isinstance(option_ids, (list, tuple))
+                ):
+                    continue
+                component = components.get(component_id)
+                options = (
+                    component.get("options", {})
+                    if isinstance(component, Mapping) else {}
+                )
+                admitted = {
+                    option_id for option_id in option_ids
+                    if isinstance(option_id, str)
+                    and isinstance(options.get(option_id), Mapping)
+                    and options[option_id].get("implemented") is True
+                }
+                admitted.update(option_sets.get(component_id, ()))
+                option_sets[component_id] = tuple(sorted(admitted))
 
         def variants(template_id: str):
             template = templates.get(template_id)
@@ -1420,11 +1466,10 @@ def pending_wrf_physics_components(
         ) -> tuple[PhysicsPortBlocker, ...]:
     """Return unfinished components selected by a WRF physics request.
 
-    MYNN surface layer and PBL are one coupled port.  Reporting them together
-    prevents either half from being mistaken for a scientifically meaningful
-    stand-alone implementation.  RUC's layer count is included in its blocker
-    even though WRF also supports a six-layer RUC configuration; the target
-    suite explicitly requests nine.
+    The PBL/surface-layer verdict comes from the complete declarative WRF
+    v4.6.1 table in :mod:`gpuwm.wrf461_compatibility`.  RUC's layer count is
+    included in its blocker even though WRF also supports a six-layer RUC
+    configuration; the target suite explicitly requests nine.
 
     This function is the single readiness authority.  ``gpuwm/config.py``
     deliberately accepts every selector value in its schema tables and lets
@@ -1438,21 +1483,25 @@ def pending_wrf_physics_components(
     # package data (see the EXPERIMENTAL_THOMPSON_ENV comment block above).
     # Byte validation of the resolved table root still fails closed at
     # setup, which is the guard that was ever load-bearing at run time.
-    if (sf_sfclay_physics == 5) != (bl_pbl_physics == 5):
-        # MYNN is admitted only as the coupled 5/5 suite.  Its surface layer
-        # diagnoses T2/Q2/TH2 itself and its PBL driver consumes UST/HFX/QFX/
-        # WSPD/RMOL from that same surface layer, so half a suite is not a
-        # smaller configuration -- it is a different, unvalidated one.
-        blockers.append(PhysicsPortBlocker(
-            component="MYNN half-suite",
-            selectors=(("sf_sfclay_physics", sf_sfclay_physics),
-                       ("bl_pbl_physics", bl_pbl_physics)),
-            missing=(
-                "MYNN is admitted only as the coupled pair "
-                "sf_sfclay_physics=5 with bl_pbl_physics=5",
-                "the surface layer supplies UST/HFX/QFX/WSPD/RMOL to the PBL "
-                "driver and diagnoses T2/Q2/TH2 in place of SFCDIAGS",
-            )))
+    # Namelist preview invokes this readiness layer before its documented
+    # WRF-to-ArWen selector mappings (for example Shin-Hong 11 -> YSU 1).
+    # The matrix governs the ported selector set only; an outside raw WRF
+    # value continues to the importer's mapping/refusal authority.
+    if (
+        bl_pbl_physics in PBL_OPTIONS
+        and sf_sfclay_physics in SURFACE_LAYER_OPTIONS
+    ):
+        pair_verdict, pair_citation = pbl_surface_layer_verdict(
+            bl_pbl_physics, sf_sfclay_physics)
+        if pair_verdict is WRFVerdict.FATAL:
+            blockers.append(PhysicsPortBlocker(
+                component="WRF v4.6.1 PBL/surface-layer compatibility",
+                selectors=(("sf_sfclay_physics", sf_sfclay_physics),
+                           ("bl_pbl_physics", bl_pbl_physics)),
+                missing=(
+                    "WRF v4.6.1 refuses this pairing",
+                    f"{pair_citation.anchor}: {pair_citation.law}",
+                )))
     if sf_surface_physics == 3 and num_soil_layers != 9:
         # RUC itself is no longer refused: it has a dispatch row, a seam, a
         # cold start, restart identity and output.  What is still refused is
@@ -1531,6 +1580,7 @@ def require_ready_wrf_physics(**selection: int) -> None:
 
 __all__ = [
     "EXPERIMENTAL_THOMPSON_ENV",
+    "KESSLER_PROFILE_ID",
     "MYNN_NOAHMP_PROFILE_ID",
     "MYNN_PROFILE_ID",
     "MYNN_RUC_PROFILE_ID",

@@ -2409,3 +2409,94 @@ def test_a_manifest_without_the_ladder_still_means_the_certified_top(
 
     assert receipt["pressure_levels_hpa"] is None
     assert receipt["source_top_pressure_pa"] == 10000.0
+
+
+# ---------------------------------------------------------------------------
+# The runner is part of the installed package, not a checkout script
+# ---------------------------------------------------------------------------
+
+def test_the_runner_is_importable_from_the_package():
+    """`pip install gpuwm` has to be able to RUN a forecast.
+
+    The chain's last two stages used to be a script path under
+    ``tools/``, which only a git checkout has, so a wheel install could
+    preprocess a GFS cycle and then had nowhere to run it.  "Install the
+    product, then clone the repository to use it" is not an install.
+    """
+
+    import gpuwm.prepared_single_domain_forecast as packaged
+
+    assert packaged.main is runner.main
+    assert packaged.runner_capabilities()["runner"] \
+        == "tools.prepared_single_domain_forecast"
+
+
+def test_the_tools_entry_point_is_the_same_module_not_a_copy():
+    """One implementation, two entries -- and receipts cannot diverge.
+
+    ``tools/prepared_single_domain_forecast.py`` still works for every
+    transcript and doc that names it.  It delegates: the module object
+    it exposes IS the package module, so there is no second runner whose
+    hashes could disagree with the first one's.
+    """
+
+    import gpuwm.prepared_single_domain_forecast as packaged
+
+    assert runner is packaged
+
+
+def test_the_runtime_identity_binds_the_packaged_runner_file():
+    """The receipt names where the code actually lives."""
+
+    identity = runner._runtime_source_identity()
+    keys = set(identity["source_sha256"])
+    assert "gpuwm/prepared_single_domain_forecast.py" in keys
+    assert "tools/prepared_single_domain_forecast.py" not in keys
+
+
+def test_a_reused_authority_directory_is_a_sentence_not_a_traceback(
+        tmp_path, capsys):
+    """Re-running the documented command is the commonest way here.
+
+    ``--output-directory`` is create-only on purpose: an authority
+    directory that merged two runs would publish a receipt describing
+    neither.  But the refusal arrived as a raw ``FileExistsError``
+    traceback ending in a Windows error number, which is how an owner
+    met it.  One sentence, the remedy, exit 2 -- the same standard as
+    the front-door refusals.
+    """
+
+    argv = [
+        "--materialize-authorities", "--source", "gfs",
+        "--base-experiment-config",
+        str(ROOT / "configs" / "gfs_wrf_direct_proof.toml"),
+        "--base-wps-namelist",
+        str(ROOT / "configs" / "gfs_wrf_direct_proof.namelist.wps"),
+        "--physics-profile", runner.MORRISON_PHYSICS_PROFILE,
+        "--output-directory", str(tmp_path / "authority")]
+    assert runner.main(argv) == 0
+    capsys.readouterr()
+
+    rc = runner.main(argv)
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "Traceback" not in captured.err
+    assert captured.err.strip().count("\n") == 0, captured.err
+    assert "--output-directory refused" in captured.err
+    assert "already exists" in captured.err
+    assert "Pass a new --output-directory" in captured.err
+
+
+def test_a_missing_base_input_is_a_sentence_too(tmp_path, capsys):
+    """The other way to mistype this stage's flags."""
+
+    rc = runner.main([
+        "--materialize-authorities", "--source", "gfs",
+        "--base-experiment-config", str(tmp_path / "nope.toml"),
+        "--base-wps-namelist", str(tmp_path / "nope.namelist.wps"),
+        "--physics-profile", runner.MORRISON_PHYSICS_PROFILE,
+        "--output-directory", str(tmp_path / "authority")])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "Traceback" not in captured.err
+    assert "nope.toml" in captured.err

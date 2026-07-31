@@ -225,11 +225,9 @@ def test_km_opt_selects_exactly_one_diffusion_scheme(tmp_path):
     assert (cfg.km_opt, cfg.khdif, cfg.kvdif) == (1, 75.0, 25.0)
 
 
-def test_km_opt4_requires_pbl_until_wrf_vertical_diffusion_is_wired(
-        tmp_path):
-    with pytest.raises(NotImplementedError,
-                       match=r"km_opt=4.*bl_pbl_physics=0.*vertical"):
-        load_config(_write_toml(tmp_path, dynamics="km_opt = 4"))
+def test_km_opt4_admits_pbl_off_vertical_diffusion(tmp_path):
+    les = load_config(_write_toml(tmp_path, dynamics="km_opt = 4"))
+    assert les.km_opt == 4 and les.bl_pbl_physics == 0
     # The surface layer is not decoration here: validate_run_config refuses a
     # PBL scheme without one (it consumes UST/HFX/QFX/WSPD/RMOL from it), and
     # gpuwm/core/physics.py initialize_physics has always refused the same
@@ -283,9 +281,6 @@ def test_step_guards_unsupported_combinations_cpu():
         step(_Stub(), RunConfig(**base, specified=True, khdif=75.0))
     with pytest.raises(ValueError, match="km_opt=4.*khdif/kvdif"):
         step(_Stub(), RunConfig(**base, km_opt=4, khdif=75.0))
-    with pytest.raises(NotImplementedError,
-                       match=r"km_opt=4.*bl_pbl_physics=0.*vertical"):
-        step(_Stub(), RunConfig(**base, km_opt=4))
     with pytest.raises(ValueError, match="diff_6th_opt"):
         step(_Stub(moist=True), RunConfig(**base, moist=True,
                                           diff_6th_opt=1))

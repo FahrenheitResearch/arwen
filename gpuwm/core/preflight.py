@@ -1228,6 +1228,12 @@ def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
     if cfg is not None and int(cfg.sf_sfclay_physics) == 5:
         from gpuwm.core.mynn_sfclay import MYNN_SURFACE_OUTPUTS
         union.update(dict.fromkeys(MYNN_SURFACE_OUTPUTS))
+    elif (cfg is not None and int(cfg.km_opt) == 4
+          and int(cfg.bl_pbl_physics) == 0):
+        # vertical_diffusion_2's isfflx=1 wall stress consumes WRF USTM.
+        # MM5 surface schemes otherwise do not retain this MYNN-adjacent
+        # diagnostic in ArWen.
+        union["ustm"] = None
     union.update(dict.fromkeys(NOAH_FIELDS_2D))
     union.update(dict.fromkeys(("ebal", "kpbl")))
     if cfg is not None and int(cfg.bl_pbl_physics) == 5:

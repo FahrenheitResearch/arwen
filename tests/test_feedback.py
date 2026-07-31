@@ -71,7 +71,7 @@ def test_feedback_refuses_one_way_only_microphysics_transition():
     NestCoupler(child, feedback=0)
     with pytest.raises(
             ValueError,
-            match="identical active parent/child prognostic.*no reverse"):
+            match="cross-scheme-feedback-reverse-mapping-unimplemented-v1"):
         NestCoupler(child, feedback=1)
 
     same_scheme = replace(

@@ -906,6 +906,144 @@ real wrf_tau23(const WrfSmagGrid& q, const real* km, int kw, int j, int i)
     return -rhoavg * kavg * wrf_defor23(q, kw, j, i);
 }
 
+// WRF v4.6.1 vertical_diffusion_2, selected by diff_opt=2 when the PBL is
+// off (dyn_em/module_first_rk_step_part2.F:1008-1074).  For km_opt=4
+// smag2d_km makes xkmv=xkmh and xkhv=0
+// (dyn_em/module_diffusion_em.F:2018-2023), so the
+// interior vertical operator has momentum stresses only.  Scalar interior
+// fluxes are identically zero; their explicit surface fluxes are below.
+extern "C" __global__
+void wrf_smag_vd_u(WRF_SMAG_GRID_ARGS, const real* km, real* tend,
+                   int nz, int ny, int nx, int phb3d,
+                   int boundary_x, int boundary_y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx + 1 || j >= ny || k >= nz) return;
+    WRF_SMAG_MAKE_GRID;
+    real lower = wrf_tau13(q, km, k, j, i);
+    real upper = wrf_tau13(q, km, k + 1, j, i);
+    tend[I3S(k, j, i, ny, nx + 1)] += G * (upper - lower) / dnw[k];
+}
+
+extern "C" __global__
+void wrf_smag_vd_v(WRF_SMAG_GRID_ARGS, const real* km, real* tend,
+                   int nz, int ny, int nx, int phb3d,
+                   int boundary_x, int boundary_y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny + 1 || k >= nz) return;
+    WRF_SMAG_MAKE_GRID;
+    real lower = wrf_tau23(q, km, k, j, i);
+    real upper = wrf_tau23(q, km, k + 1, j, i);
+    tend[I3S(k, j, i, ny + 1, nx)] += G * (upper - lower) / dnw[k];
+}
+
+__device__ __forceinline__
+real wrf_tau33(const WrfSmagGrid& q, const real* km, int k, int j, int i)
+{
+    if (k < 0 || k >= q.nz) return 0.0f;
+    int jj = wrf_iy(q, j), ii = wrf_ix(q, i);
+    real defor33 = 2.0f * (
+        q.w[I3(k + 1, jj, ii, q.ny, q.nx)]
+        - q.w[I3(k, jj, ii, q.ny, q.nx)])
+        * wrf_rdzw(q, k, j, i);
+    return -wrf_rho(q, k, j, i) * wrf_k(q, km, k, j, i) * defor33;
+}
+
+extern "C" __global__
+void wrf_smag_vd_w(WRF_SMAG_GRID_ARGS, const real* km, real* tend,
+                   int nz, int ny, int nx, int phb3d,
+                   int boundary_x, int boundary_y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int kw = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || kw <= 0 || kw >= nz) return;
+    WRF_SMAG_MAKE_GRID;
+    tend[I3(kw, j, i, ny, nx)] += G * (
+        wrf_tau33(q, km, kw, j, i)
+        - wrf_tau33(q, km, kw - 1, j, i)) / dn[kw];
+}
+
+// vertical_diffusion_2's isfflx=1 wall-stress branch
+// (dyn_em/module_diffusion_em.F:4182-4250).  USTM is the friction velocity
+// without the convective-wind correction, exactly the grid%ustm field WRF
+// passes.
+extern "C" __global__
+void wrf_smag_surface_u(WRF_SMAG_GRID_ARGS, const real* ustm, int active,
+                        real* tend, int nz, int ny, int nx, int phb3d,
+                        int boundary_x, int boundary_y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (!active || i >= nx + 1 || j >= ny) return;
+    WRF_SMAG_MAKE_GRID;
+    int ic = wrf_ix(q, i), im = wrf_ix(q, i - 1), jj = wrf_iy(q, j);
+    real vv = 0.25f * (
+        q.v[I3S(0, wrf_jv(q, j), ic, ny + 1, nx)]
+        + q.v[I3S(0, wrf_jv(q, j + 1), ic, ny + 1, nx)]
+        + q.v[I3S(0, wrf_jv(q, j), im, ny + 1, nx)]
+        + q.v[I3S(0, wrf_jv(q, j + 1), im, ny + 1, nx)]);
+    real uu = q.u[I3S(0, jj, wrf_iu(q, i), ny, nx + 1)];
+    real speed = sqrtf(uu * uu + vv * vv) + 1.0e-15f;
+    real ustar = 0.5f * (
+        ustm[(size_t)jj * nx + ic] + ustm[(size_t)jj * nx + im]);
+    real stress = ustar * ustar * uu / speed;
+    real rhoavg = 0.5f * (
+        wrf_rho(q, 0, j, ic) + wrf_rho(q, 0, j, im));
+    tend[I3S(0, j, i, ny, nx + 1)] += G * stress * rhoavg / dnw[0];
+}
+
+extern "C" __global__
+void wrf_smag_surface_v(WRF_SMAG_GRID_ARGS, const real* ustm, int active,
+                        real* tend, int nz, int ny, int nx, int phb3d,
+                        int boundary_x, int boundary_y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (!active || i >= nx || j >= ny + 1) return;
+    WRF_SMAG_MAKE_GRID;
+    int jc = wrf_iy(q, j), jm = wrf_iy(q, j - 1), ii = wrf_ix(q, i);
+    real uu = 0.25f * (
+        q.u[I3S(0, jc, wrf_iu(q, i), ny, nx + 1)]
+        + q.u[I3S(0, jc, wrf_iu(q, i + 1), ny, nx + 1)]
+        + q.u[I3S(0, jm, wrf_iu(q, i), ny, nx + 1)]
+        + q.u[I3S(0, jm, wrf_iu(q, i + 1), ny, nx + 1)]);
+    real vv = q.v[I3S(0, wrf_jv(q, j), ii, ny + 1, nx)];
+    real speed = sqrtf(vv * vv + uu * uu) + 1.0e-15f;
+    real ustar = 0.5f * (
+        ustm[(size_t)jc * nx + ii] + ustm[(size_t)jm * nx + ii]);
+    real stress = ustar * ustar * vv / speed;
+    real rhoavg = 0.5f * (
+        wrf_rho(q, 0, jc, i) + wrf_rho(q, 0, jm, i));
+    tend[I3S(0, j, i, ny + 1, nx)] += G * stress * rhoavg / dnw[0];
+}
+
+// vertical_diffusion_2's isfflx=1 heat and water-vapour fluxes
+// (dyn_em/module_diffusion_em.F:4288-4310,4384-4400).  ArWen's admitted
+// identity fixes use_theta_m=0, so the theta-m cross term is intentionally
+// absent.
+extern "C" __global__
+void wrf_smag_surface_scalars(
+        WRF_SMAG_GRID_ARGS, const real* hfx, const real* qfx, int active,
+        real* rth, real* rqv, int nz, int ny, int nx, int phb3d,
+        int boundary_x, int boundary_y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (!active || i >= nx || j >= ny) return;
+    WRF_SMAG_MAKE_GRID;
+    size_t h = (size_t)j * nx + i;
+    real vapor = moist ? qv[I3(0, j, i, ny, nx)] : 0.0f;
+    real cpm = CP * (1.0f + 0.8f * vapor);
+    rth[I3(0, j, i, ny, nx)] -= G * hfx[h] / cpm / dnw[0];
+    if (moist) rqv[I3(0, j, i, ny, nx)] -= G * qfx[h] / dnw[0];
+}
+
 __device__ __forceinline__
 real wrf_tau13_mavg(const WrfSmagGrid& q, const real* km, int k, int j, int i)
 {

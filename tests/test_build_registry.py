@@ -116,6 +116,11 @@ def test_the_builder_reproduces_the_tracked_registry_byte_for_byte(
             "change together.")
 
 
+def test_generated_map_projection_enum_matches_the_runtime_contract() -> None:
+    """Registry consumers may select every projection the runtime accepts."""
+    assert physics_registry()["parameters"]["map_proj"]["enum"] == [0, 1, 2, 3]
+
+
 #: A declaration whose whole spec the builder's own table pins, so its default
 #: is one byte the builder rewrites unconditionally.
 _OWNED_ROW = b'"num_soil_layers":{'
@@ -284,8 +289,17 @@ def test_ratified_nssl2_legacy_profile_follows_every_base_route() -> None:
             assert (legacy in declared) == (base in declared), source
 
 
-def test_deferred_hrrr_kessler_profile_remains_undeclared() -> None:
+def test_ratified_kessler_template_is_declared_only_on_hrrr_routes() -> None:
     registry = physics_registry()
-    assert all(
-        template["components"].get("microphysics") != "kessler-mp1"
-        for template in registry["templates"].values())
+    template_id = "kessler-mp1-ysu-mm5-noah-dudhia-v1"
+    assert registry["templates"][template_id]["components"][
+        "microphysics"] == "kessler-mp1"
+    for route_id, route in registry["runner_routes"].items():
+        for source_id, declared in route.get(
+                "source_template_ids", {}).items():
+            assert (template_id in declared) == (
+                source_id == "hrrr"
+                and route_id in {
+                    "tools.hrrr_single_domain_benchmark",
+                    "tools.prepared_domain_tree_forecast",
+                })

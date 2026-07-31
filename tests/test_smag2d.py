@@ -314,7 +314,8 @@ def test_wrf_smag_physical_boundary_k_zero_and_first_interior_scalar(
     from gpuwm.core.constants import G
     from gpuwm.core.diagnostics import update_diagnostics
     from gpuwm.core.dycore import (launch_wrf_smag2d_hd,
-                                   launch_wrf_smag2d_km)
+                                   launch_wrf_smag2d_km,
+                                   launch_wrf_smag2d_vertical)
     from gpuwm.core.state import init_at_rest
 
     nx, ny, nz = 10, 8, 6
@@ -390,7 +391,8 @@ def test_wrf_smag_production_terrain_maps_momentum_authority():
 
     from gpuwm.core.diagnostics import update_diagnostics
     from gpuwm.core.dycore import (launch_wrf_smag2d_hd,
-                                   launch_wrf_smag2d_km)
+                                   launch_wrf_smag2d_km,
+                                   launch_wrf_smag2d_vertical)
     from gpuwm.core.grid import make_base_state, make_vertical_coord
     from gpuwm.core.smag2d import (wrf_periodic_momentum_authority,
                                   wrf_periodic_scalar_metric_tendency)
@@ -477,6 +479,14 @@ def test_wrf_smag_production_terrain_maps_momentum_authority():
     launch_wrf_smag2d_hd(
         state, cfg, state.thp, kh, rth, stagger="", time_t=False,
         full_theta=True)
+    ru_vertical = cp.zeros_like(state.u)
+    rv_vertical = cp.zeros_like(state.v)
+    rw_vertical = cp.zeros_like(state.w)
+    rth_vertical = cp.zeros_like(state.thp)
+    rqv_vertical = cp.zeros_like(state.qv)
+    launch_wrf_smag2d_vertical(
+        state, cfg, km, ru=ru_vertical, rv=rv_vertical, rw=rw_vertical,
+        rth=rth_vertical, rqv=rqv_vertical, time_t=False)
 
     phb = cp.asnumpy(state.phb).astype(np.float64)
     if phb.ndim == 1:
@@ -526,6 +536,20 @@ def test_wrf_smag_production_terrain_maps_momentum_authority():
             atol=4.0e-5 * scale, err_msg=name)
         dry_delta = np.max(np.abs(ref - dry_rho_authority[name]))
         assert dry_delta > 5.0e-3 * scale
+    for name, actual in (
+            ("ru_vertical", ru_vertical),
+            ("rv_vertical", rv_vertical),
+            ("rw_vertical", rw_vertical)):
+        ref = authority[name]
+        scale = max(float(np.max(np.abs(ref))), 1.0e-10)
+        assert scale > 1.0e-6
+        np.testing.assert_allclose(
+            cp.asnumpy(actual), ref, rtol=3.0e-3,
+            atol=4.0e-5 * scale, err_msg=name)
+    # xkhv is exactly zero under km_opt=4; with no attached surface writer
+    # the held USTM/HFX/QFX are cold zero as well.
+    np.testing.assert_array_equal(cp.asnumpy(rth_vertical), 0.0)
+    np.testing.assert_array_equal(cp.asnumpy(rqv_vertical), 0.0)
 
     assert (np.max(np.abs(authority["ru_cross"]))
             > 1.0e-3 * np.max(np.abs(authority["ru"])))
@@ -555,6 +579,71 @@ def test_wrf_smag_production_terrain_maps_momentum_authority():
         atol=4.0e-5 * theta_scale)
     assert np.max(np.abs(theta_ref - perturbation_only)) \
         > 1.0e-3 * theta_scale
+
+
+@requires_gpu
+def test_wrf_smag_pbl_off_surface_flux_policy():
+    """Pin vertical_diffusion_2's isfflx=1 wall/heat/moisture branches."""
+    from types import SimpleNamespace
+
+    import cupy as cp
+
+    from gpuwm.core import constants as c
+    from gpuwm.core.diagnostics import update_diagnostics
+    from gpuwm.core.dycore import launch_wrf_smag2d_vertical
+    from gpuwm.core.moist import init_moist_balanced
+
+    nx, ny, nz = 6, 5, 4
+    cfg = RunConfig(
+        nx=nx, ny=ny, nz=nz, dx=1000.0, dy=1000.0, ztop=6000.0,
+        dt=2.0, run_seconds=0.0, km_opt=4, bl_pbl_physics=0,
+        sf_sfclay_physics=1, moist=True)
+    coord = make_vertical_coord(nz)
+    base = make_base_state(
+        coord, lambda z: 300.0 + 0.004 * np.asarray(z),
+        p_surf=cfg.p_surf, ztop=cfg.ztop)
+    state = init_moist_balanced(
+        cfg, coord, base, lambda z: 0.01 + 0.0 * np.asarray(z))
+    state.u[...] = cp.float32(4.0)
+    state.v[...] = cp.float32(3.0)
+    update_diagnostics(state, cfg.hypsometric_opt)
+
+    shape = (ny, nx)
+    state.physics = SimpleNamespace(fields={
+        "ustm": cp.full(shape, 0.5, dtype=cp.float32),
+        "hfx": cp.full(shape, 100.0, dtype=cp.float32),
+        "qfx": cp.full(shape, 1.0e-4, dtype=cp.float32),
+    })
+    km = cp.zeros((nz, ny, nx), dtype=cp.float32)
+    ru = cp.zeros_like(state.u)
+    rv = cp.zeros_like(state.v)
+    rw = cp.zeros_like(state.w)
+    rth = cp.zeros_like(state.thp)
+    rqv = cp.zeros_like(state.qv)
+    launch_wrf_smag2d_vertical(
+        state, cfg, km, ru=ru, rv=rv, rw=rw, rth=rth, rqv=rqv,
+        time_t=False)
+
+    dnw0 = float(cp.asnumpy(state.dnw)[0])
+    rho = cp.asnumpy((1.0 + state.qv[0]) / state.alt[0])
+    expected_u = c.G * (0.5 ** 2) * (4.0 / 5.0) * rho / dnw0
+    expected_v = c.G * (0.5 ** 2) * (3.0 / 5.0) * rho / dnw0
+    expected_th = (
+        -c.G * 100.0 / (c.CP * (1.0 + 0.8 * 0.01)) / dnw0)
+    expected_qv = -c.G * 1.0e-4 / dnw0
+    np.testing.assert_allclose(cp.asnumpy(ru[0, :, :nx]), expected_u,
+                               rtol=2.0e-6, atol=1.0e-8)
+    np.testing.assert_allclose(cp.asnumpy(rv[0, :ny]), expected_v,
+                               rtol=2.0e-6, atol=1.0e-8)
+    np.testing.assert_allclose(cp.asnumpy(rth[0]), expected_th,
+                               rtol=2.0e-6, atol=1.0e-8)
+    np.testing.assert_allclose(cp.asnumpy(rqv[0]), expected_qv,
+                               rtol=2.0e-6, atol=1.0e-10)
+    np.testing.assert_array_equal(cp.asnumpy(ru[1:]), 0.0)
+    np.testing.assert_array_equal(cp.asnumpy(rv[1:]), 0.0)
+    np.testing.assert_array_equal(cp.asnumpy(rw), 0.0)
+    np.testing.assert_array_equal(cp.asnumpy(rth[1:]), 0.0)
+    np.testing.assert_array_equal(cp.asnumpy(rqv[1:]), 0.0)
 
 
 @requires_gpu

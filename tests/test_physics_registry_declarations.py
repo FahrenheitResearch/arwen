@@ -36,7 +36,8 @@ from test_physics_registry import _single_plan, _uniform_tree
 #: Knobs GPUWM reads from the experiment schema rather than from RunConfig
 #: (gpuwm/experiment.py and gpuwm/case_data.py).  They are whole-experiment
 #: values, never per-domain.
-_EXPERIMENT_SCHEMA_PARAMETERS = frozenset({"p_top", "blend_width", "co2_vmr"})
+_EXPERIMENT_SCHEMA_PARAMETERS = frozenset({
+    "p_top", "blend_width", "co2_vmr", "feedback"})
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 

@@ -22,6 +22,7 @@ from gpuwm.physics_registry import (
     validate_physics_plan,
 )
 from gpuwm.physics_compat import (
+    KESSLER_PROFILE_ID,
     MYNN_NOAHMP_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
@@ -325,12 +326,26 @@ def test_unnamed_tree_tuple_governance_uses_registry_reachability_only():
     assert receipt["acknowledgements"] == []
     assert receipt["acknowledgement_provenance"] == {}
 
-    outside = {**normal, "bl_pbl_physics": 0}
+    pbl_off = {**normal, "bl_pbl_physics": 0}
+    pbl_off_receipt = multi_domain_physics_selection(
+        {1: pbl_off, 2: pbl_off})
+    assert {
+        domain["governance"]["state"]
+        for domain in pbl_off_receipt["domains"].values()
+    } == {"registry-reachable"}
+    assert pbl_off_receipt["acknowledgements"] == []
+
+    outside = {
+        **normal,
+        "ra_lw_physics": 90,
+        "ra_sw_physics": 90,
+    }
     with pytest.raises(PhysicsCapabilityError) as caught:
         multi_domain_physics_selection({1: outside, 2: outside})
     message = str(caught.value)
     assert "d01 resolved physics tuple" in message
-    assert "bl_pbl_physics=0" in message
+    assert "ra_lw_physics=90" in message
+    assert "ra_sw_physics=90" in message
     assert "outside-registry-declared-reachability" in message
     assert (
         '--ack expert-tuple-v1 or acknowledgements = ["expert-tuple-v1"]'
@@ -420,7 +435,7 @@ def test_fixed_template_runners_reject_all_overrides():
     assert "expert-setting-route" in {error["code"] for error in expert["errors"]}
 
 
-@pytest.mark.parametrize("component", ["pbl", "surface_layer", "land_surface", "radiation"])
+@pytest.mark.parametrize("component", ["land_surface", "radiation"])
 def test_tree_route_rejects_currently_unsupported_component_variation(component):
     plan = _uniform_tree()
     replacements = {
@@ -437,7 +452,20 @@ def test_tree_route_rejects_currently_unsupported_component_variation(component)
     }
 
 
-def test_tree_route_rejects_unsupported_morrison_to_nssl_transition():
+@pytest.mark.parametrize(
+    ("component", "option"),
+    [("pbl", "off"), ("surface_layer", "revised-mm5"),
+     ("radiation", "off")],
+)
+def test_tree_route_admits_wrf_legal_harmless_component_variation(
+        component, option):
+    plan = _uniform_tree()
+    plan["domains"][1]["components"] = {component: option}
+    report = validate_physics_plan(plan)
+    assert report["launchable"] is True, report["errors"]
+
+
+def test_tree_route_admits_morrison_to_nssl_only_with_matrix_policy():
     plan = _uniform_tree(MORRISON_TEMPLATE_ID)
     plan["domains"][1]["components"] = {"microphysics": "nssl2-mp18"}
     plan["domains"][1]["parameters"] = {
@@ -445,9 +473,38 @@ def test_tree_route_rejects_unsupported_morrison_to_nssl_transition():
     }
     report = validate_physics_plan(plan)
     assert report["launchable"] is False
-    assert "unsupported-component-transition" in {
+    assert "transition-required-setting" in {
         error["code"] for error in report["errors"]
     }
+
+    plan["domains"][1]["parameters"] = {
+        "nest_microphysics_transition": "mp-edge-mass-diagnosed-v1"
+    }
+    admitted = validate_physics_plan(plan)
+    assert admitted["launchable"] is True
+    assert "transition-maturity" in {
+        warning["code"] for warning in admitted["warnings"]
+    }
+
+
+def test_registry_advertises_all_twenty_mixed_edges_honestly():
+    rules = physics_registry()["transitions"][
+        "microphysics-one-way-v1"]["cross_options"]
+    pairs = {
+        (rule["parent_option_id"], rule["child_option_id"])
+        for rule in rules
+    }
+    assert len(rules) == len(pairs) == 20
+    ratified = [rule for rule in rules if rule["status"] == "ratified"]
+    assert [(rule["parent_option_id"], rule["child_option_id"])
+            for rule in ratified] == [("thompson-mp8", "nssl2-mp18")]
+    experimental = [
+        rule for rule in rules if rule["status"] == "experimental"
+    ]
+    assert len(experimental) == 19
+    assert {
+        rule["maturity"] for rule in experimental
+    } == {"experimental-runtime"}
 
 
 def test_data_driven_component_constraints_reject_engine_impossible_settings():
@@ -499,12 +556,32 @@ def test_huge_numeric_parameter_returns_validation_error_instead_of_crashing(
     assert cli_report["errors"]
 
 
-@pytest.mark.parametrize("template_id", SINGLE_DOMAIN_PHYSICS_PROFILES)
+@pytest.mark.parametrize(
+    "template_id",
+    tuple(
+        profile for profile in SINGLE_DOMAIN_PHYSICS_PROFILES
+        if profile != KESSLER_PROFILE_ID),
+)
 def test_v2_templates_preserve_every_existing_v1_runtime_switch(template_id):
     report = validate_physics_plan(_single_plan(template_id))
     assert report["launchable"] is True
     resolved = report["resolved_domains"][0]["settings"]
     for key, value in single_domain_runtime_switches(template_id).items():
+        assert resolved[key] == value
+
+
+def test_hrrr_kessler_template_preserves_its_runtime_switches():
+    plan = _single_plan(WSM6_TEMPLATE_ID)
+    plan["context"].update(
+        source_id="hrrr",
+        runner_id="tools.hrrr_single_domain_benchmark",
+    )
+    plan["domains"][0]["template_id"] = KESSLER_PROFILE_ID
+    report = validate_physics_plan(plan)
+    assert report["launchable"] is True, report["errors"]
+    resolved = report["resolved_domains"][0]["settings"]
+    for key, value in single_domain_runtime_switches(
+            KESSLER_PROFILE_ID).items():
         assert resolved[key] == value
 
 
@@ -567,14 +644,15 @@ def test_template_maturity_and_warning_are_preserved_for_20cr_profile():
     }
 
 
-def test_mynn_components_remain_reciprocally_coupled_in_registry_data():
+def test_mynn_component_dependencies_are_the_wrf_v461_cells():
     components = physics_registry()["components"]
     assert components["surface_layer"]["options"]["mynn"]["constraints"][
         "requires_components"
-    ] == {"pbl": ["mynn"]}
+    ] == {"pbl": ["off", "mynn"]}
     assert components["pbl"]["options"]["mynn"]["constraints"][
         "requires_components"
-    ] == {"surface_layer": ["mynn"]}
+    ] == {
+        "surface_layer": ["revised-mm5", "classic-mm5", "mynn"]}
 
 
 def test_mynn_is_implemented_and_warns_rather_than_blocking():
@@ -655,16 +733,11 @@ def test_noahmp_is_admitted_with_mm5_or_the_coupled_mynn_suite():
         "surface_layer": ["revised-mm5", "classic-mm5", "mynn"]}
 
 
-def test_selecting_only_half_of_mynn_blocks_on_the_reciprocal_dependency():
-    """The registry half-suite gate, which is the GUI's copy of the runtime one.
+def test_registry_refuses_the_same_mynn_surface_ysu_cell_as_wrf():
+    """MYNN surface with YSU is the fatal half of WRF's mixed-pair law."""
 
-    ``gpuwm.physics_compat`` refuses a half suite at run time.  This asserts
-    the registry refuses it at plan time too, and names the dependency rather
-    than claiming the scheme is unimplemented -- it is not, and a user told
-    otherwise would go looking for missing physics that is present.
-    """
     plan = _single_plan()
-    plan["domains"][0]["components"] = {"pbl": "mynn"}
+    plan["domains"][0]["components"] = {"surface_layer": "mynn"}
     report = validate_physics_plan(plan)
     assert report["launchable"] is False
     assert "component-dependency" in {error["code"]

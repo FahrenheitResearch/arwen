@@ -1,3 +1,24 @@
+# A checkout is byte-identical to the wheel, on every platform.
+#
+# git-for-Windows ships core.autocrlf=true, so without this line a
+# Windows clone materializes CRLF in every text file it has not been
+# told to leave alone -- including `gpuwm/*.py`.  The product hashes
+# those: `_runtime_source_identity` in the prepared-forecast runners
+# binds the SHA-256 of its own implementation files, and the
+# preparation proof binds an export-source set.  A pip-installed
+# package (LF, as the wheel stores it) and a Windows clone (CRLF) then
+# disagree about the same file, and a mixed estate -- rw-wps from the
+# venv, the runner from a clone -- dies with `proof export source
+# hashes differ from preparation`.  That was observed, not theorized.
+#
+# `* -text` means "no conversion, in either direction, anywhere": the
+# bytes in the object database are the bytes on disk.  The per-path
+# rules below stay because they say the same thing more loudly for the
+# files where it matters most, and because `text eol=lf` additionally
+# normalizes on the way IN for files a contributor might author with
+# CRLF.  tests/test_line_ending_stability.py holds the promise.
+* -text
+
 gpuwm/data/** -text
 tools/grib1_bridge/vendor/** -text
 patches/** -text

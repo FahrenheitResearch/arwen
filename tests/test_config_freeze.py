@@ -48,7 +48,7 @@ def _frozen_constructors():
 def test_new_fields_are_reviewed_defaults_appended_last():
     """New fields remain appended, preserving positional construction."""
     names = [f.name for f in dataclasses.fields(RunConfig)]
-    assert names[-60:] == [
+    assert names[-65:] == [
         "nested", "grid_id", "top_lid", "moist_cq", "morr_rimed_ice",
         "wsm6_hail_opt", "ra_lw_physics", "ra_sw_physics", "icloud",
         "swrad_scat", "wrf_rrtmg_compatibility", "num_soil_layers",
@@ -65,7 +65,8 @@ def test_new_fields_are_reviewed_defaults_appended_last():
         "opt_irrm", "opt_infdv", "opt_tdrn", "soiltstep", "noahmp_output",
         "noahmp_acc_dt",
         "mosaic_lu", "mosaic_soil", "flag_sm_adj", "spp_lsm",
-        "nwp_diagnostics"]
+        "nwp_diagnostics", "isfflx", "o3input", "use_mp_re",
+        "seaice_albedo_default", "rdmaxalb"]
     # Noah option selectors. Each default reproduces the value the launcher
     # previously pinned, so exposing them cannot move a frozen trajectory.
     assert RunConfig.__dataclass_fields__["usemonalb"].default is False
@@ -102,6 +103,12 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     # trajectory is unchanged.  At 1 the diagnostic is trajectory-inert by
     # test (tests/test_uh_lifecycle.py).
     assert RunConfig.__dataclass_fields__["nwp_diagnostics"].default == 0
+    assert RunConfig.__dataclass_fields__["isfflx"].default == 1
+    assert RunConfig.__dataclass_fields__["o3input"].default == 2
+    assert RunConfig.__dataclass_fields__["use_mp_re"].default == 1
+    assert RunConfig.__dataclass_fields__[
+        "seaice_albedo_default"].default == 0.65
+    assert RunConfig.__dataclass_fields__["rdmaxalb"].default is True
     # MM5 surface-layer options.  Both WRF Registry defaults are 0, and both
     # are inert at 0: the surface-layer kernel's isftcflx/iz0tlnd branches
     # are skipped entirely, so every frozen trajectory is unchanged.

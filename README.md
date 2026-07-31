@@ -327,12 +327,14 @@ Stated plainly, up front:
   door: `rw-wps` converts them to `wrfinput`/`wrfbdy`, which drive
   unchanged stock WRF and `gpuwm downscale` -- and which reach the
   ArWen GPU loop through
-  `tools/prepared_single_domain_forecast.py` (one domain) or
-  `tools/prepared_domain_tree_forecast.py` (a nest ladder), **not**
-  through `gpuwm run`, which refuses a config with no `[case_data]`
-  table. The complete GFS command sequence, in the order that works,
-  is [FIRST-LIGHT.md § 3a](docs/public/FIRST-LIGHT.md). Each step
-  prints the next one with its digests filled in.
+  `python -m gpuwm.prepared_single_domain_forecast` (one domain) or
+  `python -m gpuwm.prepared_domain_tree_forecast` (a nest ladder),
+  **not** through `gpuwm run`, which refuses a config with no
+  `[case_data]` table. For single-domain GFS, `gpuwm go <config>` runs
+  that whole sequence -- authority, fetch, front door, forecast,
+  render -- so none of its digests has to be carried by hand; the
+  sequence itself, and the routes `go` does not drive, are
+  [FIRST-LIGHT.md 3a](docs/public/FIRST-LIGHT.md).
   HRRR remains CONUS (Lambert) only; worldwide points use GFS or ERA5,
   both global.
 - **Verification depth.** One case (3 April 1974, ERA5, four domains to

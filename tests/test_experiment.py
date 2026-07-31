@@ -791,6 +791,10 @@ def test_rejects_non_finite_vertical_and_projection(tmp_path):
         ProjectionConfig(**{**proj, "ref_lat": 95.0})
     with pytest.raises(ValueError, match="stand_lon"):
         ProjectionConfig(**{**proj, "stand_lon": float("inf")})
+    with pytest.raises(
+            ValueError,
+            match=r"angular dx/dy.*polar filter.*map_proj == 6"):
+        ProjectionConfig(**{**proj, "map_proj": "rotated-lat-lon"})
     base = BASE.format(experiment="restart_interval_s = 0.0",
                        shared="map_proj = 1", d01="", d02="")
     text = base + (

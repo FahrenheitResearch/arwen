@@ -16,7 +16,7 @@ import numpy as np
 
 from gpuwm.core.model import FeedbackScratch
 from gpuwm.core.microphysics_transition import (
-    launch_mp8_to_mp18_parent_field,
+    launch_microphysics_edge_parent_field,
     resolve_microphysics_transition,
     transition_handles_field,
     transition_parent_field_shape,
@@ -34,6 +34,9 @@ _APPLICATION_NAME = {"t": "theta", "ph": "phi"}
 _SIDES = (("west", "xs"), ("east", "xe"),
           ("south", "ys"), ("north", "ye"))
 _GEOMETRY_NAMES = ("ci", "ip", "cj", "jp", "xig", "xjg")
+MISMATCHED_MICROPHYSICS_FEEDBACK_BLOCKER = (
+    "cross-scheme-feedback-reverse-mapping-unimplemented-v1"
+)
 
 
 def _field_shape(state, kind: str) -> tuple[int, int, int]:
@@ -87,6 +90,12 @@ class NestCoupler:
             raise ValueError(
                 "experimental feedback is horizontal-only and requires "
                 "identical parent/child vertical level counts")
+        if self.feedback == 1 and self.microphysics_transition.mixed:
+            raise ValueError(
+                f"{MISMATCHED_MICROPHYSICS_FEEDBACK_BLOCKER}: experimental "
+                "two-way feedback has no ratified reverse mass/moment "
+                f"mapping for MP{parent.run.mp_physics}->"
+                f"MP{child.run.mp_physics}")
         if (self.feedback == 1
                 and nest_field_kinds(parent.run)
                 != nest_field_kinds(child.run)):
@@ -166,8 +175,9 @@ class NestCoupler:
             raise RuntimeError("parent field exceeds F16 arena capacity")
         out = backing.reshape(-1)[:count].reshape(shape)
         if transition_handles_field(self.microphysics_transition, kind):
-            launch_mp8_to_mp18_parent_field(
-                parent_state, kind, out=out, coupled=True)
+            launch_microphysics_edge_parent_field(
+                self.microphysics_transition, parent_state, kind,
+                out=out, coupled=True)
         else:
             couple_nest_field(parent_state, kind, out=out)
         return out
@@ -205,6 +215,21 @@ class NestCoupler:
             "first_parent_ticks": self.first_parent_ticks,
             "last_parent_ticks": self.last_parent_ticks,
         })
+        if self.microphysics_transition.mixed:
+            init_count = int(getattr(
+                self.child_node.state,
+                "_microphysics_transition_init_count", 0))
+            receipt["initialization_mapping_count"] = init_count
+            receipt["per_species_processing_counts"] = [
+                {
+                    **dict(row),
+                    "initialization_count": init_count,
+                    "lateral_forcing_count": int(self.force_count),
+                    "total_edge_processing_count": (
+                        init_count + int(self.force_count)),
+                }
+                for row in self.microphysics_transition.species_actions()
+            ]
         return MappingProxyType(receipt)
 
     def _coupled_child_field(self, kind: str):
@@ -382,4 +407,6 @@ class NestCoupler:
         self._prepared_feedback = None
 
 
-__all__ = ["NestCoupler"]
+__all__ = [
+    "MISMATCHED_MICROPHYSICS_FEEDBACK_BLOCKER", "NestCoupler",
+]

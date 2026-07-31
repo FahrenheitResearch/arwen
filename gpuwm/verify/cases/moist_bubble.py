@@ -172,10 +172,8 @@ def run(outdir: Path | None = None) -> dict:
     from gpuwm.config import validate_run_config
     from gpuwm.core.dycore import run_steps, stability_report
 
-    # The legacy idealized setup disables PBL.  Native WRF consequently
-    # adds vertical_diffusion_2 for km_opt=4, which gpuwm does not yet carry.
-    # Refuse before device allocation; real74's PBL-on production path stays
-    # supported.
+    # The idealized setup disables PBL.  Native WRF consequently adds
+    # vertical_diffusion_2 for km_opt=4; ArWen now carries that full branch.
     cfg = validate_run_config(default_config())
     coord = make_vertical_coord(cfg.nz)
     base = make_base_state(coord, lambda z: wk82_sounding(z)[0],

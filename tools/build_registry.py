@@ -36,6 +36,20 @@ JOURNAL = MODEL / "tools" / "data" / "knob_survey_lanes.jsonl"
 REGISTRY_PATH = MODEL / "gpuwm" / "physics_registry_v2.json"
 
 from gpuwm.physics_registry import canonical_json  # noqa: E402
+from gpuwm.wrf461_compatibility import (  # noqa: E402
+    CUMULUS_OPTIONS,
+    LAND_SURFACE_OPTIONS,
+    MATRIX_CELL_COUNT,
+    MP_OPTIONS,
+    PBL_OPTIONS,
+    PBL_SURFACE_LAYER_AUTHORITY,
+    RADIATION_OPTIONS,
+    SURFACE_LAYER_OPTIONS,
+    WRF_COMMIT,
+    WRF_VERSION,
+    compatibility_cell,
+    iter_compatibility_matrix,
+)
 # The prose-stripping rule belongs to the gate, so it is imported rather than
 # reimplemented.  A second copy is how the citations drifted: this builder
 # stripped only ``#`` comments while tools/check_parameter_claims.py stripped
@@ -82,16 +96,38 @@ IMPLEMENTED: dict[str, dict] = {
     "spec_zone": {"type": "integer", "minimum": 1, "default": 1},
     "relax_zone": {"type": "integer", "minimum": 2, "default": 4},
     # projection
-    "map_proj": {"type": "integer", "enum": [0, 1], "default": 0},
+    "map_proj": {"type": "integer", "enum": [0, 1, 2, 3], "default": 0},
     # boundary layer
     "ysu_topdown_pblmix": {"type": "integer", "enum": [0, 1], "default": 1},
     # radiation
     "swrad_scat": {"type": "number", "minimum": 0.0, "default": 1.0},
+    "o3input": {
+        "type": "integer", "enum": [0, 2], "default": 2,
+        "warnings": [
+            "o3input=0 is implemented only by ra_rrtmg_variant="
+            "'rrtmg_legacy', where the WRF wrapper constructs O3DATA. "
+            "RTE+RRTMGP admits only 2."]},
+    "use_mp_re": {
+        "type": "integer", "enum": [0, 1], "default": 1,
+        "warnings": [
+            "use_mp_re=0 is implemented only by ra_rrtmg_variant="
+            "'rrtmg_legacy'; it disables the WRF microphysics effective-"
+            "radius scheme table and makes the wrapper calculate radii."]},
     "ra_rrtmg_variant": {
         "type": "string",
         "enum": ["rte-rrtmgp", "rrtmg_legacy"],
         "default": "rte-rrtmgp"},
+    # experiment feedback already executes in the native multi-domain runner.
+    "feedback": {
+        "type": "integer", "enum": [0, 1], "default": 0,
+        "warnings": [
+            "DIVERGENCE from WRF's default 1: gpuwm defaults feedback to 0 "
+            "to preserve every assembled one-way trajectory. feedback=1 is "
+            "experimental and supported only by the native gpuwm run "
+            "multi-domain executor; prepared hierarchy artifacts remain "
+            "static one-way and refuse it."]},
     # surface layer -- newly ported this pass
+    "isfflx": {"type": "integer", "enum": [0, 1], "default": 1},
     "isftcflx": {"type": "integer", "enum": [0, 1, 2], "default": 0},
     "iz0tlnd": {"type": "integer", "enum": [0, 1, 2], "default": 0},
     # Noah LSM -- newly ported: kernel branches already existed at
@@ -100,6 +136,18 @@ IMPLEMENTED: dict[str, dict] = {
     "usemonalb": {"type": "boolean", "default": False},
     "rdlai2d": {"type": "boolean", "default": False},
     "opt_thcnd": {"type": "integer", "enum": [1, 2], "default": 1},
+    "rdmaxalb": {
+        "type": "boolean", "default": True,
+        "warnings": [
+            "rdmaxalb=false is implemented only by Noah LSM "
+            "(sf_surface_physics=2), whose LSMINIT replaces supplied SNOALB "
+            "with VEGPARM MAXALB by vegetation category."]},
+    "seaice_albedo_default": {
+        "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.65,
+        "warnings": [
+            "A nondefault seaice_albedo_default is implemented only by RUC "
+            "LSM (sf_surface_physics=3), in the live sea-ice ALBBCK "
+            "override before LSMRUC."]},
     # experiment-scope knobs (whole tree, never per-domain)
     "p_top": {"type": "number", "minimum": 0.0},
     "blend_width": {"type": "integer", "minimum": 0, "default": 5},
@@ -183,6 +231,291 @@ TIGHTEN: dict[str, dict] = {
 
 WRF_TYPE = {"integer": "integer", "real": "number",
             "logical": "boolean", "character": "string"}
+
+# Lane K's final ledger for declarations that remain unavailable.  The class
+# is kept beside the blocker so the generated registry and the handoff cannot
+# drift into calling a bounded option branch a new subsystem.
+UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
+    "aer_opt": (
+        "c",
+        "Radiation aerosol optics are absent: no aerosol optical-depth/"
+        "single-scattering/asymmetry state, ingest, restart carriers, or "
+        "legacy/RTE radiation-kernel binding exists."),
+    "aercu_fct": (
+        "c",
+        "This belongs to the unported multiscale Kain-Fritsch aerosol-aware "
+        "cumulus scheme; gpuwm's cu_physics set contains only off and the "
+        "ported KF scheme, which has no AERCU tendency state."),
+    "aercu_opt": (
+        "c",
+        "This selects aerosol-aware behavior in the unported multiscale "
+        "Kain-Fritsch scheme; gpuwm has no MSKF component or its aerosol "
+        "state/activation subsystem."),
+    "brcr_ub": (
+        "c",
+        "Not a WRF v4.6.1 namelist option. BRCR_UB is a YSU scheme-internal "
+        "constant compiled into the existing kernel, so there is no legal "
+        "WRF user setting to expose."),
+    "cu_diag": (
+        "c",
+        "The cumulus-diagnostics subsystem is absent: gpuwm carries none of "
+        "WRF's per-step/per-output convective diagnostic accumulators, "
+        "restart state, or wrfout variables."),
+    "cu_rad_feedback": (
+        "c",
+        "KF radiation feedback needs persistent convective cloud fraction, "
+        "condensate-path profiles, cadence ownership, restart state, and a "
+        "radiation-driver merge; the ported KF contract returns none of "
+        "those profiles."),
+    "cu_used": (
+        "c",
+        "Not a WRF v4.6.1 namelist option. CU_USED is derived by WRF from "
+        "the selected cumulus scheme and domain state, not legally set by a "
+        "user."),
+    "fractional_seaice": (
+        "b",
+        "The component branches exist only partially: land-use initialization "
+        "and RUC/MYNN wrappers disagree on thresholds and several ingest paths "
+        "hardwire opposite modes. A bounded transcription must make one "
+        "option govern ingest, surface-layer deblend/reblend, and LSM routing "
+        "with WRF oracle coverage."),
+    "icloud_cu": (
+        "c",
+        "Not a WRF v4.6.1 namelist option. ICLOUD_CU is derived cloud-state "
+        "routing inside WRF's cumulus/radiation drivers, not a user knob."),
+    "ifsnow": (
+        "c",
+        "IFSNOW controls snow physics in WRF's slab/thermal-diffusion land "
+        "surface schemes; those schemes are not ported, and Noah/RUC/"
+        "Noah-MP do not consume this selector."),
+    "ishallow": (
+        "c",
+        "ISHALLOW belongs to the unported Grell 3-D cumulus family, not the "
+        "ported Kain-Fritsch component; exposing it would require that new "
+        "scheme."),
+    "kf_edrates": (
+        "c",
+        "The KF entrainment/detrainment diagnostic output subsystem is "
+        "absent: the ported kernel does not return the rate profiles and "
+        "gpuwm has no carriers, restart identity, or wrfout variables for "
+        "them."),
+    "kfeta_trigger": (
+        "b",
+        "This is an option branch inside the already ported KF scheme, but "
+        "the alternate trigger paths and their moisture-advective-tendency "
+        "input are not transcribed into the KF kernel/driver or oracle "
+        "fixtures."),
+    "naer": (
+        "c",
+        "This Thompson aerosol-aware droplet mode requires prognostic aerosol/"
+        "CCN number state and activation coupling that the ported fixed-"
+        "aerosol Thompson component does not allocate or restart."),
+    "nssl_2moment_on": (
+        "c",
+        "Disabling NSSL two-moment changes the scheme identity, prognostic "
+        "number fields, kernel contract, restart inventory, and nest "
+        "transition semantics; only the NSSL two-moment component is ported."),
+    "nssl_3moment": (
+        "c",
+        "NSSL three-moment needs additional prognostic moments, allocations, "
+        "kernel equations, restart/wrfout fields, and nest transitions; the "
+        "ported component is two-moment only."),
+    "nssl_alphah": (
+        "b",
+        "The hail gamma-shape option is a bounded branch in the already "
+        "ported NSSL scheme, but its value is still compiled into coefficient "
+        "setup and is not carried through RunConfig, kernel arguments, or "
+        "independent WRF oracle fixtures."),
+    "nssl_alphahl": (
+        "b",
+        "The large-hail gamma-shape option is a bounded NSSL coefficient "
+        "branch, but config plumbing, device coefficient regeneration, and "
+        "two-value WRF oracle fixtures are absent."),
+    "nssl_alphar": (
+        "c",
+        "Not a WRF v4.6.1 namelist option. NSSL_ALPHAR is a scheme-internal "
+        "rain-shape constant and has no legal user setting."),
+    "nssl_cccn": (
+        "b",
+        "The initial CCN concentration is a bounded NSSL setup value, but "
+        "gpuwm hardwires QNN cold-start initialization and has no RunConfig/"
+        "restart-bound path or two-value WRF initialization oracle."),
+    "nssl_ccn_on": (
+        "b",
+        "The NSSL CCN-number branch is inside the ported scheme and QNN state "
+        "exists, but the on/off coefficient and tendency paths are not wired "
+        "through setup/kernel arguments or covered by independent WRF "
+        "oracles."),
+    "nssl_density_on": (
+        "c",
+        "Variable-density NSSL hydrometeors require density prognostic state, "
+        "additional kernel equations, restart/wrfout fields, and transition "
+        "semantics; the fixed-density NSSL two-moment identity is the only "
+        "ported one."),
+    "nssl_ehlw0": (
+        "c",
+        "Not a WRF v4.6.1 namelist option. NSSL_EHLW0 is a scheme-internal "
+        "collection-efficiency constant and has no legal user setting."),
+    "nssl_ehw0": (
+        "c",
+        "Not a WRF v4.6.1 namelist option. NSSL_EHW0 is a scheme-internal "
+        "collection-efficiency constant and has no legal user setting."),
+    "nssl_hail_on": (
+        "c",
+        "Changing the NSSL hail-species mode changes prognostic species, "
+        "kernel/state binding, restart inventory, radiation radii, and nest "
+        "transition semantics; only the hail-enabled NSSL two-moment identity "
+        "is ported."),
+    "nssl_icdx": (
+        "b",
+        "The NSSL ice-distribution selector is a bounded coefficient branch "
+        "inside the ported scheme, but the alternate initialization/table "
+        "path is not transcribed or oracle-tested and has no config plumbing."),
+    "nssl_icdxhl": (
+        "b",
+        "The NSSL large-hail distribution selector is a bounded coefficient "
+        "branch, but its alternate table/setup path, device plumbing, and "
+        "two-value WRF oracle are absent."),
+    "num_land_cat": (
+        "c",
+        "WRF derives this count from the selected land-use dataset/table. "
+        "Supporting another value requires alternate static categories, "
+        "parameter tables, field validation, and state dimensions; it is not "
+        "an independent runtime tune in gpuwm."),
+    "num_soil_cat": (
+        "c",
+        "WRF derives this count from the selected soil-category dataset/table. "
+        "Arbitrary values require alternate static categories, parameter "
+        "tables, validation, and allocations rather than a scalar branch."),
+    "progn": (
+        "c",
+        "Thompson prognostic cloud-droplet number requires additional "
+        "prognostic number/aerosol state, activation equations, restart and "
+        "wrfout fields; the ported Thompson identity uses diagnostic droplets."),
+    "scm_force_flux": (
+        "c",
+        "This belongs to WRF's single-column-model forcing subsystem; gpuwm "
+        "has no SCM runner, forcing time series, column boundary contract, or "
+        "restart semantics."),
+    "seaice_albedo_opt": (
+        "c",
+        "The option is consumed by WRF's separate Noah sea-ice thermodynamics "
+        "driver (including the Mills branch and optional ALBSI field); that "
+        "driver and field are absent, so the RUC ALBBCK override is not a "
+        "substitute."),
+    "seaice_snowdepth_max": (
+        "c",
+        "This bound is consumed only by the absent Noah sea-ice "
+        "thermodynamics driver; gpuwm has no sea-ice snow-depth state or "
+        "surface-driver call on which it could act."),
+    "seaice_snowdepth_min": (
+        "c",
+        "This bound is consumed only by the absent Noah sea-ice "
+        "thermodynamics driver; gpuwm has no sea-ice snow-depth state or "
+        "surface-driver call on which it could act."),
+    "seaice_snowdepth_opt": (
+        "c",
+        "The selector belongs to the absent Noah sea-ice thermodynamics "
+        "driver and its optional SNOWSI input; no such state, ingest, restart, "
+        "or kernel contract exists."),
+    "seaice_thickness_default": (
+        "c",
+        "WRF consumes this in the absent Noah sea-ice thermodynamics driver "
+        "when seaice_thickness_opt=0. The unrelated 3 m cold-start soil "
+        "interpolation literal is not this knob and cannot honor it."),
+    "seaice_thickness_opt": (
+        "c",
+        "The selector belongs to the absent Noah sea-ice thermodynamics "
+        "driver; option 1 additionally requires ICEDEPTH ingest/state/restart "
+        "carriers that gpuwm does not have."),
+    "seaice_threshold": (
+        "c",
+        "SEAICE_THRESHOLD is consumed by WRF's unported slab land-surface "
+        "scheme. The ported LSMs use their own XICE_THRESHOLD contracts and "
+        "cannot honor this different selector."),
+    "sf_surface_mosaic": (
+        "c",
+        "Surface mosaics require a tile dimension, per-tile land-use/soil "
+        "fractions and LSM states, aggregation, restart/wrfout contracts, and "
+        "driver loops; gpuwm carries one surface column per grid cell."),
+    "shallowcu_forced_ra": (
+        "c",
+        "Forced shallow-cumulus radiation needs persistent shallow-convective "
+        "cloud/condensate profiles and radiation-cadence merge state; neither "
+        "the shallow-cumulus component nor those carriers are ported."),
+    "shalwater_depth": (
+        "c",
+        "The shallow-water surface branch needs a bathymetry/depth static "
+        "field and its surface coupling; gpuwm ingests neither and has no "
+        "runtime branch to consume the scalar."),
+    "shalwater_z0": (
+        "c",
+        "The shallow-water roughness branch needs the missing shallow-water/"
+        "bathymetry classification and surface-driver coupling; setting a "
+        "scalar alone would be inert."),
+    "shcu_physics": (
+        "c",
+        "This selects independent shallow-cumulus schemes. No shallow-"
+        "cumulus component, tendencies, cadence state, restart contract, or "
+        "radiation coupling is ported."),
+    "slope_rad": (
+        "c",
+        "Slope-aware radiation needs slope/aspect terrain statics and modified "
+        "solar-incidence geometry in the radiation driver; those fields and "
+        "branches are absent."),
+    "smooth_option": (
+        "c",
+        "WRF nest smoothing requires parent/child feedback-time smoothing "
+        "kernels and halo/ownership semantics. gpuwm has no smoothing "
+        "operator; prepared hierarchy artifacts are explicitly static one-way."),
+    "sst_update": (
+        "c",
+        "SST updates require a time-varying lower-boundary input stream, "
+        "interpolation/cadence state, restart position, and surface ownership; "
+        "gpuwm cases use one analysis-time lower boundary."),
+    "surface_input_source": (
+        "c",
+        "Alternate surface-input sources require source-specific static/"
+        "met-field selection and provenance semantics. gpuwm's ingest routes "
+        "own those choices explicitly and implement no interchangeable "
+        "runtime source selector."),
+    "swint_opt": (
+        "c",
+        "Shortwave interpolation needs carried previous/next radiation fields "
+        "and per-step interpolation ownership; WRF's additional FARMS choice "
+        "also needs an unported solver. gpuwm recomputes on radiation cadence "
+        "and carries neither subsystem."),
+    "tice2tsk_if2cold": (
+        "b",
+        "This is a bounded branch in the existing fractional-sea-ice surface "
+        "wrapper, but gpuwm currently transcribes only the false arithmetic. "
+        "The true get_local_ice_tsk correction must be ported together with "
+        "the coherent fractional_seaice option and WRF oracle fixtures."),
+    "tmn_update": (
+        "c",
+        "Updating deep-soil temperature needs a running/calendar mean "
+        "algorithm, lower-boundary history, restart state, and ownership "
+        "across ingest and LSM cadence; gpuwm carries a fixed analysis TMN."),
+    "topo_shading": (
+        "c",
+        "Terrain shadowing needs horizon/terrain statics, solar azimuth and "
+        "shadow geometry, plus radiation-driver state; none is carried."),
+    "topo_wind": (
+        "c",
+        "Topographic wind correction needs terrain-subgrid static fields and "
+        "the associated momentum-adjustment subsystem; gpuwm has neither the "
+        "inputs nor a runtime operator."),
+    "ua_phys": (
+        "c",
+        "Noah unified-atmosphere coupling is a separate physics path with "
+        "additional state and feedback semantics; gpuwm ports the ordinary "
+        "Noah LSM driver only."),
+    "use_aero_icbc": (
+        "c",
+        "This belongs to Thompson aerosol-aware microphysics (WRF option 28) "
+        "and requires aerosol initial/boundary-condition species, ingest, "
+        "nesting, restart, and activation kernels; that scheme is not ported."),
+}
 
 NOISE = re.compile(
     r"^(MISSED BY THE CANDIDATE LIST[^.]*\.|MISFILED IN THE CANDIDATE LIST[^.]*\.|"
@@ -426,8 +759,8 @@ def _surface_coupling_warnings(registry: dict) -> None:
         "still binds start time and latitude/longitude and seeds the same "
         "offset value once.")
     noahmp[8] = (
-        "MYNN surface-layer pairing is admitted as the coupled MYNN 5/5 "
-        "suite. WRF v4.6.1 runs MYNN first, then NOAHMP_SFLX overwrites "
+        "When the MYNN 5/5 pairing is selected, WRF v4.6.1 runs the MYNN "
+        "surface layer first, then NOAHMP_SFLX overwrites "
         "TSK/HFX/QFX/LH on its active land columns while leaving "
         "UST/CHS/CHS2/CQS2/FLHC/FLQC with MYNN. The surface-driver post-pass "
         "unconditionally replaces MYNN's T2/Q2/TH2 with Noah-MP's "
@@ -462,12 +795,13 @@ def _surface_coupling_warnings(registry: dict) -> None:
     ruc[9] = (
         "Mosaic land-use and soil remain fail-closed at 0, spp_lsm at 0 and "
         "flag_sm_adj at 0. Also pinned rather than configurable: "
-        "XICE_THRESHOLD=0.5, seaice_albedo_default=0.65, isncovr_opt=2, "
-        "c1sn=0.026, c2sn=21.0, myj=False and rdlai2d=False. "
+        "XICE_THRESHOLD=0.5, isncovr_opt=2, c1sn=0.026, c2sn=21.0, "
+        "myj=False and rdlai2d=False. seaice_albedo_default is configurable "
+        "over [0,1] and defaults to the former literal 0.65. "
         "FRACTIONAL_SEAICE follows WRF's enabled pre/post coupling.")
     ruc[8] = (
-        "Admitted at num_soil_layers=9 with revised MM5, classic MM5 or the "
-        "coupled MYNN 5/5 suite. Under MYNN, WRF v4.6.1 runs the surface "
+        "Admitted at num_soil_layers=9 with revised MM5, classic MM5 or "
+        "MYNN surface. Under the MYNN 5/5 pairing, WRF v4.6.1 runs the surface "
         "layer first; LSMRUC then overwrites TSK/HFX/QFX/LH, preserves "
         "UST/FLHC/FLQC/CHS2/CQS2, and the driver recomputes CHS from FLHC. "
         "SFCDIAGS_RUCLSM unconditionally replaces MYNN's T2/Q2/TH2 before "
@@ -621,9 +955,246 @@ def _unimplemented_specs(known: set[str]) -> dict[str, dict]:
     return unimplemented
 
 
+def _wrf_compatibility_authority() -> dict:
+    """JSON form of the normalized, fully cited WRF compatibility matrix."""
+
+    def citation(value) -> dict[str, str]:
+        return {
+            "source": value.anchor,
+            "law": value.law,
+        }
+
+    def cell(**updates):
+        values = {
+            "mp_physics": 1,
+            "bl_pbl_physics": 0,
+            "sf_sfclay_physics": 1,
+            "sf_surface_physics": 2,
+            "radiation": "off",
+            "cu_physics": 0,
+        }
+        values.update(updates)
+        return compatibility_cell(**values)
+
+    counts: dict[str, int] = {}
+    for matrix_cell in iter_compatibility_matrix():
+        verdict = matrix_cell.verdict.value
+        counts[verdict] = counts.get(verdict, 0) + 1
+
+    return {
+        "wrf_version": WRF_VERSION,
+        "wrf_commit": WRF_COMMIT,
+        "implementation": "gpuwm.wrf461_compatibility",
+        "cell_count": MATRIX_CELL_COUNT,
+        "dimensions": {
+            "mp_physics": list(MP_OPTIONS),
+            "bl_pbl_physics": list(PBL_OPTIONS),
+            "sf_sfclay_physics": list(SURFACE_LAYER_OPTIONS),
+            "sf_surface_physics": list(LAND_SURFACE_OPTIONS),
+            "radiation": list(RADIATION_OPTIONS),
+            "cu_physics": list(CUMULUS_OPTIONS),
+        },
+        "independent_axis_citations": {
+            "mp_physics": {
+                str(value): citation(cell(mp_physics=value).citations[0])
+                for value in MP_OPTIONS
+            },
+            "sf_surface_physics": {
+                str(value): citation(
+                    cell(sf_surface_physics=value).citations[2])
+                for value in LAND_SURFACE_OPTIONS
+            },
+            "radiation": {
+                value: citation(cell(radiation=value).citations[3])
+                for value in RADIATION_OPTIONS
+            },
+            "cu_physics": {
+                str(value): citation(cell(cu_physics=value).citations[4])
+                for value in CUMULUS_OPTIONS
+            },
+            "soil_layer_reconfiguration": citation(
+                cell().citations[5]),
+        },
+        "pbl_surface_layer_cells": [
+            {
+                "bl_pbl_physics": pbl,
+                "sf_sfclay_physics": surface,
+                "verdict": verdict.value,
+                "citation": citation(source),
+            }
+            for (pbl, surface), (verdict, source)
+            in sorted(PBL_SURFACE_LAYER_AUTHORITY.items())
+        ],
+        "precedence": [
+            "a fatal PBL/surface-layer cell is fatal for every other axis",
+            "otherwise analytic radiation is not expressible in WRF v4.6.1",
+            "otherwise sf_surface_physics=0 is legal with WRF silently "
+            "setting num_soil_layers=5",
+            "all remaining cells are legal",
+        ],
+        "verdict_counts": dict(sorted(counts.items())),
+        "test": (
+            "tests/test_wrf461_compatibility.py sweeps all 2,400 cells and "
+            "requires every cell to carry all six WRF citations"),
+    }
+
+
 def build(registry: dict) -> dict:
     """Apply this pass's tables to ``registry`` in place and return it."""
     _surface_coupling_warnings(registry)
+    registry["authority"][
+        "wrf_v461_compatibility_matrix"
+    ] = _wrf_compatibility_authority()
+    registry["authority"]["reachability_declaration"] = (
+        "components.<component>.options.<option>.reachability declares how "
+        "a user can select the option: 'template' through a registered base "
+        "template, 'component-override' through either a route's full "
+        "allowed_component_overrides or its option-scoped "
+        "allowed_component_options, 'expert-template' only through a route's "
+        "expert_template_ids with its expert_acknowledgement_id, and "
+        "'unreachable' not normally reachable -- which must name a blocker. "
+        "implemented and reachable are independent. "
+        "tests/test_registry_reachability.py recomputes every state.")
+
+    # Named native-HRRR Kessler product used by the end-to-end ratification
+    # probe.  Its source route is intentionally HRRR-only: no other source
+    # inherits evidence from that run.
+    kessler_id = "kessler-mp1-ysu-mm5-noah-dudhia-v1"
+    wsm6_id = "wsm6-ysu-mm5-noah-no-radiation-v1"
+    kessler = copy.deepcopy(registry["templates"][wsm6_id])
+    kessler["components"]["microphysics"] = "kessler-mp1"
+    kessler["label"] = (
+        "Kessler warm rain + YSU + classic MM5 + Noah + Dudhia SW")
+    kessler["maturity"] = "implemented-unverified"
+    kessler["warnings"] = [
+        "Native-HRRR Kessler admission is bound to the Lane C one-hour "
+        "end-to-end probe and its frozen-species discard receipt; it is not "
+        "evidence for any non-HRRR source route."
+    ]
+    registry["templates"][kessler_id] = kessler
+    registry["components"]["microphysics"]["options"][
+        "kessler-mp1"]["reachability"] = {"state": "template"}
+    for route_id in (
+            "tools.hrrr_single_domain_benchmark",
+            "tools.prepared_domain_tree_forecast"):
+        declared = registry["runner_routes"][route_id].setdefault(
+            "source_template_ids", {}).setdefault("hrrr", [])
+        if kessler_id in declared:
+            declared.remove(kessler_id)
+        position = declared.index(wsm6_id) + 1 if wsm6_id in declared else 0
+        declared.insert(position, kessler_id)
+
+    # WRF v4.6.1's actual PBL/surface-layer law is in
+    # phys/module_physics_init.F:3699-3701,3837-3839.  In particular MYNN
+    # PBL accepts the revised and classic MM5 surface layers, and the MYNN
+    # surface layer is legal with PBL off.  These declarative constraints
+    # mirror the same 12-cell table used by runtime admission.
+    pbl_options = registry["components"]["pbl"]["options"]
+    surface_options = registry["components"]["surface_layer"]["options"]
+    pbl_options["ysu"]["constraints"]["requires_components"][
+        "surface_layer"
+    ] = ["revised-mm5", "classic-mm5"]
+    pbl_options["mynn"]["constraints"]["requires_components"][
+        "surface_layer"
+    ] = ["revised-mm5", "classic-mm5", "mynn"]
+    surface_options["mynn"]["constraints"]["requires_components"][
+        "pbl"
+    ] = ["off", "mynn"]
+    surface_options["mynn"]["warnings"] = [
+        warning for warning in surface_options["mynn"]["warnings"]
+        if not warning.startswith("MYNN is admitted only as the coupled")
+        and not warning.startswith(
+            "WRF v4.6.1 admits this surface layer with PBL off")
+    ]
+    surface_options["mynn"]["warnings"].insert(
+        0,
+        "WRF v4.6.1 admits this surface layer with PBL off or MYNN PBL. "
+        "MYNN PBL also admits revised/classic MM5 surface layers; the exact "
+        "12-cell authority is phys/module_physics_init.F:3699-3701,"
+        "3837-3839 and is published under "
+        "authority.wrf_v461_compatibility_matrix.",
+    )
+
+    # PBL-off with km_opt=4 follows WRF's diff_opt=2 vertical_diffusion_2
+    # path.  The prior registry rail described an absent vertical operator;
+    # that operator is now ported, including USTM/HFX/QFX surface fluxes.
+    pbl_off = pbl_options["off"]
+    pbl_off.setdefault("constraints", {}).setdefault(
+        "forbidden_setting_values", {}).pop("km_opt", None)
+    if not pbl_off["constraints"]["forbidden_setting_values"]:
+        pbl_off["constraints"].pop("forbidden_setting_values")
+    if not pbl_off["constraints"]:
+        pbl_off.pop("constraints")
+    pbl_off.setdefault("extensions", {})["wrf_vertical_diffusion_2"] = {
+        "activation": "bl_pbl_physics=0, diff_opt=2, km_opt=4",
+        "wrf_call_site": "dyn_em/module_first_rk_step_part2.F:1008-1074",
+        "wrf_coefficient_policy": (
+            "dyn_em/module_diffusion_em.F:2018-2023 sets xkmv=xkmh and "
+            "xkhv=0 for km_opt=4"),
+        "ported_operators": [
+            "tau13 u momentum", "tau23 v momentum", "tau33 w momentum",
+            "USTM lower-boundary momentum stress",
+            "HFX lower-boundary heat flux", "QFX lower-boundary vapor flux",
+        ],
+    }
+    pbl_off["reachability"] = {"state": "component-override"}
+
+    # A source-driven active LSM still needs a surface-layer writer in ArWen.
+    # This is not a WRF prohibition: it is the named local structural seam
+    # that keeps the sfclay=0/LSM>0 cells fail-closed.
+    land_options = registry["components"]["land_surface"]["options"]
+    for option_id in ("noah", "ruc-lsm", "noah-mp"):
+        option = land_options[option_id]
+        option.setdefault("constraints", {}).setdefault(
+            "requires_components", {})["surface_layer"] = [
+                "revised-mm5", "classic-mm5", "mynn"]
+        option.setdefault("extensions", {})[
+            "arwen_surface_exchange_structural_requirement"
+        ] = {
+            "reason": (
+                "ArWen's active LSM drivers consume UST/CHS/CHS2/CQS2/"
+                "FLHC/FLQC exchange fields that have no writer when "
+                "sf_sfclay_physics=0"),
+            "classification": (
+                "ArWen structural constraint; WRF v4.6.1 does not prohibit "
+                "sf_sfclay_physics=0 with an active LSM"),
+        }
+
+    # The experiment-per-domain front door now exposes harmless WRF-legal
+    # PBL-off and radiation-off choices, plus every WRF-legal implemented
+    # surface-layer pairing.  This is option-scoped so ArWen's analytic
+    # radiation proxy remains outside normal registry reachability.
+    tree_route = registry["runner_routes"][
+        "tools.prepared_domain_tree_forecast"]
+    tree_route["allowed_component_options"] = {
+        "pbl": ["off", "ysu", "mynn"],
+        "surface_layer": ["revised-mm5", "classic-mm5", "mynn"],
+        "radiation": [
+            "off", "dudhia-shortwave", "rte-rrtmgp",
+            "rte-rrtmgp-legacy-aggregate"],
+    }
+    surface_options["revised-mm5"]["reachability"] = {
+        "state": "component-override"}
+    radiation_options = registry["components"]["radiation"]["options"]
+    radiation_options["off"]["reachability"] = {
+        "state": "component-override"}
+    analytic = radiation_options["analytic-clear-sky"]
+    analytic["reachability"] = {
+        "state": "unreachable",
+        "blocker": (
+            "The 90/90 analytic clear-sky proxy is ArWen-specific: WRF "
+            "v4.6.1 registers no equivalent package "
+            "(Registry/Registry.EM_COMMON:3107-3125). It remains available "
+            "to unnamed domain trees only through the authority-level "
+            "expert-tuple-v1 acknowledgement and is intentionally excluded "
+            "from allowed_component_options."),
+    }
+    analytic["warnings"] = [
+        "ARWEN-SPECIFIC, NOT A WRF SCHEME. Analytic 90/90 radiation remains "
+        "an expert acknowledgement path because WRF v4.6.1 has no equivalent "
+        "Registry package."
+    ]
+
     params = registry["parameters"]
     # Citations are read before the tables overwrite the specs that carry
     # them, so a verified citation survives a spec being tightened.
@@ -643,6 +1214,26 @@ def build(registry: dict) -> dict:
     for table in (IMPLEMENTED, TIGHTEN, unimplemented):
         for name, spec in table.items():
             params[name] = copy.deepcopy(spec)
+
+    for name, (_, reason) in UNIMPLEMENTED_LEDGER.items():
+        prior = params.get(name)
+        if not isinstance(prior, dict) or "type" not in prior:
+            raise KeyError(
+                f"Lane K ledger row {name!r} has no typed registry parameter")
+        params[name] = {
+            "type": prior["type"],
+            "implemented": False,
+            "unimplemented_reason": reason,
+        }
+    remaining_false = {
+        name for name, spec in params.items()
+        if isinstance(spec, dict) and spec.get("implemented") is False
+    }
+    if remaining_false != set(UNIMPLEMENTED_LEDGER):
+        raise AssertionError(
+            "Lane K ledger no longer covers exactly every implemented=false "
+            f"parameter; missing={sorted(remaining_false - set(UNIMPLEMENTED_LEDGER))}, "
+            f"retired={sorted(set(UNIMPLEMENTED_LEDGER) - remaining_false)}")
 
     uncited, replaced = [], []
     for name in OWNED:
@@ -767,7 +1358,8 @@ def build(registry: dict) -> dict:
     registry["authority"]["unnamed_tree_reachability_contract"] = (
         "An unnamed domain tree resolves each domain's complete component "
         "tuple against the union of registry-declared experiment-per-domain "
-        "template, component-override, and expert-template reachability. "
+        "template, whole-component override, option-scoped component "
+        "override, and expert-template reachability. "
         "Normal tuples proceed unchanged; expert-template tuples require the "
         "route's expert acknowledgement; a tuple outside that union requires "
         "the authority-level acknowledgement id. This is a tuple capability "
@@ -779,6 +1371,55 @@ def build(registry: dict) -> dict:
             "tools.prepared_single_domain_forecast"):
         registry["runner_routes"][route_id][
             "requires_moist_real_initialization"] = True
+    mp_options = (
+        (1, "kessler-mp1"),
+        (6, "wsm6-mp6"),
+        (8, "thompson-mp8"),
+        (10, "morrison-mp10"),
+        (18, "nssl2-mp18"),
+    )
+    cross_options = []
+    for parent_mp, parent_option in mp_options:
+        for child_mp, child_option in mp_options:
+            if parent_mp == child_mp:
+                continue
+            ratified = (parent_mp, child_mp) == (8, 18)
+            rule = {
+                "parent_option_id": parent_option,
+                "child_option_id": child_option,
+                "required_parent_settings": {
+                    "moist": True,
+                    "moist_cq": True,
+                },
+                "required_child_settings": {
+                    "moist": True,
+                    "moist_cq": True,
+                    "nest_microphysics_transition": (
+                        "mp8-to-mp18-mass-diagnosed-v1"
+                        if ratified else "mp-edge-mass-diagnosed-v1"
+                    ),
+                },
+                "status": "ratified" if ratified else "experimental",
+            }
+            if not ratified:
+                rule["maturity"] = "experimental-runtime"
+            cross_options.append(rule)
+    registry["transitions"]["microphysics-one-way-v1"] = {
+        "component_id": "microphysics",
+        "cross_options": cross_options,
+        "same_option": {
+            "allowed": True,
+            "required_child_settings": {
+                "nest_microphysics_transition": "same-scheme-only",
+            },
+        },
+        "topology_id": "one-way-nested-v1",
+    }
+    registry["parameters"]["nest_microphysics_transition"]["enum"] = [
+        "same-scheme-only",
+        "mp8-to-mp18-mass-diagnosed-v1",
+        "mp-edge-mass-diagnosed-v1",
+    ]
     return registry
 
 

@@ -611,10 +611,43 @@ def wrf_periodic_momentum_authority(
                 rw_y[kw, j, i] = factor * (y_h - y_z)
                 rw[kw, j, i] = rw_x[kw, j, i] + rw_y[kw, j, i]
 
+    # vertical_diffusion_2 for diff_opt=2 with PBL off.  Under km_opt=4,
+    # smag2d_km makes xkmv=xkmh and xkhv=0, so these are the complete
+    # interior vertical terms; surface USTM/HFX/QFX are separate inputs.
+    ru_vertical = np.zeros_like(ru)
+    rv_vertical = np.zeros_like(rv)
+    rw_vertical = np.zeros_like(rw)
+    for k in range(nz):
+        for j in range(ny):
+            for i in range(nx + 1):
+                ru_vertical[k, j, i] = (
+                    G * (tau13(k + 1, j, i) - tau13(k, j, i)) / dnw[k])
+            for i in range(nx):
+                rv_vertical[k, j, i] = (
+                    G * (tau23(k + 1, j, i) - tau23(k, j, i)) / dnw[k])
+        rv_vertical[k, ny] = rv_vertical[k, 0]
+
+    def tau33(k, j, i):
+        if k < 0 or k >= nz:
+            return 0.0
+        deform = 2.0 * (
+            w[k + 1, iy(j), ix(i)] - w[k, iy(j), ix(i)]
+        ) * rdzw(k, j, i)
+        return -rh(k, j, i) * at(km, k, j, i) * deform
+
+    for kw in range(1, nz):
+        for j in range(ny):
+            for i in range(nx):
+                rw_vertical[kw, j, i] = (
+                    G * (tau33(kw, j, i) - tau33(kw - 1, j, i))
+                    / dn[kw])
+
     return {"km": km, "kh": 3.0 * km, "d11": d11, "d22": d22,
             "d12": d12, "ru": ru, "rv": rv, "rw": rw,
             "ru_cross": ru_cross, "rv_cross": rv_cross,
-            "rw_x": rw_x, "rw_y": rw_y}
+            "rw_x": rw_x, "rw_y": rw_y,
+            "ru_vertical": ru_vertical, "rv_vertical": rv_vertical,
+            "rw_vertical": rw_vertical}
 
 
 __all__ = ["wrf_d11_algebra", "wrf_flat_u_cross_stress_tendency",

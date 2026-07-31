@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "1.3.0"
+version = "1.3.1"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -45,6 +45,14 @@ gpuwm-wrf-init = "gpuwm.source_cli:main"
 rw-wps = "gpuwm.source_cli:main"
 gpuwm-wrf-runtime-check = "gpuwm.native_wrf_distribution:main"
 gpuwm-mapped-inspect = "gpuwm.mapped_source:main"
+# The two prepared-cache forecast runners.  They used to be reachable
+# only as script paths under tools/, which meant a `pip install gpuwm`
+# could preprocess a GFS cycle and then had nowhere to run it -- the
+# product's own documented chain required a git checkout to finish.
+# Their substance is in the package now; tools/ keeps thin delegating
+# entry points for the spelling the docs and receipts already use.
+gpuwm-prepared-forecast = "gpuwm.prepared_single_domain_forecast:main"
+gpuwm-prepared-tree-forecast = "gpuwm.prepared_domain_tree_forecast:main"
 
 [tool.setuptools.packages.find]
 include = ["gpuwm*", "tools"]

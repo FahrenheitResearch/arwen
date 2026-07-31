@@ -4,7 +4,7 @@ The implementation is a direct, single-precision translation of
 ``SFCLAY1D_mynn`` for the admitted option identities: every defined
 ``isftcflx`` over water, with ``iz0tlnd=0``, ``spp_pbl=0`` and ``psi_opt=0``.
 It is a numerical reference for oracle/CUDA work; importing it does not admit
-the coupled MYNN 5/5 runtime selector.
+the MYNN surface-layer runtime selector.
 
 Over-water branch selection, read from ``module_sf_mynn.F:631-710`` rather
 than from the header comment at :35-41, which does not mention that

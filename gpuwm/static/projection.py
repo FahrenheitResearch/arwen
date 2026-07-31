@@ -414,9 +414,19 @@ def projection_class(map_proj: str) -> type[ProjectedGrid]:
                "polar": PolarStereoGrid}
     key = str(map_proj).lower()
     if key not in classes:
+        latlon = key in {
+            "lat-lon", "latlon", "regular_ll", "rotated-lat-lon",
+            "rotated_ll",
+        }
+        blocker = (
+            "; regular/rotated latitude-longitude needs angular dx/dy "
+            "rather than metre spacing and WRF's global/pole polar filter; "
+            "rotated grids also need pole_lat/pole_lon state and the "
+            "map_proj == 6 curvature branch"
+            if latlon else "")
         raise NotImplementedError(
             f"map_proj {map_proj!r} not supported (implemented: "
-            "'lambert', 'mercator', 'polar')")
+            f"'lambert', 'mercator', 'polar'){blocker}")
     return classes[key]
 
 

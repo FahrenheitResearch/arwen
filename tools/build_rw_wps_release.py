@@ -40,6 +40,25 @@ _TOP_LEVEL_EXCLUDES = {
     # door drives the offline CUDA child.  Neither belongs in the
     # standalone RW-WPS preprocessing wheel.
     "domain_wizard.py",
+    # The wizard's prompt session, for the same reason and one more: it
+    # reaches gpuwm.domain_wizard and gpuwm.core.preflight, both absent
+    # here, so staging it fails this builder's own unresolved-import
+    # scan.  A preprocessing wheel has no domain to size.
+    "domain_interactive.py",
+    # `gpuwm go` drives tools/prepared_single_domain_forecast.py through
+    # the GPU forecast.  Its imports happen to resolve against what RW-WPS
+    # stages, so the scan would not have caught it -- but the runner it
+    # exists to call is not in this wheel, so shipping it would offer a
+    # command that cannot run.
+    "go_cli.py",
+    # The two prepared-cache GPU forecast runners.  Their substance
+    # moved out of tools/ and into the package so a `pip install gpuwm`
+    # can finish a forecast; that makes them top-level modules here, and
+    # they are exactly what this preprocessing wheel does not do.  They
+    # reach gpuwm.core.model and the whole CUDA side, which RW-WPS does
+    # not stage.
+    "prepared_single_domain_forecast.py",
+    "prepared_domain_tree_forecast.py",
     "downscale.py",
     "offline_child.py",
     "offline_child_run.py",
@@ -80,6 +99,10 @@ _TOOL_FILES = {"__init__.py", *HRRR_HELPERS}
 _FORBIDDEN_STAGED_FILES = {
     "gpuwm/cli.py",
     "gpuwm/domain_wizard.py",
+    "gpuwm/domain_interactive.py",
+    "gpuwm/go_cli.py",
+    "gpuwm/prepared_single_domain_forecast.py",
+    "gpuwm/prepared_domain_tree_forecast.py",
     "gpuwm/downscale.py",
     "gpuwm/offline_child.py",
     "gpuwm/offline_child_run.py",

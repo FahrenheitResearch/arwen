@@ -552,6 +552,21 @@ def validate_physics_plan(
         if isinstance(route, dict)
         else []
     )
+    route_component_options: dict[str, set[str]] = {}
+    raw_component_options = (
+        route.get("allowed_component_options", {})
+        if isinstance(route, dict)
+        else {}
+    )
+    if isinstance(raw_component_options, dict):
+        route_component_options = {
+            component_id: {
+                option_id for option_id in option_ids
+                if isinstance(option_id, str)
+            }
+            for component_id, option_ids in raw_component_options.items()
+            if isinstance(component_id, str) and isinstance(option_ids, list)
+        }
     route_parameter_keys = set(
         route.get("allowed_parameter_keys", []) if isinstance(route, dict) else []
     )
@@ -886,12 +901,15 @@ def validate_physics_plan(
                 if (
                     template_components.get(component_id) != option_id
                     and component_id not in route_component_overrides
+                    and option_id not in route_component_options.get(
+                        component_id, set())
                 ):
                     errors.append(
                         _issue(
                             "component-override-route",
                             f"{base_path}.components.{component_id}",
-                            "runner route does not allow this component to vary per domain",
+                            "runner route does not allow this component option "
+                            "to vary per domain",
                         )
                     )
 
@@ -1340,6 +1358,22 @@ def validate_physics_plan(
                         )
                     )
                     continue
+                maturity = rule.get("maturity")
+                warning_policy = selected_registry.get("warning_policy", {})
+                warning_maturities = (
+                    warning_policy.get("warn_maturities", [])
+                    if isinstance(warning_policy, dict) else []
+                )
+                if maturity in warning_maturities:
+                    warnings.append(
+                        _issue(
+                            "transition-maturity",
+                            edge_path,
+                            f"{component_id} transition "
+                            f"{parent_option!r}->{child_option!r} is "
+                            f"{maturity!r}; review the per-species receipt",
+                        )
+                    )
                 for role, resolved, key in (
                     ("parent", parent, "required_parent_settings"),
                     ("child", child, "required_child_settings"),

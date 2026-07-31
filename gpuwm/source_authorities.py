@@ -51,8 +51,23 @@ def twentycrv3_authorities() -> Mapping[str, Path]:
 #: and the same byte contract, because it is the same kind of thing: an
 #: immutable input a front door reads, not a config anyone edits.
 _GFS_VTABLE_NAME = "Vtable.GFS.rw-wps"
+#: Re-pinned 2026-07-30 to the committed bytes: 9e391880... -> ec8e615b...
+#:
+#: The old value was this file's CRLF form.  It is not a JSON file, so
+#: the per-path ``gpuwm/authorities/*.json text eol=lf`` rule did not
+#: cover it, and on a Windows clone (git-for-Windows defaults
+#: core.autocrlf=true) it materialized with CRLF -- which is the
+#: checkout the constant was taken from, and the wheel that was built
+#: from it.  The same file on Linux, and in the object database, is LF,
+#: so this gate could only ever have been true on one platform: the
+#: byte contract it exists to enforce was itself platform-dependent.
+#:
+#: The repository now declares ``* -text``, so every checkout gets the
+#: committed bytes and this is the one hash for all of them.  Nothing
+#: was widened: the file is unchanged, the check is unchanged, and the
+#: constant now names what the file actually is.
 _GFS_VTABLE_SHA256 = (
-    "9e391880bd11d9eae471aea5832646b1c284861169a0fc82f43e0e78b43038b8")
+    "ec8e615ba724b3ddf114c4c199a81083b3a17b4e1705055ec016f1769144090e")
 
 
 def packaged_gfs_vtable() -> Path:

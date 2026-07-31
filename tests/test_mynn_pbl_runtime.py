@@ -285,14 +285,56 @@ def test_where_the_edmf_mass_flux_stops_activating(stretch, expect_plumes):
 
 
 @requires_gpu
-def test_a_mynn_half_suite_never_reaches_the_driver():
+def test_the_pbl_surface_pairings_the_driver_accepts_are_wrfs_own():
+    """Every PBL/surface-layer pairing, against WRF v4.6.1's own table.
+
+    This used to assert that two pairings -- MYNN surface with YSU, and
+    classic MM5 surface with MYNN PBL -- both refused, under the name
+    "the MYNN half suite".  Half of that was wrong, and the v1.3.x
+    combination lane found it in WRF's source:
+    ``phys/module_physics_init.F:3837-3839`` accepts ``isfc`` in
+    {5, 1, 2} for MYNN PBL, and classic MM5 supplies ``isfc=1``
+    (``:3140-3142``), so ``(bl_pbl=5, sf_sfclay=91)`` is legal WRF and is
+    admitted now.  ``(bl_pbl=1, sf_sfclay=5)`` remains fatal: YSU
+    requires ``isfc=1`` (``:3699-3701``) and MYNN surface supplies 5.
+
+    Rewritten to sweep the authority rather than restate a conclusion.
+    A hardcoded pair is how the old story survived being false; asking
+    ``pbl_surface_layer_verdict`` means this test cannot disagree with
+    the table without the table changing.
+    """
+
     from gpuwm.config import validate_run_config
     from gpuwm.physics_compat import UnsupportedPhysicsSuiteError
+    from gpuwm.wrf461_compatibility import (
+        PBL_SURFACE_LAYER_AUTHORITY,
+        WRFVerdict,
+    )
 
-    for surface, pbl in ((5, 1), (91, 5)):
-        with pytest.raises(UnsupportedPhysicsSuiteError):
-            validate_run_config(RunConfig(
-                nx=6, ny=4, nz=20, dx=3000.0, dy=3000.0, ztop=12000.0,
-                dt=12.0, run_seconds=0.0, time_step_sound=4, moist=True,
-                sf_sfclay_physics=surface, sf_surface_physics=2,
-                bl_pbl_physics=pbl))
+    def config(surface, pbl, land_surface):
+        return RunConfig(
+            nx=6, ny=4, nz=20, dx=3000.0, dy=3000.0, ztop=12000.0,
+            dt=12.0, run_seconds=0.0, time_step_sound=4, moist=True,
+            sf_sfclay_physics=surface, sf_surface_physics=land_surface,
+            num_soil_layers=4 if land_surface else 4,
+            bl_pbl_physics=pbl)
+
+    seen = {"fatal": 0, "legal": 0}
+    for (pbl, surface), (verdict, citation) in \
+            PBL_SURFACE_LAYER_AUTHORITY.items():
+        # Noah needs a surface layer to write its exchange seam; with the
+        # surface layer off that ArWen-structural refusal would mask the
+        # verdict this test is about, so the LSM comes off with it.
+        land_surface = 2 if surface else 0
+        if verdict is WRFVerdict.FATAL:
+            with pytest.raises(UnsupportedPhysicsSuiteError) as caught:
+                validate_run_config(config(surface, pbl, land_surface))
+            assert citation.path in str(caught.value)
+            seen["fatal"] += 1
+        else:
+            cfg = config(surface, pbl, land_surface)
+            assert validate_run_config(cfg) is cfg
+            seen["legal"] += 1
+
+    # WRF's complete 12-cell table: 9 legal, 3 fatal.
+    assert seen == {"legal": 9, "fatal": 3}

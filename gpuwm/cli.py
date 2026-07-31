@@ -48,10 +48,12 @@ from gpuwm.core.preflight import register_cli as preflight_register_cli
 from gpuwm.doctor import register_cli as doctor_register_cli
 from gpuwm.domain_wizard import register_cli as domain_register_cli
 from gpuwm.downscale import register_cli as downscale_register_cli
+from gpuwm import domain_interactive
 from gpuwm.experiment import is_experiment_toml
 from gpuwm.explain import add_explain_flag, explain_enabled, render
 from gpuwm.fetch import register_cli as fetch_register_cli
 from gpuwm.geog_assets import register_cli as geog_register_cli
+from gpuwm.go_cli import register_cli as go_register_cli
 from gpuwm.ingest.preflight import register_cli as ingest_register_cli
 from gpuwm.render import register_cli as render_register_cli
 from gpuwm.setup_cli import register_cli as setup_register_cli
@@ -195,6 +197,7 @@ def build_parser() -> argparse.ArgumentParser:
     table_assets_register_cli(sub)
     bridge_assets_register_cli(sub)
     setup_register_cli(sub)
+    go_register_cli(sub)
     adapt_register_cli(sub)
     lst = sub.add_parser(
         "cases", help="list the discovered verification cases and the "
@@ -297,8 +300,32 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(_join_negative_coordinates(
-        list(sys.argv[1:] if argv is None else argv)))
+    tokens = list(sys.argv[1:] if argv is None else argv)
+
+    # Bare `gpuwm domain` at a terminal asks its four questions instead
+    # of printing a usage dump.  The session hands back the argv a
+    # reader could have typed, which is then parsed and dispatched by
+    # exactly the code below -- there is no second wizard.
+    #
+    # Off a terminal this is not reached, so a script or CI job still
+    # gets the usage error and a nonzero exit.  A prompt nobody can see
+    # is a hang, which is a worse answer than an error.
+    interactive = False
+    if domain_interactive.is_interactive(tokens):
+        try:
+            tokens = domain_interactive.collect()
+        except domain_interactive.PromptAborted as stop:
+            print(f"gpuwm domain: stopped ({stop}); nothing was written.",
+                  file=sys.stderr)
+            return 2
+        interactive = True
+        print("")
+        print(domain_interactive.printable_command(tokens))
+        print("")
+
+    args = parser.parse_args(_join_negative_coordinates(tokens))
+    # Provenance: the emitted TOML records which front door authored it.
+    args.interactive = interactive
 
     try:
         return _dispatch(args)
@@ -358,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
 def _dispatch(args) -> int:
     if args.command in ("check", "fetch", "fetch-geog", "domain", "render",
                         "downscale", "doctor", "fetch-tables",
-                        "fetch-bridges", "setup", "adapt"):
+                        "fetch-bridges", "setup", "go", "adapt"):
         return args.func(args)
 
     if args.command == "cases":

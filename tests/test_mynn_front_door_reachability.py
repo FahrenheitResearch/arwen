@@ -11,7 +11,7 @@ MP 6/8/10/18; only MP 6 could be reached.
 things together -- the importer map, its ``physics_compat`` readiness row,
 and its dispatch row.  For MYNN two of the three were already done.  This
 file pins all three to each other so the lagging-leg failure cannot recur
-silently, and shows the readiness authority still refusing what it refused.
+silently, and shows the readiness authority following WRF's mixed-pair law.
 """
 
 from __future__ import annotations
@@ -35,13 +35,15 @@ def _blockers(**selection):
     return pending_wrf_physics_components(**request)
 
 
-def test_the_readiness_authority_admits_the_coupled_mynn_suite():
+def test_the_readiness_authority_admits_every_wrf_legal_mynn_pairing():
     assert _blockers(sf_sfclay_physics=5, bl_pbl_physics=5) == ()
-    # ... and still refuses each half, in both directions.
-    for half in ({"sf_sfclay_physics": 5}, {"bl_pbl_physics": 5}):
-        blockers = _blockers(**half)
-        assert blockers, f"half-suite {half} must remain refused"
-        assert any("half-suite" in blocker.component for blocker in blockers)
+    assert _blockers(sf_sfclay_physics=1, bl_pbl_physics=5) == ()
+    assert _blockers(sf_sfclay_physics=91, bl_pbl_physics=5) == ()
+    assert _blockers(sf_sfclay_physics=5, bl_pbl_physics=0) == ()
+
+    blockers = _blockers(sf_sfclay_physics=5, bl_pbl_physics=1)
+    assert [blocker.component for blocker in blockers] == [
+        "WRF v4.6.1 PBL/surface-layer compatibility"]
 
 
 def test_the_importer_can_express_every_suite_the_authority_admits():
@@ -83,8 +85,7 @@ def test_mynn_lsm_pairings_are_admitted_after_the_ownership_port(
     measured them -- WRF write-back sequencing transcribed, ownership
     tables tested, three-step GPU integrations receipted -- and retired
     both blockers, so the guard now pins the ADMITTED state.  The
-    unmeasured-stays-refused control lives on in the half-suite
-    assertions above."""
+    WRF-fatal control lives in the pairing assertion above."""
 
     blockers = _blockers(
         sf_sfclay_physics=5, bl_pbl_physics=5,

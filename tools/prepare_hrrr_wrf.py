@@ -14,6 +14,7 @@ import time
 
 from gpuwm.physics_compat import (
     SINGLE_DOMAIN_PHYSICS_PROFILES,
+    KESSLER_PROFILE_ID,
     MORRISON_PROFILE_ID,
     MYNN_NOAHMP_PROFILE_ID,
     MYNN_PROFILE_ID,
@@ -33,6 +34,7 @@ MAX_PIPELINE_WORKERS = 64
 
 _HRRR_COLD_START_CONTRACT = {
     WSM6_PROFILE_ID: ((), {}),
+    KESSLER_PROFILE_ID: ((), {}),
     MYNN_PROFILE_ID: ((), {}),
     MYNN_RUC_PROFILE_ID: ((), {}),
     RUC_PROFILE_ID: ((), {}),

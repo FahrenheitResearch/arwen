@@ -812,10 +812,10 @@ def test_rejects_unmapped_scheme(tmp_path):
         import_namelists(*_pair(tmp_path, inp=inp))
     inp = INPUT_TEXT.replace("bl_pbl_physics = 11, 11",
                              "bl_pbl_physics = 5, 5")
-    # MYNN 5/5 is admitted; 5 in the PBL slot alone still is not, because
-    # this namelist leaves sf_sfclay_physics at its MM5 value.
-    with pytest.raises(ValueError, match="MYNN half-suite"):
-        import_namelists(*_pair(tmp_path, inp=inp))
+    # WRF v4.6.1 explicitly accepts MYNN PBL with the MM5 surface layer.
+    toml_text, _ = import_namelists(*_pair(tmp_path, inp=inp))
+    assert "bl_pbl_physics = 5" in toml_text
+    assert "sf_sfclay_physics = 91" in toml_text
 
 
 def test_rejects_moving_nest_keys(tmp_path):
@@ -933,12 +933,13 @@ def test_rejects_two_simultaneous_horizontal_mixing_schemes(tmp_path):
         import_namelists(*_pair(tmp_path, inp=inp))
 
 
-def test_km_opt4_without_pbl_rejects_missing_vertical_diffusion(tmp_path):
+def test_km_opt4_without_pbl_imports_complete_vertical_diffusion(tmp_path):
     inp = INPUT_TEXT.replace("bl_pbl_physics = 11, 11",
                              "bl_pbl_physics = 0, 0")
-    with pytest.raises(ValueError,
-                       match=r"km_opt/bl_pbl_physics.*vertical_diffusion_2"):
-        import_namelists(*_pair(tmp_path, inp=inp))
+    toml_text, _report = import_namelists(*_pair(tmp_path, inp=inp))
+    imported = _load(tmp_path, toml_text)
+    assert all(domain.run.bl_pbl_physics == 0 for domain in imported.domains)
+    assert all(domain.run.km_opt == 4 for domain in imported.domains)
 
 
 def test_mix_full_fields_must_be_explicitly_true(tmp_path):
@@ -1246,6 +1247,13 @@ def test_use_mp_re_fixes_at_one_and_refuses_zero(tmp_path):
     assert fixed[("physics", "use_mp_re")].fixed_value == 1
     with pytest.raises(ValueError, match="use_mp_re"):
         _import_with(tmp_path, extra_physics=" use_mp_re = 0,\n")
+
+
+def test_isfflx_zero_is_emitted_and_reaches_every_domain(tmp_path):
+    text, _ = _import_with(tmp_path, extra_physics=" isfflx = 0,\n")
+    assert "isfflx = 0" in text
+    exp = _load(tmp_path, text, "isfflx-zero.toml")
+    assert {domain.run.isfflx for domain in exp.domains} == {0}
 
 
 def test_cu_rad_feedback_false_fixes_true_refuses(tmp_path):

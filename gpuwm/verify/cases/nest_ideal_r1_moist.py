@@ -100,11 +100,10 @@ def build_case():
         identity_halo_run, synchronized_identity_config)
 
     exp = synchronized_identity_config(load_scaffold(variant="n2b"))
-    # Both identity domains inherit the historical WK82 no-PBL km_opt=4
-    # combination.  WRF runs vertical_diffusion_2 in that branch; reject
-    # before GPU state construction until its vertical stresses and surface
-    # flux policy are implemented.  Low-level nest/oracle construction tests
-    # may continue to inspect the scaffold without advancing it.
+    # Both identity domains inherit the WK82 no-PBL km_opt=4 combination.
+    # Admission is load-bearing: this now selects WRF vertical_diffusion_2's
+    # ported momentum stresses and surface-flux policy as well as horizontal
+    # Smagorinsky diffusion.
     for domain in exp.domains:
         validate_run_config(domain.run)
 

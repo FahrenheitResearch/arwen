@@ -8,15 +8,11 @@ benchmark route allowed nothing -- so ``implemented: true`` was necessary and
 nowhere near sufficient, and nothing said so.
 
 The naive gate would be the biconditional ``implemented <=> reachable``.  It is
-the wrong gate, because the two properties are legitimately independent in both
-directions:
-
-* ``pbl: off``, ``surface_layer: revised-mm5``, ``radiation: off`` and the
-  analytic clear-sky proxy are all implemented and deliberately not offered to
-  a source-driven forecast; and
-* ``land_surface: ruc-lsm`` is implemented to the point of forecasting,
-  restarting and writing output, and is still unreachable because no route can
-  produce the nine-level soil state it starts from.
+the wrong gate, because reachability has meaningful levels.  ``pbl: off``,
+``surface_layer: revised-mm5`` and ``radiation: off`` are implemented and
+normally reachable as option-scoped component overrides; Noah-MP is implemented
+but expert-template-only; and the analytic clear-sky proxy is implemented but
+deliberately outside registry reachability because it is not a WRF scheme.
 
 So the intended relationship is DECLARED, per option, in
 ``reachability.state``, and this file recomputes every state from the templates
@@ -115,6 +111,7 @@ def _computed_states(registry: dict) -> dict[tuple[str, str], str]:
         declares = bool(normal) or bool(expert)
         per_domain = route.get("mode") == "experiment-per-domain"
         overridable = set(route.get("allowed_component_overrides", []) or [])
+        option_overrides = route.get("allowed_component_options", {}) or {}
         expert_selector_keys = set(
             route.get("allowed_expert_selector_keys", []) or [])
 
@@ -141,9 +138,16 @@ def _computed_states(registry: dict) -> dict[tuple[str, str], str]:
                 by_override = per_domain and component_id in overridable
                 by_selector = bool(selector_keys) and selector_keys <= (
                     expert_selector_keys)
-                if not (by_override or by_selector):
+                admitted_options = set(
+                    option_overrides.get(component_id, []) or [])
+                if not (by_override or by_selector or admitted_options):
                     continue
                 for option_id in component["options"]:
+                    if (
+                        not (by_override or by_selector)
+                        and option_id not in admitted_options
+                    ):
+                        continue
                     reached[(component_id, option_id)].add(
                         "component-override")
 
@@ -326,9 +330,9 @@ def _perturbed(mutate) -> list[str]:
 def test_the_gate_fails_when_a_template_makes_something_reachable() -> None:
     """A gate nobody has seen fail is not evidence, part one.
 
-    Swap the revised MM5 surface layer into a registered template -- exactly
-    the kind of one-word edit that made three ported schemes invisible in the
-    first place, run backwards -- and the recomputation must notice.
+    Revised MM5 is currently a component override.  Swap it into a registered
+    template and its easiest reachability becomes ``template``; the
+    recomputation must notice that undeclared promotion.
     """
 
     def mutate(registry: dict) -> None:

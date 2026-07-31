@@ -207,7 +207,8 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
         if rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY:
             from gpuwm.core.rrtmg_legacy import RRTMGLegacyRadiation
             radiation = RRTMGLegacyRadiation(
-                start_time, lat, lon, p_top=float(initial.receipt["p_top"]))
+                start_time, lat, lon, p_top=float(initial.receipt["p_top"]),
+                o3input=cfg.o3input)
 
     if surface is None:
         return initialize_physics(

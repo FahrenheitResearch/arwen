@@ -183,6 +183,21 @@ def _ruc_fractional_reblend(
     ).astype(xp.float32)
 
 
+def _ruc_seaice_albedo_override(
+        albbck, xice, seaice_albedo_default, *, arrays):
+    """WRF v4.6.1 ``module_surface_driver.F:3453-3459``.
+
+    Kept as a pure array operation so the two legal configuration values can
+    be distinguished without executing the much larger RUC column.
+    """
+    xp = arrays
+    ice = (xice >= np.float32(XICE_THRESHOLD)) & (
+        xice <= np.float32(1.0))
+    return xp.where(
+        ice, np.float32(seaice_albedo_default), albbck
+    ).astype(xp.float32), ice
+
+
 #: gpuwm's 2-D field name -> the ``LSMRUC`` argument it binds.  Every name on
 #: the right is in :data:`gpuwm.core.ruc.RUC_DRIVER_COLUMN_STATE`.  The four
 #: renames are WRF's own: the surface driver passes ``albedo`` as ``alb``,
@@ -493,10 +508,18 @@ class RucRuntimeParameters:
     :meth:`restart_identity` returns as strict JSON.
     """
 
-    def __init__(self, bundle=None, *,
-                 dataset_identifier: str = DEFAULT_VEGETATION_DATASET):
+    def __init__(
+            self, bundle=None, *,
+            dataset_identifier: str = DEFAULT_VEGETATION_DATASET,
+            seaice_albedo_default: float = SEAICE_ALBEDO_DEFAULT):
         self.bundle = load_ruc_parameters() if bundle is None else bundle
         self.dataset_identifier = str(dataset_identifier)
+        value = float(seaice_albedo_default)
+        if not np.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError(
+                "seaice_albedo_default must be finite and in [0, 1], got "
+                f"{seaice_albedo_default!r}")
+        self.seaice_albedo_default = value
         # Raises on a dataset gpuwm.core.ruc has no RUC VEGPARM section for,
         # rather than silently falling back to another table.
         self.vegetation = self.bundle.vegetation_for(self.dataset_identifier)
@@ -529,7 +552,7 @@ class RucRuntimeParameters:
             "num_soil_layers": int(NUM_SOIL_LAYERS),
             "soil_level_depths_m": [float(v) for v in RUC_SOIL_LEVELS_M],
             "xice_threshold": float(XICE_THRESHOLD),
-            "seaice_albedo_default": float(SEAICE_ALBEDO_DEFAULT),
+            "seaice_albedo_default": float(self.seaice_albedo_default),
             "isncovr_opt": int(ISNCOVR_OPT),
             "c1sn": float(C1SN),
             "c2sn": float(C2SN),
@@ -686,11 +709,9 @@ def ruc_lsm_step(
     # :3453-3459.  Unconditional, before the call, and outside the
     # FRACTIONAL_SEAICE block.  ALBBCK is an input to SOILVEGIN, so this
     # reaches the column's snow-free albedo on the same step.
-    ice = (device["xice"] >= np.float32(XICE_THRESHOLD)) & (
-        device["xice"] <= np.float32(1.0))
-    device["albbck"] = cp.where(
-        ice, np.float32(SEAICE_ALBEDO_DEFAULT), device["albbck"]
-    ).astype(cp.float32)
+    device["albbck"], ice = _ruc_seaice_albedo_override(
+        device["albbck"], device["xice"], params.seaice_albedo_default,
+        arrays=cp)
     ice_component = ice & (device["xice"] <= np.float32(1.0))
     ice_fraction = device["xice"]
     # module_surface_driver.F:3461-3473.  The static optics are grid-cell

@@ -14,6 +14,7 @@ from gpuwm.experiment import VerticalConfig
 from gpuwm.ingest.hrrr_target import HrrrTargetDomain
 from gpuwm.ingest.prepared_cache import prepared_cache_identity
 from gpuwm.physics_compat import (
+    KESSLER_PROFILE_ID,
     MORRISON_PROFILE_ID,
     MYNN_NOAHMP_PROFILE_ID,
     MYNN_PROFILE_ID,
@@ -63,7 +64,8 @@ def test_hrrr_runner_capability_query_is_side_effect_free_without_run_args(
     assert payload["schema"] == "gpuwm-runner-capabilities-v1"
     assert payload["supported_sources"] == ["hrrr"]
     assert payload["physics_profile_ids"] == [
-        WSM6_PROFILE_ID, THOMPSON_PROFILE_ID, MORRISON_PROFILE_ID,
+        WSM6_PROFILE_ID, KESSLER_PROFILE_ID,
+        THOMPSON_PROFILE_ID, MORRISON_PROFILE_ID,
         NSSL2_PROFILE_ID, NSSL2_LEGACY_RRTMG_PROFILE_ID,
         MYNN_PROFILE_ID, RUC_PROFILE_ID,
         MYNN_RUC_PROFILE_ID, NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID]
@@ -101,6 +103,15 @@ def test_hrrr_runner_capability_query_is_side_effect_free_without_run_args(
         "readiness": "MODEL_VALIDATED_RUNTIME_PROFILE",
         "explicit_expert_consent_required": False,
         "runtime_guards": [],
+    }
+    assert payload["physics_profiles"][KESSLER_PROFILE_ID] == {
+        "selector": 1,
+        "readiness": "IMPLEMENTED_UNVERIFIED",
+        "explicit_expert_consent_required": False,
+        "runtime_guards": [],
+        "source_scope": ["hrrr"],
+        "frozen_species_policy": (
+            "retain QC/QR; discard source QI/QS/QG with a receipt"),
     }
     nssl2 = payload["physics_profiles"][NSSL2_PROFILE_ID]
     assert nssl2["selector"] == 18

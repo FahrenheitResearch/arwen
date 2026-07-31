@@ -72,29 +72,26 @@ def test_front_door_capability_refusal_cites_unimplemented_registry_option():
     assert "selectors {'ra_lw_physics': 1, 'ra_sw_physics': 1}" in message
 
 
-def test_a_mynn_half_suite_is_the_only_mynn_refusal_left():
-    """5/5 is admitted; either half alone is not.
+def test_mixed_mynn_pairings_follow_wrf_v461_instead_of_a_half_suite_gate():
+    """WRF admits three mixed pairings and fatals the other three."""
 
-    The receipt has to name the pair, because "MYNN is unsupported" would
-    now be false and would send a user looking for missing physics that is
-    in fact present.
-    """
-    assert pending_wrf_physics_components(
-        mp_physics=6, sf_sfclay_physics=5, bl_pbl_physics=5,
-        sf_surface_physics=2, num_soil_layers=4) == ()
-    assert pending_wrf_physics_components(
-        mp_physics=6, sf_sfclay_physics=5, bl_pbl_physics=5,
-        sf_surface_physics=3, num_soil_layers=9) == ()
-    assert pending_wrf_physics_components(
-        mp_physics=6, sf_sfclay_physics=5, bl_pbl_physics=5,
-        sf_surface_physics=4, num_soil_layers=4) == ()
-    for surface, pbl in ((5, 1), (91, 5), (1, 5), (5, 0)):
+    for surface, pbl in (
+            (5, 5), (1, 5), (91, 5), (5, 0), (1, 0), (91, 0)):
+        assert pending_wrf_physics_components(
+            mp_physics=6, sf_sfclay_physics=surface,
+            bl_pbl_physics=pbl, sf_surface_physics=2,
+            num_soil_layers=4) == ()
+
+    for surface, pbl in ((5, 1), (0, 1), (0, 5)):
         blockers = pending_wrf_physics_components(
-            mp_physics=6, sf_sfclay_physics=surface, bl_pbl_physics=pbl,
-            sf_surface_physics=2, num_soil_layers=4)
-        assert [item.component for item in blockers] == ["MYNN half-suite"]
+            mp_physics=6, sf_sfclay_physics=surface,
+            bl_pbl_physics=pbl, sf_surface_physics=2,
+            num_soil_layers=4)
+        assert [item.component for item in blockers] == [
+            "WRF v4.6.1 PBL/surface-layer compatibility"]
         assert blockers[0].selectors == (
             ("sf_sfclay_physics", surface), ("bl_pbl_physics", pbl))
+        assert "phys/module_physics_init.F:" in blockers[0].missing[1]
 
 
 def test_target_runconfig_is_admitted_without_substitution():

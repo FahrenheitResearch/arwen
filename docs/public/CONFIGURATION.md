@@ -151,7 +151,7 @@ is importable from a WRF namelist.
 | `rdlai2d` | `rdlai2d` | false | bool | Noah read-in LAI |
 | `opt_thcnd` | `opt_thcnd` | 1 | 1, 2 | Noah soil thermal conductivity (Johansen/McCumber-Pielke) |
 | `num_soil_layers` | `num_soil_layers` | 4 | scheme-defined | ArWen *refuses* a count the scheme does not define where WRF silently overwrites it |
-| `nest_microphysics_transition` | -- | `same-scheme-only` | + `mp8-to-mp18-mass-diagnosed-v1` | ArWen-only, one-way nest mp edges |
+| `nest_microphysics_transition` | -- | `same-scheme-only` | + `mp8-to-mp18-mass-diagnosed-v1`, `mp-edge-mass-diagnosed-v1` | ArWen-only, one-way nest MP edges; the first id preserves the ratified Thompson→NSSL path and the matrix id selects the other ported mixed edges |
 
 Scheme selectors (`mp_physics`, `bl_pbl_physics`, `ra_lw/sw_physics`,
 `sf_sfclay_physics`, `sf_surface_physics`, `cu_physics`) and their

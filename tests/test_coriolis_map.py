@@ -148,14 +148,23 @@ def test_msf_one_f_zero_bitwise_phase2(case):
     ref = np.load(_DATA / "phase2_step_regression.npz")
     s, cfg = pin.CASES[case]()
     if cfg.km_opt == 4 and cfg.bl_pbl_physics == 0:
-        # The historical moist/open captures exercised only horizontal
-        # km_opt=4.  WRF also runs vertical_diffusion_2 when PBL is off, so
-        # those bitwise gates are retired until gpuwm carries the complete
-        # operator.  Dry-flat/terrain remain meaningful km_opt=1 pins.
-        with pytest.raises(
-                NotImplementedError,
-                match=r"km_opt=4.*bl_pbl_physics=0.*vertical"):
-            validate_run_config(cfg)
+        # These historical captures contain the retired horizontal-only
+        # answer.  Admission now succeeds because vertical_diffusion_2 is
+        # present.  Exercise both moist-periodic and dry-open full-step
+        # paths here; pointwise vertical authority lives in test_smag2d.
+        assert validate_run_config(cfg).bl_pbl_physics == 0
+        before = {
+            f: cp.asnumpy(getattr(s, f)).copy()
+            for f in pin.PIN_FIELDS
+        }
+        run_steps(s, cfg, n=pin.PIN_STEPS)
+        for f in pin.PIN_FIELDS:
+            got = cp.asnumpy(getattr(s, f))
+            assert np.isfinite(got).all(), f
+        assert any(
+            not np.array_equal(cp.asnumpy(getattr(s, f)), before[f])
+            for f in pin.PIN_FIELDS
+        )
         return
     if case == "dry_flat":
         # exercising the setter with identity values must stay bitwise too

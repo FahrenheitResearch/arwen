@@ -326,6 +326,27 @@ class RunConfig:
     # are not carried and their absence from wrfouts is the honest signal.
     # The diagnostic is trajectory-inert by construction and by test.
     nwp_diagnostics: int = 0
+    # Lane-K option exposure.  These fields are appended so positional
+    # RunConfig construction keeps its historical order, and every default is
+    # the behavior the assembled tree had before the option became settable.
+    #
+    # isfflx is WRF's surface heat/moisture-flux gate.  The ported MM5 and
+    # MYNN surface-layer paths implement 0/1; WRF's prescribed-flux value 2
+    # also needs the diffusion-side forcing contract and is not admitted.
+    isfflx: int = 1
+    # Legacy RRTMG's two implemented ozone sources: wrapper O3DATA (0) and
+    # the CAM climatology / parent-routed o3rad field (2).  RTE+RRTMGP keeps
+    # its established climatological-ozone identity at 2.
+    o3input: int = 2
+    # WRF's module_physics_init gate around the microphysics effective-radius
+    # scheme table.  Only legacy RRTMG owns that wrapper branch.
+    use_mp_re: int = 1
+    # RUC's live CASE(RUCLSMSCHEME) sea-ice albedo replacement.  The previous
+    # literal was 0.65, so that remains the gpuwm default.
+    seaice_albedo_default: float = 0.65
+    # Noah LSMINIT snow-albedo source.  True preserves the supplied geogrid
+    # SNOALB field; false transcribes WRF's MAXALB(IVGTYP)*0.01 branch.
+    rdmaxalb: bool = True
 
 
 #: The Noah-MP option identity gpuwm admits, field -> the only accepted
@@ -785,6 +806,51 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "(McCumber-Pielke, clamped for soiltyp 4), got "
             f"{cfg.opt_thcnd}."
         )
+    if cfg.isfflx not in (0, 1):
+        raise ValueError(
+            "isfflx must be 0 (surface heat/moisture fluxes off) or 1 "
+            "(on), got "
+            f"{cfg.isfflx}; WRF value 2 also needs the unported prescribed-"
+            "flux/diffusion forcing path."
+        )
+    if cfg.isfflx == 0 and cfg.sf_sfclay_physics == 0:
+        raise ValueError(
+            "isfflx=0 has no consumer when sf_sfclay_physics=0; gpuwm "
+            "implements the gate in its MM5 and MYNN surface-layer paths."
+        )
+    if cfg.o3input not in (0, 2):
+        raise ValueError(
+            "o3input must be 0 (legacy-RRTMG wrapper O3DATA) or 2 "
+            f"(CAM climatology), got {cfg.o3input}."
+        )
+    if cfg.use_mp_re not in (0, 1):
+        raise ValueError(
+            "use_mp_re must be 0 (legacy-RRTMG calculated radii) or 1 "
+            f"(use the WRF microphysics scheme table), got {cfg.use_mp_re}."
+        )
+    if (not math.isfinite(cfg.seaice_albedo_default)
+            or not 0.0 <= cfg.seaice_albedo_default <= 1.0):
+        raise ValueError(
+            "seaice_albedo_default must be finite and in [0, 1], got "
+            f"{cfg.seaice_albedo_default}."
+        )
+    if (cfg.seaice_albedo_default != 0.65
+            and cfg.sf_surface_physics != 3):
+        raise ValueError(
+            "a nondefault seaice_albedo_default is implemented only by "
+            "RUC LSM (sf_surface_physics=3), got "
+            f"sf_surface_physics={cfg.sf_surface_physics}."
+        )
+    if type(cfg.rdmaxalb) is not bool:
+        raise ValueError(
+            f"rdmaxalb must be boolean, got {cfg.rdmaxalb!r}."
+        )
+    if not cfg.rdmaxalb and cfg.sf_surface_physics != 2:
+        raise ValueError(
+            "rdmaxalb=false is implemented by Noah LSMINIT and requires "
+            "sf_surface_physics=2, got "
+            f"sf_surface_physics={cfg.sf_surface_physics}."
+        )
     if cfg.sf_surface_physics != 2 and (
             cfg.usemonalb or cfg.rdlai2d or cfg.opt_thcnd != 1):
         raise ValueError(
@@ -807,13 +873,6 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "layer (sf_sfclay_physics != 0) for its exchange coefficients: "
             "Noah reads CHS/CHS2/CQS2/QGH/RIB, Noah-MP and RUC read the same "
             "seam, and with sf_sfclay_physics=0 nothing writes them."
-        )
-    if cfg.bl_pbl_physics and not cfg.sf_sfclay_physics:
-        raise ValueError(
-            f"bl_pbl_physics={cfg.bl_pbl_physics} requires a surface layer "
-            "(sf_sfclay_physics != 0): the PBL scheme consumes UST, HFX, QFX, "
-            "WSPD and RMOL from it, and with sf_sfclay_physics=0 they stay at "
-            "their cold-start values for the whole run."
         )
     if cfg.cu_physics and not cfg.moist:
         raise ValueError(
@@ -925,6 +984,20 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "resolved 4/4 RRTMG pair (ra_physics=4 or "
             "ra_lw_physics=ra_sw_physics=4), got "
             f"{ra_lw_physics}/{ra_sw_physics}")
+    if ((cfg.o3input != 2 or cfg.use_mp_re != 1)
+            and cfg.ra_rrtmg_variant != RRTMG_VARIANT_LEGACY):
+        raise ValueError(
+            f"o3input={cfg.o3input} and use_mp_re={cfg.use_mp_re}: "
+            "nondefault values are implemented only by "
+            f"ra_rrtmg_variant='{RRTMG_VARIANT_LEGACY}'."
+        )
+    if ((cfg.o3input != 2 or cfg.use_mp_re != 1)
+            and (ra_lw_physics, ra_sw_physics) != (4, 4)):
+        raise ValueError(
+            f"o3input={cfg.o3input} and use_mp_re={cfg.use_mp_re} require "
+            "the resolved 4/4 legacy-RRTMG radiation pair, got "
+            f"{ra_lw_physics}/{ra_sw_physics}."
+        )
     if (cfg.wrf_rrtmg_compatibility in WRF_RRTMG_SUBSTITUTION_TOKENS
             and cfg.ra_rrtmg_variant != RRTMG_VARIANT_RTE_RRTMGP):
         raise ValueError(
@@ -968,10 +1041,12 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "state does not allocate water or hydrometeor fields."
         )
     if cfg.nest_microphysics_transition not in (
-            "same-scheme-only", "mp8-to-mp18-mass-diagnosed-v1"):
+            "same-scheme-only", "mp8-to-mp18-mass-diagnosed-v1",
+            "mp-edge-mass-diagnosed-v1"):
         raise ValueError(
-            "nest_microphysics_transition must be 'same-scheme-only' or "
-            "'mp8-to-mp18-mass-diagnosed-v1', got "
+            "nest_microphysics_transition must be 'same-scheme-only', "
+            "'mp8-to-mp18-mass-diagnosed-v1', or "
+            "'mp-edge-mass-diagnosed-v1', got "
             f"{cfg.nest_microphysics_transition!r}."
         )
     if (not cfg.nested
@@ -1035,14 +1110,6 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
         raise ValueError(
             "km_opt=4 selects WRF Smagorinsky mixing; khdif/kvdif are "
             "constant-K controls for km_opt=1 and cannot also be active."
-        )
-    if cfg.km_opt == 4 and cfg.bl_pbl_physics == 0:
-        raise NotImplementedError(
-            "km_opt=4 with bl_pbl_physics=0 is not yet supported: WRF "
-            "diff_opt=2 also runs vertical_diffusion_2 when the PBL is "
-            "off (using xkmv=xkmh for the u/v/w stress terms), and gpuwm "
-            "does not yet implement that vertical operator and its surface-"
-            "flux policy."
         )
     if cfg.diff_6th_slopeopt not in (0, 1):
         raise ValueError(

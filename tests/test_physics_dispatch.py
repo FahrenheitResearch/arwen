@@ -302,27 +302,27 @@ def test_in_port_schemes_fail_closed_with_a_port_receipt(overrides, component):
 
 
 @pytest.mark.parametrize("overrides", [
-    dict(sf_sfclay_physics=5),                       # PBL slot left at YSU
-    dict(sf_sfclay_physics=91, bl_pbl_physics=5),    # surface slot left at MM5
+    dict(sf_sfclay_physics=5, bl_pbl_physics=1),
+    dict(sf_sfclay_physics=0, bl_pbl_physics=5),
 ])
-def test_a_mynn_half_suite_is_still_refused(overrides):
-    """MYNN is admitted as 5/5 and only as 5/5.
-
-    Half a suite is not a smaller configuration, it is a different one: the
-    surface layer supplies UST/HFX/QFX/WSPD/RMOL to the PBL driver and
-    diagnoses T2/Q2/TH2 in place of SFCDIAGS, so pairing either half with
-    MM5 or YSU is a coupling nothing has ever validated.
-    """
+def test_wrf_fatal_pbl_surface_layer_cells_are_refused(overrides):
     with pytest.raises(UnsupportedPhysicsSuiteError) as caught:
         validate_run_config(_cfg(**overrides))
-    assert [item.component for item in caught.value.blockers]         == ["MYNN half-suite"]
+    assert [item.component for item in caught.value.blockers] == [
+        "WRF v4.6.1 PBL/surface-layer compatibility"]
+    assert "phys/module_physics_init.F:" in str(caught.value)
     assert "no substitutions were applied" in str(caught.value)
 
 
-def test_the_coupled_mynn_suite_is_admitted():
-    """The negative control for the row above: 5/5 must NOT raise."""
+@pytest.mark.parametrize("surface,pbl", [
+    (5, 5),
+    (1, 5),
+    (91, 5),
+    (5, 0),
+])
+def test_wrf_legal_mynn_pairings_are_admitted(surface, pbl):
     validate_run_config(_cfg(
-        sf_sfclay_physics=5, bl_pbl_physics=5, nz=5))
+        sf_sfclay_physics=surface, bl_pbl_physics=pbl, nz=5))
 
 
 def test_noahmp_is_admitted_at_four_soil_layers_and_only_there():
