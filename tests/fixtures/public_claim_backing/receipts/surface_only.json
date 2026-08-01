@@ -1,0 +1,14 @@
+{
+  "schema": "gpuwm.t0-state-digest/v1",
+  "comment": "Fixture receipt covering one group, so a claim wider than its receipt has a narrow receipt to exceed.",
+  "evaluator_commit": "0000000000000000000000000000000000000000",
+  "covered_groups": [
+    "surface"
+  ],
+  "uncovered_required_groups": [
+    "dry_dynamics",
+    "moisture",
+    "soil"
+  ],
+  "verdict": "PASS"
+}

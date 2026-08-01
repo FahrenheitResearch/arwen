@@ -713,6 +713,26 @@ class DomainState:
         (``mub2d`` is the scalar broadcast for flat terrain)."""
         return self.mub2d + self.mup
 
+    def cell_area_weight(self) -> cp.ndarray:
+        """Mass-point cell-area weight ``1/msft**2`` as ``(ny, nx)`` FP64.
+
+        ARW carries the column-mass equation on the map plane: the
+        acoustic mass update multiplies the layer divergence by
+        ``msftx*msfty``, which for gpuwm's isotropic factor is the
+        ``m2 = msft*msft`` product formed in
+        ``kernels/acoustic.cu advance_mu_th_msf``.  Dividing the column
+        mass by that same product restores the physical cell area, so
+        ``sum(total_mu * cell_area_weight)`` is the quantity whose
+        tendency telescopes to the lateral boundary faces.  The reciprocal
+        is taken in FP64 from the FP32 product the kernel itself forms, so
+        the weight is the kernel's convention rather than a re-derivation;
+        with identity map factors it is exactly 1.0 and the weighted sum
+        is bit-identical to the unweighted one.
+        """
+        xp = _state_array_module(self)
+        msft2 = self.msft * self.msft
+        return 1.0 / msft2.astype(xp.float64)
+
     def height_half(self) -> np.ndarray:
         """Base-state half-level heights in metres, on host: ``(nz,)`` for a
         flat base state, per-column ``(nz, ny, nx)`` with terrain.

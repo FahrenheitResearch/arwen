@@ -201,6 +201,40 @@ def _isolated_fetch_lock_root(tmp_path_factory):
         os.environ[fetch_guard.LOCK_ROOT_ENV] = previous
 
 
+def complete_runtime_manifest(payload: dict | None = None,
+                              *, platform_name: str = "linux-x86_64",
+                              **overrides) -> dict:
+    """A sealed-runtime manifest that meets the WHOLE required schema.
+
+    Fixtures used to declare only the keys the assertion under test
+    happened to read, which is exactly how a two-key manifest reached a
+    field user's preparation and died several minutes in, at a third
+    consumer, on a key nobody had validated.  Now that
+    :func:`gpuwm.runtime_manifest.validate_manifest` is the one gate,
+    a fixture that skips a field is testing a document no consumer will
+    ever accept.  Build from here and override deliberately.
+    """
+
+    from gpuwm import __version__
+    from gpuwm.native_wrf_distribution import distribution_contract
+    from gpuwm.runtime_manifest import RUNTIME_SCHEMA
+
+    manifest = {
+        "schema": RUNTIME_SCHEMA,
+        "status": "READY",
+        "artifact": {"name": "gpuwm-native-wrf",
+                     "gpuwm_version": __version__},
+        "source": {"commit": "0" * 40, "tree": "1" * 40,
+                   "worktree_clean": True},
+        "contract": distribution_contract(platform_name),
+        "payload": payload if payload is not None else {
+            "libexec/bridges/placeholder": {"bytes": 0, "sha256": "0" * 64},
+        },
+    }
+    manifest.update(overrides)
+    return manifest
+
+
 def assert_gates(case: str, metrics: dict) -> None:
     """Assert every benchmark gate for ``case`` passes.
 

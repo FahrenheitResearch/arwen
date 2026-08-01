@@ -14,6 +14,8 @@ is :func:`gpuwm.verify.npref.np_ysu_column`.
 
 from __future__ import annotations
 
+from typing import Mapping
+
 import numpy as np
 import cupy as cp
 
@@ -21,7 +23,19 @@ from gpuwm.core.kernels import get_kernel
 from gpuwm.core.state import DTYPE
 
 _TPB = 32
+_VALIDATE_TPB = 256
 _KMAX = 128
+
+_YSU_3D_FLOAT_OUTPUTS = (
+    "du", "dv", "dtheta", "dqv", "dqc", "dqi", "exch_h", "exch_m",
+)
+_YSU_2D_OUTPUTS = (
+    "hpbl", "kpbl", "wstar", "delta", "topdown_radsum", "wstar3_2",
+    "cloudflg",
+)
+_YSU_OUTPUTS = _YSU_3D_FLOAT_OUTPUTS + _YSU_2D_OUTPUTS
+_YSU_2D_FLOAT_OUTPUTS = tuple(
+    name for name in _YSU_2D_OUTPUTS if name not in ("kpbl", "cloudflg"))
 
 
 def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
@@ -76,8 +90,7 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
     if ysu_topdown_pblmix not in (0, 1, False, True):
         raise ValueError("ysu_topdown_pblmix must be 0 or 1")
 
-    out = {name: cp.empty_like(theta) for name in
-           ("du", "dv", "dtheta", "dqv", "dqc", "dqi", "exch_h", "exch_m")}
+    out = {name: cp.empty_like(theta) for name in _YSU_3D_FLOAT_OUTPUTS}
     out.update(hpbl=cp.empty((ny, nx), dtype=DTYPE),
                kpbl=cp.empty((ny, nx), dtype=cp.int32),
                wstar=cp.empty((ny, nx), dtype=DTYPE),
@@ -98,3 +111,58 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
             np.int32(int(ysu_topdown_pblmix)),
             np.int32(nz), np.int32(ny), np.int32(nx)))
     return out
+
+
+def validate_ysu_outputs(
+        out: Mapping[str, cp.ndarray], status: cp.ndarray) -> str | None:
+    """Return the first non-finite native YSU output name, or ``None``.
+
+    ``launch_ysu`` owns this exact output layout.  One validation kernel
+    records a bit per floating-point output and one scalar readback preserves
+    the driver's historical first-invalid error ordering.  The two integer
+    outputs are necessarily finite and need no device work.
+    """
+    if tuple(out) != _YSU_OUTPUTS:
+        raise ValueError(
+            "native YSU validation requires outputs in launcher order "
+            f"{_YSU_OUTPUTS}, got {tuple(out)}")
+    if (not isinstance(status, cp.ndarray) or status.shape != (1,)
+            or status.dtype != cp.uint32 or not status.flags.c_contiguous):
+        raise ValueError(
+            "YSU validation status must be a C-contiguous uint32 device "
+            "array with shape (1,)")
+
+    shape_3d = out["du"].shape
+    shape_2d = out["hpbl"].shape
+    if len(shape_3d) != 3 or len(shape_2d) != 2:
+        raise ValueError("native YSU outputs must retain 3-D/2-D shapes")
+    for name in _YSU_3D_FLOAT_OUTPUTS:
+        value = out[name]
+        if (not isinstance(value, cp.ndarray) or value.shape != shape_3d
+                or value.dtype != DTYPE or not value.flags.c_contiguous):
+            raise ValueError(
+                f"native YSU output {name} must be C-contiguous float32 "
+                f"with shape {shape_3d}")
+    for name in _YSU_2D_FLOAT_OUTPUTS:
+        value = out[name]
+        if (not isinstance(value, cp.ndarray) or value.shape != shape_2d
+                or value.dtype != DTYPE or not value.flags.c_contiguous):
+            raise ValueError(
+                f"native YSU output {name} must be C-contiguous float32 "
+                f"with shape {shape_2d}")
+
+    status.fill(cp.uint32(0))
+    count_3d = out["du"].size
+    count_2d = out["hpbl"].size
+    blocks = (max(count_3d, count_2d) + _VALIDATE_TPB - 1) // _VALIDATE_TPB
+    kernel = get_kernel("ysu_validation", "ysu_validate_outputs")
+    kernel(
+        (blocks,), (_VALIDATE_TPB,),
+        tuple(out[name] for name in _YSU_3D_FLOAT_OUTPUTS)
+        + tuple(out[name] for name in _YSU_2D_FLOAT_OUTPUTS)
+        + (status, np.int64(count_3d), np.int64(count_2d)))
+    invalid = int(status[0].item())
+    for bit, name in enumerate(_YSU_OUTPUTS):
+        if invalid & (1 << bit):
+            return name
+    return None

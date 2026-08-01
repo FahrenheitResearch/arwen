@@ -173,7 +173,15 @@ def test_the_consumer_reports_a_vacuous_retention_claim_without_refusing_it():
     assert proven["vacuous_species"] == []
 
 
-def test_public_wrapper_accepts_64_decoder_workers_independent_of_native_budget():
+def test_decoder_workers_are_independent_of_the_native_preprocess_budget():
+    """The wrapper's own point: two worker budgets, separately accounted.
+
+    Written at the decode pipeline's real ceiling.  It used to be
+    written at 64 -- a number no run could reach, because the sealed
+    decoder refuses anything over 13 and the pipeline refused it in
+    turn, after the static build had already been paid for.
+    """
+    workers = prepare.MAX_PIPELINE_WORKERS
     report = {
         "status": "PASS",
         "preparation": {
@@ -186,15 +194,48 @@ def test_public_wrapper_accepts_64_decoder_workers_independent_of_native_budget(
                 "peak_active_native_workers": 0,
             },
         },
-        "pipeline": {"workers": {"requested": "64", "selected": 64}},
+        "pipeline": {"workers": {"requested": str(workers),
+                                 "selected": workers}},
     }
 
     _preprocess, native_budget, decoder = prepare._validated_worker_receipts(
         report, selected_backend="cuda", requested_preprocess_workers=None,
-        requested_pipeline_workers="64", final_hour=12)
+        requested_pipeline_workers=str(workers), final_hour=12)
 
-    assert decoder["selected"] == 64
+    assert decoder["selected"] == workers
     assert native_budget["pipeline_decoder_workers_included"] is False
+
+
+def test_pipeline_workers_refuses_over_the_decoders_ceiling_at_parse_time():
+    """The late refusal this replaces cost a whole static build first.
+
+    The wrapper advertised 1..64 while the decoder it spawns accepts
+    1..13, so `--pipeline-workers 32` was accepted, the geometry receipt
+    and native static cache were built, and only then did the pipeline
+    refuse.  argparse now answers with a usage message instead.
+    """
+    from tools.hrrr_pipeline import MAX_PIPELINE_WORKERS
+
+    assert prepare.MAX_PIPELINE_WORKERS == MAX_PIPELINE_WORKERS
+
+    parser = prepare._parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "--source-root", "src", "--source-manifest", "m",
+            "--source-manifest-sha256", "0" * 64, "--namelist-input", "n",
+            "--valid-time", "2026-08-01_00:00:00", "--output-root", "out",
+            "--static-cache", "c", "--static-receipt", "r",
+            "--pipeline-workers", str(MAX_PIPELINE_WORKERS + 1)])
+
+    # Watched firing: the ceiling itself, and 'auto', both parse.
+    for accepted in (str(MAX_PIPELINE_WORKERS), "auto"):
+        args = parser.parse_args([
+            "--source-root", "src", "--source-manifest", "m",
+            "--source-manifest-sha256", "0" * 64, "--namelist-input", "n",
+            "--valid-time", "2026-08-01_00:00:00", "--output-root", "out",
+            "--static-cache", "c", "--static-receipt", "r",
+            "--pipeline-workers", accepted])
+        assert args.pipeline_workers == accepted
 
 
 @pytest.mark.parametrize(
@@ -348,3 +389,203 @@ def test_public_wrapper_rejects_mismatched_or_incomplete_physics_receipt():
     with pytest.raises(RuntimeError, match="cold-start evidence"):
         prepare._validated_physics_receipt(
             wrong_bits, requested_profile=MORRISON_PROFILE_ID)
+
+
+# ---------------------------------------------------------------------------
+# The decoder this wrapper launches, and the disposition of the optional
+# stock-WRF export.  Both are field failures: the first refused on a healthy
+# wheel install, and the second threw away a completed preparation.
+# ---------------------------------------------------------------------------
+
+def _wrapper_case(tmp_path: Path, monkeypatch, *, export_returncode: int = 0):
+    """One runnable wrapper invocation, with every subprocess faked.
+
+    Returns ``(argv, commands, output)``: the argument vector, the list
+    every faked ``_run`` appends to, and the output root -- so a test can
+    assert what was launched and what was written.
+    """
+
+    import subprocess as subprocess_module
+
+    source = tmp_path / "source"
+    source.mkdir()
+    for hour in (0, 1):
+        (source / f"hrrr.t05z.wrfnatf{hour:02d}.grib2").write_bytes(b"atmos")
+        (source / f"hrrr.t05z.soilf{hour:02d}.grib2").write_bytes(b"soil")
+    source_manifest = source / "SHA256SUMS"
+    source_manifest.write_text("fixture\n", encoding="ascii")
+    static_cache = tmp_path / "static.npz"
+    static_receipt = tmp_path / "static.json"
+    namelist = tmp_path / "namelist.input"
+    for path in (static_cache, static_receipt, namelist):
+        path.write_bytes(b"fixture")
+    decoder = tmp_path / "hrrr_grib2_bridge"
+    decoder.write_bytes(b"decoder")
+    monkeypatch.setattr(prepare, "_decoder", lambda _env: decoder)
+
+    commands: list[list[str]] = []
+
+    def fake_run(command, _env, cwd=None):
+        commands.append(command)
+        if any(str(value).endswith("hrrr_single_domain_benchmark.py")
+               for value in command):
+            outdir = Path(command[command.index("--outdir") + 1])
+            outdir.mkdir(parents=True)
+            (outdir / "report.json").write_text(json.dumps({
+                "status": "PASS",
+                "history_interval_seconds": 3600.0,
+                "physics": {
+                    "schema": "gpuwm-prepared-physics-profile-v1",
+                    "profile": WSM6_PROFILE_ID,
+                    "hrrr_initialization": _cold_start_receipt(
+                        WSM6_PROFILE_ID),
+                },
+                "preparation": {
+                    "preprocess_backend": {"backend": "cuda"},
+                    "preprocess_worker_budget": {
+                        "schema": "gpuwm-preprocess-worker-budget-v1",
+                        "backend": "cuda",
+                        "applicable": False,
+                        "pipeline_decoder_workers_included": False,
+                        "peak_active_native_workers": 0,
+                    },
+                },
+                "pipeline": {"workers": {"requested": "8", "selected": 8}},
+            }), encoding="utf-8")
+        elif "gpuwm.wrf_direct" in command and export_returncode:
+            raise subprocess_module.CalledProcessError(
+                export_returncode, command)
+
+    monkeypatch.setattr(prepare, "_run", fake_run)
+    output = tmp_path / "output"
+    argv = [
+        "--source-root", str(source),
+        "--source-manifest", str(source_manifest),
+        "--source-manifest-sha256", "0" * 64,
+        "--static-cache", str(static_cache),
+        "--static-receipt", str(static_receipt),
+        "--namelist-input", str(namelist),
+        "--physics-profile", WSM6_PROFILE_ID,
+        "--valid-time", "2026-07-18_05:00:00",
+        "--run-seconds", "3600",
+        "--history-interval-seconds", "3600",
+        "--output-root", str(output),
+    ]
+    return argv, commands, output
+
+
+def test_a_refused_stock_wrf_export_no_longer_destroys_the_preparation(
+        tmp_path: Path, monkeypatch, capsys) -> None:
+    """The field failure: PASS report, then exit 1 with nothing to show.
+
+    ``gpuwm.wrf_direct`` refused on a real, named feature gap (frozen-soil
+    SH2O setup), and ``subprocess.run(check=True)`` carried that refusal
+    all the way out of a wrapper whose actual product -- the prepared
+    cache and its PASS report -- was already written and correct.  The
+    gap is still reported; it no longer takes the work with it.
+    """
+
+    argv, commands, output = _wrapper_case(
+        tmp_path, monkeypatch, export_returncode=1)
+    assert prepare.main(argv) == 0
+
+    assert any("gpuwm.wrf_direct" in command for command in commands)
+    receipt = json.loads(
+        (output / "public-wrapper-result.json").read_text(encoding="utf-8"))
+    assert receipt["status"] == "PASS"
+    assert receipt["stock_wrf_export"]["status"] == "REFUSED"
+    assert receipt["stock_wrf_export"]["returncode"] == 1
+    assert receipt["wrf_input"] is None
+    assert "warning:" in capsys.readouterr().err
+
+
+def test_a_required_stock_wrf_export_still_fails_the_command(
+        tmp_path: Path, monkeypatch) -> None:
+    """Negative control, watched firing: asked for, refused, nonzero.
+
+    Without --require-stock-wrf-export the very same refusal exits 0
+    (the test above), so this assertion is not free.
+    """
+
+    argv, _commands, _output = _wrapper_case(
+        tmp_path, monkeypatch, export_returncode=1)
+    with pytest.raises(RuntimeError, match="required and refused"):
+        prepare.main(argv + ["--require-stock-wrf-export"])
+
+
+def test_skipping_the_stock_wrf_export_never_launches_it(
+        tmp_path: Path, monkeypatch) -> None:
+    argv, commands, output = _wrapper_case(tmp_path, monkeypatch)
+    assert prepare.main(argv + ["--skip-stock-wrf-export"]) == 0
+    assert not any("gpuwm.wrf_direct" in command for command in commands)
+    receipt = json.loads(
+        (output / "public-wrapper-result.json").read_text(encoding="utf-8"))
+    assert receipt["status"] == "PASS"
+    assert receipt["stock_wrf_export"]["status"] == "SKIPPED"
+    assert receipt["wrf_input"] is None
+
+
+def test_a_successful_stock_wrf_export_still_names_its_output(
+        tmp_path: Path, monkeypatch) -> None:
+    argv, commands, output = _wrapper_case(tmp_path, monkeypatch)
+    assert prepare.main(argv) == 0
+    assert any("gpuwm.wrf_direct" in command for command in commands)
+    receipt = json.loads(
+        (output / "public-wrapper-result.json").read_text(encoding="utf-8"))
+    assert receipt["stock_wrf_export"]["status"] == "PASS"
+    assert receipt["wrf_input"] == str(output / "wrf-native-input")
+
+
+def test_the_two_export_flags_are_mutually_exclusive(tmp_path: Path,
+                                                     monkeypatch) -> None:
+    argv, _commands, _output = _wrapper_case(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        prepare.main(argv + ["--skip-stock-wrf-export",
+                             "--require-stock-wrf-export"])
+
+
+def test_the_wrapper_resolves_the_decoder_the_shared_ladder_resolves(
+        monkeypatch, tmp_path: Path) -> None:
+    """Issue two, at the wrapper: a wheel has no cargo workspace.
+
+    ``REPO`` is site-packages on a pip install, so the old
+    ``REPO/tools/grib1_bridge/target/release/hrrr_grib2_bridge`` named a
+    path that cannot exist there, and the cargo fallback ran in a
+    directory that does not exist either.  Now it is the same ladder
+    ``gpuwm doctor`` reports, and the staged bridge wins.
+    """
+
+    from gpuwm import bridges
+
+    site_packages = tmp_path / "site-packages"
+    site_packages.mkdir()
+    staged = tmp_path / "userdir"
+    staged.mkdir()
+    for variable in bridges.BRIDGE_ENV.values():
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setattr(bridges, "crate_dir", lambda: tmp_path / "no-crate")
+    monkeypatch.setattr(bridges, "_package_parent", lambda: site_packages)
+    monkeypatch.setattr(bridges, "default_bridge_dir", lambda: staged)
+    monkeypatch.setattr(prepare, "BRIDGE_CRATE", tmp_path / "no-crate")
+
+    # Negative control, watched firing: nothing staged, named refusal --
+    # and it names ~/.gpuwm/bridges rather than a cargo target directory.
+    with pytest.raises(FileNotFoundError) as error:
+        prepare._decoder({})
+    assert str(staged) in str(error.value)
+
+    decoder = staged / bridges.executable_name("hrrr_grib2_bridge")
+    decoder.write_bytes(b"decoder")
+    assert prepare._decoder({}) == decoder.resolve()
+
+
+def test_an_explicit_decoder_override_is_honored_and_fails_loud(
+        monkeypatch, tmp_path: Path) -> None:
+    override = tmp_path / "my_bridge"
+    override.write_bytes(b"decoder")
+    monkeypatch.setenv("GPUWM_HRRR_DECODER", str(override))
+    assert prepare._decoder({}) == override.resolve()
+
+    monkeypatch.setenv("GPUWM_HRRR_DECODER", str(tmp_path / "absent"))
+    with pytest.raises(FileNotFoundError, match="GPUWM_HRRR_DECODER"):
+        prepare._decoder({})

@@ -1039,6 +1039,318 @@ def _wrf_compatibility_authority() -> dict:
     }
 
 
+#: Path A of the owner-ratified vocabulary decision (D-1/D-2).  The old
+#: spellings claimed validation the labels never carried: agreement with a
+#: matched WRF run is agreement with another model, and "validated" is read
+#: by everyone as skill against the atmosphere.  The new spellings say what
+#: the evidence is.  Applied to maturity VALUES at every surface; template
+#: ids keep their historical spelling because an id is a name, not a claim,
+#: and renaming one silently breaks every config and route that cites it.
+MATURITY_RENAMES = {
+    "model-validated": "wrf-matched-run",
+    "validation-candidate": "wrf-matched-run-candidate",
+}
+
+#: The conformance axis, lowest evidence first.  This tuple is the ONLY
+#: ordering of maturity names in the repository: gpuwm/physics_registry.py
+#: derives MATURITY_RANK, both warning tiers and the composition ceiling
+#: from the block this builds, so a rung cannot be reordered in one place
+#: and not the other.
+_MATURITY_RUNGS = (
+    ("planned", "unimplemented-only",
+     "Registered so the roadmap is readable. No GPUWM runtime component "
+     "exists, implemented is false, and the option cannot be selected."),
+    ("port-in-progress", "unimplemented-only",
+     "A port exists in the tree but does not reach the runtime. "
+     "implemented is false and the option cannot be selected."),
+    ("implemented-unverified", "warn",
+     "A GPUWM runtime component executes this option and no matched "
+     "ArWen-versus-WRF forecast trajectory has been run with it. "
+     "Selecting it warns and does not block."),
+    ("experimental-runtime", "warn",
+     "Executable, and carrying a documented runtime restriction or an "
+     "unratified composition -- a table-bound runtime, or a nest edge "
+     "between two microphysics schemes. Selecting it warns and does not "
+     "block."),
+    ("supported", "nonwarning",
+     "Agreement with the WRF reference implementation is settled for this "
+     "option by committed oracle parity or an equivalent comparison, and "
+     "it carries no runtime restriction. Selecting it does not warn."),
+    ("wrf-matched-run-candidate", "warn",
+     "Executable and gated, with a ratified reference comparison, and "
+     "deliberately not the default: the next candidate for a full matched "
+     "run. Selecting it warns and does not block."),
+    ("wrf-matched-run", "nonwarning",
+     "A matched multi-hour ArWen-versus-WRF forecast of a reference case "
+     "has been run with this option and its decay tables are published. "
+     "This is agreement with WRF, not skill against observations."),
+)
+
+#: The independent-science axis (D-26: options only).  ``none`` is the
+#: honest default and the only value this pass assigns: the value set above
+#: it is the ratified catalogue's, and an option is promoted off ``none``
+#: only by an entry in ``scientific_evidence_catalogue``.  Assigning a
+#: category here without that entry would be exactly the unbacked claim the
+#: two-axis split exists to prevent.
+_SCIENTIFIC_ENUM = (
+    ("none",
+     "No independent scientific evidence is claimed for this option. Its "
+     "evidence is conformance with the WRF reference implementation, which "
+     "lives on the other axis."),
+    ("idealized-analytic",
+     "Compared against a closed-form or analytically constrained solution "
+     "of an idealized problem."),
+    ("converged-numerical-reference",
+     "Compared against a converged high-resolution numerical reference "
+     "solution of an idealized problem."),
+    ("conservation-gated",
+     "Carries a committed conservation residual gate over an idealized "
+     "problem."),
+    ("obs-evaluated",
+     "Evaluated against observations. No option in this registry carries "
+     "this value; the rung exists so the absence is visible rather than "
+     "unrepresentable."),
+)
+
+
+def _rename_maturities(registry: dict) -> None:
+    """Rewrite every maturity VALUE at every surface under Path A."""
+
+    for component in registry.get("components", {}).values():
+        for option in component.get("options", {}).values():
+            if option.get("maturity") in MATURITY_RENAMES:
+                option["maturity"] = MATURITY_RENAMES[option["maturity"]]
+    for template in registry.get("templates", {}).values():
+        if template.get("maturity") in MATURITY_RENAMES:
+            template["maturity"] = MATURITY_RENAMES[template["maturity"]]
+    for transition in registry.get("transitions", {}).values():
+        for rule in transition.get("cross_options", []):
+            if rule.get("maturity") in MATURITY_RENAMES:
+                rule["maturity"] = MATURITY_RENAMES[rule["maturity"]]
+        same = transition.get("same_option")
+        if isinstance(same, dict) and same.get("maturity") in MATURITY_RENAMES:
+            same["maturity"] = MATURITY_RENAMES[same["maturity"]]
+
+
+def _evidence_architecture(registry: dict) -> None:
+    """Author the two axes, the ladder and the composition rule."""
+
+    rungs = {
+        name: {
+            "rank": rank,
+            "warning_tier": tier,
+            "definition": definition,
+        }
+        for rank, (name, tier, definition) in enumerate(_MATURITY_RUNGS)
+    }
+    order = [name for name, _tier, _definition in _MATURITY_RUNGS]
+
+    registry["maturity_ladder"] = {
+        "axis": "conformance",
+        "order": order,
+        "rungs": rungs,
+        "meaning": (
+            "How far agreement with the WRF reference implementation has "
+            "been demonstrated for this component, template or nest edge. "
+            "Every rung is a statement about agreement with another model "
+            "and none of them is a statement about skill against "
+            "observations."),
+        "composition_rule": _composition_rule(),
+    }
+    registry["evidence_axes"] = {
+        "conformance_implies_scientific_validation": False,
+        "conformance_implies_scientific_validation_meaning": (
+            "Agreement with WRF is agreement with a model. No rung of the "
+            "conformance ladder implies any value on the scientific axis, "
+            "and the two are reported separately everywhere."),
+        "maturity": {
+            "axis": "conformance",
+            "ladder": "maturity_ladder",
+            "rungs": rungs,
+            "surfaces": [
+                "components.<component_id>.options.<option_id>.maturity",
+                "templates.<template_id>.maturity",
+                "transitions.<transition_id>.cross_options[].maturity",
+            ],
+            "absent_surfaces": [
+                {
+                    "surface": (
+                        "transitions.<transition_id>.cross_options[] whose "
+                        "status is 'ratified'"),
+                    "owner_decision_id": "D-26",
+                    "contract": (
+                        "A ratified nest edge carries no maturity key. The "
+                        "absence is the contract, not an omission: the edge "
+                        "was ratified as a whole against its per-species "
+                        "receipt, so there is no separate conformance rung "
+                        "to report for it. An unratified edge carries "
+                        "'experimental-runtime' and warns."),
+                },
+            ],
+        },
+        "scientific": {
+            "axis": "independent-scientific-evidence",
+            "default": "none",
+            "enum": {
+                name: {"definition": definition}
+                for name, definition in _SCIENTIFIC_ENUM
+            },
+            "surfaces": [
+                "components.<component_id>.options.<option_id>"
+                ".scientific_evidence",
+            ],
+            "absent_surfaces": [
+                {
+                    "surface": "templates.<template_id>",
+                    "owner_decision_id": "D-26",
+                    "contract": (
+                        "Templates carry no scientific_evidence. A template "
+                        "is a composition of options and inherits no "
+                        "independent evidence by being composed; read the "
+                        "axis on the options it selects."),
+                },
+                {
+                    "surface": "transitions.<transition_id>.cross_options[]",
+                    "owner_decision_id": "D-26",
+                    "contract": (
+                        "A nest edge carries no scientific_evidence for the "
+                        "same reason."),
+                },
+            ],
+            "catalogue_contract": (
+                "An option is promoted off 'none' only by an entry in "
+                "scientific_evidence_catalogue naming the artifact and "
+                "quoting its category basis. Every option in this registry "
+                "reads 'none': their evidence is conformance, which lives "
+                "on the other axis."),
+        },
+    }
+
+    for component in registry.get("components", {}).values():
+        for option in component.get("options", {}).values():
+            option.setdefault("scientific_evidence", "none")
+
+    tier_of = {name: tier for name, tier, _definition in _MATURITY_RUNGS}
+    policy = registry["warning_policy"]
+    policy["nonwarning_maturities"] = [
+        name for name in order if tier_of[name] == "nonwarning"]
+    policy["warn_maturities"] = [
+        name for name in order if tier_of[name] == "warn"]
+    policy["tier_authority"] = (
+        "Both lists are computed from maturity_ladder.rungs[].warning_tier "
+        "in ladder order. There is no second ordering of maturity names.")
+
+
+def _composition_rule() -> dict:
+    """The owner-ratified two-clause rule (D-16), axis A, as an invariant.
+
+    Enforcement point is the registry document, not the loader.  A blocking
+    load-time ERROR on clause C2 would take WSM6 and both NSSL-2 templates
+    out of service, so the rule is enforced by
+    ``tests/test_physics_registry_composition.py`` over the shipped
+    document while the loader enforces only the two-axis membership that
+    cannot take a working template out of service (D-22).
+    """
+
+    return {
+        "id": "template-composition-ceiling-v1",
+        "axis": "A-strict-min",
+        "owner_decision_id": "D-16",
+        "enforcement_point": "registry-document-invariant",
+        "severity": "invariant-test",
+        "enforcement_ref": "tests/test_physics_registry_composition.py",
+        "clauses": {
+            "C1": {
+                "name": "trajectory pointer",
+                "statement": (
+                    "A template whose maturity is at or above "
+                    "'wrf-matched-run-candidate' carries an evidence_pointer "
+                    "that resolves to a matched-run manifest under "
+                    "gpuwm/authorities/matched_runs/."),
+            },
+            "C2": {
+                "name": "composition ceiling",
+                "statement": (
+                    "A template's maturity rank does not exceed the lowest "
+                    "maturity rank among the component options it selects. "
+                    "A composed suite is only as conformant as its weakest "
+                    "member."),
+            },
+        },
+        "discharge": (
+            "A clause is discharged for a template either by a resolvable "
+            "evidence_pointer -- a whole-suite matched run outranks a "
+            "component-wise minimum, because the suite itself was compared "
+            "-- or by an entry in composition_exemptions naming the "
+            "owner-decision id that granted it. Nothing is discharged "
+            "silently."),
+        "composition_exemptions": _composition_exemptions(),
+    }
+
+
+def _composition_exemptions() -> dict:
+    """Every template the ratified axis flags without a matched-run pointer.
+
+    Each entry names the decision that granted it and states, in the terms
+    of the rule, what is missing.  These are not waivers of the finding;
+    they are the finding, written down where the checker reads it.
+    """
+
+    unverified_land_pbl = (
+        "Noah and YSU are 'implemented-unverified': neither has its own "
+        "matched ArWen-versus-WRF forecast trajectory, so the strict-min "
+        "ceiling for every suite selecting them is 'implemented-unverified'."
+    )
+    return {
+        "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1": {
+            "owner_decision_id": "D-16",
+            "clause": "C2",
+            "basis": (
+                "The Morrison reference campaign matched the whole suite "
+                "against WRF, and no matched-run manifest for it has been "
+                "assembled yet. " + unverified_land_pbl),
+        },
+        "thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1": {
+            "owner_decision_id": "D-16",
+            "clause": "C2",
+            "basis": (
+                "The default template selects the substitution radiation "
+                "engine, and the matched run of record was produced with "
+                "the exact legacy engine, so its manifest does not cover "
+                "this template's tuple. " + unverified_land_pbl),
+        },
+        "thompson-mp8-ysu-mm5-noah-validation-v1": {
+            "owner_decision_id": "D-16",
+            "clause": "C2",
+            "basis": (
+                "A table-bound experimental runtime carried above its "
+                "component floor. " + unverified_land_pbl),
+        },
+        "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1": {
+            "owner_decision_id": "D-16",
+            "clause": "C1+C2",
+            "basis": (
+                "NSSL-2 has fused-process oracles and a ratified 500 m "
+                "comparison, and no matched-run manifest. "
+                + unverified_land_pbl),
+        },
+        "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1": {
+            "owner_decision_id": "D-16",
+            "clause": "C1+C2",
+            "basis": (
+                "The legacy-RRTMG sibling of the entry above, granted on "
+                "the same basis."),
+        },
+        "wsm6-ysu-mm5-noah-no-radiation-v1": {
+            "owner_decision_id": "D-16",
+            "clause": "C2",
+            "basis": (
+                "The reference no-radiation suite is 'supported' on its own "
+                "oracle parity. " + unverified_land_pbl),
+        },
+    }
+
+
 def build(registry: dict) -> dict:
     """Apply this pass's tables to ``registry`` in place and return it."""
     _surface_coupling_warnings(registry)
@@ -1326,13 +1638,13 @@ def build(registry: dict) -> dict:
     nssl2_legacy = copy.deepcopy(registry["templates"][nssl2_id])
     nssl2_legacy["label"] = (
         "NSSL-2 + YSU + classic MM5 + Noah + KF + legacy RRTMG")
-    nssl2_legacy["maturity"] = "validation-candidate"
+    nssl2_legacy["maturity"] = "wrf-matched-run-candidate"
     nssl2_legacy["parameters"]["wrf_rrtmg_compatibility"] = (
         "wrf-rrtmg-4-4-legacy-v1")
     nssl2_legacy["parameters"]["ra_rrtmg_variant"] = "rrtmg_legacy"
     nssl2_legacy["warnings"] = [
         "Ratified fixed NSSL-2 plus exact WRF v4.6.1 legacy RRTMG profile; "
-        "the NSSL-2 trajectory remains validation-candidate maturity."
+        "the NSSL-2 trajectory remains wrf-matched-run-candidate maturity."
     ]
     registry["templates"][nssl2_legacy_id] = nssl2_legacy
     for route in registry["runner_routes"].values():
@@ -1420,6 +1732,10 @@ def build(registry: dict) -> dict:
         "mp8-to-mp18-mass-diagnosed-v1",
         "mp-edge-mass-diagnosed-v1",
     ]
+    # Last, so both passes see every surface this builder created above --
+    # including the legacy NSSL-2 template and the regenerated nest edges.
+    _rename_maturities(registry)
+    _evidence_architecture(registry)
     return registry
 
 

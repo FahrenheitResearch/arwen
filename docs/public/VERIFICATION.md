@@ -27,10 +27,16 @@ Four instruments, in increasing scope:
    rather than hidden behind a tolerance (see
    [PHYSICS.md](PHYSICS.md)).
 
-2. **t=0 initialization parity.** ArWen's own ingest opens the same
-   analysis data as the WRF reference chain and must reproduce the WRF
-   initial state at the FP32/operator floor before any forecast
-   comparison is scored.
+2. **t=0 full-state digest.** ArWen's own ingest opens the same
+   analysis data as the WRF reference chain, and the two initial
+   states are then scored array by array -- every registered carrier
+   group, on every domain both runs wrote, against ceilings pinned in
+   `gpuwm/verify/nest_gates.py` before any of these frames existed.
+   The measurement is published as it comes out. On the reference case
+   the two t=0 states do not agree within those ceilings: verdict
+   **FAIL**, on all four domains
+   ([receipt](../../gpuwm/data/certification/t0_state_parity_digest.json),
+   [table](../../gpuwm/data/certification/t0_state_parity_digest.md)).
 
 3. **Matched-run protocol.** The model integrates a real case with
    physics, geometry, and output cadence matched to a WRF v4.6.1 CPU
@@ -60,7 +66,7 @@ The CPU reference is WRF v4.6.1 at the pinned commit, built with Intel
 ifx, run on 48 MPI ranks. The GPU run is one RTX 5090. Both write the
 same history cadence (d01-d03 hourly, d04 half-hourly).
 
-### t=0 parity (all four domains)
+### t=0 comparator metrics (all four domains)
 
 | t=0 | T2 MAE / corr | PSFC MAE | 10 m wind corr |
 |---|---|---|---|
@@ -69,9 +75,20 @@ same history cadence (d01-d03 hourly, d04 half-hourly).
 | d03 | 0.000 K / 1.000 | 0.9 Pa | 1.000 |
 | d04 | 0.000 K / 1.000 | 0.1 Pa | 1.000 |
 
-ArWen's ingest reproduces the WRF initial surface state at the
-FP32/operator floor on every domain, so everything in the tables below
-is forecast divergence, not initial-condition error.
+Those are the streaming comparator's own four metrics on the interior
+grid, and they are not a statement about the initial state. Scored in
+full -- every registered carrier group, every element of every array,
+against the pinned ceilings -- the two t=0 states do not agree: verdict
+**FAIL** on all four domains
+([receipt](../../gpuwm/data/certification/t0_state_parity_digest.json),
+[table](../../gpuwm/data/certification/t0_state_parity_digest.md)).
+Only the precipitation accumulators are bit-identical. On d01 the
+largest disagreements are 66 Pa in perturbation pressure, 0.75 m in
+terrain height, 296 K in the deepest soil layer and ten categories in
+the land-use index; the receipt carries the per-array numbers for all
+four domains. The tables below therefore contain initial-state
+differences as well as forecast divergence, and the digest is where the
+size of the former is written down.
 
 ## 3. Matched-run results (2026-07-28 rerun)
 
@@ -271,8 +288,12 @@ and these smoke receipts -- nothing more.
 
 Claimed, each with its receipt above or in the linked pages:
 
-- Initialization parity at the FP32/operator floor on the reference
-  case, all four domains.
+- A published full-state t=0 digest of the reference case on all four
+  domains, carrying the result it returned: the two t=0 states do not
+  agree within the pinned ceilings -- verdict **FAIL**
+  ([receipt](../../gpuwm/data/certification/t0_state_parity_digest.json)).
+  Parity of the initial state at the FP32/operator floor is not
+  claimed; see "Not claimed" below.
 - Named component routines bit-exact or measured-ULP-close to
   unmodified WRF v4.6.1 Fortran, per the physics registry's per-option
   records ([PHYSICS.md](PHYSICS.md)).
@@ -288,6 +309,15 @@ Claimed, each with its receipt above or in the linked pages:
 
 **Not claimed:**
 
+- **The initial states do not match at the FP32 floor.** The
+  full-state t=0 digest scores five of its six covered carrier groups
+  outside the pinned ceilings on every domain
+  ([receipt](../../gpuwm/data/certification/t0_state_parity_digest.json)):
+  verdict **FAIL**. Section 2's four surface metrics are small, and
+  they were never evidence for the rest of the state. Neither side of
+  the staged pair retained a `wrfbdy_d01`, so the lateral-boundary
+  tables are recorded as unavailable and no boundary statement is made
+  anywhere on this page.
 - **The new projections are not matched-run verified.** Mercator,
   polar stereographic, and southern-hemisphere Lambert carry the
   section-5 tier only; no ArWen-vs-WRF forecast comparison exists on
@@ -315,6 +345,14 @@ Claimed, each with its receipt above or in the linked pages:
   claim against observations.** All comparisons on this page are
   model-vs-model. Nothing here says ArWen (or WRF) verified well
   against what actually happened on any date.
+- **No resolved tornado dynamics.** The 500 m nest and the STP/UH
+  severe suite characterize the tornadic-supercell environment and
+  mesocyclone-scale morphology; they do not resolve the near-surface
+  corner flow, suction vortices, or tornado-scale wind intensity
+  (tornado-like-vortex resolution in the literature sits below
+  roughly 25 m horizontal and 10 m vertical).
+  Everything on this page is convection-permitting to sub-kilometer
+  case-study evidence, not a tornado-resolving claim.
 - **FP32 subnormal behavior differs on some GPUs.** On the measured
   hardware class (sm_120), FP32 subnormals are flushed to zero in
   arithmetic at the hardware level regardless of compile flags; the
@@ -347,12 +385,41 @@ The headline comparison (section 3) was produced as follows.
 
 ```bash
 gpuwm check configs/real74_thompson_1218z_rrtmg_legacy_4dom.toml --alloc
-gpuwm run   configs/real74_thompson_1218z_rrtmg_legacy_4dom.toml --outdir out/rematch
+gpuwm run   configs/real74_thompson_1218z_rrtmg_legacy_4dom.toml --outdir out/rematch --directory-input-hash content
 
 python tools/matched_wrfout_stream_compare.py \
   --gpu-dir out/rematch --cpu-dir /path/to/wrf-reference-wrfouts \
-  --out-csv out/rematch/metrics.csv --exclude-rows 5
+  --out-csv out/rematch/metrics.csv --exclude-rows 5 \
+  --start-time 1974-04-03_12:00:00 --done-file out/rematch/run.done
+
+python tools/matched_wrfout_t0_state_digest.py \
+  --candidate-dir out/rematch --reference-dir /path/to/wrf-reference-wrfouts \
+  --out-json out/rematch/t0_state_parity_digest.json \
+  --out-md out/rematch/t0_state_parity_digest.md
 ```
+
+Three flags here are not decoration:
+
+- `--directory-input-hash content` hashes every byte of the static geography
+  tree instead of its listing. Two people staging that tree separately get the
+  same digest only under `content`, and certification refuses a run whose
+  geography was bound by listing.
+- `--start-time` is what fills the `forecast_hour` column. Without it every
+  lead cell is written empty, and a comparison with no lead cannot be placed
+  against an acceptance band, which is keyed by lead.
+- `--done-file` is the comparator's terminating condition: it exits once that
+  file exists and no pair is still pending. Without it the poll loop has no way
+  to finish, so the command runs until it is killed. Touch that file when the
+  run completes.
+
+These commands were executed through their production entry points against a
+two-frame fixture pair before this paragraph was written; the exact argv, exit
+code, and resulting lead column are recorded in
+`gpuwm/data/certification/recipe-receipt/receipt.json` beside the metrics CSV
+it produced. The `gpuwm run` line is the one half that is not executed there --
+no fixture stands in for a four-domain six-hour integration -- and the receipt
+says so, recording instead that the production parser accepts the line as
+written.
 
 - **Expected resources:** on one RTX 5090 the full four-domain window
   took 6.7 h of wall time (67.2 wall-seconds per simulated minute
@@ -362,6 +429,10 @@ python tools/matched_wrfout_stream_compare.py \
   this case is sized for a 32 GiB card and will not fit smaller ones;
   size your own case with `gpuwm domain` ([HARDWARE.md](HARDWARE.md)).
 - **Expected result:** metrics within ordinary chaotic-divergence
-  scatter of section 3's tables (bit-identical only if hardware, driver,
-  and build match the run of record); t=0 rows should reproduce at the
-  FP32 floor on any hardware.
+  scatter of section 3's tables (bit-identical only if hardware,
+  driver, and build match the run of record). The digest command scores
+  the two t=0 states array by array and, as on the run of record, they
+  do not agree within the pinned ceilings -- verdict **FAIL**; compare
+  your per-array numbers against the committed
+  [receipt](../../gpuwm/data/certification/t0_state_parity_digest.json)
+  rather than expecting a floor.

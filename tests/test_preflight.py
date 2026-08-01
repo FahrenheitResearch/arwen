@@ -304,6 +304,7 @@ def test_scratch_registry_feature_matrix(d01_cfg):
     assert d01["integration_health_planes"] == (1024,)
     assert d01["integration_health_status_bits"] == (2048,)
     assert d01["integration_health_validation"] == (4,)
+    assert d01["physics_validation_status"] == (1,)
     assert d01["lbc_old_mup_frame_1"] == (
         pf._perimeter_count(d01_cfg.ny, d01_cfg.nx, 1),)
     assert d01["lbc_forcing_tables"] == (2 * pf.lbc_interval_values(d01_cfg),)
@@ -316,6 +317,7 @@ def test_scratch_registry_feature_matrix(d01_cfg):
     assert kessler["openbc_upp_faces"] == (4, 6, 2)
     assert kessler["openbc_vpp_faces"] == (4, 2, 8)
     assert kessler["diff_u"] == (4, 6, 9)
+    assert kessler["physics_validation_status"] == (1,)
     # Open boundaries: PD final stage disabled -> no pd_* slots; not
     # specified -> no LBC residents.
     assert "pd_fxl" not in kessler and "lbc_relax_u" not in kessler
@@ -326,6 +328,12 @@ def test_scratch_registry_feature_matrix(d01_cfg):
     assert dry_phys["physics_dry_qv"] == (4, 6, 8)
     assert dry_phys["physics_qi"] == (4, 6, 8)
     assert dry_phys["physics_qs"] == (4, 6, 8)
+    assert "physics_validation_status" not in dry_phys
+
+    kf_only = pf.scratch_slot_registry(
+        RunConfig(**_TINY, moist=True, cu_physics=1))
+    assert kf_only["physics_validation_status"] == (1,)
+    assert pf._CUMULUS_KERNEL_MODULES[1] == ("kf", "kf_validation")
 
 
 def test_nwp_diagnostics_prices_exactly_the_uh_planes(d01_cfg):
@@ -1077,15 +1085,16 @@ def test_estimate_domain_itemization_pins(exp1):
         # KF hold + expiry mask + ring-guard saves, plus the v1.1
         # co-located vertical-CFL reduction field: one extra FP32 word in
         # each of the 256 `integration_health_partial` blocks and in the
-        # single `health_final` block, 4 * (256 + 1) = 1,028 B.
-        "scratch": 567286376,
+        # single `health_final` block, 4 * (256 + 1) = 1,028 B.  Batched YSU
+        # validation adds one four-byte scratch status word.
+        "scratch": 567286380,
         "lbc": 67091504,
         "nest": 0,
         "transient": 441262500,
     }
     assert d01.resident_bytes == sum(
         v for c, v in by_cat.items() if c != "transient")
-    assert d01.resident_bytes == 1473642396
+    assert d01.resident_bytes == 1473642400
     assert est.resident_bytes == d01.resident_bytes + est.k_tables_bytes
     assert d01.transient_bytes == 441262500
 
@@ -1132,36 +1141,37 @@ def test_estimate_4dom_golden_pins(exp4, est4):
     # FP32 word to each of the 256 `integration_health_partial` blocks and
     # to `health_final`, so every domain gains exactly 4 * (256 + 1) =
     # 1,028 B over the ring-lane pins.  Constant per domain because the
-    # health reduction's block count does not scale with the grid.
-    assert per_domain == {1: 1503330596, 2: 5403118988,
-                          3: 6799612692, 4: 9728899964}
+    # health reduction's block count does not scale with the grid.  The
+    # batched YSU validator adds one four-byte status word per domain.
+    assert per_domain == {1: 1503330600, 2: 5403118992,
+                          3: 6799612696, 4: 9728899968}
     nest = {d.grid_id: d.category_bytes("nest") for d in est4.domains}
     assert nest == {1: 0, 2: 103165552, 3: 149390256, 4: 193084928}
     # The post-CQ request includes both simultaneously live nested-force
     # full-field slots.  The shared physical arena still aliases them to
     # distinct dead RK backings when those capacities fit.
-    assert est4.scratch_arena_request_bytes == 9471818124
+    assert est4.scratch_arena_request_bytes == 9471818140
     # Every Smag path requires distinct horizontal face staging; x/m reuse z
     # while y remains independent.  The pre-RK Smag K pair then borrows the
     # later acoustic coefficient backings.  These remove 141,237,600 B and
     # 141,120,000 B of exact physical allocation.
-    assert est4.scratch_arena_bytes == 3315315832
-    # 9,471,814,012 requested - 3,315,314,804 physical = 6,156,499,208 B.
-    assert est4.scratch_arena_saved_bytes == 6156502292
+    assert est4.scratch_arena_bytes == 3315315836
+    # 9,471,818,140 requested - 3,315,315,836 physical = 6,156,502,304 B.
+    assert est4.scratch_arena_saved_bytes == 6156502304
     assert est4.dycore_state_request_bytes == 4930458300
     assert est4.dycore_state_workspace_bytes == 2061345600
     assert est4.dycore_state_saved_bytes == 2869112700
     # Ring snapshot slots are resident (arena-excluded): the ports-branch
     # residency plus the exact 23,815,680-B ring total.
-    assert est4.resident_bytes == 14433110960
+    assert est4.resident_bytes == 14433110964
     # The case configures column_chunk = 6250 (byte-identical to 3125,
     # 33% faster per radiation call); the 3125 numbers stay pinned in the
     # ladder below, so the trade this bought is on the record both ways.
     assert est4.workspace_bytes == 2051400000
     assert est4.transient_peak_bytes == 3182840000
-    assert est4.subtotal_bytes == 19667350960
+    assert est4.subtotal_bytes == 19667350964
     assert est4.alloc_estimate_bytes == math.ceil(
-        1.15 * est4.subtotal_bytes) == 22617453604
+        1.15 * est4.subtotal_bytes) == 22617453609
     # Chunk ladder after arena sharing and physics-persistent reclamation.
     # The 1024-descriptor health-slot registration adds 49,168 B/domain to
     # the audited scratch; the pins below are computed on the merged tree.
@@ -1170,8 +1180,8 @@ def test_estimate_4dom_golden_pins(exp4, est4):
         for chunk in (6250, 3125, 1562, 256)}
     # Every rung carries the ring lane's ceil(1.15 x 23,815,680) =
     # 27,388,032 B on top of the ports-branch ladder.
-    assert ladder == {6250: 22617453604, 3125: 21421913604,
-                      1562: 20823952318, 256: 20324312241}
+    assert ladder == {6250: 22617453609, 3125: 21421913609,
+                      1562: 20823952323, 256: 20324312246}
 
 
 def test_d01_calibration_bounds_measured_fixture(exp1):
@@ -1282,7 +1292,7 @@ def test_n0_probe_projection_flags_stale_calibration_after_exact_aliases(
     across the four domains (x1.15 headroom = 27,388,032 B of estimate),
     which consumed that margin: composed with the ports-branch growth
     (health descriptors, nested-force slots) the stale projection now sits
-    1,315,538 B BELOW the estimate and the measured-bound leg reads True.  The
+    1,316,725 B BELOW the estimate and the measured-bound leg reads True.  The
     algebra stays pinned exactly; the operational consequence is that the
     retained pre-alias receipt can no longer flag its own staleness
     through this leg -- the next N0 certification MUST take a fresh probe
@@ -1300,7 +1310,7 @@ def test_n0_probe_projection_flags_stale_calibration_after_exact_aliases(
                       - est.dycore_state_saved_bytes
                       - (3035550000 - est.workspace_bytes)
                       - diff6_alias_saved - 141_120_000)
-    assert projected_used - est.alloc_estimate_bytes == -1_316_720
+    assert projected_used - est.alloc_estimate_bytes == -1_316_725
     legs = pf.evaluate_alloc_gates(
         measured_used_bytes=projected_used,
         estimate_bytes=est.alloc_estimate_bytes,
@@ -1392,10 +1402,10 @@ def test_check_cli_estimator_json(capsys):
     # Ring-guard mp_ring_save_* saves add 23,815,680 B of per-domain
     # (arena-excluded) scratch across the four domains; x1.15 headroom
     # lands 27,388,032 B above the ports-branch CLI pin.
-    assert payload["alloc_estimate_bytes"] == 22617453604
+    assert payload["alloc_estimate_bytes"] == 22617453609
     # All requested moist-CQ slots are represented; the shared arena aliases
     # their lifetimes without changing the exact physical backing.
-    assert payload["scratch_arena_saved_bytes"] == 6156502292
+    assert payload["scratch_arena_saved_bytes"] == 6156502304
     assert payload["dycore_state_saved_bytes"] == 2869112700
     assert payload["domains"]["d04"]["by_category"]["nest"] == 193084928
     assert payload["gates"]["alloc_estimate_le_wddm_budget"] is True
@@ -1572,6 +1582,14 @@ def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     assert "OBSERVED PEAK ENVELOPE (x1.75 footprint, windows factor" in out
     assert "1.746x its footprint projection" in out
     assert "WARNING: observed peak envelope" not in out
+    # The forecast is no longer the only phase this report prices, so the
+    # historical line must say which phase it is, the preprocessing phase
+    # must appear beside it, and one sentence must name the binding one.
+    assert "FORECAST OBSERVED PEAK ENVELOPE" in out
+    assert "INGEST OBSERVED PEAK ENVELOPE" in out
+    assert "INGEST (preprocessing, --source era5)" in out
+    assert "BINDING PHASE:" in out
+    assert "memory-binding phase" in out
 
     # A budget the ESTIMATE fits but the envelope exceeds: the estimate
     # gate still passes, and the warning names the honest number.
@@ -1590,6 +1608,11 @@ def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     assert rc == pf._EXIT_ENVELOPE_OVER_BUDGET
     assert "WARNING: observed peak envelope" in out
     assert "exceeds the WDDM budget" in out
+    # The warned number is the LARGEST phase, and the report says which.
+    assert "BINDING PHASE:" in out
+    assert payload["binding_phase"] in ("forecast", "ingest")
+    assert payload["peak_envelope_bytes"] >= payload[
+        "observed_peak_envelope_bytes"]
     # Estimator-only mode (no budget, no GPU): nothing to compare, no
     # false alarm.  cupy is stubbed out exactly as the fails-closed test
     # does so this leg never queries a real device.
@@ -1714,6 +1737,9 @@ def test_check_cli_prints_the_linux_envelope_factor_when_on_linux(
             "measured-preliminary, 3 runs)") in out
     assert "1.15x to 1.32x the itemized alloc estimate" in out
     assert "1.746x its footprint projection" not in out
+    assert "FORECAST OBSERVED PEAK ENVELOPE" in out
+    assert "INGEST OBSERVED PEAK ENVELOPE" in out
+    assert "BINDING PHASE:" in out
 
 
 def test_check_cli_legacy_config_wraps(capsys):
@@ -1724,7 +1750,7 @@ def test_check_cli_legacy_config_wraps(capsys):
     assert list(payload["domains"]) == ["d01"]
     # The 1024-descriptor health capacity adds 24,576 B and the ring-guard
     # saves 3,010,560 B to the pre-assembly pin (itemization-pin derivation).
-    assert payload["domains"]["d01"]["resident_bytes"] == 1473642396
+    assert payload["domains"]["d01"]["resident_bytes"] == 1473642400
 
 
 def test_check_cli_fails_closed_when_nothing_is_evaluable(capsys,
@@ -2566,3 +2592,148 @@ def test_estimate_domain_carries_the_noahmp_transient_items():
     for item in names.values():
         assert item.category == "transient"
         assert item.itemsize == 1
+
+
+# ---------------------------------------------------------------------------
+# Preprocessing (ingest) phase -- the phase nobody used to price
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_analysis_is_sized_by_source_levels_and_target_grid(exp1):
+    """Horizontal interpolation lands source LEVELS on the MODEL grid."""
+    run = exp1.root.run
+    shapes = pf.ingest_analysis_shapes(run, source="gfs")
+    levels = pf.SOURCE_ANALYSIS_LEVELS["gfs"]
+    mass = [s for n, s in shapes.items() if n.startswith("analysis_mass")]
+    assert mass and all(s == (levels, run.ny, run.nx) for s in mass)
+    assert shapes["analysis_u_level_0"] == (levels, run.ny, run.nx + 1)
+    assert shapes["analysis_v_level_0"] == (levels, run.ny + 1, run.nx)
+    surface = [s for n, s in shapes.items() if n.startswith("analysis_surf")]
+    assert len(surface) == pf.SOURCE_ANALYSIS_SURFACE_FIELDS["gfs"]
+    assert all(s == (run.ny, run.nx) for s in surface)
+    # ERA5 carries more levels, so its analysis is strictly larger.
+    era5 = pf.ingest_analysis_shapes(run, source="era5")
+    assert (math.prod(era5["analysis_mass_level_0"])
+            > math.prod(shapes["analysis_mass_level_0"]))
+    with pytest.raises(ValueError, match="no forcing-analysis level"):
+        pf.ingest_analysis_shapes(run, source="not-a-product")
+
+
+def test_ingest_state_term_is_the_real_domain_state_inventory(exp1):
+    """Ingest builds a full DomainState per time -- the same one priced
+    for the forecast, not a smaller setup-only object."""
+    est = pf.estimate_ingest(exp1, source="gfs")
+    expected = sum(4 * math.prod(shape) for shape
+                   in pf.state_array_shapes(exp1.root.run).values())
+    assert est.category_bytes("state") == expected
+
+
+def test_ingest_holds_two_forcing_times_not_all_of_them(exp1):
+    """The defect in one assertion.
+
+    Ingest used to keep every forcing time's analysis AND state resident,
+    which is why preprocessing a 24 h GFS case peaked at roughly twice the
+    forecast.  Streaming keeps two.  Both numbers are reported so a user
+    can see what the phase would have cost.
+    """
+    est = pf.estimate_ingest(
+        exp1, source="gfs", forcing_interval_seconds=10800.0)
+    assert est.resident_times == pf.INGEST_RESIDENT_FORCING_TIMES == 2
+    assert est.n_forcing_times > est.resident_times
+    assert (est.resident_bytes
+            == 2 * est.per_time_bytes + est.forcing_table_bytes)
+    assert (est.unstreamed_resident_bytes
+            == est.n_forcing_times * est.per_time_bytes
+            + est.forcing_table_bytes)
+    # Every time beyond the two resident ones is pure saving.
+    assert (est.unstreamed_resident_bytes - est.resident_bytes
+            == (est.n_forcing_times - est.resident_times)
+            * est.per_time_bytes)
+    # The retained perimeter frames are what replaced those states, and
+    # all of them together stay far below one of them.
+    assert est.boundary_frame_bytes < est.per_time_bytes
+
+
+def test_ingest_envelope_is_conservative_against_the_measured_case():
+    """Both ends of the CONUS 12 km measurement, re-derived here.
+
+    Measured on an RTX 5090 (process-attributed peak, 432 MiB CUDA
+    context included): 15,288 MiB before the streaming fix and 4,672 MiB
+    after, same case, byte-identical outputs.  The estimate must bound
+    BOTH -- a sizing number that lands under a measured peak is the
+    failure mode this whole phase estimate exists to prevent.
+    """
+    run = RunConfig(nx=414, ny=330, nz=49, dx=12000.0, dy=12000.0,
+                    ztop=20000.0, dt=60.0, run_seconds=86400.0,
+                    mp_physics=10, moist=True, terrain_opt=1,
+                    spec_bdy_width=5, specified=True)
+    exp = experiment_from_run_config(run, datetime(2026, 7, 30))
+    est = dataclasses.replace(
+        pf.estimate_ingest(exp, source="gfs",
+                           forcing_interval_seconds=10800.0),
+        device_overhead_bytes=0)  # the measured node is Linux
+    assert est.n_forcing_times == 9
+
+    measured_after = 4672 * 1024 ** 2
+    assert est.peak_envelope_bytes >= measured_after
+    assert est.peak_envelope_bytes <= 1.30 * measured_after
+
+    measured_before = 15288 * 1024 ** 2
+    before = (math.ceil(est.headroom * (est.unstreamed_resident_bytes
+                                        + est.transient_bytes))
+              + est.context_bytes)
+    assert before >= measured_before
+    assert before <= 1.30 * measured_before
+
+
+def test_phase_estimate_names_the_binding_phase_and_the_number(exp1):
+    phases = pf.estimate_phases(exp1, source="gfs")
+    assert phases.binding_phase in ("forecast", "ingest")
+    assert phases.peak_envelope_bytes == max(
+        phases.forecast_envelope_bytes, phases.ingest_envelope_bytes)
+    budget = phases.peak_envelope_bytes - 1
+    assert not phases.fits(budget)
+    verdict = phases.verdict(budget)
+    assert "EXCEEDS" in verdict
+    assert f"{phases.peak_envelope_bytes / GIB:.2f}" in verdict
+    assert "forecast" in verdict and "ingest" in verdict
+    assert phases.fits(phases.peak_envelope_bytes)
+    assert "fits" in phases.verdict(phases.peak_envelope_bytes)
+
+
+def test_config_forcing_source_refuses_to_guess(tmp_path):
+    """A config whose source cannot be priced says so; it never lets the
+    forecast number stand in for the whole run."""
+    # A plain RunConfig TOML is not an experiment TOML at all, so it
+    # records no forcing product and must not be guessed at.
+    plain = tmp_path / "plain.toml"
+    plain.write_text(CONFIG_D01.read_text(encoding="utf-8"),
+                     encoding="utf-8")
+    assert pf.config_forcing_source(plain) is None
+    note = pf.unpriced_ingest_note(plain)
+    assert "NOT PRICED" in note and "FORECAST only" in note
+    assert "no forcing product at all" in note
+    named = pf.unpriced_ingest_note(plain, "hrrr")
+    assert "--source hrrr" in named and "does not model" in named
+
+
+def test_an_unpriced_source_is_said_out_loud_not_scored_zero(exp1):
+    """HRRR's ingest is a different lane and nothing here measured it.
+
+    Returning zero for a phase you did not model reads exactly like
+    "this phase is free", which is the failure this estimate exists to
+    end.  So it is reported absent, the forecast stands alone, and the
+    verdict says which of the two happened.
+    """
+    priced = pf.estimate_phases(exp1, source="gfs")
+    unpriced = pf.estimate_phases(exp1, source="hrrr")
+    assert priced.ingest_priced and priced.ingest is not None
+    assert not unpriced.ingest_priced
+    assert unpriced.ingest is None
+    assert unpriced.ingest_envelope_bytes is None
+    assert unpriced.binding_phase == "forecast"
+    assert (unpriced.peak_envelope_bytes
+            == unpriced.forecast_envelope_bytes)
+    assert "NOT PRICED" in unpriced.verdict(None)
+    assert "hrrr" in unpriced.verdict(None)
+    assert pf.estimate_phases(exp1, source=None).ingest is None

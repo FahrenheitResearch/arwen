@@ -44,6 +44,7 @@ import numpy as np
 
 from gpuwm.config import (DEFAULT_COLUMN_CHUNK, RunConfig,
                           radiation_enabled, validate_run_config)
+from gpuwm.explain import warn
 
 #: Relative tolerance for cross-checking hand-typed child dx/dt against the
 #: exact chain-derived rational.  Wide enough for a truncated decimal of
@@ -281,20 +282,31 @@ class ProjectionConfig:
                     f"{self.truelat2!r} span both hemispheres; the "
                     "lc_cone secant formula is defined for a cone on "
                     "one side of the equator.")
-            if max(abs(self.truelat1), abs(self.truelat2)) >= 89.9 \
-                    or min(abs(self.truelat1), abs(self.truelat2)) <= 0.1:
+            if max(abs(self.truelat1), abs(self.truelat2)) >= 90.0 \
+                    or min(abs(self.truelat1), abs(self.truelat2)) <= 0.0:
                 raise ValueError(
                     "Lambert true latitudes must lie strictly between "
-                    "the equator and the pole (|truelat| in [0.1, 89.9] "
-                    f"degrees), got {self.truelat1!r}/{self.truelat2!r}; "
-                    "use map_proj = 'mercator' toward the equator or "
-                    "'polar' toward the pole.")
+                    "the equator and the pole, got "
+                    f"{self.truelat1!r}/{self.truelat2!r}; use map_proj "
+                    "= 'mercator' toward the equator or 'polar' toward "
+                    "the pole.")
+            if max(abs(self.truelat1), abs(self.truelat2)) >= 89.9 \
+                    or min(abs(self.truelat1), abs(self.truelat2)) <= 0.1:
+                warn("Lambert true latitudes "
+                     f"{self.truelat1!r}/{self.truelat2!r} sit inside "
+                     "0.1 degrees of the projection's degenerate limits "
+                     "(equator/pole); the cone is ill-conditioned there "
+                     "-- mercator or polar is the better tool")
         elif self.map_proj == "mercator":
-            if abs(self.truelat1) >= 89.9:
+            if abs(self.truelat1) >= 90.0:
                 raise ValueError(
                     f"Mercator truelat1 = {self.truelat1!r} is at the "
                     "pole; the projection degenerates (cos(truelat1) "
                     "-> 0).")
+            if abs(self.truelat1) >= 89.9:
+                warn(f"Mercator truelat1 = {self.truelat1!r} is within "
+                     "0.1 degrees of the pole; cos(truelat1) is nearly "
+                     "0 and the scale factor is extreme")
         elif self.map_proj == "polar":
             if abs(self.truelat1) <= 0.1:
                 raise ValueError(
@@ -550,11 +562,20 @@ def _require_keys(table_name: str, entries: dict, required, source: str):
 
 def _reject_unknown_keys(table_name: str, entries: dict, known,
                          source: str) -> None:
+    """Warn about (and drop) keys this schema does not know.
+
+    An unknown key is a typo or a leftover, and neither deserves a
+    refusal: the required-key and value checks around this call still
+    catch every misspelling of a key that matters.  Dropping the key
+    after warning keeps downstream ``**entries`` expansions honest.
+    """
     unknown = sorted(set(entries) - set(known))
     if unknown:
-        raise ValueError(
-            f"unknown key(s) {unknown} in [{table_name}] of {source}; "
-            f"known keys: {sorted(known)}.")
+        warn(f"ignoring unknown key(s) {unknown} in [{table_name}] of "
+             f"{source}",
+             why=f"Known [{table_name}] keys: {sorted(known)}.")
+        for key in unknown:
+            entries.pop(key, None)
 
 
 def _positive_int(table_name: str, key: str, value, source: str,
@@ -724,15 +745,64 @@ def validate_boundary_timing(
                 f"{forcing_seams}.")
 
 
+def _parent_before_child(domain_tables: list, source: str) -> list:
+    """Reorder [[domain]] tables so parents precede their children.
+
+    Declaration order carries no information the tree does not: when
+    every table has integer grid_id/parent_id, a wave sort (roots, then
+    children of placed domains, preserving declaration order inside a
+    wave) recovers the only admissible order.  Anything unresolvable --
+    a parent id naming no table, a cycle -- is left as declared for the
+    loop's own checks to refuse by name.
+    """
+
+    try:
+        ids = [int(dom["grid_id"]) for dom in domain_tables]
+        parents = [int(dom["parent_id"]) for dom in domain_tables]
+    except (KeyError, TypeError, ValueError):
+        return domain_tables
+    if len(set(ids)) != len(ids):
+        return domain_tables
+    # Already parent-before-child?  Then the declared order stands --
+    # it is a valid order the author chose, and downstream receipts
+    # key on domain sequence.
+    seen: set[int] = set()
+    ordered = True
+    for index in range(len(domain_tables)):
+        if parents[index] != 0 and parents[index] not in seen:
+            ordered = False
+            break
+        seen.add(ids[index])
+    if ordered:
+        return domain_tables
+    # Repair: emit the earliest declarable table each pass, preserving
+    # declaration order among the tables that are ready.
+    placed: set[int] = set()
+    remaining = list(range(len(domain_tables)))
+    order: list[int] = []
+    while remaining:
+        wave = [i for i in remaining
+                if parents[i] == 0 or parents[i] in placed]
+        if not wave:
+            return domain_tables  # unresolvable; let the loop refuse
+        order.extend(wave)
+        placed.update(ids[i] for i in wave)
+        remaining = [i for i in remaining if i not in wave]
+    warn(f"[[domain]] tables in {source} were declared out of "
+         "parent-before-child order; reordered by grid_id/parent_id")
+    return [domain_tables[i] for i in order]
+
+
 def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     """Validate a parsed experiment TOML dict and build the config."""
     known_tables = ("experiment", "shared", "projection", "domain")
     unknown_tables = [name for name in raw if name not in known_tables]
     if unknown_tables:
-        raise ValueError(
-            f"unknown table(s)/top-level key(s) {unknown_tables} in "
-            f"experiment config {source}; known tables: "
-            f"{list(known_tables)}.")
+        warn(f"ignoring unknown table(s)/top-level key(s) "
+             f"{unknown_tables} in experiment config {source}",
+             why=f"Known tables: {list(known_tables)}.")
+        for name in unknown_tables:
+            raw.pop(name, None)
     if "experiment" not in raw:
         raise ValueError(
             f"experiment config {source} must carry an [experiment] "
@@ -921,17 +991,21 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             f"[shared] of {source} sets map_proj = {map_proj} but no "
             "[projection] table is present; real experiments must carry "
             "the projection parameter set (F1 amendment).")
+    # The [projection] table carries the full parameter set, so when the
+    # [shared] integer disagrees (or is missing), the table wins -- a
+    # one-line warning replaces the old strict-equality refusal.
     if map_proj == 0 and projection is not None:
-        raise ValueError(
-            f"a [projection] table is present in {source} but [shared] "
-            "resolves map_proj = 0 (idealized/none); set map_proj to "
-            "the WRF code matching the table (1 = lambert, 2 = polar, "
-            "3 = mercator) or remove the table.")
-    if projection is not None and map_proj != projection.wrf_map_proj:
-        raise ValueError(
-            f"[shared] of {source} sets map_proj = {map_proj} but the "
-            f"[projection] table declares {projection.map_proj!r} "
-            f"(WRF code {projection.wrf_map_proj}); the two must agree.")
+        warn(f"[shared] map_proj = 0 in {source} contradicts the "
+             f"[projection] table ({projection.map_proj!r}); using the "
+             f"table (WRF code {projection.wrf_map_proj})")
+        map_proj = projection.wrf_map_proj
+        shared["map_proj"] = map_proj
+    elif projection is not None and map_proj != projection.wrf_map_proj:
+        warn(f"[shared] map_proj = {map_proj} in {source} contradicts "
+             f"the [projection] table ({projection.map_proj!r}, WRF "
+             f"code {projection.wrf_map_proj}); using the table")
+        map_proj = projection.wrf_map_proj
+        shared["map_proj"] = map_proj
 
     spec_zone = shared.get("spec_zone", RunConfig.spec_zone)
     relax_zone = shared.get("relax_zone", RunConfig.relax_zone)
@@ -942,6 +1016,12 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             f"{spec_zone} + {relax_zone}.")
 
     # ---- [[domain]] ----------------------------------------------------
+    # Declaration order used to be a refusal ("parent-before-child").
+    # The tree is fully declared by grid_id/parent_id, so when every id
+    # parses, the loader orders the tables itself and says so; only a
+    # genuinely unresolvable tree (unknown parent, cycle) still refuses,
+    # via the existing checks inside the loop.
+    domain_tables = _parent_before_child(domain_tables, source)
     domains: list[DomainConfig] = []
     by_id: dict[int, DomainConfig] = {}
     dt_by_id: dict[int, Fraction] = {}
@@ -985,11 +1065,11 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                 "must be an offset-free TOML datetime, got "
                 f"{domain_start!r}.")
         if is_root and domain_start != start_time:
-            raise ValueError(
-                f"root [[domain]] grid_id = {grid_id} of {source} has "
-                f"start_time = {domain_start.isoformat()}, but the root "
-                "must start at [experiment].start_time = "
-                f"{start_time.isoformat()}.")
+            warn(f"root [[domain]] start_time = "
+                 f"{domain_start.isoformat()} in {source} is ignored; "
+                 f"[experiment].start_time = {start_time.isoformat()} "
+                 "is authoritative")
+            domain_start = start_time
         # Construct through integer microseconds so the exact offset check
         # below cannot inherit a floating duration.
         run_microseconds = Fraction(str(run_seconds)) * 1_000_000
@@ -1034,19 +1114,22 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         specified = dom.get("specified", is_root)
         nested = dom.get("nested", not is_root)
         if is_root and (specified is not True or nested is not False):
-            raise ValueError(
-                f"the root domain grid_id = {grid_id} of {source} must "
-                f"have specified = true and nested = false (WRF "
-                "&bdy_control: the head grid takes external lateral "
-                "boundaries), got specified = "
-                f"{specified!r}, nested = {nested!r}.")
+            warn(f"root domain grid_id = {grid_id} of {source}: "
+                 f"specified = {specified!r}, nested = {nested!r} "
+                 "corrected to specified = true, nested = false",
+                 why="WRF &bdy_control: the head grid takes external "
+                     "lateral boundaries; the flags derive from "
+                     "parent_id and are never a real choice.")
+            specified, nested = True, False
         if not is_root and (nested is not True or specified is not False):
-            raise ValueError(
-                f"child domain grid_id = {grid_id} of {source} must have "
-                "nested = true and specified = false (WRF &bdy_control: "
-                "children are forced by their parent, bundle "
-                "specified=T,F,F,F / nested=F,T,T,T), got specified = "
-                f"{specified!r}, nested = {nested!r}.")
+            warn(f"child domain grid_id = {grid_id} of {source}: "
+                 f"specified = {specified!r}, nested = {nested!r} "
+                 "corrected to nested = true, specified = false",
+                 why="WRF &bdy_control: children are forced by their "
+                     "parent (bundle specified=T,F,F,F / nested=F,T,T,T); "
+                     "the flags derive from parent_id and are never a "
+                     "real choice.")
+            specified, nested = False, True
 
         ratio = _positive_int("domain", "parent_grid_ratio",
                               dom["parent_grid_ratio"], source)
@@ -1057,14 +1140,16 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         j_start = _positive_int("domain", "j_parent_start",
                                 dom["j_parent_start"], source)
         if is_root:
-            for key, value in (("parent_grid_ratio", ratio),
-                               ("parent_time_step_ratio", tratio),
-                               ("i_parent_start", i_start),
-                               ("j_parent_start", j_start)):
-                if value != 1:
-                    raise ValueError(
-                        f"the root domain grid_id = {grid_id} of {source} "
-                        f"must have {key} = 1, got {value}.")
+            corrected = [key for key, value in
+                         (("parent_grid_ratio", ratio),
+                          ("parent_time_step_ratio", tratio),
+                          ("i_parent_start", i_start),
+                          ("j_parent_start", j_start)) if value != 1]
+            if corrected:
+                warn(f"root domain grid_id = {grid_id} of {source}: "
+                     f"{', '.join(corrected)} corrected to 1 (a root has "
+                     "no parent, so these keys carry no information)")
+                ratio = tratio = i_start = j_start = 1
         else:
             for key, value in (("parent_grid_ratio", ratio),
                                ("parent_time_step_ratio", tratio)):
@@ -1079,12 +1164,13 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         # --- exact-rational dt/dx (never hand-typed on children) -------
         if is_root:
             if "dt" in dom:
-                raise ValueError(
-                    f"the root [[domain]] grid_id = {grid_id} of {source} "
-                    "carries its model step as time_step (integer "
-                    "seconds) plus optional time_step_fract_num/den "
-                    "(Registry.EM_COMMON:2245-2246), not a dt key; "
-                    f"remove dt = {dom['dt']!r}.")
+                warn(f"dt = {dom['dt']!r} on the root [[domain]] of "
+                     f"{source} is ignored; the root step is the "
+                     "time_step key (plus optional "
+                     "time_step_fract_num/den)",
+                     why="Registry.EM_COMMON:2245-2246: WRF carries the "
+                         "head-grid step as rational namelist keys, and "
+                         "this loader is bit-compatible with that.")
             if "time_step" not in dom:
                 raise ValueError(
                     f"the root [[domain]] grid_id = {grid_id} of {source} "
@@ -1128,12 +1214,14 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         else:
             if "time_step" in dom or "time_step_fract_num" in dom \
                     or "time_step_fract_den" in dom:
-                raise ValueError(
-                    f"time_step keys on child domain grid_id = {grid_id} "
-                    f"of {source} are rejected: time_step is a head-grid "
-                    "(d01) key (Registry.EM_COMMON:2245 declares it "
-                    "scalar); the child dt derives from the parent chain "
-                    "exactly (share/set_timekeeping.F:366-368).")
+                warn(f"time_step key(s) on child domain grid_id = "
+                     f"{grid_id} of {source} are ignored; the child dt "
+                     "derives from the parent chain exactly",
+                     why="time_step is a head-grid (d01) key "
+                         "(Registry.EM_COMMON:2245 declares it scalar; "
+                         "share/set_timekeeping.F:366-368 derives child "
+                         "dt).  A hand-typed child dt key is still "
+                         "cross-checked against the chain.")
             time_step, fract_num, fract_den = None, 0, 1
             dt_ex = dt_by_id[parent_id] / tratio
             # CHAINED float32 division down the ratio chain -- WRF's REAL
@@ -1214,28 +1302,29 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         for key in _DOMAIN_RUN_OVERRIDES:
             if key in dom:
                 kw[key] = dom[key]
+        # Nonzero spec_exp on a NESTED domain is forced to 0 with a
+        # warning: WRF's nested lbc_fcx_gcx branch has NO exponential
+        # sponge term -- only the specified branch applies spec_exp
+        # (dyn_em/module_bc_em.F lbc_fcx_gcx :1297-1341: specified
+        # branch spongeweight :1320, nested branch :1325-1337 with the
+        # sponge lines commented out).  gpuwm's nested Davies weights
+        # DO read cfg.spec_exp, so zeroing here is what keeps them the
+        # exact spec_exp = 0 transliteration of WRF's nested branch
+        # (the N1 child_spec_exp pin: children force with spec_exp=0).
+        if not is_root and float(kw.get("spec_exp", 0.0)) != 0.0:
+            warn(f"spec_exp = {kw['spec_exp']!r} on nested domain "
+                 f"grid_id = {grid_id} of {source} is forced to 0, "
+                 "matching WRF (the sponge applies on specified "
+                 "boundaries only); continuing",
+                 why="dyn_em/module_bc_em.F:1297-1341: the nested "
+                     "lbc_fcx_gcx branch has no sponge term (:1325); "
+                     "children force with spec_exp = 0, exactly as WRF "
+                     "would run this namelist.")
+            kw["spec_exp"] = 0.0
         # The full legacy invariant battery applies to every per-domain
         # RunConfig (p5t1 review F1): same checks, same messages as
         # load_config.
         run = validate_run_config(RunConfig(**kw))
-
-        # Nonzero spec_exp on a NESTED domain is rejected loudly: WRF's
-        # nested lbc_fcx_gcx branch has NO exponential sponge term -- only
-        # the specified branch applies spec_exp (dyn_em/module_bc_em.F
-        # lbc_fcx_gcx :1297-1341: specified branch spongeweight :1320,
-        # nested branch :1325-1337 with the sponge lines commented out).
-        # gpuwm reuses the Phase-4 Davies ``_weights`` with spec_exp = 0
-        # as a STATED transliteration of that branch, so a nonzero child
-        # spec_exp would silently change nothing.
-        if run.nested and run.spec_exp != 0.0:
-            raise ValueError(
-                f"spec_exp = {run.spec_exp!r} on nested domain grid_id = "
-                f"{grid_id} of {source} is rejected: WRF's nested "
-                "lbc_fcx_gcx branch has no exponential sponge term "
-                "(dyn_em/module_bc_em.F:1297-1341, nested branch :1325 -- "
-                "sponge only in the specified branch :1320); gpuwm's "
-                "nested Davies weights are the spec_exp = 0 "
-                "transliteration of that branch, so set spec_exp = 0.")
 
         # --- cadence divisibility (integer domain steps) ----------------
         _check_cadence("history_interval_s", Fraction(history_interval_s),

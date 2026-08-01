@@ -1,0 +1,134 @@
+{
+  "schema": "gpuwm.acceptance-band-margin-rule/v1",
+  "rule_id": "published-anchor-margin",
+  "rule_version": "1.0.0",
+  "description": "The interim acceptance band is the published comparison table plus a documented margin. For every (domain, lead, metric) triple the anchor value a yields the closed interval [a - m, a + m] with m = max(absolute_floor, relative_fraction * |a|), clamped to the metric family's physical range. A cell whose anchor is not a number is carried as nan-expected: the certified run must also report a non-number there. The rule is the artifact; the interval numbers are its output, which is why the band is re-derivable and byte-checked rather than transcribed.",
+  "anchor": {
+    "document": "docs/public/VERIFICATION.md",
+    "section_heading": "Full decay table (all domains, all leads)",
+    "lead_prefix": "F"
+  },
+  "decimals": 6,
+  "families": {
+    "temperature_error": {
+      "unit": "K",
+      "absolute_floor": 0.05,
+      "relative_fraction": 0.5,
+      "clamp_low": 0.0,
+      "clamp_high": null
+    },
+    "pressure_error": {
+      "unit": "Pa",
+      "absolute_floor": 2.0,
+      "relative_fraction": 0.5,
+      "clamp_low": 0.0,
+      "clamp_high": null
+    },
+    "reflectivity_error": {
+      "unit": "dBZ",
+      "absolute_floor": 1.0,
+      "relative_fraction": 0.5,
+      "clamp_low": 0.0,
+      "clamp_high": null
+    },
+    "correlation": {
+      "unit": "1",
+      "absolute_floor": 0.05,
+      "relative_fraction": 0.05,
+      "clamp_low": -1.0,
+      "clamp_high": 1.0
+    },
+    "skill_score": {
+      "unit": "1",
+      "absolute_floor": 0.1,
+      "relative_fraction": 0.25,
+      "clamp_low": 0.0,
+      "clamp_high": 1.0
+    }
+  },
+  "column_classification": {
+    "t2_mae": {
+      "classification": "banded",
+      "family": "temperature_error",
+      "anchor_column": "T2 MAE K"
+    },
+    "t2_corr": {
+      "classification": "recorded-only",
+      "family": null,
+      "anchor_column": null,
+      "reason": "no counterpart column in the published decay table; recorded so the comparator's output is fully classified, not banded on an anchor that does not exist"
+    },
+    "psfc_mae": {
+      "classification": "banded",
+      "family": "pressure_error",
+      "anchor_column": "PSFC MAE Pa"
+    },
+    "psfc_corr": {
+      "classification": "recorded-only",
+      "family": null,
+      "anchor_column": null,
+      "reason": "no counterpart column in the published decay table"
+    },
+    "wind10_corr": {
+      "classification": "banded",
+      "family": "correlation",
+      "anchor_column": "wind10 corr"
+    },
+    "qvapor_corr": {
+      "classification": "recorded-only",
+      "family": null,
+      "anchor_column": null,
+      "reason": "no counterpart column in the published decay table"
+    },
+    "w_corr": {
+      "classification": "banded",
+      "family": "correlation",
+      "anchor_column": "W corr"
+    },
+    "rainnc_corr": {
+      "classification": "recorded-only",
+      "family": null,
+      "anchor_column": null,
+      "reason": "no counterpart column in the published decay table"
+    },
+    "cpu_rainnc_mean_mm": {
+      "classification": "recorded-only",
+      "family": null,
+      "anchor_column": null,
+      "reason": "a reference-side level, not a comparison; banding it would gate the certified run on the reference run's own accumulation"
+    },
+    "gpu_rainnc_mean_mm": {
+      "classification": "recorded-only",
+      "family": null,
+      "anchor_column": null,
+      "reason": "a model-side level, not a comparison; its meaning is the paired difference against the reference column, which the published table does not carry"
+    },
+    "refl_comp_corr": {
+      "classification": "banded",
+      "family": "correlation",
+      "anchor_column": "refl corr"
+    },
+    "refl_comp_mae": {
+      "classification": "banded",
+      "family": "reflectivity_error",
+      "anchor_column": "refl MAE dBZ"
+    },
+    "refl_csi20": {
+      "classification": "banded",
+      "family": "skill_score",
+      "anchor_column": "CSI20"
+    },
+    "cpu_refl_max": {
+      "classification": "recorded-only",
+      "family": null,
+      "anchor_column": null,
+      "reason": "a reference-side extremum, not a comparison"
+    },
+    "gpu_refl_max": {
+      "classification": "recorded-only",
+      "family": null,
+      "anchor_column": null,
+      "reason": "a model-side extremum, not a comparison"
+    }
+  }
+}

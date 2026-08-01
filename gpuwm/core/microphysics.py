@@ -86,6 +86,7 @@ from gpuwm.core.state import DTYPE, DomainState
 from gpuwm.physics_compat import thompson_table_root as _thompson_table_root
 
 _TPB = 64          # threads per block (one thread per column)
+_VALIDATION_TPB = 256
 _KMAX = 256        # matches KESS_KMAX in kernels/kessler.cu
 KESSLER_VERTICAL_LEVEL_BOUNDS = (None, _KMAX)
 
@@ -308,6 +309,23 @@ class MicrophysicsDiagnostics:
     hailncv: cp.ndarray | None = None
 
 
+def validate_surface_diagnostics(
+        values: tuple[cp.ndarray, ...], active: int, sr_upper: np.float32,
+        status: cp.ndarray) -> int:
+    """Return compact finite/range flags for canonical surface outputs."""
+    status.fill(cp.uint32(0))
+    sr = values[2]
+    count = sr.size
+    blocks = (count + _VALIDATION_TPB - 1) // _VALIDATION_TPB
+    kernel = get_kernel(
+        "microphysics_validation", "microphysics_validate_outputs")
+    kernel(
+        (blocks,), (_VALIDATION_TPB,),
+        values + (np.uint32(active), DTYPE(sr_upper), status,
+                  np.int64(count)))
+    return int(status[0].item())
+
+
 def save_pre_mp_theta(state: DomainState) -> None:
     """WRF ``moist_physics_prep_em``: park the pre-microphysics FULL theta
     in the h_diabatic array (module_big_step_utilities_em.F:5503 "use
@@ -316,7 +334,7 @@ def save_pre_mp_theta(state: DomainState) -> None:
     :5513-5521).  :func:`moist_physics_finish` consumes and overwrites it.
     """
     thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
-    state.h_diabatic[...] = thb + state.thp
+    cp.add(thb, state.thp, out=state.h_diabatic)
 
 
 def moist_physics_finish(state: DomainState, cfg: RunConfig, th_phy,
@@ -338,11 +356,12 @@ def moist_physics_finish(state: DomainState, cfg: RunConfig, th_phy,
     """
     if cfg.no_mp_heating == 0:
         lim = DTYPE(cfg.mp_tend_lim * dt)
-        mpten = th_phy - state.h_diabatic            # :5688
-        mpten = cp.minimum(lim, mpten)               # :5706
-        mpten = cp.maximum(-lim, mpten)              # :5707
-        state.thp += mpten                           # :5743
-        state.h_diabatic[...] = mpten / DTYPE(dt)    # :5745
+        mpten = state.h_diabatic
+        cp.subtract(th_phy, mpten, out=mpten)        # :5688
+        cp.minimum(lim, mpten, out=mpten)            # :5706
+        cp.maximum(-lim, mpten, out=mpten)           # :5707
+        cp.add(state.thp, mpten, out=state.thp)      # :5743
+        cp.divide(mpten, DTYPE(dt), out=mpten)       # :5745
     else:
         state.h_diabatic[...] = 0.0                  # :5775-5776
 

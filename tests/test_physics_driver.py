@@ -396,6 +396,45 @@ def test_ysu_nan_guard_preserves_all_finite_rates_and_rejects_nonfinite():
     with pytest.raises(FloatingPointError, match="non-finite du"):
         validate_ysu_tendencies(nonfinite)
 
+    native = {
+        name: cp.ones((4, 3, 4), cp.float32)
+        for name in ("du", "dv", "dtheta", "dqv", "dqc", "dqi",
+                     "exch_h", "exch_m")
+    }
+    native.update(
+        hpbl=cp.ones((3, 4), cp.float32),
+        kpbl=cp.ones((3, 4), cp.int32),
+        wstar=cp.ones((3, 4), cp.float32),
+        delta=cp.ones((3, 4), cp.float32),
+        topdown_radsum=cp.ones((3, 4), cp.float32),
+        wstar3_2=cp.ones((3, 4), cp.float32),
+        cloudflg=cp.ones((3, 4), cp.int32))
+    status = cp.full((1,), 0xFFFFFFFF, cp.uint32)
+    before = {name: value.copy() for name, value in native.items()}
+    validate_ysu_tendencies(native, status=status)
+    assert int(status[0].item()) == 0
+    for name in native:
+        cp.testing.assert_array_equal(native[name], before[name])
+
+    native["hpbl"][0, 0] = cp.inf
+    native["dv"][0, 0, 0] = cp.nan
+    with pytest.raises(FloatingPointError, match="non-finite dv"):
+        validate_ysu_tendencies(native, status=status)
+
+    native["hpbl"][0, 0] = cp.float32(1.0)
+    native["dv"][0, 0, 0] = cp.float32(1.0)
+    for name in ("du", "dv", "dtheta", "dqv", "dqc", "dqi",
+                 "exch_h", "exch_m", "hpbl", "wstar", "delta",
+                 "topdown_radsum", "wstar3_2"):
+        native[name].flat[0] = cp.nan
+        with pytest.raises(
+                FloatingPointError, match=rf"non-finite {name} tendency"):
+            validate_ysu_tendencies(native, status=status)
+        native[name].flat[0] = cp.float32(1.0)
+    native["kpbl"].flat[0] = cp.iinfo(cp.int32).min
+    native["cloudflg"].flat[0] = cp.iinfo(cp.int32).max
+    validate_ysu_tendencies(native, status=status)
+
 
 @requires_gpu
 @pytest.mark.gpu
@@ -657,6 +696,14 @@ def test_cumulus_nca_results_accumulate_rainc_every_step_into_wrfout():
         sf_sfclay_physics=0, sf_surface_physics=0, bl_pbl_physics=0,
         dt=60.0, cu_physics=1, cudt_minutes=5.0, cumulus=cumulus)
 
+    finish_calls = []
+    finish_step = driver.finish_step
+
+    def counted_finish_step():
+        finish_calls.append(float(state.elapsed_seconds))
+        finish_step()
+
+    driver.finish_step = counted_finish_step
     rtheta_max = []
     for step, now in enumerate((0.0, 60.0, 120.0, 180.0, 240.0)):
         state.elapsed_seconds = now
@@ -675,6 +722,10 @@ def test_cumulus_nca_results_accumulate_rainc_every_step_into_wrfout():
     assert rtheta_max[0] > 0.0 and rtheta_max[1] > 0.0
     assert rtheta_max[2] == rtheta_max[3] == 0.0
     assert rtheta_max[4] > 0.0
+    # Each completed model step probes the expiry mask once in advance_ppt.
+    # The known-clean compute entry does not repeat the device-to-host probe.
+    assert finish_calls == [0.0, 60.0, 120.0, 180.0, 240.0]
+    assert driver._cu_expiry_pending is False
     cp.testing.assert_array_equal(
         driver.cu_raincv, cp.float32(60.0) * cp.float32(3.0e-4))
 
@@ -1202,6 +1253,132 @@ def test_every_microphysics_selector_writes_the_species_surface_seam(
     for name, value in expected.items():
         cp.testing.assert_array_equal(
             driver.fields[name], cp.full(shape, value, cp.float32))
+
+
+@pytest.mark.gpu
+@requires_gpu
+@pytest.mark.parametrize("mp_physics", [1, 6, 8, 10])
+def test_native_microphysics_validation_batches_all_fields_and_resets(
+        mp_physics):
+    import cupy as cp
+
+    from gpuwm.core.microphysics import MicrophysicsDiagnostics
+    from gpuwm.core.physics import microphysics_scratch_slots
+
+    state, cfg, driver = _full_state(
+        mp_physics=mp_physics, bl_pbl_physics=0)
+    names = tuple(
+        name for name, _slot in microphysics_scratch_slots(mp_physics))
+    values = {}
+    for name in names:
+        value = getattr(driver.microphysics, name)
+        value[...] = cp.float32(0.5 if name == "sr" else 1.0)
+        values[name] = value
+    diagnostics = MicrophysicsDiagnostics(**values)
+    status = state.scratch(
+        (1,), "physics_validation_status").view(cp.uint32)
+    status[...] = cp.uint32(0xFFFFFFFF)
+
+    driver.accept_microphysics(diagnostics)
+    assert int(status[0].item()) == 0
+
+    labels = {
+        "rainnc": "RAINNC", "rainncv": "RAINNCV", "sr": "SR",
+        "snownc": "SNOWNC", "snowncv": "SNOWNCV",
+        "graupelnc": "GRAUPELNC", "graupelncv": "GRAUPELNCV",
+    }
+    for name in names:
+        values[name].flat[0] = cp.nan
+        with pytest.raises(
+                FloatingPointError,
+                match=rf"microphysics {labels[name]} contains a non-finite"):
+            driver.accept_microphysics(diagnostics)
+        values[name].flat[0] = cp.float32(
+            0.5 if name == "sr" else 1.0)
+
+    values[names[-1]].flat[0] = cp.nan
+    values[names[0]].flat[0] = cp.inf
+    with pytest.raises(
+            FloatingPointError,
+            match=rf"microphysics {labels[names[0]]} contains a non-finite"):
+        driver.accept_microphysics(diagnostics)
+    values[names[-1]].flat[0] = cp.float32(
+        0.5 if names[-1] == "sr" else 1.0)
+    values[names[0]].flat[0] = cp.float32(
+        0.5 if names[0] == "sr" else 1.0)
+
+    values["sr"].flat[0] = cp.float32(-0.25)
+    with pytest.raises(ValueError, match="validated range"):
+        driver.accept_microphysics(diagnostics)
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_native_kf_validation_preserves_field_order_and_inputs(monkeypatch):
+    import cupy as cp
+
+    from gpuwm.core.kf import KainFritsch
+    from gpuwm.core.physics import _NativeKFCumulusResult
+
+    state, cfg, driver = _full_state(
+        mp_physics=10, cu_physics=1, bl_pbl_physics=0,
+        sf_sfclay_physics=0, sf_surface_physics=0)
+    owner = driver.cumulus_callable
+    assert type(owner) is KainFritsch
+    shape = tuple(state.p.shape)
+    surface = shape[1:]
+    names = (
+        "rthcuten", "rqvcuten", "rqccuten", "rqicuten",
+        "rqrcuten", "rqscuten", "nca_seconds", "pratec",
+    )
+    labels = (
+        "cumulus rthcuten", "cumulus rqvcuten", "cumulus rqccuten",
+        "cumulus rqicuten", "cumulus rqrcuten", "cumulus rqscuten",
+        "cumulus nca_seconds", "cumulus PRATEC",
+    )
+    values = {
+        name: cp.zeros(shape if index < 6 else surface, cp.float32)
+        for index, name in enumerate(names)
+    }
+    result = _NativeKFCumulusResult(
+        owner=owner, **values,
+        rainc=cp.full(surface, cp.nan, cp.float32))
+
+    monkeypatch.setattr(
+        KainFritsch, "__call__", lambda self, **_kwargs: result)
+    before = {name: value.copy() for name, value in values.items()}
+    status = state.scratch(
+        (1,), "physics_validation_status").view(cp.uint32)
+    status[...] = cp.uint32(0xFFFFFFFF)
+    driver._run_cumulus({}, state, cfg)
+    assert int(status[0].item()) == 0
+    for name in names:
+        cp.testing.assert_array_equal(values[name], before[name])
+    for value in values.values():
+        value[...] = cp.float32(9.0)
+    for name in names[:6]:
+        cp.testing.assert_array_equal(driver.cu_rates[name], before[name])
+    cp.testing.assert_array_equal(
+        driver.cu_nca, before["nca_seconds"])
+    cp.testing.assert_array_equal(
+        driver.cu_pratec, before["pratec"])
+    for value in values.values():
+        value[...] = cp.float32(0.0)
+
+    for name, label in zip(names, labels):
+        values[name].flat[0] = cp.nan
+        with pytest.raises(
+                FloatingPointError,
+                match=rf"{label} contains a non-finite value"):
+            driver._run_cumulus({}, state, cfg)
+        values[name].flat[0] = cp.float32(0.0)
+
+    values[names[-1]].flat[0] = cp.inf
+    values[names[0]].flat[0] = cp.nan
+    with pytest.raises(
+            FloatingPointError,
+            match="cumulus rthcuten contains a non-finite value"):
+        driver._run_cumulus({}, state, cfg)
 
 
 @pytest.mark.gpu

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
+import hashlib
+import json
+from pathlib import Path
 
 import pytest
 
+from gpuwm import hrrr_hierarchy_direct
 from gpuwm.hrrr_hierarchy_direct import (
     _atomic_staging_sibling,
     _compare_stock_experiment,
@@ -71,6 +75,9 @@ class _Run:
     moist: bool = True
     moist_cq: bool = False
     nest_microphysics_transition: str = "same-scheme-only"
+    output_interval_s: float = 3600.0
+    restart_interval_s: float = 0.0
+    nwp_diagnostics: int = 0
 
 
 @dataclass(frozen=True)
@@ -185,11 +192,28 @@ def _raw_runtime_namelist(
     )
 
 
+def _sealed_forcing(exp) -> tuple[int, ...]:
+    """The forcing inventory a root prepared for EXP would carry.
+
+    The duration ceiling is a property of the sealed root preparation, so
+    every gate call needs one.  Tests about geometry and physics say "the
+    root that was prepared for this experiment" with this; the tests that
+    are ABOUT the ceiling pass their own inventory explicitly.
+    """
+
+    return tuple(range(int(exp.run_seconds // 3600) + 1))
+
+
+def _slice(exp, target) -> None:
+    _supported_hierarchy_slice(
+        exp, target, forcing_hours=_sealed_forcing(exp))
+
+
 def test_public_gate_accepts_generic_parent_ordered_easy_physics_slice():
     native = _native()
     target = _target()
-    _supported_hierarchy_slice(native, target)
-    _supported_hierarchy_slice(replace(native, domains=(_Domain(1),)), target)
+    _slice(native, target)
+    _slice(replace(native, domains=(_Domain(1),)), target)
 
     child3 = replace(
         native.domains[1], grid_id=3, parent_id=2,
@@ -205,14 +229,14 @@ def test_public_gate_accepts_generic_parent_ordered_easy_physics_slice():
             native.domains[1].run, grid_id=4, nx=180, ny=180))
     generic = replace(
         native, domains=(*native.domains, child3, sibling4))
-    _supported_hierarchy_slice(generic, target)
+    _slice(generic, target)
 
     with pytest.raises(ValueError, match="parent-before-child"):
-        _supported_hierarchy_slice(replace(
+        _slice(replace(
             generic, domains=(generic.domains[0], generic.domains[2],
                               generic.domains[1], generic.domains[3])), target)
     with pytest.raises(ValueError, match="one-way"):
-        _supported_hierarchy_slice(replace(_native(), feedback=1), target)
+        _slice(replace(_native(), feedback=1), target)
     # A mixed WSM6 -> Morrison edge that names no transition policy.
     #
     # This used to refuse as "unsupported mixed": before v1.3.1 the only
@@ -229,7 +253,7 @@ def test_public_gate_accepts_generic_parent_ordered_easy_physics_slice():
                 _native().domains[1].run, mp_physics=10))))
     with pytest.raises(ValueError,
                        match="requires explicit nest_microphysics_transition"):
-        _supported_hierarchy_slice(drifted, target)
+        _slice(drifted, target)
 
     # ...and naming it, with the moist/CQ contract the transition also
     # requires on both domains, admits the same tree.  That is the other
@@ -243,7 +267,7 @@ def test_public_gate_accepts_generic_parent_ordered_easy_physics_slice():
                 _native().domains[1].run, mp_physics=10,
                 moist=True, moist_cq=True,
                 nest_microphysics_transition="mp-edge-mass-diagnosed-v1"))))
-    _supported_hierarchy_slice(admitted, target)
+    _slice(admitted, target)
 
 
 def test_public_gate_admits_explicit_thompson_to_nssl_tree_without_consent():
@@ -275,7 +299,7 @@ def test_public_gate_admits_explicit_thompson_to_nssl_tree_without_consent():
             parent_time_step_ratio=2),
     ))
 
-    _supported_hierarchy_slice(mixed, _target())
+    _slice(mixed, _target())
 
     missing_policy = replace(
         mixed, domains=(*mixed.domains[:2], replace(
@@ -284,7 +308,7 @@ def test_public_gate_admits_explicit_thompson_to_nssl_tree_without_consent():
                 nest_microphysics_transition="same-scheme-only")),
             mixed.domains[3]))
     with pytest.raises(ValueError, match="requires explicit"):
-        _supported_hierarchy_slice(missing_policy, _target())
+        _slice(missing_policy, _target())
 
 
 def test_public_gate_accepts_short_ohio_z80_sealed_root():
@@ -313,7 +337,119 @@ def test_public_gate_accepts_short_ohio_z80_sealed_root():
                 parent_time_step_ratio=3),
         ),
     )
-    _supported_hierarchy_slice(short, target)
+    _slice(short, target)
+
+
+def test_public_gate_runs_the_whole_sealed_forcing_window_not_twelve_hours():
+    """A retained f00..f24 hierarchy, and the ceiling that replaced 43200.
+
+    The gate carried ``run_seconds <= 43_200`` with the sentence "the
+    native f00..f12 forcing horizon", while the root wrapper's
+    ``hrrr_source_window``, the fetch stage and the forcing-hour equality
+    below it all handle f00..f24.  A user who fetched and prepared a
+    24 h root was refused at the last gate before publication, by a
+    constant describing neither the data nor the code.  The ceiling is the
+    sealed preparation's own inventory now, so this asserts BOTH ends: a
+    24 h window runs 24 h, and a 12 h window still refuses 15 h.
+    """
+
+    target = _target()
+    long_run = replace(_native(), run_seconds=86_400.0)
+
+    _supported_hierarchy_slice(
+        long_run, target, forcing_hours=tuple(range(25)))
+    # The intermediate case the field report used: > 12 h, < 24 h.
+    _supported_hierarchy_slice(
+        replace(long_run, run_seconds=54_000.0), target,
+        forcing_hours=tuple(range(16)))
+
+    with pytest.raises(ValueError) as refusal:
+        _supported_hierarchy_slice(
+            replace(long_run, run_seconds=54_000.0), target,
+            forcing_hours=tuple(range(13)))
+    message = str(refusal.value)
+    assert "12 h forcing horizon" in message
+    assert "f00..f12" in message
+    assert "15 h" in message
+    # A zero-length or negative request is still refused, and an
+    # inventory that is not a contiguous run of hourly leads from zero is
+    # not an authority at all.
+    with pytest.raises(ValueError, match="must be positive"):
+        _supported_hierarchy_slice(
+            replace(long_run, run_seconds=0.0), target,
+            forcing_hours=tuple(range(25)))
+    with pytest.raises(ValueError, match="contiguous hourly leads"):
+        _supported_hierarchy_slice(
+            long_run, target, forcing_hours=(0, 1, 3))
+    with pytest.raises(ValueError, match="contiguous hourly leads"):
+        _supported_hierarchy_slice(long_run, target, forcing_hours=())
+
+
+def test_public_gate_accepts_a_per_domain_history_cadence():
+    """d01 hourly beside d02 every 15 minutes -- the ladder's whole point.
+
+    Every other stage already supported it: the experiment loader gives
+    each domain its own ``history_interval_s`` and divisibility check, the
+    clock registers a per-domain history alarm, and the tree runner writes
+    per-domain wrfouts on it.  Only this drift check disagreed, and it did
+    so after the expensive preparation, with "output_interval_s (900.0,
+    3600.0)".  Preparation writes no history frame at all.
+    """
+
+    native = _native()
+    laddered = replace(native, domains=(
+        native.domains[0],
+        replace(native.domains[1], history_interval_s=900.0,
+                run=replace(native.domains[1].run,
+                            output_interval_s=900.0)),
+    ))
+
+    _slice(laddered, _target())
+
+    # A control that must still refuse: a genuinely trajectory-bearing
+    # per-domain difference is not an output cadence.
+    drifted = replace(laddered, domains=(
+        laddered.domains[0],
+        replace(laddered.domains[1], run=replace(
+            laddered.domains[1].run, sf_surface_physics=3)),
+    ))
+    with pytest.raises(ValueError, match="certified native"):
+        _slice(drifted, _target())
+
+
+def test_root_binding_ignores_write_cadence_and_inert_diagnostics():
+    """The three switches that made root and hierarchy irreconcilable.
+
+    A sealed root is built from a shipped physics profile, which writes
+    ``restart_interval_s = 0`` and no diagnostics; a hierarchy is imported
+    from the user's namelist, which may carry ``restart_interval = 60``
+    and whose cumulus-off domains inherit RunConfig's live ``cudt_minutes
+    = 5.0``.  None of the three changes one model step -- gpuwm/io/
+    restart.py already lets all three differ across a checkpoint boundary
+    -- so none of them may decide whether a prepared root can be reused.
+    """
+
+    native = _native()
+    sealed = asdict(native.domains[0])
+    sealed["run"]["restart_interval_s"] = 0.0
+    sealed["run"]["nwp_diagnostics"] = 0
+    sealed["run"]["cudt_minutes"] = 5.0
+    identity = {"domain_config": sealed, "namelist_sha256": "b" * 64}
+
+    live = replace(native.domains[0], run=replace(
+        native.domains[0].run, restart_interval_s=3600.0,
+        nwp_diagnostics=1, cudt_minutes=0.0))
+    digest, prepared = _validated_root_preparation_binding(identity, live)
+
+    assert digest == "b" * 64
+    # The document RETURNED is still the sealed one, byte for byte: the
+    # normalization decides the comparison, never what gets re-hashed.
+    assert prepared == sealed
+
+    # And a real trajectory difference in the same document still refuses.
+    drifted = replace(live, run=replace(live.run, sf_surface_physics=3))
+    with pytest.raises(ValueError, match="run.sf_surface_physics"):
+        _validated_root_preparation_binding(identity, drifted)
 
 
 def test_root_cache_reuse_binds_effective_d01_not_child_topology():
@@ -438,6 +574,36 @@ def test_raw_namelist_gate_rejects_dropped_runtime_drift(
         _require_raw_stock_delta(native, stock)
 
 
+def test_the_route_asks_for_an_optional_stock_wrf_export():
+    """A missing ORACLE file must not destroy a prepared hierarchy.
+
+    ``native_hierarchy`` offers required/optional/off and defaults to
+    ``required``; ``gfs_direct`` asks for ``optional``.  This route
+    passed nothing and inherited ``required``, so it was the only one
+    that discarded a complete, verified GPU hierarchy when the
+    unchanged-WRF file set could not represent the state -- which a
+    single sub-freezing soil node anywhere in the domain is enough to
+    cause.  Read from the call site itself because the whole
+    orchestration below it needs a sealed root preparation to run; the
+    behaviour of each mode is pinned in tests/test_native_hierarchy.py.
+    """
+    import ast
+    import inspect
+    from gpuwm import hrrr_hierarchy_direct
+
+    tree = ast.parse(inspect.getsource(hrrr_hierarchy_direct))
+    modes = [
+        keyword.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "initialize_and_export_native_hierarchy"
+        for keyword in node.keywords
+        if keyword.arg == "stock_wrf_export"
+    ]
+    assert modes == ["optional"]
+
+
 def test_raw_wps_gate_binds_hourly_hierarchy_contract(tmp_path):
     wps = tmp_path / "namelist.wps"
     wps.write_text(
@@ -456,3 +622,48 @@ def test_raw_wps_gate_binds_hourly_hierarchy_contract(tmp_path):
         encoding="ascii")
     with pytest.raises(ValueError, match="interval_seconds"):
         _require_raw_wps_contract(wps, 4)
+
+
+def test_the_hierarchy_prints_the_digest_its_own_chain_promises(
+        tmp_path, monkeypatch, capsys):
+    """The one placeholder in the emitted chain no stage used to fill.
+
+    `gpuwm domain --source hrrr` closes a multi-domain emission with
+    ``--preparation-receipt-sha256 <printed by the hierarchy>``, and the
+    forecast runner checks that digest against ``receipt.json``.  Walking
+    that printed route end to end found the hierarchy never printed it,
+    so the chain could not be completed without hashing a file by hand.
+    """
+
+    output_root = tmp_path / "hierarchy"
+
+    def _fake(*, output_root: Path, **_ignored):
+        output_root.mkdir(parents=True)
+        (output_root / "receipt.json").write_text(
+            '{"status": "PASS"}\n', encoding="utf-8")
+        return {
+            "status": "PASS",
+            "workers": 8,
+            "timing_seconds": {"total": 1.0},
+            "wrf_manifest": {"files": {}},
+        }
+
+    monkeypatch.setattr(
+        hrrr_hierarchy_direct, "prepare_hrrr_hierarchy", _fake)
+    assert hrrr_hierarchy_direct.main([
+        "--root-preparation", str(tmp_path / "root"),
+        "--root-domain-spec", str(tmp_path / "d01-target.json"),
+        "--wps-namelist", str(tmp_path / "namelist.wps"),
+        "--namelist-input", str(tmp_path / "namelist.input"),
+        "--stock-wrf-namelist-input", str(tmp_path / "stock.namelist.input"),
+        "--geog-root", str(tmp_path / "geog"),
+        "--source-manifest", str(tmp_path / "SHA256SUMS"),
+        "--source-manifest-sha256", "0" * 64,
+        "--valid-time", "2020-01-01_00:00:00",
+        "--output-root", str(output_root),
+    ]) == 0
+
+    printed = json.loads(capsys.readouterr().out)
+    expected = hashlib.sha256(
+        (output_root / "receipt.json").read_bytes()).hexdigest()
+    assert printed["preparation_receipt_sha256"] == expected

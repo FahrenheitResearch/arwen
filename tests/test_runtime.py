@@ -592,8 +592,19 @@ def test_single_domain_implicit_trace_gases_keep_experiment_column_chunk(
             state=State(), surface_pressure=ones, surface_qv=zeros)
 
     monkeypatch.setattr(runtime, "initialize_real", fake_initialize_real)
-    monkeypatch.setattr(
-        runtime, "build_state_lateral_boundaries", lambda *args, **kwargs: object())
+    class _Frames:
+        """Streaming stand-in: setup adds one state at a time now."""
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def add_state(self, state):
+            pass
+
+        def build(self, _times):
+            return object()
+
+    monkeypatch.setattr(runtime, "StateBoundaryFrames", _Frames)
     monkeypatch.setattr(runtime, "attach_lateral_boundaries", lambda *args: None)
     soil_kwargs = {}
 
@@ -728,13 +739,17 @@ def test_run_experiment_threads_experiment_timing_authority(
         runtime, "prepare_experiment_case",
         lambda exp, data, **kwargs: prepared)
 
+    # The stub stands in for integrate_prepared_case, so it returns what that
+    # function returns: a summary the capsule emission on the exit can read.
+    summary = SimpleNamespace(wrfout_paths=(), trajectory_digest=None)
+
     def integrate(*args, **kwargs):
         captured.update(kwargs)
-        return "summary"
+        return summary
 
     monkeypatch.setattr(runtime, "integrate_prepared_case", integrate)
     assert runtime.run_experiment(
-        authoritative, data, tmp_path / "out") == "summary"
+        authoritative, data, tmp_path / "out") is summary
     assert captured["run_seconds"] == authoritative.run_seconds
     assert (captured["history_interval_s"]
             == authoritative_domain.history_interval_s)

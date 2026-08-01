@@ -91,7 +91,7 @@ def test_hrrr_runner_capability_query_is_side_effect_free_without_run_args(
         "forecast_executor_included": False,
     }
     thompson = payload["physics_profiles"][THOMPSON_PROFILE_ID]
-    assert thompson["readiness"] == "MODEL_VALIDATED_EXPERIMENTAL_RUNTIME"
+    assert thompson["readiness"] == "WRF_MATCHED_RUN_EXPERIMENTAL_RUNTIME"
     assert thompson["runtime_guard"]["environment"] \
         == "GPUWM_EXPERIMENTAL_THOMPSON_MP8"
     assert thompson["explicit_expert_consent_required"] is False
@@ -100,7 +100,7 @@ def test_hrrr_runner_capability_query_is_side_effect_free_without_run_args(
     assert len(thompson["table_authority"]["assets"]) == 4
     assert payload["physics_profiles"][MORRISON_PROFILE_ID] == {
         "selector": 10,
-        "readiness": "MODEL_VALIDATED_RUNTIME_PROFILE",
+        "readiness": "WRF_MATCHED_RUN_RUNTIME_PROFILE",
         "explicit_expert_consent_required": False,
         "runtime_guards": [],
     }
@@ -115,10 +115,10 @@ def test_hrrr_runner_capability_query_is_side_effect_free_without_run_args(
     }
     nssl2 = payload["physics_profiles"][NSSL2_PROFILE_ID]
     assert nssl2["selector"] == 18
-    assert nssl2["readiness"] == "VALIDATION_CANDIDATE"
+    assert nssl2["readiness"] == "WRF_MATCHED_RUN_CANDIDATE"
     assert nssl2["explicit_expert_consent_required"] is False
     legacy = payload["physics_profiles"][NSSL2_LEGACY_RRTMG_PROFILE_ID]
-    assert legacy["readiness"] == "VALIDATION_CANDIDATE"
+    assert legacy["readiness"] == "WRF_MATCHED_RUN_CANDIDATE"
     assert legacy["radiation_solver"] == "legacy RRTMG"
     assert nssl2["resolved_fixed_preset"] is True
     assert payload["physics_profiles"][MYNN_PROFILE_ID]["readiness"] \
@@ -437,8 +437,8 @@ def test_f00_and_boundary_mapping_forward_explicit_target_radius(monkeypatch):
 
     def fake_interpolate(
             snapshot, grid, *, target_landmask, soil_mapping_report,
-            surface_fallback_radius, backend):
-        observed.append((surface_fallback_radius, backend))
+            surface_fallback_radius, backend, target_name):
+        observed.append((surface_fallback_radius, backend, target_name))
         soil_mapping_report.update({
             "land_stencil": {
                 "fallback_radius_cells": surface_fallback_radius,
@@ -470,7 +470,18 @@ def test_f00_and_boundary_mapping_forward_explicit_target_radius(monkeypatch):
         object(), targets, boundary_report, surface_fallback_radius=10,
         preprocess_backend="cpu-backend")
 
-    assert observed == [(10, "cpu-backend")] * 5
+    assert [entry[:2] for entry in observed] == [(10, "cpu-backend")] * 5
+    # Each of the five mappings names ITSELF.  A soil refusal from one of
+    # four independently mapped boundary strips used to name neither the
+    # strip nor the domain, which on a coastal domain left four
+    # identical-looking suspects.
+    assert [entry[2] for entry in observed] == [
+        "domain 1",
+        "the west boundary strip of domain 1",
+        "the east boundary strip of domain 1",
+        "the south boundary strip of domain 1",
+        "the north boundary strip of domain 1",
+    ]
     assert f00_report["land_stencil"]["fallback_radius_cells"] == 10
     assert all(
         report["land_stencil"]["fallback_radius_cells"] == 10
@@ -573,10 +584,16 @@ def _write_native_physics_namelist(
         nssl_controls="", sf_sfclay_physics=91,
         sf_surface_physics=2, bl_pbl_physics=1,
         num_soil_layers=None):
-    diff_factor = (" diff_6th_factor = 0.10, 0.08,\n"
+    # d01 comes FIRST in every per-domain column here, because this
+    # preparer prepares the root: the profile-conforming value is d01's and
+    # the second entry is a nest value that must NOT be selected.  The
+    # columns stay deliberately non-uniform, which is what makes reading
+    # the wrong end of a WRF array a visible failure rather than a
+    # coincidence.
+    diff_factor = (" diff_6th_factor = 0.08, 0.10,\n"
                    if include_diff_factor else "")
     if full_real74_suite:
-        diff_factor = (" diff_6th_factor = 0.10, 0.12,\n"
+        diff_factor = (" diff_6th_factor = 0.12, 0.10,\n"
                        if include_diff_factor else "")
         radiation = """ ra_lw_physics = 4, 4,
  ra_sw_physics = 4, 4,
@@ -584,32 +601,32 @@ def _write_native_physics_namelist(
  sf_sfclay_physics = 91, 91,
  sf_surface_physics = 2, 2,
  bl_pbl_physics = 1, 1,
- cu_physics = 1, {cu_physics},
+ cu_physics = {cu_physics}, 1,
  cudt = 5, 5,
  num_soil_layers = 4, 4,
 """.format(cu_physics=cu_physics)
-        dynamics = """ epssm = 0.1, 0.5,
- top_lid = .true., .false.,
+        dynamics = """ epssm = 0.5, 0.1,
+ top_lid = .false., .true.,
 """
         morrison = (
-            f" morr_rimed_ice = 1, {morr_rimed_ice},\n"
+            f" morr_rimed_ice = {morr_rimed_ice}, 1,\n"
             if mp_physics == 10 else "")
     else:
         soil = (
-            f" num_soil_layers = 4, {num_soil_layers},\n"
+            f" num_soil_layers = {num_soil_layers}, 4,\n"
             if num_soil_layers is not None else "")
         radiation = f""" ra_lw_physics = 0, 0,
  ra_sw_physics = 1, 1,
- radt = 3, 1,
- sf_sfclay_physics = 91, {sf_sfclay_physics},
- sf_surface_physics = 2, {sf_surface_physics},
- bl_pbl_physics = 1, {bl_pbl_physics},
+ radt = 1, 3,
+ sf_sfclay_physics = {sf_sfclay_physics}, 91,
+ sf_surface_physics = {sf_surface_physics}, 2,
+ bl_pbl_physics = {bl_pbl_physics}, 1,
  cu_physics = 0, 0,
 {soil}"""
         dynamics = ""
         morrison = ""
     path.write_text(f"""&physics
- mp_physics = 6, {mp_physics},
+ mp_physics = {mp_physics}, 6,
  {morrison}{nssl_controls}{radiation}\
 /
 &dynamics
@@ -621,16 +638,51 @@ def _write_native_physics_namelist(
 """, encoding="ascii")
 
 
-def test_native_hrrr_fixed_physics_profile_validates_selected_inner_domain(
+def test_native_hrrr_fixed_physics_profile_validates_the_root_domain(
         tmp_path):
     path = tmp_path / "namelist.input"
     _write_native_physics_namelist(path)
     receipt = _validate_native_hrrr_physics_profile(path)
     assert receipt["profile"] == WSM6_PROFILE_ID
-    assert receipt["selection"] == "last-or-only WRF domain value"
+    assert receipt["selection"] == "d01 (first-or-only) WRF domain value"
     assert receipt["validated_namelist"]["physics"]["radt"] == 1.0
     assert receipt["validated_namelist"]["dynamics"][
         "diff_6th_factor"] == 0.08
+
+
+def test_native_hrrr_root_preparer_reads_d01_and_names_the_nest_it_ignored(
+        tmp_path):
+    """The exact v1.3.1 field report, both halves.
+
+    A user handed this single-domain root preparer their two-domain
+    namelist.  d01 stated the WSM6 profile's diff_6th_factor = 0.08; d02
+    stated a nest's 0.10.  The preparer read the LAST column, refused with
+    "selected last-domain value must be 0.08, got 0.1", and the user
+    changed d02 -- which is not what they meant and not what the root
+    runs.  d01 is now what binds, and a refusal that happens to land on a
+    per-domain column says which domain it read and how to fix it.
+    """
+
+    good = tmp_path / "d01-conforming.input"
+    _write_native_physics_namelist(good)
+    assert " diff_6th_factor = 0.08, 0.10,\n" in good.read_text()
+    receipt = _validate_native_hrrr_physics_profile(good)
+    assert receipt["validated_namelist"]["dynamics"][
+        "diff_6th_factor"] == 0.08
+
+    drifted = tmp_path / "d01-drifted.input"
+    drifted.write_text(
+        good.read_text().replace(
+            " diff_6th_factor = 0.08, 0.10,",
+            " diff_6th_factor = 0.10, 0.08,"),
+        encoding="ascii")
+    with pytest.raises(ValueError) as refusal:
+        _validate_native_hrrr_physics_profile(drifted)
+    message = str(refusal.value)
+    assert "d01's value must be 0.08" in message
+    assert ("multi-domain namelist passed to a single-domain root preparer"
+            in message)
+    assert "&dynamics/diff_6th_factor" in message
 
 
 def test_native_hrrr_fixed_physics_profile_rejects_scheme_drift(tmp_path):
@@ -712,7 +764,7 @@ def test_native_hrrr_thompson_profile_is_guarded_and_table_bound(
     receipt = _validate_native_hrrr_physics_profile(
         path, THOMPSON_PROFILE_ID)
     assert receipt["profile"] == THOMPSON_PROFILE_ID
-    assert receipt["readiness"] == "MODEL_VALIDATED_EXPERIMENTAL"
+    assert receipt["readiness"] == "WRF_MATCHED_RUN_EXPERIMENTAL"
     assert receipt["resolved"]["mp_physics"] == 8
     assert receipt["resolved"]["moist"] is True
     assert receipt["resolved"]["moist_cq"] is True
@@ -764,10 +816,10 @@ def test_native_hrrr_real74_suite_profiles_bind_exact_namelist_and_runtime(
     assert receipt["radiation_substitution"]["contract"] \
         == WRF_RRTMG_TO_RTE_RRTMGP
     if profile == MORRISON_PROFILE_ID:
-        assert receipt["readiness"] == "MODEL_VALIDATED_RUNTIME_PROFILE"
+        assert receipt["readiness"] == "WRF_MATCHED_RUN_RUNTIME_PROFILE"
         assert receipt["morrison_contract"]["morr_rimed_ice"] == 1
     else:
-        assert receipt["readiness"] == "VALIDATION_CANDIDATE"
+        assert receipt["readiness"] == "WRF_MATCHED_RUN_CANDIDATE"
         assert receipt["nssl2_contract"]["selector"] == 18
         assert receipt["nssl2_contract"]["resolved_default_mode"] == {
             "two_moment": True,
@@ -795,7 +847,7 @@ def test_native_hrrr_nssl2_legacy_profile_binds_exact_solver_identity(
     receipt = _validate_native_hrrr_physics_profile(
         path, NSSL2_LEGACY_RRTMG_PROFILE_ID)
 
-    assert receipt["readiness"] == "VALIDATION_CANDIDATE"
+    assert receipt["readiness"] == "WRF_MATCHED_RUN_CANDIDATE"
     assert receipt["resolved"]["wrf_rrtmg_compatibility"] == WRF_RRTMG_LEGACY
     assert receipt["resolved"]["ra_rrtmg_variant"] == "rrtmg_legacy"
     assert receipt["radiation_identity"] == {
@@ -885,10 +937,10 @@ def test_native_hrrr_nssl2_profile_rejects_surrounding_suite_drift(tmp_path):
 def test_native_hrrr_nssl2_accepts_equivalent_explicit_optional_selectors(
         tmp_path):
     path = tmp_path / "namelist.input"
-    controls = """ nssl_2moment_on = -1, 1,
- nssl_hail_on = -1, 1,
- nssl_ccn_on = -1, 1,
- nssl_density_on = -1, 2,
+    controls = """ nssl_2moment_on = 1, -1,
+ nssl_hail_on = 1, -1,
+ nssl_ccn_on = 1, -1,
+ nssl_density_on = 2, -1,
  nssl_3moment = 0, 0,
 """
     _write_native_physics_namelist(
@@ -904,8 +956,8 @@ def test_native_hrrr_nssl2_accepts_equivalent_explicit_optional_selectors(
 
 
 @pytest.mark.parametrize("controls,match", (
-    (" nssl_hail_on = -1, 0,\n", "fixed preset does not implement"),
-    (" nssl_rho_qhl = 900, 800,\n", "nssl_rho_qhl=900.0"),
+    (" nssl_hail_on = 0, -1,\n", "fixed preset does not implement"),
+    (" nssl_rho_qhl = 800, 900,\n", "nssl_rho_qhl=900.0"),
 ))
 def test_native_hrrr_nssl2_rejects_silently_substituted_optional_controls(
         tmp_path, controls, match):

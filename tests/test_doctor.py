@@ -8,6 +8,7 @@ doctor describes.  Everything here is CPU-only and read-only.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 
@@ -123,22 +124,27 @@ def test_doctor_cli_exit_codes_and_report_shape(monkeypatch, capsys,
         assert "gpuwm doctor: runtime estate" in out
     else:
         assert out.startswith("gpuwm doctor\n")
-        # The default layer must always name the way to the other one.
-        assert "--explain" in out
     assert rc_healthy_or_not in (0, 1)
 
     monkeypatch.setattr(doctor, "find_spec", lambda name: None)
     rc = cli.main(argv)
-    assert rc == 1
+    # Warn-not-block: an absent optional extra (cupy, the render pair)
+    # is REPORTED as MISSING with its remedy, but does not move the
+    # exit code -- only broken/integrity-suspect findings do, and
+    # un-importing the extras breaks nothing else in the estate.
+    assert rc == rc_healthy_or_not
     out = capsys.readouterr().out
     assert "MISSING" in out
     if explain:
         # The whole pasteable block, exactly where it always was.
         assert "remedy:" in out
     else:
-        # One line per gap, each naming THE command that closes it.
+        # One line per gap, each naming THE command that closes it,
+        # plus the pointer at the full layer (printed exactly when
+        # there are gaps to explain).
         assert "remedy:" not in out
         assert "-> pip install 'gpuwm[gpu]'" in out
+        assert "--explain" in out
 
 
 def test_doctor_explains_the_case_data_root_layout(monkeypatch, capsys):
@@ -280,17 +286,17 @@ def test_distribution_manifest_revalidates_declared_artifact_hashes(
     import hashlib
     import json as jsonlib
 
+    from conftest import complete_runtime_manifest
+
     artifact = tmp_path / "payload.bin"
     artifact.write_bytes(b"sealed")
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(jsonlib.dumps({
-        "schema": "gpuwm-native-wrf-runtime-v1", "status": "READY",
-        "payload": {"payload.bin": {
+    manifest.write_text(jsonlib.dumps(complete_runtime_manifest({
+        "payload.bin": {
             "bytes": 6,
             "sha256": hashlib.sha256(b"sealed").hexdigest(),
             "executable": False,
-        }},
-    }), encoding="utf-8")
+        }})), encoding="utf-8")
     monkeypatch.setenv("GPUWM_NATIVE_DISTRIBUTION_MANIFEST", str(manifest))
     check = doctor._distribution_manifest_check()
     assert check.status == "verified"
@@ -302,9 +308,20 @@ def test_distribution_manifest_revalidates_declared_artifact_hashes(
     assert "mismatch" in check.detail
 
 
-def test_distribution_manifest_without_hashes_is_labeled_presence_only(
+def test_distribution_manifest_missing_backend_inventory_is_named_here(
         monkeypatch, tmp_path):
+    """The exact document a field user hand-authored, refused up front.
+
+    It carried ``schema`` and ``status`` and nothing else.  Doctor
+    blessed it, ``_source_identity`` accepted it, and the run died
+    minutes later inside the preprocessing selector on
+    ``contract.platform.backends``.  Every one of those keys is named
+    here now, before anything runs.
+    """
+
     import json as jsonlib
+
+    from conftest import complete_runtime_manifest
 
     manifest = tmp_path / "manifest.json"
     manifest.write_text(jsonlib.dumps({
@@ -312,8 +329,44 @@ def test_distribution_manifest_without_hashes_is_labeled_presence_only(
     }), encoding="utf-8")
     monkeypatch.setenv("GPUWM_NATIVE_DISTRIBUTION_MANIFEST", str(manifest))
     check = doctor._distribution_manifest_check()
-    assert check.status == "present"
-    assert "presence-only" in check.detail
+    assert check.status == "missing"
+    assert check.blocking
+    for field in ("artifact", "source", "contract", "payload"):
+        assert field in check.detail
+    assert check.action == "unset GPUWM_NATIVE_DISTRIBUTION_MANIFEST"
+
+    # And the field the field user's run actually died on, when the
+    # rest of the document is otherwise well formed.
+    document = complete_runtime_manifest()
+    del document["contract"]["platform"]["backends"]
+    manifest.write_text(jsonlib.dumps(document), encoding="utf-8")
+    check = doctor._distribution_manifest_check()
+    assert check.status == "missing"
+    assert "contract.platform.backends" in check.detail
+
+
+def test_distribution_manifest_without_an_artifact_inventory_is_refused(
+        monkeypatch, tmp_path):
+    """No per-artifact hashes is a defect, not a "presence-only" pass.
+
+    Doctor used to label such a document ``present`` and move on, which
+    is how a manifest nobody could actually bind decoders out of read as
+    a healthy line in the report.  A sealed archive's installer always
+    writes the inventory; a document without one is not one.
+    """
+
+    import json as jsonlib
+
+    from conftest import complete_runtime_manifest
+
+    manifest = tmp_path / "manifest.json"
+    document = complete_runtime_manifest()
+    del document["payload"]
+    manifest.write_text(jsonlib.dumps(document), encoding="utf-8")
+    monkeypatch.setenv("GPUWM_NATIVE_DISTRIBUTION_MANIFEST", str(manifest))
+    check = doctor._distribution_manifest_check()
+    assert check.status == "missing"
+    assert "payload" in check.detail
 
 
 def test_report_and_exit_code_distinguish_verified_from_present():
@@ -1585,3 +1638,299 @@ def test_the_readme_states_doctors_contract_not_the_old_overclaim():
               / "README.md").read_text(encoding="utf-8")
     assert "every gap prints the exact command that fixes it" not in readme
     assert "command or a `#` comment" in readme
+
+
+# ---------------------------------------------------------------------------
+# The paths a RUN resolves.  Doctor said "no gaps" and then a field user's
+# first preparation died three separate ways on paths doctor never asked
+# about; each of those questions is a check now, and each is tested here.
+# ---------------------------------------------------------------------------
+
+def _wheel_shaped_install(monkeypatch, tmp_path):
+    """A package parent with no checkout crate and no staged bridges."""
+
+    site_packages = tmp_path / "site-packages"
+    site_packages.mkdir()
+    staged = tmp_path / "userdir"
+    staged.mkdir()
+    for variable in bridges.BRIDGE_ENV.values():
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setattr(bridges, "crate_dir", lambda: tmp_path / "no-crate")
+    monkeypatch.setattr(bridges, "_package_parent", lambda: site_packages)
+    monkeypatch.setattr(bridges, "default_bridge_dir", lambda: staged)
+    return staged
+
+
+def test_the_route_decoder_check_resolves_what_preparation_will_launch(
+        monkeypatch, tmp_path):
+    """Doctor and the wrapper ask ONE function, so they cannot disagree.
+
+    The wheel failure: the wrapper resolved
+    ``<site-packages>/tools/grib1_bridge/target/release/...`` -- a
+    directory a wheel does not have -- while doctor resolved the shared
+    ladder and reported the bridge ``gpuwm setup`` had staged.  Green
+    report, missing file, one command apart.
+    """
+
+    from tools import prepare_hrrr_wrf
+
+    staged = _wheel_shaped_install(monkeypatch, tmp_path)
+
+    check = doctor._decoder_route_check("hrrr")
+    assert check.status == "missing"
+    assert check.blocking
+    assert "hrrr_grib2_bridge" in check.detail
+    assert str(staged) in check.detail
+
+    decoder = staged / bridges.executable_name("hrrr_grib2_bridge")
+    decoder.write_bytes(
+        b"\x7fELF" + bridges.BRIDGE_ABI_MARKERS["hrrr_grib2_bridge"])
+    check = doctor._decoder_route_check("hrrr")
+    assert check.status == "verified"
+    assert str(decoder.resolve()) in check.detail
+    # And the wrapper resolves the same file, through the same call.
+    assert prepare_hrrr_wrf._decoder({}) == decoder.resolve()
+
+
+def test_a_stale_route_decoder_is_a_blocking_finding(monkeypatch, tmp_path):
+    """Negative control for the ABI half: it exists and still refuses.
+
+    Watched firing -- with the marker present the same file reports
+    ``verified`` in the test above.
+    """
+
+    staged = _wheel_shaped_install(monkeypatch, tmp_path)
+    (staged / bridges.executable_name("hrrr_grib2_bridge")).write_bytes(
+        b"\x7fELFusage: hrrr_grib2_bridge OLD ARGUMENTS")
+    check = doctor._decoder_route_check("hrrr")
+    assert check.status == "missing"
+    assert check.blocking
+    assert "predates" in check.detail
+
+
+def test_every_declared_doctor_source_has_route_checks():
+    for source in doctor.DOCTOR_SOURCES:
+        checks = doctor._source_route_checks(source)
+        assert checks
+        assert all(check.name.startswith(source) for check in checks)
+    with pytest.raises(ValueError, match="unknown doctor source"):
+        doctor._source_route_checks("not-a-source")
+
+
+def test_the_default_estate_carries_every_route(monkeypatch):
+    """A bare ``gpuwm doctor`` reports the routes, not only the estate.
+
+    Behind a flag they would have been invisible to the exact user this
+    was written for: someone who ran ``gpuwm doctor``, read "no gaps",
+    and then hit a route path the report had never resolved.
+    """
+
+    names = {check.name for check in doctor.collect_checks()}
+    for source in doctor.DOCTOR_SOURCES:
+        assert f"{source} route decoder" in names
+    narrowed = {check.name for check in doctor.collect_checks(("hrrr",))}
+    assert "hrrr route decoder" in narrowed
+
+
+def test_the_provenance_check_reports_the_path_a_run_will_take():
+    check = doctor._install_identity_check()
+    assert check.status == "verified"
+    assert any(source in check.detail
+               for source in ("git", "installed-wheel-record",
+                              "gpuwm-native-distribution-manifest"))
+
+
+def test_the_provenance_check_is_a_blocking_gap_when_nothing_can_answer(
+        monkeypatch):
+    """Negative control, watched firing: no identity is a broken install."""
+
+    from gpuwm.runtime_manifest import IdentityError
+
+    def refuse(_root, **_kwargs):
+        raise IdentityError("no provenance to bind")
+
+    monkeypatch.setattr("gpuwm.runtime_manifest.provenance", refuse)
+    check = doctor._install_identity_check()
+    assert check.status == "missing"
+    assert check.blocking
+
+
+def test_the_route_entry_points_import_from_a_scratch_directory():
+    check = doctor._non_git_import_check()
+    assert check.status == "verified", check.detail
+    for module in doctor._ROUTE_ENTRY_MODULES:
+        assert module in check.detail
+
+
+def test_a_route_entry_point_that_cannot_import_is_a_blocking_gap(
+        monkeypatch):
+    """Negative control, watched firing: an unimportable module is a gap."""
+
+    monkeypatch.setattr(
+        doctor, "_ROUTE_ENTRY_MODULES", ("tools.no_such_entry_point",))
+    check = doctor._non_git_import_check()
+    assert check.status == "missing"
+    assert check.blocking
+    assert "no_such_entry_point" in check.detail
+
+
+def test_the_source_flag_narrows_the_report(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    code = doctor.doctor_main(
+        SimpleNamespace(json=True, explain=False, source=["hrrr"]))
+    assert code in (0, 1)
+    import json as jsonlib
+
+    names = {entry["name"] for entry in jsonlib.loads(capsys.readouterr().out)}
+    assert "hrrr route decoder" in names
+
+
+# ---------------------------------------------------------------------------
+# The probe that could never time out.  ``subprocess.run(timeout=...)`` bounds
+# the WAIT, not ``CreateProcess``; a file with a corrupt image header can make
+# the Windows loader raise a modal dialog inside that call, which no timeout
+# reaches and no hidden-window session dismisses.  A release battery froze
+# there twice, probing sixteen bytes of ASCII.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("payload,why", (
+    (b"not machine code", "the sixteen ASCII bytes that froze the battery"),
+    (b"", "an empty file"),
+    (b"MZ", "a truncated MZ stub with no signature offset"),
+    (b"MZ" + b"\x00" * 0x3a + b"\xff\xff\xff\xff", "an out-of-range PE offset"),
+    (b"#!/bin/sh\necho hello\n", "a shell script, not a native image"),
+))
+def test_a_file_that_is_not_a_native_image_is_never_launched(
+        tmp_path, monkeypatch, payload, why):
+    """The fix, at the mechanism: refuse from the bytes, launch nothing.
+
+    ``subprocess.run`` is replaced by a landmine rather than merely
+    timed, because "it finished quickly" is compatible with having got
+    lucky.  The property under test is that the operating system is
+    never asked about a file whose header already answers.
+    """
+
+    def landmine(*_args, **_kwargs):  # pragma: no cover - must not be reached
+        raise AssertionError(
+            f"a non-executable was handed to CreateProcess: {why}")
+
+    monkeypatch.setattr(doctor.subprocess, "run", landmine)
+    fake = tmp_path / doctor.bridges.executable_name("grib1_bridge")
+    fake.write_bytes(payload)
+    if os.name != "nt":
+        fake.chmod(0o755)
+    ok, evidence = doctor._exec_probe(fake)
+    assert not ok
+    assert "corrupt" in evidence
+
+
+def test_the_probe_of_a_non_image_returns_in_bounded_time(tmp_path):
+    """And it does so on THIS box, wall clock, with nothing patched.
+
+    The regression the battery hit was a hang, so the assertion that
+    matters is elapsed time against a real call, not a mocked one.  The
+    budget is generous by three orders of magnitude and still fails a
+    return to the old behaviour, which did not return at all.
+    """
+
+    import time
+
+    fake = tmp_path / doctor.bridges.executable_name("grib1_bridge")
+    fake.write_bytes(b"not machine code")
+    if os.name != "nt":
+        fake.chmod(0o755)
+    started = time.perf_counter()
+    ok, _evidence = doctor._exec_probe(fake)
+    elapsed = time.perf_counter() - started
+    assert not ok
+    assert elapsed < 5.0, f"the probe took {elapsed:.1f} s"
+
+
+def test_the_header_classifier_accepts_real_images_and_nothing_else(tmp_path):
+    """Negative control on the gate itself: a real header still passes.
+
+    Watched firing -- flip the magic bytes and the same file is refused.
+    Without this, a gate that refused everything would look like a fix.
+    """
+
+    from gpuwm import bridges as bridges_module
+
+    elf = tmp_path / "elf.bin"
+    elf.write_bytes(b"\x7fELF" + b"\x00" * 0x40)
+    assert bridges_module.native_executable_format(elf)[0] == "elf"
+
+    pe = tmp_path / "pe.bin"
+    pe.write_bytes(b"MZ" + b"\x00" * 0x3a + (0x80).to_bytes(4, "little")
+                   + b"\x00" * 0x40)
+    assert bridges_module.native_executable_format(pe)[0] == "pe"
+
+    broken = tmp_path / "broken.bin"
+    broken.write_bytes(b"XX" + b"\x00" * 0x40)
+    assert bridges_module.native_executable_format(broken)[0] is None
+
+    assert bridges_module.native_executable_format(
+        tmp_path / "absent.bin")[0] is None
+
+
+def test_launchable_refuses_a_binary_built_for_the_other_platform(tmp_path):
+    from gpuwm import bridges as bridges_module
+
+    other = "elf" if os.name == "nt" else "pe"
+    path = tmp_path / "other.bin"
+    if other == "elf":
+        path.write_bytes(b"\x7fELF" + b"\x00" * 0x40)
+    else:
+        path.write_bytes(b"MZ" + b"\x00" * 0x3a
+                         + (0x80).to_bytes(4, "little") + b"\x00" * 0x40)
+    ok, evidence = bridges_module.launchable(path)
+    assert not ok
+    assert "another platform" in evidence
+
+
+def test_quiet_loader_errors_restores_what_it_found():
+    """The error-mode backstop must not leak into the rest of the run."""
+
+    from gpuwm import bridges as bridges_module
+
+    if os.name != "nt":
+        with bridges_module.quiet_loader_errors():
+            pass
+        return
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    before = kernel32.SetErrorMode(0)
+    kernel32.SetErrorMode(before)
+    with bridges_module.quiet_loader_errors():
+        inside = kernel32.SetErrorMode(0)
+        kernel32.SetErrorMode(inside)
+        assert inside & bridges_module.quiet_loader_errors._FAIL_FAST
+    after = kernel32.SetErrorMode(0)
+    kernel32.SetErrorMode(after)
+    assert after == before
+
+
+def test_the_other_two_probes_share_the_same_gate(tmp_path, monkeypatch):
+    """One mechanism, every probe: the renderer and the fetch backbone.
+
+    Three copies of ``subprocess.run(timeout=...)`` had the same hang,
+    and fixing only the one the battery happened to hit would have left
+    two loaded guns in the same report.
+    """
+
+    from gpuwm import rustwx, rustwx_fetch
+
+    def landmine(*_args, **_kwargs):  # pragma: no cover - must not be reached
+        raise AssertionError("a non-executable was handed to CreateProcess")
+
+    monkeypatch.setattr(rustwx.subprocess, "run", landmine)
+    monkeypatch.setattr(rustwx_fetch.subprocess, "run", landmine)
+    fake = tmp_path / "rw_thing"
+    fake.write_bytes(b"not machine code")
+    if os.name != "nt":
+        fake.chmod(0o755)
+    for probe in (rustwx.probe_renderer, rustwx_fetch.probe_fetch_bin):
+        ok, evidence = probe(fake)
+        assert not ok
+        assert "corrupt" in evidence

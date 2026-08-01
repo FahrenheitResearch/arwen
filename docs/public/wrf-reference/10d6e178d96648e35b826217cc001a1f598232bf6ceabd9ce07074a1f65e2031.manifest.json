@@ -1,0 +1,18 @@
+{
+  "schema": "gpuwm.wrf-reference-manifest/v1",
+  "wrf_version": "4.6.1",
+  "wrf_commit": null,
+  "config_sha256": "10d6e178d96648e35b826217cc001a1f598232bf6ceabd9ce07074a1f65e2031",
+  "wrf_exe_sha256": null,
+  "build_recipe_sha256": null,
+  "namelist_sha256": null,
+  "reference_wrfout_sha256": null,
+  "build_recipe": null,
+  "namelists": null,
+  "unmeasured": {
+    "wrf_exe_sha256": "the reference binary lives on the campaign compute nodes, not in this repository; its bytes must be hashed there and the digest committed here. Nothing in this tree can measure it, and a digest nobody read is not a receipt.",
+    "build_recipe_sha256": "the build recipe is committed beside this manifest once the recipe that produced the reference binary is transcribed from the node it was built on; the digest is then the SHA-256 of that committed file.",
+    "namelist_sha256": "namelist.wps and namelist.input for the reference run are recorded with the run metadata on the compute node and are not in this repository yet.",
+    "reference_wrfout_sha256": "the reference wrfout stream is not redistributable and is not in this repository; only its per-frame digests belong here, and they must be taken from the frames the comparison actually scored."
+  }
+}

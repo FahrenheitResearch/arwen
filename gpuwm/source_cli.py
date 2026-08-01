@@ -236,8 +236,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--namelist-input", type=Path)
     parser.add_argument(
         "--physics-profile",
-        choices=SINGLE_DOMAIN_PHYSICS_PROFILES,
-        help="explicit single-domain GPUWM forecast physics contract",
+        help=(
+            "optional assertion that the experiment IS this shipped "
+            "single-domain suite, refused on any switch drift; omitted, "
+            "the config's own physics is prepared as written and its "
+            "WRF-verification status is reported (the HRRR route still "
+            "requires a shipped profile: its cold-start evidence "
+            "contract is profile-keyed)"
+        ),
     )
     parser.add_argument(
         "--ack",
@@ -456,26 +462,15 @@ def _distribution_decoder(
         os.environ.get(environment_name) if environment_name is not None else None
     )
     installed = Path(installed_raw).resolve() if installed_raw else None
-    distribution = os.environ.get("GPUWM_NATIVE_DISTRIBUTION_MANIFEST")
-    if distribution is not None:
-        manifest = Path(distribution).resolve()
-        if not manifest.is_file():
-            raise ValueError(
-                "GPUWM_NATIVE_DISTRIBUTION_MANIFEST does not name a file"
-            )
-        try:
-            payload = _load_json_document(
-                manifest,
-                "native distribution manifest",
-            )
-        except (OSError, TypeError, ValueError) as error:
-            raise ValueError(f"invalid native distribution manifest: {error}") from error
-        if not isinstance(payload, dict):
-            raise ValueError("native distribution manifest must be a JSON object")
-        if payload.get("schema") != "gpuwm-native-wrf-runtime-v1" or payload.get(
-            "status"
-        ) != "READY":
-            raise ValueError("native distribution manifest is not READY runtime-v1")
+    # One validator for the whole schema, at the first read.  This used
+    # to accept any document carrying schema+status and then bind
+    # decoders out of it, so a manifest that was already invalid in
+    # three other fields got as far as launching a bridge.
+    from gpuwm.runtime_manifest import manifest_from_environment
+
+    bound = manifest_from_environment()
+    if bound is not None:
+        manifest, payload = bound
         if installed is None:
             raise ValueError(
                 f"installed runtime did not export required {environment_name}"
@@ -731,7 +726,17 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
         or args.history_interval_seconds <= 0.0
     ):
         errors.append("--history-interval-seconds must be positive and finite")
-    if args.root_preparation is None:
+    if (args.physics_profile is not None
+            and args.physics_profile not in SINGLE_DOMAIN_PHYSICS_PROFILES):
+        # HRRR-route-owned refusal, not a suite whitelist: the HRRR
+        # cold-start evidence contract (tools/prepare_hrrr_wrf.py) is
+        # keyed by shipped profile id and has no entry to consult for
+        # any other name.
+        errors.append(
+            f"--physics-profile {args.physics_profile!r} has no HRRR "
+            f"cold-start evidence contract; this route offers "
+            f"{list(SINGLE_DOMAIN_PHYSICS_PROFILES)!r}")
+    elif args.root_preparation is None:
         from gpuwm.physics_compat import (
             validate_single_domain_physics_profile,
         )
@@ -915,13 +920,18 @@ def _required_gfs_args(args: argparse.Namespace) -> list[str]:
                 pass
     acknowledgements, _ = acknowledgement_delivery(
         flag=tuple(args.ack), toml=toml_acknowledgements)
-    try:
-        validate_single_domain_physics_profile(
-            WSM6_PROFILE_ID
-            if args.physics_profile is None else args.physics_profile,
-            expert_acknowledgements=acknowledgements)
-    except ValueError as exc:
-        errors.append(str(exc))
+    # Validated only when the caller NAMED a profile.  The old WSM6
+    # substitution made "no profile given" indistinguishable from "WSM6
+    # requested" one process later; an unnamed config's own suite is
+    # prepared as written and its verification status reported (owner
+    # ruling 2026-07-31).
+    if args.physics_profile is not None:
+        try:
+            validate_single_domain_physics_profile(
+                args.physics_profile,
+                expert_acknowledgements=acknowledgements)
+        except ValueError as exc:
+            errors.append(str(exc))
     return errors
 
 
@@ -1697,11 +1707,21 @@ def main(argv: list[str] | None = None) -> int:
             )
         from gpuwm.namelist_compat import analyze_namelists
 
-        report = analyze_namelists(
-            args.wps_namelist,
-            args.namelist_input,
-            source_top_pressure_pa=args.source_top_pressure_pa,
-        )
+        # This is step one of docs/migrating-from-wps.md, so it is the
+        # first thing a person migrating an existing WRF setup runs --
+        # and the commonest way to get it wrong is to name a file that
+        # is not there yet.  `gpuwm import-namelist` answers that in one
+        # sentence; this surface used to answer it with a five-frame
+        # traceback ending in pathlib.  Same condition, same sentence.
+        try:
+            report = analyze_namelists(
+                args.wps_namelist,
+                args.namelist_input,
+                source_top_pressure_pa=args.source_top_pressure_pa,
+            )
+        except (OSError, UnicodeDecodeError, ValueError) as error:
+            print(f"--namelist-support-report: {error}", file=sys.stderr)
+            return EXIT_CONFIG
         print(_json(report))
         return 0 if report["verdict"] == "PASS" else EXIT_CONFIG
 

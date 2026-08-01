@@ -46,6 +46,124 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON constant {value!r} is not allowed")
 
 
+def iter_maturity_surfaces(registry: Mapping[str, object]):
+    """Yield ``(path, maturity)`` for every surface carrying a maturity.
+
+    The walk is structural rather than a list of known surfaces, so a
+    maturity introduced on a surface nobody thought of is still checked.
+    ``maturity_ladder`` and ``evidence_axes`` are the vocabulary itself and
+    are skipped: their rung names are definitions, not uses.
+    """
+
+    def walk(node: object, path: str):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "maturity" and isinstance(value, str):
+                    yield f"{path}.maturity", value
+                else:
+                    yield from walk(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                yield from walk(value, f"{path}[{index}]")
+
+    for key, value in registry.items():
+        if key in ("maturity_ladder", "evidence_axes"):
+            continue
+        yield from walk(value, key)
+
+
+def _enforce_evidence_axes(registry: Mapping[str, object]) -> None:
+    """Load-time two-axis membership enforcement (owner decision D-22).
+
+    Enforced here, at the loader, because the repository's own ethos is
+    that a malformed document does not get to reach a caller.  What is
+    enforced is MEMBERSHIP on both axes -- every maturity value at every
+    surface names a rung, every implemented option's scientific_evidence
+    names an enum entry -- which cannot take a working template out of
+    service: a template only fails it by carrying a word the vocabulary
+    does not define.  The composition rule is deliberately NOT enforced
+    here (D-16): clause C2 flags six shipped templates, and a blocking
+    loader would take WSM6 and both NSSL-2 profiles out of service, so it
+    is a registry-document invariant that a test enforces instead.
+    """
+
+    ladder = registry.get("maturity_ladder")
+    if not isinstance(ladder, dict):
+        raise RuntimeError("bundled GPUWM physics registry lacks the "
+                           "maturity_ladder block")
+    order = ladder.get("order")
+    rungs = ladder.get("rungs")
+    if not isinstance(order, list) or not isinstance(rungs, dict):
+        raise RuntimeError("maturity_ladder must carry an order list and a "
+                           "rungs map")
+    if list(rungs) and set(order) != set(rungs):
+        raise RuntimeError(
+            "maturity_ladder.order and maturity_ladder.rungs disagree: "
+            f"{sorted(set(order) ^ set(rungs))}")
+
+    axes = registry.get("evidence_axes")
+    if not isinstance(axes, dict):
+        raise RuntimeError("bundled GPUWM physics registry lacks the "
+                           "evidence_axes block")
+    for axis_key in ("maturity", "scientific"):
+        if not isinstance(axes.get(axis_key), dict):
+            raise RuntimeError(f"evidence_axes lacks the {axis_key!r} axis")
+    if axes.get("conformance_implies_scientific_validation") is not False:
+        raise RuntimeError(
+            "evidence_axes.conformance_implies_scientific_validation must be "
+            "present and false: agreement with WRF is agreement with a "
+            "model and never implies scientific validation")
+    if axes["maturity"].get("rungs") != rungs:
+        raise RuntimeError(
+            "evidence_axes.maturity.rungs and maturity_ladder.rungs are two "
+            "orderings of the same names; they must be identical")
+
+    in_use = set()
+    for path, maturity in iter_maturity_surfaces(registry):
+        if maturity not in rungs:
+            raise RuntimeError(
+                f"{path} carries maturity {maturity!r}, which names no rung "
+                f"of maturity_ladder; rungs are {sorted(rungs)}")
+        in_use.add(maturity)
+    if in_use != set(rungs):
+        raise RuntimeError(
+            "maturity_ladder.rungs must equal the maturity values in use; "
+            f"unused rungs {sorted(set(rungs) - in_use)}, "
+            f"undeclared values {sorted(in_use - set(rungs))}")
+
+    scientific_enum = axes["scientific"].get("enum")
+    if not isinstance(scientific_enum, dict) or not scientific_enum:
+        raise RuntimeError("evidence_axes.scientific.enum is missing")
+    components = registry.get("components")
+    for component_id, component in (components or {}).items():
+        if not isinstance(component, dict):
+            continue
+        for option_id, option in component.get("options", {}).items():
+            if not isinstance(option, dict) or option.get(
+                    "implemented") is not True:
+                continue
+            value = option.get("scientific_evidence")
+            if value not in scientific_enum:
+                raise RuntimeError(
+                    f"components.{component_id}.options.{option_id}"
+                    f".scientific_evidence is {value!r}, which names no "
+                    f"entry of evidence_axes.scientific.enum")
+
+    policy = registry.get("warning_policy")
+    policy = policy if isinstance(policy, dict) else {}
+    for tier, key in (("nonwarning", "nonwarning_maturities"),
+                      ("warn", "warn_maturities")):
+        computed = [
+            name for name in order
+            if isinstance(rungs.get(name), dict)
+            and rungs[name].get("warning_tier") == tier
+        ]
+        if policy.get(key) != computed:
+            raise RuntimeError(
+                f"warning_policy.{key} is {policy.get(key)!r} but the ladder "
+                f"computes {computed!r}; the ladder is the single source")
+
+
 def _load_registry() -> dict[str, object]:
     value = json.loads(
         _REGISTRY_PATH.read_text(encoding="utf-8"),
@@ -57,10 +175,42 @@ def _load_registry() -> dict[str, object]:
         raise RuntimeError("bundled GPUWM physics plan schema drift")
     if value.get("validation_schema") != VALIDATION_SCHEMA:
         raise RuntimeError("bundled GPUWM physics validation schema drift")
+    _enforce_evidence_axes(value)
     return value
 
 
 _REGISTRY = _load_registry()
+
+#: The one ordering of maturity names in this module, read from the
+#: generated document rather than restated here.  Every consumer that needs
+#: to compare two maturities -- the warning tiers below, the composition
+#: ceiling in tests/test_physics_registry_composition.py -- reads this.
+MATURITY_RANK: dict[str, int] = {
+    name: rank
+    for rank, name in enumerate(_REGISTRY["maturity_ladder"]["order"])
+}
+
+
+def maturity_rank(maturity: object) -> int | None:
+    """Rank of a maturity on the conformance ladder, or None if unknown."""
+
+    return MATURITY_RANK.get(maturity) if isinstance(maturity, str) else None
+
+
+def _ladder_tier(registry: Mapping[str, object], tier: str) -> list[str]:
+    """Return the ladder-ordered maturities in one warning tier."""
+
+    ladder = registry.get("maturity_ladder")
+    ladder = ladder if isinstance(ladder, dict) else {}
+    order = ladder.get("order")
+    rungs = ladder.get("rungs")
+    if not isinstance(order, list) or not isinstance(rungs, dict):
+        return []
+    return [
+        name for name in order
+        if isinstance(rungs.get(name), dict)
+        and rungs[name].get("warning_tier") == tier
+    ]
 
 
 def canonical_json(value: object) -> str:
@@ -525,12 +675,12 @@ def validate_physics_plan(
     parameter_specs = parameter_specs if isinstance(parameter_specs, dict) else {}
     warning_policy = selected_registry.get("warning_policy", {})
     warning_policy = warning_policy if isinstance(warning_policy, dict) else {}
-    warn_maturities = warning_policy.get("warn_maturities", [])
-    if not isinstance(warn_maturities, list):
-        warn_maturities = []
-    nonwarning_maturities = warning_policy.get("nonwarning_maturities", [])
-    if not isinstance(nonwarning_maturities, list):
-        nonwarning_maturities = []
+    # Both tiers come off the ladder, not out of warning_policy: the policy
+    # block is the document's readable echo of them and the loader refuses a
+    # registry where the two disagree, so reading the ladder here leaves
+    # exactly one ordering of maturity names in this module.
+    warn_maturities = _ladder_tier(selected_registry, "warn")
+    nonwarning_maturities = _ladder_tier(selected_registry, "nonwarning")
     warn_unknown_maturity = (
         warning_policy.get("unknown_implemented_maturity") == "warn"
     )
@@ -1359,11 +1509,7 @@ def validate_physics_plan(
                     )
                     continue
                 maturity = rule.get("maturity")
-                warning_policy = selected_registry.get("warning_policy", {})
-                warning_maturities = (
-                    warning_policy.get("warn_maturities", [])
-                    if isinstance(warning_policy, dict) else []
-                )
+                warning_maturities = _ladder_tier(selected_registry, "warn")
                 if maturity in warning_maturities:
                     warnings.append(
                         _issue(

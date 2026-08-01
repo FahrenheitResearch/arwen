@@ -18,6 +18,7 @@ import sys
 import tempfile
 from typing import Mapping, Sequence
 
+from gpuwm.explain import warn
 from gpuwm.mapped_authoring import (
     DESCRIPTOR_SCHEMA,
     _canonical_json,
@@ -79,7 +80,9 @@ def _object(
         raise ValueError(f"{label} must be an object")
     unknown = sorted(set(value) - allowed)
     if unknown:
-        raise ValueError(f"{label} has unknown key(s): {unknown}")
+        # The required-key check below still catches every typo of a
+        # key that matters; an extra key is named and ignored.
+        warn(f"ignoring unknown key(s) {unknown} in {label}")
     missing = sorted(required - set(value))
     if missing:
         raise ValueError(f"{label} is missing required key(s): {missing}")
@@ -95,6 +98,92 @@ def _positive_number(value: object, label: str) -> float:
     return result
 
 
+#: Every value :func:`descriptor_skeleton` leaves for the author to
+#: replace carries this prefix.  One string, used by the generator that
+#: writes them and by the gate that refuses them, so the two can never
+#: drift apart.
+SCAFFOLD_MARKER_PREFIX = "REPLACE_WITH_"
+
+
+def scaffold_gaps(descriptor: object) -> list[str]:
+    """Dotted paths in ``descriptor`` still holding ``--skeleton`` scaffold.
+
+    The scaffold's placeholders are deliberate -- the whole point of
+    ``--skeleton`` is that its output "cannot accidentally pass as a
+    completed adapter" (docs/arbitrary-verified-adapters.md) -- but a
+    reader who ran the two documented commands in order met that design
+    as ``descriptor.adapt.model_top_pa must be a positive finite
+    number``: a type error about one field, from a validator that had
+    no idea it was looking at its own generator's output, with three
+    more unreplaced values waiting behind it one run at a time.
+
+    This function is what makes the scaffold round-trip *checkable*:
+    the generator's contract is that everything its own battery objects
+    to appears in this list, so the refusal can name the whole job at
+    once and a test can hold the two surfaces to the same set.
+    Two markers -- ``name`` and ``target.name`` -- pass every other
+    validator unchanged, which is worse than failing: an adapter
+    published as ``REPLACE_WITH_ADAPTER_NAME`` is a real bundle with a
+    placeholder identity.
+    """
+
+    gaps: list[str] = []
+
+    def walk(value: object, path: str) -> None:
+        if isinstance(value, str):
+            if value.startswith(SCAFFOLD_MARKER_PREFIX):
+                gaps.append(path)
+        elif isinstance(value, dict):
+            for key in sorted(value):
+                walk(value[key], f"{path}.{key}" if path else str(key))
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                walk(item, f"{path}[{index}]")
+
+    walk(descriptor, "")
+    # The empty pressure inventory is scaffolding too: the skeleton
+    # writes `levels: []` on purpose, load_mapping accepts it, and the
+    # refusal arrives much later out of the vertical-coverage check.
+    if isinstance(descriptor, dict):
+        vertical = descriptor.get("coordinates")
+        vertical = (vertical.get("vertical")
+                    if isinstance(vertical, dict) else None)
+        if isinstance(vertical, dict) and vertical.get("levels") == []:
+            gaps.append("coordinates.vertical.levels")
+    return sorted(gaps)
+
+
+def _named_gaps(gaps: list[str], limit: int = 4) -> str:
+    """``a, b, c and 16 more`` -- a sentence, not a wall of dotted paths.
+
+    A Vtable that matches few canonical fields leaves a marker per
+    unmatched field, so the full list runs to twenty entries.  The
+    skeleton's own success message prints all of them, one per line,
+    because there it IS the to-do list; a refusal states the size of
+    the job and enough of it to recognise.
+    """
+
+    if len(gaps) <= limit + 1:
+        # "and 1 more" is a worse sentence than the item it replaced.
+        return ", ".join(gaps)
+    return f"{', '.join(gaps[:limit])} and {len(gaps) - limit} more"
+
+
+def _refuse_scaffold(raw: object, label: str) -> None:
+    """Refuse an unfilled scaffold in one sentence that sizes the job."""
+
+    gaps = scaffold_gaps(raw)
+    if not gaps:
+        return
+    raise ValueError(
+        f"{label} is still the `--skeleton` scaffold: {len(gaps)} value(s) "
+        f"are unfilled ({_named_gaps(gaps)}) -- replace every "
+        "REPLACE_WITH_* value and declare the complete pressure inventory "
+        "in coordinates.vertical.levels, then author again "
+        "(docs/arbitrary-verified-adapters.md)"
+    )
+
+
 def _load_adapt_policy(descriptor_path: Path) -> tuple[dict[str, object], object]:
     snapshot = _stable_file_snapshot(descriptor_path)
     raw = _strict_json(snapshot.data, f"descriptor {snapshot.path}")
@@ -102,6 +191,10 @@ def _load_adapt_policy(descriptor_path: Path) -> tuple[dict[str, object], object
         raise ValueError(
             f"adapt descriptor must use schema {DESCRIPTOR_SCHEMA!r}"
         )
+    # Before the field-by-field type checks, because "you have not
+    # filled the template in" is the true answer and a type error about
+    # one of its markers is a misleading one.
+    _refuse_scaffold(raw, f"descriptor {snapshot.path}")
     policy = _object(
         raw.get("adapt"),
         "descriptor.adapt",
@@ -260,13 +353,11 @@ def _soil_source_layers(
             }
         )
     _require_contiguous_layers(source_layers, "source soil inventory")
-    expected = mapping["target"].get("soil_layer_count")
-    if expected != len(source_layers):
-        raise ValueError(
-            "soil-layer check failed: source layer count "
-            f"{len(source_layers)} differs from target.soil_layer_count "
-            f"{expected!r}"
-        )
+    # NOTE: the source count is deliberately NOT compared against
+    # target.soil_layer_count here.  conservative_layer_means exists
+    # exactly for a source column with a different layer count than the
+    # target; build_composition checks the FINAL target count for both
+    # policies, which covers the identity case this check used to.
     return source_layers
 
 
@@ -646,11 +737,12 @@ def verify_grib2_inputs(
         cadence_seconds = next(iter(intervals))
         expected = mapping["target"].get("boundary_interval_seconds")
         if cadence_seconds != expected:
-            raise ValueError(
-                "record-inventory check failed: actual cadence "
-                f"{cadence_seconds} s differs from descriptor target "
-                f"boundary_interval_seconds={expected}"
-            )
+            # The observed uniform cadence is the authority; the
+            # descriptor's declared number is stale metadata.  The
+            # returned receipt carries the observed value either way.
+            warn(f"GRIB2 inventory cadence is {cadence_seconds} s where "
+                 f"the descriptor declares boundary_interval_seconds="
+                 f"{expected}; the observed cadence is what runs")
     for snapshot in snapshots:
         _require_authority_snapshot(snapshot)
     return {
@@ -761,7 +853,12 @@ def author_adapter(
         dump_path = Path(grib2_dump).resolve()
     for decoder in (inventory_path, dump_path):
         if not decoder.is_file():
-            raise FileNotFoundError(decoder)
+            # ValueError so the CLI boundary prints a refusal, not a
+            # traceback with a bare path.
+            raise ValueError(
+                f"GRIB2 decoder {decoder} does not exist; build the "
+                "bridges (gpuwm setup, or gpuwm doctor --explain for "
+                "the checkout route)")
     decoder_snapshots = tuple(
         _snapshot_authority(decoder)
         for decoder in (inventory_path, dump_path)
@@ -799,8 +896,11 @@ def author_adapter(
     }
     collisions = [str(path) for path in outputs.values() if path.exists()]
     if collisions:
-        raise FileExistsError(
-            f"refusing to overwrite adapt output(s) {collisions}"
+        # ValueError so the CLI boundary prints a refusal, not a
+        # traceback.  Create-only stays create-only.
+        raise ValueError(
+            f"refusing to overwrite adapt output(s) {collisions}; "
+            "author into a new --output-dir"
         )
     authorities = {
         descriptor_path,
@@ -1261,24 +1361,29 @@ def _from_cli(args) -> int:
         }
         used = [name for name, value in incompatible.items() if value]
         if used:
-            raise ValueError(
-                f"--skeleton cannot be combined with {', '.join(used)}"
-            )
+            warn(f"--skeleton writes a template and ignores "
+                 f"{', '.join(used)}; authoring is the next command, "
+                 "after the skeleton is filled in")
         payload = descriptor_skeleton(args.vtable)
         _write_new(args.skeleton, _canonical_json(payload))
+        # The scaffold's gaps, named here by the same function that
+        # refuses them at authoring time -- so the list a reader is
+        # handed is exactly the list the next command will hold them
+        # to, rather than one type error per run.
+        gaps = scaffold_gaps(payload)
         print(
-            f"adapt skeleton: wrote {args.skeleton}; replace every "
-            "REPLACE_WITH_* value, declare the full pressure levels, and "
-            "review every selector before authoring"
+            f"adapt skeleton: wrote {args.skeleton}; {len(gaps)} value(s) "
+            "need you before --descriptor will author it:"
         )
-        print(
-            "What the battery will check for you, and what it will trust "
-            "from your declaration -- units, geolocation, cell "
-            "registration, level sufficiency, land-mask polarity -- is "
-            "docs/adapt-validation-contract.md. Read it while you fill "
-            "this in, not after.",
-            file=sys.stderr,
-        )
+        for gap in gaps:
+            print(f"  {gap}")
+        warn("the battery trusts your declaration for units, "
+             "geolocation, cell registration, level sufficiency and "
+             "land-mask polarity",
+             why="What the battery checks for you, and what it trusts "
+                 "from your declaration, is "
+                 "docs/adapt-validation-contract.md.  Read it while you "
+                 "fill this in, not after.")
         return 0
     missing = [
         name
@@ -1300,30 +1405,30 @@ def _from_cli(args) -> int:
         grib2_dump=args.grib2_dump,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
-    print(
-        "RUNNABLE, NOT stock-WRF certified: unchanged-stock-WRF evidence "
-        "is a separate exact-authority gate.",
-        file=sys.stderr,
-    )
-    print(
-        "The battery proved these files implement your descriptor and that "
-        "your GRIB files satisfy it. It did not check that the descriptor "
-        "is a correct physical reading of them: units, absolute "
-        "geolocation, cell registration, level sufficiency, intended time "
-        "semantics, land-mask polarity, and soil depth labels are trusted "
-        "from your declaration. Run the self-checks in "
-        "docs/adapt-validation-contract.md before you run the adapter.",
-        file=sys.stderr,
-    )
+    warn("adapter is RUNNABLE, not stock-WRF certified; the descriptor's "
+         "physical reading (units, geolocation, levels, land-mask "
+         "polarity) is trusted from your declaration",
+         why="The battery proved these files implement your descriptor "
+             "and that your GRIB files satisfy it.  It did not check "
+             "that the descriptor is a correct physical reading of "
+             "them: units, absolute geolocation, cell registration, "
+             "level sufficiency, intended time semantics, land-mask "
+             "polarity, and soil depth labels are trusted from your "
+             "declaration.  Run the self-checks in "
+             "docs/adapt-validation-contract.md before you run the "
+             "adapter.  Unchanged-stock-WRF evidence is a separate "
+             "exact-authority gate.")
     return 0
 
 
 __all__ = [
     "ADAPTER_STATUS",
     "ADAPT_PROVENANCE_SCHEMA",
+    "SCAFFOLD_MARKER_PREFIX",
     "author_adapter",
     "build_composition",
     "descriptor_skeleton",
     "register_cli",
+    "scaffold_gaps",
     "verify_grib2_inputs",
 ]

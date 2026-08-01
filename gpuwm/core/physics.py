@@ -42,7 +42,10 @@ from gpuwm.core import constants as c
 from gpuwm.core.noah import (_F2D as NOAH_FIELDS_2D,
                              _F3D as NOAH_FIELDS_3D,
                              launch_noah, load_tables, pack_params)
-from gpuwm.core.microphysics import MicrophysicsDiagnostics
+from gpuwm.core.microphysics import (
+    MicrophysicsDiagnostics,
+    validate_surface_diagnostics,
+)
 from gpuwm.core.mynn_sfclay import (
     MYNN_SURFACE_OUTPUTS,
     MynnSurfaceResult,
@@ -85,13 +88,20 @@ from gpuwm.core.mynn_pbl_runtime import (
 from gpuwm.core.sfclay import (SFCLAY_OUTPUTS, SFClayResult,
                                launch_sfclay, sfclay)
 from gpuwm.core.state import DTYPE, DomainState
-from gpuwm.core.ysu import launch_ysu
+from gpuwm.core.ysu import launch_ysu, validate_ysu_outputs
 from gpuwm.ingest.soil import NOAH_LAYER_THICKNESS_M
 
 
 _WSM6_MINOR_DT_SECONDS = np.float32(120.0)
 _FP32_SIGNIFICAND_SCALE = 1 << 24
 _FP32_ONE_BITS = 0x3F800000
+_MICROPHYSICS_DIAGNOSTIC_LABELS = {
+    "rainnc": "RAINNC", "rainncv": "RAINNCV", "sr": "SR",
+    "snownc": "SNOWNC", "snowncv": "SNOWNCV",
+    "graupelnc": "GRAUPELNC", "graupelncv": "GRAUPELNCV",
+    "hailnc": "HAILNC", "hailncv": "HAILNCV",
+}
+_MICROPHYSICS_VALIDATION_NAMES = tuple(_MICROPHYSICS_DIAGNOSTIC_LABELS)
 
 
 def _wsm6_sr_roundoff_limit(dt: float) -> tuple[np.float32, int, int]:
@@ -461,6 +471,48 @@ def _checked_array(value, shape: tuple[int, ...], name: str) -> cp.ndarray:
     return _validated_array(value, shape, name).copy()
 
 
+def _native_microphysics_diagnostics(
+        result: MicrophysicsDiagnostics,
+        targets: MicrophysicsDiagnostics,
+        slots: Mapping[str, str],
+        shape: tuple[int, ...]) -> bool:
+    """Whether a scheme returned the driver's exact canonical FP32 arrays."""
+    for name in _MICROPHYSICS_VALIDATION_NAMES:
+        value = getattr(result, name)
+        if name not in slots:
+            if value is not None:
+                return False
+            continue
+        target = getattr(targets, name)
+        if (value is not target or not isinstance(value, cp.ndarray)
+                or value.shape != shape or value.dtype != DTYPE
+                or not value.flags.c_contiguous):
+            return False
+    return True
+
+
+def _validate_native_microphysics(
+        result: MicrophysicsDiagnostics,
+        slots: Mapping[str, str],
+        sr_upper: np.float32,
+        status: cp.ndarray) -> tuple[str | None, bool, bool]:
+    """Validate canonical scheme outputs with one kernel and one readback."""
+    sr = result.sr
+    active = sum(
+        1 << bit for bit, name in enumerate(_MICROPHYSICS_VALIDATION_NAMES)
+        if name in slots)
+    values = tuple(
+        getattr(result, name) if name in slots else sr
+        for name in _MICROPHYSICS_VALIDATION_NAMES)
+    flags = validate_surface_diagnostics(
+        values, active, sr_upper, status)
+    invalid = next(
+        (name for bit, name in enumerate(_MICROPHYSICS_VALIDATION_NAMES)
+         if flags & (1 << bit)),
+        None)
+    return invalid, bool(flags & (1 << 16)), bool(flags & (1 << 17))
+
+
 def _specified_mass_mask(array: cp.ndarray) -> None:
     """WRF add_a2a physical-boundary exclusion (one mass cell, all four
     sides).  WRF applies it whenever ``specified .or. nested``
@@ -473,8 +525,16 @@ def _specified_mass_mask(array: cp.ndarray) -> None:
     array[..., :, -1] = 0.0
 
 
-def validate_ysu_tendencies(ysu: Mapping[str, cp.ndarray]) -> None:
+def validate_ysu_tendencies(
+        ysu: Mapping[str, cp.ndarray], *,
+        status: cp.ndarray | None = None) -> None:
     """Reject non-finite YSU output without modifying finite tendencies."""
+    if status is not None:
+        invalid = validate_ysu_outputs(ysu, status)
+        if invalid is not None:
+            raise FloatingPointError(
+                f"YSU returned non-finite {invalid} tendency")
+        return
     for name, value in ysu.items():
         if not bool(cp.isfinite(value).all()):
             raise FloatingPointError(f"YSU returned non-finite {name} tendency")
@@ -531,6 +591,97 @@ class CumulusResult:
     rainc: cp.ndarray | None = None
     nca_seconds: cp.ndarray | None = None
     pratec: cp.ndarray | None = None
+
+
+class _NativeKFCumulusResult(CumulusResult):
+    """Transient receipt for outputs owned by the exact production KF."""
+
+    __slots__ = ("_owner",)
+
+    def __init__(self, *, owner, **values):
+        super().__init__(**values)
+        self._owner = owner
+
+
+_KF_VALIDATION_FIELDS = (
+    "rthcuten", "rqvcuten", "rqccuten", "rqicuten",
+    "rqrcuten", "rqscuten", "nca_seconds", "pratec",
+)
+_KF_VALIDATION_LABELS = (
+    "cumulus rthcuten", "cumulus rqvcuten", "cumulus rqccuten",
+    "cumulus rqicuten", "cumulus rqrcuten", "cumulus rqscuten",
+    "cumulus nca_seconds", "cumulus PRATEC",
+)
+
+
+def _is_native_kf_result(
+        result: CumulusResult, cumulus_callable, state: DomainState,
+        cfg: RunConfig, shape: tuple[int, int, int]) -> bool:
+    """Whether KF output provenance and metadata admit batched validation."""
+    from gpuwm.core.kf import (
+        KFPhaseMode,
+        KainFritsch,
+        kf_phase_mode_for_microphysics,
+    )
+
+    if (int(cfg.cu_physics) != 1
+            or type(cumulus_callable) is not KainFritsch
+            or type(result) is not _NativeKFCumulusResult
+            or result._owner is not cumulus_callable):
+        return False
+    try:
+        phase_mode = kf_phase_mode_for_microphysics(cfg.mp_physics)
+    except (TypeError, ValueError):
+        return False
+    separate_ice = phase_mode == KFPhaseMode.SEPARATE_ICE_SNOW
+    separate_snow = phase_mode in (
+        KFPhaseMode.SEPARATE_SNOW, KFPhaseMode.SEPARATE_ICE_SNOW)
+    if ((result.rqicuten is not None) != separate_ice
+            or (result.rqscuten is not None) != separate_snow
+            or (getattr(state, "qi", None) is not None) != separate_ice
+            or (getattr(state, "qs", None) is not None) != separate_snow):
+        return False
+    for name in _KF_VALIDATION_FIELDS[:6]:
+        value = getattr(result, name)
+        if value is None:
+            if name in ("rqicuten", "rqscuten"):
+                continue
+            return False
+        if (type(value) is not cp.ndarray or value.shape != shape
+                or value.dtype != DTYPE or not value.flags.c_contiguous):
+            return False
+    surface_shape = shape[1:]
+    for name in _KF_VALIDATION_FIELDS[6:]:
+        value = getattr(result, name)
+        if (type(value) is not cp.ndarray or value.shape != surface_shape
+                or value.dtype != DTYPE or not value.flags.c_contiguous):
+            return False
+    return True
+
+
+def _validate_native_kf_result(
+        result: _NativeKFCumulusResult, state: DomainState) -> None:
+    """Validate native KF arrays with one ordered device status record."""
+    from gpuwm.core.kf import validate_kf_outputs
+
+    values = []
+    active = 0
+    placeholder = result.rthcuten
+    for bit, name in enumerate(_KF_VALIDATION_FIELDS):
+        value = getattr(result, name)
+        if value is None:
+            values.append(placeholder)
+        else:
+            values.append(value)
+            active |= 1 << bit
+    invalid = validate_kf_outputs(
+        tuple(values), active,
+        state.scratch(
+            (1,), "physics_validation_status").view(cp.uint32))
+    for bit, label in enumerate(_KF_VALIDATION_LABELS):
+        if invalid & (1 << bit):
+            raise FloatingPointError(
+                f"{label} contains a non-finite value")
 
 
 @dataclass
@@ -740,7 +891,7 @@ def _prepare_atmosphere(state: DomainState) -> dict[str, cp.ndarray]:
     p_interface[nz] = state.p_top
     # Sequential downward integration in the Fortran's loop order.
     for k in range(nz - 1, -1, -1):
-        p_interface[k] = p_interface[k + 1] - layer[k]
+        cp.subtract(p_interface[k + 1], layer[k], out=p_interface[k])
     pressure = 0.5 * (p_interface[:-1] + p_interface[1:])
 
     qv = (state.qv if state.qv is not None
@@ -933,6 +1084,11 @@ class PhysicsDriver:
         self._pending_rainbl = zero_surface()
         self.rainc = (state.scratch(state.mup.shape, "cu_rainc")
                       if cfg.cu_physics else None)
+        # Host mirror of an exceptional in-flight KF expiry transition.
+        # The device mask remains authoritative for direct/synthetic callers;
+        # this flag lets the normal compute-entry recovery path avoid probing
+        # a mask that the prior step already finalized.
+        self._cu_expiry_pending = False
         if cfg.cu_physics:
             # WRF KF driver persistence (Task 6b).  kf_init seeds
             # NCA = -100 so every column is eligible on the first call
@@ -984,47 +1140,61 @@ class PhysicsDriver:
         shape = self.state.mup.shape
 
         slots = dict(microphysics_scratch_slots(self.mp_physics))
-        labels = {"rainnc": "RAINNC", "rainncv": "RAINNCV", "sr": "SR",
-                  "snownc": "SNOWNC", "snowncv": "SNOWNCV",
-                  "graupelnc": "GRAUPELNC",
-                  "graupelncv": "GRAUPELNCV", "hailnc": "HAILNC",
-                  "hailncv": "HAILNCV"}
+        labels = _MICROPHYSICS_DIAGNOSTIC_LABELS
         if slots:
-            validated = {}
             required = {"rainnc", "rainncv", "sr"}
             if self.mp_physics == 18:
                 # NSSL owns every frozen-category accumulator/increment in
                 # its named contract.  Missing one would silently retain a
                 # stale canonical scratch field across physics calls.
                 required.update(slots)
-            for name in labels:
-                value = getattr(result, name)
-                if name not in slots:
-                    if value is not None:
-                        raise ValueError(
-                            f"microphysics {labels[name]} is not produced "
-                            f"by mp_physics={self.mp_physics}")
-                    continue
-                if value is None:
-                    if name in required:
-                        raise ValueError(
-                            f"microphysics {labels[name]} may not be None")
-                    # Existing WSM6/Morrison attachments may omit their
-                    # optional frozen-category diagnostics; the canonical
-                    # zero-filled slot remains for those schemes.
-                    continue
-                target = getattr(self.microphysics, name)
-                if self.mp_physics == 18:
-                    validated[name] = _trusted_canonical_array(
-                        value, target, shape,
-                        f"microphysics {labels[name]}")
-                else:
-                    validated[name] = _validated_array(
-                        value, shape, f"microphysics {labels[name]}")
+            native = (
+                self.mp_physics != 18
+                and _native_microphysics_diagnostics(
+                    result, self.microphysics, slots, shape))
+            if native:
+                validated = {
+                    name: getattr(result, name) for name in slots}
+                invalid, below, above = _validate_native_microphysics(
+                    result, slots, self._sr_roundoff_upper,
+                    self.state.scratch(
+                        (1,), "physics_validation_status").view(cp.uint32))
+                if invalid is not None:
+                    raise FloatingPointError(
+                        f"microphysics {labels[invalid]} contains a "
+                        "non-finite value")
+            else:
+                validated = {}
+                for name in labels:
+                    value = getattr(result, name)
+                    if name not in slots:
+                        if value is not None:
+                            raise ValueError(
+                                f"microphysics {labels[name]} is not produced "
+                                f"by mp_physics={self.mp_physics}")
+                        continue
+                    if value is None:
+                        if name in required:
+                            raise ValueError(
+                                f"microphysics {labels[name]} may not be None")
+                        # Existing WSM6/Morrison attachments may omit their
+                        # optional frozen-category diagnostics; the canonical
+                        # zero-filled slot remains for those schemes.
+                        continue
+                    target = getattr(self.microphysics, name)
+                    if self.mp_physics == 18:
+                        validated[name] = _trusted_canonical_array(
+                            value, target, shape,
+                            f"microphysics {labels[name]}")
+                    else:
+                        validated[name] = _validated_array(
+                            value, shape, f"microphysics {labels[name]}")
             sr = validated["sr"]
             if self.mp_physics != 18:
-                below = bool(cp.any(sr < DTYPE(0.0)))
-                above = bool(cp.any(sr > DTYPE(self._sr_roundoff_upper)))
+                if not native:
+                    below = bool(cp.any(sr < DTYPE(0.0)))
+                    above = bool(
+                        cp.any(sr > DTYPE(self._sr_roundoff_upper)))
                 if below or above:
                     sr_min = float(cp.min(sr).item())
                     sr_max = float(cp.max(sr).item())
@@ -1137,17 +1307,32 @@ class PhysicsDriver:
             raise TypeError("cumulus callable must return CumulusResult")
         nz, ny, nx = state.p.shape
         shape = (nz, ny, nx)
-        rtheta = _checked_array(
-            result.rthcuten, shape, "cumulus rthcuten")
-        rqv = _checked_array(result.rqvcuten, shape, "cumulus rqvcuten")
-        rqc = (None if result.rqccuten is None else _checked_array(
-            result.rqccuten, shape, "cumulus rqccuten"))
-        rqi = (None if result.rqicuten is None else _checked_array(
-            result.rqicuten, shape, "cumulus rqicuten"))
-        rqr = (None if result.rqrcuten is None else _checked_array(
-            result.rqrcuten, shape, "cumulus rqrcuten"))
-        rqs = (None if result.rqscuten is None else _checked_array(
-            result.rqscuten, shape, "cumulus rqscuten"))
+        native_kf = _is_native_kf_result(
+            result, self.cumulus_callable, state, cfg, shape)
+        if native_kf:
+            _validate_native_kf_result(result, state)
+            # Exact production provenance makes these temporary launch
+            # outputs safe read-only sources.  The NCA branch below copies
+            # every value into persistent driver storage on this stream
+            # before the transient result can leave scope.
+            rtheta = result.rthcuten
+            rqv = result.rqvcuten
+            rqc = result.rqccuten
+            rqi = result.rqicuten
+            rqr = result.rqrcuten
+            rqs = result.rqscuten
+        else:
+            rtheta = _checked_array(
+                result.rthcuten, shape, "cumulus rthcuten")
+            rqv = _checked_array(result.rqvcuten, shape, "cumulus rqvcuten")
+            rqc = (None if result.rqccuten is None else _checked_array(
+                result.rqccuten, shape, "cumulus rqccuten"))
+            rqi = (None if result.rqicuten is None else _checked_array(
+                result.rqicuten, shape, "cumulus rqicuten"))
+            rqr = (None if result.rqrcuten is None else _checked_array(
+                result.rqrcuten, shape, "cumulus rqrcuten"))
+            rqs = (None if result.rqscuten is None else _checked_array(
+                result.rqscuten, shape, "cumulus rqscuten"))
         unsupported = []
         if getattr(state, "qi", None) is None and rqi is not None:
             unsupported.append("rqicuten")
@@ -1194,10 +1379,14 @@ class PhysicsDriver:
         if result.pratec is None:
             raise ValueError(
                 "cumulus results with nca_seconds must include pratec")
-        nca_new = _checked_array(
-            result.nca_seconds, (ny, nx), "cumulus nca_seconds")
-        pratec_new = _checked_array(
-            result.pratec, (ny, nx), "cumulus PRATEC")
+        if native_kf:
+            nca_new = result.nca_seconds
+            pratec_new = result.pratec
+        else:
+            nca_new = _checked_array(
+                result.nca_seconds, (ny, nx), "cumulus nca_seconds")
+            pratec_new = _checked_array(
+                result.pratec, (ny, nx), "cumulus PRATEC")
         # DT in every KF driver formula is WRF's model-clock step, not the
         # internal integration substep (Task 6b audit).
         clock_dt = _model_clock_dt(cfg)
@@ -1280,6 +1469,9 @@ class PhysicsDriver:
         # so floor(x + 0.5) is exact NINT.
         expiring = active & (cp.floor(self.cu_nca / dt + DTYPE(0.5))
                              <= DTYPE(1.0))
+        # Set before publishing the device mask so an exception during any
+        # subsequent enqueue leaves compute() able to retry finalization.
+        self._cu_expiry_pending = True
         self.cu_expiring[...] = expiring
         self.cu_nca[...] = cp.where(active, self.cu_nca - dt, self.cu_nca)
         self.finish_step()
@@ -1295,7 +1487,11 @@ class PhysicsDriver:
         forcing and changes only Morrison plus the next compose.  No
         volume-rate copy is allocated.
         """
-        if self.cu_expiring is None or not bool(self.cu_expiring.any()):
+        if self.cu_expiring is None:
+            self._cu_expiry_pending = False
+            return
+        if not bool(self.cu_expiring.any()):
+            self._cu_expiry_pending = False
             return
         mask = self.cu_expiring[None] != DTYPE(0.0)
         for array in self.cu_rates.values():
@@ -1307,6 +1503,7 @@ class PhysicsDriver:
             if array is not None:
                 array[...] = cp.where(mask, DTYPE(0.0), array)
         self.cu_expiring[...] = DTYPE(0.0)
+        self._cu_expiry_pending = False
 
     def _compose_tendencies(self, cfg: RunConfig) -> None:
         """Compose held PBL/radiation/cumulus components in WRF order."""
@@ -1746,7 +1943,9 @@ class PhysicsDriver:
                 self.rthratenlw + self.rthratensw),
             ysu_topdown_pblmix=cfg.ysu_topdown_pblmix)
         try:
-            validate_ysu_tendencies(out)
+            validate_ysu_tendencies(
+                out, status=self.state.scratch(
+                    (1,), "physics_validation_status").view(cp.uint32))
         except FloatingPointError:
             self.ysu_nan_guard_fires += 1
             raise
@@ -1826,7 +2025,7 @@ class PhysicsDriver:
         # step.  Normal compute() calls finalize the mask immediately after
         # composing the prior/current RK target, so this is a cheap invariant
         # guard for direct users and restored synthetic states.
-        if cfg.cu_physics:
+        if cfg.cu_physics and self._cu_expiry_pending:
             self.finish_step()
         now = float(state.elapsed_seconds)
         itimestep = int(np.floor(now / cfg.dt + 0.5)) + 1

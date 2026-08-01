@@ -1,4 +1,390 @@
 # Changelog
+## 1.4.0 (2026-08-01)
+
+This release removes the two things that most often stopped a run that
+was going to be fine. Any physics suite the engine implements now runs:
+the whitelist of named suites is gone, and verification status is a
+label reported on the receipt rather than a gate. And 33 user-facing
+refusals became one-line warnings that continue -- a hard refusal is
+now reserved for the cases where the run would be garbage.
+
+Preprocessing no longer costs more memory than the forecast it feeds.
+On a measured CONUS 12 km case the ingest peak fell from 14.93 GiB to
+4.56 GiB with byte-identical outputs, and `gpuwm check` and the
+`gpuwm domain` fit loop now price ingest as its own phase -- so a
+domain that cannot fit is refused before anything is downloaded rather
+than after.
+
+A run may now start at a forecast lead instead of only at a cycle's
+analysis: `start_time` may be cycle + K hours, the initial condition
+comes from f{K}, and the GRIB bridge enforces instantaneous-only
+fields for that path.
+
+The HRRR route works end to end from a wheel: the wizard emits the
+complete input set for the nested route, per-domain history cadence is
+supported, sizing is coverage-aware and refuses an off-grid domain
+before the download, transport prefers S3, ocean-edge domains prepare,
+and one cell of snow-depth interpolation overshoot is repaired instead
+of losing a preparation.
+
+Nests inherit the physics profile's `epssm` instead of a hardcoded
+value. That one line was a first-minute blow-up on sub-kilometre nests
+over steep terrain.
+
+The externalized Thompson tables stage outside the install, so a wheel
+upgrade no longer deletes what you just downloaded, and a missing
+table is a named preflight refusal instead of a mid-forecast
+traceback. `jsonschema` is a declared dependency, and
+certification-capsule emission can no longer cost you a completed
+forecast. `gpuwm doctor` now resolves the exact execution paths a run
+will use, per data route.
+
+A substantial part of what follows is fixes for issues reported by an
+external tester, who ran the published wheel with no git checkout
+anywhere near it.
+
+### Performance
+
+- The full-physics step is faster on the same hardware and the same
+  inputs, from a profile-first pass that removed per-step scalar
+  device-to-host transfers, batched output validation, and reused
+  scratch buffers in place. The representative trace, its method and
+  its receipts are in [PERF-SURVEY.md](PERF-SURVEY.md). No numerical
+  result changed: the pass is measured against a bit-identical base.
+
+### The HRRR route, and the nest that blew up
+
+- **The HRRR hierarchy prints the digest its own chain asks for.** The
+  emitted multi-domain chain ends in `--preparation-receipt-sha256
+  <printed by the hierarchy>`, and the forecast runner checks that
+  digest against the hierarchy's `receipt.json` -- but the hierarchy
+  printed only timings and the three WRF file digests, so the one
+  placeholder in that chain no stage filled. Walking the printed route
+  end to end on a two-domain run is what found it: the chain could not
+  be completed without hashing a file by hand. It is printed now, taken
+  from the published receipt rather than from the in-memory payload, so
+  it is a digest of the bytes the next stage reads. In the same pass the
+  single-domain block stopped pointing at FIRST-LIGHT section 3a for its
+  forecast stage: 3a is the GFS route, which that same block tells the
+  reader not to use, and it never mentions the benchmark runner. It now
+  says the arguments come from what the preparation wrapper prints,
+  which is where they actually come from.
+- **Every nest gets the physics profile's `epssm`.** `gpuwm domain`
+  wrote `epssm = 0.1` on every nest while the root took 0.5 from the
+  profile -- stripping the vertical-acoustic off-centering exactly where
+  nest terrain is steepest. On a wizard 3 km -> 750 m ladder over steep
+  terrain, w grew -15 -> -289 -> -976 m/s to non-finite in seven
+  acoustic substeps at the child's single steepest cell (34.6 degrees;
+  the 3 km parent smooths the same peak to 15.7 and survived). The
+  reported nested-forecast blow-up was that one line; the PBL guard was
+  the messenger. The value is now written per domain in the emitted
+  TOML, so it is visible where it is set and stays overridable there.
+- **`gpuwm domain --source hrrr` emits every input the HRRR routes
+  read.** It used to emit one of five, and the `namelist.wps` it did
+  emit was missing `&share/interval_seconds` -- the one key the
+  domain-tree route's first gate requires. The wizard now writes the
+  target-domain document, the native `namelist.input` and its stock-WRF
+  twin beside the config, all derived from the emitted experiment and
+  re-imported through the real importer before they are left on disk;
+  binds a route-compatible physics profile when none is named (and
+  refuses an incompatible one at emission, naming the switches); and
+  prints the actual HRRR chain with every value it knows already bound.
+  A multi-domain HRRR emission used to be told to prepare with `rw-wps`,
+  which is the GFS front door.
+- **An HRRR domain is sized against HRRR's grid, not only your card.**
+  HRRR's native grid is finite and the interpolation halo needs real
+  source cells outside the target on every side, so a ladder sized
+  purely against VRAM could be a legal, well-sized experiment that no
+  HRRR fetch can force -- found by running the wizard's own output: a
+  3 km root whose halo ran nine rows off the top of the grid, discovered
+  by the root preparation after the download. The fit loop now asks the
+  source's own window function about every candidate, a point HRRR
+  cannot force at any size is refused before anything is written, and a
+  domain the grid stopped rather than the card says which bound it hit.
+- **One cell of interpolation overshoot no longer loses a preparation.**
+  Snow water and snow depth are physically non-negative, so a negative
+  mapped value is the horizontal operator overshooting across the snow
+  line, not data. A nested HRRR preparation died on one cell of 88 844
+  at -4.9 cm beside a 44.5 m maximum. It is repaired at zero, on the
+  same terms soil moisture already was; an overshoot beyond what a
+  bounded stencil can produce still refuses, now with the count, the
+  most negative value and the field maximum in the sentence.
+- **A coastal HRRR domain prepares.** Any domain whose 5-cell boundary
+  strip was entirely water died in soil mapping with a message naming
+  neither the strip nor the domain -- and the four strips are mapped
+  independently, so one Pacific-facing edge killed the whole
+  preparation. A water target needs no land donor: its soil is the
+  target-water fill. The land-window diagnostics are recorded as absent
+  with the reason, the finiteness and physical-range checks now run in
+  every case, and the refusal that remains (target land with no
+  reachable source land) names the grid, the count and the remedy.
+- **A frozen soil node no longer discards a prepared hierarchy.** The
+  stock-WRF export's frozen-soil refusal is typed as
+  `StockWrfExportUnsupported`, and the HRRR hierarchy asks for an
+  optional export like every other route, so a state gpuwm integrates
+  but the WRF file format cannot represent is recorded as a refused
+  export manifest instead of destroying a complete, verified
+  preparation.
+- **`--transport auto` is paired with the byte mode it runs.** It probed
+  NOMADS first; both hosts serve identical bytes, but S3 is several
+  times faster for the whole-file default (a measured three-hour window:
+  54 minutes over NOMADS, about three over S3). `auto` now prefers S3
+  and falls back to NOMADS only when S3 cannot serve the window yet;
+  `--wait-for`, which is what NOMADS's head start is for, keeps its
+  NOMADS-first polling. When NOMADS is chosen with `--mode full-file`
+  the cost is named before the first byte moves, and `gpuwm fetch` says
+  who chose the byte mode -- the backbone cannot tell a typed flag from
+  a caller's default, and used to call both an "operator override".
+- **`--pipeline-workers` is refused at parse time.** `prepare_hrrr_wrf`
+  advertised 1..64 while the decoder it spawns accepts 1..13, so an
+  impossible request cost a geometry receipt and a static build before
+  anything refused it.
+
+### Front doors, packaging and documentation
+
+- `gpuwm fetch-tables` stages outside the install. It used to write its
+  two downloads *inside* site-packages, so the 315 MiB a wheel user had
+  just paid for was deleted by the next `pip install --upgrade` or venv
+  rebuild -- and the nested-GFS forecast that followed died on a bare
+  `FileNotFoundError` naming a path in site-packages, after the fetch
+  and preprocessing had already been paid for. Staging now lands in
+  `~/.gpuwm/tables/thompson`, beside `~/.gpuwm/bridges`, and the staged
+  root is completed from the package so it is whole; a complete
+  packaged root (every clone, and every wheel staged before this
+  change) still answers first and is left alone. The gap itself is
+  refused at `--materialize-authorities` -- step 2 of the six the
+  documentation prints, before any download -- in one sentence naming
+  the table and `gpuwm fetch-tables`, and the domain-tree runner's
+  preflight says the same thing rather than raising.
+- `gpuwm fetch --author-front-door-manifest` resolves the bridge itself
+  when `--bridge` is omitted, through the same `gpuwm.bridges` ladder
+  `gpuwm go` has always used. FIRST-LIGHT's stage-by-stage route
+  printed `tools/grib1_bridge/target/release/gfs_grib2_bridge`, which
+  exists only in a checkout, so a wheel user following the documented
+  long form was refused after paying for the fetch. That page now
+  documents the resolved default, and its step 5/step 6 pair names the
+  `--outdir` rw-wps actually prints (`<output-root>-forecast`) instead
+  of a third path neither stage produces.
+- `gpuwm adapt --skeleton` names its own gaps, and `--descriptor`
+  refuses the unfilled scaffold as a scaffold. The placeholders are
+  deliberate, but the reader met them as
+  `descriptor.adapt.model_top_pa must be a positive finite number` --
+  a type error about one field, with three more waiting one run apart,
+  and two (`name`, `target.name`) that passed every validator and would
+  have shipped an adapter called `REPLACE_WITH_ADAPTER_NAME`. One
+  function now reports them, so the skeleton's list and the authoring
+  gate's list cannot drift.
+- `rw-wps --namelist-support-report` refuses a missing namelist in one
+  sentence. It is step one of `docs/migrating-from-wps.md` and answered
+  the commonest possible mistake with a five-frame traceback out of
+  `pathlib`, while `gpuwm import-namelist` answered the identical
+  condition cleanly; both now go through one function.
+- `gpuwm downscale --card` accepts the tiers `gpuwm domain` accepts.
+  It hardcoded `16gb|24gb|32gb` and rejected `12gb` -- a tier the
+  product advertises and this command already maps -- so two front
+  doors quoted different tier lists for one concept.
+- The wizard's oversized-footprint advisory measures latitude too, and
+  names the flags that matter. A Linux `--card 24gb --ladder 12` sized
+  a 144x88 degree domain behind a hemispheric fetch box; the advisory
+  saw only longitude, and offered `--card 12gb` rather than saying what
+  the printed `--area` is or why shrinking it alone would starve the
+  domain it feeds. Still an advisory, still never a refusal.
+- DATA.md prices HRRR at what it costs. The documented ~0.4 GB per
+  forecast hour was one object in a subset mode that is no longer the
+  default; the default pulls the whole `wrfnat` **and** `wrfprs` pair,
+  measured 704 MB + 427 MB, so ~1.1 GB an hour and ~21 GB for f00..f18.
+  Both modes are now priced separately. `docs/native_source_adapters.md`
+  says that its `share/configs/...` paths are distribution-root paths
+  and names the checkout's `configs/` equivalents; FIRST-LIGHT's
+  custom-ladder examples no longer hide the required `--cycle` and
+  `--out` behind an ellipsis -- nor does HARDWARE.md's short version --
+  and the page no longer offers `gpuwm domain --explain` as a way to
+  list profiles, which is a usage error rather than a listing.
+
+### Physics freedom, memory and initialization
+
+- 33 user-facing refusals are one-line warnings that continue. The
+  config loader, preflight, the environment-production path and
+  certification-capsule emission now say what they found and carry on,
+  because none of those findings was ever evidence that the run would
+  be wrong. `jsonschema` is declared in `pyproject.toml` instead of
+  assumed, and a missing one costs a capsule rather than a finished
+  forecast. The README quickstart is two commands.
+- Any physics suite the engine implements runs. The whitelist that
+  admitted a fixed list of named suites is gone, and verification
+  status -- `readiness`, `warning_only` -- is reported metadata on the
+  receipt rather than a gate: an unverified combination is labelled,
+  not refused. `export_prepared_wrf` gains an `experiment_config_suite`
+  contract, expert-tuple governance is applied uniformly behind
+  `--ack`, and the Thompson table checks are keyed on `mp_physics == 8`
+  rather than on a suite name. An unacknowledged expert tuple warns and
+  runs, with both accepted spellings of the acknowledgement in the line
+  and `acknowledged: false` on the receipt; a caller who *names* an
+  expert `--physics-profile` asked for that gate and still meets it.
+- Preprocessing no longer peaks at roughly double the forecast. The
+  initialization loop held every forcing time's horizontally
+  interpolated analysis and every time's complete `DomainState`
+  resident until the last one existed, purely so the lateral-boundary
+  builder could see them all at once; only the first time is used
+  downstream. It now streams: `StateBoundaryFrames` takes each state's
+  four `spec_bdy_width` perimeter frames as it is built and the state
+  is released immediately. On a measured CONUS 12 km case (414x330x49,
+  nine 3-hourly GFS times, RTX 5090) the preprocessing peak fell from
+  **14.93 GiB to 4.56 GiB**, below the same case's 7.10 GiB forecast
+  peak, with the prepared cache's 451 arrays and both wrfinput_d01 and
+  wrfbdy_d01 byte-identical to the pre-change run. Applies to the GFS,
+  ERA5, mapped-source and config-driven (`gpuwm run`) ingest paths.
+- `gpuwm check` and `gpuwm domain` price **every phase**, not just the
+  forecast. The report carries an INGEST line and a one-sentence
+  binding-phase verdict, the wizard's fit loop sizes against the
+  largest phase, and a config whose forcing product this estimator has
+  not modelled (HRRR's native-hybrid-level lane) is reported NOT PRICED
+  rather than scored as free. Previously a domain sized to "fit your
+  card" could pass `gpuwm check` and then run out of memory during
+  preprocessing, a phase nothing had estimated.
+- `gpuwm go` runs that check **before the fetch stage**. A binding
+  phase that cannot fit the card's free VRAM is refused with its
+  number and the re-sizing command, with nothing downloaded; over
+  budget but inside free VRAM warns and proceeds. `--no-memory-gate`
+  skips it.
+- GFS: a run may be initialized from any forecast lead the fetch
+  carries, not only from the cycle's f000 analysis. `start_time` may be
+  `cycle + K` for any K in the fetched forecast-hour set: the initial
+  condition comes from f{K}, the lateral boundaries from f{K+i}, and
+  the model clock starts at `start_time`. `gpuwm fetch
+  --forecast-start-hour K` plans the window (`--hours` stays its
+  length, so `--forecast-start-hour 174 --hours 66` fetches
+  f174..f240), the same flag on `--author-front-door-manifest` cuts a
+  front-door manifest to that tail of an existing fetch instead of
+  re-downloading it, `gpuwm domain --forecast-start-hour K` emits the
+  config, and `gpuwm go` carries the lead through its chain. Before
+  this, `rw-wps --source gfs` refused any experiment whose start_time
+  was not the cycle -- so reaching a window deep in a forecast meant
+  integrating to it. Admission warns rather than blocks, and every
+  receipt records cycle, lead and start together
+  (`gpuwm-gfs-initial-condition-provenance-v1`); a forecast lead is
+  never relabelled as an analysis. A run at lead 0 is unchanged, proved
+  by a byte-identical prepared cache, wrfinput/wrfbdy, final state and
+  history frames against the base commit.
+- Docs: added an explicit resolved-scale disclaimer -- the 500 m nest
+  and the STP/UH severe suite are tornadic-supercell environment and
+  mesocyclone-proxy diagnostics, not resolved tornado dynamics -- to
+  README Limits and to VERIFICATION.md section 6 Not-claimed.
+
+### The HRRR route on a pip install
+
+A field report ran the published wheel -- no git checkout anywhere near
+it -- through the HRRR to nested-d02 route and hit five failures in a
+row that `gpuwm doctor` had just called "no gaps". Every one of them is
+a resolution the report never performed.
+
+- `gpuwm fetch --source hrrr` takes whole objects by default
+  (`--mode full-file` through the Rust backbone) instead of `.idx`
+  record subsets. The old `auto` default resolved to `idx-subset`
+  against every healthy host, because its probe rule only takes the
+  whole file when the index cannot carry the selection; one measured
+  419 MB file cost 560 s that way against 27-35 s taken whole.
+  Subsetting is the opt-in bandwidth saver it was always documented as,
+  it says in one line what it costs when chosen, and an install without
+  the backbone is told before the download rather than after it.
+- The HRRR preparation wrapper resolves its decoder through the same
+  ladder `gpuwm doctor` reports -- environment override, checkout
+  build, `libexec/bridges`, `~/.gpuwm/bridges` -- instead of a cargo
+  workspace under `site-packages` that no wheel has. A green doctor
+  line and a runnable preparation are now the same claim.
+- A run binds its identity from the installed wheel (distribution
+  version plus the digests pip wrote into `RECORD`) when it is not a
+  git checkout, instead of running `git rev-parse` with the working
+  directory in `site-packages` and exiting 128. A venv nested inside an
+  unrelated repository is treated as "not a checkout of this tree"
+  rather than being bound to that repository's commit.
+- The sealed-runtime manifest is validated against its whole schema at
+  the first read, by one validator every consumer calls, and the
+  refusal names every missing field at once. A minimal hand-authored
+  document used to satisfy the identity gate, run a preparation for
+  minutes, and die at a third consumer on `contract.platform.backends`.
+- The stock-WRF export no longer takes a successful preparation down
+  with it. `--skip-stock-wrf-export` never attempts it;
+  `--require-stock-wrf-export` makes a refusal fatal; by default a
+  refusal is one warning line and the prepared cache and its PASS
+  report stand. The converter's own named refusals are unchanged.
+- `gpuwm doctor` resolves the paths a run will use: the exact decoder
+  per data route, the byte transport `gpuwm fetch` will pick, the
+  identity path a receipt will bind, the complete manifest schema, and
+  whether the route entry points import from a directory that is not a
+  repository. `--source SOURCE` narrows the report to one route; every
+  route is in the default estate, because behind a flag these would
+  have been invisible to the person this was written for.
+
+### One d01 across the HRRR nested route
+
+The same field report's other half. Seven contract contradictions on the
+HRRR to nested-d02 route, six of them the same shape: two parts of this
+route answering one question differently, each needing a hand
+workaround.
+
+- The single-domain root preparer reads **d01's** column entry of every
+  WRF per-domain array, not the last one. `gpuwm domain`'s own emitted
+  ladder writes `diff_6th_factor = 0.08, 0.10`; the preparer read 0.10
+  -- d02's value, while preparing d01 -- and refused with a sentence
+  about the number, never saying which domain it had looked at. A
+  refusal on a column that is not uniform now says so and names the fix.
+- `num_land_cat` and `fractional_seaice` no longer hit the unmapped-key
+  refusal, which they did despite gpuwm's own stock-WRF namelist writer
+  emitting both and a shipped hierarchy config carrying both.
+  `num_land_cat` is validated against the one land-use identity gpuwm
+  builds -- the 21-category MODIS set its static builder stamps and
+  every wrfout carries -- and recorded; `fractional_seaice` is reported
+  with the branch each initialization route actually runs. Neither is
+  silently dropped, and a genuinely unmapped key still refuses by name.
+- The hierarchy's run-length ceiling is the sealed root preparation's
+  own forcing inventory. It was pinned at 43200 s with a sentence about
+  "the native f00..f12 forcing horizon", while its own docstring
+  promised not to pin a duration and while the source window, the fetch
+  and the forcing-hour check below it all handled f00..f24.
+- Per-domain history cadence is supported: a 3 km parent written hourly
+  beside a 1 km child written every 15 minutes -- the ladder's whole
+  point, and already implemented by the experiment loader, the clock and
+  the tree runner -- was refused after preparation as a drift.
+- `moist_cq` and `top_lid` have one authority: the shipped physics
+  profile. WRF's namelist has no `moist_cq` key and gpuwm's `top_lid`
+  default is deliberately not WRF's Registry default, so something must
+  decide them; the profiles decided one way and the importer invented
+  another, opposite for every WSM6/Kessler/MYNN/RUC/Noah-MP suite, so a
+  public root and a public hierarchy built from the *same* namelist
+  could not produce matching d01 identities. A test asserts every
+  shipped profile agrees with the single answer.
+- Prepared-cache identity asks the partition gpuwm already publishes
+  twice instead of keeping a third opinion, through one normalization
+  shared by the hierarchy's root binding and the tree preflight. Write
+  cadences, a trajectory-inert diagnostic toggle, and a `cudt_minutes`
+  that is dead at `cu_physics = 0` and spelled differently by the
+  importer and the profiles were all compared by exact equality.
+- `write_prepared_cache` accepts a read-only mapping. It crashed on the
+  `MappingProxyType` hydrometeor record that `restore_prepared_cache`
+  deliberately hands back, with "Object of type mappingproxy is not JSON
+  serializable" from inside a nested publication, naming no field. A set
+  still refuses, having no canonical order.
+
+Every refusal removed here has a negative control beside it: a garbage
+namelist key, a USGS category count, an active `cudt_minutes`, a real
+trajectory difference and a run longer than the sealed forcing window
+all still fail closed.
+
+### Fixed
+
+- `gpuwm doctor` no longer hangs forever probing a present-but-invalid
+  executable on Windows. `subprocess.run`'s timeout bounds the wait and
+  not `CreateProcess`, so a file with a corrupt image header could make
+  the loader raise a modal dialog inside that call which no timeout
+  reaches and no hidden-window session dismisses; a release battery
+  froze there twice. Every probe in the package -- the bridges, the
+  renderer, the fetch backbone -- now reads the ELF/PE header first and
+  reports "present but not a native executable" from the bytes, with a
+  fail-fast process error mode behind it for the loader dialogs a
+  header cannot predict (a missing DLL). The verdict for a genuine
+  bridge is unchanged.
+
 ## 1.3.1 (2026-07-31)
 
 Four commands take a fresh machine to a rendered forecast: `pip

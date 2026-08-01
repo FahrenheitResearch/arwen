@@ -28,9 +28,9 @@ from typing import Any
 
 from gpuwm import __version__
 from gpuwm.bridges import BRIDGE_ABI_MARKERS as _SHARED_BRIDGE_ABI_MARKERS
-
-
-RUNTIME_SCHEMA = "gpuwm-native-wrf-runtime-v1"
+from gpuwm.bridges import quiet_loader_errors
+from gpuwm.gpu_stack_identity import gpu_cuda_stack_identity
+from gpuwm.runtime_manifest import RUNTIME_SCHEMA
 PYTHON_DISTRIBUTION = "rw-wps"
 BRIDGE_NAMES = (
     "grib1_bridge",
@@ -378,13 +378,18 @@ def bridge_identity(path: Path, name: str) -> dict[str, Any]:
         frozen.write_bytes(payload)
         frozen.chmod(after.st_mode)
         try:
-            completed = subprocess.run(
-                [str(frozen)],
-                text=True,
-                capture_output=True,
-                timeout=10,
-                check=False,
-            )
+            # The format was proven above, so this launch cannot be the
+            # unbounded CreateProcess of a non-image; the error mode
+            # covers the remaining loader dialog (a missing DLL), which
+            # hangs the same way and which no header can predict.
+            with quiet_loader_errors():
+                completed = subprocess.run(
+                    [str(frozen)],
+                    text=True,
+                    capture_output=True,
+                    timeout=10,
+                    check=False,
+                )
         except subprocess.TimeoutExpired as error:
             raise RuntimeError(
                 f"native bridge identity probe timed out: {path}"
@@ -624,35 +629,7 @@ def verify_runtime(
     kernels = {
         name: _sha256(kernel_root / name) for name in CUDA_KERNEL_SOURCES}
 
-    gpu: dict[str, Any] = {"required": require_gpu, "status": "NOT_CHECKED"}
-    if require_gpu:
-        import cupy as cp
-
-        count = int(cp.cuda.runtime.getDeviceCount())
-        if count < 1:
-            raise RuntimeError("CuPy reports no CUDA devices")
-        device = cp.cuda.Device(0)
-        with device:
-            value = cp.arange(16, dtype=cp.float32)
-            checksum = float(cp.asnumpy(value.sum()))
-            properties = cp.cuda.runtime.getDeviceProperties(0)
-            runtime_version = int(cp.cuda.runtime.runtimeGetVersion())
-        if not 12_000 <= runtime_version < 13_000:
-            raise RuntimeError(
-                "native-WRF runtime requires a CUDA 12.x runtime, got "
-                f"{runtime_version}")
-        raw_name = properties.get("name", b"")
-        if isinstance(raw_name, bytes):
-            raw_name = raw_name.decode("utf-8", errors="replace")
-        gpu = {
-            "required": True,
-            "status": "PASS",
-            "device_count": count,
-            "device_0_name": str(raw_name),
-            "driver_version": int(cp.cuda.runtime.driverGetVersion()),
-            "runtime_version": runtime_version,
-            "test_checksum": checksum,
-        }
+    gpu: dict[str, Any] = gpu_cuda_stack_identity(require_gpu=require_gpu)
 
     return {
         "schema": RUNTIME_SCHEMA,

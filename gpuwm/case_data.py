@@ -51,6 +51,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from gpuwm.experiment import ExperimentConfig, build_experiment
+from gpuwm.explain import warn
 
 _GLOB_CHARS = frozenset("*?[")
 
@@ -306,13 +307,17 @@ def _resolve_forcing(base_dir: Path, value, source: str) -> tuple[Path, ...]:
             resolved.append(path)
     seen: set[Path] = set()
     unique: list[Path] = []
+    duplicated: list[Path] = []
     for path in resolved:
         if path in seen:
-            raise ValueError(
-                f"forcing in [case_data] of {source} lists {path} more "
-                "than once.")
+            duplicated.append(path)
+            continue
         seen.add(path)
         unique.append(path)
+    if duplicated:
+        warn(f"forcing in [case_data] of {source} lists "
+             f"{len(duplicated)} path(s) more than once; each is read "
+             "once (first occurrence kept)")
     return tuple(unique)
 
 
@@ -321,9 +326,9 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path
     """Validate a parsed ``[case_data]`` table dict (fail-loud)."""
     unknown = sorted(set(raw) - _KNOWN_KEYS)
     if unknown:
-        raise ValueError(
-            f"unknown key(s) {unknown} in [case_data] of {source}; known "
-            f"keys: {sorted(_KNOWN_KEYS)}.")
+        warn(f"ignoring unknown key(s) {unknown} in [case_data] of "
+             f"{source}",
+             why=f"Known [case_data] keys: {sorted(_KNOWN_KEYS)}.")
     missing = [key for key in _REQUIRED_KEYS if key not in raw]
     if missing:
         raise ValueError(
@@ -414,17 +419,21 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path
                 f"co2_vmr in [case_data] of {source} must be a number (mole "
                 f"fraction), got {co2!r}.")
         co2 = float(co2)
-        if not math.isfinite(co2) or not 0.0 < co2 < 1.0e-2:
+        if not math.isfinite(co2) or co2 <= 0.0:
             raise ValueError(
                 f"co2_vmr = {co2!r} in [case_data] of {source} must be a "
-                "finite mole fraction in (0, 1e-2) -- e.g. 330 ppm is "
+                "finite positive mole fraction -- e.g. 330 ppm is "
                 "330.0e-6.")
+        if co2 >= 1.0e-2:
+            warn(f"co2_vmr = {co2!r} in [case_data] of {source} exceeds "
+                 "the 1e-2 sanity envelope (330 ppm is 330.0e-6; check "
+                 "the unit); continuing with it as written")
 
     title = raw["output_title"]
     if not isinstance(title, str) or not title:
-        raise ValueError(
-            f"output_title in [case_data] of {source} must be a non-empty "
-            f"string, got {title!r}.")
+        warn(f"output_title in [case_data] of {source} is empty or not "
+             "a string; using 'gpuwm' as the wrfout TITLE attribute")
+        title = "gpuwm"
 
     domain = raw.get("output_domain", 1)
     if isinstance(domain, bool) or not isinstance(domain, int) or domain < 1:

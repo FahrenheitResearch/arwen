@@ -60,6 +60,26 @@ def cgroup_capacity() -> dict[str, float | int | None]:
     }
 
 
+#: The HRRR decode pipeline's real worker ceiling, and the ONLY place it
+#: is stated in Python.  It is not a policy choice here: the sealed
+#: decoder binary refuses anything outside 1..13 itself
+#: (``tools/grib1_bridge/src/bin/hrrr_grib2_bridge.rs:1227`` and
+#: ``:1243``, "WORKERS must be in 1..13"), so a caller that accepts more
+#: is only promising something the process it spawns will reject.
+#: ``tools/prepare_hrrr_wrf.py`` used to advertise 64 and refused at 14
+#: only after the static build had already run -- minutes of work spent
+#: to reach a bound the argument parser could have named immediately.
+#: Raising the ceiling means rebuilding and re-sealing that binary.
+MAX_PIPELINE_WORKERS = 13
+
+#: The auto policy's ceiling and floor.
+_AUTO_WORKERS = MAX_PIPELINE_WORKERS
+_AUTO_FALLBACK_WORKERS = 8
+
+_WORKER_RANGE_TEXT = (
+    f"pipeline workers must be 1..{MAX_PIPELINE_WORKERS} or 'auto'")
+
+
 def resolve_workers(value: str) -> tuple[int, dict[str, object]]:
     capacity = cgroup_capacity()
     text = str(value).strip().lower()
@@ -68,15 +88,17 @@ def resolve_workers(value: str) -> tuple[int, dict[str, object]]:
         available = capacity["memory_available_bytes"]
         enough_cpu = cpu is None or float(cpu) >= 26.0
         enough_memory = available is None or int(available) >= 24 * 1024 ** 3
-        workers = 13 if enough_cpu and enough_memory else 8
-        policy = "auto13_if_cpu_ge_26_and_available_memory_ge_24GiB_else8"
+        workers = (_AUTO_WORKERS if enough_cpu and enough_memory
+                   else _AUTO_FALLBACK_WORKERS)
+        policy = (f"auto{_AUTO_WORKERS}_if_cpu_ge_26_and_available_memory_"
+                  f"ge_24GiB_else{_AUTO_FALLBACK_WORKERS}")
     else:
         try:
             workers = int(text)
         except ValueError as error:
-            raise ValueError("pipeline workers must be 1..13 or 'auto'") from error
-        if workers not in range(1, 14):
-            raise ValueError("pipeline workers must be 1..13 or 'auto'")
+            raise ValueError(_WORKER_RANGE_TEXT) from error
+        if workers not in range(1, MAX_PIPELINE_WORKERS + 1):
+            raise ValueError(_WORKER_RANGE_TEXT)
         policy = "explicit"
     return workers, {"requested": text, "selected": workers,
                      "policy": policy, "cgroup": capacity}
@@ -147,7 +169,8 @@ def verify_source_tree(*, source_root: Path, manifest: Path,
                 f"expected {expected}, got {actual}")
         return path.stat().st_size
 
-    with ThreadPoolExecutor(max_workers=max(1, min(workers, 13))) as pool:
+    hash_workers = max(1, min(workers, MAX_PIPELINE_WORKERS))
+    with ThreadPoolExecutor(max_workers=hash_workers) as pool:
         sizes = list(pool.map(verify, paths))
     series_rows = _parse_series(series)
     declared = {str((source_root / relative).resolve()) for relative in entries}
@@ -166,7 +189,7 @@ def verify_source_tree(*, source_root: Path, manifest: Path,
         "source_forecast_hours": [row[0] for row in series_rows],
         "model_forcing_hours": list(range(len(series_rows))),
         "wall_seconds": time.perf_counter() - started,
-        "hash_workers": max(1, min(workers, 13)),
+        "hash_workers": hash_workers,
     }
 
 

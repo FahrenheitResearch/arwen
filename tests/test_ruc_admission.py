@@ -582,7 +582,7 @@ def test_the_host_column_cost_is_flat_in_the_column_count() -> None:
         "path exists should be re-measured rather than trusted")
 
 
-def test_the_width_rail_covers_noahmp_and_not_ruc() -> None:
+def test_the_width_rail_covers_noahmp_and_not_ruc(capsys) -> None:
     """A decision now, not a gap, and it is recorded either way.
 
     ``validate_run_config`` hands the readiness authority ``columns=nx*ny``
@@ -633,16 +633,34 @@ def test_the_width_rail_covers_noahmp_and_not_ruc() -> None:
         f"ceiling and the measurement have drifted apart: {noahmp_at_width}")
 
     # ... and the control: one column past the measured ceiling, the
-    # authority still refuses on width, with the rail this test exists to
-    # record.
+    # authority still SAYS SO on width -- as a warning since the
+    # warn-not-block ruling, because an unmeasured width is a
+    # performance projection and not a correctness gap.  The rail this
+    # test exists to record is that the width question is asked of
+    # Noah-MP and is NOT asked of RUC; the discriminator is the same
+    # either way, and reading it from the warning keeps it honest.
+    capsys.readouterr()
     noahmp = pending_wrf_physics_components(
         sf_surface_physics=4, num_soil_layers=4,
         columns=NOAHMP_MEASURED_COLUMN_CEILING + 1, **selection)
-    assert any(blocker.component == "Noah-MP column budget"
-               for blocker in noahmp), (
-        "the readiness authority did not refuse Noah-MP past its measured "
-        f"ceiling, so the RUC result above is not evidence of anything: "
-        f"{noahmp}")
+    width_lines = [line for line in capsys.readouterr().err.splitlines()
+                   if line.startswith("warning:") and "Noah-MP at" in line]
+    assert len(width_lines) == 1, (
+        "the readiness authority said nothing about Noah-MP past its "
+        f"measured ceiling, so the RUC result above is not evidence of "
+        f"anything: {width_lines}")
+    assert str(NOAHMP_MEASURED_COLUMN_CEILING) in width_lines[0]
+    assert not any(blocker.component == "Noah-MP column budget"
+                   for blocker in noahmp), (
+        "width is a warning now, not a blocker; a blocker here means the "
+        f"warn-not-block conversion regressed: {noahmp}")
+
+    # The control's control: RUC never gets that line, at any width.
+    capsys.readouterr()
+    pending_wrf_physics_components(
+        sf_surface_physics=3, num_soil_layers=9,
+        columns=NOAHMP_MEASURED_COLUMN_CEILING + 1, **selection)
+    assert "Noah-MP at" not in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -677,7 +695,7 @@ def test_the_gfs_route_is_deliberately_not_offered_ruc():
         "forecast cannot complete its first step")
 
 
-def test_the_gfs_front_door_refuses_ruc_at_preparation(tmp_path):
+def test_the_gfs_front_door_refuses_ruc_at_preparation(tmp_path, capsys):
     """Before the prepare run, not 2.8 seconds into the forecast."""
     import dataclasses
 
@@ -708,10 +726,27 @@ def test_the_gfs_front_door_refuses_ruc_at_preparation(tmp_path):
         return dataclasses.replace(exp, domains=domains)
 
     # The tree route, which resolves selectors rather than a profile.
-    with _pytest.raises(
-            ValueError, match="outside-registry-declared-reachability") as tree:
+    #
+    # Two gates fire here and this test now pins both, because the
+    # warn-not-block ruling separated them.  The generic tuple-governance
+    # question -- "has the registry blessed this combination?" -- is a
+    # WARNING: every component is implemented, so it runs and says so.
+    # The route-declaration question -- "does the GFS route offer
+    # ruc-lsm at all?" -- is the one that still REFUSES, by name, and it
+    # is the gate this test exists for: RUC on GFS prepares cleanly and
+    # then dies on its first surface-temperature call.  An unimplemented
+    # route is not an unblessed tuple, and the merge must not let the
+    # first gate's softening be mistaken for the second's.
+    with _pytest.raises(ValueError, match="ruc-lsm") as tree:
         front_door_physics_selection(_with_ruc(baseline))
-    assert "expert-tuple-v1" in str(tree.value)
+    assert "does not offer" in str(tree.value)
+    assert "mavail" in str(tree.value)
+    tree_lines = [line for line in capsys.readouterr().err.splitlines()
+                  if line.startswith("warning:")]
+    assert tree_lines, "the tree route said nothing about the RUC tuple"
+    tree_message = "\n".join(tree_lines)
+    assert "outside-registry-declared-reachability" in tree_message
+    assert "expert-tuple-v1" in tree_message
 
     # And the single-domain route, which names the template.
     single = dataclasses.replace(baseline, domains=baseline.domains[:1])

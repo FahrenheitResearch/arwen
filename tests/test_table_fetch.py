@@ -207,3 +207,228 @@ def test_cli_dispatches_fetch_tables_for_real(monkeypatch, capsys):
     monkeypatch.setenv("GPUWM_THOMPSON_TABLE_ROOT", str(packaged))
     assert main(["fetch-tables"]) == 0
     assert "nothing to fetch" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# The staging location: outside the install, or a wheel upgrade deletes it
+# ---------------------------------------------------------------------------
+
+def _wheel_shaped_install(tmp_path, monkeypatch) -> tuple[Path, Path]:
+    """(packaged root missing the externalized pair, user-level root).
+
+    What a fresh ``pip install gpuwm`` looks like: the two assets under
+    PyPI's per-file cap are inside site-packages, the two over it are
+    not anywhere yet.  ``~/.gpuwm`` is redirected into ``tmp_path`` so
+    the test never touches the real home directory.
+    """
+
+    real_packaged = packaged_thompson_table_root()
+    if not real_packaged.is_dir():
+        pytest.skip("packaged table root absent (wheel-only checkout)")
+    packaged = tmp_path / "site-packages" / "gpuwm" / "data" / "thompson"
+    packaged = packaged / "tables"
+    packaged.mkdir(parents=True)
+    for asset in CLASSIC_TABLE_ASSETS:
+        if asset.filename in table_assets.EXTERNALIZED_TABLE_FILENAMES:
+            continue
+        source = real_packaged / asset.filename
+        if not source.is_file():
+            pytest.skip(f"packaged asset absent: {asset.filename}")
+        try:
+            os.link(source, packaged / asset.filename)
+        except OSError:
+            import shutil
+            shutil.copyfile(source, packaged / asset.filename)
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.delenv("GPUWM_THOMPSON_TABLE_ROOT", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(
+        "gpuwm.physics_compat.packaged_thompson_table_root",
+        lambda: packaged)
+    return packaged, home / ".gpuwm" / "tables" / "thompson"
+
+
+def test_a_wheel_stages_outside_site_packages_and_resolves_there(
+        tmp_path, monkeypatch, capsys):
+    """`FileNotFoundError: missing Thompson table asset
+    .../site-packages/gpuwm/data/thompson/tables/qr_acr_qg_V4.dat`
+
+    A wheel user paid for a 315 MiB `gpuwm fetch-tables`, then a wheel
+    upgrade deleted every byte of it, because staging went INSIDE
+    site-packages.  Staging now lands beside ~/.gpuwm/bridges, and the
+    resolver reads it there.
+    """
+
+    from gpuwm.physics_compat import thompson_table_root
+
+    real_packaged = packaged_thompson_table_root()
+    # Same guard as the offline staging test above, and for the same
+    # reason: this stages `--from` the packaged root, and a published
+    # clone deliberately does not carry the externalized assets --
+    # `gpuwm fetch-tables` downloads them.  Without this the release
+    # snapshot fails its own suite for doing exactly what it should.
+    if not all((real_packaged / name).is_file()
+               for name in table_assets.EXTERNALIZED_TABLE_FILENAMES):
+        pytest.skip("externalized asset bytes not present in this checkout")
+
+    packaged, user_root = _wheel_shaped_install(tmp_path, monkeypatch)
+
+    # Before staging: the resolver can only answer with the packaged
+    # root, and it is short the two externalized assets.
+    assert Path(thompson_table_root()) == packaged
+    assert {a.filename for a in table_assets.unstaged_table_assets()} == set(
+        table_assets.EXTERNALIZED_TABLE_FILENAMES)
+
+    assert table_assets.staging_root() == user_root
+    assert table_assets.fetch_tables_main(
+        _args(from_dir=str(real_packaged))) == 0
+    printed = capsys.readouterr().out
+    assert "so a wheel upgrade cannot delete it" in printed
+
+    # The staged root is COMPLETE -- half of it in site-packages would
+    # resolve to nothing -- and it is what a run now reads.
+    validate_table_assets(user_root)
+    assert Path(thompson_table_root()) == user_root
+    assert table_assets.unstaged_table_assets() == []
+
+    # The wheel upgrade that used to erase the work: site-packages is
+    # emptied, and the staged set still answers.
+    for path in packaged.iterdir():
+        path.unlink()
+    assert Path(thompson_table_root()) == user_root
+    assert table_assets.unstaged_table_assets() == []
+
+
+def test_a_complete_packaged_root_is_left_alone(tmp_path, monkeypatch,
+                                                capsys):
+    """Negative control: a clone, and a wheel staged before this change.
+
+    Both have all four assets in the packaged root, and neither should
+    be told to re-download 362 MiB into a new location.
+    """
+
+    from gpuwm.physics_compat import thompson_table_root
+
+    packaged = packaged_thompson_table_root()
+    valid, invalid, absent = table_assets.classify_assets(packaged)
+    if invalid or absent:
+        pytest.skip("packaged table root incomplete in this checkout")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.delenv("GPUWM_THOMPSON_TABLE_ROOT", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    assert Path(thompson_table_root()) == packaged
+    assert table_assets.staging_root() == packaged
+    assert table_assets.fetch_tables_main(_args()) == 0
+    assert "nothing to fetch" in capsys.readouterr().out
+    assert not (home / ".gpuwm").exists()
+
+
+def test_a_named_root_is_never_filled_from_the_package(tmp_path,
+                                                       monkeypatch):
+    """GPUWM_THOMPSON_TABLE_ROOT stays the operator's to populate.
+
+    The completion-from-package step exists so a root THIS command
+    chose is whole.  A mirror an operator named is not that, and
+    quietly copying the package into it would make their explicit
+    configuration mean something else.
+    """
+
+    root = tmp_path / "mirror"
+    root.mkdir()
+    monkeypatch.setenv("GPUWM_THOMPSON_TABLE_ROOT", str(root))
+    assert table_assets.staging_root() == root
+    assert table_assets.staging_is_self_chosen(root) is False
+
+
+# ---------------------------------------------------------------------------
+# The refusal: one sentence at preflight, never a traceback mid-forecast
+# ---------------------------------------------------------------------------
+
+def test_a_missing_table_is_one_sentence_naming_the_file_and_the_command(
+        tmp_path, monkeypatch):
+    root = tmp_path / "empty"
+    root.mkdir()
+    monkeypatch.setenv("GPUWM_THOMPSON_TABLE_ROOT", str(root))
+    with pytest.raises(table_assets.MissingTableAssets) as raised:
+        table_assets.require_thompson_tables()
+    message = str(raised.value)
+    # One sentence: no line breaks, and no full stop that starts
+    # another one.  (Filenames carry dots; sentences carry ". ".)
+    assert "\n" not in message
+    assert ". " not in message
+    assert "mp_physics=8" in message
+    assert "qr_acr_qg_V4.dat" in message
+    assert "gpuwm fetch-tables" in message
+    # A FileNotFoundError subclass, so every stage that already turns
+    # OSError into a sentence prints it instead of a traceback.
+    assert isinstance(raised.value, FileNotFoundError)
+
+
+def test_drift_stays_the_byte_validator_s_sentence_not_the_preflight_s(
+        tmp_path, monkeypatch):
+    """Negative control: the preflight answers absence, and only absence.
+
+    A table that is PRESENT but wrong is a different failure with a
+    better sentence available -- ``validate_table_assets`` can name the
+    expected and actual byte counts.  The cheap gate must not shadow it
+    with "not staged, run fetch-tables", which would send an operator
+    with a drifted mirror to download a file they already have.
+    """
+
+    packaged = packaged_thompson_table_root()
+    root = tmp_path / "drifted"
+    root.mkdir()
+    for asset in CLASSIC_TABLE_ASSETS:
+        (root / asset.filename).write_bytes(b"drift")
+    monkeypatch.setenv("GPUWM_THOMPSON_TABLE_ROOT", str(root))
+    assert table_assets.unstaged_table_assets() == []
+    assert table_assets.require_thompson_tables() == root
+    with pytest.raises(ValueError, match="has 5 bytes; expected"):
+        validate_table_assets(root)
+
+    # ... and a genuinely absent set is the preflight's to name.
+    (root / CLASSIC_TABLE_ASSETS[0].filename).unlink()
+    with pytest.raises(table_assets.MissingTableAssets):
+        table_assets.require_thompson_tables()
+
+    valid, invalid, absent = table_assets.classify_assets(packaged)
+    if invalid or absent:
+        pytest.skip("packaged table root incomplete in this checkout")
+    monkeypatch.setenv("GPUWM_THOMPSON_TABLE_ROOT", str(packaged))
+    assert table_assets.unstaged_table_assets() == []
+
+
+def test_gpuwm_check_warns_about_unstaged_tables_and_still_passes(
+        tmp_path, monkeypatch, capsys):
+    """Warn, never block: `gpuwm check` is the memory preflight.
+
+    Sizing a domain whose tables live elsewhere is legitimate, so this
+    is one line and the exit code is untouched -- the run doors are
+    where the same condition is refused.
+    """
+
+    from gpuwm.core.preflight import _warn_unstaged_physics_tables
+
+    empty = tmp_path / "no-tables"
+    empty.mkdir()
+    monkeypatch.setenv("GPUWM_THOMPSON_TABLE_ROOT", str(empty))
+
+    class _Domain:
+        def __init__(self, mp):
+            self.run = type("R", (), {"mp_physics": mp})()
+
+    exp = type("E", (), {"domains": (_Domain(8),)})()
+    assert _warn_unstaged_physics_tables(exp) is None
+    warned = capsys.readouterr().err
+    assert warned.startswith("warning: ")
+    assert "qr_acr_qg_V4.dat" in warned
+    assert "gpuwm fetch-tables" in warned
+
+    # Negative control: a non-mp8 config says nothing at all.
+    other = type("E", (), {"domains": (_Domain(10),)})()
+    assert _warn_unstaged_physics_tables(other) is None
+    assert capsys.readouterr().err == ""

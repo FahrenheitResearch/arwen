@@ -35,6 +35,8 @@ from typing import Any, Callable
 
 import numpy as np
 
+from gpuwm.certify.capsule import emit_run_capsule
+
 
 HEARTBEAT_SCHEMA = "gpuwm.run-progress/v1"
 FAILURE_CAPSULE_SCHEMA = "gpuwm.failure-capsule/v1"
@@ -1221,6 +1223,32 @@ def _worker_main(args: argparse.Namespace) -> int:
             exp, data, outdir, restart=args.restart,
             progress_callback=progress, health_debug=args.health_debug)
         progress.complete(summary.completed_seconds)
+        # The durable success receipt DETERMINISM.md section 7 records as
+        # missing: the failure path has carried the input hashes and the GPU
+        # identity all along, and a run that succeeded left only a heartbeat.
+        emit_run_capsule(
+            outdir, emission_site="supervisor:success",
+            run_context={
+                "config_bytes": {"path": str(Path(config_path).resolve()),
+                                 "sha256": digest},
+                "input_artifact_bytes": input_hashes,
+                "runner_route_and_io_mode": {
+                    "route": "supervisor:gpuwm run", "io_mode": "history"},
+                "output_and_diagnostic_mode": {
+                    "io_mode": "history",
+                    "restart_interval_seconds": (
+                        None if exp.restart_interval_s is None
+                        else float(exp.restart_interval_s))},
+            },
+            input_bytes={"entries": input_hashes},
+            run_shape={"route": "supervisor:gpuwm run",
+                       "domain_count": len(exp.domains),
+                       "run_seconds": float(exp.run_seconds)},
+            output={"frames": runtime._frame_records(summary.wrfout_paths),
+                    "trajectory_digest": summary.trajectory_digest},
+            receipts={"run_progress": {
+                "path": str((outdir / HEARTBEAT_NAME).resolve())}},
+        )
         return 0
     except BaseException as exc:
         try:

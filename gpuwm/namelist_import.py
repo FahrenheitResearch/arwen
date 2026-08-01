@@ -246,6 +246,24 @@ def _tokens(rhs: str) -> list:
     return out
 
 
+def read_namelist_role(path: str | Path, role: str) -> dict[str, dict[str, list]]:
+    """:func:`parse_namelist`, with an unreadable file as one sentence.
+
+    THE shared refusal for "you named a namelist that is not there".
+    ``gpuwm import-namelist`` has always produced it; ``rw-wps
+    --namelist-support-report``, documented as step one of
+    migrating-from-wps.md, called :func:`parse_namelist` directly and
+    handed the reader a five-frame ``FileNotFoundError`` traceback for
+    the identical mistake.  Two surfaces answering the same condition
+    differently is the bug; one function is the fix.
+    """
+
+    try:
+        return parse_namelist(path)
+    except (OSError, UnicodeDecodeError) as error:
+        raise ValueError(f"cannot read {role} {path}: {error}") from None
+
+
 def parse_namelist(path: str | Path) -> dict[str, dict[str, list]]:
     """Parse a Fortran namelist file into {section: {key: [values]}}.
 
@@ -278,6 +296,59 @@ def parse_namelist(path: str | Path) -> dict[str, dict[str, list]]:
         elif current_key is not None:
             current[current_key].extend(_tokens(line))
     return sections
+
+
+# ---------------------------------------------------------------------------
+# The d01-only view of a namelist that may describe a whole hierarchy
+# ---------------------------------------------------------------------------
+
+#: Sentence a single-domain consumer appends when the namelist it was
+#: handed describes more than one domain.  Kept here so the diagnosis is
+#: spelled the same wherever it is raised.
+MULTI_DOMAIN_ROOT_VIEW_HINT = (
+    "multi-domain namelist passed to a single-domain root preparer: "
+    "d01 is the domain being prepared, so its own (FIRST) column value is "
+    "the one that binds; the differing per-domain column(s) below belong "
+    "to the nests.  Fix by correcting d01's value, or by preparing the "
+    "root from a max_dom = 1 namelist")
+
+
+def root_domain_namelist_view(
+        sections, *, source: str = "",
+) -> tuple[dict[str, dict[str, object]], tuple[str, ...]]:
+    """``(d01 view, per-domain columns that differ across domains)``.
+
+    WRF per-domain arrays are ordered d01..dNN, so the head grid's value
+    is element zero of every column -- for ``&physics``, ``&dynamics``,
+    ``&time_control`` and the rest alike.  A single-domain consumer handed
+    a hierarchy namelist wants exactly that view, and nothing else in the
+    file.
+
+    The second return value names every column that is NOT uniform.  Those
+    are the keys where reading the wrong end of the array silently
+    prepares a different domain, and a consumer that refuses on one of
+    them owes the user :data:`MULTI_DOMAIN_ROOT_VIEW_HINT` rather than a
+    sentence blaming the value it happened to read.
+
+    ``source`` appears in refusals about a malformed column.
+    """
+
+    view: dict[str, dict[str, object]] = {}
+    differing: list[str] = []
+    for section_name, entries in sections.items():
+        resolved: dict[str, object] = {}
+        for key, values in entries.items():
+            if not isinstance(values, list) or not values:
+                raise ValueError(
+                    f"&{section_name}/{key}"
+                    + (f" of {source}" if source else "")
+                    + " has no value; a WRF namelist key must carry at "
+                    "least its d01 column entry")
+            resolved[key] = values[0]
+            if any(value != values[0] for value in values[1:]):
+                differing.append(f"&{section_name}/{key}")
+        view[section_name] = resolved
+    return view, tuple(sorted(differing))
 
 
 # ---------------------------------------------------------------------------
@@ -549,14 +620,8 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             f"'{RRTMG_VARIANT_LEGACY}', got {rrtmg_variant!r}")
     wps_path, input_path = Path(wps_path), Path(input_path)
 
-    def _parse_role(path: Path, role: str) -> dict:
-        try:
-            return parse_namelist(path)
-        except (OSError, UnicodeDecodeError) as err:
-            raise ValueError(f"cannot read {role} {path}: {err}") from None
-
-    wps = _parse_role(wps_path, "namelist.wps")
-    inp = _parse_role(input_path, "namelist.input")
+    wps = read_namelist_role(wps_path, "namelist.wps")
+    inp = read_namelist_role(input_path, "namelist.input")
     substitutions: list[Substitution] = []
     dropped: list[DroppedKey] = []
     fixed: list[FixedKey] = []
@@ -1606,6 +1671,60 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                              "(evaluated at output time, PROVENANCE D2)"),
     ):
         drop("physics", key, ph.take(key), reason)
+    # ---- land-use identity keys ----------------------------------------
+    # Both are ordinary keys in a WRF-Runner/WPS-generated namelist and both
+    # used to reach ph.finish() unmapped, which refused the whole import
+    # with "unmapped key(s) ['fractional_seaice', 'num_land_cat']" -- a
+    # sentence about the importer's map, not about the run.
+    #
+    # num_land_cat is the geography's land-use category count.  gpuwm never
+    # reads it from the namelist: the count comes from LANDUSE.TBL for the
+    # MMINLU the static build stamped (gpuwm/core/landuse.py
+    # load_landuse_table + the lucats bound check), and every gpuwm
+    # geography and wrfout is the 21-category MODIS set
+    # (gpuwm/native_wrf_contract.py:47, gpuwm/io/wrfout.py:197).  So it is
+    # validated against that identity and recorded -- a namelist declaring
+    # USGS's 24 describes static data gpuwm does not build, and refusing is
+    # the only honest answer.
+    _MODIS_LAND_CATEGORIES = 21
+    num_land_cat = ph.take("num_land_cat")
+    if num_land_cat is not None:
+        if any(isinstance(value, bool) or not isinstance(value, int)
+               or value != _MODIS_LAND_CATEGORIES for value in num_land_cat):
+            raise _err(
+                "physics", "num_land_cat", num_land_cat,
+                f"gpuwm builds one land-use identity -- the "
+                f"{_MODIS_LAND_CATEGORIES}-category "
+                "MODIFIED_IGBP_MODIS_NOAH set stamped by its static builder "
+                "and written into every wrfout -- so no other category count "
+                "describes the geography it will actually initialize from.")
+    fix("physics", "num_land_cat", num_land_cat, _MODIS_LAND_CATEGORIES,
+        "the land-use category count is read from LANDUSE.TBL for the "
+        "static build's MMINLU (MODIFIED_IGBP_MODIS_NOAH), never from the "
+        "namelist")
+    # fractional_seaice selects WRF's sea-ice land-use branch.  gpuwm does
+    # not take it from the namelist either, and unlike num_land_cat the two
+    # gpuwm initialization routes do not agree: the prepared-cache route
+    # every HRRR/GFS/ERA5 forecast runs (gpuwm/ingest/hrrr_physics.py:154)
+    # calls initialize_landuse with the FRACTIONAL branch, while the
+    # case-data runtime path (gpuwm/runtime.py:702, :930) takes the default
+    # XICE >= 0.5 branch.  Recording that divergence beside the value is
+    # the honest report; inventing a knob that only one of the two routes
+    # would honor is not.
+    fractional_seaice = ph.take("fractional_seaice")
+    if fractional_seaice is not None and any(
+            isinstance(value, bool) or not isinstance(value, int)
+            or value not in (0, 1) for value in fractional_seaice):
+        raise _err(
+            "physics", "fractional_seaice", fractional_seaice,
+            "must be 0 (WRF's XICE >= 0.5 branch, the Registry default) or "
+            "1 (the fractional branch).")
+    drop("physics", "fractional_seaice", fractional_seaice,
+         "gpuwm selects the sea-ice land-use branch per initialization "
+         "route, not from the namelist: the prepared-cache route every "
+         "HRRR/GFS/ERA5 forecast runs uses the FRACTIONAL branch "
+         "(gpuwm/ingest/hrrr_physics.py -> gpuwm/core/landuse.py:264,318), "
+         "the case-data runtime path uses the XICE >= 0.5 branch")
     urban = ph.take("sf_urban_physics")
     if urban is not None and any(int(v) != 0 for v in urban):
         raise _err("physics", "sf_urban_physics", urban,
@@ -1622,6 +1741,22 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         fix("physics", key, values, 0,
             "mosaic land/soil physics is not implemented; validated off")
     ph.finish()
+
+    # ---- switches WRF's namelist cannot state -----------------------------
+    # ``moist_cq`` has no WRF namelist key, and gpuwm's ``top_lid`` default
+    # is deliberately not WRF's Registry default.  Both land in every
+    # prepared-cache domain identity, so the importer, the shipped physics
+    # profiles and the domain wizard have to give the same answer for the
+    # same suite or a root sealed from a profile can never match a
+    # hierarchy imported from the same namelist.  physics_compat owns that
+    # answer; this is a lookup, not a second opinion.
+    from gpuwm.physics_compat import implicit_runtime_switches
+
+    implicit = implicit_runtime_switches(
+        mp_physics=mp_physics, sf_sfclay_physics=sfclay,
+        sf_surface_physics=sfsfc, bl_pbl_physics=bl_pbl_physics,
+        cu_physics=cu[0], num_soil_layers=resolved_soil_layers,
+        ra_lw_physics=ra_lw_physics, ra_sw_physics=ra_sw_physics)
 
     # ---- &dynamics --------------------------------------------------------
     # Omitted keys take WRF Registry defaults (F2): hybrid_opt 2
@@ -1644,12 +1779,22 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         "gpuwm transcribes the non-moist-theta use_theta_m=0 branch")
     top_lid_values = dyn.col("top_lid", max_dom)
     if top_lid_values is None:
-        top_lid = False
+        # NOT WRF's Registry default.  gpuwm's open-top branch is
+        # implemented and selectable, but it is not what gpuwm runs when
+        # nobody says: gpuwm/config.py records the 2026-07-18 probe where
+        # the open top NaN'd a two-domain real-data run within 15 sim-min,
+        # and every shipped physics profile states the value its suite was
+        # certified with.  Resolving an ABSENT key to WRF's default instead
+        # of to that certified value is what made a hierarchy imported from
+        # a profile's own namelist unable to match the root prepared from
+        # it.
+        top_lid = bool(implicit["top_lid"])
         defaults_applied.append(AppliedDefault(
-            key="top_lid", value=False,
-            reason="WRF Registry default is an open model top "
-                   "(top_lid = false); gpuwm's legacy RunConfig default "
-                   "is not authoritative for imported namelists"))
+            key="top_lid", value=top_lid,
+            reason="the namelist does not declare &dynamics/top_lid; "
+                   f"resolved from {implicit['source']} (WRF's Registry "
+                   "default is an open top, which gpuwm implements but "
+                   "does not select for you)"))
     else:
         top_lid = bool(_uniform(
             "dynamics", "top_lid",
@@ -1903,10 +2048,13 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         f"smdiv = {_fmt(smdiv)}",
         f"top_lid = {_fmt(top_lid)}",
         f"moist = {_fmt(mp_physics > 0)}",
-        # WRF always applies calc_cq when moist species exist.  GPUWM keeps a
-        # false legacy safety default, so imported WRF trajectories must pin
-        # the matched production setting explicitly.
-        f"moist_cq = {_fmt(mp_physics > 0)}",
+        # WRF has no moist_cq namelist key: it derives calc_cq from the
+        # moist species that exist.  The importer used to answer that with
+        # its own rule, `mp_physics > 0`, which contradicted every shipped
+        # WSM6/Kessler/MYNN/RUC/Noah-MP profile (all moist_cq = false) and
+        # so made a public HRRR hierarchy unable to bind the public root it
+        # was prepared from.  physics_compat is the one authority now.
+        f"moist_cq = {_fmt(bool(implicit['moist_cq']))}",
         f"mp_physics = {mp_physics}",
         f"morr_rimed_ice = {morr_rimed_ice}",
         f"moist_adv_opt = {moist_adv_opt}",
@@ -2026,6 +2174,15 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         elif cudt[n]:
             drop("physics", f"cudt[{n + 1}]", [cudt[n]],
                  "cudt is consumed only where cu_physics = 1")
+        # An omitted cudt_minutes inherits RunConfig's live 5.0 while the
+        # shipped physics profiles and the domain wizard write 0.0 for the
+        # same cumulus-off suite.  Both spellings mean the same dead
+        # switch -- gpuwm/core/clock.py builds no cumulus calendar and
+        # gpuwm/core/physics.py takes no cumulus step at cu_physics = 0 --
+        # so the two are reconciled where identities are COMPARED
+        # (gpuwm.ingest.prepared_cache.effective_prepared_domain_config),
+        # not by writing a value into a receipt this importer has always
+        # reproduced byte for byte.
         lines.append(f"diff_6th_factor = {_fmt(diff_6th_factor[n])}")
     text = "\n".join(lines) + "\n"
 

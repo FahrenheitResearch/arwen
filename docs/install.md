@@ -116,9 +116,15 @@ The wheel and sdist also exclude the two externalized Thompson tables
 (freezeH2O.dat, 243 MiB, and qr_acr_qg_V4.dat, 71 MiB -- together they
 would put the artifacts over PyPI's per-file limit); run
 `gpuwm fetch-tables` once after `pip install gpuwm` to stage them,
-SHA-256-verified, into the installed package's table root (a checkout
-already carries qr_acr_qg_V4.dat, so from a clone only freezeH2O.dat
-downloads).
+SHA-256-verified, into `~/.gpuwm/tables/thompson` -- outside the
+install, beside `~/.gpuwm/bridges`, because staging inside
+site-packages meant the next `pip install --upgrade` deleted the
+download without saying so. The staged directory holds the whole
+four-asset set (the two the wheel does carry are copied in beside the
+two it fetches), since a run reads one complete table root. A checkout
+whose packaged root already has all four -- and any wheel that staged
+into site-packages before 1.4 -- keeps reading that one and stages
+nothing.
 `gpuwm doctor` reports exactly which pieces are missing and prints the
 command that fixes each one.
 

@@ -22,6 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
+from gpuwm.certify.kernel_manifest import record_module
 from gpuwm.core.kernels import _preamble
 
 _KDIR = Path(__file__).resolve().parent / "kernels"
@@ -69,8 +70,11 @@ def thermal_source() -> str:
 def _module(options: tuple[str, ...]):
     import cupy as cp
 
-    module = cp.RawModule(code=thermal_source(), options=options)
+    source = thermal_source()
+    module = cp.RawModule(code=source, options=options)
     module.compile()
+    record_module("gpuwm.core.noahmp_thermal_gpu:thermal",
+                  source=source, options=options, module=module)
     return module
 
 

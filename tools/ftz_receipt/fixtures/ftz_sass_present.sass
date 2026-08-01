@@ -1,0 +1,11 @@
+// hand-written control fixture: identical instruction set to
+// ftz_sass_absent.sass, opposite FTZ modifiers.  A parser that always
+// answered the same way cannot separate the pair.
+// .text.control_kernel
+        /*0000*/                   LDC R1, c[0x0][0x37c] ;
+        /*0010*/                   IMAD.WIDE R2, R9, 0x4, R2 ;
+        /*0020*/                   FMUL.FTZ R9, R2, R5 ;
+        /*0030*/                   FMNMX.FTZ R7, R2, R5, PT ;
+        /*0040*/                   FSETP.NEU.FTZ.AND P0, PT, R2, R5, PT ;
+        /*0050*/                   F2F.FTZ.F32.F64 R6, R16 ;
+        /*0060*/                   EXIT ;

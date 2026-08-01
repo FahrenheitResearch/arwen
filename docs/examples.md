@@ -27,18 +27,21 @@ gpuwm fetch --source gfs --cycle latest --hours 24 \
 
 gpuwm fetch --source gfs --author-front-door-manifest \
   --out /case/gfs-data \
-  --bridge /clone/tools/grib1_bridge/target/release/gfs_grib2_bridge \
   --wps-namelist /case/namelist.wps \
   --experiment-config /case/experiment.toml
 # prints: /case/gfs-data/gfs-input-manifest.json + MANIFEST_SHA256
-# and the complete rw-wps command below with both filled in.
+# and the complete rw-wps command below with both filled in, --bridge
+# included -- omitting --bridge above resolves the built
+# gfs_grib2_bridge this install has and binds THAT one.
 ```
 
-Then run the front door.  `--bridge` names the built
-`gfs_grib2_bridge` executable (from `cargo build --release --locked
---offline` in `tools/grib1_bridge`; `gpuwm doctor` lists where bridges
-are found, or set `GPUWM_GFS_GRIB2_BRIDGE` instead of passing the
-flag):
+Then run the front door.  Paste the command the step above printed; it
+already names the bridge the manifest bound.  Written out, `--bridge`
+is the built `gfs_grib2_bridge` executable (a wheel install gets it
+from `gpuwm setup` into `~/.gpuwm/bridges`; a clone can `cargo build
+--release --locked --offline` in `tools/grib1_bridge`; `gpuwm doctor`
+lists where bridges are found, or set `GPUWM_GFS_GRIB2_BRIDGE` instead
+of passing the flag):
 
 ```bash
 rw-wps --source gfs \

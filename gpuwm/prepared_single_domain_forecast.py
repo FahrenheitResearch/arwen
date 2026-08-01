@@ -61,6 +61,7 @@ from gpuwm.core.thompson_contract import (  # noqa: E402
     validate_table_assets as validate_thompson_table_assets,
 )
 from gpuwm.experiment import build_experiment, load_experiment  # noqa: E402
+from gpuwm.explain import warn  # noqa: E402
 from gpuwm.ingest.prepared_cache import (  # noqa: E402
     PREPARED_CACHE_SCHEMA,
     PreparedCacheReader,
@@ -75,25 +76,36 @@ from gpuwm.native_wrf_contract import (  # noqa: E402
 )
 from gpuwm.supervisor import atomic_write_json  # noqa: E402
 from gpuwm.physics_compat import (  # noqa: E402
+    KESSLER_PROFILE_ID,
     MORRISON_PROFILE_ID,
+    MULTI_DOMAIN_SELECTION_SCHEMA,
     MYNN_NOAHMP_PROFILE_ID,
     MYNN_PROFILE_ID,
     MYNN_RUC_PROFILE_ID,
     NOAHMP_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
+    PhysicsCapabilityError,
     RUC_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     THOMPSON_TABLE_ROOT_ENV,
     WRF_RRTMG_LEGACY,
-    WRF_RRTMG_TO_RTE_RRTMGP,
+    WRF_RRTMG_SUBSTITUTION_TOKENS,
     WSM6_PROFILE_ID,
+    acknowledgement_delivery,
+    identify_single_domain_profile,
+    land_surface_component_for_selector,
+    land_surface_route_blocker,
+    single_domain_physics_selection,
     single_domain_runtime_switches,
+    single_domain_verification_status,
     thompson_runtime_requirements,
     thompson_table_root,
     validate_single_domain_physics_profile,
 )
+from gpuwm.certify.capsule import emit_run_capsule  # noqa: E402
 from gpuwm.source_authorities import twentycrv3_authority_sha256  # noqa: E402
+from gpuwm.table_assets import require_thompson_tables  # noqa: E402
 from gpuwm.wrf_physics_inventory import (  # noqa: E402
     stock_wrf_physics_inventory,
 )
@@ -105,6 +117,7 @@ RUNNER_CAPABILITIES_SCHEMA = "gpuwm-runner-capabilities-v1"
 AUTHORITY_MATERIALIZATION_SCHEMA = (
     "gpuwm-named-source-physics-authorities-v1")
 PHYSICS_PROFILE = WSM6_PROFILE_ID
+KESSLER_PHYSICS_PROFILE = KESSLER_PROFILE_ID
 TWENTYCRV3_WSM6_PHYSICS_PROFILE = (
     "20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1")
 THOMPSON_PHYSICS_PROFILE = THOMPSON_PROFILE_ID
@@ -118,6 +131,7 @@ NOAHMP_PHYSICS_PROFILE = NOAHMP_PROFILE_ID
 MYNN_NOAHMP_PHYSICS_PROFILE = MYNN_NOAHMP_PROFILE_ID
 PHYSICS_PROFILES = (
     PHYSICS_PROFILE,
+    KESSLER_PHYSICS_PROFILE,
     TWENTYCRV3_WSM6_PHYSICS_PROFILE,
     THOMPSON_PHYSICS_PROFILE,
     MORRISON_PHYSICS_PROFILE,
@@ -131,13 +145,18 @@ PHYSICS_PROFILES = (
 )
 SUPPORTED_SOURCES = frozenset({"gfs", "era5", "20crv3"})
 _SOURCE_PHYSICS_PROFILES = MappingProxyType({
-    # RUC is deliberately absent from GFS and present on ERA5.  A
+    # REPORTED METADATA, NOT A GATE (owner ruling 2026-07-31): these
+    # per-source lists name the shipped profiles whose verification
+    # evidence this runner can vouch for on each source.  They feed the
+    # capabilities receipt and the registry drift check; nothing refuses
+    # a suite for being absent from them.  The one real per-source
+    # blocker they used to encode -- RUC absent from GFS because a
     # GFS-initialised RUC forecast prepares in full and then dies on its
-    # first surface-temperature call with `mavail must be finite`,
-    # having advanced no model time (v1.1.1 field finding; completing
-    # that initialisation is a v1.2 item).  ERA5 and HRRR RUC were not
-    # exercised by the run that found it and are not withdrawn on the
-    # inference that they share it.
+    # first surface-temperature call with `mavail must be finite`
+    # (v1.1.1 field finding; completing that initialisation is a v1.2
+    # item) -- is enforced on the resolved sf_surface_physics selector
+    # by the registry's land-surface route declaration instead, in
+    # ``_validate_physics`` below, for named and unnamed suites alike.
     "gfs": (
         PHYSICS_PROFILE, THOMPSON_PHYSICS_PROFILE,
         MORRISON_PHYSICS_PROFILE, NSSL2_PHYSICS_PROFILE,
@@ -168,6 +187,20 @@ _TWENTYCRV3_WSM6_RUNTIME_SWITCHES = MappingProxyType({
     "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.12,
     "diff_6th_slopeopt": 1,
 })
+#: The switch names an experiment-config-selected (custom) suite's
+#: receipt records: the union of what the shipped profile rows pin,
+#: in one canonical order, so two receipts for one config are
+#: byte-identical.
+_SUITE_RECEIPT_SWITCH_KEYS = (
+    "moist", "moist_cq", "mp_physics", "top_lid", "epssm",
+    "morr_rimed_ice", "wsm6_hail_opt", "ra_physics",
+    "ra_lw_physics", "ra_sw_physics", "radt",
+    "wrf_rrtmg_compatibility", "ra_rrtmg_variant",
+    "sf_sfclay_physics", "sf_surface_physics",
+    "bl_pbl_physics", "cu_physics", "cudt_minutes",
+    "num_soil_layers", "terrain_opt", "km_opt", "diff_6th_opt",
+    "diff_6th_factor", "diff_6th_slopeopt",
+)
 _MATERIALIZED_PHYSICS_KEYS = frozenset({
     "moist", "moist_cq", "mp_physics", "top_lid", "epssm",
     "morr_rimed_ice", "wsm6_hail_opt", "ra_physics",
@@ -276,6 +309,17 @@ def runner_capabilities() -> dict[str, object]:
     missing_executor_modules = _missing_forecast_executor_modules()
     forecast_available = not missing_executor_modules
     thompson = thompson_runtime_requirements()
+    # The key name physics_profile_ids predates the 2026-07-31 owner
+    # ruling, when these per-source lists were the ADMISSION lists.  The
+    # key survives for existing consumers, but its meaning is now the
+    # verification evidence this runner can vouch for on each source,
+    # and each entry says so beside the list rather than relying on a
+    # consumer to find the top-level physics_admission block.
+    source_profile_ids_semantics = (
+        "per-source WRF-verification evidence this runner vouches for; "
+        "NOT an admission list -- any engine-valid suite runs from the "
+        "hash-bound experiment config on every supported source (see "
+        "physics_admission)")
     sources = {
         "gfs": {
             "readiness": "IMPLEMENTED_RUNTIME_PREFLIGHT_REQUIRED",
@@ -283,6 +327,7 @@ def runner_capabilities() -> dict[str, object]:
                 "portable-single-domain-v2", "hierarchy-d01-v1"],
             "single_d01_gpu_execution": True,
             "physics_profile_ids": list(_SOURCE_PHYSICS_PROFILES["gfs"]),
+            "physics_profile_ids_semantics": source_profile_ids_semantics,
         },
         "era5": {
             "readiness": "IMPLEMENTED_RUNTIME_PREFLIGHT_REQUIRED",
@@ -290,6 +335,7 @@ def runner_capabilities() -> dict[str, object]:
                 "portable-single-domain-v2", "hierarchy-d01-v1"],
             "single_d01_gpu_execution": True,
             "physics_profile_ids": list(_SOURCE_PHYSICS_PROFILES["era5"]),
+            "physics_profile_ids_semantics": source_profile_ids_semantics,
         },
         "20crv3": {
             "readiness": (
@@ -301,6 +347,7 @@ def runner_capabilities() -> dict[str, object]:
             "single_d01_gpu_execution": True,
             "physics_profile_ids": list(
                 _SOURCE_PHYSICS_PROFILES["20crv3"]),
+            "physics_profile_ids_semantics": source_profile_ids_semantics,
             "limitations": [
                 "prepared source is hash-bound to one filename member",
                 "GPU forecast execution has no public 20CRv3 acceptance gate",
@@ -314,6 +361,18 @@ def runner_capabilities() -> dict[str, object]:
             "readiness": "SUPPORTED_RUNNER_PROFILE",
             "explicit_expert_consent_required": False,
             "runtime_guards": [],
+        },
+        KESSLER_PHYSICS_PROFILE: {
+            "selector": 1,
+            "readiness": "IMPLEMENTED_UNVERIFIED",
+            "explicit_expert_consent_required": False,
+            "explicit_profile_selection_required": True,
+            "runtime_guards": [],
+            "external_table_assets": [],
+            "resolved_fixed_preset": True,
+            "warning": (
+                "Kessler mp1 has no gpuwm/WRF forecast trajectory "
+                "comparison on this runner's prepared sources"),
         },
         TWENTYCRV3_WSM6_PHYSICS_PROFILE: {
             "selector": 6,
@@ -332,7 +391,7 @@ def runner_capabilities() -> dict[str, object]:
         },
         MORRISON_PHYSICS_PROFILE: {
             "selector": 10,
-            "readiness": "MODEL_VALIDATED_RUNTIME_PROFILE",
+            "readiness": "WRF_MATCHED_RUN_RUNTIME_PROFILE",
             "explicit_expert_consent_required": False,
             "runtime_guards": [],
             "external_table_assets": [],
@@ -340,7 +399,7 @@ def runner_capabilities() -> dict[str, object]:
         },
         NSSL2_PHYSICS_PROFILE: {
             "selector": NSSL2_MP_PHYSICS,
-            "readiness": "VALIDATION_CANDIDATE",
+            "readiness": "WRF_MATCHED_RUN_CANDIDATE",
             "explicit_expert_consent_required": False,
             "runtime_guards": [],
             "external_table_assets": [],
@@ -349,7 +408,7 @@ def runner_capabilities() -> dict[str, object]:
         },
         NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE: {
             "selector": NSSL2_MP_PHYSICS,
-            "readiness": "VALIDATION_CANDIDATE",
+            "readiness": "WRF_MATCHED_RUN_CANDIDATE",
             "explicit_expert_consent_required": False,
             "runtime_guards": [],
             "external_table_assets": [],
@@ -436,6 +495,17 @@ def runner_capabilities() -> dict[str, object]:
             sorted(SUPPORTED_SOURCES) if forecast_available else []),
         "physics_profile_ids": (
             list(PHYSICS_PROFILES) if forecast_available else []),
+        # Owner ruling 2026-07-31: the ids above are the shipped suites
+        # whose WRF-verification evidence this runner reports; they are
+        # not an admission list.  Any suite the engine implements runs
+        # from the hash-bound experiment config, --physics-profile is an
+        # optional exactness assertion, and verification status is
+        # receipt metadata, never a gate.
+        "physics_admission": {
+            "mode": "any-engine-valid-suite-from-hash-bound-experiment",
+            "physics_profile_flag": "optional-exactness-assertion",
+            "verification_status": "reported-never-gating",
+        },
         "report_schema": REPORT_SCHEMA,
         "progress_schema": PROGRESS_SCHEMA,
         "readiness": (
@@ -553,6 +623,8 @@ def runner_capabilities() -> dict[str, object]:
                 source: list(profiles)
                 for source, profiles in _SOURCE_PHYSICS_PROFILES.items()
             },
+            "source_physics_profile_ids_semantics": (
+                source_profile_ids_semantics),
         },
     }
 
@@ -673,13 +745,13 @@ def _validate_hash_bound_history_cadence(
     domain = exp.root
     experiment_cadence = float(domain.history_interval_s)
     run_copy_cadence = float(domain.run.output_interval_s)
-    if (not math.isfinite(requested) or requested <= 0.0
-            or requested != experiment_cadence
-            or requested != run_copy_cadence):
-        raise ValueError(
-            "history-interval-seconds must be finite, positive, and exactly "
-            "match the hash-bound experiment history_interval_s and its "
-            "derived output_interval_s copy")
+    if requested != experiment_cadence or requested != run_copy_cadence:
+        # The hash-bound experiment value is what the run uses either
+        # way; a stale flag is named and overridden, never a refusal.
+        warn(f"--history-interval-seconds {requested:g} differs from "
+             f"the hash-bound experiment history_interval_s "
+             f"({experiment_cadence:g} s); the experiment value is "
+             "authoritative and is used")
     exact_steps = Fraction(experiment_cadence) / exp.dt_exact(domain.grid_id)
     if exact_steps.denominator != 1 or exact_steps < 1:
         raise ValueError(
@@ -714,18 +786,30 @@ def _validate_hash_bound_history_cadence(
 
 
 def _profile_runtime_switches(source: str, profile: str) -> dict[str, object]:
-    """Resolve one source-scoped, complete physics product."""
+    """Resolve one complete named physics product.
+
+    No per-source membership refusal any more (owner ruling 2026-07-31:
+    the suite choice is the user's; ``_SOURCE_PHYSICS_PROFILES`` is
+    reported verification metadata, not a gate).  What remains
+    fail-closed here is a NAME the shipped switch tables genuinely do
+    not define, and the one real per-source blocker -- the registry's
+    land-surface route declaration -- is enforced on the resolved
+    selector in :func:`_validate_physics`, for named and unnamed suites
+    alike.
+    """
 
     if source not in SUPPORTED_SOURCES:
         raise ValueError(f"unsupported prepared forecast source {source!r}")
-    allowed = _SOURCE_PHYSICS_PROFILES[source]
-    if profile not in allowed:
-        raise ValueError(
-            f"physics profile {profile!r} is not available for source "
-            f"{source!r}; available={list(allowed)!r}")
     if profile == TWENTYCRV3_WSM6_PHYSICS_PROFILE:
         return dict(_TWENTYCRV3_WSM6_RUNTIME_SWITCHES)
-    return single_domain_runtime_switches(profile)
+    try:
+        return single_domain_runtime_switches(profile)
+    except ValueError:
+        raise ValueError(
+            f"physics profile {profile!r} is not a shipped runner "
+            f"profile; omit --physics-profile to run the hash-bound "
+            f"experiment's own suite as written, or pick one of "
+            f"{list(PHYSICS_PROFILES)!r}") from None
 
 
 def _profile_readiness(source: str, profile: str) -> tuple[str, str | None]:
@@ -735,25 +819,30 @@ def _profile_readiness(source: str, profile: str) -> tuple[str, str | None]:
                 "; Thompson MP8 also remains an experimental table-bound "
                 "runtime"),
             NSSL2_PHYSICS_PROFILE: (
-                "; NSSL-2 MP18 also remains a validation candidate"),
+                "; NSSL-2 MP18 also remains a matched-run candidate"),
             NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE: (
-                "; NSSL-2 MP18 plus legacy RRTMG remains a validation "
+                "; NSSL-2 MP18 plus legacy RRTMG remains a matched-run "
                 "candidate"),
         }.get(profile, "")
         return "IMPLEMENTED_UNVERIFIED", (
             "this 20CRv3 GPU forecast profile has no public acceptance gate"
             f"{suffix}")
+    if profile == TWENTYCRV3_WSM6_PHYSICS_PROFILE:
+        # Selectable on any prepared source now; its verification
+        # standing does not improve with the source it runs on.
+        return "IMPLEMENTED_UNVERIFIED", (
+            "this profile has no public forecast acceptance gate")
     if profile == THOMPSON_PHYSICS_PROFILE:
-        return "MODEL_VALIDATED_EXPERIMENTAL_RUNTIME", (
+        return "WRF_MATCHED_RUN_EXPERIMENTAL_RUNTIME", (
             "Thompson MP8 remains an experimental table-bound runtime")
     if profile == MORRISON_PHYSICS_PROFILE:
-        return "MODEL_VALIDATED_RUNTIME_PROFILE", None
+        return "WRF_MATCHED_RUN_RUNTIME_PROFILE", None
     if profile in (
             NSSL2_PHYSICS_PROFILE,
             NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE,
     ):
-        return "VALIDATION_CANDIDATE", (
-            "NSSL-2 MP18 is implemented but remains a validation candidate")
+        return "WRF_MATCHED_RUN_CANDIDATE", (
+            "NSSL-2 MP18 is implemented but remains a matched-run candidate")
     if profile == MYNN_PHYSICS_PROFILE:
         return "IMPLEMENTED_UNVERIFIED", (
             "MYNN 5/5 has no gpuwm/WRF forecast trajectory comparison")
@@ -767,7 +856,24 @@ def _profile_readiness(source: str, profile: str) -> tuple[str, str | None]:
         return "IMPLEMENTED_UNVERIFIED_EXPERT", (
             "Noah-MP has no gpuwm/WRF forecast trajectory comparison and "
             "retains its registry-owned expert acknowledgement")
-    return "SUPPORTED_RUNNER_PROFILE", None
+    # Every other shipped template answers with its REGISTRY maturity
+    # rather than a flat supported default: the fallback used to be
+    # reachable only by WSM6 (maturity 'supported', which it matched),
+    # and now that any registered template runs by name, a Kessler-class
+    # implemented-unverified template must not read as more mature than
+    # the verification block beside it in the same receipt.
+    from gpuwm.physics_registry import physics_registry
+
+    template = physics_registry()["templates"].get(profile)
+    maturity = (
+        template.get("maturity") if isinstance(template, Mapping) else None)
+    if maturity == "supported":
+        return "SUPPORTED_RUNNER_PROFILE", None
+    if maturity == "wrf-matched-run":
+        return "WRF_MATCHED_RUN_RUNTIME_PROFILE", None
+    return "IMPLEMENTED_UNVERIFIED", (
+        f"registry maturity {maturity!r}: this profile has no "
+        "gpuwm/WRF forecast trajectory comparison on this runner")
 
 
 def _toml_literal(value: object) -> str:
@@ -842,14 +948,50 @@ def _experiment_tables(raw: Mapping[str, object]) -> dict[str, object]:
 
 
 def _render_materialized_experiment(
-        base_text: str, *, source: str, profile: str,
+        base_text: str, *, source: str, profile: str | None,
 ) -> tuple[str, object, dict[str, object]]:
-    """Patch only profile-owned TOML keys and preserve all other controls."""
+    """Patch only profile-owned TOML keys and preserve all other controls.
 
-    switches = _profile_runtime_switches(source, profile)
+    ``profile=None`` (owner ruling 2026-07-31) means the base config's
+    own physics IS the product: the authority pair is still published --
+    later stages bind these exact bytes -- with no switch rewritten, and
+    the receipt reports the suite's verification status instead of a
+    profile.
+    """
+
     base_raw = tomllib.loads(base_text)
-    build_experiment(_experiment_tables(base_raw),
-                     source="base named-source experiment")
+    base_exp = build_experiment(_experiment_tables(base_raw),
+                                source="base named-source experiment")
+    if profile is None:
+        for domain in base_exp.domains:
+            component = land_surface_component_for_selector(
+                getattr(domain.run, "sf_surface_physics", None))
+            if component is not None:
+                blocker = land_surface_route_blocker(
+                    component, source=source)
+                if blocker is not None:
+                    raise ValueError(
+                        f"d{int(domain.grid_id):02d}: {blocker}")
+        base_non_physics = _non_physics_descriptor_sha256(base_raw)
+        return base_text, base_exp, {
+            "base_non_physics_descriptor_sha256": base_non_physics,
+            "generated_non_physics_descriptor_sha256": base_non_physics,
+            "profile_validation": {
+                "schema": "gpuwm-prepared-physics-suite-v1",
+                "source": source,
+                "profile": None,
+                "profile_binding": "experiment-config",
+                "verification": single_domain_verification_status(
+                    base_exp.root.run),
+            },
+        }
+    switches = _profile_runtime_switches(source, profile)
+    component = land_surface_component_for_selector(
+        switches.get("sf_surface_physics"))
+    if component is not None:
+        blocker = land_surface_route_blocker(component, source=source)
+        if blocker is not None:
+            raise ValueError(blocker)
     header = re.compile(
         r"^\s*(\[\[|\[)([A-Za-z0-9_.-]+)(\]\]|\])\s*(?:#.*)?$")
     assignment = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*=")
@@ -934,10 +1076,14 @@ def _atomic_write_bytes(path: Path, payload: bytes) -> None:
 
 def materialize_named_source_authorities(
         *, source: str, base_experiment_config: Path,
-        base_wps_namelist: Path, physics_profile: str,
+        base_wps_namelist: Path, physics_profile: str | None,
         output_directory: Path,
 ) -> dict[str, object]:
-    """Publish create-only per-case experiment/WPS physics authorities."""
+    """Publish create-only per-case experiment/WPS physics authorities.
+
+    ``physics_profile=None`` publishes the base pair with the config's
+    own physics unchanged; the receipt reports its verification status.
+    """
 
     base_experiment_config = _require_file(
         base_experiment_config, "base experiment config")
@@ -946,6 +1092,15 @@ def materialize_named_source_authorities(
     base_text = base_experiment_config.read_text(encoding="utf-8")
     rendered, exp, validation = _render_materialized_experiment(
         base_text, source=source, profile=physics_profile)
+    # THE earliest point on the documented route at which the physics
+    # this run will execute is known: step 2 of 6, before the fetch and
+    # before preprocessing.  An mp8 suite whose lookup tables were never
+    # staged is refused here, in one sentence naming the table and
+    # `gpuwm fetch-tables`, rather than eight minutes and two paid
+    # stages later at the top of the GPU run.
+    if any(int(domain.run.mp_physics) == THOMPSON_MP_PHYSICS
+           for domain in exp.domains):
+        require_thompson_tables(assets=THOMPSON_CLASSIC_TABLE_ASSETS)
     output_directory = claim_output_directory(
         output_directory, flag="--output-directory")
     experiment = output_directory / "experiment.toml"
@@ -955,7 +1110,14 @@ def materialize_named_source_authorities(
     _atomic_write_bytes(wps, base_wps_namelist.read_bytes())
     if _sha256(wps) != _sha256(base_wps_namelist):
         raise RuntimeError("materialized WPS namelist is not a byte-exact copy")
-    readiness, warning = _profile_readiness(source, physics_profile)
+    if physics_profile is None:
+        verification = validation["profile_validation"]["verification"]
+        readiness = "EXPERIMENT_CONFIG_SUITE"
+        warning = (
+            None if verification["status"] == "wrf-verified"
+            else verification["sentence"])
+    else:
+        readiness, warning = _profile_readiness(source, physics_profile)
     receipt = {
         "schema": AUTHORITY_MATERIALIZATION_SCHEMA,
         "status": "PASS",
@@ -1149,8 +1311,17 @@ def _validated_thompson_runtime_contract() -> dict[str, object]:
     # honours GPUWM_THOMPSON_TABLE_ROOT as an override and falls back to
     # the packaged directory; either way the assets are re-validated
     # byte for byte below, which is the check that ever mattered.
+    #
+    # Absence is answered BEFORE the byte validation, and in a sentence
+    # that names the command which fixes it.  This function runs while
+    # the physics receipt is built -- at --materialize-authorities,
+    # which is step 2 of 6 on the documented GFS route -- so an install
+    # that never staged the externalized tables learns it here, before
+    # the fetch and before preprocessing, instead of from a
+    # FileNotFoundError traceback at the top of the GPU run.
     root = _require_directory(
-        Path(thompson_table_root()), "Thompson table root")
+        Path(require_thompson_tables(assets=THOMPSON_CLASSIC_TABLE_ASSETS)),
+        "Thompson table root")
     assets = validate_thompson_table_assets(root)
     if tuple(assets) != tuple(THOMPSON_CLASSIC_TABLE_ASSETS):
         raise ValueError("validated Thompson assets differ from the classic contract")
@@ -1210,10 +1381,25 @@ def _validated_thompson_runtime_contract() -> dict[str, object]:
     }
 
 
+def _receipt_mp_physics(physics_receipt: Mapping[str, object]) -> int:
+    """The resolved microphysics selector a physics receipt records."""
+
+    resolved = physics_receipt.get("resolved")
+    if not isinstance(resolved, Mapping):
+        return -1
+    try:
+        return int(resolved.get("mp_physics"))
+    except (TypeError, ValueError):
+        return -1
+
+
 def _thompson_authority_paths(
         physics_receipt: Mapping[str, object],
 ) -> dict[str, Path]:
-    if physics_receipt.get("profile") != THOMPSON_PHYSICS_PROFILE:
+    # Keyed on the resolved selector, not the profile id: every admitted
+    # mp8 suite binds the table authority (matching the domain-tree
+    # runner, which has always keyed this on mp_physics == 8).
+    if _receipt_mp_physics(physics_receipt) != THOMPSON_MP_PHYSICS:
         return {}
     contract = physics_receipt.get("thompson_contract")
     if not isinstance(contract, Mapping):
@@ -1238,7 +1424,7 @@ def _thompson_authority_paths(
 def _verify_thompson_runtime_environment(
         physics_receipt: Mapping[str, object],
 ) -> None:
-    if physics_receipt.get("profile") != THOMPSON_PHYSICS_PROFILE:
+    if _receipt_mp_physics(physics_receipt) != THOMPSON_MP_PHYSICS:
         return
     contract = physics_receipt.get("thompson_contract")
     table = contract.get("table_authority") if isinstance(contract, Mapping) else None
@@ -1361,58 +1547,27 @@ def _runtime_source_identity() -> dict[str, object]:
         str(path.relative_to(REPO)).replace("\\", "/"): _sha256(path)
         for path in paths
     }
-    raw_manifest = os.environ.get("GPUWM_NATIVE_DISTRIBUTION_MANIFEST")
-    if raw_manifest:
-        manifest_path = Path(raw_manifest).resolve()
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        artifact = manifest.get("artifact")
-        source = manifest.get("source")
-        if (manifest.get("schema") != "gpuwm-native-wrf-runtime-v1"
-                or manifest.get("status") != "READY"
-                or not isinstance(artifact, dict)
-                or artifact.get("gpuwm_version") != __version__
-                or not isinstance(source, dict)
-                or not source.get("worktree_clean")
-                or not isinstance(source.get("commit"), str)
-                or not isinstance(source.get("tree"), str)):
-            raise RuntimeError("unrecognized native distribution manifest")
-        commit = source["commit"]
-        tree = source["tree"]
-        status = []
-        identity_source = "gpuwm-native-distribution-manifest"
-        manifest_sha256 = _sha256(manifest_path)
-    else:
-        try:
-            top_level = Path(subprocess.check_output(
-                ["git", "rev-parse", "--show-toplevel"], cwd=REPO,
-                text=True, stderr=subprocess.DEVNULL).strip()).resolve()
-            if top_level != REPO.resolve():
-                raise RuntimeError(
-                    f"git provenance escaped the gpuwm checkout: {top_level}")
-            commit = subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=REPO, text=True,
-                stderr=subprocess.DEVNULL).strip()
-            tree = subprocess.check_output(
-                ["git", "rev-parse", "HEAD^{tree}"], cwd=REPO, text=True,
-                stderr=subprocess.DEVNULL).strip()
-            status = subprocess.check_output(
-                ["git", "status", "--short"], cwd=REPO, text=True,
-                stderr=subprocess.DEVNULL).splitlines()
-            identity_source = "git"
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            commit = None
-            tree = None
-            status = None
-            identity_source = "runtime-module-sha256-only"
-        manifest_sha256 = None
-    return {
-        "git_commit": commit,
-        "git_tree": tree,
-        "git_status_short": status,
-        "identity_source": identity_source,
-        "distribution_manifest_sha256": manifest_sha256,
-        "source_sha256": source_sha256,
-    }
+    # One resolver for all three installs (gpuwm.runtime_manifest).  The
+    # branch this replaced degraded a wheel install to
+    # `runtime-module-sha256-only` -- honest, but weaker than the truth:
+    # pip knows exactly which artifact it wrote, and RECORD says so.  It
+    # also raised, uncaught, when site-packages happened to sit INSIDE
+    # some unrelated repository, binding a stranger's commit or dying;
+    # that case is now simply "not a checkout of this tree".
+    from gpuwm.runtime_manifest import IdentityError, provenance
+
+    try:
+        identity = provenance(REPO)
+    except IdentityError:
+        # Neither a manifest, nor a checkout, nor an installed
+        # distribution: a source tree someone copied into place.  The
+        # per-module digests above still bind what ran.
+        identity = {
+            "git_commit": None, "git_tree": None, "git_status_short": None,
+            "identity_source": "runtime-module-sha256-only",
+            "distribution_manifest_sha256": None, "installed_wheel": None,
+        }
+    return {**identity, "source_sha256": source_sha256}
 
 
 def _durable_wrfout_inventory(output_directory: Path) -> list[dict[str, object]]:
@@ -1753,8 +1908,40 @@ _GFS_MANIFEST_IDENTITY_KEYS = ("model", "product", "cycle")
 _GFS_MANIFEST_LEVEL_KEYS = ("pressure_levels_hpa", "top_pressure_pa")
 
 
+def proof_initial_forecast_lead(proof: Mapping[str, object]) -> int:
+    """The source lead the prepared run starts from, per its own proof.
+
+    A proof written before initialization from a forecast lead existed
+    carries no such block, and there is exactly one lead it can have
+    meant: 0, the cycle's analysis.  Reading it as 0 is a statement of
+    what those runs WERE, not a default applied to a missing field.
+    """
+
+    block = proof.get("initial_condition")
+    if block is None:
+        return 0
+    if not isinstance(block, Mapping):
+        raise ValueError(
+            "preparation proof initial-condition provenance is malformed")
+    lead = block.get("initial_forecast_lead_hours")
+    if isinstance(lead, bool) or not isinstance(lead, int) or lead < 0:
+        raise ValueError(
+            "preparation proof declares an unreadable initial forecast lead")
+    kind = block.get("initial_condition_kind")
+    process = block.get("forecast_generating_process_id")
+    # A lead is never readable as an analysis, in either direction.
+    if (kind != ("analysis" if lead == 0 else "forecast")
+            or process != (81 if lead == 0 else 96)):
+        raise ValueError(
+            f"preparation proof labels forecast lead f{lead:03d} as "
+            f"{kind!r} (process {process!r}); a forecast lead is not an "
+            "analysis")
+    return lead
+
+
 def _gfs_manifest_source_receipt(
-        manifest: Mapping[str, object], exp) -> dict[str, object]:
+        manifest: Mapping[str, object], exp,
+        proof: Mapping[str, object]) -> dict[str, object]:
     """Bind the GFS cycle identity; validate and record the level ladder.
 
     The identity comparison binds ``model``/``product``/``cycle`` and
@@ -1777,18 +1964,39 @@ def _gfs_manifest_source_receipt(
     known = set(_GFS_MANIFEST_IDENTITY_KEYS) | set(_GFS_MANIFEST_LEVEL_KEYS)
     unknown = sorted(set(identity) - known)
     if unknown:
-        raise ValueError(
-            f"GFS source manifest identity carries unsupported field(s) "
-            f"{unknown}")
+        # Forward-compat: a NEWER fetch may stamp fields this runner
+        # does not know.  Every field this runner reads is still bound
+        # and checked below; extras are named and ignored.  (The old
+        # closed-set refusal rejected every manifest this release's
+        # own fetch authored.)
+        warn(f"GFS source manifest identity carries field(s) {unknown} "
+             "this runner does not read; ignoring them")
     bound = {key: identity.get(key) for key in _GFS_MANIFEST_IDENTITY_KEYS}
+    # start_time is the model's time zero and the cycle is the source's;
+    # they coincide only at lead 0.  Deriving the cycle by subtracting
+    # the proof's declared lead keeps the binding exact at every lead
+    # instead of demanding that a run start when its source did.
+    lead_hours = proof_initial_forecast_lead(proof)
+    cycle_time = exp.start_time - timedelta(hours=lead_hours)
     expected = {
         "model": "GFS",
         "product": "pgrb2.0p25",
-        "cycle": exp.start_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "cycle": cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     if bound != expected:
         raise ValueError(
-            "GFS source manifest identity differs from the experiment cycle")
+            "GFS source manifest identity differs from the cycle this "
+            "experiment starts from (start_time "
+            f"{exp.start_time:%Y-%m-%d %H:%M:%S} at forecast lead "
+            f"f{lead_hours:03d})")
+    provenance = proof.get("initial_condition")
+    if isinstance(provenance, Mapping) and (
+            provenance.get("cycle") != expected["cycle"]
+            or provenance.get("model_start_time")
+            != exp.start_time.strftime("%Y-%m-%dT%H:%M:%SZ")):
+        raise ValueError(
+            "preparation proof initial-condition provenance disagrees with "
+            "the manifest cycle or the experiment start_time")
     # Absent levels mean a directory fetched by an older ArWen, whose only
     # possible ladder is the certified 100 hPa one; the validator returns
     # that constant, which is exactly what the preparation assumed.
@@ -1812,6 +2020,7 @@ def _gfs_manifest_source_receipt(
 
 def _manifest_file_specs(
         source: str, manifest: Mapping[str, object], exp,
+        proof: Mapping[str, object],
 ) -> tuple[dict[str, dict[str, object]], Mapping[str, object] | None]:
     """Normalized role specs, plus the GFS source receipt when there is one."""
 
@@ -1864,7 +2073,8 @@ def _manifest_file_specs(
             parsed_hours.append(int(suffix))
         if len(parsed_hours) < 2 or len(set(parsed_hours)) != len(parsed_hours):
             raise ValueError("GFS manifest requires at least two unique GRIB hours")
-        return normalized, _gfs_manifest_source_receipt(manifest, exp)
+        return normalized, _gfs_manifest_source_receipt(
+            manifest, exp, proof)
     else:
         required = common | {"grib", "vtable"}
         optional = {"static_input", "static_receipt", "source_orography"}
@@ -1899,9 +2109,9 @@ def _validate_profile_switches(
             "implemented-unverified 20CRv3 WSM6+KF+RTE profile"),
         THOMPSON_PHYSICS_PROFILE: "guarded Thompson MP8 profile",
         MORRISON_PHYSICS_PROFILE: "Morrison MP10 runtime profile",
-        NSSL2_PHYSICS_PROFILE: "NSSL-2 validation-candidate profile",
+        NSSL2_PHYSICS_PROFILE: "NSSL-2 wrf-matched-run-candidate profile",
         NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE: (
-            "NSSL-2 + legacy RRTMG validation-candidate profile"),
+            "NSSL-2 + legacy RRTMG wrf-matched-run-candidate profile"),
         MYNN_PHYSICS_PROFILE: "MYNN 5/5 implemented-unverified profile",
         RUC_PHYSICS_PROFILE: "RUC LSM implemented-unverified profile",
         MYNN_RUC_PHYSICS_PROFILE: (
@@ -1914,11 +2124,15 @@ def _validate_profile_switches(
         observed = {name: getattr(cfg, name) for name in expected}
         observed_radiation = radiation_scheme_ids(cfg)
         if observed != expected or observed_radiation != expected_radiation:
+            label = labels.get(profile, f"named {profile} profile")
             raise ValueError(
-                f"experiment physics differs from the {labels[profile]} on "
+                f"experiment physics differs from the {label} on "
                 f"d{int(domain.grid_id):02d}: expected={expected}, "
                 f"radiation={expected_radiation}, observed={observed}, "
-                f"resolved_radiation={observed_radiation}")
+                f"resolved_radiation={observed_radiation}.  A named "
+                f"--physics-profile asserts the experiment IS that suite; "
+                f"omit the flag to run the experiment's own physics as "
+                f"written")
         observed_domains.append({
             "grid_id": int(domain.grid_id),
             **observed,
@@ -1941,23 +2155,57 @@ def _validate_profile_switches(
 
 
 def _validate_physics(
-        exp, profile: str, run_seconds: float,
+        exp, profile: str | None, run_seconds: float,
         history_interval_seconds: float, *, source: str | None = None,
+        expert_acknowledgements: tuple[str, ...] = (),
 ) -> dict[str, object]:
-    if profile not in PHYSICS_PROFILES:
-        raise ValueError(f"unsupported prepared forecast physics profile {profile!r}")
+    """Admit the experiment's physics and build its receipt.
+
+    ``profile`` is an OPTIONAL assertion (owner ruling 2026-07-31): when
+    named, the experiment must BE that shipped suite, switch for switch,
+    exactly as before.  When omitted, the hash-bound experiment config is
+    the authority and any suite the engine implements runs; its
+    verification status -- "WRF-verified" against a shipped profile, or
+    "supported, not yet WRF-verified" -- is recorded in the receipt and
+    never gates.  Fail-closed refusals remain only where the code
+    genuinely does not implement the request: engine selector validation
+    (``gpuwm.config.validate_run_config``, which names the exact switch)
+    and the registry's land-surface route declaration.
+
+    The registry's source-neutral tuple governance is APPLIED here too,
+    on every prepared source, for named, matched and unnamed suites
+    alike -- but as a WARNING, not a refusal (warn-not-block ruling):
+    an expert-template tuple is implemented and individually verified,
+    so an unacknowledged one runs and prints one line naming both
+    published delivery spellings, ``--ack <id>`` and
+    ``acknowledgements = ["<id>"]`` in the hash-bound experiment, and
+    the receipt carries ``acknowledged=false`` either way.  Applying
+    the governance is what keeps the removal of the profile whitelist
+    from widening consent SILENTLY: pre-ruling, expert tuples could not
+    reach the non-GFS lanes at all, and every run record now states
+    exactly which unblessed tuple executed.  A caller who NAMES an
+    expert ``--physics-profile`` has asked for that gate and still
+    meets it at the front door
+    (:func:`gpuwm.physics_compat.validate_single_domain_physics_profile`).
+    """
+
     if len(exp.domains) != 1:
         raise ValueError(
             "prepared single-domain forecast runner requires exactly one domain")
     dc = exp.root
     cfg = dc.run
-    if (not math.isfinite(run_seconds) or run_seconds <= 0.0
-            or run_seconds % 3600.0 != 0.0):
-        raise ValueError("run-seconds must be a positive whole-hour duration")
+    if not math.isfinite(run_seconds) or run_seconds <= 0.0:
+        raise ValueError("run-seconds must be a positive duration")
+    if run_seconds % 3600.0 != 0.0:
+        warn(f"run-seconds {run_seconds:g} is not a whole number of "
+             "hours; continuing (forcing coverage is checked "
+             "separately)")
     if float(exp.run_seconds) != float(run_seconds) \
             or float(cfg.run_seconds) != float(run_seconds):
-        raise ValueError(
-            "run-seconds must exactly match the hash-bound experiment")
+        warn(f"--run-seconds {run_seconds:g} differs from the "
+             f"hash-bound experiment run_seconds "
+             f"({float(exp.run_seconds):g} s); the experiment value is "
+             "authoritative and is used")
     cadence_receipt = _validate_hash_bound_history_cadence(
         exp, history_interval_seconds)
     if (dc.grid_id != 1 or dc.parent_id != 0 or cfg.grid_id != 1
@@ -1966,29 +2214,115 @@ def _validate_physics(
             "prepared forecast requires one specified, non-nested d01")
     if (float(exp.restart_interval_s) != 0.0
             or int(exp.feedback) != 0):
-        raise ValueError(
-            "prepared single-domain forecast requires restart_interval_s=0 "
-            "and feedback=0")
-    validation_source = (
-        "20crv3"
-        if profile == TWENTYCRV3_WSM6_PHYSICS_PROFILE
-        else (source or "gfs")
+        warn("restart_interval_s/feedback are inert on the prepared "
+             "single-domain runner (it writes no checkpoints, and one "
+             "domain has nothing to feed back); continuing with them "
+             "ignored")
+    # The one genuine per-source blocker, keyed on the resolved selector
+    # rather than a profile name, so a hand-authored suite meets exactly
+    # the gate a named one does.  The registry declaration has no
+    # opinion for sources it does not cover.
+    if source is not None:
+        component = land_surface_component_for_selector(
+            getattr(cfg, "sf_surface_physics", None))
+        if component is not None:
+            blocker = land_surface_route_blocker(component, source=source)
+            if blocker is not None:
+                raise ValueError(f"d01: {blocker}")
+
+    matched = identify_single_domain_profile(cfg)
+    effective = profile if profile is not None else matched
+    # The receipt's ``source`` is the run's actual provenance.  (Until
+    # this fix the 20CRv3-vouched profile rewrote it to the vouching
+    # source on cross-source runs -- a wrong label on exactly the
+    # cross-source admission the ruling opened.)
+    validation_source = source or "gfs"
+    verification = single_domain_verification_status(cfg)
+    # The registry's source-neutral tuple governance, the same call the
+    # front doors and the domain-tree route make: an unacknowledged
+    # expert tuple WARNS here naming the acknowledgement and runs; a
+    # tuple the registry has no spelling for records its blocker and
+    # runs.  The acknowledgement channels are the runner's own --ack
+    # flag and the hash-bound experiment's ``acknowledgements`` array,
+    # and either one silences the line.
+    acknowledgements, ack_provenance = acknowledgement_delivery(
+        flag=tuple(expert_acknowledgements),
+        toml=tuple(getattr(exp, "acknowledgements", ()) or ()),
     )
-    receipt = _validate_profile_switches(
-        exp, source=validation_source, profile=profile)
+    if effective is not None:
+        receipt = _validate_profile_switches(
+            exp, source=validation_source, profile=effective)
+        receipt["profile_binding"] = (
+            "named" if profile is not None else "matched")
+        # Switch drift refuses first (the named gate's own words); only
+        # a config that IS the suite reaches the consent question.
+        governance_selection = single_domain_physics_selection(
+            cfg, expert_acknowledgements=acknowledgements,
+            acknowledgement_provenance=ack_provenance)
+        domain_governance = governance_selection["domains"]["1"]
+    else:
+        observed = {
+            name: getattr(cfg, name)
+            for name in _SUITE_RECEIPT_SWITCH_KEYS
+            if hasattr(cfg, name)
+        }
+        observed_radiation = radiation_scheme_ids(cfg)
+        # Recording is not permission withheld: the registry may simply
+        # have no spelling for an engine-valid tuple (the shipped
+        # hierarchy descriptor's aggregate radiation-off is the
+        # exhibit), and the domain-tree route has always recorded that
+        # blocker and run.  Same mechanism here -- and an expert tuple
+        # the registry DOES spell warns above without its
+        # acknowledgement, exactly as it does on the domain-tree route.
+        governance_selection = single_domain_physics_selection(
+            cfg, expert_acknowledgements=acknowledgements,
+            acknowledgement_provenance=ack_provenance)
+        domain_governance = governance_selection["domains"]["1"]
+        receipt = {
+            "schema": "gpuwm-prepared-physics-suite-v1",
+            "source": validation_source,
+            "profile": None,
+            "profile_binding": "experiment-config",
+            "readiness": "IMPLEMENTED_SUITE_NOT_WRF_VERIFIED",
+            "warning": verification["sentence"],
+            "warning_only": True,
+            "registry_components": domain_governance["components"],
+            "registry_blocker": domain_governance["registry_blocker"],
+            "resolved": {
+                **observed,
+                "radiation_scheme_ids": list(observed_radiation),
+            },
+            "validated_domains": [{
+                "grid_id": int(dc.grid_id),
+                **observed,
+                "radiation_scheme_ids": list(observed_radiation),
+            }],
+        }
+    receipt["registry_governance"] = {
+        **domain_governance["governance"],
+        "registry_sha256": governance_selection["registry_sha256"],
+        "acknowledgements": list(governance_selection["acknowledgements"]),
+        "acknowledgement_provenance": dict(
+            governance_selection["acknowledgement_provenance"]),
+    }
+    receipt["verification"] = verification
     receipt["landuse_identity"] = dict(_LANDUSE_IDENTITY)
-    if profile == THOMPSON_PHYSICS_PROFILE:
+    # Scheme contracts key on the RESOLVED SELECTORS, never on the
+    # profile name: an mp8 suite admitted without the Thompson profile
+    # id must still bind the table authority and the preflight/run
+    # table-root stability check (the domain-tree runner has always
+    # keyed this on mp_physics == 8).
+    mp_selector = int(cfg.mp_physics)
+    if mp_selector == THOMPSON_MP_PHYSICS:
         receipt["thompson_contract"] = _validated_thompson_runtime_contract()
-    elif profile == MORRISON_PHYSICS_PROFILE:
+    elif mp_selector == 10:
+        rimed_ice = int(cfg.morr_rimed_ice)
         receipt["morrison_contract"] = {
             "selector": 10,
-            "morr_rimed_ice": 1,
-            "rimed_ice_category": "hail",
+            "morr_rimed_ice": rimed_ice,
+            "rimed_ice_category": "hail" if rimed_ice == 1 else "graupel",
         }
-    elif profile in (
-            NSSL2_PHYSICS_PROFILE,
-            NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE,
-    ):
+    elif mp_selector == NSSL2_MP_PHYSICS:
         receipt["nssl2_contract"] = {
             "selector": NSSL2_MP_PHYSICS,
             "contract_id": NSSL2_CONTRACT_ID,
@@ -1998,35 +2332,44 @@ def _validate_physics(
             "transported_fields": list(NSSL2_DEFAULT_MODE.transported_fields),
             "wrf_namelist_defaults": dict(NSSL2_WRF_NAMELIST_DEFAULTS),
         }
-        if profile == NSSL2_PHYSICS_PROFILE:
-            receipt["radiation_substitution"] = {
-                "contract": WRF_RRTMG_TO_RTE_RRTMGP,
-                "requested_wrf_scheme_ids": [4, 4],
-                "resolved_gpuwm_scheme_ids": [4, 4],
-                "resolved_gpuwm_solver": "RTE+RRTMGP",
-            }
-        else:
-            receipt["radiation_identity"] = {
-                "contract": WRF_RRTMG_LEGACY,
-                "requested_wrf_scheme_ids": [4, 4],
-                "resolved_gpuwm_scheme_ids": [4, 4],
-                "resolved_gpuwm_solver": "legacy RRTMG",
-            }
-    if profile == MORRISON_PHYSICS_PROFILE:
+    compatibility = str(getattr(cfg, "wrf_rrtmg_compatibility", "none"))
+    if compatibility in WRF_RRTMG_SUBSTITUTION_TOKENS:
+        scheme_ids = list(radiation_scheme_ids(cfg))
         receipt["radiation_substitution"] = {
-            "contract": WRF_RRTMG_TO_RTE_RRTMGP,
-            "requested_wrf_scheme_ids": [4, 4],
-            "resolved_gpuwm_scheme_ids": [4, 4],
+            "contract": compatibility,
+            "requested_wrf_scheme_ids": scheme_ids,
+            "resolved_gpuwm_scheme_ids": scheme_ids,
             "resolved_gpuwm_solver": "RTE+RRTMGP",
+        }
+    elif compatibility == WRF_RRTMG_LEGACY:
+        scheme_ids = list(radiation_scheme_ids(cfg))
+        receipt["radiation_identity"] = {
+            "contract": WRF_RRTMG_LEGACY,
+            "requested_wrf_scheme_ids": scheme_ids,
+            "resolved_gpuwm_scheme_ids": scheme_ids,
+            "resolved_gpuwm_solver": "legacy RRTMG",
         }
     receipt["output_cadence"] = cadence_receipt
     return receipt
 
 
 def _validate_front_door_physics_proof(
-        proof: Mapping[str, object], *, source: str, profile: str, cfg,
+        proof: Mapping[str, object], *, source: str, profile: str | None, cfg,
 ) -> dict[str, object] | None:
-    """Verify v3's explicit physics receipt without rewriting v2 history."""
+    """Verify v3's explicit physics receipt without rewriting v2 history.
+
+    THE profile-agnostic invariant of this route: the physics executed
+    is the physics prepared.  The preparation proof records the front
+    door's selection receipt, and this recomputes the same receipt from
+    the same hash-bound experiment config and requires byte equality.
+    The proof's own receipt says which of the two selection spellings
+    the preparation used -- a named-profile receipt or the per-domain
+    config-derived one -- and the recomputation follows it; both are
+    pure functions of (config, registry, acknowledgements), so equality
+    still proves the prepared selection came from THIS config under
+    THIS registry.  The runner's own ``--physics-profile``, when named,
+    is separately enforced against the config by ``_validate_physics``.
+    """
 
     if source != "gfs" or proof.get("schema") in _LEGACY_PROOF_SCHEMAS[source]:
         return None
@@ -2045,10 +2388,21 @@ def _validate_front_door_physics_proof(
     if not isinstance(acknowledgement_provenance, dict):
         raise ValueError(
             "GFS v3 preparation proof acknowledgement provenance is malformed")
-    expected = validate_single_domain_physics_profile(
-        profile, config=cfg,
-        expert_acknowledgements=tuple(acknowledgements),
-        acknowledgement_provenance=acknowledgement_provenance)
+    if selected.get("schema") == MULTI_DOMAIN_SELECTION_SCHEMA:
+        expected = single_domain_physics_selection(
+            cfg,
+            expert_acknowledgements=tuple(acknowledgements),
+            acknowledgement_provenance=acknowledgement_provenance)
+    else:
+        proof_profile = selected.get("profile")
+        if not isinstance(proof_profile, str):
+            raise ValueError(
+                "GFS v3 preparation proof physics receipt names no profile "
+                "and is not a per-domain selection receipt")
+        expected = validate_single_domain_physics_profile(
+            proof_profile, config=cfg,
+            expert_acknowledgements=tuple(acknowledgements),
+            acknowledgement_provenance=acknowledgement_provenance)
     if selected != expected:
         raise ValueError(
             "GFS v3 preparation proof physics selection differs from the "
@@ -2693,7 +3047,9 @@ def _resolve_cache_identity_compatibility(
 def preflight_prepared_forecast(
         *, source: str, prepared_root: Path, proof_sha256: str,
         source_manifest_sha256: str, prepared_content_sha256: str,
-        experiment_config: Path, wps_namelist: Path, physics_profile: str,
+        experiment_config: Path, wps_namelist: Path,
+        physics_profile: str | None = None,
+        expert_acknowledgements: tuple[str, ...] = (),
         run_seconds: float, history_interval_seconds: float,
         domain_bundle: Path | None = None,
 ) -> PreparedForecastInputs:
@@ -2746,14 +3102,14 @@ def preflight_prepared_forecast(
         source_exp, domains=(source_exp.root,))
     physics_receipt = _validate_physics(
         exp, physics_profile, run_seconds, history_interval_seconds,
-        source=source)
+        source=source, expert_acknowledgements=expert_acknowledgements)
     front_door_physics = _validate_front_door_physics_proof(
         proof, source=source, profile=physics_profile, cfg=exp.root.run)
     physics_receipt["execution_plan"] = _execution_plan_receipt(
         source_exp=source_exp, executed_exp=exp, profile=physics_profile,
         history_interval_seconds=history_interval_seconds)
     manifest_files, source_manifest_receipt = _manifest_file_specs(
-        source, manifest, source_exp)
+        source, manifest, source_exp, proof)
     mapped_paths: Mapping[str, Path] = MappingProxyType({})
     mapped_authority: Mapping[str, object] | None = None
     source_member: str | None = None
@@ -2789,7 +3145,12 @@ def preflight_prepared_forecast(
     cadence_hours = next(iter(deltas))
     if (source == "gfs" and cadence_hours not in {1, 3}) \
             or (source in {"era5", "20crv3"} and cadence_hours < 1):
-        raise ValueError(f"unsupported {source.upper()} forcing cadence")
+        # The cadence is uniform (checked above) and the coverage is
+        # checked below; a cadence outside the blessed set is coarser
+        # boundary forcing, not a broken preparation.
+        warn(f"{source.upper()} forcing cadence of {cadence_hours} h is "
+             "outside the set this runner has demonstrated "
+             "(1 h/3 h for GFS); continuing with it as prepared")
     boundary_interval_seconds = cadence_hours * 3600
     if (proof.get("boundary_interval_seconds") != boundary_interval_seconds
             or forcing_hours[-1] * 3600 < run_seconds):
@@ -2805,8 +3166,32 @@ def preflight_prepared_forecast(
         manifest_hours = sorted(
             int(role.removeprefix("grib-f"))
             for role in manifest_files if role.startswith("grib-f"))
-        if manifest_hours != list(forcing_hours):
-            raise ValueError("GFS manifest GRIB hours differ from proof forcing")
+        # Two vocabularies, bound to each other rather than assumed
+        # equal: the manifest names absolute NOAA leads, the proof's
+        # forcing hours are model offsets from start_time, and the
+        # declared lead is what maps one onto the other.  At lead 0 this
+        # is the identity comparison it has always been.
+        lead_hours = proof_initial_forecast_lead(proof)
+        expected_source_hours = [lead_hours + hour for hour in forcing_hours]
+        declared_source_hours = proof.get("source_forecast_hours")
+        if declared_source_hours is None:
+            declared_source_hours = expected_source_hours
+        if declared_source_hours != expected_source_hours:
+            raise ValueError(
+                "preparation proof source forecast hours are not its "
+                "forcing offsets shifted by the declared initial lead")
+        if not set(expected_source_hours) <= set(manifest_hours):
+            raise ValueError(
+                "GFS manifest GRIB hours do not carry the proof's forcing "
+                f"window f{expected_source_hours[0]:03d}.."
+                f"f{expected_source_hours[-1]:03d}")
+        unused = sorted(set(manifest_hours) - set(expected_source_hours))
+        if unused:
+            # Bound, decoded, and honestly not used: a manifest authored
+            # over a whole fetch while the run starts partway into it.
+            warn("the GFS source manifest binds forecast hour(s) "
+                 + ", ".join(f"f{hour:03d}" for hour in unused)
+                 + " that this run's forcing window does not use")
     elif source == "20crv3":
         if (manifest.get("valid_times") != expected_times
                 or manifest.get("cadence_seconds")
@@ -3322,7 +3707,8 @@ def run_prepared_forecast(
         "prepared_layout": inputs.layout,
         "scope": (
             f"single {cfg.nx}x{cfg.ny}x{cfg.nz} prepared-cache GPUWM "
-            f"forecast using {inputs.physics_receipt['profile']}"),
+            f"forecast using "
+            f"{inputs.physics_receipt.get('profile') or 'the hash-bound experiment physics suite'}"),
         "gpuwm_version": __version__,
         "runtime_source_identity": runtime_source_identity,
         "domain": {
@@ -3424,6 +3810,28 @@ def run_prepared_forecast(
         },
     }
     _atomic_json(outdir / "report.json", report)
+    emit_run_capsule(
+        outdir, emission_site="prepared_single_domain_forecast",
+        run_context={
+            "runner_route_and_io_mode": {
+                "route": "prepared_single_domain_forecast",
+                "io_mode": "history"},
+            "output_and_diagnostic_mode": {
+                "io_mode": "history",
+                "history_interval_seconds": cadence_seconds},
+            "input_artifact_bytes": dict(inputs.file_sha256),
+        },
+        run_shape={
+            "route": "prepared_single_domain_forecast",
+            "domain_count": 1,
+            "run_seconds": float(exp.run_seconds),
+            "nx": int(cfg.nx), "ny": int(cfg.ny), "nz": int(cfg.nz),
+            "dt_seconds": float(cfg.dt),
+        },
+        output={"frames": output_inventory,
+                "trajectory_digest": {"d01": final_digest}},
+        receipts={"report": {"path": str((outdir / "report.json").resolve())}},
+    )
     _atomic_json(progress_path, {
         "schema": PROGRESS_SCHEMA,
         "status": "PASS",
@@ -3517,7 +3925,16 @@ def _parse_args(argv=None):
     parser.add_argument("--experiment-config", type=Path, required=True)
     parser.add_argument("--wps-namelist", type=Path, required=True)
     parser.add_argument(
-        "--physics-profile", choices=PHYSICS_PROFILES, required=True)
+        "--physics-profile", default=None,
+        help=("optional assertion that the hash-bound experiment IS this "
+              "shipped suite, refused on any switch drift; omitted, the "
+              "experiment's own physics runs as written and its "
+              "WRF-verification status is reported, never gating"))
+    parser.add_argument(
+        "--ack", action="append", default=[],
+        help=("registry-owned expert acknowledgement id; repeat as "
+              "needed.  The hash-bound experiment's acknowledgements "
+              "array delivers the same consent"))
     parser.add_argument(
         "--run-seconds", type=float, default=None,
         help=("forecast length; must equal the hash-bound experiment's "
@@ -3546,7 +3963,10 @@ def _parse_materialize_args(argv=None):
         "--base-experiment-config", type=Path, required=True)
     parser.add_argument("--base-wps-namelist", type=Path, required=True)
     parser.add_argument(
-        "--physics-profile", choices=PHYSICS_PROFILES, required=True)
+        "--physics-profile", default=None,
+        help=("shipped suite to materialize into the experiment; omitted, "
+              "the base config's own physics is published unchanged and "
+              "its WRF-verification status is reported"))
     parser.add_argument("--output-directory", type=Path, required=True)
     return parser.parse_args(argv)
 
@@ -3621,9 +4041,18 @@ def main(argv=None) -> int:
             experiment_config=args.experiment_config,
             wps_namelist=args.wps_namelist,
             physics_profile=args.physics_profile,
+            expert_acknowledgements=tuple(args.ack),
             run_seconds=args.run_seconds,
             history_interval_seconds=args.history_interval_seconds,
             domain_bundle=args.domain_bundle)
+        verification = dict(inputs.physics_receipt).get("verification")
+        if (isinstance(verification, dict)
+                and verification.get("status") != "wrf-verified"
+                and isinstance(verification.get("sentence"), str)):
+            # One sentence, and the run continues (owner posture:
+            # warn-not-block; detail lives in the receipt).
+            print(f"prepared forecast: {verification['sentence']}",
+                  file=sys.stderr)
         report = run_prepared_forecast(inputs, output_directory=outdir)
     except BaseException as error:
         model_elapsed_seconds = 0.0

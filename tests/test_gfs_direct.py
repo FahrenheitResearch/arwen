@@ -36,8 +36,19 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_gfs_series_requires_f000_and_uniform_cadence(tmp_path):
-    for hour in (0, 3, 6):
+def test_gfs_series_may_begin_at_a_lead_and_keeps_its_cadence_rules(tmp_path):
+    """Converted from ``..._requires_f000_...``, and here is why.
+
+    The old name asserted the thing this release removes: that a series
+    must begin at f000.  That anchor had no product justification -- a
+    GFS f018 record has the same shape as an f000 record and WPS/real
+    initializes from forecast leads routinely -- and it is what forced a
+    user who wanted the f174..f240 window to decode from f000 to reach
+    it.  Every OTHER clause of the old test is kept verbatim below,
+    because none of them were about the anchor.
+    """
+
+    for hour in (0, 3, 6, 18, 21):
         (tmp_path / f"f{hour:03}.grib2").write_bytes(b"GRIB")
     series = tmp_path / "series.tsv"
     series.write_text(
@@ -46,6 +57,18 @@ def test_gfs_series_requires_f000_and_uniform_cadence(tmp_path):
         "6\tf006.grib2\t96\n",
         encoding="utf-8")
     assert [hour for hour, _ in _read_series(series)] == [0, 3, 6]
+
+    # The change: a series that begins at a forecast lead is a series.
+    series.write_text(
+        "18\tf018.grib2\t96\n21\tf021.grib2\t96\n", encoding="utf-8")
+    assert [hour for hour, _ in _read_series(series)] == [18, 21]
+
+    # ...and one time is still not a series: an initial condition with no
+    # boundary time cannot force a run.
+    series.write_text("18\tf018.grib2\t96\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="at least two times"):
+        _read_series(series)
+
     series.write_text("0\tf000.grib2\t96\n3\tf003.grib2\t96\n")
     with pytest.raises(ValueError, match="analysis process ID 81"):
         _read_series(series)
@@ -62,6 +85,12 @@ def test_gfs_series_requires_f000_and_uniform_cadence(tmp_path):
 
     series.write_text("0\tf000.grib2\n6\tf003.grib2\n")
     with pytest.raises(ValueError, match="exactly 1 or 3 hours"):
+        _read_series(series)
+
+    # The cadence rules bind at a lead exactly as they do at f000.
+    series.write_text("18\tf018.grib2\t96\n21\tf021.grib2\t96\n"
+                      "6\tf006.grib2\t96\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="uniform"):
         _read_series(series)
 
 
@@ -582,9 +611,12 @@ def _wizard_single_domain_config(tmp_path):
     return out
 
 
-def test_a_config_bound_to_no_shipped_profile_prints_prose_not_a_command(
+def test_a_config_bound_to_no_shipped_profile_prints_a_runnable_command(
         tmp_path):
-    """The honest gap: say so; never print a command that cannot run."""
+    """Converted (owner ruling 2026-07-31): there is no gap to apologise
+    for -- the runner executes this suite as written, so the printed
+    command omits --physics-profile and one sentence states the
+    verification status."""
 
     import json
     from gpuwm.gfs_direct import prepared_forecast_next_command
@@ -614,8 +646,10 @@ def test_a_config_bound_to_no_shipped_profile_prints_prose_not_a_command(
         experiment_config=descriptor,
         wps_namelist=Path("configs/gfs_wrf_direct_proof.namelist.wps"))
     text = "\n".join(lines)
-    assert "matches none of the profiles" in text
-    assert "prepared_single_domain_forecast.py" not in text
+    assert "python -m gpuwm.prepared_single_domain_forecast" in text
+    assert "--physics-profile" not in text
+    assert "supported, not yet WRF-verified" in text
+    assert "matches none of the profiles" not in text
     _assert_pasteable(lines)
 
 
@@ -717,13 +751,18 @@ def test_the_shipped_two_domain_proof_config_still_passes_the_front_door():
     assert "ra_physics" in receipt["domains"]["1"]["registry_blocker"]
 
 
-def test_the_single_domain_whitelist_still_binds_on_single_domain(tmp_path):
-    """Never widen: one domain still meets the profile whitelist.
+def test_the_single_domain_default_suite_passes_and_a_named_gate_binds(
+        tmp_path):
+    """POSITIVE CONTROL, converted from "one domain still meets the
+    profile whitelist" (owner ruling 2026-07-31).
 
-    The scoping fix must not become an escape hatch.  A single-domain
-    config carrying the product default suite is refused by the same
-    door that now lets the two-domain one through, and a single-domain
-    config bound to a shipped profile still passes.
+    The single-domain half of the whitelist is gone: the wizard's
+    default emission -- the exact config the v1.1.0 field regression
+    could never pass -- is now admitted unnamed, governed the way the
+    tree route has always been governed, with a per-domain receipt.
+    What did NOT widen: naming a profile still gates switch for switch,
+    and a config bound to one when NAMED still yields the profile
+    receipt.
     """
 
     from gpuwm.gfs_direct import front_door_physics_selection
@@ -731,14 +770,28 @@ def test_the_single_domain_whitelist_still_binds_on_single_domain(tmp_path):
     default_suite = load_experiment(_wizard_single_domain_config_default(
         tmp_path))
     assert len(default_suite.domains) == 1
+    receipt = front_door_physics_selection(default_suite)
+    assert receipt["schema"] == (
+        "gpuwm-front-door-physics-selection-multi-domain-v1")
+    assert receipt["profile"] is None
+    assert sorted(receipt["domains"]) == ["1"]
+    assert receipt["domains"]["1"]["components"]["microphysics"] \
+        == "thompson-mp8"
+    assert receipt["domains"]["1"]["governance"]["state"] \
+        == "registry-reachable"
+
+    # The gate a caller asks for is not dropped: the default suite
+    # named against a shipped profile is still refused with the drift.
     with pytest.raises(ValueError, match="selected physics differs"):
-        front_door_physics_selection(default_suite)
+        front_door_physics_selection(
+            default_suite, physics_profile=WSM6_PROFILE_ID)
 
     bound = load_experiment(_wizard_single_domain_config(tmp_path))
     assert len(bound.domains) == 1
-    receipt = front_door_physics_selection(bound)
-    assert receipt["schema"] == "gpuwm-front-door-physics-selection-v1"
-    assert receipt["profile"] == WSM6_PROFILE_ID
+    named = front_door_physics_selection(
+        bound, physics_profile=WSM6_PROFILE_ID)
+    assert named["schema"] == "gpuwm-front-door-physics-selection-v1"
+    assert named["profile"] == WSM6_PROFILE_ID
 
 
 def _noahmp_experiment(exp, acknowledgements=()):
@@ -813,7 +866,59 @@ def test_registry_reachable_tuple_is_unaffected_by_ack_delivery(
         acknowledgements=toml)
     receipt = front_door_physics_selection(
         exp, expert_acknowledgements=flag)
-    assert receipt["profile"] == WSM6_PROFILE_ID
+    # Unnamed selection carries no inferred profile any more; the tuple
+    # is registry-reachable and irrelevant acknowledgements change
+    # nothing about its admission.
+    assert receipt["profile"] is None
+    assert receipt["domains"]["1"]["governance"]["state"] \
+        == "registry-reachable"
+    assert receipt["domains"]["1"]["governance"]["acknowledged"] is True
+
+
+def test_unnamed_prepare_and_export_speak_the_same_selection(tmp_path):
+    """The seam the 2026-07-31 field run died on, now watched.
+
+    prepare_gfs_wrf hands export_prepared_wrf the profileless contract
+    and then requires the exporter's v3 manifest to carry a physics
+    receipt byte-equal to the front door's own selection.  The exporter
+    recomputes from the CACHE-IDENTITY spelling of the config (asdict,
+    JSON-stable) rather than trusting the caller, so this test pins
+    that both spellings of the config produce one receipt -- and that
+    one drifted selector breaks the equality the RuntimeError gate
+    checks.
+    """
+
+    from gpuwm.gfs_direct import front_door_physics_selection
+    from gpuwm.ingest.prepared_cache import prepared_domain_config_identity
+    from gpuwm.physics_compat import (
+        MULTI_DOMAIN_SELECTION_SCHEMA,
+        single_domain_physics_selection,
+    )
+
+    exp = load_experiment(_wizard_single_domain_config_default(tmp_path))
+    front_door = front_door_physics_selection(exp)
+    assert front_door["schema"] == MULTI_DOMAIN_SELECTION_SCHEMA
+    assert front_door["profile"] is None
+
+    identity_cfg = prepared_domain_config_identity(exp.root)["run"]
+    exporter_side = single_domain_physics_selection(
+        identity_cfg,
+        expert_acknowledgements=tuple(front_door["acknowledgements"]),
+        acknowledgement_provenance=front_door[
+            "acknowledgement_provenance"])
+
+    assert exporter_side == front_door
+    # JSON round trip (the proof is written and re-read as JSON).
+    canonical = json.dumps(front_door, sort_keys=True)
+    assert json.dumps(exporter_side, sort_keys=True) == canonical
+    assert json.loads(canonical) == json.loads(
+        json.dumps(exporter_side, sort_keys=True))
+
+    # Negative control: one drifted selector and the equality the
+    # prepare gate enforces no longer holds.
+    drifted_cfg = dict(identity_cfg)
+    drifted_cfg["cu_physics"] = 0 if identity_cfg["cu_physics"] else 1
+    assert single_domain_physics_selection(drifted_cfg) != front_door
 
 
 def test_an_explicit_profile_is_still_enforced_on_a_domain_tree(tmp_path):

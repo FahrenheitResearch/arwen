@@ -10,7 +10,7 @@ requested card's budget.  Nothing here is a new
 model of anything: the
 physics/dynamics block is the product's default suite (the four-domain
 reference configuration's selections with the microphysics slot on
-Thompson mp8, the model-validated matched-run scheme), the projection
+Thompson mp8, the wrf-matched-run scheme), the projection
 and nest-registration math is the existing :mod:`gpuwm.static.projection`
 (lambert/mercator/polar, auto-selected from the point latitude), and the
 memory arithmetic is the existing preflight estimator called in-process.
@@ -65,20 +65,22 @@ import os
 import shlex
 import shutil
 import tomllib
-from datetime import datetime
+from datetime import datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
 
-from gpuwm.core.preflight import (GIB, PEAK_ENVELOPE_BASIS,
+from gpuwm.core.preflight import (GIB, INGEST_PEAK_ENVELOPE_BASIS,
+                                  PEAK_ENVELOPE_BASIS,
                                   envelope_platform, estimate_experiment,
+                                  estimate_phases,
                                   observed_peak_envelope_bytes,
                                   peak_envelope_factor,
                                   unknown_platform_note,
                                   windows_small_card_advisory)
 from gpuwm.experiment import ExperimentConfig, build_experiment
-from gpuwm.explain import explain_enabled
+from gpuwm.explain import explain_enabled, warn
 from gpuwm.fetch import parse_cycle
 from gpuwm.physics_compat import (MORRISON_PROFILE_ID, MYNN_PROFILE_ID,
                                   MYNN_RUC_PROFILE_ID,
@@ -87,6 +89,9 @@ from gpuwm.physics_compat import (MORRISON_PROFILE_ID, MYNN_PROFILE_ID,
                                   RUC_PROFILE_ID, THOMPSON_PROFILE_ID,
                                   WSM6_PROFILE_ID,
                                   single_domain_runtime_switches)
+from gpuwm.hrrr_route_inputs import (coverage_advisory, coverage_refusal,
+                                     route_input_paths,
+                                     write_hrrr_route_inputs)
 from gpuwm.static.projection import (WRF_MAP_PROJ_CODES, _wrap180,
                                      projection_class)
 
@@ -250,7 +255,7 @@ _PACKAGED_VTABLE = Path(__file__).parent / "data" / "vtables" / \
 
 #: The product's default physics/dynamics selections -- the reference
 #: four-domain configuration's [shared] block with the microphysics slot
-#: on Thompson (mp_physics 8: the model-validated matched-run scheme,
+#: on Thompson (mp_physics 8: the wrf-matched-run scheme,
 #: WRF's own tables packaged and hash-pinned): the MM5 surface layer
 #: (91), Noah LSM (2), YSU PBL (1), RTE+RRTMGP radiation (4, the
 #: ratified WRF-RRTMG 4/4 substitution), and the certified
@@ -344,35 +349,38 @@ def _radiation_words(switches: dict) -> str:
 
 def prepared_route_physics_notice(profile: str | None,
                                   source: str) -> list[str]:
-    """Say -- out loud -- what the single-domain GFS/HRRR door will run.
+    """The emitted suite's standing on the prepared single-domain route.
 
-    The prepared SINGLE-domain forecast runner accepts only the shipped
-    profiles and compares an experiment's switches to them for exact
-    equality.  The product default suite is not one of them, so a user
-    on that route must pick a profile, and picking the wrong one quietly
-    changes the science: three of the six run no cumulus and shortwave
-    Dudhia with longwave OFF.  Never silent -- name every option and
-    what it actually runs, at emit time, before anyone spends three
-    minutes of preprocessing to find out.
+    Owner ruling 2026-07-31: the prepared single-domain forecast runner
+    executes any suite the engine implements, exactly as this file
+    writes it -- the profile whitelist and its exact-equality refusal
+    are gone, and verification status is reported, never gating.  These
+    lines are the --explain detail; the always-printed ``physics:``
+    summary line already carries the one-sentence status.  Picking a
+    shipped profile still quietly changes the science -- several run no
+    cumulus and shortwave Dudhia with longwave OFF -- so each candidate
+    is still named with what it actually runs.
     """
 
     if source not in ("gfs", "hrrr"):
         return []
     if profile is not None:
         return [
-            "note: this config is bound to a shipped profile, so it "
-            "passes the prepared single-domain forecast runner's "
-            "physics guard exactly as emitted."
+            "note: this config is bound to a shipped profile, so every "
+            "runner enforces it switch for switch, exactly as emitted."
         ]
     lines = [
-        "NOTE -- physics on the prepared single-domain route: the "
-        "default suite above is the product default, but the prepared "
-        "SINGLE-domain forecast runner accepts only the profiles below "
-        "and compares switches for exact equality, so it will refuse "
-        "this file.  The multi-domain (domain-tree) runner has no such "
-        "whitelist and runs the suite above as written.",
-        "  Re-emit with --physics-profile <id> to get a config that "
-        "passes as emitted.  What each one ACTUALLY runs:",
+        "note: the suite above runs as written on the prepared "
+        "single-domain route and the multi-domain (domain-tree) route "
+        "alike; no --physics-profile is required, and its "
+        "WRF-verification status is reported in the run receipts."
+        if source == "gfs" else
+        "note: the HRRR route's cold-start evidence contract is keyed "
+        "by shipped profile, so it prepares WSM6 when none is named; "
+        "pass --physics-profile <id> to choose.",
+        "  --physics-profile <id> binds the config to a shipped suite "
+        "and every runner then enforces it switch for switch.  What "
+        "each one ACTUALLY runs:",
     ]
     for candidate in WIZARD_PHYSICS_PROFILES:
         lines.append(f"    {physics_summary(candidate)}")
@@ -391,6 +399,13 @@ def prepared_route_physics_notice(profile: str | None,
 #: documented examples run 60-80 degrees of longitude at 24 GiB) passes
 #: without comment.
 _WIDE_FOOTPRINT_DEGREES = 90.0
+
+#: The same "bigger than you probably meant" bar for latitude.  The
+#: longitude test alone let a Linux ``--card 24gb --ladder 12`` print a
+#: 144 x 88 degree domain behind a 174-degree fetch box without the
+#: latitude -- pole to equator and then some -- being mentioned at all.
+#: Documented continental examples run 30-50 degrees of latitude.
+_TALL_FOOTPRINT_DEGREES = 60.0
 
 
 def _area_span_degrees(area: str) -> tuple[float, float] | None:
@@ -417,26 +432,143 @@ def oversized_footprint_advisory(area: str) -> list[str]:
     a first-time reader learns that the hemisphere-wide fetch box they
     are about to download is a consequence of their card's size and a
     single flag away from something smaller.
+
+    Two things the first version got wrong, both found by a wheel user
+    on Linux at ``--card 24gb --ladder 12``.  It measured longitude
+    only, so a box 88 degrees tall passed unremarked; and its remedy
+    named ``--card 12gb``, a tier not every platform runs, while saying
+    nothing about the ``--area`` on the very fetch command printed two
+    lines below -- the number a reader looks at when they wonder what
+    this will cost them.  The sentence now names the box as the fetch
+    box, and says why narrowing that flag alone is not the fix: the
+    download exists to cover the domain, so the domain is what has to
+    get smaller.
     """
 
     spans = _area_span_degrees(area)
     if spans is None:
         return []
     lat_span, lon_span = spans
-    if lon_span < _WIDE_FOOTPRINT_DEGREES:
+    if (lon_span < _WIDE_FOOTPRINT_DEGREES
+            and lat_span < _TALL_FOOTPRINT_DEGREES):
         return []
     return [
-        f"this domain was sized to fill your card: the fetch box spans "
-        f"{lon_span:.0f} degrees of longitude and {lat_span:.0f} of "
-        f"latitude, which is a large download and a large run.  Pass "
-        f"--vram-gib N (or --card 12gb) for a smaller domain; nothing "
-        f"here is wrong, it is just bigger than a first run usually "
-        f"wants."]
+        f"this domain is sized to fill your card, not your map: the "
+        f"fetch command below downloads a {lon_span:.0f} x "
+        f"{lat_span:.0f} degree --area box, so pass --vram-gib N (or a "
+        f"finer --root-dx KM) for a smaller first run -- narrowing "
+        f"--area on its own would starve the domain it feeds"]
+
+
+def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
+                        profile: str | None, data_dir: str) -> str:
+    """The HRRR chain, with every file this emission just wrote bound.
+
+    HRRR reaches the GPU through the native front door: neither ``gpuwm
+    run`` (the ERA5 ``[case_data]`` route) nor ``gpuwm go`` (whose last
+    stage takes gfs/era5/20crv3) drives it, and it is NOT prepared with
+    ``rw-wps``, which is the GFS door.  Until 2026-08-01 a multi-domain
+    HRRR emission was told to use exactly that, because the
+    multi-domain branch of :func:`final_step_command` returned before
+    the HRRR one was ever reached.
+
+    Every value this emission knows is bound -- the four input files,
+    the valid time, the run length, the cadence, the profile.  What is
+    left as a placeholder is what cannot exist yet: the WPS_GEOG root,
+    which is the reader's install, and the sha256 of each stage's own
+    receipt, which does not exist until that stage has run and which
+    that stage prints.
+    """
+    paths = route_input_paths(Path(out))
+    printed = {key: _printed_path(value) for key, value in paths.items()}
+    source_root = _printed_path(data_dir)
+    root, tree = "hrrr-root-prep", "hrrr-hierarchy"
+    valid_time = exp.start_time.strftime("%Y-%m-%d_%H:%M:%S")
+    run_seconds = int(exp.run_seconds)
+    cadence = int(exp.domains[0].history_interval_s)
+    profile_flag = (f"      --physics-profile {profile} \\\n"
+                    if profile is not None else "")
+    prepare = (
+        "  python -m tools.prepare_hrrr_wrf \\\n"
+        f"      --source-root {source_root} \\\n"
+        f"      --source-manifest {source_root}/SHA256SUMS \\\n"
+        "      --source-manifest-sha256 <printed by gpuwm fetch> \\\n"
+        f"      --domain-spec {printed['target_domain']} \\\n"
+        f"      --namelist-input {printed['namelist_input']} \\\n"
+        "      --geog-root <your WPS_GEOG> \\\n"
+        + profile_flag
+        + f"      --valid-time {valid_time} \\\n"
+        f"      --run-seconds {run_seconds} \\\n"
+        f"      --history-interval-seconds {cadence} \\\n"
+        "      --skip-stock-wrf-export \\\n"
+        f"      --output-root {root}\n")
+    if len(exp.domains) == 1:
+        # No forecast command is printed here, on purpose.  HRRR does not
+        # reach `gpuwm.prepared_single_domain_forecast` -- that runner's
+        # --source takes gfs/era5/20crv3 and refuses hrrr by design -- and
+        # `gpuwm.prepared_domain_tree_forecast` requires at least two
+        # domains.  The single-domain HRRR forecast stage is the same
+        # benchmark runner the preparation above drives, whose argument
+        # set that wrapper assembles from artifacts this file cannot
+        # name.  Printing a command that refuses is the exact failure
+        # this block exists to end, so it says what is true instead.
+        return (
+            "# HRRR runs the native route -- not `gpuwm run`, not `gpuwm "
+            "go`, and not\n"
+            "#   rw-wps, which is the GFS door.  Every input below was "
+            "written beside\n"
+            "#   this config; the placeholders are your WPS_GEOG and the "
+            "digests each\n"
+            "#   stage prints when it finishes.\n"
+            + prepare
+            + "# that preparation is the whole of what one HRRR domain "
+            "can be driven to\n"
+            "#   from this file.  Its forecast stage is "
+            "tools/hrrr_single_domain_benchmark.py\n"
+            "#   (--io-mode history, no --prepare-only), whose arguments "
+            "the wrapper above\n"
+            "#   assembles from its own output -- so re-run it with the "
+            "ones that\n"
+            "#   wrapper prints.  A ladder with a "
+            "nest (--ladder 12-3,\n"
+            "#   or --root-dx/--chain) instead reaches the nested route, "
+            "which this file\n"
+            "#   drives end to end: hierarchy, then "
+            "gpuwm.prepared_domain_tree_forecast.")
+    return (
+        "# HRRR runs the native route -- not `gpuwm run`, not `gpuwm go`, "
+        "and not\n"
+        "#   rw-wps, which is the GFS door.  Every input below was "
+        "written beside\n"
+        "#   this config; the placeholders are your WPS_GEOG and the "
+        "digests each\n"
+        "#   stage prints when it finishes.\n"
+        + prepare
+        + "  python -m gpuwm.hrrr_hierarchy_direct \\\n"
+        f"      --root-preparation {root} \\\n"
+        f"      --root-domain-spec {printed['target_domain']} \\\n"
+        f"      --wps-namelist {printed['wps_namelist']} \\\n"
+        f"      --namelist-input {printed['namelist_input']} \\\n"
+        "      --stock-wrf-namelist-input "
+        f"{printed['stock_namelist_input']} \\\n"
+        "      --geog-root <your WPS_GEOG> \\\n"
+        f"      --source-manifest {source_root}/SHA256SUMS \\\n"
+        "      --source-manifest-sha256 <printed by gpuwm fetch> \\\n"
+        f"      --valid-time {valid_time} \\\n"
+        f"      --output-root {tree}\n"
+        "  python -m gpuwm.prepared_domain_tree_forecast \\\n"
+        f"      --prepared-root {tree} \\\n"
+        "      --preparation-receipt-sha256 <printed by the hierarchy> "
+        "\\\n"
+        f"      --experiment-config {_printed_path(out)} \\\n"
+        "      --experiment-config-sha256 <sha256 of that file> \\\n"
+        "      --outdir hrrr-forecast")
 
 
 def final_step_command(out: "Path", *, source: str, profile: str | None,
                        domain_count: int, data_dir: str,
-                       case_data: dict | None) -> str:
+                       case_data: dict | None,
+                       exp: ExperimentConfig | None = None) -> str:
     """Step 3 of the closing block: the command that actually runs THIS file.
 
     It used to be ``gpuwm run <config>`` for every source, and for GFS
@@ -458,9 +590,19 @@ def final_step_command(out: "Path", *, source: str, profile: str | None,
     printed = _printed_path(out)
     if case_data is not None:
         return f"gpuwm run {printed}"
-    if source == "gfs" and domain_count == 1 and profile is not None:
+    if source == "gfs" and domain_count == 1:
+        # Bound to a shipped profile or not: the chain runs the suite
+        # this file selects, as written (owner ruling 2026-07-31).
         return (f"gpuwm go {printed} --data-dir {_printed_path(data_dir)}"
                 "   # authority, front door, forecast and render, in order")
+    if source == "hrrr" and exp is not None:
+        # BEFORE the multi-domain branch, not after it.  A multi-domain
+        # HRRR emission used to fall into the branch below and be told
+        # to prepare with rw-wps -- the GFS front door -- because this
+        # test ran second.  The HRRR chain is its own, and every file it
+        # names was just written beside the config.
+        return hrrr_route_commands(out, exp, profile=profile,
+                                   data_dir=data_dir)
     if domain_count > 1:
         return (
             "# this is a " + str(domain_count) + "-domain tree, which the "
@@ -470,22 +612,41 @@ def final_step_command(out: "Path", *, source: str, profile: str | None,
             "--prepared-root ... --preparation-receipt-sha256 ...\n"
             "#   the full sequence is docs/public/FIRST-LIGHT.md "
             "section 3a")
-    if source == "hrrr":
-        return (
-            "# HRRR reaches the GPU through the native front door, not "
-            "`gpuwm run`\n"
-            "#   (which is the ERA5 [case_data] route) and not `gpuwm go` "
-            "(whose\n"
-            "#   last stage accepts gfs/era5/20crv3): follow "
-            "docs/public/FIRST-LIGHT.md\n"
-            "#   section 3a, substituting the HRRR front door.")
     return (
-        "# this config matches no shipped runner profile, so the "
-        "single-domain\n"
-        "#   forecast runner refuses it as emitted.  Re-emit with "
-        "--physics-profile <id>\n"
-        "#   (`gpuwm domain --help` lists them) to get a file `gpuwm go` "
-        "runs end to end.")
+        "# a native single-domain route with no one-command chain for "
+        "this source:\n"
+        "#   follow docs/public/FIRST-LIGHT.md section 3a.  The runner "
+        "executes the\n"
+        "#   suite in this file as written; --physics-profile is an "
+        "optional binding.")
+
+
+#: What ``--source hrrr`` binds when no ``--physics-profile`` is named.
+#:
+#: Not a preference: the native HRRR routes admit ONE physics slice
+#: (bl_pbl_physics 1, sf_sfclay_physics 91, sf_surface_physics 2,
+#: ra_physics 0, ra_lw_physics 0, ra_sw_physics 1, cu_physics 0), and
+#: the wizard's default suite -- Kain-Fritsch cumulus and RTE+RRTMGP on
+#: both streams -- is outside it on three switches.  Emitting that suite
+#: for HRRR produced a config every HRRR route refuses, after the
+#: fetch.  This profile is what the HRRR root preparer itself defaults
+#: to, and it needs no staged microphysics tables.
+HRRR_DEFAULT_PROFILE = WSM6_PROFILE_ID
+
+
+def resolved_physics_profile(source: str, requested: str | None
+                             ) -> str | None:
+    """The profile this emission actually binds.
+
+    An explicit ``--physics-profile`` always wins -- including one the
+    HRRR routes will refuse, which is refused at emission with the
+    switch named rather than silently replaced.
+    """
+    if requested is not None:
+        return requested
+    if source == "hrrr":
+        return HRRR_DEFAULT_PROFILE
+    return DEFAULT_PHYSICS_PROFILE
 
 
 def profile_switches(profile: str | None) -> dict:
@@ -503,7 +664,8 @@ def physics_summary(profile: str | None) -> str:
     cumulus = ("Kain-Fritsch cumulus" if switches["cu_physics"]
                else "NO cumulus parameterization")
     label = profile if profile is not None else (
-        "product default suite (no shipped runner profile matches it)")
+        "product default suite (supported, not yet WRF-verified; every "
+        "runner executes it as written)")
     return (f"{label}: mp_physics {switches['mp_physics']}, "
             f"{_radiation_words(switches)} (radt "
             f"{float(switches['radt']):g} min), {cumulus}, "
@@ -565,12 +727,19 @@ def _parse_point(raw: str) -> tuple[float, float]:
             "interpolation and static-tile windowing are not "
             "pole-capable) -- move --point off the pole")
     if not -180.0 <= lon <= 180.0:
-        raise ValueError(
-            f"--point longitude {lon:g} must lie within [-180, 180]")
+        if -360.0 <= lon <= 360.0:
+            wrapped = _wrap180(lon)
+            warn(f"--point longitude {lon:g} wrapped to {wrapped:g} "
+                 "(the [-180, 180] convention this project uses)")
+            lon = wrapped
+        else:
+            raise ValueError(
+                f"--point longitude {lon:g} must lie within [-180, 180]")
     return lat, lon
 
 
-def _resolve_cycle(raw: str, *, source: str, hours: int) -> datetime:
+def _resolve_cycle(raw: str, *, source: str, hours: int,
+                   start_hour: int = 0) -> datetime:
     """Parse ``--cycle``, resolving ``latest`` the way ``fetch`` does.
 
     v1.0.0 refused ``--cycle latest`` here with a message that said
@@ -578,6 +747,10 @@ def _resolve_cycle(raw: str, *, source: str, hours: int) -> datetime:
     wizard-then-fetch there was nothing to tell a user which cycle was
     current -- they had to run a throwaway fetch first.  The resolver
     already existed; the wizard now calls it, and says what it picked.
+
+    ``start_hour`` is the forecast lead the run will START at, so
+    ``latest`` resolves to a cycle complete through the END of the
+    window (lead + length) rather than through its length alone.
     """
 
     if raw.strip().lower() != "latest":
@@ -589,7 +762,7 @@ def _resolve_cycle(raw: str, *, source: str, hours: int) -> datetime:
             "you want as YYYY-MM-DDTHH (UTC)")
     from gpuwm.fetch import resolve_latest_cycle
     try:
-        cycle = resolve_latest_cycle(source, hours)
+        cycle = resolve_latest_cycle(source, start_hour + hours)
     except (RuntimeError, OSError) as error:
         raise ValueError(
             f"--cycle latest could not be resolved for {source}: {error}"
@@ -598,7 +771,7 @@ def _resolve_cycle(raw: str, *, source: str, hours: int) -> datetime:
             "instead") from error
     print(f"gpuwm domain: --cycle latest resolved to "
           f"{cycle:%Y-%m-%dT%H}Z (newest complete {source} cycle "
-          f"covering f{hours:03d})")
+          f"covering f{start_hour + hours:03d})")
     return cycle
 
 
@@ -684,9 +857,33 @@ def _domain_tables(dims: list[tuple[int, int]],
     certified ladder's depth-varying values: the multi-domain runner has
     no profile whitelist, and refining the radiation cadence with the
     grid is the point of the ladder.
+
+    EVERY domain, root and nest alike, gets the profile's ``epssm``.
+    Until 2026-08-01 the nests were written ``epssm = 0.1`` while the
+    root took 0.5 from the profile, and that one line was the whole of
+    a reported nested-forecast blow-up: epssm is the vertical-acoustic
+    off-centering coefficient, 0.1 is nearly centred, and the nest is
+    exactly where the terrain is steepest -- a wizard 3 km -> 750 m
+    ladder over the Cascades grew w from -15 to -289 to -976 m/s to
+    non-finite in seven acoustic substeps at the steepest cell in the
+    child (34.6 degrees; the 3 km parent smooths the same peak to 15.7
+    and survives).  Setting the nest to the profile's 0.5 and changing
+    nothing else ran both geometries clean for the full two hours.
+
+    The 0.1 was not invented here -- it is WRF's Registry default, and
+    it is what an IMPORTED namelist legitimately produces: ``epssm =
+    0.5`` in a namelist.input assigns d01 only, so the shipped
+    real74 ladders carry 0.5/0.1/0.1/0.1 and are right to
+    (:mod:`gpuwm.namelist_import`, which reads the Registry column).
+    The wizard is an author, not an importer, and copying an
+    importer's per-domain tail is how the value got here.  Terrain-
+    scaled epssm -- more off-centering where slopes are steepest -- is
+    a real future refinement; it is deliberately NOT attempted here.
+    Per-domain ``epssm`` stays overridable in the emitted TOML.
     """
     root_physics = {key: profile_switches(profile)[key]
                     for key in _PER_DOMAIN_PHYSICS}
+    epssm = profile_switches(profile)["epssm"]
     tables = []
     dx = float(root_dx_m)
     for index, (nx, ny) in enumerate(dims):
@@ -712,7 +909,7 @@ def _domain_tables(dims: list[tuple[int, int]],
                 "parent_grid_ratio": ratio,
                 "parent_time_step_ratio": ratio, "nx": nx, "ny": ny,
                 "specified": False, "nested": True,
-                "history_interval_s": 900.0, "epssm": 0.1,
+                "history_interval_s": 900.0, "epssm": epssm,
                 "radt": _radt_minutes(dx), "cu_physics": 0,
                 "diff_6th_factor": _DIFF6_FACTORS[index],
             }
@@ -832,16 +1029,22 @@ def parse_chain(raw: str) -> tuple[int, ...]:
                 f"--chain entry {field!r} is not an integer; --chain is a "
                 "comma-separated list of whole nest ratios, e.g. "
                 "--chain 4,3,3") from None
-        if not MIN_CHAIN_RATIO <= ratio <= MAX_CHAIN_RATIO:
+        if ratio < MIN_CHAIN_RATIO:
             raise ValueError(
-                f"--chain ratio {ratio} is outside "
-                f"[{MIN_CHAIN_RATIO}, {MAX_CHAIN_RATIO}]; refine in more "
-                "steps rather than one large one")
+                f"--chain ratio {ratio} is below {MIN_CHAIN_RATIO}; a "
+                "ratio-1 child is not a refinement")
+        if ratio > MAX_CHAIN_RATIO:
+            warn(f"--chain ratio {ratio} exceeds the blessed maximum of "
+                 f"{MAX_CHAIN_RATIO}; continuing with it as written",
+                 why="WRF's own guidance is odd ratios of 3 or 5; beyond "
+                     f"{MAX_CHAIN_RATIO} the interpolation stencil and "
+                     "the boundary blend are undemonstrated in one step "
+                     "-- refining in more steps is the proven route.")
         ratios.append(ratio)
     if len(ratios) > MAX_CHAIN_DEPTH:
-        raise ValueError(
-            f"--chain declares {len(ratios)} nests; the limit is "
-            f"{MAX_CHAIN_DEPTH}")
+        warn(f"--chain declares {len(ratios)} nests, more than the "
+             f"{MAX_CHAIN_DEPTH} any configuration has demonstrated; "
+             "continuing")
     return tuple(ratios)
 
 
@@ -864,11 +1067,13 @@ def parse_custom_ladder(*, root_dx_km, chain, ladder: str):
             "--root-dx / --chain; drop --ladder to use the custom form")
     root_km = (ROOT_DX_M / 1000.0 if root_dx_km is None
                else float(root_dx_km))
-    if not math.isfinite(root_km) \
-            or not MIN_ROOT_DX_KM <= root_km <= MAX_ROOT_DX_KM:
+    if not math.isfinite(root_km) or root_km <= 0.0:
         raise ValueError(
-            f"--root-dx {root_km:g} km is outside "
-            f"[{MIN_ROOT_DX_KM:g}, {MAX_ROOT_DX_KM:g}] km")
+            f"--root-dx {root_km:g} km must be a positive spacing")
+    if not MIN_ROOT_DX_KM <= root_km <= MAX_ROOT_DX_KM:
+        warn(f"--root-dx {root_km:g} km is outside the expected "
+             f"[{MIN_ROOT_DX_KM:g}, {MAX_ROOT_DX_KM:g}] km window "
+             "(check the unit -- this flag takes kilometres); continuing")
     ratios = parse_chain("" if chain is None else chain)
     return root_km * 1000.0, ratios
 
@@ -987,10 +1192,8 @@ def _fetch_area(projection: dict, nx: int, ny: int,
                 notes.append(
                     f"the suggested forcing box's {edge} edge was clamped "
                     f"from {raw:.2f} to {clamped:.2f} to stay "
-                    f"{pole_clearance_deg(root_dx_m):.2f} deg clear of the pole: "
-                    "lat-lon source interpolation and static-tile "
-                    "windowing are not pole-capable, so a box touching "
-                    "the pole is not a box the pipeline can honour")
+                    f"{pole_clearance_deg(root_dx_m):.2f} deg clear of "
+                    "the pole")
     lon_w = float(_wrap180(float(lon_u.min()) - margin_deg))
     lon_e = float(_wrap180(float(lon_u.max()) + margin_deg))
     if lon_e == -180.0:
@@ -1146,13 +1349,41 @@ def fit_ladder(*, ladder: str | None = None, budget_bytes: int, hours: int,
             fetch_hints={"source": source}, case_data=None,
             root_dx_m=root_dx_m, profile=profile)
         exp = experiment_from_text(text, source=f"<candidate {label}>")
-        estimate = estimate_experiment(
-            exp, forcing_interval_seconds=interval, vram_gib=vram_gib)
-        envelope = observed_peak_envelope_bytes(
-            estimate.footprint_projection_bytes, vram_gib=vram_gib)
-        return dims, exp, envelope
+        # Every PHASE, not just the forecast.  Sizing a domain against the
+        # forecast alone is what let this wizard hand a user a config that
+        # fit their card, take a multi-gigabyte download, and then OOM in
+        # preprocessing -- the phase it had never priced.
+        phases = estimate_phases(
+            exp, source=source, forcing_interval_seconds=interval,
+            vram_gib=vram_gib)
+        return dims, exp, phases.peak_envelope_bytes
+
+    def uncovered(exp) -> str | None:
+        """Why the SOURCE cannot force this layout, if it cannot.
+
+        The budget is not the only constraint on how large a domain may
+        be.  HRRR's native grid is finite, and the interpolation stencil
+        plus the surface-fallback halo need real source cells outside
+        the target on every side -- so a card-filling ladder near the
+        edge of HRRR's coverage is a legal, well-sized experiment that
+        no HRRR fetch can force.  Sizing against VRAM alone produced
+        exactly that on a 24 GiB card: a 3 km root whose halo ran nine
+        rows off the top of the HRRR grid, discovered by the root
+        preparation after the download.
+        """
+        if source != "hrrr":
+            return None
+        return coverage_refusal(exp)
 
     dims, exp, envelope = candidate(_MIN_SCALE)
+    smallest_uncovered = uncovered(exp)
+    if smallest_uncovered is not None:
+        raise DomainFitError(
+            f"ladder {label} cannot be forced by {source} even at the "
+            f"minimum layout ({dims[0][0]}x{dims[0][1]} root): "
+            f"{smallest_uncovered}.  Move --point away from the edge of "
+            f"the {source.upper()} grid, or choose a source whose "
+            "coverage includes it")
     if envelope > budget_bytes:
         # Say WHY it does not fit.  "your card is too small" is what the
         # bare number reads as, and at the minimum layout it is usually
@@ -1171,14 +1402,14 @@ def fit_ladder(*, ladder: str | None = None, budget_bytes: int, hours: int,
             f"{constants / GIB:.2f} GiB ({share:.0f}% of the projection) "
             "is grid-independent calibration constants, so a smaller grid "
             "cannot help")
+        phases = estimate_phases(
+            exp, source=source, forcing_interval_seconds=interval,
+            vram_gib=vram_gib)
         raise DomainFitError(
             f"ladder {label} does not fit a {budget_bytes / GIB:.1f} GiB "
             f"budget even at the minimum layout ({dims[0][0]}x{dims[0][1]} "
-            f"root): footprint projection x "
-            f"{peak_envelope_factor(vram_gib=vram_gib):.2f} "
-            f"({envelope_platform(vram_gib=vram_gib)} envelope) "
-            f"= {envelope / GIB:.2f} GiB.  {detail}; choose a shallower "
-            "ladder or a larger card")
+            f"root): {phases.verdict(budget_bytes)}.  {detail}; choose a "
+            "shallower ladder or a larger card")
     lo, hi = _MIN_SCALE, _MAX_SCALE
     best = (dims, exp)
     for _ in range(36):
@@ -1188,7 +1419,7 @@ def fit_ladder(*, ladder: str | None = None, budget_bytes: int, hours: int,
         except DomainFitError:
             hi = mid
             continue
-        if envelope <= budget_bytes:
+        if envelope <= budget_bytes and uncovered(exp) is None:
             best = (dims, exp)
             lo = mid
         else:
@@ -1206,15 +1437,26 @@ def _write_atomic(path: Path, text: str) -> None:
 
 def render_wps_namelist(projection: dict, dims: list[tuple[int, int]],
                         ratios: tuple[int, ...],
-                        root_dx_m: float = ROOT_DX_M) -> str:
+                        root_dx_m: float = ROOT_DX_M,
+                        source: str = "era5") -> str:
     """Minimal namelist.wps matching the TOML bit-for-bit.
 
     The config-driven pipeline reads only geog_data_res/max_dom from it,
     but the native-WRF contract checker cross-checks every projection and
     layout key against the [projection]/[[domain]] tables, so the emitted
     pair must agree exactly.
+
+    ``&share/interval_seconds`` is the source's own forcing cadence, as
+    an INTEGER.  It was omitted entirely until 2026-08-01, and the HRRR
+    domain-tree route's raw-WPS contract gate requires exactly 3600
+    there -- so every wizard-emitted HRRR tree failed that route's first
+    gate on a key the wizard had never written.  The importer drops the
+    key for the other routes, so stating it costs them nothing and
+    stating it wrong (3600.0 is refused, type-strictly) costs
+    everything.
     """
     tables = _domain_tables(dims, ratios, root_dx_m=root_dx_m)
+    interval_seconds = int(SOURCE_FORCING_INTERVAL_S[source])
 
     def csv(values):
         return ", ".join(str(v) for v in values) + ","
@@ -1223,6 +1465,7 @@ def render_wps_namelist(projection: dict, dims: list[tuple[int, int]],
         "&share\n"
         " wrf_core = 'ARW',\n"
         f" max_dom = {len(tables)},\n"
+        f" interval_seconds = {interval_seconds},\n"
         " io_form_geogrid = 2,\n"
         "/\n"
         "&geogrid\n"
@@ -1252,7 +1495,7 @@ def _default_name(lat: float, lon: float) -> str:
 
 
 def sizing_summary(exp: ExperimentConfig, estimate, budget_bytes: int,
-                   vram_gib: float) -> str:
+                   vram_gib: float, phases=None) -> str:
     """The whole sizing verdict on one line: what fits, in what.
 
     The itemized table -- per-domain dx, mass grid, dt, resident bytes,
@@ -1266,15 +1509,22 @@ def sizing_summary(exp: ExperimentConfig, estimate, budget_bytes: int,
 
     envelope = observed_peak_envelope_bytes(
         estimate.footprint_projection_bytes, vram_gib=vram_gib)
+    phase = ""
+    if phases is not None:
+        envelope = phases.peak_envelope_bytes
+        phase = f", binding phase {phases.binding_phase}"
+        if not phases.ingest_priced:
+            phase += " -- ingest NOT PRICED for this source"
     return (f"sizing: {len(exp.domains)} domain(s); alloc "
             f"{estimate.alloc_estimate_bytes / GIB:.2f} GiB, peak "
             f"envelope {envelope / GIB:.2f} GiB of a "
             f"{budget_bytes / GIB:.2f} GiB budget "
-            f"({(budget_bytes - envelope) / GIB:.2f} GiB headroom)")
+            f"({(budget_bytes - envelope) / GIB:.2f} GiB headroom{phase})")
 
 
 def _print_sizing_table(exp: ExperimentConfig, estimate,
-                        budget_bytes: int, vram_gib: float) -> None:
+                        budget_bytes: int, vram_gib: float,
+                        phases=None) -> None:
     envelope = observed_peak_envelope_bytes(
         estimate.footprint_projection_bytes, vram_gib=vram_gib)
     print("sizing (itemized preflight estimator, in-process):")
@@ -1300,6 +1550,22 @@ def _print_sizing_table(exp: ExperimentConfig, estimate,
     platform_note = unknown_platform_note()
     if platform_note is not None:
         print(f"    {platform_note}")
+    if phases is not None and not phases.ingest_priced:
+        print(f"  ingest (preprocessing): NOT PRICED for --source "
+              f"{phases.source} -- that lane is the native-hybrid-level "
+              "ingest, which this estimator does not model; the envelope "
+              "above is the forecast phase only")
+    elif phases is not None:
+        ingest = phases.ingest
+        print(f"  ingest (preprocessing): {ingest.n_forcing_times} forcing "
+              f"times x {ingest.per_time_bytes / GIB:.2f} GiB each, "
+              f"{ingest.resident_times} resident at a time = "
+              f"{ingest.resident_bytes / GIB:.2f} GiB resident; peak "
+              f"envelope {ingest.peak_envelope_bytes / GIB:.2f} GiB")
+        print(f"    ingest envelope basis: {INGEST_PEAK_ENVELOPE_BASIS}")
+    if phases is not None:
+        print(f"  BINDING PHASE: {phases.verdict(budget_bytes)}")
+        envelope = phases.peak_envelope_bytes
     print(f"  budget {budget_bytes / GIB:.2f} GiB "
           f"({vram_gib:g} GiB card - {vram_reserve_gib(vram_gib):g} GiB "
           f"reserve); headroom {(budget_bytes - envelope) / GIB:.2f} GiB")
@@ -1396,9 +1662,13 @@ def _refuse_profile_its_source_cannot_prepare(profile, source) -> None:
         return
     blocker = land_surface_route_blocker(named, source=str(source))
     if blocker is not None:
-        raise ValueError(
+        # One sentence at the boundary; the registry pointer and the
+        # failure mechanism ride the --explain layer.
+        from gpuwm.explain import layered
+        head, _, detail = str(blocker).partition(": ")
+        raise ValueError(layered(
             f"--physics-profile {profile} cannot be prepared with "
-            f"--source {source}: {blocker}")
+            f"--source {source}: {head}", detail))
 
 
 def domain_main(args) -> int:
@@ -1419,14 +1689,32 @@ def domain_main(args) -> int:
     budget = int(budget_gib * GIB)
     if args.hours < 1:
         raise ValueError("--hours must be at least 1")
-    start_time = _resolve_cycle(
-        args.cycle, source=args.source, hours=args.hours)
+    # The model's time zero.  It is the cycle when the run is initialized
+    # from the analysis, and cycle + K when it is initialized from the
+    # f{K} forecast lead -- which is a routine thing to want and used to
+    # be impossible to ask for on this door.  Checked BEFORE the cycle is
+    # resolved, because `--cycle latest` probes the mirrors for a cycle
+    # complete through lead + length and a bad lead should not spend a
+    # network round trip to be refused.
+    start_hour = getattr(args, "forecast_start_hour", None) or 0
+    if start_hour < 0:
+        raise ValueError(
+            "--forecast-start-hour must be a nonnegative forecast lead")
+    if start_hour and args.source not in {"gfs", "gdas"}:
+        raise ValueError(
+            f"--forecast-start-hour: --source gfs/gdas only, not "
+            f"{args.source} (its front door takes its own lead flag)")
+    cycle = _resolve_cycle(
+        args.cycle, source=args.source, hours=args.hours,
+        start_hour=start_hour)
+    start_time = cycle + timedelta(hours=start_hour)
     name = args.name or _default_name(lat, lon)
     projection = _projection_entries(
         lat, lon, getattr(args, 'projection', 'auto'))
     out: Path = args.out
 
-    profile = getattr(args, "physics_profile", DEFAULT_PHYSICS_PROFILE)
+    profile = resolved_physics_profile(
+        args.source, getattr(args, "physics_profile", None))
     custom = parse_custom_ladder(
         root_dx_km=getattr(args, "root_dx", None),
         chain=getattr(args, "chain", None),
@@ -1454,7 +1742,12 @@ def domain_main(args) -> int:
             except DomainFitError as error:
                 if args.ladder != "auto":
                     raise
-                print(f"ladder {candidate_ladder}: {error}")
+                # One line per candidate; the full envelope arithmetic
+                # is the same for every ladder and prints with the
+                # final refusal if none fits.
+                first_sentence = str(error).split(":", 1)[0]
+                print(f"ladder {candidate_ladder}: does not fit "
+                      f"({first_sentence}); trying the next shallower one")
                 continue
             chosen = (candidate_ladder, dims)
             break
@@ -1482,8 +1775,11 @@ def domain_main(args) -> int:
                 else out.parent / "data" / name)
     fetch_hints = {
         # The RESOLVED cycle, never the literal "latest": the emitted
-        # config is a record of one start time, not of a query.
-        "source": args.source, "cycle": start_time.strftime("%Y-%m-%dT%H"),
+        # config is a record of one start time, not of a query.  And the
+        # CYCLE, never the start time: they differ by the forecast lead,
+        # and a fetch aimed at start_time would ask for the wrong cycle
+        # entirely.
+        "source": args.source, "cycle": cycle.strftime("%Y-%m-%dT%H"),
         "hours": (args.hours if cadence is None else
                   max(cadence, math.ceil(args.hours / cadence) * cadence)),
         "area": ",".join(f"{v:.2f}" for v in area),
@@ -1491,6 +1787,8 @@ def domain_main(args) -> int:
     }
     if cadence is not None:
         fetch_hints["cadence"] = cadence
+    if start_hour:
+        fetch_hints["forecast_start_hour"] = start_hour
 
     # [case_data] only where the config-driven front door can honestly
     # consume the fetched data (the native GRIB1 = ERA5 route).
@@ -1528,29 +1826,40 @@ def domain_main(args) -> int:
         interactive=getattr(args, "interactive", False))
     # Round-trip the exact bytes through the real loader before writing.
     exp = experiment_from_text(text, source=str(out))
+    interval = SOURCE_FORCING_INTERVAL_S[args.source]
     estimate = estimate_experiment(
-        exp,
-        forcing_interval_seconds=SOURCE_FORCING_INTERVAL_S[args.source],
+        exp, forcing_interval_seconds=interval, vram_gib=vram_gib)
+    phases = estimate_phases(
+        exp, source=args.source, forcing_interval_seconds=interval,
         vram_gib=vram_gib)
-    envelope = observed_peak_envelope_bytes(
-        estimate.footprint_projection_bytes, vram_gib=vram_gib)
+    envelope = phases.peak_envelope_bytes
     if envelope > budget:
         raise DomainFitError(
-            "internal fit regression: emitted config's envelope "
+            "internal fit regression: emitted config's "
+            f"{phases.binding_phase} envelope "
             f"{envelope / GIB:.2f} GiB exceeds the budget "
             f"{budget_gib:.2f} GiB")
 
     _write_atomic(out, text)
-    wps_path = out.parent / f"{out.stem}.namelist.wps"
-    _write_atomic(wps_path, render_wps_namelist(
-        projection, dims, ratios, root_dx_m=root_dx_m))
-    written = [out, wps_path]
+    wps_text = render_wps_namelist(
+        projection, dims, ratios, root_dx_m=root_dx_m, source=args.source)
+    if args.source == "hrrr":
+        # The HRRR routes read namelists and a target-domain document,
+        # not this TOML.  Emitting only the TOML left every one of them
+        # to be hand-authored -- which is why the route's own gate had
+        # to borrow a proof harness to run at all.
+        written = [out] + write_hrrr_route_inputs(
+            out, exp, wps_text=wps_text, writer=_write_atomic)
+    else:
+        wps_path = out.parent / f"{out.stem}.namelist.wps"
+        _write_atomic(wps_path, wps_text)
+        written = [out, wps_path]
     if args.source == "era5" and args.vtable is None:
         if vtable_path.exists():
             if vtable_path.read_bytes() != _PACKAGED_VTABLE.read_bytes():
-                raise ValueError(
-                    f"{vtable_path} exists and differs from the packaged "
-                    "Vtable.ERA5_CDO; refusing to overwrite")
+                warn(f"kept your existing {vtable_path.name} (it differs "
+                     "from the packaged Vtable.ERA5_CDO); pass --vtable "
+                     "to name one explicitly")
         else:
             shutil.copyfile(_PACKAGED_VTABLE, vtable_path)
             written.append(vtable_path)
@@ -1560,9 +1869,11 @@ def domain_main(args) -> int:
           f"({'-'.join(f'{v:g}' for v in _ladder_dx_km(ratios, root_dx_m))} km), "
           f"card {vram_gib:g} GiB")
     if explain:
-        _print_sizing_table(exp, estimate, budget, vram_gib)
+        _print_sizing_table(exp, estimate, budget, vram_gib,
+                            phases=phases)
     else:
-        print(sizing_summary(exp, estimate, budget, vram_gib))
+        print(sizing_summary(exp, estimate, budget, vram_gib,
+                             phases=phases))
     print(f"wrote {out}"
           + (f" (+ {', '.join(p.name for p in written[1:])})"
              if len(written) > 1 else ""))
@@ -1581,18 +1892,26 @@ def domain_main(args) -> int:
     fetch_command = ("gpuwm fetch "
                      f"--source {args.source} --cycle {fetch_hints['cycle']} "
                      f"--hours {fetch_hints['hours']} {area_flag} "
-                     f"--out {_printed_path(printed_out)}")
+                     + (f"--forecast-start-hour {start_hour} "
+                        if start_hour else "")
+                     + f"--out {_printed_path(printed_out)}")
     check_command = (f"gpuwm check {_printed_path(out)} "
                      f"--budget-gib {budget_gib:g} --vram-gib {vram_gib:g}")
     run_command = final_step_command(
         out, source=args.source, profile=profile,
         domain_count=len(dims), data_dir=printed_out,
-        case_data=case_data)
+        case_data=case_data, exp=exp)
 
     for note in area_notes:
-        print(f"note: {note}")
+        warn(note,
+             why="lat-lon source interpolation and static-tile windowing "
+                 "are not pole-capable, so a box touching the pole is "
+                 "not a box the pipeline can honour.")
     for note in oversized_footprint_advisory(fetch_hints["area"]):
         print(f"advisory: {note}")
+    if args.source == "hrrr":
+        for note in coverage_advisory(exp):
+            print(f"advisory: {note}")
     print(f"physics: {physics_summary(profile)}")
     chain_km = _ladder_dx_km(ratios, root_dx_m)
     shared = shared_physics(profile)
@@ -1635,7 +1954,8 @@ def domain_main(args) -> int:
                        f"{budget_gib:g}", "--vram-gib", f"{vram_gib:g}"])
         if rc != 0:
             print(f"gpuwm check FAILED (rc {rc}) on the emitted config; "
-                  "the wizard does not certify this file", flush=True)
+                  "the files above were still written -- fix the gap "
+                  "check names, then re-run gpuwm check", flush=True)
             return rc
         print("gpuwm check: PASS (rc 0)")
     else:
@@ -1658,7 +1978,8 @@ def domain_main(args) -> int:
                            f"{budget_gib:g}", "--vram-gib", f"{vram_gib:g}"])
             if rc != 0:
                 print(f"gpuwm check FAILED (rc {rc}) on the emitted "
-                      "config; the wizard does not certify this file",
+                      "config; the files above were still written -- fix "
+                      "the gap check names, then re-run gpuwm check",
                       flush=True)
                 return rc
             print("gpuwm check: PASS (rc 0)")
@@ -1780,11 +2101,24 @@ def register_cli(subparsers) -> None:
                              "(era5) the [case_data] declarations")
     parser.add_argument("--cycle", required=True,
                         metavar="YYYY-MM-DDTHH|latest",
-                        help="start time (UTC) = the forcing cycle; "
-                             "'latest' probes the public mirrors for the "
-                             "newest complete gfs/hrrr cycle covering "
-                             "--hours and prints what it picked (needs "
-                             "network; era5 must name an explicit time)")
+                        help="the forcing CYCLE (UTC), which is the run's "
+                             "start time unless --forecast-start-hour "
+                             "moves it; 'latest' probes the public mirrors "
+                             "for the newest complete gfs/hrrr cycle "
+                             "covering the whole window and prints what it "
+                             "picked (needs network; era5 must name an "
+                             "explicit time)")
+    parser.add_argument("--forecast-start-hour", type=int, default=None,
+                        metavar="K",
+                        help="gfs/gdas only: initialize the run from the "
+                             "cycle's f{K} FORECAST lead instead of its "
+                             "analysis, so start_time = cycle + K h and "
+                             "the boundaries come from f{K+i}.  This is "
+                             "how a window deep in a forecast (say "
+                             "f174..f240) is reached without integrating "
+                             "from f000.  The initial condition is then "
+                             "itself a K-hour forecast, and every receipt "
+                             "says so")
     parser.add_argument("--out", type=Path, required=True, metavar="TOML",
                         help="emitted experiment TOML path")
     parser.add_argument("--data-dir", default=None, metavar="DIR",

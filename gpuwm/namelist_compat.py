@@ -16,7 +16,7 @@ import math
 from pathlib import Path
 from typing import Iterable
 
-from gpuwm.namelist_import import parse_namelist
+from gpuwm.namelist_import import read_namelist_role
 from gpuwm.vertical_contract import validate_explicit_eta_grid
 from gpuwm.wrf_physics_inventory import stock_wrf_physics_inventory
 
@@ -259,8 +259,12 @@ def analyze_namelists(
     """
 
     wps_path, input_path = Path(wps_path), Path(input_path)
-    wps = parse_namelist(wps_path)
-    inp = parse_namelist(input_path)
+    # "Syntactically readable" above is a promise about CONTENT; a file
+    # that is not there is a usage mistake, and it reaches the caller as
+    # the same one-sentence ValueError `gpuwm import-namelist` raises
+    # rather than as a traceback out of pathlib.
+    wps = read_namelist_role(wps_path, "namelist.wps")
+    inp = read_namelist_role(input_path, "namelist.input")
     issues: list[CompatibilityIssue] = []
     projection: dict[str, object] | None = None
     classifications = {
@@ -980,7 +984,7 @@ def analyze_namelists(
                 # NSSL 18 is selectable since the certified
                 # campaign/real74-fixed-nssl merge (product/v1 NSSL lane
                 # 2026-07-29); its registry maturity stays
-                # "validation-candidate", which this report does not restate.
+                # "wrf-matched-run-candidate", which this report does not restate.
                 runtime_supported = mp[index] in {6, 8, 10, 18}
                 if not runtime_supported:
                     gpuwm_reasons.append(

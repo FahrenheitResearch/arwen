@@ -1,0 +1,758 @@
+{
+  "$defs": {
+    "unavailable_section": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "status": {
+          "const": "unavailable"
+        }
+      },
+      "required": [
+        "status",
+        "reason"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "gpuwm.certification-capsule/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One machine-readable run-identity receipt: the code, the resolved physics registry, the input bytes, the pinned numerical environment of docs/public/DETERMINISM.md section 3, the translation units the run compiled, the arithmetic contract, the run shape, the output frames with their trajectory digests, and the attached receipts.",
+  "properties": {
+    "arithmetic_contract": {
+      "type": "object"
+    },
+    "code": {
+      "additionalProperties": false,
+      "properties": {
+        "git_commit": {
+          "description": "the verbatim return of gpuwm.supervisor.git_commit, including its 'unavailable: <stderr>' form",
+          "type": "string"
+        },
+        "gpuwm_version": {
+          "type": "string"
+        },
+        "runtime_source_sha256": {
+          "type": [
+            "string",
+            "object",
+            "null"
+          ]
+        },
+        "tree_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktree_clean": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "gpuwm_version",
+        "git_commit",
+        "tree_sha256",
+        "worktree_clean",
+        "runtime_source_sha256"
+      ],
+      "type": "object"
+    },
+    "emission_site": {
+      "description": "which forecast exit wrote this capsule",
+      "enum": [
+        "runtime.run_experiment:single-domain",
+        "runtime.run_experiment:domain-tree",
+        "prepared_single_domain_forecast",
+        "prepared_domain_tree_forecast",
+        "supervisor:success"
+      ]
+    },
+    "input_bytes": {
+      "type": "object"
+    },
+    "kernel_manifest": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "compiled_image": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "ptx",
+                  "cubin"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              },
+              "sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "resolved",
+                  "unavailable"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          "options": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_sha256",
+          "options",
+          "compiled_image"
+        ],
+        "type": "object"
+      },
+      "description": "one entry per translation unit the run compiled, keyed by module; the option tuple is per module, never global",
+      "type": "object"
+    },
+    "numerical_stack": {
+      "additionalProperties": false,
+      "description": "one entry per item of the published pin table; eleven rows, thirteen items, because two rows name two things each",
+      "properties": {
+        "arwen_version_and_commit": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          ],
+          "description": "ArWen version and git commit",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "resolved",
+                "unavailable"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "value",
+            "source",
+            "status"
+          ],
+          "type": "object"
+        },
+        "config_bytes": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          ],
+          "description": "Configuration file bytes",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "resolved",
+                "unavailable"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "value",
+            "source",
+            "status"
+          ],
+          "type": "object"
+        },
+        "cuda_driver_version": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          ],
+          "description": "Driver version",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "resolved",
+                "unavailable"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "value",
+            "source",
+            "status"
+          ],
+          "type": "object"
+        },
+        "cuda_toolkit_nvrtc": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          ],
+          "description": "CUDA toolkit / NVRTC used to compile kernels",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "resolved",
+                "unavailable"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "value",
+            "source",
+            "status"
+          ],
+          "type": "object"
+        },
+        "cupy_accelerators": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          ],
+          "description": "CuPy version, and `CUPY_ACCELERATORS` -- CUPY_ACCELERATORS",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "resolved",
+                "unavailable"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "value",
+            "source",
+            "status"
+          ],
+          "type": "object"
+        },
+        "cupy_version": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          ],
+          "description": "CuPy version, and `CUPY_ACCELERATORS` -- CuPy version",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "resolved",
+                "unavailable"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "value",
+            "source",
+            "status"
+          ],
+          "type": "object"
+        },
+        "gpu_identity": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          ],
+          "description": "Physical GPU (model, SM version, and \u2014 for a same-card screen \u2014 the same UUID)",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "resolved",
+                "unavailable"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "value",
+            "source",
+            "status"
+          ],
+          "type": "object"
+        },
+        "hdf5_version": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          ],
+          "description": "netCDF4 / HDF5 versions -- HDF5",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "resolved",
+                "unavailable"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "value",
+            "source",
+            "status"
+          ],
+          "type": "object"
+        },
+        "input_artifact_bytes": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          ],
+          "description": "Every input artifact's bytes",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "resolved",
+                "unavailable"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "value",
+            "source",
+            "status"
+          ],
+          "type": "object"
+        },
+        "netcdf4_version": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          ],
+          "description": "netCDF4 / HDF5 versions -- netCDF4",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "resolved",
+                "unavailable"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "value",
+            "source",
+            "status"
+          ],
+          "type": "object"
+        },
+        "numpy_version": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          ],
+          "description": "NumPy version",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "resolved",
+                "unavailable"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "value",
+            "source",
+            "status"
+          ],
+          "type": "object"
+        },
+        "output_and_diagnostic_mode": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          ],
+          "description": "Output and diagnostic mode, history cadence, checkpoint cadence",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "resolved",
+                "unavailable"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "value",
+            "source",
+            "status"
+          ],
+          "type": "object"
+        },
+        "runner_route_and_io_mode": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          ],
+          "description": "Runner route and I/O mode",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "resolved",
+                "unavailable"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "value",
+            "source",
+            "status"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "gpu_identity",
+        "cuda_driver_version",
+        "cuda_toolkit_nvrtc",
+        "cupy_version",
+        "cupy_accelerators",
+        "numpy_version",
+        "netcdf4_version",
+        "hdf5_version",
+        "arwen_version_and_commit",
+        "config_bytes",
+        "input_artifact_bytes",
+        "runner_route_and_io_mode",
+        "output_and_diagnostic_mode"
+      ],
+      "type": "object"
+    },
+    "output": {
+      "type": "object"
+    },
+    "receipts": {
+      "type": "object"
+    },
+    "registry": {
+      "type": "object"
+    },
+    "run_shape": {
+      "type": "object"
+    },
+    "schema": {
+      "const": "gpuwm.certification-capsule/v1"
+    }
+  },
+  "required": [
+    "schema",
+    "emission_site",
+    "code",
+    "registry",
+    "input_bytes",
+    "numerical_stack",
+    "kernel_manifest",
+    "arithmetic_contract",
+    "run_shape",
+    "output",
+    "receipts"
+  ],
+  "title": "ArWen certification capsule",
+  "type": "object"
+}

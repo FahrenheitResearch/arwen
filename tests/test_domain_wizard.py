@@ -27,10 +27,11 @@ from gpuwm.cli import main as cli_main
 from gpuwm.core.preflight import (GIB, estimate_experiment,
                                   observed_peak_envelope_bytes)
 from gpuwm.domain_wizard import (CARD_VRAM_GIB, LADDER_RATIOS,
-                                 _dims_for_scale, experiment_from_text,
-                                 vram_reserve_gib)
+                                 DomainFitError, _dims_for_scale,
+                                 experiment_from_text, vram_reserve_gib)
 from gpuwm.experiment import load_experiment
 from gpuwm.fetch import validate_fetch_hints
+from gpuwm.hrrr_route_inputs import HrrrRouteInputError, route_input_paths
 from gpuwm.physics_compat import MORRISON_PROFILE_ID
 from gpuwm.ingest.grib import parse_vtable
 from gpuwm.static.lambert import (grids_from_projection_config,
@@ -76,12 +77,25 @@ def _assert_refused(capsys, needle: str, rc: int) -> None:
     ("95.0,-60.0", "[-90, 90]"),
     ("90.0,-60.0", "pole itself"),
     ("-90.0,10.0", "pole itself"),
-    ("35.3,-190.0", "[-180, 180]"),
+    ("35.3,-400.0", "[-180, 180]"),
 ])
 def test_point_rejections(tmp_path, capsys, point, needle):
     rc, out = _run_wizard(tmp_path, point=point)
     _assert_refused(capsys, needle, rc)
     assert not out.exists()
+
+
+def test_out_of_convention_longitude_wraps_with_a_warning(tmp_path, capsys):
+    """Warn-not-block: 170E spelled as -190 is a real longitude; the
+    wizard wraps it to the [-180, 180] convention, says so in one line,
+    and proceeds."""
+
+    rc, out = _run_wizard(tmp_path, point="35.3,-190.0")
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert out.exists()
+    assert "warning:" in captured.err
+    assert "wrapped to 170" in captured.err
 
 
 def test_card_and_vram_gib_are_mutually_exclusive(tmp_path, capsys):
@@ -269,7 +283,8 @@ def test_polar_fetch_box_stays_clear_of_the_pole(tmp_path, capsys):
     # short of it and the clamp never fires, which proves nothing.
     rc, out = _run_wizard(tmp_path, point="69.65,18.96", source="gfs",
                           cycle="2026-07-29T18", card="32gb")
-    printed = capsys.readouterr().out
+    captured = capsys.readouterr()
+    printed = captured.out
     assert rc == 0, printed
     raw = tomllib.loads(out.read_text(encoding="utf-8"))
     south, west, north, east = (
@@ -278,8 +293,9 @@ def test_polar_fetch_box_stays_clear_of_the_pole(tmp_path, capsys):
     assert abs(south) <= MAX_FETCH_ABS_LAT + 1e-9
     assert north < 90.0 and south > -90.0
     # This particular point clamps, so it must say so rather than
-    # silently handing over a box it refuses elsewhere.
-    assert "clear of the pole" in printed
+    # silently handing over a box it refuses elsewhere.  The clamp is
+    # a one-line warning now (stderr), with the mechanism on --explain.
+    assert "clear of the pole" in captured.err
     from gpuwm.fetch import parse_area
     parse_area(raw["fetch"]["area"])  # still a valid fetch box
 
@@ -735,9 +751,19 @@ def test_check_without_case_data_runs_memory_preflight(tmp_path, capsys):
 
 
 def test_existing_divergent_vtable_is_never_overwritten(tmp_path, capsys):
-    (tmp_path / "Vtable.ERA5_CDO").write_text("not the packaged table")
-    rc, _ = _run_wizard(tmp_path)
-    _assert_refused(capsys, "refusing to overwrite", rc)
+    """Warn-not-block: the user's Vtable is kept (never overwritten),
+    the wizard says so in one line, and the emission succeeds."""
+
+    marker = "not the packaged table"
+    (tmp_path / "Vtable.ERA5_CDO").write_text(marker)
+    rc, out = _run_wizard(tmp_path)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert out.exists()
+    assert "warning:" in captured.err
+    assert "kept your existing Vtable.ERA5_CDO" in captured.err
+    # The refusal is gone; the protection is not.
+    assert (tmp_path / "Vtable.ERA5_CDO").read_text() == marker
 
 
 # ---------------------------------------------------------------------------
@@ -845,7 +871,7 @@ def test_fetch_area_applies_and_clamps_the_margin():
 # Custom ladders: --root-dx / --chain alongside the presets.
 # ---------------------------------------------------------------------------
 
-def test_chain_and_root_dx_parsing_and_refusals():
+def test_chain_and_root_dx_parsing_and_refusals(capsys):
     from gpuwm.domain_wizard import (MAX_CHAIN_DEPTH, MAX_CHAIN_RATIO,
                                      MAX_ROOT_DX_KM, MIN_CHAIN_RATIO,
                                      MIN_ROOT_DX_KM, ROOT_DX_M,
@@ -854,14 +880,20 @@ def test_chain_and_root_dx_parsing_and_refusals():
     assert parse_chain("4,3,3") == (4, 3, 3)
     assert parse_chain(" 4 , 3 ") == (4, 3)
     assert parse_chain("") == ()
+    # KEEP-HARD: an unparseable ratio and a non-refinement stay refusals.
     with pytest.raises(ValueError, match="not an integer"):
         parse_chain("4,3.5")
-    with pytest.raises(ValueError, match="outside"):
-        parse_chain(str(MAX_CHAIN_RATIO + 1))
-    with pytest.raises(ValueError, match="outside"):
+    with pytest.raises(ValueError, match="not a refinement"):
         parse_chain(str(MIN_CHAIN_RATIO - 1))
-    with pytest.raises(ValueError, match="limit is"):
-        parse_chain(",".join(["2"] * (MAX_CHAIN_DEPTH + 1)))
+    # Warn-not-block: the conservative upper bounds report and continue.
+    capsys.readouterr()
+    assert parse_chain(str(MAX_CHAIN_RATIO + 1)) == (MAX_CHAIN_RATIO + 1,)
+    err = capsys.readouterr().err
+    assert "warning:" in err and "exceeds the blessed maximum" in err
+    deep = tuple([2] * (MAX_CHAIN_DEPTH + 1))
+    assert parse_chain(",".join(map(str, deep))) == deep
+    err = capsys.readouterr().err
+    assert "warning:" in err and "nests" in err
 
     # A preset run stays a preset run.
     assert parse_custom_ladder(
@@ -875,9 +907,17 @@ def test_chain_and_root_dx_parsing_and_refusals():
         root_dx_km=None, chain="4", ladder="auto") == (ROOT_DX_M, (4,))
     with pytest.raises(ValueError, match="cannot be combined"):
         parse_custom_ladder(root_dx_km=3.0, chain="4", ladder="12-3")
-    for bad in (MIN_ROOT_DX_KM / 2, MAX_ROOT_DX_KM * 2):
-        with pytest.raises(ValueError, match="--root-dx"):
-            parse_custom_ladder(root_dx_km=bad, chain="4", ladder="auto")
+    # Warn-not-block: the km-typo window warns and continues; a
+    # non-positive spacing stays a refusal.
+    capsys.readouterr()
+    for odd in (MIN_ROOT_DX_KM / 2, MAX_ROOT_DX_KM * 2):
+        root_m, _ = parse_custom_ladder(
+            root_dx_km=odd, chain="4", ladder="auto")
+        assert root_m == odd * 1000.0
+        err = capsys.readouterr().err
+        assert "warning:" in err and "--root-dx" in err
+    with pytest.raises(ValueError, match="positive spacing"):
+        parse_custom_ladder(root_dx_km=-1.0, chain="4", ladder="auto")
 
 
 def test_custom_ladder_3km_to_750m_emits_and_checks(tmp_path, capsys):
@@ -914,6 +954,63 @@ def test_custom_ladder_3km_to_750m_emits_and_checks(tmp_path, capsys):
         assert a.dx == b.dx
         np.testing.assert_allclose(lat_a, lat_b, rtol=0, atol=1e-9)
         np.testing.assert_allclose(lon_a, lon_b, rtol=0, atol=1e-9)
+
+
+@pytest.mark.parametrize("ladder_flags", [
+    ("--root-dx", "3", "--chain", "4"),
+    ("--ladder", "12-3-1"),
+])
+def test_every_domain_inherits_the_profiles_epssm(tmp_path, capsys,
+                                                  ladder_flags):
+    """The nest gets the profile's epssm, not WRF's Registry default.
+
+    The regression this pins killed a reported nested forecast: the
+    wizard wrote ``epssm = 0.1`` on every nest while the root took 0.5
+    from the physics profile, stripping the vertical-acoustic
+    off-centering exactly where nest terrain is steepest.  A 3 km ->
+    750 m ladder over the Cascades grew w to non-finite in seven
+    acoustic substeps at the child's steepest cell; the same geometry
+    with the nest at the profile's 0.5 ran clean.
+
+    Asserted against ``profile_switches`` rather than the number 0.5, so
+    a profile that ships a different epssm still propagates to depth.
+    """
+    from gpuwm.domain_wizard import profile_switches
+
+    out = tmp_path / "epssm.toml"
+    rc = cli_main(["domain", "--point=46.9,-121.8", "--card", "24gb",
+                   *ladder_flags, "--source", "gfs",
+                   "--cycle", "2026-07-29T18", "--hours", "6",
+                   "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert rc == 0, printed
+
+    exp = load_experiment(out)
+    expected = float(profile_switches(None)["epssm"])
+    assert len(exp.domains) > 1
+    assert [float(d.run.epssm) for d in exp.domains] == (
+        [expected] * len(exp.domains))
+    # Stated per domain in the file the reader opens, so the value that
+    # matters is visible where it is set -- and overridable there.
+    text = out.read_text(encoding="utf-8")
+    assert text.count("epssm = ") == len(exp.domains)
+    assert "epssm = 0.1" not in text
+
+
+def test_a_named_profiles_epssm_reaches_the_nest(tmp_path, capsys):
+    """Same contract when --physics-profile names the suite."""
+    from gpuwm.domain_wizard import profile_switches
+
+    out = tmp_path / "epssm-profile.toml"
+    assert cli_main([
+        "domain", "--point=46.9,-121.8", "--card", "24gb",
+        "--ladder", "12-3", "--source", "gfs", "--cycle",
+        "2026-07-29T18", "--hours", "6", "--physics-profile",
+        MORRISON_PROFILE_ID, "--out", str(out)]) == 0
+    capsys.readouterr()
+    exp = load_experiment(out)
+    expected = float(profile_switches(MORRISON_PROFILE_ID)["epssm"])
+    assert [float(d.run.epssm) for d in exp.domains] == [expected] * 2
 
 
 def test_custom_ladder_deep_chain_reaches_the_hundred_metre_scale(
@@ -1056,7 +1153,7 @@ def test_physics_profile_configs_pass_the_runner_guard_as_emitted(
                    "--out", str(out)])
     printed = capsys.readouterr().out
     assert rc == 0, printed
-    assert "passes the prepared single-domain forecast runner's" in printed
+    assert "every runner enforces it switch for switch" in printed
 
     exp = load_experiment(out)
     validation = runner._validate_profile_switches(
@@ -1072,15 +1169,17 @@ def test_physics_profile_configs_pass_the_runner_guard_as_emitted(
     assert profile in text
 
 
-def test_the_default_suite_says_out_loud_that_the_single_door_refuses_it(
+def test_the_default_suite_states_its_verification_status_and_runs(
         tmp_path, capsys):
-    """Never silent: name the gap and what each alternative really runs.
+    """Converted (owner ruling 2026-07-31): status is stated, never a gate.
 
-    A pilot read the profiles' `ra_physics: 0` as "radiation off" and
-    reported that the GFS route runs radiation-off silently.  Three of
-    the six profiles do run reduced physics -- and three run full
-    RTE+RRTMGP -- so the raw switch is exactly the wrong thing to show
-    anyone.  The wizard prints the resolved behaviour in words instead.
+    The old contract here was "say out loud that the single door refuses
+    this file".  The door no longer refuses any suite the engine
+    implements, so what must be said out loud is the verification
+    status -- one sentence on the default screen -- with the shipped
+    profiles and what each ACTUALLY runs behind --explain.  A pilot once
+    read the profiles' `ra_physics: 0` as "radiation off", so the words,
+    never the raw switch, still carry the resolved behaviour.
     """
     from gpuwm.domain_wizard import (WIZARD_PHYSICS_PROFILES,
                                      physics_summary,
@@ -1090,10 +1189,14 @@ def test_the_default_suite_says_out_loud_that_the_single_door_refuses_it(
                         cycle="2026-07-29T18")
     printed = capsys.readouterr().out
     assert rc == 0
-    assert "no shipped runner profile matches it" in printed
-    assert "it will refuse this file" in printed
-    assert "The multi-domain (domain-tree) runner has no such whitelist" \
-        in printed
+    # One clear sentence of status on the physics line...
+    assert "supported, not yet WRF-verified" in printed
+    # ...no refusal talk anywhere...
+    assert "will refuse" not in printed
+    assert "refuses it as emitted" not in printed
+    # ...and the runs-as-written statement plus the profile catalog
+    # under --explain.
+    assert "runs as written on the prepared single-domain route" in printed
     for profile in WIZARD_PHYSICS_PROFILES:
         assert profile in printed
 
@@ -1290,14 +1393,275 @@ def test_an_era5_emission_still_points_at_gpuwm_run(tmp_path, capsys):
 
 def test_an_hrrr_emission_names_the_front_door_not_a_refusing_command(
         tmp_path, capsys):
-    """HRRR reaches neither `gpuwm run` nor `gpuwm go`; say which route."""
+    """HRRR reaches neither `gpuwm run` nor `gpuwm go`; name its own chain.
 
-    _, printed = _emit(tmp_path, capsys, "--ladder", "12", source="hrrr",
-                       name="hrrr-area")
+    It used to name a documentation section instead of a command, which
+    left the reader to author four input files the wizard could have
+    written.  It writes them now, so it names them.
+    """
+
+    out, printed = _emit(tmp_path, capsys, "--ladder", "12", source="hrrr",
+                         name="hrrr-area")
     block = printed.split("next:")[-1]
     assert "gpuwm run " not in block
     assert "gpuwm go " not in block
-    assert "FIRST-LIGHT.md" in block
+    # Not rw-wps either: that is the GFS front door.
+    assert "rw-wps \\" not in block
+    assert "tools.prepare_hrrr_wrf" in block
+    # And it must NOT name a runner that refuses HRRR by design:
+    # prepared_single_domain_forecast's --source takes gfs/era5/20crv3,
+    # and the tree runner requires two domains.  Printing either for a
+    # single HRRR domain is the failure this whole block exists to end.
+    assert "prepared_single_domain_forecast" not in block
+    assert not [line for line in block.splitlines()
+                if "prepared_domain_tree_forecast" in line
+                and "#" not in line]
+    assert "hrrr_single_domain_benchmark.py" in block
+    paths = route_input_paths(out)
+    assert all(path.exists() for path in paths.values())
+    # The root preparation takes the target-domain document and the
+    # native namelist; namelist.wps is a hierarchy input, so it is
+    # written but not named by a single-domain chain.
+    for key in ("target_domain", "namelist_input"):
+        assert _posix(paths[key]) in block
+
+
+def test_a_nested_hrrr_emission_drives_the_route_with_no_hand_edits(
+        tmp_path, capsys):
+    """The acceptance this lane exists for, run through the ROUTE's gates.
+
+    ``gpuwm domain --source hrrr`` used to emit one file of the five the
+    nested HRRR route consumes, and the namelist.wps it did emit was
+    missing ``&share/interval_seconds`` -- the single key that route's
+    first gate demands.  The gate run that proved the route worked at
+    all had to author the rest with a lane's proof harness.
+
+    So this test does not check that four files exist.  It runs the
+    route's own validators, imported from the route, over the exact
+    bytes the wizard wrote: the raw-WPS contract, the native/stock
+    delta, the namelist import (which carries the Lambert contract
+    check), the public hierarchy slice, and the root preparer's profile
+    binding and vertical grid.  Every one of them is the thing that
+    refused wizard output before.
+    """
+    from gpuwm.hrrr_hierarchy_direct import (
+        _native_experiment, _require_raw_stock_delta,
+        _require_raw_wps_contract, _supported_hierarchy_slice)
+    from gpuwm.ingest.hrrr_target import (load_hrrr_target_domain,
+                                          required_hrrr_source_window)
+    from gpuwm.physics_compat import WSM6_PROFILE_ID
+    from gpuwm.vertical_contract import explicit_vertical_from_wrf_namelist
+    from tools.hrrr_single_domain_benchmark import (
+        _validate_native_hrrr_physics_profile)
+
+    out = tmp_path / "wind.toml"
+    rc = cli_main(["domain", "--point=46.4,-118.3", "--card", "24gb",
+                   "--root-dx", "3", "--chain", "4", "--source", "hrrr",
+                   "--cycle", "2026-07-29T18", "--hours", "3",
+                   "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert rc == 0, printed
+
+    paths = route_input_paths(out)
+    exp = load_experiment(out)
+    assert len(exp.domains) == 2
+
+    # The route's raw contract gates, on the emitted bytes.
+    assert _require_raw_wps_contract(
+        paths["wps_namelist"], len(exp.domains))["status"] == "PASS"
+    assert _require_raw_stock_delta(
+        paths["namelist_input"],
+        paths["stock_namelist_input"])["status"] == "PASS"
+
+    # The target-domain document loads, and its HRRR source window fits.
+    target = load_hrrr_target_domain(paths["target_domain"])
+    assert (target.nx, target.ny, target.nz) == (
+        exp.root.run.nx, exp.root.run.ny, exp.root.run.nz)
+    required_hrrr_source_window(target)
+
+    # The importer + Lambert contract check the hierarchy runs, and the
+    # public slice gate, for this run's own forcing inventory.
+    native_exp, _resolved, _report = _native_experiment(
+        paths["wps_namelist"], paths["namelist_input"])
+    hours = tuple(range(int(exp.run_seconds // 3600) + 1))
+    _supported_hierarchy_slice(native_exp, target, forcing_hours=hours)
+
+    # The namelist describes the same tree as the TOML beside it --
+    # including the epssm that made this lane necessary.
+    assert [(d.run.nx, d.run.ny, float(d.run.epssm))
+            for d in native_exp.domains] == [
+        (d.run.nx, d.run.ny, float(d.run.epssm)) for d in exp.domains]
+    assert {float(d.run.epssm) for d in native_exp.domains} == {0.5}
+
+    # And the ROOT preparation's own two gates over the same file.
+    binding = _validate_native_hrrr_physics_profile(
+        paths["namelist_input"], WSM6_PROFILE_ID)
+    assert binding["profile"] == WSM6_PROFILE_ID
+    vertical = explicit_vertical_from_wrf_namelist(
+        paths["namelist_input"], expected_nz=target.nz,
+        context="native HRRR initializer")
+    assert vertical.eta_levels == exp.vertical.eta_levels
+    assert vertical.p_top == exp.vertical.p_top
+
+
+def test_a_nested_hrrr_next_block_names_hrrr_commands_not_the_gfs_door(
+        tmp_path, capsys):
+    """The multi-domain branch used to answer first, and said rw-wps.
+
+    ``final_step_command`` tested ``domain_count > 1`` before it tested
+    the source, so a multi-domain HRRR emission -- the only shape the
+    nested route takes -- was told to prepare with the GFS front door.
+    """
+    out = tmp_path / "tree.toml"
+    assert cli_main([
+        "domain", "--point=46.4,-118.3", "--card", "24gb",
+        "--root-dx", "3", "--chain", "4", "--source", "hrrr",
+        "--cycle", "2026-07-29T18", "--hours", "3",
+        "--out", str(out)]) == 0
+    block = capsys.readouterr().out.split("next:")[-1]
+
+    # rw-wps may be NAMED (the block says it is the wrong door); it must
+    # not be the thing the reader is asked to run.
+    assert not [line for line in block.splitlines()
+                if "rw-wps" in line and "#" not in line]
+    assert "gpuwm run " not in block and "gpuwm go " not in block
+    assert "tools.prepare_hrrr_wrf" in block
+    assert "gpuwm.hrrr_hierarchy_direct" in block
+    assert "gpuwm.prepared_domain_tree_forecast" in block
+    # Every file the chain names was written, and every value the
+    # wizard knows is bound rather than left as a placeholder.
+    for path in route_input_paths(out).values():
+        assert path.exists()
+        assert _posix(path) in block
+    assert "--valid-time 2026-07-29_18:00:00" in block
+    assert "--run-seconds 10800" in block
+
+
+def test_hrrr_sizing_respects_hrrrs_own_grid_not_only_the_card(
+        tmp_path, capsys):
+    """VRAM is not the only bound on how large an HRRR domain may be.
+
+    HRRR's native grid is 1799 x 1059, and the interpolation stencil
+    plus the surface-fallback halo need real source cells outside the
+    target on every side.  A ladder sized purely against VRAM is a
+    legal, well-sized experiment that no HRRR fetch can force: on a
+    24 GiB Linux card, a 3 km root near the Washington/Oregon border
+    ran its halo nine rows off the top of the HRRR grid, and the root
+    preparation found out after the download.
+
+    Sized against the SOURCE's own window function -- the one the root
+    preparer calls -- the fit loop stops where HRRR does, and says so.
+    """
+    from gpuwm.hrrr_route_inputs import coverage_refusal, target_domain
+    from gpuwm.ingest.hrrr_target import (HRRR_SOURCE_NY,
+                                          required_hrrr_source_window)
+
+    out = tmp_path / "edge.toml"
+    rc = cli_main(["domain", "--point=46.35,-118.10", "--card", "32gb",
+                   "--root-dx", "3", "--chain", "4", "--source", "hrrr",
+                   "--cycle", "2026-07-29T18", "--hours", "1",
+                   "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert rc == 0, printed
+
+    exp = load_experiment(out)
+    assert coverage_refusal(exp) is None
+    window = required_hrrr_source_window(
+        target_domain(exp)).to_dict()["zero_based_inclusive"]
+    assert window["j"][1] <= HRRR_SOURCE_NY - 1
+
+    # It stopped AT the grid, with card headroom still unspent, and the
+    # printed advisory says which of the two bounds it hit.
+    assert window["j"][1] == HRRR_SOURCE_NY - 1
+    assert "bounded by HRRR's own grid, not by your card" in printed
+
+
+def test_a_point_hrrr_cannot_force_at_all_is_refused_by_the_fit_loop(
+        tmp_path, capsys):
+    """Watched firing: outside HRRR's coverage, nothing fits.
+
+    Not a silent shrink to zero and not a refusal about memory -- the
+    smallest layout this ladder has still needs source cells HRRR does
+    not have, and the message says so and names the flag.
+    """
+    out = tmp_path / "atlantic.toml"
+    rc = cli_main(["domain", "--point=25.0,-40.0", "--card", "12gb",
+                   "--ladder", "12", "--source", "hrrr",
+                   "--cycle", "2026-07-29T18", "--hours", "1",
+                   "--out", str(out)])
+    captured = capsys.readouterr()
+    assert rc != 0
+    message = captured.err + captured.out
+    assert "cannot be forced by hrrr" in message
+    assert "leaves HRRR coverage" in message
+    assert "Move --point" in message
+    assert not out.exists()
+
+
+def test_a_route_incompatible_profile_is_refused_at_emission(
+        tmp_path, capsys):
+    """Named at emission, not after a fetch and a root preparation.
+
+    The HRRR routes admit one physics slice.  A profile outside it used
+    to be emitted happily and refused three stages later, by a gate
+    naming a switch the wizard had already chosen.
+    """
+    out = tmp_path / "bad.toml"
+    rc = cli_main(["domain", "--point=46.4,-118.3", "--card", "24gb",
+                   "--ladder", "12-3", "--source", "hrrr",
+                   "--cycle", "2026-07-29T18", "--hours", "3",
+                   "--physics-profile", MORRISON_PROFILE_ID,
+                   "--out", str(out)])
+    captured = capsys.readouterr()
+    assert rc != 0
+    message = captured.err + captured.out
+    assert "cannot drive the nested HRRR route" in message
+    assert "cu_physics=1" in message
+    assert "ra_sw_physics=4" in message
+    assert "--physics-profile" in message
+    # Watched firing: the wizard's own HRRR default is compatible, so
+    # the refusal above is about the profile, not about HRRR.
+    good = tmp_path / "good.toml"
+    assert cli_main([
+        "domain", "--point=46.4,-118.3", "--card", "24gb",
+        "--ladder", "12-3", "--source", "hrrr", "--cycle",
+        "2026-07-29T18", "--hours", "3", "--out", str(good)]) == 0
+    capsys.readouterr()
+    assert route_input_paths(good)["namelist_input"].exists()
+
+
+def test_the_emitted_namelists_are_refused_if_they_drift_from_the_config(
+        tmp_path):
+    """The round trip that makes 'zero hand edits' mechanical.
+
+    The route reads the namelists, not the TOML.  A set that describes a
+    different tree than the config beside it is a defect that surfaces
+    only after a fetch and a root preparation, so the writer re-imports
+    what it wrote through the REAL importer and refuses on any
+    difference.  Watched firing: one edited geometry key, and it fires.
+    """
+    from gpuwm.hrrr_route_inputs import verify_round_trip
+
+    out = tmp_path / "drift.toml"
+    assert cli_main([
+        "domain", "--point=46.4,-118.3", "--card", "24gb",
+        "--ladder", "12-3", "--source", "hrrr", "--cycle",
+        "2026-07-29T18", "--hours", "3", "--out", str(out)]) == 0
+    paths = route_input_paths(out)
+    exp = load_experiment(out)
+
+    # Unedited, the round trip is silent.
+    verify_round_trip(exp, paths["wps_namelist"], paths["namelist_input"])
+
+    # The edit is this lane's own bug, written into the namelist: the
+    # nest back on WRF's Registry default while the config says 0.5.
+    namelist = paths["namelist_input"]
+    text = namelist.read_text(encoding="utf-8")
+    edited = text.replace("0.5, 0.5,", "0.5, 0.1,", 1)
+    assert edited != text
+    namelist.write_text(edited, encoding="utf-8")
+    with pytest.raises(HrrrRouteInputError, match="epssm"):
+        verify_round_trip(exp, paths["wps_namelist"], namelist)
 
 
 def test_a_tree_emission_names_the_tree_runner(tmp_path, capsys):
@@ -1311,14 +1675,15 @@ def test_a_tree_emission_names_the_tree_runner(tmp_path, capsys):
     assert "prepared_domain_tree_forecast" in block
 
 
-def test_a_profileless_gfs_emission_says_why_go_would_refuse_it(
-        tmp_path, capsys):
-    """No shipped profile is the OTHER reason the chain would stop."""
+def test_a_profileless_gfs_emission_points_at_gpuwm_go(tmp_path, capsys):
+    """Converted (owner ruling 2026-07-31): the chain runs the default
+    suite as written, so a profileless single-domain GFS emission gets
+    the same one-command next step a bound one does."""
 
     _, printed = _emit(tmp_path, capsys, "--ladder", "12")
     block = printed.split("next:")[-1]
     assert "gpuwm run " not in block
-    assert "--physics-profile" in block
+    assert "gpuwm go " in block
 
 
 def _posix(path) -> str:
@@ -1342,12 +1707,24 @@ def test_a_card_filling_footprint_gets_an_advisory_not_a_refusal():
     wide = oversized_footprint_advisory("-6.39,-159.63,73.19,-35.37")
     assert len(wide) == 1
     assert "--vram-gib" in wide[0]
-    assert "124 degrees of longitude" in wide[0]
+    assert "124 x" in wide[0]
+    # It names the flag that CAUSED the box as well as the one that
+    # shrinks it, and says why narrowing the download alone is wrong.
+    assert "--area" in wide[0]
+    assert "starve" in wide[0]
 
     # A continental domain is not remarkable and gets no line.
     assert oversized_footprint_advisory("6.24,-135.55,63.02,-59.45") == []
     # Nor is a shape this function cannot read a reason to say anything.
     assert oversized_footprint_advisory("not-a-box") == []
+
+    # A box that is merely TALL used to pass unremarked, because only
+    # longitude was measured: the wheel user's Linux --card 24gb
+    # --ladder 12 emitted 88 degrees of latitude.  This one is 84 tall
+    # and 70 wide -- under the longitude bar, over the latitude one.
+    tall = oversized_footprint_advisory("-8.00,-120.00,76.00,-50.00")
+    assert len(tall) == 1
+    assert "70 x 84" in tall[0]
 
 
 def test_the_advisory_reaches_the_terminal_on_a_large_card(tmp_path,
@@ -1361,5 +1738,6 @@ def test_the_advisory_reaches_the_terminal_on_a_large_card(tmp_path,
                      "--physics-profile", MORRISON_PROFILE_ID,
                      "--out", str(out)]) == 0
     printed = capsys.readouterr().out
-    assert "advisory: this domain was sized to fill your card" in printed
+    assert "advisory: this domain is sized to fill your card" in printed
+    assert "--vram-gib N" in printed
     assert "gpuwm domain: FAIL" not in printed

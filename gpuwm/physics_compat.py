@@ -20,7 +20,7 @@ import os
 from types import MappingProxyType
 from typing import Mapping
 
-from gpuwm.explain import layered
+from gpuwm.explain import layered, warn
 from gpuwm.wrf461_compatibility import (
     PBL_OPTIONS,
     SURFACE_LAYER_OPTIONS,
@@ -194,16 +194,79 @@ def packaged_thompson_table_root() -> "Path":
     return Path(__file__).resolve().parent / "data" / "thompson" / "tables"
 
 
+def user_thompson_table_root() -> "Path":
+    """User-level staging directory: ``~/.gpuwm/tables/thompson``.
+
+    The same place ``~/.gpuwm/bridges`` occupies for the built bridges,
+    and for the same reason: ``gpuwm fetch-tables`` used to stage its
+    two downloads *inside site-packages*, where the next wheel upgrade
+    or venv rebuild deletes them without saying so.  A user who had
+    already paid for a 315 MiB download then met a bare
+    ``FileNotFoundError`` in the middle of a forecast.  Under the home
+    directory the staged set outlives the install that fetched it, and
+    every checkout and venv on the machine reads the same bytes.
+
+    Named per table set rather than a flat ``tables/`` because a root is
+    validated as a *complete set*: mixing two schemes' assets in one
+    directory would make "complete" unanswerable.
+    """
+
+    from pathlib import Path
+
+    return Path.home() / ".gpuwm" / "tables" / "thompson"
+
+
+def _table_root_is_complete(root: "Path") -> bool:
+    """Every classic asset filename present as a file in ``root``.
+
+    Presence only.  The SHA-256 pins are re-checked at load by
+    ``validate_table_assets``; resolution asks the cheap question
+    (which root can this run read?) and answers it with stats, not with
+    362 MiB of hashing on every import.
+    """
+
+    from gpuwm.core.thompson_contract import CLASSIC_TABLE_ASSETS
+
+    try:
+        return all((root / asset.filename).is_file()
+                   for asset in CLASSIC_TABLE_ASSETS)
+    except OSError:  # pragma: no cover - unreadable home/site-packages
+        return False
+
+
 def thompson_table_root() -> str:
-    """Resolved mp8 table root: env override first, packaged default second.
+    """Resolved mp8 table root: env override, then staged, then packaged.
 
     The override exists for byte-identical mirrors (fast local disks,
     cluster scratch); a root with different bytes fails closed in
     ``validate_table_assets`` exactly as the packaged one would.
+
+    Below it, a *complete* packaged directory still answers first --
+    that is the read fallback that keeps every install which already
+    staged into site-packages working, and it makes a git clone (whose
+    packaged root ships the whole set) resolve exactly where it always
+    did, the same way a checkout's own bridge build outranks a staged
+    one in :func:`gpuwm.bridges.artifact_candidates`.  When the packaged
+    directory is short an asset -- every fresh wheel, and every wheel an
+    upgrade has just emptied -- the complete staged set under
+    :func:`user_thompson_table_root` answers instead.  Both roots are
+    pinned to the same bytes, so this order chooses a location, never a
+    numerical setup.
     """
 
     override = os.environ.get(THOMPSON_TABLE_ROOT_ENV)
-    return override if override else str(packaged_thompson_table_root())
+    if override:
+        return override
+    packaged = packaged_thompson_table_root()
+    if _table_root_is_complete(packaged):
+        return str(packaged)
+    try:
+        staged = user_thompson_table_root()
+    except (RuntimeError, OSError):  # pragma: no cover - no home directory
+        return str(packaged)
+    if _table_root_is_complete(staged):
+        return str(staged)
+    return str(packaged)
 
 # Noah-MP's whole column runs on the DEVICE: the slab orchestration in
 # gpuwm/core/noahmp_column_slab.py answers every land column with no Python
@@ -506,6 +569,93 @@ def identify_single_domain_profile(run_config) -> str | None:
 #: Sentinel for :func:`identify_single_domain_profile`: a config that
 #: lacks a switch entirely never matches a profile that pins it.
 _MISSING = object()
+
+
+#: Runtime switches a WRF namelist cannot state honestly, so somebody has
+#: to decide them for it.  ``moist_cq`` has no WRF namelist key at all
+#: (WRF derives calc_cq internally from the moist species that exist),
+#: and gpuwm's ``top_lid`` default is deliberately NOT WRF's Registry
+#: default (gpuwm/config.py records the falsification bar for flipping
+#: it).  Both are part of every prepared-cache domain identity.
+#:
+#: They had three answers.  The shipped profiles above state them; the
+#: domain wizard reads those same profiles; the WRF importer invented its
+#: own -- ``moist_cq = mp_physics > 0`` and WRF's open-top default -- and
+#: so a public root prepared from a profile and a public hierarchy
+#: imported from the SAME namelist could not produce matching d01
+#: identities for WSM6, Kessler, MYNN, RUC or Noah-MP.  This function is
+#: the single answer all three now ask for.
+IMPLICIT_RUNTIME_SWITCHES = ("moist_cq", "top_lid")
+
+#: The switches that pick a shipped profile's row.  Every profile above
+#: is unique on this tuple except the NSSL pair, which differs only in
+#: its RRTMG variant and agrees on both implicit switches -- so a tie is
+#: an answer here, not an ambiguity.
+_PROFILE_SELECTOR_KEYS = (
+    "mp_physics", "sf_sfclay_physics", "sf_surface_physics",
+    "bl_pbl_physics", "cu_physics", "num_soil_layers",
+    "ra_lw_physics", "ra_sw_physics",
+)
+
+
+def implicit_runtime_switches(**selection) -> dict[str, object]:
+    """Certified ``moist_cq``/``top_lid`` for one WRF physics selection.
+
+    ``selection`` is the WRF switch set an importer already resolved
+    (:data:`_PROFILE_SELECTOR_KEYS`; unknown keys are ignored so callers
+    may pass their whole suite).  When every shipped profile matching it
+    agrees, those are the values -- byte-for-byte the ones
+    :func:`single_domain_runtime_switches` hands the root preparer and
+    the domain wizard.  When nothing matches, or matches disagree, the
+    answer is gpuwm's own ``RunConfig`` default, which is what an
+    unstated switch has always resolved to.
+
+    Returns ``{"moist_cq": ..., "top_lid": ..., "source": ...,
+    "profiles": (...)}``: the source string is a receipt line, because a
+    value decided FOR the user has to be able to say who decided it.
+    """
+
+    from gpuwm.config import RunConfig
+
+    requested = {key: selection[key] for key in _PROFILE_SELECTOR_KEYS
+                 if key in selection}
+    matched = []
+    for profile in SINGLE_DOMAIN_PHYSICS_PROFILES:
+        row = _SINGLE_DOMAIN_RUNTIME_SWITCHES[profile]
+        if requested and all(row.get(key) == value
+                             for key, value in requested.items()):
+            matched.append(profile)
+    answers = {
+        tuple(_SINGLE_DOMAIN_RUNTIME_SWITCHES[profile][name]
+              for name in IMPLICIT_RUNTIME_SWITCHES)
+        for profile in matched
+    }
+    if len(answers) == 1:
+        row = _SINGLE_DOMAIN_RUNTIME_SWITCHES[matched[0]]
+        return {
+            **{name: row[name] for name in IMPLICIT_RUNTIME_SWITCHES},
+            "source": (
+                "the shipped single-domain physics profile this suite IS "
+                if len(matched) == 1 else
+                "the shipped single-domain physics profiles this suite IS, "
+                "which agree here: ")
+            + ", ".join(matched),
+            "profiles": tuple(matched),
+        }
+    defaults = RunConfig(nx=1, ny=1, nz=1, dx=1.0, dy=1.0, ztop=1.0,
+                         dt=1.0, run_seconds=1.0)
+    return {
+        **{name: getattr(defaults, name)
+           for name in IMPLICIT_RUNTIME_SWITCHES},
+        "source": (
+            "gpuwm's RunConfig defaults: this suite is not one of the "
+            "shipped single-domain physics profiles"
+            if not matched else
+            "gpuwm's RunConfig defaults: this suite matches shipped "
+            "profiles that disagree about these switches "
+            f"({', '.join(sorted(matched))})"),
+        "profiles": tuple(matched),
+    }
 
 
 class PhysicsCapabilityError(ValueError):
@@ -935,6 +1085,133 @@ def validate_single_domain_physics_profile(
     }
 
 
+#: Verification-status vocabulary for the REPORTED physics metadata.
+#:
+#: Owner ruling (2026-07-31): the physics-suite choice is the user's.
+#: The single-domain profile whitelist is gone as a gate; what remains
+#: of it is this status, computed from the same profile data that used
+#: to feed the whitelist and STATED in receipts and ``--explain`` --
+#: never used to refuse a suite the engine implements.
+VERIFICATION_WRF_VERIFIED = "wrf-verified"
+VERIFICATION_SUPPORTED = "supported-not-wrf-verified"
+VERIFICATION_STATUS_SCHEMA = "gpuwm-physics-verification-status-v1"
+
+#: The registry maturity that constitutes WRF-verification evidence.
+#: Everything else the engine implements is honestly "supported".
+_WRF_VERIFIED_MATURITY = "wrf-matched-run"
+
+
+def single_domain_verification_status(run_config) -> dict[str, object]:
+    """WRF-verification evidence for one run config, as reported metadata.
+
+    Never a gate.  A switch-exact match against a shipped profile
+    carries that profile's registry-template maturity; a suite matching
+    no profile may still match a registered template at COMPONENT level
+    (the wizard's default suite does), which is named without being
+    claimed as switch-level evidence.  The ``sentence`` is the one line
+    product surfaces print -- detail stays in this receipt.
+    """
+
+    from gpuwm.physics_registry import physics_registry
+
+    registry = physics_registry()
+    matched = identify_single_domain_profile(run_config)
+    maturity = None
+    if matched is not None:
+        template = registry["templates"].get(matched)
+        if isinstance(template, Mapping):
+            maturity = template.get("maturity")
+    component_match: dict[str, object] | None = None
+    if matched is None:
+        try:
+            resolved = validate_physics_capabilities(run_config)
+        except (PhysicsCapabilityError, TypeError, ValueError):
+            resolved = None
+        if resolved is not None:
+            for template_id, template in registry["templates"].items():
+                if (isinstance(template, Mapping)
+                        and dict(template.get("components", {}))
+                        == resolved):
+                    component_match = {
+                        "template": template_id,
+                        "maturity": template.get("maturity"),
+                        "scope": "components-only-not-switch-level",
+                    }
+                    break
+    verified = matched is not None and maturity == _WRF_VERIFIED_MATURITY
+    if verified:
+        sentence = (
+            f"physics: {matched} carries WRF-verification evidence "
+            f"(registry maturity {maturity!r}).")
+    elif matched is not None:
+        sentence = (
+            f"physics: {matched} is supported, not yet WRF-verified "
+            f"(registry maturity {maturity!r}); the run continues.")
+    else:
+        sentence = (
+            "physics: this suite is supported, not yet WRF-verified; "
+            "the run continues.")
+    return {
+        "schema": VERIFICATION_STATUS_SCHEMA,
+        "status": (
+            VERIFICATION_WRF_VERIFIED if verified
+            else VERIFICATION_SUPPORTED),
+        "matched_profile": matched,
+        "matched_profile_maturity": maturity,
+        "component_matched_template": component_match,
+        "sentence": sentence,
+    }
+
+
+def single_domain_physics_selection(
+        config,
+        *,
+        profile: str | None = None,
+        expert_acknowledgements: tuple[str, ...] = (),
+        acknowledgement_provenance: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """The single-domain front-door selection receipt, profile optional.
+
+    Owner ruling (2026-07-31): any physics suite the engine implements
+    runs on the prepared single-domain route.  A profile the caller
+    NAMED still gates -- a gate asked for is not a gate to drop, and it
+    is how "this config IS that shipped suite" stays assertable -- but
+    an unnamed config is governed exactly the way the domain-tree route
+    has always governed a one-node tree: engine-valid selectors, the
+    registry's source-neutral tuple governance, and a recorded blocker
+    (not a refusal) where the registry has no spelling for the tuple.
+
+    This is THE one spelling of the single-domain selection decision,
+    and its callers are the whole point: the GFS front door
+    (:func:`gpuwm.gfs_direct.front_door_physics_selection`), the direct
+    exporter's profileless contract
+    (:func:`gpuwm.wrf_direct.export_prepared_wrf` with
+    ``experiment_config_suite=True``), and the prepared-forecast
+    runner's own tuple governance and proof recompute
+    (:mod:`gpuwm.prepared_single_domain_forecast`).  All of them compute
+    THIS receipt from the hash-bound experiment config, which is what
+    keeps "the physics executed is the physics prepared"
+    byte-comparable across every seam.
+    """
+
+    if profile is not None:
+        return validate_single_domain_physics_profile(
+            profile, config=config,
+            expert_acknowledgements=expert_acknowledgements,
+            acknowledgement_provenance=acknowledgement_provenance)
+    # The reachability union here spans EVERY implemented route's
+    # declared templates, not only the domain-tree route's: the
+    # registry declares RUC among this route's own shipped products
+    # (ERA5), and a shipped product must not be governed as an outside
+    # tuple at its own runner.  Expert templates keep their published
+    # acknowledgement from whichever route declares them.
+    return multi_domain_physics_selection(
+        {1: config},
+        expert_acknowledgements=expert_acknowledgements,
+        acknowledgement_provenance=acknowledgement_provenance,
+        governance_route_modes=("experiment-per-domain", "fixed-template"))
+
+
 #: Route/source pairs whose declared template list this front door
 #: enforces at PREPARATION time.
 #:
@@ -1064,13 +1341,16 @@ def multi_domain_physics_selection(
         profile: str | None = None,
         expert_acknowledgements: tuple[str, ...] = (),
         acknowledgement_provenance: Mapping[str, object] | None = None,
+        governance_route_modes: tuple[str, ...] = ("experiment-per-domain",),
 ) -> dict[str, object]:
     """Record and govern a domain tree's resolved physics tuple.
 
-    The prepared single-domain forecast runner accepts a fixed list of
-    named profiles and compares an experiment's switches to one of them
-    for exact equality.  The domain-tree runner never had that list and
-    does not grow one here, in either of its two possible spellings.
+    The domain-tree runner never had a profile whitelist and does not
+    grow one here, in either of its two possible spellings -- and since
+    the 2026-07-31 owner ruling this same governance also admits an
+    UNNAMED single-domain configuration (a one-node tree) on the
+    prepared single-domain route, via
+    :func:`single_domain_physics_selection`.
 
     Every domain has already passed the executable selector checks.  This
     second gate asks a different, registry-owned governance question about
@@ -1117,7 +1397,7 @@ def multi_domain_physics_selection(
         }
         if components is not None:
             state, required = _tree_tuple_registry_governance(
-                registry, components)
+                registry, components, route_modes=governance_route_modes)
             governance = {
                 "state": state,
                 "required_acknowledgement": required,
@@ -1125,13 +1405,24 @@ def multi_domain_physics_selection(
                     required is None or required in acknowledged),
             }
             if required is not None and required not in acknowledged:
+                # Warn-not-block: an implemented tuple outside the
+                # registry's blessed reachability RUNS, with one line
+                # saying so.  The governance record above already
+                # carries acknowledged=False, so every receipt states
+                # the truth; the acknowledgement remains the way to
+                # silence the warning.
                 tuple_text = ", ".join(
                     f"{key}={_selection_value(settings, key)!r}"
                     for key in sorted(selector_keys))
-                raise PhysicsCapabilityError(
-                    f"d{grid_id:02d} resolved physics tuple "
-                    f"({tuple_text}) has registry reachability {state!r}; "
-                    f"add {_ack_instruction(required)} to proceed")
+                warn(f"d{grid_id:02d} physics tuple ({tuple_text}) has "
+                     f"registry reachability {state!r} -- running it "
+                     f"unblessed; add {_ack_instruction(required)} to "
+                     "silence this warning",
+                     why="Every component in the tuple is individually "
+                         "implemented and verified; the registry has "
+                         "simply not blessed this combination end to "
+                         "end.  The run record carries "
+                         "acknowledged=false either way.")
         domains[str(grid_id)] = {
             "components": components,
             "registry_blocker": blocker,
@@ -1164,8 +1455,20 @@ def multi_domain_physics_selection(
 def _tree_tuple_registry_governance(
         registry: Mapping[str, object],
         selected: Mapping[str, str],
+        *,
+        route_modes: tuple[str, ...] = ("experiment-per-domain",),
 ) -> tuple[str, str | None]:
-    """Resolve a complete tuple without consulting source identity."""
+    """Resolve a complete tuple without consulting source identity.
+
+    ``route_modes`` names which implemented routes' declared templates
+    make up the reachability union.  The domain-tree question keeps its
+    historical union (the per-domain routes and their component
+    overrides); the single-domain selection widens it to the
+    fixed-template routes too, because a template the registry declares
+    as one of THIS route's shipped products (RUC on ERA5 is the
+    exhibit) must not read as outside the registry's reachability at
+    its own runner.
+    """
 
     components = registry.get("components", {})
     templates = registry.get("templates", {})
@@ -1188,7 +1491,7 @@ def _tree_tuple_registry_governance(
         if (
             not isinstance(route, Mapping)
             or route.get("implemented") is not True
-            or route.get("mode") != "experiment-per-domain"
+            or route.get("mode") not in route_modes
         ):
             continue
         override_components = [
@@ -1324,7 +1627,7 @@ def thompson_runtime_requirements() -> dict[str, object]:
     )
 
     return {
-        "readiness": "MODEL_VALIDATED_EXPERIMENTAL_RUNTIME",
+        "readiness": "WRF_MATCHED_RUN_EXPERIMENTAL_RUNTIME",
         "explicit_expert_consent_required": False,
         "runtime_guard": {
             "environment": EXPERIMENTAL_THOMPSON_ENV,
@@ -1520,38 +1823,27 @@ def pending_wrf_physics_components(
                 "__constant__ real ruc_soil_layer_depth[9]",
             )))
     if sf_surface_physics == 4 and columns is not None:
-        # The one blocker here that is about GRID WIDTH rather than a missing
-        # branch.  Noah-MP is fully ported and bitwise, and since the slab
-        # orchestration it also FINISHES at production width; what stays
-        # refused is a width nothing has measured.  ``columns`` is the whole
-        # grid, i.e. the worst case, because the land fraction is not known
-        # until the landmask is ingested and a fail-closed rail must not
-        # assume the friendlier number.
+        # GRID WIDTH, not a missing branch.  Noah-MP is fully ported and
+        # bitwise, and since the slab orchestration it also FINISHES at
+        # production width; a wider grid than anything measured is a
+        # PERFORMANCE projection, not a correctness gap -- so it is a
+        # one-line warning now, never a blocker (warn-not-block ruling).
+        # The env override is kept as the way to silence the warning.
         budget = max(NOAHMP_MEASURED_COLUMN_CEILING,
                      noahmp_expert_column_budget())
         if columns > budget:
-            blockers.append(PhysicsPortBlocker(
-                component="Noah-MP column budget",
-                selectors=(("sf_surface_physics", 4), ("columns", columns)),
-                missing=(
-                    f"Noah-MP's slab path is measured to "
-                    f"{NOAHMP_MEASURED_COLUMN_CEILING} columns "
-                    f"({NOAHMP_MEASURED_SLAB_CALL_SECONDS[0]}-"
-                    f"{NOAHMP_MEASURED_SLAB_CALL_SECONDS[1]} s per "
-                    f"land-surface call on one RTX 5090, 2026-07-27); "
-                    f"{columns} columns project linearly to "
-                    f"{noahmp_projected_call_seconds(columns):.2f} s per "
-                    f"call, and no run has measured that width",
-                    f"set {NOAHMP_EXPERT_COLUMN_BUDGET_ENV} to the column "
-                    f"count you accept to run beyond the measured width",
-                    "raising the budget makes nothing faster -- it records "
-                    "that the projection above was read and accepted",
-                ),
-                # The projection AND the environment variable that
-                # accepts it are both the action here: a reader told
-                # only that the width is unmeasured, without the switch
-                # that admits it, has been refused with no way forward.
-                action_count=2))
+            warn(
+                f"Noah-MP at {columns} columns is beyond the "
+                f"{NOAHMP_MEASURED_COLUMN_CEILING}-column measured width; "
+                f"the land-surface call projects to about "
+                f"{noahmp_projected_call_seconds(columns):.2f} s -- "
+                "slow, not wrong; continuing",
+                why=f"Measured {NOAHMP_MEASURED_SLAB_CALL_SECONDS[0]}-"
+                    f"{NOAHMP_MEASURED_SLAB_CALL_SECONDS[1]} s per call "
+                    f"at {NOAHMP_MEASURED_COLUMN_CEILING} columns on one "
+                    "RTX 5090 (2026-07-27); the projection is linear in "
+                    f"columns.  Set {NOAHMP_EXPERT_COLUMN_BUDGET_ENV} at "
+                    "or above your column count to silence this warning.")
     if sf_surface_physics == 4 and num_soil_layers != 4:
         # Noah-MP itself is no longer refused: it has a dispatch row, a
         # driver, a cold start, restart identity and output.  What is still
@@ -1612,7 +1904,9 @@ __all__ = [
     "WSM6_PROFILE_ID",
     "WRF_RRTMG_TO_RTE_RRTMGP",
     "WRF_RRTMG_TO_RTE_RRTMGP_V1",
+    "IMPLICIT_RUNTIME_SWITCHES",
     "identify_single_domain_profile",
+    "implicit_runtime_switches",
     "packaged_thompson_table_root",
     "pending_wrf_physics_components",
     "thompson_table_root",
@@ -1620,8 +1914,10 @@ __all__ = [
     "require_rrtmg_legacy_executable",
     "require_rrtmg_legacy_ready",
     "rrtmg_variant",
+    "single_domain_physics_selection",
     "single_domain_runtime_switches",
     "thompson_runtime_requirements",
+    "user_thompson_table_root",
     "validate_physics_capabilities",
     "validate_resolved_physics_vertical_levels",
     "validate_single_domain_physics_profile",

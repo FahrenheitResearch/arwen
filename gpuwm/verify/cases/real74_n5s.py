@@ -37,6 +37,10 @@ ETA_LEVELS = (
     0.07007, 0.05902, 0.04898, 0.03984, 0.03153,
     0.02398, 0.01710, 0.01085, 0.00517, 0.00000,
 )
+#: This case's initial instant.  The metric registration takes it as a
+#: required argument, so the one place that knows which campaign is being
+#: scored is this case module.
+N5S_START_TIME = datetime(1974, 4, 3, 12, 0, 0)
 N5S_FORCING_INTERVAL_SECONDS = 6 * 60 * 60
 N5S_SOIL_LAYERS = 4
 REFLECTIVITY_MICROPHYSICS = frozenset((1, 6, 8, 10, 18))
@@ -1053,7 +1057,7 @@ def build_n5s_experiment(*, run_minutes: int = 30,
     raw = {
         "experiment": {
             "name": "N5S_matched_physics_wrf_shadow",
-            "start_time": datetime(1974, 4, 3, 12, 0, 0),
+            "start_time": N5S_START_TIME,
             "run_seconds": run_seconds,
             "feedback": 0, "smooth_option": 0, "blend_width": 5,
             "spec_bdy_width": 5, "restart_interval_s": 0.0,
@@ -1236,6 +1240,7 @@ def run_restored_experiment(wrf_inputs: str | Path, outdir: str | Path, *,
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     created = make_registration(
+        start_time=N5S_START_TIME.isoformat(),
         run_minutes=run_minutes, history_minutes=history_minutes)
     reg = created if registration is None else require_matching_registrations(
         created, registration)

@@ -40,7 +40,10 @@ gpuwm adapt --vtable VTABLE --descriptor DESCRIPTOR
   [--grib2-inventory EXE --grib2-dump EXE]
 ```
 
-Skeleton mode writes a review-required `rw-wps.descriptor.v1` scaffold.
+Skeleton mode writes a review-required `rw-wps.descriptor.v1` scaffold
+and prints every value it left for you to replace; authoring mode
+refuses that scaffold as a scaffold until they are all replaced,
+rather than as a type error about whichever one it reached first.
 Authoring mode compiles its Vtable selectors, inventories the actual files,
 checks exact fields/levels, target unit/axis/staggering bindings, complete
 declared soil policy, one regular-lat/lon GDT 0 grid, uniform cadence, and

@@ -1,0 +1,1702 @@
+{
+  "band_schema_version": "1.0.0",
+  "cells": [
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d01",
+      "lead": "1.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.012
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d01",
+      "lead": "1.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 0.5
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d01",
+      "lead": "1.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.97
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d01",
+      "lead": "1.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 1.58
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d01",
+      "lead": "1.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.863
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d01",
+      "lead": "1.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.984
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d01",
+      "lead": "1.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 1.0
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d01",
+      "lead": "2.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.019
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d01",
+      "lead": "2.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 0.8
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d01",
+      "lead": "2.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.971
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d01",
+      "lead": "2.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 1.84
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d01",
+      "lead": "2.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.854
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d01",
+      "lead": "2.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.975
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d01",
+      "lead": "2.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 1.0
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d01",
+      "lead": "3.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.025
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d01",
+      "lead": "3.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 1.09
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d01",
+      "lead": "3.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.963
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d01",
+      "lead": "3.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 2.13
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d01",
+      "lead": "3.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.845
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d01",
+      "lead": "3.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.963
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d01",
+      "lead": "3.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 1.0
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d01",
+      "lead": "4.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.03
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d01",
+      "lead": "4.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 1.37
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d01",
+      "lead": "4.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.953
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d01",
+      "lead": "4.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 2.44
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d01",
+      "lead": "4.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.82
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d01",
+      "lead": "4.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.945
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d01",
+      "lead": "4.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 1.0
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d01",
+      "lead": "5.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.034
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d01",
+      "lead": "5.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 1.78
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d01",
+      "lead": "5.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.945
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d01",
+      "lead": "5.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 2.72
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d01",
+      "lead": "5.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.8
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d01",
+      "lead": "5.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.922
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d01",
+      "lead": "5.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 1.0
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d01",
+      "lead": "6.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.041
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d01",
+      "lead": "6.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 2.21
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d01",
+      "lead": "6.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.939
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d01",
+      "lead": "6.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 2.86
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d01",
+      "lead": "6.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.785
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d01",
+      "lead": "6.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.909
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d01",
+      "lead": "6.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 1.0
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d02",
+      "lead": "1.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.014
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d02",
+      "lead": "1.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 1.02
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d02",
+      "lead": "1.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.996
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d02",
+      "lead": "1.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 0.41
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d02",
+      "lead": "1.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.931
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d02",
+      "lead": "1.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.994
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d02",
+      "lead": "1.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 1.0
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d02",
+      "lead": "2.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.029
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d02",
+      "lead": "2.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 1.87
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d02",
+      "lead": "2.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.994
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d02",
+      "lead": "2.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 0.8
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d02",
+      "lead": "2.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.897
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d02",
+      "lead": "2.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.872
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d02",
+      "lead": "2.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.998
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d02",
+      "lead": "3.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.051
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d02",
+      "lead": "3.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 3.15
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d02",
+      "lead": "3.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.985
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d02",
+      "lead": "3.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 1.33
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d02",
+      "lead": "3.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.857
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d02",
+      "lead": "3.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.749
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d02",
+      "lead": "3.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.997
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d02",
+      "lead": "4.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.076
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d02",
+      "lead": "4.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 4.24
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d02",
+      "lead": "4.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.975
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d02",
+      "lead": "4.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 1.85
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d02",
+      "lead": "4.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.794
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d02",
+      "lead": "4.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.743
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d02",
+      "lead": "4.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.995
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d02",
+      "lead": "5.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.116
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d02",
+      "lead": "5.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 6.92
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d02",
+      "lead": "5.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.951
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d02",
+      "lead": "5.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 2.8
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d02",
+      "lead": "5.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.75
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d02",
+      "lead": "5.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.58
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d02",
+      "lead": "5.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.992
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d02",
+      "lead": "6.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.165
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d02",
+      "lead": "6.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 11.55
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d02",
+      "lead": "6.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.929
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d02",
+      "lead": "6.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 4.02
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d02",
+      "lead": "6.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.682
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d02",
+      "lead": "6.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.375
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d02",
+      "lead": "6.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.988
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d03",
+      "lead": "1.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.01
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d03",
+      "lead": "1.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 0.92
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d03",
+      "lead": "1.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.996
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d03",
+      "lead": "1.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 0.26
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d03",
+      "lead": "1.0",
+      "metric": "refl_csi20",
+      "placement": "nan",
+      "published_value": null
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d03",
+      "lead": "1.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.999
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d03",
+      "lead": "1.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 1.0
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d03",
+      "lead": "2.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.015
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d03",
+      "lead": "2.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 1.21
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d03",
+      "lead": "2.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.997
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d03",
+      "lead": "2.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 0.33
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d03",
+      "lead": "2.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.708
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d03",
+      "lead": "2.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.986
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d03",
+      "lead": "2.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.998
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d03",
+      "lead": "3.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.046
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d03",
+      "lead": "3.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 5.2
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d03",
+      "lead": "3.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.981
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d03",
+      "lead": "3.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 1.06
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d03",
+      "lead": "3.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.67
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d03",
+      "lead": "3.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.333
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d03",
+      "lead": "3.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.963
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d03",
+      "lead": "4.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.105
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d03",
+      "lead": "4.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 7.93
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d03",
+      "lead": "4.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.933
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d03",
+      "lead": "4.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 2.7
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d03",
+      "lead": "4.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.428
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d03",
+      "lead": "4.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.358
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d03",
+      "lead": "4.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.946
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d03",
+      "lead": "5.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.186
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d03",
+      "lead": "5.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 10.0
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d03",
+      "lead": "5.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.795
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d03",
+      "lead": "5.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 5.35
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d03",
+      "lead": "5.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.313
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d03",
+      "lead": "5.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.37
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d03",
+      "lead": "5.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.954
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d03",
+      "lead": "6.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.347
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d03",
+      "lead": "6.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 20.45
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d03",
+      "lead": "6.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.715
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d03",
+      "lead": "6.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 9.75
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d03",
+      "lead": "6.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.425
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d03",
+      "lead": "6.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.138
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d03",
+      "lead": "6.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.901
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d04",
+      "lead": "0.5",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.004
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d04",
+      "lead": "0.5",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 0.34
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d04",
+      "lead": "0.5",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.99
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d04",
+      "lead": "0.5",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 0.08
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d04",
+      "lead": "0.5",
+      "metric": "refl_csi20",
+      "placement": "nan",
+      "published_value": null
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d04",
+      "lead": "0.5",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.998
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d04",
+      "lead": "0.5",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 1.0
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d04",
+      "lead": "1.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.007
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d04",
+      "lead": "1.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 0.35
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d04",
+      "lead": "1.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.997
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d04",
+      "lead": "1.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 0.11
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d04",
+      "lead": "1.0",
+      "metric": "refl_csi20",
+      "placement": "nan",
+      "published_value": null
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d04",
+      "lead": "1.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.998
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d04",
+      "lead": "1.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 1.0
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d04",
+      "lead": "1.5",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.006
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d04",
+      "lead": "1.5",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 0.46
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d04",
+      "lead": "1.5",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.995
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d04",
+      "lead": "1.5",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 0.13
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d04",
+      "lead": "1.5",
+      "metric": "refl_csi20",
+      "placement": "nan",
+      "published_value": null
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d04",
+      "lead": "1.5",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.994
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d04",
+      "lead": "1.5",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 1.0
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d04",
+      "lead": "2.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.007
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d04",
+      "lead": "2.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 0.7
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d04",
+      "lead": "2.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.997
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d04",
+      "lead": "2.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 0.14
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d04",
+      "lead": "2.0",
+      "metric": "refl_csi20",
+      "placement": "nan",
+      "published_value": null
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d04",
+      "lead": "2.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.988
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d04",
+      "lead": "2.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 1.0
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d04",
+      "lead": "2.5",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.014
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d04",
+      "lead": "2.5",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 0.63
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d04",
+      "lead": "2.5",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.999
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d04",
+      "lead": "2.5",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 0.25
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d04",
+      "lead": "2.5",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.023
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d04",
+      "lead": "2.5",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.942
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d04",
+      "lead": "2.5",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.998
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d04",
+      "lead": "3.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.026
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d04",
+      "lead": "3.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 2.1
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d04",
+      "lead": "3.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.998
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d04",
+      "lead": "3.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 0.4
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d04",
+      "lead": "3.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.136
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d04",
+      "lead": "3.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.904
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d04",
+      "lead": "3.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.995
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d04",
+      "lead": "3.5",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.047
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d04",
+      "lead": "3.5",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 4.25
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d04",
+      "lead": "3.5",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.923
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d04",
+      "lead": "3.5",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 0.76
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d04",
+      "lead": "3.5",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.249
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d04",
+      "lead": "3.5",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.735
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d04",
+      "lead": "3.5",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.982
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d04",
+      "lead": "4.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.107
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d04",
+      "lead": "4.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 7.27
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d04",
+      "lead": "4.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.87
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d04",
+      "lead": "4.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 3.01
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d04",
+      "lead": "4.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.516
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d04",
+      "lead": "4.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.508
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d04",
+      "lead": "4.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.951
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d04",
+      "lead": "4.5",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.173
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d04",
+      "lead": "4.5",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 10.99
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d04",
+      "lead": "4.5",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.832
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d04",
+      "lead": "4.5",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 5.09
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d04",
+      "lead": "4.5",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.328
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d04",
+      "lead": "4.5",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.257
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d04",
+      "lead": "4.5",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.915
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d04",
+      "lead": "5.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.268
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d04",
+      "lead": "5.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 16.37
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d04",
+      "lead": "5.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.667
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d04",
+      "lead": "5.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 8.32
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d04",
+      "lead": "5.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.418
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d04",
+      "lead": "5.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.216
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d04",
+      "lead": "5.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.879
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d04",
+      "lead": "5.5",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.309
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d04",
+      "lead": "5.5",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 18.78
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d04",
+      "lead": "5.5",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.68
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d04",
+      "lead": "5.5",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 11.36
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d04",
+      "lead": "5.5",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.391
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d04",
+      "lead": "5.5",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.112
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d04",
+      "lead": "5.5",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.842
+    },
+    {
+      "anchor_column": "T2 MAE K",
+      "domain": "d04",
+      "lead": "6.0",
+      "metric": "t2_mae",
+      "placement": "inside",
+      "published_value": 0.434
+    },
+    {
+      "anchor_column": "PSFC MAE Pa",
+      "domain": "d04",
+      "lead": "6.0",
+      "metric": "psfc_mae",
+      "placement": "inside",
+      "published_value": 22.7
+    },
+    {
+      "anchor_column": "refl corr",
+      "domain": "d04",
+      "lead": "6.0",
+      "metric": "refl_comp_corr",
+      "placement": "inside",
+      "published_value": 0.577
+    },
+    {
+      "anchor_column": "refl MAE dBZ",
+      "domain": "d04",
+      "lead": "6.0",
+      "metric": "refl_comp_mae",
+      "placement": "inside",
+      "published_value": 14.2
+    },
+    {
+      "anchor_column": "CSI20",
+      "domain": "d04",
+      "lead": "6.0",
+      "metric": "refl_csi20",
+      "placement": "inside",
+      "published_value": 0.222
+    },
+    {
+      "anchor_column": "W corr",
+      "domain": "d04",
+      "lead": "6.0",
+      "metric": "w_corr",
+      "placement": "inside",
+      "published_value": 0.11
+    },
+    {
+      "anchor_column": "wind10 corr",
+      "domain": "d04",
+      "lead": "6.0",
+      "metric": "wind10_corr",
+      "placement": "inside",
+      "published_value": 0.795
+    }
+  ],
+  "config_sha256": "10d6e178d96648e35b826217cc001a1f598232bf6ceabd9ce07074a1f65e2031",
+  "derivation": {
+    "anchor_document": "docs/public/VERIFICATION.md",
+    "anchor_section": "Full decay table (all domains, all leads)",
+    "anchor_table_sha256": "dbbc9893708926931496c4f307064cebb8a1a6a658feaa940daf216e19dd9dfe",
+    "margin_rule_sha256": "908836237122affb23d0b95172bb0de91ea072928f688ac6290bd22fb5a36de5",
+    "rule_id": "published-anchor-margin",
+    "rule_version": "1.0.0"
+  },
+  "provenance": "documented-margin",
+  "schema": "gpuwm.acceptance-band-coverage/v1",
+  "tally": {
+    "inside": 205,
+    "nan": 5,
+    "outside": 0
+  },
+  "triple_count": 210
+}

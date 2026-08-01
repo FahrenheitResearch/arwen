@@ -47,7 +47,7 @@ import subprocess
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
                            cargo_build_one_liner, default_bridge_dir,
-                           executable_name)
+                           executable_name, launchable, quiet_loader_errors)
 
 #: Environment variable naming a prebuilt fetch backbone.
 FETCH_ENV = "GPUWM_RW_FETCH"
@@ -147,12 +147,22 @@ def probe_fetch_bin(path: Path) -> tuple[bool, str]:
     ``--abi`` check that follows is the stale-build guard: a binary that
     launches but emits a different record ABI is worse than a missing
     one, because it fails after the download rather than before it.
+
+    The header gate in front of the launch is the same one every probe
+    in this package uses, for the same reason: on Windows a corrupt
+    image header can hang ``CreateProcess`` itself, where no timeout
+    reaches.  See :func:`gpuwm.bridges.native_executable_format`.
     """
 
+    ok, evidence = launchable(path)
+    if not ok:
+        return False, f"{evidence} -- corrupt, stale, or built for " \
+                      "another platform"
     try:
-        probe = subprocess.run(
-            [str(path), "--version"], capture_output=True, text=True,
-            errors="replace", timeout=_PROBE_TIMEOUT_S)
+        with quiet_loader_errors():
+            probe = subprocess.run(
+                [str(path), "--version"], capture_output=True, text=True,
+                errors="replace", timeout=_PROBE_TIMEOUT_S)
     except OSError as error:
         return False, f"exists but failed to execute: {error}"
     except subprocess.TimeoutExpired:
@@ -164,9 +174,10 @@ def probe_fetch_bin(path: Path) -> tuple[bool, str]:
                        "its version line -- corrupt, stale, or built for "
                        "another platform")
     try:
-        abi = subprocess.run(
-            [str(path), "--abi"], capture_output=True, text=True,
-            errors="replace", timeout=_PROBE_TIMEOUT_S)
+        with quiet_loader_errors():
+            abi = subprocess.run(
+                [str(path), "--abi"], capture_output=True, text=True,
+                errors="replace", timeout=_PROBE_TIMEOUT_S)
     except (OSError, subprocess.TimeoutExpired) as error:
         return False, f"executes but --abi failed: {error}"
     observed = (abi.stdout or "").strip()

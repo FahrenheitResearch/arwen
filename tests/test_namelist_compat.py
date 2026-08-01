@@ -380,7 +380,7 @@ def test_nssl2_runtime_is_reported_runnable_with_full_moment_inventory(
     (product/v1 NSSL lane 2026-07-29).  The runtime verdict and the stock
     export inventory stay independently computed, exactly as the mp8
     promotion pinned; NSSL's registry maturity remains
-    "validation-candidate" and is not this report's claim."""
+    "wrf-matched-run-candidate" and is not this report's claim."""
     report = require_supported_namelists(*_write_pair(tmp_path, mp=18))
     assert report["verdict"] == "PASS"
     assert report["required_state"]["stock_wrf_export"]["verdict"] == "PASS"
@@ -572,3 +572,74 @@ def test_public_engine_cli_emits_machine_report_and_exit_status(tmp_path, capsys
         "--namelist-input", str(bad_inp),
     ]) == EXIT_CONFIG
     assert json.loads(capsys.readouterr().out)["verdict"] == "FAIL"
+
+
+# ---------------------------------------------------------------------------
+# Step one of migrating-from-wps.md, when the file is not there yet
+# ---------------------------------------------------------------------------
+
+def test_the_support_report_refuses_a_missing_namelist_in_one_sentence(
+        tmp_path, capsys):
+    """`FileNotFoundError` out of pathlib, five frames deep.
+
+    docs/migrating-from-wps.md makes this the FIRST command a person
+    migrating an existing WRF setup runs, so pointing it at a file that
+    is not there yet is the commonest way to meet it -- and `gpuwm
+    import-namelist` answers the identical condition with one sentence.
+    Two surfaces, one condition, one answer.
+    """
+
+    wps, inp = _write_pair(tmp_path, max_dom=1, mp=8)
+    missing = tmp_path / "not-written-yet.namelist.wps"
+
+    assert source_cli_main([
+        "--namelist-support-report",
+        "--wps-namelist", str(missing),
+        "--namelist-input", str(inp),
+    ]) == EXIT_CONFIG
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Traceback" not in captured.err
+    assert "cannot read namelist.wps" in captured.err
+    assert str(missing) in captured.err
+
+    # The namelist.input half is named as itself, not as the other one.
+    assert source_cli_main([
+        "--namelist-support-report",
+        "--wps-namelist", str(wps),
+        "--namelist-input", str(tmp_path / "absent.namelist.input"),
+    ]) == EXIT_CONFIG
+    assert "cannot read namelist.input" in capsys.readouterr().err
+
+    # Negative control: with both files present the report still runs,
+    # so the guard above is a guard and not a blanket refusal.
+    assert source_cli_main([
+        "--namelist-support-report",
+        "--wps-namelist", str(wps),
+        "--namelist-input", str(inp),
+        "--source-top-pressure-pa", "5000",
+    ]) == 0
+    assert json.loads(capsys.readouterr().out)["schema"] \
+        == "rw-wps.namelist-support.v1"
+
+
+def test_the_two_migration_doors_give_the_same_sentence(tmp_path, capsys):
+    """`gpuwm import-namelist` and `rw-wps --namelist-support-report`
+    now share one refusal, through one function."""
+
+    from gpuwm.cli import main as gpuwm_main
+
+    missing = tmp_path / "nope.namelist.wps"
+    _wps, inp = _write_pair(tmp_path, max_dom=1, mp=8)
+
+    assert gpuwm_main(["import-namelist", str(missing), str(inp)]) == 2
+    importer = capsys.readouterr().err
+    assert source_cli_main([
+        "--namelist-support-report",
+        "--wps-namelist", str(missing), "--namelist-input", str(inp),
+    ]) == EXIT_CONFIG
+    reporter = capsys.readouterr().err
+
+    core = f"cannot read namelist.wps {missing}"
+    assert core in importer
+    assert core in reporter

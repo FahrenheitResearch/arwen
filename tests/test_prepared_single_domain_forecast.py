@@ -69,12 +69,12 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
         == runner.THOMPSON_TABLE_ROOT_ENV
     assert len(thompson["table_authority"]["assets"]) == 4
     nssl2 = payload["physics_profiles"][runner.NSSL2_PHYSICS_PROFILE]
-    assert nssl2["readiness"] == "VALIDATION_CANDIDATE"
+    assert nssl2["readiness"] == "WRF_MATCHED_RUN_CANDIDATE"
     assert nssl2["explicit_expert_consent_required"] is False
     assert nssl2["resolved_fixed_preset"] is True
     legacy = payload["physics_profiles"][
         runner.NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE]
-    assert legacy["readiness"] == "VALIDATION_CANDIDATE"
+    assert legacy["readiness"] == "WRF_MATCHED_RUN_CANDIDATE"
     assert legacy["radiation_solver"] == "legacy RRTMG"
     twentycr_wsm6 = payload["physics_profiles"][
         runner.TWENTYCRV3_WSM6_PHYSICS_PROFILE]
@@ -226,8 +226,18 @@ def test_materializer_publishes_exact_profile_and_preserves_descriptors(
         == _sha256(output / "authority-receipt.json")
 
 
-def test_materializer_is_create_only_and_rejects_source_profile_mismatch(
+def test_materializer_is_create_only_and_keeps_only_genuine_refusals(
         tmp_path):
+    """Converted from the per-source profile whitelist (removed 2026-07-31).
+
+    The owner ruled the suite choice is the user's: a registered shipped
+    profile materializes for any prepared source now, so the old
+    "not available for source" list refusal is gone.  What must remain
+    fail-closed is the genuine blocker -- the registry's land-surface
+    route declaration, which carries the GFS+RUC `mavail must be
+    finite` field finding -- and the create-only output contract.
+    """
+
     experiment = ROOT / "configs" / "gfs_wrf_direct_proof.toml"
     wps = ROOT / "configs" / "gfs_wrf_direct_proof.namelist.wps"
     output = tmp_path / "authorities"
@@ -241,13 +251,33 @@ def test_materializer_is_create_only_and_rejects_source_profile_mismatch(
             base_wps_namelist=wps,
             physics_profile=runner.MORRISON_PHYSICS_PROFILE,
             output_directory=output)
-    with pytest.raises(ValueError, match="not available for source"):
+    # A shipped profile that only ever ran on another source is admitted
+    # -- reported as implemented-unverified, never refused by name.
+    cross = runner.materialize_named_source_authorities(
+        source="gfs", base_experiment_config=experiment,
+        base_wps_namelist=wps,
+        physics_profile=runner.TWENTYCRV3_WSM6_PHYSICS_PROFILE,
+        output_directory=tmp_path / "cross")
+    assert cross["status"] == "PASS"
+    assert cross["readiness"] == "IMPLEMENTED_UNVERIFIED"
+    # The genuine per-source blocker refuses on the resolved selector,
+    # names the registry declaration, and creates nothing.
+    with pytest.raises(ValueError, match="does not offer the ruc-lsm"):
         runner.materialize_named_source_authorities(
             source="gfs", base_experiment_config=experiment,
             base_wps_namelist=wps,
-            physics_profile=runner.TWENTYCRV3_WSM6_PHYSICS_PROFILE,
+            physics_profile=runner.RUC_PHYSICS_PROFILE,
             output_directory=tmp_path / "wrong")
     assert not (tmp_path / "wrong").exists()
+    # A name the shipped tables genuinely do not define still fails
+    # closed, naming the value.
+    with pytest.raises(ValueError, match="not a shipped runner profile"):
+        runner.materialize_named_source_authorities(
+            source="gfs", base_experiment_config=experiment,
+            base_wps_namelist=wps,
+            physics_profile="no-such-suite-v1",
+            output_directory=tmp_path / "unknown")
+    assert not (tmp_path / "unknown").exists()
 
 
 def test_materializer_cli_publishes_receipted_authorities(tmp_path, capsys):
@@ -710,10 +740,18 @@ def _prepared_fixture(
             ("noahmp-host-column-throughput-v1",)
             if physics_profile == runner.NOAHMP_PHYSICS_PROFILE else ()
         )
-        front_door_physics = (
-            runner.validate_single_domain_physics_profile(
-                physics_profile, config=exp.root.run,
-                expert_acknowledgements=acknowledgements))
+        if physics_profile is None:
+            # Cross-lane: the proof's physics receipt comes from the
+            # REAL front door (the other lane's writer), not from a
+            # fixture re-spelling of it.
+            from gpuwm.gfs_direct import front_door_physics_selection
+
+            front_door_physics = front_door_physics_selection(exp)
+        else:
+            front_door_physics = (
+                runner.validate_single_domain_physics_profile(
+                    physics_profile, config=exp.root.run,
+                    expert_acknowledgements=acknowledgements))
     proof = {
         "schema": runner._PROOF_SCHEMA[source],
         "status": "READY_NOT_YET_STOCK_WRF_GATED",
@@ -1082,7 +1120,8 @@ def _bind_synthetic_preflight_geometry(monkeypatch, *, hierarchy: bool):
             "STATIC": np.ones((ny, nx), dtype=np.float64)})
 
 
-def _preflight_fixture(fixture, *, physics_profile=runner.PHYSICS_PROFILE):
+def _preflight_fixture(fixture, *, physics_profile=runner.PHYSICS_PROFILE,
+                       expert_acknowledgements=()):
     history_interval_seconds = load_experiment(
         fixture.experiment).root.history_interval_s
     return runner.preflight_prepared_forecast(
@@ -1092,6 +1131,7 @@ def _preflight_fixture(fixture, *, physics_profile=runner.PHYSICS_PROFILE):
         prepared_content_sha256=fixture.content_sha256,
         experiment_config=fixture.experiment, wps_namelist=fixture.wps,
         physics_profile=physics_profile,
+        expert_acknowledgements=tuple(expert_acknowledgements),
         run_seconds=fixture.run_seconds,
         history_interval_seconds=history_interval_seconds)
 
@@ -1162,13 +1202,376 @@ def test_20crv3_materialized_profiles_reach_exact_prepared_preflight(
     assert inputs.physics_receipt["validated_domains"][0]["grid_id"] == 1
 
 
-def test_20crv3_profile_is_source_scoped_and_does_not_weaken_gfs():
+def test_a_named_profile_still_binds_switch_for_switch():
+    """A gate the caller asked for is not a gate the ruling dropped.
+
+    Naming --physics-profile asserts the hash-bound experiment IS that
+    shipped suite; a GFS experiment carrying different switches is still
+    refused against it, with the drift named.  (This test used to pin
+    the per-source scoping of the 20CRv3 profile; the scoping is gone --
+    the mismatch refusal is what remains, and it is profile-vs-config,
+    not profile-vs-source.)
+    """
+
     exp = load_experiment(ROOT / "configs" / "gfs_wrf_direct_proof.toml")
 
     with pytest.raises(ValueError, match="experiment physics differs"):
         runner._validate_physics(
             exp, runner.TWENTYCRV3_WSM6_PHYSICS_PROFILE,
             exp.run_seconds, 3600, source="gfs")
+
+
+def test_the_product_default_suite_is_admitted_without_a_profile(
+        tmp_path, monkeypatch):
+    """POSITIVE CONTROL for the 2026-07-31 owner ruling.
+
+    The exact suite ``gpuwm domain`` emits by default -- Thompson mp8,
+    RTE+RRTMGP both streams, Kain-Fritsch, YSU/MM5/Noah -- was refused
+    by this runner's whitelist against every named profile (watched
+    firing below, and live in the field).  With no --physics-profile it
+    is now admitted, its verification status is reported rather than
+    gating, and the Thompson table couplings re-keyed on mp_physics == 8
+    still bind.
+    """
+
+    from gpuwm.domain_wizard import DEFAULT_SUITE_PHYSICS
+
+    _bind_test_thompson_runtime(tmp_path, monkeypatch)
+    exp = load_experiment(ROOT / "configs" / "gfs_wrf_direct_proof.toml")
+    run = replace(exp.root.run, **DEFAULT_SUITE_PHYSICS)
+    root = replace(exp.root, run=run)
+    exp = replace(exp, domains=(root,))
+
+    # The refusal this control replaces, still firing for a NAMED
+    # profile the config is not: the default suite is not the shipped
+    # Thompson validation profile.
+    with pytest.raises(ValueError, match="experiment physics differs"):
+        runner._validate_physics(
+            exp, runner.THOMPSON_PHYSICS_PROFILE, exp.run_seconds,
+            float(exp.root.history_interval_s), source="gfs")
+
+    receipt = runner._validate_physics(
+        exp, None, exp.run_seconds,
+        float(exp.root.history_interval_s), source="gfs")
+
+    assert receipt["schema"] == "gpuwm-prepared-physics-suite-v1"
+    assert receipt["profile"] is None
+    assert receipt["profile_binding"] == "experiment-config"
+    assert receipt["resolved"]["mp_physics"] == 8
+    assert receipt["warning_only"] is True
+    verification = receipt["verification"]
+    assert verification["status"] == "supported-not-wrf-verified"
+    assert "not yet WRF-verified" in verification["sentence"]
+    assert "the run continues" in verification["sentence"]
+    # The registry knows this tuple: the default template matches at
+    # component level, reported without being claimed as switch-level
+    # evidence.
+    assert verification["component_matched_template"]["template"] \
+        == "thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1"
+    # Coupling the removal must not drop: an mp8 suite admitted without
+    # the Thompson profile id still binds the table authority and the
+    # preflight-vs-run table-root stability check.
+    assert "thompson_contract" in receipt
+    assert runner._thompson_authority_paths(receipt)
+    runner._verify_thompson_runtime_environment(receipt)
+
+
+def test_an_unimplemented_mp_selector_still_refuses_naming_the_switch(
+        tmp_path):
+    """NEGATIVE CONTROL: suite freedom opens nothing the engine lacks.
+
+    mp_physics = 28 (aerosol-aware Thompson) has no kernel path in this
+    tree.  The runner admits an experiment only through
+    ``load_experiment`` -- preflight's first read of the hash-bound
+    config -- and the engine validator refuses it there, naming the
+    exact switch and the offending value.  The registry capability
+    resolver refuses the same selector by name too.
+    """
+
+    text = (ROOT / "configs" / "gfs_wrf_direct_proof.toml").read_text(
+        encoding="utf-8")
+    assert text.count("mp_physics = 6") == 1
+    bad = tmp_path / "unimplemented-mp.toml"
+    bad.write_text(
+        text.replace("mp_physics = 6", "mp_physics = 28"),
+        encoding="utf-8")
+    with pytest.raises(ValueError, match="mp_physics") as caught:
+        load_experiment(bad)
+    assert "28" in str(caught.value)
+
+    from gpuwm.physics_compat import (
+        PhysicsCapabilityError,
+        validate_physics_capabilities,
+    )
+    selectors = runner.single_domain_runtime_switches(
+        runner.WSM6_PROFILE_ID)
+    selectors["mp_physics"] = 28
+    with pytest.raises(PhysicsCapabilityError, match="mp_physics"):
+        validate_physics_capabilities(selectors)
+
+
+def test_unnamed_preflight_recomputes_the_front_door_selection(
+        tmp_path, monkeypatch):
+    """The profile-agnostic invariant of the route, watched at PREFLIGHT.
+
+    The docstring of ``_validate_front_door_physics_proof`` calls the
+    byte equality between the proof's per-domain selection receipt and
+    the runner's recompute THE invariant; until this test nothing
+    watched its ``MULTI_DOMAIN_SELECTION_SCHEMA`` branch fire through
+    the production entrypoint.  The fixture's proof physics is written
+    by the REAL GFS front door, JSON round trip included, and the
+    negative control tampers one selector in the proof and watches the
+    recompute refuse.
+    """
+
+    fixture = _prepared_fixture(tmp_path, "gfs", physics_profile=None)
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+
+    inputs = _preflight_fixture(fixture, physics_profile=None)
+
+    proof_physics = inputs.proof["physics"]
+    assert proof_physics["schema"] \
+        == runner.MULTI_DOMAIN_SELECTION_SCHEMA
+    assert proof_physics["profile"] is None
+    assert inputs.proof["export"]["physics"] == proof_physics
+    # The runner admitted the unnamed config on its own authority...
+    assert inputs.physics_receipt["profile_binding"] in (
+        "matched", "experiment-config")
+    assert inputs.physics_receipt["registry_governance"][
+        "state"] == "registry-reachable"
+
+    # ...and the recompute REFUSES a proof whose recorded selection
+    # differs from the hash-bound config, both spellings tampered
+    # identically so this is the recompute firing, not the export
+    # cross-check.
+    proof = json.loads(fixture.proof.read_text(encoding="utf-8"))
+    domain = proof["physics"]["domains"]["1"]
+    assert domain["selectors"]["cu_physics"] != 1
+    domain["selectors"]["cu_physics"] = 1
+    proof["export"]["physics"] = proof["physics"]
+    _write_json(fixture.proof, proof)
+    with pytest.raises(
+            ValueError,
+            match="physics selection differs from the hash-bound"):
+        _preflight_fixture(fixture, physics_profile=None)
+
+
+def test_unnamed_forecast_main_reaches_execution_and_states_the_status(
+        tmp_path, monkeypatch, capsys):
+    """main() with NO --physics-profile: the production entrypoint.
+
+    Everything up to and including preflight is real; only the GPU
+    execution behind it is stubbed, because this suite runs where no
+    CUDA device is granted.  The runner must admit the unnamed config,
+    print the one-sentence verification status, and hand preflight's
+    inputs to execution.
+    """
+
+    fixture = _prepared_fixture(tmp_path, "gfs", physics_profile=None)
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+    observed = {}
+
+    def fake_run(inputs, *, output_directory):
+        observed["inputs"] = inputs
+        return {
+            "schema": runner.REPORT_SCHEMA,
+            "status": "PASS",
+            "source": inputs.source,
+            "run_seconds": float(fixture.run_seconds),
+            "history_interval_seconds": 3600.0,
+            "gridded_output": {"frame_count": 2},
+            "input": {
+                "prepared_content_sha256": fixture.content_sha256},
+        }
+
+    monkeypatch.setattr(runner, "run_prepared_forecast", fake_run)
+    rc = runner.main([
+        "--source", "gfs",
+        "--prepared-root", str(fixture.prepared),
+        "--proof-sha256", _sha256(fixture.proof),
+        "--source-manifest-sha256", _sha256(fixture.source_manifest),
+        "--prepared-content-sha256", fixture.content_sha256,
+        "--experiment-config", str(fixture.experiment),
+        "--wps-namelist", str(fixture.wps),
+        "--io-mode", "history",
+        "--outdir", str(tmp_path / "outdir"),
+    ])
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert "supported, not yet WRF-verified" in captured.err
+    summary = json.loads(captured.out)
+    assert summary["status"] == "PASS"
+    receipt = observed["inputs"].physics_receipt
+    assert receipt["profile_binding"] in ("matched", "experiment-config")
+    assert receipt["verification"]["status"] == "supported-not-wrf-verified"
+
+
+def test_materializer_unnamed_publishes_the_base_suite_unchanged(tmp_path):
+    """--materialize-authorities with no profile: bytes are the product."""
+
+    base = ROOT / "configs" / "gfs_wrf_direct_proof.toml"
+    wps = ROOT / "configs" / "gfs_wrf_direct_proof.namelist.wps"
+    output = tmp_path / "unnamed-authorities"
+
+    receipt = runner.materialize_named_source_authorities(
+        source="gfs", base_experiment_config=base,
+        base_wps_namelist=wps, physics_profile=None,
+        output_directory=output)
+
+    assert receipt["status"] == "PASS"
+    assert receipt["physics_profile"] is None
+    assert receipt["readiness"] == "EXPERIMENT_CONFIG_SUITE"
+    assert (output / "experiment.toml").read_bytes() == base.read_bytes()
+    assert (output / "namelist.wps").read_bytes() == wps.read_bytes()
+    validation = receipt["normalized_selected_physics"]
+    assert validation["profile_binding"] == "experiment-config"
+    assert validation["verification"]["schema"] \
+        == "gpuwm-physics-verification-status-v1"
+
+
+def test_matched_expert_suite_demands_the_registry_ack_at_the_runner(
+        capsys):
+    """The governance bypass the 2026-07-31 review found, now closed.
+
+    A Noah-MP tuple that MATCHES the expert template is governed on the
+    prepared ERA5 lane by the registry-owned acknowledgement -- exactly
+    the consent the GFS front door records for the identical tuple --
+    delivered by either published spelling.
+
+    Unacknowledged, the tuple STILL RUNS and says so in one line naming
+    both spellings, and the receipt carries ``acknowledged=False``: the
+    warn-not-block ruling owns the severity of this site (an expert
+    tuple is implemented and individually verified; what is missing is
+    the registry's end-to-end blessing, which is a thing to state, not
+    a thing to stop for).  What suite freedom owns, and what this test
+    exists for, is that the governance is APPLIED here at all -- on the
+    unnamed and matched paths, on every prepared source -- and that
+    both delivery channels flip it, with provenance.  An explicitly
+    NAMED expert profile is a gate the caller asked for and still
+    refuses at the front door
+    (``test_gfs_direct.py``); that is a different site with a different
+    posture on purpose.
+    """
+
+    text = (ROOT / "configs" / "gfs_wrf_direct_proof.toml").read_text(
+        encoding="utf-8")
+    _rendered, exp, _receipt = runner._render_materialized_experiment(
+        text, source="era5", profile=runner.NOAHMP_PHYSICS_PROFILE)
+
+    unacked = runner._validate_physics(
+        exp, None, exp.run_seconds, 3600, source="era5")
+    message = capsys.readouterr().err
+    warnings = [line for line in message.splitlines()
+                if line.startswith("warning:")]
+    # One line, not a paragraph, and it names the tuple's state and both
+    # published ways to acknowledge it -- the same three facts the
+    # refusal used to carry.
+    assert len(warnings) == 1, warnings
+    assert "registry-expert-template" in warnings[0]
+    assert "--ack noahmp-host-column-throughput-v1" in warnings[0]
+    assert 'acknowledgements = ["noahmp-host-column-throughput-v1"]' \
+        in warnings[0]
+    # Warning, not silence: the receipt states the unblessed truth.
+    unacked_governance = unacked["registry_governance"]
+    assert unacked_governance["state"] == "registry-expert-template"
+    assert unacked_governance["acknowledged"] is False
+
+    # TOML delivery (the hash-bound experiment's own array).
+    acked = replace(
+        exp, acknowledgements=("noahmp-host-column-throughput-v1",))
+    receipt = runner._validate_physics(
+        acked, None, acked.run_seconds, 3600, source="era5")
+    assert receipt["profile_binding"] == "matched"
+    governance = receipt["registry_governance"]
+    assert governance["state"] == "registry-expert-template"
+    assert governance["acknowledged"] is True
+    assert governance["acknowledgement_provenance"] == {
+        "noahmp-host-column-throughput-v1": [
+            "[experiment].acknowledgements"]}
+    # Acknowledging it is what silences the line.
+    assert "registry-expert-template" not in capsys.readouterr().err
+
+    # Flag delivery (the runner's own --ack).
+    receipt = runner._validate_physics(
+        exp, None, exp.run_seconds, 3600, source="era5",
+        expert_acknowledgements=("noahmp-host-column-throughput-v1",))
+    assert receipt["registry_governance"]["acknowledged"] is True
+    assert receipt["registry_governance"]["acknowledgement_provenance"] == {
+        "noahmp-host-column-throughput-v1": ["--ack"]}
+    assert "registry-expert-template" not in capsys.readouterr().err
+
+
+def test_shipped_ruc_profile_is_not_governed_as_an_outside_tuple():
+    """The single-domain union includes THIS route's own declarations.
+
+    The registry declares RUC among the prepared single-domain route's
+    ERA5 products; the domain-tree union alone would misread that
+    shipped tuple as outside reachability and demand the authority
+    acknowledgement for it.
+    """
+
+    text = (ROOT / "configs" / "gfs_wrf_direct_proof.toml").read_text(
+        encoding="utf-8")
+    _rendered, exp, _receipt = runner._render_materialized_experiment(
+        text, source="era5", profile=runner.RUC_PHYSICS_PROFILE)
+
+    receipt = runner._validate_physics(
+        exp, None, exp.run_seconds, 3600, source="era5")
+
+    assert receipt["profile_binding"] == "matched"
+    assert receipt["registry_governance"]["state"] == "registry-reachable"
+    assert receipt["registry_governance"]["required_acknowledgement"] is None
+
+
+def test_kessler_readiness_reports_its_registry_maturity():
+    """A named (or matched) Kessler must not read as more mature than
+    the verification block beside it in the same receipt."""
+
+    text = (ROOT / "configs" / "gfs_wrf_direct_proof.toml").read_text(
+        encoding="utf-8")
+    _rendered, exp, _receipt = runner._render_materialized_experiment(
+        text, source="gfs", profile=runner.KESSLER_PHYSICS_PROFILE)
+
+    named = runner._validate_physics(
+        exp, runner.KESSLER_PHYSICS_PROFILE, exp.run_seconds, 3600,
+        source="gfs")
+    assert named["readiness"] == "IMPLEMENTED_UNVERIFIED"
+    assert named["warning"] is not None
+    assert named["verification"]["status"] == "supported-not-wrf-verified"
+
+    matched = runner._validate_physics(
+        exp, None, exp.run_seconds, 3600, source="gfs")
+    assert matched["profile_binding"] == "matched"
+    assert matched["readiness"] == "IMPLEMENTED_UNVERIFIED"
+
+    # And the advertised catalog no longer omits the name it accepts.
+    assert runner.KESSLER_PHYSICS_PROFILE in runner.PHYSICS_PROFILES
+    capabilities = runner.runner_capabilities()
+    assert runner.KESSLER_PHYSICS_PROFILE \
+        in capabilities["physics_profiles"]
+
+
+def test_cross_source_profile_receipt_records_the_run_source():
+    """The receipt's source is the run's provenance, not the voucher's.
+
+    Naming the 20CRv3-vouched profile on a GFS run used to stamp
+    '20crv3' into the receipt -- a wrong label on exactly the
+    cross-source admission the 2026-07-31 ruling opened.
+    """
+
+    text = (ROOT / "configs" / "gfs_wrf_direct_proof.toml").read_text(
+        encoding="utf-8")
+    _rendered, exp, _receipt = runner._render_materialized_experiment(
+        text, source="gfs",
+        profile=runner.TWENTYCRV3_WSM6_PHYSICS_PROFILE)
+
+    receipt = runner._validate_physics(
+        exp, runner.TWENTYCRV3_WSM6_PHYSICS_PROFILE, exp.run_seconds,
+        3600, source="gfs")
+
+    assert receipt["source"] == "gfs"
+    assert receipt["readiness"] == "IMPLEMENTED_UNVERIFIED"
 
 
 def test_20crv3_cache_identity_allows_only_the_legacy_same_scheme_default(
@@ -1314,18 +1717,43 @@ def test_materialized_wsm6_physics_receipt_is_canonical():
     ),
 )
 def test_gfs_new_front_door_families_reach_prepared_v3_preflight(
-        tmp_path, monkeypatch, profile, sfclay, surface, pbl, soil_layers):
+        tmp_path, monkeypatch, capsys, profile, sfclay, surface, pbl,
+        soil_layers):
     fixture = _prepared_fixture(
         tmp_path, "gfs", physics_profile=profile)
     _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
 
-    inputs = _preflight_fixture(fixture, physics_profile=profile)
+    expert = profile == runner.NOAHMP_PHYSICS_PROFILE
+    acknowledgements = (
+        ("noahmp-host-column-throughput-v1",) if expert else ())
+    if expert:
+        # The registry-owned expert acknowledgement is applied AT THE
+        # RUNNER too (its governance is source-neutral tuple
+        # governance, the same one the front doors apply), and it names
+        # both delivery spellings.  Severity here is warn-not-block's:
+        # the tuple runs unblessed and says so in one line.
+        _preflight_fixture(fixture, physics_profile=profile)
+        unacked = [line for line in capsys.readouterr().err.splitlines()
+                   if line.startswith("warning:")
+                   and "registry-expert-template" in line]
+        assert len(unacked) == 1, unacked
+        assert "--ack noahmp-host-column-throughput-v1" in unacked[0]
+        assert 'acknowledgements = ["noahmp-host-column-throughput-v1"]' \
+            in unacked[0]
+
+    inputs = _preflight_fixture(
+        fixture, physics_profile=profile,
+        expert_acknowledgements=acknowledgements)
 
     assert inputs.proof["schema"] == "gpuwm-gfs-direct-wrf-proof-v3"
     assert inputs.proof["physics"]["profile"] == profile
     assert inputs.proof["export"]["schema"] \
         == "gpuwm-native-direct-wrf-export-v3"
     assert inputs.proof["export"]["physics"] == inputs.proof["physics"]
+    governance = inputs.physics_receipt["registry_governance"]
+    assert governance["acknowledged"] is True
+    assert governance["state"] == (
+        "registry-expert-template" if expert else "registry-reachable")
     resolved = inputs.physics_receipt["resolved"]
     assert resolved["sf_sfclay_physics"] == sfclay
     assert resolved["sf_surface_physics"] == surface
@@ -1377,7 +1805,7 @@ def test_preflight_accepts_exact_nssl2_validation_candidate_and_binds_receipt(
 
     receipt = inputs.physics_receipt
     assert receipt["profile"] == runner.NSSL2_PHYSICS_PROFILE
-    assert receipt["readiness"] == "VALIDATION_CANDIDATE"
+    assert receipt["readiness"] == "WRF_MATCHED_RUN_CANDIDATE"
     assert receipt["resolved"]["mp_physics"] == 18
     assert receipt["resolved"]["moist"] is True
     assert receipt["resolved"]["moist_cq"] is True
@@ -1405,7 +1833,7 @@ def test_preflight_accepts_exact_nssl2_validation_candidate_and_binds_receipt(
 def test_nssl2_profile_rejects_wsm6_experiment_before_cache_restore(tmp_path):
     fixture = _prepared_fixture(tmp_path, "gfs")
 
-    with pytest.raises(ValueError, match="NSSL-2 validation-candidate"):
+    with pytest.raises(ValueError, match="NSSL-2 wrf-matched-run-candidate"):
         runner.preflight_prepared_forecast(
             source="gfs", prepared_root=fixture.prepared,
             proof_sha256=_sha256(fixture.proof),
@@ -1443,7 +1871,7 @@ def test_preflight_accepts_materialized_morrison_for_named_sources(
 
     receipt = inputs.physics_receipt
     assert receipt["profile"] == runner.MORRISON_PHYSICS_PROFILE
-    assert receipt["readiness"] == "MODEL_VALIDATED_RUNTIME_PROFILE"
+    assert receipt["readiness"] == "WRF_MATCHED_RUN_RUNTIME_PROFILE"
     assert receipt["resolved"]["mp_physics"] == 10
     assert receipt["resolved"]["morr_rimed_ice"] == 1
     assert receipt["resolved"]["radiation_scheme_ids"] == [4, 4]
@@ -1478,7 +1906,7 @@ def test_preflight_accepts_guarded_thompson_for_each_prepared_source(
 
     receipt = inputs.physics_receipt
     assert receipt["profile"] == runner.THOMPSON_PHYSICS_PROFILE
-    assert receipt["readiness"] == "MODEL_VALIDATED_EXPERIMENTAL_RUNTIME"
+    assert receipt["readiness"] == "WRF_MATCHED_RUN_EXPERIMENTAL_RUNTIME"
     assert receipt["resolved"]["mp_physics"] == 8
     assert receipt["resolved"]["moist"] is True
     assert receipt["resolved"]["moist_cq"] is True
@@ -2031,11 +2459,16 @@ def test_hash_bound_history_cadence_uses_floor_schedule_for_any_due_output(
     assert receipt["run_end_frame_scheduled"] is last_equals_run_end
 
 
-def test_hash_bound_history_cadence_rejects_cli_mismatch_and_nonstep_cadence():
+def test_hash_bound_history_cadence_warns_on_cli_mismatch(capsys):
+    """Warn-not-block: the hash-bound experiment cadence is what the
+    run uses; a stale flag is named, not fatal.  The non-whole-step
+    cadence stays a refusal (KEEP-HARD: the schedule cannot exist)."""
     base = load_experiment(ROOT / "configs" / "gfs_wrf_direct_proof.toml")
     subhourly = _retime_single_domain(base, cadence_seconds=900.0)
-    with pytest.raises(ValueError, match="exactly match the hash-bound"):
-        runner._validate_hash_bound_history_cadence(subhourly, 1800.0)
+    receipt = runner._validate_hash_bound_history_cadence(subhourly, 1800.0)
+    err = capsys.readouterr().err
+    assert "warning:" in err and "authoritative" in err
+    assert receipt["experiment_seconds"] == 900.0
 
     nonstep = _retime_single_domain(base, cadence_seconds=71.0)
     with pytest.raises(ValueError, match="whole number of exact model time steps"):
@@ -2302,6 +2735,16 @@ def _experiment_stub(*, start_time, p_top_pa: float):
         start_time=start_time, vertical=SimpleNamespace(p_top=p_top_pa))
 
 
+#: The preparation proof these manifest-identity tests are read against.
+#: A proof with no initial-condition provenance block declares no
+#: forecast lead, which is exactly what every proof written before
+#: lead-offset initialization meant: start_time IS the cycle.  The
+#: manifest binding now derives the cycle as start_time minus the
+#: declared lead, so the proof has to be named rather than assumed --
+#: test_forecast_offset_init.py exercises the nonzero-lead half.
+_ANALYSIS_START_PROOF: dict = {}
+
+
 def test_the_runner_accepts_the_manifest_this_release_s_fetch_authors(
         tmp_path, monkeypatch):
     """F3: the producing lane's real output, through the consuming lane."""
@@ -2319,7 +2762,8 @@ def test_the_runner_accepts_the_manifest_this_release_s_fetch_authors(
 
     roles, receipt = runner._manifest_file_specs(
         "gfs", manifest,
-        _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=5000.0))
+        _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=5000.0),
+        _ANALYSIS_START_PROOF)
 
     assert {"series", "bridge", "wps_namelist", "experiment_config",
             "grib-f000", "grib-f003"} == set(roles)
@@ -2341,33 +2785,41 @@ def test_the_runner_still_refuses_a_manifest_from_a_different_cycle(
         tmp_path, monkeypatch, top_pressure_pa=5000.0)
     other_cycle = _GFS_FETCH_CYCLE + timedelta(hours=6)
 
-    with pytest.raises(ValueError, match="identity differs from the experiment"):
+    with pytest.raises(ValueError, match="identity differs from the cycle this experiment"):
         runner._manifest_file_specs(
             "gfs", manifest,
-            _experiment_stub(start_time=other_cycle, p_top_pa=5000.0))
+            _experiment_stub(start_time=other_cycle, p_top_pa=5000.0),
+            _ANALYSIS_START_PROOF)
 
     for key in ("model", "product"):
         wrong = json.loads(json.dumps(manifest))
         wrong["source"][key] = "something-else"
         with pytest.raises(ValueError,
-                           match="identity differs from the experiment"):
+                           match="identity differs from the cycle this experiment"):
             runner._manifest_file_specs(
                 "gfs", wrong,
-                _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=5000.0))
+                _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=5000.0),
+                _ANALYSIS_START_PROOF)
 
 
-def test_the_runner_enumerates_the_manifest_identity_rather_than_ignoring_it(
-        tmp_path, monkeypatch):
-    """An unknown `source` field is a refusal, not a silently dropped key."""
+def test_unknown_manifest_identity_fields_warn_and_the_bound_set_decides(
+        tmp_path, monkeypatch, capsys):
+    """Warn-not-block: a NEWER fetch may stamp fields this runner does
+    not read; they are named and ignored, and every field the runner
+    DOES read is still bound and checked.  (The old closed-set refusal
+    rejected manifests this release's own fetch authored.)"""
 
     manifest = _authored_gfs_front_door_manifest(
         tmp_path, monkeypatch, top_pressure_pa=5000.0)
     manifest["source"]["invented_by_nobody"] = 1
 
-    with pytest.raises(ValueError, match="unsupported field"):
-        runner._manifest_file_specs(
-            "gfs", manifest,
-            _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=5000.0))
+    specs, receipt = runner._manifest_file_specs(
+        "gfs", manifest,
+        _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=5000.0),
+        _ANALYSIS_START_PROOF)
+    err = capsys.readouterr().err
+    assert "warning:" in err and "invented_by_nobody" in err
+    assert receipt["identity"]["model"] == "GFS"
 
 
 def test_the_runner_holds_the_level_ladder_to_the_vertical_contract(
@@ -2385,14 +2837,16 @@ def test_the_runner_holds_the_level_ladder_to_the_vertical_contract(
     with pytest.raises(ValueError, match="reaching 5000 Pa"):
         runner._manifest_file_specs(
             "gfs", manifest,
-            _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=1000.0))
+            _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=1000.0),
+            _ANALYSIS_START_PROOF)
 
     broken = json.loads(json.dumps(manifest))
     broken["source"]["top_pressure_pa"] = 1234.0
     with pytest.raises(ValueError, match="pressure ladder tops out"):
         runner._manifest_file_specs(
             "gfs", broken,
-            _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=1000.0))
+            _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=1000.0),
+            _ANALYSIS_START_PROOF)
 
 
 def test_a_manifest_without_the_ladder_still_means_the_certified_top(
@@ -2405,7 +2859,8 @@ def test_a_manifest_without_the_ladder_still_means_the_certified_top(
 
     _roles, receipt = runner._manifest_file_specs(
         "gfs", manifest,
-        _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=10000.0))
+        _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=10000.0),
+        _ANALYSIS_START_PROOF)
 
     assert receipt["pressure_levels_hpa"] is None
     assert receipt["source_top_pressure_pa"] == 10000.0
@@ -2500,3 +2955,76 @@ def test_a_missing_base_input_is_a_sentence_too(tmp_path, capsys):
     assert rc == 2
     assert "Traceback" not in captured.err
     assert "nope.toml" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# The mp8 table gap, named at step 2 of 6 instead of after preprocessing
+# ---------------------------------------------------------------------------
+
+def test_materializing_mp8_without_tables_refuses_before_any_fetch(
+        tmp_path, monkeypatch, capsys):
+    """`FileNotFoundError: missing Thompson table asset ...qr_acr_qg_V4.dat`
+
+    A wheel user met that traceback at the top of the GPU run, having
+    already paid for the fetch and for rw-wps.  Everything needed to
+    know it was coming was available at ``--materialize-authorities``,
+    which is step 2 of the six the documentation prints and runs in
+    under a second.  It is answered there now, in one sentence.
+    """
+
+    from gpuwm.table_assets import MissingTableAssets
+
+    empty = tmp_path / "no-tables"
+    empty.mkdir()
+    monkeypatch.setenv(runner.THOMPSON_TABLE_ROOT_ENV, str(empty))
+    base_experiment = ROOT / "configs" / "gfs_wrf_direct_proof.toml"
+    base_wps = ROOT / "configs" / "gfs_wrf_direct_proof.namelist.wps"
+
+    with pytest.raises(MissingTableAssets) as raised:
+        runner.materialize_named_source_authorities(
+            source="gfs",
+            base_experiment_config=base_experiment,
+            base_wps_namelist=base_wps,
+            physics_profile=runner.THOMPSON_PHYSICS_PROFILE,
+            output_directory=tmp_path / "authority")
+    message = str(raised.value)
+    assert "mp_physics=8" in message
+    assert "gpuwm fetch-tables" in message
+    # Refused BEFORE anything was published: no half-written authority
+    # directory for the next command to bind.
+    assert not (tmp_path / "authority").exists()
+
+    # Through the CLI it is a sentence and exit 2, never a traceback.
+    assert runner.main([
+        "--materialize-authorities", "--source", "gfs",
+        "--base-experiment-config", str(base_experiment),
+        "--base-wps-namelist", str(base_wps),
+        "--physics-profile", runner.THOMPSON_PHYSICS_PROFILE,
+        "--output-directory", str(tmp_path / "authority-cli"),
+    ]) == 2
+    printed = capsys.readouterr().err
+    assert "Traceback" not in printed
+    assert "prepared_single_domain_forecast: refused:" in printed
+    assert "gpuwm fetch-tables" in printed
+
+
+def test_a_non_mp8_suite_never_asks_for_thompson_tables(tmp_path,
+                                                        monkeypatch):
+    """Negative control: the gate is keyed on the selector, not the run.
+
+    With no tables anywhere, a Morrison authority still materializes --
+    otherwise the refusal above would be a blanket block on every
+    forecast rather than the one scheme that reads those files.
+    """
+
+    empty = tmp_path / "no-tables"
+    empty.mkdir()
+    monkeypatch.setenv(runner.THOMPSON_TABLE_ROOT_ENV, str(empty))
+    receipt = runner.materialize_named_source_authorities(
+        source="gfs",
+        base_experiment_config=ROOT / "configs" / "gfs_wrf_direct_proof.toml",
+        base_wps_namelist=(
+            ROOT / "configs" / "gfs_wrf_direct_proof.namelist.wps"),
+        physics_profile=runner.MORRISON_PHYSICS_PROFILE,
+        output_directory=tmp_path / "authority")
+    assert receipt["status"] == "PASS"

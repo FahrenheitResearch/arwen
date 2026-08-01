@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "1.3.1"
+version = "1.4.0"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -13,7 +13,12 @@ requires-python = ">=3.11"
 # relies on NEP-50 weak promotion (float32 op python-scalar stays
 # float32); numpy 1.26 would silently widen those chains to float64.
 # The rrtmg modules also guard this at import time.
-dependencies = ["numpy>=2.0", "netCDF4>=1.6", "matplotlib>=3.8"]
+# jsonschema: every forecast route validates its certification capsule
+# against gpuwm/certify/capsule_v1.schema.json at emission (found live:
+# a pip install without it ran a whole forecast, then hit the import at
+# capsule time -- emission is non-fatal now, but the dependency is real).
+dependencies = ["numpy>=2.0", "netCDF4>=1.6", "matplotlib>=3.8",
+                "jsonschema>=4.0"]
 keywords = ["WRF", "WPS", "GRIB", "NetCDF", "weather", "CUDA"]
 classifiers = ["License :: OSI Approved :: Apache Software License"]
 
@@ -71,6 +76,13 @@ gpuwm = [
     "data/**/*",
 ]
 "gpuwm.core.kernels" = ["*.cu", "*.cuh"]
+# The FTZ claim census is a shipped register, not a development artifact: a
+# reader who installs the wheel and finds an FTZ sentence in the docs needs
+# the record that says which measured cell backs it.
+"gpuwm.verify" = ["*.json"]
+# The capsule schema ships with the code that emits against it: a capsule a
+# reader cannot validate is a receipt they have to take on trust.
+"gpuwm.certify" = ["*.json"]
 "gpuwm.ingest" = ["*.md"]
 tools = ["prepare_hrrr_*.sh"]
 

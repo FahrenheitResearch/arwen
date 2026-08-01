@@ -962,6 +962,46 @@ def test_kf_kernel_zeroes_tder_when_trial_downdraft_is_suppressed():
 
 @pytest.mark.gpu
 @requires_gpu
+def test_native_kf_validation_batches_fields_and_resets_status():
+    import cupy as cp
+
+    from gpuwm.core.kf import validate_kf_outputs
+
+    shape = (8, 2, 3)
+    surface = shape[1:]
+    values = tuple(
+        cp.full(shape if index < 6 else surface, index + 1, cp.float32)
+        for index in range(8))
+    before = tuple(value.copy() for value in values)
+    status = cp.full((1,), cp.uint32(0xFFFFFFFF), cp.uint32)
+
+    assert validate_kf_outputs(values, 0xFF, status) == 0
+    assert int(status[0].item()) == 0
+    for got, expected in zip(values, before):
+        cp.testing.assert_array_equal(got, expected)
+
+    for index, value in enumerate(values):
+        value.flat[0] = cp.nan
+        assert validate_kf_outputs(values, 0xFF, status) == 1 << index
+        value.flat[0] = cp.float32(index + 1)
+
+    values[-1].flat[0] = cp.inf
+    values[0].flat[0] = cp.nan
+    invalid = validate_kf_outputs(values, 0xFF, status)
+    assert invalid & 1
+    assert invalid & (1 << 7)
+    values[-1].flat[0] = cp.float32(8.0)
+    values[0].flat[0] = cp.float32(1.0)
+
+    # Warm/no-separate-snow modes pass valid placeholder pointers for the
+    # two inactive frozen categories; their payloads must not be read.
+    values[3].flat[0] = cp.nan
+    values[5].flat[0] = cp.inf
+    assert validate_kf_outputs(values, 0xD7, status) == 0
+
+
+@pytest.mark.gpu
+@requires_gpu
 def test_kf_production_binding_nca_hold_and_domain_flag():
     """Task 6b NCA persistence against the float64 driver mirror.
 

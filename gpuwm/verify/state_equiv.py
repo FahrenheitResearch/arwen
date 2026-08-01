@@ -45,6 +45,31 @@ def _monotone_fp32_key(value: np.ndarray) -> np.ndarray:
     return np.where(negative, ~bits, bits ^ np.uint32(0x80000000))
 
 
+def fp32_signed_ulp(candidate, reference) -> np.ndarray:
+    """Signed candidate-minus-reference ULP distance under N2 semantics.
+
+    This is the ONE certified ULP definition: every receipt that reports a
+    ULP against the ``fp32_state_equiv`` ceilings computes it here, so a
+    second implementation cannot drift away from the comparator that owns
+    the verdict.  Both operands are taken exactly as stored on the host in
+    FP32, mapped to monotone unsigned keys, and subtracted in int64 -- so
+    adjacent finite patterns differ by one, the two signed-zero encodings
+    are adjacent, and the sign is candidate minus reference.
+
+    The result has the shared shape of the inputs; a shape disagreement is
+    an error rather than a broadcast, because a silently broadcast
+    comparison would score a different array than the one named.
+    """
+    candidate_fp32 = _fp32_host(candidate)
+    reference_fp32 = _fp32_host(reference)
+    if candidate_fp32.shape != reference_fp32.shape:
+        raise ValueError(
+            f"shape mismatch: candidate {candidate_fp32.shape}, "
+            f"reference {reference_fp32.shape}")
+    return (_monotone_fp32_key(candidate_fp32).astype(np.int64)
+            - _monotone_fp32_key(reference_fp32).astype(np.int64))
+
+
 def _failed(*, count: int = 0, reason: str) -> dict[str, object]:
     return {
         "count": int(count),
@@ -124,8 +149,7 @@ def fp32_state_equiv_report(candidate_state, reference_state,
             invalid_reason = invalid_reason or f"field {name!r} is non-finite"
             continue
 
-        signed = (_monotone_fp32_key(candidate).astype(np.int64)
-                  - _monotone_fp32_key(reference).astype(np.int64))
+        signed = fp32_signed_ulp(candidate, reference)
         fields[name] = _metrics(signed)
         signed_parts.append(signed.reshape(-1))
 
@@ -144,4 +168,4 @@ def fp32_state_equiv_report(candidate_state, reference_state,
     }
 
 
-__all__ = ["fp32_state_equiv_report"]
+__all__ = ["fp32_signed_ulp", "fp32_state_equiv_report"]

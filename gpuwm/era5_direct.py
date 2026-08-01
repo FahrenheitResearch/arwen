@@ -36,14 +36,17 @@ from gpuwm.ingest.grib import (
 )
 from gpuwm.ingest.horiz import interpolate_era5_to_lambert
 from gpuwm.ingest.lateral_bc import (
+    StateBoundaryFrames,
     attach_lateral_boundaries,
-    build_state_lateral_boundaries,
 )
 from gpuwm.ingest.prepared_cache import (
     prepared_cache_identity,
     write_prepared_cache,
 )
-from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
+from gpuwm.ingest.preprocess_backend import (
+    release_backend_memory,
+    resolve_preprocess_backend,
+)
 from gpuwm.ingest.real import initialize_real
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.native_domain_artifacts import _atomic_staging_sibling
@@ -363,9 +366,15 @@ def prepare_era5_wrf(
     from gpuwm.core.grid import make_vertical_coord
 
     initialize_started = time.perf_counter()
-    results = []
-    horizontal = []
-    for source in snapshots:
+    # Only the first time's met/state survive this loop; every later time
+    # contributes its perimeter frames and is released at once.  Holding
+    # all of them is what made ingest peak above the forecast it prepares.
+    initial_result = None
+    initial_met = None
+    forcing = StateBoundaryFrames(
+        spec_bdy_width=cfg.spec_bdy_width,
+        spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
+    for index, source in enumerate(snapshots):
         met = interpolate_era5_to_lambert(
             source, grid,
             source_orography_catalog=source_orography_catalog,
@@ -384,13 +393,15 @@ def prepare_era5_wrf(
             static["MAPFAC_M"], static["MAPFAC_U"], static["MAPFAC_V"],
             static["F"], static["E"], sina=static["SINALPHA"],
             cosa=static["COSALPHA"])
-        horizontal.append(met)
-        results.append(initialized)
-    boundaries = build_state_lateral_boundaries(
-        [value.state for value in results], times,
-        spec_bdy_width=cfg.spec_bdy_width,
-        spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
-    attach_lateral_boundaries(results[0].state, boundaries)
+        forcing.add_state(initialized.state)
+        if index == 0:
+            initial_met = met
+            initial_result = initialized
+        else:
+            del met, initialized, coord
+            release_backend_memory(preprocess)
+    boundaries = forcing.build(times)
+    attach_lateral_boundaries(initial_result.state, boundaries)
 
     # No lake skin override: metgrid's masked=both SKINTEMP chain with
     # static-landmask targets already yields water-source skin at lakes,
@@ -399,7 +410,7 @@ def prepare_era5_wrf(
     # Noah-geometry schemes, so their soil state is unchanged by the LSM
     # dispatch seam.
     soil = preprocess_land_surface_soil(
-        horizontal[0].fields,
+        initial_met.fields,
         sf_surface_physics=int(cfg.sf_surface_physics),
         soil_type=static["SCT_DOM"],
         deep_soil_temperature=static["TMN"],
@@ -446,7 +457,7 @@ def prepare_era5_wrf(
                 geog_root=Path(geog_root), source_name="ERA5",
                 artifact_output=staging / "hierarchy-artifacts",
                 wrf_output=staging / "wrf-native-input",
-                root_initial_result=results[0], root_met=horizontal[0],
+                root_initial_result=initial_result, root_met=initial_met,
                 root_soil=soil, root_static_fields=static,
                 root_boundaries=boundaries,
                 bridge_manifest_sha256=input_manifest_digest,
@@ -518,7 +529,7 @@ def prepare_era5_wrf(
         cache_started = time.perf_counter()
         cache_receipt = write_prepared_cache(
             prepared_cache, identity=identity,
-            initial_result=results[0], met=horizontal[0],
+            initial_result=initial_result, met=initial_met,
             boundaries=boundaries, surface=_canonical_surface(soil),
             metadata={
                 "source_adapter": "era5",

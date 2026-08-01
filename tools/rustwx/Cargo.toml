@@ -20,6 +20,7 @@ members = [
     "crates/rusty-weather",
     "crates/rw-fetch",
     "crates/rw-ingest",
+    "crates/rw-nexrad",
     "crates/rw-store",
     "crates/rw-wrfbatch",
 ]

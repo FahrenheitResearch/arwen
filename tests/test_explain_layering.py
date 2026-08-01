@@ -392,12 +392,27 @@ def test_setup_never_swallows_a_refusal(monkeypatch, capsys):
     rc = setup_cli.setup_main(argparse.Namespace(
         with_geog=False, from_dir=None, explain=False))
     printed = capsys.readouterr().out
-    assert rc == 2
+    # Warn-not-block: the estate has no blocking gaps, so the refused
+    # step is a note, not a failure -- but its output still prints
+    # verbatim (a wrapper that hides why a step refused is worse than
+    # no wrapper).
+    assert rc == 0
     assert "FAILED  bridges" in printed
-    # Verbatim, and without --explain, because this is the reason.
     assert "REFUSED: no bundle for this" in printed
+    assert "already complete" in printed
     # And the independent step still ran.
     assert "  ok      tables" in printed
+
+    # KEEP-HARD negative: the same refused step against an estate with
+    # a real blocking gap keeps the step's exit code.
+    from gpuwm.doctor import Check
+    monkeypatch.setattr(
+        "gpuwm.doctor.collect_checks",
+        lambda: [Check("bridge gfs_grib2_bridge", "missing",
+                       "not built yet")])
+    rc = setup_cli.setup_main(argparse.Namespace(
+        with_geog=False, from_dir=None, explain=False))
+    assert rc == 2
 
 
 def test_a_step_that_raises_keeps_what_it_had_already_printed(
@@ -416,11 +431,16 @@ def test_a_step_that_raises_keeps_what_it_had_already_printed(
     monkeypatch.setattr(
         setup_cli, "step_namespace",
         lambda module_name: argparse.Namespace(func=exploding))
-    monkeypatch.setattr("gpuwm.doctor.collect_checks", lambda: [])
+    from gpuwm.doctor import Check
+    monkeypatch.setattr(
+        "gpuwm.doctor.collect_checks",
+        lambda: [Check("thompson tables", "missing", "not staged")])
 
     rc = setup_cli.setup_main(argparse.Namespace(
         with_geog=False, from_dir=None, explain=False))
     printed = capsys.readouterr().out
+    # The step died AND the estate has a blocking gap: the failure
+    # stands, with everything the step printed kept above it.
     assert rc == 2
     assert "downloading freezeH2O.dat" in printed
     assert "OSError: connection reset by peer" in printed
@@ -492,12 +512,11 @@ def test_a_physics_refusal_keeps_its_rule_and_defers_its_mechanism():
     assert "phys/module_physics_init.F:3213-3219,3699-3701" in full
 
 
-def test_the_noahmp_budget_remedy_is_never_behind_the_flag():
-    """The one blocker whose second element is a remedy, not a reason.
-
-    A reader refused for an unmeasured grid width, and not told about
-    the variable that accepts it, has been refused with no way forward.
-    """
+def test_the_noahmp_budget_is_a_warning_not_a_blocker(capsys):
+    """Warn-not-block: an unmeasured grid WIDTH is a performance
+    projection, not a correctness gap.  One warning line carries the
+    projection; the env variable that silences it stays named under
+    --explain.  No blocker is raised."""
 
     from gpuwm.physics_compat import (
         NOAHMP_EXPERT_COLUMN_BUDGET_ENV, pending_wrf_physics_components)
@@ -505,10 +524,19 @@ def test_the_noahmp_budget_remedy_is_never_behind_the_flag():
     blockers = pending_wrf_physics_components(
         mp_physics=8, sf_sfclay_physics=1, bl_pbl_physics=1,
         sf_surface_physics=4, num_soil_layers=4, columns=10_000_000)
-    budget = [b for b in blockers if b.component == "Noah-MP column budget"]
-    assert budget, [b.component for b in blockers]
-    assert NOAHMP_EXPERT_COLUMN_BUDGET_ENV in budget[0].action()
-    assert NOAHMP_EXPERT_COLUMN_BUDGET_ENV not in budget[0].why()
-    # format() is unchanged: it still says everything, on one line.
-    assert budget[0].action() in budget[0].format()
-    assert budget[0].why() in budget[0].format()
+    assert not [b for b in blockers
+                if b.component == "Noah-MP column budget"]
+    err = capsys.readouterr().err
+    assert "warning:" in err
+    assert "Noah-MP" in err and "slow, not wrong" in err
+
+    explain.set_explain(True)
+    try:
+        pending_wrf_physics_components(
+            mp_physics=8, sf_sfclay_physics=1, bl_pbl_physics=1,
+            sf_surface_physics=4, num_soil_layers=4, columns=10_000_000)
+        err = capsys.readouterr().err
+        # The remedy is never withheld: --explain names the variable.
+        assert NOAHMP_EXPERT_COLUMN_BUDGET_ENV in err
+    finally:
+        explain.set_explain(False)

@@ -338,6 +338,123 @@ def test_grid_relative_winds_rotate_through_earth_basis(monkeypatch):
     assert mapped.fields["VV"].shape == (50, target.ny + 1, target.nx)
 
 
+class HostBackend:
+    """A device-free preprocess backend, shared by the tests below."""
+
+    name = "cpu-test"
+    array_module = np
+
+    @staticmethod
+    def float32(value):
+        return np.asarray(value, dtype=np.float32)
+
+    @staticmethod
+    def bool_array(value):
+        return np.asarray(value, dtype=bool)
+
+    @staticmethod
+    def rotate_earth_to_grid(u, v, sina, cosa):
+        u = np.asarray(u, dtype=np.float32)
+        v = np.asarray(v, dtype=np.float32)
+        sina = np.asarray(sina, dtype=np.float32)
+        cosa = np.asarray(cosa, dtype=np.float32)
+        return u * cosa + v * sina, v * cosa - u * sina
+
+    @staticmethod
+    def receipt():
+        return {"backend": "cpu-test", "implementation": "numpy"}
+
+    # Required by the common backend-object contract; HRRR does not use
+    # regular-grid mapping, masked nearest, or vertical setup here.
+    regular_plan = masked_nearest = era5_rh_to_water = staticmethod(
+        lambda *_args, **_kwargs: None)
+    prepare_wrf_vertical = staticmethod(lambda *_args, **_kwargs: None)
+
+
+def _mapped_with_landmask(landmask, *, source_land=True,
+                          target_name="domain 1"):
+    """Map one constant snapshot onto LANDMASK, recording the soil report."""
+    target = _target(
+        nx=16, ny=14, ref_lat=35.5, ref_lon=-98.0,
+        truelat1=30.0, truelat2=60.0, stand_lon=-88.0)
+    snapshot, _, _ = _constant_earth_wind_snapshot(target)
+    if not source_land:
+        fields = dict(snapshot.fields)
+        fields["LANDSEA"] = np.zeros_like(fields["LANDSEA"])
+        snapshot = HrrrNativeSnapshot(
+            valid_time=snapshot.valid_time,
+            forecast_hour=snapshot.forecast_hour,
+            i_start=snapshot.i_start, j_start=snapshot.j_start,
+            ny=snapshot.ny, nx=snapshot.nx, fields=fields)
+    report: dict = {}
+    mapped = interpolate_hrrr_to_lambert(
+        snapshot, target.grid(), target_landmask=landmask,
+        soil_mapping_report=report, backend=HostBackend(),
+        target_name=target_name)
+    return mapped, report
+
+
+def test_an_all_water_target_maps_its_soil_instead_of_refusing():
+    """A coastal domain's ocean boundary strip is a legal configuration.
+
+    The four specified-boundary strips are mapped by independent calls,
+    so one Pacific-facing west strip with no land in it used to abort a
+    whole preparation -- with a sentence that named neither the strip nor
+    the domain.  Nothing about the mapping needs land here: every soil
+    cell of a water target is the target-water fill the mapper already
+    writes (SOILT = SKINTEMP, SOILW = 1), and no land donor is consulted.
+    """
+    mapped, report = _mapped_with_landmask(
+        np.zeros((14, 16)), target_name="the west boundary strip of domain 1")
+
+    # The water fill, everywhere, exactly as the policy says.
+    np.testing.assert_allclose(
+        np.asarray(mapped.fields["SOILT"]),
+        np.broadcast_to(np.asarray(mapped.fields["SKINTEMP"])[None, :, :],
+                        np.asarray(mapped.fields["SOILT"]).shape))
+    np.testing.assert_allclose(np.asarray(mapped.fields["SOILW"]), 1.0)
+
+    # And the receipt says so, naming the strip, rather than going silent.
+    assert report["target"] == "the west boundary strip of domain 1"
+    assert report["target_land_count"] == 0
+    for field in ("SOILT", "SOILW"):
+        entry = report["fields"][field]
+        assert entry["land_window_statistics"] is None
+        assert entry["target_land_cell_count"] == 0
+        assert "no land cells" in entry["land_window_statistics_absent_because"]
+        # The admission checks that need no land still ran: before this
+        # fix the empty-land refusal came first and skipped them.
+        assert "all_target_minimum" in entry
+
+
+def test_a_land_target_with_no_reachable_source_land_refuses_by_name():
+    """The case that genuinely cannot be mapped, named and remedied.
+
+    Watched firing: the same geometry with source land present is the
+    test above's sibling, and it maps.  Here the target has land cells
+    and the HRRR window has none, so no donor exists at any radius --
+    the refusal must say WHICH grid and what to do about it.
+    """
+    with pytest.raises(ValueError) as refusal:
+        _mapped_with_landmask(np.ones((14, 16)), source_land=False,
+                              target_name="domain 2")
+    message = str(refusal.value)
+    assert "domain 2" in message
+    assert "surface_fallback_radius_cells" in message
+    assert "target point(s)" in message
+
+
+def test_a_mixed_land_water_target_still_reports_land_statistics():
+    """Negative control: land present, so the diagnostics are not skipped."""
+    landmask = np.ones((14, 16))
+    landmask[:, :5] = 0.0                      # an ocean west edge
+    _mapped, report = _mapped_with_landmask(landmask)
+    assert report["target_land_count"] == 14 * 11
+    entry = report["fields"]["SOILT"]
+    assert entry["convex_bounds_conserved"] is True
+    assert "land_window_statistics" not in entry
+
+
 def test_full_hrrr_host_backend_is_deterministic_and_device_free():
     class HostBackend:
         name = "cpu-test"

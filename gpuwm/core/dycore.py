@@ -175,33 +175,30 @@ def stage_fluxes(state: DomainState, cfg: RunConfig
     return ru, rv, _omega_ref(state, cfg, ru, rv)
 
 
-def boundary_mass_tendency(state: DomainState, cfg: RunConfig) -> float:
-    """FP64 domain-sum dry-mass tendency through the lateral boundary.
+def domain_mass_measure(state: DomainState) -> float:
+    """FP64 area-weighted domain dry-mass measure ``sum(mu/msft**2)``.
 
-    This is the telescoped boundary form of WRF ``advance_mu_t`` evaluated
-    after ``advance_uv`` has updated the acoustic perturbation momenta.  The
-    total face flux is ``u_pp + (c1h*mu_face+c2h)*u`` (and analogously for
-    v); multiplying its opposing-face difference by ``dnw/dx`` or
-    ``dnw/dy`` gives exactly the domain sum of the column-mass equation.
-    Internal ``rmu_t`` sources are intentionally excluded so a closure
-    residual detects them.  The current diagnostic is needed by the flat,
-    map-factor-one WK82 case; a mapped-domain budget requires the ARW
-    cell-area weighting and fails loudly rather than reporting a false
-    closure.
+    The ONE measure both the flat and the mapped boundary-tendency
+    branches close against, so a residual cannot be read in one unit and
+    scored against the other.  With identity map factors the weight is
+    exactly 1.0 and this is the plain column-mass sum.
     """
-    if state.has_msf:
-        raise NotImplementedError(
-            "boundary_mass_tendency needs mapped-cell area weighting when "
-            "has_msf is true")
+    return float(cp.sum(state.total_mu().astype(cp.float64)
+                        * state.cell_area_weight(), dtype=cp.float64))
+
+
+def _boundary_mass_tendency_flat(state: DomainState,
+                                 cfg: RunConfig) -> cp.ndarray:
+    """Unmapped telescoped boundary tendency as a 0-d FP64 device scalar."""
     boundary_x = _boundary_x(cfg)
     boundary_y = _boundary_y(cfg)
+    tendency = cp.float64(0.0)
     if not boundary_x and not boundary_y:
-        return 0.0
+        return tendency
     mu = state.total_mu()
     dnw = state.dnw[:, None]
     c1h = state.c1h[:, None]
     c2h = state.c2h[:, None]
-    tendency = cp.float64(0.0)
     if boundary_x:
         west = (state.u_pp[:, :, 0]
                 + (c1h * mu[:, 0][None] + c2h) * state.u[:, :, 0])
@@ -218,7 +215,129 @@ def boundary_mass_tendency(state: DomainState, cfg: RunConfig) -> float:
         tendency += cp.sum(
             (dnw * DTYPE(1.0 / cfg.dy) * (north - south)).astype(cp.float64),
             dtype=cp.float64)
-    return float(tendency)
+    return tendency
+
+
+def _boundary_mass_tendency_mapped(state: DomainState,
+                                   cfg: RunConfig) -> cp.ndarray:
+    """Mapped telescoped boundary tendency as a 0-d FP64 device scalar.
+
+    Derived from the in-tree mapped acoustic kernel rather than from a
+    textbook form.  ``advance_mu_th_msf`` advances the column mass by
+
+        d(mu_c)/dt = m_c**2 * sum_k dnw_k * (rdx*dFx + rdy*dFy) + rmu_c
+
+    with ``m_c**2 = msft*msft`` and the total face flux
+    ``F = u'' + (c1h*mu_face + c2h)*u/msfu`` (the reference momentum
+    already carries its FACE map factor; ``u''`` carries its own from
+    ``small_step_prep``).  Dividing the cell equation by ``m_c**2`` -- the
+    weight :meth:`DomainState.cell_area_weight` applies -- removes the map
+    factor from the flux term entirely, so the divergence telescopes over
+    the domain and only the outermost faces survive.  The ``rmu_t``
+    forcing and the specified-zone reset are deliberately NOT folded in
+    here: they are separate budget terms, and a flux-only "closure" on a
+    forced domain would be a false receipt.
+
+    The mapped face factor is the only arithmetic difference from the flat
+    branch, which is why the reduction control on an identity-map state is
+    exact rather than approximate.
+    """
+    boundary_x = _boundary_x(cfg)
+    boundary_y = _boundary_y(cfg)
+    tendency = cp.float64(0.0)
+    if not boundary_x and not boundary_y:
+        return tendency
+    mu = state.total_mu()
+    dnw = state.dnw[:, None]
+    c1h = state.c1h[:, None]
+    c2h = state.c2h[:, None]
+    if boundary_x:
+        west = (state.u_pp[:, :, 0]
+                + (c1h * mu[:, 0][None] + c2h) * state.u[:, :, 0]
+                / state.msfu[:, 0][None])
+        east = (state.u_pp[:, :, -1]
+                + (c1h * mu[:, -1][None] + c2h) * state.u[:, :, -1]
+                / state.msfu[:, -1][None])
+        tendency += cp.sum(
+            (dnw * DTYPE(1.0 / cfg.dx) * (east - west)).astype(cp.float64),
+            dtype=cp.float64)
+    if boundary_y:
+        south = (state.v_pp[:, 0, :]
+                 + (c1h * mu[0, :][None] + c2h) * state.v[:, 0, :]
+                 / state.msfv[0, :][None])
+        north = (state.v_pp[:, -1, :]
+                 + (c1h * mu[-1, :][None] + c2h) * state.v[:, -1, :]
+                 / state.msfv[-1, :][None])
+        tendency += cp.sum(
+            (dnw * DTYPE(1.0 / cfg.dy) * (north - south)).astype(cp.float64),
+            dtype=cp.float64)
+    return tendency
+
+
+def boundary_mass_tendency_device(state: DomainState,
+                                  cfg: RunConfig) -> cp.ndarray:
+    """0-d FP64 device scalar form of :func:`boundary_mass_tendency`.
+
+    Keeping the device scalar unread is what lets the accumulator observer
+    run without a per-substep host synchronization.
+    """
+    if state.has_msf:
+        return _boundary_mass_tendency_mapped(state, cfg)
+    return _boundary_mass_tendency_flat(state, cfg)
+
+
+def boundary_mass_tendency(state: DomainState, cfg: RunConfig) -> float:
+    """FP64 domain-sum dry-mass tendency through the lateral boundary.
+
+    This is the telescoped boundary form of WRF ``advance_mu_t`` evaluated
+    after ``advance_uv`` has updated the acoustic perturbation momenta.  The
+    total face flux is ``u_pp + (c1h*mu_face+c2h)*u/msfu`` (and analogously
+    for v); multiplying its opposing-face difference by ``dnw/dx`` or
+    ``dnw/dy`` gives exactly the domain sum of the column-mass equation for
+    the measure :func:`domain_mass_measure`.  Internal ``rmu_t`` sources
+    are intentionally excluded so a closure residual detects them.  Mapped
+    domains take the ARW cell-area weighting
+    (:meth:`DomainState.cell_area_weight`); the flat, map-factor-one
+    branch keeps the WK82 arithmetic unchanged.
+
+    Reading the result synchronizes the device; call
+    :func:`boundary_mass_tendency_device` from a hot loop instead.
+    """
+    return float(boundary_mass_tendency_device(state, cfg))
+
+
+class MassFluxAccumulator:
+    """Device-resident FP64 running sum of the substep boundary increments.
+
+    The list-appending ``mass_flux_observer`` reads one device scalar per
+    acoustic substep, which is a host synchronization inside the
+    innermost loop.  This accumulator adds the same FP64 increments in the
+    same order on the device and is read once, at the end of the run, so a
+    receipt-enabled real-case integration pays no per-substep sync.  The
+    two are mutually exclusive keywords on :func:`step` precisely because
+    running both would double-count nothing but would reintroduce the sync
+    the accumulator exists to remove.
+    """
+
+    __slots__ = ("_total", "count")
+
+    def __init__(self) -> None:
+        self._total = cp.zeros((), dtype=cp.float64)
+        #: number of accumulated substep increments
+        self.count = 0
+
+    def add(self, increment) -> None:
+        """Accumulate one FP64 increment without reading it."""
+        self._total += increment
+        self.count += 1
+
+    def total(self) -> float:
+        """Host FP64 total; the one synchronization this observer takes."""
+        return float(self._total)
+
+    def reset(self) -> None:
+        self._total = cp.zeros((), dtype=cp.float64)
+        self.count = 0
 
 
 def _launch_slow_pgf(state: DomainState, cfg: RunConfig, *, cq=None) -> None:
@@ -1618,7 +1737,8 @@ def apply_open_zero_gradient(state: DomainState, cfg: RunConfig) -> None:
 
 
 def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
-         mass_flux_observer=None, refl_10cm_due: bool = False) -> None:
+         mass_flux_observer=None, mass_flux_accumulator=None,
+         refl_10cm_due: bool = False) -> None:
     """Advance ``state`` one full RK3 step of length ``cfg.dt``.
 
     ``acoustic=True`` (default) runs the full ARW split-explicit loop: per
@@ -1630,6 +1750,11 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
     final-RK-stage acoustic substep's boundary-flux mass increment.  Summing
     those increments independently closes the completed step's domain-mass
     change and is otherwise a zero-cost dormant diagnostic.
+    ``mass_flux_accumulator`` is the device-resident alternative (a
+    :class:`MassFluxAccumulator`): it takes the same increments in the
+    same order without reading any of them, so a long integration pays no
+    per-substep host synchronization.  The two keywords are mutually
+    exclusive and supplying both raises.
     ``refl_10cm_due`` is the history-step flag threaded to microphysics;
     the active scheme computes and stashes radar reflectivity before its
     finish-stage theta writeback and the post-microphysics EOS refresh.
@@ -1688,6 +1813,12 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
     ``diff_6th_opt = 1`` with moisture raises ``ValueError`` (unlimited
     fluxes bypass the PD limiter).  Coriolis/curvature is boundary-aware.
     """
+    if mass_flux_observer is not None and mass_flux_accumulator is not None:
+        raise ValueError(
+            "mass_flux_observer and mass_flux_accumulator are mutually "
+            "exclusive: the accumulator exists to remove the per-substep "
+            "host synchronization the list observer takes, and running "
+            "both reinstates it")
     if acoustic and cfg.time_step_sound % 2 != 0:
         raise ValueError(
             f"time_step_sound must be even, got {cfg.time_step_sound}: RK3 "
@@ -1876,6 +2007,9 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
             if mass_flux_observer is not None and istage == 2:
                 mass_flux_observer(
                     dtau * boundary_mass_tendency(state, cfg))
+            elif mass_flux_accumulator is not None and istage == 2:
+                mass_flux_accumulator.add(
+                    dtau * boundary_mass_tendency_device(state, cfg))
             # advance_mu_th stores WRF MUDF directly before its rounded mass
             # update; reconstructing it from two FP32 states loses sub-ULP
             # column-mass tendencies.

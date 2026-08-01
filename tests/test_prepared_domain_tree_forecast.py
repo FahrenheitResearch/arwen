@@ -532,6 +532,58 @@ def test_preflight_binds_every_domain_and_detects_identity_drift(tmp_path, monke
 
 
 
+def test_preflight_normalizes_dead_and_write_only_switches_like_the_gate(
+        tmp_path, monkeypatch):
+    """The last refusal in the v1.3.1 field report, and its control.
+
+    A hierarchy sealed ``cudt_minutes = 5.0`` (RunConfig's live default,
+    inherited because a WRF importer omits the key when cumulus is off)
+    and ``nwp_diagnostics = 0``; the wizard-emitted experiment wrote the
+    profile's ``0.0`` and, because its audience reads UH products, ``1``.
+    Preflight compared by exact equality and refused -- after preparation,
+    on a cumulus interval with no cumulus scheme and a diagnostic toggle
+    that cannot move one grid point.  The hierarchy's own root binding
+    already normalized the first of those; both sides go through the same
+    normalization now.
+    """
+
+    prepared, receipt, config = _synthetic_prepared_tree(tmp_path, monkeypatch)
+    header_path = (
+        prepared / "hierarchy-artifacts" / "domains" / "d02"
+        / "prepared-cache" / "header.json"
+    )
+    header = json.loads(header_path.read_text(encoding="utf-8"))
+    run = header["identity"]["domain_config"]["run"]
+    assert run["cu_physics"] == 0
+    run["cudt_minutes"] = 5.0
+    run["nwp_diagnostics"] = 1
+    run["restart_interval_s"] = 3600.0
+    run["output_interval_s"] = 900.0
+    header_path.write_text(json.dumps(header), encoding="utf-8")
+
+    inputs = runner.preflight_prepared_tree(
+        prepared_root=prepared,
+        preparation_receipt_sha256=_sha(receipt),
+        experiment_config=config,
+        experiment_config_sha256=_sha(config),
+    )
+
+    assert [item.grid_id for item in inputs.domains] == [1, 2]
+    assert inputs.execution_plan["launch_allowed"] is True
+
+    # Control: an ACTIVE cumulus interval is a real difference and still
+    # refuses, so this normalization is about dead state only.
+    header["identity"]["domain_config"]["run"]["cu_physics"] = 1
+    header_path.write_text(json.dumps(header), encoding="utf-8")
+    with pytest.raises(ValueError, match="cudt_minutes"):
+        runner.preflight_prepared_tree(
+            prepared_root=prepared,
+            preparation_receipt_sha256=_sha(receipt),
+            experiment_config=config,
+            experiment_config_sha256=_sha(config),
+        )
+
+
 def test_the_tree_runner_uses_the_shared_radiation_workspace_predicate():
     """A local restatement of the predicate killed legacy-RRTMG trees.
 
@@ -568,3 +620,82 @@ def test_the_tree_runner_uses_the_shared_radiation_workspace_predicate():
     legacy = _exp(RRTMG_VARIANT_LEGACY)
     assert all(radiation_scheme_ids(d.run) == (4, 4) for d in legacy.domains)
     assert uses_modern_rrtmgp_workspace(legacy) is False
+
+
+# ---------------------------------------------------------------------------
+# The mp8 table gap: one sentence at preflight, never a traceback mid-run
+# ---------------------------------------------------------------------------
+
+def test_a_missing_thompson_table_is_a_refusal_not_a_traceback(
+        tmp_path, monkeypatch, capsys):
+    """`FileNotFoundError: missing Thompson table asset .../qr_acr_qg_V4.dat`
+
+    A wheel user's nested GFS run died exactly here, five frames deep,
+    after paying for a fetch and three minutes of preprocessing -- and
+    the path it named was inside site-packages, where `gpuwm
+    fetch-tables` had staged nothing this install could keep.  The gap
+    is now answered by the preflight, in one sentence naming the table
+    and the command that stages it.
+    """
+
+    from gpuwm.table_assets import MissingTableAssets
+
+    empty = tmp_path / "no-tables"
+    empty.mkdir()
+    monkeypatch.setenv("GPUWM_THOMPSON_TABLE_ROOT", str(empty))
+
+    def _preflight(**_kwargs):
+        from gpuwm.table_assets import require_thompson_tables
+
+        require_thompson_tables()
+        raise AssertionError("preflight should have refused")
+
+    monkeypatch.setattr(runner, "preflight_prepared_tree", _preflight)
+    prepared = tmp_path / "prepared-root"
+    prepared.mkdir()
+    outdir = tmp_path / "run"
+    code = runner.main([
+        "--prepared-root", str(prepared),
+        "--preparation-receipt-sha256", "a" * 64,
+        "--experiment-config", str(_write_mixed_config(tmp_path)),
+        "--experiment-config-sha256", "b" * 64,
+        "--outdir", str(outdir),
+    ])
+    assert code == 2
+    printed = capsys.readouterr().err
+    assert "Traceback" not in printed
+    assert "prepared_domain_tree_forecast: refused:" in printed
+    assert "qr_acr_qg_V4.dat" in printed
+    assert "gpuwm fetch-tables" in printed
+    # A refusal is not a failed run: nothing ran, so no failed-run
+    # receipt claims otherwise.
+    assert not (outdir / "evidence" / "failed-run-receipt.json").exists()
+
+    # Negative control: the same runner path with the tables present
+    # gets past this gate and fails on its own (fake) preflight instead.
+    monkeypatch.delenv("GPUWM_THOMPSON_TABLE_ROOT")
+    with pytest.raises(AssertionError, match="should have refused"):
+        runner.main([
+            "--prepared-root", str(prepared),
+            "--preparation-receipt-sha256", "a" * 64,
+            "--experiment-config", str(_write_mixed_config(tmp_path)),
+            "--experiment-config-sha256", "b" * 64,
+            "--outdir", str(tmp_path / "run2"),
+        ])
+    assert MissingTableAssets is not None
+
+
+def test_the_tree_preflight_checks_tables_before_the_hierarchy(tmp_path,
+                                                               monkeypatch):
+    """Placement, not just presence: the gap is named BEFORE the GPU.
+
+    ``_verify_thompson_assets`` used to run at the top of
+    ``run_prepared_tree``; it now runs inside
+    ``preflight_prepared_tree``, which is the function whose whole job
+    is to answer "can this run" without touching a card.
+    """
+
+    import inspect
+
+    source = inspect.getsource(runner.preflight_prepared_tree)
+    assert "_verify_thompson_assets(exp)" in source

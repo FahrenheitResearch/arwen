@@ -11,12 +11,11 @@ import json
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import time
 import tomllib
 from types import SimpleNamespace
 
-from gpuwm import __version__
+from gpuwm import runtime_manifest
 from gpuwm.experiment import build_experiment
 from gpuwm.hrrr_native_static import (
     sha256_file,
@@ -30,6 +29,7 @@ from gpuwm.ingest.nest_init import NestedInputCatalog, ParentInitView
 from gpuwm.ingest.prepared_cache import (
     PreparedCacheReader,
     compare_prepared_domain_config,
+    effective_prepared_domain_config,
     prepared_domain_config_identity,
     prepared_cache_identity,
     restore_prepared_cache,
@@ -61,6 +61,20 @@ _DOMAIN_PREPARATION_OVERRIDES = frozenset({
     "cu_physics", "cudt_minutes", "radt", "radt_minutes", "bldt",
     "diff_6th_factor", "epssm", "spec_exp", "mp_physics", "moist",
     "moist_cq", "nest_microphysics_transition",
+    # Per-domain history cadence.  This is the ladder's whole point -- a
+    # 3 km parent written hourly beside a 1 km child written every 15
+    # minutes -- and the machinery for it already exists end to end: the
+    # experiment loader gives every domain its own history_interval_s and
+    # divisibility check (gpuwm/experiment.py), the clock registers a
+    # per-domain history alarm (gpuwm/core/clock.py:586), and the tree
+    # runner writes per-domain wrfouts on it
+    # (gpuwm/prepared_domain_tree_forecast.py, io_modes "history cadence:
+    # per-domain experiment TOML").  Only this drift check disagreed, and
+    # it did so AFTER the expensive preparation: a wizard-emitted
+    # 3600/900 ladder passed the wizard, the root preparer and fetch, then
+    # died on "output_interval_s (900.0, 3600.0)".  Preparation itself
+    # writes no history frame at all.
+    "output_interval_s",
 })
 _MAX_PUBLIC_DOMAINS = 21
 
@@ -248,7 +262,25 @@ def _domain_layout(domain) -> dict[str, object]:
     }
 
 
-def _supported_hierarchy_slice(exp, root_target) -> None:
+def sealed_forcing_horizon_seconds(forcing_hours) -> float:
+    """The forecast length one sealed root preparation can force.
+
+    The prepared root carries a contiguous hourly forcing inventory
+    starting at its own hour zero; a hierarchy may run to its last hour
+    and no further.  That is a property of the bundle in front of us, so
+    it is read from the bundle.
+    """
+
+    hours = [int(hour) for hour in forcing_hours]
+    expected = list(range(len(hours)))
+    if not hours or hours != expected:
+        raise ValueError(
+            "root preparation forcing inventory must be contiguous hourly "
+            f"leads starting at 0; got {hours}")
+    return float(hours[-1]) * 3600.0
+
+
+def _supported_hierarchy_slice(exp, root_target, *, forcing_hours) -> None:
     """Bind the public adapter to its sealed root and generic valid nests.
 
     ``build_experiment`` is the geometry authority: it rejects cycles,
@@ -258,6 +290,16 @@ def _supported_hierarchy_slice(exp, root_target) -> None:
     requested namelist describes that root without pinning one location,
     duration, or vertical grid.  The fixed native HRRR physics product remains
     explicit and children may vary only in their geometry and nest identity.
+
+    ``forcing_hours`` is the sealed root preparation's own inventory.  The
+    duration ceiling is derived from it rather than from a constant: the
+    docstring above already promised not to pin a duration, and every
+    other stage of this route -- ``hrrr_source_window`` in the fetch/root
+    wrapper, the forcing-hour equality below, the tree runner -- handles
+    f00..f24 dynamically.  A hardcoded 12 h refused an f00..f24 root
+    preparation that had already been fetched and prepared, with a
+    sentence ("the native f00..f12 forcing horizon") describing a
+    limitation of neither the data nor the code.
     """
 
     if not 1 <= len(exp.domains) <= _MAX_PUBLIC_DOMAINS:
@@ -272,10 +314,15 @@ def _supported_hierarchy_slice(exp, root_target) -> None:
             f"child grid ids {expected_ids}, got {domain_ids}")
     if exp.feedback != 0 or exp.smooth_option != 0:
         raise ValueError("the public HRRR hierarchy gate is one-way only")
-    if not 0.0 < exp.run_seconds <= 43_200.0:
+    horizon = sealed_forcing_horizon_seconds(forcing_hours)
+    if not 0.0 < exp.run_seconds <= horizon:
         raise ValueError(
             "the public HRRR hierarchy duration must be positive and no "
-            "longer than the native f00..f12 forcing horizon")
+            f"longer than the {horizon / 3600.0:g} h forcing horizon this "
+            "root preparation was sealed with (f00.."
+            f"f{int(horizon // 3600):02d}); requested "
+            f"{exp.run_seconds / 3600.0:g} h.  Re-prepare the root over a "
+            "longer window to run longer.")
     expected_projection = {
         "map_proj": root_target.map_proj,
         "ref_lat": root_target.ref_lat,
@@ -402,15 +449,18 @@ def _compare_stock_experiment(native_exp, stock_exp) -> None:
 
 
 def _effective_domain_config(domain) -> dict[str, object]:
-    """Canonicalize cadence fields that are inactive under selected schemes."""
+    """Canonicalize cadence fields that are inactive under selected schemes.
 
-    document = prepared_domain_config_identity(domain)
-    run = document["run"]
-    if run["radt"] > 0.0:
-        run["radt_minutes"] = run["radt"]
-    if run["cu_physics"] == 0:
-        run["cudt_minutes"] = 0.0
-    return document
+    One line now, because the normalization moved to
+    :func:`gpuwm.ingest.prepared_cache.effective_prepared_domain_config`
+    where every consumer of a prepared-domain identity can reach it --
+    this gate and the tree forecast's preflight were normalizing
+    differently, which is how a wizard-emitted config could pass here and
+    be refused there.
+    """
+
+    return effective_prepared_domain_config(
+        prepared_domain_config_identity(domain))
 
 
 def _validated_root_preparation_binding(
@@ -428,14 +478,10 @@ def _validated_root_preparation_binding(
     prepared_domain = identity.get("domain_config")
     if not isinstance(prepared_domain, dict):
         raise ValueError("root preparation identity lacks domain_config")
-    effective_prepared_domain = deepcopy(prepared_domain)
-    prepared_run = effective_prepared_domain.get("run", {})
-    if not isinstance(prepared_run, dict):
+    if not isinstance(prepared_domain.get("run"), dict):
         raise ValueError("root preparation domain_config lacks run controls")
-    if prepared_run.get("radt", 0.0) > 0.0:
-        prepared_run["radt_minutes"] = prepared_run["radt"]
-    if prepared_run.get("cu_physics") == 0:
-        prepared_run["cudt_minutes"] = 0.0
+    effective_prepared_domain = effective_prepared_domain_config(
+        deepcopy(prepared_domain))
     # Same rule as every other prepared-identity comparison: a field the
     # header predates, holding its not-in-use default, is schema growth
     # and not a trajectory difference.  Everything else still refuses.
@@ -463,58 +509,34 @@ def _validated_root_preparation_binding(
 
 
 def _source_identity(cpu_bridge: Path) -> dict[str, object]:
-    package = Path(__file__).resolve().parent
-    root = package.parent
-    distribution = os.environ.get("GPUWM_NATIVE_DISTRIBUTION_MANIFEST")
-    if distribution:
-        manifest_path = Path(distribution).resolve()
-        manifest = _json(manifest_path)
-        source = manifest.get("source")
-        artifact = manifest.get("artifact")
-        if (manifest.get("schema") != "gpuwm-native-wrf-runtime-v1"
-                or manifest.get("status") != "READY"
-                or not isinstance(source, dict)
-                or not source.get("worktree_clean")
-                or not isinstance(artifact, dict)
-                or artifact.get("gpuwm_version") != __version__):
-            raise RuntimeError(
-                "unrecognized or incompatible native distribution manifest")
-        return {
-            "identity_source": "gpuwm-native-distribution-manifest",
-            "git_commit": source.get("commit"),
-            "git_tree": source.get("tree"),
-            "distribution_manifest_sha256": sha256_file(manifest_path),
-            "cpu_preprocess_bridge": {
-                "path": str(cpu_bridge),
-                "bytes": cpu_bridge.stat().st_size,
-                "sha256": sha256_file(cpu_bridge),
-            },
-        }
-    identity: dict[str, object] = {
-        "identity_source": "git",
-        "cpu_preprocess_bridge": {
-            "path": str(cpu_bridge),
-            "bytes": cpu_bridge.stat().st_size,
-            "sha256": sha256_file(cpu_bridge),
-        },
-    }
-    def git(*args: str) -> str:
-        return subprocess.check_output(
-            ["git", "-C", str(root), *args], text=True,
-            stderr=subprocess.DEVNULL).strip()
+    """What this install is, resolved the one way every consumer does.
 
-    top = Path(git("rev-parse", "--show-toplevel")).resolve()
-    if top != root.resolve():
-        raise RuntimeError(f"git provenance escaped the gpuwm tree: {top}")
-    status = git("status", "--porcelain").splitlines()
-    if status:
+    :func:`gpuwm.runtime_manifest.provenance` is the single ladder
+    ``gpuwm doctor`` reports: the sealed manifest validated against its
+    WHOLE schema, then a genuine checkout of THIS tree, then the
+    installed wheel's ``RECORD`` digests.  Both branches this replaced
+    were the field report's bugs in one function -- a manifest checked a
+    key at a time (a document missing ``contract`` entirely passed here
+    and died three consumers later), and an unguarded ``git rev-parse``
+    rooted at the package directory, which for the pip install that runs
+    this nested HRRR route is ``site-packages``.
+    """
+
+    root = Path(__file__).resolve().parent.parent
+    identity = dict(runtime_manifest.provenance(root))
+    identity["cpu_preprocess_bridge"] = {
+        "path": str(cpu_bridge),
+        "bytes": cpu_bridge.stat().st_size,
+        "sha256": sha256_file(cpu_bridge),
+    }
+    # The hierarchy's own extra demand, unchanged: a checkout publishing
+    # this route may have nothing uncommitted.  It belongs to the git
+    # path alone -- a sealed manifest has already asserted
+    # `source.worktree_clean`, and a wheel has no worktree to dirty.
+    if (identity.get("identity_source") == "git"
+            and identity.get("git_status_short")):
         raise RuntimeError(
             "public HRRR hierarchy requires a completely clean source tree")
-    identity.update({
-        "git_commit": git("rev-parse", "HEAD"),
-        "git_tree": git("rev-parse", "HEAD^{tree}"),
-        "git_status_short": [],
-    })
     return identity
 
 
@@ -585,14 +607,10 @@ def prepare_hrrr_hierarchy(
     native_exp, native_resolved, native_report = _native_experiment(
         Path(wps_namelist), Path(namelist_input))
     target = load_hrrr_target_domain(root_domain_spec)
-    _supported_hierarchy_slice(native_exp, target)
-    wps_runtime_contract = _require_raw_wps_contract(
-        Path(wps_namelist), len(native_exp.domains))
-    if native_exp.start_time != valid_time:
-        raise ValueError("valid time differs from the native namelist start")
-
-    static_fields, static_receipt = verify_hrrr_native_static(
-        paths["static_cache"], paths["static_receipt"], target)
+    # The sealed root preparation is the forcing authority, so read its
+    # inventory BEFORE gating the requested duration -- that is what makes
+    # the duration ceiling a property of this bundle rather than a
+    # constant.
     cache_header = _json(paths["prepared_cache"] / "header.json")
     if (cache_header.get("schema") != "gpuwm-prepared-real-cache-v1"
             or cache_header.get("status") != "READY"):
@@ -600,6 +618,16 @@ def prepare_hrrr_hierarchy(
     identity = cache_header.get("identity")
     if not isinstance(identity, dict):
         raise ValueError("root preparation cache lacks an identity")
+    forcing_hours = tuple(identity.get("forcing_hours", ()))
+    _supported_hierarchy_slice(
+        native_exp, target, forcing_hours=forcing_hours)
+    wps_runtime_contract = _require_raw_wps_contract(
+        Path(wps_namelist), len(native_exp.domains))
+    if native_exp.start_time != valid_time:
+        raise ValueError("valid time differs from the native namelist start")
+
+    static_fields, static_receipt = verify_hrrr_native_static(
+        paths["static_cache"], paths["static_receipt"], target)
     root_namelist_sha, prepared_domain = _validated_root_preparation_binding(
         identity, native_exp.root)
 
@@ -614,7 +642,6 @@ def prepare_hrrr_hierarchy(
     if identity.get("static_cache_sha256") != static_sha:
         raise ValueError("static cache differs from root preparation identity")
     namelist_sha = sha256_file(Path(namelist_input))
-    forcing_hours = tuple(identity.get("forcing_hours", ()))
     expected_forcing_hours = tuple(range(
         0, int(native_exp.run_seconds // 3600) + 1))
     if forcing_hours != expected_forcing_hours:
@@ -753,6 +780,14 @@ def prepare_hrrr_hierarchy(
             input_provenance=provenance,
             artifact_manifest_reference=(
                 "../hierarchy-artifacts/domain-artifacts.json"),
+            # The GPU runner consumes hierarchy-artifacts/;
+            # wrf-native-input/ is the unchanged-WRF oracle set beside
+            # it.  gfs_direct already asks for "optional" here, so a
+            # state gpuwm can integrate but the WRF file format cannot
+            # represent is recorded as a REFUSED export manifest in the
+            # receipt instead of destroying the preparation.  This route
+            # was the last caller inheriting "required".
+            stock_wrf_export="optional",
         )
         hierarchy_seconds = time.perf_counter() - hierarchy_started
         stock_copy = staging / "namelist.input"
@@ -831,12 +866,21 @@ def main(argv=None) -> int:
         valid_time=valid_time, output_root=args.output_root,
         workers=args.workers, cpu_bridge=args.cpu_preprocess_bridge,
     )
+    # The forecast runner takes --preparation-receipt-sha256 over the
+    # receipt this stage just wrote, and the emitted chain tells the
+    # reader the hierarchy prints it.  It did not: the one placeholder
+    # in that chain no stage filled, so the printed route could not be
+    # walked without hashing a file by hand.  Print it here, from the
+    # published receipt rather than from the payload, so the digest is
+    # of the bytes the next stage will read.
     print(json.dumps({
         "status": payload["status"],
         "output_root": str(args.output_root.resolve()),
         "workers": payload["workers"],
         "timing_seconds": payload["timing_seconds"],
         "wrf_files": payload["wrf_manifest"]["files"],
+        "preparation_receipt_sha256": sha256_file(
+            args.output_root / "receipt.json"),
     }, indent=2, sort_keys=True, allow_nan=False))
     return 0
 

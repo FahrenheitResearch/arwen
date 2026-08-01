@@ -12,7 +12,10 @@ was wrong and what changed because of it.
 Tell the wizard your card; it sizes the grids:
 
 ```bash
-gpuwm domain --point 35.3,-97.5 --card 24gb ...    # or --vram-gib N
+# --card, --cycle and --out are the required trio; --vram-gib N
+# replaces --card for a capacity between the named tiers.
+gpuwm domain --point 35.3,-97.5 --card 24gb \
+  --cycle 1999-05-03T12 --hours 6 --out configs/myarea.toml
 ```
 
 | card tier | flat reserve | working budget | what fits (measured examples) |
@@ -86,10 +89,12 @@ in-process) prices a run in three layers:
 Example (24 GiB tier, printed by the wizard on Windows):
 
 ```
-  itemized alloc estimate 7.17 GiB; footprint projection 11.29 GiB
-    x 1.75 observed peak envelope = 19.75 GiB
+  itemized alloc estimate 7.25 GiB; footprint projection 11.37 GiB  x 1.75 observed peak envelope = 19.90 GiB
     envelope factor: windows (measured, 1 WDDM run)
-  budget 20.00 GiB (24 GiB card - 4 GiB reserve); headroom 0.25 GiB
+  ingest (preprocessing): 2 forcing times x 0.25 GiB each, 2 resident at a time = 0.53 GiB resident; peak envelope 2.61 GiB
+    ingest envelope basis: measured, CONUS 12 km 414x330x49 x 9 GFS times, RTX 5090 / Linux: itemization + 0.65x one forcing time of transients, x1.15 headroom, + CUDA context
+  BINDING PHASE: the forecast is the memory-binding phase at 19.90 GiB peak envelope (forecast 19.90 GiB, ingest 2.61 GiB); it fits the 20.00 GiB budget with 0.10 GiB to spare
+  budget 20.00 GiB (24 GiB card - 4 GiB reserve); headroom 0.10 GiB
 ```
 
 Both the wizard and `gpuwm check` name the factor and its platform on
@@ -235,13 +240,55 @@ between sessions on the same box); ratios travel better than absolutes.
 The model state is FP32 throughout, matching WRF's default REAL. Two
 hardware-level facts worth knowing:
 
-- Kernel compilation flushes FP32 subnormals to zero (CuPy compiles
-  with FTZ), and on some architectures subnormal flushing is
-  unconditional in hardware. The measured consequences are branch
-  flips on physically negligible inputs; each known instance is
-  recorded in the physics registry ([PHYSICS.md](PHYSICS.md)), and the
-  radiation preparation path routes one subnormal-sensitive block
-  through the host by design.
+<!-- BEGIN GENERATED ftz-statement: hardware-fp32-subnormals (tools/ftz_receipt/render_statement.py) -->
+- FP32 subnormal handling was measured on this machine's GPU
+  (NVIDIA GeForce RTX 5090, compute capability 12.0, driver
+  13.3 (13030)) across the 6 compile routes the model
+  uses, crossed with 6 arithmetic mechanisms.  The answer
+  depends on the route:
+  - `R1` loader RawModule (`gpuwm/core/kernels/__init__.py:20`,
+    gpuwm.core.kernels.load_module), effective NVRTC options `-std=c++17`
+    `-ftz=true`: `flush-to-zero` on 6 of 6 mechanisms [disassembly
+    `tools/ftz_receipt/receipt/sass/r1.sass`]
+  - `R1-ftztrue` loader RawModule + explicit --ftz=true (control)
+    (`gpuwm/core/kernels/__init__.py:20 + control flag`, cupy.RawModule),
+    effective NVRTC options `-std=c++17` `--ftz=true` `-ftz=true`:
+    `flush-to-zero` on 6 of 6 mechanisms [disassembly
+    `tools/ftz_receipt/receipt/sass/r1_ftztrue.sass`]
+  - `R2` RawModule with the shortwave option tuple
+    (`gpuwm/core/rrtmg_sw.py:2890`, cupy.RawModule), effective NVRTC options
+    `-std=c++17` `--ftz=false` `-ftz=true`: `flush-to-zero` on 6 of 6
+    mechanisms [disassembly `tools/ftz_receipt/receipt/sass/r2.sass`]
+  - `R3` direct NVRTC + cuda.function.Module (`gpuwm/core/rrtmg_lw.py:3723`,
+    cupy.cuda.compiler.compile_using_nvrtc), effective NVRTC options
+    `-std=c++17` `--ftz=false` `-arch=compute_120`: `ieee-agreement` on 6 of
+    6 mechanisms [disassembly `tools/ftz_receipt/receipt/sass/r3.sass`]
+  - `R4` CuPy-generated ReductionKernel (`gpuwm/core/mynn_pbl_gpu.py:290`,
+    cupy.ReductionKernel), effective NVRTC options `--std=c++17`
+    `-ftz=true`: `flush-to-zero` on 6 of 6 mechanisms [disassembly of 6
+    objects, `tools/ftz_receipt/receipt/sass/r4_0.sass` and siblings]
+  - `R5` inline PTX without .ftz (`gpuwm/core/kernels/__init__.py:20`,
+    gpuwm.core.kernels.load_module), effective NVRTC options `-std=c++17`
+    `-ftz=true` (this route rides `R1`'s compile): `ieee-agreement` on 4 of
+    6 mechanisms; `not-applicable` on 2 of 6 mechanisms [disassembly
+    `tools/ftz_receipt/receipt/sass/r1.sass`, the object `R1` compiled]
+  `R5` and `R1` are kernels inside ONE compiled object -- same device, same
+  flags, one compile -- and they did not measure alike, so on this device
+  the outcome follows the instruction the compiler emitted rather than the
+  hardware alone.
+  The control arm is load-bearing: the 3 distinct bit tables among the 6 arms
+  are what shows the pipeline responds to the flag at all.
+  The consequences reach physics: each known instance is recorded in the
+  physics registry ([PHYSICS.md](PHYSICS.md)), and the radiation preparation
+  path routes one subnormal-sensitive block through the host by design.
+  Evidence: the device bit table `tools/ftz_receipt/receipt/bitpatterns.csv` (both
+  passes byte-identical: true), the objects the routes themselves compiled,
+  `tools/ftz_receipt/receipt/cubin/`, and their disassembly,
+  `tools/ftz_receipt/receipt/sass/` (Cuda compilation tools, release 13.0,
+  V13.0.39), all recorded in `tools/ftz_receipt/receipt/receipt.json`.
+<!-- END GENERATED ftz-statement: hardware-fp32-subnormals -->
+- The consequence that reaches the science is a branch flip on
+  physically negligible inputs, not a change in a resolved quantity.
 - Determinism holds per build and hardware: the reference run
   reproduced output frames SHA256-identically across a mid-run kill
   and relaunch. No cross-GPU or cross-driver bit-identity is claimed.

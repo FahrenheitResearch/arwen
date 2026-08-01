@@ -26,6 +26,12 @@ tools/hrrr_grib2_bridge-*
 !tools/grib1_bridge/vendor/**
 tools/rustwx/target/
 !tools/rustwx/vendor/**
+# ... but not build output or a lock file cargo drops there when an
+# excluded vendor crate is built on its own manifest.  Build the
+# workspace target instead:
+#   cargo test --offline --manifest-path vendor/wx-radar/Cargo.toml \n#     --target-dir target
+tools/rustwx/vendor/**/target/
+tools/rustwx/vendor/wx-radar/Cargo.lock
 !tools/rustwx/assets/**
 # The two vendor negations above exist so an offline `cargo build` has
 # its crates, and they re-admit EVERYTHING under those trees -- including
@@ -40,3 +46,6 @@ tools/rustwx/vendor/**/__pycache__/
 # wrfinput/wrfbdy).  Real data, reproducible from the commands in the
 # handoff report, and never a build input.
 /cache/
+
+# Scratch output from tools/da_synthetic_cycle runs (dirs and redirect files).
+.gate-*

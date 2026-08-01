@@ -9,6 +9,7 @@ import tomllib
 
 import pytest
 
+from conftest import complete_runtime_manifest
 from gpuwm import __version__ as gpuwm_version
 from gpuwm.physics_compat import (
     MYNN_PROFILE_ID,
@@ -1828,18 +1829,16 @@ def test_cli_installed_distribution_rejects_explicit_decoder_substitution(
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
         json.dumps(
-            {
-                "schema": "gpuwm-native-wrf-runtime-v1",
-                "status": "READY",
-                "payload": {
+            complete_runtime_manifest(
+                {
                     f"libexec/bridges/{path.name}": {
                         "bytes": path.stat().st_size,
                         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                         "executable": True,
                     }
                     for path in (inventory, dump)
-                },
-            }
+                }
+            )
         ),
         encoding="utf-8",
     )
@@ -1865,18 +1864,16 @@ def test_cli_installed_distribution_uses_manifest_bound_decoders(
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
         json.dumps(
-            {
-                "schema": "gpuwm-native-wrf-runtime-v1",
-                "status": "READY",
-                "payload": {
+            complete_runtime_manifest(
+                {
                     f"libexec/bridges/{path.name}": {
                         "bytes": path.stat().st_size,
                         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                         "executable": True,
                     }
                     for path in (inventory, dump)
-                },
-            }
+                }
+            )
         ),
         encoding="utf-8",
     )
@@ -1907,18 +1904,16 @@ def test_cli_installed_windows_distribution_uses_exe_decoders(
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
         json.dumps(
-            {
-                "schema": "gpuwm-native-wrf-runtime-v1",
-                "status": "READY",
-                "payload": {
+            complete_runtime_manifest(
+                {
                     f"libexec/bridges/{path.name}": {
                         "bytes": path.stat().st_size,
                         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                         "executable": True,
                     }
                     for path in (inventory, dump)
-                },
-            }
+                }
+            )
         ),
         encoding="utf-8",
     )

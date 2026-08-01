@@ -111,7 +111,7 @@ is importable from a WRF namelist.
 | `epssm` | `epssm` | 0.1 | per-domain | acoustic off-centering; scalar namelist assignment changes d01 only (Registry tail keeps 0.1), preserved per-domain |
 | `smdiv` | `smdiv` | 0.1 | finite | 3-D divergence damping |
 | `emdiv` | `emdiv` | 0.0 (ArWen legacy) | finite | WRF Registry default 0.01 is emitted explicitly on import |
-| `km_opt` | `km_opt` | 1 | 1 (constant K), 4 (2-D Smagorinsky) | `diff_opt=2` form implied; WRF -1 must-set honored: omission refuses |
+| `km_opt` | `km_opt` | 1 | 1 (constant K), 4 (2-D Smagorinsky) | `diff_opt=2` form implied; WRF -1 must-set honored: omission refuses. 2 (1.5-order prognostic TKE) and 3 (3-D Smagorinsky) are implemented on the LES lane and are **refused by this build** -- `gpuwm/config.py` admits `{1, 4}` here; the row grows to `{1, 2, 3, 4}` in the release that carries that lane |
 | `c_s` | `c_s` | 0.25 | > 0 | Smagorinsky constant (smag2d kernel) |
 | `khdif`, `kvdif` | `khdif`, `kvdif` | 0.0 | >= 0 | km_opt=1 only; refused with open/specified boundaries |
 | `diff_6th_opt` | `diff_6th_opt` | 0 | 0, 1, 2 | option 1 refused when moist (PD bypass) |

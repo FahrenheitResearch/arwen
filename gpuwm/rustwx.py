@@ -32,6 +32,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from gpuwm import bridges
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
                            cargo_build_one_liner, default_bridge_dir,
                            executable_name)
@@ -214,12 +215,22 @@ def probe_renderer(path: Path) -> tuple[bool, str]:
     observable separates a runnable executable from an empty, truncated,
     or wrong-platform file, which refuses to launch (OSError) or dies
     with an abnormal status and no usage text.
+
+    The header is read before the launch, as in every probe in this
+    package: on Windows a corrupt image header can hang
+    ``CreateProcess`` where no timeout reaches.  See
+    :func:`gpuwm.bridges.native_executable_format`.
     """
 
+    ok, evidence = bridges.launchable(path)
+    if not ok:
+        return False, f"{evidence} -- corrupt, stale, or built for " \
+                      "another platform"
     try:
-        probe = subprocess.run(
-            [str(path), "--help"], capture_output=True, text=True,
-            errors="replace", timeout=_PROBE_TIMEOUT_S)
+        with bridges.quiet_loader_errors():
+            probe = subprocess.run(
+                [str(path), "--help"], capture_output=True, text=True,
+                errors="replace", timeout=_PROBE_TIMEOUT_S)
     except OSError as error:
         return False, f"exists but failed to execute: {error}"
     except subprocess.TimeoutExpired:

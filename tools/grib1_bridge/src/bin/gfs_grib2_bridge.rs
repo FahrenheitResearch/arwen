@@ -1142,8 +1142,16 @@ fn parse_series(path: &Path) -> Result<Vec<SeriesInput>, Box<dyn Error>> {
             expected_forecast_process_id,
         });
     }
-    if result.len() < 2 || result[0].hour != 0 {
-        return Err("GFS series must contain at least two times and begin at f000".into());
+    // The series names the SOURCE leads it carries and need not begin at
+    // f000.  Initializing from a forecast lead is ordinary practice, and
+    // this anchor was one of the places that forced a user wanting the
+    // f174..f240 window to decode from f000.  Everything that made the
+    // anchor look load-bearing is still enforced below and above: `hour`
+    // is unsigned, the process ID is declared per line and never inferred
+    // (so an f000 row must still say 81 and a lead row must say 96), and
+    // the cadence must be positive, uniform and certified.
+    if result.len() < 2 {
+        return Err("GFS series must contain at least two times".into());
     }
     if result.last().map(|value| value.hour).unwrap_or(0) > 384 {
         return Err("GFS series exceeds the certified f384 product horizon".into());
@@ -2708,5 +2716,96 @@ mod tests {
                 "bound_clamp_fields\t".to_string(),
             ]
         );
+    }
+
+    /// One scratch directory of series rows, and the parse of them.
+    fn parsed_series(label: &str, rows: &[(&str, &str)]) -> Result<Vec<SeriesInput>, String> {
+        let root = env::temp_dir().join(format!(
+            "gpuwm-gfs-series-{}-{}",
+            std::process::id(),
+            label
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut text = String::new();
+        for (line, name) in rows {
+            fs::write(root.join(name), b"GRIB").unwrap();
+            text.push_str(line);
+            text.push('\n');
+        }
+        let series = root.join("series.tsv");
+        fs::write(&series, text).unwrap();
+        let outcome = parse_series(&series).map_err(|error| error.to_string());
+        fs::remove_dir_all(&root).unwrap();
+        outcome
+    }
+
+    #[test]
+    fn a_series_may_begin_at_a_forecast_lead() {
+        // The defect: this used to be "GFS series must contain at least
+        // two times and begin at f000", so a user who wanted a window
+        // deep in the forecast had to decode from f000 to reach it.
+        let parsed = parsed_series(
+            "lead",
+            &[
+                ("18\tf018.grib2\t96", "f018.grib2"),
+                ("21\tf021.grib2\t96", "f021.grib2"),
+                ("24\tf024.grib2\t96", "f024.grib2"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.iter().map(|input| input.hour).collect::<Vec<_>>(),
+            vec![18, 21, 24]
+        );
+        // Every lead row still declares process 96 explicitly: a lead is
+        // never relabelled as an analysis, and 96 is never inferred.
+        assert!(parsed
+            .iter()
+            .all(|input| input.expected_forecast_process_id == 96));
+
+        // A two-column lead row still declares only the analysis
+        // capability, so it fails closed at decode rather than being
+        // promoted to a forecast product here.
+        let legacy = parsed_series(
+            "legacy",
+            &[
+                ("18\tf018.grib2", "f018.grib2"),
+                ("21\tf021.grib2", "f021.grib2"),
+            ],
+        )
+        .unwrap();
+        assert!(legacy
+            .iter()
+            .all(|input| input.expected_forecast_process_id == 81));
+
+        // f000 still must say 81, and the cadence rules are untouched.
+        assert!(parsed_series("f000", &[("0\tf000.grib2\t96", "f000.grib2")])
+            .unwrap_err()
+            .contains("analysis process ID 81"));
+        assert!(parsed_series(
+            "single",
+            &[("18\tf018.grib2\t96", "f018.grib2")]
+        )
+        .unwrap_err()
+        .contains("at least two times"));
+        assert!(parsed_series(
+            "cadence",
+            &[
+                ("18\tf018.grib2\t96", "f018.grib2"),
+                ("20\tf020.grib2\t96", "f020.grib2"),
+            ]
+        )
+        .unwrap_err()
+        .contains("exactly 1 or 3 hours"));
+        assert!(parsed_series(
+            "horizon",
+            &[
+                ("381\tf381.grib2\t96", "f381.grib2"),
+                ("385\tf385.grib2\t96", "f385.grib2"),
+            ]
+        )
+        .unwrap_err()
+        .contains("f384"));
     }
 }

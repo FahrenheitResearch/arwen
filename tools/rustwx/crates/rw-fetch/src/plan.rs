@@ -229,8 +229,17 @@ pub enum Decision {
 /// the GRIB implies, take the full file.**  A `.idx` that provably ends
 /// where the object ends is the only case that earns a range subset.
 /// An explicit `--mode` always wins -- and `--mode idx-subset` refuses
-/// loudly rather than quietly degrading, because an operator who asked
-/// for a subset has to hear that the index could not carry it.
+/// loudly rather than quietly degrading, because whoever asked for a
+/// subset has to hear that the index could not carry it.
+///
+/// The reason strings say WHAT chose, never WHO: these two branches ran
+/// because `--mode` was on this process's command line, and this
+/// process cannot see whether a person typed it or a caller's default
+/// supplied it.  They used to claim "operator override", which was
+/// simply false for every `gpuwm fetch` -- that front door passes
+/// `--mode full-file` as its own default, so the line credited an
+/// operator for a choice no operator had made.  The layer that knows
+/// says so in its own words (`gpuwm/fetch.py`).
 pub fn decide(request: ModeRequest, facts: &ProbeFacts, patterns: usize) -> Decision {
     if !facts.object_present {
         return Decision::Refuse("the GRIB object is not present at this source".to_string());
@@ -238,7 +247,7 @@ pub fn decide(request: ModeRequest, facts: &ProbeFacts, patterns: usize) -> Deci
     match request {
         ModeRequest::FullFile => Decision::Take(
             Mode::FullFile,
-            "--mode full-file: operator override, no index consulted".to_string(),
+            "--mode full-file: requested explicitly, no index consulted".to_string(),
         ),
         ModeRequest::IdxSubset => {
             if patterns == 0 {
@@ -264,7 +273,8 @@ pub fn decide(request: ModeRequest, facts: &ProbeFacts, patterns: usize) -> Deci
             match facts.idx_covers_object {
                 Some(true) => Decision::Take(
                     Mode::IdxSubset,
-                    "--mode idx-subset: operator override, index verified complete".to_string(),
+                    "--mode idx-subset: requested explicitly, index verified complete"
+                        .to_string(),
                 ),
                 Some(false) => Decision::Refuse(
                     "--mode idx-subset: the .idx is short -- its last message does not \
@@ -534,7 +544,14 @@ mod tests {
         facts.idx_declared = false;
         facts.idx_fetched = false;
         match decide(ModeRequest::FullFile, &facts, 0) {
-            Decision::Take(Mode::FullFile, why) => assert!(why.contains("override"), "{why}"),
+            Decision::Take(Mode::FullFile, why) => {
+                assert!(why.contains("requested explicitly"), "{why}");
+                // The reason names WHAT chose, not WHO: this process
+                // cannot tell a typed flag from a caller's default, and
+                // it used to credit an "operator" for every `gpuwm
+                // fetch`, whose own default supplies this mode.
+                assert!(!why.contains("operator"), "{why}");
+            }
             other => panic!("expected a full-file take, got {other:?}"),
         }
     }

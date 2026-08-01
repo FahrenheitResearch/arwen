@@ -1120,7 +1120,10 @@ def test_front_door_author_flag_contracts(tmp_path, capsys):
             ["fetch", "--source", "hrrr", "--cycle", "2026-07-28T05",
              "--hours", "2", "--out", str(tmp_path),
              "--author-front-door-manifest"])
-    refused("requires --out plus --bridge",
+    # --bridge is no longer in this list: it resolves itself through
+    # gpuwm.bridges when omitted (the documented long form printed a
+    # checkout-only path that no wheel install has).
+    refused("requires --out plus --wps-namelist, --experiment-config",
             ["fetch", "--source", "gfs", "--out", str(tmp_path),
              "--author-front-door-manifest"])
     refused("belong to --author-front-door-manifest",
@@ -1181,7 +1184,16 @@ def test_hrrr_object_url_speaks_both_transports():
         fetch.hrrr_object_url(cycle, 2, "wrfnat", transport="ftp")
 
 
-def test_resolve_hrrr_transport_auto_prefers_nomads_when_it_serves():
+def test_resolve_hrrr_transport_auto_prefers_s3_when_it_serves():
+    """The pairing fix: auto is paired with the whole-file default.
+
+    Both hosts serve identical bytes.  S3 is several times faster for
+    whole-file transfers (measured: a three-hour window, 54 minutes over
+    NOMADS against about three over S3); NOMADS's head start only
+    matters to --wait-for, which never reaches this function.  Preferring
+    the freshest host to a caller who was not asking for freshness cost
+    the wall clock for nothing.
+    """
     cycle = datetime(2026, 7, 28, 5)
     now = datetime(2026, 7, 28, 8)
     probed = []
@@ -1193,20 +1205,28 @@ def test_resolve_hrrr_transport_auto_prefers_nomads_when_it_serves():
     got = fetch.resolve_hrrr_transport(
         cycle, "auto", last_hour=6, now=now, probe=probe,
         progress=lambda line: None)
-    assert got == "nomads"
+    assert got == "s3"
     # Completeness mirrors resolve_latest_cycle: BOTH final-hour objects.
     assert probed == [
-        fetch.hrrr_object_url(cycle, 6, "wrfnat", transport="nomads"),
-        fetch.hrrr_object_url(cycle, 6, "wrfprs", transport="nomads")]
+        fetch.hrrr_object_url(cycle, 6, "wrfnat", transport="s3"),
+        fetch.hrrr_object_url(cycle, 6, "wrfprs", transport="s3")]
 
 
-def test_resolve_hrrr_transport_auto_falls_back_to_s3():
+def test_resolve_hrrr_transport_auto_falls_back_to_nomads():
+    """Watched firing: a cycle S3 has not got yet still fetches.
+
+    NOMADS publishes ahead of the mirrors, so it remains the answer
+    while a live cycle is still propagating -- the preference above is
+    a preference, not a pin.
+    """
     cycle = datetime(2026, 7, 28, 5)
     now = datetime(2026, 7, 28, 8)
+    lines = []
     got = fetch.resolve_hrrr_transport(
         cycle, "auto", last_hour=6, now=now, probe=lambda url: False,
-        progress=lambda line: None)
-    assert got == "s3"
+        progress=lines.append)
+    assert got == "nomads"
+    assert any("S3 does not serve" in line for line in lines)
 
 
 def test_resolve_hrrr_transport_skips_the_probe_for_archived_cycles():
@@ -1575,3 +1595,73 @@ def test_a_named_incomplete_cycle_refuses_with_the_complete_one(monkeypatch):
     assert "newest complete GFS cycle" in message
     assert "2026-07-29T18Z" in message
     assert "--cycle latest" in message
+
+
+# ---------------------------------------------------------------------------
+# The bridge the documented long form could not name on a wheel
+# ---------------------------------------------------------------------------
+
+def test_front_door_manifest_resolves_the_bridge_when_none_is_given(
+        tmp_path, monkeypatch, capsys):
+    """`front-door manifest inputs are missing: bridge:
+    tools/grib1_bridge/target/release/gfs_grib2_bridge`
+
+    FIRST-LIGHT step 3a printed that path.  It exists in a checkout and
+    in no wheel install, so a person following the stage-by-stage route
+    from pip met this after paying for the fetch -- while `gpuwm go`,
+    running the same stage, had resolved the bridge through
+    gpuwm.bridges all along.  Omitting --bridge now asks the same
+    resolver.
+    """
+
+    from gpuwm import bridges
+
+    monkeypatch.setattr(gfs_transport, "_download", _fake_gfs_download)
+    out = tmp_path / "gfs"
+    bridge, wps, config = _front_door_inputs(tmp_path)
+    monkeypatch.setattr(
+        bridges, "find_bridge",
+        lambda name: bridge if name == "gfs_grib2_bridge" else None)
+
+    assert cli.main([
+        "fetch", "--source", "gfs", "--cycle", "2026-07-28T06",
+        "--hours", "3", "--area", "30,-100,40,-90", "--out", str(out),
+        "--author-front-door-manifest",
+        "--wps-namelist", str(wps), "--experiment-config", str(config)]) == 0
+    payload = json.loads(
+        (out / fetch.GFS_INPUT_MANIFEST_NAME).read_text(encoding="utf-8"))
+    # The resolved executable is what the manifest BINDS, so the rw-wps
+    # line printed next launches the binary this manifest was sealed
+    # against -- not a second one the reader had to name correctly.
+    assert payload["files"]["bridge"]["sha256"] == fetch.sha256_file(bridge)
+    printed = capsys.readouterr().out
+    assert "--bridge " in printed
+    assert bridge.name in printed.split("--bridge ", 1)[1].split()[0]
+
+
+def test_an_unresolvable_bridge_names_fetch_bridges_not_a_missing_path(
+        tmp_path, monkeypatch, capsys):
+    """Negative control: resolution failing is still one sentence.
+
+    An install with no built decoder anywhere gets the command that
+    stages one, rather than "inputs are missing: bridge: None".
+    """
+
+    from gpuwm import bridges
+
+    monkeypatch.setattr(gfs_transport, "_download", _fake_gfs_download)
+    out = tmp_path / "gfs"
+    _bridge, wps, config = _front_door_inputs(tmp_path)
+    assert cli.main(["fetch", "--source", "gfs", "--cycle", "2026-07-28T06",
+                     "--hours", "3", "--area", "30,-100,40,-90",
+                     "--out", str(out)]) == 0
+    capsys.readouterr()
+    monkeypatch.setattr(bridges, "find_bridge", lambda name: None)
+    assert cli.main([
+        "fetch", "--source", "gfs", "--out", str(out),
+        "--author-front-door-manifest",
+        "--wps-namelist", str(wps), "--experiment-config", str(config)]) == 2
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "gpuwm fetch-bridges" in err
+    assert "gfs_grib2_bridge" in err

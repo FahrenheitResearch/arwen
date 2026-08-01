@@ -26,6 +26,7 @@ import traceback
 import numpy as np
 
 from gpuwm import __version__
+from gpuwm import runtime_manifest
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -211,48 +212,17 @@ def _source_identity() -> dict[str, object]:
         raise FileNotFoundError(f"HRRR installed source helpers are missing: {missing}")
     source_sha256 = {str(path.relative_to(REPO)): _sha256(path)
                      for path in paths}
-    raw_manifest = os.environ.get("GPUWM_NATIVE_DISTRIBUTION_MANIFEST")
-    if raw_manifest:
-        manifest_path = Path(raw_manifest).resolve()
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        artifact = manifest.get("artifact")
-        source = manifest.get("source")
-        if (manifest.get("schema") != "gpuwm-native-wrf-runtime-v1"
-                or manifest.get("status") != "READY"
-                or not isinstance(artifact, dict)
-                or artifact.get("gpuwm_version") != __version__
-                or not isinstance(source, dict)
-                or not source.get("worktree_clean")):
-            raise RuntimeError("unrecognized native distribution manifest")
-        commit = str(source["commit"])
-        tree = str(source["tree"])
-        status = []
-        identity_source = "gpuwm-native-distribution-manifest"
-        source_sha256["distribution/manifest.json"] = _sha256(manifest_path)
-    else:
-        top_level = Path(subprocess.check_output(
-            ["git", "rev-parse", "--show-toplevel"], cwd=REPO,
-            text=True, stderr=subprocess.DEVNULL).strip()).resolve()
-        if top_level != REPO.resolve():
-            raise RuntimeError(
-                f"git provenance escaped the gpuwm checkout: {top_level}")
-        commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=REPO, text=True,
-            stderr=subprocess.DEVNULL).strip()
-        tree = subprocess.check_output(
-            ["git", "rev-parse", "HEAD^{tree}"], cwd=REPO, text=True,
-            stderr=subprocess.DEVNULL).strip()
-        status = subprocess.check_output(
-            ["git", "status", "--short"], cwd=REPO, text=True,
-            stderr=subprocess.DEVNULL).splitlines()
-        identity_source = "git"
-    return {
-        "git_commit": commit,
-        "git_tree": tree,
-        "git_status_short": status,
-        "identity_source": identity_source,
-        "source_sha256": source_sha256,
-    }
+    # Manifest, then a genuine checkout of THIS tree, then the installed
+    # wheel.  Same resolver as the benchmark's, for the same reason: the
+    # bare `git rev-parse` this replaced exited 128 on every pip install.
+    identity = runtime_manifest.provenance(REPO)
+    manifest_sha256 = identity.pop("distribution_manifest_sha256", None)
+    if manifest_sha256 is not None:
+        source_sha256["distribution/manifest.json"] = manifest_sha256
+    installed_wheel = identity.pop("installed_wheel", None)
+    if installed_wheel is not None:
+        identity["installed_wheel"] = installed_wheel
+    return {**identity, "source_sha256": source_sha256}
 
 
 def _physics_update_counts(driver) -> dict[str, int]:

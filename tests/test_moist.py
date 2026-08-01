@@ -42,6 +42,34 @@ def _setup(nx=32, nz=16, moist=True):
 
 @pytest.mark.gpu
 @requires_gpu
+@pytest.mark.parametrize("clamp", [False, True])
+def test_scalar_update_in_place_matches_expression_bits(clamp):
+    """The scratch-reuse form preserves every eager CuPy FP32 boundary."""
+    import cupy as cp
+
+    from gpuwm.core.moist import _update_scalar_in_place
+
+    rng = cp.random.RandomState(20260731)
+    shape = (5, 3, 4)
+    q0 = rng.standard_normal(shape, dtype=cp.float32)
+    chm0 = rng.uniform(0.75, 1.25, shape).astype(cp.float32)
+    chm = rng.uniform(0.75, 1.25, shape).astype(cp.float32)
+    tend = rng.standard_normal(shape, dtype=cp.float32)
+    dt_eff = 0.375
+    expected = (chm0 * q0 + dt_eff * tend) / chm
+    if clamp:
+        expected = cp.maximum(expected, 0.0)
+
+    got = cp.empty_like(q0)
+    tend_scratch = tend.copy()
+    _update_scalar_in_place(
+        got, q0, chm0, chm, tend_scratch, dt_eff, clamp=clamp)
+
+    cp.testing.assert_array_equal(got, expected)
+
+
+@pytest.mark.gpu
+@requires_gpu
 def test_moist_state_allocation():
     import cupy as cp
     from gpuwm.core.state import DomainState

@@ -167,7 +167,9 @@ def test_every_prompt_shows_its_default_and_enter_accepts_it(monkeypatch):
     ("not a point", "35.3,-97.5", "decimal degrees"),
     ("95,-97.5", "35.3,-97.5", "[-90, 90]"),
     ("90,-97.5", "35.3,-97.5", "pole itself"),
-    ("35.3,-200", "35.3,-97.5", "[-180, 180]"),
+    # -200 now wraps with a warning (warn-not-block); -400 is beyond
+    # the wrappable window and still re-prompts.
+    ("35.3,-400", "35.3,-97.5", "[-180, 180]"),
 ])
 def test_a_bad_point_re_prompts_and_says_why(monkeypatch, capsys, bad,
                                              good, complaint):
@@ -438,8 +440,16 @@ def test_the_printed_command_round_trips_through_the_parser(monkeypatch):
 # The seam: what a bare session emits has to be something `gpuwm go` runs
 # ---------------------------------------------------------------------------
 
-def test_the_session_states_the_two_defaults_it_supplied(monkeypatch):
-    """A default that changes what runs is announced, not discovered."""
+def test_the_session_states_the_defaults_it_supplied(monkeypatch):
+    """A default that changes what runs is announced, not discovered.
+
+    Converted from ``..._the_two_defaults_...``: there are three now.
+    The forecast lead a run starts from is a default of exactly that
+    kind -- a session that never mentions it is a session in which a
+    user cannot reach a window deep in a forecast without integrating
+    to it -- so it is named where the other two are named.  Both
+    original defaults keep every assertion they had.
+    """
 
     _answers(monkeypatch, BASE_REPLIES)
     _no_gpu(monkeypatch)
@@ -451,6 +461,8 @@ def test_the_session_states_the_two_defaults_it_supplied(monkeypatch):
     assert interactive.default_physics_profile("gfs") in text
     assert "--physics-profile" in text
     assert "--ladder" in text
+    assert "f000 analysis" in text
+    assert "--forecast-start-hour" in text
 
 
 @pytest.mark.parametrize("source", sorted(interactive.SOURCES))
@@ -474,7 +486,7 @@ def test_every_default_profile_is_offered_and_model_validated(source):
     assert offering, (
         f"no runner route declares {profile} for {source}; the "
         "interactive default would emit a config its own runner refuses")
-    assert payload["templates"][profile]["maturity"] == "model-validated"
+    assert payload["templates"][profile]["maturity"] == "wrf-matched-run"
 
 
 def test_a_bare_session_emits_a_config_gpuwm_go_accepts(tmp_path,

@@ -1,0 +1,22 @@
+//
+// Parser fixture: the same float instructions with no .ftz modifier.
+// Hand-written; it is not the output of any compile and is never cited as
+// evidence about a device.
+//
+.version 8.7
+.target sm_120
+.address_size 64
+
+.visible .entry fixture_absent(
+	.param .u64 fixture_absent_param_0
+)
+{
+	.reg .pred 	%p<2>;
+	.reg .f32 	%f<8>;
+
+	mul.rn.f32 	%f3, %f1, %f2;
+	min.f32 	%f4, %f1, %f2;
+	setp.neu.f32 	%p1, %f1, %f2;
+	cvt.rn.f32.f64 	%f5, %fd1;
+	ret;
+}

@@ -52,6 +52,54 @@ def gfs_config(tmp_path_factory):
     return _emit(tmp_path_factory.mktemp("gfs"), "myarea")
 
 
+#: What the pinned card below reports free.  Comfortably above this
+#: file's fixture config (a 24 GiB-card ladder, ~19.94 GiB forecast peak
+#: envelope) so the gate's verdict here is "fits", deterministically.
+_PINNED_FREE_BYTES = 30 * 1024 ** 3
+
+
+@pytest.fixture(autouse=True)
+def _a_card_whose_free_vram_this_file_decides(monkeypatch):
+    """Pin the ONE number the outside world moves in the memory gate.
+
+    ``memory_gate`` refuses when the binding phase exceeds the free VRAM
+    it measures *right now*, which is correct and is the whole point of
+    gating before the fetch.  It also means that on a shared card every
+    test below that drives the real chain -- the stage-failure replay,
+    the one-line-per-stage report, ``--explain`` -- turns red whenever
+    another run happens to hold the card, because the chain stops at a
+    genuine refusal instead of reaching the stage behaviour under test.
+    Proven: with 8 GiB reported free, five tests in this file fail; with
+    the card idle they pass.  A test suite must not have that reading.
+
+    So the card's free VRAM is pinned here and everything else in the
+    gate stays real -- the phase estimates, the reserve policy, the
+    verdict sentence, the refuse/warn arithmetic all run as shipped.
+    The gate's own tests below substitute ``memory_gate`` wholesale from
+    inside the test body, after this fixture, so they still choose their
+    own numbers and are unaffected.
+    """
+
+    try:
+        import cupy
+    except Exception:  # no device here: the gate's no-device path is
+        return         # already deterministic
+    monkeypatch.setattr(
+        cupy.cuda.runtime, "memGetInfo",
+        lambda: (_PINNED_FREE_BYTES, 32 * 1024 ** 3), raising=False)
+
+
+def test_the_pinned_card_is_what_the_gate_reads(gfs_config, tmp_path):
+    """The fixture above is load-bearing; prove it reaches the gate."""
+
+    plan = go_cli.plan_from_config(gfs_config, outdir=tmp_path / "out")
+    gate = go_cli.memory_gate(plan)
+    if gate["free_bytes"] is None:
+        pytest.skip("no CUDA device on this box; gate took its no-device path")
+    assert gate["free_bytes"] == _PINNED_FREE_BYTES
+    assert not gate["refuse"]
+
+
 # ---------------------------------------------------------------------------
 # Refusals: never half-orchestrate
 # ---------------------------------------------------------------------------
@@ -74,15 +122,29 @@ def test_a_domain_tree_is_refused_toward_its_own_runner(tmp_path, capsys):
     assert go_cli.MANUAL_CHAIN in error
 
 
-def test_a_config_with_no_shipped_profile_is_refused_before_anything_runs(
+def test_a_config_with_no_shipped_profile_runs_with_status_stated(
         tmp_path, capsys):
-    """The chain's LAST stage would refuse this; say so at the first."""
+    """Converted (owner ruling 2026-07-31): the chain's last stage runs
+    the config's own suite as written, so the first stage plans it
+    instead of refusing it -- with the verification status stated in one
+    sentence and no --physics-profile invented anywhere."""
 
     config = _emit(tmp_path, "default_suite", profile=None)
-    assert cli_main(["go", str(config), "--dry-run"]) == 2
-    error = capsys.readouterr().err
-    assert "matches none of the profiles" in error
-    assert "--physics-profile" in error
+    assert cli_main(["go", str(config), "--dry-run"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "supported, not yet WRF-verified" in captured.out
+    assert "--physics-profile" not in captured.out
+
+    plan = go_cli.plan_from_config(config, outdir=tmp_path / "go")
+    assert plan["profile"] is None
+    for command in (
+            go_cli.authority_command(plan),
+            go_cli.forecast_command(plan, {
+                "proof": "a" * 64, "source_manifest": "b" * 64,
+                "prepared_content": "c" * 64}),
+    ):
+        assert "--physics-profile" not in command
 
 
 def test_a_missing_config_is_a_refusal_not_a_traceback(tmp_path, capsys):
@@ -614,3 +676,136 @@ def test_a_second_go_into_the_same_tree_is_refused_in_its_own_words(
     assert "already exists" in message
     assert "--outdir" in message
     assert "Traceback" not in message
+
+
+# ---------------------------------------------------------------------------
+# The memory gate: before the download, never after it
+# ---------------------------------------------------------------------------
+
+def test_the_memory_gate_prices_both_phases_and_names_the_binding_one(
+        gfs_config, tmp_path):
+    """`go` must know what this run costs BEFORE `gpuwm fetch` runs.
+
+    The bug this closes: the only estimate anyone computed described the
+    forecast, so a domain sized to a 12 GB card downloaded 81 GFS files
+    and then died in preprocessing at 15.82 GB.  Both phases are priced
+    here, from the config alone, with no device and no download.
+    """
+    plan = go_cli.plan_from_config(gfs_config, outdir=tmp_path / "out")
+    gate = go_cli.memory_gate(plan)
+    phases = gate["phases"]
+    assert phases.ingest_priced
+    assert phases.ingest.n_forcing_times >= 2
+    assert phases.ingest.resident_times == 2
+    assert phases.binding_phase in ("forecast", "ingest")
+    assert phases.binding_phase in gate["verdict"]
+    assert "forecast" in gate["verdict"] and "ingest" in gate["verdict"]
+
+
+def test_the_memory_gate_refuses_ahead_of_the_fetch_stage(gfs_config,
+                                                          tmp_path,
+                                                          monkeypatch,
+                                                          capsys):
+    """A refusal must land with the download still un-started.
+
+    Every stage command is replaced by a recorder, so if `fetch` appears
+    in the record at all the gate ran too late.
+    """
+    ran: list[str] = []
+
+    def _record(label, command, **kwargs):
+        ran.append(label)
+
+    monkeypatch.setattr(go_cli, "_run_stage", _record)
+    monkeypatch.setattr(go_cli, "resolve_bridge", lambda: Path("bridge"))
+    monkeypatch.setattr(
+        go_cli, "memory_gate",
+        lambda plan, **kw: {
+            "verdict": "preprocessing (ingest) is the memory-binding phase "
+                       "at 40.00 GiB peak envelope",
+            "refuse": True, "warn": True, "free_bytes": 8 * 1024 ** 3,
+        })
+    args = _args(gfs_config, tmp_path / "out")
+    with pytest.raises(go_cli.GoRefusal) as refusal:
+        go_cli.go_main(args)
+    assert ran == []
+    message = str(refusal.value)
+    assert "BEFORE the fetch stage" in message
+    assert "memory-binding phase" in message
+    assert "gpuwm domain --vram-gib" in message
+    assert "--no-memory-gate" in message
+
+
+def test_the_memory_gate_warns_without_blocking_and_can_be_skipped(
+        gfs_config, tmp_path, monkeypatch, capsys):
+    """Over budget but inside free VRAM is an advisory, not a refusal."""
+    ran: list[str] = []
+
+    def _stage(label, command, **kwargs):
+        ran.append(label)
+        if label == "manifest":  # stop the chain where the real work starts
+            raise go_cli.GoStageFailed(9)
+
+    monkeypatch.setattr(go_cli, "_run_stage", _stage)
+    monkeypatch.setattr(go_cli, "resolve_bridge", lambda: Path("bridge"))
+    monkeypatch.setattr(
+        go_cli, "memory_gate",
+        lambda plan, **kw: {"verdict": "the forecast is the memory-binding "
+                                       "phase at 9.00 GiB peak envelope",
+                            "refuse": False, "warn": True,
+                            "free_bytes": 12 * 1024 ** 3})
+    assert go_cli.go_main(_args(gfs_config, tmp_path / "warn")) == 9
+    assert ran == ["authority", "fetch", "manifest"]
+    printed = capsys.readouterr().out
+    assert "WARNING" in printed
+    assert "memory-binding phase" in printed
+
+    called: list[str] = []
+    ran.clear()
+    monkeypatch.setattr(
+        go_cli, "memory_gate",
+        lambda plan, **kw: called.append("gate") or {})
+    args = _args(gfs_config, tmp_path / "skipped")
+    args.no_memory_gate = True
+    assert go_cli.go_main(args) == 9
+    assert called == []
+    assert ran == ["authority", "fetch", "manifest"]
+
+
+def _args(config, outdir):
+    import argparse
+
+    return argparse.Namespace(
+        config=config, outdir=outdir, data_dir=None, geog_root=None,
+        dry_run=False, no_memory_gate=False, explain=False)
+
+
+# ---------------------------------------------------------------------------
+# The forecast lead: a start of cycle + K, carried through the chain
+# ---------------------------------------------------------------------------
+
+def test_go_carries_the_configs_forecast_lead_into_its_fetch(tmp_path):
+    """A lead in [fetch] is load-bearing, exactly like cycle/hours/area.
+
+    ``gpuwm go`` is step 3 of what the wizard itself prints, so a config
+    whose start_time is cycle + K has to reach a fetch that downloads
+    f{K}..  Ignoring the lead here would download f000.. and then hand
+    the front door a series that does not carry the lead the experiment
+    starts from -- a refusal produced by the orchestrator, from a config
+    that is entirely correct.
+    """
+
+    config = _emit(tmp_path, "lead", "--forecast-start-hour", "174")
+    plan = go_cli.plan_from_config(config, outdir=tmp_path / "go")
+    assert plan["forecast_start_hour"] == 174
+    # The cycle stays the CYCLE; the lead is carried beside it.
+    assert plan["cycle"] == "2026-07-29T18"
+    fetch = go_cli.fetch_command(plan)
+    assert "--forecast-start-hour" in fetch
+    assert fetch[fetch.index("--forecast-start-hour") + 1] == "174"
+
+    # And an analysis-start config still prints the command it always did.
+    plain = go_cli.plan_from_config(
+        _emit(tmp_path, "plain"), outdir=tmp_path / "go-plain")
+    assert plain["forecast_start_hour"] == 0
+    assert "--forecast-start-hour" not in go_cli.fetch_command(plain)

@@ -19,6 +19,9 @@ def load_module(name: str):
     src = _preamble() + (_KDIR / f"{name}.cu").read_text()
     mod = cp.RawModule(code=src, options=("-std=c++17",), name_expressions=None)
     mod.compile()
+    from gpuwm.certify.kernel_manifest import record_module
+    record_module(f"{MODULE_KEY_ROOT}:{name}",
+                  source=src, options=("-std=c++17",), module=mod)
     return mod
 
 
@@ -48,7 +51,16 @@ def load_module_int_defines(
     mod = cp.RawModule(code=src, options=("-std=c++17",),
                        name_expressions=None)
     mod.compile()
+    from gpuwm.certify.kernel_manifest import record_module
+    tier = ",".join(f"{key}={value}" for key, value in normalized)
+    record_module(f"{MODULE_KEY_ROOT}:{name}[{tier}]",
+                  source=src, options=("-std=c++17",), module=mod)
     return mod
+
+
+#: Manifest namespace for the translation units the loaders above compile.
+#: Declared below them because the FTZ receipt pins their RawModule lines.
+MODULE_KEY_ROOT = "gpuwm.core.kernels"
 
 
 @lru_cache(maxsize=None)

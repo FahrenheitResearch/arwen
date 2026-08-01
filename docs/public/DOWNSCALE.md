@@ -17,13 +17,13 @@ workflow plus the measured cost of the one shortcut people take
    Cross-scheme conversion is explicit and fail-closed (active
    condensate is never paired with a fabricated zero number moment;
    NSSL targets require the official `calcnfromq` diagnosis).
-3. **Choose the boundary cadence explicitly.** The tool refuses to run
-   until you either pass `--max-boundary-interval-seconds` or opt in
-   to the archive's own cadence with `--accept-parent-cadence` -- one
-   or the other, never both (supplying both is an argument error
-   naming the pair). This is deliberate: boundary cadence is the
-   dominant error term (table below), so it is a decision you make,
-   not a default you inherit.
+3. **The boundary cadence defaults to the archive's own.** With no
+   cadence flag the tool uses the parent history cadence and says so
+   in one warning line; `--max-boundary-interval-seconds` bounds it
+   explicitly and `--accept-parent-cadence` is the warning-free
+   spelling of the default (one or the other, never both). Boundary
+   cadence is the dominant error term (table below), so the line is
+   worth reading -- but a runnable job is never refused for it.
 4. **Full-physics children need a child-grid surface source**
    (`--child-surface-from`): a `wrfinput` or history file on the exact
    child grid supplies land identity and soil warm start -- mirroring
@@ -52,6 +52,13 @@ gpuwm downscale RUNDIR --parent-domain 3 --parent-restart ... \
   --max-boundary-interval-seconds 900 --out child-run
 ```
 
+`--card` takes the same tiers `gpuwm domain` does
+(`12gb|16gb|24gb|32gb`, [HARDWARE.md](HARDWARE.md)) and `--vram-gib N`
+covers anything between them; both feed the same budget model. Until
+1.4 this command hardcoded a shorter list and rejected `--card 12gb`
+while the wizard accepted it -- two commands quoting different tier
+lists for the same concept.
+
 Point mode writes the derived TOML beside `--out` for reuse, and
 inherits the *parent's* per-domain tuning knobs verbatim (documented
 in the TOML header). `--dry-run` prints the full plan -- frames,
@@ -67,10 +74,14 @@ Acceptance measurement (2026-07-29, RTX 5090): the reference case's
 to the run's own 500 m d04 geometry (400x400, ratio 2, dt 2.5 s, full
 physics) over 3 h spanning convective initiation -- then scored against
 the *live-nest* d04 of the same run on the interior grid (5-row rim
-excluded). The offline cold start reproduced the live nest's own
-initialization almost exactly (t=0 row below), so the whole table is
-forcing-path cost: hourly interval-linear boundaries versus the live
-nest's every-parent-step forcing.
+excluded). At F+0.0 the offline cold start matches the live nest on the
+four metrics this table scores -- 0.000 K T2 MAE, 1.000 T2 correlation,
+0.1 Pa PSFC MAE, 1.000 wind correlation (first row below). That row is
+the whole scope of the statement: it is four comparator metrics on one
+pair of runs, and no full-state digest was taken of the offline/live
+pair. Read the rest of the table as forcing-path cost: hourly
+interval-linear boundaries versus the live nest's every-parent-step
+forcing.
 
 | lead | T2 MAE (K) | T2 corr | PSFC MAE (Pa) | wind10 corr | refl corr | refl MAE (dBZ) | CSI@20 |
 |---|---|---|---|---|---|---|---|
@@ -106,9 +117,9 @@ boundaries, an offline child is honest for mesoscale downscaling --
 temperature, pressure, wind envelope -- and is **not** a substitute
 for a live nest at convective scale: cell placement inside the child
 is decorrelated from what a live nest would produce. The CLI prints
-this guidance whenever an archive coarser than 15 minutes is offered
-with `--accept-parent-cadence`; passing the flag is your
-acknowledgment, recorded in `report.json` as
+this guidance as a warning whenever the archive is coarser than 15
+minutes, however the cadence was chosen; `--accept-parent-cadence` is
+recorded in `report.json` as
 `boundary_cadence_provenance.accepted_parent_cadence: true` beside
 the ceiling and the effective boundary interval (an explicit
 `--max-boundary-interval-seconds` records `false` there instead).

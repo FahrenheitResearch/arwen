@@ -615,3 +615,151 @@ def test_a_resume_that_re_resolves_a_bar_records_the_new_one(tmp_path,
                       if bar["kind"] == "hrrr-atmosphere")
     assert atmosphere["derived"] == CERTIFIED_RECORD_BARS["hrrr-atmosphere"]
     assert atmosphere["inventory_change_accepted"] is False
+
+
+# ---------------------------------------------------------------------------
+# The default byte transport.  ``--mode auto`` resolved to ``idx-subset``
+# against every healthy host, so the documented fast path was reachable only
+# by typing three flags -- and a field user paid 560 s for a 419 MB file that
+# the whole-file route moves in 27-35 s.
+# ---------------------------------------------------------------------------
+
+def _hrrr_fetch_plan(monkeypatch, argv, *, backbone: Path | None,
+                     resolved_transport: str = "s3"):
+    """Run ``gpuwm fetch --source hrrr`` far enough to read its plan.
+
+    The transfer itself is replaced; what is under test is the pair
+    (engine, mode) the front door decides on before any byte moves.
+    """
+
+    seen: dict[str, object] = {}
+
+    def capture(**kwargs):
+        seen.update(kwargs)
+        raise _StopBeforeTransfer
+
+    monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", lambda: backbone)
+    monkeypatch.setattr(rustwx_fetch, "probe_fetch_bin",
+                        lambda path: (True, "usable"))
+    monkeypatch.setattr(fetch, "fetch_hrrr", capture)
+    monkeypatch.setattr(fetch, "require_published_cycle",
+                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(fetch, "check_prior_request",
+                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(fetch, "resolve_hrrr_transport",
+                        lambda cycle, requested, **kwargs: resolved_transport)
+    parser = cli.build_parser()
+    args = parser.parse_args(argv)
+    try:
+        fetch.fetch_main(args)
+    except _StopBeforeTransfer:
+        pass
+    return seen
+
+
+class _StopBeforeTransfer(Exception):
+    """Raised by the stand-in transfer once the plan is readable."""
+
+
+def _hrrr_argv(tmp_path, *extra):
+    return ["fetch", "--source", "hrrr", "--cycle", "2026-07-30T12",
+            "--hours", "1", "--out", str(tmp_path / "out"), *extra]
+
+
+def test_the_hrrr_default_is_the_whole_file_through_the_backbone(
+        tmp_path, monkeypatch):
+    """The standing ruling, restored as the default it always was.
+
+    Full files are the pipeline; record subsetting is an opt-in
+    bandwidth saver.  ``--mode auto`` inverted that in practice, because
+    its probe rule only takes the whole object when the ``.idx`` cannot
+    carry the selection -- which a healthy host's index always can.
+    """
+
+    plan = _hrrr_fetch_plan(monkeypatch, _hrrr_argv(tmp_path),
+                            backbone=tmp_path / "rw_fetch")
+    assert plan["engine"] == "rust"
+    assert plan["mode"] == fetch.HRRR_DEFAULT_MODE == "full-file"
+
+
+def test_subsetting_stays_available_and_says_what_it_costs(
+        tmp_path, monkeypatch, capsys):
+    plan = _hrrr_fetch_plan(
+        monkeypatch, _hrrr_argv(tmp_path, "--mode", "idx-subset"),
+        backbone=tmp_path / "rw_fetch")
+    assert plan["mode"] == "idx-subset"
+    printed = capsys.readouterr().out
+    assert "idx-subset selected" in printed
+    assert "costs wall clock" in printed
+
+
+def test_an_explicit_auto_still_means_the_probe_rule(tmp_path, monkeypatch):
+    plan = _hrrr_fetch_plan(
+        monkeypatch, _hrrr_argv(tmp_path, "--mode", "auto"),
+        backbone=tmp_path / "rw_fetch")
+    assert plan["mode"] == "auto"
+
+
+def test_an_install_without_the_backbone_is_told_what_it_is_paying(
+        tmp_path, monkeypatch, capsys):
+    """The fallback is correct and slow, and now it says so up front.
+
+    Negative control for the line above: with the backbone present the
+    same invocation prints no such warning (asserted below).
+    """
+
+    plan = _hrrr_fetch_plan(monkeypatch, _hrrr_argv(tmp_path), backbone=None)
+    assert plan["engine"] == "python"
+    assert plan["mode"] == "auto"
+    warned = capsys.readouterr().err
+    assert "Python transport" in warned
+    assert "gpuwm setup" in warned
+
+    _hrrr_fetch_plan(monkeypatch, _hrrr_argv(tmp_path),
+                     backbone=tmp_path / "rw_fetch")
+    assert "Python transport" not in capsys.readouterr().err
+
+
+def test_choosing_the_python_engine_is_not_second_guessed(
+        tmp_path, monkeypatch, capsys):
+    plan = _hrrr_fetch_plan(
+        monkeypatch, _hrrr_argv(tmp_path, "--engine", "python"),
+        backbone=None)
+    assert plan["engine"] == "python"
+    assert "Python transport" not in capsys.readouterr().err
+
+
+def test_an_auto_resolved_nomads_whole_file_names_the_faster_flag(
+        tmp_path, monkeypatch, capsys):
+    """The throughput split between the two hosts, said once.
+
+    Measured on one box against one cycle, four objects, the same
+    backbone and the same default mode: 348/209/418/255 s from NOMADS
+    and 69/34/45/44 s from S3.  ``auto`` prefers S3 for exactly that
+    reason and reaches NOMADS only when S3 cannot serve the window yet,
+    so this line now explains a real trade -- the freshest host, at the
+    slower rate -- rather than apologising for a default.
+    """
+
+    _hrrr_fetch_plan(monkeypatch, _hrrr_argv(tmp_path),
+                     backbone=tmp_path / "rw_fetch",
+                     resolved_transport="nomads")
+    printed = capsys.readouterr().out
+    assert "--transport s3" in printed
+    assert "paces whole-file transfers" in printed
+
+
+def test_a_pinned_transport_is_not_second_guessed(tmp_path, monkeypatch,
+                                                  capsys):
+    """Negative control, watched firing: an operator who named the host.
+
+    The line above fires for the same resolved host when it was chosen
+    by ``auto``; naming ``--transport nomads`` is a decision, and a
+    decision does not get advice.
+    """
+
+    _hrrr_fetch_plan(monkeypatch,
+                     _hrrr_argv(tmp_path, "--transport", "nomads"),
+                     backbone=tmp_path / "rw_fetch",
+                     resolved_transport="nomads")
+    assert "--transport s3" not in capsys.readouterr().out

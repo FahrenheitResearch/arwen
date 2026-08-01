@@ -23,6 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
+from gpuwm.certify.kernel_manifest import record_module
 from gpuwm.core.kernels import _preamble
 
 _KDIR = Path(__file__).resolve().parent / "kernels"
@@ -137,9 +138,14 @@ def driver_source() -> str:
 def _module(options: tuple[str, ...], source: str | None):
     import cupy as cp
 
-    module = cp.RawModule(code=source if source is not None else driver_source(),
+    code = source if source is not None else driver_source()
+    module = cp.RawModule(code=code,
                           options=options)
     module.compile()
+    record_module(
+        "gpuwm.core.noahmp_driver_gpu:driver"
+        + ("" if source is None else "(substituted-source)"),
+        source=code, options=options, module=module)
     return module
 
 

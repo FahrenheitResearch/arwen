@@ -224,13 +224,30 @@ rw-wps --show-physics-registry
 Read `runner_routes.*.source_template_ids` and `expert_template_ids`.
 Where this page and that output disagree, the output is right.
 
-The prepared SINGLE-domain forecast runner adds a second, separate
-restriction: it accepts only the shipped `--physics-profile` values and
-compares switches for exact equality. `gpuwm domain --physics-profile`
-emits a config that passes that guard as written, and the wizard prints
-what each profile actually runs -- three of the six run full RTE+RRTMGP
-with Kain-Fritsch, three run longwave OFF with Dudhia shortwave and no
-cumulus. Read the names. The multi-domain runner has no whitelist.
+The physics suite is yours to choose. The GFS/ERA5/20CRv3 prepared
+single-domain runner and the multi-domain tree runner execute any suite
+the engine implements, exactly as your config writes it; there is no
+profile whitelist on those routes. `--physics-profile` is optional
+there: naming one asserts your config IS that shipped suite, and the
+runner refuses on any switch drift, which is how you keep a run pinned
+to a published product. The one route this does NOT describe is HRRR
+cold start: its evidence contract is keyed by shipped profile, so it
+prepares WSM6 when no profile is named and refuses a name outside its
+contract -- an unnamed HRRR config's own suite does not run as written
+there. Whether the suite you selected carries WRF-verification
+evidence is stated -- one sentence in the wizard
+output, the run receipt, and `--explain` -- and never gates: a suite
+without evidence prints "supported, not yet WRF-verified" and the run
+continues. An expert-template suite (Noah-MP) keeps its registry-owned
+acknowledgement on every route, delivered as `--ack <id>` or
+`acknowledgements = ["<id>"]` in the experiment. `gpuwm domain
+--explain` lists the shipped profiles and
+what each one actually runs -- several run full RTE+RRTMGP with
+Kain-Fritsch, several run longwave OFF with Dudhia shortwave and no
+cumulus. Read the names. What still refuses, on every route, is a
+switch value the engine genuinely does not implement (the refusal names
+the switch) and the registry's land-surface route blockers (for
+example GFS+RUC, which dies at its first surface-temperature call).
 
 ## Namelist import substitutions
 

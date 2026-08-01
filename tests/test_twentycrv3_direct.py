@@ -225,7 +225,18 @@ def test_the_wizard_default_toml_is_refused_in_a_sentence(tmp_path, capsys):
     err = capsys.readouterr().err
     assert rc == 2, "a config refusal fails closed"
     assert "Traceback" not in err
-    assert err.count("\n") == 1, f"one sentence, not a stack: {err!r}"
+    # The config loader now WARNS about the unknown [case_data] table
+    # instead of refusing on it (warn-not-block), so this door's own
+    # refusal arrives one line further down.  Both halves still have to
+    # be one line each -- the pilot's complaint was a stack, and a
+    # warning that grew into a paragraph would be the same failure.
+    lines = [line for line in err.splitlines() if line.strip()]
+    warnings = [line for line in lines if line.startswith("warning:")]
+    refusal = [line for line in lines if not line.startswith("warning:")]
+    assert len(warnings) == 1, f"one warning line, not a stack: {err!r}"
+    assert "case_data" in warnings[0]
+    assert len(refusal) == 1, f"one sentence, not a stack: {err!r}"
+    err = refusal[0]
     # It names the incompatibility...
     assert "[case_data]" in err
     # ...and a supported route to a config this door accepts.

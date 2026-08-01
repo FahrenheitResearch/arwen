@@ -25,11 +25,16 @@ Per-source transport:
   (``nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod``, roughly the
   newest 48 h, where each hour publishes first) and the AWS Open Data
   S3 archive ``noaa-hrrr-bdp-pds``.  ``--transport auto`` (default)
-  probes NOMADS for the requested window and falls back to S3.  NOMADS
+  probes S3 for the requested window and uses NOMADS only when S3
+  cannot serve it yet: S3 is several times faster for the whole-file
+  default, and NOMADS's head start matters only to ``--wait-for``,
+  which keeps its own NOMADS-first polling.  NOMADS
   has no grib-filter route for these products -- its HRRR filter
   scripts cover the 2-D ``wrfsfc`` file only -- so subsetting stays
   ``.idx`` byte ranges on both hosts and the exact 561/18 record
-  contracts are unchanged.  ``--wait-for`` polls (at most every 30 s)
+  contracts are unchanged.  The bytes move whole by default
+  (:data:`HRRR_DEFAULT_MODE`, through the Rust backbone's parallel
+  range GETs); ``--mode idx-subset`` is the opt-in bandwidth saver.  ``--wait-for`` polls (at most every 30 s)
   and downloads each forecast hour as it publishes, so preparation can
   start before a live cycle finishes publishing.  HRRR objects are
   CONUS-wide; ``.idx`` subsetting selects records, not areas, so
@@ -62,7 +67,7 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from gpuwm import fetch_bars, fetch_guard
+from gpuwm import explain, fetch_bars, fetch_guard
 from gpuwm.explain import layered
 from gpuwm.nomads_governor import paced_urlopen
 
@@ -134,6 +139,25 @@ FETCH_ENGINES = ("auto", "rust", "python")
 #: file.  No time constants are involved; both named modes are
 #: first-class and either can be forced.
 FETCH_MODES = ("auto", "full-file", "idx-subset")
+
+#: What ``gpuwm fetch --source hrrr`` does when nobody says otherwise.
+#:
+#: The whole file, in parallel range GETs.  This was ``auto``, whose
+#: probe rule -- take the whole object only when the ``.idx`` cannot
+#: carry the selection -- resolves to ``idx-subset`` against every
+#: healthy host, because a healthy host publishes a complete index.  So
+#: the default was hundreds of small serial range requests: a field
+#: report timed one 419 MB HRRR file at **560 s** on a 2 Gbps host,
+#: against **27-35 s** for the same class of file taken whole through
+#: the Rust backbone.  Roughly a 16x tax, paid by default, to save
+#: bandwidth nobody had asked to save.
+#:
+#: The project ruling this restores is older than the probe rule: full
+#: files are the pipeline, and record subsetting is an opt-in bandwidth
+#: saver.  ``--mode idx-subset`` still does exactly what it always did
+#: and says so in one line when it is chosen; ``--mode auto`` still
+#: exists for a caller that genuinely wants the probe to decide.
+HRRR_DEFAULT_MODE = "full-file"
 
 #: ``gpuwm fetch --transport`` host names to ``rw_fetch --source``
 #: registry names.  Same two hosts, different vocabularies: ArWen has
@@ -416,18 +440,51 @@ def parse_cycle(raw: str, source: str) -> datetime:
     return cycle
 
 
-def gfs_forecast_hours(hours: int, cadence: int) -> tuple[int, ...]:
-    """The f000..fNNN ladder the GFS series contract accepts."""
+def _forecast_start_hour(start: int | None, cadence: int) -> int:
+    """The lead a fetch window begins at: 0, or a checked positive lead.
+
+    A window that starts at f000 is the analysis and its short forecast;
+    a window that starts at f{K} is the run whose initial condition is
+    GFS's own K-hour forecast.  Both are legitimate; the second is what
+    a user wanting the f174..f240 window needs, and fetching f000..f240
+    to reach it is the workaround this closes.
+    """
+
+    if start is None:
+        return 0
+    if isinstance(start, bool) or not isinstance(start, int) or start < 0:
+        raise ValueError(
+            "--forecast-start-hour must be a nonnegative forecast lead")
+    if start % cadence:
+        raise ValueError(
+            f"--forecast-start-hour {start} is not on the {cadence} h "
+            "cadence, so the requested lead is not a time this window "
+            "would contain")
+    return start
+
+
+def gfs_forecast_hours(hours: int, cadence: int,
+                       start: int | None = None) -> tuple[int, ...]:
+    """The f{start}..f{start+NNN} ladder the GFS series contract accepts.
+
+    ``start`` defaults to 0, which is the f000..fNNN ladder every prior
+    release fetched, byte for byte.  ``--hours`` stays what it always
+    was: the LENGTH of the window, not its final lead, so a window is
+    described the same way wherever it begins.
+    """
 
     if cadence not in (1, 3):
         raise ValueError("GFS cadence must be 1 or 3 hours")
     if hours < cadence or hours % cadence:
         raise ValueError(
             f"--hours must be a positive multiple of the {cadence} h cadence")
-    if hours > GFS_MAX_FORECAST_HOUR:
+    start = _forecast_start_hour(start, cadence)
+    if start + hours > GFS_MAX_FORECAST_HOUR:
         raise ValueError(
-            f"--hours exceeds the GFS f{GFS_MAX_FORECAST_HOUR} horizon")
-    return tuple(range(0, hours + 1, cadence))
+            f"--hours {hours} beginning at f{start:03d} reaches "
+            f"f{start + hours:03d}, past the GFS "
+            f"f{GFS_MAX_FORECAST_HOUR} horizon")
+    return tuple(range(start, start + hours + 1, cadence))
 
 
 def gdas_capability_refusal(requested_hour: int) -> str:
@@ -459,16 +516,18 @@ def gdas_capability_refusal(requested_hour: int) -> str:
         "failure later, so the refusal is here.")
 
 
-def gdas_forecast_hours(hours: int, cadence: int = 3) -> tuple[int, ...]:
+def gdas_forecast_hours(hours: int, cadence: int = 3,
+                        start: int | None = None) -> tuple[int, ...]:
     """The GDAS ladder inside the certified span, or a capability refusal."""
 
-    if hours > GDAS_MAX_FORECAST_HOUR:
-        raise ValueError(gdas_capability_refusal(hours))
-    if hours == 0:
-        return (0,)
     if cadence < 1:
         raise ValueError("--cadence must be a positive number of hours")
-    return tuple(range(0, hours + 1, cadence))
+    start = _forecast_start_hour(start, cadence)
+    if start + hours > GDAS_MAX_FORECAST_HOUR:
+        raise ValueError(gdas_capability_refusal(start + hours))
+    if hours == 0:
+        return (start,)
+    return tuple(range(start, start + hours + 1, cadence))
 
 
 def hrrr_forecast_hours(hours: int, cycle: datetime) -> tuple[int, ...]:
@@ -628,17 +687,36 @@ def resolve_hrrr_transport(cycle: datetime, requested: str, *,
                            probe=None, progress=print) -> str:
     """Pick the concrete HRRR transport for one fetch invocation.
 
-    NOMADS serves byte-identical HRRR files and ``.idx`` indexes but
-    keeps only about the newest :data:`HRRR_NOMADS_RETENTION_HOURS` of
-    cycles, publishing each hour before the cloud mirrors.  ``auto``
-    probes NOMADS for the requested window's final hour pair (both the
-    ``wrfnat`` and ``wrfprs`` objects, mirroring the latest-cycle
-    completeness rule) and falls back to S3 -- one decision per
-    invocation, so a fetch never silently mixes hosts; the manifest
-    records every file's actual URL and transport either way, and the
-    downloaded subset bytes are identical from both.  An explicit
-    ``nomads`` that NOMADS cannot serve refuses with the retention
-    story rather than failing file by file mid-download.
+    Both hosts serve byte-identical HRRR files and ``.idx`` indexes, so
+    the choice is never about the data.  It is about two things the
+    hosts do NOT share: NOMADS publishes each forecast hour before the
+    cloud mirrors do and keeps only about the newest
+    :data:`HRRR_NOMADS_RETENTION_HOURS`; S3 is the full archive and is
+    far faster for whole-file transfers.
+
+    ``auto`` therefore probes **S3** for the requested window's final
+    hour pair (both the ``wrfnat`` and ``wrfprs`` objects, mirroring the
+    latest-cycle completeness rule) and uses NOMADS only when S3 cannot
+    serve that window yet.  It used to be the other way round, and the
+    pairing was wrong for the default byte mode: this product's default
+    is ``--mode full-file``, and NOMADS paces large transfers hard.
+    Measured on one box, one cycle, the same four objects through the
+    same backbone: 348/209/418/255 s from NOMADS against 69/34/45/44 s
+    from S3, and a three-hour window that took 54 minutes over NOMADS
+    took about three over S3.  Nobody chose that; it fell out of
+    preferring the freshest host to a caller who was not asking for
+    freshness.
+
+    ``--wait-for`` IS asking for freshness, and it does not come through
+    here at all -- the live-cycle path keeps ``auto`` unresolved and
+    tries NOMADS first on every polling round, which is exactly what
+    downloading hours as they publish requires
+    (:func:`_fetch_hrrr_locked`).
+
+    One decision per invocation, so a fetch never silently mixes hosts;
+    the manifest records every file's actual URL and transport either
+    way.  An explicit ``nomads`` that NOMADS cannot serve refuses with
+    the retention story rather than failing file by file mid-download.
     """
 
     if requested == "s3":
@@ -652,9 +730,11 @@ def resolve_hrrr_transport(cycle: datetime, requested: str, *,
     if now is None:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
     age_hours = (now - cycle).total_seconds() / 3600.0
-    urls = (hrrr_object_url(cycle, last_hour, "wrfnat", transport="nomads"),
-            hrrr_object_url(cycle, last_hour, "wrfprs", transport="nomads"))
     if requested == "nomads":
+        urls = (hrrr_object_url(cycle, last_hour, "wrfnat",
+                                transport="nomads"),
+                hrrr_object_url(cycle, last_hour, "wrfprs",
+                                transport="nomads"))
         if all(probe(url) for url in urls):
             return "nomads"
         detail = (
@@ -668,18 +748,23 @@ def resolve_hrrr_transport(cycle: datetime, requested: str, *,
             f"{cycle:%Y-%m-%dT%H}Z through f{last_hour:02d}{detail}; use "
             "--transport s3 (the full archive) or auto")
     if age_hours > HRRR_NOMADS_RETENTION_HOURS:
+        # Past NOMADS retention there is no second host to probe.
         progress(
             f"fetch hrrr: cycle {cycle:%Y-%m-%dT%H}Z is {age_hours:.0f} h "
             f"old, beyond the ~{HRRR_NOMADS_RETENTION_HOURS} h NOMADS "
             "retention -- using the AWS S3 archive")
         return "s3"
-    if all(probe(url) for url in urls):
-        progress("fetch hrrr: using NOMADS (production mirror, identical "
-                 "files and .idx indexes; S3 remains the fallback)")
-        return "nomads"
-    progress("fetch hrrr: NOMADS does not serve the full requested window "
-             "yet -- falling back to the AWS S3 archive")
-    return "s3"
+    s3_urls = (hrrr_object_url(cycle, last_hour, "wrfnat", transport="s3"),
+               hrrr_object_url(cycle, last_hour, "wrfprs", transport="s3"))
+    if all(probe(url) for url in s3_urls):
+        progress("fetch hrrr: using the AWS S3 archive (identical files "
+                 "and .idx indexes, and far faster for whole-file "
+                 "transfers; NOMADS remains the fallback while a cycle "
+                 "is still reaching S3)")
+        return "s3"
+    progress("fetch hrrr: S3 does not serve the full requested window yet "
+             "-- using NOMADS, which publishes ahead of the mirrors")
+    return "nomads"
 
 
 # ---------------------------------------------------------------------------
@@ -1150,9 +1235,14 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
         command = [
             "gpuwm", "fetch", "--source", source,
             "--cycle", cycle.strftime("%Y-%m-%dT%H"),
-            "--hours", str(hours[-1]), "--cadence", str(cadence),
+            # --hours is the window LENGTH, so a window that begins at a
+            # forecast lead resumes to the same set it was cut from.
+            "--hours", str(hours[-1] - hours[0]),
+            "--cadence", str(cadence),
             "--area", area_arg, "--out", str(out),
         ]
+        if hours[0]:
+            command.extend(("--forecast-start-hour", str(hours[0])))
         if accept_inventory_change:
             command.append("--accept-inventory-change")
         return shlex.join(command)
@@ -1264,6 +1354,7 @@ def author_gfs_front_door_manifest(
         static_receipt: Path | None = None,
         manifest_out: Path | None = None,
         source: str = "gfs",
+        forecast_start_hour: int | None = None,
         progress=print) -> tuple[Path, str]:
     """Write the exact input manifest the GFS front door verifies.
 
@@ -1309,13 +1400,45 @@ def author_gfs_front_door_manifest(
         raise ValueError(
             f"fetch manifest in {out} lacks a forecast-hour inventory")
     prefix = GFS_CONTAINER_PREFIX[source]
+    # Author over a TAIL of what was fetched, when asked.  A directory
+    # already holding f000..f240 does not have to be re-downloaded for a
+    # run that starts at f174: the manifest and its series are cut to
+    # f174..f240, so the front door decodes only that window.  The cut is
+    # by absolute lead, because that is what the fetch recorded.
+    series_name = f"{prefix}-series.tsv"
+    if forecast_start_hour is not None:
+        if (isinstance(forecast_start_hour, bool)
+                or not isinstance(forecast_start_hour, int)
+                or forecast_start_hour < 0):
+            raise ValueError(
+                "--forecast-start-hour must be a nonnegative forecast lead")
+        if forecast_start_hour not in hours:
+            raise ValueError(
+                f"--forecast-start-hour {forecast_start_hour} is not a "
+                f"forecast hour {out} carries.  It holds "
+                + ", ".join(f"f{hour:03d}" for hour in hours))
+        hours = [hour for hour in hours if hour >= forecast_start_hour]
+        if len(hours) < 2:
+            raise ValueError(
+                f"--forecast-start-hour {forecast_start_hour} leaves "
+                f"{len(hours)} forecast hour(s) in {out}; a run needs its "
+                "initial condition and at least one lateral boundary time")
+        series_name = f"{prefix}-series-f{forecast_start_hour:03d}.tsv"
     subset_names = {
         item.get("forecast_hour"): item.get("name")
         for item in prior.get("files", ())
         if isinstance(item, dict)
         and item.get("role") == f"{source}-subset"}
+    if forecast_start_hour:
+        # A real, hash-bound series over the tail, written beside the
+        # fetch's own.  The full series is never edited: both remain
+        # readable, and the manifest names exactly one of them.
+        _atomic_write_text(out / series_name, "".join(
+            f"{hour}\t{subset_names[hour]}\t{81 if hour == 0 else 96}\n"
+            for hour in hours
+            if isinstance(subset_names.get(hour), str)))
     roles: dict[str, Path] = {
-        "series": out / f"{prefix}-series.tsv",
+        "series": out / series_name,
         "bridge": Path(bridge),
         "wps_namelist": Path(wps_namelist),
         "experiment_config": Path(experiment_config),
@@ -1429,6 +1552,15 @@ def author_gfs_front_door_manifest(
     output_root = out.resolve() / "prepared"
     progress(f"fetch {source}: front-door manifest {path}")
     progress(f"fetch {source}: front-door manifest sha256 {digest}")
+    if hours[0]:
+        lead_start = cycle + timedelta(hours=hours[0])
+        progress(
+            f"fetch {source}: this manifest binds forecast hours "
+            f"f{hours[0]:03d}..f{hours[-1]:03d}.  An experiment whose "
+            f"start_time is {lead_start:%Y-%m-%d %H:%M:%S} is initialized "
+            f"from f{hours[0]:03d} -- a {hours[0]} h forecast, not an "
+            "analysis -- with its lateral boundaries from the hours "
+            "after it")
     if source != "gfs":
         # A command that ends in a refusal is worse than no command.
         # This container has exactly one certified ingest route and it
@@ -2676,6 +2808,7 @@ def fetch_main(args) -> int:
             flag for flag, value in (
                 ("--p-top-pa", args.p_top_pa),
                 ("--all-levels", args.all_levels or None),
+                ("--forecast-start-hour", args.forecast_start_hour),
             ) if value is not None)
         if gfs_only:
             raise ValueError(
@@ -2702,7 +2835,7 @@ def fetch_main(args) -> int:
                 f"{'/'.join(GFS_CONTAINER_SOURCES)} only (the HRRR front "
                 "door consumes the fetched SHA256SUMS directly; its "
                 "handoff line is printed after every HRRR fetch)")
-        required = ("--bridge", "--wps-namelist", "--experiment-config")
+        required = ("--wps-namelist", "--experiment-config")
         absent = [flag for flag in required if author_roles[flag] is None]
         if absent or args.out is None:
             raise ValueError(
@@ -2710,6 +2843,18 @@ def fetch_main(args) -> int:
                 + ", ".join(required)
                 + " (the front-door manifest binds each file's sha256, "
                 "including the bridge executable's)")
+        if args.bridge is None:
+            # `gpuwm go` has always resolved this through
+            # gpuwm.bridges; the stage-by-stage route demanded a path
+            # instead, and the one FIRST-LIGHT printed
+            # (tools/grib1_bridge/target/release/...) exists only in a
+            # checkout -- so a wheel user following the documented long
+            # form met "front-door manifest inputs are missing: bridge"
+            # after paying for the fetch.  Same resolver, same answer,
+            # whichever door they came through.  Resolved after the
+            # flags above so a usage mistake still reads as one.
+            args.bridge = author_roles["--bridge"] = _resolve_manifest_bridge(
+                source)
     else:
         supplied = sorted(
             flag for flag, value in author_roles.items()
@@ -2728,7 +2873,8 @@ def fetch_main(args) -> int:
             experiment_config=args.experiment_config,
             static_input=args.static_input,
             static_receipt=args.static_receipt,
-            manifest_out=args.manifest_out, source=source)
+            manifest_out=args.manifest_out, source=source,
+            forecast_start_hour=args.forecast_start_hour)
         return 0
     if source == "era5" and args.validate:
         expected = None
@@ -2782,10 +2928,16 @@ def fetch_main(args) -> int:
                     "does not apply to a single time")
             hours = gdas_forecast_hours(
                 args.hours,
-                3 if args.cadence is None else args.cadence)
+                3 if args.cadence is None else args.cadence,
+                args.forecast_start_hour)
         else:
             cadence = args.cadence if args.cadence is not None else 3
-            hours = gfs_forecast_hours(args.hours, cadence)
+            hours = gfs_forecast_hours(
+                args.hours, cadence, args.forecast_start_hour)
+        if hours[0]:
+            print(f"fetch {source}: window begins at forecast lead "
+                  f"f{hours[0]:03d}; a model initialized there starts from "
+                  f"a {hours[0]} h forecast, not an analysis")
         if args.cycle == "latest":
             cycle = resolve_latest_cycle(source, hours[-1])
             print(f"fetch {source}: latest complete cycle is "
@@ -2818,13 +2970,42 @@ def fetch_main(args) -> int:
                 and args.wait_timeout_minutes <= 0:
             raise ValueError("--wait-timeout-minutes must be positive")
         transport = args.transport if args.transport is not None else "auto"
-        mode = args.mode if args.mode is not None else "auto"
         # Only an unpinned request may wander between hosts; an operator
         # who named --transport gets that host or an error.
         transport_fallback = (
             tuple(HRRR_TRANSPORTS[1:]) if transport == "auto" else ())
         engine, engine_bin = resolve_fetch_engine(
             args.engine if args.engine is not None else "auto")
+        # The default is the fast path wherever the fast path exists.
+        # The Python transport can only do .idx range subsets, so on an
+        # install without the backbone the default has to stay 'auto' --
+        # and that install is told, in one line, what it is paying.
+        if args.mode is not None:
+            mode = args.mode
+            if mode == "idx-subset":
+                print("fetch hrrr: --mode idx-subset selected: record "
+                      "subsetting saves bandwidth and costs wall clock "
+                      "(hundreds of small range GETs per file instead of "
+                      "one parallel whole-file transfer).")
+        elif engine == "rust":
+            mode = HRRR_DEFAULT_MODE
+        else:
+            mode = "auto"
+            # Only when the slow path was inherited rather than chosen.
+            if args.engine != "python":
+                explain.warn(
+                    "gpuwm fetch is using the Python transport, which can "
+                    "only do .idx range subsets; whole-file transfers need "
+                    "the rust backbone.  Run `gpuwm setup` (or `gpuwm "
+                    "fetch-bridges`) to stage it.",
+                    "A field measurement of this exact difference: one "
+                    "419 MB HRRR file took 560 s through serial .idx range "
+                    "requests on a 2 Gbps host, and 27-35 s for the same "
+                    "class of file taken whole through the backbone's "
+                    "parallel range GETs.  The Python transport is the "
+                    "always-available fallback and is correct -- it is "
+                    "simply the slow one, and an install should not "
+                    "discover that after the download.")
         if engine == "python" and mode != "auto":
             raise ValueError(
                 f"--mode {mode} needs the rust fetch backbone: the Python "
@@ -2863,9 +3044,32 @@ def fetch_main(args) -> int:
             timeout_minutes = (args.wait_timeout_minutes
                                if args.wait_timeout_minutes is not None
                                else HRRR_WAIT_TIMEOUT_DEFAULT_MINUTES)
+            # Name who chose the byte mode.  The backbone cannot: it
+            # sees `--mode full-file` on its command line and cannot
+            # tell a typed flag from this front door's own default,
+            # which is where every unqualified `gpuwm fetch` gets it.
+            mode_chooser = "you" if args.mode is not None else "the default"
             print(f"fetch hrrr: engine {engine}"
                   + (f" ({engine_bin})" if engine_bin is not None else "")
-                  + (f", mode {mode}" if engine == "rust" else ""))
+                  + (f", mode {mode} ({mode_chooser})"
+                     if engine == "rust" else ""))
+            if (args.transport is None and transport == "nomads"
+                    and mode == "full-file"):
+                # Said BEFORE the first byte moves, and only when the
+                # host was RESOLVED rather than named: an operator who
+                # typed `--transport nomads` made a decision, and a
+                # decision does not get advice.  Under the S3-first rule
+                # above, `auto` reaches NOMADS only when S3 cannot serve
+                # the window yet, so this line now explains a real trade
+                # instead of apologising for a default.  Measured on one
+                # box, one cycle, the same four objects through the same
+                # backbone: 348/209/418/255 s from NOMADS against
+                # 69/34/45/44 s from S3.
+                print("fetch hrrr: NOMADS paces whole-file transfers -- "
+                      "expect several times the wall clock of the S3 "
+                      "archive for --mode full-file.  S3 carries this "
+                      "cycle once it finishes propagating; --transport "
+                      "s3 takes it from there.")
             manifest = fetch_hrrr(
                 cycle=cycle, hours=hours, area=area, out=args.out,
                 force=args.force_refetch, transport=transport,
@@ -2904,7 +3108,12 @@ def fetch_main(args) -> int:
             experiment_config=args.experiment_config,
             static_input=args.static_input,
             static_receipt=args.static_receipt,
-            manifest_out=args.manifest_out, source=source)
+            # No tail cut here: the download that just ran already
+            # STARTS at --forecast-start-hour, so its series and manifest
+            # are the window.  Cutting again would only be a second,
+            # redundant statement of the same lead.
+            manifest_out=args.manifest_out, source=source,
+            forecast_start_hour=None)
     elif source == "gdas":
         # No `next:` here on purpose.  Every step past this one ends in
         # `rw-wps --source gdas`, which refuses; a next: that leads to a
@@ -2926,12 +3135,38 @@ def fetch_main(args) -> int:
         print(f"  gpuwm fetch --source {source} "
               f"--author-front-door-manifest --out "
               f"{shlex.quote(str(args.out))}")
-        print("  # and these three are yours to point at: --bridge (the "
-              "built\n"
-              "  # gfs_grib2_bridge), --wps-namelist, "
-              "--experiment-config.\n"
-              "  # `gpuwm doctor` names the bridge path on this machine.")
+        print("  # and these two are yours to point at: --wps-namelist "
+              "and\n"
+              "  # --experiment-config.  The bridge resolves itself "
+              "(--bridge PATH\n"
+              "  # overrides); `gpuwm doctor` names the one this "
+              "install found.")
     return 0
+
+
+def _resolve_manifest_bridge(source: str) -> Path:
+    """The built decoder ``--author-front-door-manifest`` should bind.
+
+    Through :mod:`gpuwm.bridges`, which is where every other consumer
+    looks: the environment override, then a checkout's own build, then
+    ``libexec/bridges``, then the ``~/.gpuwm/bridges`` that ``gpuwm
+    setup`` / ``gpuwm fetch-bridges`` stage into.  Resolving here rather
+    than defaulting in argparse keeps the flag's absence meaningful --
+    an explicit ``--bridge`` still wins, and still fails loudly when it
+    names a file that is not there.
+    """
+
+    from gpuwm import bridges
+
+    found = bridges.find_bridge(bridges.SOURCE_DECODERS[source])
+    if found is None:
+        raise ValueError(
+            f"--author-front-door-manifest needs the built "
+            f"{bridges.SOURCE_DECODERS[source]}, and none is resolvable on "
+            "this install -- run `gpuwm fetch-bridges` (or pass --bridge "
+            "PATH), then re-run this command; `gpuwm doctor` prints the "
+            "exact steps for this install")
+    return found
 
 
 #: Keys an advisory ``[fetch]`` table may carry (mirroring the CLI flags).
@@ -2940,7 +3175,7 @@ def fetch_main(args) -> int:
 #: strict experiment schema runs.
 FETCH_HINT_KEYS = frozenset({
     "source", "cycle", "hours", "area", "point", "radius_km", "out",
-    "cadence",
+    "cadence", "forecast_start_hour",
 })
 _FETCH_HINT_SOURCES = ("gfs", "gdas", "hrrr", "era5")
 
@@ -2978,11 +3213,21 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
     # A hint table that advertises a fetch this ArWen would refuse is a
     # rotten hint: catch it at config load, in the same words the CLI
     # would use, rather than at the download.
+    start_hour = table.get("forecast_start_hour", 0)
+    if not isinstance(start_hour, int) or start_hour < 0:
+        raise ValueError(
+            f"forecast_start_hour = {start_hour!r} in [fetch] of {source} "
+            "must be a nonnegative forecast lead")
+    if start_hour and table["source"] not in {"gfs", "gdas"}:
+        raise ValueError(
+            f"[fetch] of {source}: forecast_start_hour applies to "
+            "source = gfs|gdas only")
     if table["source"] == "gdas":
         hours = table.get("hours")
-        if isinstance(hours, (int, float)) and hours > GDAS_MAX_FORECAST_HOUR:
+        if isinstance(hours, (int, float))                 and start_hour + hours > GDAS_MAX_FORECAST_HOUR:
             raise ValueError(
-                f"[fetch] of {source}: {gdas_capability_refusal(int(hours))}")
+                f"[fetch] of {source}: "
+                f"{gdas_capability_refusal(int(start_hour + hours))}")
 
 
 def register_cli(subparsers) -> None:
@@ -3097,13 +3342,17 @@ def register_cli(subparsers) -> None:
     parser.add_argument(
         "--mode", default=None, choices=FETCH_MODES,
         help="hrrr --engine rust only: the byte transport, a separate "
-             "axis from --transport's choice of host.  'auto' (default) "
-             "is the probe rule -- if the object is there and its .idx "
-             "is absent, malformed, or provably shorter than the "
-             "object, the whole file is taken; there are no time "
-             "constants in it.  'full-file' and 'idx-subset' force "
-             "either transport, and 'idx-subset' refuses rather than "
-             "silently degrading when the index cannot carry it")
+             f"axis from --transport's choice of host.  '{HRRR_DEFAULT_MODE}' "
+             "is the default -- the whole object in parallel range GETs, "
+             "which is the pipeline this product is built on.  "
+             "'idx-subset' is the opt-in bandwidth saver: it selects "
+             "records instead of taking the file, saves transfer volume, "
+             "costs wall clock, and refuses rather than silently "
+             "degrading when the index cannot carry the selection.  "
+             "'auto' is the probe rule -- take the whole file when the "
+             ".idx is absent, malformed, or provably shorter than the "
+             "object -- which is what an install without the rust "
+             "backbone falls back to")
     parser.add_argument(
         "--cache-dir", type=Path, default=None, metavar="DIR",
         help="hrrr --engine rust only: wx-core disk cache root, keyed "
@@ -3126,13 +3375,15 @@ def register_cli(subparsers) -> None:
     front.add_argument(
         "--author-front-door-manifest", action="store_true",
         help="author the front-door input manifest for the fetched "
-             "series; requires --bridge, --wps-namelist, and "
-             "--experiment-config")
+             "series; requires --wps-namelist and --experiment-config "
+             "(--bridge defaults to the built decoder this install "
+             "resolves)")
     front.add_argument(
         "--bridge", type=Path, default=None, metavar="EXE",
-        help="built gfs_grib2_bridge executable (cargo build --release "
-             "--locked --offline in tools/grib1_bridge; see gpuwm "
-             "doctor)")
+        help="built gfs_grib2_bridge executable; omit it and the same "
+             "resolver `gpuwm go` uses finds the one this install has "
+             "(checkout build, libexec, then ~/.gpuwm/bridges -- see "
+             "gpuwm doctor)")
     front.add_argument(
         "--wps-namelist", type=Path, default=None, metavar="WPS",
         help="the namelist.wps the front door will consume (e.g. the "
@@ -3150,6 +3401,17 @@ def register_cli(subparsers) -> None:
     front.add_argument(
         "--manifest-out", type=Path, default=None, metavar="JSON",
         help=f"manifest path (default <out>/{GFS_INPUT_MANIFEST_NAME})")
+    parser.add_argument(
+        "--forecast-start-hour", type=int, default=None, metavar="K",
+        help="gfs/gdas only: the forecast lead the window BEGINS at "
+             "(default f000, the analysis).  --hours stays the window "
+             "length, so --forecast-start-hour 174 --hours 66 fetches "
+             "f174..f240 and nothing before it; an experiment whose "
+             "start_time is cycle+K is then initialized from f{K} with "
+             "its boundaries from f{K+i}.  With "
+             "--author-front-door-manifest on an already-fetched --out, "
+             "this authors the manifest over that tail of the existing "
+             "series instead of re-downloading it")
     parser.set_defaults(func=fetch_main)
     return parser
 
@@ -3158,6 +3420,7 @@ __all__ = [
     "Area", "Era5ValidationReport", "FETCH_HINT_KEYS",
     "FETCH_MANIFEST_SCHEMA", "GFS_FRONT_DOOR_MANIFEST_SCHEMA",
     "GFS_INPUT_MANIFEST_NAME", "GFS_LAKE_DONOR_MARGIN_DEG",
+    "HRRR_DEFAULT_MODE", "FETCH_ENGINES", "FETCH_MODES",
     "HRRR_NOMADS_BASE", "HRRR_NOMADS_RETENTION_HOURS", "HRRR_TRANSPORTS",
     "HRRR_WAIT_POLL_SECONDS", "HRRR_WAIT_TIMEOUT_DEFAULT_MINUTES",
     "validate_fetch_hints",

@@ -71,29 +71,68 @@ WPS_GEOG static tree is not part of it -- `gpuwm setup --with-geog`
 opts in and prints the size before anything downloads, or run
 `gpuwm fetch-geog` later.
 
-Then a first forecast:
+Then a first forecast -- two commands, no placeholders:
 
 ```bash
-# 1. Size a nest ladder to your card. Ends by printing the exact
-#    fetch/check/run commands for what it just wrote.
-gpuwm domain --point 35.3,-97.5 --card 24gb --cycle 1999-05-03T12 \
-  --hours 6 --out configs/myarea.toml
+# 1. Size a domain to your card at your point of interest.  The
+#    emitted TOML records the cycle and fetch area, so nothing has to
+#    be copied by hand.
+gpuwm domain --point 35.3,-97.5 --card 24gb --ladder 12 \
+  --source gfs --cycle latest --hours 6 --out configs/myarea.toml
 
-# 2. Get data (the wizard printed this line with the area filled in)
-gpuwm fetch --source gfs --cycle ... --area ... --out data/myarea
-
-# 3. Initialize. GFS/HRRR go through the native front door; ERA5 runs
-#    straight from the config.
-rw-wps --source gfs ...
-
-# 4. Run
-gpuwm run configs/myarea.toml --outdir out/myarea
+# 2. Run the whole chain: fetch -> initialize -> GPU forecast -> PNGs.
+#    (`--dry-run` prints the six underlying commands instead.)
+gpuwm go configs/myarea.toml
 ```
+
+Bare `gpuwm domain` at a terminal asks four questions and ends by
+printing that exact `gpuwm go` line.  Nest ladders (12-3, 12-3-1, ...)
+and the ERA5 route run stage by stage instead of through `go`; the
+wizard's closing block prints each next command for the config it just
+wrote, and the full walkthrough is
+[FIRST-LIGHT.md](docs/public/FIRST-LIGHT.md).
+
+### Route status
+
+Before every release cut, a route-coverage gate installs the built
+wheel on a machine that has never seen this project and drives every
+route this documentation advertises, filling each printed placeholder
+from what the run itself printed rather than from knowledge of the
+source. What that gate found for 1.4.0 is below.
+
+**Supported** means the gate was green end to end from a wheel.
+**Experimental** means the route works and has a named rough edge --
+the edge is in the last column rather than in your way.
+
+| Route | Status | What the gate found |
+|---|---|---|
+| Install: `pip install 'gpuwm[all]'` -> `gpuwm setup` -> `gpuwm doctor` | **Supported** | Green on a cold machine from this release's pinned bundle. |
+| Parts: `gpuwm fetch-bridges`, `gpuwm fetch-tables`, re-run | **Supported** | Green, and re-running either is safe: what is already staged and pin-valid is verified and skipped. |
+| `gpuwm fetch-geog` (the WPS_GEOG static tree) | **Supported** | Green. |
+| GFS, single domain, through `gpuwm go` | **Supported** | Green: one command from fetch to PNGs. |
+| GFS, single domain, stage by stage | **Supported** | Green through the forecast. |
+| GFS, nest ladder -> the domain-tree runner | **Supported** | Green through the forecast. No page documents an authority-materialization step for the tree runner; the single-domain page's step does not transfer, and this route does not need it. |
+| ERA5, from a config | **Supported** | Green: request template -> validate -> check -> run -> render. |
+| `gpuwm import-namelist` (an existing WRF namelist pair) | **Supported** | Green on a real pair. Bring your own: nothing in the product emits a `namelist.input` to practise the importer on, and no example pair ships. |
+| `gpuwm certify` / `gpuwm dual-run` | **Supported** | Green. |
+| HRRR, single domain: fetch -> native preparation | **Experimental** | Fetch and the preparation are green from a wheel. The handoff to the forecast is not: the wizard's closing block says the preparation prints the forecast stage's arguments, and it does not print them -- so reaching a finished single-domain forecast means assembling that `tools/hrrr_single_domain_benchmark.py` command by hand out of the preparation's output tree. The nest-ladder route below needs no such step. |
+| HRRR, nest ladder: preparation -> hierarchy -> tree forecast | **Supported** | Green end to end through the forecast: domain, fetch, preparation, hierarchy and the tree runner, each command copied from the one the previous stage printed. One value in the printed tree-runner command is not printed by any stage -- `--experiment-config-sha256`; the command names the file and you hash it yourself. |
+| `gpuwm downscale` (an offline finer nest from an archived run) | **Experimental** | The dry run is green. Derived mode refuses when the child config enables surface physics and no child-grid surface source was given; the refusal names `--child-surface-from`. |
+| `gpuwm enprod` (ensemble products) | **Experimental** | Green over an ensemble, and `--make-fixture` writes a synthetic one so you can try the suite. Member generation is undocumented: no public page prints a runnable command that produces members. |
+| `gpuwm adapt` (an arbitrary but verified GRIB2 adapter) | **Experimental** | `--skeleton` is green and names its own gaps. Authoring needs a descriptor you complete by hand; the unfilled scaffold is refused as a scaffold rather than accepted. |
 
 `gpuwm doctor` prints one line per item with the command that closes
 each gap; `gpuwm doctor --explain` prints the full remedy block for
 each, with the evidence behind it. Every command in this project takes
 `--explain` and means the same thing by it.
+
+Doctor reports the estate *and* the paths a run resolves: for each data
+route, the exact decoder its preparation will launch, the byte transport
+its fetch will pick, the identity its receipt will bind, and whether its
+entry points import from a directory that is not a repository.
+`gpuwm doctor --source hrrr` narrows the report to one route. That half
+exists because a wheel install once read "no gaps" and then refused,
+one command later, on a path the report had never resolved.
 
 The longer path -- the install scripts, the manual steps, and what each
 piece is -- is below.
@@ -318,8 +357,18 @@ Stated plainly, up front:
   No end-to-end bit-identity with WRF is claimed anywhere; see
   [VERIFICATION.md](docs/public/VERIFICATION.md) for exactly what is
   claimed.
-- **No data assimilation.** Cold starts from public analyses only; no
-  observation ingest, no cycling, no ensemble machinery.
+- **No data assimilation on the supported path.** `gpuwm run` cold-starts
+  from public analyses only. v1.2 adds EXPERIMENTAL ensemble and DA
+  machinery reachable **only** through experimental tools that nothing
+  else calls -- `tools/ensemble_forecast.py` (perturbed members, cycling
+  with an assimilation seam), `gpuwm enprod` (ensemble products), and
+  `tools/da_synthetic_cycle.py` (the composition gate). None of it is on
+  a certified forecast path, none of it has been calibrated against a
+  verification archive, and the perturbation library imposes no mass or
+  wind balance, perturbs no boundary forcing, and tapers laterally only.
+  Run `python -m tools.ensemble_forecast run --help`, which prints the
+  full limitation list before it does anything. See
+  [PROVENANCE.md](PROVENANCE.md) for the register entry.
 - **Data routes.** All three sources drive ArWen GPU forecasts; they
   differ in which door they use AND in which command runs the
   forecast. ERA5 uses the config door: `[case_data]` in the experiment
@@ -341,6 +390,22 @@ Stated plainly, up front:
   500 m) is deeply validated against WRF v4.6.1; other configurations
   inherit component-level evidence only. Physics options carry explicit
   per-option maturity labels ([PHYSICS.md](docs/public/PHYSICS.md)).
+- **Resolved scale.** The innermost demonstrated grid is 500 m. That
+  resolves supercell storm structure, cold pools, mesocyclone-scale
+  rotation, and the environmental and morphological severe-weather
+  diagnostics rendered on it -- 2-5 km updraft helicity, the
+  Significant Tornado Parameter, CAPE/CIN/SRH/shear.
+  It does not resolve tornado dynamics: the near-surface corner flow,
+  suction vortices, or tornado-scale wind intensity, which the
+  literature on tornado-like vortices places below roughly 25 m
+  horizontal and 10 m vertical spacing.
+  Read the STP/UH severe suite as a tornadic-supercell environment
+  and mesocyclone-proxy diagnostic, not as a resolved-tornado claim:
+  these are convection-permitting to sub-kilometer case studies,
+  not tornado-resolving simulations.
+  Sub-kilometer nests additionally sit in the PBL gray zone flagged
+  in [FIRST-LIGHT.md](docs/public/FIRST-LIGHT.md) (a 3-D turbulence
+  closure, SASE, is planned).
 - **Platforms.** Developed and measured on Windows 11 + RTX 5090 and on
   Linux CUDA 12.x nodes. The sealed Windows archive is CPU-preprocessing
   only; Windows CUDA is exercised via the developer checkout.

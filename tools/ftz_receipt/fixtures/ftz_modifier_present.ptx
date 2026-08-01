@@ -1,0 +1,23 @@
+//
+// Parser fixture: every float instruction carries the .ftz modifier.
+// Hand-written; it is not the output of any compile and is never cited as
+// evidence about a device.  It exists so a parser that always answers the
+// same way fails one of the pair.
+//
+.version 8.7
+.target sm_120
+.address_size 64
+
+.visible .entry fixture_present(
+	.param .u64 fixture_present_param_0
+)
+{
+	.reg .pred 	%p<2>;
+	.reg .f32 	%f<8>;
+
+	mul.rn.ftz.f32 	%f3, %f1, %f2;
+	min.ftz.f32 	%f4, %f1, %f2;
+	setp.neu.ftz.f32 	%p1, %f1, %f2;
+	cvt.rn.ftz.f32.f64 	%f5, %fd1;
+	ret;
+}

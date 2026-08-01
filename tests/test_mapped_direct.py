@@ -335,10 +335,26 @@ def _install_prepare_fakes(
         mapped_direct, "interpolate_era5_to_lambert", interpolate,
     )
     monkeypatch.setattr(mapped_direct, "initialize_real", initialize)
-    monkeypatch.setattr(
-        mapped_direct, "build_state_lateral_boundaries",
-        lambda actual_states, actual_times, **_kwargs: boundaries,
-    )
+    # The mapped lane no longer hands every state to one builder: it
+    # streams, adding each state's perimeter frames as that state is
+    # built so the state itself can be released.  This double records
+    # the sequence so the test still proves the builder saw the states,
+    # AND now proves they arrived one at a time in forcing order.
+    frame_calls = {"added": [], "built": []}
+
+    class RecordingFrames:
+        def __init__(self, **kwargs):
+            frame_calls["kwargs"] = kwargs
+
+        def add_state(self, state):
+            frame_calls["added"].append(state)
+
+        def build(self, actual_times):
+            frame_calls["built"].append(tuple(actual_times))
+            return boundaries
+
+    monkeypatch.setattr(mapped_direct, "StateBoundaryFrames", RecordingFrames)
+    calls["frames"] = frame_calls
 
     def attach(state, value):
         state.lateral_boundaries = value
@@ -468,6 +484,16 @@ def test_single_domain_preserves_legacy_direct_export(monkeypatch, tmp_path):
     assert calls["build_static"] == 1
     assert calls["interpolate"] == len(expected.snapshots)
     assert args["output_root"].is_dir()
+    # Streaming contract: every forcing time contributed its perimeter
+    # frames, one state at a time and in forcing order, and the intervals
+    # were assembled once from those frames.  The old builder took all the
+    # states at once, which is what made preprocessing hold them all.
+    frames = calls["frames"]
+    assert len(frames["added"]) == len(expected.snapshots)
+    assert frames["added"] == [r.state for r in expected.results]
+    assert len(frames["built"]) == 1
+    assert frames["kwargs"]["spec_bdy_width"] == (
+        expected.exp.root.run.spec_bdy_width)
 
 
 def test_long_provenance_role_publishes_short_hash_named_evidence(

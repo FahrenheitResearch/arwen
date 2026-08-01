@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gpuwm.acceptance-band/v1",
+  "title": "ArWen acceptance band",
+  "description": "One acceptance band, addressed by the SHA-256 of the configuration it certifies. Every comparator metric column is classified exactly once, so a column added to the comparator later cannot be silently ignored; every banded column carries a closed interval per (domain, lead) or an explicit nan-expected marker. The band is data: the derivation rule that produced it is named and hashed here, and re-running that rule on the same inputs reproduces this file byte for byte.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "band_schema_version",
+    "provenance",
+    "config_sha256",
+    "derivation",
+    "metric_coverage",
+    "intervals"
+  ],
+  "properties": {
+    "schema": {
+      "const": "gpuwm.acceptance-band/v1"
+    },
+    "band_schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "provenance": {
+      "enum": [
+        "documented-margin",
+        "wrf-ensemble-envelope"
+      ]
+    },
+    "config_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "identity of the configuration this band certifies; the band is addressed by config identity, never by a case name"
+    },
+    "derivation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rule_id",
+        "rule_version",
+        "margin_rule_sha256",
+        "anchor_document",
+        "anchor_section",
+        "anchor_table_sha256"
+      ],
+      "properties": {
+        "rule_id": {
+          "type": "string"
+        },
+        "rule_version": {
+          "type": "string"
+        },
+        "margin_rule_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "anchor_document": {
+          "type": "string"
+        },
+        "anchor_section": {
+          "type": "string"
+        },
+        "anchor_table_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "ensemble": {
+      "type": "object",
+      "description": "present only when provenance is wrf-ensemble-envelope; the named artifacts are internal-scope and are not retrievable from any public location",
+      "additionalProperties": false,
+      "required": [
+        "member_count",
+        "member_config_digests",
+        "pair_score_artifact_digest",
+        "interval_statistic",
+        "scope"
+      ],
+      "properties": {
+        "member_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "member_config_digests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "pair_score_artifact_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "interval_statistic": {
+          "type": "string"
+        },
+        "scope": {
+          "const": "internal"
+        }
+      }
+    },
+    "metric_coverage": {
+      "type": "object",
+      "description": "exactly one entry per comparator metric column",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "classification"
+        ],
+        "properties": {
+          "classification": {
+            "enum": [
+              "banded",
+              "recorded-only"
+            ]
+          },
+          "family": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "anchor_column": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "intervals": {
+      "type": "object",
+      "description": "domain -> lead -> metric -> closed interval or nan-expected marker",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "lower",
+              "upper",
+              "nan_expected"
+            ],
+            "properties": {
+              "lower": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "upper": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "nan_expected": {
+                "type": "boolean"
+              },
+              "anchor": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "const": "wrf-ensemble-envelope"
+          }
+        },
+        "required": [
+          "provenance"
+        ]
+      },
+      "then": {
+        "required": [
+          "ensemble"
+        ]
+      }
+    }
+  ]
+}

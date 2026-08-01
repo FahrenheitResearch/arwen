@@ -1,0 +1,1429 @@
+{
+  "band_schema_version": "1.0.0",
+  "config_sha256": "10d6e178d96648e35b826217cc001a1f598232bf6ceabd9ce07074a1f65e2031",
+  "derivation": {
+    "anchor_document": "docs/public/VERIFICATION.md",
+    "anchor_section": "Full decay table (all domains, all leads)",
+    "anchor_table_sha256": "dbbc9893708926931496c4f307064cebb8a1a6a658feaa940daf216e19dd9dfe",
+    "margin_rule_sha256": "908836237122affb23d0b95172bb0de91ea072928f688ac6290bd22fb5a36de5",
+    "rule_id": "published-anchor-margin",
+    "rule_version": "1.0.0"
+  },
+  "intervals": {
+    "d01": {
+      "1.0": {
+        "psfc_mae": {
+          "anchor": 0.5,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 2.5
+        },
+        "refl_comp_corr": {
+          "anchor": 0.97,
+          "lower": 0.92,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 1.58,
+          "lower": 0.58,
+          "nan_expected": false,
+          "upper": 2.58
+        },
+        "refl_csi20": {
+          "anchor": 0.863,
+          "lower": 0.64725,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "t2_mae": {
+          "anchor": 0.012,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.062
+        },
+        "w_corr": {
+          "anchor": 0.984,
+          "lower": 0.934,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "wind10_corr": {
+          "anchor": 1.0,
+          "lower": 0.95,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "2.0": {
+        "psfc_mae": {
+          "anchor": 0.8,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 2.8
+        },
+        "refl_comp_corr": {
+          "anchor": 0.971,
+          "lower": 0.921,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 1.84,
+          "lower": 0.84,
+          "nan_expected": false,
+          "upper": 2.84
+        },
+        "refl_csi20": {
+          "anchor": 0.854,
+          "lower": 0.6405,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "t2_mae": {
+          "anchor": 0.019,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.069
+        },
+        "w_corr": {
+          "anchor": 0.975,
+          "lower": 0.925,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "wind10_corr": {
+          "anchor": 1.0,
+          "lower": 0.95,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "3.0": {
+        "psfc_mae": {
+          "anchor": 1.09,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 3.09
+        },
+        "refl_comp_corr": {
+          "anchor": 0.963,
+          "lower": 0.913,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 2.13,
+          "lower": 1.065,
+          "nan_expected": false,
+          "upper": 3.195
+        },
+        "refl_csi20": {
+          "anchor": 0.845,
+          "lower": 0.63375,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "t2_mae": {
+          "anchor": 0.025,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.075
+        },
+        "w_corr": {
+          "anchor": 0.963,
+          "lower": 0.913,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "wind10_corr": {
+          "anchor": 1.0,
+          "lower": 0.95,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "4.0": {
+        "psfc_mae": {
+          "anchor": 1.37,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 3.37
+        },
+        "refl_comp_corr": {
+          "anchor": 0.953,
+          "lower": 0.903,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 2.44,
+          "lower": 1.22,
+          "nan_expected": false,
+          "upper": 3.66
+        },
+        "refl_csi20": {
+          "anchor": 0.82,
+          "lower": 0.615,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "t2_mae": {
+          "anchor": 0.03,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.08
+        },
+        "w_corr": {
+          "anchor": 0.945,
+          "lower": 0.895,
+          "nan_expected": false,
+          "upper": 0.995
+        },
+        "wind10_corr": {
+          "anchor": 1.0,
+          "lower": 0.95,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "5.0": {
+        "psfc_mae": {
+          "anchor": 1.78,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 3.78
+        },
+        "refl_comp_corr": {
+          "anchor": 0.945,
+          "lower": 0.895,
+          "nan_expected": false,
+          "upper": 0.995
+        },
+        "refl_comp_mae": {
+          "anchor": 2.72,
+          "lower": 1.36,
+          "nan_expected": false,
+          "upper": 4.08
+        },
+        "refl_csi20": {
+          "anchor": 0.8,
+          "lower": 0.6,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "t2_mae": {
+          "anchor": 0.034,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.084
+        },
+        "w_corr": {
+          "anchor": 0.922,
+          "lower": 0.872,
+          "nan_expected": false,
+          "upper": 0.972
+        },
+        "wind10_corr": {
+          "anchor": 1.0,
+          "lower": 0.95,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "6.0": {
+        "psfc_mae": {
+          "anchor": 2.21,
+          "lower": 0.21,
+          "nan_expected": false,
+          "upper": 4.21
+        },
+        "refl_comp_corr": {
+          "anchor": 0.939,
+          "lower": 0.889,
+          "nan_expected": false,
+          "upper": 0.989
+        },
+        "refl_comp_mae": {
+          "anchor": 2.86,
+          "lower": 1.43,
+          "nan_expected": false,
+          "upper": 4.29
+        },
+        "refl_csi20": {
+          "anchor": 0.785,
+          "lower": 0.58875,
+          "nan_expected": false,
+          "upper": 0.98125
+        },
+        "t2_mae": {
+          "anchor": 0.041,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.091
+        },
+        "w_corr": {
+          "anchor": 0.909,
+          "lower": 0.859,
+          "nan_expected": false,
+          "upper": 0.959
+        },
+        "wind10_corr": {
+          "anchor": 1.0,
+          "lower": 0.95,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      }
+    },
+    "d02": {
+      "1.0": {
+        "psfc_mae": {
+          "anchor": 1.02,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 3.02
+        },
+        "refl_comp_corr": {
+          "anchor": 0.996,
+          "lower": 0.946,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 0.41,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 1.41
+        },
+        "refl_csi20": {
+          "anchor": 0.931,
+          "lower": 0.69825,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "t2_mae": {
+          "anchor": 0.014,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.064
+        },
+        "w_corr": {
+          "anchor": 0.994,
+          "lower": 0.944,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "wind10_corr": {
+          "anchor": 1.0,
+          "lower": 0.95,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "2.0": {
+        "psfc_mae": {
+          "anchor": 1.87,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 3.87
+        },
+        "refl_comp_corr": {
+          "anchor": 0.994,
+          "lower": 0.944,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 0.8,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 1.8
+        },
+        "refl_csi20": {
+          "anchor": 0.897,
+          "lower": 0.67275,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "t2_mae": {
+          "anchor": 0.029,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.079
+        },
+        "w_corr": {
+          "anchor": 0.872,
+          "lower": 0.822,
+          "nan_expected": false,
+          "upper": 0.922
+        },
+        "wind10_corr": {
+          "anchor": 0.998,
+          "lower": 0.948,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "3.0": {
+        "psfc_mae": {
+          "anchor": 3.15,
+          "lower": 1.15,
+          "nan_expected": false,
+          "upper": 5.15
+        },
+        "refl_comp_corr": {
+          "anchor": 0.985,
+          "lower": 0.935,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 1.33,
+          "lower": 0.33,
+          "nan_expected": false,
+          "upper": 2.33
+        },
+        "refl_csi20": {
+          "anchor": 0.857,
+          "lower": 0.64275,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "t2_mae": {
+          "anchor": 0.051,
+          "lower": 0.001,
+          "nan_expected": false,
+          "upper": 0.101
+        },
+        "w_corr": {
+          "anchor": 0.749,
+          "lower": 0.699,
+          "nan_expected": false,
+          "upper": 0.799
+        },
+        "wind10_corr": {
+          "anchor": 0.997,
+          "lower": 0.947,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "4.0": {
+        "psfc_mae": {
+          "anchor": 4.24,
+          "lower": 2.12,
+          "nan_expected": false,
+          "upper": 6.36
+        },
+        "refl_comp_corr": {
+          "anchor": 0.975,
+          "lower": 0.925,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 1.85,
+          "lower": 0.85,
+          "nan_expected": false,
+          "upper": 2.85
+        },
+        "refl_csi20": {
+          "anchor": 0.794,
+          "lower": 0.5955,
+          "nan_expected": false,
+          "upper": 0.9925
+        },
+        "t2_mae": {
+          "anchor": 0.076,
+          "lower": 0.026,
+          "nan_expected": false,
+          "upper": 0.126
+        },
+        "w_corr": {
+          "anchor": 0.743,
+          "lower": 0.693,
+          "nan_expected": false,
+          "upper": 0.793
+        },
+        "wind10_corr": {
+          "anchor": 0.995,
+          "lower": 0.945,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "5.0": {
+        "psfc_mae": {
+          "anchor": 6.92,
+          "lower": 3.46,
+          "nan_expected": false,
+          "upper": 10.38
+        },
+        "refl_comp_corr": {
+          "anchor": 0.951,
+          "lower": 0.901,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 2.8,
+          "lower": 1.4,
+          "nan_expected": false,
+          "upper": 4.2
+        },
+        "refl_csi20": {
+          "anchor": 0.75,
+          "lower": 0.5625,
+          "nan_expected": false,
+          "upper": 0.9375
+        },
+        "t2_mae": {
+          "anchor": 0.116,
+          "lower": 0.058,
+          "nan_expected": false,
+          "upper": 0.174
+        },
+        "w_corr": {
+          "anchor": 0.58,
+          "lower": 0.53,
+          "nan_expected": false,
+          "upper": 0.63
+        },
+        "wind10_corr": {
+          "anchor": 0.992,
+          "lower": 0.942,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "6.0": {
+        "psfc_mae": {
+          "anchor": 11.55,
+          "lower": 5.775,
+          "nan_expected": false,
+          "upper": 17.325
+        },
+        "refl_comp_corr": {
+          "anchor": 0.929,
+          "lower": 0.879,
+          "nan_expected": false,
+          "upper": 0.979
+        },
+        "refl_comp_mae": {
+          "anchor": 4.02,
+          "lower": 2.01,
+          "nan_expected": false,
+          "upper": 6.03
+        },
+        "refl_csi20": {
+          "anchor": 0.682,
+          "lower": 0.5115,
+          "nan_expected": false,
+          "upper": 0.8525
+        },
+        "t2_mae": {
+          "anchor": 0.165,
+          "lower": 0.0825,
+          "nan_expected": false,
+          "upper": 0.2475
+        },
+        "w_corr": {
+          "anchor": 0.375,
+          "lower": 0.325,
+          "nan_expected": false,
+          "upper": 0.425
+        },
+        "wind10_corr": {
+          "anchor": 0.988,
+          "lower": 0.938,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      }
+    },
+    "d03": {
+      "1.0": {
+        "psfc_mae": {
+          "anchor": 0.92,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 2.92
+        },
+        "refl_comp_corr": {
+          "anchor": 0.996,
+          "lower": 0.946,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 0.26,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 1.26
+        },
+        "refl_csi20": {
+          "anchor": null,
+          "lower": null,
+          "nan_expected": true,
+          "upper": null
+        },
+        "t2_mae": {
+          "anchor": 0.01,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.06
+        },
+        "w_corr": {
+          "anchor": 0.999,
+          "lower": 0.949,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "wind10_corr": {
+          "anchor": 1.0,
+          "lower": 0.95,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "2.0": {
+        "psfc_mae": {
+          "anchor": 1.21,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 3.21
+        },
+        "refl_comp_corr": {
+          "anchor": 0.997,
+          "lower": 0.947,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 0.33,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 1.33
+        },
+        "refl_csi20": {
+          "anchor": 0.708,
+          "lower": 0.531,
+          "nan_expected": false,
+          "upper": 0.885
+        },
+        "t2_mae": {
+          "anchor": 0.015,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.065
+        },
+        "w_corr": {
+          "anchor": 0.986,
+          "lower": 0.936,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "wind10_corr": {
+          "anchor": 0.998,
+          "lower": 0.948,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "3.0": {
+        "psfc_mae": {
+          "anchor": 5.2,
+          "lower": 2.6,
+          "nan_expected": false,
+          "upper": 7.8
+        },
+        "refl_comp_corr": {
+          "anchor": 0.981,
+          "lower": 0.931,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 1.06,
+          "lower": 0.06,
+          "nan_expected": false,
+          "upper": 2.06
+        },
+        "refl_csi20": {
+          "anchor": 0.67,
+          "lower": 0.5025,
+          "nan_expected": false,
+          "upper": 0.8375
+        },
+        "t2_mae": {
+          "anchor": 0.046,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.096
+        },
+        "w_corr": {
+          "anchor": 0.333,
+          "lower": 0.283,
+          "nan_expected": false,
+          "upper": 0.383
+        },
+        "wind10_corr": {
+          "anchor": 0.963,
+          "lower": 0.913,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "4.0": {
+        "psfc_mae": {
+          "anchor": 7.93,
+          "lower": 3.965,
+          "nan_expected": false,
+          "upper": 11.895
+        },
+        "refl_comp_corr": {
+          "anchor": 0.933,
+          "lower": 0.883,
+          "nan_expected": false,
+          "upper": 0.983
+        },
+        "refl_comp_mae": {
+          "anchor": 2.7,
+          "lower": 1.35,
+          "nan_expected": false,
+          "upper": 4.05
+        },
+        "refl_csi20": {
+          "anchor": 0.428,
+          "lower": 0.321,
+          "nan_expected": false,
+          "upper": 0.535
+        },
+        "t2_mae": {
+          "anchor": 0.105,
+          "lower": 0.0525,
+          "nan_expected": false,
+          "upper": 0.1575
+        },
+        "w_corr": {
+          "anchor": 0.358,
+          "lower": 0.308,
+          "nan_expected": false,
+          "upper": 0.408
+        },
+        "wind10_corr": {
+          "anchor": 0.946,
+          "lower": 0.896,
+          "nan_expected": false,
+          "upper": 0.996
+        }
+      },
+      "5.0": {
+        "psfc_mae": {
+          "anchor": 10.0,
+          "lower": 5.0,
+          "nan_expected": false,
+          "upper": 15.0
+        },
+        "refl_comp_corr": {
+          "anchor": 0.795,
+          "lower": 0.745,
+          "nan_expected": false,
+          "upper": 0.845
+        },
+        "refl_comp_mae": {
+          "anchor": 5.35,
+          "lower": 2.675,
+          "nan_expected": false,
+          "upper": 8.025
+        },
+        "refl_csi20": {
+          "anchor": 0.313,
+          "lower": 0.213,
+          "nan_expected": false,
+          "upper": 0.413
+        },
+        "t2_mae": {
+          "anchor": 0.186,
+          "lower": 0.093,
+          "nan_expected": false,
+          "upper": 0.279
+        },
+        "w_corr": {
+          "anchor": 0.37,
+          "lower": 0.32,
+          "nan_expected": false,
+          "upper": 0.42
+        },
+        "wind10_corr": {
+          "anchor": 0.954,
+          "lower": 0.904,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "6.0": {
+        "psfc_mae": {
+          "anchor": 20.45,
+          "lower": 10.225,
+          "nan_expected": false,
+          "upper": 30.675
+        },
+        "refl_comp_corr": {
+          "anchor": 0.715,
+          "lower": 0.665,
+          "nan_expected": false,
+          "upper": 0.765
+        },
+        "refl_comp_mae": {
+          "anchor": 9.75,
+          "lower": 4.875,
+          "nan_expected": false,
+          "upper": 14.625
+        },
+        "refl_csi20": {
+          "anchor": 0.425,
+          "lower": 0.31875,
+          "nan_expected": false,
+          "upper": 0.53125
+        },
+        "t2_mae": {
+          "anchor": 0.347,
+          "lower": 0.1735,
+          "nan_expected": false,
+          "upper": 0.5205
+        },
+        "w_corr": {
+          "anchor": 0.138,
+          "lower": 0.088,
+          "nan_expected": false,
+          "upper": 0.188
+        },
+        "wind10_corr": {
+          "anchor": 0.901,
+          "lower": 0.851,
+          "nan_expected": false,
+          "upper": 0.951
+        }
+      }
+    },
+    "d04": {
+      "0.5": {
+        "psfc_mae": {
+          "anchor": 0.34,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 2.34
+        },
+        "refl_comp_corr": {
+          "anchor": 0.99,
+          "lower": 0.94,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 0.08,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 1.08
+        },
+        "refl_csi20": {
+          "anchor": null,
+          "lower": null,
+          "nan_expected": true,
+          "upper": null
+        },
+        "t2_mae": {
+          "anchor": 0.004,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.054
+        },
+        "w_corr": {
+          "anchor": 0.998,
+          "lower": 0.948,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "wind10_corr": {
+          "anchor": 1.0,
+          "lower": 0.95,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "1.0": {
+        "psfc_mae": {
+          "anchor": 0.35,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 2.35
+        },
+        "refl_comp_corr": {
+          "anchor": 0.997,
+          "lower": 0.947,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 0.11,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 1.11
+        },
+        "refl_csi20": {
+          "anchor": null,
+          "lower": null,
+          "nan_expected": true,
+          "upper": null
+        },
+        "t2_mae": {
+          "anchor": 0.007,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.057
+        },
+        "w_corr": {
+          "anchor": 0.998,
+          "lower": 0.948,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "wind10_corr": {
+          "anchor": 1.0,
+          "lower": 0.95,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "1.5": {
+        "psfc_mae": {
+          "anchor": 0.46,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 2.46
+        },
+        "refl_comp_corr": {
+          "anchor": 0.995,
+          "lower": 0.945,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 0.13,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 1.13
+        },
+        "refl_csi20": {
+          "anchor": null,
+          "lower": null,
+          "nan_expected": true,
+          "upper": null
+        },
+        "t2_mae": {
+          "anchor": 0.006,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.056
+        },
+        "w_corr": {
+          "anchor": 0.994,
+          "lower": 0.944,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "wind10_corr": {
+          "anchor": 1.0,
+          "lower": 0.95,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "2.0": {
+        "psfc_mae": {
+          "anchor": 0.7,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 2.7
+        },
+        "refl_comp_corr": {
+          "anchor": 0.997,
+          "lower": 0.947,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 0.14,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 1.14
+        },
+        "refl_csi20": {
+          "anchor": null,
+          "lower": null,
+          "nan_expected": true,
+          "upper": null
+        },
+        "t2_mae": {
+          "anchor": 0.007,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.057
+        },
+        "w_corr": {
+          "anchor": 0.988,
+          "lower": 0.938,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "wind10_corr": {
+          "anchor": 1.0,
+          "lower": 0.95,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "2.5": {
+        "psfc_mae": {
+          "anchor": 0.63,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 2.63
+        },
+        "refl_comp_corr": {
+          "anchor": 0.999,
+          "lower": 0.949,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 0.25,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 1.25
+        },
+        "refl_csi20": {
+          "anchor": 0.023,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.123
+        },
+        "t2_mae": {
+          "anchor": 0.014,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.064
+        },
+        "w_corr": {
+          "anchor": 0.942,
+          "lower": 0.892,
+          "nan_expected": false,
+          "upper": 0.992
+        },
+        "wind10_corr": {
+          "anchor": 0.998,
+          "lower": 0.948,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "3.0": {
+        "psfc_mae": {
+          "anchor": 2.1,
+          "lower": 0.1,
+          "nan_expected": false,
+          "upper": 4.1
+        },
+        "refl_comp_corr": {
+          "anchor": 0.998,
+          "lower": 0.948,
+          "nan_expected": false,
+          "upper": 1.0
+        },
+        "refl_comp_mae": {
+          "anchor": 0.4,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 1.4
+        },
+        "refl_csi20": {
+          "anchor": 0.136,
+          "lower": 0.036,
+          "nan_expected": false,
+          "upper": 0.236
+        },
+        "t2_mae": {
+          "anchor": 0.026,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.076
+        },
+        "w_corr": {
+          "anchor": 0.904,
+          "lower": 0.854,
+          "nan_expected": false,
+          "upper": 0.954
+        },
+        "wind10_corr": {
+          "anchor": 0.995,
+          "lower": 0.945,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "3.5": {
+        "psfc_mae": {
+          "anchor": 4.25,
+          "lower": 2.125,
+          "nan_expected": false,
+          "upper": 6.375
+        },
+        "refl_comp_corr": {
+          "anchor": 0.923,
+          "lower": 0.873,
+          "nan_expected": false,
+          "upper": 0.973
+        },
+        "refl_comp_mae": {
+          "anchor": 0.76,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 1.76
+        },
+        "refl_csi20": {
+          "anchor": 0.249,
+          "lower": 0.149,
+          "nan_expected": false,
+          "upper": 0.349
+        },
+        "t2_mae": {
+          "anchor": 0.047,
+          "lower": 0.0,
+          "nan_expected": false,
+          "upper": 0.097
+        },
+        "w_corr": {
+          "anchor": 0.735,
+          "lower": 0.685,
+          "nan_expected": false,
+          "upper": 0.785
+        },
+        "wind10_corr": {
+          "anchor": 0.982,
+          "lower": 0.932,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "4.0": {
+        "psfc_mae": {
+          "anchor": 7.27,
+          "lower": 3.635,
+          "nan_expected": false,
+          "upper": 10.905
+        },
+        "refl_comp_corr": {
+          "anchor": 0.87,
+          "lower": 0.82,
+          "nan_expected": false,
+          "upper": 0.92
+        },
+        "refl_comp_mae": {
+          "anchor": 3.01,
+          "lower": 1.505,
+          "nan_expected": false,
+          "upper": 4.515
+        },
+        "refl_csi20": {
+          "anchor": 0.516,
+          "lower": 0.387,
+          "nan_expected": false,
+          "upper": 0.645
+        },
+        "t2_mae": {
+          "anchor": 0.107,
+          "lower": 0.0535,
+          "nan_expected": false,
+          "upper": 0.1605
+        },
+        "w_corr": {
+          "anchor": 0.508,
+          "lower": 0.458,
+          "nan_expected": false,
+          "upper": 0.558
+        },
+        "wind10_corr": {
+          "anchor": 0.951,
+          "lower": 0.901,
+          "nan_expected": false,
+          "upper": 1.0
+        }
+      },
+      "4.5": {
+        "psfc_mae": {
+          "anchor": 10.99,
+          "lower": 5.495,
+          "nan_expected": false,
+          "upper": 16.485
+        },
+        "refl_comp_corr": {
+          "anchor": 0.832,
+          "lower": 0.782,
+          "nan_expected": false,
+          "upper": 0.882
+        },
+        "refl_comp_mae": {
+          "anchor": 5.09,
+          "lower": 2.545,
+          "nan_expected": false,
+          "upper": 7.635
+        },
+        "refl_csi20": {
+          "anchor": 0.328,
+          "lower": 0.228,
+          "nan_expected": false,
+          "upper": 0.428
+        },
+        "t2_mae": {
+          "anchor": 0.173,
+          "lower": 0.0865,
+          "nan_expected": false,
+          "upper": 0.2595
+        },
+        "w_corr": {
+          "anchor": 0.257,
+          "lower": 0.207,
+          "nan_expected": false,
+          "upper": 0.307
+        },
+        "wind10_corr": {
+          "anchor": 0.915,
+          "lower": 0.865,
+          "nan_expected": false,
+          "upper": 0.965
+        }
+      },
+      "5.0": {
+        "psfc_mae": {
+          "anchor": 16.37,
+          "lower": 8.185,
+          "nan_expected": false,
+          "upper": 24.555
+        },
+        "refl_comp_corr": {
+          "anchor": 0.667,
+          "lower": 0.617,
+          "nan_expected": false,
+          "upper": 0.717
+        },
+        "refl_comp_mae": {
+          "anchor": 8.32,
+          "lower": 4.16,
+          "nan_expected": false,
+          "upper": 12.48
+        },
+        "refl_csi20": {
+          "anchor": 0.418,
+          "lower": 0.3135,
+          "nan_expected": false,
+          "upper": 0.5225
+        },
+        "t2_mae": {
+          "anchor": 0.268,
+          "lower": 0.134,
+          "nan_expected": false,
+          "upper": 0.402
+        },
+        "w_corr": {
+          "anchor": 0.216,
+          "lower": 0.166,
+          "nan_expected": false,
+          "upper": 0.266
+        },
+        "wind10_corr": {
+          "anchor": 0.879,
+          "lower": 0.829,
+          "nan_expected": false,
+          "upper": 0.929
+        }
+      },
+      "5.5": {
+        "psfc_mae": {
+          "anchor": 18.78,
+          "lower": 9.39,
+          "nan_expected": false,
+          "upper": 28.17
+        },
+        "refl_comp_corr": {
+          "anchor": 0.68,
+          "lower": 0.63,
+          "nan_expected": false,
+          "upper": 0.73
+        },
+        "refl_comp_mae": {
+          "anchor": 11.36,
+          "lower": 5.68,
+          "nan_expected": false,
+          "upper": 17.04
+        },
+        "refl_csi20": {
+          "anchor": 0.391,
+          "lower": 0.291,
+          "nan_expected": false,
+          "upper": 0.491
+        },
+        "t2_mae": {
+          "anchor": 0.309,
+          "lower": 0.1545,
+          "nan_expected": false,
+          "upper": 0.4635
+        },
+        "w_corr": {
+          "anchor": 0.112,
+          "lower": 0.062,
+          "nan_expected": false,
+          "upper": 0.162
+        },
+        "wind10_corr": {
+          "anchor": 0.842,
+          "lower": 0.792,
+          "nan_expected": false,
+          "upper": 0.892
+        }
+      },
+      "6.0": {
+        "psfc_mae": {
+          "anchor": 22.7,
+          "lower": 11.35,
+          "nan_expected": false,
+          "upper": 34.05
+        },
+        "refl_comp_corr": {
+          "anchor": 0.577,
+          "lower": 0.527,
+          "nan_expected": false,
+          "upper": 0.627
+        },
+        "refl_comp_mae": {
+          "anchor": 14.2,
+          "lower": 7.1,
+          "nan_expected": false,
+          "upper": 21.3
+        },
+        "refl_csi20": {
+          "anchor": 0.222,
+          "lower": 0.122,
+          "nan_expected": false,
+          "upper": 0.322
+        },
+        "t2_mae": {
+          "anchor": 0.434,
+          "lower": 0.217,
+          "nan_expected": false,
+          "upper": 0.651
+        },
+        "w_corr": {
+          "anchor": 0.11,
+          "lower": 0.06,
+          "nan_expected": false,
+          "upper": 0.16
+        },
+        "wind10_corr": {
+          "anchor": 0.795,
+          "lower": 0.745,
+          "nan_expected": false,
+          "upper": 0.845
+        }
+      }
+    }
+  },
+  "metric_coverage": {
+    "cpu_rainnc_mean_mm": {
+      "anchor_column": null,
+      "classification": "recorded-only",
+      "family": null,
+      "reason": "a reference-side level, not a comparison; banding it would gate the certified run on the reference run's own accumulation"
+    },
+    "cpu_refl_max": {
+      "anchor_column": null,
+      "classification": "recorded-only",
+      "family": null,
+      "reason": "a reference-side extremum, not a comparison"
+    },
+    "gpu_rainnc_mean_mm": {
+      "anchor_column": null,
+      "classification": "recorded-only",
+      "family": null,
+      "reason": "a model-side level, not a comparison; its meaning is the paired difference against the reference column, which the published table does not carry"
+    },
+    "gpu_refl_max": {
+      "anchor_column": null,
+      "classification": "recorded-only",
+      "family": null,
+      "reason": "a model-side extremum, not a comparison"
+    },
+    "psfc_corr": {
+      "anchor_column": null,
+      "classification": "recorded-only",
+      "family": null,
+      "reason": "no counterpart column in the published decay table"
+    },
+    "psfc_mae": {
+      "anchor_column": "PSFC MAE Pa",
+      "classification": "banded",
+      "family": "pressure_error"
+    },
+    "qvapor_corr": {
+      "anchor_column": null,
+      "classification": "recorded-only",
+      "family": null,
+      "reason": "no counterpart column in the published decay table"
+    },
+    "rainnc_corr": {
+      "anchor_column": null,
+      "classification": "recorded-only",
+      "family": null,
+      "reason": "no counterpart column in the published decay table"
+    },
+    "refl_comp_corr": {
+      "anchor_column": "refl corr",
+      "classification": "banded",
+      "family": "correlation"
+    },
+    "refl_comp_mae": {
+      "anchor_column": "refl MAE dBZ",
+      "classification": "banded",
+      "family": "reflectivity_error"
+    },
+    "refl_csi20": {
+      "anchor_column": "CSI20",
+      "classification": "banded",
+      "family": "skill_score"
+    },
+    "t2_corr": {
+      "anchor_column": null,
+      "classification": "recorded-only",
+      "family": null,
+      "reason": "no counterpart column in the published decay table; recorded so the comparator's output is fully classified, not banded on an anchor that does not exist"
+    },
+    "t2_mae": {
+      "anchor_column": "T2 MAE K",
+      "classification": "banded",
+      "family": "temperature_error"
+    },
+    "w_corr": {
+      "anchor_column": "W corr",
+      "classification": "banded",
+      "family": "correlation"
+    },
+    "wind10_corr": {
+      "anchor_column": "wind10 corr",
+      "classification": "banded",
+      "family": "correlation"
+    }
+  },
+  "provenance": "documented-margin",
+  "schema": "gpuwm.acceptance-band/v1"
+}

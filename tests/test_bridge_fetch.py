@@ -245,15 +245,27 @@ def test_from_dir_stages_loose_artifacts_under_the_same_pins(tmp_path):
         assert bridge_assets.matches_pin(dest / pin.filename, pin)
 
 
-def test_from_dir_refuses_a_directory_missing_an_artifact(tmp_path):
+def test_from_dir_stages_the_verified_subset_with_a_warning(
+        tmp_path, capsys):
+    """Warn-not-block: the artifacts are independent; what is present
+    and pin-valid stages, what is absent is named for doctor.  An
+    EMPTY directory still refuses -- there is nothing to stage."""
     archive, bundle = _synthetic_bundle(tmp_path)
     loose = tmp_path / "loose"
     loose.mkdir()
     with zipfile.ZipFile(archive) as zf:
         (loose / "alpha.bin").write_bytes(zf.read("alpha.bin"))
 
-    with pytest.raises(bridge_assets.BridgeAssetError, match="beta.bin"):
-        bridge_assets.stage_from_dir(loose, bundle, tmp_path / "dest",
+    installed = bridge_assets.stage_from_dir(
+        loose, bundle, tmp_path / "dest", progress=lambda _line: None)
+    err = capsys.readouterr().err
+    assert [path.name for path in installed] == ["alpha.bin"]
+    assert "warning:" in err and "beta.bin" in err
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(bridge_assets.BridgeAssetError, match="neither"):
+        bridge_assets.stage_from_dir(empty, bundle, tmp_path / "dest2",
                                      progress=lambda _line: None)
 
 
@@ -453,7 +465,6 @@ def test_the_packaged_pins_document_parses():
 @pytest.mark.parametrize("mutation,pattern", (
     ({"schema": "something-else"}, "schema"),
     ({"platforms": []}, "platforms must be an object"),
-    ({"platforms": {"solaris-sparc": {}}}, "unknown platform"),
     ({"release": ""}, "release must be"),
 ))
 def test_a_malformed_pins_document_is_refused(mutation, pattern):
@@ -462,6 +473,18 @@ def test_a_malformed_pins_document_is_refused(mutation, pattern):
     payload.update(mutation)
     with pytest.raises(bridge_assets.BridgeAssetError, match=pattern):
         bridge_assets.parse_pins(payload)
+
+
+def test_an_unknown_platform_entry_is_skipped_with_a_warning(capsys):
+    """Warn-not-block: a pins document from a newer release may pin a
+    platform this build does not know; the entry is irrelevant to this
+    host and is skipped, not fatal."""
+    payload = {"schema": bridge_assets.PINS_SCHEMA, "release": None,
+               "platforms": {"solaris-sparc": {}}}
+    pins = bridge_assets.parse_pins(payload)
+    err = capsys.readouterr().err
+    assert "warning:" in err and "solaris-sparc" in err
+    assert pins.platforms == {}
 
 
 def test_a_pinned_platform_without_a_release_is_refused():

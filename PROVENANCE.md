@@ -149,15 +149,77 @@ bytes are outside the numerical oracle.
   the dedicated nest/coupler loader in `gpuwm/core/nest_interp.py` passes
   `-fmad=false`, so SINT/TR4, boundary interpolation, terrain adjustment,
   and dormant feedback arithmetic do not contract multiply/add pairs.
-- **Rounding and subnormals**: ordinary FP32/FP64 operations and
-  conversions use round-to-nearest-even.  No loader or kernel supplies an
-  FTZ option.  NVRTC's documented defaults are `--ftz=false`,
-  `--prec-div=true`, and `--prec-sqrt=true`, so this compilation policy
-  preserves single-precision subnormals and uses IEEE round-to-nearest
-  division/square root (see the NVIDIA
-  [NVRTC compile-option reference](https://docs.nvidia.com/cuda/nvrtc/index.html#supported-compile-options)).
-  Explicit parity-critical kernels use `__fadd_rn`/`__fmul_rn`/related
-  intrinsics where an operation boundary itself is part of the seam.
+<!-- BEGIN GENERATED ftz-statement: provenance-compile-policy (tools/ftz_receipt/render_statement.py) -->
+- **Rounding and subnormals**: ordinary FP32/FP64 operations and conversions
+  use round-to-nearest-even.  FP32 subnormal handling is not one policy: it
+  differs between the compile routes this codebase uses, so it is recorded
+  per route, as measured on NVIDIA GeForce RTX 5090 (compute capability
+  12.0, driver 13.3 (13030), NVRTC 13.0,
+  CuPy 14.0.1) by `tools/ftz_receipt/probe.py` over
+  6 arithmetic mechanisms:
+  - `R1` loader RawModule (`gpuwm/core/kernels/__init__.py:20`,
+    gpuwm.core.kernels.load_module), effective NVRTC options `-std=c++17`
+    `-ftz=true`: `flush-to-zero` on 6 of 6 mechanisms [disassembly
+    `tools/ftz_receipt/receipt/sass/r1.sass`]
+  - `R1-ftztrue` loader RawModule + explicit --ftz=true (control)
+    (`gpuwm/core/kernels/__init__.py:20 + control flag`, cupy.RawModule),
+    effective NVRTC options `-std=c++17` `--ftz=true` `-ftz=true`:
+    `flush-to-zero` on 6 of 6 mechanisms [disassembly
+    `tools/ftz_receipt/receipt/sass/r1_ftztrue.sass`]
+  - `R2` RawModule with the shortwave option tuple
+    (`gpuwm/core/rrtmg_sw.py:2890`, cupy.RawModule), effective NVRTC options
+    `-std=c++17` `--ftz=false` `-ftz=true`: `flush-to-zero` on 6 of 6
+    mechanisms [disassembly `tools/ftz_receipt/receipt/sass/r2.sass`]
+  - `R3` direct NVRTC + cuda.function.Module (`gpuwm/core/rrtmg_lw.py:3723`,
+    cupy.cuda.compiler.compile_using_nvrtc), effective NVRTC options
+    `-std=c++17` `--ftz=false` `-arch=compute_120`: `ieee-agreement` on 6 of
+    6 mechanisms [disassembly `tools/ftz_receipt/receipt/sass/r3.sass`]
+  - `R4` CuPy-generated ReductionKernel (`gpuwm/core/mynn_pbl_gpu.py:290`,
+    cupy.ReductionKernel), effective NVRTC options `--std=c++17`
+    `-ftz=true`: `flush-to-zero` on 6 of 6 mechanisms [disassembly of 6
+    objects, `tools/ftz_receipt/receipt/sass/r4_0.sass` and siblings]
+  - `R5` inline PTX without .ftz (`gpuwm/core/kernels/__init__.py:20`,
+    gpuwm.core.kernels.load_module), effective NVRTC options `-std=c++17`
+    `-ftz=true` (this route rides `R1`'s compile): `ieee-agreement` on 4 of
+    6 mechanisms; `not-applicable` on 2 of 6 mechanisms [disassembly
+    `tools/ftz_receipt/receipt/sass/r1.sass`, the object `R1` compiled]
+  The option tuple each row names is the tuple NVRTC received, captured by
+  wrapping the compiler entry point rather than re-deriving it: CuPy appends
+  `-ftz=true` to whatever the caller passed, at
+  `cupy.cuda.compiler` line 585 (`options += ('-ftz=true',)`), after the
+  caller's options, and NVRTC honours the last occurrence.
+  The inventory records 5 distinct caller-supplied option tuples across the 14
+  compile sites in the shipped package, each listed here with a site that
+  supplies it:
+  - no caller options -- `gpuwm/core/mynn_pbl_gpu.py:283`
+    (cp.ReductionKernel), and 6 other site(s)
+  - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:20` (cp.RawModule), and
+    2 other site(s)
+  - `-std=c++17` `--ftz=false` a target flag built from the device
+    architecture at run time -- `gpuwm/core/rrtmg_lw.py:3723`
+    (_cc.compile_using_nvrtc), and 1 other site(s)
+  - `-std=c++17` `--ftz=false` -- `gpuwm/core/rrtmg_sw.py:2890`
+    (cp.RawModule)
+  - `-std=c++17` `-fmad=false` -- `gpuwm/core/nest_interp.py:259`
+    (cp.RawModule)
+  `R5` and `R1` are kernels inside ONE compiled object -- same device, same
+  flags, one compile -- and they did not measure alike, so on this device
+  the outcome follows the instruction the compiler emitted rather than the
+  hardware alone.
+  Evidence: the device bit table `tools/ftz_receipt/receipt/bitpatterns.csv` (both
+  passes byte-identical: true), the objects the routes themselves compiled,
+  `tools/ftz_receipt/receipt/cubin/`, and their disassembly,
+  `tools/ftz_receipt/receipt/sass/` (Cuda compilation tools, release 13.0,
+  V13.0.39), all recorded in `tools/ftz_receipt/receipt/receipt.json`.
+<!-- END GENERATED ftz-statement: provenance-compile-policy -->
+- **Operation boundaries**: explicit parity-critical kernels use
+  `__fadd_rn`/`__fmul_rn`/related intrinsics where an operation boundary
+  itself is part of the seam.  NVRTC's documented option defaults are
+  `--ftz=false`, `--prec-div=true`, and `--prec-sqrt=true` (see the NVIDIA
+  [NVRTC compile-option reference](https://docs.nvidia.com/cuda/nvrtc/index.html#supported-compile-options));
+  what the compiler defaults to and what a given route ends up asking for
+  are separate questions, and the measured answer to the second is the
+  generated block above.
 - **Reduction order**: reductions that mirror serial WRF loops are serial
   within each CUDA work item and retain the WRF iteration order.  One
   checkable example is the two `n=0..49` wet-snow/wet-graupel sums in
@@ -800,6 +862,69 @@ Root-domain-only production pair, 2 h at 15-min cadence, base
   ~36 Pa local (mean 0.31 Pa); |dQVAPOR| max ~1e-3 kg/kg local.
 - **Cost**: byte-inert on timing — 0.335 vs 0.335 wall s per sim-min
   (both sides, dual-run).
+## EXPERIMENTAL ensemble / perturbation / DA-cycle route (v1.2)
+
+Registered here because a consumer can reach this machinery from the repo
+without ever seeing a finished manifest, and everything below is a scope
+cut rather than a mechanism transcribed from an oracle. **Nothing in this
+section is on a certified forecast path**, no product it draws has been
+calibrated against a verification archive, and every manifest, receipt and
+PNG it writes carries an `experimental` stamp.
+
+- **Entry points, and only these**: `tools/ensemble_forecast.py` (`run`,
+  `cycle`, `bench`, `status`), `gpuwm enprod`, and
+  `tools/da_synthetic_cycle.py`. `gpuwm run` reaches none of it.
+- **Authority**: no WRF mechanism is transcribed. The perturbation
+  construction is a prescribed isotropic Gaussian random field, the
+  probability-matched mean follows Ebert (2001) with the every-*M*-th
+  pooled selection described in Flora et al. (2018) fn. 1, and the
+  neighborhood-maximum ensemble probability is the standard
+  max-in-neighborhood-per-member-then-ensemble-fraction order.
+- **Scientific non-goals of `gpuwm.da.perturb`**, stated before a run and
+  repeated in every returned provenance dict: no mass balance (`mu'`
+  untouched, no hydrostatic re-balance); no wind balance (the `u`/`v`
+  increments are neither non-divergent nor in geostrophic/gradient balance
+  with the temperature increment); one shared, unperturbed lateral
+  boundary file for all members, so ensemble spread decays toward the rim
+  by construction; lateral rim taper only, no vertical taper; no surface,
+  soil, or physics-parameter perturbation and no `w`, `mu'` or
+  hydrometeor perturbation; no flow dependence.
+- **Registered artifact — vertical FFT periodicity.** The draw is periodic
+  on every axis. Horizontally the rim taper hides it. Vertically nothing
+  does: on a periodic column level 0 and level `nz-1` are ONE interval
+  apart, so their correlation is approximately `exp(-1/(2 Lv^2))` --
+  0.983 at the admitted quarter-column cap (`nz=24`, `Lv=6`), not the
+  `exp(-2) ~ 0.135` earlier documentation claimed by confusing the seam
+  with the maximum circular separation. The cap bounds the HALF-COLUMN
+  correlation (0.270 at that setting, itself above `exp(-2)` because
+  periodic images contribute covariance) and does not control the seam.
+  Every draw reports its exact figures in
+  `provenance["fields"][i]["vertical_wrap"]`, computed from the applied
+  filter.
+- **Registered scope cut — horizontal scale admission.** A prescribed
+  length scale is admitted only up to `span/(2*pi)`, because the
+  documented radial-spectrum peak `k = 1/L` is resolved only when
+  `1/L >= 2*pi/span`. The previous quarter-span limit admitted
+  configurations whose peak fell below the domain's lowest nonzero
+  wavenumber (measured `peak * L = 2.356` at the old cap on 32-, 64- and
+  128-point domains).
+- **Determinism scope**: "byte-identical given the seed" holds on ONE
+  software and device stack. The white noise is drawn on the host with
+  NumPy Philox and hash-stamped, so `noise_sha256` is machine-independent;
+  the filtered field is not, because cuFFT and pocketfft round
+  differently, and the provenance records which FFT backend ran.
+- **Ensemble-product NaN policy**: `mask` (default) excludes non-finite
+  member values from every reduction at that point, shrinks the
+  denominator with them, leaves a point with no finite member blank, and
+  records the resulting coverage in the provenance and on the panel;
+  `refuse` fails the product naming the members. The NMEP voting roster is
+  fixed by the point's own data so the denominator does not move with the
+  neighborhood radius and the advertised monotonicity is exact.
+- **Ensemble-product roster override**: `--accept-status` beyond
+  `DONE,complete` triggers a frame-inventory check of every admitted
+  member against the manifest before anything renders, and stamps the
+  override on every panel.
+
 ## Attribution defects in this repository's own history (2026-07-26)
 
 This register exists so a provenance claim is never re-derived from memory.

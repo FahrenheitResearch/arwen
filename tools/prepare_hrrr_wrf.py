@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 
+from gpuwm import explain
 from gpuwm.physics_compat import (
     SINGLE_DOMAIN_PHYSICS_PROFILES,
     KESSLER_PROFILE_ID,
@@ -30,7 +31,37 @@ from gpuwm.hrrr_forecast import hrrr_source_window
 
 
 REPO = Path(__file__).resolve().parents[1]
-MAX_PIPELINE_WORKERS = 64
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+
+# The decode pipeline owns this bound and the sealed decoder binary
+# enforces it; restating a number here is how this wrapper came to
+# advertise 1..64 while the pipeline refused anything over 13 -- and to
+# refuse it only after the static build, minutes in.
+from tools.hrrr_pipeline import MAX_PIPELINE_WORKERS  # noqa: E402
+
+
+def _pipeline_workers(value: str) -> str:
+    """Parse-time validation for ``--pipeline-workers``.
+
+    argparse raises on the spelling itself, so an unrunnable request
+    costs a usage message rather than a static build.
+    """
+    text = str(value).strip().lower()
+    if text == "auto":
+        return text
+    try:
+        workers = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"pipeline-workers must be 1..{MAX_PIPELINE_WORKERS} or auto"
+        ) from None
+    if workers not in range(1, MAX_PIPELINE_WORKERS + 1):
+        raise argparse.ArgumentTypeError(
+            f"pipeline-workers must be 1..{MAX_PIPELINE_WORKERS} or auto "
+            f"(the HRRR decoder accepts no more than "
+            f"{MAX_PIPELINE_WORKERS})")
+    return str(workers)
 
 _HRRR_COLD_START_CONTRACT = {
     WSM6_PROFILE_ID: ((), {}),
@@ -92,24 +123,128 @@ def _run(command: list[str], env: dict[str, str],
 #: named '<crate>' found; location searched: crates.io index``.  Every
 #: documented build (README, install.sh, install.ps1, CONTRIBUTING) already
 #: ``cd``s here; this one now does too.
+#:
+#: It exists in a source checkout and NOT in a wheel install: a wheel's
+#: ``REPO`` is ``site-packages``, which has a ``tools`` package (this
+#: file is in it) and no Rust workspace at all.  Building here is
+#: therefore the developer path only; see :func:`_decoder`.
 BRIDGE_CRATE = REPO / "tools" / "grib1_bridge"
 
 
 def _decoder(env: dict[str, str]) -> Path:
-    requested = env.get("GPUWM_HRRR_DECODER")
-    if requested:
-        path = Path(requested).resolve()
+    """The HRRR decoder this preparation will launch.
+
+    This used to resolve exactly one path --
+    ``<REPO>/tools/grib1_bridge/target/release/hrrr_grib2_bridge`` --
+    and, when it was absent, run ``cargo build`` in a directory that a
+    wheel install does not have.  On a pip install ``REPO`` is
+    ``site-packages``, so the bridge ``gpuwm setup`` had already staged
+    in ``~/.gpuwm/bridges`` was never even looked at and a healthy
+    machine refused with a path nobody had ever been told to create.
+
+    The order now is the project's one bridge ladder
+    (:func:`gpuwm.bridges.resolve_source_decoder`): the
+    ``GPUWM_HRRR_DECODER`` override first and fail-loud, then a
+    checkout's own build, then ``libexec/bridges``, then
+    ``~/.gpuwm/bridges``.  ``gpuwm doctor`` calls the same function, so
+    a green report and a runnable preparation are now the same claim.
+
+    Building from source stays available and stays last: it is the
+    developer convenience it always was, and it can only run where the
+    crate actually exists.
+
+    ``env`` is the environment for that build subprocess.  Resolution
+    itself reads the PROCESS environment, through the shared ladder --
+    which is the point: ``gpuwm doctor``, ingest and this wrapper must
+    all be answering about the same machine, and a private copy of the
+    environment is how three answers to one question start.
+    """
+
+    from gpuwm import bridges
+
+    # An explicit override is the operator's decision and never falls
+    # through to anything -- least of all to a build, which would answer
+    # a question about one exact file by producing a different one.
+    overridden = bool(os.environ.get(bridges.BRIDGE_ENV["hrrr_grib2_bridge"]))
+    try:
+        return bridges.resolve_source_decoder("hrrr")
+    except FileNotFoundError:
+        if overridden or not BRIDGE_CRATE.is_dir():
+            raise
+    # A checkout that has simply not built the crate yet: build it where
+    # its vendored registry lives, then resolve through the same ladder
+    # so the answer is the one every other consumer would have got.
+    _run([
+        "cargo", "build", "--release", "--locked", "--offline",
+        "--bin", "hrrr_grib2_bridge",
+    ], env, cwd=BRIDGE_CRATE)
+    return bridges.resolve_source_decoder("hrrr")
+
+
+#: The three dispositions :func:`_stock_wrf_export` can report.
+STOCK_WRF_EXPORT_STATES = ("PASS", "SKIPPED", "REFUSED")
+
+
+def _stock_wrf_export(command: list[str], env: dict[str, str], *,
+                      skip: bool, required: bool) -> dict[str, object]:
+    """Run the stock-WRF export; return its disposition, never its veto.
+
+    The prepared cache and the preparation report are this command's
+    product for the GPU hierarchy, which reads them directly and never
+    opens a ``wrfinput``.  Until now a refusal from ``gpuwm.wrf_direct``
+    -- including its honest, named feature gaps -- propagated straight
+    out of ``subprocess.run(check=True)`` and took the whole wrapper
+    down nonzero, so a field user watched a PASS report scroll past and
+    then got exit 1 with nothing to show for a preparation that had in
+    fact completed.  Discarding finished work because an *optional*
+    downstream converter is not finished yet is the wrong trade.
+
+    So: skipped on request, attempted otherwise, and its refusal is one
+    warning line unless the caller said the export is what they came
+    for.  The converter writes its own refusal to this process's stderr,
+    so nothing is swallowed -- this makes a gap non-fatal, it does not
+    make it invisible, and it does not paper one over inside
+    ``wrf_direct``, where the named refusal stays exactly as it is.
+    """
+
+    if skip:
+        return {
+            "status": "SKIPPED",
+            "reason": "--skip-stock-wrf-export",
+            "required": False,
+        }
+    try:
+        _run(command, env)
+    except subprocess.CalledProcessError as error:
+        returncode = error.returncode
     else:
-        name = "hrrr_grib2_bridge.exe" if os.name == "nt" else "hrrr_grib2_bridge"
-        path = BRIDGE_CRATE / "target" / "release" / name
-        if not path.is_file():
-            _run([
-                "cargo", "build", "--release", "--locked", "--offline",
-                "--bin", "hrrr_grib2_bridge",
-            ], env, cwd=BRIDGE_CRATE)
-    if not path.is_file():
-        raise FileNotFoundError(f"HRRR decoder is missing: {path}")
-    return path
+        return {"status": "PASS", "required": required}
+    # The converter writes its own refusal to this process's stderr, so
+    # the reason is already on the terminal, verbatim and unabridged.
+    receipt = {
+        "status": "REFUSED",
+        "required": required,
+        "returncode": returncode,
+        "command": list(command),
+    }
+    if required:
+        raise RuntimeError(
+            "stock-WRF export was required and refused (exit "
+            f"{returncode}); the prepared cache and preparation "
+            "report above are complete and stand")
+    explain.warn(
+        f"stock-WRF export refused (exit {returncode}); the "
+        "prepared cache and PASS report stand and the GPU hierarchy can "
+        "consume them.  Pass --skip-stock-wrf-export to stop attempting "
+        "it, or --require-stock-wrf-export to make this fatal.",
+        "gpuwm.wrf_direct converts a prepared cache into stock-WRF "
+        "wrfinput/wrfbdy files.  Nothing in the GPU route reads those: "
+        "the hierarchy consumes the prepared cache itself, whose "
+        "receipt is the report this run just validated.  The converter's "
+        "own refusal is quoted above and is unchanged -- it is a real "
+        "gap, reported as one, and it no longer destroys the work that "
+        "succeeded before it.")
+    return receipt
 
 
 def _valid_time(raw: str) -> datetime:
@@ -397,18 +532,36 @@ def _parser() -> argparse.ArgumentParser:
         help=("future GPUWM history cadence bound into the prepared-cache "
               "identity; preparation itself writes no history frames"),
     )
-    parser.add_argument("--pipeline-workers", default="8")
+    parser.add_argument(
+        "--pipeline-workers", type=_pipeline_workers, default="8",
+        help=(f"HRRR decode workers: 1..{MAX_PIPELINE_WORKERS} or auto "
+              "(the decoder's own bound)"))
     parser.add_argument("--prepare-workers", type=int)
     parser.add_argument(
         "--preprocess-backend", choices=("cuda", "cpu", "auto"),
         default="cuda")
     parser.add_argument("--preprocess-workers", type=int)
     parser.add_argument("--cpu-preprocess-bridge", type=Path)
+    export = parser.add_mutually_exclusive_group()
+    export.add_argument(
+        "--skip-stock-wrf-export", action="store_true",
+        help="do not write the stock-WRF wrfinput/wrfbdy export at all.  "
+             "The GPU hierarchy consumes the prepared cache directly and "
+             "never reads that export; skipping it is the right answer "
+             "whenever stock wrf.exe is not the consumer")
+    export.add_argument(
+        "--require-stock-wrf-export", action="store_true",
+        help="treat a failed stock-WRF export as this command's failure.  "
+             "Without it the export is attempted, a refusal is one "
+             "warning line, and the prepared cache and PASS report -- "
+             "which are complete and independently usable -- still stand")
+    explain.add_explain_flag(parser)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    explain.set_explain(explain.explain_enabled(args))
     valid_time = _valid_time(args.valid_time)
     source_forecast_hours = hrrr_source_window(
         cycle=valid_time, start_hour=args.forecast_start_hour,
@@ -428,17 +581,8 @@ def main(argv: list[str] | None = None) -> int:
             and args.cpu_preprocess_bridge is not None):
         raise ValueError(
             "cpu-preprocess-bridge requires preprocess-backend cpu")
-    try:
-        pipeline_workers = int(args.pipeline_workers)
-    except ValueError:
-        if args.pipeline_workers.lower() != "auto":
-            raise ValueError(
-                f"pipeline-workers must be 1..{MAX_PIPELINE_WORKERS} or auto"
-            ) from None
-    else:
-        if pipeline_workers not in range(1, MAX_PIPELINE_WORKERS + 1):
-            raise ValueError(
-                f"pipeline-workers must be 1..{MAX_PIPELINE_WORKERS} or auto")
+    # --pipeline-workers is validated by its argparse type, at parse
+    # time, against the decode pipeline's own ceiling.
     if len(args.source_manifest_sha256) != 64:
         raise ValueError("source-manifest-sha256 must contain 64 hexadecimal digits")
     int(args.source_manifest_sha256, 16)
@@ -575,11 +719,19 @@ def main(argv: list[str] | None = None) -> int:
     ]
     for acknowledgement in args.ack:
         export_command.extend(("--ack", acknowledgement))
-    _run(export_command, env)
+    stock_wrf_export = _stock_wrf_export(
+        export_command, env,
+        skip=args.skip_stock_wrf_export,
+        required=args.require_stock_wrf_export)
     export_seconds = time.perf_counter() - export_started
     result = {
         "status": "PASS",
-        "wrf_input": str(output / "wrf-native-input"),
+        "stock_wrf_export": stock_wrf_export,
+        # Named only when it exists.  A path in a receipt is a claim
+        # that the artifact is there; a skipped or refused export must
+        # not leave one behind for a reader to trip over.
+        "wrf_input": (str(output / "wrf-native-input")
+                      if stock_wrf_export["status"] == "PASS" else None),
         "source_cycle": valid_time.isoformat(),
         "model_start_time": model_start_time.isoformat(),
         "source_forecast_hours": list(source_forecast_hours),

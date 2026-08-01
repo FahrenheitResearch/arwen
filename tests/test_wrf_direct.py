@@ -142,6 +142,97 @@ def test_the_profile_free_export_gate_keeps_its_exact_v2_stock_slice(tmp_path):
     assert not list(tmp_path.glob("wrf-native-input.tmp-*"))
 
 
+def test_experiment_config_suite_export_is_not_pinned_to_the_v2_slice(
+        tmp_path, monkeypatch):
+    """The profileless PREPARATION contract (owner ruling 2026-07-31).
+
+    The exact cache the pinned test above shows the legacy no-profile
+    branch refusing -- a registry-reachable MYNN tree -- must pass the
+    physics gate under ``experiment_config_suite=True``, because the
+    hash-bound experiment config is the authority now.  The v2 slice
+    pin stays where it is: on callers that ask for neither contract.
+    A marker planted at the first post-gate step proves the gate was
+    crossed rather than the whole export succeeding by accident.
+    """
+
+    cache = _minimal_prepared_cache(tmp_path / "prepared", {
+        "mp_physics": 6, "hybrid_opt": 2, "hypsometric_opt": 2,
+        "specified": True, "nested": False, "spec_bdy_width": 5,
+        "bl_pbl_physics": 5, "sf_sfclay_physics": 5, "sf_surface_physics": 2,
+        "cu_physics": 0, "ra_lw_physics": 0, "ra_sw_physics": 1,
+        # A real cache identity is asdict(RunConfig), so it always
+        # carries num_soil_layers; the v2-slice fixture above can omit
+        # it only because that branch never resolves the tuple.
+        "num_soil_layers": 4,
+    })
+
+    def marker(*args, **kwargs):
+        raise RuntimeError("reached-post-physics-gate")
+
+    monkeypatch.setattr(wrf_direct, "_forcing_interval_indices", marker)
+    with pytest.raises(RuntimeError, match="reached-post-physics-gate"):
+        export_prepared_wrf(
+            cache, tmp_path / "static.npz", tmp_path / "geometry.json",
+            tmp_path / "wrf-native-input",
+            valid_time=datetime(2026, 7, 29, 6),
+            experiment_config_suite=True)
+
+
+def test_experiment_config_suite_export_keeps_the_expert_acknowledgement(
+        tmp_path, monkeypatch, capsys):
+    """Suite freedom is not consent silence.
+
+    The exporter's profileless recompute APPLIES the registry-owned
+    expert-tuple governance -- that is the contract
+    ``experiment_config_suite=True`` carries, and it is what this test
+    guards.  Its severity is warn-not-block's: an expert tuple is
+    implemented and individually verified, so it runs and says so in
+    one line naming both delivery spellings, and delivering the
+    acknowledgement silences that line.
+    """
+
+    from gpuwm.physics_compat import (
+        NOAHMP_PROFILE_ID,
+        single_domain_runtime_switches,
+    )
+
+    run = {
+        **single_domain_runtime_switches(NOAHMP_PROFILE_ID),
+        "hybrid_opt": 2, "hypsometric_opt": 2,
+        "specified": True, "nested": False, "spec_bdy_width": 5,
+    }
+    cache = _minimal_prepared_cache(tmp_path / "prepared", run)
+
+    def marker(*args, **kwargs):
+        raise RuntimeError("reached-post-physics-gate")
+
+    monkeypatch.setattr(wrf_direct, "_forcing_interval_indices", marker)
+
+    with pytest.raises(RuntimeError, match="reached-post-physics-gate"):
+        export_prepared_wrf(
+            cache, tmp_path / "static.npz", tmp_path / "geometry.json",
+            tmp_path / "wrf-native-input",
+            valid_time=datetime(2026, 7, 29, 6),
+            experiment_config_suite=True)
+    unacked = [line for line in capsys.readouterr().err.splitlines()
+               if line.startswith("warning:")
+               and "registry-expert-template" in line]
+    assert len(unacked) == 1, unacked
+    assert "--ack noahmp-host-column-throughput-v1" in unacked[0]
+    assert 'acknowledgements = ["noahmp-host-column-throughput-v1"]' \
+        in unacked[0]
+
+    with pytest.raises(RuntimeError, match="reached-post-physics-gate"):
+        export_prepared_wrf(
+            cache, tmp_path / "static.npz", tmp_path / "geometry.json",
+            tmp_path / "wrf-native-input",
+            valid_time=datetime(2026, 7, 29, 6),
+            experiment_config_suite=True,
+            expert_acknowledgements=(
+                "noahmp-host-column-throughput-v1",))
+    assert "registry-expert-template" not in capsys.readouterr().err
+
+
 def test_single_domain_cli_forwards_physics_profile_and_acknowledgement(
         tmp_path, monkeypatch, capsys):
     observed = {}
@@ -570,6 +661,61 @@ def test_canonical_surface_bypasses_source_specific_soil_nodes():
     np.testing.assert_array_equal(actual["TSLB"], values["TSLB"])
     np.testing.assert_array_equal(actual["SH2O"], values["SH2O"])
     np.testing.assert_allclose(actual["VEGFRA"], 50.0)
+
+
+def _frozen_soil_case(coldest_kelvin: float):
+    """A met-node surface case whose coldest soil node is COLDEST_KELVIN."""
+
+    nodes = np.full((9, 2, 2), 285.0)
+    # The HRRR source nodes bracketing Noah's deepest midpoint (1.50 m),
+    # in one column of four: the measured shape of the field failure.
+    nodes[6:8, 1, 1] = coldest_kelvin
+    values = {
+        "met/SKINTEMP": np.full((2, 2), 288.0),
+        "met/XICE": np.zeros((2, 2)),
+        "met/SOILT": nodes,
+        "met/SOILW": np.full((9, 2, 2), 0.25),
+    }
+
+    class Cache:
+        _arrays: dict = {}
+
+        def array(self, name):
+            return values[name]
+
+    static = {
+        "LANDMASK": np.ones((2, 2)),
+        "TMN": np.full((2, 2), 283.0),
+        "GREENFRAC": np.full((12, 2, 2), 0.5),
+        "ALBEDO12M": np.full((12, 2, 2), 20.0),
+        "LAI12M": np.full((12, 2, 2), 2.0),
+        "SNOALB": np.full((2, 2), 60.0),
+    }
+    return Cache(), static
+
+
+def test_frozen_soil_refusal_is_typed_export_representability():
+    """The refusal a caller PREPARING a forecast has to be able to catch.
+
+    gpuwm's Noah surface layer integrates frozen soil perfectly well;
+    only the unchanged-WRF wrfinput file set has no table-driven
+    SH2O partition to write here.  That is what
+    ``StockWrfExportUnsupported`` is for, and as a bare ``ValueError``
+    this one was uncatchable -- a nested HRRR preparation over the
+    mountainous west finished every expensive stage and then discarded
+    a complete, verified GPU hierarchy because one soil node in one
+    column, at the deepest level, was below freezing.
+    """
+    cache, static = _frozen_soil_case(272.0)
+    with pytest.raises(StockWrfExportUnsupported, match="frozen-soil SH2O"):
+        _surface_fields(cache, static, 3)
+
+
+def test_a_warm_column_still_exports_so_the_refusal_is_not_free():
+    """Negative control: the same case above freezing writes SH2O."""
+    cache, static = _frozen_soil_case(285.0)
+    fields = _surface_fields(cache, static, 3)
+    np.testing.assert_array_equal(fields["SH2O"], fields["SMOIS"])
 
 
 def test_timestamp_writer_appends_multiple_boundary_records(tmp_path):

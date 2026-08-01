@@ -121,6 +121,18 @@ class Check:
     brief: str | None = None
     #: Fold key for the terse report; ``None`` never folds.
     group: str | None = None
+    #: Does this gap justify a nonzero exit?  ``True`` for anything
+    #: broken or integrity-suspect (a named executable that is absent,
+    #: a table that fails its hash, a manifest that fails revalidation).
+    #: ``False`` for an *absent optional* piece with a documented
+    #: fallback or a documented opt-in (CuPy on the base install, the
+    #: render extra, the rust renderer, the CPU preprocess library, the
+    #: WPS_GEOG tree nobody has fetched yet).  The report text is
+    #: identical either way -- MISSING stays MISSING and the remedy
+    #: still prints; only the exit code reads this, so a base install
+    #: that did everything its documentation asked stops failing
+    #: installers and `gpuwm setup` for gaps it was told are optional.
+    blocking: bool = True
 
 
 #: Terse-report fold keys.  Both name a crate, because that is what
@@ -235,9 +247,11 @@ def _cupy_check() -> Check:
             "not installed -- gpuwm check/run and the domain wizard's "
             "sizing estimator need it; fetch/import-namelist/render "
             "do not", GPU_EXTRA_HINT,
-            action="pip install 'gpuwm[gpu]'", brief="not installed")
+            action="pip install 'gpuwm[gpu]'", brief="not installed",
+            blocking=False)
     return Check("cupy (GPU runtime)", "missing", evidence, GPU_EXTRA_HINT,
-                 action="pip install 'gpuwm[gpu]'", brief=_short(evidence))
+                 action="pip install 'gpuwm[gpu]'", brief=_short(evidence),
+                 blocking=False)
 
 
 def _render_extra_check() -> Check:
@@ -257,12 +271,14 @@ def _render_extra_check() -> Check:
             f"{' and '.join(sorted(broken))} not installed -- gpuwm "
             "render needs the render extra", RENDER_EXTRA_HINT,
             action="pip install 'gpuwm[render]'",
-            brief=f"{' and '.join(sorted(broken))} not installed")
+            brief=f"{' and '.join(sorted(broken))} not installed",
+            blocking=False)
     detail = "; ".join(f"{name}: {evidence}"
                        for name, evidence in sorted(broken.items()))
     return Check("render extra (wrf-rust + matplotlib)", "missing",
                  detail, RENDER_EXTRA_HINT,
-                 action="pip install 'gpuwm[render]'", brief=_short(detail))
+                 action="pip install 'gpuwm[render]'", brief=_short(detail),
+                 blocking=False)
 
 
 # ---------------------------------------------------------------------------
@@ -279,12 +295,28 @@ def _exec_probe(path: Path) -> tuple[bool, str]:
     executable from an empty, truncated, or wrong-platform file, which
     refuses to launch (OSError) or dies with an abnormal status
     (Windows NTSTATUS / signal) and no diagnostic of its own.
+
+    The header is checked BEFORE anything is launched, because on
+    Windows the expensive way of asking this question can never answer:
+    ``subprocess.run``'s timeout bounds the wait and not
+    ``CreateProcess``, and a file with a corrupt image header can raise
+    a modal loader dialog inside that call which no timeout reaches.
+    Two release batteries froze there, on a file containing sixteen
+    ASCII characters.  :func:`gpuwm.bridges.launchable` answers the same
+    question from the bytes; the launch that follows is bounded by the
+    timeout AND by an error mode that makes the loader fail rather than
+    prompt.  Nothing about a genuine bridge's verdict changed.
     """
 
+    ok, evidence = bridges.launchable(path)
+    if not ok:
+        return False, f"{evidence} -- corrupt, truncated, or built for " \
+                      "another platform"
     try:
-        probe = subprocess.run(
-            [str(path), "--version"], capture_output=True, text=True,
-            errors="replace", timeout=_PROBE_TIMEOUT_S)
+        with bridges.quiet_loader_errors():
+            probe = subprocess.run(
+                [str(path), "--version"], capture_output=True, text=True,
+                errors="replace", timeout=_PROBE_TIMEOUT_S)
     except OSError as error:
         return False, f"exists but failed to execute: {error}"
     except subprocess.TimeoutExpired:
@@ -460,12 +492,15 @@ def _rust_renderer_check() -> Check:
             group=_GROUP_ENGINES)
     ok, evidence = rustwx.probe_renderer(found)
     if not ok:
+        # Non-blocking on the exit code, per this function's own
+        # contract: matplotlib remains the documented fallback.
         return Check(
             name, "missing", f"{found} -- {evidence}",
             "# it has to be replaced:\n" + bridges.install_aware_build_hint(
                 rustwx.CARGO_BUILD_HINT, "tools/rustwx"),
             action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
-            brief=_short(evidence), group=_GROUP_ENGINES)
+            brief=_short(evidence), group=_GROUP_ENGINES,
+            blocking=False)
     # Ask the question the renderer answers, in the renderer's own
     # order.  Probing gpuwm's checkout path alone reported "NO basemap
     # assets found" on every pip install -- including the ones where
@@ -510,7 +545,7 @@ def _cpu_library_check() -> Check:
             "(--preprocess-backend cpu needs it; the CUDA backend does "
             f"not): {error}", remedy,
             action=_build_action(), brief="not staged",
-            group=_GROUP_BRIDGES)
+            group=_GROUP_BRIDGES, blocking=False)
     except (OSError, RuntimeError, AttributeError) as error:
         return Check(
             "cpu preprocess library", "missing",
@@ -624,12 +659,16 @@ def _geog_tree_checks(geog: Path) -> list[Check]:
 
     checks: list[Check] = []
     if not geog.is_dir():
+        # A tree nobody has fetched yet is the documented state of a
+        # fresh install (the ~16 GB download is an explicit opt-in), so
+        # it reports but does not fail the exit code.  A *partial* tree
+        # below stays blocking -- that one is a corrupted download.
         return [Check(
             "WPS_GEOG", "missing",
             f"{geog} does not exist (the default geog_root).  Nothing "
             "that builds static fields can run without it",
             GEOG_HINT, action="gpuwm fetch-geog",
-            brief=f"{geog} does not exist")]
+            brief=f"{geog} does not exist", blocking=False)]
     absent = sorted(name for name in GEOG_DATASETS
                     if not (geog / name).is_dir())
     unindexed = sorted(
@@ -707,6 +746,18 @@ def _case_data_root_check() -> list[Check]:
 
 
 def _distribution_manifest_check() -> Check:
+    """The sealed manifest: the WHOLE schema, then the artifacts.
+
+    This used to check ``schema`` and ``status`` and stop.  A field user
+    hand-authored a two-key document to get past an unrelated bug, got a
+    green line here, and died several minutes into a preparation at
+    ``contract.platform.backends`` -- a key doctor had never looked at.
+    The validator it calls now is the same one every consumer calls, and
+    it names every missing field at once.
+    """
+
+    from gpuwm.runtime_manifest import RUNTIME_SCHEMA, manifest_defects
+
     name = "GPUWM_NATIVE_DISTRIBUTION_MANIFEST"
     raw = os.environ.get(name)
     if not raw:
@@ -719,27 +770,31 @@ def _distribution_manifest_check() -> Check:
     path = Path(raw)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError):
-        payload = None
-    if (not isinstance(payload, dict)
-            or payload.get("schema") != "gpuwm-native-wrf-runtime-v1"
-            or payload.get("status") != "READY"):
+    except (OSError, ValueError, UnicodeDecodeError) as error:
         return Check(
             name, "missing",
-            f"set to {raw} but not a READY gpuwm-native-wrf-runtime-v1 "
-            "document",
+            f"set to {raw} but not a readable JSON document: {error}",
             f"# unset {name} unless you are running a sealed runtime\n"
             "  # archive, whose installer sets it correctly",
-            action=f"unset {name}",
-            brief="not a READY gpuwm-native-wrf-runtime-v1 document")
-    declared = payload.get("payload")
-    if not isinstance(declared, dict) or not declared:
+            action=f"unset {name}", brief=_short(f"unreadable: {error}"))
+    defects = manifest_defects(payload)
+    if defects:
+        shown = "; ".join(defects[:4])
+        more = f" (+{len(defects) - 4} more)" if len(defects) > 4 else ""
         return Check(
-            name, "present",
-            f"{path}: READY schema, but the manifest declares no "
-            "per-artifact hashes, so only its schema and status could be "
-            "checked (presence-only)",
-            brief="READY, but declares no per-artifact hashes")
+            name, "missing",
+            f"{path}: not a complete {RUNTIME_SCHEMA} document -- "
+            f"{len(defects)} problem(s): {shown}{more}",
+            f"# unset {name} unless you are running a sealed runtime\n"
+            "  # archive, whose installer writes this document beside its\n"
+            "  # artifacts.  A clone or a pip install binds its identity\n"
+            "  # from git or from the installed wheel and needs no manifest.",
+            action=f"unset {name}",
+            brief=f"{len(defects)} schema problem(s): {_short(defects[0], 40)}")
+    # A non-empty per-artifact inventory is part of the required schema
+    # now, so the old "READY but declares no hashes -- presence only"
+    # branch is unreachable: such a document is refused above, by name.
+    declared = payload["payload"]
     root = path.resolve().parent
     failures: list[str] = []
     verified = 0
@@ -781,7 +836,228 @@ def _distribution_manifest_check() -> Check:
         brief=f"READY; {verified} artifacts re-hashed")
 
 
-def collect_checks() -> list[Check]:
+# ---------------------------------------------------------------------------
+# The paths a RUN resolves: provenance, importability, per-source decoders
+# ---------------------------------------------------------------------------
+
+def _install_identity_check() -> Check:
+    """Can this install name itself?  Every run's receipt asks it.
+
+    Not a nicety.  ``_source_identity`` runs before any data is read and
+    used to be a bare ``git rev-parse`` with the working directory set
+    to the directory holding the package -- ``site-packages`` on a pip
+    install, where git exits 128.  A field user hit
+    ``CalledProcessError: returned non-zero exit status 128`` on the
+    first preparation of a green install; nothing in the estate report
+    had asked the question that fails.  So doctor asks it, here, by
+    calling the exact resolver the run calls.
+    """
+
+    from gpuwm.runtime_manifest import IdentityError, provenance
+
+    root = Path(__file__).resolve().parent.parent
+    name = "run provenance (identity every receipt binds)"
+    try:
+        identity = provenance(root)
+    except IdentityError as error:
+        return Check(
+            name, "missing", str(error),
+            REINSTALL_HINT
+            + "\n  # a run records what produced it; with no distribution\n"
+            "  # metadata and no checkout there is nothing to record",
+            action="pip install -e .", brief=_short(str(error)))
+    except Exception as error:  # a manifest defect, reported in full below
+        return Check(
+            name, "missing",
+            f"the bound distribution manifest is unusable: {error}",
+            "# see the GPUWM_NATIVE_DISTRIBUTION_MANIFEST line below",
+            action="unset GPUWM_NATIVE_DISTRIBUTION_MANIFEST",
+            brief=_short(str(error)))
+    source = identity["identity_source"]
+    if source == "git":
+        evidence = f"git checkout {str(identity['git_commit'])[:12]} at {root}"
+    elif source == "gpuwm-native-distribution-manifest":
+        evidence = ("sealed runtime manifest "
+                    f"{str(identity['git_commit'])[:12]}")
+    else:
+        wheel = identity["installed_wheel"] or {}
+        evidence = (f"installed wheel {wheel.get('distribution_name')} "
+                    f"{wheel.get('distribution_version')} "
+                    f"({wheel.get('record_file_count')} RECORD entries, "
+                    f"aggregate "
+                    f"{str(wheel.get('record_aggregate_sha256'))[:12]})")
+    return Check(name, "verified", f"{source}: {evidence}",
+                 brief=_short(f"{source}: {evidence}"))
+
+
+#: Modules a data route launches in a fresh interpreter, from whatever
+#: directory the user happens to be standing in.
+_ROUTE_ENTRY_MODULES = (
+    "tools.prepare_hrrr_wrf",
+    "tools.hrrr_single_domain_benchmark",
+)
+
+
+def _non_git_import_check() -> Check:
+    """Do the route entry points import from a directory that is not a repo?
+
+    The wrapper scripts are packaged modules, but they resolve paths and
+    provenance relative to the installed tree, and one of them used to
+    do that with a subprocess whose working directory decided the
+    answer.  Importing them from a scratch directory -- which is where a
+    user actually runs -- is the cheapest possible proof that neither
+    the current directory nor the absence of a repository around it
+    changes whether they load.
+    """
+
+    import tempfile
+
+    name = "route entry points (import from a non-repository directory)"
+    code = "".join(f"import {module}\n" for module in _ROUTE_ENTRY_MODULES)
+    # The probe's import path is the directory that holds the ``gpuwm``
+    # package, which is what BOTH installs give a run: site-packages is
+    # already on ``sys.path`` for a wheel, and a checkout root is what
+    # every documented developer invocation supplies.  Seeding it keeps
+    # the question about the working directory -- the thing that broke
+    # -- rather than about whether a clone happens to be pip-installed.
+    root = str(Path(__file__).resolve().parent.parent)
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = (
+        root + os.pathsep + environment.get("PYTHONPATH", "")).rstrip(
+            os.pathsep)
+    with tempfile.TemporaryDirectory(prefix="gpuwm-doctor-cwd-") as scratch:
+        try:
+            probe = subprocess.run(
+                [sys.executable, "-c", code], capture_output=True, text=True,
+                errors="replace", cwd=scratch, env=environment,
+                timeout=_PROBE_TIMEOUT_S * 4)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return Check(
+                name, "missing", f"the import probe failed to run: {error}",
+                REINSTALL_HINT, action="pip install -e .",
+                brief=_short(str(error)))
+    if probe.returncode == 0:
+        return Check(
+            name, "verified",
+            f"{', '.join(_ROUTE_ENTRY_MODULES)} imported from a scratch "
+            "directory outside any git repository",
+            brief=f"{len(_ROUTE_ENTRY_MODULES)} modules import cleanly")
+    tail = [line for line in (probe.stderr or "").strip().splitlines()
+            if line.strip()]
+    reason = tail[-1] if tail else f"exit {probe.returncode}"
+    return Check(
+        name, "missing", f"failed to import: {reason}",
+        REINSTALL_HINT
+        + "\n  # the preparation wrappers must load from any directory;\n"
+        "  # an install that only works inside a checkout is incomplete",
+        action="pip install -e .", brief=_short(reason))
+
+
+#: Doctor's per-source route checks, by the ``--source`` name.  These are
+#: public data products, not cases.
+DOCTOR_SOURCES = ("hrrr",)
+
+#: Fold key for one source's route findings.
+_GROUP_ROUTE = "route"
+
+
+def _decoder_route_check(source: str) -> Check:
+    """THE decoder that source's preparation will launch, resolved here.
+
+    Resolved by calling :func:`gpuwm.bridges.resolve_source_decoder` --
+    the function the preparation wrapper itself calls -- rather than by
+    re-deriving a path.  Doctor reporting one path while preparation
+    used another is not a hypothetical: the wrapper resolved a source
+    checkout's cargo workspace under ``site-packages``, so a wheel
+    install got "no gaps" here and ``HRRR decoder is missing`` there.
+    """
+
+    name = f"{source} route decoder"
+    try:
+        found = bridges.resolve_source_decoder(source)
+    except FileNotFoundError as error:
+        message = str(error)
+        headline, _, remedy = message.partition("\n")
+        return Check(
+            name, "missing", headline,
+            remedy or bridges.bridge_remedy(bridges.SOURCE_DECODERS[source]),
+            action=_build_action(), brief="not resolvable",
+            group=_GROUP_ROUTE)
+    executable = bridges.SOURCE_DECODERS[source]
+    ok, evidence = bridges.bridge_abi_matches(executable, found)
+    if not ok:
+        return Check(
+            name, "missing", f"{found} -- {evidence}",
+            "# this one has to be replaced before the "
+            f"{source} route can run:\n"
+            + bridges.install_aware_build_hint(bridges.CARGO_BUILD_HINT),
+            action=_build_action(), brief=_short(evidence),
+            group=_GROUP_ROUTE)
+    return Check(
+        name, "verified",
+        f"preparation will launch {found} ({evidence})",
+        brief=_short(str(found)), group=_GROUP_ROUTE)
+
+
+def _hrrr_fetch_path_check() -> Check:
+    """Which byte transport ``gpuwm fetch --source hrrr`` will use.
+
+    Reported because the difference is 16x on a real link and was
+    invisible until after the download: the Python fallback can only do
+    ``.idx`` range subsets, and one 419 MB file took 560 s that way
+    against 27-35 s taken whole.  Not a gap -- the fallback is the
+    documented always-available route and the fetch-backbone line above
+    already carries the remedy -- so this is ``info`` when it is slow
+    and ``verified`` when it is not.
+    """
+
+    from gpuwm import fetch, rustwx_fetch
+
+    name = "hrrr route fetch transport"
+    try:
+        found = rustwx_fetch.find_fetch_bin()
+        usable = found is not None and rustwx_fetch.probe_fetch_bin(found)[0]
+    except FileNotFoundError:
+        found, usable = None, False
+    if usable:
+        return Check(
+            name, "verified",
+            f"engine rust ({found}), default --mode {fetch.HRRR_DEFAULT_MODE}"
+            " (whole objects in parallel range GETs)",
+            brief=f"rust, {fetch.HRRR_DEFAULT_MODE}", group=_GROUP_ROUTE)
+    return Check(
+        name, "info",
+        "engine python (the rust backbone is not usable here), which can "
+        "only do .idx range subsets -- correct, and roughly an order of "
+        "magnitude slower per file",
+        "gpuwm setup\n"
+        "  # stages the rust fetch backbone; whole-file transfers need it",
+        action="gpuwm setup", brief="python transport (.idx subsets only)",
+        group=_GROUP_ROUTE)
+
+
+def _source_route_checks(source: str) -> list[Check]:
+    """Everything one data route resolves before it reads a byte."""
+
+    if source not in DOCTOR_SOURCES:
+        raise ValueError(f"unknown doctor source {source!r}; known: "
+                         f"{list(DOCTOR_SOURCES)}")
+    checks = [_decoder_route_check(source)]
+    if source == "hrrr":
+        checks.append(_hrrr_fetch_path_check())
+    return checks
+
+
+def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
+    """The estate, plus every named data route's own resolution.
+
+    ``sources=None`` means every route this build knows, which is what
+    a bare ``gpuwm doctor`` runs: the report that said "no gaps" before
+    a route died on a path it had never resolved is the reason these
+    are in the default estate rather than behind a flag.
+    """
+
+    selected = DOCTOR_SOURCES if sources is None else tuple(sources)
     checks: list[Check] = []
     version = ".".join(str(v) for v in sys.version_info[:3])
     if sys.version_info >= (3, 11):
@@ -804,6 +1080,10 @@ def collect_checks() -> list[Check]:
     checks.append(_noah_tables_check())
     checks.extend(_case_data_root_check())
     checks.append(_distribution_manifest_check())
+    checks.append(_install_identity_check())
+    checks.append(_non_git_import_check())
+    for source in selected:
+        checks.extend(_source_route_checks(source))
     return checks
 
 
@@ -942,15 +1222,24 @@ def format_brief(checks: list[Check]) -> str:
         if setup:
             summary += " " + setup
         lines.append(summary)
+        lines.append("Run `gpuwm doctor --explain` for the full remedy "
+                     "for each line, with the evidence behind it.")
     else:
         lines.append("gpuwm doctor: no gaps.")
-    lines.append("Run `gpuwm doctor --explain` for the full remedy for "
-                 "each line, with the evidence behind it.")
     return "\n".join(lines)
 
 
+def blocking_gaps(checks: list[Check]) -> list[Check]:
+    """The gaps that justify a nonzero exit: broken or integrity-suspect
+    findings, never the absent-optional ones (see :class:`Check`)."""
+
+    return [check for check in checks
+            if check.status == "missing" and check.blocking]
+
+
 def doctor_main(args) -> int:
-    checks = collect_checks()
+    sources = getattr(args, "source", None) or None
+    checks = collect_checks(tuple(sources) if sources else None)
     if getattr(args, "json", False):
         print(json.dumps(
             [check.__dict__ for check in checks], indent=2))
@@ -958,7 +1247,7 @@ def doctor_main(args) -> int:
         print(format_report(checks))
     else:
         print(format_brief(checks))
-    return 1 if any(check.status == "missing" for check in checks) else 0
+    return 1 if blocking_gaps(checks) else 0
 
 
 def register_cli(subparsers) -> None:
@@ -971,9 +1260,17 @@ def register_cli(subparsers) -> None:
              "that closes each gap (--explain for the full remedies)")
     parser.add_argument("--json", action="store_true",
                         help="emit the checks as JSON")
+    parser.add_argument(
+        "--source", action="append", choices=sorted(DOCTOR_SOURCES),
+        metavar="SOURCE",
+        help="report only this data route's own resolution (repeatable) "
+             "alongside the shared estate: the exact decoder its "
+             "preparation will launch, and the byte transport its fetch "
+             "will use.  Omitted, every route this build knows is "
+             f"reported ({', '.join(sorted(DOCTOR_SOURCES))})")
     parser.set_defaults(func=doctor_main)
     return parser
 
 
-__all__ = ["Check", "SETUP_ACTIONS", "collect_checks", "doctor_main",
-           "format_brief", "format_report", "register_cli"]
+__all__ = ["Check", "DOCTOR_SOURCES", "SETUP_ACTIONS", "collect_checks",
+           "doctor_main", "format_brief", "format_report", "register_cli"]

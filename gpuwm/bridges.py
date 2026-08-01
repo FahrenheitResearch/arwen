@@ -378,6 +378,121 @@ def install_aware_one_line_hint(one_liner: str,
             "a clone)")
 
 
+#: The two native executable formats this project runs, by magic bytes.
+#: An ELF header is four bytes; a PE is ``MZ`` plus a signature at the
+#: offset stored at 0x3c, so 0x40 bytes is always enough to classify.
+_EXECUTABLE_HEADER_BYTES = 0x40
+
+
+def native_executable_format(path: Path) -> tuple[str | None, str]:
+    """``('elf'|'pe'|None, evidence)`` from the file's own header.
+
+    A cheap read, and the ONLY safe way to ask "can this be executed"
+    about a file of unknown provenance -- because on Windows, asking the
+    operating system can hang forever.
+
+    ``subprocess.run(..., timeout=...)`` bounds the *wait*, never
+    ``CreateProcess`` itself.  A file with a corrupt or absent PE header
+    can make the image loader raise a modal error dialog inside
+    ``CreateProcess``, and in a session with no interactive desktop
+    there is nothing to dismiss it: the call never returns, the timeout
+    never starts, and the process is unkillable-by-timeout.  A release
+    battery froze twice at exactly that call, on a probe of a file whose
+    contents were sixteen bytes of ASCII.
+
+    So every probe reads the header first and refuses non-executables
+    itself.  The answer for a real bridge is unchanged -- a genuine ELF
+    or PE still goes on to be launched -- and the answer for the file
+    that used to hang is now a finding, in microseconds.
+    """
+
+    try:
+        with Path(path).open("rb") as stream:
+            head = stream.read(_EXECUTABLE_HEADER_BYTES)
+    except OSError as error:
+        return None, f"cannot be read: {error}"
+    if head[:4] == b"\x7fELF":
+        return "elf", "ELF executable header"
+    if head[:2] == b"MZ" and len(head) >= 0x40:
+        offset = int.from_bytes(head[0x3c:0x40], "little")
+        # The signature lives past this window; its OFFSET is what a
+        # truncated or fabricated MZ stub gets wrong, and a plausible
+        # one is all that is needed to make launching safe to attempt.
+        if 0 < offset < (1 << 24):
+            return "pe", "PE executable header"
+        return None, ("has an MZ stub whose PE signature offset is out of "
+                      "range -- truncated or not an executable")
+    return None, (f"is not a native executable ({len(head)} byte(s) read, "
+                  "no ELF or PE header)")
+
+
+def launchable(path: Path) -> tuple[bool, str]:
+    """Is ``path`` safe and sensible to hand to the operating system?
+
+    Format first, then the POSIX execute bit.  Both are properties of
+    the file, so neither can hang, and together they cover every way a
+    probe used to discover the answer the expensive way.
+    """
+
+    path = Path(path)
+    if not path.is_file():
+        return False, "does not exist"
+    binary_format, evidence = native_executable_format(path)
+    if binary_format is None:
+        return False, f"exists but {evidence}"
+    expected = "pe" if os.name == "nt" else "elf"
+    if binary_format != expected:
+        return False, (f"exists but is a {binary_format.upper()} binary on a "
+                       f"host that runs {expected.upper()} -- built for "
+                       "another platform")
+    if os.name != "nt" and not os.access(path, os.X_OK):
+        return False, "exists but is not marked executable"
+    return True, evidence
+
+
+class quiet_loader_errors:  # noqa: N801 - a context manager, used as a verb
+    """Make the Windows image loader FAIL instead of prompting.
+
+    ``SetErrorMode`` is per-process and inherited by children, so
+    setting it around a probe covers the loader dialog that would
+    otherwise appear inside ``CreateProcess``.  This is the backstop
+    behind :func:`launchable`, not a replacement for it: a header check
+    cannot know about a missing DLL, and a missing-DLL dialog hangs
+    exactly the same way.
+
+    A no-op everywhere but Windows.
+    """
+
+    _FAIL_FAST = 0x0001 | 0x0002 | 0x8000  # CRITICALERRORS|GPFAULT|OPENFILE
+
+    def __enter__(self):
+        self._previous = None
+        if os.name != "nt":
+            return self
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            self._previous = kernel32.SetErrorMode(self._FAIL_FAST)
+            # SetErrorMode replaces rather than merges, so restore the
+            # union: another library may have asked for its own bits.
+            kernel32.SetErrorMode(self._previous | self._FAIL_FAST)
+        except (AttributeError, OSError):  # pragma: no cover - not Windows
+            self._previous = None
+        return self
+
+    def __exit__(self, *_exception):
+        if self._previous is None:
+            return False
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.SetErrorMode(self._previous)
+        except (AttributeError, OSError):  # pragma: no cover
+            pass
+        return False
+
+
 def default_bridge_dir() -> Path:
     """User-level directory for prebuilt bridges: ``~/.gpuwm/bridges``."""
 
@@ -466,6 +581,57 @@ def find_bridge(name: str) -> Path | None:
         raise ValueError(f"unknown bridge executable {name!r}; known: "
                          f"{sorted(BRIDGE_ENV)}")
     return find_artifact(BRIDGE_ENV[name], executable_name(name))
+
+
+#: Public data source -> the bridge executable its preparation route
+#: launches.  These are product names (the data a user asks for), never
+#: case names.
+SOURCE_DECODERS = {
+    "hrrr": "hrrr_grib2_bridge",
+    "gfs": "gfs_grib2_bridge",
+    "era5": "grib1_bridge",
+}
+
+
+def resolve_source_decoder(source: str) -> Path:
+    """THE decoder ``source``'s preparation will launch, or a refusal.
+
+    One function, called by the preparation wrapper AND by ``gpuwm
+    doctor``, because the alternative was two resolvers with different
+    answers: the wrapper resolved a *source-tree cargo workspace*
+    (``<root>/tools/grib1_bridge/target/release/...``) that exists only
+    in a checkout, while doctor resolved the shared ladder in this
+    module.  On a wheel install doctor therefore reported the bridge
+    ``gpuwm setup`` had staged in ``~/.gpuwm/bridges`` -- correctly --
+    and the preparation then went looking under ``site-packages/tools``
+    and refused.  "No gaps" followed by a missing file is the exact
+    failure a pre-flight exists to prevent, and it can only be prevented
+    by asking the same question through the same code.
+
+    Resolution is :func:`bridge_candidates`' order: the environment
+    override (a missing file it names is a hard error, never a silent
+    fall-through), then a checkout's own build, then ``libexec/bridges``
+    beside the package, then the user-level ``~/.gpuwm/bridges`` that
+    ``gpuwm fetch-bridges`` stages into.  A checkout's build coming
+    before the staged copy is deliberate: a developer's rebuild must win
+    over whatever they downloaded last month.
+
+    Nothing here runs cargo, so it is safe to call from a report.
+    """
+
+    if source not in SOURCE_DECODERS:
+        raise ValueError(
+            f"no decoder is declared for source {source!r}; known: "
+            f"{sorted(SOURCE_DECODERS)}")
+    name = SOURCE_DECODERS[source]
+    found = find_bridge(name)
+    if found is not None:
+        return found
+    raise FileNotFoundError(
+        f"the {source} route's decoder ({executable_name(name)}) is not "
+        "installed here.  Searched, in order: "
+        + ", ".join(str(candidate) for candidate in bridge_candidates(name))
+        + "\n" + bridge_remedy(name))
 
 
 def bridge_abi_matches(name: str, path: Path) -> tuple[bool, str]:
@@ -658,6 +824,8 @@ def decode_failure_message(subject: str, stderr: str) -> str:
 
 __all__ = [
     "decode_failure_message",
+    "SOURCE_DECODERS", "resolve_source_decoder",
+    "launchable", "native_executable_format", "quiet_loader_errors",
     "BRIDGE_ABI_MARKERS", "bridge_abi_matches",
     "BRIDGE_ENV", "CARGO_BUILD_HINT", "CLONE_DIR", "CRATE_RELATIVE",
     "REPOSITORY_URL", "RUSTWX_CRATE_RELATIVE", "WINDOWS_SHELL",

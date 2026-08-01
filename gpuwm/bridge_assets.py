@@ -83,6 +83,7 @@ from urllib.request import Request, urlopen
 import zipfile
 
 from gpuwm import bridges
+from gpuwm.explain import warn
 
 #: Schema of the packaged pins document.
 PINS_SCHEMA = "gpuwm-bridge-pins-v1"
@@ -289,8 +290,13 @@ def parse_pins(payload: object, *, origin: str = "pins") -> BridgePins:
     assert isinstance(raw_platforms, dict)
     platforms: dict[str, BundlePin] = {}
     for key, record in sorted(raw_platforms.items()):
-        _require(key in SUPPORTED_PLATFORMS,
-                 f"{origin} declares unknown platform {key!r}")
+        if key not in SUPPORTED_PLATFORMS:
+            # A pins document from a newer release may name a platform
+            # this build does not know; that entry is irrelevant to
+            # this host and skipping it keeps the document usable.
+            warn(f"{origin} declares platform {key!r} this build does "
+                 "not know; skipping that entry")
+            continue
         _require(isinstance(record, dict), f"{key}: record is not an object")
         bundle = record.get("bundle")
         _require(isinstance(bundle, dict), f"{key}: bundle is not an object")
@@ -614,16 +620,26 @@ def stage_from_loose_files(source_dir: Path, bundle: BundlePin, dest: Path,
 
     absent = [pin.filename for pin in bundle.binaries
               if not (source_dir / pin.filename).is_file()]
-    if absent:
+    present = [pin for pin in bundle.binaries
+               if (source_dir / pin.filename).is_file()]
+    if absent and not present:
         raise BridgeAssetError(
             f"{source_dir} carries neither {bundle.filename} nor the loose "
             f"artifacts; missing {', '.join(absent)}")
+    if absent:
+        # The eight artifacts are independent; an air-gapped operator
+        # with the decoders but not the renderer gets the decoders,
+        # verified, and doctor names what is still missing.
+        warn(f"{source_dir} is missing {len(absent)} of "
+             f"{len(bundle.binaries)} pinned artifact(s) "
+             f"({', '.join(absent)}); staging the {len(present)} that "
+             "are present -- gpuwm doctor reports the rest")
     dest.mkdir(parents=True, exist_ok=True)
     work = dest / f"{ARCHIVE_SUBDIR}-stage"
     work.mkdir(parents=True, exist_ok=True)
     installed: list[Path] = []
     try:
-        for pin in bundle.binaries:
+        for pin in present:
             temp = work / pin.filename
             shutil.copyfile(source_dir / pin.filename, temp)
             final = dest / pin.filename
@@ -793,13 +809,25 @@ def fetch_bridges_main(args) -> int:
 
     remaining = [pin.filename for pin in bundle.binaries
                  if not matches_pin(dest / pin.filename, pin)]
-    if remaining:
+    installed_names = {path.name for path in installed}
+    broken = [name for name in remaining if name in installed_names]
+    if broken:
+        # Something this invocation just wrote fails its pin: that is
+        # an integrity failure, and it stays a refusal.
         print("gpuwm fetch-bridges: REFUSED: staging finished but "
-              f"{', '.join(remaining)} still do not match their pins")
+              f"{', '.join(broken)} still do not match their pins")
         return 2
+    if remaining:
+        # A partial --from DIR staging: everything written verified;
+        # what the directory did not carry is reported, not fatal.
+        warn(f"{len(remaining)} pinned artifact(s) are still not "
+             f"staged ({', '.join(remaining)}); gpuwm doctor names "
+             "the remedy for each")
+    verified = len(bundle.binaries) - len(remaining)
     print(f"gpuwm fetch-bridges: {len(installed)} artifact(s) staged at "
-          f"{dest}; all {len(bundle.binaries)} verified against the "
-          "packaged pins.  `gpuwm doctor` re-checks the full estate")
+          f"{dest}; {verified} of {len(bundle.binaries)} verified "
+          "against the packaged pins.  `gpuwm doctor` re-checks the "
+          "full estate")
     for note in _override_warnings(bundle):
         print(note)
     return 0

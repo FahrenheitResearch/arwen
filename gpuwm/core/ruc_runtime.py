@@ -492,7 +492,7 @@ RUC_RUNTIME_RESTRICTIONS: tuple[tuple[str, str, str], ...] = (
         "assembled driver is bitwise against oracle/lsmruc.csv except its "
         "26 pinned upstream-residue cells.  No gpuwm/WRF forecast "
         "trajectory comparison exists.",
-        "That is what validation-candidate would require and this scheme is "
+        "That is what wrf-matched-run-candidate would require and this scheme "
         "implemented-unverified.",
     ),
 )

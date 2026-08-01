@@ -30,10 +30,15 @@ afterwards means preprocessing twice.  Every later stage consumes the
 previous one's output, so a failed stage replays its whole output and
 stops -- unlike ``gpuwm setup``, whose steps are independent.
 
-**Scope is the route that is actually documented.**  GFS single-domain
-with a shipped ``--physics-profile``.  Anything else -- an ERA5
-``[case_data]`` config, a multi-domain tree, a config whose physics
-matches no shipped profile -- is refused up front, naming the manual
+**Scope is the route that is actually documented.**  GFS
+single-domain.  A config bound to a shipped ``--physics-profile``
+carries that assertion through every stage; a config bound to none --
+the wizard's default suite, or any hand-authored suite the engine
+implements -- runs as written, with its WRF-verification status stated
+in the receipts (owner ruling 2026-07-31: the suite choice is the
+user's, and status is reported, never gating).  What is still refused
+up front -- an ERA5 ``[case_data]`` config, a multi-domain tree, a
+source with no printed-value relay -- is refused naming the manual
 chain, rather than half-orchestrated into a state nobody can finish by
 hand either.
 """
@@ -215,15 +220,12 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     except Exception as error:  # a config that will not load is the finding
         raise GoRefusal(f"{config} does not load as an experiment: "
                         f"{error}") from error
-    if profile is None:
-        raise GoRefusal(
-            f"the physics in {config} matches none of the profiles the "
-            "prepared single-domain runner accepts, so the chain's last "
-            "stage would refuse it.  This is the wizard's default suite "
-            "unless a profile was asked for.\n"
-            "  remedy: re-emit with a profile -- gpuwm domain "
-            "--physics-profile <id> ... -- and `gpuwm domain --help` "
-            "lists the ids")
+    # ``profile`` may be None: the runner executes the config's own
+    # suite as written (owner ruling 2026-07-31), so a config matching
+    # no shipped profile is not a refusal any more -- the chain just
+    # omits --physics-profile and the receipts report the suite's
+    # verification status.  A matched profile is still forwarded, so a
+    # bound config keeps its exactness assertion end to end.
 
     # No "is the runner on disk?" gate any more.  It used to be here
     # because the runner was a script under tools/ that a wheel install
@@ -262,6 +264,11 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         "source": source,
         "cycle": str(fetch_table["cycle"]),
         "hours": int(fetch_table["hours"]),
+        # Load-bearing exactly like cycle/hours/area: the config's
+        # start_time IS cycle + this lead, so a fetch that ignored it
+        # would download a window the front door then refuses for not
+        # carrying the lead the experiment starts from.
+        "forecast_start_hour": int(fetch_table.get("forecast_start_hour", 0)),
         "area": str(fetch_table["area"]),
         "data": data,
         "profile": profile,
@@ -278,6 +285,16 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
 # The five commands, composed from the plan
 # ---------------------------------------------------------------------------
 
+def _lead_note(plan: dict) -> str:
+    """The forecast lead, said in the plan line, or nothing at lead 0."""
+
+    lead = plan.get("forecast_start_hour") or 0
+    if not lead:
+        return ""
+    return (f", initialized from forecast lead f{lead:03d} "
+            f"(a {lead} h forecast, not an analysis)")
+
+
 def _area_flag(area: str) -> str:
     """``--area=VALUE`` when the value leads with a minus, else split.
 
@@ -288,21 +305,38 @@ def _area_flag(area: str) -> str:
     return f"--area={area}"
 
 
+def _profile_flags(plan: dict) -> list[str]:
+    """``--physics-profile <id>`` when the config is bound to one.
+
+    Empty for a config matching no shipped profile: the runner executes
+    the hash-bound experiment's own suite as written, and inventing a
+    name here would re-create the WSM6-substitution defect this chain
+    already met once.
+    """
+
+    profile = plan.get("profile")
+    return [] if profile is None else ["--physics-profile", str(profile)]
+
+
 def authority_command(plan: dict) -> list[str]:
     return [sys.executable, "-m", str(plan["runner"]),
             "--materialize-authorities",
             "--source", plan["source"],
             "--base-experiment-config", str(plan["config"]),
             "--base-wps-namelist", str(plan["wps_namelist"]),
-            "--physics-profile", plan["profile"],
+            *_profile_flags(plan),
             "--output-directory", str(plan["authority"])]
 
 
 def fetch_command(plan: dict) -> list[str]:
-    return [sys.executable, "-m", "gpuwm.cli", "fetch",
-            "--source", plan["source"], "--cycle", plan["cycle"],
-            "--hours", str(plan["hours"]), _area_flag(plan["area"]),
-            "--out", str(plan["data"])]
+    command = [sys.executable, "-m", "gpuwm.cli", "fetch",
+               "--source", plan["source"], "--cycle", plan["cycle"],
+               "--hours", str(plan["hours"]), _area_flag(plan["area"]),
+               "--out", str(plan["data"])]
+    if plan.get("forecast_start_hour"):
+        command.extend(
+            ("--forecast-start-hour", str(plan["forecast_start_hour"])))
+    return command
 
 
 def manifest_command(plan: dict, bridge: Path) -> list[str]:
@@ -336,14 +370,12 @@ def prepare_command(plan: dict, bridge: Path, *, manifest: Path,
             str(plan["authority"] / "experiment.toml"),
             "--source-manifest", str(manifest),
             "--source-manifest-sha256", manifest_sha256,
-            # Not optional in practice, whatever the flag's help says.
-            # `gpuwm/source_cli.py` falls back to WSM6_PROFILE_ID when
-            # --physics-profile is absent and then compares the config's
-            # physics against THAT, so omitting it refuses every config
-            # except a wsm6-no-radiation one.  The end-to-end run that
-            # found this used the profile FIRST-LIGHT.md's own worked
-            # example uses.
-            "--physics-profile", plan["profile"],
+            # Forwarded only when the config is bound to one: the GFS
+            # front door no longer substitutes WSM6 for an absent
+            # profile (the defect that once made this flag mandatory in
+            # practice) -- an unnamed config's own suite is prepared as
+            # written and its verification status reported.
+            *_profile_flags(plan),
             "--geog-root", str(geog_root),
             "--output-root", str(plan["prepared"])]
 
@@ -358,7 +390,7 @@ def forecast_command(plan: dict, digests: dict) -> list[str]:
             "--experiment-config",
             str(plan["authority"] / "experiment.toml"),
             "--wps-namelist", str(plan["authority"] / "namelist.wps"),
-            "--physics-profile", plan["profile"],
+            *_profile_flags(plan),
             "--io-mode", "history", "--outdir", str(plan["run"])]
 
 
@@ -584,7 +616,14 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
     output = (completed.stdout or "") + (completed.stderr or "")
     if completed.returncode != 0:
         print(f"  FAILED  {label} (exit {completed.returncode})")
-        for line in output.splitlines():
+        # The stage's own refusal is usually its last few lines; replay
+        # a readable tail by default and everything under --explain.
+        lines = output.splitlines()
+        tail = lines if explain else lines[-_FAILURE_TAIL_LINES:]
+        if len(tail) < len(lines):
+            print(f"    ... ({len(lines) - len(tail)} earlier line(s); "
+                  "re-run with --explain to replay all of them)")
+        for line in tail:
             print(f"    {line}")
         print(f"go: stopped at {label}; every later stage consumes this "
               "one's output, so nothing after it ran.")
@@ -593,6 +632,17 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
     if explain:
         for line in output.splitlines():
             print(f"    {line}")
+    else:
+        # Warnings must not need a flag to be seen: a passing stage's
+        # warning lines surface, one line each, nothing else.
+        for line in output.splitlines():
+            if line.lstrip().lower().startswith("warning:"):
+                print(f"    {line.strip()}")
+
+
+#: Failure-replay tail length: enough to carry any refusal message this
+#: tree prints plus a Python traceback's tail, small enough to read.
+_FAILURE_TAIL_LINES = 30
 
 
 class GoStageFailed(Exception):
@@ -601,6 +651,73 @@ class GoStageFailed(Exception):
     def __init__(self, code: int):
         super().__init__(f"stage exited {code}")
         self.code = code
+
+
+def _physics_words(plan: dict) -> str:
+    """The banner's physics clause: profile id, or one honest sentence."""
+
+    if plan.get("profile") is not None:
+        return f"profile {plan['profile']}"
+    return ("physics from the config as written (supported, not yet "
+            "WRF-verified)")
+
+
+def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
+    """Price every phase of ``plan`` against this card, before the fetch.
+
+    The whole point is WHERE this runs.  A configuration that cannot fit
+    used to discover that in preprocessing -- after `gpuwm fetch` had
+    pulled 81 GFS files down -- because the only memory estimate anyone
+    computed described the forecast.  Both phases are priced here, at
+    planning time, and the verdict names the binding phase and its
+    number in one sentence.
+
+    Returns a dict with ``verdict`` (always), ``refuse`` (a genuine OOM
+    prediction: the binding phase does not fit even the whole card's
+    free VRAM) and ``warn`` (it fits free VRAM but not the reserved
+    budget -- said out loud, never blocking).
+    """
+
+    from gpuwm.core.preflight import (ReservePolicy, _load_experiment_any,
+                                      config_forcing_source,
+                                      estimate_phases, unpriced_ingest_note)
+
+    config = Path(plan["config"])
+    source = config_forcing_source(config)
+    if source is None:
+        return {"verdict": unpriced_ingest_note(config, plan.get("source")),
+                "refuse": False, "warn": True, "free_bytes": None}
+    exp = _load_experiment_any(config)
+    # The cadence the domain was SIZED against, from the same [fetch]
+    # table the fetch stage reads, so the two cannot disagree.
+    cadence_h = plan.get("cadence")
+    phases = estimate_phases(
+        exp, source=source, vram_gib=vram_gib,
+        ingest_forcing_interval_seconds=(
+            float(cadence_h) * 3600.0 if cadence_h else None))
+
+    free = None
+    try:
+        import cupy as cp
+
+        free = int(cp.cuda.runtime.memGetInfo()[0])
+    except Exception:
+        # No device here (a planning box, a CI runner): price the phases
+        # and print the verdict, but never refuse on a card we cannot see.
+        return {"verdict": phases.verdict(None), "refuse": False,
+                "warn": False, "free_bytes": None, "phases": phases}
+    reserve = ReservePolicy.n0_alloc(
+        exp, estimate_bytes=phases.forecast.alloc_estimate_bytes)
+    budget = reserve.budget_bytes(free)
+    peak = phases.peak_envelope_bytes
+    return {
+        "verdict": phases.verdict(budget),
+        "refuse": peak > free,
+        "warn": peak > budget,
+        "free_bytes": free,
+        "budget_bytes": budget,
+        "phases": phases,
+    }
 
 
 def go_main(args) -> int:
@@ -620,8 +737,8 @@ def go_main(args) -> int:
 
     if getattr(args, "dry_run", False):
         print(f"go: {plan['config']} -- source {plan['source']}, cycle "
-              f"{plan['cycle']}, {plan['hours']} h, profile "
-              f"{plan['profile']}")
+              f"{plan['cycle']}, {plan['hours']} h, "
+              f"{_physics_words(plan)}{_lead_note(plan)}")
         print("")
         for label, command in (
                 ("1. authority", authority_command(plan)),
@@ -663,7 +780,31 @@ def go_main(args) -> int:
             f"  # or remove {plan['root']} if that run is finished with")
 
     print(f"go: {plan['config']} -- source {plan['source']}, cycle "
-          f"{plan['cycle']}, {plan['hours']} h, profile {plan['profile']}")
+          f"{plan['cycle']}, {plan['hours']} h, {_physics_words(plan)}"
+          f"{_lead_note(plan)}")
+
+    # BEFORE the download, not after it.  `gpuwm fetch` is the stage that
+    # costs the user gigabytes and minutes; a configuration that cannot
+    # fit has to be told so on this side of it.
+    if not getattr(args, "no_memory_gate", False):
+        gate = memory_gate(plan)
+        print(f"go: memory -- {gate['verdict']}")
+        if gate["refuse"]:
+            raise GoRefusal(
+                f"this configuration will not fit: {gate['verdict']}, and "
+                f"the card has {gate['free_bytes'] / (1024 ** 3):.2f} GiB "
+                "free right now.  Refusing here, BEFORE the fetch stage "
+                "downloads the forcing data, rather than in preprocessing "
+                "after it.\n"
+                "  remedy: re-size for this card -- gpuwm domain "
+                f"--vram-gib {gate['free_bytes'] // (1024 ** 3)} ... -- or "
+                "free VRAM and re-run\n"
+                "  # gpuwm go CONFIG --no-memory-gate runs it anyway")
+        if gate["warn"]:
+            print("go: WARNING -- that is above the reserved budget, "
+                  "though it fits the free VRAM measured just now.  "
+                  "Proceeding; a driver/other-process spike could still "
+                  "OOM this run.")
     try:
         _run_stage("authority", authority_command(plan), explain=explain)
         _run_stage("fetch", fetch_command(plan), explain=explain)
@@ -686,6 +827,17 @@ def go_main(args) -> int:
     except GoStageFailed as failure:
         return failure.code
 
+    # The forecast writes its own validity verdict (health, stability,
+    # input-identity gates) into report.json; say it here so the chain
+    # ends with the one line a reader is looking for.
+    try:
+        verdict = json.loads(
+            (plan["run"] / "report.json").read_text(
+                encoding="utf-8")).get("status")
+    except (OSError, ValueError):
+        verdict = None
+    if verdict:
+        print(f"go: forecast validity {verdict}")
     print(f"go: wrote {plan['run']}")
     if rendered:
         print(f"go: rendered {plan['render']}")
@@ -729,6 +881,11 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--dry-run", action="store_true", dest="dry_run",
                         help="print the six commands, filled in, and "
                              "exit without running any of them")
+    parser.add_argument("--no-memory-gate", action="store_true",
+                        dest="no_memory_gate",
+                        help="skip the before-the-fetch memory check that "
+                             "refuses a configuration whose binding phase "
+                             "cannot fit this card's free VRAM")
     parser.set_defaults(func=go_main)
     return parser
 
@@ -737,7 +894,8 @@ __all__ = [
     "GoRefusal", "GoStageFailed", "HEARTBEAT_SECONDS", "MANUAL_CHAIN",
     "ORCHESTRATED_SOURCES", "RUNNER_MODULE", "RUNNER_RELATIVE",
     "authority_command", "fetch_command", "forecast_command", "go_main",
-    "manifest_command", "plan_from_config", "prepare_command", "printable",
+    "manifest_command", "memory_gate", "plan_from_config",
+    "prepare_command", "printable",
     "proof_digests", "register_cli", "render_command",
     "render_extra_missing", "resolve_bridge", "wrfout_frames",
 ]

@@ -62,8 +62,8 @@ MYNN, in the same order:
    `RunConfig` fields with `validate_run_config` refusing anything outside the
    admitted identity before a run starts.
 
-`registry_sha256` is now
-`c3abb1b23a11a503f64088f70d3c4020f5556c250d1c4dc5ea407955bd5a56df`;
+`registry_sha256` at the end of THIS lane was
+`c3abb1b23a11a503f64088f70d3c4020f5556c250d1c4dc5ea407955bd5a56df` -- the move this lane made, not the tracked file's current digest, which every later registry change moves again; run `gpuwm.physics_registry.registry_sha256()` for the value on the tree in front of you;
 the admitting lane recorded
 `398dd150b232fec029e76c3ac43abe366d7facb139595ae344a72444ac55ade7`
 and this lane's rewrite of the scaling warning moved it

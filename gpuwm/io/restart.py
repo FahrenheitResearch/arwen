@@ -380,6 +380,13 @@ REBUILT_SCRATCH_SLOTS = frozenset({
     "nssl2_driver_ignored_accumulator",
     "nssl2_fused_temperature", "nssl2_primary_ice_target",
     "nssl2_nucond_ss",
+    # The DA reflectivity operator's own dry-air density and diagnosed
+    # temperature (gpuwm/da/obsop.py:_nssl_reflectivity).  Both are filled
+    # in full at the top of one H(x) call — rho from 1/alt, T from theta
+    # and Exner — and consumed by the shared NSSL diagnostic inside that
+    # same call, so no restart boundary can fall between the write and the
+    # read and neither carries anything across a step.
+    "da_nssl_rho", "da_nssl_t",
     "cu_expiring",
 })
 
@@ -479,6 +486,7 @@ DRIVER_REBUILT_ATTRS = frozenset({
     "bldt_seconds", "stepbl", "radt_minutes", "cudt_minutes",
     "stepra", "stepcu", "radt_seconds", "cudt_seconds",
     "rainc", "cu_nca", "cu_pratec", "cu_raincv", "cu_expiring",
+    "_cu_expiry_pending",
     "cu_rates", "_sr_roundoff_upper", "_sr_roundoff_max_ulps",
     "_wsm6_minor_loops",
 })
@@ -1574,7 +1582,8 @@ def _driver_manifest(driver) -> dict[str, object]:
     # coupled tendencies have not yet received their required simultaneous
     # clear.  ``cu_expiring`` itself remains rebuild-only scratch.
     cu_expiring = getattr(driver, "cu_expiring", None)
-    if cu_expiring is not None and bool(cu_expiring.any()):
+    if (bool(getattr(driver, "_cu_expiry_pending", False))
+            or (cu_expiring is not None and bool(cu_expiring.any()))):
         raise RestartManifestError(
             "cannot write restart while KF expiry finalization is pending; "
             "call PhysicsDriver.finish_step() before checkpointing")

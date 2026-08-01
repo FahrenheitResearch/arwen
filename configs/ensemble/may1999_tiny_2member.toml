@@ -1,0 +1,35 @@
+# Two-member tiny-domain ensemble overlay (EXPERIMENTAL).
+#
+# The overlay never edits the base experiment config: experiment TOMLs are
+# hash-bound and reject unknown tables, so the ensemble's own knobs live
+# here and cite the base by path (its sha256 is recorded in the manifest).
+#
+#   python -m tools.ensemble_forecast run \
+#       --ensemble-config configs/ensemble/may1999_tiny_2member.toml \
+#       --ens-root out/tiny-ensemble
+#
+# EXPERIMENTAL, and uncalibrated. gpuwm.da.perturb imposes no mass or wind
+# balance, shares one unperturbed boundary file across members (spread
+# decays toward the rim by construction), and tapers laterally only. See
+# `python -m tools.ensemble_forecast run --help` and PROVENANCE.md.
+
+[ensemble]
+base_config = "may1999_tiny_ensemble_base.toml"
+n_members = 2
+base_seed = 20260730
+# The real spectral perturbation lane, now that it has landed.  The engine
+# refuses to substitute one provenance for another silently; "gpuwm.da.perturb"
+# is the shipped scientific route, "experimental-stub" the non-scientific one.
+perturbation = "gpuwm.da.perturb"
+
+[ensemble.perturbation_options]
+# A single potential-temperature perturbation.  length_scale_km sits inside
+# gpuwm.da.perturb's admission band on this 40x32 grid of 12 km cells: at or
+# above 2 grid spacings (24 km) and at or below span/(2*pi) (384/6.283 =
+# 61 km), which is where the documented spectral peak k=1/L is resolved.
+# dx_km is NOT set here: the engine supplies the grid spacing from the base
+# config, and stating it twice is a refusal.
+rim_width = 5
+fields = [
+    { name = "theta", amplitude = 0.5, length_scale_km = 48.0 },
+]

@@ -28,6 +28,22 @@ exits 0 without touching the network.
 installs) under the same verification.  ``GPUWM_TABLE_ASSET_URL_BASE``
 overrides the download base URL (mirrors); the asset filename is
 appended to it either way.
+
+WHERE the bytes land moved once, deliberately.  This command used to
+stage into whatever ``thompson_table_root()`` resolved to, which on a
+wheel install is *inside site-packages* -- so the 315 MiB a user had
+just paid for was deleted by the next ``pip install --upgrade`` or venv
+rebuild, silently, and the failure surfaced as a bare
+``FileNotFoundError`` traceback in the middle of a forecast that had
+already paid for fetch and preprocessing.  Staging now targets
+``~/.gpuwm/tables/thompson`` (:func:`gpuwm.physics_compat
+.user_thompson_table_root`), beside ``~/.gpuwm/bridges``, and the
+staged root is made *complete*: the assets that do ship in the package
+are copied in beside the downloaded ones, because a root is validated
+as a whole set and a half-staged directory would resolve to nothing.
+An install whose packaged root is already complete -- every git clone,
+and every wheel that staged into site-packages before this change --
+is left exactly where it is.
 """
 
 from __future__ import annotations
@@ -76,6 +92,16 @@ class TableAssetError(RuntimeError):
     """A refusal: wrong bytes, unfetchable asset, or unusable source."""
 
 
+class MissingTableAssets(FileNotFoundError):
+    """One-sentence refusal: a selected scheme's tables are not staged.
+
+    A ``FileNotFoundError`` subclass on purpose.  Every stage that can
+    meet this already turns ``OSError`` into a sentence rather than a
+    traceback, so the sentence below reaches the reader through the
+    handlers that exist instead of needing a new one at each site.
+    """
+
+
 def classify_assets(
         root: Path,
         assets: tuple[TableAsset, ...] = CLASSIC_TABLE_ASSETS,
@@ -113,6 +139,131 @@ def missing_externalized_assets(
     _valid, _invalid, absent = classify_assets(root, assets)
     return [asset for asset in absent
             if asset.filename in EXTERNALIZED_TABLE_FILENAMES]
+
+
+def unstaged_table_assets(
+        root: Path | None = None,
+        assets: tuple[TableAsset, ...] = CLASSIC_TABLE_ASSETS,
+) -> list[TableAsset]:
+    """Assets that are simply not there in ``root``.
+
+    Presence, and nothing else.  Size and SHA-256 stay where they
+    belong -- re-validated at load, on every launch, by
+    ``validate_table_assets``, which can name the expected and actual
+    bytes.  Absence is the question a preflight owns, and answering it
+    must not cost 362 MiB of hashing on every run; a file that is
+    present but wrong is drift, a different sentence, and this function
+    deliberately does not compete with it.
+    """
+
+    if root is None:
+        from gpuwm.physics_compat import thompson_table_root
+
+        root = Path(thompson_table_root())
+    root = Path(root)
+    gaps: list[TableAsset] = []
+    for asset in assets:
+        try:
+            present = (root / asset.filename).is_file()
+        except OSError:
+            present = False
+        if not present:
+            gaps.append(asset)
+    return gaps
+
+
+def require_thompson_tables(
+        root: Path | None = None,
+        assets: tuple[TableAsset, ...] = CLASSIC_TABLE_ASSETS,
+) -> Path:
+    """The resolved mp8 table root, or a one-sentence refusal.
+
+    THE preflight for ``mp_physics=8``.  It exists because the same
+    condition used to be discovered by ``validate_table_assets`` at the
+    top of the GPU run -- after the fetch, after preprocessing, minutes
+    of paid work in -- and reached the reader as a ``FileNotFoundError``
+    traceback naming a path inside site-packages.  Called from the
+    stages that select physics, it is one sentence naming the table and
+    the command that stages it, before anything expensive starts.
+    """
+
+    if root is None:
+        from gpuwm.physics_compat import thompson_table_root
+
+        root = Path(thompson_table_root())
+    root = Path(root)
+    # ``assets`` is a parameter because the pins are not universal: a
+    # caller that binds its own table authority (and the harnesses that
+    # stand in for one) must be checked against the set IT will load,
+    # not against a second opinion this module happens to hold.
+    gaps = unstaged_table_assets(root, assets)
+    if not gaps:
+        return root
+    mib = sum(asset.bytes for asset in gaps) / (1024 * 1024)
+    raise MissingTableAssets(
+        f"mp_physics=8 (Thompson) needs "
+        f"{', '.join(asset.filename for asset in gaps)}, which "
+        f"{'are' if len(gaps) > 1 else 'is'} not staged at {root} -- run "
+        f"`gpuwm fetch-tables` ({mib:.0f} MiB, SHA-256 verified against "
+        f"the packaged pins) before preparing this forecast")
+
+
+def staging_is_self_chosen(root: Path) -> bool:
+    """True when ``root`` is the user-level location THIS command picked.
+
+    The distinction matters for one behaviour only: a self-chosen root
+    is completed from the package (below), because nothing else will
+    complete it and an incomplete root resolves to nothing.  A root an
+    operator NAMED through ``GPUWM_THOMPSON_TABLE_ROOT`` is theirs --
+    this command fetches the externalized assets into it and reports
+    anything else missing as a broken install, exactly as it always
+    has, rather than quietly filling their mirror from the package.
+    """
+
+    from gpuwm.physics_compat import (THOMPSON_TABLE_ROOT_ENV,
+                                      user_thompson_table_root)
+
+    if os.environ.get(THOMPSON_TABLE_ROOT_ENV):
+        return False
+    try:
+        return Path(root) == user_thompson_table_root()
+    except (RuntimeError, OSError):  # pragma: no cover - no home directory
+        return False
+
+
+def staging_root(root: Path | None = None) -> Path:
+    """WHERE ``fetch-tables`` writes: the root the next run will read.
+
+    Deliberately not "wherever ``thompson_table_root()`` points today".
+    On a fresh wheel that is site-packages, which the next upgrade
+    empties; the durable location is the user-level directory beside
+    ``~/.gpuwm/bridges``.  An install whose *packaged* root is already
+    complete keeps it -- a clone, or a wheel staged before this change
+    -- because that is the root :func:`thompson_table_root` resolves for
+    it, and re-staging 362 MiB to change nothing is not a service.
+
+    ``GPUWM_THOMPSON_TABLE_ROOT`` still wins outright: an operator who
+    named a root is telling this command where the bytes go.
+    """
+
+    if root is not None:
+        return Path(root)
+    from gpuwm.physics_compat import (
+        THOMPSON_TABLE_ROOT_ENV,
+        packaged_thompson_table_root,
+        user_thompson_table_root,
+    )
+
+    override = os.environ.get(THOMPSON_TABLE_ROOT_ENV)
+    if override:
+        return Path(override)
+    packaged = packaged_thompson_table_root()
+    if not unstaged_table_assets(packaged):
+        return packaged
+    try:
+        return user_thompson_table_root()
+    except (RuntimeError, OSError):  # pragma: no cover - no home directory
+        return packaged
 
 
 def _staging_path(root: Path, asset: TableAsset) -> Path:
@@ -198,14 +349,26 @@ def fetch_asset_from_dir(root: Path, asset: TableAsset,
 
 
 def fetch_tables_main(args) -> int:
-    from gpuwm.physics_compat import thompson_table_root
+    from gpuwm.physics_compat import packaged_thompson_table_root
 
-    root = Path(thompson_table_root())
+    root = staging_root(getattr(args, "root", None))
+    packaged = packaged_thompson_table_root()
     if not root.is_dir():
-        print(f"gpuwm fetch-tables: table root {root} is not a directory "
-              "(broken install, or GPUWM_THOMPSON_TABLE_ROOT points "
-              "nowhere)")
-        return 2
+        if root == packaged:
+            print(f"gpuwm fetch-tables: table root {root} is not a "
+                  "directory (broken install, or "
+                  "GPUWM_THOMPSON_TABLE_ROOT points nowhere)")
+            return 2
+        # The user-level staging root is ours to create, exactly as
+        # `gpuwm fetch-bridges` creates ~/.gpuwm/bridges.
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            print(f"gpuwm fetch-tables: cannot create table root {root}: "
+                  f"{error}")
+            return 2
+        print(f"gpuwm fetch-tables: staging into {root} (outside the "
+              "install, so a wheel upgrade cannot delete it)")
 
     valid, invalid, absent = classify_assets(root)
     for line in invalid:
@@ -213,6 +376,28 @@ def fetch_tables_main(args) -> int:
               "is never overwritten; delete it and re-run")
     if invalid:
         return 2
+
+    # A staged root has to hold the WHOLE set: resolution asks whether a
+    # root is complete, so downloading the two externalized assets into
+    # ~/.gpuwm and leaving the other two behind in site-packages would
+    # produce two half-roots and no runnable one.  Assets the package
+    # does carry are copied across under the same pin verification.
+    copied: list[TableAsset] = []
+    if root != packaged and staging_is_self_chosen(root):
+        available = {asset.filename for asset in classify_assets(packaged)[0]}
+        for asset in list(absent):
+            if asset.filename not in available:
+                continue
+            mib = asset.bytes / (1024 * 1024)
+            print(f"gpuwm fetch-tables: copying {asset.filename} "
+                  f"({mib:.1f} MiB) from the package into {root}")
+            try:
+                fetch_asset_from_dir(root, asset, packaged)
+            except TableAssetError as error:
+                print(f"gpuwm fetch-tables: REFUSED: {error}")
+                return 2
+            absent.remove(asset)
+            copied.append(asset)
 
     packaged_gaps = [asset for asset in absent
                      if asset.filename not in EXTERNALIZED_TABLE_FILENAMES]
@@ -225,7 +410,7 @@ def fetch_tables_main(args) -> int:
 
     fetchable = [asset for asset in absent
                  if asset.filename in EXTERNALIZED_TABLE_FILENAMES]
-    if not fetchable:
+    if not fetchable and not copied:
         print(f"gpuwm fetch-tables: all {len(valid)} table assets at "
               f"{root} verified (exact size + SHA-256); nothing to fetch")
         return 0
@@ -260,9 +445,11 @@ def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
         "fetch-tables",
         help="download the externalized physics table assets (currently "
-             "the 243 MiB Thompson freezeH2O.dat) into the resolved table "
-             "root, SHA-256-verified against the packaged pins before "
-             "install; idempotent when everything is already present")
+             "the 243 MiB Thompson freezeH2O.dat) into ~/.gpuwm/tables/"
+             "thompson -- outside the install, so a wheel upgrade cannot "
+             "delete them -- SHA-256-verified against the packaged pins "
+             "before install; idempotent when everything is already "
+             "present")
     parser.add_argument(
         "--from", dest="from_dir", metavar="DIR", default=None,
         help="stage from a local directory instead of downloading "
@@ -274,6 +461,7 @@ def register_cli(subparsers) -> None:
 __all__ = [
     "ASSET_URL_BASE_ENV",
     "EXTERNALIZED_TABLE_FILENAMES",
+    "MissingTableAssets",
     "RELEASE_ASSET_BASE_URL",
     "TableAssetError",
     "asset_url_base",
@@ -283,4 +471,8 @@ __all__ = [
     "fetch_tables_main",
     "missing_externalized_assets",
     "register_cli",
+    "require_thompson_tables",
+    "staging_is_self_chosen",
+    "staging_root",
+    "unstaged_table_assets",
 ]

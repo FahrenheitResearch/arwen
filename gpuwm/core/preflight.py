@@ -583,12 +583,18 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "diff6_seam": 0,
     "diffusion": 0,
     "dycore": 0,
+    # The FTZ receipt's probe rides the production loader from the same
+    # kernels directory, so the local-frame sweep sees it like any model
+    # module; it holds no local frame.
+    "ftz_probe": 0,
     "health": 0,
     "kessler": 5120,
     "kf": 24064,
+    "kf_validation": 0,
     "lbc_flow": 0,
     "lbc_state": 0,
     "morrison": 5120,
+    "microphysics_validation": 0,
     "mynn_pbl": 0,
     "mynn_surface": 0,
     "nest": 0,
@@ -630,6 +636,7 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "vert_interp": 768,
     "wsm6": 7216,
     "ysu": 9232,
+    "ysu_validation": 0,
 }
 
 @dataclass(frozen=True)
@@ -809,10 +816,10 @@ CORE_KERNEL_MODULES = frozenset({
 #: exactly ``gpuwm/config.py``'s accepted set (0, 1, 6, 8, 10, 18).
 _MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (),
-    1: ("kessler",),
-    6: ("wsm6",),
-    8: ("thompson",),
-    10: ("morrison",),
+    1: ("kessler", "microphysics_validation"),
+    6: ("wsm6", "microphysics_validation"),
+    8: ("thompson", "microphysics_validation"),
+    10: ("morrison", "microphysics_validation"),
     18: ("nssl2", "nssl2_driver_support", "nssl2_diagnostics",
          "nssl2_fused_gs", "nssl2_nucond", "nssl2_qvexcess"),
 }
@@ -825,9 +832,9 @@ _MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
 _REFLECTIVITY_MICROPHYSICS = frozenset({1, 6, 8, 10, 18})
 
 _CUMULUS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
-    0: (), 1: ("kf",)}
+    0: (), 1: ("kf", "kf_validation")}
 _PBL_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
-    0: (), 1: ("ysu",), 5: ("mynn_pbl",)}
+    0: (), 1: ("ysu", "ysu_validation"), 5: ("mynn_pbl",)}
 _SURFACE_LAYER_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (), 1: ("sfclay",), 5: ("mynn_surface",), 91: ("sfclay",)}
 _LAND_SURFACE_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
@@ -1607,6 +1614,10 @@ def scratch_slot_registry(cfg: RunConfig, *,
                      mp_snowncv=s2, mp_graupelnc=s2,
                      mp_graupelncv=s2, mp_hailnc=s2, mp_hailncv=s2,
                      mp_sr=s2)
+        # gpuwm/da/obsop.py:_nssl_reflectivity H(x) temporaries: dry-air
+        # density and (when no temperature is passed) diagnosed T, both
+        # mass-shaped, filled and consumed inside one operator call.
+        slots.update(da_nssl_rho=m, da_nssl_t=m)
 
     if cfg.km_opt == 4:
         slots.update(smag_km=m, smag_kh=m)
@@ -1648,6 +1659,10 @@ def scratch_slot_registry(cfg: RunConfig, *,
         if cfg.mp_physics not in (6, 8, 10, 18):
             slots["physics_qi"] = m                 # physics.py:395
             slots["physics_qs"] = m                 # physics.py:400
+    if (int(cfg.bl_pbl_physics) == 1
+            or int(cfg.mp_physics) in (1, 6, 8, 10)
+            or int(cfg.cu_physics) == 1):
+        slots["physics_validation_status"] = (1,)
     if int(cfg.bl_pbl_physics) == 5:
         # MYNN's whole working set, declared in
         # gpuwm/core/mynn_pbl_scratch.py.  Before it was declared the solver
@@ -1982,6 +1997,15 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "gpuwm/core/physics.py:387-414",
         "physics preparation explicitly zeroes these arrays before reads"),
     ScratchSlotLifetime(
+        ("physics_validation_status",), "write_before_read",
+        "gpuwm/core/physics.py:_run_ysu; "
+        "gpuwm/core/physics.py:_validate_native_microphysics; "
+        "gpuwm/core/physics.py:_validate_native_kf_result; "
+        "gpuwm/core/ysu.py:validate_ysu_outputs",
+        "the float32 backing is viewed as uint32 and reset before every "
+        "validation launch; its blocking scalar read completes before the "
+        "next sequential domain can reuse the shared-arena word"),
+    ScratchSlotLifetime(
         ("lbc_qv_held", "lbc_relax_u", "lbc_relax_v",
          "lbc_relax_theta", "lbc_relax_phi"),
         "write_before_read",
@@ -2061,6 +2085,15 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
     ScratchSlotLifetime(
         ("refl_10cm",), "carrying", "gpuwm/core/refl.py:376-399",
         "one-frame output handoff can outlive the producing domain step"),
+    # DA reflectivity-operator temporaries: both are filled in full at the
+    # top of _nssl_reflectivity (rho from 1/alt, T from theta and Exner)
+    # before diagnose_radardd02_if_due reads them, inside one H(x) call.
+    ScratchSlotLifetime(
+        ("da_nssl_rho", "da_nssl_t"), "write_before_read",
+        "gpuwm/da/obsop.py:_nssl_reflectivity",
+        "the observation operator fills dry-air density and temperature "
+        "before the shared NSSL diagnostic reads them; both are dead when "
+        "the call returns"),
     # EXCLUDED (carrying): UP_HELI_MAX is a restart-serialized elementwise
     # running max, read-modify-written every step and consumed by history
     # frames; per-domain identity must be preserved.
@@ -2817,6 +2850,323 @@ class ExperimentMemoryEstimate:
         return self.held_projection_bytes + self.device_overhead_bytes
 
 
+# ---------------------------------------------------------------------------
+# Preprocessing (ingest) phase
+#
+# Everything above prices the FORECAST.  For a long time that was the only
+# phase anybody priced, and on a measured 414x330x49 CONUS 12 km case the
+# forecast peaked at 7.10 GiB while preprocessing the very same case peaked
+# at 14.94 GiB -- so `gpuwm check` reported an envelope for a phase that
+# was not the binding one, and a domain sized to a 12 GB card downloaded
+# 81 GFS files and then died in preprocessing at 15.82 GB.  Ingest is now
+# streamed (gpuwm/ingest/lateral_bc.py:StateBoundaryFrames), and the model
+# below is what it actually holds.
+# ---------------------------------------------------------------------------
+
+#: Forcing times a streaming ingest holds on the device at once: the
+#: INITIAL time -- which the prepared cache, wrfinput and the surface
+#: analysis are all written from -- plus the time currently being built.
+#: Every other time contributes its perimeter frames and is released
+#: before the next one is interpolated.
+INGEST_RESIDENT_FORCING_TIMES = 2
+
+#: Pressure levels each forcing product decodes onto the target grid.
+#: GFS: the certified 21-level ladder the Rust bridge gates on
+#: (gpuwm/gfs_direct.py:_validate_ladder; a case whose p_top sits above
+#: 100 hPa is fetched with extra levels, so this is a floor for those).
+#: ERA5: the 37 standard pressure levels of the reanalysis product.
+#:
+#: This map IS the priced-source inventory: a product absent from it is
+#: reported NOT PRICED rather than given a plausible number, and every
+#: other table in this section is keyed by exactly these names.  The
+#: native-hybrid-level ingest lane is deliberately not among them --
+#: nothing here has measured it.  A wrong ingest estimate is the defect;
+#: an absent one that says so is not.
+SOURCE_ANALYSIS_LEVELS = {"era5": 37, "gfs": 21}
+
+#: Cadence each PRICED product is fetched at.  The ingest phase's time
+#: COUNT comes from this, not from the forecast's LBC interval: a GFS
+#: chain fetched 3-hourly has nine forcing times over 24 h where the
+#: 6-hourly default would claim five.  Keys track SOURCE_ANALYSIS_LEVELS
+#: exactly; the wizard keeps its own, wider table for the forecast side,
+#: which prices products this one does not.
+INGEST_FORCING_CADENCE_SECONDS = {"era5": 21600.0, "gfs": 10800.0}
+
+#: Fields each product carries on those levels: T, RH, GHT on mass points
+#: plus U and V on their own staggers.
+SOURCE_ANALYSIS_MASS_LEVEL_FIELDS = 3
+SOURCE_ANALYSIS_WIND_LEVEL_FIELDS = 1  # each of U and V, on its own stagger
+
+#: Single-level fields interpolated alongside them (surface state, skin,
+#: snow, ice, land mask and the four soil moisture/temperature layers).
+#: Counted from the decoder inventory of a real GFS ingest.
+SOURCE_ANALYSIS_SURFACE_FIELDS = {"era5": 19, "gfs": 19}
+
+#: What the itemization below does NOT enumerate: the vertical-interpolation
+#: geometry and the elementwise temporaries WRF-real's setup builds and
+#: drops inside one call.  One time is built at a time, so this is charged
+#: ONCE, as a fraction of one forcing time's residency.
+#:
+#: MEASURED, both ends of the same CONUS 12 km case (414x330x49, 9 GFS
+#: times, RTX 5090, process-attributed peak, 432 MiB CUDA context
+#: subtracted): the all-times-resident form itemizes 13.71 GiB and peaked
+#: at 14.93 GiB (0.80 GiB unaccounted); the streaming form itemizes 3.23
+#: GiB and peaked at 4.56 GiB (0.91 GiB unaccounted).  Against a 1.50 GiB
+#: forcing time that is 0.53x and 0.61x -- additive and stable, which is
+#: what a per-call transient should be.  0.65 is the margin over both.
+INGEST_TRANSIENT_PER_TIME_FRACTION = 0.65
+
+#: What that measurement was, printed beside the number it produces.
+INGEST_PEAK_ENVELOPE_BASIS = (
+    "measured, CONUS 12 km 414x330x49 x 9 GFS times, RTX 5090 / Linux: "
+    "itemization + 0.65x one forcing time of transients, x1.15 headroom, "
+    "+ CUDA context")
+
+
+def ingest_analysis_shapes(cfg: RunConfig, *, source: str
+                           ) -> dict[str, tuple[int, ...]]:
+    """One forcing time, horizontally interpolated onto the target grid.
+
+    The source-level fields land on the model's OWN horizontal grid --
+    that is what horizontal interpolation is -- so they are sized by the
+    target ny/nx and the SOURCE's level count, not the model's nz.
+    """
+    key = str(source).strip().lower()
+    try:
+        levels = SOURCE_ANALYSIS_LEVELS[key]
+        surface = SOURCE_ANALYSIS_SURFACE_FIELDS[key]
+    except KeyError:
+        raise ValueError(
+            f"no forcing-analysis level inventory for source {source!r}; "
+            f"known: {sorted(SOURCE_ANALYSIS_LEVELS)}") from None
+    ny, nx = int(cfg.ny), int(cfg.nx)
+    shapes: dict[str, tuple[int, ...]] = {}
+    for index in range(SOURCE_ANALYSIS_MASS_LEVEL_FIELDS):
+        shapes[f"analysis_mass_level_{index}"] = (levels, ny, nx)
+    for index in range(SOURCE_ANALYSIS_WIND_LEVEL_FIELDS):
+        shapes[f"analysis_u_level_{index}"] = (levels, ny, nx + 1)
+        shapes[f"analysis_v_level_{index}"] = (levels, ny + 1, nx)
+    for index in range(surface):
+        shapes[f"analysis_surface_{index}"] = (ny, nx)
+    return shapes
+
+
+@dataclass(frozen=True)
+class IngestMemoryEstimate:
+    """Itemized device memory for the preprocessing phase of one root.
+
+    Preprocessing builds one complete :class:`DomainState` per forcing
+    time from one horizontally interpolated analysis per forcing time.
+    Streaming means ``resident_times`` of each coexist rather than all of
+    them, which is the whole difference between this phase costing twice
+    the forecast and costing less than half of it.
+    """
+
+    grid_id: int
+    items: tuple[MemoryItem, ...]
+    resident_times: int
+    n_forcing_times: int
+    boundary_frame_bytes: int
+    headroom: float = ALLOCATOR_HEADROOM
+    context_bytes: int = CUDA_CONTEXT_BYTES
+    device_overhead_bytes: int = field(
+        default_factory=lambda: platform_projection_constants()[1])
+
+    def category_bytes(self, category: str) -> int:
+        return sum(item.nbytes for item in self.items
+                   if item.category == category)
+
+    @property
+    def per_time_bytes(self) -> int:
+        """One forcing time: its analysis plus the state built from it."""
+        return sum(item.nbytes for item in self.items
+                   if item.category in ("analysis", "state"))
+
+    @property
+    def forcing_table_bytes(self) -> int:
+        """The completed boundary tables, uploaded onto the initial state."""
+        return self.category_bytes("lbc")
+
+    @property
+    def resident_bytes(self) -> int:
+        return (self.resident_times * self.per_time_bytes
+                + self.forcing_table_bytes)
+
+    @property
+    def unstreamed_resident_bytes(self) -> int:
+        """What this phase cost before it streamed -- every time at once."""
+        return (self.n_forcing_times * self.per_time_bytes
+                + self.forcing_table_bytes)
+
+    @property
+    def transient_bytes(self) -> int:
+        """Un-enumerated setup temporaries for the ONE time being built."""
+        return math.ceil(
+            INGEST_TRANSIENT_PER_TIME_FRACTION * self.per_time_bytes)
+
+    @property
+    def subtotal_bytes(self) -> int:
+        return self.resident_bytes + self.transient_bytes
+
+    @property
+    def alloc_estimate_bytes(self) -> int:
+        """Subtotal under the same allocator headroom the forecast uses."""
+        return math.ceil(self.headroom * self.subtotal_bytes)
+
+    @property
+    def peak_envelope_bytes(self) -> int:
+        """What a machine watching this phase should expect to see.
+
+        Pool allocations plus the non-pool CUDA context.  No second
+        envelope multiplier: unlike the forecast, this phase has no
+        per-step churn for a retention factor to model -- it builds one
+        forcing time at a time, keeps two, and drops the rest.
+        """
+        return (self.alloc_estimate_bytes + self.context_bytes
+                + self.device_overhead_bytes)
+
+
+def estimate_ingest(exp: ExperimentConfig, *, source: str,
+                    forcing_interval_seconds: float
+                    = DEFAULT_FORCING_INTERVAL_SECONDS,
+                    vram_gib: float | None = None,
+                    ) -> IngestMemoryEstimate:
+    """Itemize the preprocessing phase of ``exp``'s root domain.
+
+    Nested domains are initialized from the completed root one at a time
+    (``initialize_and_export_regular_source_hierarchy``), and a child is
+    never larger than the root's per-time residency in the layouts the
+    wizard emits, so the root is the phase peak.
+    """
+    dc = exp.root
+    run = dc.run
+    n_intervals = lbc_intervals(exp.run_seconds, forcing_interval_seconds)
+    items: list[MemoryItem] = []
+    items += _items("analysis", ingest_analysis_shapes(run, source=source))
+    items += _items("state", state_array_shapes(run))
+    registry = scratch_slot_registry(
+        run, n_lbc_intervals=(n_intervals if run.specified else 0))
+    items += _items("lbc", {slot: shape for slot, shape in registry.items()
+                            if slot.startswith("lbc_")})
+    # The host-side perimeter frames StateBoundaryFrames retains: float64,
+    # four sides, every forcing time.  Reported so the phase's HOST cost
+    # is visible too; it is not part of the device residency above.
+    width = int(run.spec_bdy_width)
+    frame_elements = sum(
+        2 * width * (dims[1] + dims[2]) * dims[0]
+        for dims in _lbc_field_dims(run).values())
+    return IngestMemoryEstimate(
+        grid_id=dc.grid_id, items=tuple(items),
+        resident_times=INGEST_RESIDENT_FORCING_TIMES,
+        n_forcing_times=n_intervals + 1,
+        boundary_frame_bytes=8 * frame_elements * (n_intervals + 1),
+        device_overhead_bytes=platform_projection_constants(
+            vram_gib=vram_gib)[1],
+    )
+
+
+@dataclass(frozen=True)
+class PhaseMemoryEstimate:
+    """Both phases of one run, and which of them binds the card.
+
+    A configuration fits when the LARGEST phase fits.  Pricing only the
+    forecast is what let a wizard size a domain to a card, watch the user
+    download 81 GFS files, and then fail in preprocessing.
+    """
+
+    forecast: ExperimentMemoryEstimate
+    ingest: IngestMemoryEstimate | None
+    forecast_envelope_bytes: int
+    ingest_envelope_bytes: int | None
+    source: str | None = None
+
+    @property
+    def ingest_priced(self) -> bool:
+        return self.ingest_envelope_bytes is not None
+
+    @property
+    def binding_phase(self) -> str:
+        if not self.ingest_priced:
+            return "forecast"
+        return ("ingest"
+                if self.ingest_envelope_bytes > self.forecast_envelope_bytes
+                else "forecast")
+
+    @property
+    def peak_envelope_bytes(self) -> int:
+        if not self.ingest_priced:
+            return self.forecast_envelope_bytes
+        return max(self.forecast_envelope_bytes, self.ingest_envelope_bytes)
+
+    def fits(self, budget_bytes: int) -> bool:
+        return self.peak_envelope_bytes <= int(budget_bytes)
+
+    def verdict(self, budget_bytes: int | None) -> str:
+        """One sentence naming the binding phase and its number."""
+        if not self.ingest_priced:
+            text = (f"the forecast needs "
+                    f"{self.forecast_envelope_bytes / GIB:.2f} GiB peak "
+                    f"envelope, and preprocessing for --source "
+                    f"{self.source} is NOT PRICED here, so this is the "
+                    "forecast phase only")
+        else:
+            phase = self.binding_phase
+            label = ("preprocessing (ingest)" if phase == "ingest"
+                     else "the forecast")
+            text = (f"{label} is the memory-binding phase at "
+                    f"{self.peak_envelope_bytes / GIB:.2f} GiB peak "
+                    f"envelope (forecast "
+                    f"{self.forecast_envelope_bytes / GIB:.2f} GiB, ingest "
+                    f"{self.ingest_envelope_bytes / GIB:.2f} GiB)")
+        if budget_bytes is None:
+            return text
+        if self.fits(budget_bytes):
+            return (f"{text}; it fits the "
+                    f"{budget_bytes / GIB:.2f} GiB budget with "
+                    f"{(budget_bytes - self.peak_envelope_bytes) / GIB:.2f} "
+                    "GiB to spare")
+        return (f"{text}; that EXCEEDS the {budget_bytes / GIB:.2f} GiB "
+                f"budget by "
+                f"{(self.peak_envelope_bytes - budget_bytes) / GIB:.2f} GiB")
+
+
+def estimate_phases(exp: ExperimentConfig, *, source: str,
+                    column_chunk: int | None = None,
+                    forcing_interval_seconds: float
+                    = DEFAULT_FORCING_INTERVAL_SECONDS,
+                    ingest_forcing_interval_seconds: float | None = None,
+                    vram_gib: float | None = None,
+                    ) -> PhaseMemoryEstimate:
+    """Price every phase of ``exp`` and say which one binds the card.
+
+    ``ingest_forcing_interval_seconds`` defaults to the SOURCE's own
+    fetch cadence rather than the forecast's LBC interval, because the
+    ingest phase's time count is set by what was downloaded.
+    """
+    forecast = estimate_experiment(
+        exp, column_chunk=column_chunk,
+        forcing_interval_seconds=forcing_interval_seconds,
+        vram_gib=vram_gib)
+    key = None if source is None else str(source).strip().lower()
+    ingest = None
+    if key in SOURCE_ANALYSIS_LEVELS:
+        cadence = ingest_forcing_interval_seconds
+        if cadence is None:
+            cadence = INGEST_FORCING_CADENCE_SECONDS.get(
+                key, forcing_interval_seconds)
+        ingest = estimate_ingest(
+            exp, source=key, forcing_interval_seconds=float(cadence),
+            vram_gib=vram_gib)
+    return PhaseMemoryEstimate(
+        forecast=forecast, ingest=ingest,
+        forecast_envelope_bytes=observed_peak_envelope_bytes(
+            forecast.footprint_projection_bytes, vram_gib=vram_gib),
+        ingest_envelope_bytes=(None if ingest is None
+                               else ingest.peak_envelope_bytes),
+        source=key,
+    )
+
+
 def pool_retention_residual_bytes() -> int:
     """Tier-2 RUN-gate reserve term (provisional policy): the d01 RUN
     fixture's pool-held bytes beyond the d01 alloc-estimate basis
@@ -3506,6 +3856,55 @@ def _load_experiment_any(path: Path) -> ExperimentConfig:
                                       datetime(1970, 1, 1))
 
 
+def config_forcing_source(path: Path) -> str | None:
+    """The forcing product a config records, or None if it records none.
+
+    The preprocessing phase is priced against the SOURCE's level count
+    and field inventory, so an unpriceable source has to be said out
+    loud rather than silently reported as "the forecast is the whole
+    story" -- which is exactly how a domain sized to a 12 GB card came
+    to die in preprocessing after the download.
+    """
+    import tomllib
+
+    from gpuwm.experiment import is_experiment_toml
+
+    path = Path(path)
+    if not is_experiment_toml(path):
+        return None
+    with open(path, "rb") as stream:
+        raw = tomllib.load(stream)
+    table = raw.get("fetch")
+    if isinstance(table, dict) and isinstance(table.get("source"), str):
+        source = table["source"].strip().lower()
+        if source in SOURCE_ANALYSIS_LEVELS:
+            return source
+        return None
+    # The config-driven front door decodes ERA5 GRIB1; a [case_data]
+    # table is that route by definition.
+    return "era5" if "case_data" in raw else None
+
+
+def unpriced_ingest_note(path: Path, source: str | None = None) -> str:
+    """Why the preprocessing phase could not be priced for this config.
+
+    Said in full rather than shortened to a footnote, because the number
+    beside it is a FORECAST number and a reader who takes it for the
+    whole run is making the exact mistake this phase estimate exists to
+    prevent.
+    """
+    known = ", ".join(sorted(SOURCE_ANALYSIS_LEVELS))
+    if source:
+        why = (f"--source {source} ingests on a lane this estimator does "
+               f"not model (priced sources: {known})")
+    else:
+        why = ("this config records no forcing product at all, so there "
+               f"is no ingest lane to price (priced sources: {known})")
+    return (f"preprocessing (ingest) NOT PRICED: {why}, so the envelope "
+            "beside it covers the FORECAST only.  Preprocessing has its "
+            "own peak and it is not always the smaller one.")
+
+
 #: ``gpuwm check`` exit code for "every gate passed, but the observed peak
 #: envelope exceeds the budget".  Nonzero, because the report says in prose
 #: that the run may not fit and a script must be able to see that; distinct
@@ -3519,6 +3918,38 @@ def _format_bytes(n: int | None) -> str:
 
 def _leg_text(value: bool | None) -> str:
     return {True: "PASS", False: "FAIL", None: "not measured"}[value]
+
+
+def _warn_unstaged_physics_tables(exp) -> None:
+    """One line when a selected scheme's lookup tables are not staged.
+
+    A WARNING, not a gate.  ``gpuwm check`` is the memory preflight and
+    the page that calls it "Preflight"; a person who runs it before an
+    mp8 case should hear that the tables are absent while the fix is
+    still one command and no download has started, and the run doors
+    (``--materialize-authorities`` and both prepared runners) are where
+    the same condition is actually refused.  Sizing a domain whose
+    tables are elsewhere is a legitimate thing to do, so nothing here
+    changes an exit code.
+    """
+
+    try:
+        if not any(int(domain.run.mp_physics) == 8
+                   for domain in exp.domains):
+            return
+        from gpuwm.table_assets import require_thompson_tables
+
+        require_thompson_tables()
+    except FileNotFoundError as error:
+        from gpuwm.explain import warn
+
+        warn(str(error),
+             why="The tables are read at load and validated byte for "
+                 "byte, so a run cannot start without them.  This "
+                 "preflight sizes memory and does not need them, which "
+                 "is why it says so and continues.")
+    except Exception:  # pragma: no cover - never let an advisory throw
+        return
 
 
 def check_main(args) -> int:
@@ -3537,6 +3968,7 @@ def check_main(args) -> int:
     to a script.  A harder verdict wins: 1, 2 and 3 outrank 4.
     """
     exp = _load_experiment_any(args.config)
+    _warn_unstaged_physics_tables(exp)
     #: Whether the free-VRAM figure below was measured off the device or
     #: derived from a declared --budget-gib.  Printed, because the two
     #: must never wear the same label.
@@ -3668,8 +4100,24 @@ def check_main(args) -> int:
             measured_free_bytes=free, reserve=reserve)
 
     budget = None if free is None else reserve.budget_bytes(free)
-    envelope = observed_peak_envelope_bytes(
+    forecast_envelope = observed_peak_envelope_bytes(
         estimate.footprint_projection_bytes, vram_gib=card_total_gib)
+    # PREPROCESSING IS A PHASE TOO.  Reporting only the forecast is what
+    # let a 12 GB-sized domain download 81 GFS files and then OOM in
+    # ingest at 15.82 GB.  A config whose source this estimator cannot
+    # price says so; it never silently reports the forecast as the peak.
+    ingest_source = config_forcing_source(args.config)
+    phases = estimate_phases(
+        exp, source=ingest_source, column_chunk=chunk,
+        forcing_interval_seconds=args.forcing_interval_s,
+        vram_gib=card_total_gib)
+    if not phases.ingest_priced:
+        phases = None
+    #: The envelope every verdict below compares: the largest phase, not
+    #: whichever phase happens to be modelled.
+    envelope = (forecast_envelope if phases is None
+                else phases.peak_envelope_bytes)
+    binding_phase = "forecast" if phases is None else phases.binding_phase
     #: The report's own prose says this configuration may not fit.  It is
     #: read here, before either renderer, because the exit code has to
     #: carry it whether or not anybody reads the text.
@@ -3715,7 +4163,9 @@ def check_main(args) -> int:
                 peak_envelope_factor(vram_gib=card_total_gib),
             "observed_peak_envelope_basis": PEAK_ENVELOPE_BASIS[
                 envelope_platform(vram_gib=card_total_gib)],
-            "observed_peak_envelope_bytes": envelope,
+            "observed_peak_envelope_bytes": forecast_envelope,
+            "peak_envelope_bytes": envelope,
+            "binding_phase": binding_phase,
             "reserve_bytes": reserve.reserve_bytes,
             "reserve_components": {
                 "retention_residual_bytes":
@@ -3738,6 +4188,32 @@ def check_main(args) -> int:
                 None if budget is None else envelope_over_budget),
             "gates": gates,
         }
+        if phases is None:
+            payload["ingest"] = None
+            payload["ingest_not_priced_reason"] = unpriced_ingest_note(
+                args.config, ingest_source)
+        else:
+            ingest = phases.ingest
+            payload["ingest"] = {
+                "source": ingest_source,
+                "forcing_times": ingest.n_forcing_times,
+                "resident_forcing_times": ingest.resident_times,
+                "per_forcing_time_bytes": ingest.per_time_bytes,
+                "analysis_bytes": ingest.category_bytes("analysis"),
+                "state_bytes": ingest.category_bytes("state"),
+                "forcing_table_bytes": ingest.forcing_table_bytes,
+                "resident_bytes": ingest.resident_bytes,
+                "transient_bytes": ingest.transient_bytes,
+                "subtotal_bytes": ingest.subtotal_bytes,
+                "unstreamed_resident_bytes":
+                    ingest.unstreamed_resident_bytes,
+                "boundary_frame_host_bytes": ingest.boundary_frame_bytes,
+                "alloc_estimate_bytes": ingest.alloc_estimate_bytes,
+                "peak_envelope_bytes": ingest.peak_envelope_bytes,
+                "context_bytes": ingest.context_bytes,
+                "peak_envelope_basis": INGEST_PEAK_ENVELOPE_BASIS,
+            }
+            payload["phase_verdict"] = phases.verdict(budget)
         advisory = feedback_advisory(exp)
         if advisory is not None:
             payload["advisories"] = [advisory]
@@ -3821,11 +4297,31 @@ def check_main(args) -> int:
                 "1.32x the itemized alloc estimate machine-wide, so this "
                 "factor is a margin over the measurements rather than a "
                 "multiplier stacked on top of them")
-        print(f"  OBSERVED PEAK ENVELOPE "
+        print(f"  FORECAST OBSERVED PEAK ENVELOPE "
               f"(x{peak_envelope_factor(vram_gib=card_total_gib):.2f} "
               f"footprint, {family} factor; "
               f"{PEAK_ENVELOPE_BASIS[family]}): "
-              f"{_format_bytes(envelope)} -- {provenance}.")
+              f"{_format_bytes(forecast_envelope)} -- {provenance}.")
+        if phases is None:
+            print("  " + unpriced_ingest_note(args.config, ingest_source))
+        else:
+            ingest = phases.ingest
+            print(f"  INGEST (preprocessing, --source {ingest_source}): "
+                  f"{ingest.n_forcing_times} forcing times x "
+                  f"{_format_bytes(ingest.per_time_bytes)} each "
+                  f"(analysis {_format_bytes(ingest.category_bytes('analysis'))}"
+                  f" + state {_format_bytes(ingest.category_bytes('state'))}); "
+                  f"{ingest.resident_times} resident at a time = "
+                  f"{_format_bytes(ingest.resident_bytes)} resident")
+            print(f"    INGEST OBSERVED PEAK ENVELOPE "
+                  f"(x{ingest.headroom:.2f} headroom + "
+                  f"{_format_bytes(ingest.context_bytes)} CUDA context; "
+                  f"{INGEST_PEAK_ENVELOPE_BASIS}): "
+                  f"{_format_bytes(ingest.peak_envelope_bytes)}   "
+                  f"[streaming; holding all "
+                  f"{ingest.n_forcing_times} times would resident "
+                  f"{_format_bytes(ingest.unstreamed_resident_bytes)}]")
+            print(f"  BINDING PHASE: {phases.verdict(budget)}.")
         print(f"  reserve {reserve.reserve_bytes / GIB:.2f} GiB "
               f"(retention {reserve.retention_residual_bytes / GIB:.2f} + "
               f"overhead {reserve.device_overhead_bytes / GIB:.2f} + "
@@ -3857,6 +4353,10 @@ def check_main(args) -> int:
         for metric in N0_GATE_METRICS:
             print(f"  {metric}: {_leg_text(gates[metric])}")
         if envelope_over_budget:
+            if binding_phase != "forecast":
+                print(f"  WARNING: the binding phase here is "
+                      f"{binding_phase}, not the forecast; the envelope "
+                      "named below is that phase's.")
             print(f"  WARNING: observed peak envelope "
                   f"{_format_bytes(envelope)} exceeds the WDDM budget "
                   f"{_format_bytes(budget)} by "

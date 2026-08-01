@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gpuwm.wrf-reference-manifest/v1",
+  "title": "WRF reference manifest",
+  "description": "What the matched comparison was made against: which WRF executable, from which build recipe, under which namelists, producing which output bytes. Certification refuses to return a verdict while any of the four hash groups is absent. The reference wrfouts and the meteorological inputs are not redistributable; only their hashes appear here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "wrf_version",
+    "config_sha256",
+    "wrf_exe_sha256",
+    "build_recipe_sha256",
+    "namelist_sha256",
+    "reference_wrfout_sha256"
+  ],
+  "properties": {
+    "schema": {
+      "const": "gpuwm.wrf-reference-manifest/v1"
+    },
+    "wrf_version": {
+      "type": "string",
+      "description": "the released WRF version the reference binary was built from"
+    },
+    "wrf_commit": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "upstream commit of that build, where one is recorded"
+    },
+    "config_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the ArWen configuration this reference is the counterpart of; the manifest is addressed by configuration identity, never by a case name"
+    },
+    "wrf_exe_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the wrf.exe bytes that produced the reference stream"
+    },
+    "build_recipe_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the committed build-recipe document beside this manifest"
+    },
+    "namelist_sha256": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "file name -> SHA-256 for every namelist the reference run consumed (namelist.wps and namelist.input at minimum)",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
+    },
+    "reference_wrfout_sha256": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "frame name -> SHA-256 for every reference wrfout frame the comparison scored",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
+    },
+    "build_recipe": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "path, relative to this directory, of the committed build recipe"
+    },
+    "namelists": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "file name -> path, relative to this directory, of each committed namelist",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "unmeasured": {
+      "type": "object",
+      "description": "for each hash group this manifest does not yet carry, why. A manifest that carries this block is refused by certify; the block exists so the refusal is legible rather than mysterious.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -94,7 +94,7 @@ def patch_bytes(raw: bytes) -> bytes:
     start, end = _find_object_span(raw)
     option = json.loads(raw[start:end])
     if option.get("maturity") not in {
-        "model-validated", "implemented-unverified",
+        "wrf-matched-run", "implemented-unverified",
     }:
         raise ValueError(f"unexpected Morrison maturity: {option.get('maturity')}")
     if option.get("warnings") not in ([], MORRISON_WARNINGS):

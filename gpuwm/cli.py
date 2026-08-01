@@ -17,7 +17,10 @@ is a legacy :class:`RunConfig` dispatched to its registered real case.
 newest valid ``gpuwmrst`` checkpoint set in ``--outdir``
 (:mod:`gpuwm.resume`) and continues through run's own dispatch, so the
 restart machinery's identity refusals apply unchanged.  ``gpuwm render
-WRFOUT...`` renders product PNGs (:mod:`gpuwm.render`).
+WRFOUT...`` renders product PNGs (:mod:`gpuwm.render`); ``gpuwm enprod
+ENS_ROOT`` renders the ensemble suite -- mean, spread, exceedance
+probability, paintball, probability-matched mean -- over a manifest-
+declared ensemble of member run directories (:mod:`gpuwm.da.enprod`).
 ``gpuwm import-namelist WPS INPUT`` translates WRF namelists into a
 resolved experiment TOML and prints the substitution report.  ``gpuwm
 verify CASE`` runs either an idealized benchmark or a real case, prints
@@ -42,9 +45,11 @@ from pathlib import Path
 
 from gpuwm.adapt import register_cli as adapt_register_cli
 from gpuwm.bridge_assets import register_cli as bridge_assets_register_cli
+from gpuwm.certify.cli import register_cli as certify_register_cli
 from gpuwm.config import load_config
 from gpuwm.core.preflight import check_main
 from gpuwm.core.preflight import register_cli as preflight_register_cli
+from gpuwm.da.enprod import register_cli as enprod_register_cli
 from gpuwm.doctor import register_cli as doctor_register_cli
 from gpuwm.domain_wizard import register_cli as domain_register_cli
 from gpuwm.downscale import register_cli as downscale_register_cli
@@ -192,6 +197,7 @@ def build_parser() -> argparse.ArgumentParser:
     geog_register_cli(sub)
     domain_register_cli(sub)
     render_register_cli(sub)
+    enprod_register_cli(sub)
     downscale_register_cli(sub)
     doctor_register_cli(sub)
     table_assets_register_cli(sub)
@@ -199,6 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_register_cli(sub)
     go_register_cli(sub)
     adapt_register_cli(sub)
+    certify_register_cli(sub)
     lst = sub.add_parser(
         "cases", help="list the discovered verification cases and the "
                       "entry points each one declares")
@@ -326,6 +333,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(_join_negative_coordinates(tokens))
     # Provenance: the emitted TOML records which front door authored it.
     args.interactive = interactive
+    # Library code emits one-line warnings through gpuwm.explain.warn;
+    # stamping the flag once here is what lets --explain add their
+    # mechanism prose without threading args through every call chain.
+    from gpuwm.explain import set_explain
+    set_explain(explain_enabled(args))
 
     try:
         return _dispatch(args)
@@ -368,12 +380,14 @@ def main(argv: list[str] | None = None) -> int:
               + _layer(error, args), file=sys.stderr)
         return 2
     except RuntimeError as error:
-        if args.command in ("fetch", "fetch-geog"):
-            # fetch/fetch-geog RuntimeErrors are operational outcomes
+        if args.command in ("fetch", "fetch-geog", "fetch-tables",
+                            "fetch-bridges"):
+            # fetch-family RuntimeErrors are operational outcomes
             # with a stated remedy (no complete latest cycle on the
             # mirrors; a --wait-for window that timed out with its
-            # resume story; a download that must be re-run to resume),
-            # not programming errors.  Scoped to the fetch commands:
+            # resume story; a download that must be re-run to resume;
+            # another writer holding the staging lock), not
+            # programming errors.  Scoped to the fetch commands:
             # elsewhere a RuntimeError (including CUDA runtime
             # failures) must keep its traceback.
             print(f"gpuwm {args.command}: "
@@ -384,8 +398,9 @@ def main(argv: list[str] | None = None) -> int:
 
 def _dispatch(args) -> int:
     if args.command in ("check", "fetch", "fetch-geog", "domain", "render",
-                        "downscale", "doctor", "fetch-tables",
-                        "fetch-bridges", "setup", "go", "adapt"):
+                        "enprod", "downscale", "doctor", "fetch-tables",
+                        "fetch-bridges", "setup", "go", "adapt", "certify",
+                        "dual-run"):
         return args.func(args)
 
     if args.command == "cases":

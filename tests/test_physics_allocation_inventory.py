@@ -150,9 +150,34 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     'gpuwm/core/diffusion.py': {
         'diffuse_only_test': 1,
     },
+    # ``__init__`` and ``reset`` are ``MassFluxAccumulator``'s FP64 running
+    # sum, committed unlisted at 90f02a89 and entered 2026-07-31.  Each is one
+    # ``cp.zeros((), dtype=cp.float64)``: zero-dimensional, 8 bytes, 512 in a
+    # pool block.  It sits outside a workspace because there is no workspace
+    # to sit in -- the accumulator is a diagnostic object the CALLER
+    # constructs and hands to ``step``, and ``step`` never constructs one, so
+    # no forecast path can reach either site per step, per domain or per
+    # output interval.  (Nothing under ``gpuwm/`` constructs one at all today;
+    # the live mass-flux caller, ``verify/cases/wk82.py``, takes the
+    # host-syncing list observer instead.  ``reset`` has no caller anywhere.)
+    #
+    # The bound is one 8-byte scalar per accumulator object, and what makes
+    # that the whole cost is ``add`` -- the only method the acoustic loop
+    # touches, once per substep of every final RK stage.  It accumulates with
+    # ``self._total += increment``, cupy's in-place ``__iadd__``, which
+    # rebinds nothing.  Measured rather than assumed: 2,048 device-scalar adds
+    # and 2,048 host-float adds each cost zero device mallocs and leave
+    # ``data.ptr`` unchanged, and an 8-step integration leaves ``_total`` the
+    # same object it was constructed as.  ``tests/test_mapped_mass_closure.py:
+    # test_the_mass_flux_accumulator_allocates_once_and_never_per_substep``
+    # is that measurement, and it carries the out-of-place spelling of ``add``
+    # as its negative control -- one malloc per add, which is what this row
+    # would be recording if the increment were folded the other way.
     'gpuwm/core/dycore.py': {
+        '__init__': 1,
         'launch_coriolis_curvature': 2,
         'launch_diff6': 2,
+        'reset': 1,
     },
     'gpuwm/core/health.py': {},
     'gpuwm/core/kf.py': {

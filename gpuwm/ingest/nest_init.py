@@ -707,7 +707,8 @@ def _prepare_child_input_on_grid(
             source, grid, target_landmask=static_fields["LANDMASK"],
             soil_mapping_report=soil_mapping_report,
             surface_fallback_radius=surface_fallback_radius,
-            backend=preprocess)
+            backend=preprocess,
+            target_name=f"domain {child_dc.grid_id}")
         skin = _host(horizontal.fields["SKINTEMP"])
         lake_skin_temperature = np.where(lake_mask, skin, np.nan)
         mapping_receipt.update({

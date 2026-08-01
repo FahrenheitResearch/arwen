@@ -311,7 +311,8 @@ def test_real_source_mp_off_requires_explicit_moist_carrier(source_id):
                for domain in admitted["resolved_domains"])
 
 
-def test_unnamed_tree_tuple_governance_uses_registry_reachability_only():
+def test_unnamed_tree_tuple_governance_uses_registry_reachability_only(
+        capsys):
     from gpuwm.physics_compat import (
         PhysicsCapabilityError,
         multi_domain_physics_selection,
@@ -340,10 +341,20 @@ def test_unnamed_tree_tuple_governance_uses_registry_reachability_only():
         "ra_lw_physics": 90,
         "ra_sw_physics": 90,
     }
-    with pytest.raises(PhysicsCapabilityError) as caught:
-        multi_domain_physics_selection({1: outside, 2: outside})
-    message = str(caught.value)
-    assert "d01 resolved physics tuple" in message
+    # Warn-not-block owns the SEVERITY of this site: a tuple outside the
+    # registry's declared reachability is still individually implemented,
+    # so it runs and says so -- one line per domain, naming the tuple, the
+    # state and both published ways to acknowledge it.  What this test
+    # guards is unchanged: that the governance is computed from registry
+    # reachability alone, that it is REPORTED, and that the
+    # acknowledgement is what flips it.
+    unacked = multi_domain_physics_selection({1: outside, 2: outside})
+    lines = [line for line in capsys.readouterr().err.splitlines()
+             if line.startswith("warning:")]
+    assert len(lines) == 2, lines
+    message = "\n".join(lines)
+    assert "d01 physics tuple" in message
+    assert "d02 physics tuple" in message
     assert "ra_lw_physics=90" in message
     assert "ra_sw_physics=90" in message
     assert "outside-registry-declared-reachability" in message
@@ -351,6 +362,13 @@ def test_unnamed_tree_tuple_governance_uses_registry_reachability_only():
         '--ack expert-tuple-v1 or acknowledgements = ["expert-tuple-v1"]'
         in message
     )
+    # Warned, and recorded as unacknowledged -- not silently blessed.
+    assert {
+        domain["governance"]["state"]
+        for domain in unacked["domains"].values()
+    } == {"outside-registry-declared-reachability"}
+    assert not any(domain["governance"]["acknowledged"]
+                   for domain in unacked["domains"].values())
 
     acknowledged = multi_domain_physics_selection(
         {1: outside, 2: outside},
@@ -364,17 +382,29 @@ def test_unnamed_tree_tuple_governance_uses_registry_reachability_only():
                for domain in acknowledged["domains"].values())
 
 
-def test_unnamed_tree_expert_template_retains_its_specific_acknowledgement():
-    from gpuwm.physics_compat import (
-        PhysicsCapabilityError,
-        multi_domain_physics_selection,
-    )
+def test_unnamed_tree_expert_template_retains_its_specific_acknowledgement(
+        capsys):
+    from gpuwm.physics_compat import multi_domain_physics_selection
 
     expert = single_domain_runtime_switches(NOAHMP_PROFILE_ID)
-    with pytest.raises(
-            PhysicsCapabilityError,
-            match="noahmp-host-column-throughput-v1"):
-        multi_domain_physics_selection({1: expert, 2: expert})
+    # The point of this test is that an expert TEMPLATE keeps its own
+    # specific acknowledgement id rather than collapsing into the generic
+    # outside-reachability one -- and that survives warn-not-block's
+    # ruling on severity: the tuple runs, and the line it prints names
+    # THIS template's acknowledgement, not expert-tuple-v1.
+    unacked = multi_domain_physics_selection({1: expert, 2: expert})
+    lines = [line for line in capsys.readouterr().err.splitlines()
+             if line.startswith("warning:")]
+    assert len(lines) == 2, lines
+    message = "\n".join(lines)
+    assert "noahmp-host-column-throughput-v1" in message
+    assert "expert-tuple-v1" not in message
+    assert {
+        domain["governance"]["required_acknowledgement"]
+        for domain in unacked["domains"].values()
+    } == {"noahmp-host-column-throughput-v1"}
+    assert not any(domain["governance"]["acknowledged"]
+                   for domain in unacked["domains"].values())
 
     receipt = multi_domain_physics_selection(
         {1: expert, 2: expert},
@@ -384,6 +414,9 @@ def test_unnamed_tree_expert_template_retains_its_specific_acknowledgement():
         domain["governance"]["state"]
         for domain in receipt["domains"].values()
     } == {"registry-expert-template"}
+    assert all(domain["governance"]["acknowledged"]
+               for domain in receipt["domains"].values())
+    assert "noahmp-host-column-throughput-v1" not in capsys.readouterr().err
 
 
 def test_registry_routes_drift_check_against_live_runner_capabilities():

@@ -280,14 +280,12 @@ def test_invalid_experiment_error_wins_over_missing_case_data(tmp_path):
     ("sfcp_to_sfcp = false", "false branch is not implemented"),
     ("sfcp_to_sfcp = 1", "must be a boolean"),
     ("co2_vmr = 330.0e-6", None),
-    ("co2_vmr = -1.0e-6", "finite mole fraction"),
-    ("co2_vmr = 0.5", "finite mole fraction"),
+    ("co2_vmr = -1.0e-6", "positive mole fraction"),
     ("forcing_interval_s = 21600.0", None),
     ("forcing_interval_s = -60.0", "finite positive interval"),
     ("output_domain = 1", None),
     ("output_domain = 0", "positive integer"),
     ('output_title = "fixture title"', None),
-    ('output_title = ""', "non-empty"),
     ('source_orography_variable = "SOILHGT"', None),
     ('source_orography_variable = ""', "non-empty variable name"),
 ])
@@ -304,12 +302,34 @@ def test_key_validation_is_fail_loud(tmp_path, mutation, message):
             load_case_data(path)
 
 
-def test_unknown_and_missing_keys_are_loud(tmp_path):
+@pytest.mark.parametrize("mutation, needle, attr, expected", [
+    ("co2_vmr = 0.5", "sanity envelope", "co2_vmr", 0.5),
+    ('output_title = ""', "output_title", "output_title", "gpuwm"),
+])
+def test_advisory_values_warn_and_continue(tmp_path, capsys, mutation,
+                                           needle, attr, expected):
+    """Warn-not-block: sanity envelopes report in one line and keep
+    going; the loaded value is stated by the warning."""
+    key = mutation.split(" =")[0]
+    lines = [line for line in _CASE_DATA_TOML.splitlines()
+             if not line.startswith(key)]
+    lines.append(mutation)
+    path = make_case_toml(tmp_path, case_data="\n".join(lines) + "\n")
+    data = load_case_data(path)
+    err = capsys.readouterr().err
+    assert "warning:" in err and needle in err
+    assert getattr(data, attr) == expected
+
+
+def test_unknown_keys_warn_and_missing_keys_are_loud(tmp_path, capsys):
+    # Warn-not-block: a typo'd extra key is named and ignored.
     path = make_case_toml(
         tmp_path, case_data=_CASE_DATA_TOML + "mystery_key = 1\n")
-    with pytest.raises(ValueError, match="mystery_key"):
-        load_case_data(path)
+    load_case_data(path)
+    err = capsys.readouterr().err
+    assert "warning:" in err and "mystery_key" in err
 
+    # KEEP-HARD negative: a missing REQUIRED key still refuses.
     lines = [line for line in _CASE_DATA_TOML.splitlines()
              if not line.startswith("vtable")]
     path = make_case_toml(tmp_path, case_data="\n".join(lines) + "\n")

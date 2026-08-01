@@ -30,6 +30,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from gpuwm import __version__  # noqa: E402
+from gpuwm import runtime_manifest  # noqa: E402
 from tools.hrrr_build_native_static import (  # noqa: E402
     array_sha256,
     benchmark_grid,
@@ -197,13 +198,13 @@ def runner_capabilities() -> dict[str, object]:
             },
             MORRISON_PROFILE_ID: {
                 "selector": 10,
-                "readiness": "MODEL_VALIDATED_RUNTIME_PROFILE",
+                "readiness": "WRF_MATCHED_RUN_RUNTIME_PROFILE",
                 "explicit_expert_consent_required": False,
                 "runtime_guards": [],
             },
             NSSL2_PROFILE_ID: {
                 "selector": NSSL2_MP_PHYSICS,
-                "readiness": "VALIDATION_CANDIDATE",
+                "readiness": "WRF_MATCHED_RUN_CANDIDATE",
                 "explicit_expert_consent_required": False,
                 "runtime_guards": [],
                 "external_table_assets": [],
@@ -212,7 +213,7 @@ def runner_capabilities() -> dict[str, object]:
             },
             NSSL2_LEGACY_RRTMG_PROFILE_ID: {
                 "selector": NSSL2_MP_PHYSICS,
-                "readiness": "VALIDATION_CANDIDATE",
+                "readiness": "WRF_MATCHED_RUN_CANDIDATE",
                 "explicit_expert_consent_required": False,
                 "runtime_guards": [],
                 "external_table_assets": [],
@@ -635,48 +636,22 @@ def _source_identity() -> dict[str, object]:
     source_sha256 = {
         str(path.relative_to(REPO)): _sha256(path) for path in paths
     }
-    raw_manifest = os.environ.get("GPUWM_NATIVE_DISTRIBUTION_MANIFEST")
-    if raw_manifest:
-        manifest_path = Path(raw_manifest).resolve()
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        artifact = manifest.get("artifact")
-        source = manifest.get("source")
-        if (manifest.get("schema") != "gpuwm-native-wrf-runtime-v1"
-                or manifest.get("status") != "READY"
-                or not isinstance(artifact, dict)
-                or artifact.get("gpuwm_version") != __version__
-                or not isinstance(source, dict)
-                or not source.get("worktree_clean")):
-            raise RuntimeError("unrecognized native distribution manifest")
-        commit = str(source["commit"])
-        tree = str(source["tree"])
-        status = []
-        identity_source = "gpuwm-native-distribution-manifest"
-        source_sha256["distribution/manifest.json"] = _sha256(manifest_path)
-    else:
-        top_level = Path(subprocess.check_output(
-            ["git", "rev-parse", "--show-toplevel"], cwd=REPO,
-            text=True, stderr=subprocess.DEVNULL).strip()).resolve()
-        if top_level != REPO.resolve():
-            raise RuntimeError(
-                f"git provenance escaped the gpuwm checkout: {top_level}")
-        commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=REPO, text=True,
-            stderr=subprocess.DEVNULL).strip()
-        tree = subprocess.check_output(
-            ["git", "rev-parse", "HEAD^{tree}"], cwd=REPO, text=True,
-            stderr=subprocess.DEVNULL).strip()
-        status = subprocess.check_output(
-            ["git", "status", "--short"], cwd=REPO, text=True,
-            stderr=subprocess.DEVNULL).splitlines()
-        identity_source = "git"
-    return {
-        "git_commit": commit,
-        "git_tree": tree,
-        "git_status_short": status,
-        "identity_source": identity_source,
-        "source_sha256": source_sha256,
-    }
+    # Three real installs, three identities -- resolved in one shared
+    # place (gpuwm.runtime_manifest.provenance).  This used to be a
+    # sealed-manifest branch and an unguarded `git rev-parse` with the
+    # working directory set to REPO, which for every pip install is
+    # site-packages: `CalledProcessError: returned non-zero exit status
+    # 128`, before a single byte of the user's data was read.  A wheel
+    # has an identity -- the distribution version and the digests pip
+    # wrote into RECORD -- and that is what it binds now.
+    identity = runtime_manifest.provenance(REPO)
+    manifest_sha256 = identity.pop("distribution_manifest_sha256", None)
+    if manifest_sha256 is not None:
+        source_sha256["distribution/manifest.json"] = manifest_sha256
+    installed_wheel = identity.pop("installed_wheel", None)
+    if installed_wheel is not None:
+        identity["installed_wheel"] = installed_wheel
+    return {**identity, "source_sha256": source_sha256}
 
 
 def _physics_receipt(driver, cp) -> dict[str, object]:
@@ -1057,13 +1032,27 @@ def _validate_native_hrrr_physics_profile(
         ) -> dict[str, object]:
     """Bind the namelist to one explicit HRRR runner profile.
 
-    The accepted historical input has two domains and this standalone
-    controller represents its inner-domain profile, so the last value is the
-    selected value.  A one-domain arbitrary target naturally selects its only
-    value.  Missing, non-numeric, non-finite, or changed values all fail.
+    This preparer prepares d01.  It therefore reads d01's column entry --
+    the FIRST value of every WRF per-domain array -- for every key it
+    validates, and for a max_dom = 1 namelist that is simply the only
+    value.
+
+    It used to read the LAST value, on the reasoning that the historical
+    two-domain input's inner domain was what this standalone controller
+    represented.  On the public nested route that is the wrong domain and
+    it fails in the most confusing way available: given a two-domain
+    namelist whose d01 states the profile's ``diff_6th_factor = 0.08`` and
+    whose d02 states a nest's 0.10, it read 0.10 and refused with a
+    sentence about the value, never mentioning that it had been looking at
+    d02.  A refusal on a column that is not uniform now says so and names
+    the fix.
     """
 
-    from gpuwm.namelist_import import parse_namelist
+    from gpuwm.namelist_import import (
+        MULTI_DOMAIN_ROOT_VIEW_HINT,
+        parse_namelist,
+        root_domain_namelist_view,
+    )
 
     front_door_selection = validate_single_domain_physics_profile(
         profile, expert_acknowledgements=expert_acknowledgements,
@@ -1072,21 +1061,22 @@ def _validate_native_hrrr_physics_profile(
         })
     expected_profile = _native_hrrr_profile_contract(profile)
     sections = parse_namelist(path)
+    root_view, nonuniform_columns = root_domain_namelist_view(
+        sections, source=str(path))
     selected: dict[str, dict[str, float | bool]] = {}
     for section_name, expected_fields in expected_profile.items():
-        section = sections.get(section_name)
+        section = root_view.get(section_name)
         if section is None:
             raise ValueError(
                 f"native HRRR profile {profile!r} requires "
                 f"&{section_name}")
         selected[section_name] = {}
         for key, expected in expected_fields.items():
-            values = section.get(key)
-            if not values:
+            if key not in section:
                 raise ValueError(
                     f"native HRRR profile {profile!r} requires "
                     f"&{section_name}/{key}")
-            raw = values[-1]
+            raw = section[key]
             if isinstance(expected, bool):
                 if not isinstance(raw, (bool, np.bool_)):
                     raise ValueError(
@@ -1103,21 +1093,28 @@ def _validate_native_hrrr_physics_profile(
                 matches = math.isfinite(actual) and actual == expected
                 expected_text = f"{expected:g}"
             if not matches:
-                raise ValueError(
+                column = f"&{section_name}/{key}"
+                message = (
                     f"native HRRR profile {profile!r} drift at "
-                    f"&{section_name}/{key}: selected last-domain value "
-                    f"must be {expected_text}, got {raw!r}")
+                    f"{column}: d01's value must be {expected_text}, got "
+                    f"{raw!r}")
+                if column in nonuniform_columns:
+                    message += (
+                        f".  {MULTI_DOMAIN_ROOT_VIEW_HINT}.  Columns that "
+                        "differ across domains here: "
+                        + ", ".join(nonuniform_columns))
+                raise ValueError(message)
             selected[section_name][key] = actual
     if profile in (NSSL2_PROFILE_ID, NSSL2_LEGACY_RRTMG_PROFILE_ID):
-        physics_section = sections["physics"]
+        physics_section = root_view["physics"]
         nssl_values: dict[str, int | float] = {}
         selector_names = {
             "nssl_2moment_on", "nssl_hail_on", "nssl_ccn_on",
             "nssl_density_on", "nssl_3moment",
         }
         for key, default in NSSL2_WRF_NAMELIST_DEFAULTS.items():
-            values = physics_section.get(key)
-            raw = default if not values else values[-1]
+            # d01's column entry, for the same reason as the loop above.
+            raw = physics_section.get(key, default)
             if isinstance(default, int):
                 if isinstance(raw, bool) or not isinstance(
                         raw, (int, np.integer)):
@@ -1161,7 +1158,7 @@ def _validate_native_hrrr_physics_profile(
         "schema": "gpuwm-prepared-physics-profile-v1",
         "profile": profile,
         "front_door_selection": front_door_selection,
-        "selection": "last-or-only WRF domain value",
+        "selection": "d01 (first-or-only) WRF domain value",
         "resolved": resolved,
         "validated_namelist": selected,
         "hrrr_initialization_contract": {
@@ -1187,17 +1184,17 @@ def _validate_native_hrrr_physics_profile(
         },
     }
     if profile == THOMPSON_PROFILE_ID:
-        receipt["readiness"] = "MODEL_VALIDATED_EXPERIMENTAL"
+        receipt["readiness"] = "WRF_MATCHED_RUN_EXPERIMENTAL"
         receipt["thompson_contract"] = _thompson_runtime_authority()
     elif profile == MORRISON_PROFILE_ID:
-        receipt["readiness"] = "MODEL_VALIDATED_RUNTIME_PROFILE"
+        receipt["readiness"] = "WRF_MATCHED_RUN_RUNTIME_PROFILE"
         receipt["morrison_contract"] = {
             "selector": 10,
             "morr_rimed_ice": 1,
             "rimed_ice_category": "hail",
         }
     elif profile in (NSSL2_PROFILE_ID, NSSL2_LEGACY_RRTMG_PROFILE_ID):
-        receipt["readiness"] = "VALIDATION_CANDIDATE"
+        receipt["readiness"] = "WRF_MATCHED_RUN_CANDIDATE"
         receipt["nssl2_contract"] = {
             "selector": NSSL2_MP_PHYSICS,
             "contract_id": NSSL2_CONTRACT_ID,
@@ -1729,7 +1726,7 @@ def _map_snapshot(
         snapshot, grid, target_landmask=static["LANDMASK"],
         soil_mapping_report=mapping_report,
         surface_fallback_radius=surface_fallback_radius,
-        backend=preprocess_backend)
+        backend=preprocess_backend, target_name="domain 1")
     return met, time.perf_counter() - started
 
 
@@ -1873,7 +1870,11 @@ def _map_boundary_snapshot(
             snapshot, subgrid, target_landmask=target_landmask,
             soil_mapping_report=side_report,
             surface_fallback_radius=surface_fallback_radius,
-            backend=preprocess_backend)
+            backend=preprocess_backend,
+            # Four strips are mapped independently here, so a soil
+            # refusal that named only "soil mapping" left a coastal
+            # domain's owner with four identical-looking suspects.
+            target_name=f"the {side} boundary strip of domain 1")
         compact[side] = _detach_mapped_snapshot(met)
         side_reports[side] = side_report
         del met

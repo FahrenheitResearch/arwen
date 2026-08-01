@@ -679,6 +679,71 @@ def test_raw_lake_uses_source_water_skin_without_changing_land_or_ocean():
             lake_mask=lake_mask)
 
 
+def _snow_case(snowh_values):
+    shape = (1, len(snowh_values))
+    fields = {
+        "LANDSEA": np.ones(shape),
+        "SKINTEMP": np.full(shape, 275.0),
+        "TMN": np.full(shape, 275.0),
+        "SNOWH": np.asarray([snowh_values], dtype=np.float64),
+    }
+    for name in ("ST000007", "ST007028", "ST028100", "ST100289"):
+        fields[name] = np.full(shape, 275.0)
+    for name in ("SM000007", "SM007028", "SM028100", "SM100289"):
+        fields[name] = np.full(shape, 0.3)
+    return fields, np.full(shape, 6.0)
+
+
+def test_bounded_snow_overshoot_is_repaired_at_zero_not_refused():
+    """One cell of interpolation overshoot must not lose a preparation.
+
+    Snow depth is physically non-negative, so a negative mapped value is
+    never data -- it is a non-monotone horizontal operator overshooting
+    across the snow line, the sharpest gradient the field has.  A real
+    nested HRRR domain over the mountainous west died here on ONE cell
+    of 88 844 at -4.9 cm, beside a 44.5 m maximum, with a message that
+    named neither the numbers nor which condition had failed.
+    """
+    from gpuwm.ingest.soil import preprocess_noah_soil
+
+    fields, soil_type = _snow_case([44.5, -0.0487, 0.0])
+    soil = preprocess_noah_soil(fields, soil_type=soil_type)
+    np.testing.assert_array_equal(soil.snow_depth, [[44.5, 0.0, 0.0]])
+    # SNOW follows SNOWH through real.exe's 5:1 ratio, and follows the
+    # repair with it rather than carrying the negative onward.
+    assert float(soil.snow_water[0, 1]) == 0.0
+
+    # A non-negative field is untouched: every previously passing case
+    # is byte-identical.
+    fields, soil_type = _snow_case([44.5, 0.0, 1.25])
+    soil = preprocess_noah_soil(fields, soil_type=soil_type)
+    np.testing.assert_array_equal(soil.snow_depth, [[44.5, 0.0, 1.25]])
+
+
+def test_snow_beyond_the_overshoot_band_still_refuses_with_its_numbers():
+    """Watched firing: the repair above is bounded, not a blanket clamp.
+
+    A fill value, a unit error or a broken decode is not overshoot, and
+    the refusal that catches it names the count, the most negative value
+    and the field's own maximum.
+    """
+    from gpuwm.ingest.soil import preprocess_noah_soil
+
+    fields, soil_type = _snow_case([1.0, -50.0, 0.0])
+    with pytest.raises(ValueError, match="overshoot band") as refusal:
+        preprocess_noah_soil(fields, soil_type=soil_type)
+    message = str(refusal.value)
+    assert "snow depth" in message
+    assert "-50" in message
+    assert "most negative" in message
+
+    # And the other two conditions each name themselves, rather than
+    # three of them sharing one sentence.
+    fields, soil_type = _snow_case([1.0, np.nan, 0.0])
+    with pytest.raises(ValueError, match="non-finite value"):
+        preprocess_noah_soil(fields, soil_type=soil_type)
+
+
 def test_reconciled_era5_sea_ice_exercises_noah_ice_branch(params):
     from gpuwm.ingest.soil import preprocess_noah_soil
 

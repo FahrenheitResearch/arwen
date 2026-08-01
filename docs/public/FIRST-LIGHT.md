@@ -91,14 +91,16 @@ fits your card's budget. Output on the 24 GB tier (Windows):
 
 ```
   domain    dx        mass grid      dt         resident
-  d01     12.000 km   170 x 136        60 s     0.65 GiB
-  d02      3.000 km   336 x 272        15 s     2.31 GiB
-  d03      1.000 km   360 x 294         5 s     2.69 GiB
-  d04      0.500 km   288 x 236       5/2 s     1.74 GiB
-  itemized alloc estimate 7.17 GiB; footprint projection 11.29 GiB
-    x 1.75 observed peak envelope = 19.75 GiB
+  d01     12.000 km   176 x 140        60 s     0.68 GiB
+  d02      3.000 km   352 x 280        15 s     2.45 GiB
+  d03      1.000 km   378 x 300         5 s     2.83 GiB
+  d04      0.500 km   304 x 240       5/2 s     1.84 GiB
+  itemized alloc estimate 7.25 GiB; footprint projection 11.37 GiB  x 1.75 observed peak envelope = 19.90 GiB
     envelope factor: windows (measured, 1 WDDM run)
-  budget 20.00 GiB (24 GiB card - 4 GiB reserve); headroom 0.25 GiB
+  ingest (preprocessing): 2 forcing times x 0.25 GiB each, 2 resident at a time = 0.53 GiB resident; peak envelope 2.61 GiB
+    ingest envelope basis: measured, CONUS 12 km 414x330x49 x 9 GFS times, RTX 5090 / Linux: itemization + 0.65x one forcing time of transients, x1.15 headroom, + CUDA context
+  BINDING PHASE: the forecast is the memory-binding phase at 19.90 GiB peak envelope (forecast 19.90 GiB, ingest 2.61 GiB); it fits the 20.00 GiB budget with 0.10 GiB to spare
+  budget 20.00 GiB (24 GiB card - 4 GiB reserve); headroom 0.10 GiB
 ```
 
 The same command on Linux prints `x 1.45 observed peak envelope` over a
@@ -110,7 +112,15 @@ against a Windows model that predicted 2.1x it
 this reason.
 
 It emits the experiment TOML, a matching `namelist.wps`, and prints the
-exact `gpuwm fetch` command for the data it needs. `--ladder` picks the
+exact `gpuwm fetch` command for the data it needs. With `--source hrrr`
+it emits the whole input set the native HRRR routes read -- the
+`<stem>.d01-target.json` target-domain document, the native
+`<stem>.namelist.input` and its stock-WRF twin
+`<stem>.stock.namelist.input` beside them -- and its closing block
+prints the HRRR chain (root preparation, hierarchy, forecast) with every
+one of those paths already bound. The only blanks are your `WPS_GEOG`
+root and the receipt digests each stage prints when it finishes.
+`--ladder` picks the
 depth (`12`, `12-3`, `12-3-1`, `12-3-1-0.5`, or `auto`; the
 single-domain `12` ladder emits `restart_interval_s = 0`, the portable
 prepared-forecast contract); `--vram-gib N` covers cards between the
@@ -123,11 +133,21 @@ a chain of integer refinement ratios, sized by the same estimator fit
 loop and validated by the same `gpuwm check`:
 
 ```bash
+# 3 km -> 750 m
 gpuwm domain --point=35.3,-97.5 --card 24gb \
-    --root-dx 3 --chain 4 ...          # 3 km -> 750 m
+    --root-dx 3 --chain 4 \
+    --cycle 1999-05-03T12 --hours 6 --out configs/myarea.toml
+# 3 km -> 1 km -> 333 m -> 111 m
 gpuwm domain --point=35.3,-97.5 --card 32gb \
-    --root-dx 3 --chain 3,3,3 ...      # 3 km -> 1 km -> 333 m -> 111 m
+    --root-dx 3 --chain 3,3,3 \
+    --cycle 1999-05-03T12 --hours 6 --out configs/myarea.toml
 ```
+
+`--cycle` and `--out` are required on every `gpuwm domain` call -- the
+two lines above used to end in `...`, which hid them and made both
+examples an argparse error when pasted. `--cycle latest` resolves the
+newest complete cycle for `--source gfs`/`hrrr`; ERA5 and reanalysis
+cases name the date they want.
 
 Root `dt` follows the same convention at any spacing (5 s per km, 2.5
 in the tropics) and is carried exactly, including half seconds, through
@@ -213,10 +233,14 @@ Three first-time-user pilots ran this route on rented Linux 4090s and
 theirs.
 
 ```bash
-# 1. Size the domain.  --physics-profile emits a config the runner
-#    accepts as written; without it you get the product default suite,
-#    which the SINGLE-domain runner refuses (the wizard says so, and
-#    lists what every profile actually runs).
+# 1. Size the domain.  --physics-profile is OPTIONAL: it binds the
+#    config to a shipped suite that every later stage then enforces
+#    switch for switch.  Without it you get the product default suite,
+#    which runs as written too -- the receipts state its verification
+#    status ("supported, not yet WRF-verified") and the run continues.
+#    Add --explain to a COMPLETE domain command (it is a modifier, not
+#    a query: `gpuwm domain --explain` on its own is a usage error) and
+#    it prints what the profile you chose actually runs.
 gpuwm domain --point=35.3,-97.5 --card 24gb --ladder 12     --source gfs --cycle latest --hours 6     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --out configs/myarea.toml
 
 # 2. Materialize the exact physics authority.  BEFORE rw-wps, not after.
@@ -224,18 +248,27 @@ python -m gpuwm.prepared_single_domain_forecast --materialize-authorities     --
 
 # 3. Fetch, then author the front-door manifest.  Step 3 prints the
 #    complete rw-wps command with its digest already filled in.
+#    --bridge is optional: omitted, it resolves the built
+#    gfs_grib2_bridge this install has (a checkout's own build, then
+#    libexec/, then the ~/.gpuwm/bridges that `gpuwm setup` stages
+#    into) -- the same resolver `gpuwm go` uses.  `gpuwm doctor` names
+#    the one it found; pass --bridge PATH to override it.
 gpuwm fetch --source gfs --cycle <RESOLVED> --hours 6     --area=<THE BOX THE WIZARD PRINTED> --out data/myarea
-gpuwm fetch --source gfs --author-front-door-manifest --out data/myarea     --bridge tools/grib1_bridge/target/release/gfs_grib2_bridge     --wps-namelist work/myarea-authority/namelist.wps     --experiment-config work/myarea-authority/experiment.toml
+gpuwm fetch --source gfs --author-front-door-manifest --out data/myarea     --wps-namelist work/myarea-authority/namelist.wps     --experiment-config work/myarea-authority/experiment.toml
 
 # 4. Run the front door (paste the line step 3 printed, plus these).
 rw-wps ... --geog-root $GPUWM_CASE_DATA_ROOT/WPS_GEOG     --output-root out/myarea-init
 
 # 5. Run the forecast.  rw-wps finishes by printing THIS command with
-#    all three digests filled in -- copy it rather than retyping.
-python -m gpuwm.prepared_single_domain_forecast     --source gfs --prepared-root out/myarea-init     --proof-sha256 <printed> --source-manifest-sha256 <printed>     --prepared-content-sha256 <printed>     --experiment-config work/myarea-authority/experiment.toml     --wps-namelist work/myarea-authority/namelist.wps     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --io-mode history --outdir out/myarea-run
+#    all three digests filled in -- copy it rather than retyping.  Its
+#    --outdir is <output-root>-forecast, so with step 4's
+#    --output-root out/myarea-init the printed line ends in
+#    --outdir out/myarea-init-forecast.  Change it if you like; step 6
+#    reads whatever you ran with.
+python -m gpuwm.prepared_single_domain_forecast     --source gfs --prepared-root out/myarea-init     --proof-sha256 <printed> --source-manifest-sha256 <printed>     --prepared-content-sha256 <printed>     --experiment-config work/myarea-authority/experiment.toml     --wps-namelist work/myarea-authority/namelist.wps     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --io-mode history --outdir out/myarea-init-forecast
 
-# 6. Render.
-gpuwm render out/myarea-run/wrfout/<frame> --out out/myarea-png
+# 6. Render.  <frame> is one file under wrfout/, not the directory.
+gpuwm render out/myarea-init-forecast/wrfout/<frame> --out out/myarea-png
 ```
 
 Measured on a Linux RTX 4070 12 GB (node 3, GFS 2026-07-29 18Z, single
@@ -250,10 +283,12 @@ domain 342x272x49 at 12 km):
 | `gpuwm render` (4 products, 1 frame) | 21.8 s |
 
 **Multi-domain** products go to `python -m gpuwm.prepared_domain_tree_forecast`
-instead, which takes `--prepared-root` + `--preparation-receipt-sha256`
-and has no physics-profile whitelist -- it runs the wizard's default
-suite as written. `rw-wps` names whichever runner applies to the proof
-it just wrote, with the digests filled in.
+instead, which takes `--prepared-root` + `--preparation-receipt-sha256`.
+Neither runner has a physics-profile whitelist: both run the suite your
+config selects as written (the wizard's default suite included), and
+`--physics-profile` is an optional assertion that the config is one of
+the shipped suites. `rw-wps` names whichever runner applies to the
+proof it just wrote, with the digests filled in.
 
 **Watch progress** at `<outdir>/evidence/progress.json` (domain tree) or
 `<outdir>/progress.json` (single domain), not the `run-progress.json`

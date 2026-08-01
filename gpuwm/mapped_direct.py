@@ -20,14 +20,17 @@ from gpuwm.core.grid import make_vertical_coord
 from gpuwm.experiment import load_experiment, validate_boundary_timing
 from gpuwm.ingest.horiz import interpolate_era5_to_lambert
 from gpuwm.ingest.lateral_bc import (
+    StateBoundaryFrames,
     attach_lateral_boundaries,
-    build_state_lateral_boundaries,
 )
 from gpuwm.ingest.prepared_cache import (
     prepared_cache_identity,
     write_prepared_cache,
 )
-from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
+from gpuwm.ingest.preprocess_backend import (
+    release_backend_memory,
+    resolve_preprocess_backend,
+)
 from gpuwm.ingest.real import initialize_real
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.mapped_composition import (
@@ -412,8 +415,14 @@ def prepare_mapped_wrf(
     )
     preprocess_receipt = preprocess.receipt()
     initialize_started = time.perf_counter()
-    results = []
-    horizontal = []
+    # Only the first time's met/state survive this loop; every later time
+    # contributes its perimeter frames and is released at once.  Holding
+    # all of them is what made ingest peak above the forecast it prepares.
+    initial_result = None
+    initial_met = None
+    forcing = StateBoundaryFrames(
+        spec_bdy_width=cfg.spec_bdy_width,
+        spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
     coord = make_vertical_coord(
         cfg.nz, hybrid_opt=cfg.hybrid_opt, etac=cfg.etac,
         eta_levels=exp.vertical.eta_levels,
@@ -423,7 +432,7 @@ def prepare_mapped_wrf(
     )
     coriolis_f, coriolis_e = grid.coriolis_m()
     rotation_sin, rotation_cos = grid.rotation_m()
-    for source in snapshots:
+    for index, source in enumerate(snapshots):
         # Metgrid classifies masked-field TARGET cells by the model
         # (geogrid) landmask; the mapped lane declares it like the ERA5
         # lanes so soil, skin, snow, and physics share one surface.
@@ -440,14 +449,15 @@ def prepare_mapped_wrf(
             mapfac_m, mapfac_u, mapfac_v, coriolis_f, coriolis_e,
             sina=rotation_sin, cosa=rotation_cos,
         )
-        horizontal.append(met)
-        results.append(initialized)
-    boundaries = build_state_lateral_boundaries(
-        [value.state for value in results], times,
-        spec_bdy_width=cfg.spec_bdy_width,
-        spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone,
-    )
-    attach_lateral_boundaries(results[0].state, boundaries)
+        forcing.add_state(initialized.state)
+        if index == 0:
+            initial_met = met
+            initial_result = initialized
+        else:
+            del met, initialized
+            release_backend_memory(preprocess)
+    boundaries = forcing.build(times)
+    attach_lateral_boundaries(initial_result.state, boundaries)
     # No lake skin override: the masked=both SKINTEMP chain with
     # static-landmask targets already yields water-source skin at lakes,
     # matching real.exe's no-TAVGSFC behavior.  The static landmask drives
@@ -457,14 +467,14 @@ def prepare_mapped_wrf(
     # forwards this exact argument list to preprocess_noah_soil for
     # Noah-geometry schemes.
     soil = preprocess_land_surface_soil(
-        horizontal[0].fields,
+        initial_met.fields,
         sf_surface_physics=int(cfg.sf_surface_physics),
         soil_type=static["SCT_DOM"],
         deep_soil_temperature=static["TMN"],
         soil_layer_contract=bundle.soil_layer_contract,
         landmask=static["LANDMASK"],
         terrain=static["HGT_M"],
-        source_orography=horizontal[0].fields["SOURCE_OROGRAPHY"],
+        source_orography=initial_met.fields["SOURCE_OROGRAPHY"],
     )
     initialize_seconds = time.perf_counter() - initialize_started
 
@@ -552,8 +562,8 @@ def prepare_mapped_wrf(
                 source_name="RW-WPS-MAPPED",
                 artifact_output=staging / "hierarchy-artifacts",
                 wrf_output=wrf_path,
-                root_initial_result=results[0],
-                root_met=horizontal[0],
+                root_initial_result=initial_result,
+                root_met=initial_met,
                 root_soil=soil,
                 root_static_fields=static,
                 root_boundaries=boundaries,
@@ -669,7 +679,7 @@ def prepare_mapped_wrf(
         cache_started = time.perf_counter()
         cache_receipt = write_prepared_cache(
             prepared_path, identity=identity,
-            initial_result=results[0], met=horizontal[0],
+            initial_result=initial_result, met=initial_met,
             boundaries=boundaries, surface=canonical_noah_surface(soil),
             metadata={
                 "source_adapter": "mapped",

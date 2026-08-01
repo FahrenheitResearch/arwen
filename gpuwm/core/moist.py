@@ -252,6 +252,22 @@ def _pd_fold_sources(state: DomainState, cfg: RunConfig, name: str,
     return q0_eff
 
 
+def _update_scalar_in_place(q, q0, chm0, chm, tend, dt_eff: float,
+                            *, clamp: bool) -> None:
+    """Apply WRF's coupled scalar update without expression temporaries.
+
+    Each ufunc is kept separate and in the original expression order so its
+    FP32 rounding boundary is unchanged.  ``tend`` is write-before-read
+    scratch that every species resets before its next use.
+    """
+    cp.multiply(chm0, q0, out=q)
+    cp.multiply(dt_eff, tend, out=tend)
+    cp.add(q, tend, out=q)
+    cp.divide(q, chm, out=q)
+    if clamp:
+        cp.maximum(q, DTYPE(0.0), out=q)
+
+
 def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                           ru, rv, ww, dt_eff: float, final: bool,
                           apply_relax: bool = True,
@@ -374,7 +390,8 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                                    open_x=boundary_x, open_y=boundary_y)
             if state.has_msf:                 # WRF rk_update_scalar:
                 tend *= state.msft[None]      # tendency = advect_tend*msfty
-            q[...] = cp.maximum((chm0 * q0_eff + dt_eff * tend) / chm, 0.0)
+            _update_scalar_in_place(
+                q, q0_eff, chm0, chm, tend, dt_eff, clamp=True)
         else:
             launch_flux_div_scalar(q, ru, rv, ww, tend, state,
                                    cfg.dx, cfg.dy,
@@ -408,8 +425,8 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                 fixed = fixed_tendencies.get(name)
                 if fixed is not None:
                     tend += fixed
-            updated = (chm0 * q0 + dt_eff * tend) / chm
-            q[...] = cp.maximum(updated, 0.0) if final else updated
+            _update_scalar_in_place(
+                q, q0, chm0, chm, tend, dt_eff, clamp=final)
 
     if getattr(state, "qi", None) is not None:
         for name in extra_moist_species(state):
@@ -444,8 +461,8 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                                        open_x=boundary_x, open_y=boundary_y)
                 if state.has_msf:
                     tend *= state.msft[None]
-                q[...] = cp.maximum((chm0 * q0_eff + dt_eff * tend) / chm,
-                                    0.0)
+                _update_scalar_in_place(
+                    q, q0_eff, chm0, chm, tend, dt_eff, clamp=True)
             else:
                 launch_flux_div_scalar(q, ru, rv, ww, tend, state,
                                        cfg.dx, cfg.dy,
@@ -475,8 +492,8 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                     fixed = fixed_tendencies.get(name)
                     if fixed is not None:
                         tend += fixed
-                updated = (chm0 * q0 + dt_eff * tend) / chm
-                q[...] = cp.maximum(updated, 0.0) if final else updated
+                _update_scalar_in_place(
+                    q, q0, chm0, chm, tend, dt_eff, clamp=final)
     if cfg.specified:
         from gpuwm.ingest.lateral_bc import apply_flow_dependent_boundaries
         fields = tuple(getattr(state, name) for name in moist_species(state)

@@ -236,6 +236,11 @@ class PreflightIssue:
     path: Path | None = None
     variable: str | None = None
     index: tuple[int, ...] | None = None
+    #: "error" fails the preflight; "warning" is REPORTED and the run
+    #: proceeds.  Warnings are the advisory findings -- conservative
+    #: meteorological envelopes, cadence pedantry -- where the input is
+    #: readable and self-consistent but outside a blessed window.
+    severity: str = "error"
 
     def format(self) -> str:
         address = []
@@ -264,8 +269,19 @@ class PreflightReport:
     checks: tuple[str, ...]
 
     @property
+    def errors(self) -> tuple[PreflightIssue, ...]:
+        return tuple(issue for issue in self.failures
+                     if issue.severity != "warning")
+
+    @property
+    def warnings(self) -> tuple[PreflightIssue, ...]:
+        return tuple(issue for issue in self.failures
+                     if issue.severity == "warning")
+
+    @property
     def ok(self) -> bool:
-        return not self.failures
+        # Warnings report; only errors refuse (warn-not-block).
+        return not self.errors
 
     @property
     def passed(self) -> bool:
@@ -283,15 +299,19 @@ class PreflightReport:
             f"valid_times={','.join(t.isoformat() for t in self.catalog.valid_times)}",
             f"run_ceiling_seconds={self.catalog.run_ceiling_seconds:g}",
         ]
-        if self.failures:
-            lines.append(f"failures={len(self.failures)} (all independent checks ran)")
-            lines.extend(f"- {issue.format()}" for issue in self.failures)
+        errors, warnings = self.errors, self.warnings
+        if errors:
+            lines.append(f"failures={len(errors)} (all independent checks ran)")
+            lines.extend(f"- {issue.format()}" for issue in errors)
         else:
             lines.append(f"checks={len(self.checks)}")
+        if warnings:
+            lines.append(f"warnings={len(warnings)} (reported, not blocking)")
+            lines.extend(f"- WARN {issue.format()}" for issue in warnings)
         return "\n".join(lines)
 
     def raise_for_failures(self) -> None:
-        if self.failures:
+        if self.errors:
             raise ValueError(self.format())
 
 
@@ -702,12 +722,15 @@ def _scan_forcing(catalog: InputCatalog) -> tuple[list[PreflightIssue], list[str
                 active = finite & ((value < lo) | (value > hi))
             if np.any(active):
                 index = _first_index(active)
+                # Advisory envelope, not a physical impossibility: the
+                # field decoded, is finite, and sits outside a
+                # conservative window.  Reported, never blocking.
                 issues.append(PreflightIssue(
                     "meteorological-bounds",
                     f"{name} at {snapshot.valid_time} = {value[index]:g} "
                     f"outside [{lo:g}, {hi:g}]",
                     path=_source_for(catalog, snapshot.valid_time, name),
-                    variable=name, index=index,
+                    variable=name, index=index, severity="warning",
                 ))
     return issues, checks
 

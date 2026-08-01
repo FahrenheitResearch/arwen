@@ -2890,6 +2890,10 @@ class CudaSW:
         self.module = cp.RawModule(code=code,
                                    options=("-std=c++17", "--ftz=false"))
         self.module.compile()
+        from gpuwm.certify.kernel_manifest import record_module
+        record_module("gpuwm.core.rrtmg_sw:rrtmg_sw", source=code,
+                      options=("-std=c++17", "--ftz=false"),
+                      module=self.module)
         self.tab_gpu = cp.asarray(packed)
         self.ngb_gpu = cp.asarray(np.asarray(tab.ngb, dtype=np.int32))
         self.max_nlay = MAX_RADIATION_LAYERS - 1

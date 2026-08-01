@@ -155,15 +155,31 @@ def setup_main(args) -> int:
     # Close with the estate report either way, because after a partial
     # setup "where do I stand" is exactly the question, and it is the
     # same function `gpuwm doctor` runs rather than a summary of it.
-    from gpuwm.doctor import collect_checks, format_brief, format_report
+    from gpuwm.doctor import (blocking_gaps, collect_checks, format_brief,
+                              format_report)
 
     checks = collect_checks()
     print(format_report(checks) if explain else format_brief(checks))
     if failed:
+        if not blocking_gaps(checks):
+            # Field case: a checkout install has no published bundle
+            # pins, so fetch-bridges refuses -- while the bridges it
+            # would have fetched are already built and verified (the
+            # doctor brief above says so).  A step that could not run
+            # against an estate that is already complete is a note,
+            # not a failure.
+            print("setup: a step above refused, but the estate is "
+                  "already complete (no blocking gaps); nothing was "
+                  "missing.")
+            return 0
         print("setup: a step above refused; its own output is quoted "
               "under it.  The remaining steps still ran.")
         return failed
-    return 1 if any(check.status == "missing" for check in checks) else 0
+    # Every step succeeded: setup did its whole job.  Only a broken or
+    # integrity-suspect finding fails the exit; a documented optional
+    # absence (cupy on a base install, the render extra, a WPS_GEOG
+    # tree nobody opted into) reports in the brief above and exits 0.
+    return 1 if blocking_gaps(checks) else 0
 
 
 def register_cli(subparsers) -> None:

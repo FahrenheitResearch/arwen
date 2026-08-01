@@ -8,10 +8,13 @@ import pytest
 
 from gpuwm.config import RunConfig, validate_run_config
 from gpuwm.physics_compat import (
+    IMPLICIT_RUNTIME_SWITCHES,
     PhysicsCapabilityError,
+    SINGLE_DOMAIN_PHYSICS_PROFILES,
     UnsupportedPhysicsSuiteError,
     WSM6_PROFILE_ID,
     WRF_RRTMG_TO_RTE_RRTMGP,
+    implicit_runtime_switches,
     pending_wrf_physics_components,
     single_domain_runtime_switches,
     validate_physics_capabilities,
@@ -54,6 +57,44 @@ def test_full_target_mynn_ruc_pair_has_no_remaining_blocker():
     assert pending_wrf_physics_components(
         mp_physics=6, sf_sfclay_physics=91, bl_pbl_physics=1,
         sf_surface_physics=3, num_soil_layers=9) == ()
+
+
+def test_every_shipped_profile_answers_its_own_implicit_switches():
+    """The drift guard for the one authority on moist_cq/top_lid.
+
+    Three places used to decide these: the shipped profiles (read by the
+    HRRR root preparer AND the domain wizard) and the WRF namelist
+    importer, which invented ``moist_cq = mp_physics > 0`` and WRF's
+    open-top Registry default.  For every WSM6-family suite the two
+    answers were opposite, which is why a public root prepared from a
+    profile could not bind a public hierarchy imported from the same
+    namelist.  If a new profile ever disagrees with what this lookup
+    returns for its own selectors, that separation is back, and this
+    fails.
+    """
+
+    for profile in SINGLE_DOMAIN_PHYSICS_PROFILES:
+        switches = single_domain_runtime_switches(profile)
+        resolved = implicit_runtime_switches(**switches)
+        assert profile in resolved["profiles"], profile
+        for name in IMPLICIT_RUNTIME_SWITCHES:
+            assert resolved[name] == switches[name], (profile, name)
+        assert profile in resolved["source"]
+
+    # A suite that is no shipped profile falls back to gpuwm's own
+    # RunConfig defaults, and says so rather than guessing a profile.
+    defaults = _cfg()
+    unknown = implicit_runtime_switches(
+        mp_physics=6, sf_sfclay_physics=1, sf_surface_physics=0,
+        bl_pbl_physics=0, cu_physics=0, num_soil_layers=4,
+        ra_lw_physics=1, ra_sw_physics=1)
+    assert unknown["profiles"] == ()
+    assert unknown["moist_cq"] == defaults.moist_cq
+    assert unknown["top_lid"] == defaults.top_lid
+    assert "not one of the shipped" in unknown["source"]
+
+    # An empty selection is not a match for everything.
+    assert implicit_runtime_switches()["profiles"] == ()
 
 
 def test_front_door_capability_refusal_cites_unimplemented_registry_option():

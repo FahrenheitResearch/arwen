@@ -226,11 +226,12 @@ def test_auto_backend_uses_only_the_certified_cuda_runtime_family(
 
 def test_sealed_cpu_distribution_forces_auto_to_cpu_and_blocks_cuda(
         tmp_path, monkeypatch):
+    from conftest import complete_runtime_manifest
+
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({
-        "schema": "gpuwm-native-wrf-runtime-v1",
-        "contract": distribution_contract("windows-x86_64"),
-    }), encoding="utf-8")
+    manifest.write_text(
+        json.dumps(complete_runtime_manifest(platform_name="windows-x86_64")),
+        encoding="utf-8")
     monkeypatch.setenv("GPUWM_NATIVE_DISTRIBUTION_MANIFEST", str(manifest))
     cpu = SimpleNamespace(name="cpu")
     monkeypatch.setattr(

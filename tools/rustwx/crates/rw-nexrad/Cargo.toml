@@ -1,0 +1,36 @@
+# ArWen's NEXRAD Level-II front door: anonymous-S3 acquisition from the
+# `noaa-nexrad-level2` open-data bucket plus a strict decode of one volume
+# into a flat sweep pack the Python superob stage mmaps.
+#
+# Every dependency already exists in this workspace's `cargo vendor`
+# closure (wx-radar was vendored with the renderer but had no downloader;
+# the S3 client here is the rw-sat/rw-glm ListObjectsV2 pattern retold for
+# a bucket whose keys are day directories), so the bin builds with
+# --locked --offline like every other vendored artifact.
+
+[package]
+name = "rw-nexrad"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rw_nexrad"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Pre-2016 Level-II keys are gzip-wrapped (`..._V06.gz`).  `rust_backend`
+# rather than the zlib C shim, matching rustwx-io: this bin is built
+# --offline from the vendor closure and must not need a system zlib.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+rustls.workspace = true
+rustls-rustcrypto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+ureq.workspace = true
+rw-store = { path = "../rw-store" }
+wx-radar = { path = "../../vendor/wx-radar" }

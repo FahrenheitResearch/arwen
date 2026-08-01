@@ -777,6 +777,99 @@ def build_state_lateral_boundaries(states, times, *, spec_bdy_width=5,
         relax_zone=relax_zone)
 
 
+class StateBoundaryFrames:
+    """One-state-at-a-time accumulator for :class:`LateralBoundaries`.
+
+    :func:`build_state_lateral_boundaries` needs every initialized state at
+    once, so an N-time ingest had to hold N complete model states -- and the
+    N horizontally interpolated snapshots that produced them -- before a
+    single boundary number existed.  That, not the forecast, is what made
+    preprocessing the memory-binding phase.
+
+    This accumulator takes one state, keeps only the four
+    ``spec_bdy_width`` perimeter frames it will actually write, and lets the
+    caller drop the state immediately.  At a 414x330x49 root with nine
+    forcing times, ALL nine times of frames come to 0.13 GiB of host
+    memory against the 1.50 GiB one forcing time occupies on the device.
+
+    :meth:`build` is exact, not approximate: for the same states and times
+    it returns element-for-element what the all-at-once builder returns.
+    The retained frames are the same ``ascontiguousarray`` slices
+    :func:`_field_boundary` would have taken, and the tendency is the same
+    float64 ``(after - before) / duration`` over the same two operands.
+    """
+
+    def __init__(self, *, spec_bdy_width: int = 5, spec_zone: int = 1,
+                 relax_zone: int = 4):
+        if spec_zone < 1 or relax_zone < 2:
+            raise ValueError("spec_zone must be >=1 and relax_zone >=2")
+        if spec_bdy_width < spec_zone + relax_zone:
+            raise ValueError("spec_bdy_width must cover spec_zone + relax_zone")
+        self.spec_bdy_width = int(spec_bdy_width)
+        self.spec_zone = int(spec_zone)
+        self.relax_zone = int(relax_zone)
+        self._frames: list[Mapping[str, Mapping[str, np.ndarray]]] = []
+        self._inventory: frozenset[str] | None = None
+
+    def __len__(self) -> int:
+        return len(self._frames)
+
+    @property
+    def retained_bytes(self) -> int:
+        """Host bytes the accumulated perimeter frames occupy."""
+        return sum(int(array.nbytes)
+                   for frame in self._frames
+                   for side in frame.values()
+                   for array in side.values())
+
+    def add_snapshot(self, snapshot: Mapping[str, object]) -> None:
+        """Retain one coupled full-domain snapshot's perimeter frames."""
+        names = frozenset(snapshot)
+        if not names:
+            raise ValueError("boundary snapshot field inventory is empty")
+        if self._inventory is None:
+            self._inventory = names
+        elif names != self._inventory:
+            raise ValueError("boundary snapshot field inventories differ")
+        width = self.spec_bdy_width
+        for name in sorted(snapshot):
+            value = np.asarray(snapshot[name])
+            if value.ndim not in (2, 3):
+                raise ValueError(
+                    "boundary fields must be matching 2-D or 3-D arrays")
+            if min(value.shape[-2:]) < 2 * width:
+                raise ValueError(
+                    "domain is too small for the requested boundary width")
+        self._frames.append(MappingProxyType({
+            side: extract_lateral_side(snapshot, side, width)
+            for side in ("west", "east", "south", "north")
+        }))
+
+    def add_state(self, state) -> None:
+        """Retain one initialized :class:`DomainState`'s perimeter frames.
+
+        The full-domain coupled snapshot is a device temporary here; only
+        the perimeter survives the call, so the caller may release the
+        state as soon as this returns.
+        """
+        self.add_snapshot(domain_boundary_snapshot(state))
+
+    def build(self, times: Sequence[datetime | float]) -> LateralBoundaries:
+        """Assemble the intervals from the accumulated perimeter frames."""
+        if len(self._frames) != len(times) or len(self._frames) < 2:
+            raise ValueError(
+                "snapshots and times must have the same length >= 2")
+        seconds = _seconds(times)
+        intervals = tuple(
+            build_lateral_interval_from_sides(
+                self._frames[index], self._frames[index + 1],
+                start_seconds=float(seconds[index]),
+                end_seconds=float(seconds[index + 1]))
+            for index in range(len(self._frames) - 1))
+        return LateralBoundaries(intervals, self.spec_bdy_width,
+                                 self.spec_zone, self.relax_zone)
+
+
 def _validate_lateral_attachment(state, boundaries: LateralBoundaries) -> None:
     """Validate external forcing geometry against one target state."""
     if not boundaries.intervals:
@@ -1377,7 +1470,8 @@ __all__ = ["BoundaryInterval", "FieldBoundary", "LateralBoundaries",
            "apply_state_scalar_lateral_boundary",
            "attach_lateral_boundaries", "attach_nest_boundaries",
            "attach_streaming_lateral_boundaries",
-           "build_lateral_boundaries", "build_state_lateral_boundaries",
+           "StateBoundaryFrames", "build_lateral_boundaries",
+           "build_state_lateral_boundaries",
            "build_lateral_interval_from_sides", "extract_lateral_side",
            "couple_nest_field", "domain_boundary_snapshot",
            "lateral_boundary_clock_dt", "lateral_boundary_reload_count",

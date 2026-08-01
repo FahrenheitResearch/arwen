@@ -1,0 +1,22 @@
+{
+  "_note": "Shape of the gpu block that gpuwm.native_wrf_distribution.verify_runtime emitted before the device/driver/runtime probe was lifted into gpuwm/gpu_stack_identity.py. Transcribed from gpuwm/native_wrf_distribution.py at 22549ee2 (the NOT_CHECKED literal at the top of the gpu section and the PASS dict literal that follows it) and committed ahead of the extraction so the extraction is checked against a sample that predates it.",
+  "source_commit": "22549ee2",
+  "schema": "gpuwm-native-wrf-runtime-v1",
+  "gpu_block_keys": {
+    "require_gpu_false": ["required", "status"],
+    "require_gpu_true": [
+      "required",
+      "status",
+      "device_count",
+      "device_0_name",
+      "driver_version",
+      "runtime_version",
+      "test_checksum"
+    ]
+  },
+  "gpu_block_values_require_gpu_false": {
+    "required": false,
+    "status": "NOT_CHECKED"
+  },
+  "cuda_runtime_accepted_range": [12000, 13000]
+}

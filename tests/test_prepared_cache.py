@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -309,6 +309,64 @@ def test_nested_child_cache_may_omit_external_lbc_for_wrfinput_export(tmp_path):
     assert reader.header["metadata"]["lbc"] is None
     assert not any(name.startswith("lbc/") for name in reader.arrays)
     assert reader.verify_all()["status"] == "PASS"
+
+
+def test_child_cache_writes_a_restored_mappingproxy_hydrometeor_record(
+        tmp_path):
+    """The exact v1.3.1 crash, reproduced through the type that caused it.
+
+    ``restore_prepared_cache`` hands back
+    ``CachedInitialResult.hydrometeor_initialization`` as a
+    ``MappingProxyType`` on purpose -- a restored document must not be
+    mutable.  ``write_prepared_cache`` then copies that record into the
+    child cache it derives, through ``_json_copy -> _canonical ->
+    json.dumps``, which serializes ``dict`` and nothing that merely
+    behaves like one: "TypeError: Object of type mappingproxy is not JSON
+    serializable", from inside a nested hierarchy publication, naming no
+    field.  Nesting one proxy inside another is deliberate: a fix that
+    only unwrapped the top level would still crash on the real payload.
+    """
+
+    initial, met, boundaries = _fixture()
+    record = MappingProxyType({
+        "schema": "gpuwm-hrrr-microphysics-initialization-v3",
+        "state_source_absent_fields": MappingProxyType({
+            "qnr": MappingProxyType({"expected_float32": 0.0}),
+        }),
+        "source_mass_fields": ("QC", "QR"),
+    })
+    initial = SimpleNamespace(
+        **vars(initial), hydrometeor_initialization=record)
+    identity = {
+        "domain_config": {
+            "grid_id": 2,
+            "parent_id": 1,
+            "run": {"nested": True, "specified": False},
+        },
+    }
+    path = tmp_path / "prepared-child-mappingproxy"
+
+    receipt = write_prepared_cache(
+        path, identity=identity, initial_result=initial, met=met,
+        boundaries=None)
+    reader = PreparedCacheReader(path, expected_identity=identity)
+
+    assert receipt["status"] == "BUILT"
+    stored = reader.header["metadata"]["hydrometeor_initialization"]
+    assert stored == {
+        "schema": "gpuwm-hrrr-microphysics-initialization-v3",
+        "state_source_absent_fields": {"qnr": {"expected_float32": 0.0}},
+        # Tuples normalize to lists exactly as they always did.
+        "source_mass_fields": ["QC", "QR"],
+    }
+    # A proxy and its underlying mapping must hash the same, or the same
+    # prepared state would carry two content digests depending on which
+    # object the caller happened to hold.
+    assert prepared_cache_module._canonical(record) \
+        == prepared_cache_module._canonical(dict(stored))
+    # An unordered container still has no canonical serialization.
+    with pytest.raises(TypeError, match="cannot contain a set"):
+        prepared_cache_module._canonical({"species": {"QC", "QR"}})
 
 
 @pytest.mark.parametrize("identity", (

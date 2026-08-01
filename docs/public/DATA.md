@@ -45,6 +45,22 @@ gpuwm fetch --source gfs --cycle latest --hours 24 \
 - `--cycle latest` resolves the newest cycle whose *final* requested
   hour exists (anonymous S3 HEAD probes, newest first) -- a
   mid-publication cycle can never win.
+- `--forecast-start-hour K` begins the window at the cycle's f{K}
+  forecast lead instead of its f000 analysis. `--hours` stays the
+  window *length*, so `--forecast-start-hour 174 --hours 66` fetches
+  f174..f240 and nothing before it. A run whose `start_time` is
+  `cycle + K` is then initialized from f{K}, with lateral boundaries
+  from f{K+i} -- reaching a window deep in a forecast without
+  integrating to it. `gpuwm domain --forecast-start-hour K` emits such
+  a config (it sets `start_time` and records the lead in `[fetch]`),
+  and `gpuwm go` carries the lead into its own fetch.
+  **The initial condition is then itself a K-hour forecast, not an
+  analysis**, and every receipt says so: the preparation proof carries a
+  `gpuwm-gfs-initial-condition-provenance-v1` block naming the cycle,
+  the lead, the model start time, and forecast-generating process 96.
+  Adding the flag to an already-fetched `--out` with
+  `--author-front-door-manifest` cuts the front-door manifest to that
+  tail of the existing series instead of re-downloading it.
 - Emits `gfs-series.tsv` (relative paths; the directory is relocatable)
   with each row's certified forecast-process ID, and
   `fetch-manifest.json` with per-file SHA-256.
@@ -176,10 +192,16 @@ authors it from the fetch:
 ```bash
 gpuwm fetch --source gfs --author-front-door-manifest \
   --out data/gfs-latest \
-  --bridge tools/grib1_bridge/target/release/gfs_grib2_bridge \
   --wps-namelist configs/myarea.namelist.wps \
   --experiment-config configs/myarea.toml
 ```
+
+`--bridge` is optional: omitted, the built `gfs_grib2_bridge` is
+resolved through the same ladder every other consumer uses (the
+`GPUWM_GFS_GRIB2_BRIDGE` override, a checkout's own `cargo build`,
+`libexec/bridges`, then the `~/.gpuwm/bridges` that `gpuwm setup`
+stages into), and the resolved executable is the one the manifest
+binds. Pass `--bridge PATH` to name a different one.
 
 This writes `gfs-input-manifest.json` (schema
 `gpuwm-gfs-direct-input-manifest-v1`), prints its SHA-256, and prints
@@ -205,8 +227,13 @@ gpuwm fetch --source hrrr --cycle 2026-07-28T00 --hours 18 \
 - Two hosts serve byte-identical GRIB **files**: the NOMADS production
   mirror (roughly the newest 48 h, where each hour publishes first) and
   the full `noaa-hrrr-bdp-pds` S3 archive. `--transport auto` (default)
-  probes NOMADS for the requested window and falls back to S3;
-  `nomads`/`s3` force a host. The manifest records each file's
+  probes S3 for the requested window and uses NOMADS only when S3
+  cannot serve it yet: the hosts differ in throughput, not in bytes,
+  and S3 is several times faster for the whole-file default (measured
+  on one box against one cycle: 348/209/418/255 s from NOMADS,
+  69/34/45/44 s from S3). NOMADS' head start is what `--wait-for`
+  needs, and that path polls NOMADS first, unchanged. `nomads`/`s3`
+  force a host. The manifest records each file's
   transport, and a directory fetched over one host resumes over the
   other. (NOMADS' grib-filter scripts cover only the 2-D `wrfsfc` file,
   so subsetting stays `.idx` byte ranges on both hosts.)
@@ -235,7 +262,16 @@ gpuwm fetch --source hrrr --cycle 2026-07-28T00 --hours 18 \
   pair has begun publishing).
 - The fetch prints the complete front-door handoff line
   (`--source-manifest SHA256SUMS --source-manifest-sha256 <digest>`).
-- **Disk:** roughly 0.4 GB per forecast hour; ~8 GB for f00..f18.
+- **Disk:** the default is whole files, so budget **~1.1 GB per
+  forecast hour** -- roughly 21 GB for f00..f18. That is one `wrfnat`
+  (measured 703,971,338 B on a live 2026-07-29 23Z object) plus one
+  `wrfprs` (measured 426,845,586 B, the f004-f006 average of HRRR
+  20260608 00Z); the fetch pulls **both** every hour, which is what the
+  earlier "~0.4 GB/h" understated -- that figure priced one object in
+  `--mode idx-subset`. Opt into `--mode idx-subset` and a measured
+  four-object live fetch landed 882 MB for two forecast hours, i.e.
+  ~0.44 GB/h, ~8.4 GB for f00..f18 -- less bandwidth, far more wall
+  clock (see the mode discussion below).
 
 ## 20CRv3 (ensemble members, you supply the files)
 
@@ -354,8 +390,9 @@ when it is not. Build it with
 doctor` reports whether it is there and usable.
 
 **Which host** -- `--transport auto|nomads|s3` (HRRR). See the HRRR
-section: both serve byte-identical GRIB files, `auto` prefers NOMADS
-for recent cycles and falls back to S3.
+section: both serve byte-identical GRIB files, `auto` prefers S3 (the
+faster host for whole files) and falls back to NOMADS while a cycle is
+still reaching the archive.
 
 **How much of the object** -- `--mode auto|full-file|idx-subset`
 (HRRR, `--engine rust`). This is the byte transport, not the host.
@@ -377,10 +414,10 @@ on a short index would be silently, invisibly incomplete.
 -- an operator who asked for a subset should hear that it was not
 possible.
 
-A full-file HRRR hour is the complete `wrfnat`/`wrfprs` object, about
-0.7 GB instead of 0.1 GB, and `hrrr_grib2_bridge` consumes it
-unchanged: that bridge selects by exact field identity, not by file
-size. Full files also never read index field *names*, which makes them
+A full-file HRRR hour is the complete `wrfnat` **and** `wrfprs` pair --
+measured 704 MB + 427 MB, so ~1.1 GB an hour against ~0.44 GB for the
+same hour subset -- and `hrrr_grib2_bridge` consumes them unchanged:
+that bridge selects by exact field identity, not by file size. Full files also never read index field *names*, which makes them
 immune to the provider-spelling divergence described under HRRR above.
 
 **Record counts.** Every download is checked against a record count
@@ -565,7 +602,8 @@ $GPUWM_CASE_DATA_ROOT/
 |---|---|---|
 | WPS_GEOG static tree (`gpuwm fetch-geog`) | ~1.3 GB download, ~16 GB unpacked (full NCAR `--bundle`: ~29 GB unpacked) | once |
 | GFS subsets | ~3.3 KB/deg2/h (e.g. ~3 MB/h at 30x30 deg) | per case |
-| HRRR subsets | ~0.4 GB/h (~8 GB for f00..f18) | per case |
+| HRRR, default whole files | ~1.1 GB/h (~21 GB for f00..f18) -- `wrfnat` 704 MB + `wrfprs` 427 MB, measured | per case |
+| HRRR, `--mode idx-subset` | ~0.44 GB/h (~8.4 GB for f00..f18), measured; saves bandwidth, costs wall clock | per case |
 | ERA5 retrieval | tens of MB per valid time (regional box) | per case |
 | Output frames (`wrfout`) | grid-dependent; ~198 MB/frame on a 250x200x49 domain; 20.1 GB for the four-domain 6 h reference run | per run |
 | Restart checkpoints | ~5.7 GB per four-domain checkpoint on the reference case | per `restart_interval_s` |

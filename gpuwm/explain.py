@@ -34,6 +34,7 @@ terminal.  Nothing is deleted; a layer is chosen.
 from __future__ import annotations
 
 import argparse
+import sys
 
 #: Separates a message's ACTION half from its WHY half inside one string.
 #:
@@ -134,7 +135,41 @@ def explain_enabled(args) -> bool:
     return bool(getattr(args, "explain", False))
 
 
+#: Process-wide record of whether this invocation asked for the full
+#: layer.  Library code that emits warnings has no ``args`` in reach;
+#: the CLI stamps the flag here once, right after parsing.
+_EXPLAIN_ACTIVE = False
+
+
+def set_explain(enabled: bool) -> None:
+    """Record --explain for this process (set once by the CLI)."""
+
+    global _EXPLAIN_ACTIVE
+    _EXPLAIN_ACTIVE = bool(enabled)
+
+
+def warn(action: str, why: str = "") -> None:
+    """Print one warning sentence and keep going.
+
+    This is the voice of every check that found something worth saying
+    but nothing worth stopping for: the run continues, and the reader
+    gets exactly one ``warning:`` line saying what happened and (when
+    there is one) what to do.  The mechanism prose goes in ``why`` and
+    prints only when the invocation carried ``--explain`` -- same
+    layering contract as the refusals, same flag.
+
+    Warnings go to stderr so a piped stdout (JSON reports, command
+    relays) stays clean.
+    """
+
+    action = " ".join(str(action).split())
+    print(f"warning: {action}", file=sys.stderr)
+    if why and _EXPLAIN_ACTIVE:
+        for line in str(why).strip("\n").splitlines():
+            print(f"  {line}", file=sys.stderr)
+
+
 __all__ = [
     "EXPLAIN_MARK", "add_explain_flag", "explain_enabled", "layered",
-    "render", "split",
+    "render", "set_explain", "split", "warn",
 ]

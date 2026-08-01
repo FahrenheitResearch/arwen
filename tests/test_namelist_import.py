@@ -667,7 +667,7 @@ def test_nssl2_maps_first_class_without_substitution(tmp_path):
     """mp18 imports selector-for-selector since the certified NSSL merge
     (product/v1 NSSL lane 2026-07-29): the mapping row is native, no
     substitution is recorded, and the emitted TOML loads with the
-    selector intact.  The scheme's maturity ("validation-candidate" in
+    selector intact.  The scheme's maturity ("wrf-matched-run-candidate" in
     physics_registry_v2.json) is a registry statement, not an importer
     gate -- exactly the mp8 promotion contract shape."""
     inp = INPUT_TEXT.replace("mp_physics = 55, 55", "mp_physics = 18, 18")
@@ -874,6 +874,106 @@ def test_rejects_unmapped_namelist_key(tmp_path):
                              " hybrid_opt = 2,\n tracer_opt = 2,")
     with pytest.raises(ValueError, match="unmapped key"):
         import_namelists(*_pair(tmp_path, inp=inp))
+
+
+def test_ordinary_land_use_keys_import_with_receipts(tmp_path):
+    """``num_land_cat`` and ``fractional_seaice``, from the field report.
+
+    Both are ordinary keys in a WPS/WRF-Runner-generated namelist -- gpuwm
+    writes both itself in ``tools/write_hrrr_stock_wrf_namelist.py`` -- and
+    both used to reach the unmapped-key refusal, which stopped a public
+    HRRR hierarchy import on the importer's own map rather than on
+    anything about the run.  Neither is silently dropped: one is validated
+    against the land-use identity gpuwm actually builds, the other is
+    reported with the branch each initialization route runs.
+    """
+
+    inp = INPUT_TEXT.replace(
+        " cudt = 5, 0,",
+        " cudt = 5, 0,\n num_land_cat = 21,\n fractional_seaice = 1,")
+    toml_text, report = import_namelists(*_pair(tmp_path, inp=inp))
+
+    # Neither key invents a TOML value.
+    assert "num_land_cat" not in toml_text
+    assert "fractional_seaice" not in toml_text
+    fixed = {(f.section, f.key): f for f in report.fixed}
+    assert fixed[("physics", "num_land_cat")].fixed_value == 21
+    assert "LANDUSE.TBL" in fixed[("physics", "num_land_cat")].reason
+    dropped = {(d.section, d.key): d for d in report.dropped}
+    seaice = dropped[("physics", "fractional_seaice")]
+    assert seaice.values == (1,)
+    assert "FRACTIONAL" in seaice.reason.upper()
+    rendered = report.format()
+    assert "num_land_cat" in rendered and "fractional_seaice" in rendered
+
+    # A category count describing geography gpuwm does not build refuses.
+    usgs = INPUT_TEXT.replace(
+        " cudt = 5, 0,", " cudt = 5, 0,\n num_land_cat = 24,")
+    with pytest.raises(ValueError, match="num_land_cat"):
+        import_namelists(*_pair(tmp_path, inp=usgs))
+    nonsense = INPUT_TEXT.replace(
+        " cudt = 5, 0,", " cudt = 5, 0,\n fractional_seaice = 2,")
+    with pytest.raises(ValueError, match="fractional_seaice"):
+        import_namelists(*_pair(tmp_path, inp=nonsense))
+
+    # Negative control: a key that genuinely has no gpuwm counterpart is
+    # still refused by name, so this widened nothing else.
+    garbage = INPUT_TEXT.replace(
+        " cudt = 5, 0,", " cudt = 5, 0,\n num_land_cat = 21,\n"
+        " definitely_not_a_wrf_key = 3,")
+    with pytest.raises(ValueError,
+                       match="unmapped key.*definitely_not_a_wrf_key"):
+        import_namelists(*_pair(tmp_path, inp=garbage))
+
+
+def test_implicit_switches_come_from_the_shipped_profile_not_the_importer(
+        tmp_path):
+    """``moist_cq`` and ``top_lid`` have ONE authority now.
+
+    WRF's namelist has no ``moist_cq`` key, and gpuwm's ``top_lid``
+    default is deliberately not WRF's Registry default.  The importer used
+    to answer both itself -- ``moist_cq = mp_physics > 0`` and WRF's open
+    top -- while the HRRR root preparer and the domain wizard read the
+    shipped physics profiles.  For every WSM6-family suite the two
+    answers were opposite, so a public root prepared from a profile could
+    never bind a public hierarchy imported from the same namelist.
+    """
+
+    from gpuwm.physics_compat import (
+        MORRISON_PROFILE_ID, WSM6_PROFILE_ID, single_domain_runtime_switches,
+    )
+
+    wsm6 = INPUT_TEXT.replace(
+        " mp_physics = 55, 55,", " mp_physics = 6, 6,").replace(
+        " ra_lw_physics = 4, 4,", " ra_lw_physics = 0, 0,").replace(
+        " ra_sw_physics = 4, 4,", " ra_sw_physics = 1, 1,").replace(
+        " bl_pbl_physics = 11, 11,", " bl_pbl_physics = 1, 1,").replace(
+        " cu_physics = 1, 0,", " cu_physics = 0, 0,").replace(
+        " radt = 12, 3,", " radt = 1, 1,")
+    toml_text, report = import_namelists(*_pair(tmp_path, inp=wsm6))
+
+    profile = single_domain_runtime_switches(WSM6_PROFILE_ID)
+    assert profile["moist_cq"] is False and profile["top_lid"] is True
+    assert "moist_cq = false" in toml_text
+    assert "top_lid = true" in toml_text
+    applied = {entry.key: entry for entry in report.defaults_applied}
+    assert WSM6_PROFILE_ID in applied["top_lid"].reason
+
+    # The Morrison-family suite the bundle uses is unchanged: its profile
+    # states the other answer, and the importer already agreed with it.
+    morrison = single_domain_runtime_switches(MORRISON_PROFILE_ID)
+    assert morrison["moist_cq"] is True and morrison["top_lid"] is False
+    bundle_toml, _ = import_namelists(*_pair(tmp_path))
+    assert "moist_cq = true" in bundle_toml
+    assert "top_lid = false" in bundle_toml
+
+    # An explicit namelist top_lid still wins over the profile: this is a
+    # default, not an override.
+    explicit = wsm6.replace(
+        " use_theta_m = 0,",
+        " use_theta_m = 0,\n top_lid = .false., .false.,")
+    explicit_toml, _ = import_namelists(*_pair(tmp_path, inp=explicit))
+    assert "top_lid = false" in explicit_toml
 
 
 def test_rejects_unsupported_theta_m(tmp_path):

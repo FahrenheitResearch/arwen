@@ -1,9 +1,28 @@
-"""Pre-registered, shared metrics for the N5S matched-physics shadow.
+"""Pre-registered pins and evidence emitters for the N5S matched-physics shadow.
 
-The same functions score every CPU-WRF member pair and the gpuwm candidate
+The same registration scores every CPU-WRF member pair and the gpuwm candidate
 against unperturbed WRF.  Scoring is CPU-only and reads WRF-compatible
 NetCDF history frames.  A complete, hash-checked registration is mandatory
 on both sides of every comparison.
+
+The metric arithmetic itself lives in :mod:`gpuwm.verify.field_metrics`, which
+carries no domain list, no grid spacing and no threshold.  What stays here is
+what is specific to this campaign: the frozen pins, the four-domain ladder, the
+registered metric key strings, and the run-artifact/evidence emitters.  The
+delegation is scored by ``tests/test_field_metrics.py`` against a baseline
+measured through this module before the arithmetic moved.
+
+**Freeze note.**  These pins are a campaign artifact and stay frozen.  Every
+number the registered gate record carries was measured under exactly the
+domain list, spacing ladder, field set, thresholds and metric key strings
+below; re-cutting them to a parameterized form would leave published numbers
+attached to pins that no longer say what they said when the numbers were
+taken.  So this module is not the place the general case grows: the generic
+instruments -- :mod:`gpuwm.verify.field_metrics`,
+:mod:`gpuwm.verify.chaos_envelope` and :mod:`gpuwm.verify.spectral` -- take
+their geometry as arguments and score any campaign, and this one keeps the
+one it measured.  Nothing here is imported by those modules; the delegation
+runs one way only.
 """
 
 from __future__ import annotations
@@ -18,9 +37,9 @@ import re
 import subprocess
 from typing import Mapping, Sequence
 
-import netCDF4
 import numpy as np
 
+from gpuwm.verify import field_metrics
 from gpuwm.verify.n5s_common import (
     restored_input_sha256, sha256_file, stable_hash, write_json,
 )
@@ -32,6 +51,12 @@ N5S_DX_METERS = {
     "d01": 12000.0, "d02": 3000.0, "d03": 1000.0,
     "d04": 1000.0 / 3.0,
 }
+#: Domains carrying the registered reflectivity FSS row.  This names the
+#: frozen gate-record selection; it is not a widening knob, and the generic
+#: metric path does not consult it.  Frozen: the row this campaign scored is
+#: the row it published, and a second domain here would be a different gate
+#: record wearing this one's name.
+N5S_FSS_DOMAINS = ("d04",)
 N5S_WRF_BUILD = {
     "wrf_version": "v4.6.1",
     "microphysics": "Morrison",
@@ -57,12 +82,17 @@ def evaluator_commit() -> str:
         return "0" * 40
 
 
-def make_registration(*, run_minutes: int = 30, history_minutes: int = 5,
-                      commit: str | None = None,
-                      start_time: str = "1974-04-03T12:00:00",
+def make_registration(*, start_time: str, run_minutes: int = 30,
+                      history_minutes: int = 5, commit: str | None = None,
                       parameters: Mapping[str, object] | None = None
                       ) -> dict[str, object]:
-    """Create all metric/mask pins before any output is inspected."""
+    """Create all metric/mask pins before any output is inspected.
+
+    ``start_time`` is required.  It anchors frame discovery, so a default
+    would silently score one campaign's frame names on another campaign's
+    output — and the frame ladder would simply come up empty, which reads as
+    a staging error rather than as the wrong pin.
+    """
     run_seconds = int(run_minutes) * 60
     cadence_seconds = int(history_minutes) * 60
     if not 30 <= run_minutes <= 75:
@@ -228,165 +258,39 @@ def discover_frames(run_directory: str | Path, domain: str,
     return found
 
 
-def _read_field(path: Path, field: str) -> np.ndarray:
-    with netCDF4.Dataset(path) as dataset:
-        if field not in dataset.variables:
-            raise ValueError(f"N5S frame {path} is missing {field}")
-        variable = dataset.variables[field]
-        if variable.ndim < 3 or variable.shape[0] != 1:
-            raise ValueError(f"N5S field {field} in {path} has invalid shape")
-        value = np.ma.asarray(variable[0])
-        if np.ma.isMaskedArray(value) and np.any(np.ma.getmaskarray(value)):
-            raise ValueError(f"N5S field {field} in {path} carries masked data")
-        result = np.asarray(value, dtype=np.float64)
-    if result.size == 0 or not np.all(np.isfinite(result)):
-        raise ValueError(f"N5S field {field} in {path} is empty/non-finite")
-    return result
-
-
-def _boxcar(array: np.ndarray, width: int) -> np.ndarray:
-    """Odd-width, edge-extended separable boxcar over the last two axes."""
-    if width < 1 or width % 2 != 1 or array.ndim < 2:
-        raise ValueError("boxcar width must be a positive odd integer")
-    if width == 1:
-        return np.asarray(array, dtype=np.float64)
-    radius = width // 2
-    result = np.asarray(array, dtype=np.float64)
-    for axis in (-1, -2):
-        pads = [(0, 0)] * result.ndim
-        pads[axis] = (radius, radius)
-        padded = np.pad(result, pads, mode="edge")
-        prefix_shape = list(padded.shape)
-        prefix_shape[axis] = 1
-        prefix = np.concatenate(
-            [np.zeros(prefix_shape, dtype=np.float64),
-             np.cumsum(padded, axis=axis, dtype=np.float64)], axis=axis)
-        high = [slice(None)] * result.ndim
-        low = [slice(None)] * result.ndim
-        high[axis] = slice(width, None)
-        low[axis] = slice(None, -width)
-        result = (prefix[tuple(high)] - prefix[tuple(low)]) / float(width)
-    return result
-
-
-def _odd_width(physical_width_m: float, dx_m: float) -> int:
-    cells = max(1, int(math.floor(physical_width_m / dx_m + 0.5)))
-    return cells if cells % 2 else cells + 1
-
-
-def rmse(left: np.ndarray, right: np.ndarray) -> float:
-    if left.shape != right.shape or left.size == 0:
-        raise ValueError("RMSE operands must have one non-empty common shape")
-    difference = np.asarray(left, dtype=np.float64) - np.asarray(
-        right, dtype=np.float64)
-    if not np.all(np.isfinite(difference)):
-        raise ValueError("RMSE operand difference is non-finite")
-    return float(np.sqrt(np.mean(difference * difference, dtype=np.float64)))
-
-
-def _aggregate_rmse(differences: Sequence[np.ndarray]) -> float:
-    total = 0.0
-    count = 0
-    for difference in differences:
-        value = np.asarray(difference, dtype=np.float64)
-        if value.size == 0 or not np.all(np.isfinite(value)):
-            raise ValueError("N5S metric sample is empty/non-finite")
-        total += float(np.sum(value * value, dtype=np.float64))
-        count += value.size
-    if count == 0:
-        raise ValueError("N5S metric has no samples")
-    return float(math.sqrt(total / count))
-
-
-def _interior(array: np.ndarray, width: int) -> np.ndarray:
-    ny, nx = array.shape[-2:]
-    if ny <= 2 * width or nx <= 2 * width:
-        raise ValueError("N5S field is too small for the registered interior mask")
-    return array[..., width:-width, width:-width]
-
-
-def _boundary_values(array: np.ndarray, width: int) -> np.ndarray:
-    ny, nx = array.shape[-2:]
-    if ny <= 2 * width or nx <= 2 * width:
-        raise ValueError("N5S field is too small for spec_bdy_width")
-    j, i = np.indices((ny, nx))
-    mask = np.minimum.reduce((i, nx - 1 - i, j, ny - 1 - j)) < width
-    return array[..., mask]
+#: The metric arithmetic is generic; these names keep the campaign's callers
+#: and the registered spellings (``half_width_cells``, the duration/cadence
+#: quiet sentinel) pointing at the one implementation.
+rmse = field_metrics.rmse
+has_qualifying_object = field_metrics.has_qualifying_object
+_read_field = field_metrics.read_frame_field
+_boxcar = field_metrics.boxcar
+_odd_width = field_metrics.odd_width_cells
+_aggregate_rmse = field_metrics.aggregate_rmse
+_interior = field_metrics.interior
+_boundary_values = field_metrics.boundary_values
+_composite = field_metrics.composite
 
 
 def neighborhood_fraction(events: np.ndarray, half_width_cells: int
                           ) -> np.ndarray:
-    if events.ndim != 2 or half_width_cells < 0:
-        raise ValueError("FSS events must be 2-D and radius non-negative")
-    return _boxcar(events.astype(np.float64), 2 * half_width_cells + 1)
+    return field_metrics.neighborhood_fraction(events, half_width_cells)
 
 
 def fss_distance(left: np.ndarray, right: np.ndarray, *, threshold: float,
                  half_width_cells: int) -> float:
-    if left.shape != right.shape or left.ndim != 2:
-        raise ValueError("FSS operands must be common-shape 2-D fields")
-    lhs = neighborhood_fraction(left >= threshold, half_width_cells)
-    rhs = neighborhood_fraction(right >= threshold, half_width_cells)
-    numerator = float(np.sum((lhs - rhs) ** 2, dtype=np.float64))
-    denominator = float(np.sum(lhs * lhs + rhs * rhs, dtype=np.float64))
-    fss = 1.0 if denominator == 0.0 else 1.0 - numerator / denominator
-    distance = 1.0 - fss
-    if not math.isfinite(distance):
-        raise ValueError("FSS distance is non-finite")
-    return float(min(1.0, max(0.0, distance)))
-
-
-def _composite(reflectivity: np.ndarray) -> np.ndarray:
-    if reflectivity.ndim == 2:
-        return reflectivity
-    if reflectivity.ndim == 3:
-        return np.max(reflectivity, axis=0)
-    raise ValueError("REFL_10CM must be 2-D or 3-D after removing Time")
-
-
-def has_qualifying_object(composite: np.ndarray, *, threshold: float,
-                          min_cells: int, connectivity: int = 8) -> bool:
-    """NumPy-only connected-component test with deterministic scan order."""
-    if composite.ndim != 2 or min_cells < 1 or connectivity not in (4, 8):
-        raise ValueError("invalid storm-object labeling parameters")
-    active = np.asarray(composite >= threshold, dtype=bool)
-    seen = np.zeros_like(active)
-    ny, nx = active.shape
-    offsets = [(-1, 0), (0, -1), (0, 1), (1, 0)]
-    if connectivity == 8:
-        offsets += [(-1, -1), (-1, 1), (1, -1), (1, 1)]
-    for j0 in range(ny):
-        for i0 in range(nx):
-            if not active[j0, i0] or seen[j0, i0]:
-                continue
-            seen[j0, i0] = True
-            stack = [(j0, i0)]
-            count = 0
-            while stack:
-                j, i = stack.pop()
-                count += 1
-                if count >= min_cells:
-                    return True
-                for dj, di in offsets:
-                    jj, ii = j + dj, i + di
-                    if (0 <= jj < ny and 0 <= ii < nx and active[jj, ii]
-                            and not seen[jj, ii]):
-                        seen[jj, ii] = True
-                        stack.append((jj, ii))
-    return False
+    return field_metrics.fss_distance(
+        left, right, threshold=threshold, half_width=half_width_cells)
 
 
 def first_object_time(frames: Mapping[int, np.ndarray], *, threshold: float,
                       min_cells: int, duration_seconds: int,
                       cadence_seconds: int, connectivity: int = 8) -> float:
-    for seconds in sorted(frames):
-        if seconds == 0:
-            continue
-        if has_qualifying_object(
-                _composite(frames[seconds]), threshold=threshold,
-                min_cells=min_cells, connectivity=connectivity):
-            return float(seconds)
-    return float(duration_seconds + cadence_seconds)
+    """First qualifying object, with this gate's registered quiet sentinel."""
+    return field_metrics.first_object_time(
+        frames, threshold=threshold, min_cells=min_cells,
+        quiet_time_seconds=duration_seconds + cadence_seconds,
+        connectivity=connectivity)
 
 
 def score_run_pair(left_directory: str | Path, right_directory: str | Path,
@@ -419,28 +323,16 @@ def score_run_pair(left_directory: str | Path, right_directory: str | Path,
         filter_width = _odd_width(
             float(params["low_pass_physical_width_m"]), dx)
         for field in N5S_STATE_FIELDS:
-            low_pass_differences = []
-            boundary_differences = []
-            for seconds in score_times:
-                lhs = _read_field(left_frames[seconds], field)
-                rhs = _read_field(right_frames[seconds], field)
-                if lhs.shape != rhs.shape:
-                    raise ValueError(f"N5S {domain}/{field} shapes differ")
-                filtered = _boxcar(lhs, filter_width) - _boxcar(
-                    rhs, filter_width)
-                low_pass_differences.append(
-                    _interior(filtered, low_pass_exclusion))
-                lhs_prev = _read_field(left_frames[seconds - cadence], field)
-                rhs_prev = _read_field(right_frames[seconds - cadence], field)
-                if lhs_prev.shape != lhs.shape or rhs_prev.shape != rhs.shape:
-                    raise ValueError(f"N5S {domain}/{field} shape changes in time")
-                increment_error = (lhs - lhs_prev) - (rhs - rhs_prev)
-                boundary_differences.append(
-                    _boundary_values(increment_error, boundary_width))
-            scores[f"low_pass_state_rmse:{domain}:{field}"] = (
-                _aggregate_rmse(low_pass_differences))
+            low_pass, boundary = field_metrics.state_and_boundary_rmse(
+                left_frames=left_frames, right_frames=right_frames,
+                field=field, score_times=score_times, cadence_seconds=cadence,
+                filter_width_cells=filter_width,
+                interior_exclusion_cells=low_pass_exclusion,
+                boundary_width_cells=boundary_width,
+                label=f"N5S {domain}/{field}")
+            scores[f"low_pass_state_rmse:{domain}:{field}"] = low_pass
             scores[f"applied_boundary_increment_error:{domain}:{field}"] = (
-                _aggregate_rmse(boundary_differences))
+                boundary)
 
         reflectivity_left = {
             seconds: _read_field(left_frames[seconds], "REFL_10CM")
@@ -449,8 +341,8 @@ def score_run_pair(left_directory: str | Path, right_directory: str | Path,
             seconds: _read_field(right_frames[seconds], "REFL_10CM")
             for seconds in score_times}
         threshold = float(params["reflectivity_threshold_dbz"])
-        min_cells = max(1, int(math.ceil(
-            float(params["object_min_area_km2"]) * 1.0e6 / (dx * dx))))
+        min_cells = field_metrics.minimum_object_cells(
+            float(params["object_min_area_km2"]), dx)
         left_timing = first_object_time(
             reflectivity_left, threshold=threshold, min_cells=min_cells,
             duration_seconds=duration, cadence_seconds=cadence,
@@ -461,19 +353,19 @@ def score_run_pair(left_directory: str | Path, right_directory: str | Path,
             connectivity=int(params["object_connectivity"]))
         scores[f"storm_object_timing_difference:{domain}:first_object"] = abs(
             left_timing - right_timing)
-        if domain == "d04":
-            half_width = max(0, int(math.floor(
-                float(params["fss_neighborhood_half_width_m"]) / dx + 0.5)))
-            distances = [
-                fss_distance(
-                    _composite(reflectivity_left[seconds]),
-                    _composite(reflectivity_right[seconds]),
-                    threshold=threshold, half_width_cells=half_width)
-                for seconds in score_times
-            ]
+        # The registered gate record scores FSS on the innermost domain under
+        # one frozen key, and that stays frozen: this scorer reproduces a
+        # campaign, so its key strings are part of what was published.  Which
+        # domains are scored is a caller's choice, not the metric's: the
+        # generic path takes the spacing as an argument and will score any of
+        # them.
+        if domain in N5S_FSS_DOMAINS:
             scores[
                 "d04_reflectivity_fss_distance:d04:REFL_10CM_40DBZ"
-            ] = float(np.mean(distances, dtype=np.float64))
+            ] = field_metrics.mean_fss_distance(
+                reflectivity_left, reflectivity_right, threshold=threshold,
+                radius_m=float(params["fss_neighborhood_half_width_m"]),
+                dx_m=dx, times=score_times)
     if not scores or any(not math.isfinite(value) or value < 0.0
                          for value in scores.values()):
         raise ValueError("N5S scoring produced missing/invalid distances")

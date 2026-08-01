@@ -260,6 +260,9 @@ def _nest_module():
                        options=("-std=c++17", "-fmad=false"),
                        name_expressions=None)
     mod.compile()
+    from gpuwm.certify.kernel_manifest import record_module
+    record_module("gpuwm.core.nest_interp:nest", source=src,
+                  options=("-std=c++17", "-fmad=false"), module=mod)
     return mod
 
 

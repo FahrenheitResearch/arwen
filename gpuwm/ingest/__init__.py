@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         load_hrrr_native_window,
     )
     from .lateral_bc import (
+        StateBoundaryFrames,
         attach_lateral_boundaries,
         build_state_lateral_boundaries,
     )
@@ -40,6 +41,7 @@ _LAZY_EXPORTS = {
     ),
     "load_hrrr_native_series": (".hrrr", "load_hrrr_native_series"),
     "load_hrrr_native_window": (".hrrr", "load_hrrr_native_window"),
+    "StateBoundaryFrames": (".lateral_bc", "StateBoundaryFrames"),
     "attach_lateral_boundaries": (
         ".lateral_bc", "attach_lateral_boundaries"
     ),
@@ -72,6 +74,7 @@ __all__ = [
     "HrrrNativeSnapshot",
     "NoahSoilState",
     "RealInitResult",
+    "StateBoundaryFrames",
     "attach_lateral_boundaries",
     "build_state_lateral_boundaries",
     "decode_era5_grib",

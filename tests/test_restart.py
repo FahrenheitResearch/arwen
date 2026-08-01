@@ -659,6 +659,19 @@ def test_restart_refuses_unfinalized_kf_expiry_transition(monkeypatch):
     """A checkpoint cannot retain an unconsumed transient expiry mask."""
     cfg = _cfg(moist=True, mp_physics=10, cu_physics=1)
     _state, driver = _shim_driver_state(cfg, monkeypatch)
+
+    # The host recovery receipt alone is sufficient to reject a checkpoint:
+    # an exception may have occurred before a nonzero mask was published.
+    driver._cu_expiry_pending = True
+    with pytest.raises(restart.RestartManifestError,
+                       match="KF expiry finalization is pending"):
+        restart._driver_manifest(driver)
+    driver.finish_step()
+    assert driver._cu_expiry_pending is False
+    restart._driver_manifest(driver)
+
+    # Keep probing the device mask for direct callers and synthetic states
+    # that do not update the host receipt.
     driver.cu_expiring[0, 0] = np.float32(1.0)
 
     with pytest.raises(restart.RestartManifestError,

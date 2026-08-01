@@ -131,24 +131,29 @@ def test_downscale_cli_dry_run_child_config_mode(tmp_path, capsys):
         run_seconds=600.0, output_interval_s=300.0)
     child_toml.write_text(_render_child_toml(merged), encoding="utf-8")
 
-    # Cadence is a contract: no flag, no run.  The CLI dispatch boundary
-    # turns the OfflineChildContractError refusal into exit 2 + a stderr
-    # message (no traceback), matching the wizard/fetch refusal contract.
+    # Warn-not-block: with no cadence flag the archive's own cadence is
+    # the default -- one warning line says so and the run proceeds.
     rc_args = [
         "downscale", str(tmp_path), "--parent-domain", "3",
         "--parent-namelist", str(namelist),
         "--child-config", str(child_toml), "--ratio", "1",
         "--i-parent-start", "4", "--j-parent-start", "4",
         "--out", str(tmp_path / "child-run"), "--dry-run"]
-    assert cli_main(rc_args) == 2
-    err = capsys.readouterr().err
-    assert "scientific" in err
-    assert "Traceback" not in err
+    assert cli_main(rc_args) == 0
+    captured = capsys.readouterr()
+    assert "downscale_plan" in captured.out
+    assert "warning:" in captured.err
+    assert "cadence" in captured.err
+    # 3600 s > the 900 s guidance prints the caveat, as a warning.
+    assert "coarser" in captured.err
+    assert "Traceback" not in captured.err
 
+    # --accept-parent-cadence still works (now as the explicit,
+    # warning-free spelling of the same default).
     assert cli_main(rc_args + ["--accept-parent-cadence"]) == 0
-    out = capsys.readouterr().out
-    assert "downscale_plan" in out
-    assert "coarser" in out  # 3600 s > the 900 s guidance prints the caveat
+    captured = capsys.readouterr()
+    assert "downscale_plan" in captured.out
+    assert "using the parent archive's own" not in captured.err
 
 
 def test_cadence_flags_are_mutually_exclusive(tmp_path, capsys):
@@ -263,24 +268,36 @@ def test_runner_namespace_threads_the_acceptance_provenance(
     assert parsed.accepted_parent_cadence is False
 
 
-def test_downscale_cli_rejects_hours_with_child_config(tmp_path, capsys):
+def test_downscale_cli_warns_and_ignores_hours_with_child_config(
+        tmp_path, capsys):
+    """Warn-not-block: an inert flag is named and ignored, never fatal."""
+
     start = datetime(1974, 4, 3, 12)
-    for index in range(2):
+    for index in range(3):
         _history(tmp_path / f"wrfout_d03_1974-04-03_{12 + index:02d}_00_00",
                  start + timedelta(hours=index), ny=18, nx=20)
     namelist = tmp_path / "namelist.input"
     namelist.write_text("&physics\n mp_physics = 8,\n/\n", encoding="utf-8")
+    child_toml = tmp_path / "child.toml"
+    parent = {"nx": 20, "ny": 18, "dx": 1000.0, "dy": 1000.0}
+    merged = _derive_child_run_config(
+        _PARENT_CONFIG, parent=parent, ratio=1, child_nx=12, child_ny=10,
+        run_seconds=600.0, output_interval_s=300.0)
+    child_toml.write_text(_render_child_toml(merged), encoding="utf-8")
     rc = cli_main([
         "downscale", str(tmp_path),
         "--parent-namelist", str(namelist),
-        "--child-config", str(tmp_path / "missing.toml"),
+        "--child-config", str(child_toml),
         "--ratio", "1", "--i-parent-start", "4", "--j-parent-start", "4",
         "--hours", "2", "--accept-parent-cadence",
         "--out", str(tmp_path / "child-run"), "--dry-run"])
-    assert rc == 2
-    err = capsys.readouterr().err
-    assert "--point" in err
-    assert "Traceback" not in err
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "downscale_plan" in captured.out
+    assert "warning:" in captured.err
+    assert "--hours" in captured.err
+    assert "ignored" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def _surface_file(path, *, ny=10, nx=12, soil=4, with_identity=True,

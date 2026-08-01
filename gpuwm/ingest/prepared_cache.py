@@ -65,8 +65,44 @@ class PreparedCacheCorruptError(ValueError):
 
 
 def _canonical(value) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+    return json.dumps(_plain(value), sort_keys=True, separators=(",", ":"),
                       ensure_ascii=True, allow_nan=False)
+
+
+def _plain(value):
+    """Recursively unwrap read-only containers into plain JSON types.
+
+    ``json`` serializes ``dict``/``list`` and nothing else that behaves
+    like them.  A ``MappingProxyType`` -- the exact type
+    :func:`restore_prepared_cache` hands back as
+    ``CachedInitialResult.hydrometeor_initialization``, deliberately, so
+    a restored document cannot be mutated -- is a ``Mapping`` but not a
+    ``dict``, so ``json.dumps`` raised ``TypeError: Object of type
+    mappingproxy is not JSON serializable``.  That turned "restore a
+    prepared root, then write the child cache derived from it" into a
+    crash with no mention of the field that caused it.
+
+    Unwrapping here rather than at each call site keeps ONE normalization
+    for every identity, metadata and manifest document this module
+    canonicalizes, and it changes no output: a proxy serializes to the
+    same object its underlying mapping does.  Tuples already normalized
+    to lists through ``json``; sets and frozensets do not, and are not
+    accepted -- an unordered container has no canonical serialization, so
+    guessing one would put an order-dependent digest in an identity.
+    """
+
+    if isinstance(value, Mapping):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, (str, bytes)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        raise TypeError(
+            "prepared-cache documents cannot contain a set: an unordered "
+            "container has no canonical serialization, and an identity "
+            "digest must not depend on iteration order")
+    return value
 
 
 def _json_copy(value):
@@ -129,6 +165,79 @@ def undelayed_identity_defaults(experiment) -> dict[str, object]:
     start = getattr(experiment, "start_time", None)
     return {"start_time": start.isoformat()
             if isinstance(start, datetime) else start}
+
+
+#: Identity fields that describe when the run WRITES, not what it
+#: integrates.  gpuwm already publishes this partition twice, for the two
+#: other places the same question is asked:
+#: :data:`gpuwm.io.restart.CONFIG_RUN_LENGTH_FIELDS` (which RunConfig
+#: fields may differ between a checkpoint's writer and its resumer) and
+#: :func:`gpuwm.core.model.experiment_fingerprint` (which fields are
+#: excluded from the trajectory hash).  A prepared cache is the same
+#: question one stage earlier -- it holds an initial state and its
+#: boundaries, and preparation writes no history or restart frame at all
+#: -- so it asks the same table instead of keeping a third opinion.
+#:
+#: Binding these here is what refused a two-domain HRRR tree whose d02
+#: history cadence was 900 s beside d01's 3600 s, and a hierarchy whose
+#: namelist carried ``restart_interval = 60``: both are output cadences,
+#: neither changes one model step.
+NON_TRAJECTORY_IDENTITY_FIELDS = frozenset({
+    "run.output_interval_s",
+    "run.restart_interval_s",
+})
+
+#: Trajectory-inert diagnostic toggles, on the same footing as the
+#: cadences above and for the same published reason:
+#: :data:`gpuwm.io.restart.CONFIG_DIAGNOSTIC_FIELDS` already allows
+#: ``nwp_diagnostics`` to differ across a restart boundary because
+#: flipping it cannot change the trajectory (pinned by
+#: tests/test_uh_lifecycle.py).  It selects which diagnostic accumulators
+#: a FORECAST carries; a prepared cache predates every one of them.
+INERT_DIAGNOSTIC_IDENTITY_FIELDS = frozenset({
+    "run.nwp_diagnostics",
+})
+
+
+def effective_prepared_domain_config(document):
+    """Canonicalize one prepared-domain identity for comparison.
+
+    Two documents describe the same prepared d0N when they agree here.
+    Three normalizations, each of which was a real refusal:
+
+    * cadence and inert-diagnostic fields (the two tables above) are
+      dropped -- they say when the forecast writes, not what it
+      integrates;
+    * ``cudt_minutes`` is pinned to 0 when ``cu_physics == 0``, because a
+      cumulus interval with no cumulus scheme is dead namelist state and
+      the two producers spell the dead value differently (a WRF importer
+      that omits the key inherits RunConfig's 5.0; a shipped physics
+      profile states 0.0);
+    * ``radt_minutes`` follows a positive ``radt``, which overrides it
+      (gpuwm/config.py) -- the legacy shadow field is not a second
+      radiation cadence.
+
+    A non-document is returned unchanged so callers can hand this
+    whatever the header gave them.
+    """
+
+    if not isinstance(document, Mapping):
+        return document
+    normalized = _plain(document)
+    run = normalized.get("run")
+    if not isinstance(run, dict):
+        return normalized
+    for path in sorted(NON_TRAJECTORY_IDENTITY_FIELDS
+                       | INERT_DIAGNOSTIC_IDENTITY_FIELDS):
+        section, _, key = path.partition(".")
+        if section == "run":
+            run.pop(key, None)
+    if run.get("radt", 0.0) > 0.0:
+        run["radt_minutes"] = run["radt"]
+    if run.get("cu_physics") == 0:
+        run["cudt_minutes"] = 0.0
+    return normalized
+
 
 #: Where the writing gpuwm stamps its version in a cache header.  It
 #: sits OUTSIDE the hashed ``basis`` on purpose: the content digest of
@@ -898,12 +1007,16 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
 
 __all__ = [
     "CACHE_WRITER_KEY", "CachedInitialResult",
-    "DEFAULT_TOLERANT_IDENTITY_FIELDS", "PREPARED_CACHE_SCHEMA",
+    "DEFAULT_TOLERANT_IDENTITY_FIELDS",
+    "INERT_DIAGNOSTIC_IDENTITY_FIELDS",
+    "NON_TRAJECTORY_IDENTITY_FIELDS", "PREPARED_CACHE_SCHEMA",
     "PreparedCacheCorruptError", "PreparedCacheMismatchError",
     "PreparedCacheReader", "RestoredPreparedCache", "UNSTAMPED_WRITER",
     "cache_writer_version", "compare_prepared_domain_config",
-    "compare_prepared_identity", "prepared_cache_identity",
+    "compare_prepared_identity", "effective_prepared_domain_config",
+    "prepared_cache_identity",
     "prepared_domain_config_identity", "prepared_identity_refusal",
     "restore_prepared_cache",
-    "select_prepared_met_fields", "write_prepared_cache",
+    "select_prepared_met_fields", "undelayed_identity_defaults",
+    "write_prepared_cache",
 ]

@@ -161,6 +161,54 @@ def _soil_temperature_elevation_delta(terrain, source_orography, terrestrial):
     return np.where(usable, -0.0065 * difference, 0.0)
 
 
+#: How far below zero a bounded-stencil overshoot may carry a snow
+#: field before it stops being an interpolation artifact, as a fraction
+#: of that field's own positive maximum.  Mirrors the soil-moisture
+#: overshoot band a few dozen lines below, and for the same reason: the
+#: source fields are non-negative, the horizontal operators that carry
+#: them to the model grid are not monotone, and a snow line is the
+#: sharpest gradient either field has.
+_SNOW_OVERSHOOT_FRACTION = 0.25
+
+
+def _admitted_snow_field(name: str, value: np.ndarray, shape) -> np.ndarray:
+    """Admit one snow field, repairing bounded overshoot at zero.
+
+    Snow water and snow depth are physically non-negative, so a negative
+    mapped value is never data: it is the horizontal interpolation
+    operator overshooting across the snow line.  Refusing it refused the
+    whole preparation -- a real nested HRRR domain over the mountainous
+    west died on ONE cell of 88 844 at -4.9 cm of snow depth, beside a
+    44.5 m maximum, with a message that named neither the field's
+    numbers nor which of its three conditions had failed.
+
+    So the physically impossible value is repaired to the only defined
+    one and an overshoot far beyond what a bounded stencil can produce
+    -- a fill value, a unit error, a broken decode -- still refuses,
+    with the numbers in the sentence.  Fields already non-negative are
+    untouched, so every previously passing case is byte-identical.
+    """
+    if value.shape != tuple(shape):
+        raise ValueError(
+            f"{name} must be a 2-D field shaped {tuple(shape)}, got "
+            f"{value.shape}")
+    if not np.isfinite(value).all():
+        raise ValueError(
+            f"{name} carries {int(np.count_nonzero(~np.isfinite(value)))} "
+            f"non-finite value(s) of {value.size}")
+    smallest = float(np.min(value))
+    if smallest >= 0.0:
+        return value
+    floor = -_SNOW_OVERSHOOT_FRACTION * max(float(np.max(value)), 0.0)
+    if smallest < floor:
+        raise ValueError(
+            f"{name} is negative beyond the interpolation-overshoot band: "
+            f"{int(np.count_nonzero(value < 0.0))} value(s) of "
+            f"{value.size}, most negative {smallest:.6g}, field maximum "
+            f"{float(np.max(value)):.6g}")
+    return np.maximum(value, 0.0)
+
+
 def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
                          deep_soil_temperature=None, lake_mask=None,
                          lake_skin_temperature=None,
@@ -510,11 +558,9 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
         snow = np.zeros(shape, dtype=np.float64)
     snowh = (_host(fields["SNOWH"]) if snowh_present
              else np.zeros(shape, dtype=np.float64))
-    for name, value in (("snow water", snow), ("snow depth", snowh)):
-        if (value.shape != shape or not np.isfinite(value).all()
-                or np.any(value < 0.0)):
-            raise ValueError(
-                f"{name} must be a finite non-negative 2-D field")
+    snow, snowh = (
+        _admitted_snow_field("snow water", snow, shape),
+        _admitted_snow_field("snow depth", snowh, shape))
     if not snow_present and snowh_present:
         snow = snowh * (1000.0 / 5.0)
     elif snow_present and not snowh_present:

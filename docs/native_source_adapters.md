@@ -151,7 +151,14 @@ GRIB1/GRIB2/NetCDF consumer, mixed-product composition, canonical-frame
 packing, native initialization, and atomic hierarchy export are wired through
 the same public command. A genuine GFS GRIB2 d01-through-d04 hierarchy and genuine
 ERA5 GRIB1, GFS GRIB2, and ERA5 NetCDF single domains passed unchanged stock
-WRF v4.6.1. For example, the GFS hierarchy route is:
+WRF v4.6.1. For example, the GFS hierarchy route is (paths below are
+relative to a **standalone distribution root**, where
+`tools/build_native_wrf_distribution.py` stages these four files under
+`share/configs/`. There is no `share/` in a git checkout: the same four
+files live in the repository's `configs/` directory --
+`configs/rw-wps-gfs-pressure-grib2.mapping.json` and so on. They are not
+carried by the pip wheel; clone the repository or build a distribution
+to get them):
 
 ```bash
 rw-wps --source mapped --source-format grib2 \

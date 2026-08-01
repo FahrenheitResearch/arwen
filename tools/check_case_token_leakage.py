@@ -125,6 +125,28 @@ PROTECTED_ZONES: tuple[str, ...] = (
     "gpuwm/experiment.py",
     "gpuwm/runtime.py",
     "gpuwm/supervisor.py",
+    # certification measurement path: the one certified ULP definition, the
+    # generic t=0 full-state digest and its CLI.  A case token here would
+    # mean the digest scores one campaign's staging layout rather than a
+    # staged pair, which is the specialization this gate exists to catch.
+    "gpuwm/verify/state_equiv.py",
+    "gpuwm/verify/t0_state_digest.py",
+    "tools/matched_wrfout_t0_state_digest.py",
+    # the published certification receipts.  A receipt's *input inventory*
+    # names the files that were staged, so a campaign spelling there is the
+    # provenance the receipt exists to carry and earns a baseline line; a
+    # campaign spelling anywhere else in a receipt -- a group name, a
+    # variable, a registration field -- would mean the certified measurement
+    # itself was written for one case, which is what this zone watches for.
+    "gpuwm/data/certification/",
+    # generic verification instruments: these score whatever they are
+    # pointed at, so a case token here would silently specialize the
+    # yardstick rather than the run being measured
+    "gpuwm/verify/field_metrics.py",
+    "gpuwm/verify/chaos_envelope.py",
+    "gpuwm/verify/spectral.py",
+    "tools/matched_wrfout_envelope.py",
+    "tools/certify_band_from_ensemble.py",
     # generic simulation layer and runner selection
     "crates/rw-sim/src/domain.rs",
     "crates/rw-sim/src/physics.rs",

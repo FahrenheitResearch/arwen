@@ -605,6 +605,7 @@ mod tests {
             elevation_number: 1,
             elevation_angle: 0.5,
             nyquist_velocity: None,
+            nyquist_radials_disagree: false,
             sweep_index: 0,
             start_status: 3,
             end_status: 2,

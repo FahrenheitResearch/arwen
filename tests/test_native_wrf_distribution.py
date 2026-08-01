@@ -855,17 +855,12 @@ def test_bridge_identity_translates_noexec_probe_error(tmp_path, monkeypatch):
 
 
 def test_gfs_provenance_prefers_bound_distribution_manifest(tmp_path, monkeypatch):
+    from conftest import complete_runtime_manifest
+
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({
-        "schema": RUNTIME_SCHEMA,
-        "status": "READY",
-        "artifact": {"gpuwm_version": __version__},
-        "source": {
-            "commit": "a" * 40,
-            "tree": "b" * 40,
-            "worktree_clean": True,
-        },
-    }), encoding="utf-8")
+    document = complete_runtime_manifest()
+    document["source"].update({"commit": "a" * 40, "tree": "b" * 40})
+    manifest.write_text(json.dumps(document), encoding="utf-8")
     monkeypatch.setenv("GPUWM_NATIVE_DISTRIBUTION_MANIFEST", str(manifest))
     identity = _git_source_identity()
     assert identity["identity_source"] == "gpuwm-native-distribution-manifest"

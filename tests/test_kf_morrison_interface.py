@@ -347,6 +347,7 @@ def test_nca_expiry_preserves_current_rk_copy_but_zeros_morrison_rates(
         np.testing.assert_array_equal(driver.cu_rates[name], 0.0)
     np.testing.assert_array_equal(driver.cu_nca, 0.0)
     np.testing.assert_array_equal(driver.cu_expiring, 0.0)
+    assert driver._cu_expiry_pending is False
 
 
 def test_cuda_sources_keep_four_rates_and_wrf_number_seed_statement_order():

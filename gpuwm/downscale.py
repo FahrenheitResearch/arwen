@@ -15,10 +15,11 @@ contracts, :mod:`gpuwm.offline_child_run` driver).  Two child modes:
   (``--card``/``--vram-gib``, the domain wizard's budget convention).
   The derived config is written beside ``--out`` as a reusable TOML.
 
-Cadence is a scientific contract, not a default: pass
-``--max-boundary-interval-seconds`` explicitly or opt in to the archive's
-own cadence with ``--accept-parent-cadence``.  Parents intended for
-downscaling should write history at 15-minute (or denser) cadence.
+Boundary cadence defaults to the parent archive's own history cadence
+(announced with a one-line warning; ``--max-boundary-interval-seconds``
+bounds it explicitly, ``--accept-parent-cadence`` silences the warning).
+Parents intended for downscaling should write history at 15-minute (or
+denser) cadence.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from pathlib import Path
 import netCDF4
 import numpy as np
 
+from gpuwm.explain import warn
 from gpuwm.offline_child import (
     OfflineChildContractError,
     OfflineChildPlacement,
@@ -58,6 +60,19 @@ _GEOMETRY_KEYS = (
     "nx", "ny", "dx", "dy", "dt", "grid_id", "specified", "nested",
     "run_seconds", "output_interval_s", "clock_dt", "case",
 )
+
+
+def _card_vram_gib() -> dict:
+    """The wizard's card-tier table, imported where it is used.
+
+    One table, two front doors: ``gpuwm domain`` and ``gpuwm downscale``
+    have to accept the same tier names or the product documents two
+    different answers to "what cards does this support".
+    """
+
+    from gpuwm.domain_wizard import CARD_VRAM_GIB
+
+    return CARD_VRAM_GIB
 
 
 def _discover_parent_series(
@@ -101,7 +116,12 @@ def _parse_point(raw: str) -> tuple[float, float]:
     parts = raw.split(",")
     if len(parts) != 2:
         raise ValueError(f"--point must be LAT,LON, got {raw!r}")
-    lat, lon = float(parts[0]), float(parts[1])
+    try:
+        lat, lon = float(parts[0]), float(parts[1])
+    except ValueError:
+        raise ValueError(
+            f"--point must be LAT,LON in decimal degrees, got {raw!r}"
+        ) from None
     if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 360.0):
         raise ValueError(f"--point {raw!r} is outside geographic bounds")
     return lat, lon
@@ -299,26 +319,32 @@ def downscale_main(args) -> int:
     frames = _discover_parent_series(
         [Path(p) for p in args.parent], args.parent_domain)
     cadence = _parent_cadence_seconds(frames)
+    # Provenance: True whenever the ceiling is the archive's own
+    # cadence (by flag or by default), False for an explicit bound.
+    cadence_is_parents = args.max_boundary_interval_seconds is None
     if args.max_boundary_interval_seconds is not None:
         max_interval = float(args.max_boundary_interval_seconds)
-    elif args.accept_parent_cadence:
-        max_interval = cadence
     else:
-        raise OfflineChildContractError(
-            f"parent history cadence is {cadence:g} s; boundary cadence is "
-            "a scientific choice tied to child resolution -- pass "
-            "--max-boundary-interval-seconds SECONDS explicitly or accept "
-            "the archive's own cadence with --accept-parent-cadence "
-            "(guidance: write parent history at 15-min or denser cadence "
-            "when planning to downscale)")
+        # The archive's own cadence is the default: it is already known,
+        # it is the only cadence these frames can serve, and the coarse-
+        # cadence caveat below still prints.  --accept-parent-cadence is
+        # kept as an accepted no-op for existing scripts.
+        max_interval = cadence
+        if not args.accept_parent_cadence:
+            warn(f"using the parent archive's own {cadence:g} s history "
+                 "cadence as the boundary cadence; pass "
+                 "--max-boundary-interval-seconds SECONDS to bound it",
+                 why="Boundary cadence is a scientific choice tied to "
+                     "child resolution; write parent history at 15-min "
+                     "or denser cadence when planning to downscale.")
     if cadence > CADENCE_GUIDANCE_SECONDS:
-        print(f"gpuwm downscale: parent cadence {cadence:g} s is coarser "
-              f"than the {CADENCE_GUIDANCE_SECONDS:g} s guidance; the "
-              "child sees interval-linear boundary forcing where a live "
-              "nest is forced every parent step -- expect boundary-swept "
-              "differences to grow with the cadence gap.  Regenerate the "
-              "parent archive at 15-min (or denser) history cadence for "
-              "production downscaling.")
+        warn(f"parent cadence {cadence:g} s is coarser than the "
+             f"{CADENCE_GUIDANCE_SECONDS:g} s guidance for downscaling",
+             why="The child sees interval-linear boundary forcing where "
+                 "a live nest is forced every parent step -- expect "
+                 "boundary-swept differences to grow with the cadence "
+                 "gap.  Regenerate the parent archive at 15-min (or "
+                 "denser) history cadence for production downscaling.")
 
     if args.parent_restart is not None:
         binding = bind_parent_physics_from_gpuwm_restart(args.parent_restart)
@@ -345,10 +371,9 @@ def downscale_main(args) -> int:
                 raise OfflineChildContractError(
                     f"--child-config placement requires --{name.replace('_', '-')}")
         if args.hours is not None or args.output_interval_seconds is not None:
-            raise OfflineChildContractError(
-                "--hours/--output-interval-seconds belong to --point "
-                "derivation; with --child-config set run_seconds and "
-                "output_interval_s in the TOML")
+            warn("--hours/--output-interval-seconds are ignored with "
+                 "--child-config; the TOML's run_seconds and "
+                 "output_interval_s are used")
         child_config = Path(args.child_config)
         ratio = int(args.ratio)
         i_start, j_start = int(args.i_parent_start), int(args.j_parent_start)
@@ -420,7 +445,7 @@ def downscale_main(args) -> int:
         "parent_frames": [str(path) for path in frames],
         "cadence_seconds": contract.interval_seconds,
         "max_boundary_interval_seconds": max_interval,
-        "accepted_parent_cadence": bool(args.accept_parent_cadence),
+        "accepted_parent_cadence": bool(cadence_is_parents),
         "physics_binding": dict(binding.receipt()),
         "child_config": str(child_config),
         "placement": {"ratio": ratio, "i_parent_start": i_start,
@@ -446,7 +471,7 @@ def downscale_main(args) -> int:
         parent_grid_ratio=int(ratio),
         i_parent_start=int(i_start), j_parent_start=int(j_start),
         max_boundary_interval_seconds=float(max_interval),
-        accepted_parent_cadence=bool(args.accept_parent_cadence),
+        accepted_parent_cadence=bool(cadence_is_parents),
         child_surface_from=(None if args.child_surface_from is None
                             else Path(args.child_surface_from)),
         preprocess_backend=args.preprocess_backend,
@@ -489,9 +514,17 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--j-parent-start", type=int, default=None)
     parser.add_argument("--child-size", default=None, metavar="NX[,NY]",
                         help="explicit child extent for --point")
-    parser.add_argument("--card", choices=("16gb", "24gb", "32gb"),
+    # THE tier list, not a copy of it.  This tuple used to be written
+    # out by hand as ("16gb", "24gb", "32gb") while `gpuwm domain` took
+    # its choices from CARD_VRAM_GIB -- so `--card 12gb`, a tier the
+    # product advertises and this module already maps three lines down
+    # in --point sizing, was an argparse rejection here and nowhere
+    # else.  Two commands quoting different tier lists for the same
+    # concept is a documentation bug you cannot fix in the docs.
+    parser.add_argument("--card", choices=sorted(_card_vram_gib()),
                         default=None,
-                        help="VRAM tier for --point sizing (default 24gb)")
+                        help="VRAM tier for --point sizing (default 24gb; "
+                             "the same tiers `gpuwm domain` accepts)")
     parser.add_argument("--vram-gib", type=float, default=None,
                         help="explicit VRAM capacity for --point sizing")
     parser.add_argument("--hours", type=float, default=None,

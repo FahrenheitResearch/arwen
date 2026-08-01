@@ -280,7 +280,7 @@ def test_ratified_nssl2_legacy_profile_follows_every_base_route() -> None:
         "validation-candidate-v1")
     template = registry["templates"][legacy]
 
-    assert template["maturity"] == "validation-candidate"
+    assert template["maturity"] == "wrf-matched-run-candidate"
     assert template["parameters"]["wrf_rrtmg_compatibility"] == (
         "wrf-rrtmg-4-4-legacy-v1")
     assert template["parameters"]["ra_rrtmg_variant"] == "rrtmg_legacy"

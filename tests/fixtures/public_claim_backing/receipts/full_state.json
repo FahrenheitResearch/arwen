@@ -1,0 +1,16 @@
+{
+  "schema": "gpuwm.t0-state-digest/v1",
+  "comment": "Fixture receipt for tests/test_public_claim_backing.py. Not a measurement: only the fields the doc guard reads are present, so a claim of full breadth has something to be checked against.",
+  "evaluator_commit": "0000000000000000000000000000000000000000",
+  "covered_groups": [
+    "accumulation",
+    "boundary",
+    "diagnostic",
+    "dry_dynamics",
+    "moisture",
+    "soil",
+    "surface"
+  ],
+  "uncovered_required_groups": [],
+  "verdict": "PASS"
+}

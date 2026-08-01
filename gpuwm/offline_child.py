@@ -74,6 +74,19 @@ _NSSL_WRF_TO_STATE = MappingProxyType({
 })
 
 
+#: Parent microphysics schemes this offline-child route can carry.
+#:
+#: NOT a profile whitelist -- the four checks below are the ordinary
+#: fail-closed kind the 2026-07-31 suite ruling keeps: the child's
+#: hydrometeor mapping is written against the transported species of
+#: WSM6 (6), Thompson (8), Morrison (10) and NSSL (18), and a parent
+#: outside that set has no mapping to refuse or accept with.  Naming the
+#: set once keeps the four enforcement points from ever disagreeing
+#: about which parents the mapping actually implements; each refusal
+#: still quotes the exact switch and value.
+PARENT_SCHEME_CONTRACT = frozenset({6, 8, 10, 18})
+
+
 class OfflineChildContractError(ValueError):
     """The archived parent cannot safely force the requested child."""
 
@@ -94,7 +107,7 @@ class ParentPhysicsBinding:
     evidence_sha256: str
 
     def __post_init__(self) -> None:
-        if int(self.mp_physics) not in {6, 8, 10, 18}:
+        if int(self.mp_physics) not in PARENT_SCHEME_CONTRACT:
             raise OfflineChildContractError(
                 f"unsupported bound parent mp_physics={self.mp_physics}")
         if int(self.domain_id) < 1:
@@ -318,7 +331,7 @@ def inspect_parent_history_frame(
         bound_mp = None
         if source_mp_physics is not None:
             requested = int(source_mp_physics)
-            if requested not in {6, 8, 10, 18}:
+            if requested not in PARENT_SCHEME_CONTRACT:
                 raise OfflineChildContractError(
                     f"unsupported declared parent mp_physics={requested}")
             # Inventory-only inference is advisory. WRF streams may retain
@@ -467,7 +480,7 @@ def map_microphysics_to_nssl18(
     """
 
     source_mp = int(source_mp_physics)
-    if source_mp not in {6, 8, 10, 18}:
+    if source_mp not in PARENT_SCHEME_CONTRACT:
         raise OfflineChildContractError(
             f"NSSL conversion currently accepts source mp 6/8/10/18, got {source_mp}")
     normalized = {name: np.asarray(value, dtype=np.float32)
@@ -880,7 +893,7 @@ def _resolve_source_physics(
         raise OfflineChildContractError(
             "source physics must be bound from a companion setup record")
     source_mp_physics = int(source_mp_physics)
-    if source_mp_physics not in {6, 8, 10, 18}:
+    if source_mp_physics not in PARENT_SCHEME_CONTRACT:
         raise OfflineChildContractError(
             f"unsupported parent mp_physics={source_mp_physics}")
     return source_mp_physics, morr_rimed_ice

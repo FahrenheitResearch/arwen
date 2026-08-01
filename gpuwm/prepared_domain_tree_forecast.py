@@ -41,6 +41,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from gpuwm import __version__  # noqa: E402
+from gpuwm.certify.capsule import emit_run_capsule  # noqa: E402
 from gpuwm.core.microphysics_transition import (  # noqa: E402
     MP8_TO_MP18_POLICY,
     resolve_microphysics_transition,
@@ -49,6 +50,7 @@ from gpuwm.experiment import load_experiment  # noqa: E402
 from gpuwm.ingest.prepared_cache import (  # noqa: E402
     PreparedCacheReader,
     compare_prepared_domain_config,
+    effective_prepared_domain_config,
     prepared_domain_config_identity,
     prepared_identity_refusal,
     undelayed_identity_defaults,
@@ -59,6 +61,7 @@ from gpuwm.native_wrf_contract import (  # noqa: E402
     verify_native_static_receipt,
 )
 from gpuwm.static.lambert import grids_from_projection_config  # noqa: E402
+from gpuwm.table_assets import MissingTableAssets  # noqa: E402
 
 
 REPORT_SCHEMA = "gpuwm-prepared-domain-tree-forecast-v1"
@@ -685,6 +688,11 @@ def preflight_prepared_tree(
     exp = load_experiment(experiment_config)
     if len(exp.domains) < 2:
         raise ValueError("prepared domain-tree runner requires at least two domains")
+    # The physics this config selects has to be RUNNABLE before the
+    # hierarchy is verified, not after: this is the preflight, and a
+    # missing lookup table is exactly the class of thing a preflight
+    # exists to name before the GPU is touched.
+    _verify_thompson_assets(exp)
     if _hierarchy_valid_time(preparation) != exp.start_time.isoformat():
         raise ValueError("preparation valid_time differs from experiment start_time")
     if preparation.get("domain_count") != len(exp.domains):
@@ -822,9 +830,19 @@ def preflight_prepared_tree(
         # v1.0.1-era prepared tree unrunnable under a strict-equality
         # check -- refused with a sentence that named the user's
         # experiment file, when the cause was a package upgrade.
+        # Both sides through the SAME normalization the hierarchy's root
+        # binding uses.  They used to differ: the hierarchy gate pinned an
+        # inactive cudt_minutes to 0 and this one compared it raw, so a
+        # cumulus-off tree whose cache inherited RunConfig's live 5.0 was
+        # refused against a wizard config that wrote the profile's 0.0 --
+        # after preparation, on a switch no step of the run reads.  The
+        # same table also drops the write cadences and the inert
+        # diagnostic toggle, which say when a forecast writes rather than
+        # what it integrates.
         tolerated_fields, differing_fields = compare_prepared_domain_config(
-            identity.get("domain_config"),
-            prepared_domain_config_identity(domain),
+            effective_prepared_domain_config(identity.get("domain_config")),
+            effective_prepared_domain_config(
+                prepared_domain_config_identity(domain)),
             not_in_use=undelayed_identity_defaults(exp))
         if differing_fields:
             raise ValueError(prepared_identity_refusal(
@@ -1019,10 +1037,17 @@ def _verify_thompson_assets(exp) -> None:
 
     if not any(domain.run.mp_physics == 8 for domain in exp.domains):
         return
-    from gpuwm.physics_compat import thompson_table_root
     from gpuwm.core.thompson_contract import validate_table_assets
+    from gpuwm.table_assets import require_thompson_tables
 
-    validate_table_assets(Path(thompson_table_root()))
+    # Absence first, and in one sentence.  A wheel user reached this
+    # line after paying for a fetch and three minutes of preprocessing
+    # and got a five-frame FileNotFoundError naming a path inside
+    # site-packages -- true, and useless.  require_thompson_tables says
+    # which table and which command stages it; the byte validation
+    # below is unchanged and still runs on every launch.
+    root = require_thompson_tables()
+    validate_table_assets(root)
 
 
 def _rebind_rebuilt_state(state, workspace) -> None:
@@ -1430,6 +1455,25 @@ def run_prepared_tree(
         "runtime_source_identity": runtime_identity,
     }
     _atomic_json(evidence / "run-receipt.json", report)
+    emit_run_capsule(
+        outdir, emission_site="prepared_domain_tree_forecast",
+        run_context={
+            "runner_route_and_io_mode": {
+                "route": "prepared_domain_tree_forecast", "io_mode": io_mode},
+            "output_and_diagnostic_mode": {"io_mode": io_mode},
+            "input_artifact_bytes": dict(inputs.authority_sha256),
+        },
+        run_shape={
+            "route": "prepared_domain_tree_forecast",
+            "domain_count": len(exp.domains),
+            "run_seconds": float(exp.run_seconds),
+            "experiment_fingerprint": fingerprint,
+            "domains": _domain_rows(exp),
+        },
+        output={"frames": outputs, "trajectory_digest": final_digests},
+        receipts={"run_receipt": {
+            "path": str((evidence / "run-receipt.json").resolve())}},
+    )
     _atomic_json(
         progress_path,
         {
@@ -1489,6 +1533,14 @@ def main(argv=None) -> int:
             restart=args.restart,
             health_debug=args.health_debug,
         )
+    except MissingTableAssets as error:
+        # A refusal, not a failed run: no failed-run-receipt, because
+        # nothing ran.  One sentence naming the table and the command
+        # that stages it -- the shape every other guard in this main
+        # already uses.
+        print(f"prepared_domain_tree_forecast: refused: {error}",
+              file=sys.stderr)
+        return 2
     except BaseException as error:
         evidence = outdir / "evidence"
         evidence.mkdir(exist_ok=True)

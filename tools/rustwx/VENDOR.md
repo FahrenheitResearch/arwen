@@ -210,6 +210,128 @@ command-line bins and their 9.8 MB test fixtures.
     stopped working fails the test.  Neither asserts which copy was
     resolved, which is the point.
 
+8. `crates/rw-nexrad` is new (not in the source workspace): the
+   NEXRAD Level-II acquisition and decode front door.  `vendor/wx-radar`
+   arrived with a Level-II *parser* and no downloader; the anonymous-S3
+   client here is the source workspace's own `rw-sat`/`rw-glm`
+   `ListObjectsV2` pattern retold for a bucket keyed by day directory
+   per site.  No new external crate: every dependency was already in the
+   vendor closure.
+9. `vendor/wx-radar/src/level2.rs::parse_radial_block_nyquist` reads the
+   Message-31 RAD block's Nyquist velocity at byte 16, not the byte 26
+   the source tree used.  Byte 26 is the low half of the vertical
+   calibration constant; reinterpreting it as an int*2 scaled by 100
+   yields physically impossible Nyquist velocities -- one KTLX volume
+   reported 620.7, 450.8 and 313.9 m/s for cuts whose real values are
+   8-32 m/s.  The corrected layout was established from the bytes of a
+   real volume rather than a reading of the ICD: the block's own LRTUP
+   field says 28, and only one arrangement of (unambiguous range, two
+   noise-level floats, Nyquist, flags, two calibration floats) both fits
+   in 28 bytes and decodes every field to a sane number.  This is a bug
+   fix, not an adaptation, and it is safe to carry: no other crate in
+   this workspace reads the field, so the renderer's output is
+   unchanged.  It is listed here because a diff against the source tree
+   must show it as intentional.  The crate's own tests pin the offsets
+   with the verbatim bytes of that volume's first RAD block.
+10. `vendor/wx-radar/src/level2.rs` gains a `ParseMode`, and with it a
+    `Level2File::parse_strict` beside the existing `parse`.  `parse`
+    keeps the source tree's behaviour exactly -- it is the renderer's
+    parser, and a renderer that draws 95% of a damaged volume beats one
+    that draws nothing -- while `parse_strict` refuses a volume, by
+    name, the moment any part of it contradicts what it declares about
+    itself.  `crates/rw-nexrad` is the only strict caller.
+
+    The lenient path is unchanged in one respect only: a bzip2 LDM block
+    that will not decompress used to be substituted into the message
+    stream *still compressed*, so a decompression failure was fed to the
+    Message-31 parser as though it were radial bytes.  That is not
+    leniency, it is manufacturing radials out of noise, so the block now
+    contributes nothing (lenient) or refuses the volume (strict).
+
+    What strict adds: a per-radial envelope, from the tighter of the
+    message header's size and the Message-31 header's own radial length,
+    with every data block pointer, moment header and gate span required
+    to lie inside it; the mandatory VOL/ELV/RAD constant blocks required
+    by name, so that a generic block is no longer treated as a Nyquist
+    source merely because its type byte is `R`; the RAD block's own
+    LRTUP required to be 20 or 28, the two layouts whose byte 16..18
+    Nyquist position has been verified; unsupported Message-31
+    compression, undefined data word widths, and declared lengths that
+    leave the volume all refused; and a step to the next message by the
+    declared size rather than rounded up to a 2432-byte legacy record.
+
+    VOL and ELV were required by *name* only, which left a radial free to
+    carry a constant block of any length declaring any generic-format
+    version and still be called conforming.  Both are now parsed.  The
+    supported VOL layouts were settled the same way the RAD offsets were
+    -- from the bytes of real archived volumes, not from a reading of the
+    ICD.  Nine volumes off `unidata-nexrad-level2`, six sites, 2017
+    through 2026, produced exactly two `(version, LRTUP)` combinations:
+    version 2.0 in 44 bytes (KTLX 2017-05-16, 2018-05-01, 2019-05-20,
+    2020-05-22, 2021-05-26) and version 3.0 in 52 (KGWX 2022-03-30,
+    KDDC 2024-05-06, KLZK 2025-03-14, KFWS 2026-07-29, KTLX 2026-07-29).
+    Version 3.0 appends eight bytes to the 2.0 layout and moves nothing,
+    so the pairing is the contract: a block declaring 3.0 in 44 bytes, or
+    2.0 in 52, is stating two incompatible things about where its fields
+    are.  The gate has teeth beyond the label -- the latitude and
+    longitude at bytes 8..16 must be a place on Earth, which four bytes
+    read at the wrong offset almost never are.  ELV is required to be its
+    only possible layout, 12 bytes.  The crate's tests pin the verbatim
+    VOL blocks of the KTLX 2019 and KFWS 2026 volumes and the ELV block
+    of the former; `rw_nexrad decode` was run against both whole volumes
+    and returned READY.
+
+    **Corrected 2026-07-30, and the correction is the lesson.**  That
+    first survey sampled 2017 onward, found only 2.0 and 3.0, and
+    concluded the version 1.0 the crate's synthetic fixture declared was
+    invented.  It is not: 1.0 is the 2011-2014 era, and it was outside
+    the sampling window rather than outside the archive.  Extending the
+    window to the years the pre-2016 `.gz` keys cover produced it at
+    once, from KTLX 2011-05-24, 2012-04-14, 2013-05-20 and 2014-04-27 --
+    the last being the Moore tornado day.  `KNOWN_VOL_LAYOUTS` now reads
+    1.0/44, 2.0/44 and 3.0/52, and 2015-05-06 is where 2.0 (and RAD
+    LRTUP 28) begins.  A survey is evidence only over the range it
+    covers, and the range has to be the range the product will read.
+
+    The original caution still holds in the other direction: had the
+    allow-list been written from the fixture *alone* it would have
+    admitted 1.0 and refused 2.0 and 3.0, i.e. every volume from 2015 on.
+    Either way the fixture was not evidence; the archive is.
+
+12. `vendor/wx-radar/src/level2.rs` learns the second Archive-II shape.
+    `decompress_archive2` walked an LDM block table unconditionally, but
+    the pre-2016 keys -- everything the archive stores as `..._V06.gz` or
+    `..._V03.gz`, roughly 2011 through 2016 -- hold no block table at
+    all: once gunzipped, the messages follow the 24-byte volume header
+    directly.  Walking a block table over those bytes yields zero-length
+    "blocks" and a volume that decodes to nothing, silently.
+
+    `Level2File::is_ldm_framed` decides between the two from the first
+    block's payload: an LDM table always opens with the bzip2 metadata
+    block, so it begins `BZh`, while in the unframed shape those bytes
+    are the first message's CTM header.  Verified against real volumes
+    from 2011, 2012, 2013, 2014, 2015 and 2016 (all unframed) and 2017,
+    2019 and 2026 (all LDM+bzip2).  It is `pub` and `#[doc(hidden)]` so
+    `rw-nexrad`'s framing check can be pinned against it -- the framing
+    record and the decoder must agree about which shape they read.
+
+    Strict mode also now refuses a volume that framed cleanly and yielded
+    no Message-31 radial at all.  The renderer may draw zero sweeps; an
+    observation front door that publishes zero sweeps has published
+    nothing and called it READY.
+
+    The crate's own `archive2_volume` test fixture stored its messages
+    uncompressed behind a length word, which is neither real shape -- an
+    LDM block is always a bzip2 stream.  It now bzip2s them, so the
+    fixture is an LDM volume and the tests exercise the layout they name.
+
+    The source tree bounded all of these against the end of the
+    decompressed volume instead, so a missing, reordered or corrupt
+    pointer read a *neighbouring* radial's bytes and returned plausible
+    geometry or a plausible Nyquist velocity, with every stage
+    reporting success.  Outer LDM framing cannot see that: the enclosing
+    block lengths are valid while the inner pointer is not.
+
 ## vendor/crates-io
 
 `cargo vendor --locked vendor/crates-io` output: every crates.io and

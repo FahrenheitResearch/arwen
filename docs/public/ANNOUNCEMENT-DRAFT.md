@@ -24,10 +24,14 @@ The part I care most about is the verification story. Every physics
 scheme is a transcription of WRF v4.6.1 source, and the project applies
 three gates: bit-level kernel oracles against unmodified WRF Fortran
 (several components are bit-identical; the rest carry measured ULP
-distances, published per option), t=0 initialization parity (the model
-opens the WRF initial state at the FP32 floor on all four domains of the
-reference case), and matched-run forecasts scored frame by frame against
-a 48-rank WRF reference.
+distances, published per option), a full-state t=0 digest of the
+reference case, and matched-run forecasts scored frame by frame against
+a 48-rank WRF reference. The t=0 digest scores every carrier group on
+all four domains against ceilings pinned long before it ran, and it is
+published with the answer it gave: on that case the two initial states
+do not agree within those ceilings -- verdict FAIL, with the per-array
+distances in the
+[receipt](../../gpuwm/data/certification/t0_state_parity_digest.json).
 
 Not every selectable option has passed all three, and the product says
 which. MYNN has an assembled-driver gate and a 300-step coupled-runtime

@@ -813,16 +813,47 @@ def _require_source_physical_ranges(source: Mapping[str, np.ndarray]) -> None:
         raise ValueError("source HRRR Q2 is non-finite or outside 0..0.1")
 
 
+#: What a soil-mapping refusal or report calls its target when the caller
+#: names nothing better.  Every caller in the product names it: a strip
+#: refusal that says only "soil mapping requires ... land cells" tells a
+#: coastal-domain owner nothing about WHICH of four independently mapped
+#: boundary strips, on which domain, was being talked about.
+DEFAULT_SOIL_TARGET_NAME = "the HRRR target grid"
+
+
 def _record_soil_field_stats(report, name, source, candidate,
-                             source_land, target_land, limits):
+                             source_land, target_land, limits, *,
+                             target_name=DEFAULT_SOIL_TARGET_NAME):
+    """Record one mapped soil field's admission checks and land diagnostics.
+
+    A target with NO land cells is a legitimate configuration, not a
+    failure: every one of its soil cells is the target-water fill
+    (SOILT = SKINTEMP, SOILW = 1) that the mapper already wrote, and no
+    land donor is consulted to produce it.  The four specified-boundary
+    strips are mapped independently, so a Pacific-coast domain's
+    all-water west strip used to abort a preparation whose other three
+    strips and whose interior were entirely ordinary -- and the message
+    named neither the strip nor the domain.
+
+    The land-window statistics below are exactly that: a comparison of
+    the SOURCE land window against the TARGET land cells.  With no land
+    on one side there is no comparison to make, so the diagnostics are
+    recorded as absent with the reason, and the admission checks that do
+    not need land -- finiteness and physical range over EVERY mapped
+    cell -- still run.  Previously the empty-land raise came first, so a
+    zero-land target skipped the range check entirely.
+
+    The case that genuinely cannot be mapped is the opposite one: target
+    land cells with no reachable HRRR land donor.  The stencil builder
+    refuses that before this function is ever called, and it counts the
+    unresolved points.
+    """
     if hasattr(candidate, "get"):
         candidate = candidate.get()
     candidate = np.asarray(candidate).astype(np.float64, copy=False)
     source = np.asarray(source, dtype=np.float64)
     source_values = source[:, source_land]
     target_values = candidate[:, target_land]
-    if source_values.shape[1] == 0 or target_values.shape[1] == 0:
-        raise ValueError("soil mapping requires source and target land cells")
     lower, upper = limits
     # Interpolation inherits the source's bound-kissing cells, so the
     # mapped output is admitted on the same terms the source was.
@@ -830,7 +861,24 @@ def _record_soil_field_stats(report, name, source, candidate,
     if (not np.isfinite(candidate).all()
             or np.any((candidate < lower) | (candidate > upper))):
         raise ValueError(
-            f"mapped HRRR {name} is non-finite or outside {lower}..{upper}")
+            f"mapped HRRR {name} for {target_name} is non-finite or outside "
+            f"{lower}..{upper}")
+    if source_values.shape[1] == 0 or target_values.shape[1] == 0:
+        empty = "target" if target_values.shape[1] == 0 else "source window"
+        report[name] = {
+            "physical_limits": [lower, upper],
+            "all_target_minimum": float(np.min(candidate)),
+            "all_target_maximum": float(np.max(candidate)),
+            "land_window_statistics": None,
+            "land_window_statistics_absent_because": (
+                f"{target_name} has no land cells in the {empty}; every "
+                "soil cell here is the target-water fill and no land "
+                "donor is consulted, so there is no source-to-target "
+                "land comparison to report"),
+            "source_land_cell_count": int(source_values.shape[1]),
+            "target_land_cell_count": int(target_values.shape[1]),
+        }
+        return
     source_min = np.min(source_values, axis=1)
     source_max = np.max(source_values, axis=1)
     target_min = np.min(target_values, axis=1)
@@ -870,7 +918,8 @@ def interpolate_hrrr_to_lambert(
         soil_mapping_report: MutableMapping[str, object] | None = None,
         surface_fallback_radius: int = 8,
         backend="cuda", workers: int | None = None,
-        cpu_bridge: Path | str | None = None) -> HorizontalSnapshot:
+        cpu_bridge: Path | str | None = None,
+        target_name: str = DEFAULT_SOIL_TARGET_NAME) -> HorizontalSnapshot:
     """Interpolate a verified HRRR window to one WRF Lambert C grid.
 
     Atmospheric continuous fields use WPS's overlapping-parabolic operator.
@@ -882,6 +931,13 @@ def interpolate_hrrr_to_lambert(
     expects.  HRRR winds are grid-relative.  They are converted to the earth
     basis on the source mass grid, interpolated to each target staggering, and
     converted to the target Lambert basis before placing U/V on C-grid faces.
+
+    ``target_name`` is what a refusal or a mapping report calls this
+    grid.  The four specified-boundary strips are mapped by separate
+    calls, so "the west boundary strip of domain 1" and "domain 2" are
+    different targets whose soil refusals must not be confusable: a
+    coastal domain's all-water west strip once aborted a preparation
+    with a sentence naming neither the strip nor the domain.
     """
     if not isinstance(snapshot, HrrrNativeSnapshot):
         raise TypeError("snapshot must be an HrrrNativeSnapshot")
@@ -917,8 +973,23 @@ def interpolate_hrrr_to_lambert(
         raise ValueError("target_landmask must contain only finite 0/1 values")
     target_land = target_landmask.astype(bool)
     source_land = np.asarray(source["LANDSEA"]) >= 0.5
-    land_stencil = mass_plan.masked_bilinear_stencil(
-        source_land, target_land, fallback_radius=surface_fallback_radius)
+    try:
+        land_stencil = mass_plan.masked_bilinear_stencil(
+            source_land, target_land,
+            fallback_radius=surface_fallback_radius)
+    except ValueError as error:
+        # The one soil case that genuinely cannot be mapped: this target
+        # has land cells and the HRRR window has no land within reach of
+        # them.  The stencil builder is generic and counts the points;
+        # only here is it known WHICH grid was being mapped, which is
+        # the whole difference between an actionable refusal and a
+        # coastal-domain owner guessing at four identical-looking
+        # boundary strips.
+        raise ValueError(
+            f"HRRR soil mapping for {target_name} cannot fill its land "
+            f"cells: {error}.  Either move the domain so its land is "
+            "inside HRRR's land coverage, or raise the catalog's "
+            "surface_fallback_radius_cells") from error
     out: dict[str, object] = {}
     for name in (
             "PRES", "HGT", "TT",
@@ -995,8 +1066,10 @@ def interpolate_hrrr_to_lambert(
     if (not np.isfinite(skin_host).all()
             or np.any((skin_host < 170.0) | (skin_host > 400.0))):
         raise ValueError(
-            "mapped HRRR SKINTEMP is non-finite or outside 170..400 K")
+            f"mapped HRRR SKINTEMP for {target_name} is non-finite or "
+            "outside 170..400 K")
     local_report: dict[str, object] = {
+        "target": target_name,
         "policy": (
             "source-land-masked convex bilinear; bounded nearest-valid "
             "fallback; "
@@ -1027,10 +1100,11 @@ def interpolate_hrrr_to_lambert(
     }
     _record_soil_field_stats(
         local_report["fields"], "SOILT", source["SOILT"], out["SOILT"],
-        source_land, target_land, (170.0, 400.0))
+        source_land, target_land, (170.0, 400.0),
+        target_name=target_name)
     _record_soil_field_stats(
         local_report["fields"], "SOILW", source["SOILW"], out["SOILW"],
-        source_land, target_land, (0.0, 1.0))
+        source_land, target_land, (0.0, 1.0), target_name=target_name)
     if soil_mapping_report is not None:
         if len(soil_mapping_report):
             raise ValueError("soil_mapping_report must be empty")

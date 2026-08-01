@@ -100,12 +100,98 @@ def _read_fields(path: Path, names: tuple[str, ...], rows: int):
 _FIELDS = ("T2", "PSFC", "U10", "V10", "QVAPOR", "W", "RAINNC", "REFL_10CM")
 
 
+def boundary_distance(ny: int, nx: int) -> np.ndarray:
+    """Cell distance to the nearest lateral boundary, ``min`` over sides.
+
+    Identical convention to the runtime's boundary-row attribution
+    (``distance = min(j, ny - 1 - j, i, nx - 1 - i)``): d = 0 is the
+    specified row, d = 1.. are relaxation rows.  Re-deriving it here keeps
+    the comparator CPU-only, and a test asserts the two agree cell for
+    cell rather than by inspection.
+    """
+    j = np.arange(ny)[:, None]
+    i = np.arange(nx)[None, :]
+    return np.minimum(np.minimum(j, ny - 1 - j),
+                      np.minimum(i, nx - 1 - i))
+
+
+def strata_masks(ny: int, nx: int, spec_bdy_width: int):
+    """``(label, mask)`` pairs for the specified / relaxation / interior
+    bands, plus one mask per individual relaxation row.
+
+    The interior band starts at ``d >= spec_bdy_width``, so the aggregate
+    relaxation band is exactly ``d = 1..spec_bdy_width - 1``.  Bands with
+    no cells are still emitted, with an empty mask, so a small frame
+    reports a band as unpopulated instead of silently dropping it.
+    """
+    if spec_bdy_width < 1:
+        raise ValueError(
+            f"spec_bdy_width must be >= 1, got {spec_bdy_width}")
+    d = boundary_distance(ny, nx)
+    bands = [("d0_specified", d == 0)]
+    for row in range(1, spec_bdy_width):
+        bands.append((f"d{row}_relaxation", d == row))
+    bands.append(("relaxation", (d >= 1) & (d <= spec_bdy_width - 1)))
+    bands.append(("interior", d >= spec_bdy_width))
+    return bands
+
+
+def _masked(field, mask: np.ndarray):
+    """Select the mask's cells from the LAST TWO axes of ``field``."""
+    if field is None:
+        return None
+    return field[..., mask]
+
+
+def compare_masked(gpu: dict, cpu: dict, mask: np.ndarray) -> dict:
+    """Matched metrics over one boundary band of an untrimmed frame pair."""
+    return _compare_fields({k: _masked(v, mask) for k, v in gpu.items()},
+                           {k: _masked(v, mask) for k, v in cpu.items()},
+                           composite_axis=0)
+
+
+def compare_strata(gpu_path: Path, cpu_path: Path,
+                   spec_bdy_width: int) -> list[dict]:
+    """One metric row per boundary band for a matched frame pair."""
+    gpu_stamp, gpu = _read_fields(gpu_path, _FIELDS, 0)
+    cpu_stamp, cpu = _read_fields(cpu_path, _FIELDS, 0)
+    if gpu_stamp != cpu_stamp:
+        raise ValueError(
+            f"Times mismatch: gpu {gpu_stamp!r} vs cpu {cpu_stamp!r}")
+    shape = None
+    for name in _FIELDS:
+        if gpu.get(name) is not None:
+            shape = gpu[name].shape[-2:]
+            break
+    if shape is None:
+        raise ValueError(f"{gpu_path.name} carries none of {_FIELDS}")
+    ny, nx = shape
+    rows = []
+    for label, mask in strata_masks(ny, nx, spec_bdy_width):
+        row = {"band": label, "cells": int(mask.sum())}
+        if row["cells"] == 0:
+            row.update({k: float("nan") for k in _METRIC_COLUMNS})
+        else:
+            row.update(compare_masked(gpu, cpu, mask))
+        rows.append(row)
+    return rows
+
+
 def compare_pair(gpu_path: Path, cpu_path: Path, rows: int) -> dict:
     gpu_stamp, gpu = _read_fields(gpu_path, _FIELDS, rows)
     cpu_stamp, cpu = _read_fields(cpu_path, _FIELDS, rows)
     if gpu_stamp != cpu_stamp:
         raise ValueError(
             f"Times mismatch: gpu {gpu_stamp!r} vs cpu {cpu_stamp!r}")
+    return _compare_fields(gpu, cpu, composite_axis=0)
+
+
+def _compare_fields(gpu: dict, cpu: dict, *, composite_axis: int) -> dict:
+    """The metric set, over whatever selection of cells it is handed.
+
+    Shared verbatim by the ``--exclude-rows`` interior grid and by the
+    boundary bands, so one field is never scored by two formulas.
+    """
     row: dict[str, object] = {}
 
     def _stat2(name: str, key: str):
@@ -137,8 +223,8 @@ def compare_pair(gpu_path: Path, cpu_path: Path, rows: int) -> dict:
         row["rainnc_corr"] = float("nan")
         row["cpu_rainnc_mean_mm"] = row["gpu_rainnc_mean_mm"] = float("nan")
     if gpu["REFL_10CM"] is not None and cpu["REFL_10CM"] is not None:
-        gcomp = gpu["REFL_10CM"].max(axis=0)
-        ccomp = cpu["REFL_10CM"].max(axis=0)
+        gcomp = gpu["REFL_10CM"].max(axis=composite_axis)
+        ccomp = cpu["REFL_10CM"].max(axis=composite_axis)
         row["refl_comp_corr"] = _pearson(gcomp, ccomp)
         row["refl_comp_mae"] = float(np.abs(
             gcomp.astype(np.float64) - ccomp.astype(np.float64)).mean())
@@ -152,8 +238,7 @@ def compare_pair(gpu_path: Path, cpu_path: Path, rows: int) -> dict:
     return row
 
 
-_COLUMNS = (
-    "domain", "valid_time", "forecast_hour",
+_METRIC_COLUMNS = (
     "t2_mae", "t2_corr", "psfc_mae", "psfc_corr", "wind10_corr",
     "qvapor_corr", "w_corr", "rainnc_corr",
     "cpu_rainnc_mean_mm", "gpu_rainnc_mean_mm",
@@ -161,8 +246,19 @@ _COLUMNS = (
     "cpu_refl_max", "gpu_refl_max",
 )
 
+_COLUMNS = ("domain", "valid_time", "forecast_hour") + _METRIC_COLUMNS
 
-def main() -> int:
+_STRATA_COLUMNS = (("domain", "valid_time", "forecast_hour", "band", "cells")
+                   + _METRIC_COLUMNS)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """The comparator's whole flag surface, assembled.
+
+    Split out of :func:`main` so a test can hold the published reproduce
+    commands against the parser that actually runs them, instead of against a
+    transcription of the help text.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--gpu-dir", type=Path, required=True)
     parser.add_argument("--cpu-dir", type=Path, required=True)
@@ -174,9 +270,22 @@ def main() -> int:
     parser.add_argument("--start-time", default=None,
                         help="run start (YYYY-MM-DD_HH:MM:SS) for lead hours")
     parser.add_argument("--exclude-rows", type=int, default=5)
+    parser.add_argument("--boundary-strata", action="store_true",
+                        help="also score per boundary-distance band "
+                             "(d=0 specified, d=1..relaxation, interior)")
+    parser.add_argument("--strata-csv", type=Path, default=None,
+                        help="band table destination "
+                             "(default: --out-csv with a -strata suffix)")
+    parser.add_argument("--spec-bdy-width", type=int, default=5,
+                        help="first interior distance; the relaxation band "
+                             "is d = 1..spec_bdy_width-1")
     parser.add_argument("--poll-seconds", type=float, default=30.0)
     parser.add_argument("--settle-seconds", type=float, default=20.0)
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     start_dt = (datetime.strptime(args.start_time, "%Y-%m-%d_%H:%M:%S")
                 if args.start_time else None)
@@ -190,6 +299,15 @@ def main() -> int:
         args.out_csv.parent.mkdir(parents=True, exist_ok=True)
         with args.out_csv.open("w", newline="") as fh:
             csv.writer(fh).writerow(_COLUMNS)
+
+    strata_csv = None
+    if args.boundary_strata:
+        strata_csv = args.strata_csv or args.out_csv.with_name(
+            args.out_csv.stem + "-strata" + args.out_csv.suffix)
+        if not strata_csv.exists():
+            strata_csv.parent.mkdir(parents=True, exist_ok=True)
+            with strata_csv.open("w", newline="") as fh:
+                csv.writer(fh).writerow(_STRATA_COLUMNS)
 
     cpu_index: dict[tuple[str, str], Path] = {}
     for path in sorted(args.cpu_dir.iterdir()):
@@ -209,6 +327,9 @@ def main() -> int:
                 continue
             try:
                 row = compare_pair(path, cpu_index[key], args.exclude_rows)
+                bands = (compare_strata(path, cpu_index[key],
+                                        args.spec_bdy_width)
+                         if strata_csv is not None else ())
             except Exception as exc:  # noqa: BLE001 - retry next poll
                 print(f"[stream-compare] {path.name}: not ready ({exc})",
                       flush=True)
@@ -226,6 +347,17 @@ def main() -> int:
                            for k in _COLUMNS if k not in record})
             with args.out_csv.open("a", newline="") as fh:
                 csv.DictWriter(fh, fieldnames=_COLUMNS).writerow(record)
+            if strata_csv is not None:
+                with strata_csv.open("a", newline="") as fh:
+                    writer = csv.DictWriter(fh, fieldnames=_STRATA_COLUMNS)
+                    for band in bands:
+                        band_record = {"domain": domain, "valid_time": stamp,
+                                       "forecast_hour": lead}
+                        band_record.update(
+                            {k: band.get(k, float("nan"))
+                             for k in _STRATA_COLUMNS
+                             if k not in band_record})
+                        writer.writerow(band_record)
             done.add(key)
             line = (f"- {domain} {stamp} (F{lead or '?'}): "
                     f"T2 MAE {record['t2_mae']:.3f} K corr "

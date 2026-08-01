@@ -15,12 +15,13 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import numpy as np
 
 from gpuwm import __version__
 from gpuwm.bridges import decode_failure_message
+from gpuwm.explain import warn
 from gpuwm.era5_direct import (
     _canonical_surface,
     _load_static,
@@ -36,14 +37,17 @@ from gpuwm.ingest.horiz import (
     interpolate_lake_skin_temperature,
 )
 from gpuwm.ingest.lateral_bc import (
+    StateBoundaryFrames,
     attach_lateral_boundaries,
-    build_state_lateral_boundaries,
 )
 from gpuwm.ingest.prepared_cache import (
     prepared_cache_identity,
     write_prepared_cache,
 )
-from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
+from gpuwm.ingest.preprocess_backend import (
+    release_backend_memory,
+    resolve_preprocess_backend,
+)
 from gpuwm.ingest.real import initialize_real
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.native_domain_artifacts import _atomic_staging_sibling
@@ -57,12 +61,11 @@ from gpuwm.source_hierarchy import (
     initialize_and_export_regular_source_hierarchy,
 )
 from gpuwm.physics_compat import (
-    WSM6_PROFILE_ID,
     acknowledgement_delivery,
     land_surface_component_for_selector,
     land_surface_route_blocker,
     multi_domain_physics_selection,
-    validate_single_domain_physics_profile,
+    single_domain_physics_selection,
 )
 from gpuwm.wrf_direct import export_prepared_wrf
 
@@ -170,22 +173,15 @@ def _implementation_sha256() -> dict[str, str]:
 
 
 def _distribution_manifest() -> tuple[Path, dict[str, object]]:
-    raw_path = os.environ.get("GPUWM_NATIVE_DISTRIBUTION_MANIFEST")
-    if not raw_path:
+    """The sealed manifest, validated against its WHOLE schema."""
+
+    from gpuwm.runtime_manifest import manifest_from_environment
+
+    bound = manifest_from_environment()
+    if bound is None:
         raise RuntimeError(
             "installed GFS runtime requires GPUWM_NATIVE_DISTRIBUTION_MANIFEST")
-    path = Path(raw_path).resolve()
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    artifact = payload.get("artifact")
-    source = payload.get("source")
-    if (payload.get("schema") != "gpuwm-native-wrf-runtime-v1"
-            or payload.get("status") != "READY"
-            or not isinstance(artifact, dict)
-            or artifact.get("gpuwm_version") != __version__
-            or not isinstance(source, dict)
-            or not source.get("worktree_clean")):
-        raise RuntimeError("unrecognized or incompatible native distribution manifest")
-    return path, payload
+    return bound
 
 
 def _git_source_identity() -> dict[str, object]:
@@ -476,8 +472,18 @@ def _read_series(path: Path) -> tuple[tuple[int, Path], ...]:
             raise FileNotFoundError(f"missing GFS series file: {source}")
         records.append((hour, source))
     hours = [hour for hour, _ in records]
-    if len(hours) < 2 or hours[0] != 0:
-        raise ValueError("GFS series must have at least two times and begin at f000")
+    # The series names the SOURCE leads it carries, and its first entry is
+    # not required to be f000.  Initializing a model from a forecast lead
+    # is routine practice -- WPS/real does it from any met_em set -- and
+    # the f000 anchor here was the reason a user who wanted the f174..f240
+    # window had to integrate 240 hours to reach it.  What a series must
+    # still be is at least two times, nonnegative, strictly increasing on
+    # one uniform certified cadence, inside the published horizon: the
+    # first is the initial condition and the rest are its boundaries.
+    if len(hours) < 2:
+        raise ValueError("GFS series must have at least two times")
+    if hours[0] < 0:
+        raise ValueError("GFS series forecast hours must be nonnegative")
     if hours[-1] > 384:
         raise ValueError("GFS series exceeds the certified f384 product horizon")
     deltas = [later - earlier for earlier, later in zip(hours, hours[1:])]
@@ -486,6 +492,86 @@ def _read_series(path: Path) -> tuple[tuple[int, Path], ...]:
     if deltas[0] not in {1, 3}:
         raise ValueError("GFS series cadence must be exactly 1 or 3 hours")
     return tuple(records)
+
+
+def resolve_initial_forecast_lead(
+        *, start_time: datetime, cycle_time: datetime,
+        source_hours: Sequence[int]) -> int:
+    """The source lead the model starts from, or a precise refusal.
+
+    ``start_time = cycle + K hours`` for any K the series actually
+    carries.  K = 0 is the analysis and is what every GFS run did
+    before; a positive K initializes from a forecast lead, which is
+    ordinary practice (WPS/real does it) and is what the front door used
+    to refuse outright with "GFS cycle must equal experiment start_time".
+    A user who wanted the f174..f240 window therefore had to integrate
+    240 hours to reach it.
+
+    Three things are refused here and nothing else: a start BEFORE the
+    cycle (no such product exists), a start that is not a whole number of
+    hours after it (the series is hourly), and a lead the fetched set does
+    not contain.  The last one names the set, because "which leads do I
+    have" is the question a caller who hits it is actually asking.
+    """
+
+    offset = start_time - cycle_time
+    seconds = offset.total_seconds()
+    if seconds < 0:
+        raise ValueError(
+            f"experiment start_time {start_time:%Y-%m-%d %H:%M:%S} is "
+            f"BEFORE GFS cycle {cycle_time:%Y-%m-%d %H:%M:%S}; a model "
+            "cannot be initialized from a product its source has not "
+            "produced yet")
+    if seconds % 3600:
+        raise ValueError(
+            f"experiment start_time {start_time:%Y-%m-%d %H:%M:%S} is "
+            f"{seconds / 3600.0:g} h after GFS cycle "
+            f"{cycle_time:%Y-%m-%d %H:%M:%S}; a GFS forecast lead is a "
+            "whole number of hours")
+    lead = int(seconds // 3600)
+    hours = [int(hour) for hour in source_hours]
+    if lead not in hours:
+        raise ValueError(
+            f"experiment start_time {start_time:%Y-%m-%d %H:%M:%S} asks "
+            f"GFS cycle {cycle_time:%Y-%m-%d %H:%M:%S} for forecast lead "
+            f"f{lead:03d}, which this series does not carry.  The fetched "
+            "forecast hours are "
+            + ", ".join(f"f{hour:03d}" for hour in hours)
+            + ".  Fetch that lead (`gpuwm fetch --source gfs "
+            f"--forecast-start-hour {lead}`) or set start_time to a lead "
+            "the series has")
+    return lead
+
+
+def initial_condition_provenance(
+        *, cycle_time: datetime, lead_hours: int) -> dict[str, object]:
+    """What the initial condition IS, said in one sentence and in fields.
+
+    A forecast lead is never relabelled as an analysis: at K = 0 this
+    says analysis and names process 81; at K > 0 it says forecast, names
+    process 96, and says out loud that the initial condition is itself a
+    K-hour forecast.  Every receipt this door writes carries this block,
+    so a reader can never recover the cycle without also recovering the
+    lead.
+    """
+
+    analysis = lead_hours == 0
+    start_time = cycle_time + timedelta(hours=lead_hours)
+    return {
+        "schema": "gpuwm-gfs-initial-condition-provenance-v1",
+        "cycle": cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "initial_forecast_lead_hours": int(lead_hours),
+        "model_start_time": start_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "initial_condition_kind": "analysis" if analysis else "forecast",
+        "forecast_generating_process_id": 81 if analysis else 96,
+        "statement": (
+            f"initialized from GFS cycle "
+            f"{cycle_time:%Y-%m-%dT%H:%M:%SZ} analysis (f000)"
+            if analysis else
+            f"initialized from GFS cycle "
+            f"{cycle_time:%Y-%m-%dT%H:%M:%SZ} at lead f{lead_hours:03d}: "
+            f"the initial condition is itself a {lead_hours} h forecast"),
+    }
 
 
 def _verify_input_manifest(
@@ -711,35 +797,32 @@ def front_door_physics_selection(
         physics_profile: str | None = None,
         expert_acknowledgements: tuple[str, ...] = (),
 ) -> dict[str, object]:
-    """The front door's physics gate, scoped by DOMAIN COUNT.
+    """The front door's physics selection: record, govern, never whitelist.
 
-    One door, two routes, and the routes have never had the same
-    physics contract.  The prepared SINGLE-domain forecast runner
-    accepts a fixed list of named profiles and compares an experiment's
-    switches to one of them for exact equality; the multi-domain
-    (domain-tree) runner has no such list and runs the selected suite as
-    written.  ``gpuwm domain`` prints that boundary in the note beside
-    every config it emits.
+    One door, one contract now (owner ruling 2026-07-31: the physics
+    suite is the user's choice).  The single-domain route used to
+    substitute WSM6 when no profile was named and compare the config's
+    switches against it for exact equality, so the product default suite
+    -- and every hand-authored suite -- was refused at preparation time.
+    That whitelist is gone: an UNNAMED configuration, one domain or a
+    tree, is governed the way the domain-tree route has always been
+    governed -- engine-valid selectors, the registry's source-neutral
+    tuple governance with its expert acknowledgements, and a recorded
+    blocker (never a refusal) where the registry has no spelling for an
+    engine-valid tuple.  Verification status is receipt metadata.
 
-    v1.1.0 lost the boundary: the any-combo work made this door call
-    :func:`validate_single_domain_physics_profile` for every
-    configuration, so the whitelist bound at the front door instead of
-    at the runner that owns it.  Three things followed, all of them
-    field-observed -- a two-domain config that prepared cleanly on 1.0.1
-    was refused; the product default suite is deliberately not in the
-    whitelist, so the config the wizard emits BY DEFAULT could not pass
-    at all; and the refusal arrived as a stack trace.
+    v1.1.0's regression (this whitelist binding at the front door for
+    every configuration, refusing the wizard's default emission as a
+    stack trace) and v1.1.1's scoping fix are recorded in this module's
+    history; the 2026-07-31 ruling removed the single-domain half too.
 
-    A single domain meets the whitelist exactly as it did in 1.1.0,
-    defaulting to WSM6 when the caller named no profile.  An unnamed
-    domain tree is governed by the registry reachability of each complete
-    resolved component tuple: declared tuples proceed unchanged, while an
-    outside tuple must carry the explicit expert acknowledgement named by
-    :func:`multi_domain_physics_selection`.  That capability decision is
-    source-neutral.  The per-domain receipt records both the selectors and
-    their governance result.  An explicitly named profile is still
-    enforced on either route, because a gate the caller asked for remains
-    binding.
+    An explicitly named profile is still enforced on either route,
+    because a gate the caller asked for remains binding: naming
+    ``--physics-profile`` asserts the config IS that shipped suite.
+    The one genuine per-source blocker -- the registry's land-surface
+    route declaration, which carries the GFS+RUC `mavail must be
+    finite` field finding -- refuses on the resolved selector for every
+    shape alike, before any GRIB is decoded.
     """
 
     acknowledgements, provenance = acknowledgement_delivery(
@@ -747,23 +830,35 @@ def front_door_physics_selection(
         toml=getattr(exp, "acknowledgements", ()),
     )
     if len(exp.domains) == 1:
-        selection = validate_single_domain_physics_profile(
-            WSM6_PROFILE_ID if physics_profile is None else physics_profile,
-            config=exp.root.run,
+        # THE single-domain selection spelling, shared with the
+        # prepared-forecast runner's governance and recompute so the
+        # two sides cannot drift (physics_compat owns it).
+        selection = single_domain_physics_selection(
+            exp.root.run,
+            profile=physics_profile,
             expert_acknowledgements=acknowledgements,
             acknowledgement_provenance=provenance)
-        _refuse_unoffered_land_surface(
-            {1: selection.get("selectors")})
-        return selection
-    selection = multi_domain_physics_selection(
-        {int(domain.grid_id): domain.run for domain in exp.domains},
-        profile=physics_profile,
-        expert_acknowledgements=acknowledgements,
-        acknowledgement_provenance=provenance)
-    _refuse_unoffered_land_surface({
-        int(grid_id): domain.get("selectors")
-        for grid_id, domain in selection["domains"].items()})
+    else:
+        selection = multi_domain_physics_selection(
+            {int(domain.grid_id): domain.run for domain in exp.domains},
+            profile=physics_profile,
+            expert_acknowledgements=acknowledgements,
+            acknowledgement_provenance=provenance)
+    _refuse_unoffered_land_surface(_selection_selectors_by_domain(selection))
     return selection
+
+
+def _selection_selectors_by_domain(
+        selection: Mapping[str, object]) -> dict[int, object]:
+    """Selector records by grid id, for either selection receipt shape."""
+
+    domains = selection.get("domains")
+    if isinstance(domains, Mapping):
+        return {
+            int(grid_id): domain.get("selectors")
+            for grid_id, domain in domains.items()
+        }
+    return {1: selection.get("selectors")}
 
 
 def _refuse_unoffered_land_surface(selectors_by_domain) -> None:
@@ -898,11 +993,60 @@ def prepare_gfs_wrf(
     physics_selection = front_door_physics_selection(
         exp, physics_profile=physics_profile,
         expert_acknowledgements=expert_acknowledgements)
-    if exp.start_time != cycle_time:
-        raise ValueError("GFS cycle must equal experiment start_time")
-    hours = [hour for hour, _ in records]
+    # The model's time zero is the experiment's, and it may sit at any
+    # source lead the series carries -- not only at the cycle.  Two hour
+    # vocabularies live from here down and they are never interchanged:
+    # SOURCE leads (f000, f018, f174 ...) name NOAA products, and MODEL
+    # forcing offsets (0, 3, 6 ...) count from start_time.  Everything
+    # downstream of this door -- the prepared cache, the WRF export, the
+    # forecast runner -- speaks model offsets, which is why a run at lead
+    # 0 is bit-for-bit the run it always was.
+    series_hours = [hour for hour, _ in records]
+    lead_hours = resolve_initial_forecast_lead(
+        start_time=exp.start_time, cycle_time=cycle_time,
+        source_hours=series_hours)
+    provenance = initial_condition_provenance(
+        cycle_time=cycle_time, lead_hours=lead_hours)
+    initial_index = series_hours.index(lead_hours)
+    source_hours = series_hours[initial_index:]
+    if lead_hours:
+        # Said BEFORE the window checks below, so a refusal about the
+        # window is read in the light of the lead that shaped it.  Warn,
+        # do not block: this is a legitimate initialization whose one
+        # consequence the reader has to be told once.
+        warn(provenance["statement"],
+             "Every field this door consumes is an instantaneous GRIB2 "
+             "product definition template 4.0 record, refused by "
+             "gfs_grib2_bridge if it is anything else, so no consumed "
+             "field carries an accumulation or averaging window whose "
+             "meaning would depend on the lead.  What does depend on the "
+             "lead is forecast skill: the state you are starting from "
+             f"is GFS's own {lead_hours} h forecast, not an analysis.")
+        if initial_index:
+            warn(
+                f"the GFS series carries {initial_index} forecast hour(s) "
+                f"before f{lead_hours:03d} "
+                + "(" + ", ".join(f"f{hour:03d}"
+                                  for hour in series_hours[:initial_index])
+                + "); they are decoded and bound by the input manifest but "
+                "are not used by this run",
+                "The series and its manifest are one hash-bound document: "
+                "the door verifies every file the series names rather than "
+                "silently ignoring some.  Author a manifest over the tail "
+                "you want (`gpuwm fetch --author-front-door-manifest "
+                f"--forecast-start-hour {lead_hours}`) to decode only it.")
+    if len(source_hours) < 2:
+        raise ValueError(
+            f"GFS series ends at forecast lead f{lead_hours:03d}, the lead "
+            "this experiment starts from, so it carries no lateral boundary "
+            "time at all; fetch at least one more forecast hour")
+    hours = [hour - lead_hours for hour in source_hours]
     if hours[-1] * 3600 < exp.run_seconds:
-        raise ValueError("GFS series does not cover the configured run")
+        raise ValueError(
+            f"GFS series does not cover the configured run: it reaches "
+            f"f{source_hours[-1]:03d}, which is {hours[-1]} h after the "
+            f"f{lead_hours:03d} this experiment starts from, and the run "
+            f"is {exp.run_seconds / 3600.0:g} h long")
     boundary_interval_seconds = (hours[1] - hours[0]) * 3600
     cfg = exp.root.run
     # What the fetch actually reached, not what the default ladder would
@@ -953,28 +1097,40 @@ def prepare_gfs_wrf(
             hour: manifest["files"][f"grib-f{hour:03d}"]["sha256"]
             for hour, _ in records
         }
-        snapshots = _load_bridge_snapshots(
+        decoded_snapshots = _load_bridge_snapshots(
             decoded, cycle_time, records, expected_source_sha256,
             expected_levels_hpa=expected_levels_hpa)
+        # From here on the run sees only the window that starts at the
+        # experiment's lead.  Each snapshot still carries the SOURCE
+        # valid time the bridge decoded (cycle + its own lead), which is
+        # exactly start_time + the model offset.
+        snapshots = decoded_snapshots[initial_index:]
         decode_seconds = time.perf_counter() - decode_started
         lake_mask = static["LU_INDEX"] == 21
         coverage_receipt = {
             f"f{hour:03d}": _source_coverage_receipt(snapshot, grid, lake_mask)
-            for (hour, _), snapshot in zip(records, snapshots)
+            for hour, snapshot in zip(source_hours, snapshots)
         }
 
         from gpuwm.core.grid import make_vertical_coord
 
         initialize_started = time.perf_counter()
-        results = []
-        horizontal = []
+        # Only the first time's met/state survive this loop; every later
+        # time contributes its perimeter frames and is released at once.
+        # Retaining all of them is what made ingest peak above the
+        # forecast it was preparing.
+        initial_result = None
+        initial_met = None
+        forcing = StateBoundaryFrames(
+            spec_bdy_width=cfg.spec_bdy_width,
+            spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
         interpolation_landmask = np.asarray(
             static["LANDMASK"] >= 0.5, dtype=np.bool_).copy()
         # GEOG lakes can be much smaller than a 0.25-degree GFS cell.  Select
         # their atmospheric/soil source as land here, then apply the existing
         # explicit nearest-source-water lake initialization below.
         interpolation_landmask[lake_mask] = True
-        for source in snapshots:
+        for index, source in enumerate(snapshots):
             met = interpolate_era5_to_lambert(
                 source, grid,
                 target_landmask=interpolation_landmask,
@@ -993,18 +1149,20 @@ def prepare_gfs_wrf(
                 static["MAPFAC_M"], static["MAPFAC_U"], static["MAPFAC_V"],
                 static["F"], static["E"], sina=static["SINALPHA"],
                 cosa=static["COSALPHA"])
-            horizontal.append(met)
-            results.append(initialized)
+            forcing.add_state(initialized.state)
+            if index == 0:
+                initial_met = met
+                initial_result = initialized
+            else:
+                del met, initialized, coord
+                release_backend_memory(preprocess)
         times = tuple(snapshot.valid_time for snapshot in snapshots)
-        boundaries = build_state_lateral_boundaries(
-            [value.state for value in results], times,
-            spec_bdy_width=cfg.spec_bdy_width,
-            spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
-        attach_lateral_boundaries(results[0].state, boundaries)
+        boundaries = forcing.build(times)
+        attach_lateral_boundaries(initial_result.state, boundaries)
         lake_skin = interpolate_lake_skin_temperature(
             snapshots[0], grid, lake_mask)
         soil = preprocess_land_surface_soil(
-            horizontal[0].fields,
+            initial_met.fields,
             sf_surface_physics=int(cfg.sf_surface_physics),
             num_soil_layers=int(cfg.num_soil_layers),
             soil_type=static["SCT_DOM"],
@@ -1016,6 +1174,12 @@ def prepare_gfs_wrf(
             "adapter": "gfs-pgrb2-0p25-direct-v1",
             "input_manifest_schema": manifest["schema"],
             "input_manifest_sha256": manifest_digest,
+            # Cycle AND lead, never one standing in for the other.  A
+            # cache restored from this identity can say what its initial
+            # condition was without consulting anything else.
+            "initial_condition": provenance,
+            "source_forecast_hours": list(source_hours),
+            "decoded_forecast_hours": list(series_hours),
             "decoder": {
                 "name": Path(bridge).name,
                 "sha256": decoder_digest,
@@ -1062,7 +1226,7 @@ def prepare_gfs_wrf(
                     geog_root=Path(geog_root), source_name="GFS",
                     artifact_output=staging / "hierarchy-artifacts",
                     wrf_output=staging / "wrf-native-input",
-                    root_initial_result=results[0], root_met=horizontal[0],
+                    root_initial_result=initial_result, root_met=initial_met,
                     root_soil=soil, root_static_fields=static,
                     root_boundaries=boundaries,
                     bridge_manifest_sha256=manifest_digest,
@@ -1097,6 +1261,8 @@ def prepare_gfs_wrf(
                     "status": "READY_NOT_YET_STOCK_WRF_GATED",
                     "domain_count": len(exp.domains),
                     "physics": physics_selection,
+                    "initial_condition": provenance,
+                    "source_forecast_hours": list(source_hours),
                     "forcing_times": [value.isoformat() for value in times],
                     "forcing_hours": hours,
                     "boundary_interval_seconds": boundary_interval_seconds,
@@ -1145,7 +1311,7 @@ def prepare_gfs_wrf(
             cache_started = time.perf_counter()
             cache_receipt = write_prepared_cache(
                 prepared_cache, identity=identity,
-                initial_result=results[0], met=horizontal[0],
+                initial_result=initial_result, met=initial_met,
                 boundaries=boundaries, surface=_canonical_surface(soil),
                 metadata={
                     "source_adapter": "gfs",
@@ -1164,11 +1330,16 @@ def prepare_gfs_wrf(
                 prepared_cache, static_cache, geometry_receipt, wrf_output,
                 valid_time=times[0],
                 boundary_interval_seconds=boundary_interval_seconds,
-                # The RESOLVED profile, not the caller's argument: the
-                # single-domain route defaults to WSM6 when nobody named
-                # one, and the exporter must be handed the same profile
-                # the gate just checked or its receipt cannot match.
+                # The RESOLVED selection, not the caller's argument.
+                # Named, the exporter re-validates the same profile this
+                # gate just checked.  Unnamed (owner ruling 2026-07-31),
+                # the exporter recomputes the experiment-config suite
+                # selection from its OWN cache-bound config -- the
+                # profileless contract -- and the equality check below
+                # proves both spellings agree byte for byte.
                 physics_profile=physics_selection["profile"],
+                experiment_config_suite=(
+                    physics_selection["profile"] is None),
                 expert_acknowledgements=tuple(
                     physics_selection["acknowledgements"]),
                 acknowledgement_provenance=physics_selection[
@@ -1223,6 +1394,13 @@ def prepare_gfs_wrf(
             proof = {
                 "schema": PROOF_SCHEMA,
                 "status": "READY_NOT_YET_STOCK_WRF_GATED",
+                # Cycle, lead and start, all three, in the document a
+                # forecast run is pinned to.  ``forcing_hours`` below
+                # are MODEL offsets from start_time;
+                # ``source_forecast_hours`` are the NOAA leads they came
+                # from, and the two are equal exactly when the lead is 0.
+                "initial_condition": provenance,
+                "source_forecast_hours": list(source_hours),
                 "forcing_times": [value.isoformat() for value in times],
                 "forcing_hours": hours,
                 "boundary_interval_seconds": boundary_interval_seconds,
@@ -1400,14 +1578,8 @@ def prepared_forecast_next_command(
                 load_experiment(Path(experiment_config)).root.run)
         except Exception:  # a config this process cannot load is not a command
             profile = None
-    if profile is None:
-        return lines + [
-            f"  (the physics in {Path(experiment_config)} matches none of "
-            "the profiles the prepared single-domain runner accepts, so "
-            "no runnable command can be printed for it.  Re-emit the "
-            "config with `gpuwm domain --physics-profile <id>` -- "
-            "`gpuwm domain --help` lists the ids -- and the runner will "
-            "then accept it.)"]
+    profile_line = (
+        [] if profile is None else [f"      --physics-profile {profile} \\"])
     lines += [
         "  python -m gpuwm.prepared_single_domain_forecast \\",
         f"      --source {source} \\",
@@ -1417,11 +1589,17 @@ def prepared_forecast_next_command(
         f"      --prepared-content-sha256 {content} \\",
         f"      --experiment-config {_arg(experiment_config)} \\",
         f"      --wps-namelist {_arg(wps_namelist)} \\",
-        f"      --physics-profile {profile} \\",
+        *profile_line,
         f"      --io-mode history --outdir {_arg(outdir)}",
         "  (--run-seconds and --history-interval-seconds default to the "
         "hash-bound experiment; the runner refuses any other value.)",
     ]
+    if profile is None:
+        # One sentence, and the command above runs (owner posture
+        # 2026-07-31: verification status is stated, never gating).
+        lines.append(
+            "  (physics: this config's suite is supported, not yet "
+            "WRF-verified; the runner executes it as written.)")
     return lines
 
 
@@ -1446,10 +1624,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hierarchy-workers", type=int)
     parser.add_argument(
         "--physics-profile", default=None,
-        help="registered fixed physics template materialized in the "
-             "experiment; the single-domain route defaults to "
-             f"{WSM6_PROFILE_ID} and a domain tree, which has no profile "
-             "whitelist, defaults to the suite the config selects")
+        help="optional assertion that the experiment IS this registered "
+             "fixed physics template, refused on any switch drift; "
+             "omitted, the suite the config selects runs as written on "
+             "both routes and its WRF-verification status is reported, "
+             "never gating")
     parser.add_argument(
         "--ack", action="append", default=[],
         help="registry-owned expert acknowledgement id; repeat as needed")

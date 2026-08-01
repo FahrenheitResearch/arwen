@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 
 from gpuwm.offline_child import (
+    PARENT_SCHEME_CONTRACT,
+    _resolve_source_physics,
     bind_parent_physics_from_wrf_namelist,
     build_offline_child_domain_state,
     MomentDiagnosisRequired,
@@ -304,6 +306,51 @@ def test_inventory_inference_is_advisory_when_companion_binds_physics(tmp_path):
     info = inspect_parent_history_frame(path, source_mp_physics=18)
     assert info.source_mp_physics == 18
     assert info.inferred_mp_physics == 10
+
+
+@pytest.mark.parametrize("parent_mp", [0, 1])
+def test_offline_child_parent_scheme_refusal_names_the_switch(
+        tmp_path, parent_mp):
+    """A genuine unimplemented-selector refusal, watched at all four gates.
+
+    This route's parent contract is NOT a profile whitelist: the child's
+    hydrometeor mapping is written against the transported species of
+    WSM6/Thompson/Morrison/NSSL, and mp 0 (no microphysics) and mp 1
+    (Kessler, qc+qr only) have no mapping here -- so the 2026-07-31 suite
+    ruling leaves these refusals standing.  What the ruling does demand
+    is that each one name the exact switch and its value, and that the
+    refusal be pinned rather than merely believed; before this test the
+    four enforcement points had no coverage at all.
+    """
+
+    namelist = tmp_path / f"namelist-mp{parent_mp}.input"
+    namelist.write_text(
+        f"&physics\n mp_physics = {parent_mp},\n/\n", encoding="utf-8")
+    with pytest.raises(
+            OfflineChildContractError,
+            match=f"mp_physics={parent_mp}"):
+        bind_parent_physics_from_wrf_namelist(namelist)
+
+    frame = tmp_path / "parent.nc"
+    _history(frame, datetime(1974, 4, 3, 12))
+    with pytest.raises(
+            OfflineChildContractError,
+            match=f"mp_physics={parent_mp}"):
+        inspect_parent_history_frame(frame, source_mp_physics=parent_mp)
+
+    with pytest.raises(
+            OfflineChildContractError,
+            match=f"source mp 6/8/10/18, got {parent_mp}"):
+        map_microphysics_to_nssl18({}, source_mp_physics=parent_mp)
+
+    with pytest.raises(
+            OfflineChildContractError,
+            match=f"mp_physics={parent_mp}"):
+        _resolve_source_physics(parent_mp, None, None)
+
+    # The four enforcement points read ONE named contract, so a scheme
+    # can never be carried by one of them and refused by another.
+    assert PARENT_SCHEME_CONTRACT == frozenset({6, 8, 10, 18})
 
 
 def test_conservative_parent_snapshot_and_streamed_lateral_intervals(tmp_path):

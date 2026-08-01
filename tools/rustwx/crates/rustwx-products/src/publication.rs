@@ -484,7 +484,42 @@ pub fn atomic_write_json<T: Serialize>(
     atomic_write_bytes(path, &bytes)
 }
 
+/// Move `tmp` onto `dst` in one step, replacing whatever `dst` held.
+///
+/// One call is enough on both families this workspace runs on. POSIX
+/// `rename(2)` is specified to replace an existing destination atomically;
+/// Rust's Windows `fs::rename` calls `MoveFileExW` with
+/// `MOVEFILE_REPLACE_EXISTING`, which does the same. The "rename does not
+/// overwrite on Windows" folklore is about `MoveFileW` without that flag.
+///
+/// `atomic_replace_is_a_single_step_on_this_platform` asserts that against
+/// the real filesystem rather than trusting the paragraph above, because
+/// the whole no-loss-window claim rests on it and it is a platform fact.
+///
+/// A failed replace leaves both paths as they were: `dst` keeps its
+/// previous content and `tmp` is still there for the caller to clean up.
+/// That is the contract any substitute passed to
+/// [`atomic_write_bytes_with_replacer`] must honour.
+pub fn replace_file(tmp: &Path, dst: &Path) -> Result<(), std::io::Error> {
+    fs::rename(tmp, dst)
+}
+
 pub fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    atomic_write_bytes_with_replacer(path, bytes, replace_file)
+}
+
+/// [`atomic_write_bytes`] with the final replace step supplied by the
+/// caller, so the crash window can be *tested* rather than reasoned about.
+///
+/// Production has exactly one implementation and it is [`replace_file`].
+pub fn atomic_write_bytes_with_replacer<R>(
+    path: &Path,
+    bytes: &[u8],
+    replace: R,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    R: FnOnce(&Path, &Path) -> Result<(), std::io::Error>,
+{
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -502,10 +537,10 @@ pub fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::
         let _ = fs::remove_file(&tmp_path);
         return Err(err);
     }
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-    if let Err(err) = fs::rename(&tmp_path, path) {
+    // One step, and nothing before it touches `path`. There is no moment at
+    // which the destination is absent: it holds the old bytes until the
+    // replace returns and the new bytes afterwards.
+    if let Err(err) = replace(&tmp_path, path) {
         let _ = fs::remove_file(&tmp_path);
         return Err(Box::new(err));
     }
@@ -745,6 +780,110 @@ mod tests {
         let loaded: JsonFixture = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(loaded, second);
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// The platform fact the whole guarantee rests on, asserted against the
+    /// real filesystem: a rename onto an existing file succeeds and the
+    /// destination ends up holding exactly the source's bytes.
+    #[test]
+    fn atomic_replace_is_a_single_step_on_this_platform() {
+        let root = std::env::temp_dir().join(format!(
+            "rustwx_products_publication_platform_{}",
+            process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let dst = root.join("manifest.json");
+        let tmp = root.join("incoming");
+        fs::write(&dst, b"previous good manifest").unwrap();
+        fs::write(&tmp, b"the new one").unwrap();
+
+        replace_file(&tmp, &dst).unwrap();
+
+        assert_eq!(fs::read(&dst).unwrap(), b"the new one");
+        assert!(!tmp.exists(), "the source name must be gone after a replace");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// The retired code was `remove_file(dst)` then `rename(tmp, dst)`. A
+    /// crash between them left no manifest at all -- and every operational
+    /// bin in this workspace publishes its run manifest through here.
+    ///
+    /// The stub honours `replace_file`'s contract in the failing direction:
+    /// it moves nothing, which is what a failed rename/MoveFileEx does.
+    #[test]
+    fn a_failure_at_the_replace_leaves_the_previous_manifest_intact() {
+        let root = std::env::temp_dir().join(format!(
+            "rustwx_products_publication_crash_{}",
+            process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("manifest.json");
+        fs::write(&path, b"previous good manifest").unwrap();
+
+        let err = atomic_write_bytes_with_replacer(&path, b"the new one", |tmp, dst| {
+            // The instant the retired remove/rename gap sat at: the payload
+            // is written and fsynced, the destination is untouched, and the
+            // process dies here.
+            assert!(tmp.is_file(), "the staged payload must exist");
+            assert!(
+                dst.is_file(),
+                "the destination must still exist when the replace is entered"
+            );
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected crash at the replace",
+            ))
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("injected crash"), "{err}");
+
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"previous good manifest",
+            "a failed replace must leave the previous manifest byte-identical"
+        );
+        let leftovers: Vec<String> = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp"))
+            .collect();
+        assert_eq!(leftovers, Vec::<String>::new());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// The positive half, and the one that would have caught the retired
+    /// code: an observer around the real replace records what the
+    /// destination held going in and coming out. Both are present.
+    #[test]
+    fn the_manifest_is_never_absent_across_a_successful_write() {
+        let root = std::env::temp_dir().join(format!(
+            "rustwx_products_publication_present_{}",
+            process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("manifest.json");
+        fs::write(&path, b"previous good manifest").unwrap();
+        let mut seen: Vec<Option<Vec<u8>>> = Vec::new();
+
+        atomic_write_bytes_with_replacer(&path, b"the new one", |tmp, dst| {
+            seen.push(fs::read(dst).ok());
+            let outcome = replace_file(tmp, dst);
+            seen.push(fs::read(dst).ok());
+            outcome
+        })
+        .unwrap();
+
+        assert_eq!(
+            seen,
+            vec![
+                Some(b"previous good manifest".to_vec()),
+                Some(b"the new one".to_vec()),
+            ],
+            "the destination must read as the old manifest before the replace and \
+             the new one after it, and never as absent"
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"the new one");
         let _ = fs::remove_dir_all(root);
     }
 

@@ -39,6 +39,24 @@ adapter. Review every selector and unit, declare the complete pressure
 inventory, and compare with the worked
 `configs/rw-wps-gfs-pressure-grib2.descriptor.json` example.
 
+The command **prints the list of values it left for you**, and
+`--descriptor` refuses the unfilled scaffold against that same list, so
+what you are told to do and what you are held to cannot drift:
+
+```
+adapt skeleton: wrote /case/product.descriptor.json; 4 value(s) need
+you before --descriptor will author it:
+  adapt.model_top_pa
+  coordinates.vertical.levels
+  name
+  target.name
+```
+
+`name` and `target.name` are on that list because nothing else would
+catch them: they are ordinary strings, every validator accepts them,
+and a bundle published as `REPLACE_WITH_ADAPTER_NAME` is a real adapter
+with a placeholder identity.
+
 The descriptor's adapt-only policy is removed from the executable mapping but
 is SHA-256-bound through provenance:
 

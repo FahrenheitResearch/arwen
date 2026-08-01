@@ -11,6 +11,7 @@ surface/vector transforms.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import gc
 import hashlib
 import json
 import os
@@ -434,33 +435,77 @@ def resolve_preprocess_backend(backend="cuda", *, workers: int | None = None,
 
 
 def _sealed_distribution_preprocess_backends() -> tuple[str, ...] | None:
-    """Return the exact backend inventory of an installed native package."""
+    """Return the exact backend inventory of an installed native package.
 
-    manifest = os.environ.get("GPUWM_NATIVE_DISTRIBUTION_MANIFEST")
-    if not manifest:
+    The inventory is read from a document that has already been checked
+    against its WHOLE schema
+    (:func:`gpuwm.runtime_manifest.validate_manifest`), not against the
+    one key this function needs.  Reading a key at a time is how a
+    manifest missing ``contract`` entirely passed the identity gate,
+    ran a preparation for minutes, and then died here -- correctly, and
+    far too late.  Same refusal, hoisted to the first read.
+    """
+
+    from gpuwm.runtime_manifest import manifest_from_environment
+
+    bound = manifest_from_environment()
+    if bound is None:
         return None
-    path = Path(manifest)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        backends = payload["contract"]["platform"]["backends"]
-    except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
-        raise ValueError(
-            "sealed native distribution has no valid preprocessing backend "
-            f"inventory: {path}") from error
-    if (
-        not isinstance(backends, list)
-        or not backends
-        or any(item not in {"cpu", "cuda"} for item in backends)
-        or len(set(backends)) != len(backends)
-    ):
-        raise ValueError(
-            "sealed native distribution has an invalid preprocessing backend "
-            f"inventory: {backends!r}")
+    _path, payload = bound
+    backends = payload["contract"]["platform"]["backends"]
     return tuple(backends)
+
+
+def release_backend_memory(backend) -> None:
+    """Hand this backend's unreferenced blocks back to the device.
+
+    Streaming ingest drops one forcing time's arrays before it builds the
+    next, but CuPy's pool keeps every freed block, so the machine-visible
+    footprint would stay pinned at the high-water mark of the very first
+    time even though nothing is using it.  Asking the pool to release
+    what nobody holds is what turns the Python-level release into a
+    device-level one.
+
+    ``gc.collect()`` runs first because a released :class:`DomainState`
+    can be reachable only through a reference cycle, and a cycle-collected
+    array is not freed until the collector runs.  Live arrays are never
+    touched: :meth:`free_all_blocks` releases unreferenced blocks only.
+    This is a memory operation with no numerical effect whatsoever.
+    """
+
+    # Best effort, by design.  This function exists to hand back memory
+    # nobody is using; it decides nothing and computes nothing, so it must
+    # never be the reason a preparation fails -- nor a reason anything
+    # else behaves differently.  Both guards below are about that.
+    #
+    # A backend with no device pool has nothing to hand back: the CPU
+    # backend's arrays are NumPy, freed by refcount, and a CPU stand-in
+    # swapped in for cupy is the same story.  Returning before the
+    # collector matters because gc.collect() is a WHOLE-PROCESS event --
+    # charging every caller of a no-op release for a full collection is
+    # a side effect on code that never asked for one.
+    pools = []
+    if getattr(backend, "name", None) == "cuda":
+        module = backend.array_module
+        pools = [getattr(module, accessor, None)
+                 for accessor in ("get_default_memory_pool",
+                                  "get_default_pinned_memory_pool")]
+        pools = [accessor for accessor in pools if accessor is not None]
+    if not pools:
+        return
+    # Only now, and only because it pays for itself: a released
+    # DomainState can be reachable through a reference cycle, and a
+    # cycle-collected array is not returned to the pool until the
+    # collector runs.  This is what turns the Python-level release into
+    # a device-level one.  No numerical effect whatsoever.
+    gc.collect()
+    for accessor in pools:
+        accessor().free_all_blocks()
 
 
 __all__ = [
     "CudaPreprocessBackend",
     "ParallelCpuPreprocessBackend",
+    "release_backend_memory",
     "resolve_preprocess_backend",
 ]

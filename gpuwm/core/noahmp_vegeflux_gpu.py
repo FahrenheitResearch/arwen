@@ -25,6 +25,7 @@ from typing import Sequence
 
 import numpy as np
 
+from gpuwm.certify.kernel_manifest import record_module
 import gpuwm.core.noahmp_libm as _libm
 import gpuwm.core.noahmp_vegeflux as _host
 from gpuwm.core.noahmp_vegeflux import R4, VegeFluxState
@@ -137,12 +138,17 @@ def _module(use_device_libm: bool = False):
     if use_device_libm:
         # Negative control only.  CUDA's device libm is not the WRF function.
         options.append("-DUSE_DEVICE_LIBM")
+    code = _KERNEL.read_text(encoding="ascii")
     module = cp.RawModule(
-        code=_KERNEL.read_text(encoding="ascii"),
+        code=code,
         backend="nvrtc",
         options=tuple(options),
     )
     module.compile()
+    record_module(
+        "gpuwm.core.noahmp_vegeflux_gpu:vegeflux"
+        + ("(device-libm)" if use_device_libm else ""),
+        source=code, options=tuple(options), module=module)
     for name, value in _constant_tables().items():
         _copy_constant(module, name, value)
     return module

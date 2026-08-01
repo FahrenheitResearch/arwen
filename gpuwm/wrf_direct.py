@@ -991,8 +991,21 @@ def _surface_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
     # This proof case is warm (all soil nodes > 285 K), so WRF's frozen-water
     # initialization is exactly SH2O == SMOIS.  Fail closed for colder cases
     # until the table-driven partition is exported here as well.
+    #
+    # EXPORT-REPRESENTABILITY, not preparation: gpuwm's own Noah surface
+    # layer carries frozen soil through the forecast; only the
+    # unchanged-WRF wrfinput file set has no table-driven partition to
+    # say SH2O with here.  That is precisely the category
+    # StockWrfExportUnsupported's docstring reserves for itself, so a
+    # caller whose product is a PREPARED FORECAST can record the refusal
+    # and proceed while a caller whose product IS the export still
+    # fails.  As a bare ValueError it was uncatchable: a measured
+    # mountainous-west domain had 1438 of 65340 columns with a soil node
+    # below freezing -- every one of them land, at the DEEPEST node,
+    # between 1600 m and 3274 m of terrain -- and lost a complete,
+    # verified GPU hierarchy to a missing oracle file.
     if np.any(soilt < 273.15):
-        raise ValueError(
+        raise StockWrfExportUnsupported(
             "direct WRF export does not yet support frozen-soil SH2O setup")
     tmn = np.asarray(static["TMN"], dtype=np.float64).copy()
     valid_tmn = np.isfinite(tmn) & (tmn >= 170.0) & (tmn <= 400.0)
@@ -1829,7 +1842,26 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
                         expert_acknowledgements: Sequence[str] = (),
                         acknowledgement_provenance: Mapping[
                             str, object] | None = None,
+                        experiment_config_suite: bool = False,
                         ) -> dict[str, object]:
+    """Export wrfinput/wrfbdy under one of three physics contracts.
+
+    - ``physics_profile`` named: the exporter re-validates that the
+      cache-bound config IS that shipped suite and the v3 manifest
+      carries the named-profile selection receipt.
+    - ``experiment_config_suite=True`` (owner ruling 2026-07-31, the
+      profileless preparation contract): the exporter recomputes the
+      same source-neutral per-domain selection receipt the front door
+      computed -- from its OWN cache-bound config, never from a caller
+      claim -- and the v3 manifest carries it, so the caller's byte
+      equality check proves the prepared physics came from this config
+      under this registry.  Expert tuples retain their registry-owned
+      acknowledgement here too.
+    - Neither: the historical v2 contract, pinned to the exact stock
+      slice (WSM6+YSU+classic-MM5+Noah); see
+      test_the_profile_free_export_gate_keeps_its_exact_v2_stock_slice.
+    """
+
     cache = PreparedCache(Path(prepared_cache))
     static_path = Path(static_cache)
     geometry_path = Path(geometry_receipt)
@@ -1849,6 +1881,13 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
 
         physics_selection = validate_single_domain_physics_profile(
             physics_profile, config=cfg,
+            expert_acknowledgements=tuple(expert_acknowledgements),
+            acknowledgement_provenance=acknowledgement_provenance)
+    elif experiment_config_suite:
+        from gpuwm.physics_compat import single_domain_physics_selection
+
+        physics_selection = single_domain_physics_selection(
+            cfg,
             expert_acknowledgements=tuple(expert_acknowledgements),
             acknowledgement_provenance=acknowledgement_provenance)
     try:
@@ -1923,11 +1962,17 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
         _date_text(value + timedelta(seconds=boundary_interval_seconds))
         for value in boundary_times
     ]
+    # The suite receipt is per-domain; this exporter writes exactly d01,
+    # so the global attributes are stamped from that domain's selector
+    # record.  A named-profile receipt already carries flat selectors.
+    selection_selectors = physics_selection
+    if physics_selection is not None and "domains" in physics_selection:
+        selection_selectors = physics_selection["domains"]["1"]
     updates = _global_updates(
         valid_time=valid_time, nx=nx, ny=ny, nz=nz,
         dx=float(cfg["dx"]), dy=float(cfg["dy"]), dt=float(cfg["dt"]),
         geometry=geometry,
-        physics_selection=physics_selection,
+        physics_selection=selection_selectors,
     )
     num_soil_layers = int(cfg.get("num_soil_layers", 4))
     sf_surface_physics = int(cfg["sf_surface_physics"])
@@ -1972,7 +2017,10 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
                 f"{physics_inventory.scheme}+YSU+classic-MM5+Noah "
                 "initialized state contract"
                 if physics_selection is None else
-                f"{physics_selection['profile']} initialized state contract"
+                (f"{physics_selection['profile']} initialized state contract"
+                 if physics_selection.get("profile") is not None else
+                 "hash-bound experiment-config suite initialized state "
+                 "contract")
             ),
             "T_INIT is bound to final dry theta and is diagnostic-only",
             "hydrometeor/W/HT_SHAD/PC external LBC arrays are zero",
@@ -2044,6 +2092,11 @@ def main() -> None:
         "--physics-profile",
         help="registered fixed physics template carried by the prepared cache")
     parser.add_argument(
+        "--experiment-config-suite", action="store_true",
+        help=("no named profile: recompute and carry the cache-bound "
+              "config's own per-domain physics selection receipt "
+              "(v3 manifest), instead of the legacy v2 stock slice"))
+    parser.add_argument(
         "--ack", action="append", default=[],
         help="registry-owned expert acknowledgement id; repeat as needed")
     args = parser.parse_args()
@@ -2059,6 +2112,8 @@ def main() -> None:
             ("--static-cache", args.static_cache),
             ("--geometry-receipt", args.geometry_receipt),
             ("--physics-profile", args.physics_profile),
+            ("--experiment-config-suite",
+             args.experiment_config_suite or None),
             ("--ack", args.ack or None),
         ) if value is not None]
         if missing or incompatible:
@@ -2085,12 +2140,17 @@ def main() -> None:
             parser.error(
                 "single-domain mode missing/incompatible options: "
                 f"missing={missing}, incompatible={incompatible}")
+        if args.physics_profile is not None and args.experiment_config_suite:
+            parser.error(
+                "--experiment-config-suite means NO named profile; "
+                "pass exactly one of it and --physics-profile")
         manifest = export_prepared_wrf(
             args.prepared_cache, args.static_cache, args.geometry_receipt,
             args.output, valid_time=valid_time,
             boundary_interval_seconds=args.boundary_interval_seconds,
             overwrite=args.overwrite,
             physics_profile=args.physics_profile,
+            experiment_config_suite=args.experiment_config_suite,
             expert_acknowledgements=tuple(args.ack),
             acknowledgement_provenance={
                 value: ["--ack"] for value in args.ack

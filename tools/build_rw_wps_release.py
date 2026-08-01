@@ -115,6 +115,14 @@ _FORBIDDEN_STAGED_FILES = {
 }
 
 _OPTIONAL_STAGED_IMPORTS = {
+    ("gpuwm/core/kernels/__init__.py", "gpuwm.certify.kernel_manifest"):
+        "certification kernel-manifest recording, reached only after the "
+        "CuPy import inside the loader; RW-WPS stages no forecast executor "
+        "and compiles no CUDA module",
+    ("gpuwm/core/nest_interp.py", "gpuwm.certify.kernel_manifest"):
+        "certification kernel-manifest recording, reached only after the "
+        "CuPy import inside the loader; RW-WPS stages no forecast executor "
+        "and compiles no CUDA module",
     ("gpuwm/core/state.py", "gpuwm.core.preflight"):
         "CUDA forecast scratch-preflight path; RW-WPS constructs host state",
     ("tools/hrrr_single_domain_benchmark.py", "gpuwm.core.clock"):

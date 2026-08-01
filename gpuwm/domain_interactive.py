@@ -72,13 +72,13 @@ DEFAULT_LADDER = "12"
 #: runner refuses it and ``gpuwm go`` refuses it earlier and says so.
 #: The short front door therefore names a profile, and names the
 #: strongest one its source offers: ``morrison-mp10-...`` is the only
-#: ``model-validated`` template in the registry that all three of these
+#: ``wrf-matched-run`` template in the registry that all three of these
 #: sources' routes declare, and it is FIRST-LIGHT section 3a's own
 #: worked example.
 #:
 #: ``tests/test_domain_interactive.py`` re-derives every entry from the
 #: generated registry -- offered by that source's route, and
-#: model-validated -- so this table cannot quietly outlive the facts it
+#: at wrf-matched-run -- so this table cannot quietly outlive the facts
 #: is quoting.
 DEFAULT_PHYSICS_PROFILE_BY_SOURCE = {
     "gfs": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
@@ -284,6 +284,16 @@ def collect(*, printer=print) -> list[str]:
     printer(f"  ladder: {DEFAULT_LADDER} km, one domain -- the shape "
             "`gpuwm go` runs end to end (pass --ladder for nests).")
     printer(f"  physics: {profile} (pass --physics-profile for another).")
+    if source in {"gfs", "gdas"}:
+        # Not a sixth question: the analysis start is right for almost
+        # every first run, and a prompt for an advanced choice would
+        # lengthen the shortest path to one.  But a session that never
+        # MENTIONS the choice is a session in which the feature does not
+        # exist, so it is named where the other defaults are named.
+        printer("  start: the cycle's f000 analysis (pass "
+                "--forecast-start-hour K to start from the f{K} forecast "
+                "lead instead -- the way to reach a window deep in a "
+                "forecast without integrating to it).")
 
     vram = detected_vram_gib()
     if vram is not None:

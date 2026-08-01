@@ -114,8 +114,11 @@ Those input hashes and that GPU identity are written to a durable
 artifact only on failure, in `failure-capsule.json`; a *successful* run
 leaves `run-progress.json` (run id, config digest, progress) and its
 stdout log, which prints the resolved configuration and the input
-catalog fingerprint. There is no single machine-readable run-identity
-receipt covering the whole pin set. Section 7.
+catalog fingerprint. A successful run additionally writes
+`certification-capsule.json` beside its output, which carries one entry
+per item of the table above with an explicit resolved/unavailable status,
+the code identity, the compiled kernel manifest, and the emitted frames
+with their SHA-256. Section 7.
 
 ### Three mechanisms that make the pin set necessary
 
@@ -212,7 +215,9 @@ schedule, then identity, then inventory, then scalars, then SHA-256.
   checkpoint bytes, by construction.
 - **Run reports and receipts.** They contain wall time, timings, memory
   peaks, and absolute paths.
-- **`run-progress.json`.** It is a liveness heartbeat.
+- **`run-progress.json`.** It records the run id, the config digest, the
+  progress and the terminal status — none of which is model state, and
+  its timestamps and pid differ between runs by construction.
 
 "Bit-identical restart" therefore means the *downstream* state digests
 and regenerated outputs match under the same build, cadence, and
@@ -294,13 +299,12 @@ in this release.
   scalars, state digests, and outputs, and emits an immutable verdict.
   Today the ordering exists inside the verification case, not as an
   ordinary run-path contract.
-- **A durable run-identity receipt on success.** The supervisor already
-  computes config and input digests and knows the GPU identity; on a
-  successful run they are not written to a machine-readable artifact,
-  and the receipt would need to carry the rest of the pin set (exact
-  library versions, driver, NVRTC, `CUPY_ACCELERATORS`, compile flags,
-  kernel manifest) to support a mechanical refusal to compare
-  mismatched environments.
+- **A mechanical refusal to compare mismatched environments.** A
+  successful run now writes `certification-capsule.json`, which carries
+  every item of the pin table with an explicit resolved/unavailable
+  status alongside the per-module kernel manifest, so the inputs to such
+  a refusal exist. The refusal itself — a command that reads two
+  capsules and declines the comparison — is not in this release.
 - **Project-owned reduction order.** Replacing the dycore `sum`/`cumsum`
   and the host solar normalization with fixed-order implementations
   would move those two items out of the library-version pin.

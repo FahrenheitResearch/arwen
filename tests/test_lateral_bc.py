@@ -11,6 +11,7 @@ import pytest
 from conftest import requires_gpu
 from gpuwm.ingest.lateral_bc import (
     BoundaryInterval,
+    StateBoundaryFrames,
     FieldBoundary,
     LateralBoundaries,
     SideBoundary,
@@ -1151,3 +1152,153 @@ def test_completed_step_relaxes_qv_toward_driving_data():
                                atol=1.0e-6)
     # The spec row follows the driving data outright.
     np.testing.assert_allclose(qv[:, j, 0], 0.012, rtol=1.0e-3)
+
+
+def _multi_time_snapshots(count=9, seed=20260731):
+    """One coupled-snapshot series in the shape ingest actually builds."""
+    rng = np.random.default_rng(seed)
+    shapes = {
+        "u": (10, 120, 151), "v": (10, 121, 150),
+        "theta": (10, 120, 150), "phi": (11, 120, 150),
+        "mu": (1, 120, 150), "qv": (10, 120, 150),
+    }
+    return [
+        {name: rng.standard_normal(shape).astype(np.float32)
+         for name, shape in shapes.items()}
+        for _ in range(count)
+    ]
+
+
+def test_state_boundary_frames_match_the_all_at_once_builder_bit_for_bit():
+    """The streaming accumulator is a memory change, not a numeric one.
+
+    Ingest used to hold every forcing time's complete state so this
+    builder could see them all at once.  The accumulator keeps only the
+    perimeter frames, so what it produces has to be the same bytes --
+    every side, every field, every interval, value and tendency.
+    """
+    snapshots = _multi_time_snapshots()
+    start = datetime(2026, 7, 30, 0, 0, 0)
+    times = [start + timedelta(hours=3 * n) for n in range(len(snapshots))]
+    reference = build_lateral_boundaries(
+        snapshots, times, spec_bdy_width=5, spec_zone=1, relax_zone=4)
+
+    frames = StateBoundaryFrames(
+        spec_bdy_width=5, spec_zone=1, relax_zone=4)
+    for snapshot in snapshots:
+        frames.add_snapshot(snapshot)
+    candidate = frames.build(times)
+
+    assert len(candidate.intervals) == len(reference.intervals) == 8
+    assert candidate.spec_bdy_width == reference.spec_bdy_width
+    assert candidate.spec_zone == reference.spec_zone
+    assert candidate.relax_zone == reference.relax_zone
+    for expected_interval, actual_interval in zip(reference.intervals,
+                                                  candidate.intervals):
+        assert (actual_interval.start_seconds
+                == expected_interval.start_seconds)
+        assert actual_interval.end_seconds == expected_interval.end_seconds
+        assert set(actual_interval.fields) == set(expected_interval.fields)
+        for name in expected_interval.fields:
+            for side in ("west", "east", "south", "north"):
+                expected = getattr(expected_interval.fields[name], side)
+                actual = getattr(actual_interval.fields[name], side)
+                assert actual.value.dtype == expected.value.dtype
+                assert actual.value.shape == expected.value.shape
+                assert (actual.value.tobytes()
+                        == expected.value.tobytes()), f"{name}/{side} value"
+                assert (actual.tendency.tobytes()
+                        == expected.tendency.tobytes()), (
+                            f"{name}/{side} tendency")
+
+
+def test_state_boundary_frames_retain_only_the_perimeter():
+    """The whole point: a retained time costs a perimeter, not a volume."""
+    width = 5
+    snapshots = _multi_time_snapshots()
+    frames = StateBoundaryFrames(spec_bdy_width=width)
+    for snapshot in snapshots:
+        frames.add_snapshot(snapshot)
+
+    def perimeter_elements(shape):
+        nz, ny, nx = shape
+        return 2 * nz * ny * width + 2 * nz * nx * width
+
+    expected = len(snapshots) * 8 * sum(
+        perimeter_elements(np.asarray(value).shape)
+        for value in snapshots[0].values())
+    one_time_float64 = sum(
+        np.asarray(value).size * 8 for value in snapshots[0].values())
+
+    assert len(frames) == len(snapshots)
+    # Exactly the four frames, nothing else retained.
+    assert frames.retained_bytes == expected
+    # A retained time is a small fraction of the time it came from; the
+    # all-at-once builder retained the whole thing, on the device.
+    assert frames.retained_bytes / len(frames) < 0.2 * one_time_float64
+
+
+def test_state_boundary_frames_reject_the_same_geometry_faults():
+    snapshots = _multi_time_snapshots(count=3)
+    times = [0.0, 10800.0, 21600.0]
+
+    frames = StateBoundaryFrames(spec_bdy_width=5)
+    frames.add_snapshot(snapshots[0])
+    with pytest.raises(ValueError, match="inventories differ"):
+        frames.add_snapshot({"u": snapshots[1]["u"]})
+
+    narrow = {"theta": np.zeros((3, 8, 6), dtype=np.float32)}
+    with pytest.raises(ValueError, match="domain is too small"):
+        StateBoundaryFrames(spec_bdy_width=5).add_snapshot(narrow)
+
+    short = StateBoundaryFrames(spec_bdy_width=5)
+    short.add_snapshot(snapshots[0])
+    short.add_snapshot(snapshots[1])
+    with pytest.raises(ValueError, match="same length"):
+        short.build(times)
+
+    with pytest.raises(ValueError, match="spec_zone"):
+        StateBoundaryFrames(spec_bdy_width=5, spec_zone=0)
+    with pytest.raises(ValueError, match="spec_bdy_width must cover"):
+        StateBoundaryFrames(spec_bdy_width=3, spec_zone=1, relax_zone=4)
+
+
+def test_release_backend_memory_returns_cuda_blocks_and_spares_cpu():
+    """The Python-level release only reaches the device through the pool."""
+    from gpuwm.ingest.preprocess_backend import release_backend_memory
+
+    freed = []
+
+    class _Pool:
+        def __init__(self, label):
+            self.label = label
+
+        def free_all_blocks(self):
+            freed.append(self.label)
+
+    class _Module:
+        @staticmethod
+        def get_default_memory_pool():
+            return _Pool("device")
+
+        @staticmethod
+        def get_default_pinned_memory_pool():
+            return _Pool("pinned")
+
+    release_backend_memory(SimpleNamespace(name="cpu"))
+    assert freed == []
+
+    release_backend_memory(
+        SimpleNamespace(name="cuda", array_module=_Module()))
+    assert freed == ["device", "pinned"]
+
+    # An array module with no pool has nothing to hand back, and this
+    # helper must never be the reason a preparation fails: it decides
+    # nothing and computes nothing.  A CPU stand-in swapped in for cupy
+    # (which tests/test_runtime.py does) used to raise straight through
+    # the middle of setup.
+    import numpy as np_module
+
+    release_backend_memory(
+        SimpleNamespace(name="cuda", array_module=np_module))
+    assert freed == ["device", "pinned"]

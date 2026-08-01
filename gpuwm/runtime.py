@@ -50,6 +50,7 @@ from typing import Mapping
 import numpy as np
 
 from gpuwm.case_data import CaseDataConfig
+from gpuwm.certify.capsule import emit_run_capsule
 from gpuwm.config import (DEFAULT_COLUMN_CHUNK, RunConfig,
                           radiation_scheme_ids, soil_layer_count)
 from gpuwm.core.grid import make_vertical_coord
@@ -57,8 +58,12 @@ from gpuwm.core.noah import noah_initial_snow_albedo
 from gpuwm.experiment import ExperimentConfig, VerticalConfig
 from gpuwm.ingest.grib import cached_era5_forcing
 from gpuwm.ingest.horiz import interpolate_era5_to_lambert
-from gpuwm.ingest.lateral_bc import (attach_lateral_boundaries,
-                                     build_state_lateral_boundaries)
+from gpuwm.ingest.lateral_bc import (StateBoundaryFrames,
+                                     attach_lateral_boundaries)
+from gpuwm.ingest.preprocess_backend import (
+    CudaPreprocessBackend,
+    release_backend_memory,
+)
 from gpuwm.ingest.real import initialize_real
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.static.build import (GeogSelection, build_static,
@@ -72,6 +77,7 @@ FEEDBACK_EXPERIMENTAL_WARNING = (
     "WARNING: feedback = 1 is EXPERIMENTAL and is not certified against "
     "stock WRF yet; the certification reference is in progress."
 )
+CONSERVATION_CLOSURE_RECEIPT_NAME = "conservation-closure.json"
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +133,9 @@ class RealCaseRunSummary:
     rainc_max_ji: tuple[int, int] | None = None
     rainc_max_lat: float | None = None
     rainc_max_lon: float | None = None
+    #: Per-domain canonical trajectory digest, or ``None`` with the
+    #: instrumentation disabled (see :func:`trajectory_digest_enabled`).
+    trajectory_digest: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +152,103 @@ class ExperimentRunSummary:
     feedback_provenance: Mapping[str, object] | None = None
     feedback_provenance_receipt: Path | None = None
     feedback_provenance_receipt_sha256: str | None = None
+    #: Per-domain canonical trajectory digest, or ``None`` with the
+    #: instrumentation disabled (see :func:`trajectory_digest_enabled`).
+    trajectory_digest: dict | None = None
+
+
+#: Environment switch that turns the trajectory-digest instrumentation off.
+#: The A4 control pair runs the same short-window config with the digest on
+#: and off; if the instrumentation participated in the trajectory the two runs
+#: would differ, and the shipped comparator is what says whether they do.
+TRAJECTORY_DIGEST_ENV = "GPUWM_TRAJECTORY_DIGEST"
+
+
+def trajectory_digest_enabled() -> bool:
+    """Whether the run-route trajectory digest is computed.  Default on."""
+    import os
+
+    raw = os.environ.get(TRAJECTORY_DIGEST_ENV)
+    return True if raw is None else raw.strip().lower() not in {
+        "0", "false", "no", "off"}
+
+
+class _SingleDomainDigestClock:
+    """The boundary-clock inputs the frozen single-domain loop owns.
+
+    ``canonical_state_digest`` mixes WRF's REAL boundary accumulator
+    ``dtbc`` into the digest.  The frozen single-domain loop maintains no
+    such accumulator: ``dtbc`` is a domain-tree coupler property
+    (``gpuwm/core/model.py`` root-boundary section) and lateral forcing on
+    this route is applied from the configured interval.  Reporting the
+    ``DomainClock`` initial value keeps the digest a complete, reproducible
+    function of the state this route does own, and the run summary records
+    that the route does not advance it, so nobody reads the digest as
+    evidence about a boundary clock that never ran.
+    """
+
+    __slots__ = ()
+
+    #: ``gpuwm.core.clock.DomainClock`` initialises ``dtbc_fp32`` to +0.0f.
+    dtbc_fp32 = np.float32(0.0)
+
+    #: Recorded beside the digest so the omission is legible in the capsule.
+    provenance = (
+        "the frozen single-domain loop maintains no WRF dtbc accumulator; "
+        "the digest carries the DomainClock initial value")
+
+
+def _frame_records(paths) -> list[dict[str, object]]:
+    """Every emitted frame with the SHA-256 of the bytes now on disk."""
+    records = []
+    for path in paths:
+        path = Path(path)
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+        records.append({"path": str(path.resolve()),
+                        "bytes": path.stat().st_size,
+                        "sha256": digest.hexdigest()})
+    return records
+
+
+def _emit_front_door_capsule(outdir, *, emission_site: str, exp,
+                             data: CaseDataConfig, wrfout_paths,
+                             trajectory_digest, io_mode: str) -> Path:
+    """Write the front door's certification capsule.
+
+    Unconditional: it does not consult ``exp.feedback``, because a receipt
+    that appears only on one physics tier is a receipt the other tier cannot
+    be certified from.
+    """
+    run_context = {
+        "runner_route_and_io_mode": {
+            "route": emission_site, "io_mode": io_mode},
+        "output_and_diagnostic_mode": {
+            "io_mode": io_mode,
+            "history_interval_seconds": float(exp.domains[0].history_interval_s)
+            if getattr(exp.domains[0], "history_interval_s", None) is not None
+            else None,
+            "restart_interval_seconds": (
+                None if exp.restart_interval_s is None
+                else float(exp.restart_interval_s)),
+        },
+    }
+    run_shape = {
+        "route": emission_site,
+        "domain_count": len(exp.domains),
+        "run_seconds": float(exp.run_seconds),
+        "start_time": exp.start_time.isoformat(),
+        "output_title": data.output_title,
+    }
+    output = {
+        "frames": _frame_records(wrfout_paths),
+        "trajectory_digest": trajectory_digest,
+    }
+    return emit_run_capsule(
+        outdir, emission_site=emission_site, run_context=run_context,
+        run_shape=run_shape, output=output)
 
 
 def feedback_provenance(exp: ExperimentConfig) -> Mapping[str, object] | None:
@@ -500,9 +606,21 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     if source_orography_path is not None:
         source_orography = load_source_orography(
             source_orography_path, source_orography_variable)
-    results = []
-    horizontal = []
-    for valid_time in times:
+    # Only the first time's analysis/state and the last time's analysis
+    # outlive this loop; every intermediate time contributes its perimeter
+    # frames and is released before the next one is built.  Retaining all
+    # N of them made setup, not the forecast, the memory-binding phase.
+    initial_result = None
+    initial_met = None
+    forcing = StateBoundaryFrames(
+        spec_bdy_width=cfg.spec_bdy_width, spec_zone=cfg.spec_zone,
+        relax_zone=cfg.relax_zone)
+    release_backend = CudaPreprocessBackend()
+    met = result = None
+    for index, valid_time in enumerate(times):
+        if index:
+            del met, result
+            release_backend_memory(release_backend)
         source = snapshot_for(valid_time)
         # Metgrid classifies masked-field TARGET cells by the model
         # (geogrid) landmask, not by the nearest source LSM; the source-side
@@ -529,15 +647,17 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         result.state.set_map_coriolis(
             grid.mapfac_m(), grid.mapfac_u(), grid.mapfac_v(), f, e,
             sina=sina, cosa=cosa)
-        horizontal.append(met)
-        results.append(result)
-    boundaries = build_state_lateral_boundaries(
-        [result.state for result in results], times,
-        spec_bdy_width=cfg.spec_bdy_width, spec_zone=cfg.spec_zone,
-        relax_zone=cfg.relax_zone)
-    attach_lateral_boundaries(results[0].state, boundaries)
+        forcing.add_state(result.state)
+        if index == 0:
+            initial_met = met
+            initial_result = result
+    # ``met``/``result`` now name the LAST forcing time; the first are held
+    # separately above.  Nothing between them is still resident.
+    final_met = met
+    boundaries = forcing.build(times)
+    attach_lateral_boundaries(initial_result.state, boundaries)
 
-    soil_fields = dict(horizontal[0].fields)
+    soil_fields = dict(initial_met.fields)
     # No lake skin override: with metgrid's masked=both SKINTEMP chain and
     # static-landmask target classification, lake cells already carry the
     # water-source skin value, and real.exe (no TAVGSFC) keeps exactly that
@@ -558,7 +678,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     # usemonalb=false path, landuse_init overwrites ALBEDO12M from the table.
     vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], start_time)
     lai = monthly_interp_to_date(static["LAI12M"], start_time)
-    state = results[0].state
+    state = initial_result.state
     # initialize_real loads prognostics but does not launch the EOS kernel.
     # Diagnose the time-zero atmosphere before the first RRTMGP call.
     update_diagnostics(state, cfg.hypsometric_opt)
@@ -636,12 +756,12 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     # Seed time-zero surface diagnostics from the source analysis.  The
     # first model step replaces them through SFCLAY/Noah/YSU in WRF
     # ordering.
-    met0 = horizontal[0].fields
+    met0 = initial_met.fields
     driver.fields["psfc"][...] = cp.asarray(
-        results[0].surface_pressure, dtype=cp.float32)
+        initial_result.surface_pressure, dtype=cp.float32)
     driver.fields["t2"][...] = met0["T2"]
     driver.fields["q2"][...] = cp.asarray(
-        results[0].surface_qv, dtype=cp.float32)
+        initial_result.surface_qv, dtype=cp.float32)
     driver.fields["th2"][...] = (driver.fields["t2"]
                                   * (cp.float32(100000.0)
                                      / driver.fields["psfc"])
@@ -652,7 +772,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
                                         + met0["V10"][1:])
     return PreparedRealCase(
         cfg=cfg, grid=grid, static_fields=static,
-        initial_result=results[0], final_analysis=horizontal[-1],
+        initial_result=initial_result, final_analysis=final_met,
         initial_snow_water_kgm2=np.array(
             soil.snow_water, dtype=np.float64, copy=True),
         forcing_times=times, geog_selection=geog_selection)
@@ -1297,6 +1417,18 @@ def integrate_prepared_case(
                 step_wall_seconds=time.perf_counter() - outer_started)
     cp.cuda.runtime.deviceSynchronize()
 
+    # After the final device synchronization and after every history frame is
+    # durable, so the digest observes the trajectory and cannot join it.
+    trajectory_digest = None
+    if trajectory_digest_enabled():
+        from gpuwm.state_digest import canonical_state_digest
+
+        trajectory_digest = {
+            f"d{domain_id:02d}": canonical_state_digest(
+                state, _SingleDomainDigestClock(), scope="trajectory"),
+            "boundary_clock_provenance": _SingleDomainDigestClock.provenance,
+        }
+
     rainc_max = 0.0
     rainc_ji = None
     rainc_lat = None
@@ -1311,6 +1443,7 @@ def integrate_prepared_case(
         rainc_lat = float(lat[j, i])
         rainc_lon = float(lon[j, i])
     return RealCaseRunSummary(
+        trajectory_digest=trajectory_digest,
         wrfout_paths=tuple(outputs), nan_free=nan_free,
         w_max_ms=w_max, boundary_w_max_ms=boundary_w_max,
         interior_w_max_ms=interior_w_max,
@@ -1501,6 +1634,10 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
             health_debug=health_debug, feedback=experimental_feedback)
         _write_feedback_provenance_receipt(
             outdir, exp, resumed=restart is not None)
+        _emit_front_door_capsule(
+            outdir, emission_site="runtime.run_experiment:single-domain",
+            exp=exp, data=data, wrfout_paths=summary.wrfout_paths,
+            trajectory_digest=summary.trajectory_digest, io_mode="history")
         return summary
 
     _preparation_progress(progress_callback, "build-domain-tree")
@@ -1541,12 +1678,27 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         paths = writers.paths
     import cupy as cp
     cp.cuda.runtime.deviceSynchronize()
+    # After the writer drain above and after the final device synchronization,
+    # so the digest observes the trajectory and cannot participate in it.
+    trajectory_digest = None
+    if trajectory_digest_enabled():
+        from gpuwm.state_digest import canonical_state_digest
+
+        trajectory_digest = {
+            f"d{grid_id:02d}": canonical_state_digest(
+                node.state, node.clock, scope="trajectory")
+            for grid_id, node in sorted(model.nodes_by_grid_id.items())
+        }
     transition_path, transition_sha, transitions = \
         _write_microphysics_transition_receipt(
             outdir, model, exp, resumed=restart is not None)
     feedback_path, feedback_sha, feedback_receipt = \
         _write_feedback_provenance_receipt(
             outdir, exp, resumed=restart is not None)
+    _emit_front_door_capsule(
+        outdir, emission_site="runtime.run_experiment:domain-tree",
+        exp=exp, data=data, wrfout_paths=paths,
+        trajectory_digest=trajectory_digest, io_mode="history")
     return ExperimentRunSummary(
         wrfout_paths=paths,
         completed_seconds=model.root.clock.elapsed_seconds,
@@ -1557,7 +1709,8 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         microphysics_transition_receipt_sha256=transition_sha,
         feedback_provenance=feedback_receipt,
         feedback_provenance_receipt=feedback_path,
-        feedback_provenance_receipt_sha256=feedback_sha)
+        feedback_provenance_receipt_sha256=feedback_sha,
+        trajectory_digest=trajectory_digest)
 
 
 def _submit_tree_history_frame(writers, node, ticks: int) -> None:
@@ -1614,6 +1767,7 @@ def resolved_tree_config_report(exp: ExperimentConfig,
 
 
 __all__ = [
+    "CONSERVATION_CLOSURE_RECEIPT_NAME",
     "ExperimentRunSummary", "FEEDBACK_EXPERIMENTAL_WARNING",
     "FEEDBACK_PROVENANCE_RECEIPT_NAME",
     "MICROPHYSICS_TRANSITION_RECEIPT_NAME",

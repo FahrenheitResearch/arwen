@@ -319,7 +319,14 @@ def test_adapt_skeleton_generator_is_create_only_and_review_required(
     assert payload["adapt"]["model_top_pa"] \
         == "REPLACE_WITH_MODEL_TOP_PA"
     assert payload["coordinates"]["vertical"]["levels"] == []
-    assert "review every selector" in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    # The scaffold announces its own gaps, by name, in the order the
+    # authoring gate will hold the reader to -- so "what is left to do"
+    # is answered once here rather than one type error per run.
+    assert "4 value(s) need you" in printed
+    for gap in ("adapt.model_top_pa", "coordinates.vertical.levels",
+                "name", "target.name"):
+        assert f"\n  {gap}\n" in printed
 
     with pytest.raises(FileExistsError, match="refusing to overwrite"):
         main(
@@ -331,6 +338,123 @@ def test_adapt_skeleton_generator_is_create_only_and_review_required(
                 str(output),
             ]
         )
+
+
+def _skeleton_payload(tmp_path) -> tuple[Path, dict]:
+    output = tmp_path / "source.descriptor.json"
+    assert main(["adapt", "--vtable", str(VTABLE),
+                 "--skeleton", str(output)]) == 0
+    return output, json.loads(output.read_text(encoding="utf-8"))
+
+
+def _fill_scaffold(payload: dict) -> dict:
+    """Replace exactly what :func:`scaffold_gaps` reports, nothing else."""
+
+    filled = json.loads(json.dumps(payload))
+    filled["name"] = "example-adapter"
+    filled["target"]["name"] = "example-target"
+    filled["adapt"]["model_top_pa"] = 5000.0
+    filled["coordinates"]["vertical"]["levels"] = [
+        100000.0, 92500.0, 85000.0, 70000.0, 50000.0, 25000.0, 10000.0,
+        5000.0,
+    ]
+    return filled
+
+
+def test_the_skeleton_round_trips_through_its_own_descriptor_validator(
+    tmp_path,
+    capsys,
+):
+    """`gpuwm adapt: descriptor.adapt.model_top_pa must be a positive
+    finite number` -- what a user zero got from the two commands the
+    documentation prints, in order, with nothing else on the machine.
+
+    The scaffold's placeholders are deliberate; the defect was that its
+    own validator met them as a type error about one field and said
+    nothing about the other three, so filling them in was a sequence of
+    guesses one run apart.  The round-trip contract asserted here is:
+    the ONLY things the authoring gate objects to in a fresh skeleton
+    are the gaps the skeleton itself named, and replacing exactly those
+    carries the descriptor through the same validator clean.
+    """
+
+    from gpuwm.adapt import _load_adapt_policy, scaffold_gaps
+
+    path, payload = _skeleton_payload(tmp_path)
+    capsys.readouterr()
+
+    gaps = scaffold_gaps(payload)
+    assert gaps == ["adapt.model_top_pa", "coordinates.vertical.levels",
+                    "name", "target.name"]
+
+    # 1. Authoring refuses the untouched scaffold as a scaffold, once,
+    #    naming the size of the job rather than one of its fields.
+    assert main(["adapt", "--vtable", str(VTABLE), "--descriptor", str(path),
+                 "--input", str(ACTUAL_GRIB),
+                 "--output-dir", str(tmp_path / "out")]) == 2
+    refusal = capsys.readouterr().err
+    assert "is still the `--skeleton` scaffold" in refusal
+    assert "4 value(s) are unfilled" in refusal
+    assert "adapt.model_top_pa" in refusal
+    assert "must be a positive finite number" not in refusal
+
+    # 2. Replacing exactly the named gaps round-trips: no gaps left, and
+    #    the validator that produced the original refusal now accepts it.
+    filled = tmp_path / "filled.descriptor.json"
+    filled.write_text(json.dumps(_fill_scaffold(payload), indent=2),
+                      encoding="utf-8")
+    assert scaffold_gaps(json.loads(filled.read_text(encoding="utf-8"))) == []
+    policy, _snapshot = _load_adapt_policy(filled)
+    assert policy["model_top_pa"] == 5000.0
+
+    # What the mapping compiler says next is a question about the
+    # Vtable's own content (this one gives two soil layers overlapping
+    # selectors), which is precisely the "review every selector" work
+    # docs/arbitrary-verified-adapters.md sends the author to do.  The
+    # gate asserted here is that it is no longer a SCAFFOLD complaint:
+    # the template half of the job is finished and stays finished.
+    with pytest.raises(ValueError) as raised:
+        compile_mapping_descriptor(filled, vtable_path=VTABLE)
+    assert "scaffold" not in str(raised.value)
+    assert "REPLACE_WITH" not in str(raised.value)
+
+
+def test_filling_only_the_reported_field_still_names_the_rest(tmp_path):
+    """The one-at-a-time failure mode, pinned closed.
+
+    Setting ``model_top_pa`` and re-running used to advance to the next
+    placeholder's own error message.  The gate reports what is left.
+    """
+
+    from gpuwm.adapt import _load_adapt_policy
+
+    _path, payload = _skeleton_payload(tmp_path)
+    payload["adapt"]["model_top_pa"] = 5000.0
+    partial = tmp_path / "partial.descriptor.json"
+    partial.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    with pytest.raises(ValueError, match="3 value\\(s\\) are unfilled"):
+        _load_adapt_policy(partial)
+
+
+def test_without_the_scaffold_gate_the_generic_type_error_returns(
+    tmp_path,
+    monkeypatch,
+):
+    """Negative control: the gate is what changed the message.
+
+    Neutralize ``_refuse_scaffold`` and the untouched scaffold is once
+    again refused by ``descriptor.adapt.model_top_pa must be a positive
+    finite number`` -- the exact string the wheel user was handed.
+    """
+
+    from gpuwm.adapt import _load_adapt_policy
+
+    path, _payload = _skeleton_payload(tmp_path)
+    monkeypatch.setattr(adapt, "_refuse_scaffold", lambda raw, label: None)
+    with pytest.raises(
+            ValueError,
+            match="descriptor.adapt.model_top_pa must be a positive finite"):
+        _load_adapt_policy(path)
 
 
 # ---------------------------------------------------------------------------

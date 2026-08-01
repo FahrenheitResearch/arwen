@@ -223,6 +223,98 @@ def test_python_positions_survive_an_edit_above_them(tmp_path: Path):
 
 
 # --------------------------------------------------------------------------
+# the certification measurement path is inside the zones
+# --------------------------------------------------------------------------
+
+#: Modules the t=0 digest work package added to PROTECTED_ZONES.  A digest
+#: that named one campaign's frames would score that campaign's staging
+#: layout rather than a staged pair, and would read clean to every other
+#: check in the tree.
+_CERTIFICATION_MODULES = (
+    "gpuwm/verify/state_equiv.py",
+    "gpuwm/verify/t0_state_digest.py",
+    "tools/matched_wrfout_t0_state_digest.py",
+)
+
+
+def _scratch_copy(tmp_path: Path, rel: str, suffix: str = "") -> Path:
+    root = tmp_path / "root"
+    target = root / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        (REPO_ROOT / rel).read_text(encoding="utf-8") + suffix,
+        encoding="utf-8")
+    return root
+
+
+@pytest.mark.parametrize("rel", _CERTIFICATION_MODULES)
+def test_a_case_token_injected_into_the_digest_path_is_reported(
+    tmp_path: Path, rel: str
+):
+    """The zone entries are live: injecting one token makes the gate fail."""
+    injected = "\n\nSTAGED_FRAMES = ('wrfout_d01_1974-04-03_12_00_00',)\n"
+    root = _scratch_copy(tmp_path, rel, injected)
+    new = _new_against_real_baseline(root)
+    assert [(v.path, v.kind) for v in new] == [(rel, "string literal")], new
+
+
+@pytest.mark.parametrize("rel", _CERTIFICATION_MODULES)
+def test_the_unmutated_digest_path_reports_nothing(tmp_path: Path, rel: str):
+    """The control root must be clean before an injection dirties it."""
+    assert _new_against_real_baseline(_scratch_copy(tmp_path, rel)) == []
+
+
+#: The published receipt.  The measurement path is only half the zone: a
+#: receipt is where a case name has an honest reason to appear (its input
+#: inventory records what was staged), which is exactly why the file needs
+#: watching -- an inventory entry is data, and a case name anywhere else in
+#: the document would mean the scoring contract itself was written for one
+#: campaign.
+PUBLISHED_RECEIPT = "gpuwm/data/certification/t0_state_parity_digest.json"
+
+
+def test_the_published_receipt_is_in_a_protected_zone():
+    from tools.check_case_token_leakage import PROTECTED_ZONES
+
+    assert (REPO_ROOT / PUBLISHED_RECEIPT).is_file()
+    assert any(PUBLISHED_RECEIPT.startswith(zone) for zone in PROTECTED_ZONES)
+
+
+def test_the_published_receipt_reports_nothing_new(tmp_path: Path):
+    """Its inventory names are baselined; nothing else in it may offend."""
+    root = tmp_path / "root"
+    target = root / PUBLISHED_RECEIPT
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes((REPO_ROOT / PUBLISHED_RECEIPT).read_bytes())
+    assert _new_against_real_baseline(root) == []
+
+
+def test_a_case_token_in_a_receipt_scoring_position_is_reported(
+    tmp_path: Path,
+):
+    """The injection control for the receipt half of the zone.
+
+    The token goes into a *scoring* position -- a carrier-group name -- not
+    into the input inventory.  The baseline covers the inventory entries by
+    position, so if it were absorbing this one too the key would be too
+    wide, which is the failure mode this gate was rewritten to close.
+    """
+    document = json.loads(
+        (REPO_ROOT / PUBLISHED_RECEIPT).read_text(encoding="utf-8"))
+    groups = document["registration"]["carrier_groups"]
+    groups["real74_dynamics"] = groups.pop("dry_dynamics")
+
+    root = tmp_path / "root"
+    target = root / PUBLISHED_RECEIPT
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(document, indent=2), encoding="utf-8")
+
+    new = _new_against_real_baseline(root)
+    assert [(v.kind, v.text) for v in new] == [
+        ("registry key", "real74_dynamics")], new
+
+
+# --------------------------------------------------------------------------
 # specialization that arrives by import
 # --------------------------------------------------------------------------
 
@@ -385,3 +477,40 @@ def test_a_missing_baseline_suppresses_nothing(tmp_path: Path):
     table, error = load_baseline(tmp_path / "absent.json")
     assert table == {}
     assert error is not None
+
+
+def test_a_case_token_in_the_new_verification_instruments_is_reported(
+        tmp_path: Path):
+    """CONTROL for the zone extension.
+
+    The metric and envelope modules score whatever they are pointed at.  A
+    case token in one of them specializes the yardstick rather than the run,
+    which is invisible until somebody points it at a second case -- so each
+    new module is checked here, one scratch injection at a time.
+    """
+    injected = {
+        "gpuwm/verify/field_metrics.py": "REAL74_DX = 500.0\n",
+        "gpuwm/verify/chaos_envelope.py": "def ohio_rows():\n    return ()\n",
+        "gpuwm/verify/spectral.py": "REAL74_BAND = (1, 2)\n",
+        "tools/matched_wrfout_envelope.py": "HRRR_LEADS = (3600,)\n",
+        "tools/certify_band_from_ensemble.py": "def band_1974():\n    return {}\n",
+    }
+    for relative, source in injected.items():
+        root = tmp_path / relative.replace("/", "-")
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source, encoding="utf-8")
+        new = _new_against_real_baseline(root)
+        assert [v.path for v in new] == [relative], (relative, new)
+
+
+def test_the_new_instruments_are_in_a_protected_zone():
+    from tools.check_case_token_leakage import PROTECTED_ZONES
+
+    for relative in ("gpuwm/verify/field_metrics.py",
+                     "gpuwm/verify/chaos_envelope.py",
+                     "gpuwm/verify/spectral.py",
+                     "tools/matched_wrfout_envelope.py",
+                     "tools/certify_band_from_ensemble.py"):
+        assert relative in PROTECTED_ZONES
+        assert (REPO_ROOT / relative).is_file()

@@ -1,0 +1,1040 @@
+{
+  "schema": "gpuwm.ftz-receipt/v1",
+  "generator": "tools/ftz_receipt/probe.py",
+  "device": {
+    "name": "NVIDIA GeForce RTX 5090",
+    "uuid": "e302d74f28a933cb8853ae03ac17c249ba5b01",
+    "pci_bus_id": "0000:01:00.0",
+    "compute_capability": "12.0",
+    "cuda_driver_version": 13030,
+    "cuda_runtime_version": 12090,
+    "nvrtc_version": "13.0",
+    "cupy_version": "14.0.1",
+    "numpy_version": "2.2.6",
+    "python": "3.13.7",
+    "platform": "Windows-11-10.0.26200-SP0"
+  },
+  "cupy_ftz_append_site": {
+    "found": true,
+    "module": "cupy.cuda.compiler",
+    "line": 585,
+    "text": "options += ('-ftz=true',)",
+    "appended": "-ftz=true"
+  },
+  "effective_option_capture": {
+    "method": "wrap cupy.cuda.compiler._compile_using_nvrtc_no_warning for the duration of the probe",
+    "cache_mode": "CUPY_CACHE_IN_MEMORY=1",
+    "per_route": {
+      "R1": [
+        {
+          "fired": true,
+          "effective_flags": [
+            "-std=c++17",
+            "-ftz=true"
+          ],
+          "include_path_count": 6,
+          "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
+          "object_format": "cubin",
+          "object_sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+          "source_sha256": "f871bedb13d80f562e373b21ecfd4b48592352c6562e3b35a269aebe9c9e0ff6"
+        }
+      ],
+      "R1-ftztrue": [
+        {
+          "fired": true,
+          "effective_flags": [
+            "-std=c++17",
+            "--ftz=true",
+            "-ftz=true"
+          ],
+          "include_path_count": 6,
+          "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
+          "object_format": "cubin",
+          "object_sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+          "source_sha256": "f871bedb13d80f562e373b21ecfd4b48592352c6562e3b35a269aebe9c9e0ff6"
+        }
+      ],
+      "R2": [
+        {
+          "fired": true,
+          "effective_flags": [
+            "-std=c++17",
+            "--ftz=false",
+            "-ftz=true"
+          ],
+          "include_path_count": 6,
+          "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
+          "object_format": "cubin",
+          "object_sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+          "source_sha256": "f871bedb13d80f562e373b21ecfd4b48592352c6562e3b35a269aebe9c9e0ff6"
+        }
+      ],
+      "R3": [
+        {
+          "fired": true,
+          "effective_flags": [
+            "-std=c++17",
+            "--ftz=false",
+            "-arch=compute_120"
+          ],
+          "include_path_count": 0,
+          "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
+          "object_format": "cubin",
+          "object_sha256": "436070cf076f1a06ed5ce4acb1203f73d8defef39dd21417382364535020e9de",
+          "source_sha256": "f871bedb13d80f562e373b21ecfd4b48592352c6562e3b35a269aebe9c9e0ff6"
+        }
+      ],
+      "R4": [
+        {
+          "fired": true,
+          "effective_flags": [
+            "--std=c++17",
+            "-ftz=true"
+          ],
+          "include_path_count": 6,
+          "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
+          "object_format": "cubin",
+          "object_sha256": "6844e4b1e407ff792b68b9c826c9c8f9012a2db1a190388214e9fc5d5efb4465",
+          "source_sha256": "d0e37f2c0e4a3234a85ee0a506d09b0ea99abcf3fd40fb3545f501a87acd763b"
+        },
+        {
+          "fired": true,
+          "effective_flags": [
+            "--std=c++17",
+            "-ftz=true"
+          ],
+          "include_path_count": 6,
+          "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
+          "object_format": "cubin",
+          "object_sha256": "598236be4666fbea5a77f252d59c6dfa1662ce9cda2c39e8f832551fb4a6f800",
+          "source_sha256": "4ea03eca3d40f35190b90ae6cbf271756686f793754b4263cd53a58b4b05bea8"
+        },
+        {
+          "fired": true,
+          "effective_flags": [
+            "--std=c++17",
+            "-ftz=true"
+          ],
+          "include_path_count": 6,
+          "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
+          "object_format": "cubin",
+          "object_sha256": "d1a87e5c76d186ef35d1946a2d10973e6c72e07b0f1f17d94271e92fe153bfd0",
+          "source_sha256": "a4459d785cb7f2abc955ba0f5f30693c2c8cf1f66055877c88b845aaf0f4cf0b"
+        },
+        {
+          "fired": true,
+          "effective_flags": [
+            "--std=c++17",
+            "-ftz=true"
+          ],
+          "include_path_count": 6,
+          "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
+          "object_format": "cubin",
+          "object_sha256": "3140b40935cbd85ba6c53920ad42ab420515180a9818ca637fadf8df43e6328e",
+          "source_sha256": "1101091d6d50a0b4151cabe61a81bbbd93d4c199dd1d65f38d3a8b9ee879bad9"
+        },
+        {
+          "fired": true,
+          "effective_flags": [
+            "--std=c++17",
+            "-ftz=true"
+          ],
+          "include_path_count": 6,
+          "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
+          "object_format": "cubin",
+          "object_sha256": "c3f7db6ffed0dd0634d486c22c4daf6bdfad21b1c6edeaa166793682cd1d75a5",
+          "source_sha256": "88951db87f505a4d14e6dc11b5c1f432db62edf701e7ae08957fa8b6705aad8c"
+        },
+        {
+          "fired": true,
+          "effective_flags": [
+            "--std=c++17",
+            "-ftz=true"
+          ],
+          "include_path_count": 6,
+          "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
+          "object_format": "cubin",
+          "object_sha256": "15f46295e3cf1b21d8695e895fb9b3d5746f957c2d6b5fc3ec029a089b0869ff",
+          "source_sha256": "6b4face2ad7c36eb2df08a7390b6da6939cdf1909dd16de1a6c8674d8a37a4e7"
+        }
+      ]
+    }
+  },
+  "routes": {
+    "R1": {
+      "id": "R1",
+      "label": "loader RawModule",
+      "constructor": "gpuwm.core.kernels.load_module",
+      "site": "gpuwm/core/kernels/__init__.py:20",
+      "site_options": [
+        "-std=c++17"
+      ],
+      "arm_options": [
+        "-std=c++17"
+      ]
+    },
+    "R1-ftztrue": {
+      "id": "R1-ftztrue",
+      "label": "loader RawModule + explicit --ftz=true (control)",
+      "constructor": "cupy.RawModule",
+      "site": "gpuwm/core/kernels/__init__.py:20 + control flag",
+      "site_options": [
+        "-std=c++17"
+      ],
+      "arm_options": [
+        "-std=c++17",
+        "--ftz=true"
+      ]
+    },
+    "R2": {
+      "id": "R2",
+      "label": "RawModule with the shortwave option tuple",
+      "constructor": "cupy.RawModule",
+      "site": "gpuwm/core/rrtmg_sw.py:2890",
+      "site_options": [
+        "-std=c++17",
+        "--ftz=false"
+      ],
+      "arm_options": [
+        "-std=c++17",
+        "--ftz=false"
+      ]
+    },
+    "R3": {
+      "id": "R3",
+      "label": "direct NVRTC + cuda.function.Module",
+      "constructor": "cupy.cuda.compiler.compile_using_nvrtc",
+      "site": "gpuwm/core/rrtmg_lw.py:3723",
+      "site_options": [
+        "-std=c++17",
+        "--ftz=false",
+        null
+      ],
+      "arm_options": [
+        "-std=c++17",
+        "--ftz=false",
+        "-arch=compute_120"
+      ]
+    },
+    "R4": {
+      "id": "R4",
+      "label": "CuPy-generated ReductionKernel",
+      "constructor": "cupy.ReductionKernel",
+      "site": "gpuwm/core/mynn_pbl_gpu.py:290",
+      "site_options": null,
+      "arm_options": []
+    },
+    "R5": {
+      "id": "R5",
+      "label": "inline PTX without .ftz",
+      "constructor": "gpuwm.core.kernels.load_module",
+      "site": "gpuwm/core/kernels/__init__.py:20",
+      "site_options": [
+        "-std=c++17"
+      ],
+      "arm_options": [
+        "-std=c++17"
+      ]
+    }
+  },
+  "mechanisms": [
+    "plain-operator arithmetic",
+    "__f*_rn intrinsic",
+    "fminf/fmaxf",
+    "float compare",
+    "__double2float_rn",
+    "(float) cast"
+  ],
+  "inputs": [
+    {
+      "id": "normal_control",
+      "a_bits": "0x3fc00000",
+      "b_bits": "0x40000000",
+      "d": "3.5"
+    },
+    {
+      "id": "subnormal_product",
+      "a_bits": "0x1e3ce508",
+      "b_bits": "0x1e3ce508",
+      "d": "1e-40"
+    },
+    {
+      "id": "deep_underflow",
+      "a_bits": "0x0da24260",
+      "b_bits": "0x26901d7d",
+      "d": "1e-45"
+    },
+    {
+      "id": "subnormal_operand",
+      "a_bits": "0x000116c2",
+      "b_bits": "0x3f800000",
+      "d": "9.99994610111476e-41"
+    },
+    {
+      "id": "min_subnormal_operand",
+      "a_bits": "0x00000001",
+      "b_bits": "0x3f800000",
+      "d": "1.401298464324817e-45"
+    },
+    {
+      "id": "negative_subnormal_operand",
+      "a_bits": "0x800116c2",
+      "b_bits": "0x3f800000",
+      "d": "-9.99994610111476e-41"
+    },
+    {
+      "id": "smallest_normal_control",
+      "a_bits": "0x00800000",
+      "b_bits": "0x3f800000",
+      "d": "1.1754943508222875e-38"
+    },
+    {
+      "id": "subnormal_vs_zero",
+      "a_bits": "0x000116c2",
+      "b_bits": "0x00000000",
+      "d": "0.0"
+    },
+    {
+      "id": "min_subnormal_vs_zero",
+      "a_bits": "0x00000001",
+      "b_bits": "0x00000000",
+      "d": "0.0"
+    }
+  ],
+  "verdict_vocabulary": [
+    "ieee-agreement",
+    "flush-to-zero",
+    "divergent",
+    "inconclusive",
+    "not-applicable"
+  ],
+  "cells": [
+    {
+      "route": "R1",
+      "mechanism": "plain-operator arithmetic",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R1",
+      "mechanism": "__f*_rn intrinsic",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R1",
+      "mechanism": "fminf/fmaxf",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R1",
+      "mechanism": "float compare",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R1",
+      "mechanism": "__double2float_rn",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R1",
+      "mechanism": "(float) cast",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R1-ftztrue",
+      "mechanism": "plain-operator arithmetic",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R1-ftztrue",
+      "mechanism": "__f*_rn intrinsic",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R1-ftztrue",
+      "mechanism": "fminf/fmaxf",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R1-ftztrue",
+      "mechanism": "float compare",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R1-ftztrue",
+      "mechanism": "__double2float_rn",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R1-ftztrue",
+      "mechanism": "(float) cast",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R2",
+      "mechanism": "plain-operator arithmetic",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R2",
+      "mechanism": "__f*_rn intrinsic",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R2",
+      "mechanism": "fminf/fmaxf",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R2",
+      "mechanism": "float compare",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R2",
+      "mechanism": "__double2float_rn",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R2",
+      "mechanism": "(float) cast",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R3",
+      "mechanism": "plain-operator arithmetic",
+      "verdict": "ieee-agreement",
+      "input_count": 9
+    },
+    {
+      "route": "R3",
+      "mechanism": "__f*_rn intrinsic",
+      "verdict": "ieee-agreement",
+      "input_count": 9
+    },
+    {
+      "route": "R3",
+      "mechanism": "fminf/fmaxf",
+      "verdict": "ieee-agreement",
+      "input_count": 9
+    },
+    {
+      "route": "R3",
+      "mechanism": "float compare",
+      "verdict": "ieee-agreement",
+      "input_count": 9
+    },
+    {
+      "route": "R3",
+      "mechanism": "__double2float_rn",
+      "verdict": "ieee-agreement",
+      "input_count": 9
+    },
+    {
+      "route": "R3",
+      "mechanism": "(float) cast",
+      "verdict": "ieee-agreement",
+      "input_count": 9
+    },
+    {
+      "route": "R4",
+      "mechanism": "plain-operator arithmetic",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R4",
+      "mechanism": "__f*_rn intrinsic",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R4",
+      "mechanism": "fminf/fmaxf",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R4",
+      "mechanism": "float compare",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R4",
+      "mechanism": "__double2float_rn",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R4",
+      "mechanism": "(float) cast",
+      "verdict": "flush-to-zero",
+      "input_count": 9
+    },
+    {
+      "route": "R5",
+      "mechanism": "plain-operator arithmetic",
+      "verdict": "ieee-agreement",
+      "input_count": 9
+    },
+    {
+      "route": "R5",
+      "mechanism": "__f*_rn intrinsic",
+      "verdict": "not-applicable",
+      "input_count": 0,
+      "not_applicable_reason": "route does not express this mechanism"
+    },
+    {
+      "route": "R5",
+      "mechanism": "fminf/fmaxf",
+      "verdict": "ieee-agreement",
+      "input_count": 9
+    },
+    {
+      "route": "R5",
+      "mechanism": "float compare",
+      "verdict": "ieee-agreement",
+      "input_count": 9
+    },
+    {
+      "route": "R5",
+      "mechanism": "__double2float_rn",
+      "verdict": "not-applicable",
+      "input_count": 0,
+      "not_applicable_reason": "route does not express this mechanism"
+    },
+    {
+      "route": "R5",
+      "mechanism": "(float) cast",
+      "verdict": "ieee-agreement",
+      "input_count": 9
+    }
+  ],
+  "flag_sensitivity": {
+    "arm_bit_table_sha256": {
+      "R1": "86a1ebab2375ca705902535806e9d28129ce2db4812d6a3da723eaef0c8a5224",
+      "R1-ftztrue": "86a1ebab2375ca705902535806e9d28129ce2db4812d6a3da723eaef0c8a5224",
+      "R2": "86a1ebab2375ca705902535806e9d28129ce2db4812d6a3da723eaef0c8a5224",
+      "R3": "373118f5890d8989cac4584908b0ebbb5b35239387000ca795ca5769a1ba9eec",
+      "R4": "86a1ebab2375ca705902535806e9d28129ce2db4812d6a3da723eaef0c8a5224",
+      "R5": "bec3d8f9c95a4ad0d3e04afd5ab7dc7cf8fdf9bfe0a2ebe11ab94206ca2fd86c"
+    },
+    "distinct_arm_bit_tables": 3,
+    "arms_differ": true,
+    "basis": "sha256 over each arm's (mechanism, input, device word) sequence; the mechanism set differs between arms that cannot express a mechanism, which is itself a difference"
+  },
+  "dual_run": {
+    "runs": 2,
+    "byte_identical": true,
+    "bit_table_sha256": [
+      "3070d3ccad8005b06b22dc09bf91e0cc17af98b8ba5c4c26deecc210999a7a82",
+      "3070d3ccad8005b06b22dc09bf91e0cc17af98b8ba5c4c26deecc210999a7a82"
+    ]
+  },
+  "artifacts": {
+    "bitpatterns.csv": {
+      "sha256": "3070d3ccad8005b06b22dc09bf91e0cc17af98b8ba5c4c26deecc210999a7a82",
+      "provenance": "shipped-path",
+      "description": "device bit table, both passes byte-identical"
+    },
+    "cubin/r1.cubin": {
+      "sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+      "format": "cubin",
+      "provenance": "shipped-path",
+      "description": "the compiled object NVRTC returned during route R1's own compile"
+    },
+    "cubin/r1_ftztrue.cubin": {
+      "sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+      "format": "cubin",
+      "provenance": "shipped-path",
+      "description": "the compiled object NVRTC returned during route R1-ftztrue's own compile"
+    },
+    "cubin/r2.cubin": {
+      "sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+      "format": "cubin",
+      "provenance": "shipped-path",
+      "description": "the compiled object NVRTC returned during route R2's own compile"
+    },
+    "cubin/r3.cubin": {
+      "sha256": "436070cf076f1a06ed5ce4acb1203f73d8defef39dd21417382364535020e9de",
+      "format": "cubin",
+      "provenance": "shipped-path",
+      "description": "the compiled object NVRTC returned during route R3's own compile"
+    },
+    "cubin/r4_0.cubin": {
+      "sha256": "6844e4b1e407ff792b68b9c826c9c8f9012a2db1a190388214e9fc5d5efb4465",
+      "format": "cubin",
+      "provenance": "shipped-path",
+      "description": "the compiled object NVRTC returned during route R4's own compile"
+    },
+    "cubin/r4_1.cubin": {
+      "sha256": "598236be4666fbea5a77f252d59c6dfa1662ce9cda2c39e8f832551fb4a6f800",
+      "format": "cubin",
+      "provenance": "shipped-path",
+      "description": "the compiled object NVRTC returned during route R4's own compile"
+    },
+    "cubin/r4_2.cubin": {
+      "sha256": "d1a87e5c76d186ef35d1946a2d10973e6c72e07b0f1f17d94271e92fe153bfd0",
+      "format": "cubin",
+      "provenance": "shipped-path",
+      "description": "the compiled object NVRTC returned during route R4's own compile"
+    },
+    "cubin/r4_3.cubin": {
+      "sha256": "3140b40935cbd85ba6c53920ad42ab420515180a9818ca637fadf8df43e6328e",
+      "format": "cubin",
+      "provenance": "shipped-path",
+      "description": "the compiled object NVRTC returned during route R4's own compile"
+    },
+    "cubin/r4_4.cubin": {
+      "sha256": "c3f7db6ffed0dd0634d486c22c4daf6bdfad21b1c6edeaa166793682cd1d75a5",
+      "format": "cubin",
+      "provenance": "shipped-path",
+      "description": "the compiled object NVRTC returned during route R4's own compile"
+    },
+    "cubin/r4_5.cubin": {
+      "sha256": "15f46295e3cf1b21d8695e895fb9b3d5746f957c2d6b5fc3ec029a089b0869ff",
+      "format": "cubin",
+      "provenance": "shipped-path",
+      "description": "the compiled object NVRTC returned during route R4's own compile"
+    },
+    "cubin/r5": {
+      "provenance": "shipped-path",
+      "shares_module_with": "R1",
+      "reason": "this route changes how the arithmetic is written, not how it is compiled; its kernels live in the module R1 compiled and are covered by that route's object"
+    },
+    "ptx/r1.ptx": {
+      "sha256": "1a6228cfa45ee525f50a63bdc39c4607e5019177dc8fbdbb2e68c2e8b917e502",
+      "provenance": "mirror",
+      "mirror_of": "R1",
+      "description": "same source and same effective flags as the shipped compile, with CuPy's cubin target replaced by a PTX target so the instruction modifiers are readable",
+      "ftz_modifiers": {
+        "with_ftz": {
+          "cvt": 2,
+          "min": 1,
+          "mul": 2,
+          "setp": 1
+        },
+        "without_ftz": {
+          "cvt": 1,
+          "ld": 14,
+          "min": 1,
+          "mul": 1,
+          "selp": 2,
+          "setp": 1,
+          "st": 10
+        },
+        "f32_instruction_count": 36
+      }
+    },
+    "ptx/r1_ftztrue.ptx": {
+      "sha256": "1a6228cfa45ee525f50a63bdc39c4607e5019177dc8fbdbb2e68c2e8b917e502",
+      "provenance": "mirror",
+      "mirror_of": "R1-ftztrue",
+      "description": "same source and same effective flags as the shipped compile, with CuPy's cubin target replaced by a PTX target so the instruction modifiers are readable",
+      "ftz_modifiers": {
+        "with_ftz": {
+          "cvt": 2,
+          "min": 1,
+          "mul": 2,
+          "setp": 1
+        },
+        "without_ftz": {
+          "cvt": 1,
+          "ld": 14,
+          "min": 1,
+          "mul": 1,
+          "selp": 2,
+          "setp": 1,
+          "st": 10
+        },
+        "f32_instruction_count": 36
+      }
+    },
+    "ptx/r2.ptx": {
+      "sha256": "1a6228cfa45ee525f50a63bdc39c4607e5019177dc8fbdbb2e68c2e8b917e502",
+      "provenance": "mirror",
+      "mirror_of": "R2",
+      "description": "same source and same effective flags as the shipped compile, with CuPy's cubin target replaced by a PTX target so the instruction modifiers are readable",
+      "ftz_modifiers": {
+        "with_ftz": {
+          "cvt": 2,
+          "min": 1,
+          "mul": 2,
+          "setp": 1
+        },
+        "without_ftz": {
+          "cvt": 1,
+          "ld": 14,
+          "min": 1,
+          "mul": 1,
+          "selp": 2,
+          "setp": 1,
+          "st": 10
+        },
+        "f32_instruction_count": 36
+      }
+    },
+    "ptx/r3.ptx": {
+      "sha256": "b4c566f4e5fdeb9df1121aa4b98166f966bbb117cbe3237f1fd49e13e4f17940",
+      "provenance": "mirror",
+      "mirror_of": "R3",
+      "description": "same source and same effective flags as the shipped compile, with CuPy's cubin target replaced by a PTX target so the instruction modifiers are readable",
+      "ftz_modifiers": {
+        "with_ftz": {},
+        "without_ftz": {
+          "cvt": 3,
+          "ld": 14,
+          "min": 2,
+          "mul": 3,
+          "selp": 2,
+          "setp": 2,
+          "st": 10
+        },
+        "f32_instruction_count": 36
+      }
+    },
+    "ptx/r4.ptx": {
+      "provenance": "unavailable",
+      "reason": "the CuPy-generated reduction source is built inside CuPy and is not reproducible from this tool without re-entering its kernel cache"
+    },
+    "sass/r1.sass": {
+      "sha256": "f80e2c69401311df369bc772e9b9216a759153e530f10ef62635824530581cd8",
+      "provenance": "shipped-path",
+      "derived_from": "cubin/r1.cubin",
+      "derived_from_sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+      "derivation": "nvdisasm (sections) over the committed object; no recompile",
+      "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
+      "ftz_modifiers": {
+        "with_ftz": {
+          "FMNMX": 1,
+          "FMUL": 2,
+          "FSET": 1
+        },
+        "without_ftz": {
+          "F2F": 3,
+          "FMNMX": 1,
+          "FMUL": 3,
+          "FSET": 1
+        },
+        "float_instruction_count": 12
+      }
+    },
+    "sass/r1_ftztrue.sass": {
+      "sha256": "f80e2c69401311df369bc772e9b9216a759153e530f10ef62635824530581cd8",
+      "provenance": "shipped-path",
+      "derived_from": "cubin/r1_ftztrue.cubin",
+      "derived_from_sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+      "derivation": "nvdisasm (sections) over the committed object; no recompile",
+      "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
+      "ftz_modifiers": {
+        "with_ftz": {
+          "FMNMX": 1,
+          "FMUL": 2,
+          "FSET": 1
+        },
+        "without_ftz": {
+          "F2F": 3,
+          "FMNMX": 1,
+          "FMUL": 3,
+          "FSET": 1
+        },
+        "float_instruction_count": 12
+      }
+    },
+    "sass/r2.sass": {
+      "sha256": "f80e2c69401311df369bc772e9b9216a759153e530f10ef62635824530581cd8",
+      "provenance": "shipped-path",
+      "derived_from": "cubin/r2.cubin",
+      "derived_from_sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+      "derivation": "nvdisasm (sections) over the committed object; no recompile",
+      "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
+      "ftz_modifiers": {
+        "with_ftz": {
+          "FMNMX": 1,
+          "FMUL": 2,
+          "FSET": 1
+        },
+        "without_ftz": {
+          "F2F": 3,
+          "FMNMX": 1,
+          "FMUL": 3,
+          "FSET": 1
+        },
+        "float_instruction_count": 12
+      }
+    },
+    "sass/r3.sass": {
+      "sha256": "7ebacbdff5cab6cf397ffb3650d2af8058955b0bcaa5beb7d2b14563ea5603b3",
+      "provenance": "shipped-path",
+      "derived_from": "cubin/r3.cubin",
+      "derived_from_sha256": "436070cf076f1a06ed5ce4acb1203f73d8defef39dd21417382364535020e9de",
+      "derivation": "nvdisasm (sections) over the committed object; no recompile",
+      "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
+      "ftz_modifiers": {
+        "with_ftz": {},
+        "without_ftz": {
+          "F2F": 3,
+          "FMNMX": 2,
+          "FMUL": 3,
+          "FSET": 2
+        },
+        "float_instruction_count": 10
+      }
+    },
+    "sass/r4_0.sass": {
+      "sha256": "72dde338af73042d33b87948264330794f2fd2b950fdda1efe5175fc0f21725c",
+      "provenance": "shipped-path",
+      "derived_from": "cubin/r4_0.cubin",
+      "derived_from_sha256": "6844e4b1e407ff792b68b9c826c9c8f9012a2db1a190388214e9fc5d5efb4465",
+      "derivation": "nvdisasm (sections) over the committed object; no recompile",
+      "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
+      "ftz_modifiers": {
+        "with_ftz": {
+          "FMUL": 1
+        },
+        "without_ftz": {
+          "HFMA2": 3
+        },
+        "float_instruction_count": 4
+      }
+    },
+    "sass/r4_1.sass": {
+      "sha256": "4200a791c5c8fa8cf3b002844f644953b2999e1fa3bff6278c95828144d1f96a",
+      "provenance": "shipped-path",
+      "derived_from": "cubin/r4_1.cubin",
+      "derived_from_sha256": "598236be4666fbea5a77f252d59c6dfa1662ce9cda2c39e8f832551fb4a6f800",
+      "derivation": "nvdisasm (sections) over the committed object; no recompile",
+      "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
+      "ftz_modifiers": {
+        "with_ftz": {
+          "FMUL": 1
+        },
+        "without_ftz": {
+          "HFMA2": 3
+        },
+        "float_instruction_count": 4
+      }
+    },
+    "sass/r4_2.sass": {
+      "sha256": "974fd283ccdccb91e505382cd7f761ad51ac37d4223dc68c3ab2c6e4ef8cecc0",
+      "provenance": "shipped-path",
+      "derived_from": "cubin/r4_2.cubin",
+      "derived_from_sha256": "d1a87e5c76d186ef35d1946a2d10973e6c72e07b0f1f17d94271e92fe153bfd0",
+      "derivation": "nvdisasm (sections) over the committed object; no recompile",
+      "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
+      "ftz_modifiers": {
+        "with_ftz": {
+          "FMNMX": 1
+        },
+        "without_ftz": {
+          "HFMA2": 3
+        },
+        "float_instruction_count": 4
+      }
+    },
+    "sass/r4_3.sass": {
+      "sha256": "f03f1880712f8fa3eac467a09941d265b428eff4572004b3390353f54536454c",
+      "provenance": "shipped-path",
+      "derived_from": "cubin/r4_3.cubin",
+      "derived_from_sha256": "3140b40935cbd85ba6c53920ad42ab420515180a9818ca637fadf8df43e6328e",
+      "derivation": "nvdisasm (sections) over the committed object; no recompile",
+      "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
+      "ftz_modifiers": {
+        "with_ftz": {
+          "FSET": 1
+        },
+        "without_ftz": {
+          "HFMA2": 3
+        },
+        "float_instruction_count": 4
+      }
+    },
+    "sass/r4_4.sass": {
+      "sha256": "7809d0450cd1ea98ba99827f268acf1eac7b739767c2e6c04995ec8e67848b9c",
+      "provenance": "shipped-path",
+      "derived_from": "cubin/r4_4.cubin",
+      "derived_from_sha256": "c3f7db6ffed0dd0634d486c22c4daf6bdfad21b1c6edeaa166793682cd1d75a5",
+      "derivation": "nvdisasm (sections) over the committed object; no recompile",
+      "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
+      "ftz_modifiers": {
+        "with_ftz": {},
+        "without_ftz": {
+          "F2F": 1,
+          "FMUL": 1,
+          "HFMA2": 3
+        },
+        "float_instruction_count": 5
+      }
+    },
+    "sass/r4_5.sass": {
+      "sha256": "21c283bba7123b711cede6c60abc643ea79717bd94ed49675164a68bae7f3576",
+      "provenance": "shipped-path",
+      "derived_from": "cubin/r4_5.cubin",
+      "derived_from_sha256": "15f46295e3cf1b21d8695e895fb9b3d5746f957c2d6b5fc3ec029a089b0869ff",
+      "derivation": "nvdisasm (sections) over the committed object; no recompile",
+      "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
+      "ftz_modifiers": {
+        "with_ftz": {},
+        "without_ftz": {
+          "F2F": 1,
+          "FMUL": 1,
+          "HFMA2": 3
+        },
+        "float_instruction_count": 5
+      }
+    },
+    "sass": {
+      "provenance": "shipped-path",
+      "policy": "best-effort per [D-20]",
+      "disassembler": "Cuda compilation tools, release 13.0, V13.0.39",
+      "objects": {
+        "r1": {
+          "cubin": "cubin/r1.cubin",
+          "available": true,
+          "method": "sections",
+          "kernels": [
+            "ftz_probe_ptx_cvt",
+            "ftz_probe_ptx_setp",
+            "ftz_probe_ptx_min",
+            "ftz_probe_ptx_mul",
+            "ftz_probe_cast",
+            "ftz_probe_d2f_rn",
+            "ftz_probe_compare",
+            "ftz_probe_minmax",
+            "ftz_probe_mul_rn",
+            "ftz_probe_mul_op"
+          ],
+          "artifact": "sass/r1.sass"
+        },
+        "r1_ftztrue": {
+          "cubin": "cubin/r1_ftztrue.cubin",
+          "available": true,
+          "method": "sections",
+          "kernels": [
+            "ftz_probe_ptx_cvt",
+            "ftz_probe_ptx_setp",
+            "ftz_probe_ptx_min",
+            "ftz_probe_ptx_mul",
+            "ftz_probe_cast",
+            "ftz_probe_d2f_rn",
+            "ftz_probe_compare",
+            "ftz_probe_minmax",
+            "ftz_probe_mul_rn",
+            "ftz_probe_mul_op"
+          ],
+          "artifact": "sass/r1_ftztrue.sass"
+        },
+        "r2": {
+          "cubin": "cubin/r2.cubin",
+          "available": true,
+          "method": "sections",
+          "kernels": [
+            "ftz_probe_ptx_cvt",
+            "ftz_probe_ptx_setp",
+            "ftz_probe_ptx_min",
+            "ftz_probe_ptx_mul",
+            "ftz_probe_cast",
+            "ftz_probe_d2f_rn",
+            "ftz_probe_compare",
+            "ftz_probe_minmax",
+            "ftz_probe_mul_rn",
+            "ftz_probe_mul_op"
+          ],
+          "artifact": "sass/r2.sass"
+        },
+        "r3": {
+          "cubin": "cubin/r3.cubin",
+          "available": true,
+          "method": "sections",
+          "kernels": [
+            "ftz_probe_ptx_cvt",
+            "ftz_probe_ptx_setp",
+            "ftz_probe_ptx_min",
+            "ftz_probe_ptx_mul",
+            "ftz_probe_cast",
+            "ftz_probe_d2f_rn",
+            "ftz_probe_compare",
+            "ftz_probe_minmax",
+            "ftz_probe_mul_rn",
+            "ftz_probe_mul_op"
+          ],
+          "artifact": "sass/r3.sass"
+        },
+        "r4_0": {
+          "cubin": "cubin/r4_0.cubin",
+          "available": true,
+          "method": "sections",
+          "kernels": [
+            "ftz_probe_r4_mul"
+          ],
+          "artifact": "sass/r4_0.sass"
+        },
+        "r4_1": {
+          "cubin": "cubin/r4_1.cubin",
+          "available": true,
+          "method": "sections",
+          "kernels": [
+            "ftz_probe_r4_mul_rn"
+          ],
+          "artifact": "sass/r4_1.sass"
+        },
+        "r4_2": {
+          "cubin": "cubin/r4_2.cubin",
+          "available": true,
+          "method": "sections",
+          "kernels": [
+            "ftz_probe_r4_min"
+          ],
+          "artifact": "sass/r4_2.sass"
+        },
+        "r4_3": {
+          "cubin": "cubin/r4_3.cubin",
+          "available": true,
+          "method": "sections",
+          "kernels": [
+            "ftz_probe_r4_compare"
+          ],
+          "artifact": "sass/r4_3.sass"
+        },
+        "r4_4": {
+          "cubin": "cubin/r4_4.cubin",
+          "available": true,
+          "method": "sections",
+          "kernels": [
+            "ftz_probe_r4_d2f"
+          ],
+          "artifact": "sass/r4_4.sass"
+        },
+        "r4_5": {
+          "cubin": "cubin/r4_5.cubin",
+          "available": true,
+          "method": "sections",
+          "kernels": [
+            "ftz_probe_r4_cast"
+          ],
+          "artifact": "sass/r4_5.sass"
+        }
+      },
+      "produced": 10,
+      "reason": "this record is the tier summary and has no digest of its own; the disassembly files are the artifacts, one per object, listed under `objects` and hashed individually"
+    }
+  }
+}

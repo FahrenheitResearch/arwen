@@ -1692,6 +1692,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rw-nexrad"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "flate2",
+ "rustls",
+ "rustls-rustcrypto",
+ "rw-store",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ureq",
+ "wx-radar 0.3.6",
+]
+
+[[package]]
 name = "rw-store"
 version = "0.1.0"
 dependencies = [

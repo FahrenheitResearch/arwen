@@ -1,0 +1,375 @@
+"""The capsule: one schema, one builder, one set of emitting routes.
+
+The tests hold the three things a receipt can quietly lose -- coverage of the
+published pin set, a shared builder behind every exit, and an honest account of
+what was not measured -- and each is paired with the mutation that must break
+it.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import re
+import sys
+from pathlib import Path
+
+import jsonschema
+import pytest
+
+from gpuwm.certify import capsule as capsule_module
+from gpuwm.certify.capsule import (CAPSULE_FILENAME, CAPSULE_SCHEMA_ID,
+                                   EMISSION_SITES, REQUIRED_SECTIONS,
+                                   SCHEMA_PATH, CapsuleValidationError,
+                                   build_capsule, emit_run_capsule,
+                                   load_certification_capsule,
+                                   validate_certification_capsule)
+from gpuwm.certify.pins import (COMPOUND_DOC_ROWS, PIN_KEYS, PINS,
+                                PIN_TABLE_DOC, PIN_TABLE_HEADING, resolve_pins)
+
+REPO = Path(__file__).resolve().parents[1]
+DETERMINISM = REPO / PIN_TABLE_DOC
+
+
+def _published_pin_rows() -> list[str]:
+    """First column of every row of the published pin table."""
+    lines = DETERMINISM.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines)
+                 if PIN_TABLE_HEADING in line)
+    rows: list[str] = []
+    started = False
+    for line in lines[start:]:
+        if line.startswith("| Pin |"):
+            started = True
+            continue
+        if not started:
+            continue
+        if line.startswith("|---"):
+            continue
+        if not line.startswith("|"):
+            break
+        rows.append(line.split("|")[1].strip())
+    return rows
+
+
+def _schema() -> dict:
+    return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+
+def _stub_capsule(**kwargs):
+    return build_capsule(emission_site="supervisor:success",
+                         require_gpu=False, **kwargs)
+
+
+# --- F3-AC1: the pin set is covered, present, and honestly statused --------
+
+def test_the_published_pin_table_has_eleven_rows_two_of_them_compound():
+    rows = _published_pin_rows()
+    assert len(rows) == 11, rows
+    assert set(COMPOUND_DOC_ROWS) <= set(rows)
+    assert len(COMPOUND_DOC_ROWS) == 2
+
+
+def test_every_pin_item_quotes_a_published_row_and_the_rows_are_all_covered():
+    rows = _published_pin_rows()
+    assert [pin.doc_row for pin in PINS if pin.doc_row_part is None or True]
+    for pin in PINS:
+        assert pin.doc_row in rows, (
+            f"pin {pin.key} quotes a row that is not published: {pin.doc_row}")
+    assert {pin.doc_row for pin in PINS} == set(rows)
+    assert len(PINS) == len(rows) + len(COMPOUND_DOC_ROWS) == 13
+
+
+def test_the_schema_enumerates_exactly_the_pin_keys():
+    stack = _schema()["properties"]["numerical_stack"]
+    assert tuple(stack["required"]) == PIN_KEYS
+    assert set(stack["properties"]) == set(PIN_KEYS)
+    assert stack["additionalProperties"] is False
+
+
+def test_the_schema_is_a_valid_json_schema():
+    schema = _schema()
+    jsonschema.Draft202012Validator.check_schema(schema)
+    assert schema["$id"] == CAPSULE_SCHEMA_ID
+
+
+def test_every_pin_is_present_with_a_declared_status_and_a_reason_if_absent():
+    capsule = _stub_capsule()
+    stack = capsule["numerical_stack"]
+    assert tuple(stack) == PIN_KEYS
+    for key, entry in stack.items():
+        assert entry["status"] in {"resolved", "unavailable"}, key
+        if entry["status"] == "unavailable":
+            assert entry["reason"], key
+
+
+def test_the_code_section_records_the_version_and_the_verbatim_commit():
+    import gpuwm
+    from gpuwm.supervisor import git_commit
+
+    capsule = _stub_capsule()
+    assert capsule["code"]["gpuwm_version"] == gpuwm.__version__
+    recorded = capsule["code"]["git_commit"]
+    assert recorded == git_commit()
+    assert re.fullmatch(r"[0-9a-f]{40}", recorded) or recorded.startswith(
+        "unavailable: ")
+
+
+def test_a_capsule_with_a_pin_removed_is_refused():
+    capsule = _stub_capsule()
+    capsule["numerical_stack"].pop("numpy_version")
+    with pytest.raises(CapsuleValidationError):
+        validate_certification_capsule(capsule)
+
+
+def test_the_certification_path_refuses_an_unresolved_pin():
+    """Mutation control 3: an unresolved pin cannot reach certification."""
+    capsule = _stub_capsule()
+    validate_certification_capsule(capsule)  # the plain path accepts it
+    with pytest.raises(CapsuleValidationError, match="not.*resolved"):
+        validate_certification_capsule(capsule, certification_path=True)
+
+
+# --- F2: the stub measures nothing it cannot measure ------------------------
+
+def test_the_stub_populates_no_stack_field_it_did_not_measure():
+    capsule = _stub_capsule()
+    stack = capsule["numerical_stack"]
+    for key in ("gpu_identity", "cuda_driver_version", "cuda_toolkit_nvrtc"):
+        assert stack[key]["status"] == "unavailable"
+        assert stack[key]["value"] is None
+        assert "does not probe" in stack[key]["reason"]
+
+
+def test_the_builder_uses_the_probe_the_bridge_receipt_uses():
+    import gpuwm.gpu_stack_identity as probe
+    import gpuwm.native_wrf_distribution as bridge
+
+    assert (capsule_module.gpu_cuda_stack_identity
+            is bridge.gpu_cuda_stack_identity
+            is probe.gpu_cuda_stack_identity)
+
+
+def test_run_context_keys_outside_the_pin_set_are_refused():
+    with pytest.raises(KeyError):
+        resolve_pins({"not_a_pin": 1}, require_gpu=False)
+
+
+# --- F2: four-site parity, and the control that must fail all four ---------
+
+EMITTERS = (
+    "gpuwm.runtime",
+    "gpuwm.supervisor",
+    "gpuwm.prepared_single_domain_forecast",
+    "gpuwm.prepared_domain_tree_forecast",
+)
+
+
+def _emitter_modules():
+    import importlib
+
+    return {name: importlib.import_module(name) for name in EMITTERS}
+
+
+def test_all_four_sites_emit_through_the_same_builder_object():
+    for name, module in _emitter_modules().items():
+        assert module.emit_run_capsule is emit_run_capsule, name
+
+
+def test_all_four_sites_name_a_declared_emission_site():
+    used = set()
+    for name in EMITTERS:
+        path = REPO / (name.replace(".", "/") + ".py")
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id in {"emit_run_capsule",
+                                         "_emit_front_door_capsule"}):
+                for keyword in node.keywords:
+                    if (keyword.arg == "emission_site"
+                            and isinstance(keyword.value, ast.Constant)):
+                        used.add(keyword.value.value)
+    assert used == set(EMISSION_SITES), used
+
+
+def test_control_dropping_a_required_field_is_caught_at_all_four_sites(
+        tmp_path, monkeypatch, capsys):
+    """Mutation control 1: remove one required field from the shared builder.
+
+    Warn-not-block posture: on the run path (certification_path=False)
+    the failed emission is one warning line and NO capsule file -- a
+    finished forecast is never destroyed by its audit artifact.  The
+    control still bites at every site: no site may silently write a
+    capsule missing the field, and the certification path stays fatal.
+    """
+    original = capsule_module.build_capsule
+
+    def crippled(**kwargs):
+        document = original(**kwargs)
+        document.pop("numerical_stack")
+        return document
+
+    monkeypatch.setattr(capsule_module, "build_capsule", crippled)
+    for index, module in enumerate(_emitter_modules().values()):
+        outdir = tmp_path / str(index)
+        result = module.emit_run_capsule(
+            outdir, emission_site="supervisor:success", require_gpu=False)
+        err = capsys.readouterr().err
+        assert result is None
+        assert not (outdir / CAPSULE_FILENAME).exists()
+        assert "warning:" in err
+        assert "certification capsule not written" in err
+        assert "numerical_stack" in err
+    # KEEP-HARD negative: with certification explicitly requested the
+    # same failure refuses.
+    with pytest.raises(CapsuleValidationError):
+        capsule_module.emit_run_capsule(
+            tmp_path / "cert", emission_site="supervisor:success",
+            certification_path=True, require_gpu=False)
+
+
+def test_a_missing_jsonschema_cannot_kill_a_completed_forecast(
+        tmp_path, monkeypatch, capsys):
+    """The field failure: a pip install without jsonschema ran a whole
+    forecast, then died at capsule emission.  Emission must warn and
+    return None; the certify path must name the remedy, not traceback."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_jsonschema(name, *args, **kwargs):
+        if name == "jsonschema":
+            raise ModuleNotFoundError("No module named 'jsonschema'",
+                                      name="jsonschema")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "jsonschema", raising=False)
+    monkeypatch.setattr(builtins, "__import__", no_jsonschema)
+    outdir = tmp_path / "run"
+    result = capsule_module.emit_run_capsule(
+        outdir, emission_site="supervisor:success", require_gpu=False)
+    err = capsys.readouterr().err
+    assert result is None
+    assert not (outdir / CAPSULE_FILENAME).exists()
+    assert "certification capsule not written" in err
+    assert "jsonschema" in err
+    # Certification asked for explicitly: fatal, with the remedy named.
+    with pytest.raises(CapsuleValidationError, match="pip install"):
+        capsule_module.emit_run_capsule(
+            tmp_path / "cert", emission_site="supervisor:success",
+            certification_path=True, require_gpu=False)
+
+
+def test_the_uncrippled_builder_emits_through_all_four_sites(tmp_path):
+    for index, module in enumerate(_emitter_modules().values()):
+        outdir = tmp_path / str(index)
+        path = module.emit_run_capsule(
+            outdir, emission_site="supervisor:success", require_gpu=False)
+        assert path.name == CAPSULE_FILENAME
+        document = load_certification_capsule(path)
+        assert document["schema"] == CAPSULE_SCHEMA_ID
+        assert tuple(sorted(document)) == tuple(sorted(REQUIRED_SECTIONS))
+
+
+# --- D-14: content-mode geography on the certification path ---------------
+
+def _certifiable_capsule():
+    capsule = _stub_capsule()
+    for entry in capsule["numerical_stack"].values():
+        entry["status"] = "resolved"
+        entry.pop("reason", None)
+        if entry["value"] is None:
+            entry["value"] = "recorded-by-the-test"
+    return capsule
+
+
+def test_the_certification_path_refuses_an_inventory_mode_directory_input():
+    capsule = _certifiable_capsule()
+    capsule["input_bytes"] = {"entries": {
+        "geography:/data/geog": {"algorithm": "sha256-directory-inventory",
+                                 "digest": "0" * 64},
+    }}
+    with pytest.raises(CapsuleValidationError, match="content"):
+        validate_certification_capsule(capsule, certification_path=True)
+
+
+def test_the_certification_path_accepts_a_content_mode_directory_input():
+    capsule = _certifiable_capsule()
+    capsule["input_bytes"] = {"entries": {
+        "geography:/data/geog": {"algorithm": "sha256-directory-content",
+                                 "digest": "0" * 64},
+        "forcing:/data/f.nc": {"algorithm": "sha256", "digest": "1" * 64},
+    }}
+    validate_certification_capsule(capsule, certification_path=True)
+
+
+# --- D-19: the manifest's two halves --------------------------------------
+
+def test_the_schema_requires_the_cpu_half_and_states_the_gpu_half():
+    entry = _schema()["properties"]["kernel_manifest"]["additionalProperties"]
+    assert set(entry["required"]) == {"source_sha256", "options",
+                                      "compiled_image"}
+    image = entry["properties"]["compiled_image"]
+    assert set(image["properties"]["status"]["enum"]) == {"resolved",
+                                                          "unavailable"}
+    assert image["properties"]["kind"]["enum"] == ["ptx", "cubin"]
+
+
+# --- F3-AC3: the digest observes the trajectory, it does not join it -------
+
+def test_the_digest_is_computed_after_the_final_sync_and_the_writer_drain():
+    """Structural: on both run exits the digest follows sync and drain."""
+    source = (REPO / "gpuwm" / "runtime.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = {node.name: node for node in ast.walk(tree)
+                 if isinstance(node, ast.FunctionDef)}
+    for name in ("integrate_prepared_case", "run_experiment"):
+        body = functions[name]
+        sync = [node.lineno for node in ast.walk(body)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "deviceSynchronize"]
+        digest = [node.lineno for node in ast.walk(body)
+                  if isinstance(node, ast.Call)
+                  and isinstance(node.func, ast.Name)
+                  and node.func.id == "canonical_state_digest"]
+        assert sync and digest, name
+        assert min(digest) > max(sync), (
+            f"{name} computes the digest at line {min(digest)}, at or before "
+            f"its final device synchronization at {max(sync)}")
+    drain = [node.lineno for node in ast.walk(functions["run_experiment"])
+             if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute)
+             and node.func.attr == "drain"]
+    digest = [node.lineno for node in ast.walk(functions["run_experiment"])
+              if isinstance(node, ast.Call)
+              and isinstance(node.func, ast.Name)
+              and node.func.id == "canonical_state_digest"]
+    assert drain and min(digest) > max(drain)
+
+
+def test_the_digest_instrumentation_can_be_switched_off_for_the_control_pair():
+    from gpuwm.runtime import TRAJECTORY_DIGEST_ENV, trajectory_digest_enabled
+
+    assert trajectory_digest_enabled() is True
+    import os
+
+    previous = os.environ.get(TRAJECTORY_DIGEST_ENV)
+    try:
+        os.environ[TRAJECTORY_DIGEST_ENV] = "0"
+        assert trajectory_digest_enabled() is False
+        os.environ[TRAJECTORY_DIGEST_ENV] = "1"
+        assert trajectory_digest_enabled() is True
+    finally:
+        if previous is None:
+            os.environ.pop(TRAJECTORY_DIGEST_ENV, None)
+        else:
+            os.environ[TRAJECTORY_DIGEST_ENV] = previous
+
+
+def test_both_run_summaries_carry_the_digest_field():
+    from gpuwm.runtime import ExperimentRunSummary, RealCaseRunSummary
+
+    assert "trajectory_digest" in RealCaseRunSummary.__dataclass_fields__
+    assert "trajectory_digest" in ExperimentRunSummary.__dataclass_fields__

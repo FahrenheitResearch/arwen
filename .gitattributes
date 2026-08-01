@@ -40,3 +40,14 @@ tests/fixtures/**/*.grib2 -text
 # A captured NOAA index is evidence: it round-trips byte for byte or the
 # digest its README publishes stops being true on a fresh checkout.
 tests/fixtures/**/*.idx -text
+
+# The FTZ receipt commits SHA-256 over its own artifacts; a line-ending
+# rewrite on checkout would break every one of them.  The cubins are ELF.
+tools/ftz_receipt/receipt/*.json text eol=lf
+tools/ftz_receipt/receipt/*.csv text eol=lf
+tools/ftz_receipt/receipt/ptx/** text eol=lf
+tools/ftz_receipt/receipt/cubin/** -text
+tools/ftz_receipt/receipt/sass/** text eol=lf
+tools/ftz_receipt/fixtures/*.ptx text eol=lf
+tools/ftz_receipt/fixtures/*.sass text eol=lf
+gpuwm/verify/*.json text eol=lf

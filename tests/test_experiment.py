@@ -294,11 +294,14 @@ def test_rejects_missing_domain_tables(tmp_path):
         load_experiment(path)
 
 
-def test_rejects_unknown_top_level_table(tmp_path):
-    with pytest.raises(ValueError, match="unknown table"):
-        load_experiment(_write(tmp_path, text=BASE.format(
-            experiment="restart_interval_s = 0.0", shared="", d01="",
-            d02="") + "\n[grid]\nnx = 4\n"))
+def test_warns_and_ignores_unknown_top_level_table(tmp_path, capsys):
+    """Warn-not-block: a stray table is named in one line and dropped."""
+    exp = load_experiment(_write(tmp_path, text=BASE.format(
+        experiment="restart_interval_s = 0.0", shared="", d01="",
+        d02="") + "\n[grid]\nnx = 4\n"))
+    err = capsys.readouterr().err
+    assert "warning:" in err and "grid" in err
+    assert exp.root.run.nx == 100  # the stray [grid] table changed nothing
 
 
 def test_rejects_non_root_first_domain(tmp_path):
@@ -317,18 +320,26 @@ def test_rejects_second_root(tmp_path):
         load_experiment(_write(tmp_path, text=text))
 
 
-def test_rejects_root_flag_violations(tmp_path):
-    with pytest.raises(ValueError, match="specified = true and nested"):
-        load_experiment(_write(tmp_path, d01="specified = false"))
-    with pytest.raises(ValueError, match="specified = true and nested"):
-        load_experiment(_write(tmp_path, d01="nested = true"))
+def test_root_flag_violations_are_corrected_with_a_warning(
+        tmp_path, capsys):
+    """Warn-not-block: the flags derive from parent_id; a contradiction
+    is corrected in one line, never a refusal."""
+    for override in ("specified = false", "nested = true"):
+        exp = load_experiment(_write(tmp_path, d01=override))
+        err = capsys.readouterr().err
+        assert "warning:" in err and "corrected" in err
+        assert exp.root.run.specified is True
+        assert exp.root.run.nested is False
 
 
-def test_rejects_child_flag_violations(tmp_path):
-    with pytest.raises(ValueError, match="nested = true and specified"):
-        load_experiment(_write(tmp_path, d02="specified = true"))
-    with pytest.raises(ValueError, match="nested = true and specified"):
-        load_experiment(_write(tmp_path, d02="nested = false"))
+def test_child_flag_violations_are_corrected_with_a_warning(
+        tmp_path, capsys):
+    for override in ("specified = true", "nested = false"):
+        exp = load_experiment(_write(tmp_path, d02=override))
+        err = capsys.readouterr().err
+        assert "warning:" in err and "corrected" in err
+        assert exp.domain(2).run.nested is True
+        assert exp.domain(2).run.specified is False
 
 
 def test_rejects_child_ratio_below_two(tmp_path):
@@ -413,13 +424,16 @@ def test_rejects_moving_nest_keys(tmp_path):
         load_experiment(_write(tmp_path, d02="vortex_interval = 15"))
 
 
-def test_rejects_nonzero_child_spec_exp(tmp_path):
+def test_nonzero_child_spec_exp_is_forced_to_zero_with_a_warning(
+        tmp_path, capsys):
     """WRF's nested lbc_fcx_gcx branch has no sponge term
-    (module_bc_em.F:1297-1341): a nonzero child spec_exp would silently
-    change nothing, so it is rejected loudly."""
-    with pytest.raises(ValueError,
-                       match=r"module_bc_em\.F:1297-1341"):
-        load_experiment(_write(tmp_path, d02="spec_exp = 0.33"))
+    (module_bc_em.F:1297-1341): a nonzero child spec_exp is forced to 0
+    with one warning line, which is exactly how WRF would run this
+    namelist -- the N1 pin (children force with spec_exp=0) holds."""
+    exp = load_experiment(_write(tmp_path, d02="spec_exp = 0.33"))
+    err = capsys.readouterr().err
+    assert "warning:" in err and "spec_exp" in err
+    assert exp.domain(2).run.spec_exp == 0.0
     # the root (specified branch) legitimately carries a sponge exponent
     exp = load_experiment(_write(tmp_path, d01="spec_exp = 0.33"))
     assert exp.root.run.spec_exp == 0.33
@@ -552,9 +566,13 @@ def test_rejects_hand_typed_child_dx_mismatch(tmp_path):
     assert exp.domain(3).run.dx == float(Fraction(1000, 3))
 
 
-def test_rejects_time_step_on_child(tmp_path):
-    with pytest.raises(ValueError, match="head-grid"):
-        load_experiment(_write(tmp_path, d02="time_step = 20"))
+def test_time_step_on_child_is_ignored_with_a_warning(tmp_path, capsys):
+    """Warn-not-block: the chain is authoritative; a child time_step
+    key is named and ignored (dt still derives from the parent)."""
+    exp = load_experiment(_write(tmp_path, d02="time_step = 20"))
+    err = capsys.readouterr().err
+    assert "warning:" in err and "time_step" in err
+    assert exp.dt_exact(2) == exp.dt_exact(1) / 3
 
 
 def test_rejects_root_without_time_step(tmp_path):
@@ -564,9 +582,13 @@ def test_rejects_root_without_time_step(tmp_path):
         load_experiment(_write(tmp_path, text=text))
 
 
-def test_rejects_dt_key_on_root(tmp_path):
-    with pytest.raises(ValueError, match="not a dt key"):
-        load_experiment(_write(tmp_path, d01="dt = 60.0"))
+def test_dt_key_on_root_is_ignored_with_a_warning(tmp_path, capsys):
+    """Warn-not-block: time_step is authoritative on the root; a dt
+    key is named and ignored."""
+    exp = load_experiment(_write(tmp_path, d01="dt = 60.0"))
+    err = capsys.readouterr().err
+    assert "warning:" in err and "dt" in err and "time_step" in err
+    assert exp.dt_exact(1) == 60
 
 
 def test_rejects_root_without_dx(tmp_path):
@@ -602,11 +624,20 @@ def test_rejects_inconsistent_staggered_and_mass_dims(tmp_path):
         load_experiment(_write(tmp_path, d02="nx = 61"))  # e_we=61 -> 60
 
 
-def test_rejects_unknown_and_misplaced_keys(tmp_path):
-    with pytest.raises(ValueError, match="unknown key"):
-        load_experiment(_write(tmp_path, shared="not_a_key = 1"))
-    with pytest.raises(ValueError, match="unknown key"):
-        load_experiment(_write(tmp_path, d02="hill_height = 5.0"))
+def test_unknown_keys_warn_and_misplaced_keys_still_refuse(
+        tmp_path, capsys):
+    """Warn-not-block for typos (named + dropped in one line); the
+    MISPLACED keys stay hard -- they name a real value the reader put
+    in the wrong table, and honoring or dropping it silently would
+    change the run."""
+    exp = load_experiment(_write(tmp_path, shared="not_a_key = 1"))
+    err = capsys.readouterr().err
+    assert "warning:" in err and "not_a_key" in err
+    assert exp.root.run.nx == 100
+    load_experiment(_write(tmp_path, d02="hill_height = 5.0"))
+    err = capsys.readouterr().err
+    assert "warning:" in err and "hill_height" in err
+    # KEEP-HARD negatives: misplaced and retired keys refuse by name.
     with pytest.raises(ValueError, match=r"belongs in \[\[domain\]\]"):
         load_experiment(_write(tmp_path, shared="dx = 1000.0"))
     with pytest.raises(ValueError, match="retired"):
@@ -805,18 +836,25 @@ def test_rejects_non_finite_vertical_and_projection(tmp_path):
         load_experiment(_write(tmp_path, text=text))
 
 
-def test_projection_and_map_proj_must_agree(tmp_path):
-    # Lambert experiments (map_proj = 1) REQUIRE a [projection] table
+def test_projection_and_map_proj_disagreement(tmp_path, capsys):
+    # KEEP-HARD: Lambert experiments (map_proj = 1) REQUIRE a
+    # [projection] table -- there is nothing to infer the parameters
+    # from.
     with pytest.raises(ValueError, match=r"no \[projection\]"):
         load_experiment(_write(tmp_path, shared="map_proj = 1"))
-    # ... and a [projection] table without map_proj = 1 is contradictory
+    # Warn-not-block: a [projection] table against [shared] map_proj = 0
+    # is a contradiction the table resolves -- it carries the whole
+    # parameter set, so it wins, in one warning line.
     text = BASE.format(experiment="restart_interval_s = 0.0", shared="",
                        d01="", d02="") + (
         "\n[projection]\nmap_proj = \"lambert\"\nref_lat = 39.7\n"
         "ref_lon = -83.9\ntruelat1 = 30.0\ntruelat2 = 60.0\n"
         "stand_lon = -83.9\n")
-    with pytest.raises(ValueError, match="map_proj"):
-        load_experiment(_write(tmp_path, text=text))
+    exp = load_experiment(_write(tmp_path, text=text))
+    err = capsys.readouterr().err
+    assert "warning:" in err and "map_proj" in err
+    assert exp.projection is not None
+    assert exp.root.run.map_proj == 1
 
 
 def test_rejects_moving_nest_keys_in_experiment_table(tmp_path):
@@ -896,10 +934,15 @@ def test_cli_routes_experiment_toml_to_experiment_path(tmp_path, capsys):
         rc = cli.main([command, str(path)])
         assert rc == 2  # uniform refusal boundary: message + exit 2
         assert "[case_data]" in capsys.readouterr().err
+    # A survivable config oddity (child spec_exp) is now a warning on
+    # the same route -- the refusal that follows is the missing
+    # [case_data], not the oddity.
     bad = _write(tmp_path, d02="spec_exp = 0.5")
     rc = cli.main(["run", str(bad)])
     assert rc == 2
-    assert "module_bc_em.F" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "warning:" in err and "spec_exp" in err
+    assert "[case_data]" in err
 
 
 def test_cli_single_domain_summary_needs_no_transition_fields(

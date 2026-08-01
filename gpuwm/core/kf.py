@@ -16,6 +16,7 @@ import numpy as np
 
 
 _TPB = 32
+_VALIDATION_TPB = 256
 #: Unspecialized ``KF_KMAX`` in ``kernels/kf.cu`` and the ceiling on nz.
 _KMAX = 128
 VERTICAL_LEVEL_BOUNDS = (8, _KMAX)
@@ -221,6 +222,65 @@ def launch_kf(u, v, temperature, qv, qc, pressure, exner, dz, w, *,
     return out
 
 
+def validate_kf_outputs(
+        values: tuple, active: int, status) -> int:
+    """Return finite-check flags for native KF feedback arrays.
+
+    ``values`` follows the driver's first-invalid order: the six 3-D rates
+    ``rthcuten``, ``rqvcuten``, ``rqccuten``, ``rqicuten``, ``rqrcuten``,
+    ``rqscuten``, followed by the 2-D ``nca_seconds`` and ``pratec`` fields.
+    Every pointer is valid even when its bit is inactive; the validation
+    kernel does not load inactive fields.
+    """
+    import cupy as cp
+
+    if len(values) != 8:
+        raise ValueError(
+            f"native KF validation requires 8 arrays, got {len(values)}")
+    if (isinstance(active, (bool, np.bool_))
+            or not isinstance(active, (int, np.integer))
+            or int(active) < 0 or int(active) > 0xff):
+        raise ValueError(
+            f"KF validation active mask must fit eight bits, got {active!r}")
+    if (not isinstance(status, cp.ndarray) or status.shape != (1,)
+            or status.dtype != cp.uint32 or not status.flags.c_contiguous):
+        raise ValueError(
+            "KF validation status must be a C-contiguous uint32 device "
+            "array with shape (1,)")
+
+    shape_3d = values[0].shape
+    shape_2d = values[6].shape
+    if len(shape_3d) != 3 or len(shape_2d) != 2:
+        raise ValueError("native KF outputs must retain 3-D/2-D shapes")
+    if shape_2d != shape_3d[1:]:
+        raise ValueError(
+            "native KF surface outputs must match the 3-D horizontal shape")
+    for index, value in enumerate(values[:6]):
+        if (not isinstance(value, cp.ndarray) or value.shape != shape_3d
+                or value.dtype != DTYPE or not value.flags.c_contiguous):
+            raise ValueError(
+                f"native KF 3-D output {index} must be a C-contiguous "
+                f"float32 CuPy array with shape {shape_3d}")
+    for index, value in enumerate(values[6:], start=6):
+        if (not isinstance(value, cp.ndarray) or value.shape != shape_2d
+                or value.dtype != DTYPE or not value.flags.c_contiguous):
+            raise ValueError(
+                f"native KF 2-D output {index} must be a C-contiguous "
+                f"float32 CuPy array with shape {shape_2d}")
+
+    status.fill(cp.uint32(0))
+    count_3d = values[0].size
+    count_2d = values[6].size
+    blocks = (max(count_3d, count_2d) + _VALIDATION_TPB - 1) // _VALIDATION_TPB
+    from gpuwm.core.kernels import get_kernel
+
+    get_kernel("kf_validation", "kf_validate_outputs")(
+        (blocks,), (_VALIDATION_TPB,),
+        values + (np.uint32(active), status,
+                  np.int64(count_3d), np.int64(count_2d)))
+    return int(status[0].item())
+
+
 class KainFritsch:
     """Stateful ``cu_physics=1`` callable for :class:`PhysicsDriver`.
 
@@ -301,7 +361,7 @@ class KainFritsch:
             atmosphere["exner"], atmosphere["dz"], self.w0avg,
             dx=cfg.dx, dt=clock_dt, cudt=cudt,
             phase_mode=phase_mode)
-        from gpuwm.core.physics import CumulusResult
+        from gpuwm.core.physics import _NativeKFCumulusResult
 
         # WRF's persistent rain rate PRATEC = PPTFLX*(1-FBFRC)/DXSQ in
         # mm s-1 (module_cu_kfeta.F:2504).  The kernel reports the rain
@@ -317,7 +377,8 @@ class KainFritsch:
         separate_ice = phase_mode == KFPhaseMode.SEPARATE_ICE_SNOW
         separate_snow = phase_mode in (
             KFPhaseMode.SEPARATE_SNOW, KFPhaseMode.SEPARATE_ICE_SNOW)
-        return CumulusResult(
+        return _NativeKFCumulusResult(
+            owner=self,
             rthcuten=result["rthcuten"], rqvcuten=result["rqvcuten"],
             rqccuten=result["rqccuten"],
             rqicuten=(result["rqicuten"] if separate_ice else None),
@@ -327,4 +388,5 @@ class KainFritsch:
 
 
 __all__ = ["KFPhaseMode", "KFTable", "KainFritsch",
-           "kf_phase_mode_for_microphysics", "launch_kf", "load_kf_table"]
+           "kf_phase_mode_for_microphysics", "launch_kf", "load_kf_table",
+           "validate_kf_outputs"]
