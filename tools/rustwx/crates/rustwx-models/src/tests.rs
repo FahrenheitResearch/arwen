@@ -138,6 +138,7 @@ fn canonical_bundle_products_resolve_through_model_adapter() {
 
 #[test]
 fn built_in_plot_recipes_cover_current_direct_atmos_surface_and_radar_maps() {
+    assert!(plot_recipe("terrain_height").is_some());
     assert!(plot_recipe("200mb_height_winds").is_some());
     assert!(plot_recipe("300mb_height_winds").is_some());
     assert!(plot_recipe("250mb_height_winds").is_some());
@@ -1581,13 +1582,116 @@ fn wrf_gdex_uh_recipes_use_3d_fetch_plan() {
     }
 }
 
+/// The standalone surface wind chart is what its NAME says it is.
+///
+/// A test that only checked a slug string would have passed while
+/// `wind10` pointed at `mslp_10m_winds`, which is a mean-sea-level
+/// PRESSURE chart with wind barbs drawn on top.  So this asserts the
+/// physics of the fill: the coloured quantity must be the 10 m wind
+/// speed, the barbs must be the 10 m components, and there must be no
+/// second field competing for the map.
+#[test]
+fn standalone_10m_wind_recipe_fills_with_wind_speed_not_pressure() {
+    let recipe = plot_recipe("10m_wind_speed_and_direction").expect("standalone wind recipe");
+
+    assert_eq!(
+        recipe.filled.selector,
+        Some(FieldSelector::height_agl(CanonicalField::WindSpeed, 10)),
+        "the FILL must be the wind itself"
+    );
+    assert_ne!(
+        recipe.filled.selector,
+        Some(FieldSelector::mean_sea_level(
+            CanonicalField::PressureReducedToMeanSeaLevel
+        )),
+    );
+    assert!(
+        recipe.contours.is_none(),
+        "standalone means no second field analysed over the wind"
+    );
+    assert_eq!(
+        recipe.barbs_u.as_ref().and_then(|spec| spec.selector),
+        Some(FieldSelector::height_agl(CanonicalField::UWind, 10)),
+    );
+    assert_eq!(
+        recipe.barbs_v.as_ref().and_then(|spec| spec.selector),
+        Some(FieldSelector::height_agl(CanonicalField::VWind, 10)),
+    );
+
+    // And the product it is NOT: `mslp_10m_winds` fills with pressure.
+    let mslp = plot_recipe("mslp_10m_winds").expect("mslp recipe");
+    assert_eq!(
+        mslp.filled.selector,
+        Some(FieldSelector::mean_sea_level(
+            CanonicalField::PressureReducedToMeanSeaLevel
+        )),
+    );
+    assert_ne!(recipe.slug, mslp.slug);
+}
+
+/// Every plane it needs comes from the hour being rendered.
+///
+/// The windowed wind products (`10m_wind_1h_max`, `10m_wind_run_max`)
+/// fold neighbouring hours and so render nothing at all from a single
+/// frame -- which is exactly why a single-frame wind chart was needed.
+#[test]
+fn standalone_10m_wind_needs_only_single_frame_surface_planes() {
+    let requirements = plot_recipe_store_requirements("10m_wind_speed_and_direction").unwrap();
+    let keys: Vec<String> = requirements
+        .iter()
+        .map(|requirement| {
+            requirement
+                .selector
+                .expect("every input has a canonical store selector")
+                .key()
+        })
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["wind_speed_10m_agl", "u_wind_10m_agl", "v_wind_10m_agl"],
+        "three instantaneous 10 m planes, nothing accumulated or windowed"
+    );
+}
+
+/// The spellings a person types under pressure all land on it.
+#[test]
+fn standalone_10m_wind_answers_to_the_names_people_type() {
+    for spelling in [
+        "10m_wind_speed_and_direction",
+        "10m-wind-speed-and-direction",
+        "10m_wind",
+        "10m_winds",
+        "10m wind",
+        "wind_10m",
+        "10m_wind_speed",
+        "surface_wind",
+        "surface_winds",
+        "10M_WIND",
+    ] {
+        let recipe = plot_recipe(spelling)
+            .unwrap_or_else(|| panic!("{spelling:?} should resolve to the wind chart"));
+        assert_eq!(recipe.slug, "10m_wind_speed_and_direction", "{spelling:?}");
+    }
+}
+
 #[test]
 fn wrf_gdex_wind_gust_recipe_is_unblocked_and_uses_surface_fetch_plan() {
     let blockers = plot_recipe_fetch_blockers("10m_wind_gusts", ModelId::WrfGdex).unwrap();
     assert!(blockers.is_empty());
 
     let recipe = plot_recipe("10m_wind_gusts").expect("gust recipe should exist");
-    assert!(recipe.filled.idx_patterns().contains(&"WSPD10MAX"));
+    // WSPD10MAX must NOT match this field.  It is a WRF Registry
+    // variable, not a GRIB inventory spelling, and what it holds is the
+    // running maximum of the 10 m wind between history writes -- WRF
+    // 4.6.1 defines no gust at all.  Matching it here let a maximum
+    // resolve a plane labelled "Wind Gust".
+    assert!(!recipe.filled.idx_patterns().contains(&"WSPD10MAX"));
+    for pattern in recipe.filled.idx_patterns() {
+        assert!(
+            pattern.starts_with("GUST:"),
+            "gust field must only match a source's own GUST record, got {pattern:?}"
+        );
+    }
 
     let plan = plot_recipe_fetch_plan("10m_wind_gusts", ModelId::WrfGdex).unwrap();
     assert_eq!(plan.product, WRF_GDEX_DEFAULT_SURFACE_PRODUCT);

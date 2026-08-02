@@ -1,18 +1,53 @@
 {
-  "schema": "gpuwm.wrf-reference-manifest/v1",
-  "wrf_version": "4.6.1",
-  "wrf_commit": null,
+  "build_recipe": "10d6e178d96648e35b826217cc001a1f598232bf6ceabd9ce07074a1f65e2031.build-recipe.md",
+  "build_recipe_sha256": "86fe95105eb02fde307059cf9821b27582e1cbee4b2fd9cb4d73448f8a2d226f",
   "config_sha256": "10d6e178d96648e35b826217cc001a1f598232bf6ceabd9ce07074a1f65e2031",
-  "wrf_exe_sha256": null,
-  "build_recipe_sha256": null,
-  "namelist_sha256": null,
-  "reference_wrfout_sha256": null,
-  "build_recipe": null,
-  "namelists": null,
-  "unmeasured": {
-    "wrf_exe_sha256": "the reference binary lives on the campaign compute nodes, not in this repository; its bytes must be hashed there and the digest committed here. Nothing in this tree can measure it, and a digest nobody read is not a receipt.",
-    "build_recipe_sha256": "the build recipe is committed beside this manifest once the recipe that produced the reference binary is transcribed from the node it was built on; the digest is then the SHA-256 of that committed file.",
-    "namelist_sha256": "namelist.wps and namelist.input for the reference run are recorded with the run metadata on the compute node and are not in this repository yet.",
-    "reference_wrfout_sha256": "the reference wrfout stream is not redistributable and is not in this repository; only its per-frame digests belong here, and they must be taken from the frames the comparison actually scored."
-  }
+  "namelist_sha256": {
+    "namelist.input": "89a6511550a1a6952bf7fc812f7ab0d5c827fd9589d9209f4d814eb38df552f7",
+    "namelist.wps": "0d8e865e7ac2e331d3cd83788a51658842fc2e7e98bcb60d11762db61ae25f0f"
+  },
+  "namelists": {
+    "namelist.input": "10d6e178d96648e35b826217cc001a1f598232bf6ceabd9ce07074a1f65e2031.namelist.input",
+    "namelist.wps": "10d6e178d96648e35b826217cc001a1f598232bf6ceabd9ce07074a1f65e2031.namelist.wps"
+  },
+  "reference_wrfout_sha256": {
+    "wrfout_d01_1974-04-03_12_00_00": "eacbc0de595016c8712fe1d3070c0679d65a8b55dc16d5fa11e8a13b6cb45cf3",
+    "wrfout_d01_1974-04-03_13_00_00": "c499bc54f169f64f3a9066d54ea2b4dc73662bebb65c8e24b2cbe89420400540",
+    "wrfout_d01_1974-04-03_14_00_00": "e19849df5a70fbaaad06fbae2e462eca23311f5f6488a7d4a4c807fdc79d7251",
+    "wrfout_d01_1974-04-03_15_00_00": "e0517dbaaa6e51bbeedbf40971bb069a61966fb5175a90ab38aaaf6a62055929",
+    "wrfout_d01_1974-04-03_16_00_00": "675514e4f35e79fc035aedf81152f502fe98582ca9ea836adc5eb14bfc920235",
+    "wrfout_d01_1974-04-03_17_00_00": "52e27cfde85edc856db407867392a1694d8cb0200dfc577a6390dcbf70de9006",
+    "wrfout_d01_1974-04-03_18_00_00": "a4f53ceef00791943d705424cca876d0b0ef66d5562da02b91fbcb10812ebf0c",
+    "wrfout_d02_1974-04-03_12_00_00": "26ffbc1d5547d1a5f6df46afe934572b6abdc784f6b52032440eb1e444e0c3ac",
+    "wrfout_d02_1974-04-03_13_00_00": "04950e00a7a20c763eb972c6ae2dfef94f39a7be0b2995d19ddcff4bd33cb129",
+    "wrfout_d02_1974-04-03_14_00_00": "9278ca44dc3f3c9fd4323b9566db5ab7f66a94be830a3a594a7eb7e733058d8f",
+    "wrfout_d02_1974-04-03_15_00_00": "ddd6e1c546ff2438560883bdb26e62aadc0d9565f5d0912ba19cb7989ba4228a",
+    "wrfout_d02_1974-04-03_16_00_00": "c5c4552b67521762c5b3a4d21f958b2395fcbed0891338e9e95452d43e68b931",
+    "wrfout_d02_1974-04-03_17_00_00": "80f9b73586bb568ac50805a6bd2671577102cb73ec166f017327e3bd70f7cb4e",
+    "wrfout_d02_1974-04-03_18_00_00": "2a1220934faf3428a9fb270834b399f1e3b8065db48fee5a6daca3835cb00f70",
+    "wrfout_d03_1974-04-03_12_00_00": "361199b7153fdf515dc37384aba8d460b9ab90fde418911e0e281b336f19f94d",
+    "wrfout_d03_1974-04-03_13_00_00": "2588f452da69d974f75f6c2ab0bf1f8ab8113a2d34a453c7e58fb9381c349a02",
+    "wrfout_d03_1974-04-03_14_00_00": "33b7478ae036ce208edbbb189387d2f9ceef6408664feb22e86683c516896b85",
+    "wrfout_d03_1974-04-03_15_00_00": "ea80b1f672deb1815d2e358f5f657f24e4f35b1c8b5eb4af9a934ffb93da885c",
+    "wrfout_d03_1974-04-03_16_00_00": "e7c8bf8297219ab501e4761ad5fd90b19507e0003aa103f86a1a35c5cd58c283",
+    "wrfout_d03_1974-04-03_17_00_00": "390b7e303e2cdaa63e5f084177c8d97421b296ed6d1a97dfbc9f63165581c203",
+    "wrfout_d03_1974-04-03_18_00_00": "9aa705a347d98b8d7fb8b3add5a6b7f24f2a73513af79ee9dde2f6c1518c2237",
+    "wrfout_d04_1974-04-03_12_00_00": "067803822919155bbf1fff1f4530660ba3bc2fd30fef43f46dd1bbdc737eceff",
+    "wrfout_d04_1974-04-03_12_30_00": "754d09b223af9439d9b2f47eaa0c807eb5c2690c30dc0287ff99f8f8f30fba3c",
+    "wrfout_d04_1974-04-03_13_00_00": "e989269aa3f111c840f9abced6ba666fb182493c55ee55b8706cef7b4f8b9398",
+    "wrfout_d04_1974-04-03_13_30_00": "250cef40befb27e15445d5087259061bcff9d570710534755fc954ba960bd1c4",
+    "wrfout_d04_1974-04-03_14_00_00": "6aca5916663ed67ba5d53cf5bb0df05581430ded3a9439a64f72d1aeb012203c",
+    "wrfout_d04_1974-04-03_14_30_00": "cbf68d45f8285dd7d5d1cc4d3f58930a52b638ee17a448c2663f95bd614630ba",
+    "wrfout_d04_1974-04-03_15_00_00": "eb1339aafe0567a51eb2a8509096525eba090a87ba2aaeb5761f4ae3f3fb0ca2",
+    "wrfout_d04_1974-04-03_15_30_00": "7ad8a9aec6d7983c6c4e062bfa817adb28a9d674e955b1f9d50d2443927ba152",
+    "wrfout_d04_1974-04-03_16_00_00": "b55d0ddb142002cad314eb7b64aa5097b735e2c33cc52ae1987a6ae6858ea584",
+    "wrfout_d04_1974-04-03_16_30_00": "5816730ac6db245e347dba96ac4b8dba1628e5a8a7cf13afdf4fe8854b01e849",
+    "wrfout_d04_1974-04-03_17_00_00": "869cada9a2b355fd7139011dbb5efda2cbe98a8fed4dc02b32e15e0e8812a4a9",
+    "wrfout_d04_1974-04-03_17_30_00": "17e8fc4169942e554161cecdd2f9ce58a33274674c3c2c63ab4647aaf50293b3",
+    "wrfout_d04_1974-04-03_18_00_00": "7a5e0cfda3274672811d095f979085f11390e9d90a388c4bf0f7c8ca426b05de"
+  },
+  "schema": "gpuwm.wrf-reference-manifest/v1",
+  "wrf_commit": "d66e442fccc04111067e29274c9f9eaccc3cef28",
+  "wrf_exe_sha256": "bda5e5e69754b5f5c7eb700ff20bb0e2bb65145f4e1beeef492e9b10edb586e5",
+  "wrf_version": "4.6.1"
 }

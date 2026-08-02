@@ -45,6 +45,9 @@ def gpu_cuda_stack_identity(*, require_gpu: bool = True) -> dict[str, Any]:
     count = int(cp.cuda.runtime.getDeviceCount())
     if count < 1:
         raise RuntimeError("CuPy reports no CUDA devices")
+    # Ordinal 0 is process-local.  Supervised runs bind the selected physical
+    # UUID through CUDA_VISIBLE_DEVICES before this CUDA-facing process starts,
+    # so multi-GPU orchestration intentionally sees its pinned card as 0.
     device = cp.cuda.Device(0)
     with device:
         value = cp.arange(16, dtype=cp.float32)

@@ -154,3 +154,48 @@ A successful real run publishes an atomic output directory containing
 Children do not receive external boundary files. A failed run must not leave
 a partially published final directory, and existing outputs are never
 silently overwritten.
+
+## `gpuwm report`
+
+```
+gpuwm report [RUNDIR] [-o PATH] [--dry-run|--list] [--exit-code N] [--log FILE]
+```
+
+Collects one anonymous diagnostic bundle for a run: its receipts, the
+typed failure, the stage logs, the resolved config, this install's
+provenance, the card, and the free space on every volume involved.
+`RUNDIR` defaults to the current directory, so the command works with no
+arguments from inside a run; when the current directory holds no receipt
+but `out/run` below it does, that one is read and the manifest says so.
+
+The bundle is a plain zip of UTF-8 text with `MANIFEST.txt` at its root.
+The manifest is printed to stdout as well, so the reporter sees what
+they are sending: what was included, what was absent and which route
+would have written it, and how many strings of each identity class were
+removed. `--dry-run` (alias `--list`) prints that and writes nothing.
+
+It reads only what this product writes. Collection is by allowlist, not
+by sweep: model output, input data and any unrecognised file are
+inventoried by name and size and never opened. A deny-set refuses
+dot-files, private-configuration directories, credential names and
+key-shaped suffixes *before* anything opens, reads, hashes or lists
+them, and refusals are reported counted by class rather than named,
+because a file name can itself be the secret. Paths are resolved before
+they are tested, so a symlink or `..` cannot carry a target past the
+check. And the command refuses outright when the directory holds nothing
+this product wrote, naming what it looked for -- that single rule is
+what keeps `gpuwm report` in a home directory from being a sweep.
+
+Redaction covers usernames, home-directory prefixes, hostnames, IP and
+MAC addresses, e-mail addresses, credential-shaped strings, and every
+environment variable outside an explicit allowlist. Coordinates, dates,
+grid shapes, physics choices and SHA-256 digests are kept: they are
+scientific and provenance content, not identity.
+
+The archive is assembled in memory and written once, so a full volume
+costs a relocation rather than the bundle: `--output`, then the working
+directory, then the system temporary directory, then the home
+directory. Exit 0 when a bundle was written or listed; a refusal only
+when no location accepts the write.
+
+See `public/REPORTING-A-PROBLEM.md` for the user-facing page.

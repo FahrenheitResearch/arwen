@@ -10,6 +10,13 @@ Before investing in an implementation, open an issue for anything
 broad -- a new source, physics scheme, projection, or packaging change
 -- so scope and the required evidence can be agreed first.
 
+Reporting a failure rather than proposing a change: run `gpuwm report`
+in the run directory and attach the zip it writes. It collects the
+receipts, the failure, the logs, this install's identity, the card and
+the free space, with machine identity redacted by class and a manifest
+of what it contains printed before you send it
+([reporting a problem](docs/public/REPORTING-A-PROBLEM.md)).
+
 Keep contributions fail closed:
 
 - never infer that a decodable product is a complete initial state;

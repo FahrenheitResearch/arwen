@@ -1,0 +1,37 @@
+&share
+ wrf_core = 'ARW',
+ max_dom = 4,
+ start_date = '1974-04-03_12:00:00', '1974-04-03_12:00:00', '1974-04-03_12:00:00', '1974-04-03_12:00:00',
+ end_date   = '1974-04-04_00:00:00', '1974-04-04_00:00:00', '1974-04-04_00:00:00', '1974-04-04_00:00:00',
+ interval_seconds = 21600,
+ io_form_geogrid = 2,
+/
+
+&geogrid
+ parent_id         = 1,   1,   2,   3,
+ parent_grid_ratio = 1,   4,   3,   2,
+ i_parent_start    = 1,  63, 167, 151,
+ j_parent_start    = 1,  51, 117, 151,
+ e_we              = 251, 501, 502, 401,
+ e_sn              = 201, 401, 502, 401,
+ geog_data_res     = 'default', 'default', 'default', 'default',
+ dx = 12000,
+ dy = 12000,
+ map_proj = 'lambert',
+ ref_lat   = 39.6848,
+ ref_lon   = -83.9297,
+ truelat1  = 30.0,
+ truelat2  = 60.0,
+ stand_lon = -83.9297,
+ geog_data_path = '/home/drew/weather/wrf/WRF_BUILD/WPS_GEOG',
+/
+
+&ungrib
+ out_format = 'WPS',
+ prefix = 'ERA5',
+/
+
+&metgrid
+ fg_name = 'ERA5',
+ io_form_metgrid = 2,
+/

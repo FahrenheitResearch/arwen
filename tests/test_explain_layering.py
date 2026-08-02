@@ -272,8 +272,9 @@ gpuwm doctor: runtime estate
           remedy: gpuwm fetch-bridges
                   # one download, verified against the packaged pins
                   # before anything is staged.
-gpuwm doctor: 1 gap(s).  Every remedy line above is either a command \
-to run as printed, in the order printed, or a '#' comment."""
+gpuwm doctor: 1 gap(s), 1 of them blocking (the exit code is 1).  Every \
+remedy line above is either a command to run as printed, in the order \
+printed, or a '#' comment."""
 
 
 def test_the_explain_layer_still_renders_exactly_what_it_always_did():

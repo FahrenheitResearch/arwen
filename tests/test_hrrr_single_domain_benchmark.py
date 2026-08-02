@@ -1,5 +1,6 @@
 """Native HRRR single-domain benchmark controller regressions."""
 
+import copy
 import dataclasses
 from datetime import datetime
 import json
@@ -36,10 +37,12 @@ from tools.hrrr_single_domain_benchmark import (
     main as hrrr_runner_main,
     _map_boundary_snapshot, _map_snapshot, _parse_args,
     _partition_preprocess_worker_budget,
+    _validated_namelist_extension_identity,
     _validate_native_hrrr_physics_profile,
     runner_capabilities,
 )
 from tools.prepare_hrrr_wrf import _validated_worker_receipts
+from gpuwm.stream import _materialize_input_namelist
 
 
 def _required_args():
@@ -366,6 +369,66 @@ def test_prepare_only_cadence_is_bound_into_cache_identity_without_output():
     assert prepared_identity["domain_config"]["history_interval_s"] == 3600.0
     assert prepared_identity["domain_config"]["run"][
         "output_interval_s"] == 3600.0
+
+
+def _extension_namelist(tmp_path, *, lead: int):
+    cycle = datetime(2026, 7, 20, 6)
+    template = tmp_path / "namelist.template"
+    template.write_text(
+        "&time_control\n/\n&domains\n max_dom = 1,\n/\n",
+        encoding="utf-8")
+    output = tmp_path / f"namelist-f{lead:03d}.input"
+    _materialize_input_namelist(
+        template, output, cycle=cycle, lead=lead,
+        domain_starts=[cycle])
+    return cycle, output
+
+
+def test_sealed_prepare_recomputes_namelist_invariant_from_bytes(tmp_path):
+    cycle, namelist = _extension_namelist(tmp_path, lead=1)
+    common = _required_args() + [
+        "--source-manifest-sha256", "a" * 64,
+        "--prepared-cache", "prepared-cache",
+        "--namelist-input", str(namelist),
+        "--prepare-only",
+        "--history-interval-seconds", "3600",
+        "--sealed-prepared-cache",
+    ]
+    args = _parse_args(common)
+    invariant = _validated_namelist_extension_identity(args, cycle=cycle)
+    assert invariant["schema"] == "gpuwm-namelist-extension-invariant-v1"
+    assert len(invariant["sha256"]) == 64
+
+    payload = namelist.read_text(encoding="utf-8")
+    assert " end_hour = 7," in payload
+    namelist.write_text(
+        payload.replace(" end_hour = 7,", " end_hour = 8,"),
+        encoding="utf-8")
+    with pytest.raises(ValueError, match="end time differs"):
+        _validated_namelist_extension_identity(args, cycle=cycle)
+
+    with pytest.raises(SystemExit):
+        _parse_args(common + [
+            "--namelist-extension-invariant-sha256", "b" * 64,
+        ])
+
+
+def test_suffix_prepare_recomputes_full_horizon_namelist_invariant(tmp_path):
+    cycle, namelist = _extension_namelist(tmp_path, lead=2)
+    args = _parse_args(_required_args() + [
+        "--source-manifest-sha256", "a" * 64,
+        "--prepared-cache", "prepared-cache",
+        "--namelist-input", str(namelist),
+        "--forecast-start-hour", "1",
+        "--forecast-end-hour", "2",
+        "--prepare-only",
+        "--history-interval-seconds", "3600",
+        "--namelist-extension-suffix",
+    ])
+    assert args.sealed_prepared_cache is False
+    assert _validated_namelist_extension_identity(
+        args, cycle=cycle)["schema"] \
+        == "gpuwm-namelist-extension-invariant-v1"
 
 
 def test_prepare_only_main_summary_does_not_require_forecast_cadence(
@@ -1073,7 +1136,9 @@ class _ReferencePreprocessBackend:
         return {"backend": "cpu-reference-test"}
 
 
-def _decoded_native_hrrr_initialization(mp_physics, *, analyzed_species=None):
+def _decoded_native_hrrr_initialization(
+        mp_physics, *, analyzed_species=None,
+        analyzed_source_levels=None):
     """Drive decoded native fields through real initialization, never a fake state.
 
     ``analyzed_species`` selects which of QC/QR/QI/QS/QG carry mass in the
@@ -1104,10 +1169,18 @@ def _decoded_native_hrrr_initialization(mp_physics, *, analyzed_species=None):
     column_index = np.arange(nx, dtype=np.float32)[None, None, :]
     carried = (("QC", "QR", "QI", "QS", "QG") if analyzed_species is None
                else tuple(analyzed_species))
+    if analyzed_source_levels is not None:
+        carried = tuple(analyzed_source_levels)
     analyzed = {}
     for species_index, name in enumerate(("QC", "QR", "QI", "QS", "QG"), 1):
         if name not in carried:
             analyzed[name] = np.zeros(pressure.shape, dtype=np.float32)
+            continue
+        if analyzed_source_levels is not None:
+            value = np.zeros(pressure.shape, dtype=np.float32)
+            value[int(analyzed_source_levels[name])] = np.float32(
+                species_index * 1.0e-6)
+            analyzed[name] = value
             continue
         value = np.asarray(
             species_index * 1.0e-6
@@ -1219,23 +1292,59 @@ def test_the_retention_receipt_states_when_it_proved_nothing():
     receipt = _initial_hrrr_microphysics_receipt(
         partial.state, NSSL2_PROFILE_ID, partial.hydrometeor_initialization)
     summary = receipt["retention_evidence_summary"]
-    assert summary["strength"] == "PARTIALLY_VACUOUS"
-    assert summary["proven_species"] == ["QC"]
+    assert summary["strength"] == "PARTIALLY_WRF_EXCLUDED"
+    assert summary["proven_species"] == []
+    assert summary["partially_excluded_species"] == ["QC"]
     assert summary["vacuous_species"] == ["QG", "QI", "QR", "QS"]
-    assert receipt["retention_evidence"]["QC"]["strength"] == "PROVEN"
+    assert receipt["retention_evidence"]["QC"]["strength"] == (
+        "PARTIALLY_WRF_EXCLUDED")
 
-    # The control: a real analysis on all five species is PROVEN, so the
-    # VACUOUS verdict is a discriminator and not a constant.
+    # The control: all five species carry target-influencing mass, while the
+    # surface-close source row is explicitly excluded by WRF for each.
     full = _decoded_native_hrrr_initialization(18)
     receipt = _initial_hrrr_microphysics_receipt(
         full.state, NSSL2_PROFILE_ID, full.hydrometeor_initialization)
-    assert receipt["retention_evidence_summary"]["strength"] == "PROVEN"
+    assert receipt["retention_evidence_summary"]["strength"] == (
+        "PARTIALLY_WRF_EXCLUDED")
     assert receipt["retention_evidence_summary"]["vacuous_species"] == []
     assert all(
-        evidence["strength"] == "PROVEN"
+        evidence["strength"] == "PARTIALLY_WRF_EXCLUDED"
         and evidence["source_nonzero_count"] > 0
         and evidence["state_nonzero_count"] > 0
         for evidence in receipt["retention_evidence"].values())
+
+
+def test_sparse_wrf_exclusion_is_accepted_only_with_complete_v2_evidence():
+    result = _decoded_native_hrrr_initialization(
+        18, analyzed_source_levels={"QC": 5})
+
+    receipt = _initial_hrrr_microphysics_receipt(
+        result.state, NSSL2_PROFILE_ID, result.hydrometeor_initialization)
+
+    qc = receipt["retention_evidence"]["QC"]
+    assert qc["strength"] == "WRF_EXCLUDED"
+    assert qc["source_nonzero_count"] == 6
+    assert qc["target_influencing_source_count"] == 0
+    assert qc["wrf_excluded_source_count"] == 6
+    assert qc["state_nonzero_count"] == 0
+    assert receipt["retention_evidence_summary"]["excluded_species"] == [
+        "QC"]
+
+    missing = copy.deepcopy(result.hydrometeor_initialization)
+    missing.pop("vertical_disposition")
+    with pytest.raises(ValueError, match="disposition evidence is missing"):
+        _initial_hrrr_microphysics_receipt(
+            result.state, NSSL2_PROFILE_ID, missing)
+
+    # Schema v1 retains the historical broad predicate by design.  The same
+    # sparse source/state pair is refused when the exhaustive v2 partition is
+    # absent; old receipts are not silently reinterpreted under new rules.
+    legacy = copy.deepcopy(result.hydrometeor_initialization)
+    legacy["schema"] = "gpuwm-real-hydrometeor-correspondence-v1"
+    legacy.pop("vertical_disposition")
+    with pytest.raises(ValueError, match="lost all nonzero mass"):
+        _initial_hrrr_microphysics_receipt(
+            result.state, NSSL2_PROFILE_ID, legacy)
 
 
 def test_native_hrrr_mp_off_refuses_unfaithful_analyzed_cloud_state():

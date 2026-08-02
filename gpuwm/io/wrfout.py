@@ -13,6 +13,7 @@ touches the GPU (deferred cupy import) -- the writer itself is
 CPU-importable.
 """
 from __future__ import annotations
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -351,6 +352,143 @@ def wrf_global_attrs(
     if run is not None:
         attrs.update(wrf_physics_selector_attrs(run))
     return attrs
+
+
+#: WRF's global date format, the one ``START_DATE`` and
+#: ``SIMULATION_START_DATE`` are written in
+#: (``share/output_wrf.F:352-376`` of the v4.6.1 source: the
+#: ``'(I4.4,"-",I2.2,"-",I2.2,"_",I2.2,":",I2.2,":",I2.2)'`` FORMAT).
+#: Provenance dates in a wrfout are written the same way, so a reader
+#: parsing dates out of this file needs one parser, not two.  The JSON
+#: receipts keep ISO-8601 with the trailing ``Z``; they are documents, not
+#: wrfout files, and their convention is unchanged.
+_WRF_GLOBAL_DATE_FORMAT = "%Y-%m-%d_%H:%M:%S"
+
+#: The receipts' date format, which is what the preparation proof's
+#: initial-condition block is written in.
+_RECEIPT_DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+#: Version tag stamped into every provenance-carrying wrfout, so a
+#: consumer can key on a contract rather than on the presence of a name.
+WRFOUT_INITIAL_CONDITION_SCHEMA = "gpuwm-wrfout-initial-condition-v1"
+
+#: The complete set of global attributes that record WHAT the initial
+#: condition was, as opposed to WHEN the model clock started.
+#:
+#: DOCUMENTED DIVERGENCE FROM WRF.  WRF v4.6.1 has no convention for
+#: this.  ``share/output_wrf.F`` writes exactly two date globals --
+#: ``START_DATE`` (this file's own start) and ``SIMULATION_START_DATE``
+#: (the simulation's, held across restarts) -- and both are model-clock
+#: times; the only provenance-shaped global it writes at all is
+#: ``FLAG_RESTART`` on a restart file (output_wrf.F:379-381).  Nothing
+#: upstream carries it either: metgrid's ``met_em`` globals are geometry,
+#: land-use identity and ``FLAG_*`` presence bits, with no statement of
+#: which cycle or which lead the fields came from (verified against the
+#: reference bundle's own ``met_em.d01`` and ``wrfout_d01`` files).  So
+#: WRF's convention is FOLLOWED where it exists -- ``START_DATE`` and
+#: ``SIMULATION_START_DATE`` keep their WRF meaning untouched, and these
+#: names are SCREAMING_SNAKE NC_CHAR/NC_INT globals like WRF's own -- and
+#: the gap is filled in the ``GPUWM_`` namespace this writer already uses
+#: for ``GPUWM_VERSION``/``GPUWM_FEEDBACK``.
+#:
+#: The names are the receipt's field names, uppercased and prefixed, so
+#: the wrfout and ``report.json`` are readable against each other without
+#: a mapping table.
+INITIAL_CONDITION_GLOBAL_ATTRS = (
+    "GPUWM_INITIAL_CONDITION_SCHEMA",
+    "GPUWM_INITIAL_CONDITION_KIND",
+    "GPUWM_INITIAL_CONDITION_SOURCE",
+    "GPUWM_INITIAL_CONDITION_CYCLE",
+    "GPUWM_INITIAL_FORECAST_LEAD_HOURS",
+    "GPUWM_INITIAL_CONDITION_GENERATING_PROCESS_ID",
+    "GPUWM_INITIAL_CONDITION_MODEL_START_DATE",
+    "GPUWM_INITIAL_CONDITION_STATEMENT",
+)
+
+
+def _provenance_date(value, field: str) -> datetime:
+    """One receipt date, parsed rather than transcribed."""
+
+    if not isinstance(value, str):
+        raise ValueError(
+            f"initial-condition provenance {field} is not a date string")
+    try:
+        return datetime.strptime(value, _RECEIPT_DATE_FORMAT)
+    except ValueError as exc:
+        raise ValueError(
+            f"initial-condition provenance {field} {value!r} is not a "
+            "receipt timestamp") from exc
+
+
+def initial_condition_global_attrs(
+        provenance, *, source: str | None = None) -> dict[str, object]:
+    """wrfout globals recording what the initial state WAS.
+
+    ``provenance`` is the preparation receipt's ``initial_condition``
+    block (schema ``gpuwm-gfs-initial-condition-provenance-v1``).
+    ``None`` returns ``{}``: a route whose preparation publishes no such
+    receipt writes no provenance attribute at all, and a reader must
+    treat the absence as UNKNOWN.  Absence is deliberately not spelled
+    "analysis" -- that is the exact relabelling this contract exists to
+    prevent, and pre-1.4.1 files are indistinguishable from it.
+
+    Every field published here is READ and cross-checked, never copied:
+    the kind, the generating-process id and the lead must agree with each
+    other, and cycle + lead must compose to the declared model start.  A
+    block that fails any of those is refused rather than transcribed, so
+    a wrfout cannot carry a statement its own fields contradict.
+    """
+
+    if provenance is None:
+        return {}
+    if not isinstance(provenance, Mapping):
+        raise ValueError(
+            "initial-condition provenance is malformed")
+
+    lead = provenance.get("initial_forecast_lead_hours")
+    if isinstance(lead, bool) or not isinstance(lead, int) or lead < 0:
+        raise ValueError(
+            "initial-condition provenance declares an unreadable initial "
+            "forecast lead")
+    analysis = lead == 0
+    kind = provenance.get("initial_condition_kind")
+    process = provenance.get("forecast_generating_process_id")
+    if (kind != ("analysis" if analysis else "forecast")
+            or process != (81 if analysis else 96)):
+        raise ValueError(
+            f"initial-condition provenance labels forecast lead f{lead:03d} "
+            f"as {kind!r} (process {process!r}); a forecast lead is not an "
+            "analysis")
+
+    cycle = _provenance_date(provenance.get("cycle"), "cycle")
+    start = _provenance_date(
+        provenance.get("model_start_time"), "model start time")
+    if cycle + timedelta(hours=lead) != start:
+        raise ValueError(
+            f"initial-condition provenance does not compose: cycle "
+            f"{cycle:%Y-%m-%d %H:%M:%S} + f{lead:03d} is not the declared "
+            f"model start {start:%Y-%m-%d %H:%M:%S}")
+    statement = provenance.get("statement")
+    if not isinstance(statement, str) or not statement:
+        raise ValueError(
+            "initial-condition provenance carries no statement")
+
+    return {
+        "GPUWM_INITIAL_CONDITION_SCHEMA": WRFOUT_INITIAL_CONDITION_SCHEMA,
+        "GPUWM_INITIAL_CONDITION_KIND": str(kind),
+        # The driving model, in the spelling its own front door uses.
+        # Unknown only for a caller that declared no source; the cycle is
+        # not self-describing without it.
+        "GPUWM_INITIAL_CONDITION_SOURCE": (
+            "unknown" if source is None else str(source).upper()),
+        "GPUWM_INITIAL_CONDITION_CYCLE": cycle.strftime(
+            _WRF_GLOBAL_DATE_FORMAT),
+        "GPUWM_INITIAL_FORECAST_LEAD_HOURS": np.int32(lead),
+        "GPUWM_INITIAL_CONDITION_GENERATING_PROCESS_ID": np.int32(process),
+        "GPUWM_INITIAL_CONDITION_MODEL_START_DATE": start.strftime(
+            _WRF_GLOBAL_DATE_FORMAT),
+        "GPUWM_INITIAL_CONDITION_STATEMENT": statement,
+    }
 
 
 #: The idealized cases' synthetic epoch.  Held here rather than formatted
@@ -1300,7 +1438,12 @@ class AsyncDomainWrfoutWriter:
 class PerDomainWrfoutWriters:
     """One asynchronous writer/side stream per domain in an experiment."""
 
-    def __init__(self, model, output_dir, *, start_time, title):
+    def __init__(self, model, output_dir, *, start_time, title,
+                 initial_condition=None, source=None):
+        """``initial_condition`` is the preparation receipt's provenance
+        block, stamped onto every domain's frames so the durable artifact
+        states what its initial state was and not only when it began.
+        """
         from gpuwm.runtime import _global_wrf_attrs, _metadata_frame
 
         self.model = model
@@ -1328,7 +1471,8 @@ class PerDomainWrfoutWriters:
                     node.grid, domain_start_time,
                     getattr(case, "geog_selection", None),
                     domain=node.cfg, coord=case.initial_result.coord,
-                    feedback=getattr(model, "_feedback_provenance", None)),
+                    feedback=getattr(model, "_feedback_provenance", None),
+                    initial_condition=initial_condition, source=source),
                 abort_event=self._abort_event)
         self.last_durable_wrfout = None
 

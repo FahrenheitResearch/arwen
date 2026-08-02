@@ -142,6 +142,156 @@ def compute_hybrid_coeffs(znw: np.ndarray, hybrid_opt: int, etac: float,
             "c1h": c1h, "c2h": c2h, "c3h": c3h, "c4h": c4h}
 
 
+#: Analytic base-state lapse used by WRF's ``module_initialize_real.F``
+#: surface-pressure formula (``base_lapse``, WRF Registry default 50.0).
+_BASE_LAPSE_K = 50.0
+
+
+def _max_hybrid_slope(znw: np.ndarray, hybrid_opt: int, etac: float,
+                      p_top: float) -> float:
+    """Largest discrete ``dB/deta`` on either level set of one coordinate.
+
+    The reference dry pressure is checked on full levels by WRF
+    (``dyn_em/nest_init_utils.F:1158-1182``) and on half levels by this
+    package's own base state; the tighter of the two governs.
+    """
+
+    hy = compute_hybrid_coeffs(np.asarray(znw, dtype=np.float64),
+                               hybrid_opt, etac, c.P0, p_top)
+    znu = 0.5 * (np.asarray(znw)[:-1] + np.asarray(znw)[1:])
+    full = np.diff(hy["c3f"]) / np.diff(np.asarray(znw, dtype=np.float64))
+    half = np.diff(hy["c3h"]) / np.diff(znu)
+    return float(max(full.max(), half.max()))
+
+
+def hybrid_surface_pressure_floor(znw: np.ndarray, hybrid_opt: int,
+                                  etac: float, p_top: float) -> float:
+    """Lowest surface pressure (Pa) this hybrid coordinate can order.
+
+    Writing ``pd[k] = c3[k]*(ps - p_top) + c4[k] + p_top`` and
+    ``s = dB/deta``, ``pd`` decreases with height only where
+    ``s*(P0 - ps) < P0 - p_top``.  The steepest segment of the Klemp
+    cubic therefore sets a hard floor under the surface pressure -- and
+    so a ceiling over the terrain -- for a given ``etac``/``p_top`` pair.
+    ``hybrid_opt`` 0/1 have ``B = eta`` exactly, hence no floor.
+    """
+
+    slope = _max_hybrid_slope(znw, hybrid_opt, etac, float(p_top))
+    if slope <= 1.0:
+        return 0.0
+    return c.P0 - (c.P0 - float(p_top)) / slope
+
+
+def analytic_base_terrain_height(surface_pressure: float,
+                                 base_temp: float = 290.0) -> float:
+    """Invert WRF's analytic base-state ``p_s(z)`` for terrain height.
+
+    ``module_initialize_real.F:3787-3803`` sets
+    ``p_s = p00*exp(-t00/a + sqrt((t00/a)^2 - 2*g*z/(a*Rd)))``; this is
+    that relation solved for ``z``, used only to express a pressure floor
+    in the metres a user chose the domain by.
+    """
+
+    ratio = float(base_temp) / _BASE_LAPSE_K
+    inner = np.log(float(surface_pressure) / c.P0) + ratio
+    return float((ratio ** 2 - inner ** 2) * _BASE_LAPSE_K * c.RD
+                 / (2.0 * c.G))
+
+
+def largest_supported_etac(znw: np.ndarray, p_top: float,
+                           surface_pressure: float) -> float | None:
+    """Largest ``etac`` whose reference column stays ordered at ``ps``.
+
+    ``dB/deta`` grows with ``etac``, so the constraint is monotone and a
+    bisection is exact to the printed precision.  ``None`` means no
+    positive ``etac`` suffices -- the cubic's own minimum slope of 4/3
+    already inverts the column, and only a lower ``p_top`` can help.
+    """
+
+    def ordered(candidate: float) -> bool:
+        return float(surface_pressure) > hybrid_surface_pressure_floor(
+            znw, 2, candidate, p_top)
+
+    low = 1.0e-3
+    if not ordered(low):
+        return None
+    high = 0.5
+    if ordered(high):
+        return high
+    for _ in range(40):
+        middle = 0.5 * (low + high)
+        if ordered(middle):
+            low = middle
+        else:
+            high = middle
+    # A remedy is only useful if the number printed is itself usable, so
+    # step down to the coarsest value that still orders the column rather
+    # than reporting a supremum that rounds back onto the refusal.
+    quantized = np.floor(low * 1000.0) / 1000.0
+    while quantized > 0.0 and not ordered(quantized):
+        quantized -= 0.001
+    return float(quantized) if quantized > 0.0 else None
+
+
+def hybrid_column_ordering_refusal(coord: VerticalCoord, p_top: float,
+                                   surface_pressure, *, terrain=None,
+                                   quantity: str = "reference dry pressure",
+                                   row_offset: int = 0) -> str | None:
+    """WRF's coordinate-validity refusal, with the constraint and remedy.
+
+    Pristine WRF v4.6.1 makes exactly this check and calls it fatal --
+    ``dyn_em/nest_init_utils.F:1158-1182``, whose own message says the
+    cause "tends to be caused by very high topography" and whose only
+    remedy is "reduce etac".  ``doc/README.hybrid_vert_coord:65-74``
+    names the same failure over the Himalaya.  This returns that refusal
+    with the numbers WRF's message leaves the user to find: which column,
+    how high it is, the surface pressure the coordinate can actually
+    order, and the largest ``etac`` (or ``p_top``) that would order this
+    one.  Returns ``None`` when the column is representable.
+    """
+
+    pressure = np.asarray(surface_pressure, dtype=np.float64)
+    floor = hybrid_surface_pressure_floor(
+        coord.znw, coord.hybrid_opt, coord.etac, p_top)
+    if floor <= 0.0 or not np.any(pressure <= floor):
+        return None
+    index = np.unravel_index(int(np.argmin(pressure)), pressure.shape)
+    lowest = float(pressure[index])
+    reported = tuple(int(value) for value in index)
+    if row_offset and len(reported) >= 1:
+        reported = (reported[0] + int(row_offset),) + reported[1:]
+    if terrain is None:
+        height = analytic_base_terrain_height(lowest)
+        height_source = "implied"
+    else:
+        height = float(np.asarray(terrain, dtype=np.float64)[index])
+        height_source = "terrain"
+    etac_remedy = largest_supported_etac(coord.znw, p_top, lowest)
+    slope = _max_hybrid_slope(coord.znw, coord.hybrid_opt, coord.etac, p_top)
+    top_remedy = c.P0 - slope * (c.P0 - lowest)
+    remedies = []
+    if etac_remedy is not None and etac_remedy < coord.etac:
+        remedies.append(f"reduce etac from {coord.etac:g} to at most "
+                        f"{etac_remedy:.3f}")
+    if 0.0 < top_remedy < float(p_top):
+        remedies.append(f"lower p_top from {float(p_top):g} to at most "
+                        f"{top_remedy:.0f} Pa")
+    if not remedies:
+        remedies.append("raise the model top and coarsen the terrain: no "
+                        "positive etac orders a column this high")
+    return (
+        f"{quantity} is not monotonic: the hybrid coordinate "
+        f"(hybrid_opt={coord.hybrid_opt}, etac={coord.etac:g}, "
+        f"p_top={float(p_top):g} Pa) can only order columns whose surface "
+        f"pressure stays above {floor:.0f} Pa "
+        f"(about {analytic_base_terrain_height(floor):.0f} m of terrain), "
+        f"and mass point {reported} is at "
+        f"{lowest:.0f} Pa ({height_source} height {height:.0f} m) -- "
+        f"{', or '.join(remedies)} "
+        "(WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 refuses the same "
+        "column and names the same remedy)")
+
+
 def _install_hybrid_coeffs(coord: VerticalCoord, pt: float) -> None:
     """(Re)build the hybrid coefficient arrays on ``coord`` for model-top
     pressure ``pt`` (in place: the pressure-weighted c2/c4 need p_top)."""

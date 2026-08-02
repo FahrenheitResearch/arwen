@@ -1,7 +1,7 @@
 """CPU-only integrity tests for the prepared real-data cache container."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path, PureWindowsPath
 from types import MappingProxyType, SimpleNamespace
 
@@ -17,7 +17,8 @@ from gpuwm.ingest.prepared_cache import (
     _prepared_cache_staging_path,
     _restore_lbc_mode,
     PreparedCacheCorruptError, PreparedCacheMismatchError,
-    PreparedCacheReader, prepared_cache_identity,
+    PreparedCacheReader, extend_prepared_cache,
+    prepared_cache_identity,
     select_prepared_met_fields, write_prepared_cache,
 )
 from gpuwm.io.restart import STATE_SETUP_ARRAYS, STATE_SETUP_SCALARS
@@ -64,6 +65,80 @@ def _fixture():
         "V10": np.ones((3, 2), dtype=np.float32),
     })
     return initial, met, boundaries
+
+
+def _extension_identity(*, source_hours, model_start, domain_start,
+                        bridge, source_manifest):
+    model_hours = list(range(len(source_hours)))
+    namelist_sha256 = "d" * 64 if max(source_hours) == 1 else "e" * 64
+    return {
+        "bridge_manifest_sha256": bridge,
+        "source_manifest_sha256": source_manifest,
+        "static_cache_sha256": "c" * 64,
+        "namelist_sha256": namelist_sha256,
+        "namelist_extension_invariant": {
+            "schema": "gpuwm-namelist-extension-invariant-v1",
+            "sha256": "1" * 64,
+        },
+        "domain_config": {
+            "start_time": domain_start.isoformat(),
+            "run": {
+                "run_seconds": float(len(model_hours) - 1) * 3600.0,
+                "specified": True,
+                "nested": False,
+            },
+        },
+        "forcing_hours": model_hours,
+        "source_identity": {
+            "adapter": "fixture",
+            "source_cycle": datetime(2026, 7, 20).isoformat(),
+            "model_start_time": model_start.isoformat(),
+            "source_forecast_hours": list(source_hours),
+            "model_forcing_hours": model_hours,
+        },
+    }
+
+
+def _suffix_fixture(*, seam_delta=0.0):
+    initial, met, old = _fixture()
+    old_side = old.intervals[0].fields["u"].west
+    endpoint = old_side.value + 3600.0 * old_side.tendency + seam_delta
+    suffix_side = SideBoundary(
+        endpoint, np.full_like(endpoint, 0.5, dtype=np.float64))
+    suffix = LateralBoundaries((BoundaryInterval(
+        0.0, 3600.0,
+        {"u": FieldBoundary(
+            suffix_side, suffix_side, suffix_side, suffix_side)}),),
+        5, 1, 4)
+    initial.state.lateral_boundaries = suffix
+    return initial, met, suffix
+
+
+def _manifest_extension(prior_identity, new_identity):
+    return {
+        "schema": "gpuwm-source-manifest-prefix-extension-v1",
+        "predecessor_sha256": prior_identity["source_manifest_sha256"],
+        "extended_sha256": new_identity["source_manifest_sha256"],
+        "old_source_forecast_hours": [0, 1],
+        "new_source_forecast_hours": [0, 1, 2],
+        "suffix_source_forecast_hours": [1, 2],
+        "retained_entries": 4,
+        "added_entries": ["atmosphere-f02", "surface-f02"],
+    }
+
+
+def _bridge_extension(prior_identity, suffix_identity, new_identity):
+    return {
+        "schema": "gpuwm-bridge-manifest-prefix-extension-v1",
+        "predecessor_sha256": prior_identity["bridge_manifest_sha256"],
+        "suffix_sha256": suffix_identity["bridge_manifest_sha256"],
+        "extended_sha256": new_identity["bridge_manifest_sha256"],
+        "old_source_forecast_hours": [0, 1],
+        "new_source_forecast_hours": [0, 1, 2],
+        "suffix_source_forecast_hours": [1, 2],
+        "retained_entries": 48,
+        "added_entries": ["atmosphere-f02", "soil-f02"],
+    }
 
 
 def test_prepared_identity_serializes_per_domain_start_time():
@@ -152,6 +227,290 @@ def test_prepared_cache_paths_fit_failed_windows_parent_budget():
     assert len(str(staging / "header.json")) == 254
     assert len(str(target / "a00000.npy")) == 254
     assert len(str(target / "header.json")) == 255
+
+
+def test_default_prepared_cache_bytes_ignore_disabled_seal_option(tmp_path):
+    initial, met, boundaries = _fixture()
+    first = tmp_path / "implicit-default"
+    second = tmp_path / "explicit-default"
+
+    one = write_prepared_cache(
+        first, identity={"source": "unchanged"}, initial_result=initial,
+        met=met, boundaries=boundaries)
+    two = write_prepared_cache(
+        second, identity={"source": "unchanged"}, initial_result=initial,
+        met=met, boundaries=boundaries, sealed_forcing_extension=False)
+
+    assert one["content_sha256"] == two["content_sha256"]
+    first_header = PreparedCacheReader(
+        first, expected_identity={"source": "unchanged"}).header
+    second_header = PreparedCacheReader(
+        second, expected_identity={"source": "unchanged"}).header
+    for key in ("schema", "status", "identity", "metadata", "arrays",
+                "content_sha256", "payload_bytes"):
+        assert first_header[key] == second_header[key]
+    assert "forcing_extension_mode" not in first_header["metadata"]
+    for key, spec in first_header["arrays"].items():
+        other = second_header["arrays"][key]
+        assert (first / spec["file"]).read_bytes() == \
+            (second / other["file"]).read_bytes()
+
+
+def test_prepared_cache_extension_reuses_prefix_and_appends_nonzero_hour(
+        tmp_path):
+    start = datetime(2026, 7, 20)
+    prior_identity = _extension_identity(
+        source_hours=[0, 1], model_start=start, domain_start=start,
+        bridge="a" * 64, source_manifest="b" * 64)
+    suffix_identity = _extension_identity(
+        source_hours=[1, 2], model_start=start + timedelta(hours=1),
+        domain_start=start + timedelta(hours=1), bridge="e" * 64,
+        source_manifest="f" * 64)
+    composite = "9" * 64
+    extended_identity = _extension_identity(
+        source_hours=[0, 1, 2], model_start=start, domain_start=start,
+        bridge=composite, source_manifest="f" * 64)
+    initial, met, boundaries = _fixture()
+    suffix_initial, suffix_met, suffix_boundaries = _suffix_fixture()
+    prior = tmp_path / "prior"
+    suffix = tmp_path / "suffix"
+    output = tmp_path / "extended"
+    write_prepared_cache(
+        prior, identity=prior_identity, initial_result=initial, met=met,
+        boundaries=boundaries, sealed_forcing_extension=True)
+    write_prepared_cache(
+        suffix, identity=suffix_identity, initial_result=suffix_initial,
+        met=suffix_met, boundaries=suffix_boundaries)
+
+    receipt = extend_prepared_cache(
+        output, predecessor=prior, suffix=suffix,
+        identity=extended_identity, metadata={"forcing_hours": [0, 1, 2]},
+        source_manifest_extension=_manifest_extension(
+            prior_identity, extended_identity),
+        bridge_manifest_extension=_bridge_extension(
+            prior_identity, suffix_identity, extended_identity))
+
+    reader = PreparedCacheReader(output, expected_identity=extended_identity)
+    assert reader.verify_all()["status"] == "PASS"
+    assert len(reader.header["metadata"]["lbc"]["intervals"]) == 2
+    assert receipt["appended_interval"] == [3600.0, 7200.0]
+    assert receipt["bridge_manifest_sha256"] == composite
+    prior_reader = PreparedCacheReader(prior, expected_identity=prior_identity)
+    for key, old_spec in prior_reader.arrays.items():
+        new_spec = reader.arrays[key]
+        assert Path(prior / old_spec["file"]).samefile(
+            output / new_spec["file"])
+    np.testing.assert_array_equal(
+        reader.read_array("lbc/0/u/west/value"),
+        prior_reader.read_array("lbc/0/u/west/value"))
+    np.testing.assert_array_equal(
+        reader.read_array("lbc/1/u/west/value"),
+        PreparedCacheReader(
+            suffix, expected_identity=suffix_identity).read_array(
+                "lbc/0/u/west/value"))
+
+
+def test_prepared_cache_extension_refuses_changed_seam_without_output(
+        tmp_path):
+    start = datetime(2026, 7, 20)
+    prior_identity = _extension_identity(
+        source_hours=[0, 1], model_start=start, domain_start=start,
+        bridge="a" * 64, source_manifest="b" * 64)
+    suffix_identity = _extension_identity(
+        source_hours=[1, 2], model_start=start + timedelta(hours=1),
+        domain_start=start + timedelta(hours=1), bridge="e" * 64,
+        source_manifest="f" * 64)
+    extended_identity = _extension_identity(
+        source_hours=[0, 1, 2], model_start=start, domain_start=start,
+        bridge="9" * 64,
+        source_manifest="f" * 64)
+    initial, met, boundaries = _fixture()
+    suffix_initial, suffix_met, suffix_boundaries = _suffix_fixture(
+        seam_delta=1.0)
+    prior, suffix, output = (
+        tmp_path / "prior", tmp_path / "suffix", tmp_path / "extended")
+    write_prepared_cache(
+        prior, identity=prior_identity, initial_result=initial, met=met,
+        boundaries=boundaries, sealed_forcing_extension=True)
+    write_prepared_cache(
+        suffix, identity=suffix_identity, initial_result=suffix_initial,
+        met=suffix_met, boundaries=suffix_boundaries)
+
+    with pytest.raises(PreparedCacheMismatchError, match="shared endpoint"):
+        extend_prepared_cache(
+            output, predecessor=prior, suffix=suffix,
+            identity=extended_identity, metadata={},
+            source_manifest_extension=_manifest_extension(
+                prior_identity, extended_identity),
+            bridge_manifest_extension=_bridge_extension(
+                prior_identity, suffix_identity, extended_identity))
+    assert not output.exists()
+
+
+def test_prepared_cache_extension_refuses_changed_namelist_invariant(
+        tmp_path):
+    start = datetime(2026, 7, 20)
+    prior_identity = _extension_identity(
+        source_hours=[0, 1], model_start=start, domain_start=start,
+        bridge="a" * 64, source_manifest="b" * 64)
+    suffix_identity = _extension_identity(
+        source_hours=[1, 2], model_start=start + timedelta(hours=1),
+        domain_start=start + timedelta(hours=1), bridge="e" * 64,
+        source_manifest="f" * 64)
+    extended_identity = _extension_identity(
+        source_hours=[0, 1, 2], model_start=start, domain_start=start,
+        bridge="9" * 64, source_manifest="f" * 64)
+    extended_identity["namelist_extension_invariant"]["sha256"] = "2" * 64
+    initial, met, boundaries = _fixture()
+    suffix_initial, suffix_met, suffix_boundaries = _suffix_fixture()
+    prior, suffix, output = (
+        tmp_path / "prior", tmp_path / "suffix", tmp_path / "extended")
+    write_prepared_cache(
+        prior, identity=prior_identity, initial_result=initial, met=met,
+        boundaries=boundaries, sealed_forcing_extension=True)
+    write_prepared_cache(
+        suffix, identity=suffix_identity, initial_result=suffix_initial,
+        met=suffix_met, boundaries=suffix_boundaries)
+
+    with pytest.raises(
+            PreparedCacheMismatchError, match="immutable namelist fields"):
+        extend_prepared_cache(
+            output, predecessor=prior, suffix=suffix,
+            identity=extended_identity, metadata={},
+            source_manifest_extension=_manifest_extension(
+                prior_identity, extended_identity),
+            bridge_manifest_extension=_bridge_extension(
+                prior_identity, suffix_identity, extended_identity))
+    assert not output.exists()
+
+
+def test_prepared_cache_extension_refuses_predecessor_mutation(tmp_path):
+    start = datetime(2026, 7, 20)
+    prior_identity = _extension_identity(
+        source_hours=[0, 1], model_start=start, domain_start=start,
+        bridge="a" * 64, source_manifest="b" * 64)
+    suffix_identity = _extension_identity(
+        source_hours=[1, 2], model_start=start + timedelta(hours=1),
+        domain_start=start + timedelta(hours=1), bridge="e" * 64,
+        source_manifest="f" * 64)
+    extended_identity = _extension_identity(
+        source_hours=[0, 1, 2], model_start=start, domain_start=start,
+        bridge="9" * 64,
+        source_manifest="f" * 64)
+    initial, met, boundaries = _fixture()
+    suffix_initial, suffix_met, suffix_boundaries = _suffix_fixture()
+    prior, suffix, output = (
+        tmp_path / "prior", tmp_path / "suffix", tmp_path / "extended")
+    write_prepared_cache(
+        prior, identity=prior_identity, initial_result=initial, met=met,
+        boundaries=boundaries, sealed_forcing_extension=True)
+    write_prepared_cache(
+        suffix, identity=suffix_identity, initial_result=suffix_initial,
+        met=suffix_met, boundaries=suffix_boundaries)
+    prior_reader = PreparedCacheReader(prior, expected_identity=prior_identity)
+    payload = prior / prior_reader.arrays["state/u"]["file"]
+    array = np.load(payload, allow_pickle=False)
+    array.flat[0] += 1.0
+    with payload.open("wb") as stream:
+        np.save(stream, array, allow_pickle=False)
+
+    with pytest.raises(PreparedCacheCorruptError, match="fails its manifest"):
+        extend_prepared_cache(
+            output, predecessor=prior, suffix=suffix,
+            identity=extended_identity, metadata={},
+            source_manifest_extension=_manifest_extension(
+                prior_identity, extended_identity),
+            bridge_manifest_extension=_bridge_extension(
+                prior_identity, suffix_identity, extended_identity))
+    assert not output.exists()
+
+
+def test_prepared_cache_extension_rechecks_hardlinked_stage_for_toctou(
+        tmp_path, monkeypatch):
+    start = datetime(2026, 7, 20)
+    prior_identity = _extension_identity(
+        source_hours=[0, 1], model_start=start, domain_start=start,
+        bridge="a" * 64, source_manifest="b" * 64)
+    suffix_identity = _extension_identity(
+        source_hours=[1, 2], model_start=start + timedelta(hours=1),
+        domain_start=start + timedelta(hours=1), bridge="e" * 64,
+        source_manifest="f" * 64)
+    extended_identity = _extension_identity(
+        source_hours=[0, 1, 2], model_start=start, domain_start=start,
+        bridge="9" * 64, source_manifest="f" * 64)
+    initial, met, boundaries = _fixture()
+    suffix_initial, suffix_met, suffix_boundaries = _suffix_fixture()
+    prior, suffix, output = (
+        tmp_path / "prior", tmp_path / "suffix", tmp_path / "extended")
+    write_prepared_cache(
+        prior, identity=prior_identity, initial_result=initial, met=met,
+        boundaries=boundaries, sealed_forcing_extension=True)
+    write_prepared_cache(
+        suffix, identity=suffix_identity, initial_result=suffix_initial,
+        met=suffix_met, boundaries=suffix_boundaries)
+    original = prepared_cache_module._BundleWriter.link_verified
+    injected = False
+
+    def mutate_after_link(writer, key, reader):
+        nonlocal injected
+        original(writer, key, reader)
+        if key == "state/u" and not injected:
+            injected = True
+            payload = reader.path / reader.arrays[key]["file"]
+            array = np.load(payload, allow_pickle=False)
+            array.flat[-1] += 1.0
+            with payload.open("wb") as stream_handle:
+                np.save(stream_handle, array, allow_pickle=False)
+
+    monkeypatch.setattr(
+        prepared_cache_module._BundleWriter, "link_verified",
+        mutate_after_link)
+
+    with pytest.raises(PreparedCacheCorruptError, match="fails its manifest"):
+        extend_prepared_cache(
+            output, predecessor=prior, suffix=suffix,
+            identity=extended_identity, metadata={},
+            source_manifest_extension=_manifest_extension(
+                prior_identity, extended_identity),
+            bridge_manifest_extension=_bridge_extension(
+                prior_identity, suffix_identity, extended_identity))
+    assert injected
+    assert not output.exists()
+
+
+def test_prepared_cache_extension_refuses_a_gap(tmp_path):
+    start = datetime(2026, 7, 20)
+    prior_identity = _extension_identity(
+        source_hours=[0, 1], model_start=start, domain_start=start,
+        bridge="a" * 64, source_manifest="b" * 64)
+    suffix_identity = _extension_identity(
+        source_hours=[1, 2], model_start=start + timedelta(hours=1),
+        domain_start=start + timedelta(hours=1), bridge="e" * 64,
+        source_manifest="f" * 64)
+    extended_identity = _extension_identity(
+        source_hours=[0, 1, 2], model_start=start, domain_start=start,
+        bridge="9" * 64, source_manifest="f" * 64)
+    extended_identity["forcing_hours"] = [0, 1, 3]
+    initial, met, boundaries = _fixture()
+    suffix_initial, suffix_met, suffix_boundaries = _suffix_fixture()
+    prior, suffix, output = (
+        tmp_path / "prior", tmp_path / "suffix", tmp_path / "extended")
+    write_prepared_cache(
+        prior, identity=prior_identity, initial_result=initial, met=met,
+        boundaries=boundaries, sealed_forcing_extension=True)
+    write_prepared_cache(
+        suffix, identity=suffix_identity, initial_result=suffix_initial,
+        met=suffix_met, boundaries=suffix_boundaries)
+
+    with pytest.raises(PreparedCacheMismatchError, match="exactly one"):
+        extend_prepared_cache(
+            output, predecessor=prior, suffix=suffix,
+            identity=extended_identity, metadata={},
+            source_manifest_extension=_manifest_extension(
+                prior_identity, extended_identity),
+            bridge_manifest_extension=_bridge_extension(
+                prior_identity, suffix_identity, extended_identity))
+    assert not output.exists()
 
 
 def test_prepared_cache_staging_collision_preserves_foreign_tree(

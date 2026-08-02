@@ -1,4 +1,643 @@
 # Changelog
+## 1.4.1 (2026-08-02)
+
+A correction and operations release. It adds no physics scheme, changes
+no kernel, and moves no verified number: every forecast 1.4.0 could
+produce, 1.4.1 produces identically. What it changes is what the product
+CLAIMS, what it refuses, and how much of it a stranger can actually run.
+
+Three themes:
+
+- **Two false public claims are corrected.** FP32 subnormal flushing on
+  sm_120 was described as a hardware property that no compile flag could
+  change. It is not: CuPy appends `-ftz=true` after the options its
+  caller passed, with no merge and no dedup, and the compiler honors the
+  last occurrence -- so the flush follows the instruction that gets
+  emitted, and the same source compiled without the appended flag keeps
+  full IEEE subnormals on the same silicon. Separately, the CPU
+  reference was described as an Intel `ifx` build; the pinned binary
+  carries exactly one compiler stamp, GCC 15.2.0. Both corrections state
+  what the old claim was, so a reader who saw it can tell it changed.
+  The countermeasures and the reference stream are unaffected -- only
+  the descriptions were wrong.
+
+- **Things labelled Supported now pass their own documented
+  procedures.** `gpuwm dual-run` returned nonzero on a byte-identical
+  pair, so the determinism screen the documentation tells you to run
+  could not be passed by a correct run. It returns 0 now. (1.4.0
+  reported this fix as shipped; it was not in the release.) The domain
+  wizard emitted configurations that failed the product's own `gpuwm
+  check` minutes later, because it sized against a flat reserve the
+  verifier does not use and against a card's nameplate capacity, which
+  no card hands over.
+
+- **An operator surface.** `gpuwm multi-run PLAN.toml` runs one
+  independent forecast per physical GPU; `gpuwm stream PLAN.toml` runs
+  sealed hourly HRRR forecast streaming; `gpuwm report` turns "it broke"
+  into one redacted file that can be read by someone who was not there.
+
+- **`--products wind10` returns a wind map.** On the rust engine it
+  returned `mslp_10m_winds` -- a mean-sea-level PRESSURE analysis with
+  barbs drawn over it -- while the matplotlib engine's `wind10` drew a
+  real wind map. The asymmetry left an operator without a wind map
+  during an active wildfire. The catalog had no standalone surface-wind
+  chart to point at, so one was written:
+  `10m_wind_speed_and_direction`, speed fill plus barbs and streamlines
+  from one frame, on its own 0-60 kt scale with no mask (the MSLP
+  overlay's ramp blanks below 10 kt and would draw an empty map on a
+  light-wind morning). Separately, no ArWen or WRF quantity can now
+  reach a label reading "wind gust": WRF 4.6.1 defines no gust, and
+  `WSPD10MAX` -- a running maximum, and a WRF Registry name rather than
+  a GRIB spelling -- no longer resolves the gust plane. The
+  operational-GRIB `10m_wind_gusts` family still says gust, because it
+  reads a gust the issuing centre computed.
+
+- **Thompson (mp=8) moves two steps closer to WRF v4.6.1.** The rain
+  mean-volume-diameter bound was applied twice where WRF applies it
+  once, and the rain-presence gate tested a mixing ratio where WRF
+  tests a mass concentration -- with a floor, which matters: WRF's gate
+  is a conjunction, and implementing only the mass-concentration half
+  would have broken 3.3x more level-visits than it fixed (measured over
+  a 2 h forecast, 120 microphysics calls, every disagreeing level
+  classified). What shipped removes 13,634 disagreements and
+  introduces none. **No certified trajectory digest moved** -- all four
+  are bit-identical -- and no tolerance was changed. One of 46
+  oracle fixture cases moved, in 3 surface cells, every one closer to
+  WRF. On a 2 h forecast the largest rain difference is 3.8e-02 mm
+  against a 3.4 mm domain maximum, with no systematic direction: it is
+  chaotic re-seeding, not a bias.
+
+- **A pip install draws coastlines again.** 1.4.0's wheel shipped no
+  Natural Earth assets, so an installed user rendered weather over a
+  blank rectangle -- one lane produced a textbook tropical cyclone with
+  no coastline, border or state line anywhere on the image. The map
+  shapefiles now travel in the **bridge bundle**, beside the
+  `rw_wrfbatch` binary that reads them, rather than in the wheel: the
+  wheel measures 74.6 MiB against PyPI's 100 MB per-file cap and the
+  asset tree deflates to 20.2 MiB, so putting them in the wheel would
+  leave about half a megabyte of headroom before uploads start being
+  rejected. It is also the safer placement, because the binary and its
+  map data can no longer arrive separately -- which is exactly how a
+  cyclone with no coastline got drawn.
+
+- **An unrecognized `[case_data]` key refuses instead of being
+  dropped.** This was the third appearance of one defect, and the most
+  numerically dangerous: five keys are optional by construction, and
+  `forcing_interval_s` selects the forcing window the catalog consumes.
+  Measured on the shipped CLI, `forcing_interval_sec = 10800.0` -- one
+  letter off -- produced one stderr warning and then a completed
+  forecast over a 108,000 s window nobody selected, `nan_free` true,
+  exit 0. The same value spelled correctly was refused. It now refuses
+  by name through both `gpuwm check` and `gpuwm run`, suggesting the
+  key it thinks you meant.
+
+- **A plot from a forecast-initialized run says so.** A run whose
+  initial state was the 174-hour lead of an earlier cycle printed, on
+  every one of its 159 images, the identical header a genuine analysis
+  run prints. The truth lived only in `run/report.json`, which nothing
+  downstream reads, so a 174 h-lead chart and an analysis chart were
+  indistinguishable in the one artifact that actually gets shared. The
+  header now discloses what the initial state itself was:
+
+  ```
+  Init 04/03 12Z (GFS 03/27 12Z f174) | F000 | Valid 04/03 12Z | …
+  ```
+
+  This was **not** a frame-tracking bug, and the distinction matters if
+  anyone is tempted to "fix" it further: the stamp does track the
+  frame — consecutive `wrfout` files render `f000` then `f001`,
+  measured — and `F000` on frame 0 of a 174-hour-lead run is *correct*,
+  because `F` counts hours into **this** model run, not into the
+  initial condition. What was missing was a second, different time.
+  A run with nothing to disclose renders byte-identically to before
+  (control frame 449,494 B either way).
+
+- **A renderer with no map data now says so instead of drawing a blank
+  rectangle.** Missing basemap assets caused no failure, no warning and
+  no non-zero exit — the weather was drawn over an empty frame and
+  reported as success, which is how a tropical cyclone with no
+  coastline was delivered as a finished product. The state is still
+  reachable after upgrading if bridges were staged under 1.4.0 and
+  never re-staged, so the check runs at render time against the
+  renderer's own resolution ladder and prints one line naming the
+  command that fixes it.
+
+  **Why this survived a whole release**, which is worth knowing if you
+  validate renders yourself: the renderer's last resort is a cartopy
+  shapefile cache under `$HOME/.local/share/cartopy`, and any machine
+  that has ever run cartopy has one. The *same binary* therefore draws
+  a fully mapped chart on a developer workstation and a blank
+  rectangle for a fresh user — so local render validation passed for
+  the wrong reason. The warning knows about that fallback and stays
+  silent when the cache genuinely supplies the geography.
+
+- **`gpuwm render --list-products` no longer needs a `wrfout` first.**
+  It also now asks the renderer for the catalog instead of carrying a
+  copy, so the printed list cannot drift from what the binary knows.
+
+### Long forecasts on consumer GPUs: run it twice
+
+Consumer cards have no ECC. On one such card, six 6-hour runs — three
+configurations, two duplicates each — **all failed, and all differently,
+from byte-identical initial states and prepared caches**. Two duplicate
+1-hour runs of the *same* configuration produced byte-different
+`wrfout` files. Two of the failures showed a single absurd-but-finite
+value in an otherwise healthy field, which is exactly the signature
+silent memory corruption leaves.
+
+**A single long run on such a card is not a reproducible result.** That
+is not a statement about ArWen's arithmetic — the same tree reproduces
+bit-identically on the same card when the run completes — it is a
+statement about the hardware underneath it.
+
+`gpuwm dual-run` is how you find out, and it is the reason it exists:
+prepare once, run the forecast twice into two `--outdir` trees, and
+compare. Identical capsules mean the two runs agree bit for bit;
+anything else is a finding, not noise. See
+[DETERMINISM.md](docs/public/DETERMINISM.md) section 6 for the
+procedure.
+
+One reading note for anyone diagnosing a failure from a receipt:
+`model_elapsed_seconds` records the last **committed** period, so a
+failure time taken from it is an upper bound on when the run stopped,
+not a timestamp of the failure.
+
+### Known limits of this release
+
+- **The VRAM envelope has no RTX 5090 datapoint.** The affine
+  recalibration was fitted and cross-checked against 4090, 4090 and 4070
+  pilots; both 5090s refused connections while it was being measured. It
+  is conservative by construction -- the residual moved from -22.5%..+29.1%
+  with a sign change across the range to +5.6%..+15.5%, never under -- so
+  the failure mode on an uncalibrated card is a domain smaller than it
+  needed to be, not an OOM. It is still unvalidated on 32 GiB cards.
+- **Three things that exist on branches are NOT in this release**, and
+  no branch name should be read as a shipped capability:
+  - **LES / nested large-eddy simulation.** The nested run has never
+    been scored, its probe receipt still reads `Verdict: BLOCKED`, and
+    no shipped configuration selects `km_opt` 2 or 3 -- so shipping it
+    would advertise a capability no user could reach. Targeting 1.5.
+  - **SASE PBL.** A non-WRF closure with no oracle and no verdict yet.
+  - **mp=28.** Still on the 1.3.1 base with roughly 26 shared files
+    moved underneath it, and its `CCN_ACTIVATE.BIN` table cannot be
+    redistributed -- so it could not ship a working default even if it
+    were rebased today.
+- The reference configuration file's header comment still reads `ifx`
+  and is deliberately not edited: its SHA-256 is the identity the
+  reference manifest, the acceptance band and the certification capsule
+  are all addressed by, so correcting a comment inside it would move a
+  digest the certification chain depends on. The correction is recorded
+  in `VERIFICATION.md` and in the build recipe committed beside the
+  manifest.
+- **`10m_wind_1h_max` on a wrfout store is a lower bound, not the
+  hourly maximum.** That store carries no `wind_speed_10m_max_1h`
+  plane, so the product falls back to `hypot(u10, v10)` -- an
+  instantaneous value, which cannot exceed the hour's true maximum.
+  The fallback is named in the strategy string `--list-products`
+  prints, so it is disclosed rather than silent.
+- **Upgrading ArWen does not upgrade a bridge you staged earlier, and
+  nothing says so.** `gpuwm render` resolves `rw_wrfbatch` through a
+  fixed order — a build in your checkout
+  (`tools/rustwx/target/release`), then `target/debug`, then
+  `libexec/bridges`, and only last the staged
+  `~/.gpuwm/bridges`. For anyone who installed from a wheel rather
+  than a checkout, that last one is the *only* candidate present, so
+  it always wins. A bridge staged under 1.4.0 enumerates **151**
+  products where this release's source enumerates **153**: you
+  silently get the older product set, with no error, no warning and a
+  zero exit — the new terrain frame, the standalone 10 m wind chart
+  and the map assets simply are not there. This was measured, not
+  reasoned about: it produced three test failures during assembly that
+  looked exactly like regressions and were not.
+
+  Fix it once, after upgrading:
+
+  ```bash
+  gpuwm fetch-bridges          # re-stage binaries AND map assets
+  gpuwm doctor                 # confirms the renderer and the assets
+  ```
+
+  From a checkout, `cd tools/rustwx && cargo build --release --locked
+  --offline` does the same thing by putting a fresh binary ahead of
+  the staged one in that order.
+- **The Thompson oracle fixtures carry an unstated compiler
+  dependency.** Rebuilding `tools/thompson_wrf461_oracle/` from
+  pristine WRF v4.6.1 with gfortran 13.3.0 reproduces 88 of 92
+  committed CSVs byte for byte; the other 4 -- the broad
+  multi-process columns (`ice-column`, `mixed-column`,
+  `mixed-surface`, `warm-column`) -- differ, at worst 7.3e-06
+  relative. The committed reference was built with gfortran 15.2.0.
+  Nothing in this release is affected (every comparison used the
+  committed CSVs consistently), but a fixture described as an oracle
+  should say which compiler produced it, and these do not yet.
+- **Two known mp=8 residuals are deliberately not closed here.** 3,627
+  level-visits still disagree with WRF where evaporation carried a
+  level across the rain threshold; closing them needs the TAU+1 rain
+  flag carried from the evaporation kernel to the fallout kernel, which
+  is a larger change than this release took. And `thompson.cu`'s
+  else-branch floor of 1e-12 kg/m^3 predates this work and is left as
+  it was.
+- The WRF reference manifest now carries measured hashes rather than
+  nulls, so `gpuwm certify` returns a verdict instead of refusing
+  unconditionally. Those bytes are the retained CPU run of record that
+  the published comparison scored -- not the campaign that ran alongside
+  it.
+
+
+- **Sparse HRRR cloud analyses no longer fail a false mass-loss gate.** The
+  old receipt compared global nonzero counts on the decoded pressure grid and
+  initialized eta grid, so two positive source cells that WRF deliberately
+  removed through its surface forcing, 500 Pa close-level zap, or lack of a
+  target stencil looked identical to an assignment bug. Initialization now
+  exhaustively labels every positive retained QC/QR/QI/QS/QG source sample as
+  target-influencing or one named WRF vertical-operator exclusion, with source
+  coordinates, pressure/stencil examples, compressed complete labels, and
+  geometry/operator fingerprints. An exact shared support certificate replays
+  binary ones one source level at a time through the same prepared production
+  interpolation plan; every TARGET label must equal the positive-source mask
+  intersected with that production-derived support bitset. Aggregate complete,
+  target-influencing, and exclusion replays additionally require byte-identical
+  retained output and exact-zero excluded output. Missing, changed, incomplete,
+  or contradicted evidence still refuses; target-influencing mass still may not
+  disappear. Correspondence schema v2 and public initialization schema v4 carry
+  the evidence; legacy correspondence v1 keeps its original broad refusal and a
+  sealed legacy predecessor is told to rebuild before any suffix work, rather
+  than either route silently reinterpreting old evidence.
+
+### Operational workflows
+
+- `gpuwm multi-run PLAN.toml` launches one independent forecast process per
+  selected physical GPU, either through convenient config-driven `gpuwm run`
+  entries or a shell-free supported prepared-runner argv. Device selectors
+  are resolved to unique UUIDs before launch; read-only inputs may be shared,
+  while each child receives its own output, temporary, and CuPy cache
+  directories and the machine-wide UUID lock remains shared. Checks
+  can run first in estimate or allocation mode, their nonzero reports warn but
+  do not block the forecast, and an atomic JSON summary records timestamps,
+  durations, concurrent wall time, successful-run process-overlap ratio (not
+  serial-baseline speedup), exact exit codes, paths, devices, PIDs, and logs
+  for every run.
+  Prepared-module execution is limited to the single-domain and domain-tree
+  production runners with exactly one canonical `--outdir {outdir}` binding;
+  their path-valued flags bind exactly to declared read-only inputs.
+  Config checks hold the selected UUID lock inside the child mask, and summary
+  publication is capability-probed before launch and create-only so a racing
+  writer is never overwritten. The summary binds the raw plan and declared
+  file authorities by SHA-256 with a sticky periodic monitor spanning checks
+  and forecasts, so a transient observed mutation remains a failure even when
+  old bytes are restored. Interruptions after publication capability is proven
+  record their stage, claimed directories, and known child PIDs; unexpected
+  exceptions stop the non-daemon monitor before propagating. CuPy and NVIDIA
+  driver caches are both isolated beneath each run's cache root, and the exact
+  shared UUID-lock root is proven disjoint from every run and authority path.
+  The generic supervisor now masks its selected `--gpu-uuid` into the worker
+  before any CUDA import, fixing the prior mismatch where it locked one card
+  but an unmasked worker could execute on physical index zero. It also captures
+  config bytes once, hashes and parses that capture for input discovery, and
+  makes every worker validate and parse the same create-only payload while
+  preserving the original directory as the relative-path base. Multi-run now
+  carries that one config authority through CLI routing and both check layers,
+  then snapshots every resolved forcing/Vtable/WPS/orography file into one
+  plan-wide create-only SHA store. Identical content is copied once across all
+  runs, workers consume only validated snapshots, and original paths remain
+  the numerical provenance identity. Before runtime, each worker's exact
+  role/path/detail multiset must equal the parent hash inventory, so a forcing
+  glob that shrinks, expands, or changes names between the parent and worker
+  parses fails with an honest failure capsule instead of running against a
+  subset. Ordinary single-run behavior is unchanged.
+- `gpuwm stream PLAN.toml` follows uploading HRRR cycles with bounded hourly
+  chunked restart-extend legs. The controller uses full S3 objects, extends
+  the immutable root forcing/cache prefix by one hour, rebuilds each nested
+  hierarchy, restores the preceding all-domain checkpoint, and hashes source,
+  preparation, run, health, and checkpoint artifacts into replay-verifiable
+  per-leg and cross-cycle chains. Capacity and per-fetch headroom receipts
+  price source objects, optional cache copies, retained generations, cadence,
+  and margins per physical volume before writes; a verified post-fetch resume
+  charges no duplicate source/cache write. GPU UUID ownership is explicit and
+  completed replay performs deep verification without allocating a GPU.
+
+### Sizing: the VRAM model has an intercept, and preprocessing is priced
+### for the whole domain tree
+
+An independent tester drove the published 1.4.0 wheel on a 16 GB RTX
+4080 -- half the card every route had been certified on -- and measured
+the sizing model precisely enough to correct it. Everything below is
+their measurement or a reproduction of it.
+
+- **The peak-envelope model was a multiplier with no intercept, so the
+  sign of its error changed with grid size.** It under-predicted small
+  configurations and over-predicted large ones: a 224x180 first-run
+  domain was declared 3.99 GiB and peaked at 4.38, while a 630x504
+  domain was declared 19.95 GiB and peaked at 13.88. Both from
+  `envelope = 1.45 x estimate`, which cannot describe a cost whose
+  fixed term (CUDA context + the launch-time local-memory backing
+  store) is 1.5-2.9 GiB before a grid exists. The envelope is a SUM
+  now:
+
+  ```
+  peak envelope = alloc estimate
+                + CUDA context + local-memory backing store
+                + 0.50 GiB unmodelled
+                + 5% of the estimate per nest beyond the root
+  ```
+
+  Fitting `peak = a x subtotal + b` over the single-domain runs returns
+  `a = 0.98` -- the itemization predicts the pool 1:1 and the residue is
+  a constant, which is what a context plus a backing store is. Against
+  every instrumented run (eleven on the 4080 spanning a 6.6x range of
+  estimate and one, two and four domains, plus the three 2026-07-30
+  Linux pilots on two other cards) the new envelope is conservative by
+  5% to 26% and never lands under a measured peak. The Windows/WDDM
+  lane keeps its one instrumented `x1.75` observation as a FLOOR under
+  the affine form, never as a discount.
+
+- **The non-pool term follows the DEVICE.** The backing store is
+  `(frame - default stack) x SMs x threads per SM`, so charging every
+  card the 170-SM RTX 5090's 2.49 GiB was an accounting term measured
+  on another machine -- a fifth of a 12 GiB card before a single grid
+  cell. `gpuwm check` reads the SM count off your card whenever it is
+  measuring your card; sizing for a card that is not in the machine
+  uses the largest SM count sold at that capacity, so it over-prices
+  every other card in the class rather than under-pricing any.
+
+- **Preprocessing was priced on the ROOT DOMAIN ONLY, so the prediction
+  FELL as nests were added while the real cost did not.** Predicted
+  ingest went 5.46 -> 1.89 -> 1.30 GiB across one, two and four
+  domains; measured stayed at 4.0-4.8 GiB. Under by 2.1x at two domains
+  and 3.4x at four, in the unsafe direction, on the number the
+  before-the-fetch gate half-relies on. A deeper ladder has a smaller
+  root, and only the root was priced. The hierarchy is initialized and
+  exported as one transaction, so every domain's initial state is
+  resident together: each nest is priced now, by name, and the per-call
+  setup transient is charged against the widest domain in the tree
+  rather than the root.
+
+- **`--card` tiers assumed a card hands over its nameplate capacity.**
+  A real RTX 4080 (16,376 MiB physical) presents 15.33 GiB free; the
+  16 GiB tier assumed 15.66, and because the fit loop grew the grid
+  until the envelope TOUCHED the budget, all four `--card 16gb` ladders
+  landed 0.13-0.32 GiB over the real budget and returned `gpuwm check`
+  rc 4 minutes after the wizard printed PASS. Tiers now size against
+  nominal capacity minus the larger of 0.75 GiB and 6%, and the fit
+  loop stops 5% (minimum 0.25 GiB) short of the budget instead of on
+  it.
+
+- **The reserve's overhead term is suite-dependent and the fit loop
+  assumed a flat 4.0 GiB.** It tracks the local-memory backing store of
+  the selected kernel set -- 1.93 GiB for WSM6 + MYNN, 2.91 for the
+  Thompson default, 3.94 for NSSL2 double-moment -- so both NSSL2
+  physics profiles were sized against one budget and verified against a
+  smaller one, and emitted a config that failed their own `gpuwm check`
+  at *every* card size (12/15/24/32 GiB). The fit loop prices the
+  reserve from the candidate experiment now, which is the same call
+  `gpuwm check` makes; the two cannot disagree about the same file.
+
+- **The two documented `gpuwm check` invocations no longer contradict
+  each other.** `gpuwm check CONFIG` returned 4 while the wizard's own
+  printed `gpuwm check CONFIG --budget-gib 12 --vram-gib 16` returned 0
+  on the same file on the same machine, because `--budget-gib`
+  re-declared the free figure the tier had invented. The bare form is
+  the printed next step now -- it measures the machine you are on --
+  and the declared form is printed beside it saying what it is for.
+
+- Message fixes, all reported with verbatim text: a negative VRAM
+  budget (`-7.15 GiB`) is no longer printed as a capacity to compare
+  against -- it clamps at zero and says the reserve alone exceeds the
+  card; the over-budget WARNING's announced exit code is the one the
+  process really returns rather than always "(exit code 4)"; the
+  over-budget remedy is a runnable `gpuwm domain --vram-gib N` instead
+  of "staged residency (DESIGN REOPEN) per section E"; "WDDM budget"
+  no longer appears on Linux; the wizard's failure line is a sentence;
+  and the small-card refusal no longer says "0.00 GiB (0% of the
+  projection) is grid-independent ... so a smaller grid cannot help".
+
+- `gpuwm doctor` and `gpuwm setup` print how many of their gaps are
+  BLOCKING, which is what the exit code is about. Exiting 0 with an
+  unfetched WPS_GEOG tree is correct -- that ~16 GB download is an
+  explicit opt-in -- but 1.3.1 exited 1 and 1.4.0 exits 0 on identical
+  gap text, so the only visible difference between the two versions was
+  the exit code. The severity is in the report now; the exit code did
+  not move.
+
+- **Corrected claim: 1.4.0's preprocessing memory reduction is not
+  universally ~3x.** See the 1.4.0 entry below, which now states what
+  was measured and under what conditions.
+
+**HRRR forecast leads are reachable from the front doors.** The engine
+already ran them -- a probe took HRRR f06..f12 from preparation through a
+PASS forecast on one 5090 -- but `gpuwm domain --source hrrr
+--forecast-start-hour 6` refused, `gpuwm fetch --source hrrr` hardcoded
+its window to f00..fNN and took no lead at all, and `--cycle latest`
+probed for a cycle complete through the window's *length* rather than its
+end. All four are fixed: `--hours` stays the window length on HRRR as it
+is on GFS, and a lead past the cycle's own horizon (f48 at 00/06/12/18Z,
+f18 otherwise) is refused by name before anything is downloaded.
+
+`--forecast-start-hour` on `gpuwm fetch` was refused for HRRR by the
+level-ladder check, so the message explained isobaric ladders to someone
+who had not asked about levels. It is its own refusal now, and only ERA5
+declines it -- for the reason that applies to a reanalysis.
+
+**One `--valid-time`, two meanings, now resolved.** On the HRRR route
+that flag meant the *cycle* to `tools/prepare_hrrr_wrf.py` and *model
+time zero* to `gpuwm.hrrr_hierarchy_direct`. Those are the same instant
+only at lead 0, which is the only lead the front doors used to allow, so
+nothing ever disagreed -- and the wizard printed the same string to both
+stages. Every HRRR stage now takes `--cycle` plus `--forecast-start-hour`
+and derives model time zero itself; the printed chain carries the same
+two values on every line. `--valid-time` is still accepted on each
+command with exactly the meaning it had in 1.4.0 *there*, so existing
+scripts keep working; passing both spellings at once is refused rather
+than ranked, as is adding a lead to the hierarchy's `--valid-time`, which
+would move the clock twice. `gpuwm source --source hrrr` forwards the
+cycle and the lead separately instead of handing the hierarchy a time
+that was K hours early.
+
+**A forecast lead now survives the front door on GFS too.** Four defects
+an independent tester found driving published 1.4.0:
+
+- `gpuwm go` executed five of the six keys in the `[fetch]` table it is
+  handed and dropped `cadence`. A config asking for hourly lateral
+  boundaries downloaded f000/f003 and ran with `boundary_interval_seconds
+  = 10800` -- three times coarser than the file says -- at exit 0, with
+  "forecast validity PASS" and no warning anywhere. `go` carries the
+  cadence now, and refuses a run whose receipt records a boundary
+  interval the config did not ask for, because a verdict that can only
+  be reached by reading `report.json` by hand is not a verdict.
+- `gpuwm domain --forecast-start-hour K` wrote `cadence = 3` for every
+  K, so for two leads in every three step 1 of its own printed recipe
+  exited 2 with "f004 is not on the 3 h cadence" -- and hand-editing the
+  config could not rescue it, because of the dropped key above. The
+  emitted cadence divides the lead, the printed command carries it, and
+  the wizard plans the window with the real fetch planner before writing
+  the file.
+- An hourly window crossing f120 was reported as a cycle that had not
+  finished publishing, with a remedy of passing the `--cycle` the caller
+  had already passed. GFS 0.25-degree publishes hourly only through
+  f120; that is a property of the product and is refused as one.
+- A cycle older than NOMADS' rolling window crashed with a 42-line
+  `urllib.error.HTTPError` traceback: completeness is probed against the
+  S3 archive, which holds years, while the download is the NOMADS
+  grib-filter crop, which holds days. The transport's own refusal is
+  translated into one sentence naming the age and the window.
+
+The nested HRRR route runs at a lead too. It failed at the snapshot read
+with `forecast_hour must be one of (6, 7, 8), got 0`: a prepared cache's
+forcing hours are model-relative and the decoder's published tree is
+keyed by NOAA's absolute lead, which are the same numbers only at lead
+0. The absolute leads are read from the sealed cache's own source
+identity. Measured: `gpuwm domain --source hrrr --forecast-start-hour 6`
+through preparation, hierarchy and a two-domain forecast, PASS, model
+clock at cycle + 6 h.
+
+**`gpuwm dual-run` can return 0.** Two runs of one configuration must
+write to different directories or they overwrite each other -- the
+documented procedure says so -- and the comparison was literal over
+every leaf including those absolute paths, so a clean verdict was
+unreachable for every pair whatever the physics did. The detector this
+project has instead of ECC could not report agreement. The fields that
+record *where* a run wrote are normalized to their leaf name and still
+compared; a run that wrote the wrong domain, the wrong valid time or a
+different number of frames still diverges, and every byte that carries
+physics is compared verbatim. A tester on a 3090 also failed on the
+digest of a preparation receipt, which records its own wall-clock
+timings and staging directory and so can never repeat: that comparison
+stays -- it is the pin a swapped or corrupted input trips -- and what
+changed is that both arms of the screen now share one preparation,
+which `docs/public/DETERMINISM.md` section 6 states as its own step and
+`dual-run` names when a divergence lands there.
+
+**A decode that runs out of disk says so.** When the filesystem filled
+during an HRRR decode the operator got `RuntimeError: pipeline producer
+exited 1:` with nothing after the colon: both diagnostic channels wrote
+to the filesystem that had just failed (the atomic `failure.ready`, and
+the decoder's stderr into a log inside the output tree), both ignored
+their write errors, and the consumer's unwind then removed the staging
+tree that held the last clue. The producer's output is now drained
+through a pipe and retained in the parent's memory, so a full disk cannot
+erase it; the failure names the exit code, the full argv, that retained
+output, whether `failure.ready` appeared at all, the staging tree's
+contents, and the free space on each filesystem involved -- and it is all
+captured before the unwind removes anything.
+
+**The provenance travels with the data.** v1.4.0 computed the
+initial-condition provenance of a forecast-lead run correctly and wrote
+it to `run/report.json` only. The `wrfout` -- the durable artifact, the
+one that outlives the run directory, the one `gpuwm downscale` reads
+back and the one the pictures are made from -- carried nothing: a run
+initialized from a cycle's 174 h forecast and a run initialized from
+that cycle's analysis produced the same global-attribute set, differing
+only in the model clock. Separate a chart from its run directory, which
+is exactly what publishing it does, and the provenance was gone
+silently.
+
+Every `wrfout` now states what its initial state WAS as well as when its
+clock began: `GPUWM_INITIAL_CONDITION_KIND`, `_SOURCE`, `_CYCLE`,
+`GPUWM_INITIAL_FORECAST_LEAD_HOURS`,
+`_GENERATING_PROCESS_ID`, `_MODEL_START_DATE`, `_STATEMENT` and a
+`_SCHEMA` tag. WRF's own convention is followed where it exists --
+`START_DATE`/`SIMULATION_START_DATE` keep their WRF meaning exactly
+(`share/output_wrf.F:352-376`), and the new names are SCREAMING_SNAKE
+NC_CHAR/NC_INT globals in WRF's date spelling -- and where WRF has no
+convention (it writes no initial-condition provenance at all, nor does
+metgrid) the gap is filled in the `GPUWM_` namespace and documented in
+[DATA.md](docs/public/DATA.md). An analysis run says `analysis`;
+absence of the attributes means UNKNOWN and is never readable as
+`analysis`; and a block whose kind, lead, process id and model start do
+not compose is refused at the writer instead of transcribed.
+`gpuwm downscale` copies the block forward onto the child, prints the
+parent's statement before the run when the lead is nonzero, and records
+it in the plan. Analysis-start runs are byte-for-byte unchanged: 212
+variables across 3 frames identical, same `final_state_digest`.
+
+The prepared domain-tree runner's `TITLE` said `HRRR` on every tree,
+including the GFS trees it has run since the GFS front door opened. It
+now names the run's own source.
+
+**Checkpointing and restart keep their documented promises.**
+
+- **Checkpointing is unreachable on the single-domain prepared route**
+  -- a config with no `[case_data]` table and one domain, which is what
+  the wizard's `12` ladder emits and what `gpuwm go` runs. That was
+  true before and the runner said so, but only at forecast time, and
+  `gpuwm resume` then pointed back at the `restart_interval_s` it had
+  just called inert. `gpuwm check` now names the route limitation in
+  one sentence before the run, `gpuwm resume` states the route fact and
+  the two ways to reach checkpointing, and the README feature matrix
+  and FIRST-LIGHT section 7 carry the qualifier the code enforces.
+- **The three config changes `gpuwm run --restart` documents as
+  permitted are permitted on the prepared routes too.** `run_seconds`,
+  `history_interval_s` and `restart_interval_s` used to move both the
+  prepared-cache identity and the domain-tree restart fingerprint, so
+  extending a run from its checkpoint -- FIRST-LIGHT section 7's worked
+  example, and the reason people configure checkpoints -- refused. The
+  prepared cache's non-trajectory partition now names the forecast
+  length and both spellings of the output cadence, and the tree
+  fingerprint binds the same timing-independent experiment identity
+  `gpuwm.core.model.experiment_fingerprint` binds on the native route.
+  Whether the prepared forcing REACHES the longer run is a separate
+  gate and is unchanged. Measured: a 2 h two-domain tree extended to
+  3 h from its 01:00 checkpoint, with all five overlapping
+  post-checkpoint frames byte-identical to the straight-through arm.
+- **Restart and preflight refusals are refusals, not tracebacks.** The
+  domain-tree runner exited 1 through a traceback for a restart
+  mismatch and for every preflight refusal, where its sibling guards
+  exit 2 with one sentence. Both now exit 2 with one sentence, and a
+  fingerprint mismatch NAMES the component that differs instead of
+  reporting that a hash does -- the components are stored beside the
+  digest in the checkpoint header for exactly that.
+- **A `run_seconds` off the root-domain step grid is refused at config
+  admission**, where the identical arithmetic error on
+  `history_interval_s` and `restart_interval_s` already was. It used to
+  pass `gpuwm check` with exit 0 and then die in an unhandled
+  `ValueError` at forecast, after authority, fetch, manifest and
+  prepare had all reported ok. Same check, moved to where its siblings
+  live; nothing that ran before is refused now.
+
+Four defects that all had the same shape: the run finished, said it was
+fine, and was not. Each was reproduced against the published 1.4.0 wheel
+on a 16 GB Blackwell card before it was touched, and re-measured on that
+wheel afterwards.
+
+**A config key this schema does not know now refuses, and names itself.**
+It used to warn and drop, so a misspelled `dampcoef` ran the built-in
+0.2 under your name for it, and pasting a legacy `[dynamics]` block into
+an experiment config dropped every setting in it behind one line. The
+refusal names the key and the key it thinks you meant; the known-key
+list is behind `--explain`.
+
+**Dynamics coefficients are checked against the range their scheme is
+defined on.** `epssm = 5.0` used to reach `forecast validity PASS` at
+exit 0 having moved 2 m temperature 2.2 K in two hours; `dampcoef =
+-5.0` turned the upper damping layer into an energy source; `damp_opt =
+2` -- an ordinary WRF choice this tree does not implement -- ran with the
+damping layer silently switched off. Fourteen keys now say what they
+have to be. Every value the wizard emits, every value in `configs/`, and
+every WRF Registry default still passes.
+
+**Ctrl-C has one bounded contract.** It returns 130, names the stage it
+interrupted and the pid it was waiting on, kills no child and no
+unrelated process, and leaves a partial tree with no certification
+capsule. Interrupting used to end in a `KeyboardInterrupt` traceback.
+And when a shell has started the job in the background -- where POSIX
+job control masks SIGINT, so no Ctrl-C can ever arrive -- that is now
+said in one line, with SIGTERM as the remedy, instead of being
+discovered.
+
+**A long first run no longer dies for having run.** The forecast binds
+its runtime identity at the start and re-checks it at the end; that
+identity counted `__pycache__` entries, which materialize lazily. On a
+fresh `pip install` the count went 109 -> 358 inside one process, so a
+finished forecast with its frames on disk raised `forecast runtime
+implementation changed during run`. Bytecode is derived from the source
+the identity already binds, so it is excluded. Reproduced twice on the
+1.4.0 wheel; the same run now completes.
+
+**A path that is not a config refuses in one sentence.** A missing file,
+a directory, a zero-byte `.toml`, a symlink loop and a device all used to
+be different Python tracebacks at exit 1, and a FIFO hung forever. One
+`is_file()` guard, sited before anything opens the path, exit 2.
+
 ## 1.4.0 (2026-08-01)
 
 This release removes the two things that most often stopped a run that
@@ -8,12 +647,21 @@ label reported on the receipt rather than a gate. And 33 user-facing
 refusals became one-line warnings that continue -- a hard refusal is
 now reserved for the cases where the run would be garbage.
 
-Preprocessing no longer costs more memory than the forecast it feeds.
-On a measured CONUS 12 km case the ingest peak fell from 14.93 GiB to
-4.56 GiB with byte-identical outputs, and `gpuwm check` and the
-`gpuwm domain` fit loop now price ingest as its own phase -- so a
-domain that cannot fit is refused before anything is downloaded rather
-than after.
+Preprocessing no longer grows with the length of the run. Ingest used
+to hold every forcing time resident at once; it streams now, so its
+peak is FLAT in forcing-time count where it used to climb. Measured
+against a real 1.3.1 install on identical inputs and the same idle
+card: **3.98 -> 4.00 GiB across 2 and 5 forcing times on 1.4.0, where
+1.3.1 went 4.80 -> 6.33 GiB.** That is the property that matters on a
+small card -- a 24 h window costs the same preprocessing VRAM as a 2 h
+one -- and it is what the headline should have said. On the longer
+windows the streaming change was developed against (CONUS 12 km
+414x330x49, nine 3-hourly GFS times, RTX 5090) the same change is a
+14.93 -> 4.56 GiB reduction, but ~3x is a property of a nine-time
+window, not of the release: at the 2-12 h windows a first run actually
+uses it is 1.2x-1.6x. `gpuwm check` and the `gpuwm domain` fit loop
+also price ingest as its own phase -- so a domain that cannot fit is
+refused before anything is downloaded rather than after.
 
 A run may now start at a forecast lead instead of only at a cycle's
 analysis: `start_time` may be cycle + K hours, the initial condition
@@ -234,6 +882,26 @@ anywhere near it.
   peak, with the prepared cache's 451 arrays and both wrfinput_d01 and
   wrfbdy_d01 byte-identical to the pre-change run. Applies to the GFS,
   ERA5, mapped-source and config-driven (`gpuwm run`) ingest paths.
+
+  **The 3.3x in that sentence is a property of a nine-forcing-time
+  window, not of the release.** The reduction a user sees is whatever
+  the streaming saves at *their* window length, and the honest general
+  statement is the shape rather than the ratio: 1.3.1's preprocessing
+  peak GROWS with the number of forcing times and 1.4.0's does not.
+  Measured on one card against a real 1.3.1 install, identical GRIB2
+  inputs, identical WPS_GEOG tree, identical config (242x194 @ 12 km +
+  480x384 @ 3 km):
+
+  | forcing times | window | 1.3.1 peak | 1.4.0 peak | reduction |
+  |---|---|---|---|---|
+  | 2 | 2 h | 4.80 GiB | **3.98 GiB** | 1.20x |
+  | 5 | 12 h | 6.33 GiB | **4.00 GiB** | 1.58x |
+
+  1.3.1 climbs ~0.51 GiB per extra forcing time; 1.4.0 is flat to
+  0.02 GiB. Extrapolating 1.3.1's measured slope, the ratio reaches 3x
+  at about 13 forcing times (a ~36 h window). For the 2-12 h windows a
+  first run actually uses, expect 1.2x-1.6x -- and expect it not to get
+  worse as you lengthen the run, which is the part that is new.
 - `gpuwm check` and `gpuwm domain` price **every phase**, not just the
   forecast. The report carries an INGEST line and a one-sentence
   binding-phase verdict, the wizard's fit loop sizes against the
@@ -384,6 +1052,45 @@ all still fail closed.
   fail-fast process error mode behind it for the loader dialogs a
   header cannot predict (a missing DLL). The verdict for a genuine
   bridge is unchanged.
+
+### Sending one file when something breaks
+
+`gpuwm report` collects, from a run directory, everything that explains
+a failure -- the receipts, the typed failure with its traceback, the
+supervisor's worker logs, the resolved config, this install's provenance
+through the same resolver a run receipt uses, the Python/CuPy/driver
+versions, the card and its memory, and the free space on every volume
+involved -- into one plain zip to attach to an issue. Run with no
+arguments it reads the directory it is standing in; `--dry-run` prints
+the manifest and writes nothing.
+
+It is anonymous by construction. Usernames, home-directory prefixes,
+hostnames, IP and MAC addresses, e-mail addresses, credential-shaped
+strings and every environment variable outside an allowlist are replaced
+by class placeholders in path names, in log text and inside JSON
+receipts, and the manifest counts what went by class. Coordinates,
+dates, grid shapes, physics choices and SHA-256 digests are kept: a
+chosen domain is scientific content, not identity, and a bundle whose
+digests were shredded could not be matched to a receipt.
+
+It reads only what ArWen writes. Collection is by allowlist rather
+than by sweep, a deny-set refuses dot-files, private-configuration
+directories, credential names and key-shaped suffixes before anything
+opens or lists them, paths are resolved before they are tested so a
+symlink cannot carry a target past the check, and the command refuses
+outright in a directory holding nothing this product wrote. Refusals
+are counted by class and never named, because a file name can be the
+secret. Redaction is the second line of defence, not the first.
+
+It is built for the failure it exists for. The archive is assembled in
+memory and written once, relocating to the temporary or home volume if
+the first location refuses, so a full disk costs a relocation rather
+than the bundle; a missing artifact is a named line in the manifest with
+the route that would have written it, never an exception; and when a
+volume is nearly full the manifest says so beside the note that an empty
+`pipeline producer exited 1:` message is a known erasure rather than
+additional information. Model output and input data are never copied --
+`wrfout`, restarts and NPZ caches are inventoried by name and size.
 
 ## 1.3.1 (2026-07-31)
 

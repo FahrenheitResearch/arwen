@@ -1,6 +1,6 @@
 use super::compute::{PressureFieldSet, haversine_m, pressure_level_slice_or_interp};
 use super::*;
-use crate::shared_context::DomainSpec;
+use crate::shared_context::{DomainSpec, TitleProvenance};
 use rustwx_render::PngCompressionMode;
 
 struct TestPressureFields {
@@ -875,6 +875,76 @@ fn wrf_gdex_non_d612005_products_fall_back_to_compute() {
 }
 
 #[test]
+fn locally_imported_derived_titles_name_the_grid_and_never_a_dataset_token() {
+    // Every isobaric and 2 m product renders through this lane, which is
+    // why the stray dataset token was on almost every frame.
+    let mut request = sample_local_import_derived_request();
+    request.title_provenance = TitleProvenance::LocalImport {
+        grid_label: Some("d02 750 m".to_string()),
+    };
+
+    let title = derived_title_for_request(&request, "500mb Heights / Winds");
+
+    assert_eq!(title, "500mb Heights / Winds (d02 750 m)");
+    assert!(!title.contains("d612005"), "{title}");
+}
+
+#[test]
+fn a_locally_imported_derived_batch_with_no_readable_grid_stamps_nothing() {
+    let mut request = sample_local_import_derived_request();
+    request.title_provenance = TitleProvenance::LocalImport { grid_label: None };
+
+    assert_eq!(
+        derived_title_for_request(&request, "500mb Heights / Winds"),
+        "500mb Heights / Winds"
+    );
+}
+
+#[test]
+fn a_fetched_derived_batch_keeps_its_source_catalog_dataset_token() {
+    // Negative control: the token must survive for frames that were really
+    // fetched from the catalog it names.
+    let request = sample_local_import_derived_request();
+
+    assert_eq!(
+        derived_title_for_request(&request, "500mb Heights / Winds"),
+        "500mb Heights / Winds (d612005)"
+    );
+}
+
+/// A batch shaped exactly like the shipped `gpuwm render --engine rust`
+/// one: store model `wrf`, a local provenance subtitle, and no product
+/// overrides -- which is the combination that used to reach the fallback.
+fn sample_local_import_derived_request() -> DerivedBatchRequest {
+    DerivedBatchRequest {
+        model: ModelId::WrfGdex,
+        date_yyyymmdd: "20260801".to_string(),
+        cycle_override_utc: Some(8),
+        forecast_hour: 6,
+        source: SourceId::Gdex,
+        domain: DomainSpec::new("native_grid", (-104.0, -100.0, 40.0, 44.0)),
+        out_dir: PathBuf::from("target\test-out"),
+        cache_root: PathBuf::from("target\test-cache"),
+        use_cache: false,
+        recipe_slugs: Vec::new(),
+        surface_product_override: None,
+        pressure_product_override: None,
+        source_mode: ProductSourceMode::Canonical,
+        allow_large_heavy_domain: false,
+        contour_mode: NativeContourRenderMode::Automatic,
+        native_fill_level_multiplier: 1,
+        output_width: OUTPUT_WIDTH,
+        output_height: OUTPUT_HEIGHT,
+        png_compression: PngCompressionMode::Default,
+        place_label_overlay: None,
+        output_suffix: None,
+        subtitle_left_override: None,
+        subtitle_right_override: Some("source: ArWen".to_string()),
+        title_provenance: TitleProvenance::default(),
+    }
+}
+
+#[test]
 fn cycle_pinned_fastest_native_only_run_skips_pair_resolution() {
     let request = DerivedBatchRequest {
         model: ModelId::Hrrr,
@@ -900,6 +970,7 @@ fn cycle_pinned_fastest_native_only_run_skips_pair_resolution() {
         output_suffix: None,
         subtitle_left_override: None,
         subtitle_right_override: None,
+        title_provenance: TitleProvenance::default(),
     };
     let planned = plan_native_thermo_routes_with_surface_product(
         request.model,

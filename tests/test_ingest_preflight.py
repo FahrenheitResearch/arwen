@@ -554,7 +554,8 @@ def test_table_validation_reports_checksum_and_shape(synthetic_case, tmp_path):
 
 
 def test_cli_registrar_returns_failure_without_importing_cupy(monkeypatch,
-                                                               capsys):
+                                                               capsys,
+                                                               tmp_path):
     from gpuwm.ingest import preflight
     sentinel_exp = object()
     sentinel_data = object()
@@ -569,7 +570,17 @@ def test_cli_registrar_returns_failure_without_importing_cupy(monkeypatch,
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("check")
     register_cli(subparsers)
-    args = parser.parse_args(["check", "case.toml"])
+    # The path must EXIST and must carry the shape `_check_command`
+    # routes on, even though the loader below is mocked: a4417efb
+    # refuses a path that is not a readable regular file before anything
+    # opens it, and `_check_command` returns 0 early for a legacy-shaped
+    # config or one with no [case_data] table.  The BODY is never read
+    # -- `load_experiment_case` is replaced -- so what is written here
+    # is the shape of the route, not a case fixture.
+    config = tmp_path / "case.toml"
+    config.write_text("[experiment]\n[[domain]]\n[case_data]\n",
+                      encoding="utf-8")
+    args = parser.parse_args(["check", str(config)])
     assert args.ingest_preflight_handler(args) == 1
     assert "named-defect" in capsys.readouterr().out
 

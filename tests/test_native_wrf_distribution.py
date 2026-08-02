@@ -426,6 +426,9 @@ def test_standalone_python_project_excludes_forecast_executor(tmp_path):
     assert receipt["optional_internal_imports"]
     assert all(item["optional_reason"]
                for item in receipt["optional_internal_imports"])
+    assert {
+        "gpuwm/multi_run.py", "gpuwm/stream.py",
+    } <= FORBIDDEN_WHEEL_PAYLOADS
     assert not (FORBIDDEN_WHEEL_PAYLOADS & files)
     assert not any(name.startswith("gpuwm/verify/") for name in files)
     assert "gpuwm/source_cli.py" in files
@@ -440,6 +443,8 @@ def test_standalone_python_project_excludes_forecast_executor(tmp_path):
     assert "gpuwm/offline_child.py" not in files
     assert "gpuwm/offline_child_run.py" not in files
     assert "gpuwm/offline_child_smoke.py" not in files
+    assert "gpuwm/multi_run.py" not in files
+    assert "gpuwm/stream.py" not in files
     # `gpuwm resume` locates a forecast checkpoint for the supervisor's
     # `run --restart` dispatch: nothing here imports it, no entry point
     # exposes it, and its own lookups are gpuwm.supervisor (forbidden
@@ -484,7 +489,9 @@ class RejectExternalModules(MetaPathFinder):
             "gpuwm.cli",
             "gpuwm.core.model",
             "gpuwm.core.physics",
+            "gpuwm.multi_run",
             "gpuwm.runtime",
+            "gpuwm.stream",
             "gpuwm.supervisor",
             "gpuwm.verify",
         )
@@ -555,8 +562,8 @@ gpuwm.doctor._geog_tree_checks(Path(os.environ["RW_WPS_STAGED_ROOT"])
 assert "gpuwm.geog_assets" in sys.modules
 for name in (
     "cupy", "gpuwm.cli", "gpuwm.core.model", "gpuwm.core.physics",
-    "gpuwm.domain_wizard", "gpuwm.resume",
-    "gpuwm.runtime", "gpuwm.supervisor", "gpuwm.verify",
+    "gpuwm.domain_wizard", "gpuwm.multi_run", "gpuwm.resume",
+    "gpuwm.runtime", "gpuwm.stream", "gpuwm.supervisor", "gpuwm.verify",
 ):
     assert name not in sys.modules
 """

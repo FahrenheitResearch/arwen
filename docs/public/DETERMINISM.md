@@ -89,7 +89,7 @@ what section 1 says it means.
 
 | Pin | Why it is in the set |
 |---|---|
-| Physical GPU (model, SM version, and — for a same-card screen — the same UUID) | Reduction tile sizing, subnormal handling, and math-library results are architecture properties |
+| Physical GPU (model, SM version, and — for a same-card screen — the same UUID) | Reduction tile sizing and math-library results are architecture properties (subnormal handling follows the compiled instruction, so the toolkit and CuPy rows below are what pin it) |
 | Driver version | Owns JIT/PTX translation and runtime behaviour |
 | CUDA toolkit / NVRTC used to compile kernels | Kernels are compiled at runtime; a different NVRTC is a different compiled image |
 | CuPy version, and `CUPY_ACCELERATORS` | Owns the reduction and scan implementations ArWen calls (below) |
@@ -140,8 +140,8 @@ promised. Each is a property of ArWen as built, not a hypothetical.
    `sinf`, `sqrtf`, `cbrtf`, and `tgammaf`, which carry ULP bounds
    rather than a correctly-rounded result. (Nest interpolation is the
    deliberate exception: it compiles with `-fmad=false`.)
-3. **FP32 subnormal flushing.** Subnormal handling is a route-specific
-   property of the hardware and the compile path, and the mitigations
+3. **FP32 subnormal flushing.** Subnormal handling is a property of
+   the compile route rather than of the device, and the mitigations
    ArWen applies are per-route. See
    [HARDWARE.md § FP32, subnormals, and GPU-model caveats](HARDWARE.md#fp32-subnormals-and-gpu-model-caveats)
    and the per-scheme records in [PHYSICS.md](PHYSICS.md).
@@ -254,18 +254,51 @@ compares equal.
 
 ## 6. Running the screen
 
-There is no single fail-closed `dual-run` command in this release. What
-exists is the material to do it; the composition is yours. Section 7
-records that gap honestly.
+`gpuwm dual-run` is the fail-closed comparator for this screen. It reads
+the two successful-run certification capsules, compares their complete
+leaf inventories in deterministic path order, exits nonzero on any
+difference, and can write a durable JSON report:
+
+```bash
+gpuwm dual-run \
+  --capsule-a out/run-a/certification-capsule.json \
+  --capsule-b out/run-b/certification-capsule.json \
+  --out-report out/dual-run-report.json
+```
+
+The comparison has no ignore list. The only normalization is for the
+pure output-location leaves `output.frames[i].path` and
+`receipts.<name>.path`: their final filenames are compared because two
+arms must use different output directories. Frame bytes and SHA-256,
+trajectory digests, inputs, numerical-stack pins, GPU identity, code,
+and every other capsule leaf remain literal. A missing leaf and a leaf
+whose value is `null` are different claims.
 
 The procedure:
 
 1. Pin the environment (section 3) and record the pins.
-2. Run the same configuration twice into two different output
-   directories, on the same card, with nothing else on the GPU. Use
+2. **Prepare once.** Both arms read one prepared root, one geography
+   tree, one config — exactly as they read one set of GRIB files. The
+   subject of this screen is the forecast integration, and a second
+   preparation is a second source of variation that is not it. It is
+   also not reproducible even in principle: a preparation receipt
+   records its own wall-clock timings and the staging directory the
+   decoder used, so two preparations of one configuration never produce
+   the same receipt bytes. `gpuwm dual-run` compares every input
+   artifact's bytes verbatim and always will — that comparison is what a
+   swapped or corrupted input trips — so two independently prepared arms
+   cannot agree and the screen returns nothing usable. Use
    `--directory-input-hash content` if the arms do not share one staged
    geography tree.
-3. Compare, in this order, and stop at the first difference:
+3. Run the forecast twice from that one prepared root into two different
+   `--outdir` directories, on the same card, with nothing else on the
+   GPU. Two directories are required: one would overwrite the other.
+   `gpuwm dual-run` normalizes the fields that record *where* a run
+   wrote — `output.frames[i].path`, `receipts.<name>.path` — to their
+   leaf name and still compares them, so a run that wrote the wrong
+   domain, the wrong valid time or a different number of frames still
+   diverges. Every byte that carries physics is compared verbatim.
+4. Compare, in this order, and stop at the first difference:
    - **schedule** — the two runs produced the same number of frames with
      the same names at the same model instants;
    - **environment identity** — the pin set matches, from your own
@@ -273,7 +306,13 @@ The procedure:
    - **inventory** — each pair of `wrfout` files declares the same
      variables with the same dtypes and shapes;
    - **bytes** — SHA-256 of each `wrfout` file pair.
-4. Any difference is a failure. Investigate it; do not average it away.
+
+   `gpuwm dual-run --capsule-a A/certification-capsule.json --capsule-b
+   B/certification-capsule.json` does the schedule, environment-identity
+   and bytes rows of that list from the capsules, and exits 0 only when
+   every leaf agrees. The `wrfout` variable inventory is the row it does
+   not cover.
+5. Any difference is a failure. Investigate it; do not average it away.
 
 If you use the prepared-runner tools in `tools/`, they additionally emit
 a final canonical trajectory digest per domain plus per-file SHA-256 at
@@ -288,23 +327,26 @@ state at every history instant and every checkpoint — is the real74
 verification case under `gpuwm/verify/cases/`. Read it if you are
 building your own comparator.
 
-## 7. Recorded, not shipped
+## 7. Known detector limits
 
-These are known improvements to the detector, listed so that their
-absence is not mistaken for their presence. None of them is implemented
-in this release.
+The fail-closed comparator and mechanical environment-identity refusal
+described above are shipped. The remaining limits are listed so that a
+dual-run PASS is not mistaken for evidence outside the detector's scope.
 
-- **A fail-closed comparator command.** One command that takes two run
-  directories, enforces equal environment identity, schedule, inventory,
-  scalars, state digests, and outputs, and emits an immutable verdict.
-  Today the ordering exists inside the verification case, not as an
-  ordinary run-path contract.
-- **A mechanical refusal to compare mismatched environments.** A
-  successful run now writes `certification-capsule.json`, which carries
-  every item of the pin table with an explicit resolved/unavailable
-  status alongside the per-module kernel manifest, so the inputs to such
-  a refusal exist. The refusal itself — a command that reads two
-  capsules and declines the comparison — is not in this release.
+- **A comparator that opens the output files.** `gpuwm dual-run`
+  compares the capsules, which carry each frame's SHA-256 but not its
+  variable list, dtypes or shapes. A run pair that diverged in the
+  header would be caught by the frame hash without being *named* as a
+  header difference, and a pair with no capsules cannot be compared at
+  all. The variable-level inventory ordering exists inside the
+  verification case, not as an ordinary run-path contract.
+- **A dual-run surface for the preparation stage.** Two arms of the
+  screen share one preparation (section 6), so the preparation itself is
+  not screened. Screening it would need a receipt whose bytes can repeat
+  — today a preparation receipt records its own wall-clock timings and
+  staging directory, so its digest cannot. The content digests inside it
+  (`prepared_cache.content_sha256`, the input-manifest digest) do repeat
+  and are the surface a preparation screen would be built on.
 - **Project-owned reduction order.** Replacing the dycore `sum`/`cumsum`
   and the host solar normalization with fixed-order implementations
   would move those two items out of the library-version pin.

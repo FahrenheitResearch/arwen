@@ -59,6 +59,12 @@ _TOP_LEVEL_EXCLUDES = {
     # not stage.
     "prepared_single_domain_forecast.py",
     "prepared_domain_tree_forecast.py",
+    # These product orchestrators both execute forecasts: multi-run dispatches
+    # isolated supervisor workers, while stream extends forecasts through
+    # restart checkpoints.  Neither exposes an RW-WPS preprocessing surface,
+    # and both import executor modules deliberately absent from this wheel.
+    "multi_run.py",
+    "stream.py",
     "downscale.py",
     "offline_child.py",
     "offline_child_run.py",
@@ -97,18 +103,8 @@ _ROOT_DATA = {
 }
 _TOOL_FILES = {"__init__.py", *HRRR_HELPERS}
 _FORBIDDEN_STAGED_FILES = {
-    "gpuwm/cli.py",
-    "gpuwm/domain_wizard.py",
-    "gpuwm/domain_interactive.py",
-    "gpuwm/go_cli.py",
-    "gpuwm/prepared_single_domain_forecast.py",
-    "gpuwm/prepared_domain_tree_forecast.py",
-    "gpuwm/downscale.py",
-    "gpuwm/offline_child.py",
-    "gpuwm/offline_child_run.py",
-    "gpuwm/offline_child_smoke.py",
-    "gpuwm/runtime.py",
-    "gpuwm/supervisor.py",
+    f"gpuwm/{name}" for name in _TOP_LEVEL_EXCLUDES
+} | {
     "gpuwm/core/model.py",
     "gpuwm/core/dycore.py",
     "gpuwm/core/physics.py",

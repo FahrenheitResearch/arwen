@@ -101,7 +101,9 @@ REQUIRED_WHEEL_PAYLOADS = {
 }
 FORBIDDEN_WHEEL_PAYLOADS = {
     "gpuwm/cli.py",
+    "gpuwm/multi_run.py",
     "gpuwm/runtime.py",
+    "gpuwm/stream.py",
     "gpuwm/supervisor.py",
     "gpuwm/core/model.py",
     "gpuwm/core/dycore.py",

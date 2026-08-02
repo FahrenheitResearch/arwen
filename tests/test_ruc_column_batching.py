@@ -385,16 +385,42 @@ def test_a_trailing_water_column_leaves_the_returned_ilnb_at_the_seed():
 _COST_COUNTS = (48, 96, 192, 384, 768)
 
 
-def _elapsed(work, n: int) -> float:
+def _elapsed(work, n: int, *, invocations: int = 1) -> float:
     start = time.perf_counter()
-    work(n)
+    for _ in range(invocations):
+        work(n)
     return time.perf_counter() - start
 
 
-def _ms_per_column(work, counts=_COST_COUNTS, repeats: int = 2) -> list[float]:
-    work(counts[0])
-    return [min(_elapsed(work, n) for _ in range(repeats)) / n * 1e3
-            for n in counts]
+def _ms_per_column(work, counts=_COST_COUNTS, repeats: int = 5) -> list[float]:
+    """Best-of-``repeats`` cost after equal requested column work.
+
+    Every timed sample processes ``max(counts)`` requested columns, and the
+    five default rounds rotate the counts so each occupies every timing
+    position once.  A single 48-column call is short enough for scheduler
+    noise to dominate depending on which RUC timing test ran first; equal work
+    and balanced order give every point comparable exposure while preserving
+    both scientific bounds below.
+    """
+    counts = tuple(counts)
+    sample_columns = max(counts)
+    if any(sample_columns % n for n in counts):
+        raise ValueError(
+            "RUC cost counts must divide the equal-work sample exactly")
+
+    for n in counts:
+        work(n)
+
+    samples = {n: [] for n in counts}
+    for repeat in range(repeats):
+        offset = repeat % len(counts)
+        order = counts[offset:] + counts[:offset]
+        for n in order:
+            invocations = sample_columns // n
+            processed_columns = n * invocations
+            elapsed = _elapsed(work, n, invocations=invocations)
+            samples[n].append(elapsed / processed_columns * 1e3)
+    return [min(samples[n]) for n in counts]
 
 
 def _land_surface_call(n: int) -> None:

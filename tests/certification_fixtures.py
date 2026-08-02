@@ -217,8 +217,9 @@ def complete_wrf_reference(config_sha256: str) -> dict[str, Any]:
     Synthetic digests: this fixture exists to exercise the refusal logic in
     both directions, and inventing a plausible-looking digest for the real
     reference binary would be inventing a measurement.  The committed manifest
-    under docs/public/wrf-reference/ carries what was actually measured, which
-    today is nothing, which is why certify refuses it.
+    under docs/public/wrf-reference/ carries what was actually measured on the
+    node that holds the reference bytes; this one carries obvious fakes so a
+    reader can never mistake the two.
     """
     return {
         "schema": "gpuwm.wrf-reference-manifest/v1",

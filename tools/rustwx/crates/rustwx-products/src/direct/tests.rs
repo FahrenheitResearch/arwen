@@ -1,5 +1,6 @@
 use super::planning::{build_direct_execution_plan, partition_recipes_by_selector_availability};
 use super::*;
+use crate::shared_context::TitleProvenance;
 use rustwx_core::{GridProjection, GridShape, LatLonGrid, SelectedField2D};
 
 fn sample_grid() -> LatLonGrid {
@@ -175,6 +176,7 @@ fn sample_direct_request(model: ModelId) -> DirectBatchRequest {
         output_suffix: None,
         subtitle_left_override: None,
         subtitle_right_override: None,
+        title_provenance: TitleProvenance::default(),
     }
 }
 
@@ -223,6 +225,51 @@ fn local_wrf_netcdf_titles_omit_gdex_dataset_token() {
 
     assert!(title.starts_with("Composite Reflectivity / UH"), "{title}");
     assert!(!title.contains("d612005"), "{title}");
+}
+
+#[test]
+fn locally_imported_titles_name_the_grid_and_never_a_dataset_token() {
+    // The shipped local-import path: the store model identity is still
+    // `wrf`, and the provenance subtitle says `source: ArWen`, not "local
+    // WRF NetCDF".  Before the grid identity was plumbed, that combination
+    // fell through to the GDEX fallback and stamped a dataset id this lane
+    // never read onto every frame anyone screenshots.
+    let mut request = sample_direct_request(ModelId::WrfGdex);
+    request.subtitle_right_override = Some("source: ArWen".to_string());
+    request.title_provenance = TitleProvenance::LocalImport {
+        grid_label: Some("d02 750 m".to_string()),
+    };
+
+    let title = direct_title_for_planned_product(&request, "native_grid", "MSLP / 10m Winds");
+
+    assert_eq!(title, "MSLP / 10m Winds (d02 750 m)");
+    assert!(!title.contains("d612005"), "{title}");
+}
+
+#[test]
+fn a_locally_imported_batch_with_no_readable_grid_stamps_nothing() {
+    // A wrfout with no usable GRID_ID/DX: no parenthetical at all beats a
+    // borrowed one.  This is the arm that keeps the fallback from creeping
+    // back in as "well, we had to print something".
+    let mut request = sample_direct_request(ModelId::WrfGdex);
+    request.subtitle_right_override = Some("source: ArWen".to_string());
+    request.title_provenance = TitleProvenance::LocalImport { grid_label: None };
+
+    let title = direct_title_for_planned_product(&request, "native_grid", "MSLP / 10m Winds");
+
+    assert_eq!(title, "MSLP / 10m Winds");
+}
+
+#[test]
+fn a_fetched_batch_keeps_its_source_catalog_dataset_token() {
+    // The negative control for the two above: nothing about this change may
+    // strip the dataset token from frames that really did come from the
+    // catalog, because for those it is the only thing naming the archive.
+    let request = sample_direct_request(ModelId::WrfGdex);
+
+    let title = direct_title_for_planned_product(&request, "d612005-hist2d", "Composite Reflectivity / UH");
+
+    assert_eq!(title, "Composite Reflectivity / UH (d612005)");
 }
 
 #[test]
@@ -1499,6 +1546,71 @@ fn height_winds_fill_uses_derived_wind_speed_in_knots() {
     assert!((render_field.values[1] - 19.438_445).abs() < 0.01);
     assert!((render_field.values[2] - 9.719_223).abs() < 0.01);
     assert!((render_field.values[3] - 9.719_223).abs() < 0.01);
+}
+
+/// The standalone wind chart colours its own field, in knots, from the
+/// stored 10 m speed plane -- not from a companion substitution and not
+/// left in raw m/s against a knot-calibrated ramp.
+#[test]
+fn standalone_10m_wind_fill_is_the_stored_speed_in_knots() {
+    let recipe = plot_recipe("10m_wind_speed_and_direction").unwrap();
+    let filled = sample_selected_field(
+        FieldSelector::height_agl(CanonicalField::WindSpeed, 10),
+        "m/s",
+        vec![0.0, 2.5, 10.0, 25.0],
+    );
+    let u = sample_selected_field(
+        FieldSelector::height_agl(CanonicalField::UWind, 10),
+        "m/s",
+        vec![0.0, 2.5, 10.0, 25.0],
+    );
+    let v = sample_selected_field(
+        FieldSelector::height_agl(CanonicalField::VWind, 10),
+        "m/s",
+        vec![0.0, 0.0, 0.0, 0.0],
+    );
+    let mut extracted = HashMap::new();
+    extracted.insert(filled.selector, filled.clone());
+    extracted.insert(u.selector, u);
+    extracted.insert(v.selector, v);
+
+    let render_field = render_filled_field(recipe, &filled, &extracted).unwrap();
+
+    assert_eq!(render_field.units, "kt");
+    assert!((render_field.values[0] - 0.0).abs() < 0.01);
+    assert!((render_field.values[1] - 4.859_611).abs() < 0.01);
+    assert!((render_field.values[2] - 19.438_445).abs() < 0.01);
+    assert!((render_field.values[3] - 48.596_11).abs() < 0.01);
+}
+
+/// A calm morning must still draw a map.
+///
+/// The MSLP overlay's wind ramp masks everything under 10 kt, which is
+/// right for a pressure chart and catastrophic for a chart whose only
+/// subject is the wind: on a light-wind day it renders blank.
+#[test]
+fn standalone_10m_wind_scale_masks_nothing_and_starts_at_calm() {
+    let recipe = plot_recipe("10m_wind_speed_and_direction").unwrap();
+    let scale = scale_for_recipe(
+        recipe,
+        FieldSelector::height_agl(CanonicalField::WindSpeed, 10),
+    );
+    let ColorScale::Discrete(discrete) = scale else {
+        panic!("expected a discrete wind speed scale");
+    };
+    assert_eq!(discrete.mask_below, None, "no calm cutout on a wind chart");
+    assert_eq!(discrete.levels.first().copied(), Some(0.0));
+    assert_eq!(discrete.extend, ExtendMode::Max);
+
+    // The overlay it must NOT share a ramp with.
+    let overlay = plot_recipe("mslp_10m_winds").unwrap();
+    let ColorScale::Discrete(overlay_scale) = scale_for_recipe(
+        overlay,
+        FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel),
+    ) else {
+        panic!("expected a discrete scale");
+    };
+    assert_eq!(overlay_scale.mask_below, Some(10.0));
 }
 
 #[test]

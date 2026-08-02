@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from datetime import datetime, timedelta
+import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -27,7 +31,10 @@ from gpuwm.physics_compat import (
     THOMPSON_PROFILE_ID,
     WSM6_PROFILE_ID,
 )
-from gpuwm.hrrr_forecast import hrrr_source_window
+from gpuwm.hrrr_forecast import (
+    HRRR_TIME_FORMAT, hrrr_source_window, resolve_cycle_flags)
+from gpuwm.hrrr_native_static import sha256_file
+from gpuwm.namelist_seal import namelist_extension_invariant
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -62,6 +69,227 @@ def _pipeline_workers(value: str) -> str:
             f"(the HRRR decoder accepts no more than "
             f"{MAX_PIPELINE_WORKERS})")
     return str(workers)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _canonical(value) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=True, allow_nan=False)
+
+
+def _write_json_create(path: Path, value) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8", newline="\n") as stream:
+        json.dump(value, stream, indent=2, sort_keys=True, allow_nan=False)
+        stream.write("\n")
+
+
+def _link_file_create(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, destination)
+    except OSError as exc:
+        raise RuntimeError(
+            "sealed HRRR extension requires same-filesystem hard-link reuse; "
+            "refusing a quadratic copy") from exc
+
+
+def _manifest_entries(path: Path) -> dict[str, str]:
+    """Parse one sha256sum document without forgiving unsafe inventory."""
+    entries: dict[str, str] = {}
+    for line_number, raw in enumerate(
+            Path(path).read_text(encoding="utf-8").splitlines(), 1):
+        if not raw:
+            continue
+        try:
+            digest, name = raw.split(None, 1)
+        except ValueError as exc:
+            raise ValueError(
+                f"malformed SHA256SUMS line {line_number}: {path}") from exc
+        digest = digest.lower()
+        name = name.removeprefix("*").removeprefix("./")
+        candidate = Path(name)
+        if (len(digest) != 64
+                or any(character not in "0123456789abcdef"
+                       for character in digest)
+                or candidate.is_absolute() or ".." in candidate.parts
+                or candidate.as_posix() != name or name in entries):
+            raise ValueError(
+                f"unsafe or duplicate SHA256SUMS entry on line "
+                f"{line_number}: {path}")
+        entries[name] = digest
+    if not entries:
+        raise ValueError(f"SHA256SUMS inventory is empty: {path}")
+    return entries
+
+
+def _verify_manifest_payloads(root: Path, entries: dict[str, str]) -> None:
+    for name, digest in entries.items():
+        payload = root / Path(name)
+        if not payload.is_file():
+            raise FileNotFoundError(payload)
+        if _sha256(payload) != digest:
+            raise ValueError(f"manifest payload changed: {payload}")
+
+
+def _source_manifest_extension(*, predecessor: Path, extended: Path,
+                               source_root: Path, old_hours, new_hours,
+                               cycle: datetime) -> dict[str, object]:
+    old_entries = _manifest_entries(predecessor)
+    new_entries = _manifest_entries(extended)
+    _verify_manifest_payloads(source_root, new_entries)
+    changed = sorted(
+        name for name, digest in old_entries.items()
+        if new_entries.get(name) != digest)
+    if changed:
+        raise ValueError(
+            "extended source manifest changes its sealed prefix: "
+            + ", ".join(changed))
+    added = sorted(set(new_entries) - set(old_entries))
+    lead = int(new_hours[-1])
+    expected_added = sorted((
+        f"hrrr.t{cycle:%H}z.wrfnatf{lead:02d}.grib2",
+        f"hrrr.t{cycle:%H}z.soilf{lead:02d}.grib2",
+    ))
+    if added != expected_added or list(new_hours) != list(old_hours) + [lead]:
+        raise ValueError(
+            "extended source manifest must add exactly the next atmosphere "
+            "and soil objects")
+    return {
+        "schema": "gpuwm-source-manifest-prefix-extension-v1",
+        "predecessor_sha256": _sha256(predecessor),
+        "extended_sha256": _sha256(extended),
+        "old_source_forecast_hours": list(old_hours),
+        "new_source_forecast_hours": list(new_hours),
+        "suffix_source_forecast_hours": [int(old_hours[-1]), lead],
+        "retained_entries": len(old_entries),
+        "retained_entries_sha256": hashlib.sha256(
+            _canonical(old_entries).encode("utf-8")).hexdigest(),
+        "added_entries": [
+            {"path": name, "sha256": new_entries[name]}
+            for name in added
+        ],
+    }
+
+
+_BRIDGE_HOUR = re.compile(r"^(atmosphere|soil)-f([0-9]{2})/")
+
+
+def _bridge_manifest_extension(*, predecessor: Path, suffix: Path,
+                               output: Path, old_hours, new_hours
+                               ) -> dict[str, object]:
+    """Publish a full bridge by linking the prefix and one suffix hour."""
+    predecessor_manifest = predecessor / "SHA256SUMS"
+    suffix_manifest = suffix / "SHA256SUMS"
+    old_digest = _sha256(predecessor_manifest)
+    suffix_digest = _sha256(suffix_manifest)
+    old_entries = _manifest_entries(predecessor_manifest)
+    suffix_entries = _manifest_entries(suffix_manifest)
+    _verify_manifest_payloads(predecessor, old_entries)
+    _verify_manifest_payloads(suffix, suffix_entries)
+    old_hours = list(old_hours)
+    new_hours = list(new_hours)
+    lead = int(new_hours[-1])
+    if new_hours != old_hours + [lead]:
+        raise ValueError("bridge extension is not exactly one next hour")
+    retained = {}
+    for name, digest in old_entries.items():
+        match = _BRIDGE_HOUR.match(name)
+        if match is None or int(match.group(2)) not in old_hours:
+            continue
+        retained[name] = digest
+    appended = {}
+    for name, digest in suffix_entries.items():
+        match = _BRIDGE_HOUR.match(name)
+        if match is not None and int(match.group(2)) == lead:
+            appended[name] = digest
+    atmosphere_count = sum(
+        name.startswith(f"atmosphere-f{lead:02d}/") for name in appended)
+    soil_count = sum(
+        name.startswith(f"soil-f{lead:02d}/") for name in appended)
+    if atmosphere_count != 22 or soil_count != 2:
+        raise ValueError(
+            "suffix bridge lacks the exact 22 atmosphere and 2 soil fields")
+    if set(retained) & set(appended):
+        raise ValueError("suffix bridge overwrites a retained payload")
+    output.mkdir(parents=True, exist_ok=False)
+    for name in sorted(retained):
+        _link_file_create(predecessor / name, output / name)
+    for name in sorted(appended):
+        _link_file_create(suffix / name, output / name)
+    prior_gate = dict(
+        raw.split("\t", 1)
+        for raw in (predecessor / "gate.txt").read_text(
+            encoding="utf-8").splitlines() if raw)
+    suffix_gate = dict(
+        raw.split("\t", 1)
+        for raw in (suffix / "gate.txt").read_text(
+            encoding="utf-8").splitlines() if raw)
+    if (prior_gate.get("forecast_hours")
+            != ",".join(map(str, old_hours))
+            or suffix_gate.get("forecast_hours")
+            != ",".join(map(str, [old_hours[-1], lead]))):
+        raise ValueError("bridge gates do not describe the proven windows")
+    for key in set(prior_gate) & set(suffix_gate) - {
+            "forecast_hours", "series_count"}:
+        if prior_gate[key] != suffix_gate[key]:
+            raise ValueError(f"suffix bridge changes immutable gate field {key}")
+    prior_gate["forecast_hours"] = ",".join(map(str, new_hours))
+    prior_gate["series_count"] = str(len(new_hours))
+    gate_path = output / "gate.txt"
+    gate_path.write_text(
+        "".join(f"{key}\t{value}\n" for key, value in prior_gate.items()),
+        encoding="utf-8", newline="\n")
+    authority = {
+        "schema": "gpuwm-native-hrrr-bridge-prefix-extension-v1",
+        "predecessor_sha256": old_digest,
+        "suffix_sha256": suffix_digest,
+        "old_source_forecast_hours": old_hours,
+        "new_source_forecast_hours": new_hours,
+        "suffix_source_forecast_hours": [old_hours[-1], lead],
+        "retained_entries_sha256": hashlib.sha256(
+            _canonical(retained).encode("utf-8")).hexdigest(),
+        "added_entries_sha256": hashlib.sha256(
+            _canonical(appended).encode("utf-8")).hexdigest(),
+    }
+    _write_json_create(output / "extension-authority.json", authority)
+    output_entries = {**retained, **appended}
+    output_entries["gate.txt"] = _sha256(gate_path)
+    output_entries["extension-authority.json"] = _sha256(
+        output / "extension-authority.json")
+    manifest_path = output / "SHA256SUMS"
+    with manifest_path.open("x", encoding="utf-8", newline="\n") as stream:
+        for name in sorted(output_entries):
+            stream.write(f"{output_entries[name]}  ./{name}\n")
+    merged_digest = _sha256(manifest_path)
+    _verify_manifest_payloads(output, output_entries)
+    if (_sha256(predecessor_manifest) != old_digest
+            or _sha256(suffix_manifest) != suffix_digest):
+        raise ValueError("bridge authority changed during extension")
+    return {
+        "schema": "gpuwm-bridge-manifest-prefix-extension-v1",
+        "predecessor_sha256": old_digest,
+        "suffix_sha256": suffix_digest,
+        "extended_sha256": merged_digest,
+        "old_source_forecast_hours": old_hours,
+        "new_source_forecast_hours": new_hours,
+        "suffix_source_forecast_hours": [old_hours[-1], lead],
+        "retained_entries": len(retained),
+        "retained_entries_sha256": authority[
+            "retained_entries_sha256"],
+        "added_entries": [
+            {"path": name, "sha256": appended[name]}
+            for name in sorted(appended)
+        ],
+    }
 
 _HRRR_COLD_START_CONTRACT = {
     WSM6_PROFILE_ID: ((), {}),
@@ -247,11 +475,61 @@ def _stock_wrf_export(command: list[str], env: dict[str, str], *,
     return receipt
 
 
-def _valid_time(raw: str) -> datetime:
-    value = datetime.strptime(raw, "%Y-%m-%d_%H:%M:%S")
-    if value.minute or value.second:
-        raise ValueError("valid time must be an exact hourly HRRR cycle")
-    return value
+def _namelist_start_time(path: Path) -> datetime | None:
+    """The ``&time_control`` start instant of a WRF namelist, if it has one."""
+
+    from gpuwm.namelist_import import parse_namelist
+
+    try:
+        control = parse_namelist(path).get("time_control", {})
+        parts = {
+            key: int(control[f"start_{key}"][0])
+            for key in ("year", "month", "day", "hour", "minute", "second")}
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        return None
+    try:
+        return datetime(**parts)
+    except ValueError:
+        return None
+
+
+def _namelist_start_advisory(path: Path, model_start_time: datetime,
+                             *, cycle: datetime, lead: int) -> None:
+    """Say when the namelist's own start time disagrees with model time zero.
+
+    The GPU single-domain route does not read this field -- it builds its
+    experiment from ``--cycle`` plus ``--forecast-start-hour``, and the
+    stock-WRF export below is handed the derived model start -- so a
+    disagreement here changes nothing about THIS run and is not refused.
+    It matters to the two consumers that do read it: a stock ``wrf.exe``
+    driven from the same namelist, and ``gpuwm.hrrr_hierarchy_direct``,
+    which requires the namelist start to BE model time zero and refuses
+    otherwise.  A run at lead K whose namelist still says the cycle hour
+    is inconsistent by exactly K hours for both of them, so it is said
+    out loud, once, with the value that would fix it.
+    """
+
+    observed = _namelist_start_time(path)
+    if observed is None or observed == model_start_time:
+        return
+    remedy = (f"Re-emit it with `gpuwm domain --forecast-start-hour {lead}`, "
+              "or set its start_* keys to "
+              f"{model_start_time:%Y-%m-%d %H:%M:%S}." if lead else
+              "Set its start_* keys to "
+              f"{model_start_time:%Y-%m-%d %H:%M:%S}.")
+    explain.warn(
+        f"{path.name} starts at {observed:%Y-%m-%d %H:%M:%S}, but this "
+        f"preparation's model time zero is "
+        f"{model_start_time:%Y-%m-%d %H:%M:%S} (cycle "
+        f"{cycle:%Y-%m-%d %H:%M:%S} + {lead} h).  This run is unaffected "
+        "-- the GPU route takes its clock from the cycle and the lead, "
+        "not from that field -- but a stock wrf.exe driven from this "
+        "namelist would start at the wrong hour, and "
+        "gpuwm.hrrr_hierarchy_direct requires the two to agree and will "
+        f"refuse.  {remedy}",
+        "The single-domain preparer has always ignored this field, so "
+        "nothing that ran before starts failing now; before leads were "
+        "reachable from the wizard the two instants could not disagree.")
 
 
 def _positive_finite_seconds(raw: str) -> float:
@@ -362,7 +640,7 @@ def _validated_worker_receipts(
 #: for a case that does not exist.  A prepared cache restored from an older
 #: tree does not change that: the benchmark recomputes this receipt from the
 #: restored state on every run, so the schema is always the running code's.
-HRRR_INITIALIZATION_SCHEMA = "gpuwm-hrrr-microphysics-initialization-v3"
+HRRR_INITIALIZATION_SCHEMA = "gpuwm-hrrr-microphysics-initialization-v4"
 
 #: Every hydrometeor species the native HRRR analysis decodes.  The producer
 #: must account for each of them exactly once, as either retained (mapped to
@@ -392,6 +670,7 @@ def _validated_retention_evidence(
     masses = initialization.get("state_mass_fields")
     evidence = initialization.get("retention_evidence")
     summary = initialization.get("retention_evidence_summary")
+    disposition = initialization.get("vertical_disposition")
     if (initialization.get("source_mass_fields")
             != list(_HRRR_DECODED_SOURCE_SPECIES)
             or not isinstance(correspondence, dict)
@@ -399,6 +678,7 @@ def _validated_retention_evidence(
             or not isinstance(masses, dict)
             or not isinstance(evidence, dict)
             or not isinstance(summary, dict)
+            or not isinstance(disposition, dict)
             or set(correspondence) | set(discarded)
             != set(_HRRR_DECODED_SOURCE_SPECIES)
             or set(correspondence) & set(discarded)
@@ -407,7 +687,16 @@ def _validated_retention_evidence(
         raise RuntimeError(
             "HRRR preparation omitted analyzed-hydrometeor correspondence "
             "evidence")
+    from gpuwm.ingest.real import (
+        validate_hrrr_hydrometeor_vertical_disposition,
+    )
+
     vacuous = []
+    proven = []
+    partially_excluded = []
+    excluded = []
+    source_fingerprints = {}
+    initialized_fingerprints = {}
     for source_name, state_name in sorted(correspondence.items()):
         mass = masses.get(state_name)
         species = evidence[source_name]
@@ -419,33 +708,91 @@ def _validated_retention_evidence(
                 or not _HRRR_FINGERPRINT_KEYS <= set(mass["decoded_source"])
                 or not isinstance(species, dict)
                 or species.get("state_field") != state_name
-                or species.get("strength") not in ("PROVEN", "VACUOUS")
+                or species.get("strength") not in (
+                    "PROVEN", "PARTIALLY_WRF_EXCLUDED", "WRF_EXCLUDED",
+                    "VACUOUS")
                 or int(species.get("source_nonzero_count", -1)) < 0
-                or int(species.get("state_nonzero_count", -1)) < 0):
+                or int(species.get("target_influencing_source_count", -1)) < 0
+                or int(species.get("wrf_excluded_source_count", -1)) < 0
+                or int(species.get("state_nonzero_count", -1)) < 0
+                or not isinstance(
+                    species.get("vertical_disposition_schema"), str)
+                or not isinstance(
+                    species.get("vertical_disposition_labels_sha256"), str)):
             raise RuntimeError(
                 "HRRR preparation omitted analyzed-hydrometeor "
                 "correspondence evidence")
         source_nonzero = int(species["source_nonzero_count"])
-        # The producer's strength claim has to follow from its own numbers.
-        if (species["strength"] == "PROVEN") != (source_nonzero > 0):
-            raise RuntimeError(
-                "HRRR preparation analyzed-hydrometeor retention strength "
-                f"for {source_name} contradicts its own source mass count")
         if (source_nonzero != int(mass["decoded_source"]["nonzero_count"])
                 or int(species["state_nonzero_count"])
                 != int(mass["nonzero_count"])):
             raise RuntimeError(
                 "HRRR preparation analyzed-hydrometeor retention evidence "
                 f"for {source_name} disagrees with its own fingerprints")
-        if source_nonzero > 0 and int(mass["nonzero_count"]) == 0:
+        influencing = int(species["target_influencing_source_count"])
+        wrf_excluded = int(species["wrf_excluded_source_count"])
+        if influencing + wrf_excluded != source_nonzero:
+            raise RuntimeError(
+                "HRRR preparation analyzed-hydrometeor retention strength "
+                f"for {source_name} contradicts its source partition")
+        if influencing > 0 and int(mass["nonzero_count"]) == 0:
             raise RuntimeError(
                 "HRRR preparation lost every nonzero analyzed "
                 f"{source_name} on the way into state.{state_name}")
+        if influencing == 0 and int(mass["nonzero_count"]) != 0:
+            raise RuntimeError(
+                "HRRR preparation created analyzed hydrometeor mass without "
+                f"target support for {source_name}->state.{state_name}")
+        source_fingerprints[source_name] = mass["decoded_source"]
+        initialized_fingerprints[source_name] = {
+            key: mass[key] for key in _HRRR_FINGERPRINT_KEYS}
         if species["strength"] == "VACUOUS":
             vacuous.append(source_name)
+        elif species["strength"] == "PROVEN":
+            proven.append(source_name)
+        elif species["strength"] == "PARTIALLY_WRF_EXCLUDED":
+            partially_excluded.append(source_name)
+        else:
+            excluded.append(source_name)
+
+    try:
+        validated_disposition = \
+            validate_hrrr_hydrometeor_vertical_disposition(
+                source_fingerprints, initialized_fingerprints, disposition)
+    except ValueError as exc:
+        raise RuntimeError(
+            "HRRR preparation hydrometeor vertical disposition evidence "
+            f"is invalid: {exc}") from exc
+    for source_name, species in evidence.items():
+        validated = validated_disposition["species"][source_name]
+        if (species["strength"] != validated["strength"]
+                or species["target_influencing_source_count"]
+                != validated["target_influencing_source_count"]
+                or species["wrf_excluded_source_count"]
+                != validated["wrf_excluded_source_count"]
+                or species["vertical_disposition_schema"]
+                != validated_disposition["schema"]
+                or species["vertical_disposition_labels_sha256"]
+                != validated["labels_sha256"]):
+            raise RuntimeError(
+                "HRRR preparation analyzed-hydrometeor retention evidence "
+                f"for {source_name} disagrees with its WRF support partition")
+    if partially_excluded or (excluded and proven):
+        expected_strength = "PARTIALLY_WRF_EXCLUDED"
+    elif excluded:
+        expected_strength = "WRF_EXCLUDED"
+    elif not proven:
+        expected_strength = "VACUOUS"
+    elif vacuous:
+        expected_strength = "PARTIALLY_VACUOUS"
+    else:
+        expected_strength = "PROVEN"
     if (summary.get("vacuous_species") != vacuous
-            or summary.get("strength") not in (
-                "PROVEN", "PARTIALLY_VACUOUS", "VACUOUS")):
+            or summary.get("proven_species") != proven
+            or summary.get("partially_excluded_species")
+            != partially_excluded
+            or summary.get("excluded_species") != excluded
+            or summary.get("strength") != expected_strength):
         raise RuntimeError(
             "HRRR preparation analyzed-hydrometeor retention summary "
             "disagrees with its per-species evidence")
@@ -497,6 +844,336 @@ def _validated_physics_receipt(
     return physics
 
 
+def _sealed_extension(args, *, valid_time: datetime,
+                      source_forecast_hours, output: Path,
+                      env: dict[str, str], decoder: Path,
+                      started: float,
+                      namelist_invariant: dict[str, str]) -> int:
+    """Prepare only the shared terminal/new-hour slab and append it."""
+    from gpuwm.ingest.prepared_cache import (
+        PreparedCacheReader, extend_prepared_cache,
+    )
+
+    prior = args.extend_root_preparation.resolve()
+    required_prior = {
+        "wrapper": prior / "public-wrapper-result.json",
+        "cache": prior / "native" / "prepared-cache",
+        "report": prior / "native" / "preparation-report" / "report.json",
+        "bridge": prior / "native" / "native-bridge",
+        "source_snapshot": prior / "native" / "source-manifest.snapshot",
+        "static": prior / "native-static.npz",
+        "static_receipt": prior / "native-static-receipt.json",
+        "geometry": prior / "native-geometry-receipt.json",
+    }
+    for path in required_prior.values():
+        if not path.exists():
+            raise FileNotFoundError(path)
+    prior_wrapper = json.loads(
+        required_prior["wrapper"].read_text(encoding="utf-8"))
+    old_hours = prior_wrapper.get("source_forecast_hours")
+    new_hours = list(source_forecast_hours)
+    if (prior_wrapper.get("status") != "PASS"
+            or prior_wrapper.get("prepared_cache_contract", {}).get("mode")
+            != "sealed-prefix-v1"
+            or not isinstance(old_hours, list) or len(old_hours) < 2
+            or old_hours != list(range(len(old_hours)))
+            or new_hours != old_hours + [len(old_hours)]
+            or args.forecast_start_hour != 0
+            or args.run_seconds != new_hours[-1] * 3600):
+        raise ValueError(
+            "sealed root extension must append exactly the next hour to a "
+            "zero-based sealed predecessor")
+    if (prior_wrapper.get("source_cycle") != valid_time.isoformat()
+            or prior_wrapper.get("physics", {}).get("profile")
+            != args.physics_profile
+            or float(prior_wrapper.get("history_interval_seconds", -1.0))
+            != float(args.history_interval_seconds)):
+        raise ValueError("sealed predecessor belongs to another run contract")
+    source_manifest = args.source_manifest.resolve()
+    observed_source_sha = _sha256(source_manifest)
+    if observed_source_sha != args.source_manifest_sha256.lower():
+        raise ValueError("source manifest digest differs from the request")
+    source_proof = _source_manifest_extension(
+        predecessor=required_prior["source_snapshot"],
+        extended=source_manifest, source_root=args.source_root.resolve(),
+        old_hours=old_hours, new_hours=new_hours, cycle=valid_time)
+    prior_header = json.loads(
+        (required_prior["cache"] / "header.json").read_text(
+            encoding="utf-8"))
+    hydrometeor_initialization = prior_header.get("metadata", {}).get(
+        "hydrometeor_initialization")
+    vertical_disposition = (
+        hydrometeor_initialization.get("vertical_disposition")
+        if isinstance(hydrometeor_initialization, dict) else None)
+    if (not isinstance(hydrometeor_initialization, dict)
+            or hydrometeor_initialization.get("schema")
+            != "gpuwm-real-hydrometeor-correspondence-v2"
+            or not isinstance(vertical_disposition, dict)
+            or vertical_disposition.get("schema")
+            != "gpuwm-wrf-real-hydrometeor-vertical-disposition-v1"):
+        raise ValueError(
+            "sealed predecessor lacks exhaustive WRF hydrometeor "
+            "disposition evidence; rebuild it with the current GPUWM "
+            "before extending")
+    prior_identity = prior_header.get("identity")
+    if (not isinstance(prior_identity, dict)
+            or prior_header.get("metadata", {}).get(
+                "forcing_extension_mode") != "sealed-prefix-v1"):
+        raise ValueError("predecessor prepared cache is not prefix sealed")
+    PreparedCacheReader(
+        required_prior["cache"], expected_identity=prior_identity).verify_all()
+    prior_namelist_invariant = prior_identity.get(
+        "namelist_extension_invariant")
+    if prior_namelist_invariant is None:
+        raise ValueError(
+            "sealed predecessor lacks the namelist extension invariant; "
+            "rebuild it with the current GPUWM")
+    if namelist_invariant != prior_namelist_invariant:
+        raise ValueError(
+            "native namelist changes immutable fields from the sealed "
+            "predecessor")
+    if _sha256(required_prior["static"]) != prior_identity.get(
+            "static_cache_sha256"):
+        raise ValueError("static cache differs from sealed predecessor")
+    if args.domain_spec is None:
+        raise ValueError("sealed HRRR extension requires --domain-spec")
+
+    output.mkdir(parents=True, exist_ok=False)
+    for role in ("static", "static_receipt", "geometry"):
+        _link_file_create(required_prior[role], output / required_prior[role].name)
+    native = output / "native"
+    native.mkdir()
+    snapshot = native / "source-manifest.snapshot"
+    with snapshot.open("xb") as stream:
+        stream.write(source_manifest.read_bytes())
+    if _sha256(snapshot) != observed_source_sha:
+        raise ValueError("source manifest changed while it was snapshotted")
+    extension_work = native / "extension-work"
+    extension_work.mkdir()
+    suffix_start = old_hours[-1]
+    lead = new_hours[-1]
+    series = extension_work / f"hrrr-f{suffix_start:02d}-f{lead:02d}-series.tsv"
+    rows = []
+    for hour in (suffix_start, lead):
+        atmosphere = args.source_root.resolve() / (
+            f"hrrr.t{valid_time:%H}z.wrfnatf{hour:02d}.grib2")
+        soil = args.source_root.resolve() / (
+            f"hrrr.t{valid_time:%H}z.soilf{hour:02d}.grib2")
+        for path in (atmosphere, soil):
+            if not path.is_file():
+                raise FileNotFoundError(path)
+        rows.append(f"{hour}\t{atmosphere}\t{soil}\n")
+    series.write_text("".join(rows), encoding="utf-8", newline="\n")
+    suffix_bridge = extension_work / "native-bridge"
+    suffix_cache = extension_work / "prepared-cache"
+    suffix_report_root = extension_work / "preparation-report"
+    benchmark = [
+        sys.executable, str(REPO / "tools" / "hrrr_single_domain_benchmark.py"),
+        "--bridge", str(suffix_bridge),
+        "--valid-time", args.valid_time,
+        "--forecast-start-hour", str(suffix_start),
+        "--forecast-end-hour", str(lead),
+        "--pipeline-series", str(series),
+        "--pipeline-decoder", str(decoder),
+        "--pipeline-signals", str(extension_work / "pipeline-signals"),
+        "--pipeline-workers", str(args.pipeline_workers),
+        "--source-root", str(args.source_root.resolve()),
+        "--source-manifest", str(source_manifest),
+        "--source-manifest-sha256", observed_source_sha,
+        "--static-cache", str(required_prior["static"]),
+        "--static-receipt", str(required_prior["static_receipt"]),
+        "--namelist-input", str(args.namelist_input.resolve()),
+        "--physics-profile", args.physics_profile,
+        "--prepared-cache", str(suffix_cache),
+        "--prepare-only", "--run-seconds", "3600",
+        "--history-interval-seconds", str(args.history_interval_seconds),
+        "--namelist-extension-suffix",
+        "--outdir", str(suffix_report_root),
+        "--domain-spec", str(args.domain_spec.resolve()),
+        "--preprocess-backend", args.preprocess_backend,
+    ]
+    for acknowledgement in args.ack:
+        benchmark.extend(("--ack", acknowledgement))
+    if args.prepare_workers is not None:
+        benchmark.extend(("--prepare-workers", str(args.prepare_workers)))
+    if args.preprocess_workers is not None:
+        benchmark.extend(("--preprocess-workers", str(args.preprocess_workers)))
+    if args.cpu_preprocess_bridge is not None:
+        benchmark.extend((
+            "--cpu-preprocess-bridge",
+            str(args.cpu_preprocess_bridge.resolve())))
+    prepare_started = time.perf_counter()
+    _run(benchmark, env)
+    prepare_seconds = time.perf_counter() - prepare_started
+    suffix_report_path = suffix_report_root / "report.json"
+    suffix_report = json.loads(suffix_report_path.read_text(encoding="utf-8"))
+    if (suffix_report.get("status") != "PASS"
+            or suffix_report.get("source_forecast_hours")
+            != [suffix_start, lead]
+            or suffix_report.get("model_forcing_hours") != [0, 1]):
+        raise RuntimeError("suffix preparation report has another time window")
+    preprocess_receipt, preprocess_budget, pipeline_receipt = \
+        _validated_worker_receipts(
+            suffix_report, selected_backend=args.preprocess_backend,
+            requested_preprocess_workers=args.preprocess_workers,
+            requested_pipeline_workers=args.pipeline_workers, final_hour=1)
+    physics_receipt = _validated_physics_receipt(
+        suffix_report, requested_profile=args.physics_profile)
+    merged_bridge = native / "native-bridge"
+    bridge_proof = _bridge_manifest_extension(
+        predecessor=required_prior["bridge"], suffix=suffix_bridge,
+        output=merged_bridge, old_hours=old_hours, new_hours=new_hours)
+    suffix_header = json.loads(
+        (suffix_cache / "header.json").read_text(encoding="utf-8"))
+    suffix_identity = suffix_header.get("identity")
+    if not isinstance(suffix_identity, dict):
+        raise ValueError("suffix cache has no identity")
+    new_identity = deepcopy(prior_identity)
+    new_identity["bridge_manifest_sha256"] = bridge_proof[
+        "extended_sha256"]
+    new_identity["source_manifest_sha256"] = observed_source_sha
+    new_identity["namelist_sha256"] = _sha256(
+        args.namelist_input.resolve())
+    new_identity["namelist_extension_invariant"] = namelist_invariant
+    new_identity["forcing_hours"] = list(range(lead + 1))
+    new_identity["domain_config"]["run"]["run_seconds"] = float(
+        args.run_seconds)
+    new_source_identity = deepcopy(prior_identity["source_identity"])
+    new_source_identity["source_forecast_hours"] = new_hours
+    new_source_identity["model_forcing_hours"] = list(range(lead + 1))
+    new_identity["source_identity"] = new_source_identity
+    prior_user = deepcopy(prior_header["metadata"]["user"])
+    prior_user.update({
+        "last_valid_time": (valid_time + timedelta(hours=lead)).isoformat(),
+        "source_forecast_hours": new_hours,
+        "model_forcing_hours": list(range(lead + 1)),
+        "forcing_hours": list(range(lead + 1)),
+        "source_manifest_extension": source_proof,
+        "bridge_manifest_extension": bridge_proof,
+    })
+    cache_receipt = extend_prepared_cache(
+        native / "prepared-cache", predecessor=required_prior["cache"],
+        suffix=suffix_cache, identity=new_identity, metadata=prior_user,
+        source_manifest_extension=source_proof,
+        bridge_manifest_extension=bridge_proof)
+    evidence = native / "extension-evidence"
+    evidence.mkdir()
+    _link_file_create(
+        suffix_cache / "header.json", evidence / "suffix-cache-header.json")
+    _link_file_create(
+        suffix_report_path, evidence / "suffix-preparation-report.json")
+    _write_json_create(evidence / "source-manifest-extension.json", source_proof)
+    _write_json_create(evidence / "bridge-manifest-extension.json", bridge_proof)
+    suffix_record = dict(cache_receipt["suffix"])
+    suffix_record.pop("path", None)
+    suffix_record.update({
+        "retained": False,
+        "header_snapshot": str(
+            (evidence / "suffix-cache-header.json").resolve()),
+    })
+    cache_receipt["suffix"] = suffix_record
+    _write_json_create(evidence / "prepared-cache-extension.json", cache_receipt)
+    prior_report = json.loads(
+        required_prior["report"].read_text(encoding="utf-8"))
+    combined_report = deepcopy(prior_report)
+    # A predecessor report is useful only as a base for fields whose
+    # authority genuinely did not change.  Its input block names the old
+    # bridge, old source digest, and shorter forcing window, so copying it
+    # would publish a self-contradictory PASS report.  Reconstruct every
+    # input identity from the newly published artifacts instead.
+    combined_input = {
+        "bridge": str(merged_bridge.resolve()),
+        "bridge_manifest_sha256": bridge_proof["extended_sha256"],
+        "source_manifest_sha256": observed_source_sha,
+        "source_cycle": valid_time.isoformat(),
+        "model_start_time": valid_time.isoformat(),
+        "source_forecast_hours": new_hours,
+        "model_forcing_hours": list(range(lead + 1)),
+        "forcing_hours": list(range(lead + 1)),
+        "native_static_cache": str((output / "native-static.npz").resolve()),
+        "native_static_cache_sha256": _sha256(output / "native-static.npz"),
+        "native_static_receipt": str(
+            (output / "native-static-receipt.json").resolve()),
+        "namelist_input_sha256": _sha256(args.namelist_input.resolve()),
+        "native_physics_profile": args.physics_profile,
+    }
+    combined_report.update({
+        "status": "PASS",
+        "source_cycle": valid_time.isoformat(),
+        "model_start_time": valid_time.isoformat(),
+        "source_forecast_hours": new_hours,
+        "model_forcing_hours": list(range(lead + 1)),
+        "forcing_hours": list(range(lead + 1)),
+        "source_identity": new_source_identity,
+        "input": combined_input,
+        "prepared_cache": cache_receipt,
+        "extension": {
+            "schema": "gpuwm-root-preparation-extension-v1",
+            "predecessor": str(prior),
+            "source_manifest": source_proof,
+            "bridge_manifest": bridge_proof,
+            "suffix_cache_content_sha256": suffix_header[
+                "content_sha256"],
+        },
+        "physics": suffix_report["physics"],
+        "pipeline": suffix_report.get("pipeline"),
+        "preparation": suffix_report.get("preparation"),
+    })
+    preparation_report_path = native / "preparation-report" / "report.json"
+    _write_json_create(preparation_report_path, combined_report)
+    export_command = [
+        sys.executable, "-m", "gpuwm.wrf_direct",
+        "--prepared-cache", str(native / "prepared-cache"),
+        "--static-cache", str(output / "native-static.npz"),
+        "--geometry-receipt", str(output / "native-geometry-receipt.json"),
+        "--output", str(output / "wrf-native-input"),
+        "--valid-time", valid_time.strftime("%Y-%m-%d_%H:%M:%S"),
+        "--physics-profile", args.physics_profile,
+    ]
+    for acknowledgement in args.ack:
+        export_command.extend(("--ack", acknowledgement))
+    export_started = time.perf_counter()
+    stock_wrf_export = _stock_wrf_export(
+        export_command, env, skip=args.skip_stock_wrf_export,
+        required=args.require_stock_wrf_export)
+    export_seconds = time.perf_counter() - export_started
+    # The two-frame cache was construction scratch.  Its header/report are
+    # retained above; every old payload and the new decoded hour are already
+    # hard-linked into the immutable products, so retaining the full scratch
+    # state would waste one complete root state per leg.
+    shutil.rmtree(extension_work)
+    result = {
+        "status": "PASS",
+        "stock_wrf_export": stock_wrf_export,
+        "wrf_input": (str(output / "wrf-native-input")
+                      if stock_wrf_export["status"] == "PASS" else None),
+        "source_cycle": valid_time.isoformat(),
+        "model_start_time": valid_time.isoformat(),
+        "source_forecast_hours": new_hours,
+        "model_forcing_hours": list(range(lead + 1)),
+        "forcing_hours": list(range(lead + 1)),
+        "history_interval_seconds": float(args.history_interval_seconds),
+        "static_seconds": 0.0,
+        "prepare_seconds": prepare_seconds,
+        "export_seconds": export_seconds,
+        "total_seconds": time.perf_counter() - started,
+        "preprocess_backend": preprocess_receipt,
+        "preprocess_worker_budget": preprocess_budget,
+        "pipeline_decoder_workers": pipeline_receipt,
+        "preparation_report": str(preparation_report_path),
+        "physics": physics_receipt,
+        "prepared_cache_contract": {
+            "mode": "sealed-prefix-v1",
+            "operation": "extend-one-hour",
+            "predecessor": str(prior),
+            "content_sha256": cache_receipt["content_sha256"],
+        },
+    }
+    _write_json_create(output / "public-wrapper-result.json", result)
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, required=True)
@@ -517,7 +1194,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ack", action="append", default=[],
         help="registry-owned expert physics acknowledgement id; repeatable")
-    parser.add_argument("--valid-time", required=True)
+    parser.add_argument(
+        "--cycle",
+        help="the HRRR CYCLE this window comes from, YYYY-MM-DD_HH:MM:SS "
+             "(UTC).  Model time zero is cycle + --forecast-start-hour and "
+             "is never typed")
+    parser.add_argument(
+        "--valid-time",
+        help="deprecated spelling of --cycle (it always meant the cycle "
+             "on this command); accepted unchanged for v1.4.0 scripts")
     parser.add_argument(
         "--forecast-start-hour", type=int, default=0,
         help="absolute HRRR cycle-relative source lead used for model time zero")
@@ -525,6 +1210,14 @@ def _parser() -> argparse.ArgumentParser:
         "--forecast-end-hour", type=int,
         help="inclusive absolute source lead; must cover --run-seconds exactly")
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument(
+        "--sealed-prepared-cache", action="store_true",
+        help=("opt in to a prefix-sealed root preparation for operational "
+              "one-hour extension"))
+    parser.add_argument(
+        "--extend-root-preparation", type=Path,
+        help=("sealed predecessor root; decode only its terminal overlap and "
+              "the one newly arrived hour"))
     parser.add_argument("--run-seconds", type=int, default=43_200)
     parser.add_argument(
         "--history-interval-seconds", type=_positive_finite_seconds,
@@ -562,7 +1255,13 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     explain.set_explain(explain.explain_enabled(args))
-    valid_time = _valid_time(args.valid_time)
+    cycle, _legacy = resolve_cycle_flags(
+        args.cycle, args.valid_time,
+        tool="prepare_hrrr_wrf", legacy_means="the HRRR cycle",
+        warn=explain.warn)
+    # Kept under its old name inside this function: every receipt key and
+    # every downstream flag below already spells this instant the cycle.
+    valid_time = cycle
     source_forecast_hours = hrrr_source_window(
         cycle=valid_time, start_hour=args.forecast_start_hour,
         run_seconds=args.run_seconds, end_hour=args.forecast_end_hour)
@@ -581,6 +1280,13 @@ def main(argv: list[str] | None = None) -> int:
             and args.cpu_preprocess_bridge is not None):
         raise ValueError(
             "cpu-preprocess-bridge requires preprocess-backend cpu")
+    if args.extend_root_preparation is not None \
+            and not args.sealed_prepared_cache:
+        raise ValueError(
+            "extend-root-preparation requires --sealed-prepared-cache")
+    if args.sealed_prepared_cache and args.forecast_start_hour != 0:
+        raise ValueError(
+            "sealed prepared-cache orchestration requires forecast start 0")
     # --pipeline-workers is validated by its argparse type, at parse
     # time, against the decode pipeline's own ceiling.
     if len(args.source_manifest_sha256) != 64:
@@ -592,6 +1298,10 @@ def main(argv: list[str] | None = None) -> int:
     for path in (source_root, source_manifest, namelist_input):
         if not path.exists():
             raise FileNotFoundError(path)
+    namelist_invariant = (
+        namelist_extension_invariant(
+            namelist_input, cycle=valid_time, run_seconds=args.run_seconds)
+        if args.sealed_prepared_cache else None)
     if args.geog_root is not None and args.domain_spec is None:
         raise ValueError("domain-spec is required with geog-root")
     if args.static_cache is not None and args.static_receipt is None:
@@ -599,11 +1309,21 @@ def main(argv: list[str] | None = None) -> int:
     output = args.output_root.resolve()
     if output.exists():
         raise FileExistsError(f"refusing existing output root: {output}")
-    output.mkdir(parents=True)
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO) + os.pathsep + env.get("PYTHONPATH", "")
     decoder = _decoder(env)
     started = time.perf_counter()
+    if args.sealed_prepared_cache:
+        observed_manifest = _sha256(source_manifest)
+        if observed_manifest != args.source_manifest_sha256.lower():
+            raise ValueError("source manifest digest differs from the request")
+    if args.extend_root_preparation is not None:
+        return _sealed_extension(
+            args, valid_time=valid_time,
+            source_forecast_hours=source_forecast_hours,
+            output=output, env=env, decoder=decoder, started=started,
+            namelist_invariant=namelist_invariant)
+    output.mkdir(parents=True)
 
     geometry_receipt = output / "native-geometry-receipt.json"
     if args.geog_root is not None:
@@ -621,6 +1341,20 @@ def main(argv: list[str] | None = None) -> int:
         for path in (static_cache, static_receipt):
             if not path.is_file():
                 raise FileNotFoundError(path)
+        # A prefix-sealed root is a self-contained predecessor authority.
+        # Extension cannot depend on the operator retaining two external
+        # paths which were not part of that root, and copying them once per
+        # hourly generation would defeat the hard-link-only storage contract.
+        # Publish the exact verified files under the same canonical names the
+        # geog-built route uses.  The same-filesystem refusal is intentional:
+        # every future generation links these bytes again.
+        if args.sealed_prepared_cache:
+            sealed_static = output / "native-static.npz"
+            sealed_receipt = output / "native-static-receipt.json"
+            _link_file_create(static_cache, sealed_static)
+            _link_file_create(static_receipt, sealed_receipt)
+            static_cache = sealed_static
+            static_receipt = sealed_receipt
     geometry_command = [
         sys.executable,
         str(REPO / "tools" / "write_hrrr_native_geometry_receipt.py"),
@@ -648,10 +1382,13 @@ def main(argv: list[str] | None = None) -> int:
                 raise FileNotFoundError(path)
         rows.append(f"{hour}\t{atmosphere}\t{soil}\n")
     series.write_text("".join(rows), encoding="utf-8")
+    _namelist_start_advisory(
+        namelist_input, model_start_time, cycle=valid_time,
+        lead=source_forecast_hours[0])
     benchmark = [
         sys.executable, str(REPO / "tools" / "hrrr_single_domain_benchmark.py"),
         "--bridge", str(native / "native-bridge"),
-        "--valid-time", args.valid_time,
+        "--cycle", valid_time.strftime(HRRR_TIME_FORMAT),
         "--forecast-start-hour", str(source_forecast_hours[0]),
         "--forecast-end-hour", str(source_forecast_hours[-1]),
         "--pipeline-series", str(series),
@@ -670,6 +1407,8 @@ def main(argv: list[str] | None = None) -> int:
         "--history-interval-seconds", str(args.history_interval_seconds),
         "--outdir", str(native / "preparation-report"),
     ]
+    if args.sealed_prepared_cache:
+        benchmark.append("--sealed-prepared-cache")
     for acknowledgement in args.ack:
         benchmark.extend(("--ack", acknowledgement))
     if args.prepare_workers is not None:
@@ -689,6 +1428,13 @@ def main(argv: list[str] | None = None) -> int:
     preparation_report_path = native / "preparation-report" / "report.json"
     preparation_report = json.loads(
         preparation_report_path.read_text(encoding="utf-8"))
+    if args.sealed_prepared_cache:
+        snapshot = native / "source-manifest.snapshot"
+        with snapshot.open("xb") as stream:
+            stream.write(source_manifest.read_bytes())
+        if _sha256(snapshot) != args.source_manifest_sha256.lower():
+            raise ValueError(
+                "source manifest changed during sealed preparation")
     observed_history_interval = preparation_report.get(
         "history_interval_seconds")
     if (isinstance(observed_history_interval, bool)
@@ -707,6 +1453,7 @@ def main(argv: list[str] | None = None) -> int:
     physics_receipt = _validated_physics_receipt(
         preparation_report, requested_profile=args.physics_profile)
 
+    bridge_manifest = native / "native-bridge" / "SHA256SUMS"
     export_started = time.perf_counter()
     export_command = [
         sys.executable, "-m", "gpuwm.wrf_direct",
@@ -714,7 +1461,11 @@ def main(argv: list[str] | None = None) -> int:
         "--static-cache", str(static_cache),
         "--geometry-receipt", str(geometry_receipt),
         "--output", str(output / "wrf-native-input"),
-        "--valid-time", model_start_time.strftime("%Y-%m-%d_%H:%M:%S"),
+        # gpuwm.wrf_direct's --valid-time is the valid time of the state
+        # being exported, which IS model time zero.  That flag is not part
+        # of the cycle/model-start collision: an exported wrfinput has
+        # exactly one valid time and no lead to be read against.
+        "--valid-time", model_start_time.strftime(HRRR_TIME_FORMAT),
         "--physics-profile", args.physics_profile,
     ]
     for acknowledgement in args.ack:
@@ -734,6 +1485,15 @@ def main(argv: list[str] | None = None) -> int:
                       if stock_wrf_export["status"] == "PASS" else None),
         "source_cycle": valid_time.isoformat(),
         "model_start_time": model_start_time.isoformat(),
+        # What the single-domain FORECAST stage asks for next and nothing
+        # printed.  Same rule the hierarchy follows with its own
+        # preparation_receipt_sha256: each stage publishes the digest the
+        # stage after it must bind, so the printed chain can be walked
+        # without hashing a file by hand.  Named only when the artifact is
+        # there -- a digest in a receipt is a claim that the file exists.
+        "bridge_manifest_sha256": (
+            sha256_file(bridge_manifest) if bridge_manifest.is_file()
+            else None),
         "source_forecast_hours": list(source_forecast_hours),
         "model_forcing_hours": list(model_forcing_hours),
         # Backward-compatible alias: exporter/cache forcing is model-relative.
@@ -749,6 +1509,19 @@ def main(argv: list[str] | None = None) -> int:
         "preparation_report": str(preparation_report_path),
         "physics": physics_receipt,
     }
+    if args.sealed_prepared_cache:
+        prepared_header = json.loads(
+            (native / "prepared-cache" / "header.json").read_text(
+                encoding="utf-8"))
+        if prepared_header.get("metadata", {}).get(
+                "forcing_extension_mode") != "sealed-prefix-v1":
+            raise RuntimeError(
+                "benchmark omitted requested prepared-cache prefix seal")
+        result["prepared_cache_contract"] = {
+            "mode": "sealed-prefix-v1",
+            "operation": "initial",
+            "content_sha256": prepared_header.get("content_sha256"),
+        }
     (output / "public-wrapper-result.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(result, sort_keys=True))

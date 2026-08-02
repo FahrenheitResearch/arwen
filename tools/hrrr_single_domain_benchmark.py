@@ -29,7 +29,6 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from gpuwm import __version__  # noqa: E402
 from gpuwm import runtime_manifest  # noqa: E402
 from tools.hrrr_build_native_static import (  # noqa: E402
     array_sha256,
@@ -72,7 +71,10 @@ from gpuwm.core.nssl2_contract import (  # noqa: E402
     WRF_REFERENCE_VERSION as NSSL2_WRF_REFERENCE_VERSION,
     resolve_nssl2_mode,
 )
-from gpuwm.hrrr_forecast import hrrr_source_window  # noqa: E402
+from gpuwm import explain  # noqa: E402
+from gpuwm.hrrr_forecast import (  # noqa: E402
+    hrrr_source_window, resolve_cycle_flags)
+from gpuwm.namelist_seal import namelist_extension_invariant  # noqa: E402
 from gpuwm.vertical_contract import (  # noqa: E402
     explicit_vertical_from_wrf_namelist,
 )
@@ -1416,14 +1418,19 @@ def _initial_hrrr_microphysics_receipt(
     """Gate source-to-state mass identity plus exact scheme cold start.
 
     The emitted receipt also states its own evidentiary strength.  The
-    retention gate is one-sided -- it can only fire when the decoded source
-    carried nonzero mass -- so on a cloud-free analysis it passes without
-    checking anything.  ``retention_evidence`` marks each such species
-    VACUOUS and ``retention_evidence_summary`` says so for the domain, so a
-    green receipt can never be mistaken for proof it did not earn.
+    Current producers bind every positive decoded source sample to either a
+    target-influencing WRF stencil or an explicit WRF column/support
+    exclusion.  The legacy v1 correspondence retains its original broad
+    source-nonzero/state-zero refusal so old in-process callers neither gain
+    nor lose admission through a schema reinterpretation.
     """
 
-    from gpuwm.ingest.real import array_correspondence_fingerprint
+    from gpuwm.ingest.real import (
+        HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V1,
+        HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V2,
+        array_correspondence_fingerprint,
+        validate_hrrr_hydrometeor_vertical_disposition,
+    )
 
     def scalar(value):
         if hasattr(value, "get"):
@@ -1434,8 +1441,10 @@ def _initial_hrrr_microphysics_receipt(
         raise ValueError(
             "native HRRR analyzed hydrometeor receipt lacks decoded-source "
             "to initialized-state correspondence evidence")
-    if initialization.get("schema") != (
-            "gpuwm-real-hydrometeor-correspondence-v1"):
+    correspondence_schema = initialization.get("schema")
+    if correspondence_schema not in {
+            HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V1,
+            HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V2}:
         raise ValueError(
             "native HRRR analyzed hydrometeor correspondence schema is "
             "missing or unsupported")
@@ -1465,7 +1474,8 @@ def _initial_hrrr_microphysics_receipt(
             "decoded source species")
 
     masses = {}
-    retention_evidence = {}
+    retained_source_fingerprints = {}
+    live_by_source = {}
     for source_name, name in sorted(correspondence.items()):
         if not isinstance(name, str):
             raise ValueError(
@@ -1509,6 +1519,9 @@ def _initial_hrrr_microphysics_receipt(
                 f"native HRRR decoded-source {source_name} extrema are "
                 "invalid")
         if (
+            correspondence_schema
+            == HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V1
+            and
             int(source["nonzero_count"]) > 0
             and int(live["nonzero_count"]) == 0
         ):
@@ -1525,30 +1538,69 @@ def _initial_hrrr_microphysics_receipt(
             "decoded_source_field": source_name,
             "decoded_source": source,
         }
-        # The retention gate above is `source nonzero > 0 and live nonzero
-        # == 0 -> raise`.  Against a cloud-free analysis it cannot fire, so
-        # a green receipt for that species proves nothing.  The receipt says
-        # so itself rather than leaving the reader to notice: a species whose
-        # decoded source carried no nonzero mass is recorded VACUOUS.  No
-        # threshold is invented for "negligible" beyond exact zero -- the
-        # counts and extrema that would let an acceptance harness impose one
-        # are published here instead.
+        retained_source_fingerprints[source_name] = source
+        live_by_source[source_name] = live
+
+    if (correspondence_schema
+            == HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V2):
+        disposition = initialization.get("vertical_disposition")
+        disposition_validation = \
+            validate_hrrr_hydrometeor_vertical_disposition(
+                retained_source_fingerprints, live_by_source, disposition)
+    else:
+        disposition = None
+        disposition_validation = None
+
+    retention_evidence = {}
+    for source_name, name in sorted(correspondence.items()):
+        source = retained_source_fingerprints[source_name]
+        live = live_by_source[source_name]
         source_nonzero = int(source["nonzero_count"])
         state_nonzero = int(live["nonzero_count"])
+        if disposition_validation is None:
+            strength = "PROVEN" if source_nonzero > 0 else "VACUOUS"
+            influencing_count = source_nonzero
+            excluded_count = 0
+            labels_sha256 = None
+        else:
+            disposition_species = disposition_validation["species"][source_name]
+            strength = disposition_species["strength"]
+            influencing_count = disposition_species[
+                "target_influencing_source_count"]
+            excluded_count = disposition_species["wrf_excluded_source_count"]
+            labels_sha256 = disposition_species["labels_sha256"]
+        if strength == "VACUOUS":
+            reason = (
+                "decoded source carried no nonzero mass: the retention "
+                "gate had nothing to check and this species is not proven")
+        elif strength == "WRF_EXCLUDED":
+            reason = (
+                "every positive decoded source sample was exhaustively "
+                "partitioned into an explicit WRF column/support exclusion; "
+                "no sample influenced a target state cell")
+        elif strength == "PARTIALLY_WRF_EXCLUDED":
+            reason = (
+                "target-influencing decoded source mass was retained while "
+                "the remaining positive samples were exhaustively assigned "
+                "explicit WRF column/support exclusions")
+        else:
+            reason = (
+                "every positive decoded source sample influenced a WRF "
+                "target stencil and initialized state retained nonzero mass")
         retention_evidence[source_name] = {
             "state_field": name,
-            "strength": (
-                "PROVEN" if source_nonzero > 0 else "VACUOUS"),
-            "reason": (
-                "decoded source carried nonzero mass and the initialized "
-                "state retained it"
-                if source_nonzero > 0 else
-                "decoded source carried no nonzero mass: the retention "
-                "gate had nothing to check and this species is not proven"),
+            "strength": strength,
+            "reason": reason,
             "source_nonzero_count": source_nonzero,
             "source_maximum": float(source["maximum"]),
+            "target_influencing_source_count": influencing_count,
+            "wrf_excluded_source_count": excluded_count,
             "state_nonzero_count": state_nonzero,
-            "state_maximum": maximum,
+            "state_maximum": float(live["maximum"]),
+            "vertical_disposition_schema": (
+                None if disposition_validation is None
+                else disposition_validation["schema"]),
+            "vertical_disposition_labels_sha256": labels_sha256,
         }
     for source_name, policy in sorted(discarded.items()):
         if (
@@ -1628,14 +1680,24 @@ def _initial_hrrr_microphysics_receipt(
     proven = sorted(
         name for name, evidence in retention_evidence.items()
         if evidence["strength"] == "PROVEN")
-    if not proven:
+    partially_excluded = sorted(
+        name for name, evidence in retention_evidence.items()
+        if evidence["strength"] == "PARTIALLY_WRF_EXCLUDED")
+    excluded = sorted(
+        name for name, evidence in retention_evidence.items()
+        if evidence["strength"] == "WRF_EXCLUDED")
+    if partially_excluded or (excluded and (proven or partially_excluded)):
+        overall = "PARTIALLY_WRF_EXCLUDED"
+    elif excluded:
+        overall = "WRF_EXCLUDED"
+    elif not proven:
         overall = "VACUOUS"
     elif vacuous:
         overall = "PARTIALLY_VACUOUS"
     else:
         overall = "PROVEN"
     return {
-        "schema": "gpuwm-hrrr-microphysics-initialization-v3",
+        "schema": "gpuwm-hrrr-microphysics-initialization-v4",
         "source_mass_fields": ["QC", "QR", "QI", "QS", "QG"],
         "state_mass_fields": masses,
         "source_to_state_correspondence": dict(sorted(correspondence.items())),
@@ -1643,10 +1705,20 @@ def _initial_hrrr_microphysics_receipt(
         "retention_evidence_summary": {
             "strength": overall,
             "proven_species": proven,
+            "partially_excluded_species": partially_excluded,
+            "excluded_species": excluded,
             "vacuous_species": vacuous,
             "statement": (
                 "every retained species carried nonzero decoded source mass"
                 if overall == "PROVEN" else
+                "all positive decoded source samples were exhaustively "
+                "accounted for by WRF column/support exclusions; no target "
+                "retention claim was applicable"
+                if overall == "WRF_EXCLUDED" else
+                "retention is proven for target-influencing source mass; "
+                "other positive samples were exhaustively accounted for by "
+                "WRF column/support exclusions"
+                if overall == "PARTIALLY_WRF_EXCLUDED" else
                 "no retained species carried nonzero decoded source mass: "
                 "this receipt proves nothing about analyzed-hydrometeor "
                 "retention on this domain"
@@ -1655,6 +1727,7 @@ def _initial_hrrr_microphysics_receipt(
                 f"{', '.join(proven)}; {', '.join(vacuous)} had no nonzero "
                 "decoded source mass and are not proven"),
         },
+        "vertical_disposition": disposition,
         "discarded_source_species": dict(discarded),
         "source_absent_wrf_fields": list(
             _HRRR_SOURCE_ABSENT_WRF_FIELDS[
@@ -2116,6 +2189,30 @@ def _start_seal(args, producer_report, source_hash_receipt, source_window):
     return process, receipt, time.perf_counter()
 
 
+def _validated_namelist_extension_identity(args, *, cycle: datetime):
+    """Derive the seal from actual bytes and the already validated window."""
+
+    if args.sealed_prepared_cache:
+        if args.forecast_start_hour != 0:
+            raise ValueError(
+                "sealed prepared-cache namelist must start at source hour 0")
+        horizon_seconds = float(args.run_seconds)
+    elif args.namelist_extension_suffix:
+        if args.forecast_start_hour <= 0:
+            raise ValueError(
+                "namelist extension suffix must start after source hour 0")
+        horizon_seconds = (
+            args.forecast_start_hour * 3600.0 + float(args.run_seconds))
+    else:
+        return None
+    if not horizon_seconds.is_integer():
+        raise ValueError(
+            "sealed namelist horizon must contain a whole number of seconds")
+    return namelist_extension_invariant(
+        args.namelist_input, cycle=cycle,
+        run_seconds=int(horizon_seconds))
+
+
 def run(args):
     from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
 
@@ -2156,15 +2253,19 @@ def run(args):
         build_lateral_interval_from_sides, domain_boundary_snapshot,
         extract_lateral_side)
 
-    args.outdir.mkdir(parents=True, exist_ok=False)
-    progress_path = args.outdir / "progress.json"
     target = load_hrrr_target_domain(args.domain_spec)
     source_window = required_hrrr_source_window(target)
-    requested_cycle = datetime.strptime(
-        args.valid_time, "%Y-%m-%d_%H:%M:%S")
+    requested_cycle, _legacy_cycle_flag = resolve_cycle_flags(
+        args.cycle, args.valid_time,
+        tool="hrrr_single_domain_benchmark",
+        legacy_means="the HRRR cycle", warn=explain.warn)
     source_forecast_hours = hrrr_source_window(
         cycle=requested_cycle, start_hour=args.forecast_start_hour,
         run_seconds=args.run_seconds, end_hour=args.forecast_end_hour)
+    namelist_invariant = _validated_namelist_extension_identity(
+        args, cycle=requested_cycle)
+    args.outdir.mkdir(parents=True, exist_ok=False)
+    progress_path = args.outdir / "progress.json"
     model_forcing_hours = tuple(range(len(source_forecast_hours)))
     model_start_time = requested_cycle + timedelta(
         hours=source_forecast_hours[0])
@@ -2243,7 +2344,8 @@ def run(args):
                 static_cache_sha256=static_load["cache_sha256"],
                 namelist_sha256=namelist_sha256,
                 domain_config=dc, forcing_hours=requested_hours,
-                source_identity=source_identity)
+                source_identity=source_identity,
+                namelist_extension_invariant=namelist_invariant)
 
         if args.manifest_sha256 is not None:
             prepared_cache_identity = make_prepared_cache_identity(
@@ -2789,7 +2891,7 @@ def run(args):
                     "model_forcing_hours": list(model_forcing_hours),
                     "forcing_hours": list(requested_hours),
                     "mapping_reports": _strict_json(mapping_reports),
-                })
+                }, sealed_forcing_extension=args.sealed_prepared_cache)
             timing["write_prepared_state_and_all_lbc_cache"] = (
                 time.perf_counter() - started)
 
@@ -3268,8 +3370,13 @@ def _parse_args(argv=None):
         "--ack", action="append", default=[],
         help="registry-owned expert physics acknowledgement id; repeatable")
     parser.add_argument(
-        "--valid-time", required=True,
-        help="requested exact hourly HRRR cycle (YYYY-MM-DD_HH:00:00)")
+        "--cycle",
+        help="requested exact hourly HRRR cycle (YYYY-MM-DD_HH:00:00).  "
+             "Model time zero is cycle + --forecast-start-hour")
+    parser.add_argument(
+        "--valid-time",
+        help="deprecated spelling of --cycle (it always meant the cycle "
+             "on this command); accepted unchanged for v1.4.0 scripts")
     parser.add_argument(
         "--forecast-start-hour", type=int, default=0,
         help="absolute cycle-relative HRRR lead used for model time zero")
@@ -3304,6 +3411,14 @@ def _parse_args(argv=None):
         "--prepare-only", action="store_true",
         help="prepare/restore --prepared-cache without integrating")
     parser.add_argument(
+        "--sealed-prepared-cache", action="store_true",
+        help=("opt in to a prefix-sealed prepared cache that an operational "
+              "controller may extend by one cryptographically joined hour"))
+    parser.add_argument(
+        "--namelist-extension-suffix", action="store_true",
+        help=("recompute the immutable namelist identity for a nonzero-hour "
+              "prepared-cache suffix"))
+    parser.add_argument(
         "--prepare-workers", type=int, default=2,
         help=("spawn this many independent f01+ boundary-slab initializers; "
               "f00 uses the same count for exact CPU column parallelism "
@@ -3337,6 +3452,14 @@ def _parse_args(argv=None):
             "--source-manifest-sha256 is required with --prepared-cache")
     if args.prepare_only and args.prepared_cache is None:
         parser.error("--prepare-only requires --prepared-cache")
+    if args.sealed_prepared_cache and not args.prepare_only:
+        parser.error("--sealed-prepared-cache requires --prepare-only")
+    if args.namelist_extension_suffix and not args.prepare_only:
+        parser.error("--namelist-extension-suffix requires --prepare-only")
+    if args.namelist_extension_suffix and args.sealed_prepared_cache:
+        parser.error(
+            "--namelist-extension-suffix and --sealed-prepared-cache are "
+            "mutually exclusive")
     if args.io_mode == "history" and args.history_interval_seconds is None:
         parser.error(
             "--io-mode history requires --history-interval-seconds")

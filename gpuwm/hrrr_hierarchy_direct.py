@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import json
 import os
@@ -36,6 +37,7 @@ from gpuwm.ingest.prepared_cache import (
 )
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.namelist_import import import_namelists, parse_namelist
+from gpuwm.namelist_seal import validated_namelist_extension_invariant
 from gpuwm.native_domain_artifacts import _atomic_staging_sibling
 from gpuwm.native_hierarchy import initialize_and_export_native_hierarchy
 from gpuwm.native_wrf_contract import validate_native_lambert_contracts
@@ -260,6 +262,94 @@ def _domain_layout(domain) -> dict[str, object]:
         "nested": domain.run.nested,
         "history_interval_s": domain.history_interval_s,
     }
+
+
+def namelist_start_refusal(*, requested: datetime, observed: datetime,
+                           namelist_name: str) -> str:
+    """Why the namelist's start time and model time zero must be one instant.
+
+    A pure function so the sentence a mis-copied time meets is testable
+    without a sealed root preparation on disk.
+    """
+
+    return (
+        "model time zero differs from the native namelist start: this "
+        f"stage was told {requested:%Y-%m-%d %H:%M:%S} and "
+        f"{namelist_name} starts at {observed:%Y-%m-%d %H:%M:%S}.  The two "
+        "must be the same instant.  If the root preparation began at a "
+        "forecast lead, model time zero is cycle + K, not the cycle: pass "
+        "--cycle CYCLE --forecast-start-hour K (the same pair "
+        "tools/prepare_hrrr_wrf.py was given), and emit the namelist with "
+        "`gpuwm domain --forecast-start-hour K` so its start_* keys carry "
+        "the same instant.")
+
+
+def sealed_start_refusal(*, requested: datetime, sealed_start: datetime,
+                         sealed_cycle: object) -> str:
+    """Why the sealed cache's model time zero and the request must agree.
+
+    Names the cycle and the lead the root was actually prepared at
+    whenever the cache recorded them, because that pair is the answer:
+    the same two values passed here reproduce this instant exactly.
+    """
+
+    lead = ""
+    if isinstance(sealed_cycle, str):
+        try:
+            offset = sealed_start - datetime.fromisoformat(sealed_cycle)
+        except ValueError:
+            pass
+        else:
+            lead = (f"  That root was prepared from cycle {sealed_cycle} at "
+                    f"lead f{int(offset.total_seconds() // 3600):02d}.")
+    return (
+        "root preparation model time zero differs from request: the sealed "
+        f"cache starts at {sealed_start:%Y-%m-%d %H:%M:%S}, this stage was "
+        f"told {requested:%Y-%m-%d %H:%M:%S}." + lead
+        + "  Pass --cycle CYCLE --forecast-start-hour K -- the same pair "
+        "the root preparation was given -- so both stages derive the same "
+        "model time zero.")
+
+
+def sealed_source_leads(identity: Mapping[str, object],
+                        forcing_hours) -> tuple[int, ...]:
+    """The ABSOLUTE HRRR leads the sealed root's decoded bridge tree holds.
+
+    Two hour numberings meet here and are equal only at lead 0.  The
+    prepared cache's ``forcing_hours`` are MODEL-relative -- 0, 1, 2 --
+    because that is what a forecast clock counts.  The decoder's
+    published tree is keyed by NOAA's absolute cycle-relative lead: its
+    directories are ``atmosphere-f06``/``soil-f06`` and its gate declares
+    ``(6, 7, 8)``.  Handing the model-relative 0 to that tree asked for
+    an hour it does not carry, and a root prepared at f06 refused with
+    "forecast_hour must be one of (6, 7, 8), got 0" after every check
+    above it had passed.
+
+    The sealed cache records both sequences in its own source identity,
+    so the absolute leads are read from the bundle rather than
+    reconstructed.  A cache sealed before that field existed carries only
+    the model-relative inventory, which at the lead 0 those releases
+    could express IS the absolute one -- so the fallback is exact, not a
+    guess.
+    """
+
+    model_relative = tuple(int(hour) for hour in forcing_hours)
+    source_identity = identity.get("source_identity")
+    leads = (source_identity.get("source_forecast_hours")
+             if isinstance(source_identity, Mapping) else None)
+    if leads is None:
+        return model_relative
+    absolute = tuple(int(hour) for hour in leads)
+    if len(absolute) != len(model_relative):
+        raise ValueError(
+            "root preparation source identity declares "
+            f"{len(absolute)} absolute forecast lead(s) but its cache "
+            f"carries {len(model_relative)} model forcing hour(s)")
+    if absolute != tuple(range(absolute[0], absolute[0] + len(absolute))):
+        raise ValueError(
+            "root preparation absolute forecast leads must be contiguous "
+            f"and ordered; got {list(absolute)}")
+    return absolute
 
 
 def sealed_forcing_horizon_seconds(forcing_hours) -> float:
@@ -508,6 +598,36 @@ def _validated_root_preparation_binding(
     return root_namelist_sha256, prepared_domain
 
 
+def _expected_root_cache_identity(
+        identity: dict[str, object], *, root_domain,
+        bridge_manifest_sha256: str, source_manifest_sha256: str,
+        static_cache_sha256: str, forcing_hours,
+) -> dict[str, object]:
+    """Reconstruct the exact cache identity consumed by the hierarchy."""
+
+    root_namelist_sha256, prepared_domain = \
+        _validated_root_preparation_binding(identity, root_domain)
+    invariant = identity.get("namelist_extension_invariant")
+    if invariant is not None:
+        invariant = validated_namelist_extension_invariant(
+            invariant, context="root preparation identity")
+    expected = prepared_cache_identity(
+        bridge_manifest_sha256=bridge_manifest_sha256,
+        source_manifest_sha256=source_manifest_sha256,
+        static_cache_sha256=static_cache_sha256,
+        namelist_sha256=root_namelist_sha256,
+        domain_config=root_domain,
+        forcing_hours=forcing_hours,
+        source_identity=identity["source_identity"],
+        namelist_extension_invariant=invariant,
+    )
+    # The sealed single-domain preparer stores legacy cadence shadow fields.
+    # Their effective equality was checked above; preserve the exact sealed
+    # document for cache verification.
+    expected["domain_config"] = prepared_domain
+    return expected
+
+
 def _source_identity(cpu_bridge: Path) -> dict[str, object]:
     """What this install is, resolved the one way every consumer does.
 
@@ -624,13 +744,12 @@ def prepare_hrrr_hierarchy(
     wps_runtime_contract = _require_raw_wps_contract(
         Path(wps_namelist), len(native_exp.domains))
     if native_exp.start_time != valid_time:
-        raise ValueError("valid time differs from the native namelist start")
+        raise ValueError(namelist_start_refusal(
+            requested=valid_time, observed=native_exp.start_time,
+            namelist_name=Path(namelist_input).name))
 
     static_fields, static_receipt = verify_hrrr_native_static(
         paths["static_cache"], paths["static_receipt"], target)
-    root_namelist_sha, prepared_domain = _validated_root_preparation_binding(
-        identity, native_exp.root)
-
     observed_source_sha = sha256_file(Path(source_manifest))
     if (observed_source_sha != source_manifest_sha256
             or identity.get("source_manifest_sha256") != observed_source_sha):
@@ -641,7 +760,6 @@ def prepare_hrrr_hierarchy(
     static_sha = sha256_file(paths["static_cache"])
     if identity.get("static_cache_sha256") != static_sha:
         raise ValueError("static cache differs from root preparation identity")
-    namelist_sha = sha256_file(Path(namelist_input))
     expected_forcing_hours = tuple(range(
         0, int(native_exp.run_seconds // 3600) + 1))
     if forcing_hours != expected_forcing_hours:
@@ -660,24 +778,22 @@ def prepare_hrrr_hierarchy(
             "content_sha256"):
         raise ValueError("root preparation report does not bind its cache")
     user_metadata = cache_header.get("metadata", {}).get("user", {})
-    if datetime.fromisoformat(user_metadata.get("initial_valid_time", "")) \
-            != valid_time:
-        raise ValueError("root preparation valid time differs from request")
+    sealed_start = datetime.fromisoformat(
+        user_metadata.get("initial_valid_time", ""))
+    if sealed_start != valid_time:
+        raise ValueError(sealed_start_refusal(
+            requested=valid_time, sealed_start=sealed_start,
+            sealed_cycle=user_metadata.get("source_cycle")))
 
-    expected_identity = prepared_cache_identity(
+    expected_identity = _expected_root_cache_identity(
+        identity, root_domain=native_exp.root,
         bridge_manifest_sha256=bridge_sha,
         source_manifest_sha256=observed_source_sha,
         static_cache_sha256=static_sha,
-        namelist_sha256=root_namelist_sha,
-        domain_config=native_exp.root,
         forcing_hours=forcing_hours,
-        source_identity=identity["source_identity"],
     )
-    # The sealed single-domain preparer stores legacy cadence shadow fields.
-    # They are trajectory-inactive when positive ``radt`` overrides
-    # ``radt_minutes`` and cumulus is disabled.  Their effective equality was
-    # checked above; preserve the exact sealed document for cache verification.
-    expected_identity["domain_config"] = prepared_domain
+    root_namelist_sha = expected_identity["namelist_sha256"]
+    namelist_sha = sha256_file(Path(namelist_input))
     reader = PreparedCacheReader(
         paths["prepared_cache"], expected_identity=expected_identity)
     reader.verify_all()
@@ -694,7 +810,7 @@ def prepare_hrrr_hierarchy(
 
     snapshots_started = time.perf_counter()
     snapshots = load_hrrr_native_series(
-        paths["bridge"], forcing_hours[:1],
+        paths["bridge"], sealed_source_leads(identity, forcing_hours)[:1],
         expected_manifest_sha256=bridge_sha)
     static_catalog, catalog_receipt = verified_static_catalog(
         Path(wps_namelist), Path(geog_root),
@@ -840,7 +956,22 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--geog-root", type=Path, required=True)
     parser.add_argument("--source-manifest", type=Path, required=True)
     parser.add_argument("--source-manifest-sha256", required=True)
-    parser.add_argument("--valid-time", required=True)
+    parser.add_argument(
+        "--cycle",
+        help="the HRRR CYCLE the sealed root preparation was built from, "
+             "YYYY-MM-DD_HH:MM:SS (UTC).  Model time zero -- the instant "
+             "this stage checks the namelist and the sealed cache against "
+             "-- is cycle + --forecast-start-hour")
+    parser.add_argument(
+        "--forecast-start-hour", type=int, default=0,
+        help="absolute HRRR cycle-relative lead the root preparation "
+             "began at; the same value passed to tools/prepare_hrrr_wrf.py")
+    parser.add_argument(
+        "--valid-time",
+        help="deprecated: on THIS command --valid-time meant model time "
+             "zero, not the cycle (the two differ by the lead).  Accepted "
+             "unchanged for v1.4.0 scripts; use --cycle with "
+             "--forecast-start-hour")
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--cpu-preprocess-bridge", type=Path)
@@ -849,11 +980,27 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = _parser().parse_args(argv)
-    try:
-        valid_time = datetime.strptime(args.valid_time, "%Y-%m-%d_%H:%M:%S")
-    except ValueError as exc:
+    from gpuwm import explain
+    from gpuwm.hrrr_forecast import resolve_cycle_flags
+
+    if args.forecast_start_hour < 0:
         raise ValueError(
-            "valid-time must use YYYY-MM-DD_HH:MM:SS") from exc
+            "--forecast-start-hour must be a nonnegative forecast lead")
+    if args.valid_time is not None and args.forecast_start_hour:
+        raise ValueError(
+            "--forecast-start-hour needs --cycle: on this command "
+            "--valid-time is model time zero already, so adding a lead to "
+            "it would move the clock twice.  Pass --cycle CYCLE "
+            "--forecast-start-hour K instead.")
+    # `--valid-time` on this stage always meant model time zero; `--cycle`
+    # means the cycle and has the lead added to it.  Both land on the same
+    # instant, which is the only thing the checks below compare.
+    instant, from_valid_time = resolve_cycle_flags(
+        args.cycle, args.valid_time, tool="hrrr_hierarchy_direct",
+        legacy_means="model time zero (cycle + lead)", warn=explain.warn)
+    valid_time = (
+        instant if from_valid_time
+        else instant + timedelta(hours=args.forecast_start_hour))
     payload = prepare_hrrr_hierarchy(
         root_preparation=args.root_preparation,
         root_domain_spec=args.root_domain_spec,

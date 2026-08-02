@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from gpuwm.certify.band import (BAND_SCHEMA_ID, BAND_SCHEMA_PATH,
                                 extract_anchor_table, load_band,
                                 load_margin_rule, place_value, validate_band)
 from gpuwm.certify.verdict import certify
+from gpuwm.certify.wrf_reference import MAPPING_HASH_KEYS
 
 REPO_ROOT = fixtures.REPO_ROOT
 ANCHOR_DOCUMENT = REPO_ROOT / "docs" / "public" / "VERIFICATION.md"
@@ -306,8 +308,8 @@ _FRAME_FILENAME_RE = re.compile(
 
 
 def _is_measurement_provenance(value: str) -> bool:
-    """True when a JSON *value* records which frame, or which instant, was
-    scored -- rather than naming a case.
+    """True when a string records which frame, or which instant, was scored --
+    rather than naming a case.
 
     A receipt exists to say what it measured.  The valid time of the frames
     it scored, and the names of those frames, are that provenance: the
@@ -319,10 +321,46 @@ def _is_measurement_provenance(value: str) -> bool:
     grammars are anchored and closed, so a receipt written next year passes
     with no edit here, and nothing that is not a timestamp or a frame name
     can reach the exemption by containing one -- ``the 1974-04-03 case`` and
-    ``configs/real74_case.toml`` are neither shape and stay scanned.
+    ``configs/<case>_case.toml`` are neither shape and stay scanned.
     """
     return bool(_WRF_TIMESTAMP_RE.match(value)
                 or _FRAME_FILENAME_RE.match(value))
+
+
+#: Manifest fields whose mapping *keys* are an inventory of measured things
+#: rather than vocabulary.  ``gpuwm.wrf-reference-manifest/v1`` declares both
+#: as "name -> SHA-256", so a key here is the name of a frame or a namelist
+#: the reference run actually consumed.  Imported rather than restated, so a
+#: field added to the contract cannot quietly escape this list.
+_INVENTORY_MAPPING_KEYS = frozenset(MAPPING_HASH_KEYS)
+
+
+def _digest_pinned_file_names(roots: Sequence[Path]) -> set[str]:
+    """File names whose exact bytes a committed manifest pins by digest.
+
+    A manifest may commit the artifacts it measured -- the build recipe, the
+    namelists -- verbatim beside itself, and their digests are published in
+    the manifest.  Such a file is a *measurement*, not tree vocabulary: its
+    bytes are fixed by what ran, and any edit to it breaks the digest that
+    pins it.  It therefore cannot be a hiding place for a case name, and the
+    scan reads the manifest that pins it instead of the artifact itself.
+
+    Only files a manifest actually names are exempt.  Dropping an unpinned
+    file into the directory buys nothing.
+    """
+    pinned: set[str] = set()
+    for root in roots:
+        for manifest_path in sorted(root.glob("*.manifest.json")):
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            recipe = manifest.get("build_recipe")
+            if isinstance(recipe, str):
+                pinned.add(Path(recipe).name)
+            namelists = manifest.get("namelists")
+            if isinstance(namelists, dict):
+                pinned.update(Path(value).name
+                              for value in namelists.values()
+                              if isinstance(value, str))
+    return pinned
 
 
 def _scannable_text(path: Path) -> list[str]:
@@ -337,22 +375,31 @@ def _scannable_text(path: Path) -> list[str]:
     Parsing also gives the scan a *position*, and position is what separates
     the two ways a campaign date can appear in a certification receipt.  In a
     value it is measurement provenance and is exempt when it matches the
-    timestamp or frame-name grammar above.  In a key it is not: a key is a
-    metric name, a group name, a schema field -- generic vocabulary -- and a
-    campaign spelling there means the measurement itself was written for one
-    case, which is the specialization this zone watches for.  Keys are
-    therefore always scanned, including a key spelled exactly like a frame
-    name.
+    timestamp or frame-name grammar above.  In a key it is normally not: a key
+    is a metric name, a group name, a schema field -- generic vocabulary -- and
+    a campaign spelling there means the measurement itself was written for one
+    case, which is the specialization this zone watches for.
+
+    The one exception is a key that is not vocabulary at all.  Two manifest
+    fields are declared by ``gpuwm.wrf-reference-manifest/v1`` as inventories,
+    "name -> SHA-256": their keys are the frames and namelists the reference
+    run consumed, and a frame's name is the same measurement in a key position
+    that it is in a value position.  Inside those two mappings, and only
+    there, a key that matches the closed grammar above is read as provenance.
+    Every other key in the document, including a key spelled like a frame name
+    somewhere else, is still scanned -- the exemption is a property of the
+    declared contract, not of the spelling.
     """
     text = path.read_text(encoding="utf-8", errors="replace")
     if path.suffix == ".json":
         chunks: list[str] = []
 
-        def walk(node):
+        def walk(node, inventory: bool = False):
             if isinstance(node, dict):
                 for key, value in node.items():
-                    chunks.append(str(key))
-                    walk(value)
+                    if not (inventory and _is_measurement_provenance(str(key))):
+                        chunks.append(str(key))
+                    walk(value, inventory=key in _INVENTORY_MAPPING_KEYS)
             elif isinstance(node, list):
                 for item in node:
                     walk(item)
@@ -382,11 +429,21 @@ def test_no_case_token_reaches_the_certification_data(token):
     roots = [REPO_ROOT / "gpuwm" / "certify",
              REPO_ROOT / "gpuwm" / "data" / "certification",
              REPO_ROOT / "docs" / "public" / "wrf-reference"]
+    pinned = _digest_pinned_file_names(roots)
     offenders = []
     scanned = 0
+    skipped = 0
     for root in roots:
         for path in sorted(root.rglob("*")):
             if not path.is_file() or path.suffix == ".pyc":
+                continue
+            # A verbatim copy of an artifact a manifest pins by digest is a
+            # measurement, not vocabulary: a WRF namelist for a 1974 case says
+            # start_year = 1974 because that is what ran.  Editing it to hide
+            # something breaks the digest that pins it, so the manifest is
+            # what the scan reads.
+            if path.name in pinned:
+                skipped += 1
                 continue
             scanned += 1
             for chunk in _scannable_text(path):
@@ -508,3 +565,80 @@ def test_a_case_named_key_in_a_receipt_is_still_a_violation(tmp_path):
     }), encoding="utf-8")
     assert [c for c in _scannable_text(foreign_stream)
             if "real74" in c.lower()] == ["real74_d01_1974-04-03_12_00_00"]
+
+
+def test_an_inventory_mapping_may_be_keyed_by_what_it_measured(tmp_path):
+    """Control, passing side: a key that is an inventory entry, not vocabulary.
+
+    ``gpuwm.wrf-reference-manifest/v1`` declares ``reference_wrfout_sha256``
+    and ``namelist_sha256`` as "name -> SHA-256".  A key there is the name of
+    a frame the comparison scored, which is the same measurement in a key
+    position that it is in a value position.  Without this the contract is
+    unsatisfiable: the schema requires the frame names, and the scan would
+    forbid them.
+    """
+    manifest = tmp_path / "inventory.json"
+    manifest.write_text(json.dumps({
+        "schema": "gpuwm.wrf-reference-manifest/v1",
+        "reference_wrfout_sha256": {
+            "wrfout_d01_1974-04-03_12_00_00": "0" * 64,
+            "wrfout_d04_1999-05-03_18_30_00": "1" * 64,
+        },
+        "namelist_sha256": {"namelist.wps": "2" * 64},
+    }), encoding="utf-8")
+    chunks = _scannable_text(manifest)
+    for token in ["real74", "1974", "ohio", "hrrr", "1999"]:
+        assert not [c for c in chunks if token in c.lower()], (token, chunks)
+    # Narrow: the field names themselves are still scanned vocabulary.
+    assert "reference_wrfout_sha256" in chunks
+    assert "namelist.wps" in chunks
+
+
+def test_a_case_name_in_an_inventory_key_is_still_a_violation(tmp_path):
+    """Watched firing: the exemption reads the grammar, not the position.
+
+    A key inside a declared inventory that is not a frame name is not laundered
+    by its neighbours, and the same frame-shaped key under an undeclared field
+    is still scanned -- so the exemption cannot be reached by inventing a
+    mapping and calling it one.
+    """
+    smuggled = tmp_path / "smuggled.json"
+    smuggled.write_text(json.dumps({
+        "reference_wrfout_sha256": {
+            "wrfout_d01_1974-04-03_12_00_00": "0" * 64,
+            "real74_extra_frame": "1" * 64,
+            "ohio_d01_1974-04-03_12_00_00": "2" * 64,
+        },
+    }), encoding="utf-8")
+    chunks = _scannable_text(smuggled)
+    assert [c for c in chunks if "real74" in c.lower()] == [
+        "real74_extra_frame"]
+    assert [c for c in chunks if "ohio" in c.lower()] == [
+        "ohio_d01_1974-04-03_12_00_00"]
+
+    undeclared = tmp_path / "undeclared.json"
+    undeclared.write_text(json.dumps({
+        "my_own_wrfout_sha256": {"wrfout_d01_1974-04-03_12_00_00": "0" * 64},
+    }), encoding="utf-8")
+    assert [c for c in _scannable_text(undeclared) if "1974" in c] == [
+        "wrfout_d01_1974-04-03_12_00_00"]
+
+
+def test_only_a_digest_pinned_artifact_is_read_through_its_manifest(tmp_path):
+    """The verbatim-artifact exemption is earned by being pinned, not by being
+    in the directory.
+
+    A namelist a manifest pins is a measurement: its bytes are what ran, an
+    edit breaks the digest, and a WRF namelist for a 1974 case says
+    ``start_year = 1974`` because that is the case.  A file no manifest names
+    has no such protection and is scanned like anything else.
+    """
+    (tmp_path / "abc.manifest.json").write_text(json.dumps({
+        "schema": "gpuwm.wrf-reference-manifest/v1",
+        "build_recipe": "abc.build-recipe.md",
+        "namelists": {"namelist.input": "abc.namelist.input"},
+    }), encoding="utf-8")
+    pinned = _digest_pinned_file_names([tmp_path])
+    assert pinned == {"abc.build-recipe.md", "abc.namelist.input"}
+    assert "abc.namelist.wps" not in pinned
+    assert "unpinned.namelist.input" not in pinned

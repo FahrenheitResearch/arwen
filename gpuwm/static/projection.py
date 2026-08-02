@@ -36,6 +36,7 @@ geo_em-arbitrated conventions.
 from __future__ import annotations
 
 from fractions import Fraction
+import math
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -460,6 +461,16 @@ def _parse_wps_namelist(path) -> dict:
     return values
 
 
+def _finite_spacing(value, key: str, path) -> float:
+    """One namelist grid spacing, refused as a sentence if it is not one."""
+    spacing = float(value)
+    if not math.isfinite(spacing) or spacing <= 0.0:
+        raise ValueError(
+            f"{path}: &geogrid/{key} = {value!r} must be a positive, "
+            f"finite grid spacing in metres.")
+    return spacing
+
+
 def grids_from_wps_namelist(path) -> list[ProjectedGrid]:
     """Build the projected grid for every domain of a WPS namelist.
 
@@ -475,6 +486,35 @@ def grids_from_wps_namelist(path) -> list[ProjectedGrid]:
     cls = projection_class(proj)
     max_dom = int(v.get("max_dom", [1])[0])
     e_we, e_sn = v["e_we"], v["e_sn"]
+    # &share/max_dom and the &geogrid per-domain arrays are declared
+    # independently in a namelist.wps, so nothing but this check stops
+    # them disagreeing.  Without it the loop below indexed past the end
+    # of whichever array was short and the reader got an IndexError
+    # traceback -- and, because gfs_direct.main catches only
+    # (ValueError, OSError), it escaped the door that turns refusals
+    # into sentences.  Name every short key at once: fixing them one
+    # traceback per edit is the slowest possible way to learn the shape.
+    # Only the arrays the loop below will actually index.  A
+    # single-domain namelist legitimately omits the nest-only keys --
+    # `for n in range(1, max_dom)` never runs -- so requiring them at
+    # max_dom = 1 would refuse valid files, which is how the first
+    # version of this guard broke four contract fixtures.
+    _required = [("e_we", e_we), ("e_sn", e_sn)]
+    if max_dom > 1:
+        _required += [(name, v.get(name, []))
+                      for name in ("parent_id", "parent_grid_ratio",
+                                   "i_parent_start", "j_parent_start")]
+    _short = {name: len(values) for name, values in _required
+              if len(values) < max_dom}
+    if _short:
+        listed = ", ".join(f"{name} has {count}"
+                           for name, count in sorted(_short.items()))
+        raise ValueError(
+            f"{path}: &share/max_dom = {max_dom} declares {max_dom} "
+            f"domains, but {listed} -- every &geogrid per-domain array "
+            f"must carry one entry per domain.  Either give the missing "
+            f"entries, or set max_dom to the number of domains you "
+            f"actually described.")
     truelat1 = float(v["truelat1"][0])
     if proj == "lambert":
         truelat2 = float(v["truelat2"][0])
@@ -482,8 +522,12 @@ def grids_from_wps_namelist(path) -> list[ProjectedGrid]:
     else:
         truelat2 = float(v.get("truelat2", [truelat1])[0])
         stand_lon = float(v.get("stand_lon", v["ref_lon"])[0])
-    root_dx = Fraction(float(v["dx"][0]))
-    root_dy = Fraction(float(v["dy"][0]))
+    # Same guard as the experiment loader's dx: Fraction(inf) raises
+    # OverflowError where Fraction(nan) raises ValueError, so without a
+    # finiteness test one spelling of "not a number" is a sentence and
+    # the other is a traceback.
+    root_dx = Fraction(_finite_spacing(v["dx"][0], "dx", path))
+    root_dy = Fraction(_finite_spacing(v["dy"][0], "dy", path))
     spacing_by_grid_id = {1: (root_dx, root_dy)}
     grids: list[ProjectedGrid] = [
         cls(ref_lat=float(v["ref_lat"][0]),

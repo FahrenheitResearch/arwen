@@ -34,14 +34,30 @@ and change only when a table does.  The prebuilt Rust bundles
 their pins are generated during the cut and must land in the package
 *before* the wheel is built.
 
-`.github/workflows/publish.yml` does this on a published release, in
-this order; the steps are listed here because a cut driven by hand has
-to reproduce it, not because it is manual:
+`.github/workflows/publish.yml` does this from one manual dispatch on the
+exact tag while its GitHub release is still a draft. The final privilege-
+separated job publishes the draft only after the immutable native assets and
+the prevalidated PyPI distributions land. Making a release public is not a
+second workflow trigger. The steps are listed here because a cut driven by
+hand has to reproduce them, not because their proofs are optional:
 
 - [ ] The tag and `[project].version` in `pyproject.toml` agree
       (`vX.Y.Z` and `X.Y.Z`).  The workflow refuses the cut otherwise: a
       bundle named for one while the wheel says the other is a download
-      nobody can find.
+      nobody can find. This public workflow accepts stable numeric `X.Y.Z`
+      versions only; prerelease cuts require a separately defined contract.
+- [ ] The selected workflow ref and required `release_tag` input name that
+      same tag, and a non-prerelease draft GitHub release already exists for
+      it. Stable PyPI versions are never promoted as GitHub prereleases.
+- [ ] GitHub **release immutability** is enabled in repository or organization
+      settings **before the draft release is created** (the setting applies
+      only to future releases), and the required confirmation input is true.
+      The final job refuses success unless GitHub reports the published
+      release as immutable, which locks its tag and attached assets.
+- [ ] The committed tag has `release: null` and `platforms: {}` in
+      `gpuwm/data/bridges/bridge-pins.json`. Official wheel/sdist pins are
+      generated later from the exact bundles; GitHub's automatic source
+      archives stay honestly unpinned and require a source build.
 - [ ] `cargo build --release --locked` in `tools/grib1_bridge` and in
       `tools/rustwx`, once per published platform
       (`gpuwm.bridge_assets.SUPPORTED_PLATFORMS`).
@@ -50,6 +66,10 @@ to reproduce it, not because it is manual:
       dist-bridges` on each of those platforms.
 - [ ] Upload every bundle to the release **before** the wheel is
       published, so no published wheel names an asset that is not there.
+      Every job must preserve the captured draft release ID as well as its
+      tag. A retry deletes only an interrupted GitHub `starter` asset, accepts
+      only an uploaded asset whose size and SHA-256 match, and refuses changed
+      or unexpected bytes.
 - [ ] `python tools/build_bridge_bundle.py pin --release <tag> --bundle
       <each bundle> --out gpuwm/data/bridges/bridge-pins.json
       --manifest dist-bridges/bridge-bundle-manifest.json`, then upload
@@ -75,9 +95,20 @@ to reproduce it, not because it is manual:
       `gpuwm.__version__` is the installed distribution's metadata, and a
       source tree beside a stale `site-packages` reports the stale
       number.
+- [ ] Reconcile the target PyPI version before upload. Exact existing files
+      are retained, only missing wheel/sdist files are staged for Trusted
+      Publishing, and any filename/size/SHA-256 mismatch refuses. Prove the
+      final PyPI version contains exactly those two artifacts before making
+      the GitHub draft public; this makes a one-file partial upload retryable.
 - [ ] After the release is public, one live smoke against the published
       URL: `GPUWM_NETWORK_TESTS=1 python -m pytest -q -m network
       tests/test_bridge_fetch.py`.
+- [ ] Confirm the workflow's final job, rather than an operator racing it,
+      changed the proven draft to a public release. A lost PATCH response is
+      retry-safe by rerunning the failed final job in the same workflow run:
+      the same already-public release ID/tag is success, and a post-PATCH read
+      proves `draft=false` and `immutable=true`. Do not dispatch a new full run
+      after publication; its draft-authority gate correctly refuses.
 
 A cut that skips the pin step ships a wheel whose pins declare no
 platform.  That is not a corrupt release -- `gpuwm fetch-bridges` says

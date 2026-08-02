@@ -210,6 +210,41 @@ command-line bins and their 9.8 MB test fixtures.
     stopped working fails the test.  Neither asserts which copy was
     resolved, which is the point.
 
+18. Locally imported runs name their own grid in the plot headline, and
+    never a source catalog's dataset id.  The source workspace composed
+    a `wrf`-identity title by appending the GDEX dataset token
+    (`MSLP / 10m Winds (d612005)`), falling back to that literal when no
+    product override named one.  It guarded against the fallback by
+    sniffing `subtitle_right_override` for the phrase "local WRF
+    NetCDF" -- which this lane's subtitle never says, because
+    `rw_wrfbatch --source-label` replaces that line with the local
+    model's own name.  So every isobaric and 2 m frame ArWen rendered
+    carried the id of an NCAR archive it had never read.  The guard is
+    now an explicit declaration rather than a string sniff:
+    `rustwx_products::shared_context::TitleProvenance` rides on the
+    direct, derived and windowed batch requests, defaults to
+    `SourceCatalog` (fetched batches are byte-unchanged), and
+    `rw_wrfbatch` declares `LocalImport { grid_label }` from the same
+    `GRID_ID`/`DX` reading that already names the output files -- so the
+    headline reads `MSLP / 10m Winds (d02 750 m)`.  When the file
+    declares no usable grid, the headline carries no parenthetical at
+    all: no parenthetical is honest where a borrowed one is not.
+
+19. A terrain product (`terrain_height`, `RenderStyle::WeatherTerrain`).
+    The catalog had no orography frame, so nothing in it showed a
+    viewer the ground the forecast was standing on.  Both import lanes
+    already published the plane (`HGT` -> `orography`, surface
+    geopotential height), so this is a recipe, a hypsometric fill scale
+    and three guard corrections: `should_render_overlay_only` and
+    `viewer::operational_style_for_store_variable` excluded the whole
+    `GeopotentialHeight` canonical field because the ISOBARIC member is
+    contour-analysis-only, and the surface member -- a different
+    physical quantity -- was caught by the same net.  Because the field
+    is a property of the grid rather than of the forecast time,
+    `batch_render` renders it on the first selected hour and announces
+    the skip for the rest (`direct_recipe_is_time_invariant`); a stated
+    single render and a silent drop must not look alike.
+
 8. `crates/rw-nexrad` is new (not in the source workspace): the
    NEXRAD Level-II acquisition and decode front door.  `vendor/wx-radar`
    arrived with a Level-II *parser* and no downloader; the anonymous-S3

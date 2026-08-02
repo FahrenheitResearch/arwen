@@ -1465,9 +1465,14 @@ def claim_output_directory(
     """
 
     path = Path(path)
-    resolved = path.resolve()
+    # resolve() walks symlinks and raises OSError on a loop (Errno 40 /
+    # "Symlink loop from ...").  This function's whole subject is turning
+    # an OS-level exception into a sentence, and this was the one it let
+    # through: a looping --outdir reached the reader as a traceback at
+    # rc 1, from the line before the first refusal.
+    resolved = _resolve_or_refuse(path, flag)
     for protected in protected_roots:
-        protected = Path(protected).resolve()
+        protected = _resolve_or_refuse(Path(protected), flag)
         if resolved == protected or protected in resolved.parents:
             raise ValueError(
                 f"forecast output must not be inside protected input tree "
@@ -1482,7 +1487,33 @@ def claim_output_directory(
             f"into an earlier run's directory -- the receipt it writes "
             f"has to describe one run.  Pass a new {flag}, or remove "
             f"the old directory first.") from error
-    return path.resolve()
+    return _resolve_or_refuse(path, flag)
+
+
+def _resolve_or_refuse(path: Path, flag: str) -> Path:
+    """``path.resolve()``, with its failures delivered as sentences.
+
+    RuntimeError is caught alongside OSError, and deliberately so: on a
+    symlink loop pathlib raises ``RuntimeError("Symlink loop from ...")``
+    rather than ``OSError(ELOOP)``, which an OSError-only guard misses
+    entirely.  Found by running the fix on Linux against the installed
+    wheel -- the Windows box this was written on cannot create a looping
+    symlink without privilege, so the test skipped and the guard looked
+    correct.  The catch is narrow enough to stay honest: it wraps one
+    call whose only failure mode is "this path does not resolve".
+    """
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError) as error:
+        detail = getattr(error, "strerror", None) or str(error)
+        errno = getattr(error, "errno", None)
+        where = f" (errno {errno})" if errno is not None else ""
+        raise ValueError(
+            f"{flag} {path} cannot be resolved to a real location: "
+            f"{detail}{where}.  A symlink that points into its own chain "
+            f"has no destination to create, so there is nothing here to "
+            f"refuse or to reuse -- pass an {flag} that names a real "
+            f"path.") from error
 
 
 def _validate_restored_source_adapter(metadata, source: str) -> None:
@@ -3502,6 +3533,7 @@ def run_prepared_forecast(
         DomainNode, ExperimentState, ModelRuntimeStatus, execute_experiment,
     )
     from gpuwm.core.refl import consume_refl_10cm
+    from gpuwm.core.uh_diag import reset_up_heli_max
     from gpuwm.ingest.hrrr_physics import initialize_prepared_physics
     from gpuwm.ingest.prepared_cache import restore_prepared_cache
     from gpuwm.io.wrfout import PerDomainWrfoutWriters
@@ -3591,7 +3623,14 @@ def run_prepared_forecast(
     writers = PerDomainWrfoutWriters(
         model, outdir / "wrfout", start_time=exp.start_time,
         title=(f"gpuwm {inputs.source.upper()} prepared-cache "
-               f"{cfg.nx}x{cfg.ny}x{cfg.nz}"))
+               f"{cfg.nx}x{cfg.ny}x{cfg.nz}"),
+        # The wrfout outlives the run directory: it is what gets
+        # archived, what `gpuwm downscale` reads back, and what the
+        # pictures are made from.  `report.json` alone is not where a
+        # forecast-lead initialization may live -- separate the artifact
+        # from its run directory and that provenance is gone.
+        initial_condition=inputs.proof.get("initial_condition"),
+        source=inputs.source)
     model._io_manager = writers
     forecast_started = time.perf_counter()
 
@@ -3614,6 +3653,23 @@ def run_prepared_forecast(
         refl = _consume_due_native_refl_10cm(
             current.state, ticks, consume_refl_10cm)
         writers.submit(current, ticks, refl_field=refl)
+        # History-interval reset of the UP_HELI_MAX window
+        # (module_diag_nwp.F:246-269; gpuwm's ratified placement is
+        # immediately after the frame is durable).  Every other route
+        # that publishes history frames does this -- runtime.py's
+        # prepared-case integrator, the downscale child, and the tree
+        # runner through runtime._submit_tree_history_frame -- and THIS
+        # one, the runner `gpuwm go` uses, did not.  The running max
+        # therefore never restarted: frame 2 onward reported the maximum
+        # since model start rather than since the previous frame, so
+        # every value after the first history period was wrong, and
+        # wrong in the direction that never comes back down.
+        #
+        # Safe ordering is submit's, unchanged: its producer-stream
+        # wait_event fences the side-stream D2H snapshot ahead of any
+        # later default-stream mutation, so zeroing here cannot race the
+        # staged copy.
+        reset_up_heli_max(current.state)
         record_memory()
 
     def progress_callback(**event):

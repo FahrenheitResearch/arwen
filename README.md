@@ -41,6 +41,9 @@ matching to 3 pixels in 14,227; the numbers behind this figure are in
   `real.exe` ([DATA.md](docs/public/DATA.md)).
 - Sizes domains to your GPU with a measured VRAM model
   (`gpuwm domain`; [HARDWARE.md](docs/public/HARDWARE.md)).
+- Runs independent forecasts concurrently on distinct GPUs with isolated
+  output, temp, CuPy-cache, and driver-JIT-cache paths (`gpuwm multi-run`;
+  [HARDWARE.md](docs/public/HARDWARE.md#independent-runs-on-multiple-gpus)).
 - Renders reflectivity, T2, 10 m wind, and precipitation products;
   checkpoints and resumes; re-runs finer nests offline from archived
   parents ([DOWNSCALE.md](docs/public/DOWNSCALE.md)).
@@ -71,6 +74,12 @@ WPS_GEOG static tree is not part of it -- `gpuwm setup --with-geog`
 opts in and prints the size before anything downloads, or run
 `gpuwm fetch-geog` later.
 
+Published PyPI wheels and sdists carry bridge pins generated from that
+release's exact native bundles. GitHub's automatic source `.zip` and
+`.tar.gz` archives are intentionally unpinned: install the PyPI artifact to
+use `gpuwm fetch-bridges`, or clone the tag and build the vendored Rust
+workspaces when installing from source.
+
 Then a first forecast -- two commands, no placeholders:
 
 ```bash
@@ -92,13 +101,21 @@ wizard's closing block prints each next command for the config it just
 wrote, and the full walkthrough is
 [FIRST-LIGHT.md](docs/public/FIRST-LIGHT.md).
 
+For an uploading HRRR cycle, `gpuwm stream PLAN.toml` runs bounded,
+crash-resumable hourly restart-extend legs. Each leg seals a forcing prefix,
+rebuilds the prepared hierarchy, resumes the preceding tree checkpoint, and
+publishes a hash-linked PASS timeline; forcing is never injected into a live
+model process. See [Chunked forecast streaming](docs/public/STREAMING.md) for
+the plan schema, GPU ownership, disk/cache accounting, and timeline semantics.
+
 ### Route status
 
 Before every release cut, a route-coverage gate installs the built
 wheel on a machine that has never seen this project and drives every
 route this documentation advertises, filling each printed placeholder
 from what the run itself printed rather than from knowledge of the
-source. What that gate found for 1.4.0 is below.
+source. What that gate found for 1.4.0 is below. Routes marked Unreleased are
+newer and report their separate campaign state explicitly.
 
 **Supported** means the gate was green end to end from a wheel.
 **Experimental** means the route works and has a named rough edge --
@@ -115,6 +132,8 @@ the edge is in the last column rather than in your way.
 | ERA5, from a config | **Supported** | Green: request template -> validate -> check -> run -> render. |
 | `gpuwm import-namelist` (an existing WRF namelist pair) | **Supported** | Green on a real pair. Bring your own: nothing in the product emits a `namelist.input` to practise the importer on, and no example pair ships. |
 | `gpuwm certify` / `gpuwm dual-run` | **Supported** | Green. |
+| `gpuwm multi-run PLAN.toml` (Unreleased) | **Experimental** | An earlier candidate-wheel two-GPU campaign completed simultaneous HRRR/WSM6 and GFS/Thompson forecasts on distinct physical GPUs. The final post-1.4 wheel has not repeated that campaign, so no final-wheel readiness or performance claim is made. |
+| `gpuwm stream PLAN.toml` (Unreleased) | **Experimental** | An earlier candidate wheel completed the bounded HRRR 12Z f001 -> 13Z f001 seam with initial and final health green; only 13Z was a fresh availability observation. The final post-1.4 wheel has not repeated it, and no within-cycle f001..f004 or combined HRRR-plus-GFS claim is made. |
 | HRRR, single domain: fetch -> native preparation | **Experimental** | Fetch and the preparation are green from a wheel. The handoff to the forecast is not: the wizard's closing block says the preparation prints the forecast stage's arguments, and it does not print them -- so reaching a finished single-domain forecast means assembling that `tools/hrrr_single_domain_benchmark.py` command by hand out of the preparation's output tree. The nest-ladder route below needs no such step. |
 | HRRR, nest ladder: preparation -> hierarchy -> tree forecast | **Supported** | Green end to end through the forecast: domain, fetch, preparation, hierarchy and the tree runner, each command copied from the one the previous stage printed. One value in the printed tree-runner command is not printed by any stage -- `--experiment-config-sha256`; the command names the file and you hash it yourself. |
 | `gpuwm downscale` (an offline finer nest from an archived run) | **Experimental** | The dry run is green. Derived mode refuses when the child config enables surface physics and no child-grid surface source was given; the refusal names `--child-surface-from`. |
@@ -133,6 +152,17 @@ entry points import from a directory that is not a repository.
 `gpuwm doctor --source hrrr` narrows the report to one route. That half
 exists because a wheel install once read "no gaps" and then refused,
 one command later, on a path the report had never resolved.
+
+When something has already gone wrong, `gpuwm report` is the other half:
+run it in the run directory and it collects the receipts, the failure,
+the logs, this install's identity, the card and the free space into one
+readable zip to attach to an issue. It is anonymous by construction --
+usernames, home paths, hostnames, addresses and credential-shaped
+strings are replaced by class placeholders, and your domain and dates
+are kept because they are science, not identity. `gpuwm report
+--dry-run` prints the manifest without writing anything, so you can see
+what you would be sending first:
+[reporting a problem](docs/public/REPORTING-A-PROBLEM.md).
 
 The longer path -- the install scripts, the manual steps, and what each
 piece is -- is below.
@@ -285,7 +315,11 @@ gpuwm render out/myarea/wrfout_d01_* --out out/myarea/png
 Live progress is `run-progress.json` in the output directory (atomic,
 schema `gpuwm.run-progress/v1`); restart checkpoints are written every
 `restart_interval_s` and `gpuwm resume` continues from the newest valid
-one.  The `tools/` runners write a different file: the domain-tree
+one.  That is this route, the `[case_data]` route.  The prepared
+single-domain forecaster writes no checkpoints at any
+`restart_interval_s` -- `gpuwm check` names the limitation before you
+spend the run; use a multi-domain config or a `[case_data]` experiment
+when you need to resume.  The `tools/` runners write a different file: the domain-tree
 route writes `<outdir>/evidence/progress.json` and the single-domain
 runners write `<outdir>/progress.json`.
 
@@ -320,7 +354,8 @@ opt-in via `--heavy`.*
 | Data | ERA5 (CDS), GFS 0.25-deg (NOMADS), HRRR (NOMADS or AWS S3, incl. a live-cycle `--wait-for` mode) all initialize a run; GDAS 0.25-deg (NOMADS) is **fetch and decode only through f009 -- no initialization route** (`rw-wps --source gdas` refuses). Fail-closed Rust GRIB bridges; `gpuwm fetch` download front door. Plus an experimental, not-yet-stock-WRF-gated 20CRv3 ensemble-member route for GRIB2 files you supply yourself (no fetch route) -- see [DATA.md](docs/public/DATA.md) |
 | Domains | `gpuwm domain` wizard: point + card -> sized experiment TOML (16/24/32 GiB tiers) |
 | Products | `gpuwm render`, two engines: vendored Rusty Weather renderer (default when built), whose vendored catalog carries 324 entries; the runtime lister enumerates 151 of them as implicit-render candidates per file (the rest are explicit-opt-in ensemble/probabilistic families) -- reflectivity composite/1 km, surface T/Td/RH/MSLP/wind/PWAT/cloud-cover families, the 200-850 mb isobaric charts (height/temp/dewpoint/RH/absolute-vorticity + winds), CAPE/CIN/SRH/shear/STP severe suite, heavy ECAPE family (`--heavy`), and multi-hour windowed accumulations -- everything a file's stored fields prove out renders (measured on the committed 3 km UH-smoke case: 58/58 on a single frame, 238 renders / 0 failures across its four-frame store, transcripts retained in the development tree under `evidence/render-receipts/`; `--list-products` prints the per-file verdict with a field-level reason for every unavailable row), with coast/state/county basemaps and sub-hourly leads stamped; matplotlib fallback (composite reflectivity, T2, 10 m wind, accumulated precipitation); `--pair A B` composes two runs' PNGs into labeled comparison sheets |
-| Lifecycle | `check` (input + VRAM preflight), `run`, `resume`, restart checkpoints, failure capsules |
+| Lifecycle | `check` (input + VRAM preflight), `run`, `resume`, restart checkpoints, failure capsules.  **Checkpoints are written on the `[case_data]` route (`gpuwm run`) and on the multi-domain prepared route; a single-domain config with no `[case_data]` table runs on the prepared single-domain forecaster, which writes none** -- `gpuwm check` says so before the run |
+| Operational HRRR | `gpuwm stream PLAN.toml`: bounded hourly chunked restart-extend with immutable leg chains, exact-hour cycle succession, independent disk-volume gates, and crash-safe replay |
 | Downscaling | `gpuwm downscale`: offline finer nest from archived gpuwm or WRF history (ndown-class) |
 | WRF interop | `rw-wps` emits `wrfinput`/`wrfbdy` consumed by unchanged WRF v4.6.1 (see boundaries) |
 | Namelists | `gpuwm import-namelist`: WRF namelist pair -> experiment TOML with an explicit substitution report |
@@ -445,6 +480,7 @@ What it does detect, what it does not, and the pin set that defines
 - [Getting data](docs/public/DATA.md)
 - [Hardware and VRAM sizing](docs/public/HARDWARE.md)
 - [Offline downscaling](docs/public/DOWNSCALE.md)
+- [Chunked forecast streaming](docs/public/STREAMING.md)
 - [Driving stock WRF](docs/public/WRF-INTEROP.md)
 - [Install and verify](docs/install.md)
 - [CLI reference](docs/cli-reference.md)
@@ -452,6 +488,7 @@ What it does detect, what it does not, and the pin set that defines
 - [What `gpuwm adapt` validates, and what it trusts](docs/adapt-validation-contract.md)
 - [Migrating from WPS](docs/migrating-from-wps.md)
 - [Community support matrix](docs/community-support-matrix.md)
+- [Reporting a problem](docs/public/REPORTING-A-PROBLEM.md)
 
 ## Credits and provenance
 

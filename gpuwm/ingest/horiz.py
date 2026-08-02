@@ -103,11 +103,152 @@ def _regular_coordinates(latitude, longitude, target_lat, target_lon):
     y = (target_lat - latitude[0]) / dlat[0]
     x = (unwrapped_lon - longitude[0]) / dlon[0]
     eps = 2.0e-10
-    if (np.min(x) < -eps or np.max(x) > longitude.size - 1 + eps
-            or np.min(y) < -eps or np.max(y) > latitude.size - 1 + eps):
-        raise ValueError("target points fall outside the source grid")
+    outside = ((x < -eps) | (x > longitude.size - 1 + eps)
+               | (y < -eps) | (y > latitude.size - 1 + eps))
+    if bool(np.any(outside)):
+        raise ValueError(_outside_source_grid_message(
+            latitude, longitude, target_lat, target_lon, y, x, outside))
     return np.clip(y, 0.0, latitude.size - 1.0), np.clip(
         x, 0.0, longitude.size - 1.0)
+
+
+def _outside_source_grid_message(latitude, longitude, target_lat, target_lon,
+                                 y, x, outside) -> str:
+    """Name the first uncovered target point, its index, and the source span.
+
+    ``target points fall outside the source grid`` on its own named no
+    coordinate and no window, so a user could not tell a genuinely
+    undersized crop from a source axis that does not reach the target --
+    the two have opposite remedies.  The numbers here are the same ones
+    the HRRR coverage refusal prints.
+    """
+
+    first = int(np.argmax(np.asarray(outside).ravel()))
+    index = np.unravel_index(first, np.shape(outside))
+    return (
+        "target points fall outside the source grid: target point "
+        f"{tuple(int(value) for value in index)} at lat/lon "
+        f"({np.asarray(target_lat).ravel()[first]:.4f}, "
+        f"{np.asarray(target_lon).ravel()[first]:.4f}) maps to source "
+        f"index x={np.asarray(x).ravel()[first]:.3f} "
+        f"y={np.asarray(y).ravel()[first]:.3f}, and the source covers "
+        f"x=0..{longitude.size - 1} (lon {longitude[0]:g}..{longitude[-1]:g}) "
+        f"y=0..{latitude.size - 1} (lat {latitude[0]:g}..{latitude[-1]:g})")
+
+
+def _regular_longitude_index(longitude, target_lon):
+    """Fractional source column of each target, as :func:`_regular_coordinates`
+    computes it -- same midpoint unwrap, same origin, same divisor."""
+
+    longitude = np.asarray(longitude, dtype=np.float64)
+    target_lon = np.asarray(target_lon, dtype=np.float64)
+    lon_mid = 0.5 * (longitude[0] + longitude[-1])
+    unwrapped = target_lon + 360.0 * np.round(
+        (lon_mid - target_lon) / 360.0)
+    return (unwrapped - longitude[0]) / (longitude[1] - longitude[0])
+
+
+def global_longitude_period_columns(longitude, *, tolerance=1.0e-9):
+    """Columns in one revolution when a uniform axis is globally periodic.
+
+    Returns ``None`` for a regional crop.  A source whose uniform
+    longitude increment divides 360 exactly and which carries at least a
+    full revolution of columns is periodic: its first column is the east
+    neighbour of its last, even though nothing in the array says so.
+    """
+
+    longitude = np.asarray(longitude, dtype=np.float64)
+    if longitude.ndim != 1 or longitude.size < 2:
+        return None
+    increment = float(longitude[1] - longitude[0])
+    if not np.isfinite(increment) or increment <= 0.0:
+        return None
+    columns = 360.0 / increment
+    period = int(round(columns))
+    if period < 2 or abs(columns - period) > tolerance:
+        return None
+    if longitude.size < period:
+        return None
+    return period
+
+
+def orient_global_source_longitudes(snapshot, *target_longitudes):
+    """Cut a globally periodic source axis opposite the target domain.
+
+    A whole-globe source crop is a ring, but it is stored as a finite
+    ascending array, so it carries one artificial cut.  Every operator
+    here treats that cut as the edge of the world: the unwrap in
+    :func:`_regular_coordinates` cannot place a target point in the
+    one-cell gap that straddles it, the parabolic stencil clamps instead
+    of wrapping across it, and the masked-field search stops at it.  When
+    the cut falls inside the target domain -- which is exactly what a
+    domain straddling the source's own origin meridian does -- those are
+    all wrong.
+
+    The ring has no preferred cut, so this rotates the columns until the
+    cut sits antipodal to the target's centre longitude.  Nothing is
+    resampled: the same source values are simply indexed from a different
+    origin, and the target then sits half a revolution away from the only
+    place the array is not continuous.  A regional crop has no such ring
+    and is returned unchanged.
+
+    A ring whose cut is already clear of every stencil is also returned
+    unchanged, and that is not a nicety.  Re-cutting moves the target's
+    fractional source coordinate to a different index offset, and the
+    plans carry that coordinate in FP32, so a target sitting at index 32
+    resolves its interpolation weight ~30x more finely than the same
+    target at index 720.  Rotating a ring that did not need rotating
+    would therefore perturb an initial condition for nothing.  Stopping
+    at the array edge is also exactly what WPS's own search operators do
+    at the edge of any finite crop, so an untouched cut outside the read
+    region is established behaviour rather than a latent defect.
+    """
+
+    from gpuwm.ingest.grib import Era5Snapshot
+
+    if not isinstance(snapshot, Era5Snapshot):
+        raise TypeError("snapshot must be an Era5Snapshot")
+    longitude = np.asarray(snapshot.longitude, dtype=np.float64)
+    period = global_longitude_period_columns(longitude)
+    if period is None:
+        return snapshot
+    increment = float(longitude[1] - longitude[0])
+
+    pooled = np.concatenate([
+        np.asarray(values, dtype=np.float64).ravel()
+        for values in target_longitudes]) if target_longitudes else None
+    if pooled is None or pooled.size == 0:
+        raise ValueError("orienting a global source needs target longitudes")
+    # The deterministic stencils reach floor(x)-1 .. floor(x)+2, which is
+    # also the donor halo the GFS coverage receipt certifies.  When every
+    # target already maps inside that, the cut is nowhere the interpolator
+    # looks and the ring is left alone.
+    on_axis = _regular_longitude_index(longitude, pooled)
+    if (float(on_axis.min()) >= 1.0
+            and float(on_axis.max()) <= longitude.size - 3.0):
+        return snapshot
+
+    reference = float(pooled[0])
+    unwrapped = reference + (
+        (pooled - reference + 180.0) % 360.0 - 180.0)
+    centre = 0.5 * (float(unwrapped.min()) + float(unwrapped.max()))
+
+    start = int(round((centre - 180.0 - float(longitude[0])) / increment))
+    start %= period
+    if start == 0:
+        return snapshot
+    columns = np.arange(longitude.size, dtype=np.int64)
+    take = (start + columns) % period
+    rotated = float(longitude[0]) + (start + columns) * increment
+    rotated -= 360.0 * np.floor((rotated[0] + 180.0) / 360.0)
+    return Era5Snapshot(
+        valid_time=snapshot.valid_time,
+        levels_hpa=snapshot.levels_hpa,
+        latitude=snapshot.latitude,
+        longitude=rotated,
+        fields={name: np.asarray(value)[..., take]
+                for name, value in snapshot.fields.items()},
+    )
 
 
 def _nearest_finite_source_water(skin, water, y: float, x: float) -> float:
@@ -1170,6 +1311,7 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
 
 __all__ = [
     "HorizontalSnapshot",
+    "global_longitude_period_columns",
     "interpolate_era5_to_lambert",
     "interpolate_lake_skin_temperature",
     "interpolate_regular_gpu",

@@ -39,6 +39,7 @@ use crate::runtime::{
 };
 use crate::severe::{build_planned_input_fetches, build_shared_timing_for_pair};
 use crate::shared_context::{
+    TitleProvenance,
     WeatherPanelField, build_weather_map_request, model_time_subtitle, source_subtitle,
     static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
 };
@@ -216,6 +217,7 @@ impl DerivedBatchRequest {
             output_suffix: None,
             subtitle_left_override: None,
             subtitle_right_override: None,
+            title_provenance: TitleProvenance::default(),
         }
     }
 

@@ -212,6 +212,10 @@ def _cpu_surface_driver(monkeypatch, *, sf_surface_physics):
     atmosphere = {
         "p_interface": np.array(
             [[[100000.0, 90000.0]], [[95000.0, 85000.0]]], np.float32),
+        # SFCDIAGS needs the lowest model level's vapour, which is what
+        # WRF's own remedy for an out-of-range 2 m value publishes
+        # (module_sf_noahdrv.F:1276-1282).
+        "qv": np.array([[[9.0e-3, 7.0e-3]]], np.float32),
     }
     monkeypatch.setattr(
         physics, "_prepare_atmosphere", lambda state: atmosphere)
@@ -303,6 +307,15 @@ def test_post_noah_surface_diagnostics_match_wrf_sfcdiags_before_ysu(
     expected_q2 = fields["qsfc"].copy()
     expected_q2[0, 0] -= fields["qfx"][0, 0] / (
         rho[0, 0] * fields["cqs2"][0, 0])
+    # This fixture's land column pairs a large evaporative flux with a tiny
+    # exchange coefficient, so WRF's unbounded inversion
+    # (module_sf_sfcdiags.F:56) lands outside the range a mixing ratio can
+    # occupy.  The engine then publishes the lowest model level instead,
+    # which is what WRF's own commented-out CQS2 = CHS remedy produces
+    # (module_sf_noahdrv.F:1276-1282).  The water column keeps QSFC, and
+    # T2/TH2 are untouched by the moisture guard.
+    assert expected_q2[0, 0] < 0.0
+    expected_q2[0, 0] = atmosphere["qv"][0][0, 0]
     expected_t2 = fields["tsk"].copy()
     expected_t2[0, 0] -= fields["hfx"][0, 0] / (
         rho[0, 0] * np.float32(1004.5) * fields["chs2"][0, 0])

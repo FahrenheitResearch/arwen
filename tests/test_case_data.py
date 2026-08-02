@@ -304,12 +304,21 @@ def test_key_validation_is_fail_loud(tmp_path, mutation, message):
 
 @pytest.mark.parametrize("mutation, needle, attr, expected", [
     ("co2_vmr = 0.5", "sanity envelope", "co2_vmr", 0.5),
-    ('output_title = ""', "output_title", "output_title", "gpuwm"),
 ])
 def test_advisory_values_warn_and_continue(tmp_path, capsys, mutation,
                                            needle, attr, expected):
     """Warn-not-block: sanity envelopes report in one line and keep
-    going; the loaded value is stated by the warning."""
+    going; the loaded value is stated by the warning.
+
+    The test the loaded value must equal the WRITTEN one is the whole
+    distinction, and it is why `output_title = ""` no longer belongs in
+    this list.  co2_vmr = 0.5 warns and then uses 0.5 -- the reader's
+    own number, reported as unusual.  output_title = "" warned and then
+    used "gpuwm", which is not what the reader wrote, and stamped it
+    into the wrfout TITLE attribute.  Parametrizing the two together
+    made a silent substitution look like an advisory; it is refused in
+    test_an_unusable_output_title_is_refused_not_substituted below.
+    """
     key = mutation.split(" =")[0]
     lines = [line for line in _CASE_DATA_TOML.splitlines()
              if not line.startswith(key)]
@@ -321,13 +330,42 @@ def test_advisory_values_warn_and_continue(tmp_path, capsys, mutation,
     assert getattr(data, attr) == expected
 
 
-def test_unknown_keys_warn_and_missing_keys_are_loud(tmp_path, capsys):
-    # Warn-not-block: a typo'd extra key is named and ignored.
+@pytest.mark.parametrize("mutation", [
+    'output_title = ""',
+    "output_title = 7",
+    "output_title = true",
+])
+def test_an_unusable_output_title_is_refused_not_substituted(
+        tmp_path, mutation):
+    """Every sibling in this loader raises on a wrong type -- co2_vmr,
+    output_domain, forcing_interval_s -- and this one warned and
+    substituted "gpuwm", in a module whose docstring says validation is
+    fail-loud on wrong types.  The substituted value is written to the
+    wrfout TITLE attribute, so it describes every frame of the output
+    under a key the reader did write."""
+    key = mutation.split(" =")[0]
+    lines = [line for line in _CASE_DATA_TOML.splitlines()
+             if not line.startswith(key)]
+    lines.append(mutation)
+    path = make_case_toml(tmp_path, case_data="\n".join(lines) + "\n")
+    with pytest.raises(ValueError, match="output_title"):
+        load_case_data(path)
+
+
+def test_unknown_keys_and_missing_keys_are_loud(tmp_path):
+    # This assertion was relaxed once, to "one warning line naming the
+    # key", with a comment citing warn-not-block.  Warn-not-block
+    # governs verification and gates -- reports about a run that will
+    # almost certainly work.  It does not govern "I do not understand
+    # your configuration", and a test that accepts a warning here is
+    # exactly what let the drop survive: see the module-level exhibit
+    # in test_case_data_unknown_keys_refuse.py, where the dropped key
+    # is `forcing_interval_s` and the consequence is a completed
+    # forecast built on a forcing window nobody selected.
     path = make_case_toml(
         tmp_path, case_data=_CASE_DATA_TOML + "mystery_key = 1\n")
-    load_case_data(path)
-    err = capsys.readouterr().err
-    assert "warning:" in err and "mystery_key" in err
+    with pytest.raises(ValueError, match="mystery_key"):
+        load_case_data(path)
 
     # KEEP-HARD negative: a missing REQUIRED key still refuses.
     lines = [line for line in _CASE_DATA_TOML.splitlines()

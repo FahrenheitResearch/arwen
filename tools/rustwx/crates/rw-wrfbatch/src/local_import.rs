@@ -2376,6 +2376,92 @@ pub(crate) fn netcdf_source_times(nc: &NcFile, path: &Path) -> Result<SourceTime
     })
 }
 
+/// The initial-condition provenance block a gpuwm-written wrfout carries,
+/// reduced to the one line a plot can show.
+///
+/// Contract (`docs/public/DATA.md`, "The initial-condition provenance a
+/// wrfout carries"), and the writer guarantees all three:
+///
+/// * `GPUWM_INITIAL_FORECAST_LEAD_HOURS` present and `> 0` is the only
+///   predicate.  Disclose exactly then.
+/// * A genuine analysis says so explicitly (lead `0`); it is not silence.
+/// * **Absence means UNKNOWN, never analysis.**  Idealized cases, stock
+///   WRF archives and every file written before 1.4.1 carry none of
+///   these attributes, and must render exactly as they do today.  This
+///   returns `None` for all of them, and stamps nothing.
+///
+/// The source and the cycle are read from the file, never re-derived
+/// from a run slug: the slug carries the model start, which is a
+/// different time and is already the `Init` token.
+pub(crate) fn initial_condition_disclosure(file: &WrfFile) -> Option<String> {
+    let lead = file
+        .global_attr_i32("GPUWM_INITIAL_FORECAST_LEAD_HOURS")
+        .ok()?;
+    let source = file
+        .global_attr_str("GPUWM_INITIAL_CONDITION_SOURCE")
+        .ok()?;
+    let cycle = file
+        .global_attr_str("GPUWM_INITIAL_CONDITION_CYCLE")
+        .ok()?;
+    compose_initial_condition_disclosure(i64::from(lead), &source, &cycle)
+}
+
+/// The predicate and the spelling, over values rather than over a reader.
+///
+/// Both readers reduce to this, so the two cannot disagree, and the rules
+/// can be tested without a NetCDF file: disclose only for a whole
+/// positive lead with a named source and a parseable cycle; anything
+/// else is UNKNOWN and stamps nothing.
+pub(crate) fn compose_initial_condition_disclosure(
+    lead_hours: i64,
+    source: &str,
+    cycle: &str,
+) -> Option<String> {
+    if lead_hours <= 0 {
+        return None;
+    }
+    let source = source.trim();
+    if source.is_empty() {
+        return None;
+    }
+    let cycle = format_cycle_label(parse_utc_timestamp(cycle)?);
+    Some(format!("{source} {cycle} f{lead_hours:03}"))
+}
+
+/// The same disclosure, for a file only the netcrust reader could open.
+///
+/// Both readers must answer this identically.  A wrfout that falls back
+/// to netcrust -- a compression or chunking wrf-core's pure-Rust reader
+/// declines, which is not rare -- carries exactly the same provenance
+/// attributes, and a run that discloses its lead under one reader and
+/// hides it under the other would be worse than one that never
+/// disclosed: the label would depend on the file's encoding rather than
+/// on what the run was.
+pub(crate) fn netcdf_initial_condition_disclosure(nc: &NcFile) -> Option<String> {
+    let lead = nc
+        .attribute("GPUWM_INITIAL_FORECAST_LEAD_HOURS")
+        .and_then(|attribute| attribute.as_f64())?;
+    // NC_INT in the file; read as f64 and required to be a whole positive
+    // number of hours, so a malformed value discloses nothing rather than
+    // rounding into a claim.
+    if !(lead.is_finite() && lead > 0.0 && lead.fract() == 0.0) {
+        return None;
+    }
+    let source_attribute = nc.attribute("GPUWM_INITIAL_CONDITION_SOURCE")?;
+    let source = source_attribute.as_string()?;
+    let cycle_attribute = nc.attribute("GPUWM_INITIAL_CONDITION_CYCLE")?;
+    let cycle = cycle_attribute.as_string()?;
+    compose_initial_condition_disclosure(lead as i64, source, cycle)
+}
+
+/// `2026-08-01T00:00:00Z` -> `08/01 00Z`, the spelling the `Init` and
+/// `Valid` tokens already use, so one subtitle holds one date format.
+fn format_cycle_label(unix_seconds: i64) -> String {
+    chrono::DateTime::from_timestamp(unix_seconds, 0)
+        .map(|moment| moment.format("%m/%d %HZ").to_string())
+        .unwrap_or_else(|| format_valid_unix(unix_seconds))
+}
+
 fn parse_matching_wrf_reference_attributes(
     attributes: &[(&str, String)],
 ) -> Result<(Option<i64>, Vec<String>), String> {
@@ -2575,12 +2661,25 @@ fn preflight_local_sources(
             WrfFile::open(path).map_err(|err| err.to_string())
         });
         let (source_times, shape) = match raw {
-            Ok(file) => (
-                wrf_source_times(&file, path).map_err(ImportError::TimeAxis)?,
-                (file.nx, file.ny),
-            ),
+            Ok(file) => {
+                // Every source of one invocation belongs to one run (the
+                // timeline planner refuses sources whose reference times
+                // disagree), so the disclosure is a property of the run and
+                // is recorded once here, where the file is already open.
+                // Absent attributes leave it cleared and nothing is stamped.
+                rustwx_products::shared_context::set_initial_condition_disclosure(
+                    initial_condition_disclosure(&file),
+                );
+                (
+                    wrf_source_times(&file, path).map_err(ImportError::TimeAxis)?,
+                    (file.nx, file.ny),
+                )
+            }
             Err(_) => {
                 let nc = netcrust::open(path)?;
+                rustwx_products::shared_context::set_initial_condition_disclosure(
+                    netcdf_initial_condition_disclosure(&nc),
+                );
                 (
                     netcdf_source_times(&nc, path)?,
                     netcdf_grid_shape(&nc, path)?,
@@ -2995,7 +3094,7 @@ fn read_wrf_2d_fields(
 
 /// The canonical surface-field suite shared by the raw-wrfout 2-D read and
 /// the post-processed 2-D (`wrf2d`) route: direct T2/U10/V10/PSFC/HGT/SLP/
-/// REFD_MAX/WSPD10MAX planes plus the derived 10 m wind speed, 2 m dewpoint /
+/// REFD_MAX planes plus the derived 10 m wind speed, 2 m dewpoint /
 /// relative humidity, and total-precipitation fields — each pushed only when
 /// its source planes exist in the file. Body moved unchanged from
 /// `read_wrf_2d_fields` (only the borrow spellings changed for the
@@ -3058,16 +3157,28 @@ fn push_canonical_surface_fields(
         FieldSelector::entire_atmosphere(CanonicalField::CompositeReflectivity),
         Some("dBZ"),
     )?;
-    push_direct(
-        canonical,
-        src,
-        grid,
-        projection.clone(),
-        "WSPD10MAX",
-        "wind_speed_10m_max",
-        FieldSelector::height_agl(CanonicalField::WindGust, 10),
-        Some("m/s"),
-    )?;
+    // WSPD10MAX is NOT published under a canonical selector, and in
+    // particular not under `height_agl(WindGust, 10)`, which is where it
+    // used to go.
+    //
+    // WRF 4.6.1 defines no wind gust.  `phys/module_diag_nwp.F` defines
+    // WSPD10MAX, Registry title "WIND SPD MAX 10 M": the running maximum
+    // of sqrt(u10^2 + v10^2) between history writes, reset after each
+    // dump.  AFWA's `module_diag_afwa.F` writes the same array with a
+    // precipitation blend and still names it a maximum.  Publishing it
+    // as the gust plane made the catalog's "10m AGL Wind Gusts" chart
+    // render a running maximum under a title naming a quantity this
+    // model does not compute -- and it did so silently, because the
+    // selector matched.
+    //
+    // Nor may it be published under `height_agl(WindSpeed, 10)`: this
+    // route computes the true instantaneous speed from U10/V10 a few
+    // lines below, the store's selector map is first-write-wins, and a
+    // maximum pushed first would SHADOW the instantaneous field that
+    // `10m_wind_speed_and_direction` renders.  A time maximum has no
+    // canonical selector in this catalog; until one exists with its own
+    // honest label, the plane stays out of the canonical map rather than
+    // borrowing a name that means something else.
 
     // WRF U10/V10 are grid-relative. Publish canonical vector components
     // only after applying the same SINALPHA/COSALPHA rotation as wrf-python's
@@ -4975,6 +5086,53 @@ mod tests {
         assert_eq!(wrf_reference_from_xtime(&records, &xtime), Ok(origin));
     }
 
+    /// C-03: a run whose initial state was itself a 174-hour forecast
+    /// printed exactly what a genuine analysis run prints, in all 159 of
+    /// its PNGs.  The predicate is the lead alone.
+    #[test]
+    fn a_positive_lead_discloses_its_source_cycle_and_lead() {
+        assert_eq!(
+            compose_initial_condition_disclosure(174, "GFS", "2026-08-01_00:00:00"),
+            Some("GFS 08/01 00Z f174".to_string())
+        );
+        // Three digits, like every other lead token on the sheet.
+        assert_eq!(
+            compose_initial_condition_disclosure(6, "GFS", "2026-08-01_00:00:00"),
+            Some("GFS 08/01 00Z f006".to_string())
+        );
+        // Leads past 999 h are still spelled in full rather than truncated.
+        assert_eq!(
+            compose_initial_condition_disclosure(1_000, "GFS", "2026-08-01_00:00:00"),
+            Some("GFS 08/01 00Z f1000".to_string())
+        );
+    }
+
+    /// Absence means UNKNOWN, never analysis: an idealized case, a stock
+    /// WRF archive and every file written before the provenance block
+    /// existed must render exactly as they did, and a genuine analysis
+    /// (lead 0) adds nothing either.
+    #[test]
+    fn a_zero_or_missing_lead_discloses_nothing() {
+        assert_eq!(
+            compose_initial_condition_disclosure(0, "GFS", "2026-08-01_00:00:00"),
+            None
+        );
+        assert_eq!(
+            compose_initial_condition_disclosure(-3, "GFS", "2026-08-01_00:00:00"),
+            None
+        );
+        // A lead with nothing to attribute it to is not a disclosure.
+        assert_eq!(
+            compose_initial_condition_disclosure(174, "   ", "2026-08-01_00:00:00"),
+            None
+        );
+        // ... and neither is one whose cycle cannot be read.
+        assert_eq!(
+            compose_initial_condition_disclosure(174, "GFS", "not-a-timestamp"),
+            None
+        );
+    }
+
     #[test]
     fn matching_wrf_reference_attributes_are_preferred_and_conflicts_fail() {
         let expected = parse_utc_timestamp("1974-04-03_23:00:00").unwrap();
@@ -5926,7 +6084,6 @@ mod tests {
             "u_10m",
             "v_10m",
             "wind_speed_10m",
-            "wind_speed_10m_max",
         ] {
             assert!(
                 summary.variables.iter().any(|name| name == var),
@@ -5934,6 +6091,18 @@ mod tests {
                 summary.variables
             );
         }
+        // WSPD10MAX is a running maximum, not a gust and not the
+        // instantaneous speed; it must not appear under a canonical
+        // selector at all.  Its raw plane is still readable under the
+        // light-import `wrf_*` naming.
+        assert!(
+            !summary
+                .variables
+                .iter()
+                .any(|name| name == "wind_speed_10m_max"),
+            "WSPD10MAX must not be published as a canonical plane: {:?}",
+            summary.variables
+        );
         // Raw planes: the misrouting trio plus a severe plane, an
         // accumulated-flux plane, and every formerly omitted internal-node
         // record, under the light-import wrf_* naming.

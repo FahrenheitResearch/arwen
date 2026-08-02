@@ -105,6 +105,23 @@ consumed `RunConfig` field -- the knob-parity battery
 consuming kernel/module rather than being decorative -- and every one
 is importable from a WRF namelist.
 
+**Which keys a `[[domain]]` table may override.** Exactly these twelve,
+and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
+
+    cu_physics  cudt_minutes  radt  radt_minutes  bldt
+    diff_6th_factor  epssm  spec_exp  mp_physics  moist  moist_cq
+    nest_microphysics_transition
+
+Only `gpuwm domain`'s own emission and hand-written TOML reach some of
+them, so the list is stated here rather than left to be discovered. A
+`[[domain]]` table carrying any other key -- including a physics
+selector such as `bl_pbl_physics`, which WRF *does* carry per domain --
+is **refused** naming the key, not accepted and not silently dropped:
+per-nest selection of those schemes is not implemented, and a config
+that appeared to ask for it while the `[shared]` scheme ran on every
+nest would be a wrong answer reported as a success. Put them in
+`[shared]`.
+
 | TOML key | WRF equivalent | default | allowed | note |
 |---|---|---|---|---|
 | `time_step_sound` | `time_step_sound` | 4 | even, > 0 | WRF 0 = auto imports as 4, recorded |

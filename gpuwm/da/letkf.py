@@ -590,10 +590,10 @@ class LetkfConfig:
         Precision of the R x R eigenproblem.  float64 by default and
         deliberately: the R x R solve is a vanishing fraction of total work
         even at 1/64 rate, the eigenvalues of ``(R-1)I + C Yb`` span the
-        ensemble's condition number, and on sm_120 float32 subnormals are
-        flushed in all arithmetic regardless of ``--ftz``, which float64
-        sidesteps entirely.  The gather and the final ``Xb @ W`` stay in the
-        input dtype.
+        ensemble's condition number, and float32 subnormals are flushed in
+        every kernel cupy compiles -- it appends ``-ftz=true`` after the
+        caller's options -- which float64 sidesteps entirely.  The gather
+        and the final ``Xb @ W`` stay in the input dtype.
     """
 
     localization: Localization

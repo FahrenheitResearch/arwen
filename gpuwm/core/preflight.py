@@ -170,6 +170,26 @@ DEFAULT_FORCING_INTERVAL_SECONDS = 21600.0
 N0_GATE_METRICS = ("alloc_fits_wddm_budget", "alloc_measured_le_estimate",
                    "alloc_estimate_le_wddm_budget")
 
+
+def gate_display_name(metric: str, *, vram_gib: float | None = None) -> str:
+    """A gate's name as THIS platform should print it.
+
+    The strings in :data:`N0_GATE_METRICS` are pre-registered N0 ledger
+    record names, read by ``gpuwm/verify/nest_gates.py`` and written into
+    certification receipts, so they are identifiers and must not change
+    with the host.  What a reader sees may: "WDDM" is a Windows display
+    driver model, and printing ``alloc_fits_wddm_budget`` in the first
+    ``gpuwm check`` a Linux user ever runs describes their machine with a
+    word that does not apply to it (A-6).  The prose beside these lines
+    has been platform-correct since ``envelope_platform`` was introduced;
+    only the gate names were left behind.
+
+    Display only.  The key stays the key everywhere it is recorded.
+    """
+    if envelope_platform(vram_gib=vram_gib) == "linux":
+        return metric.replace("_wddm_", "_vram_")
+    return metric
+
 #: Observed machine-peak envelope factor over the footprint projection.
 #:
 #: WINDOWS / WDDM -- 1.75.  The Thompson 12-18Z matched rerun (2026-07-28,
@@ -239,6 +259,26 @@ N0_GATE_METRICS = ("alloc_fits_wddm_budget", "alloc_measured_le_estimate",
 #: residency the pool never sees.  It is a pioneer tier: see
 #: :func:`windows_small_card_advisory` for what users are asked to send
 #: back, which is the only thing that will turn this into a measurement.
+#: 2026-08-01 AMENDMENT -- the multiplier has no intercept, so its ERROR
+#: CHANGES SIGN.  A 16 GiB fleet node (RTX 4080, Linux, driver 595.58.03,
+#: machine-wide nvidia-smi sampled at 250 ms, GPU otherwise idle) measured
+#: whole forecasts across a 6.6x span of grid sizes and found the x1.45
+#: envelope OPTIMISTIC below ~3.5 GiB of itemized estimate and pessimistic
+#: by 25-30% above it.  A 224x180 first-run domain was declared 3.99 GiB
+#: and peaked at 4.38.  The two fleet datapoints that looked contradictory
+#: -- a 5090 under-predicted by ~19%, this 4080 over-predicted by 25-30%
+#: -- are one model with a missing intercept read at two grid sizes.
+#:
+#: The intercept is not a fitted nuisance: it is the NON-POOL residency
+#: this module already itemizes (:func:`non_pool_device_bytes` -- the CUDA
+#: context plus the launch-time local-memory backing store), which the
+#: multiplicative form charged in proportion to the grid when it scales
+#: with neither.  See :data:`ENVELOPE_UNMODELLED_BYTES` for the affine
+#: replacement and the residuals behind it.
+#:
+#: These factors are RETAINED for the WDDM lane, whose one instrumented
+#: run is a true multiplicative observation over a projection that carries
+#: the Windows pool constants, and as the historical record.
 PEAK_ENVELOPE_FACTORS = {"windows": 1.75, "windows-small": 1.45,
                          "linux": 1.45}
 
@@ -295,6 +335,27 @@ def feedback_advisory(exp) -> str | None:
 
     return (FEEDBACK_TWO_WAY_ADVISORY
             if int(getattr(exp, "feedback", 0) or 0) == 1 else None)
+
+
+def check_advisories(exp, config_path=None) -> list[str]:
+    """Every route advisory this config earns, in report order.
+
+    Same posture as ``feedback_advisory``: these change no exit code and
+    block nothing.  They exist because a legal config that a later stage
+    silently ignores is worse than one it refuses -- the user learns
+    after paying for the run instead of before it.
+    """
+
+    from gpuwm.checkpoint_routes import (
+        checkpoint_route_advisory, config_has_case_data)
+
+    advisories = [feedback_advisory(exp)]
+    if config_path is not None:
+        advisories.append(checkpoint_route_advisory(
+            domain_count=len(exp.domains),
+            has_case_data=config_has_case_data(config_path),
+            restart_interval_s=getattr(exp, "restart_interval_s", 0.0)))
+    return [line for line in advisories if line]
 
 
 def platform_is_measured(platform: str | None = None) -> bool:
@@ -427,12 +488,125 @@ def windows_small_card_advisory(vram_gib: float) -> tuple[str, ...]:
         "card model.")
 
 
+#: What the machine-wide peak carries beyond the itemized estimate and
+#: the itemized non-pool residency: allocator fragmentation, the driver's
+#: own working set, and whatever the shape formulas do not enumerate.
+#:
+#: MEASURED 2026-08-01, RTX 4080 16 GiB / Linux / driver 595.58.03, GPU
+#: otherwise idle, machine-wide ``nvidia-smi`` sampled every 250 ms across
+#: whole prepared-cache forecasts.  Fitting ``peak = a x subtotal + b``
+#: over the single-domain runs returns a = 0.98 -- i.e. the itemization
+#: predicts the pool 1:1 and the residue is a CONSTANT, which is exactly
+#: what a CUDA context plus a launch-time local-memory backing store is.
+#: :data:`ENVELOPE_UNMODELLED_BYTES` is the part of that constant this
+#: module does not already itemize, rounded UP over the worst residual
+#: (an envelope must never round down).
+#:
+#: Residuals of ``measured - (alloc estimate + non-pool)``, single domain,
+#: staged prepared-cache route unless marked:
+#:
+#:   ===========  ==========  ==========  ==========  ==========
+#:   run          grid        estimate    measured    residual
+#:   ===========  ==========  ==========  ==========  ==========
+#:   s07          170x136      2.07 GiB    3.65 GiB   +0.05 GiB
+#:   small8       224x180      2.75 GiB    4.14 GiB   -0.14 GiB
+#:   small8 (go)  224x180      2.75 GiB    4.38 GiB   +0.10 GiB
+#:   s11          340x272      4.82 GiB    5.95 GiB   -0.41 GiB
+#:   edge15 (go)  448x360      7.56 GiB    8.75 GiB   -0.34 GiB
+#:   L12    (go)  474x378      8.27 GiB    9.25 GiB   -0.55 GiB
+#:   over22 (go)  594x476     12.38 GiB   12.59 GiB   -1.33 GiB
+#:   big24  (go)  630x504     13.76 GiB   13.88 GiB   -1.42 GiB
+#:   ===========  ==========  ==========  ==========  ==========
+#:
+#: The worst positive residual is +0.10 GiB; the same three-node Linux
+#: pilot set of 2026-07-30, re-read through this model, leaves +0.46 GiB
+#: of margin at its tightest (node 1, 4090).  A round half-gibibyte
+#: covers both with room, and unlike a multiplier it does not grow with
+#: the grid -- which is the whole point of having an intercept.
+ENVELOPE_UNMODELLED_BYTES = GIB // 2
+
+#: Per NEST beyond the root, as a FRACTION of the itemized estimate.
+#:
+#: A tree lands consistently above the single-domain line, because the
+#: shared scratch arena and the shared dycore-state workspace are priced
+#: at their per-slot maximum while the nest coupler's own buffers, the
+#: extra per-domain physics drivers and the per-domain output staging are
+#: not on that maximum.  Measured, same card and instrument, as
+#: ``measured - (estimate + non-pool)`` over the estimate:
+#:
+#:   =========  =======  ==========  ==========  ==============
+#:   run        domains  estimate    residual    per extra dom.
+#:   =========  =======  ==========  ==========  ==============
+#:   n10        2         4.12 GiB   +0.18 GiB      4.3%
+#:   n2_16      2         8.22 GiB   +0.34 GiB      4.2%
+#:   c07        4         2.06 GiB   +0.26 GiB      4.2%
+#:   =========  =======  ==========  ==========  ==============
+#:
+#: Three trees, two depths, a 4x span of estimate, and the same number
+#: each time -- so it is PROPORTIONAL, not a flat allowance, and 0.05
+#: rounds it up.  Zero for a single domain by construction, so no
+#: single-domain number in this release moves because of it.
+ENVELOPE_PER_NEST_FRACTION = 0.05
+
+#: What the affine envelope rests on, printed beside the number it makes.
+ENVELOPE_AFFINE_BASIS = (
+    "measured, RTX 4080 16 GiB / Linux, whole forecasts machine-wide at "
+    "250 ms across a 6.6x span of itemized estimate, 1/2/4 domains")
+
+
+def machine_peak_envelope_bytes(
+        *, alloc_estimate_bytes: int, non_pool_bytes: int,
+        domains: int = 1,
+        footprint_projection_bytes: int | None = None,
+        family: str = "linux") -> int:
+    """The machine-wide peak a run of this configuration should reach.
+
+    AFFINE, not multiplicative.  The old form was ``factor x projection``
+    with no intercept, and a model with no intercept cannot describe a
+    cost with a large fixed term: it under-predicts small configurations
+    and over-predicts large ones, which is precisely what the 16 GiB
+    fleet node measured (a 3.99 GiB declaration that peaked at 4.38, and
+    a 19.95 GiB declaration that peaked at 13.88).
+
+    The three terms are each something this module already knows:
+
+    * the itemized allocation estimate -- the pool side, which the
+      measurements track to within a few percent;
+    * :func:`non_pool_device_bytes` -- the CUDA context plus the
+      launch-time local-memory backing store, which scale with the DEVICE
+      and the kernel set, not with the grid;
+    * :data:`ENVELOPE_UNMODELLED_BYTES` (+ a per-nest term) -- the
+      measured residue, stated as a constant because that is what it
+      measured as.
+
+    The WDDM lane keeps its one instrumented multiplicative observation
+    and takes the LARGER of the two: the affine form is a floor there,
+    never a discount.
+    """
+
+    nests = max(0, int(domains) - 1)
+    affine = (int(alloc_estimate_bytes) + int(non_pool_bytes)
+              + ENVELOPE_UNMODELLED_BYTES
+              + math.ceil(ENVELOPE_PER_NEST_FRACTION * nests
+                          * int(alloc_estimate_bytes)))
+    if family == "windows" and footprint_projection_bytes is not None:
+        return max(affine, int(footprint_projection_bytes
+                               * PEAK_ENVELOPE_FACTORS["windows"]))
+    return affine
+
+
 def observed_peak_envelope_bytes(
         footprint_projection_bytes: int,
         *, platform: str | None = None,
         vram_gib: float | None = None,
 ) -> int:
-    """The empirical machine-peak envelope for a footprint projection."""
+    """The RETIRED multiplicative machine-peak envelope.
+
+    Kept because the WDDM factor is a real measurement over a real
+    projection and the Windows lane still quotes it, and because the
+    receipts of three releases are written in its terms.  New callers
+    want :func:`machine_peak_envelope_bytes`, which has an intercept.
+    """
 
     return int(footprint_projection_bytes
                * peak_envelope_factor(platform, vram_gib))
@@ -543,8 +717,61 @@ MEASURED_LOCAL_MEMORY_PROFILE = DeviceLocalMemoryProfile(
 )
 
 
+#: UPPER BOUND on the streaming-multiprocessor count shipped at each VRAM
+#: capacity, as of 2026-08.  The local-memory backing store is
+#: ``(frame - default stack) x SMs x threads per SM``, so it is a
+#: property of the DEVICE; pricing every card against the 170-SM RTX 5090
+#: this module was calibrated on is the same error as charging Linux the
+#: WDDM pool constants -- an accounting term measured somewhere else.  On
+#: a 12 GiB card the 5090's 2.49 GiB backing store is a fifth of the card
+#: before a single grid cell exists, and that is what made the wizard
+#: refuse to size a tier it can probably run.
+#:
+#: Each row is the LARGEST SM count sold at that capacity, so the term is
+#: over-priced rather than under-priced for every other card in the class
+#: (16 GiB: RTX 5080 84, RTX 4080 76, 4080 Super 80, A4000 48).  A live
+#: device always overrides this table -- see
+#: :func:`live_device_local_memory_profile`; it exists only for sizing a
+#: card that is not in this machine.
+CARD_CLASS_MULTIPROCESSORS = ((12.0, 70), (16.0, 84), (24.0, 128),
+                              (32.0, 170))
+
+
+def card_local_memory_profile(
+        vram_gib: float | None) -> DeviceLocalMemoryProfile:
+    """The conservative device profile for a card of ``vram_gib``.
+
+    ``None`` (nothing declared) keeps the measured reference profile,
+    which is the largest row in the table and therefore the safest thing
+    to assume about a card nobody named.
+    """
+
+    if vram_gib is None or not math.isfinite(float(vram_gib)):
+        return MEASURED_LOCAL_MEMORY_PROFILE
+    size = float(vram_gib)
+    smallest = None
+    for capacity, count in CARD_CLASS_MULTIPROCESSORS:
+        if size <= capacity:
+            smallest = (capacity, count)
+            break
+    if smallest is None:
+        return MEASURED_LOCAL_MEMORY_PROFILE
+    capacity, count = smallest
+    return DeviceLocalMemoryProfile(
+        name=f"<{capacity:g} GiB card class, {count} SM upper bound>",
+        multiprocessor_count=count,
+        max_threads_per_multiprocessor=(
+            MEASURED_LOCAL_MEMORY_PROFILE.max_threads_per_multiprocessor),
+        default_stack_limit_bytes=(
+            MEASURED_LOCAL_MEMORY_PROFILE.default_stack_limit_bytes),
+    )
+
+
 def local_memory_profile_from_device(cp) -> DeviceLocalMemoryProfile:
     """Read the profile off the attached device (``--alloc`` path only)."""
+    # ``gpuwm multi-run`` masks one physical UUID into each check process;
+    # CUDA ordinal 0 is therefore the selected logical device, not a claim
+    # that every run belongs on the machine's physical index zero.
     props = cp.cuda.runtime.getDeviceProperties(0)
     name = props["name"]
     return DeviceLocalMemoryProfile(
@@ -2788,6 +3015,12 @@ class ExperimentMemoryEstimate:
     retention_residual_bytes: int = field(default=0)
     device_overhead_bytes: int = field(
         default_factory=lambda: platform_projection_constants()[1])
+    #: CUDA context + launch-time local-memory backing store for the
+    #: kernel set THIS configuration launches, on the device profile it
+    #: was priced against.  The affine envelope's intercept.
+    non_pool_device_bytes: int = 0
+    #: Which envelope family priced it (``linux``/``windows``/...).
+    envelope_family: str = "linux"
 
     @property
     def resident_bytes(self) -> int:
@@ -2848,6 +3081,75 @@ class ExperimentMemoryEstimate:
     @property
     def footprint_projection_bytes(self) -> int:
         return self.held_projection_bytes + self.device_overhead_bytes
+
+    @property
+    def envelope_intercept_bytes(self) -> int:
+        """Everything in the envelope that does not scale with the grid.
+
+        The itemized non-pool residency, PLUS whatever fixed platform
+        term the projection carries: zero on Linux, and on the
+        experimental Windows small-card tier the 1.5 GiB standing in for
+        the WDDM residency the CuPy pool never sees.  That tier has no
+        measurements behind it, so replacing its multiplier with an
+        intercept must not also drop the term it was carrying -- an
+        unmeasured tier is not the place to become more optimistic.
+        """
+        return self.non_pool_device_bytes + self.device_overhead_bytes
+
+    @property
+    def peak_envelope_bytes(self) -> int:
+        """The affine machine-peak envelope for this forecast."""
+        return machine_peak_envelope_bytes(
+            alloc_estimate_bytes=self.alloc_estimate_bytes,
+            non_pool_bytes=self.envelope_intercept_bytes,
+            domains=len(self.domains),
+            footprint_projection_bytes=self.footprint_projection_bytes,
+            family=self.envelope_family)
+
+    @property
+    def affine_envelope_bytes(self) -> int:
+        """The affine form alone, whichever branch actually bound."""
+        return machine_peak_envelope_bytes(
+            alloc_estimate_bytes=self.alloc_estimate_bytes,
+            non_pool_bytes=self.envelope_intercept_bytes,
+            domains=len(self.domains), family="linux")
+
+    @property
+    def envelope_basis(self) -> str:
+        """The evidence behind whichever branch actually bound."""
+        if self.envelope_is_wddm_floor:
+            return PEAK_ENVELOPE_BASIS["windows"]
+        return ENVELOPE_AFFINE_BASIS
+
+    @property
+    def envelope_is_wddm_floor(self) -> bool:
+        """Did the retained WDDM multiplier bind instead of the sum?"""
+        return self.peak_envelope_bytes > self.affine_envelope_bytes
+
+    def peak_envelope_terms(self) -> str:
+        """The envelope's arithmetic, exactly as it was evaluated.
+
+        Printed by both `gpuwm check` and the wizard, from one place, so
+        the two can never show a sum whose parts do not add up to it --
+        which is what happens the moment a second branch exists and only
+        one of them is described.
+        """
+        nests = max(0, len(self.domains) - 1)
+        nest_term = (f" + {ENVELOPE_PER_NEST_FRACTION:.0%} of the estimate "
+                     f"x {nests} nest(s)" if nests else "")
+        affine = (f"estimate {self.alloc_estimate_bytes / GIB:.2f} + "
+                  f"non-pool {self.envelope_intercept_bytes / GIB:.2f} (CUDA "
+                  f"context + local-memory backing store) + "
+                  f"{ENVELOPE_UNMODELLED_BYTES / GIB:.2f} unmodelled"
+                  f"{nest_term} = "
+                  f"{self.affine_envelope_bytes / GIB:.2f} GiB")
+        if not self.envelope_is_wddm_floor:
+            return affine
+        factor = PEAK_ENVELOPE_FACTORS["windows"]
+        return (f"footprint {self.footprint_projection_bytes / GIB:.2f} x "
+                f"{factor:.2f} WDDM floor = "
+                f"{self.peak_envelope_bytes / GIB:.2f} GiB, which is above "
+                f"the affine form ({affine}) and therefore binds")
 
 
 # ---------------------------------------------------------------------------
@@ -2953,13 +3255,30 @@ def ingest_analysis_shapes(cfg: RunConfig, *, source: str
 
 @dataclass(frozen=True)
 class IngestMemoryEstimate:
-    """Itemized device memory for the preprocessing phase of one root.
+    """Itemized device memory for the preprocessing phase of one TREE.
 
     Preprocessing builds one complete :class:`DomainState` per forcing
     time from one horizontally interpolated analysis per forcing time.
     Streaming means ``resident_times`` of each coexist rather than all of
     them, which is the whole difference between this phase costing twice
     the forecast and costing less than half of it.
+
+    2026-08-01 AMENDMENT -- IT IS NOT ONE ROOT.  v1.4.0 priced this phase
+    on the root domain alone, so the PREDICTION FELL as nests were added
+    (5.46 -> 1.89 -> 1.30 GiB across one, two and four domains) while the
+    16 GiB fleet node measured it FLAT at 4.0-4.8 GiB -- under by 2.1x at
+    two domains and 3.4x at four, in the unsafe direction, on the very
+    number the before-the-fetch gate half-relies on.  The mechanism was
+    plain in the tool's own itemization: a deeper ladder has a SMALLER
+    root, and only the root was priced, so adding domains made the answer
+    shrink.  In the two-domain case the unpriced d02 had 4.9x the cells
+    of the priced root.
+
+    The hierarchy is initialized and exported as ONE transaction, so
+    every domain's initial state is on the device together at the moment
+    it is written: :attr:`nest_state_bytes` prices the nests, and the
+    per-call setup transient is charged against the WIDEST domain in the
+    tree rather than the root.
     """
 
     grid_id: int
@@ -2967,6 +3286,16 @@ class IngestMemoryEstimate:
     resident_times: int
     n_forcing_times: int
     boundary_frame_bytes: int
+    #: Initial-state residency of every domain BELOW the root, summed:
+    #: the hierarchy export holds the whole tree at once.  Zero for a
+    #: single-domain configuration, which is why this amendment cannot
+    #: move any single-domain number.
+    nest_state_bytes: int = 0
+    #: Analysis + state of the widest domain in the tree, whatever its
+    #: depth; the setup transient is charged against this.
+    widest_domain_time_bytes: int = 0
+    #: ``(grid_id, state_bytes)`` per nest, for the itemized report.
+    nest_state_items: tuple[tuple[int, int], ...] = ()
     headroom: float = ALLOCATOR_HEADROOM
     context_bytes: int = CUDA_CONTEXT_BYTES
     device_overhead_bytes: int = field(
@@ -2978,9 +3307,14 @@ class IngestMemoryEstimate:
 
     @property
     def per_time_bytes(self) -> int:
-        """One forcing time: its analysis plus the state built from it."""
+        """One ROOT forcing time: its analysis plus the state built from it."""
         return sum(item.nbytes for item in self.items
                    if item.category in ("analysis", "state"))
+
+    @property
+    def transient_basis_bytes(self) -> int:
+        """The domain the per-call setup transient is charged against."""
+        return max(self.widest_domain_time_bytes, self.per_time_bytes)
 
     @property
     def forcing_table_bytes(self) -> int:
@@ -2990,19 +3324,19 @@ class IngestMemoryEstimate:
     @property
     def resident_bytes(self) -> int:
         return (self.resident_times * self.per_time_bytes
-                + self.forcing_table_bytes)
+                + self.forcing_table_bytes + self.nest_state_bytes)
 
     @property
     def unstreamed_resident_bytes(self) -> int:
         """What this phase cost before it streamed -- every time at once."""
         return (self.n_forcing_times * self.per_time_bytes
-                + self.forcing_table_bytes)
+                + self.forcing_table_bytes + self.nest_state_bytes)
 
     @property
     def transient_bytes(self) -> int:
-        """Un-enumerated setup temporaries for the ONE time being built."""
+        """Un-enumerated setup temporaries for the ONE domain being built."""
         return math.ceil(
-            INGEST_TRANSIENT_PER_TIME_FRACTION * self.per_time_bytes)
+            INGEST_TRANSIENT_PER_TIME_FRACTION * self.transient_basis_bytes)
 
     @property
     def subtotal_bytes(self) -> int:
@@ -3031,12 +3365,12 @@ def estimate_ingest(exp: ExperimentConfig, *, source: str,
                     = DEFAULT_FORCING_INTERVAL_SECONDS,
                     vram_gib: float | None = None,
                     ) -> IngestMemoryEstimate:
-    """Itemize the preprocessing phase of ``exp``'s root domain.
+    """Itemize the preprocessing phase of ``exp``'s WHOLE DOMAIN TREE.
 
-    Nested domains are initialized from the completed root one at a time
-    (``initialize_and_export_regular_source_hierarchy``), and a child is
-    never larger than the root's per-time residency in the layouts the
-    wizard emits, so the root is the phase peak.
+    The root carries the streamed forcing times and the boundary tables.
+    Every nest carries one complete initial state, and they are resident
+    together: the hierarchy is verified and exported as a single atomic
+    transaction, not domain by domain with a release in between.
     """
     dc = exp.root
     run = dc.run
@@ -3048,6 +3382,25 @@ def estimate_ingest(exp: ExperimentConfig, *, source: str,
         run, n_lbc_intervals=(n_intervals if run.specified else 0))
     items += _items("lbc", {slot: shape for slot, shape in registry.items()
                             if slot.startswith("lbc_")})
+    # Every NEST: one complete initial state each, all resident for the
+    # export transaction.  A nest is initialized from its parent, so it
+    # carries no second copy of the source analysis -- but the setup
+    # transient is charged against whichever domain is widest, which on
+    # a real ladder is usually a nest and not the root.
+    nest_items: list[tuple[int, int]] = []
+    widest = sum(item.nbytes for item in items
+                 if item.category in ("analysis", "state"))
+    for child in exp.domains:
+        if child.grid_id == dc.grid_id:
+            continue
+        child_run = child.run
+        state = sum(4 * math.prod(shape)
+                    for shape in state_array_shapes(child_run).values())
+        analysis = sum(
+            4 * math.prod(shape) for shape in
+            ingest_analysis_shapes(child_run, source=source).values())
+        nest_items.append((child.grid_id, state))
+        widest = max(widest, state + analysis)
     # The host-side perimeter frames StateBoundaryFrames retains: float64,
     # four sides, every forcing time.  Reported so the phase's HOST cost
     # is visible too; it is not part of the device residency above.
@@ -3060,6 +3413,9 @@ def estimate_ingest(exp: ExperimentConfig, *, source: str,
         resident_times=INGEST_RESIDENT_FORCING_TIMES,
         n_forcing_times=n_intervals + 1,
         boundary_frame_bytes=8 * frame_elements * (n_intervals + 1),
+        nest_state_bytes=sum(nbytes for _, nbytes in nest_items),
+        widest_domain_time_bytes=widest,
+        nest_state_items=tuple(nest_items),
         device_overhead_bytes=platform_projection_constants(
             vram_gib=vram_gib)[1],
     )
@@ -3136,6 +3492,7 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
                     = DEFAULT_FORCING_INTERVAL_SECONDS,
                     ingest_forcing_interval_seconds: float | None = None,
                     vram_gib: float | None = None,
+                    profile: DeviceLocalMemoryProfile | None = None,
                     ) -> PhaseMemoryEstimate:
     """Price every phase of ``exp`` and say which one binds the card.
 
@@ -3146,7 +3503,7 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
     forecast = estimate_experiment(
         exp, column_chunk=column_chunk,
         forcing_interval_seconds=forcing_interval_seconds,
-        vram_gib=vram_gib)
+        vram_gib=vram_gib, profile=profile)
     key = None if source is None else str(source).strip().lower()
     ingest = None
     if key in SOURCE_ANALYSIS_LEVELS:
@@ -3159,8 +3516,7 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
             vram_gib=vram_gib)
     return PhaseMemoryEstimate(
         forecast=forecast, ingest=ingest,
-        forecast_envelope_bytes=observed_peak_envelope_bytes(
-            forecast.footprint_projection_bytes, vram_gib=vram_gib),
+        forecast_envelope_bytes=forecast.peak_envelope_bytes,
         ingest_envelope_bytes=(None if ingest is None
                                else ingest.peak_envelope_bytes),
         source=key,
@@ -3194,6 +3550,7 @@ def estimate_experiment(
         column_chunk: int | None = None,
         forcing_interval_seconds: float = DEFAULT_FORCING_INTERVAL_SECONDS,
         vram_gib: float | None = None,
+        profile: DeviceLocalMemoryProfile | None = None,
 ) -> ExperimentMemoryEstimate:
     """Sum the per-domain itemizations; count the lru_cache-shared
     k-distribution tables ONCE (rrtmgp.py:324/:436 -- baseline behavior,
@@ -3266,6 +3623,10 @@ def estimate_experiment(
             if uses_rrtmgp else 0),
         device_overhead_bytes=platform_projection_constants(
             vram_gib=vram_gib)[1],
+        non_pool_device_bytes=non_pool_device_bytes(
+            exp, profile=(card_local_memory_profile(vram_gib)
+                          if profile is None else profile)),
+        envelope_family=envelope_platform(vram_gib=vram_gib),
     )
 
 
@@ -3624,7 +3985,8 @@ def run_alloc_preflight(
         exp: ExperimentConfig, *,
         column_chunk: int | None = None,
         forcing_interval_seconds: float = DEFAULT_FORCING_INTERVAL_SECONDS,
-        reserve: ReservePolicy | None = None) -> AllocReport:
+        reserve: ReservePolicy | None = None,
+        profile: DeviceLocalMemoryProfile | None = None) -> AllocReport:
     """N0: construct all DomainStates + drivers + d01 LBC + the F4 nest
     manifest allocations + the RRTMGP workspace on the real device, run
     ZERO steps, report pool used/peak vs estimate, free.
@@ -3644,7 +4006,7 @@ def run_alloc_preflight(
     reserve = ReservePolicy.n0_alloc() if reserve is None else reserve
     estimate = estimate_experiment(
         exp, column_chunk=column_chunk,
-        forcing_interval_seconds=forcing_interval_seconds)
+        forcing_interval_seconds=forcing_interval_seconds, profile=profile)
     column_chunk = estimate.column_chunk
     n_int = lbc_intervals(exp.run_seconds, forcing_interval_seconds)
 
@@ -3829,17 +4191,19 @@ def run_alloc_preflight(
 # ---------------------------------------------------------------------------
 
 def _load_experiment_any(path: Path) -> ExperimentConfig:
+    import io
     import tomllib
 
     from gpuwm.case_data import load_experiment_case
     from gpuwm.config import load_config
+    from gpuwm.config_authority import read_config_authority
     from gpuwm.experiment import (build_experiment,
                                   experiment_from_run_config,
-                                  is_experiment_toml)
+                                  is_experiment_toml_bytes)
 
-    if is_experiment_toml(path):
-        with open(path, "rb") as fh:
-            raw = tomllib.load(fh)
+    authority = read_config_authority(path)
+    if is_experiment_toml_bytes(authority.payload):
+        raw = tomllib.load(io.BytesIO(authority.payload))
         if "case_data" not in raw:
             # `gpuwm domain --source gfs|hrrr` deliberately emits no
             # [case_data]: those tables feed the native front door.  The
@@ -3865,15 +4229,17 @@ def config_forcing_source(path: Path) -> str | None:
     story" -- which is exactly how a domain sized to a 12 GB card came
     to die in preprocessing after the download.
     """
+    import io
     import tomllib
 
-    from gpuwm.experiment import is_experiment_toml
+    from gpuwm.config_authority import read_config_authority
+    from gpuwm.experiment import is_experiment_toml_bytes
 
     path = Path(path)
-    if not is_experiment_toml(path):
+    authority = read_config_authority(path)
+    if not is_experiment_toml_bytes(authority.payload):
         return None
-    with open(path, "rb") as stream:
-        raw = tomllib.load(stream)
+    raw = tomllib.load(io.BytesIO(authority.payload))
     table = raw.get("fetch")
     if isinstance(table, dict) and isinstance(table.get("source"), str):
         source = table["source"].strip().lower()
@@ -3952,6 +4318,31 @@ def _warn_unstaged_physics_tables(exp) -> None:
         return
 
 
+def live_device_local_memory_profile() -> DeviceLocalMemoryProfile | None:
+    """This machine's own local-memory profile, or ``None``.
+
+    The local-memory backing store is ``(frame - default stack) x SM
+    count x threads per SM``, so it is a property of the DEVICE, and the
+    reference profile in this module is a 170-SM RTX 5090 -- roughly
+    2.2x the resident-thread capacity of a 76-SM 4080.  Charging every
+    card the 5090's backing store is the same mistake as charging Linux
+    the WDDM pool constants: an accounting term measured somewhere else.
+
+    Read only when the free-VRAM figure is being MEASURED off this
+    device, i.e. when the answer is about this machine.  A declared
+    ``--budget-gib`` says "size for a machine that is not this one", and
+    that machine's SM count is unknown, so it keeps the reference
+    profile -- which over-prices rather than under-prices.
+    """
+
+    try:
+        import cupy as cp
+
+        return local_memory_profile_from_device(cp)
+    except Exception:
+        return None
+
+
 def check_main(args) -> int:
     """``gpuwm check CONFIG [--alloc]``: memory section of the preflight.
 
@@ -3988,14 +4379,21 @@ def check_main(args) -> int:
         device_wide_used_bytes())
     chunk = (exp.column_chunk if args.column_chunk is None
              else args.column_chunk)
+    #: The device the non-pool terms are priced against.  This machine's
+    #: own, whenever the free figure is measured off it; the reference
+    #: 5090 profile when a declared budget says the target is elsewhere.
+    profile = (None if getattr(args, "budget_gib", None) is not None
+               else live_device_local_memory_profile())
+    if profile is None:
+        profile = card_local_memory_profile(card_total_gib)
     # The retention term is a fraction OF the estimate, so the estimate is
     # formed first.  It is pure arithmetic and the runners re-derive it from
     # the same inputs, so there is no second source of truth.
     reserve = ReservePolicy.n0_alloc(
-        exp, estimate_bytes=estimate_experiment(
+        exp, profile=profile, estimate_bytes=estimate_experiment(
             exp, column_chunk=chunk,
             forcing_interval_seconds=args.forcing_interval_s,
-            vram_gib=card_total_gib
+            vram_gib=card_total_gib, profile=profile
         ).alloc_estimate_bytes)
     if args.reserve_gib is not None:
         # Flat controller-ratified reserve replacing the proposed stack.
@@ -4008,7 +4406,7 @@ def check_main(args) -> int:
             report = run_alloc_preflight(
                 exp, column_chunk=chunk,
                 forcing_interval_seconds=args.forcing_interval_s,
-                reserve=reserve)
+                reserve=reserve, profile=profile)
         except (PreflightHeadroomError, PreflightAllocError) as exc:
             abort = exc
         if report is not None:
@@ -4022,7 +4420,7 @@ def check_main(args) -> int:
             estimate = estimate_experiment(
                 exp, column_chunk=chunk,
                 forcing_interval_seconds=args.forcing_interval_s,
-                vram_gib=card_total_gib)
+                vram_gib=card_total_gib, profile=profile)
             measured_used = None
             free = getattr(abort, "free_bytes", None)
             gates = evaluate_alloc_gates(
@@ -4033,7 +4431,7 @@ def check_main(args) -> int:
         estimate = estimate_experiment(
             exp, column_chunk=chunk,
             forcing_interval_seconds=args.forcing_interval_s,
-            vram_gib=card_total_gib)
+            vram_gib=card_total_gib, profile=profile)
         measured_used = None
         free = None
         if args.budget_gib is not None:
@@ -4046,17 +4444,22 @@ def check_main(args) -> int:
             # number a user then trusts.
             free = int(args.budget_gib * GIB) + reserve.reserve_bytes
             free_source = "declared (--budget-gib)"
-            # ...and, once a card is named, it is capped by that card.
-            # The arithmetic above knows the budget but not the capacity,
-            # so on its own it can and did synthesise a free figure larger
-            # than the whole card.  Without --vram-gib there is no card to
-            # cap against: --budget-gib is explicitly a "size for a machine
-            # that is not this one" flag, so this box's own capacity is
-            # not evidence about the target and must not bind it.
+            # ...and, once a card is named, it is capped by THAT card --
+            # the declared one, and only it.  The arithmetic above knows
+            # the budget but not the capacity, so on its own it can and
+            # did synthesise a free figure larger than the whole card.
+            #
+            # This box's own physical total is NOT a second ceiling here.
+            # --budget-gib is explicitly a "size for a machine that is not
+            # this one" flag, and clamping a declared 24 GiB target to a
+            # 16 GB card under the desk is how the wizard's own inline
+            # check came to refuse a config it had just sized correctly:
+            # the check reported a budget of 11.14 GiB for a 24 GiB
+            # target, which is this machine's number, not the target's.
             if card_total_gib is not None:
                 free, capped_to = cap_free_to_physical(
                     free, card_total_bytes=int(card_total_gib * GIB),
-                    measured_total_bytes=device_physical_total_bytes())
+                    measured_total_bytes=None)
             if capped_to is not None:
                 free_source = ("declared (--budget-gib), capped at the "
                                "card's physical total")
@@ -4100,8 +4503,16 @@ def check_main(args) -> int:
             measured_free_bytes=free, reserve=reserve)
 
     budget = None if free is None else reserve.budget_bytes(free)
-    forecast_envelope = observed_peak_envelope_bytes(
-        estimate.footprint_projection_bytes, vram_gib=card_total_gib)
+    #: A reserve larger than free VRAM leaves NO budget, not a negative
+    #: capacity.  ``budget = free - reserve`` is unbounded below, and a
+    #: 4000x4000 config drove it to -7.15 GiB, which the report then
+    #: printed as a figure to compare an envelope against.  Clamp at
+    #: zero and say what happened, in the report, once.
+    budget_underwater_bytes = 0
+    if budget is not None and budget < 0:
+        budget_underwater_bytes = -budget
+        budget = 0
+    forecast_envelope = estimate.peak_envelope_bytes
     # PREPROCESSING IS A PHASE TOO.  Reporting only the forecast is what
     # let a 12 GB-sized domain download 81 GFS files and then OOM in
     # ingest at 15.82 GB.  A config whose source this estimator cannot
@@ -4110,7 +4521,7 @@ def check_main(args) -> int:
     phases = estimate_phases(
         exp, source=ingest_source, column_chunk=chunk,
         forcing_interval_seconds=args.forcing_interval_s,
-        vram_gib=card_total_gib)
+        vram_gib=card_total_gib, profile=profile)
     if not phases.ingest_priced:
         phases = None
     #: The envelope every verdict below compares: the largest phase, not
@@ -4164,6 +4575,12 @@ def check_main(args) -> int:
             "observed_peak_envelope_basis": PEAK_ENVELOPE_BASIS[
                 envelope_platform(vram_gib=card_total_gib)],
             "observed_peak_envelope_bytes": forecast_envelope,
+            "non_pool_device_bytes": estimate.non_pool_device_bytes,
+            "envelope_unmodelled_bytes": ENVELOPE_UNMODELLED_BYTES,
+            "envelope_per_nest_fraction": ENVELOPE_PER_NEST_FRACTION,
+            "envelope_basis": ENVELOPE_AFFINE_BASIS,
+            "local_memory_profile": estimate.non_pool_device_bytes and
+                profile.name,
             "peak_envelope_bytes": envelope,
             "binding_phase": binding_phase,
             "reserve_bytes": reserve.reserve_bytes,
@@ -4184,6 +4601,7 @@ def check_main(args) -> int:
             "free_bytes_source": free_source,
             "free_bytes_capped_to_physical_bytes": capped_to,
             "budget_bytes": budget,
+            "budget_underwater_bytes": budget_underwater_bytes,
             "observed_peak_envelope_exceeds_budget": (
                 None if budget is None else envelope_over_budget),
             "gates": gates,
@@ -4203,6 +4621,12 @@ def check_main(args) -> int:
                 "state_bytes": ingest.category_bytes("state"),
                 "forcing_table_bytes": ingest.forcing_table_bytes,
                 "resident_bytes": ingest.resident_bytes,
+                "nest_state_bytes": ingest.nest_state_bytes,
+                "nest_state_by_grid": {
+                    f"d{grid:02d}": nbytes
+                    for grid, nbytes in ingest.nest_state_items},
+                "widest_domain_time_bytes":
+                    ingest.widest_domain_time_bytes,
                 "transient_bytes": ingest.transient_bytes,
                 "subtotal_bytes": ingest.subtotal_bytes,
                 "unstreamed_resident_bytes":
@@ -4214,9 +4638,9 @@ def check_main(args) -> int:
                 "peak_envelope_basis": INGEST_PEAK_ENVELOPE_BASIS,
             }
             payload["phase_verdict"] = phases.verdict(budget)
-        advisory = feedback_advisory(exp)
-        if advisory is not None:
-            payload["advisories"] = [advisory]
+        advisories = check_advisories(exp, args.config)
+        if advisories:
+            payload["advisories"] = advisories
         if rail is not None:
             payload["device_rail"] = rail
         if abort is not None:
@@ -4240,8 +4664,7 @@ def check_main(args) -> int:
         print(f"gpuwm check: memory preflight for {exp.name!r} "
               f"({len(exp.domains)} domain(s); column_chunk "
               f"{estimate.column_chunk})")
-        advisory = feedback_advisory(exp)
-        if advisory is not None:
+        for advisory in check_advisories(exp, args.config):
             print(f"  {advisory}")
         for d in estimate.domains:
             cats = ", ".join(
@@ -4287,32 +4710,40 @@ def check_main(args) -> int:
                 "the one machine-peak-instrumented Windows run (Thompson "
                 "rematch 2026-07-28) peaked at 1.746x its footprint "
                 "projection machine-wide (CuPy pool retention + write "
-                "transients the projection does not model), so expect true "
-                "peak VRAM near this envelope, not the projection")
+                "transients the projection does not model), so the WDDM "
+                "lane keeps that multiplier as a FLOOR under the affine "
+                "form and this envelope is the larger of the two")
         else:
             provenance = (
-                "no WDDM here, and no Windows pool constants in the "
-                "projection either: three instrumented Linux runs "
-                "(2026-07-30, two 4090s and a 4070) peaked at 1.15x to "
-                "1.32x the itemized alloc estimate machine-wide, so this "
-                "factor is a margin over the measurements rather than a "
-                "multiplier stacked on top of them")
-        print(f"  FORECAST OBSERVED PEAK ENVELOPE "
-              f"(x{peak_envelope_factor(vram_gib=card_total_gib):.2f} "
-              f"footprint, {family} factor; "
-              f"{PEAK_ENVELOPE_BASIS[family]}): "
+                "affine, not a multiplier: a multiplier with no intercept "
+                "under-predicts small configurations and over-predicts "
+                "large ones, which is what the 16 GiB fleet node measured "
+                "(3.99 GiB declared, 4.38 measured; 19.95 declared, 13.88 "
+                "measured).  The intercept is the non-pool line above, "
+                "which scales with the device and the kernel set, not "
+                "with the grid")
+        print(f"  FORECAST PEAK ENVELOPE ({estimate.peak_envelope_terms()}"
+              f"; {estimate.envelope_basis}): "
               f"{_format_bytes(forecast_envelope)} -- {provenance}.")
         if phases is None:
             print("  " + unpriced_ingest_note(args.config, ingest_source))
         else:
             ingest = phases.ingest
             print(f"  INGEST (preprocessing, --source {ingest_source}): "
-                  f"{ingest.n_forcing_times} forcing times x "
+                  f"root {ingest.n_forcing_times} forcing times x "
                   f"{_format_bytes(ingest.per_time_bytes)} each "
                   f"(analysis {_format_bytes(ingest.category_bytes('analysis'))}"
                   f" + state {_format_bytes(ingest.category_bytes('state'))}); "
                   f"{ingest.resident_times} resident at a time = "
                   f"{_format_bytes(ingest.resident_bytes)} resident")
+            if ingest.nest_state_items:
+                nested = ", ".join(
+                    f"d{grid:02d} {nbytes / GIB:.2f}"
+                    for grid, nbytes in ingest.nest_state_items)
+                print(f"    + NESTS ({len(ingest.nest_state_items)} of them, "
+                      f"one initial state each, all resident for the single "
+                      f"export transaction): {nested} = "
+                      f"{_format_bytes(ingest.nest_state_bytes)}")
             print(f"    INGEST OBSERVED PEAK ENVELOPE "
                   f"(x{ingest.headroom:.2f} headroom + "
                   f"{_format_bytes(ingest.context_bytes)} CUDA context; "
@@ -4328,6 +4759,16 @@ def check_main(args) -> int:
               f"external {reserve.external_margin_bytes / GIB:.2f}); "
               f"{free_source} free {_format_bytes(free)}; budget "
               f"{_format_bytes(budget)}")
+        if budget_underwater_bytes:
+            print(f"  NO BUDGET AT ALL: the reserve alone is "
+                  f"{_format_bytes(reserve.reserve_bytes)} against "
+                  f"{_format_bytes(free)} free, so it exceeds the card by "
+                  f"{_format_bytes(budget_underwater_bytes)} before this "
+                  f"configuration asks for a single byte.  The budget "
+                  f"above is clamped to zero: a negative capacity is not "
+                  f"a number anything can be compared against.  The "
+                  f"reserve's retention term scales with the "
+                  f"configuration, so a smaller one is the lever.")
         if capped_to is not None:
             print(f"  CAPPED: the declared free figure exceeded the card's "
                   f"physical total and was clamped to "
@@ -4351,29 +4792,64 @@ def check_main(args) -> int:
             print(f"  ABORTED before measurement ({type(abort).__name__} "
                   f"during {abort.phase}): {abort}")
         for metric in N0_GATE_METRICS:
-            print(f"  {metric}: {_leg_text(gates[metric])}")
+            print(f"  {gate_display_name(metric, vram_gib=card_total_gib)}: "
+                  f"{_leg_text(gates[metric])}")
         if envelope_over_budget:
             if binding_phase != "forecast":
                 print(f"  WARNING: the binding phase here is "
                       f"{binding_phase}, not the forecast; the envelope "
                       "named below is that phase's.")
+            # The exit code this block ANNOUNCES has to be the one the
+            # process will really return.  It used to assert "(exit code
+            # 4: gates passed)" unconditionally -- including when a gate
+            # had just failed and the process therefore exited 1, which
+            # is a printed contract a script can be written against and
+            # then mis-handle.  Read the gates here, once.
+            gate_failed = any(leg is False for leg in gates.values())
+            unevaluable = not [leg for leg in gates.values()
+                               if leg is not None]
+            if gate_failed:
+                code_note = ("exit code 1: a gate above FAILED as well, "
+                             "and the harder verdict wins")
+            elif unevaluable:
+                code_note = ("exit code 2: no gate above could be "
+                             "evaluated, which fails closed")
+            else:
+                code_note = (f"exit code {_EXIT_ENVELOPE_OVER_BUDGET}: "
+                             "gates passed, envelope did not")
+            budget_word = ("WDDM budget" if envelope_platform(
+                vram_gib=card_total_gib) == "windows" else "budget")
             print(f"  WARNING: observed peak envelope "
-                  f"{_format_bytes(envelope)} exceeds the WDDM budget "
+                  f"{_format_bytes(envelope)} exceeds the {budget_word} "
                   f"{_format_bytes(budget)} by "
                   f"{_format_bytes(envelope - budget)}.  The gates above "
-                  f"compare the itemized estimate; the rematch receipts "
-                  f"show the true machine peak lands near the envelope, "
-                  f"so this configuration may run out of budget even "
-                  f"though the estimate gate passes -- trim the "
-                  f"configuration or free VRAM before trusting the pass.  "
-                  f"(exit code {_EXIT_ENVELOPE_OVER_BUDGET}: gates passed, "
-                  f"envelope did not.)")
+                  f"compare the itemized estimate; the envelope is what "
+                  f"the machine is measured to reach, so this "
+                  f"configuration may run out of budget even though the "
+                  f"estimate gate passes -- trim the configuration or "
+                  f"free VRAM before trusting the pass.  ({code_note}.)")
         if budget is not None and estimate.alloc_estimate_bytes > budget:
             lever = recommend_column_chunk(exp, budget)
-            print("  OVER BUDGET; first lever (RRTMGP column_chunk): "
-                  + (f"--column-chunk {lever}" if lever else
-                     "no chunk halving fits after shared-scratch arena -- "
-                     "staged residency (DESIGN REOPEN) per section E"))
+            if lever:
+                print("  OVER BUDGET; first lever (RRTMGP column_chunk): "
+                      f"--column-chunk {lever}")
+            else:
+                # It used to end "staged residency (DESIGN REOPEN) per
+                # section E".  No pip user has a section E, and the
+                # sentence names no action; the actionable one already
+                # exists one layer up, in `gpuwm go`'s refusal.
+                # ``--vram-gib`` names the CARD, not the budget, so the
+                # number in the remedy is the free VRAM this preflight
+                # just used -- the same arithmetic `gpuwm go`'s refusal
+                # prints, and the same flag.
+                card_gib = max(1, int((free or budget) / GIB))
+                print("  OVER BUDGET, and the RRTMGP column_chunk lever "
+                      "cannot close it: no chunk halving fits after the "
+                      "shared-scratch arena, so the grid itself is what "
+                      "has to come down.")
+                print(f"  remedy: re-size for this card -- gpuwm domain "
+                      f"--vram-gib {card_gib} ... -- or free VRAM and "
+                      f"re-run")
     if abort is not None:
         return 3
     if args.alloc:
@@ -4466,6 +4942,7 @@ __all__ = [
     "SCRATCH_SLOT_LIFETIME_AUDIT", "ScratchSlotLifetime",
     "atmosphere_transient_shapes", "check_main", "dudhia_column_shapes",
     "estimate_domain", "estimate_experiment", "evaluate_alloc_gates",
+    "gate_display_name",
     "k_distribution_bytes", "lbc_interval_values", "lbc_intervals",
     "nest_allocation_manifest", "nest_field_kinds", "nest_slot_dtypes",
     "nest_slot_shapes",
@@ -4483,4 +4960,11 @@ __all__ = [
     "WINDOWS_SMALL_CARD_MAX_GIB", "WINDOWS_SMALL_CARD_RESERVE_BYTES",
     "windows_small_card_advisory",
     "ysu_output_transient_shapes",
+    "ENVELOPE_AFFINE_BASIS", "ENVELOPE_PER_NEST_FRACTION",
+    "ENVELOPE_UNMODELLED_BYTES", "CARD_CLASS_MULTIPROCESSORS",
+    "card_local_memory_profile", "live_device_local_memory_profile",
+    "machine_peak_envelope_bytes", "observed_peak_envelope_bytes",
+    "peak_envelope_factor", "PEAK_ENVELOPE_FACTORS",
+    "PEAK_ENVELOPE_BASIS", "envelope_platform", "estimate_ingest",
+    "estimate_phases", "IngestMemoryEstimate", "PhaseMemoryEstimate",
 ]

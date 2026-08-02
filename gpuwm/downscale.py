@@ -127,6 +127,31 @@ def _parse_point(raw: str) -> tuple[float, float]:
     return lat, lon
 
 
+def parent_initial_condition(path: Path) -> dict[str, object]:
+    """The lineage attributes a parent archive publishes, if any.
+
+    ``gpuwm downscale`` is one of the two consumers that read a wrfout
+    back, and until now it could not tell a parent initialized from a
+    cycle's analysis from one initialized from that cycle's 240 h
+    forecast.  The child inherits its parent's initial condition, so the
+    child inherits the disclosure with it.  An empty mapping means the
+    parent said nothing, which is UNKNOWN and never "analysis".
+    """
+
+    from gpuwm.io.wrfout import INITIAL_CONDITION_GLOBAL_ATTRS
+
+    with netCDF4.Dataset(path) as dataset:
+        present = set(dataset.ncattrs())
+        return {
+            name: _jsonable_attr(dataset.getncattr(name))
+            for name in INITIAL_CONDITION_GLOBAL_ATTRS if name in present
+        }
+
+
+def _jsonable_attr(value):
+    return value.item() if isinstance(value, np.generic) else value
+
+
 def _parent_geometry(path: Path) -> dict[str, object]:
     """Read the parent grid shape, spacing, latitude/longitude arrays."""
     with netCDF4.Dataset(path) as dataset:
@@ -441,8 +466,19 @@ def downscale_main(args) -> int:
               f"{surface.path} ({len(surface.fields)} fields, "
               f"{surface.identity['MMINLU']})")
 
+    lineage = parent_initial_condition(frames[0])
+    if int(lineage.get("GPUWM_INITIAL_FORECAST_LEAD_HOURS", 0)):
+        # One sentence, before the run, on the fact a published child
+        # chart would otherwise lose: the parent's own initial state was
+        # a forecast, so every child frame inherits that lead.
+        warn(lineage["GPUWM_INITIAL_CONDITION_STATEMENT"],
+             why="The child's initial and boundary conditions are the "
+                 "parent's history, so the child is no closer to an "
+                 "analysis than its parent was.")
+
     plan = {
         "parent_frames": [str(path) for path in frames],
+        "initial_condition": lineage,
         "cadence_seconds": contract.interval_seconds,
         "max_boundary_interval_seconds": max_interval,
         "accepted_parent_cadence": bool(cadence_is_parents),

@@ -74,9 +74,22 @@ gpuwm doctor
 all five Rust bridge executables, the CPU library, the packaged physics
 tables, and your data-root layout, and prints the exact command that
 fixes anything missing. Run it until it is clean; everything downstream
-assumes it is. (The `tools/rustwx` build is skippable: `gpuwm render`
-falls back to matplotlib without it, and doctor labels that state
-`info`, not a gap.)
+assumes it is.
+
+You do not have to build the render engine to have one. On a supported
+platform `gpuwm fetch-bridges` downloads this release's prebuilt
+artifacts and verifies every byte against the pinned SHA-256 digests
+packaged in the wheel; `gpuwm setup` runs it as its first step. That bundle also carries
+the renderer's map assets -- the coastline, border, state and county
+shapefiles -- staged beside the binary where it finds them on its own.
+Take the binary without them and plots come out with the weather drawn
+over a blank rectangle, which is why they travel together.
+
+(The `tools/rustwx` build remains skippable: `gpuwm render` falls back to
+matplotlib without any render engine, and doctor labels that state
+`info`, not a gap. It is a fallback, though -- four products against the
+rust catalog's 151 -- and `gpuwm render` says so on every run that uses
+it.)
 
 ## 2. Size a domain to your card (measured: 1.7 s)
 
@@ -91,25 +104,28 @@ fits your card's budget. Output on the 24 GB tier (Windows):
 
 ```
   domain    dx        mass grid      dt         resident
-  d01     12.000 km   176 x 140        60 s     0.68 GiB
-  d02      3.000 km   352 x 280        15 s     2.45 GiB
-  d03      1.000 km   378 x 300         5 s     2.83 GiB
-  d04      0.500 km   304 x 240       5/2 s     1.84 GiB
-  itemized alloc estimate 7.25 GiB; footprint projection 11.37 GiB  x 1.75 observed peak envelope = 19.90 GiB
-    envelope factor: windows (measured, 1 WDDM run)
-  ingest (preprocessing): 2 forcing times x 0.25 GiB each, 2 resident at a time = 0.53 GiB resident; peak envelope 2.61 GiB
+  d01     12.000 km   164 x 130        60 s     0.59 GiB
+  d02      3.000 km   328 x 256        15 s     2.09 GiB
+  d03      1.000 km   354 x 276         5 s     2.44 GiB
+  d04      0.500 km   284 x 220       5/2 s     1.58 GiB
+  peak envelope: footprint 10.52 x 1.75 WDDM floor = 18.41 GiB, which is above the affine form (estimate 6.40 + non-pool 2.30 (CUDA context + local-memory backing store) + 0.50 unmodelled + 5% of the estimate x 3 nest(s) = 10.16 GiB) and therefore binds
+    envelope basis: windows; measured, 1 WDDM run
+  ingest (preprocessing): root 2 forcing times x 0.22 GiB each, 2 resident at a time + 3 nest initial state(s) 2.30 GiB, all resident for the single export transaction = 2.75 GiB resident; peak envelope 5.72 GiB
     ingest envelope basis: measured, CONUS 12 km 414x330x49 x 9 GFS times, RTX 5090 / Linux: itemization + 0.65x one forcing time of transients, x1.15 headroom, + CUDA context
-  BINDING PHASE: the forecast is the memory-binding phase at 19.90 GiB peak envelope (forecast 19.90 GiB, ingest 2.61 GiB); it fits the 20.00 GiB budget with 0.10 GiB to spare
-  budget 20.00 GiB (24 GiB card - 4 GiB reserve); headroom 0.10 GiB
+  BINDING PHASE: the forecast is the memory-binding phase at 18.41 GiB peak envelope (forecast 18.41 GiB, ingest 5.72 GiB); it fits the 19.57 GiB budget with 1.16 GiB to spare
+  budget 19.57 GiB (24 GiB card presents about 22.56 GiB free, minus this suite's 2.99 GiB reserve); headroom 1.16 GiB
 ```
 
-The same command on Linux prints `x 1.45 observed peak envelope` over a
-projection that drops two Windows-only pool constants, and sizes a much
-larger grid -- roughly one card tier's worth. Three instrumented Linux
-runs measured the true peak at 1.15-1.32x the itemized alloc estimate,
-against a Windows model that predicted 2.1x it
+The same command on Linux drops the Windows-only pool constants and the
+WDDM floor with them, so the affine form binds, and the card sizes a
+much larger grid -- roughly one card tier's worth
 ([HARDWARE.md](HARDWARE.md)). `--card 12gb` is a Linux tier for exactly
 this reason.
+
+Note what the budget line says: a 24 GiB card is priced at about
+22.56 GiB free, not 24. No card hands over its nameplate capacity, and
+a tier that assumes it does emits configs that fail the product's own
+`gpuwm check` on a real card of that tier.
 
 It emits the experiment TOML, a matching `namelist.wps`, and prints the
 exact `gpuwm fetch` command for the data it needs. With `--source hrrr`
@@ -122,8 +138,9 @@ one of those paths already bound. The only blanks are your `WPS_GEOG`
 root and the receipt digests each stage prints when it finishes.
 `--ladder` picks the
 depth (`12`, `12-3`, `12-3-1`, `12-3-1-0.5`, or `auto`; the
-single-domain `12` ladder emits `restart_interval_s = 0`, the portable
-prepared-forecast contract); `--vram-gib N` covers cards between the
+single-domain `12` ladder emits `restart_interval_s = 0` because the
+prepared single-domain forecaster it routes to writes no checkpoints --
+see section 7); `--vram-gib N` covers cards between the
 named tiers (`--card 12gb|16gb|24gb|32gb`). How the sizing model works and where each platform's
 envelope factor comes from: [HARDWARE.md](HARDWARE.md).
 
@@ -390,6 +407,16 @@ gpuwm render --pair out/runA/png out/runB/png --out out/compare
 
 ## 7. Checkpoint and resume (measured: 65.6 s + 46.1 s)
 
+**Which route this is.** `gpuwm run` is the `[case_data]` route of
+section 3, and it writes checkpoints. So does the multi-domain prepared
+route (section 3a's nested chain). The **single-domain** prepared route
+-- a config with no `[case_data]` table and one domain, which is what
+`--ladder 12` emits and what `gpuwm go` runs -- writes **no**
+checkpoints at any `restart_interval_s`, and there is nothing for
+`gpuwm resume` to continue from. `gpuwm check` says so in one sentence
+before you spend the run. Reach checkpointing by using a multi-domain
+config or a `[case_data]` experiment.
+
 ```bash
 # a 2 h leg writing checkpoints every simulated hour
 gpuwm run configs/myarea.toml --outdir out/myarea    # restart_interval_s = 3600
@@ -403,6 +430,14 @@ valid checkpoint set, verified its identity against the config
 (fingerprints, physics identity, boundary-clock semantics -- mismatches
 refuse loudly), and completed the third hour in 46.1 s. Torn or
 truncated checkpoint sets are skipped with printed reasons.
+
+**What may change between the leg and the resume:** the forecast length
+(`run_seconds`) and the output/restart cadence (`history_interval_s`,
+`restart_interval_s`) -- that is the whole tolerance, on every route
+that checkpoints, and extending the run is its point. Everything else
+(geometry, timestep, physics, nesting, prepared inputs) is trajectory
+identity: change one and the restart is refused by name, in one
+sentence, exit 2.
 
 ## 8. Where to go next
 

@@ -120,6 +120,8 @@ def _gpu_pins(entries: dict[str, dict[str, Any]], *, require_gpu: bool) -> None:
         block = gpu_cuda_stack_identity(require_gpu=True)
         import cupy as cp
 
+        # This is the visible process-local device.  The run supervisor masks
+        # its selected physical UUID before the worker imports CuPy.
         device = cp.cuda.Device(0)
         properties = cp.cuda.runtime.getDeviceProperties(0)
         uuid = properties.get("uuid")

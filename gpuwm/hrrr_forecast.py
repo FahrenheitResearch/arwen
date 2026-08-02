@@ -83,11 +83,73 @@ def hrrr_source_window(
         range(start_hour, required_end + 1), cycle=cycle)
 
 
+#: WRF's own spelling for an instant, which every HRRR stage parses.
+HRRR_TIME_FORMAT = "%Y-%m-%d_%H:%M:%S"
+
+
+def parse_hrrr_cycle(raw: str, *, flag: str = "--cycle") -> datetime:
+    """Parse one exact hourly HRRR cycle in WRF's ``YYYY-MM-DD_HH:MM:SS``."""
+
+    try:
+        cycle = datetime.strptime(str(raw), HRRR_TIME_FORMAT)
+    except ValueError as error:
+        raise ValueError(
+            f"{flag} must be YYYY-MM-DD_HH:MM:SS (UTC)") from error
+    if cycle.minute or cycle.second or cycle.microsecond:
+        raise ValueError(f"{flag} must be an exact hourly HRRR cycle")
+    return cycle
+
+
+def resolve_cycle_flags(cycle: str | None, valid_time: str | None, *,
+                        tool: str, legacy_means: str,
+                        warn=None) -> tuple[datetime, bool]:
+    """Accept ``--cycle`` or the deprecated ``--valid-time``, and say so.
+
+    ``--valid-time`` shipped on four HRRR entry points meaning two
+    different instants: the CYCLE on the preparer and the single-domain
+    benchmark, the MODEL START on the nested hierarchy.  At lead 0 those
+    are the same instant, so nothing ever disagreed; at lead K one
+    reading is wrong by K hours, and the wizard printed the same string
+    to both.
+
+    The resolution is that the typed time is always the cycle
+    (``--cycle``) and model time zero is always derived from it and
+    ``--forecast-start-hour``.  ``--valid-time`` is still accepted, with
+    exactly the meaning it had in v1.4.0 on the tool it is passed to --
+    that is what ``legacy_means`` records -- so a v1.4.0 script keeps
+    working unchanged.  Passing both is refused rather than ranked.
+
+    Returns ``(instant, came_from_valid_time)``.  A caller whose legacy
+    meaning is the model start uses the flag to decide whether the
+    instant it just parsed still needs the lead added to it.
+    """
+
+    if cycle is not None and valid_time is not None:
+        raise ValueError(
+            f"{tool}: pass --cycle or --valid-time, not both.  --cycle is "
+            f"the HRRR cycle; --valid-time is its deprecated spelling and "
+            f"means {legacy_means} on this command")
+    if cycle is None and valid_time is None:
+        raise ValueError(f"{tool}: --cycle is required")
+    if cycle is not None:
+        return parse_hrrr_cycle(cycle), False
+    if warn is not None:
+        warn(f"{tool}: --valid-time is deprecated and means "
+             f"{legacy_means} here; --cycle CYCLE "
+             "--forecast-start-hour K says the same thing on every stage "
+             "of the HRRR chain, and is the only spelling that is "
+             "unambiguous at a nonzero lead")
+    return parse_hrrr_cycle(valid_time, flag="--valid-time"), True
+
+
 __all__ = [
     "HRRR_EXTENDED_CYCLE_HOURS",
     "HRRR_EXTENDED_HORIZON_HOURS",
     "HRRR_STANDARD_HORIZON_HOURS",
+    "HRRR_TIME_FORMAT",
     "hrrr_cycle_horizon",
     "hrrr_source_window",
+    "parse_hrrr_cycle",
+    "resolve_cycle_flags",
     "validate_hrrr_source_forecast_hours",
 ]

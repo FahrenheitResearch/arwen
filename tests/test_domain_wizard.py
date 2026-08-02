@@ -25,10 +25,13 @@ import pytest
 from gpuwm.case_data import load_experiment_case
 from gpuwm.cli import main as cli_main
 from gpuwm.core.preflight import (GIB, estimate_experiment,
+                                  estimate_phases,
                                   observed_peak_envelope_bytes)
 from gpuwm.domain_wizard import (CARD_VRAM_GIB, LADDER_RATIOS,
                                  DomainFitError, _dims_for_scale,
-                                 experiment_from_text, vram_reserve_gib)
+                                 card_assumed_free_gib,
+                                 experiment_from_text, fit_headroom_bytes,
+                                 sizing_budget_bytes, vram_reserve_gib)
 from gpuwm.experiment import load_experiment
 from gpuwm.fetch import validate_fetch_hints
 from gpuwm.hrrr_route_inputs import HrrrRouteInputError, route_input_paths
@@ -52,9 +55,11 @@ def _run_wizard(tmp_path, *extra, point="39.7,-96.6", card="16gb",
                 ladder="12-3", source="era5", cycle="1999-05-03T12"):
     out = tmp_path / "area.toml"
     # --point=VALUE form: a leading "-" (southern latitude) must not be
-    # parsed as an option flag.
+    # parsed as an option flag.  card=None omits --card entirely, for the
+    # cases that pass --vram-gib instead (the two are exclusive).
     rc = cli_main([
-        "domain", f"--point={point}", "--card", card, "--ladder", ladder,
+        "domain", f"--point={point}",
+        *(() if card is None else ("--card", card)), "--ladder", ladder,
         "--source", source, "--cycle", cycle, "--out", str(out), *extra])
     return rc, out
 
@@ -88,7 +93,13 @@ def test_point_rejections(tmp_path, capsys, point, needle):
 def test_out_of_convention_longitude_wraps_with_a_warning(tmp_path, capsys):
     """Warn-not-block: 170E spelled as -190 is a real longitude; the
     wizard wraps it to the [-180, 180] convention, says so in one line,
-    and proceeds."""
+    and proceeds.
+
+    The artifacts are checked, not just the sentence.  This test used to
+    assert the warning alone, and passed for two releases while the
+    wrapped value reached the emitted TOML as a quoted STRING and the
+    emitted namelist.wps as ``array(170.)``.
+    """
 
     rc, out = _run_wizard(tmp_path, point="35.3,-190.0")
     captured = capsys.readouterr()
@@ -97,6 +108,64 @@ def test_out_of_convention_longitude_wraps_with_a_warning(tmp_path, capsys):
     assert "warning:" in captured.err
     assert "wrapped to 170" in captured.err
 
+    projection = tomllib.loads(out.read_text())["projection"]
+    for key in ("ref_lon", "stand_lon", "ref_lat", "truelat1", "truelat2"):
+        assert isinstance(projection[key], float), (key, projection[key])
+    assert projection["ref_lon"] == pytest.approx(170.0)
+
+    namelist = (out.parent / f"{out.stem}.namelist.wps").read_text()
+    for line in namelist.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() in ("ref_lat", "ref_lon", "truelat1", "truelat2",
+                           "stand_lon"):
+            # Fortran has to be able to read it.
+            assert float(value.strip().rstrip(",")) == pytest.approx(
+                projection[key.strip()])
+
+
+def test_a_wrapped_longitude_matches_its_unwrapped_twin_byte_for_byte(
+        tmp_path, capsys):
+    """--point 35.3,-190 and --point 35.3,170 name the same meridian, so
+    the two emissions may not differ in type or in text."""
+
+    rc_a, out_a = _run_wizard(tmp_path / "a", point="35.3,-190.0")
+    rc_b, out_b = _run_wizard(tmp_path / "b", point="35.3,170.0")
+    capsys.readouterr()
+    assert (rc_a, rc_b) == (0, 0)
+    assert tomllib.loads(out_a.read_text())["projection"] == \
+        tomllib.loads(out_b.read_text())["projection"]
+    assert (out_a.parent / f"{out_a.stem}.namelist.wps").read_text() == \
+        (out_b.parent / f"{out_b.stem}.namelist.wps").read_text()
+
+
+def test_toml_emitter_refuses_to_quote_a_value_it_cannot_type(tmp_path):
+    """A number emitted as a string is valid TOML under the right key
+    and the wrong type, so it survives review.  The emitter renders
+    scalars it recognises and refuses the rest rather than quoting."""
+    from gpuwm.domain_wizard import _toml_value
+
+    assert _toml_value(np.float32(-160.0)) == repr(-160.0)
+    assert _toml_value(np.asarray(-160.0)) == repr(-160.0)
+    assert _toml_value(np.int64(7)) == "7"
+    assert _toml_value("lambert") == '"lambert"'
+    with pytest.raises(TypeError, match="cannot render"):
+        _toml_value(np.asarray([1.0, 2.0]))
+    with pytest.raises(TypeError, match="cannot render"):
+        _toml_value(object())
+
+
+def test_point_longitude_refusal_names_the_range_it_enforces(
+        tmp_path, capsys):
+    """One wrap is accepted, so a message claiming [-180, 180] alone
+    described a refusal that does not happen."""
+    rc, out = _run_wizard(tmp_path, point="35.3,-400.0")
+    _assert_refused(capsys, "[-360, 360]", rc)
+    assert not out.exists()
+    # and the accepted-with-a-wrap case really is accepted
+    rc_ok, out_ok = _run_wizard(tmp_path / "ok", point="35.3,270.0")
+    capsys.readouterr()
+    assert rc_ok == 0 and out_ok.exists()
+
 
 def test_card_and_vram_gib_are_mutually_exclusive(tmp_path, capsys):
     rc, _ = _run_wizard(tmp_path, "--vram-gib", "20")
@@ -104,10 +173,25 @@ def test_card_and_vram_gib_are_mutually_exclusive(tmp_path, capsys):
 
 
 def test_vram_below_reserve_rejected(tmp_path, capsys):
+    """A card too small to size is refused, and says which wall it hit.
+
+    Two walls now, not one.  Below one CUDA context plus the external
+    margin there is nothing to size against at all; above that, the fit
+    loop refuses and names the layout, the arithmetic and the share of it
+    that no smaller grid can move.  The flat 4 GiB reserve used to draw
+    the line for both, which refused cards the suite-priced reserve would
+    have sized.
+    """
     out = tmp_path / "area.toml"
     rc = cli_main(["domain", "--point", "39.7,-96.6", "--vram-gib", "2.5",
                    "--cycle", "1999-05-03T12", "--out", str(out)])
-    _assert_refused(capsys, "no budget", rc)
+    _assert_refused(capsys, "smallest layout exceeds the budget", rc)
+    assert not out.exists()
+
+    rc = cli_main(["domain", "--point", "39.7,-96.6", "--vram-gib", "0.9",
+                   "--cycle", "1999-05-03T12", "--out", str(out)])
+    _assert_refused(capsys, "leaves no budget", rc)
+    assert not out.exists()
 
 
 def test_bad_cycle_and_gfs_synoptic_hours(tmp_path, capsys):
@@ -435,12 +519,21 @@ def test_fit_fills_card_budget(tmp_path, card):
     vram = CARD_VRAM_GIB[card]
     estimate = estimate_experiment(exp, forcing_interval_seconds=21600.0,
                                    vram_gib=vram)
-    envelope = observed_peak_envelope_bytes(
-        estimate.footprint_projection_bytes, vram_gib=vram)
-    budget = int((vram - vram_reserve_gib(vram)) * GIB)
+    envelope = estimate.peak_envelope_bytes
+    # The budget is the CANDIDATE's own -- its suite's reserve out of the
+    # free VRAM a card that size really presents, not the nameplate.
+    free_bytes = int(card_assumed_free_gib(vram) * GIB)
+    budget = sizing_budget_bytes(exp, free_bytes=free_bytes, vram_gib=vram,
+                                 forcing_interval_seconds=21600.0)
     assert envelope <= budget
-    # The bisection must actually spend the budget, not stop at the floor.
-    assert envelope >= 0.8 * budget
+    # ...and it must stop SHORT of it.  Every ladder v1.4.0 emitted landed
+    # 0.01-0.19 GiB from the wall, which is a rounding error away from a
+    # refusal on the machine that then runs it.
+    assert envelope <= budget - fit_headroom_bytes(budget), (
+        "the fit loop must leave headroom, not touch the budget")
+    # The bisection must still actually spend the budget, not stop at the
+    # floor: an envelope model is not licence to size timidly.
+    assert envelope >= 0.7 * budget
     # Certified clock/dx conventions on the emitted chain.
     root = exp.root
     assert root.time_step == 60 and root.run.dx == 12000.0
@@ -468,8 +561,8 @@ def test_the_wizard_budgets_with_the_platform_envelope_factor(
     assert rc == 0
     windows_exp = experiment_from_text(
         out.read_text(encoding="utf-8"), source=str(out))
-    assert "x 1.75 observed peak envelope" in windows_out
-    assert "envelope factor: windows (measured, 1 WDDM run)" in windows_out
+    assert "peak envelope" in windows_out
+    assert "envelope basis: windows;" in windows_out
 
     monkeypatch.setattr(pf.sys, "platform", "linux")
     rc, out = _run_wizard(tmp_path / "lin", "--explain", card="24gb")
@@ -477,9 +570,8 @@ def test_the_wizard_budgets_with_the_platform_envelope_factor(
     assert rc == 0
     linux_exp = experiment_from_text(
         out.read_text(encoding="utf-8"), source=str(out))
-    assert "x 1.45 observed peak envelope" in linux_out
-    assert ("envelope factor: linux (measured-preliminary, 3 runs)"
-            in linux_out)
+    assert "local-memory backing store" in linux_out
+    assert "envelope basis: linux;" in linux_out
 
     windows_cells = windows_exp.root.run.nx * windows_exp.root.run.ny
     linux_cells = linux_exp.root.run.nx * linux_exp.root.run.ny
@@ -489,14 +581,16 @@ def test_the_wizard_budgets_with_the_platform_envelope_factor(
     # estimator -- which now itemizes differently per platform too, so
     # each config has to be re-priced under the platform that built it.
     vram = CARD_VRAM_GIB["24gb"]
-    budget = int((vram - vram_reserve_gib(vram)) * GIB)
+    free_bytes = int(card_assumed_free_gib(vram) * GIB)
     for exp, platform in ((windows_exp, "win32"), (linux_exp, "linux")):
         monkeypatch.setattr(pf.sys, "platform", platform)
-        estimate = estimate_experiment(exp, forcing_interval_seconds=21600.0)
-        envelope = observed_peak_envelope_bytes(
-            estimate.footprint_projection_bytes, platform=platform)
-        assert envelope <= budget, platform
-        assert envelope >= 0.8 * budget, platform
+        estimate = estimate_experiment(exp, forcing_interval_seconds=21600.0,
+                                       vram_gib=vram)
+        budget = sizing_budget_bytes(
+            exp, free_bytes=free_bytes, vram_gib=vram,
+            forcing_interval_seconds=21600.0)
+        assert estimate.peak_envelope_bytes <= budget, platform
+        assert estimate.peak_envelope_bytes >= 0.7 * budget, platform
 
 
 @pytest.mark.parametrize("ladder", sorted(LADDER_RATIOS))
@@ -519,9 +613,8 @@ def test_windows_12gib_is_an_experimental_tier_not_a_refusal(
     assert rc == 0, ladder
     printed = capsys.readouterr().out
 
-    assert "x 1.45 observed peak envelope" in printed
-    assert ("envelope factor: windows-small (EXPERIMENTAL, no measurements "
-            "on this card class)") in printed
+    assert "peak envelope" in printed
+    assert "envelope basis: windows-small;" in printed
     # The honest pioneer warning, in full.
     assert "EXPERIMENTAL: 12 GiB is at or below the 12 GiB Windows " \
            "small-card threshold" in printed
@@ -538,9 +631,10 @@ def test_windows_12gib_is_an_experimental_tier_not_a_refusal(
                                source=str(out))
     estimate = estimate_experiment(exp, forcing_interval_seconds=21600.0,
                                    vram_gib=12.0)
-    envelope = observed_peak_envelope_bytes(
-        estimate.footprint_projection_bytes, vram_gib=12.0)
-    assert envelope <= int((12.0 - vram_reserve_gib(12.0)) * GIB)
+    budget = sizing_budget_bytes(
+        exp, free_bytes=int(card_assumed_free_gib(12.0) * GIB),
+        vram_gib=12.0, forcing_interval_seconds=21600.0)
+    assert estimate.peak_envelope_bytes <= budget
 
 
 def test_windows_16gib_and_up_keep_the_conservative_accounting(
@@ -552,8 +646,8 @@ def test_windows_16gib_and_up_keep_the_conservative_accounting(
     rc, _ = _run_wizard(tmp_path / "sixteen", "--explain", card="16gb")
     assert rc == 0
     printed = capsys.readouterr().out
-    assert "x 1.75 observed peak envelope" in printed
-    assert "envelope factor: windows (measured, 1 WDDM run)" in printed
+    assert "peak envelope" in printed
+    assert "envelope basis: windows;" in printed
     assert "EXPERIMENTAL" not in printed
 
     # The accounting seam itself, without going through the wizard: the
@@ -1246,8 +1340,8 @@ def test_wizard_output_is_layered_and_the_default_fits_a_screen(
     if explain:
         # Every word that moved is back, in its original wording.
         assert "sizing (itemized preflight estimator, in-process):" in printed
-        assert "observed peak envelope" in printed
-        assert "envelope factor:" in printed
+        assert "peak envelope" in printed
+        assert "envelope basis:" in printed
         assert "gpuwm check: deferred" in printed
         assert "static geography:" in printed
         assert "treat sub-kilometre PBL structure as indicative" in printed
@@ -1533,8 +1627,53 @@ def test_a_nested_hrrr_next_block_names_hrrr_commands_not_the_gfs_door(
     for path in route_input_paths(out).values():
         assert path.exists()
         assert _posix(path) in block
-    assert "--valid-time 2026-07-29_18:00:00" in block
+    # Both stages get the CYCLE under one name.  They used to get one
+    # `--valid-time` string that the preparer reads as the cycle and the
+    # hierarchy reads as model time zero -- the same instant only at lead
+    # zero, which is the only lead this door used to allow.
+    assert block.count("--cycle 2026-07-29_18:00:00") == 2
+    assert "--valid-time" not in block
     assert "--run-seconds 10800" in block
+
+
+def test_a_nested_hrrr_chain_at_a_lead_hands_both_stages_the_same_two_values(
+        tmp_path, capsys):
+    """The lead is printed beside the cycle, on every stage of the chain.
+
+    At lead 0 the cycle and model time zero are the same instant, so one
+    string served both stages for four releases.  At lead 6 the printed
+    chain has to say which is which, and both stages have to be able to
+    derive the other.
+    """
+    out = tmp_path / "lead-tree.toml"
+    assert cli_main([
+        "domain", "--point=46.4,-118.3", "--card", "24gb",
+        "--root-dx", "3", "--chain", "4", "--source", "hrrr",
+        "--cycle", "2026-07-29T18", "--hours", "3",
+        "--forecast-start-hour", "6", "--out", str(out)]) == 0
+    printed = capsys.readouterr().out
+    block = printed.split("next:")[-1]
+
+    # The fetch downloads f06..f09, not f00..f03, and both preparation
+    # stages carry the same cycle and the same lead.
+    assert "gpuwm fetch --source hrrr --cycle 2026-07-29T18" in block
+    assert block.count("--forecast-start-hour 6") == 3  # fetch + both stages
+    assert block.count("--cycle 2026-07-29_18:00:00") == 2
+    assert "--valid-time" not in block
+    # The emitted config, and therefore the namelist the hierarchy reads
+    # and compares against model time zero, start at cycle + 6 h.  Before
+    # the lead was reachable here the namelist could only say the cycle
+    # hour, which the nested route refuses at any nonzero lead.
+    text = out.read_text(encoding="utf-8")
+    assert "start_time = 2026-07-30T00:00:00" in text
+    assert "forecast_start_hour = 6" in text
+    namelist = route_input_paths(out)["namelist_input"].read_text(
+        encoding="utf-8")
+    start = {line.split("=")[0].strip(): line.split("=")[1].strip()
+             for line in namelist.splitlines()
+             if line.strip().startswith("start_")}
+    assert start["start_day"] == "30, 30,"
+    assert start["start_hour"] == "00, 00,"
 
 
 def test_hrrr_sizing_respects_hrrrs_own_grid_not_only_the_card(
@@ -1665,14 +1804,38 @@ def test_the_emitted_namelists_are_refused_if_they_drift_from_the_config(
 
 
 def test_a_tree_emission_names_the_tree_runner(tmp_path, capsys):
-    """A ladder `gpuwm go` will not drive says so, with the runner."""
+    """A ladder `gpuwm go` will not drive says so, with the runner.
+
+    B-03: the runner ships as a console script and no message named it,
+    so the only invocation offered was a `python -m` form carrying two
+    bare `...` placeholders, followed by a docs path a pip install does
+    not contain.  All three are pinned here.
+    """
 
     _, printed = _emit(tmp_path, capsys, "--ladder", "12-3", "--name",
                        "treecase")
     block = printed.split("next:")[-1]
     assert "gpuwm run " not in block
     assert "gpuwm go " not in block
+    # the installed console script, and the module form as an alternative
+    assert "gpuwm-prepared-tree-forecast" in block
     assert "prepared_domain_tree_forecast" in block
+    # no bare ellipsis standing in for a value the reader must supply
+    assert " ... " not in block and block.count("...") == 0
+    # every placeholder says what to put there
+    assert "<the directory rw-wps wrote>" in block
+    # and the pointer resolves without a checkout
+    assert "https://" in block
+
+
+def test_the_manual_chain_pointer_is_reachable_without_a_checkout():
+    """A-10.  The wheel ships no docs tree, so a repo-relative path was
+    the whole of an instruction the reader provably could not follow."""
+    from gpuwm.go_cli import MANUAL_CHAIN
+
+    assert "docs/public/FIRST-LIGHT.md" in MANUAL_CHAIN
+    assert MANUAL_CHAIN.count("https://") == 1
+    assert "FahrenheitResearch/arwen" in MANUAL_CHAIN
 
 
 def test_a_profileless_gfs_emission_points_at_gpuwm_go(tmp_path, capsys):
@@ -1741,3 +1904,256 @@ def test_the_advisory_reaches_the_terminal_on_a_large_card(tmp_path,
     assert "advisory: this domain is sized to fill your card" in printed
     assert "--vram-gib N" in printed
     assert "gpuwm domain: FAIL" not in printed
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-01 sizing calibration: the tier, the reserve and the two checks
+# ---------------------------------------------------------------------------
+
+#: Free VRAM real cards of each tier hand to a fresh CUDA context.
+#:
+#: The 16 GiB row is MEASURED: an idle headless RTX 4080 (16,376 MiB
+#: physical) presents 15.33 GiB.  The others are the same 0.66 GiB
+#: driver/nameplate gap applied to the tier's nominal size, which is the
+#: assumption the tier has to be conservative against.
+REAL_CARD_FREE_GIB = {"12gb": 11.34, "16gb": 15.33, "24gb": 23.33,
+                      "32gb": 30.27}
+
+
+@pytest.mark.parametrize("card", sorted(CARD_VRAM_GIB))
+def test_the_card_tier_is_conservative_against_a_real_card(card):
+    """A tier may never assume more free VRAM than its class delivers.
+
+    The 16 GiB tier assumed the card would hand over its whole nominal
+    size.  It does not -- a real RTX 4080 presents 15.33 GiB of a 15.99
+    GiB card -- so every ladder the tier emitted was sized against VRAM
+    that does not exist, landed 0.13-0.32 GiB over the real budget, and
+    failed the product's own `gpuwm check` minutes after the wizard
+    printed PASS.
+    """
+    assumed = card_assumed_free_gib(CARD_VRAM_GIB[card])
+    assert assumed <= REAL_CARD_FREE_GIB[card], card
+    # ...and not so conservative that the tier stops being useful.
+    assert assumed >= REAL_CARD_FREE_GIB[card] - 1.0, card
+
+
+@pytest.mark.parametrize("card", sorted(CARD_VRAM_GIB))
+@pytest.mark.parametrize("ladder", ["12", "12-3", "12-3-1-0.5"])
+def test_an_emitted_config_fits_the_card_it_was_sized_for(
+        tmp_path, card, ladder):
+    """The A-0 regression, as an inequality rather than a subprocess.
+
+    Every `--card 16gb` ladder v1.4.0 emitted exceeded the budget a real
+    16 GB card leaves.  Re-priced here against that card's real free
+    VRAM and its own suite's reserve, with nothing declared and nothing
+    added back.
+    """
+    rc, out = _run_wizard(tmp_path, card=card, ladder=ladder, source="gfs",
+                          cycle="2026-07-28T00")
+    assert rc == 0
+    exp = experiment_from_text(out.read_text(encoding="utf-8"),
+                               source=str(out))
+    vram = CARD_VRAM_GIB[card]
+    interval = 10800.0
+    estimate = estimate_experiment(exp, forcing_interval_seconds=interval,
+                                   vram_gib=vram)
+    phases = estimate_phases(exp, source="gfs",
+                             forcing_interval_seconds=interval,
+                             vram_gib=vram)
+    real_free = int(REAL_CARD_FREE_GIB[card] * GIB)
+    budget = sizing_budget_bytes(exp, free_bytes=real_free, vram_gib=vram,
+                                 forcing_interval_seconds=interval)
+    assert phases.peak_envelope_bytes <= budget, (
+        f"{card} {ladder}: emitted envelope "
+        f"{phases.peak_envelope_bytes / GIB:.2f} GiB over a real budget of "
+        f"{budget / GIB:.2f} GiB")
+    assert estimate.alloc_estimate_bytes <= budget
+
+
+NSSL2_PROFILES = (
+    "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1",
+    "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1",
+)
+
+
+@pytest.mark.parametrize("physics_profile", NSSL2_PROFILES)
+@pytest.mark.parametrize("vram", [12.0, 15.0, 24.0, 32.0])
+def test_a_suite_with_a_large_backing_store_still_sizes(
+        tmp_path, physics_profile, vram):
+    """Defect 4: the reserve's overhead term is SUITE-dependent.
+
+    It tracks the local-memory backing store of the selected kernel set
+    -- 1.93 GiB for WSM6+MYNN, 3.94 for NSSL2 double-moment -- while the
+    fit loop assumed the documented flat 4.0.  Any suite whose overhead
+    pushed the reserve past that flat figure was sized against one budget
+    and verified against a smaller one, so BOTH NSSL2 profiles emitted a
+    config that failed their own check at EVERY card size.  The loop
+    prices the reserve from the candidate now, which is the same call
+    check makes.
+    """
+    out = tmp_path / "n.toml"
+    rc = cli_main([
+        "domain", "--point=35.22,-97.44", "--vram-gib", str(vram),
+        "--root-dx", "12", "--hours", "2", "--source", "gfs",
+        "--cycle", "2026-07-28T00", "--physics-profile", physics_profile,
+        "--out", str(out)])
+    assert rc == 0, f"{physics_profile} at {vram} GiB emitted rc {rc}"
+
+    exp = experiment_from_text(out.read_text(encoding="utf-8"),
+                               source=str(out))
+    interval = 10800.0
+    phases = estimate_phases(exp, source="gfs",
+                             forcing_interval_seconds=interval,
+                             vram_gib=vram)
+    # The budget the VERIFIER would use, on a card that really is this
+    # size -- the number the fit loop has to have targeted.
+    free_bytes = int(card_assumed_free_gib(vram) * GIB)
+    budget = sizing_budget_bytes(exp, free_bytes=free_bytes, vram_gib=vram,
+                                 forcing_interval_seconds=interval)
+    assert phases.peak_envelope_bytes <= budget
+
+
+def test_the_reserve_the_loop_targets_is_the_one_the_verifier_uses(tmp_path):
+    """Two budgets in one command's output was the mechanism.
+
+    The wizard printed "peak envelope 10.97 GiB of a 11.00 GiB budget"
+    and then, four lines later, "EXCEEDS the 10.33 GiB budget by 0.64".
+    One file, one invocation, two budgets.
+    """
+    from gpuwm.core.preflight import ReservePolicy, card_local_memory_profile
+
+    rc, out = _run_wizard(tmp_path, card="16gb", ladder="12-3",
+                          source="gfs", cycle="2026-07-28T00")
+    assert rc == 0
+    exp = experiment_from_text(out.read_text(encoding="utf-8"),
+                               source=str(out))
+    interval = 10800.0
+    estimate = estimate_experiment(exp, forcing_interval_seconds=interval,
+                                   vram_gib=16.0)
+    verifier = ReservePolicy.n0_alloc(
+        exp, profile=card_local_memory_profile(16.0),
+        estimate_bytes=estimate.alloc_estimate_bytes)
+    free_bytes = int(card_assumed_free_gib(16.0) * GIB)
+    assert sizing_budget_bytes(
+        exp, free_bytes=free_bytes, vram_gib=16.0,
+        forcing_interval_seconds=interval) == (
+            free_bytes - verifier.reserve_bytes)
+
+
+def test_the_wizard_prints_the_bare_check_as_the_next_step(tmp_path, capsys):
+    """Two documented commands, one file, one machine, opposite verdicts.
+
+    `gpuwm check CONFIG` returned 4 while the wizard's own printed
+    `gpuwm check CONFIG --budget-gib 12 --vram-gib 16` returned 0, because
+    --budget-gib re-declared the free figure the tier had invented.  The
+    bare form is the next step now, and the declared form is printed
+    beside it saying what it is for.
+    """
+    rc, out = _run_wizard(tmp_path, card="16gb", ladder="12", source="gfs",
+                          cycle="2026-07-28T00")
+    assert rc == 0
+    printed = capsys.readouterr().out
+    assert f"2. gpuwm check {out}" in printed.replace("\\", "/") or (
+        "2. gpuwm check" in printed)
+    assert "that measures THIS machine's free VRAM" in printed
+    assert "--budget-gib" in printed, "the declared form is still offered"
+
+
+def test_the_minimum_layout_refusal_does_not_contradict_itself(
+        tmp_path, capsys):
+    """"the other 0.00 GiB (0% of the projection) is grid-independent
+    calibration constants, so a smaller grid cannot help" -- if 0% is
+    grid-independent then the grid is exactly what would help."""
+
+    out = tmp_path / "tiny.toml"
+    rc = cli_main(["domain", "--point=35.22,-97.44", "--vram-gib", "5",
+                   "--ladder", "12-3-1-0.5", "--source", "gfs",
+                   "--cycle", "2026-07-28T00", "--out", str(out)])
+    assert rc == 2
+    message = capsys.readouterr().err
+    assert "minimum layout" in message
+    assert "there is no smaller grid on this ladder" in message
+    # The self-contradiction: a share and a claim that disagree.
+    share = float(message.split("% of the envelope")[0].split("(")[-1])
+    if share < 25.0:
+        assert "so a smaller grid cannot help" not in message
+    assert not out.exists(), "a refusal writes no file"
+
+
+@pytest.mark.parametrize("spelling", ["nan", "inf", "-inf"])
+def test_non_finite_vram_is_refused_without_inventing_a_capacity(
+        tmp_path, capsys, spelling):
+    """E-10.  The finite CHECK existed; the MESSAGE did not respect it.
+
+    It shared a sentence with the too-small-card branch, which describes
+    the card it was given -- and card_assumed_free_gib launders a
+    non-finite value through max(), which returns the finite operand.  So
+    `--vram-gib nan` was reported as a card presenting "about 0.00 GiB
+    free": a specific, false, plausible number invented for an input that
+    names no quantity.
+    """
+    # =VALUE form: a leading "-" (-inf) must not be read as an option.
+    rc, out = _run_wizard(tmp_path, f"--vram-gib={spelling}", card=None)
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "is not a size" in err
+    assert "0.00 GiB" not in err
+    assert "Traceback" not in err
+    assert not out.exists()
+
+
+def test_help_names_the_profiles_a_route_cannot_prepare(capsys):
+    """Advertised-and-impossible is worse than not advertised.
+
+    `--help` listed eight `--physics-profile` values with no marker
+    while two were refused unconditionally on `--source gfs` -- the
+    DEFAULT source -- so a reader choosing from the list had a 1-in-4
+    chance of picking one that could never work, and found out from the
+    refusal.  Measured on the 1.4.1 build, RTX 4080: those two are rc 2
+    at every one of the four card tiers.
+
+    The refusal is not what is wrong with that and is not touched here.
+    """
+    from gpuwm.domain_wizard import (WIZARD_PHYSICS_PROFILES,
+                                     _profile_help_route_note,
+                                     profile_route_blocker,
+                                     profiles_blocked_on_source)
+
+    blocked = profiles_blocked_on_source("gfs")
+    # Non-vacuous, and the reason is a real registry refusal rather than
+    # this test's opinion of it.
+    assert blocked, "nothing to advertise a caveat about"
+    for profile in blocked:
+        assert "ruc" in profile
+        assert "ruc-lsm" in profile_route_blocker(profile, "gfs")
+
+    note = _profile_help_route_note()
+    for profile in blocked:
+        assert profile in note
+    # And nothing that DOES run is listed as if it did not.
+    for profile in WIZARD_PHYSICS_PROFILES:
+        if profile not in blocked:
+            assert profile not in note
+
+    with pytest.raises(SystemExit):
+        cli_main(["domain", "--help"])
+    printed = capsys.readouterr().out
+    # argparse rewraps, so compare on the unwrapped text.
+    flat = " ".join(printed.split())
+    assert "NOT every profile runs on every route" in flat
+    for profile in blocked:
+        assert profile in flat
+
+
+def test_the_help_caveat_is_derived_not_listed(monkeypatch):
+    """A hard-coded pair would go stale in the direction that lies.
+
+    If a route regains the component, the caveat has to disappear on its
+    own -- otherwise `--help` starts refusing a pairing that works.
+    """
+    from gpuwm import domain_wizard
+
+    monkeypatch.setattr(domain_wizard, "profile_route_blocker",
+                        lambda profile, source: None)
+    assert domain_wizard.profiles_blocked_on_source("gfs") == ()
+    assert domain_wizard._profile_help_route_note() == ""

@@ -264,6 +264,14 @@ def test_up_heli_max_has_no_trajectory_or_restart_reader():
         "gpuwm/core/preflight.py",    # pricing registry + lifetime audit
         "gpuwm/runtime.py",           # calls reset_up_heli_max only
         "gpuwm/offline_child_run.py",  # downscale child reset-on-write
+        # `gpuwm go`'s runner: reset-on-write, same as the others.  This
+        # entry is an ADDITION and the reason is worth the line: for as
+        # long as it was absent, this assertion was the thing certifying
+        # that the one production runner which never reset the window was
+        # behaving correctly.  A list of who may MENTION a slot cannot
+        # notice who forgot to USE it, which is what
+        # test_every_history_publisher_resets_the_window is for.
+        "gpuwm/prepared_single_domain_forecast.py",
         "gpuwm/io/wrfout.py",         # emission
         "gpuwm/io/restart.py",        # serialization + tolerant restore
     }
@@ -285,6 +293,74 @@ def test_up_heli_max_has_no_trajectory_or_restart_reader():
                             for arg in node.args)):
                 assert rel in sanctioned_scratch, \
                     f"unsanctioned slot access in {rel}"
+
+
+#: The one delegate a runner may reset THROUGH rather than directly.
+#: It is `gpuwm/runtime.py::_submit_tree_history_frame`, which submits
+#: the frame and zeroes the window in the same two lines.
+_RESET_DELEGATES = ("_submit_tree_history_frame",)
+
+
+def _history_publishing_modules() -> dict[str, str]:
+    """Every gpuwm module that constructs a `PerDomainWrfoutWriters`.
+
+    DERIVED, not listed.  A hand-maintained roster of runners is the
+    same instrument as the allowlist above and fails the same way: a new
+    runner is simply not on it, so its absence reads as compliance.  The
+    question "who publishes durable history frames" already has a
+    mechanical answer in the tree -- who builds the writer that publishes
+    them -- so the test asks the tree instead of a list.
+    """
+
+    found = {}
+    for path in (REPO / "gpuwm").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(text)):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (func.id if isinstance(func, ast.Name)
+                    else func.attr if isinstance(func, ast.Attribute)
+                    else None)
+            if name == "PerDomainWrfoutWriters":
+                found[path.relative_to(REPO).as_posix()] = text
+                break
+    return found
+
+
+def test_every_history_publisher_resets_the_window():
+    """A runner that writes history frames must restart the UH window.
+
+    WRF zeroes the nwp_diagnostics running maxima every history interval
+    (module_diag_nwp.F:246-269).  A runner that publishes frames and
+    never resets does not merely lose the reset: every frame after the
+    first reports the maximum since MODEL START, so UP_HELI_MAX is a
+    published, headline severe-weather field carrying a wrong number
+    that grows monotonically worse with run length.
+
+    `gpuwm.prepared_single_domain_forecast` -- the runner behind `gpuwm
+    go`, i.e. the one an ordinary run uses -- did exactly that, while
+    the tree runner beside it and the two case integrators did it right.
+    The gap survived because the only structural test in this file asked
+    which files may MENTION the slot, and a file that never mentions it
+    passes that question by doing nothing.
+    """
+
+    modules = _history_publishing_modules()
+    # Non-vacuity: the derivation has to actually find the runners.
+    assert "gpuwm/prepared_single_domain_forecast.py" in modules
+    assert "gpuwm/prepared_domain_tree_forecast.py" in modules
+    assert len(modules) >= 2
+
+    delinquent = [
+        name for name, text in modules.items()
+        if "reset_up_heli_max" not in text
+        and not any(delegate in text for delegate in _RESET_DELEGATES)]
+    assert delinquent == [], (
+        "history-publishing runner(s) never restart the UP_HELI_MAX "
+        f"window: {delinquent}.  Call "
+        "gpuwm.core.uh_diag.reset_up_heli_max on the domain state right "
+        "after the frame is submitted, as every other publisher does.")
 
 
 # ---------------------------------------------------------------------------

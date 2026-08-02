@@ -436,6 +436,17 @@ fn preflight_wrf_sources(
         });
         let (kind, source_times, shape) = match raw {
             Ok(file) => {
+                // Every source of one invocation belongs to one run (the
+                // timeline planner refuses sources whose reference times
+                // disagree), so what that run was initialized from is
+                // recorded once, here, where the file is already open.  Both
+                // reader arms must answer this: a wrfout that falls back to
+                // netcrust carries the same provenance, and a lead disclosed
+                // under one reader and hidden under the other would make the
+                // label depend on the file's encoding rather than on the run.
+                rustwx_products::shared_context::set_initial_condition_disclosure(
+                    crate::local_import::initial_condition_disclosure(&file),
+                );
                 let times = crate::local_import::wrf_source_times(&file, path)?;
                 (WrfSourceKind::Raw, times, (file.nx, file.ny))
             }
@@ -443,6 +454,9 @@ fn preflight_wrf_sources(
                 let nc = netcrust::open(path).map_err(|err| {
                     format!("Open post-processed WRF {} failed: {err}", path.display())
                 })?;
+                rustwx_products::shared_context::set_initial_condition_disclosure(
+                    crate::local_import::netcdf_initial_condition_disclosure(&nc),
+                );
                 let times = crate::local_import::netcdf_source_times(&nc, path)
                     .map_err(|err| format!("Read times from {} failed: {err}", path.display()))?;
                 let shape = crate::local_import::netcdf_grid_shape(&nc, path).map_err(|err| {

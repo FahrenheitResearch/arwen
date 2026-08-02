@@ -52,6 +52,7 @@
     ],
     "direct": [
       "10m_wind_gusts",
+      "10m_wind_speed_and_direction",
       "1km_reflectivity",
       "200mb_absolute_vorticity_height_winds",
       "200mb_height_winds",
@@ -274,6 +275,7 @@
       "sref_prob_visibility_below_8046m",
       "sref_prob_visibility_below_804m",
       "sref_prob_visibility_below_9654m",
+      "terrain_height",
       "total_qpf",
       "uh_2to5km",
       "visibility"
@@ -552,14 +554,14 @@
   "summary": {
     "blocked_entries": 4,
     "derived_entries": 48,
-    "direct_entries": 226,
+    "direct_entries": 228,
     "experimental_entries": 11,
     "heavy_entries": 1,
-    "partial_entries": 269,
+    "partial_entries": 271,
     "proof_entries": 1,
     "proxy_entries": 2,
     "supported_entries": 51,
-    "total_entries": 324,
+    "total_entries": 326,
     "windowed_entries": 49
   }
 }

@@ -3,9 +3,13 @@
 // against the same Fortran fixtures.
 //
 // Numerics discipline (follows the Noah-MP lanes of this project):
-//   * every FP32 operation goes through __fadd_rn/__fsub_rn/__fmul_rn/
-//     __fdiv_rn (and __fsqrt_rn), so neither NVRTC's default --fmad=true
-//     nor CuPy's appended -ftz can change a bit;
+//   * FP32 add/sub/mul go through the AD/SU/MU macros onto rsw_add/rsw_sub/
+//     rsw_mul, and division/sqrt onto __fdiv_rn/__fsqrt_rn, so NVRTC's
+//     default --fmad=true cannot fuse a bit.  The __f*_rn intrinsics do NOT
+//     opt out of CuPy's appended -ftz: under it they compile to .rn.ftz and
+//     flush like any other FP32 instruction, which is why the flush-sensitive
+//     arithmetic is on the rsw_ helpers and only div/sqrt -- whose operands
+//     the INVARIANT below keeps non-subnormal -- stay on bare intrinsics;
 //   * FP64 intermediates inside the glibc transcriptions go through
 //     __dadd_rn/__dsub_rn/__dmul_rn for the same reason;
 //   * double -> float conversions in the libm use rsw_d2f_rn, because
@@ -41,10 +45,17 @@
 // (and, as before, levels/g-points as independent work items), never a
 // reduction.
 
-// sm_120 (GeForce Blackwell) flushes FP32 subnormals in EVERY arithmetic
-// instruction - even __fadd_rn(x, 0.0f) and cvt.f64.f32 DAZ their inputs -
-// while gfortran on x86-64 (MXCSR FTZ/DAZ clear) keeps full IEEE subnormal
-// semantics, and this chain really produces them (exp_tbl floors at 1e-20,
+// This unit is compiled through cp.RawModule (gpuwm/core/rrtmg_sw.py
+// SECTION 10), and CuPy appends -ftz=true after the caller's options, so the
+// compiler honours the last occurrence and flushes FP32 subnormals in EVERY
+// arithmetic instruction it emits here - even __fadd_rn(x, 0.0f), and it
+// synthesises a flush around cvt.f64.f32, which has none of its own.  It is
+// the flag and not the SM: built without the append, the same source keeps
+// full IEEE subnormals on this card (per-route measurements in
+// tools/ftz_receipt/receipt/receipt.json), so a compile-route change would
+// move these numbers and is not a cleanup.  Meanwhile gfortran on x86-64
+// (MXCSR FTZ/DAZ clear) keeps full IEEE subnormal semantics, and this
+// chain really produces subnormals (exp_tbl floors at 1e-20,
 // so two clamped layers give a 1e-40 transmittance product).  FP32 add/sub/
 // mul are therefore emulated through exact FP64: the product of two
 // binary32 values is exact in binary64 (48 <= 53 bits), and for sums the
@@ -52,8 +63,9 @@
 // every operand pair (when the exact sum does not fit binary64 the operand
 // magnitudes differ by > 2^53, far beyond the 2^25 half-ulp threshold, so
 // both roundings return the larger operand).  rsw_f2d decodes subnormal
-// inputs from bits (cvt DAZes them); rsw_d2f_rn encodes subnormal results
-// (from the Noah-MP lane; __double2float_rn flushes them).  Division and
+// inputs from bits (the cvt the compiler emits here DAZes them); rsw_d2f_rn
+// encodes subnormal results (from the Noah-MP lane; on this compile route
+// __double2float_rn flushes them).  Division and
 // sqrt keep the hardware correctly-rounded instructions: no division in
 // this chain sees or produces a subnormal (inputs are floored by exp_tbl's
 // 1e-20 clamp or normal-scale physics), and FP64 emulation of division

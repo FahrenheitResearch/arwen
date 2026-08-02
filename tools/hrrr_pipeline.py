@@ -5,17 +5,139 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+import errno
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import shlex
 import shutil
 import stat
 import subprocess
+import threading
 import time
 
 from gpuwm.hrrr_forecast import validate_hrrr_source_forecast_hours
+
+
+#: How much of the producer's own output the parent keeps IN MEMORY.
+#:
+#: The decoder's stderr used to land only in a log file inside the output
+#: tree.  When that tree's filesystem filled -- the exact condition the
+#: decoder was failing on -- the log stayed 0 bytes, the atomic
+#: ``failure.ready`` could not be renamed into place either, and the
+#: consumer raised ``pipeline producer exited 1:`` with nothing after the
+#: colon.  Both diagnostic channels were on the filesystem that had just
+#: failed.  Memory is the one place a full disk cannot erase, so the
+#: parent drains the producer's output through a pipe and keeps the tail
+#: here; the log file is written from that same stream, best effort, and
+#: is never what a failure report depends on.
+PRODUCER_OUTPUT_TAIL_BYTES = 256 * 1024
+
+#: How much of the retained tail a failure message quotes.
+_REPORTED_TAIL_BYTES = 8000
+
+
+class HrrrProducerFailure(RuntimeError):
+    """A decoder failure reported with everything the parent still knows.
+
+    Carries the structured evidence as :attr:`diagnostics` so a caller
+    can record it, and renders the whole of it in ``str()`` so a caller
+    that only prints the exception still gets the exit code, the argv,
+    the retained output tail, the signal files that did or did not
+    appear, and the free space on every filesystem involved.
+    """
+
+    def __init__(self, summary: str, diagnostics: dict[str, object]):
+        self.diagnostics = diagnostics
+        super().__init__(_render_failure(summary, diagnostics))
+
+
+def _disk_free(path: Path) -> dict[str, object]:
+    """Free/total bytes for one path's filesystem, or why they are unknown.
+
+    ``statvfs``/``GetDiskFreeSpaceEx`` read metadata, so this answers on a
+    filesystem with no free blocks left -- which is when it is asked.
+    """
+
+    for candidate in (path, *path.parents):
+        try:
+            usage = shutil.disk_usage(candidate)
+        except OSError:
+            continue
+        return {
+            "measured_at": str(candidate),
+            "free_bytes": int(usage.free),
+            "total_bytes": int(usage.total),
+        }
+    return {"measured_at": str(path), "free_bytes": None, "total_bytes": None}
+
+
+def _directory_listing(path: Path, limit: int = 64) -> list[str] | str:
+    """``name size`` for each entry, or the reason the listing is missing."""
+
+    try:
+        entries = sorted(path.iterdir())
+    except OSError as error:
+        return f"unreadable: {type(error).__name__}: {error}"
+    listing = []
+    for entry in entries[:limit]:
+        try:
+            size = entry.stat().st_size if entry.is_file() else None
+        except OSError:
+            size = None
+        listing.append(
+            f"{entry.name} ({size} bytes)" if size is not None
+            else f"{entry.name}/")
+    if len(entries) > limit:
+        listing.append(f"... and {len(entries) - limit} more")
+    return listing
+
+
+def _render_failure(summary: str, diagnostics: dict[str, object]) -> str:
+    lines = [summary]
+    argv = diagnostics.get("argv")
+    if argv:
+        lines.append("  producer argv: " + " ".join(
+            shlex.quote(str(item)) for item in argv))
+    tail = diagnostics.get("output_tail")
+    if tail:
+        lines.append("  producer output (tail, captured through a pipe so a "
+                     "full disk cannot erase it):")
+        lines.extend(f"    {line}" for line in str(tail).splitlines()[-40:])
+    else:
+        lines.append("  producer output: EMPTY -- the process wrote nothing "
+                     "to stdout/stderr before exiting")
+    log = diagnostics.get("log", {})
+    if isinstance(log, dict) and log.get("status") != "written":
+        lines.append(f"  producer log {log.get('path')}: {log.get('status')}")
+    signals = diagnostics.get("signals", {})
+    if isinstance(signals, dict):
+        if signals.get("failure_ready") is not None:
+            lines.append(f"  failure.ready: {signals['failure_ready']}")
+        else:
+            lines.append(
+                "  failure.ready: ABSENT -- the producer either died before "
+                "writing it or could not rename it into place")
+        lines.append(f"  signals dir {signals.get('path')}: "
+                     f"{signals.get('listing')}")
+    staging = diagnostics.get("staging")
+    if isinstance(staging, dict):
+        for path, listing in sorted(staging.items()):
+            lines.append(f"  staging {path}: {listing}")
+    elif staging:
+        lines.append(f"  staging: {staging}")
+    for role in ("output", "signals", "log"):
+        usage = diagnostics.get(f"{role}_filesystem")
+        if isinstance(usage, dict) and usage.get("free_bytes") is not None:
+            lines.append(
+                f"  {role} filesystem ({usage['measured_at']}): "
+                f"{usage['free_bytes']} bytes free of {usage['total_bytes']}")
+    removed = diagnostics.get("removed_after_report")
+    if removed:
+        lines.append(f"  staging removed AFTER this report: {removed}")
+    return "\n".join(lines)
 
 
 def _sha256(path: Path) -> str:
@@ -373,6 +495,7 @@ class HrrrPipelineProducer:
         self.workers, self.worker_receipt = resolve_workers(workers)
         self.log = log
         self.process: subprocess.Popen | None = None
+        self.argv: tuple[str, ...] = ()
         self.started = None
         self.preflight = None
         self.producer_ready_seconds: dict[int, float] = {}
@@ -380,6 +503,70 @@ class HrrrPipelineProducer:
         self.max_rss_bytes = 0
         self.stale_cleanup: tuple[str, ...] = ()
         self.cancel_cleanup: dict[str, str | None] = {}
+        #: The producer's own output, retained in this process's memory.
+        self._output_tail = bytearray()
+        self._output_lock = threading.Lock()
+        self._drain: threading.Thread | None = None
+        self._log_status = "not opened"
+        #: Diagnostics captured at the first failure, BEFORE any unwind
+        #: removes the trees they describe.
+        self.failure_diagnostics: dict[str, object] | None = None
+
+    # -- producer output ------------------------------------------------
+    #
+    # Read through a pipe and kept in memory, mirrored to the log file
+    # only as a convenience.  A log inside the output tree is exactly as
+    # writable as the tree the producer just failed to write, so it is
+    # never the channel a failure report depends on.
+
+    def _record_output(self, chunk: bytes) -> None:
+        with self._output_lock:
+            self._output_tail.extend(chunk)
+            excess = len(self._output_tail) - PRODUCER_OUTPUT_TAIL_BYTES
+            if excess > 0:
+                del self._output_tail[:excess]
+
+    def output_tail(self, limit: int = _REPORTED_TAIL_BYTES) -> str:
+        with self._output_lock:
+            data = bytes(self._output_tail[-limit:])
+        return data.decode("utf-8", errors="replace")
+
+    def _pump(self, stream, log_stream) -> None:
+        try:
+            while True:
+                chunk = stream.read(65536)
+                if not chunk:
+                    break
+                self._record_output(chunk)
+                if log_stream is not None:
+                    try:
+                        log_stream.write(chunk)
+                        log_stream.flush()
+                    except OSError as error:
+                        name = errno.errorcode.get(
+                            error.errno, str(error.errno))
+                        self._log_status = (
+                            f"write failed ({name}): {error}; the tail above "
+                            "came from memory instead")
+                        try:
+                            log_stream.close()
+                        except OSError:
+                            pass
+                        log_stream = None
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                stream.close()
+            except OSError:
+                pass
+            if log_stream is not None:
+                try:
+                    log_stream.close()
+                except OSError:
+                    pass
+                if self._log_status == "not opened":
+                    self._log_status = "written"
 
     def start(self) -> None:
         for path, label in ((self.output, "output"), (self.signals, "signals")):
@@ -388,21 +575,101 @@ class HrrrPipelineProducer:
         if not self.decoder.is_file() or not os.access(self.decoder, os.X_OK):
             raise FileNotFoundError(f"pipeline decoder is not executable: {self.decoder}")
         self.stale_cleanup = _cleanup_stale_producer_trees(self.output)
-        self.log.parent.mkdir(parents=True, exist_ok=True)
-        stream = self.log.open("wb")
+        # Best effort, both of them: a log this process cannot open is a
+        # missing convenience, not a reason to refuse to run, and it must
+        # never be the reason a failure has no message.
+        log_stream = None
+        try:
+            self.log.parent.mkdir(parents=True, exist_ok=True)
+            log_stream = self.log.open("wb")
+        except OSError as error:
+            self._log_status = (
+                f"unavailable: {type(error).__name__}: {error}")
         i0, i1, j0, j1 = self.window
-        self.started = time.perf_counter()
-        self.process = subprocess.Popen([
+        self.argv = (
             str(self.decoder), "--series-workers-ready", str(self.workers),
             str(self.series), str(self.output), str(self.signals), self.cycle,
             str(i0), str(i1), str(j0), str(j1),
-        ], stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT)
-        stream.close()
+        )
+        self.started = time.perf_counter()
+        try:
+            self.process = subprocess.Popen(
+                list(self.argv), stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        except BaseException:
+            if log_stream is not None:
+                log_stream.close()
+            raise
+        self._drain = threading.Thread(
+            target=self._pump, args=(self.process.stdout, log_stream),
+            name="hrrr-producer-output", daemon=True)
+        self._drain.start()
 
     def _sample(self) -> None:
         if self.process is not None:
             self.max_rss_bytes = max(
                 self.max_rss_bytes, _process_rss_bytes(self.process.pid))
+
+    # -- failure evidence ------------------------------------------------
+
+    def diagnostics(self) -> dict[str, object]:
+        """Everything this process knows about the producer, right now.
+
+        Every reader here is metadata-only or in-memory, so the answer is
+        the same on a filesystem with zero free blocks -- which is the
+        state it exists to describe.
+        """
+
+        failure = self.signals / "failure.ready"
+        failure_values: dict[str, str] | str | None = None
+        if failure.is_file():
+            try:
+                failure_values = _read_tsv(failure)
+            except (OSError, ValueError) as error:
+                failure_values = f"unreadable: {type(error).__name__}: {error}"
+        try:
+            log_size = self.log.stat().st_size
+        except OSError:
+            log_size = None
+        # The staging tree is what the consumer's unwind removes, so it is
+        # described here -- while it still exists -- rather than merely
+        # named in a message printed after it is gone.
+        staging: dict[str, object] = {}
+        if self.process is not None:
+            for role in ("partial", "publish"):
+                candidate = _owned_producer_tree(self.output, role,
+                                                 self.process.pid)
+                if os.path.lexists(candidate):
+                    staging[str(candidate)] = _directory_listing(candidate)
+        return {
+            "argv": list(self.argv),
+            "staging": staging or "no PID-owned staging/publish tree present",
+            "pid": None if self.process is None else self.process.pid,
+            "returncode": None if self.process is None else self.process.poll(),
+            "output_tail": self.output_tail(),
+            "log": {"path": str(self.log), "status": self._log_status,
+                    "size_bytes": log_size},
+            "signals": {
+                "path": str(self.signals),
+                "listing": _directory_listing(self.signals),
+                "failure_ready": failure_values,
+                "failure_tmp_present": (
+                    self.signals / "failure.ready.tmp").exists(),
+            },
+            "output_filesystem": _disk_free(self.output.parent),
+            "signals_filesystem": _disk_free(self.signals.parent),
+            "log_filesystem": _disk_free(self.log.parent),
+        }
+
+    def _capture_failure(self) -> dict[str, object]:
+        """Snapshot the evidence once, before any unwind can remove it."""
+
+        if self.failure_diagnostics is None:
+            self.failure_diagnostics = self.diagnostics()
+        return self.failure_diagnostics
+
+    def _failure(self, summary: str) -> HrrrProducerFailure:
+        return HrrrProducerFailure(summary, self._capture_failure())
 
     def _raise_if_failed(self) -> None:
         if self.process is None:
@@ -410,12 +677,10 @@ class HrrrPipelineProducer:
         self._sample()
         failure = self.signals / "failure.ready"
         if failure.is_file():
-            raise RuntimeError(f"pipeline producer failed: {_read_tsv(failure)}")
+            raise self._failure("pipeline producer failed")
         returncode = self.process.poll()
         if returncode not in (None, 0):
-            tail = self.log.read_text(errors="replace")[-4000:]
-            raise RuntimeError(
-                f"pipeline producer exited {returncode}: {tail}")
+            raise self._failure(f"pipeline producer exited {returncode}")
 
     def _validated_staging_root(self) -> Path:
         if self.process is None or self.preflight is None:
@@ -510,12 +775,18 @@ class HrrrPipelineProducer:
             self.cancel()
             raise TimeoutError("pipeline producer completion timed out") from error
         self._sample()
+        self._join_drain()
         if returncode != 0:
-            tail = self.log.read_text(errors="replace")[-4000:]
-            raise RuntimeError(f"pipeline producer exited {returncode}: {tail}")
+            raise self._failure(f"pipeline producer exited {returncode}")
         complete = self.signals / "complete.ready"
         if not complete.is_file() or not self.output.is_dir():
-            raise RuntimeError("pipeline producer omitted atomic completion receipt")
+            # Exit 0 with no receipt: the same evidence a nonzero exit
+            # gets, for the same reason -- a completion receipt that could
+            # not be renamed into place is what a full signals filesystem
+            # looks like from here.
+            raise self._failure(
+                "pipeline producer exited 0 but omitted its atomic "
+                "completion receipt")
         complete_values = _read_tsv(complete)
         if (complete_values.get("status") != "PASS"
                 or complete_values.get("series_count") != str(self.series_count)):
@@ -565,7 +836,13 @@ class HrrrPipelineProducer:
             "startup_stale_cleanup": list(self.stale_cleanup),
             "decoder_max_rss_bytes_observed": self.max_rss_bytes,
             "log": str(self.log.resolve()),
+            "log_status": self._log_status,
+            "argv": list(self.argv),
         }
+
+    def _join_drain(self, timeout: float = 10.0) -> None:
+        if self._drain is not None and self._drain.is_alive():
+            self._drain.join(timeout)
 
     def cancel(self) -> None:
         if self.process is None:
@@ -585,6 +862,16 @@ class HrrrPipelineProducer:
         if self.process.poll() is None:
             raise RuntimeError(
                 "pipeline producer remained live after cancellation")
+        self._join_drain()
+        # EVIDENCE BEFORE CLEANUP.  This unwind is what used to delete the
+        # staging tree, the signal directory contents and the decoder log
+        # while the caller was still trying to explain why the producer
+        # died -- so the snapshot is taken here, first, and every path it
+        # names is described (size, listing, free space) rather than
+        # merely pointed at.  Removal still happens afterwards: on a full
+        # filesystem, freeing the space IS the remedy, and the report
+        # already says what was in it.
+        self._capture_failure()
         # Never remove a tree while its native producer may still be creating
         # or opening fields.  This also covers the common consumer-failure
         # case where the producer exited successfully before cancel() ran and
@@ -603,6 +890,12 @@ class HrrrPipelineProducer:
                 cleanup[role] = (
                     f"retained:{type(error).__name__}:{error}")
         self.cancel_cleanup = cleanup
+        if self.failure_diagnostics is not None:
+            removed = sorted(
+                str(path) for path in cleanup.values()
+                if isinstance(path, str) and not path.startswith("retained:"))
+            if removed:
+                self.failure_diagnostics["removed_after_report"] = removed
 
 
 def write_pipeline_receipt(path: Path, payload: dict[str, object]) -> None:

@@ -11,11 +11,18 @@ artifact (or the forcing catalog's ``era5_z_invariant`` provider), the
 ``sfcp_to_sfcp`` surface-pressure policy, the trace-gas choice, and the
 output identity (domain id, title).
 
-All validation is fail-loud: unknown keys, missing keys, wrong types,
-missing files, and empty globs are hard errors at load.  Paths resolve
-relative to the TOML file's directory; entries containing glob
-characters expand (sorted) so a case may declare per-time forcing files
-with one pattern.
+Validation is fail-loud: unknown keys, missing keys, wrong types,
+missing files, and empty globs are hard errors at load.  One residual
+advisory is deliberate, and it is not a key-schema decision: a
+``co2_vmr`` above the sanity envelope is loaded exactly as written with
+one warning line -- the value the run uses is the one written.  A blank
+``output_title`` used to fall back to ``gpuwm``, which substituted a
+value into the wrfout ``TITLE`` attribute under a key the reader did
+write; it refuses now, like every other wrong type here.
+
+Paths resolve relative to the TOML file's directory; entries containing
+glob characters expand (sorted) so a case may declare per-time forcing
+files with one pattern.
 
 Portable roots
 --------------
@@ -43,15 +50,18 @@ Task-2 runtime prints and the catalog consumes.
 from __future__ import annotations
 
 import glob as _glob
+import io
 import math
 import os
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Mapping
 
-from gpuwm.experiment import ExperimentConfig, build_experiment
-from gpuwm.explain import warn
+from gpuwm.experiment import (ExperimentConfig, build_experiment,
+                              did_you_mean)
+from gpuwm.explain import layered, warn
 
 _GLOB_CHARS = frozenset("*?[")
 
@@ -249,6 +259,34 @@ class CaseDataConfig:
     output_title: str
     output_domain: int = 1
     forcing_interval_s: float | None = None
+    authority_backed: bool = field(default=False, repr=False, compare=False)
+    authority_identity_forcing: tuple[Path, ...] = field(
+        default=(), repr=False, compare=False)
+    authority_identity_vtable: Path | None = field(
+        default=None, repr=False, compare=False)
+    authority_identity_wps_namelist: Path | None = field(
+        default=None, repr=False, compare=False)
+    authority_identity_source_orography: (
+        SourceOrographyDeclaration | None) = field(
+            default=None, repr=False, compare=False)
+
+    def forcing_identity(self) -> tuple[Path, ...]:
+        """Original declared forcing paths, never transient CAS paths."""
+
+        return (self.authority_identity_forcing if self.authority_backed
+                else self.forcing)
+
+    def vtable_identity(self) -> Path:
+        return (self.authority_identity_vtable if self.authority_backed
+                else self.vtable)
+
+    def wps_namelist_identity(self) -> Path:
+        return (self.authority_identity_wps_namelist
+                if self.authority_backed else self.wps_namelist)
+
+    def source_orography_identity(self) -> SourceOrographyDeclaration | None:
+        return (self.authority_identity_source_orography
+                if self.authority_backed else self.source_orography)
 
     def source_orography_for_domain(
             self, domain_id: int) -> SourceOrography | None:
@@ -258,22 +296,72 @@ class CaseDataConfig:
     def resolved_inputs(self) -> tuple[ResolvedInput, ...]:
         """Every declared input artifact, for provenance reporting."""
         records = [ResolvedInput(role="forcing", path=path)
-                   for path in self.forcing]
-        records.append(ResolvedInput(role="vtable", path=self.vtable))
+                   for path in self.forcing_identity()]
+        records.append(ResolvedInput(
+            role="vtable", path=self.vtable_identity()))
         records.append(ResolvedInput(role="wps_namelist",
-                                     path=self.wps_namelist))
+                                     path=self.wps_namelist_identity()))
         records.append(ResolvedInput(role="geog_root", path=self.geog_root))
-        if isinstance(self.source_orography, PerDomainSourceOrography):
-            for domain_id, artifact in self.source_orography.by_domain:
+        source_orography = self.source_orography_identity()
+        if isinstance(source_orography, PerDomainSourceOrography):
+            for domain_id, artifact in source_orography.by_domain:
                 records.append(ResolvedInput(
                     role="source_orography", path=artifact.path,
                     detail=(f"variable={artifact.variable};"
                             f"domain=d{domain_id:02d}")))
-        elif self.source_orography is not None:
+        elif source_orography is not None:
             records.append(ResolvedInput(
-                role="source_orography", path=self.source_orography.path,
-                detail=f"variable={self.source_orography.variable}"))
+                role="source_orography", path=source_orography.path,
+                detail=f"variable={source_orography.variable}"))
         return tuple(records)
+
+
+def remap_case_data_files(
+        data: CaseDataConfig, replacements: Mapping[Path, Path],
+        ) -> CaseDataConfig:
+    """Return ``data`` with every declared file redirected atomically.
+
+    ``geog_root`` is deliberately excluded: it is a directory authority,
+    while this mapping is for the supervisor's content-addressed snapshots of
+    forcing, Vtable, WPS namelist, and declared source-orography files.
+    """
+
+    normalized = {
+        Path(source).resolve(): Path(target).resolve()
+        for source, target in replacements.items()
+    }
+
+    def mapped(path: Path) -> Path:
+        source = Path(path).resolve()
+        try:
+            return normalized[source]
+        except KeyError as error:
+            raise ValueError(
+                f"no supervisor file authority was supplied for {source}") \
+                from error
+
+    identity_forcing = tuple(data.forcing_identity())
+    identity_vtable = data.vtable_identity()
+    identity_wps = data.wps_namelist_identity()
+    identity_orography = data.source_orography_identity()
+    declaration = data.source_orography
+    if isinstance(declaration, PerDomainSourceOrography):
+        declaration = replace(declaration, by_domain=tuple(
+            (domain_id, replace(artifact, path=mapped(artifact.path)))
+            for domain_id, artifact in declaration.by_domain))
+    elif declaration is not None:
+        declaration = replace(declaration, path=mapped(declaration.path))
+    return replace(
+        data,
+        forcing=tuple(mapped(path) for path in data.forcing),
+        vtable=mapped(data.vtable),
+        wps_namelist=mapped(data.wps_namelist),
+        source_orography=declaration,
+        authority_backed=True,
+        authority_identity_forcing=identity_forcing,
+        authority_identity_vtable=identity_vtable,
+        authority_identity_wps_namelist=identity_wps,
+        authority_identity_source_orography=identity_orography)
 
 
 def _resolve_path(base_dir: Path, value, key: str, source: str) -> Path:
@@ -326,9 +414,32 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path
     """Validate a parsed ``[case_data]`` table dict (fail-loud)."""
     unknown = sorted(set(raw) - _KNOWN_KEYS)
     if unknown:
-        warn(f"ignoring unknown key(s) {unknown} in [case_data] of "
-             f"{source}",
-             why=f"Known [case_data] keys: {sorted(_KNOWN_KEYS)}.")
+        # This used to warn and drop.  The missing-key check below cannot
+        # cover for it, and the reason is structural: the OPTIONAL keys
+        # are optional by construction, so a misspelling of any of them
+        # passes every check that follows and the case loads with the
+        # built-in default under the name of the user's value.
+        #
+        # `forcing_interval_s` is the one that reaches the numbers.  It
+        # is not only a policy assertion checked against the decoded
+        # schedule (runtime.forcing_schedule); it also SELECTS the
+        # forcing window the catalog consumes -- ingest/preflight's
+        # _select_contiguous_times keeps the unique longest contiguous
+        # run at the declared interval and excludes the rest, which is
+        # how a retrieval returning a date x time cross-product has its
+        # non-contiguous extras removed.  Dropped, the whole decoded set
+        # reaches the run: a different forcing window, a longer run
+        # ceiling, `time.forcing_interval_s = discover` in the resolved
+        # config, and a forecast that completes and reports success.
+        # One stderr line is not a defence against that.  The measured
+        # before/after is in tests/test_case_data_unknown_keys_refuse.py.
+        named = ", ".join(
+            f"{key!r}{did_you_mean(key, _KNOWN_KEYS)}" for key in unknown)
+        raise ValueError(layered(
+            f"[case_data] of {source} does not have a key {named}; no key "
+            "is ignored, because a dropped key runs a default under the "
+            "name of your value.",
+            f"Known [case_data] keys: {sorted(_KNOWN_KEYS)}."))
     missing = [key for key in _REQUIRED_KEYS if key not in raw]
     if missing:
         raise ValueError(
@@ -431,9 +542,18 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path
 
     title = raw["output_title"]
     if not isinstance(title, str) or not title:
-        warn(f"output_title in [case_data] of {source} is empty or not "
-             "a string; using 'gpuwm' as the wrfout TITLE attribute")
-        title = "gpuwm"
+        # co2_vmr above, output_domain below and forcing_interval_s below
+        # that all RAISE on a wrong type; this one alone warned and
+        # substituted, in a module whose docstring says "Validation is
+        # fail-loud: unknown keys, missing keys, wrong types".  The
+        # substituted value is stamped into the wrfout TITLE attribute,
+        # i.e. into the provenance of every frame, under a key the user
+        # did write.
+        raise ValueError(
+            f"output_title in [case_data] of {source} must be a "
+            f"non-empty string, got {title!r}; it is written to the "
+            f"wrfout TITLE attribute, so a substituted default would "
+            f"describe your output as something you did not name.")
 
     domain = raw.get("output_domain", 1)
     if isinstance(domain, bool) or not isinstance(domain, int) or domain < 1:
@@ -469,9 +589,11 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path
 
 def load_case_data(path: str | Path) -> CaseDataConfig:
     """Load only the ``[case_data]`` table of an experiment TOML."""
-    path = Path(path)
-    with open(path, "rb") as fh:
-        raw = tomllib.load(fh)
+    from gpuwm.config_authority import read_config_authority
+
+    authority = read_config_authority(path)
+    path = authority.source
+    raw = tomllib.load(io.BytesIO(authority.payload))
     table = raw.get("case_data")
     if table is None:
         raise ValueError(
@@ -481,17 +603,19 @@ def load_case_data(path: str | Path) -> CaseDataConfig:
     return build_case_data(table, source=str(path), base_dir=path.parent)
 
 
-def load_experiment_case(path: str | Path
-                         ) -> tuple[ExperimentConfig, CaseDataConfig]:
-    """Load one TOML into its (experiment, case-data) config pair.
+def load_experiment_case_bytes(
+        payload: bytes, *, source: str,
+        base_dir: str | Path) -> tuple[ExperimentConfig, CaseDataConfig]:
+    """Load captured TOML bytes while retaining their original path base.
 
     The ``[case_data]`` table is split off before the experiment loader
     runs, so :mod:`gpuwm.experiment` (which rejects unknown tables)
     stays byte-untouched while one file describes a complete case.
     """
-    path = Path(path)
-    with open(path, "rb") as fh:
-        raw = tomllib.load(fh)
+    if not isinstance(payload, bytes):
+        raise TypeError("experiment config payload must be bytes")
+    base = Path(base_dir)
+    raw = tomllib.load(io.BytesIO(payload))
     table = raw.pop("case_data", None)
     # An advisory [fetch] hints table (emitted by `gpuwm domain`) splits
     # off the same way; its schema is owned by gpuwm.fetch and validated,
@@ -499,21 +623,34 @@ def load_experiment_case(path: str | Path
     fetch_table = raw.pop("fetch", None)
     if fetch_table is not None:
         from gpuwm.fetch import validate_fetch_hints
-        validate_fetch_hints(fetch_table, source=str(path))
+        validate_fetch_hints(fetch_table, source=source)
     # Validate the experiment FIRST so an invalid experiment surfaces its
     # own error even when [case_data] is also missing.
-    experiment = build_experiment(raw, source=str(path))
+    experiment = build_experiment(raw, source=source)
     if table is None:
         raise ValueError(
-            f"experiment config {path} carries no [case_data] table; the "
+            f"experiment config {source} carries no [case_data] table; the "
             "experiment runtime requires declared inputs (forcing, vtable, "
             "wps_namelist, geog_root, and policies).")
-    data = build_case_data(table, source=str(path), base_dir=path.parent)
+    data = build_case_data(table, source=source, base_dir=base)
     return experiment, data
+
+
+def load_experiment_case(path: str | Path
+                         ) -> tuple[ExperimentConfig, CaseDataConfig]:
+    """Load one TOML into its (experiment, case-data) config pair."""
+
+    from gpuwm.config_authority import read_config_authority
+
+    authority = read_config_authority(path)
+    path = authority.source
+    return load_experiment_case_bytes(
+        authority.payload, source=str(path), base_dir=path.parent)
 
 
 __all__ = [
     "CaseDataConfig", "PerDomainSourceOrography", "ResolvedInput",
     "SourceOrography", "SourceOrographyDeclaration", "build_case_data",
-    "load_case_data", "load_experiment_case", "resolve_source_orography",
+    "load_case_data", "load_experiment_case", "load_experiment_case_bytes",
+    "remap_case_data_files", "resolve_source_orography",
 ]

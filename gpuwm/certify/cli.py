@@ -82,7 +82,8 @@ def _certify_main(args) -> int:
 
 
 def _dual_run_main(args) -> int:
-    from gpuwm.certify.dualrun import compare_capsule_files
+    from gpuwm.certify.dualrun import (
+        compare_capsule_files, input_bytes_divergence_note)
 
     comparison = compare_capsule_files(args.capsule_a, args.capsule_b)
     if args.out_report is not None:
@@ -94,6 +95,12 @@ def _dual_run_main(args) -> int:
           f"{comparison.first_divergent_field}", file=sys.stderr)
     for divergence in comparison.divergences:
         print(f"dual-run:   {divergence.describe()}", file=sys.stderr)
+    # Still exit 1 -- the divergence is real and is not being excused.  What
+    # this adds is what it usually means, because the one cause an operator
+    # cannot see from a leaf name is that they prepared twice.
+    note = input_bytes_divergence_note(comparison.divergences)
+    if note is not None:
+        print(f"dual-run: {note}", file=sys.stderr)
     return 1
 
 

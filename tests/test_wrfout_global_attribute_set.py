@@ -23,7 +23,7 @@ import netCDF4
 import numpy as np
 
 from gpuwm.config import RunConfig
-from gpuwm.io.wrfout import WrfoutWriter
+from gpuwm.io.wrfout import INITIAL_CONDITION_GLOBAL_ATTRS, WrfoutWriter
 from gpuwm.runtime import _global_wrf_attrs
 
 _GOLDEN_PATH = (Path(__file__).parent / "data"
@@ -58,12 +58,30 @@ def _coord():
     return SimpleNamespace(hybrid_opt=2, etac=0.2)
 
 
-def _write_production_frame(path, *, extra_attrs=None):
+#: The initial-condition provenance a front-door-prepared run carries.
+#: Held here, in the golden's own production path, because the emitted
+#: attribute SET now has two legitimate shapes -- with and without a
+#: source receipt -- and a guard that watched only one of them would let
+#: the other drift unobserved.
+PROVENANCE = {
+    "schema": "gpuwm-gfs-initial-condition-provenance-v1",
+    "cycle": "2020-06-01T00:00:00Z",
+    "initial_forecast_lead_hours": 12,
+    "model_start_time": "2020-06-01T12:00:00Z",
+    "initial_condition_kind": "forecast",
+    "forecast_generating_process_id": 96,
+    "statement": "initialized from cycle 2020-06-01T00:00:00Z at lead f012",
+}
+
+
+def _write_production_frame(path, *, extra_attrs=None,
+                            initial_condition=None, source=None):
     """One frame through the production attribute assembly and writer."""
 
     attrs = _global_wrf_attrs(
         _grid(), datetime.datetime(2020, 6, 1, 12),
-        domain=_domain(), coord=_coord())
+        domain=_domain(), coord=_coord(),
+        initial_condition=initial_condition, source=source)
     if extra_attrs is not None:
         attrs = {**attrs, **extra_attrs}
     frame = {
@@ -91,6 +109,37 @@ def test_emitted_global_attribute_set_is_exactly_the_golden_set(tmp_path):
         "the wrfout global-attribute set moved; added="
         f"{sorted(set(emitted) - set(golden))} removed="
         f"{sorted(set(golden) - set(emitted))}")
+
+
+def test_the_provenance_carrying_set_is_exactly_its_golden_set(tmp_path):
+    """The other legitimate shape: a run whose preparation named a source.
+
+    Every front-door route writes this one.  Guarding only the shape
+    without provenance would have let the initial-condition contract be
+    added, dropped or renamed with the suite still green.
+    """
+
+    path = _write_production_frame(
+        tmp_path / "wrfout_d02_provenance.nc",
+        initial_condition=PROVENANCE, source="gfs")
+    emitted = _emitted_global_attribute_set(path)
+    golden = json.loads(_GOLDEN_PATH.read_text())[
+        "global_attributes_with_initial_condition"]
+    assert emitted == sorted(golden), (
+        "the provenance-carrying wrfout global-attribute set moved; added="
+        f"{sorted(set(emitted) - set(golden))} removed="
+        f"{sorted(set(golden) - set(emitted))}")
+
+
+def test_the_two_golden_shapes_differ_by_exactly_the_provenance(tmp_path):
+    """MUTATION CONTROL across the shapes: neither may absorb the other."""
+
+    golden = json.loads(_GOLDEN_PATH.read_text())
+    base = set(golden["global_attributes"])
+    with_provenance = set(golden["global_attributes_with_initial_condition"])
+    assert with_provenance - base == set(INITIAL_CONDITION_GLOBAL_ATTRS)
+    assert not base - with_provenance, (
+        "a provenance-carrying file dropped an attribute the plain one has")
 
 
 def test_one_synthetic_global_attribute_fails_the_guard(tmp_path):

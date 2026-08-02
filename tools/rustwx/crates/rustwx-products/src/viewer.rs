@@ -26,7 +26,7 @@
 //! speed — `surface_pressure`, `orography`, 3D volumes) resolve to
 //! `None`: the viewer keeps its clearly-labeled generic ramp for those.
 
-use rustwx_core::{CanonicalField, FieldSelector, ModelId};
+use rustwx_core::{CanonicalField, FieldSelector, ModelId, VerticalSelector};
 use rustwx_models::{PlotRecipe, built_in_plot_recipes};
 use rustwx_render::{
     ColorScale, ColormapBuildOptions, DiscreteColorScale, ExtendMode, LegendControls, LegendMode,
@@ -160,10 +160,14 @@ pub fn operational_style_for_store_variable(
         _ => {}
     }
 
-    // Production never color-fills geopotential height values (height
-    // recipes are contour-only / fill companion wind speed), and the
-    // `orography` plane shares the GeopotentialHeight field. Generic ramp.
-    if selector.field == CanonicalField::GeopotentialHeight {
+    // Production never color-fills ISOBARIC geopotential height (height
+    // recipes are contour-only / fill companion wind speed).  The surface
+    // member of the same canonical field is orography, which now has a
+    // production fill of its own, so it keeps its plot identity instead of
+    // the generic ramp.
+    if selector.field == CanonicalField::GeopotentialHeight
+        && !matches!(selector.vertical, VerticalSelector::Surface)
+    {
         return None;
     }
 
@@ -939,10 +943,6 @@ mod tests {
                 FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel),
             ),
             (
-                "orography",
-                FieldSelector::surface(CanonicalField::GeopotentialHeight),
-            ),
-            (
                 "geopotential_height_500hpa",
                 FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500),
             ),
@@ -956,6 +956,19 @@ mod tests {
                 "'{name}' must keep the generic ramp"
             );
         }
+        // `orography` used to be on that list, for want of a production
+        // colorbar.  It has one now, and the browser must show it rather
+        // than the generic ramp -- this assertion is what stops the
+        // isobaric-height exclusion from silently swallowing it again.
+        let terrain = style_for(
+            "orography",
+            &FieldSelector::surface(CanonicalField::GeopotentialHeight),
+            "m",
+        )
+        .expect("orography now has a production fill");
+        assert_eq!(terrain.title, "Terrain Height");
+        assert_eq!(terrain.display_units, "m");
+
         // Unknown derived markers fall back too.
         assert!(
             operational_style_for_store_variable(

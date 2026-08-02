@@ -12,7 +12,10 @@
 //!   `apcp_1h` increments, exactly the GRIB lane's HRRR path (HRRR never
 //!   carries 6/12/24 h APCP messages, so that lane always summed hourly
 //!   increments too). Millimeters fold first, inches out — the GRIB lane's
-//!   conversion order.
+//!   conversion order. A store written by the wrfout import lane carries
+//!   no hourly increment at all — only the run accumulation since
+//!   simulation start — so the hourly windows fall back to differencing
+//!   two stored run totals, naming both hours in the strategy note.
 //! * 2-5 km UH — pointwise maxima of the stored sub-hourly 1 h max planes
 //!   (`uh_2to5km_max_1h`, the native MXUPHL message selected at its window
 //!   start hour), the exact field the GRIB windowed lane reduced. Hours
@@ -62,6 +65,18 @@ use rw_store::run::{RwsRunManifest, validate_store_component};
 
 pub(crate) const MM_PER_INCH: f64 = 25.4;
 pub(crate) const MS_TO_KT: f64 = 1.943_844_5;
+
+/// Stored APCP variable names. Spelled once so the plan-time probe and
+/// the per-hour read agree on what "this store carries it" means — a
+/// probe that tested a different spelling than the read would hand a
+/// plan to a reader that cannot serve it.
+const APCP_1H_VAR: &str = "apcp_1h";
+/// The GRIB ingest lane's run accumulation.
+const APCP_RUN_TOTAL_VAR: &str = "apcp_run_total";
+/// The wrfout import lane's name for the same physical plane (RAINC +
+/// RAINNC [+ RAINSH] since simulation start, kg/m^2): WRF's Registry
+/// spelling, stored verbatim.
+const APCP_WRFOUT_RUN_TOTAL_VAR: &str = "apcp";
 
 /// One realized windowed product grid: display values (already in display
 /// units) on the full run grid, plus the metadata the windowed render path
@@ -216,13 +231,25 @@ pub fn compute_windowed_products(
     let mut blockers: Vec<(String, String)> = Vec::new();
     let mut accums: Vec<Accum> = Vec::new();
     let mut seen = BTreeSet::new();
+    // Which APCP plane the hourly QPF windows reduce is a property of
+    // the store, not of the request, so it is probed at most once per
+    // pass and shared by every QPF window (memoized rather than
+    // unconditional: a request that touches no QPF product must not pay
+    // an anchor-hour file open).
+    let mut qpf_source: Option<QpfSource> = None;
     for slug in requested {
         if !seen.insert(slug.as_str()) {
             continue;
         }
         let product = HrrrWindowedProduct::from_slug(slug)
             .ok_or_else(|| format!("'{slug}' is not a windowed product slug"))?;
-        let spec = match plan_product(product, anchor_hour) {
+        let source = if reduces_hourly_apcp(product) {
+            *qpf_source.get_or_insert_with(|| probe_qpf_source(&run_dir, &manifest, anchor_hour))
+        } else {
+            // Not consulted by plans that read no hourly APCP.
+            QpfSource::NativeHourly
+        };
+        let spec = match plan_product(product, anchor_hour, source) {
             Ok(spec) => spec,
             Err(reason) => {
                 blockers.push((slug.clone(), reason));
@@ -238,18 +265,28 @@ pub fn compute_windowed_products(
         if missing.is_empty() {
             accums.push(Accum::new(spec));
         } else {
+            let first = spec.hours.first().copied().unwrap_or(anchor_hour);
+            let last = spec.hours.last().copied().unwrap_or(anchor_hour);
+            let requirement = match spec.reduce {
+                // A run-total difference requires exactly its two
+                // endpoints and nothing between them; claiming it needs
+                // every hour of the span would misreport which stored
+                // hours the product actually depends on.
+                Reduce::Difference => format!(
+                    "window F{first:03}-F{last:03} is differenced from the stored run \
+                     totals at F{first:03} and F{last:03}, both required"
+                ),
+                _ => format!("window F{first:03}-F{last:03} needs every hour"),
+            };
             blockers.push((
                 slug.clone(),
                 format!(
-                    "missing stored hour(s) {} (window F{:03}-F{:03} needs every hour; \
-                     gaps are never skipped)",
+                    "missing stored hour(s) {} ({requirement}; gaps are never skipped)",
                     missing
                         .iter()
                         .map(|hour| format!("F{hour:03}"))
                         .collect::<Vec<_>>()
                         .join(", "),
-                    spec.hours.first().copied().unwrap_or(anchor_hour),
-                    spec.hours.last().copied().unwrap_or(anchor_hour),
                 ),
             ));
         }
@@ -426,6 +463,64 @@ enum Reduce {
     Min,
     /// Pointwise max - min over the window.
     Range,
+    /// Pointwise later - earlier over exactly two stored run totals: the
+    /// accumulation window between them. Two hours, never one — see
+    /// [`AccumState::DifferencePending`].
+    Difference,
+}
+
+/// Which stored APCP plane a hourly QPF window can reduce in THIS store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QpfSource {
+    /// The store carries the native trailing 1 h increment (`apcp_1h`),
+    /// the measured quantity: reduce it directly.
+    NativeHourly,
+    /// The store carries only a run accumulation (the wrfout import lane
+    /// stores nothing else): the window is the difference of the run
+    /// totals at its two endpoints.
+    DifferencedRunTotal,
+}
+
+/// The windowed products that reduce hourly APCP increments — the only
+/// plans whose source plane depends on what the store actually carries.
+fn reduces_hourly_apcp(product: HrrrWindowedProduct) -> bool {
+    use HrrrWindowedProduct::*;
+    matches!(product, Qpf1h | Qpf6h | Qpf12h | Qpf24h)
+}
+
+/// Decide [`QpfSource`] from the anchor hour's variable list — a header
+/// read, no plane decode.
+///
+/// `apcp_1h` present wins unconditionally: it is the measured hourly
+/// increment, and a derived difference must never preempt it. The
+/// fallback is claimed only when a run-total plane is actually there, so
+/// a store carrying neither still blocks naming `apcp_1h` — the plane a
+/// QPF window primarily expects — instead of naming only the substitutes.
+/// Any failure to inspect the anchor hour also keeps the native plan: the
+/// per-hour read reports the real cause (unreadable file, bad metadata)
+/// far better than this probe could, and inventing a blocker here would
+/// hide it.
+fn probe_qpf_source(run_dir: &Path, manifest: &RwsRunManifest, anchor_hour: u16) -> QpfSource {
+    let Some(entry) = manifest.hours.get(&anchor_hour) else {
+        return QpfSource::NativeHourly;
+    };
+    let Ok(path) = canonical_contained_path(
+        run_dir,
+        &run_dir.join(&entry.file),
+        &format!("hour F{anchor_hour:03} file"),
+    ) else {
+        return QpfSource::NativeHourly;
+    };
+    let Ok(reader) = HourReader::open(&path) else {
+        return QpfSource::NativeHourly;
+    };
+    let has_run_total = reader.variable(APCP_RUN_TOTAL_VAR).is_some()
+        || reader.variable(APCP_WRFOUT_RUN_TOTAL_VAR).is_some();
+    if reader.variable(APCP_1H_VAR).is_none() && has_run_total {
+        QpfSource::DifferencedRunTotal
+    } else {
+        QpfSource::NativeHourly
+    }
 }
 
 /// Display-unit conversion applied AFTER the fold (the GRIB lane's order:
@@ -453,8 +548,13 @@ struct ProductSpec {
 /// Mirror of the GRIB lane's `plan_windowed_products` + per-kernel window
 /// definitions for one product, anchored at the max stored hour. `Err` is
 /// the planning blocker reason (same wording as the GRIB lane where the
-/// constraint is identical).
-fn plan_product(product: HrrrWindowedProduct, end: u16) -> Result<ProductSpec, String> {
+/// constraint is identical). `qpf_source` is ignored by every product
+/// [`reduces_hourly_apcp`] rejects.
+fn plan_product(
+    product: HrrrWindowedProduct,
+    end: u16,
+    qpf_source: QpfSource,
+) -> Result<ProductSpec, String> {
     use HrrrWindowedProduct::*;
     if let Some(plan) = snapshot_plan(product) {
         if end < plan.window_end {
@@ -490,19 +590,50 @@ fn plan_product(product: HrrrWindowedProduct, end: u16) -> Result<ProductSpec, S
             strategy,
         })
     };
-    let qpf_sum = |window: u16| {
-        if end < window {
-            return Err(format!("{window}-h QPF requires forecast hour >= {window}"));
-        }
+    // Run-total fallback: ONE difference of the window's two endpoints,
+    // not a sum of `window` hourly differences. The intermediate run
+    // totals cancel algebraically, so summing them would read `window`
+    // extra planes to reach the same quantity through more roundings.
+    // Callers guarantee `window <= end`; the window minimum is checked
+    // before this runs, so F000 never gets a predecessor invented for it.
+    //
+    // What makes the "{window} h" label honest is `reject_exact_time_axis`:
+    // a store whose frames are not whole forecast hours cannot reach this
+    // lane at all, so the gap between two hour indices IS that many hours
+    // of accumulation. No sub-hourly frame can slip a shorter span in
+    // under an hourly name.
+    let qpf_difference = |window: u16| {
+        let start = end - window;
         spec(
-            SourceKind::Apcp1h,
-            Reduce::Sum,
-            (end + 1 - window..=end).collect(),
+            SourceKind::ApcpRunTotal,
+            Reduce::Difference,
+            vec![start, end],
             Some(window),
             "in",
             Finish::MmToInches,
-            format!("sum of {window} stored hourly APCP increments (apcp_1h)"),
+            format!(
+                "{window} h APCP differenced from stored run-total accumulations \
+                 (F{end:03} minus F{start:03}); this store carries no native \
+                 {APCP_1H_VAR} plane"
+            ),
         )
+    };
+    let qpf_window = |window: u16| {
+        if end < window {
+            return Err(format!("{window}-h QPF requires forecast hour >= {window}"));
+        }
+        match qpf_source {
+            QpfSource::NativeHourly => spec(
+                SourceKind::Apcp1h,
+                Reduce::Sum,
+                (end + 1 - window..=end).collect(),
+                Some(window),
+                "in",
+                Finish::MmToInches,
+                format!("sum of {window} stored hourly APCP increments ({APCP_1H_VAR})"),
+            ),
+            QpfSource::DifferencedRunTotal => qpf_difference(window),
+        }
     };
     match product {
         Qpf1h => {
@@ -512,19 +643,22 @@ fn plan_product(product: HrrrWindowedProduct, end: u16) -> Result<ProductSpec, S
                         .to_string(),
                 );
             }
-            spec(
-                SourceKind::Apcp1h,
-                Reduce::Direct,
-                vec![end],
-                Some(1),
-                "in",
-                Finish::MmToInches,
-                format!("stored trailing 1 h APCP accumulation (apcp_1h) at F{end:03}"),
-            )
+            match qpf_source {
+                QpfSource::NativeHourly => spec(
+                    SourceKind::Apcp1h,
+                    Reduce::Direct,
+                    vec![end],
+                    Some(1),
+                    "in",
+                    Finish::MmToInches,
+                    format!("stored trailing 1 h APCP accumulation ({APCP_1H_VAR}) at F{end:03}"),
+                ),
+                QpfSource::DifferencedRunTotal => qpf_difference(1),
+            }
         }
-        Qpf6h => qpf_sum(6),
-        Qpf12h => qpf_sum(12),
-        Qpf24h => qpf_sum(24),
+        Qpf6h => qpf_window(6),
+        Qpf12h => qpf_window(12),
+        Qpf24h => qpf_window(24),
         QpfTotal => {
             if end < 1 {
                 return Err("total QPF requires forecast hour >= 1".to_string());
@@ -871,23 +1005,27 @@ fn read_source_plane(
     };
     match kind {
         SourceKind::Apcp1h => Ok(SourcePlane::exact(to_f64(plain(read(
-            "apcp_1h", "kg/m^2",
+            APCP_1H_VAR,
+            "kg/m^2",
         ))?))),
         // The GRIB ingest lane stores the run accumulation as
         // `apcp_run_total`; the wrfout import lane stores the same
         // physical plane (RAINC + RAINNC since simulation start, kg/m^2)
         // under its WRF Registry name `apcp`.  Same quantity, second
         // name, exact-plane semantics (no fallback flag).
-        SourceKind::ApcpRunTotal => match read("apcp_run_total", "kg/m^2") {
+        SourceKind::ApcpRunTotal => match read(APCP_RUN_TOTAL_VAR, "kg/m^2") {
             Ok(values) => Ok(SourcePlane::exact(to_f64(values))),
             Err(ReadFailure::Failed(reason)) => Err(reason),
-            Err(ReadFailure::MissingVariable(missing)) => match read("apcp", "kg/m^2") {
-                Ok(values) => Ok(SourcePlane::exact(to_f64(values))),
-                Err(err) => Err(format!(
-                    "{missing}; wrfout-lane 'apcp' fallback also unavailable: {}",
-                    err.into_reason()
-                )),
-            },
+            Err(ReadFailure::MissingVariable(missing)) => {
+                match read(APCP_WRFOUT_RUN_TOTAL_VAR, "kg/m^2") {
+                    Ok(values) => Ok(SourcePlane::exact(to_f64(values))),
+                    Err(err) => Err(format!(
+                        "{missing}; wrfout-lane '{APCP_WRFOUT_RUN_TOTAL_VAR}' fallback also \
+                         unavailable: {}",
+                        err.into_reason()
+                    )),
+                }
+            }
         },
         SourceKind::Uh2to5km => match read("uh_2to5km_max_1h", "m^2/s^2") {
             Ok(values) => Ok(SourcePlane::exact(to_f64(values))),
@@ -1016,8 +1154,19 @@ enum AccumState {
     Sum(Vec<f64>),
     Max(Vec<f64>),
     Min(Vec<f64>),
-    Range { max: Vec<f64>, min: Vec<f64> },
+    Range {
+        max: Vec<f64>,
+        min: Vec<f64>,
+    },
     Direct(Vec<f64>),
+    /// [`Reduce::Difference`] after ONE fold: the window's earlier run
+    /// total, which is not the product and carries no value out of
+    /// `finish`.  The variant exists precisely so a difference that saw
+    /// only one hour blocks instead of publishing a run accumulation
+    /// relabeled as a window increment.
+    DifferencePending(Vec<f64>),
+    /// [`Reduce::Difference`] after both folds: the window increment.
+    DifferenceReady(Vec<f64>),
 }
 
 impl Accum {
@@ -1043,6 +1192,7 @@ impl Accum {
                         max: values.to_vec(),
                         min: values.to_vec(),
                     },
+                    Reduce::Difference => AccumState::DifferencePending(values.to_vec()),
                 });
             }
             Some(AccumState::Direct(_)) => {
@@ -1069,6 +1219,29 @@ impl Accum {
                     *min = min.min(*value);
                 }
             }
+            Some(AccumState::DifferencePending(start)) => {
+                // Hour order is not an assumption here, it is enforced
+                // upstream: `hours_needed` is a BTreeMap streamed in
+                // ascending hour order, so the fold already held is the
+                // window's EARLIER endpoint and `values` is the later
+                // one.  Anything else would be a planning bug, not a
+                // data condition.
+                let mut increment = std::mem::take(start);
+                for (target, value) in increment.iter_mut().zip(values) {
+                    // Round-off guard, not cosmetics: this producer's
+                    // RAINC/RAINNC are monotonic (no bucket reset), so a
+                    // true negative increment cannot occur — but the
+                    // stored run totals are f32, and differencing two
+                    // large near-equal ones can land a hair below zero.
+                    // Clamping publishes the physical floor instead of a
+                    // negative rainfall pixel.
+                    *target = (*value - *target).max(0.0);
+                }
+                self.state = Some(AccumState::DifferenceReady(increment));
+            }
+            Some(AccumState::DifferenceReady(_)) => {
+                unreachable!("differenced windows fold exactly two hours")
+            }
         }
     }
 
@@ -1080,10 +1253,27 @@ impl Accum {
             None => {
                 return Err("no stored hours folded into this window".to_string());
             }
+            // A run-total difference that folded one endpoint holds a
+            // run accumulation, NOT a window increment.  Publishing it
+            // would silently relabel "rain since simulation start" as
+            // "rain this window", so the half-folded state is a blocker.
+            Some(AccumState::DifferencePending(_)) => {
+                return Err(format!(
+                    "run-total differencing folded only one of the two window endpoints \
+                     ({}); a window increment is undefined without both",
+                    self.spec
+                        .hours
+                        .iter()
+                        .map(|hour| format!("F{hour:03}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
             Some(AccumState::Direct(values))
             | Some(AccumState::Sum(values))
             | Some(AccumState::Max(values))
-            | Some(AccumState::Min(values)) => values,
+            | Some(AccumState::Min(values))
+            | Some(AccumState::DifferenceReady(values)) => values,
             Some(AccumState::Range { max, min }) => max
                 .into_iter()
                 .zip(min)
@@ -1199,6 +1389,19 @@ mod tests {
     fn apcp_total_plane(hour: u16) -> Vec<f32> {
         (0..CELLS)
             .map(|cell| 10.0 + hour as f32 + 0.5 * cell as f32)
+            .collect()
+    }
+
+    /// Run accumulation as the wrfout import lane stores it (`apcp`,
+    /// kg/m^2 since simulation start): monotonic in hour, a DIFFERENT
+    /// increment per cell, and already nonzero at F000 — so a window
+    /// that published the run total, or differenced the wrong pair of
+    /// hours, cannot coincide with the expected increment. Every value
+    /// and every difference is an exact binary fraction, so the
+    /// expectations below are bit-exact.
+    fn apcp_run_accum_plane(hour: u16) -> Vec<f32> {
+        (0..CELLS)
+            .map(|cell| 2.0 + (0.75 + 0.25 * cell as f32) * hour as f32)
             .collect()
     }
 
@@ -1365,6 +1568,34 @@ mod tests {
         for &hour in hours {
             write_test_hour(store_root, run, hour, &[]);
         }
+    }
+
+    /// Write one synthetic hour the way the wrfout import lane does: the
+    /// run accumulation under WRF's Registry name `apcp` and NO hourly
+    /// increment plane at all (`temperature_2m` carries the grid).
+    fn write_wrfout_apcp_hour(store_root: &Path, run: &str, hour: u16, run_total: Vec<f32>) {
+        let temp = field(
+            FieldSelector::height_agl(CanonicalField::Temperature, 2),
+            "K",
+            temp_k_plane(hour),
+        );
+        let apcp = field(
+            FieldSelector::surface(CanonicalField::TotalPrecipitation),
+            "kg/m^2",
+            run_total,
+        );
+        write_hour_from_fields_with_derived(
+            store_root,
+            "hrrr",
+            run,
+            hour,
+            &[("temperature_2m", &temp), ("apcp", &apcp)],
+            &[],
+            &[],
+            "windowed-store-test",
+            1_780_000_000 + hour as u64,
+        )
+        .unwrap();
     }
 
     fn compute(
@@ -1909,6 +2140,245 @@ mod tests {
             "every UP_HELI_MAX hour must be named: {}",
             uh_3h.strategy
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wrfout_run_total_store_differences_the_1h_qpf_window() {
+        let dir = test_dir("wrfout-qpf-1h");
+        let run = "20260608_00z";
+        for hour in 0..=3u16 {
+            write_wrfout_apcp_hour(&dir, run, hour, apcp_run_accum_plane(hour));
+        }
+        // F003 is stored but not offered: the anchor is F002, and the
+        // plan must reach BACKWARD to F001 rather than forward.
+        let outcome = compute(&dir, run, &[0, 1, 2], &["qpf_1h", "qpf_total"]);
+        assert_eq!(outcome.anchor_hour, 2);
+        assert!(outcome.blockers.is_empty(), "{:?}", outcome.blockers);
+
+        let qpf_1h = grid_named(&outcome, "qpf_1h");
+        let expected: Vec<f64> = (0..CELLS)
+            .map(|cell| {
+                (f64::from(apcp_run_accum_plane(2)[cell])
+                    - f64::from(apcp_run_accum_plane(1)[cell]))
+                    / MM_PER_INCH
+            })
+            .collect();
+        assert_values(qpf_1h, &expected);
+        assert_eq!(qpf_1h.units, "in");
+        assert_eq!(qpf_1h.window_hours, Some(1));
+        assert_eq!(qpf_1h.hours_used, vec![1, 2]);
+        // Pinned verbatim: the note is the only thing that lets a reader
+        // of the plot tell a differenced window from a native one, so it
+        // must name the fallback AND the exact pair of hours subtracted.
+        assert_eq!(
+            qpf_1h.strategy,
+            "1 h APCP differenced from stored run-total accumulations (F002 minus F001); \
+             this store carries no native apcp_1h plane"
+        );
+
+        // The run total itself still reads whole, through the same
+        // wrfout-lane `apcp` plane.
+        let qpf_total = grid_named(&outcome, "qpf_total");
+        let expected: Vec<f64> = apcp_run_accum_plane(2)
+            .iter()
+            .map(|&mm| f64::from(mm) / MM_PER_INCH)
+            .collect();
+        assert_values(qpf_total, &expected);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn differenced_qpf_is_the_increment_never_the_run_total() {
+        // Negative control for the differencing fallback: it fails if
+        // the implementation ever publishes apcp(h) where the 1 h window
+        // wants apcp(h) - apcp(h-1).
+        let dir = test_dir("wrfout-qpf-negative-control");
+        let run = "20260608_00z";
+        for hour in 0..=2u16 {
+            write_wrfout_apcp_hour(&dir, run, hour, apcp_run_accum_plane(hour));
+        }
+        let outcome = compute(&dir, run, &[0, 1, 2], &["qpf_1h", "qpf_total"]);
+        let qpf_1h = grid_named(&outcome, "qpf_1h");
+        let qpf_total = grid_named(&outcome, "qpf_total");
+
+        // Guard the fixture: an increment that happened to equal the run
+        // total would make every assertion below pass vacuously.
+        for cell in 0..CELLS {
+            let increment =
+                f64::from(apcp_run_accum_plane(2)[cell]) - f64::from(apcp_run_accum_plane(1)[cell]);
+            let total = f64::from(apcp_run_accum_plane(2)[cell]);
+            assert!(
+                increment > 0.0 && total - increment > 1.0,
+                "fixture cell {cell}: increment {increment} must be positive and far \
+                 below the run total {total}"
+            );
+        }
+
+        // Pinned numerically, independent of the fixture function: the
+        // F001->F002 increments are 0.75/1.0/1.25/1.5 mm, while the run
+        // totals at F002 are 3.5/4.0/4.5/5.0 mm.
+        let expected: Vec<f64> = [0.75_f64, 1.0, 1.25, 1.5]
+            .iter()
+            .map(|mm| mm / MM_PER_INCH)
+            .collect();
+        assert_values(qpf_1h, &expected);
+        for (cell, (hourly, total)) in qpf_1h.values.iter().zip(&qpf_total.values).enumerate() {
+            assert!(
+                hourly < total,
+                "cell {cell}: qpf_1h {hourly} is the F001->F002 increment and must sit \
+                 strictly below the run total {total}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wrfout_run_total_store_differences_only_the_6h_window_endpoints() {
+        let dir = test_dir("wrfout-qpf-6h");
+        let run = "20260608_00z";
+        for hour in 0..=6u16 {
+            write_wrfout_apcp_hour(&dir, run, hour, apcp_run_accum_plane(hour));
+        }
+        let hours: Vec<u16> = (0..=6).collect();
+        let outcome = compute(&dir, run, &hours, &["qpf_6h", "qpf_12h"]);
+
+        // Six hours of accumulation = 6 * the per-cell step, reached
+        // with two plane reads instead of seven.
+        let qpf_6h = grid_named(&outcome, "qpf_6h");
+        let expected: Vec<f64> = [4.5_f64, 6.0, 7.5, 9.0]
+            .iter()
+            .map(|mm| mm / MM_PER_INCH)
+            .collect();
+        assert_values(qpf_6h, &expected);
+        assert_eq!(
+            qpf_6h.hours_used,
+            vec![0, 6],
+            "only the window endpoints are read"
+        );
+        assert_eq!(qpf_6h.window_hours, Some(6));
+        assert_eq!(
+            qpf_6h.strategy,
+            "6 h APCP differenced from stored run-total accumulations (F006 minus F000); \
+             this store carries no native apcp_1h plane"
+        );
+
+        // The window minimum still governs: no predecessor, no window.
+        assert!(blocker_reason(&outcome, "qpf_12h").contains(">= 12"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_predecessor_hour_blocks_the_differenced_window() {
+        let dir = test_dir("wrfout-qpf-gap");
+        let run = "20260608_00z";
+        for hour in [0u16, 1, 3] {
+            write_wrfout_apcp_hour(&dir, run, hour, apcp_run_accum_plane(hour));
+        }
+        let outcome = compute(&dir, run, &[0, 1, 3], &["qpf_1h", "qpf_total"]);
+        assert_eq!(outcome.anchor_hour, 3);
+
+        // F002 is the anchor's predecessor and it is not stored: the 1 h
+        // window blocks naming it, never publishing a zero or reaching
+        // further back for a wider increment wearing a "1 h" label.
+        let reason = blocker_reason(&outcome, "qpf_1h");
+        assert!(
+            reason.contains("F002"),
+            "the missing predecessor hour must be named: {reason}"
+        );
+        assert!(
+            reason.contains("never skipped"),
+            "no-silent-gap contract must be stated: {reason}"
+        );
+
+        // The gap does not touch the run total at the anchor.
+        assert!(outcome.grids.iter().any(|grid| grid.slug == "qpf_total"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn native_hourly_apcp_is_never_preempted_by_the_differenced_fallback() {
+        let dir = test_dir("native-not-preempted");
+        let run = "20260608_00z";
+        // write_test_run stores BOTH apcp_1h and apcp_run_total, the
+        // GRIB ingest lane's shape.
+        write_test_run(&dir, run, &[1, 2, 3]);
+        let outcome = compute(&dir, run, &[1, 2, 3], &["qpf_1h"]);
+
+        let qpf_1h = grid_named(&outcome, "qpf_1h");
+        let expected: Vec<f64> = apcp_1h_plane(3)
+            .iter()
+            .map(|&mm| f64::from(mm) / MM_PER_INCH)
+            .collect();
+        assert_values(qpf_1h, &expected);
+        assert_eq!(qpf_1h.hours_used, vec![3], "one hour, no predecessor read");
+        assert!(
+            qpf_1h.strategy.contains("apcp_1h") && !qpf_1h.strategy.contains("differenced"),
+            "{}",
+            qpf_1h.strategy
+        );
+
+        // Not a cosmetic assertion: in this fixture the measured hourly
+        // increment and a difference of the stored run totals are
+        // different numbers, so a fallback that preempted the native
+        // plane would land somewhere else.
+        let differenced = f64::from(apcp_total_plane(3)[0]) - f64::from(apcp_total_plane(2)[0]);
+        assert!(
+            (differenced - f64::from(apcp_1h_plane(3)[0])).abs() > 0.1,
+            "fixture must separate the two answers"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_half_folded_difference_blocks_instead_of_publishing_the_run_total() {
+        // The store-level gate normally makes this unreachable, but the
+        // accumulator must not depend on that gate to stay honest: with
+        // only the earlier endpoint folded it holds a run accumulation,
+        // and it must refuse rather than hand it out wearing a 1 h label.
+        let spec = plan_product(
+            HrrrWindowedProduct::Qpf1h,
+            2,
+            QpfSource::DifferencedRunTotal,
+        )
+        .unwrap();
+        assert_eq!(spec.reduce, Reduce::Difference);
+        assert_eq!(spec.hours, vec![1, 2]);
+
+        let mut accum = Accum::new(spec);
+        accum.fold(&[7.0, 8.0, 9.0, 10.0]);
+        let reason = accum.finish().unwrap_err();
+        assert!(
+            reason.contains("F001") && reason.contains("F002") && reason.contains("undefined"),
+            "the half-folded blocker must name both endpoints: {reason}"
+        );
+    }
+
+    #[test]
+    fn round_off_negative_run_total_steps_clamp_to_zero() {
+        let dir = test_dir("wrfout-qpf-clamp");
+        let run = "20260608_00z";
+        // A run total that dips by one f32 ulp between hours: physically
+        // impossible for this producer's monotonic RAINC/RAINNC (no
+        // bucket reset), reachable only by round-off in the stored f32.
+        let later = 1234.5_f32;
+        let earlier = f32::from_bits(later.to_bits() + 1);
+        assert!(
+            f64::from(later) - f64::from(earlier) < 0.0,
+            "the fixture must actually step backward"
+        );
+        write_wrfout_apcp_hour(&dir, run, 0, vec![0.0; CELLS]);
+        write_wrfout_apcp_hour(&dir, run, 1, vec![earlier; CELLS]);
+        write_wrfout_apcp_hour(&dir, run, 2, vec![later; CELLS]);
+
+        let outcome = compute(&dir, run, &[0, 1, 2], &["qpf_1h"]);
+        assert_values(grid_named(&outcome, "qpf_1h"), &[0.0; CELLS]);
 
         let _ = fs::remove_dir_all(&dir);
     }

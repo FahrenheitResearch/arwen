@@ -127,6 +127,30 @@ def basemap_candidates(renderer: Path | None = None) -> tuple[Path, ...]:
     return tuple(candidates)
 
 
+def cartopy_natural_earth_root() -> Path | None:
+    """The cartopy shapefile cache, if this machine has one.
+
+    Not part of :func:`basemap_candidates` -- the renderer consults this
+    *after* those, per layer, inside its own loaders -- but it is real
+    geography and it is why this bug survived a release.  A workstation
+    that has ever run cartopy has this directory, so ``rw_wrfbatch``
+    draws perfectly good coastlines there while the same binary on a
+    clean machine draws none.  Anything that reports on basemap
+    availability has to know about it or it reports a state the
+    artifact does not have.
+
+    Mirrors ``rustwx-render``'s ``cartopy_natural_earth_root``,
+    including its ``USERPROFILE``-before-``HOME`` order.
+    """
+
+    home = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+    if not home:
+        return None
+    root = (Path(home) / ".local" / "share" / "cartopy" / "shapefiles"
+            / "natural_earth")
+    return root if root.is_dir() else None
+
+
 def resolve_basemap_dir(renderer: Path | None = None) -> Path | None:
     """The first candidate that exists, or None if the renderer has none.
 
@@ -299,14 +323,24 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
                  out_dir: Path, products: str, frames: str,
                  width: int, height: int, heavy: bool = False,
                  source_label: str | None = None,
-                 ) -> tuple[list[Path], list[str]]:
-    """Render one wrfout file into ``out_dir``; (written, failures).
+                 ) -> tuple[list[Path], list[str],
+                            list[tuple[str, str]]]:
+    """Render one wrfout file into ``out_dir``; (written, failures, skipped).
 
     One invocation per file with its own store root, exactly like the
     campaign flow: a shared store would merge two wrfouts into one run.
     The renderer's event lines are relayed to stdout as they arrive is
     not attempted -- the run is short-lived and its transcript is small,
-    so it is captured and parsed for RENDERED/FAILED events instead.
+    so it is captured and parsed for RENDERED/SKIPPED/FAILED events
+    instead.
+
+    The engine has always drawn the third distinction itself: a product
+    whose stored fields are not there is ``SKIPPED <slug> <reason>`` on
+    stdout and is *not* counted in ``summary.failed``, so the process
+    still exits 0.  This function used to read only two of the three
+    lines, which made an honest skip invisible to every caller -- the
+    reason a reader saw 53 images and no word about the 54th.  All three
+    are read now, and only ``FAILED`` is a failure.
     """
 
     command = [
@@ -328,15 +362,20 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
             command, capture_output=True, text=True, errors="replace",
             env=renderer_env())
     except OSError as error:
-        return [], [f"{wrfout}: renderer failed to launch: {error}"]
+        return [], [f"{wrfout}: renderer failed to launch: {error}"], []
     written: list[Path] = []
     failures: list[str] = []
+    skipped: list[tuple[str, str]] = []
     for line in (result.stdout or "").splitlines():
         if line.startswith("RENDERED "):
             _, _, rest = line.partition(" ")
             _, _, path = rest.partition(" ")
             if path:
                 written.append(Path(path))
+        elif line.startswith("SKIPPED "):
+            slug, _, reason = line[len("SKIPPED "):].partition(" ")
+            skipped.append(
+                (slug, f"{wrfout}: {reason or 'no reason given'}"))
     for line in (result.stderr or "").splitlines():
         if line.startswith("FAILED "):
             failures.append(f"{wrfout}: {line[len('FAILED '):]}")
@@ -346,7 +385,7 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
         detail = tail[-1] if tail else f"exit {result.returncode}"
         if not failures:
             failures.append(f"{wrfout}: {detail}")
-    return written, failures
+    return written, failures, skipped
 
 
 __all__ = [

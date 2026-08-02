@@ -1,4 +1,5 @@
 use super::*;
+use crate::shared_context::TitleProvenance;
 use rustwx_render::ChromeScale;
 
 #[test]
@@ -150,6 +151,7 @@ fn windowed_render_request_uses_modern_map_chrome() {
         place_label_overlay: None,
         subtitle_left_suffix: None,
         subtitle_right_override: None,
+        title_provenance: TitleProvenance::default(),
     };
     let projected = ProjectedMap {
         projected_x: vec![0.0, 1.0, 0.0, 1.0],
@@ -180,6 +182,8 @@ fn windowed_render_request_uses_modern_map_chrome() {
     assert_eq!(render_request.width, 1200);
     assert_eq!(render_request.height, 900);
     assert_eq!(render_request.chrome_scale, ChromeScale::Fixed(0.9));
+    // A fetched batch: nothing is appended to the headline.
+    assert_eq!(render_request.title.as_deref(), Some("1-h QPF"));
     assert_eq!(render_request.supersample_factor, 1);
     assert_eq!(
         render_request.subtitle_left.as_deref(),
@@ -199,6 +203,85 @@ fn windowed_render_request_uses_modern_map_chrome() {
     );
     assert!(render_request.domain_frame.is_some());
     assert!(render_request.projected_domain.is_some());
+}
+
+#[test]
+fn a_locally_imported_windowed_title_names_its_grid() {
+    let shape = rustwx_core::GridShape::new(2, 2).unwrap();
+    let grid = rustwx_core::LatLonGrid::new(
+        shape,
+        vec![36.0, 36.0, 35.0, 35.0],
+        vec![-98.0, -97.0, -98.0, -97.0],
+    )
+    .unwrap();
+    let field = rustwx_core::Field2D::new(
+        rustwx_core::ProductKey::named("10m_wind_1h_max"),
+        "kt",
+        grid,
+        vec![10.0, 20.0, 30.0, 40.0],
+    )
+    .unwrap();
+    let computed = crate::windowed_decoder::ComputedWindowedField {
+        field,
+        title: "10 m Wind Max (1 h)".to_string(),
+        metadata: HrrrWindowedProductMetadata {
+            strategy: "test window".to_string(),
+            contributing_forecast_hours: vec![1],
+            window_hours: Some(1),
+        },
+        scale: rustwx_render::ColorScale::Discrete(crate::windowed_decoder::qpf_scale()),
+    };
+    let request = HrrrWindowedBatchRequest {
+        model: ModelId::WrfGdex,
+        date_yyyymmdd: "20260801".to_string(),
+        cycle_override_utc: Some(8),
+        forecast_hour: 1,
+        source: SourceId::Gdex,
+        domain: DomainSpec::new("native_grid", (-104.0, -100.0, 40.0, 44.0)),
+        out_dir: PathBuf::new(),
+        cache_root: PathBuf::new(),
+        use_cache: false,
+        products: vec![HrrrWindowedProduct::Wind10m1hMax],
+        output_width: 1200,
+        output_height: 900,
+        png_compression: PngCompressionMode::Default,
+        place_label_overlay: None,
+        subtitle_left_suffix: Some("\u{0394}x 750 m".to_string()),
+        subtitle_right_override: Some("source: ArWen".to_string()),
+        title_provenance: TitleProvenance::LocalImport {
+            grid_label: Some("d02 750 m".to_string()),
+        },
+    };
+    let projected = ProjectedMap {
+        projected_x: vec![0.0, 1.0, 0.0, 1.0],
+        projected_y: vec![1.0, 1.0, 0.0, 0.0],
+        extent: rustwx_render::ProjectedExtent {
+            x_min: 0.0,
+            x_max: 1.0,
+            y_min: 0.0,
+            y_max: 1.0,
+        },
+        lines: Vec::new(),
+        polygons: Vec::new(),
+        inverse_raster_projection: None,
+    };
+
+    let render_request = build_windowed_render_request(
+        HrrrWindowedProduct::Wind10m1hMax,
+        &computed,
+        &request,
+        &projected,
+        "20260801",
+        8,
+        1,
+        ModelId::WrfGdex,
+        SourceId::Gdex,
+    );
+
+    assert_eq!(
+        render_request.title.as_deref(),
+        Some("10 m Wind Max (1 h) (d02 750 m)")
+    );
 }
 
 #[test]
@@ -246,6 +329,7 @@ fn windowed_render_request_labels_fixed_window_instead_of_requested_end_hour() {
         place_label_overlay: None,
         subtitle_left_suffix: None,
         subtitle_right_override: None,
+        title_provenance: TitleProvenance::default(),
     };
     let projected = ProjectedMap {
         projected_x: vec![0.0, 1.0, 0.0, 1.0],

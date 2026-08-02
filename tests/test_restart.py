@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import csv
+import hashlib
 import json
 import os
 import struct
@@ -30,7 +31,7 @@ import sys
 from types import SimpleNamespace
 import zipfile
 from dataclasses import asdict, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -1708,6 +1709,438 @@ def test_lbc_forcing_tables_are_pinned_by_the_fingerprint(monkeypatch,
         restart.restore_restart(path, none_state, cfg)
 
 
+def _historical_setup_fingerprint(state) -> str:
+    """The pre-extension digest algorithm, copied here as a freeze oracle."""
+    digest = hashlib.sha256()
+
+    def array(name, value):
+        host = np.asarray(value)
+        digest.update(name.encode())
+        digest.update(str(host.shape).encode())
+        digest.update(str(host.dtype).encode())
+        digest.update(host.tobytes())
+
+    for name in restart.STATE_SETUP_ARRAYS:
+        array(name, getattr(state, name))
+    for name in restart.STATE_SETUP_SCALARS:
+        value = getattr(state, name)
+        if value is not None and not isinstance(value, bool):
+            value = float(value)
+        digest.update(f"{name}={value!r};".encode())
+    nest_class = getattr(state, "_nest_restart_classification", None)
+    if nest_class is not None:
+        assert nest_class == "REBUILT"
+        digest.update(b"nest_tables=REBUILT;")
+    else:
+        boundaries = getattr(state, "lateral_boundaries", None)
+        if boundaries is None:
+            digest.update(b"lateral_boundaries=None;")
+        else:
+            digest.update(
+                f"lbc:width={boundaries.spec_bdy_width};"
+                f"spec={boundaries.spec_zone};"
+                f"relax={boundaries.relax_zone};"
+                f"intervals={len(boundaries.intervals)};".encode())
+            for interval in boundaries.intervals:
+                digest.update(
+                    f"[{interval.start_seconds!r},"
+                    f"{interval.end_seconds!r}]".encode())
+                for name in sorted(interval.fields):
+                    boundary = interval.fields[name]
+                    for side_name in ("west", "east", "south", "north"):
+                        side = getattr(boundary, side_name)
+                        array(f"{name}/{side_name}/value", side.value)
+                        array(f"{name}/{side_name}/tendency", side.tendency)
+    return digest.hexdigest()
+
+
+def _extension_boundaries(count: int, *, seed=11, seconds=None,
+                          spec_bdy_width=3, spec_zone=1, relax_zone=2,
+                          extra_field=False):
+    from gpuwm.ingest.lateral_bc import build_lateral_boundaries
+
+    rng = np.random.default_rng(seed)
+    snapshots = []
+    for _ in range(count):
+        row = {"u": rng.standard_normal((8, 8))}
+        if extra_field:
+            row["v"] = rng.standard_normal((8, 8))
+        snapshots.append(row)
+    if seconds is None:
+        seconds = [float(index * 3600) for index in range(count)]
+    return build_lateral_boundaries(
+        snapshots, seconds, spec_bdy_width=spec_bdy_width,
+        spec_zone=spec_zone, relax_zone=relax_zone)
+
+
+def _extension_state(cfg, monkeypatch, *, count: int, seed=11,
+                     seconds=None, spec_bdy_width=3, spec_zone=1,
+                     relax_zone=2, extra_field=False):
+    state = _shim_state(cfg, monkeypatch)
+    _fill_setup(state)
+    state.lateral_boundaries = _extension_boundaries(
+        count, seed=seed, seconds=seconds,
+        spec_bdy_width=spec_bdy_width, spec_zone=spec_zone,
+        relax_zone=relax_zone, extra_field=extra_field)
+    return state
+
+
+def test_setup_fingerprint_refactor_preserves_legacy_bytes(monkeypatch):
+    cfg = _cfg(moist=True, mp_physics=1)
+    root = _extension_state(cfg, monkeypatch, count=3)
+    assert restart.setup_fingerprint(root) == \
+        _historical_setup_fingerprint(root)
+
+    child = _shim_state(replace(cfg, grid_id=2, nested=True), monkeypatch)
+    _fill_setup(child)
+    child._nest_restart_classification = "REBUILT"
+    assert restart.setup_fingerprint(child) == \
+        _historical_setup_fingerprint(child)
+
+
+def test_exact_restart_still_refuses_forcing_extension(monkeypatch, tmp_path):
+    cfg = _cfg(moist=True, mp_physics=1)
+    source = _extension_state(cfg, monkeypatch, count=2)
+    source.elapsed_seconds = 3600.0
+    path = restart.write_restart(tmp_path / "exact.npz", source, cfg)
+    live = _extension_state(cfg, monkeypatch, count=3)
+    with pytest.raises(restart.RestartMismatchError, match="setup"):
+        restart.restore_restart(path, live, cfg)
+
+
+def test_sealed_extension_requires_writer_opt_in_and_a_suffix(
+        monkeypatch, tmp_path):
+    cfg = _cfg(
+        moist=True, mp_physics=1, specified=True,
+        spec_bdy_width=3, spec_zone=1, relax_zone=2)
+    source = _extension_state(cfg, monkeypatch, count=2)
+    source.elapsed_seconds = 3600.0
+    ordinary = restart.write_restart(tmp_path / "ordinary.npz", source, cfg)
+    extended = _extension_state(cfg, monkeypatch, count=3)
+    with pytest.raises(restart.RestartMismatchError, match="not intentionally"):
+        restart._validate_restart(
+            ordinary, extended, cfg, sealed_forcing_extension=True)
+
+    sealed = restart.write_restart(
+        tmp_path / "sealed.npz", source, cfg,
+        sealed_forcing_extension=True)
+    same = _extension_state(cfg, monkeypatch, count=2)
+    with pytest.raises(restart.RestartMismatchError,
+                       match="append at least one"):
+        restart._validate_restart(
+            sealed, same, cfg, sealed_forcing_extension=True)
+
+
+@pytest.mark.parametrize("mutation", [
+    "old-bytes", "bounds", "controls", "fields", "gap",
+])
+def test_sealed_extension_rejects_any_non_append_change(
+        monkeypatch, tmp_path, mutation):
+    cfg = _cfg(
+        moist=True, mp_physics=1, specified=True,
+        spec_bdy_width=3, spec_zone=1, relax_zone=2)
+    source = _extension_state(cfg, monkeypatch, count=2)
+    source.elapsed_seconds = 3600.0
+    path = restart.write_restart(
+        tmp_path / f"sealed-{mutation}.npz", source, cfg,
+        sealed_forcing_extension=True)
+    kwargs = {}
+    if mutation == "bounds":
+        kwargs["seconds"] = [0.0, 3590.0, 7200.0]
+    elif mutation == "controls":
+        kwargs["spec_bdy_width"] = 4
+        kwargs["relax_zone"] = 3
+    elif mutation == "fields":
+        kwargs["extra_field"] = True
+    elif mutation == "old-bytes":
+        kwargs["seed"] = 12
+    live = _extension_state(cfg, monkeypatch, count=3, **kwargs)
+    if mutation == "gap":
+        original = restart.lateral_boundary_prefix_identity
+
+        def identity(state):
+            result = original(state)
+            if state is live:
+                result = json.loads(json.dumps(result))
+                result["intervals"][1]["start_seconds"] = 3700.0
+            return result
+
+        monkeypatch.setattr(restart, "lateral_boundary_prefix_identity", identity)
+    with pytest.raises(restart.RestartMismatchError,
+                       match="forcing|boundary"):
+        restart._validate_restart(
+            path, live, cfg, sealed_forcing_extension=True)
+
+
+def test_sealed_extension_rejects_changed_suffix_seam(
+        monkeypatch, tmp_path):
+    from gpuwm.ingest.lateral_bc import (
+        BoundaryInterval, LateralBoundaries, SideBoundary,
+    )
+
+    cfg = _cfg(
+        moist=True, mp_physics=1, specified=True,
+        spec_bdy_width=3, spec_zone=1, relax_zone=2)
+    source = _extension_state(cfg, monkeypatch, count=2)
+    source.elapsed_seconds = 3600.0
+    path = restart.write_restart(
+        tmp_path / "sealed-seam.npz", source, cfg,
+        sealed_forcing_extension=True)
+    live = _extension_state(cfg, monkeypatch, count=3)
+    intervals = list(live.lateral_boundaries.intervals)
+    suffix = intervals[1]
+    fields = dict(suffix.fields)
+    boundary = fields["u"]
+    changed = np.array(boundary.west.value, copy=True)
+    changed.flat[0] += 123.0
+    fields["u"] = replace(
+        boundary,
+        west=SideBoundary(changed, boundary.west.tendency))
+    intervals[1] = BoundaryInterval(
+        suffix.start_seconds, suffix.end_seconds, fields)
+    live.lateral_boundaries = LateralBoundaries(
+        tuple(intervals), live.lateral_boundaries.spec_bdy_width,
+        live.lateral_boundaries.spec_zone,
+        live.lateral_boundaries.relax_zone)
+
+    with pytest.raises(restart.RestartMismatchError,
+                       match="discontinuous live forcing frame"):
+        restart._validate_restart(
+            path, live, cfg, sealed_forcing_extension=True)
+
+
+def test_sealed_extension_binds_checkpoint_endpoint_setup_config_and_physics(
+        monkeypatch, tmp_path):
+    cfg = _cfg(
+        moist=True, mp_physics=1, specified=True,
+        spec_bdy_width=3, spec_zone=1, relax_zone=2)
+    source = _extension_state(cfg, monkeypatch, count=2)
+    source.elapsed_seconds = 3500.0
+    endpoint = tmp_path / "endpoint.npz"
+    with pytest.raises(restart.RestartMismatchError, match="not sealed"):
+        restart.write_restart(
+            endpoint, source, cfg, sealed_forcing_extension=True)
+    assert not endpoint.exists()
+
+    source.elapsed_seconds = 3600.0
+    path = restart.write_restart(
+        tmp_path / "identity.npz", source, cfg,
+        sealed_forcing_extension=True)
+    live = _extension_state(cfg, monkeypatch, count=3)
+    changed_setup = _extension_state(cfg, monkeypatch, count=3)
+    changed_setup.thb.flat[0] += np.float32(0.5)
+    with pytest.raises(restart.RestartMismatchError, match="immutable setup"):
+        restart._validate_restart(
+            path, changed_setup, cfg, sealed_forcing_extension=True)
+    with pytest.raises(restart.RestartMismatchError, match="dt"):
+        restart._validate_restart(
+            path, live, replace(cfg, dt=cfg.dt * 2),
+            sealed_forcing_extension=True)
+
+    tampered = _rewrite_header(
+        path, tmp_path / "physics.npz",
+        lambda header: header.__setitem__(
+            "physics_setup_fingerprint", "0" * 64))
+    with pytest.raises(restart.RestartMismatchError, match="physics setup"):
+        restart._validate_restart(
+            tampered, live, cfg, sealed_forcing_extension=True)
+
+
+def test_sealed_extension_header_tamper_and_rebuilt_child_contract(
+        monkeypatch, tmp_path):
+    cfg = _cfg(
+        moist=True, mp_physics=1, specified=True,
+        spec_bdy_width=3, spec_zone=1, relax_zone=2)
+    source = _extension_state(cfg, monkeypatch, count=2)
+    source.elapsed_seconds = 3600.0
+    path = restart.write_restart(
+        tmp_path / "root.npz", source, cfg,
+        sealed_forcing_extension=True)
+
+    def alter(header):
+        header["lateral_boundary_prefix"]["intervals"][0]["sha256"] = \
+            "0" * 64
+
+    tampered = _rewrite_header(path, tmp_path / "tampered.npz", alter)
+    live = _extension_state(cfg, monkeypatch, count=3)
+    with pytest.raises(restart.RestartMismatchError, match="sealed interval"):
+        restart._validate_restart(
+            tampered, live, cfg, sealed_forcing_extension=True)
+
+    changed_prefix = _extension_state(cfg, monkeypatch, count=3, seed=12)
+    forged_setup = _rewrite_header(
+        path, tmp_path / "forged-setup.npz",
+        lambda header: header.__setitem__(
+            "setup_fingerprint",
+            restart.setup_fingerprint(changed_prefix)))
+    with pytest.raises(restart.RestartMismatchError, match="sealed interval"):
+        restart._validate_restart(
+            forged_setup, changed_prefix, cfg,
+            sealed_forcing_extension=True)
+
+    extra_key = _rewrite_header(
+        path, tmp_path / "extra-prefix-key.npz",
+        lambda header: header["lateral_boundary_prefix"].__setitem__(
+            "unrecognized", True))
+    with pytest.raises(restart.RestartMismatchError,
+                       match="malformed sealed forcing document"):
+        restart._validate_restart(
+            extra_key, live, cfg, sealed_forcing_extension=True)
+
+    missing_root_prefix = _rewrite_header(
+        path, tmp_path / "missing-root-prefix.npz",
+        lambda header: header.__setitem__("lateral_boundary_prefix", None))
+    before = live.u.copy()
+    before_elapsed = live.elapsed_seconds
+    with pytest.raises(restart.RestartMismatchError,
+                       match="specified root has no sealed"):
+        restart._validate_restart(
+            missing_root_prefix, live, cfg,
+            sealed_forcing_extension=True)
+    assert np.array_equal(live.u, before, equal_nan=True)
+    assert live.elapsed_seconds == before_elapsed
+
+    child_cfg = replace(cfg, grid_id=2, specified=False, nested=True)
+    child = _shim_state(child_cfg, monkeypatch)
+    _fill_setup(child)
+    child._nest_restart_classification = "REBUILT"
+    child_path = restart.write_restart(
+        tmp_path / "child.npz", child, child_cfg,
+        sealed_forcing_extension=True)
+    fresh = _shim_state(child_cfg, monkeypatch)
+    _fill_setup(fresh)
+    fresh._nest_restart_classification = "REBUILT"
+    restart._validate_restart(
+        child_path, fresh, child_cfg, sealed_forcing_extension=True)
+    fresh.thb.flat[0] += np.float32(1.0)
+    with pytest.raises(restart.RestartMismatchError, match="child/nest"):
+        restart._validate_restart(
+            child_path, fresh, child_cfg, sealed_forcing_extension=True)
+
+    unexpected_child_prefix = _rewrite_header(
+        child_path, tmp_path / "child-prefix.npz",
+        lambda header: header.__setitem__(
+            "lateral_boundary_prefix",
+            restart.lateral_boundary_prefix_identity(source)))
+    with pytest.raises(restart.RestartMismatchError,
+                       match="nested child unexpectedly"):
+        restart._validate_restart(
+            unexpected_child_prefix, child, child_cfg,
+            sealed_forcing_extension=True)
+
+
+def _sealed_tree_fixture(monkeypatch, *, forcing_count: int,
+                         run_seconds: float, payload_seed: int):
+    from gpuwm.core.model import ModelRuntimeStatus
+
+    root_cfg = _cfg(
+        grid_id=1, moist=True, mp_physics=1,
+        run_seconds=run_seconds, restart_interval_s=3600.0,
+        specified=True, spec_bdy_width=3, spec_zone=1, relax_zone=2)
+    child_cfg = _cfg(
+        grid_id=2, nested=True, moist=True, mp_physics=1,
+        run_seconds=run_seconds, restart_interval_s=3600.0)
+    root_state = _extension_state(
+        root_cfg, monkeypatch, count=forcing_count)
+    child_state = _shim_state(child_cfg, monkeypatch)
+    _fill_setup(child_state)
+    child_state._nest_restart_classification = "REBUILT"
+    _fill_serialized(root_state, payload_seed)
+    _fill_serialized(child_state, payload_seed + 1)
+
+    start = datetime(2026, 7, 30)
+
+    def clock(grid_id):
+        return SimpleNamespace(
+            ticks=3600, tick_den=1, step_count=3600,
+            dtbc_fp32=np.float32(0.0),
+            spec=SimpleNamespace(
+                grid_id=grid_id, start_ticks=0, step_ticks=1),
+            history_due=lambda: False)
+
+    root_clock = clock(1)
+    # CPU fixture analogue of attach + bind: validation only needs the
+    # resident mirror's semantic identity; the host forcing inventory above
+    # supplies the exact prefix bytes.
+    root_state._lateral_boundary_device = SimpleNamespace(
+        rolling=False, clock=root_clock)
+    root = SimpleNamespace(
+        cfg=SimpleNamespace(
+            grid_id=1, parent_id=0, run=root_cfg, start_time=None),
+        state=root_state, clock=root_clock, parent=None, children=[],
+        coupler=None, _started=True)
+
+    class Coupler:
+        valid = True
+
+        def invalidate(self):
+            self.valid = False
+
+    child = SimpleNamespace(
+        cfg=SimpleNamespace(
+            grid_id=2, parent_id=1, run=child_cfg, start_time=None),
+        state=child_state, clock=clock(2), parent=root, children=[],
+        coupler=Coupler(), _started=True)
+    root.children.append(child)
+    model = SimpleNamespace(
+        root=root,
+        experiment_fingerprint="sealed-tree-fixture-v1",
+        schedule=SimpleNamespace(
+            period_ticks=1,
+            clock=SimpleNamespace(
+                tick_den=1, run_ticks=int(run_seconds), start_time=start)),
+        walk_parent_first=lambda: iter((root, child)),
+        _runtime_status=ModelRuntimeStatus(),
+        _io_manager=None,
+        _last_checkpoint=None,
+        _resumed=False,
+        _resume_committed_history_grid_ids=frozenset())
+    return model, start
+
+
+def test_sealed_tree_restart_extends_root_and_restores_rebuilt_child(
+        monkeypatch, tmp_path):
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0,
+        payload_seed=31)
+    root_path = restart.write_tree_restart(
+        tmp_path, source, start + timedelta(seconds=3600),
+        sealed_forcing_extension=True)
+    assert restart.read_restart_header(root_path)[
+        "root_external_lbc_clock"] == \
+        restart.ROOT_EXTERNAL_LBC_CLOCK_IDENTITY
+
+    resumed, _ = _sealed_tree_fixture(
+        monkeypatch, forcing_count=3, run_seconds=7200.0,
+        payload_seed=91)
+    info = restart.restore_tree_restart(
+        root_path, resumed, sealed_forcing_extension=True)
+    assert info.elapsed_ticks == 3600
+    assert np.array_equal(resumed.root.state.u, source.root.state.u,
+                          equal_nan=True)
+    resumed_child = tuple(resumed.walk_parent_first())[1]
+    source_child = tuple(source.walk_parent_first())[1]
+    assert np.array_equal(resumed_child.state.u, source_child.state.u,
+                          equal_nan=True)
+    assert resumed_child.coupler.valid is False
+
+
+def test_sealed_tree_writer_preflights_all_members_before_publication(
+        monkeypatch, tmp_path):
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0,
+        payload_seed=51)
+    for node in source.walk_parent_first():
+        node.clock.ticks = 3500
+
+    with pytest.raises(restart.RestartMismatchError, match="not sealed"):
+        restart.write_tree_restart(
+            tmp_path, source, start + timedelta(seconds=3600),
+            sealed_forcing_extension=True)
+
+    assert not list(tmp_path.glob("gpuwmrst_*.npz"))
+
+
 def _rewrite_header(path, output, mutate) -> Path:
     """Rewrite the JSON header only, leaving every array member intact."""
     with np.load(path, allow_pickle=False) as data:
@@ -2023,8 +2456,17 @@ def test_cli_run_passes_restart_through(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "load_config", lambda path: cfg)
     monkeypatch.setitem(cli._REAL_CASES, "real74_d01", fake)
     restart_file = tmp_path / "gpuwmrst_d01_1974-04-03_18_00_00.npz"
+    # The config path must EXIST even though `load_config` is mocked:
+    # a4417efb refuses a path that is not a readable regular file before
+    # anything opens it, so a name that was never written now exits 2
+    # ("does not exist; pass the experiment .toml that `gpuwm domain`
+    # wrote") without reaching the loader this test replaces.  A legacy
+    # [run]-shaped body keeps the CLI on the registered-case branch the
+    # rest of the test asserts on.
+    config = tmp_path / "cfg.toml"
+    config.write_text("[run]\ncase = \"real74_d01\"\n", encoding="utf-8")
 
-    assert cli.main(["run", str(tmp_path / "cfg.toml"),
+    assert cli.main(["run", str(config),
                      "--outdir", str(tmp_path / "run"),
                      "--restart", str(restart_file)]) == 0
     assert calls == [(cfg, tmp_path / "run", restart_file)]

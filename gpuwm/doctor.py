@@ -635,6 +635,22 @@ def _noah_tables_check() -> Check:
 # Data roots
 # ---------------------------------------------------------------------------
 
+def geography_gaps(geog: Path) -> list[Check]:
+    """The reasons a staged WPS_GEOG tree cannot build static fields.
+
+    Empty means usable.  Published because ``gpuwm go`` needs the same
+    answer doctor gives, and the alternative -- a second existence test
+    written at the call site -- is how the two came to disagree in the
+    first place: doctor named the remedy while ``go`` passed
+    ``--geog-root`` through unexamined and let ``rw-wps`` fail on a
+    missing ``index`` file, after the fetch stage had downloaded the
+    forcing.  One check, two readers.
+    """
+
+    return [check for check in _geog_tree_checks(geog)
+            if check.status == "missing"]
+
+
 def _geog_tree_checks(geog: Path) -> list[Check]:
     """Check one staged WPS_GEOG tree, wherever it was resolved from.
 
@@ -1132,6 +1148,8 @@ def format_report(checks: list[Check]) -> str:
         if check.remedy:
             lines.extend(_remedy_block(check.remedy))
     gaps = sum(1 for check in checks if check.status == "missing")
+    blocking = len(blocking_gaps(checks))
+    opt_in = gaps - blocking
     presence_only = sum(1 for check in checks if check.status == "present")
     if gaps:
         # Not "every remedy is copy-pasteable": a remedy can be a
@@ -1139,10 +1157,22 @@ def format_report(checks: list[Check]) -> str:
         # clone-and-build rather than a single line.  Claiming one line
         # when six were printed is the kind of small lie that costs the
         # reader their trust in the other five.
+        #
+        # And the count is SPLIT, because the exit code splits it.  A
+        # summary reading "1 gap(s)" out of a process that exits 0 is a
+        # report disagreeing with itself, and a fleet node comparing
+        # 1.3.1 (exit 1) with 1.4.0 (exit 0) on the identical gap text
+        # reasonably read the pair as a silent regression.  The exit code
+        # is the right one -- an opt-in nobody opted into is not a fault
+        # -- so the severity is what has to be visible.
         lines.append(
-            f"gpuwm doctor: {gaps} gap(s).  Every remedy line above is "
-            "either a command to run as printed, in the order printed, "
-            "or a '#' comment.")
+            f"gpuwm doctor: {gaps} gap(s), {blocking} of them blocking "
+            f"(the exit code is {1 if blocking else 0})"
+            + (f"; the other {opt_in} is/are opt-in pieces this install "
+               "has not staged, each a documented choice with its own "
+               "command above" if opt_in else "")
+            + ".  Every remedy line above is either a command to run as "
+              "printed, in the order printed, or a '#' comment.")
     elif presence_only:
         lines.append(f"gpuwm doctor: no gaps ({presence_only} check(s) "
                      "presence-only as labeled, the rest verified).")
@@ -1216,8 +1246,14 @@ def format_brief(checks: list[Check]) -> str:
             line += f"  -> {check.action}"
         lines.append(line)
     gaps = [check for check in checks if check.status == "missing"]
+    blocking = blocking_gaps(checks)
     if gaps:
-        summary = f"gpuwm doctor: {len(gaps)} gap(s)."
+        # Say how many of them the exit code is about.  See the note in
+        # format_report: "1 gap(s)" beside exit 0 is the whole of the
+        # reported 1.3.1 -> 1.4.0 "regression".
+        summary = (f"gpuwm doctor: {len(gaps)} gap(s), {len(blocking)} "
+                   f"of them blocking (exit "
+                   f"{1 if blocking else 0}).")
         setup = _setup_summary(gaps)
         if setup:
             summary += " " + setup
@@ -1231,7 +1267,16 @@ def format_brief(checks: list[Check]) -> str:
 
 def blocking_gaps(checks: list[Check]) -> list[Check]:
     """The gaps that justify a nonzero exit: broken or integrity-suspect
-    findings, never the absent-optional ones (see :class:`Check`)."""
+    findings, never the absent-optional ones (see :class:`Check`).
+
+    This split is the whole answer to the reported ``gpuwm setup`` exit
+    regression (1.3.1 exited 1 on an unfetched WPS_GEOG tree; 1.4.0 exits
+    0 on the identical gap text).  Exiting 0 is correct -- that download
+    is an explicit ~16 GB opt-in, and an install that did everything its
+    documentation asked must not fail an installer.  What was wrong was
+    that both reports printed the same "1 gap(s)" line, so the only
+    visible difference between the two versions was the exit code.  The
+    severity is printed now; the exit code did not move."""
 
     return [check for check in checks
             if check.status == "missing" and check.blocking]
@@ -1273,4 +1318,5 @@ def register_cli(subparsers) -> None:
 
 
 __all__ = ["Check", "DOCTOR_SOURCES", "SETUP_ACTIONS", "collect_checks",
-           "doctor_main", "format_brief", "format_report", "register_cli"]
+           "doctor_main", "format_brief", "format_report", "geography_gaps",
+           "register_cli"]

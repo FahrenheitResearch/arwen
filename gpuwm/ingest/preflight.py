@@ -324,9 +324,12 @@ def _sha256(path: Path) -> str:
 
 
 def _catalog_file(role: str, path: Path, *, product_id: str = "",
-                  provenance: str = "") -> CatalogFile:
+                  provenance: str = "",
+                  identity_path: Path | None = None) -> CatalogFile:
     resolved = path.resolve()
-    return CatalogFile(role, resolved, _sha256(resolved),
+    identity = (resolved if identity_path is None
+                else Path(identity_path).resolve())
+    return CatalogFile(role, identity, _sha256(resolved),
                        resolved.stat().st_size, product_id, provenance)
 
 
@@ -334,7 +337,10 @@ def _product_id(case_data) -> str:
     declared = getattr(case_data, "product_id", None)
     if declared:
         return str(declared)
-    name = Path(case_data.vtable).name.upper()
+    identity = (case_data.vtable_identity()
+                if hasattr(case_data, "vtable_identity")
+                else case_data.vtable)
+    name = Path(identity).name.upper()
     return "ERA5" if "ERA5" in name else name
 
 
@@ -407,41 +413,64 @@ def _build_input_catalog(case_data) -> tuple[InputCatalog,
     files: list[CatalogFile] = []
     forcing_hashes: dict[Path, str] = {}
 
-    def add_file(role: str, raw_path, *, provenance: str = "") -> None:
+    def add_file(role: str, raw_path, *, provenance: str = "",
+                 identity_path=None) -> None:
         path = Path(raw_path)
+        identity = Path(path if identity_path is None else identity_path)
         if not path.is_file():
             issues.append(PreflightIssue(
                 "missing-file", f"required {role} file does not exist",
-                path=path,
+                path=identity,
             ))
             return
         try:
             record = _catalog_file(
                 role, path, product_id=product_id if role == "forcing" else "",
-                provenance=provenance,
+                provenance=provenance, identity_path=identity,
             )
             files.append(record)
             if role == "forcing":
                 forcing_hashes[path.resolve()] = record.sha256
         except Exception as exc:
             issues.append(PreflightIssue(
-                "hash", f"could not SHA-256 hash {role}: {exc}", path=path,
+                "hash", f"could not SHA-256 hash {role}: {exc}", path=identity,
             ))
 
     forcing_paths = tuple(Path(path) for path in case_data.forcing)
-    for path in forcing_paths:
-        add_file("forcing", path, provenance="resolved CaseData forcing")
-    add_file("vtable", case_data.vtable, provenance="declared Vtable/schema")
+    forcing_identities = tuple(Path(path) for path in (
+        case_data.forcing_identity()
+        if hasattr(case_data, "forcing_identity") else case_data.forcing))
+    for path, identity in zip(forcing_paths, forcing_identities):
+        add_file(
+            "forcing", path, provenance="resolved CaseData forcing",
+            identity_path=identity)
+    vtable_identity = (
+        case_data.vtable_identity()
+        if hasattr(case_data, "vtable_identity") else case_data.vtable)
+    wps_identity = (
+        case_data.wps_namelist_identity()
+        if hasattr(case_data, "wps_namelist_identity")
+        else case_data.wps_namelist)
+    add_file(
+        "vtable", case_data.vtable, provenance="declared Vtable/schema",
+        identity_path=vtable_identity)
     add_file("wps_namelist", case_data.wps_namelist,
-             provenance="declared WPS grid source")
+             provenance="declared WPS grid source",
+             identity_path=wps_identity)
     source_orography = getattr(case_data, "source_orography", None)
+    source_orography_identity = (
+        case_data.source_orography_identity()
+        if hasattr(case_data, "source_orography_identity")
+        else source_orography)
     if source_orography is not None and hasattr(source_orography, "path"):
         add_file("source_orography", source_orography.path,
-                 provenance=f"variable={getattr(source_orography, 'variable', '')}")
+                 provenance=f"variable={getattr(source_orography, 'variable', '')}",
+                 identity_path=source_orography_identity.path)
 
     # Retrieval request/log/checksum sidecars are first-class provenance when
     # all forcing products share a staging directory (the May-1999 layout).
-    parents = {path.resolve().parent for path in forcing_paths if path.exists()}
+    parents = {path.resolve().parent for path in forcing_identities
+               if path.exists()}
     if len(parents) == 1:
         parent = next(iter(parents))
         for name in ("retrieve.py", "retrieve.log", "SHA256SUMS.txt"):
@@ -575,7 +604,7 @@ def _build_input_catalog(case_data) -> tuple[InputCatalog,
     provenance = {
         "product_id": product_id,
         "encoding": "native GRIB1 (vendored grib-core 0.1.0)",
-        "vtable_schema": str(Path(case_data.vtable).resolve()),
+        "vtable_schema": str(Path(vtable_identity).resolve()),
         "time_selection": selection,
         "raw_valid_times": tuple(value.isoformat() for value in raw_times),
         "excluded_valid_times": tuple(value.isoformat()
@@ -1467,10 +1496,14 @@ def preflight_report(exp, case_data) -> PreflightReport:
 
 
 def _check_command(args) -> int:
+    import io
+    import os
     import sys
+    import tomllib
 
     from gpuwm.case_data import load_experiment_case
-    from gpuwm.experiment import is_experiment_toml
+    from gpuwm.config_authority import read_config_authority
+    from gpuwm.experiment import is_experiment_toml_bytes
 
     # In --json mode stdout belongs to the memory estimator's machine
     # report; the input-preflight text goes to stderr so the composed
@@ -1481,9 +1514,16 @@ def _check_command(args) -> int:
     # Returning success lets the composed ``gpuwm check`` advance to the
     # memory estimator, which wraps the RunConfig as a one-domain
     # experiment (gpuwm.core.preflight._load_experiment_any) -- the same
-    # acceptance the estimator registrar has always had.  A missing file
-    # falls through to the experiment loader's own error.
-    if args.config.exists() and not is_experiment_toml(args.config):
+    # acceptance the estimator registrar has always had.
+    #
+    # No `.exists()` pre-check any more: it existed so a missing file
+    # could "fall through to the experiment loader's own error", which
+    # is precisely the traceback-at-exit-1 behaviour this release
+    # replaces.  `read_config_authority` now decides the path's kind and
+    # refuses in one sentence.
+    authority = read_config_authority(args.config)
+    if (authority is not None
+            and not is_experiment_toml_bytes(authority.payload)):
         print("input preflight: legacy RunConfig-shaped config declares no "
               "[case_data] inputs; skipping to the memory estimator",
               file=stream)
@@ -1496,20 +1536,17 @@ def _check_command(args) -> int:
     # then advance to the memory estimator: geometry/physics/VRAM
     # validation is exactly what `gpuwm check` can honestly certify for
     # these configs.
-    if args.config.exists():
-        import tomllib
-
-        with open(args.config, "rb") as fh:
-            if "case_data" not in tomllib.load(fh):
-                print(
-                    "input preflight: not applicable -- no [case_data] "
-                    "table (the config-driven run front door consumes "
-                    "the ERA5 native-GRIB1 route only; GFS/HRRR feed the "
-                    "rw-wps/gpuwm-wrf-init native front door, which "
-                    "validates its own inputs).  Continuing to the "
-                    "memory preflight.",
-                    file=stream)
-                return 0
+    if authority is not None:
+        if "case_data" not in tomllib.load(io.BytesIO(authority.payload)):
+            print(
+                "input preflight: not applicable -- no [case_data] "
+                "table (the config-driven run front door consumes "
+                "the ERA5 native-GRIB1 route only; GFS/HRRR feed the "
+                "rw-wps/gpuwm-wrf-init native front door, which "
+                "validates its own inputs).  Continuing to the "
+                "memory preflight.",
+                file=stream)
+            return 0
     exp, case_data = load_experiment_case(args.config)
     report = preflight_report(exp, case_data)
     print(report.format(), file=stream)

@@ -152,6 +152,100 @@ def test_an_emptied_container_does_not_vanish_from_the_comparison():
     assert comparison.first_divergent_field.startswith("receipts")
 
 
+# ---- output-location fields: normalized, never skipped -------------------
+
+def _relocated(capsule, directory: str):
+    """The same run, written into a different output directory."""
+    moved = copy.deepcopy(capsule)
+    for frame in moved["output"]["frames"]:
+        frame["path"] = f"{directory}/{Path(frame['path']).name}"
+    for receipt in moved["receipts"].values():
+        receipt["path"] = f"{directory}/{Path(receipt['path']).name}"
+    return moved
+
+
+def test_two_identical_runs_in_different_directories_compare_clean(tmp_path):
+    """The verdict a control pair could never reach before.
+
+    Two runs of one configuration MUST write to different directories or
+    they overwrite each other, so comparing absolute output paths made exit
+    0 unreachable for every dual run regardless of physics -- the
+    comparator defeated its own purpose.  The paths are now compared by
+    leaf name.
+    """
+    a = _write(tmp_path / "a.json", _relocated(CAPSULE, "/runs/arm-a"))
+    b = _write(tmp_path / "b.json",
+               _relocated(CAPSULE, r"D:\elsewhere\arm-b"))
+    comparison = compare_capsule_files(a, b)
+    assert comparison.identical, comparison.first_divergent_field
+    assert main(["dual-run", "--capsule-a", str(a),
+                 "--capsule-b", str(b)]) == 0
+
+
+def test_relocation_does_not_hide_a_changed_frame(tmp_path):
+    """FAILURE CONTROL: the physics bytes are still compared verbatim."""
+    moved = _relocated(CAPSULE, "/runs/arm-b")
+    set_leaf(moved, "output.frames[1].sha256", "z" * 64)
+    a = _write(tmp_path / "a.json", _relocated(CAPSULE, "/runs/arm-a"))
+    b = _write(tmp_path / "b.json", moved)
+    comparison = compare_capsule_files(a, b)
+    assert comparison.identical is False
+    assert comparison.first_divergent_field == "output.frames[1].sha256"
+    assert main(["dual-run", "--capsule-a", str(a),
+                 "--capsule-b", str(b)]) == 1
+
+
+def test_a_renamed_frame_still_diverges():
+    """Normalized is not ignored: the leaf name is the compared value."""
+    renamed = _relocated(CAPSULE, "/runs/arm-b")
+    renamed["output"]["frames"][0]["path"] = "/runs/arm-b/wrfout_d09_9999"
+    comparison = compare_capsules(_relocated(CAPSULE, "/runs/arm-a"), renamed)
+    assert comparison.identical is False
+    assert comparison.first_divergent_field == "output.frames[0].path"
+
+
+def test_a_dropped_output_path_is_not_normalized_into_agreement():
+    """A path that went missing is still a hole, not a matching basename."""
+    dropped = copy.deepcopy(CAPSULE)
+    delete_leaf(dropped, "output.frames[0].path")
+    comparison = compare_capsules(CAPSULE, dropped)
+    assert comparison.identical is False
+    assert comparison.first_divergent_field == "output.frames[0].path"
+
+
+def test_input_paths_are_not_normalized():
+    """Only OUTPUT locations are provenance; an input path is a finding.
+
+    Two runs of one configuration read the same configuration file, so a
+    difference in the recorded config path means they did not, and that is
+    exactly the kind of thing this command exists to catch.
+    """
+    from gpuwm.certify.dualrun import is_output_path_field
+
+    moved = copy.deepcopy(CAPSULE)
+    section = moved["numerical_stack"]["config_bytes"]
+    original = section["value"]["path"]
+    section["value"]["path"] = f"/somewhere/else/{Path(original).name}"
+    comparison = compare_capsules(CAPSULE, moved)
+    assert comparison.identical is False
+    assert comparison.first_divergent_field == (
+        "numerical_stack.config_bytes.value.path")
+    assert not is_output_path_field(
+        "numerical_stack.config_bytes.value.path")
+
+
+def test_the_normalized_field_set_is_exactly_the_output_locations():
+    """Every normalized field is an output location, and no other field is."""
+    from gpuwm.certify.dualrun import is_output_path_field
+
+    normalized = {path for path in FIELD_PATHS if is_output_path_field(path)}
+    assert normalized == (
+        {f"output.frames[{index}].path"
+         for index in range(len(CAPSULE["output"]["frames"]))}
+        | {f"receipts.{name}.path" for name in CAPSULE["receipts"]})
+    assert normalized, "the fixture carries no output-location field to pin"
+
+
 def test_the_comparison_order_is_a_property_of_the_documents(tmp_path):
     """Two mutations, and the reported first field does not depend on order."""
     mutated = copy.deepcopy(CAPSULE)
@@ -163,3 +257,87 @@ def test_the_comparison_order_is_a_property_of_the_documents(tmp_path):
     assert compare_capsules(CAPSULE, reordered).first_divergent_field == (
         forward)
     assert forward == "code.git_commit"
+
+
+# ---- input-artifact bytes: compared verbatim, and explained --------------
+#
+# An independent tester ran the documented procedure on a 3090 and got all
+# three wrfout frames, the canonical state digest and all 159 PNGs
+# byte-identical -- and exit 1, on the absolute output paths above AND on
+# the sha256 of proof.json, a preparation receipt that records its own
+# wall-clock timings and the staging directory its decoder used and so can
+# never repeat.  The paths were the comparator's defect.  The proof digest
+# was not: two independent preparations really did produce different input
+# bytes, and that comparison is what a swapped or corrupted input trips.
+# What was missing was anyone telling the operator so.
+
+def _with_input_artifacts(capsule, artifacts):
+    moved = copy.deepcopy(capsule)
+    moved["numerical_stack"]["input_artifact_bytes"]["value"] = dict(artifacts)
+    return moved
+
+
+def test_an_input_artifact_digest_still_diverges_and_is_never_normalized():
+    """FAILURE CONTROL: input bytes are the pin a corrupted input trips."""
+    from gpuwm.certify.dualrun import is_output_path_field
+
+    a = _with_input_artifacts(CAPSULE, {"proof": "a" * 64,
+                                        "experiment_config": "c" * 64})
+    b = _with_input_artifacts(CAPSULE, {"proof": "b" * 64,
+                                        "experiment_config": "c" * 64})
+    comparison = compare_capsules(a, b)
+    assert comparison.identical is False
+    assert comparison.first_divergent_field == (
+        "numerical_stack.input_artifact_bytes.value.proof")
+    assert not is_output_path_field(
+        "numerical_stack.input_artifact_bytes.value.proof")
+
+
+def test_a_preparation_receipt_divergence_names_the_procedural_cause():
+    """The sentence the tester spent hours not being told."""
+    from gpuwm.certify.dualrun import input_bytes_divergence_note
+
+    a = _with_input_artifacts(CAPSULE, {"proof": "a" * 64})
+    b = _with_input_artifacts(CAPSULE, {"proof": "b" * 64})
+    note = input_bytes_divergence_note(compare_capsules(a, b).divergences)
+    assert note is not None
+    assert "DIFFERENT INPUT BYTES" in note
+    assert "input_artifact_bytes.value.proof" in note
+    assert "Prepare ONCE" in note
+    assert "DETERMINISM.md" in note
+
+
+def test_the_note_stays_silent_when_no_input_byte_diverged():
+    """It explains a finding; it never invents one."""
+    from gpuwm.certify.dualrun import input_bytes_divergence_note
+
+    mutated = copy.deepcopy(CAPSULE)
+    set_leaf(mutated, "output.frames[1].sha256", "z" * 64)
+    divergences = compare_capsules(CAPSULE, mutated).divergences
+    assert divergences
+    assert input_bytes_divergence_note(divergences) is None
+
+
+def test_a_non_preparation_input_divergence_is_reported_without_the_remedy():
+    """A digest that is not a preparation receipt gets no procedural excuse."""
+    from gpuwm.certify.dualrun import input_bytes_divergence_note
+
+    a = _with_input_artifacts(CAPSULE, {"static": "a" * 64})
+    b = _with_input_artifacts(CAPSULE, {"static": "b" * 64})
+    note = input_bytes_divergence_note(compare_capsules(a, b).divergences)
+    assert note is not None
+    assert "DIFFERENT INPUT BYTES" in note
+    assert "Prepare ONCE" not in note
+
+
+def test_the_cli_prints_the_note_and_still_exits_one(tmp_path, capsys):
+    """Explaining a divergence is not excusing it."""
+    a = _write(tmp_path / "a.json",
+               _with_input_artifacts(CAPSULE, {"proof": "a" * 64}))
+    b = _write(tmp_path / "b.json",
+               _with_input_artifacts(CAPSULE, {"proof": "b" * 64}))
+    assert main(["dual-run", "--capsule-a", str(a),
+                 "--capsule-b", str(b)]) == 1
+    errors = capsys.readouterr().err
+    assert "first divergent field" in errors
+    assert "Prepare ONCE" in errors

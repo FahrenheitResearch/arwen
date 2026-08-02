@@ -22,6 +22,7 @@ import netCDF4
 import numpy as np
 
 from gpuwm.config import load_config, radiation_scheme_ids, soil_layer_count
+from gpuwm.io.wrfout import INITIAL_CONDITION_GLOBAL_ATTRS
 from gpuwm.offline_child import (
     OfflineChildContractError,
     OfflineChildPlacement,
@@ -265,6 +266,18 @@ def _create_output_root(path: Path) -> Path:
 
 
 def _parent_grid_metadata(path: Path) -> tuple[float, float, dict[str, object]]:
+    """Parent geometry, plus the lineage attributes the child inherits.
+
+    A downscaled child's initial state is the parent's history, so the
+    child's initial condition descends from whatever the parent's did.
+    The parent's initial-condition provenance is therefore copied
+    forward verbatim -- it describes the ROOT of the lineage, which is
+    the fact a published child chart must not lose.  The child's own
+    time zero stays in ``START_DATE``, where WRF puts it.  A parent that
+    carries no provenance (a stock-WRF archive, or a pre-1.4.1 file)
+    hands the child nothing, and the child says nothing rather than
+    inventing an analysis.
+    """
     with netCDF4.Dataset(path) as dataset:
         try:
             dx = float(dataset.getncattr("DX"))
@@ -272,9 +285,11 @@ def _parent_grid_metadata(path: Path) -> tuple[float, float, dict[str, object]]:
         except AttributeError as exc:
             raise OfflineChildContractError(
                 f"{path} lacks authoritative DX/DY attributes") from exc
+        present = set(dataset.ncattrs())
         attrs = {
             name: dataset.getncattr(name)
-            for name in _PROJECTION_ATTRS if name in dataset.ncattrs()
+            for name in (*_PROJECTION_ATTRS, *INITIAL_CONDITION_GLOBAL_ATTRS)
+            if name in present
         }
     return dx, dy, attrs
 

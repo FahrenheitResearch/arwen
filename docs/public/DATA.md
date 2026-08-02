@@ -58,9 +58,27 @@ gpuwm fetch --source gfs --cycle latest --hours 24 \
   analysis**, and every receipt says so: the preparation proof carries a
   `gpuwm-gfs-initial-condition-provenance-v1` block naming the cycle,
   the lead, the model start time, and forecast-generating process 96.
+  **Every `wrfout` says so too** -- see
+  [the initial-condition provenance a wrfout carries](#the-initial-condition-provenance-a-wrfout-carries)
+  below.  Receipts live in a run directory; pictures get separated from
+  it, so the durable artifact carries the statement as well.
   Adding the flag to an already-fetched `--out` with
   `--author-front-door-manifest` cuts the front-door manifest to that
   tail of the existing series instead of re-downloading it.
+- **`--cadence 1` reaches f120, and no further.** NCEP publishes the
+  0.25-degree `pgrb2` product every hour through f120 and every three
+  hours from f120 to f384: f121, f122 and f124 do not exist and never
+  will, while f120 and f123 do. An hourly window that would cross f120
+  is refused before any probe runs, naming the break and pointing at
+  `--cadence 3`. It used to be probed for and reported as a cycle that
+  had not finished publishing, which sent readers off to wait for data
+  no cycle will ever carry.
+- **NOMADS keeps about 10 days; the completeness probe reads an archive
+  that keeps years.** A cycle in between passed the probe and then died
+  inside `urllib` with a raw traceback. The transport's own answer is
+  now translated into one refusal naming the age, the HTTP status and
+  the rolling window. Reading the raw S3 objects instead is not a
+  substitute — see *Reach* below.
 - Emits `gfs-series.tsv` (relative paths; the directory is relocatable)
   with each row's certified forecast-process ID, and
   `fetch-manifest.json` with per-file SHA-256.
@@ -260,6 +278,26 @@ gpuwm fetch --source hrrr --cycle 2026-07-28T00 --hours 18 \
   latest` requires both the final `wrfnat` and `wrfprs` objects to
   exist (with `--wait-for` it instead picks the newest cycle whose f00
   pair has begun publishing).
+- `--forecast-start-hour K` begins the window at f{K} here too, and
+  `--hours` stays the window *length*: `--forecast-start-hour 6 --hours
+  6` fetches f06..f12 and nothing before it, and the model clock starts
+  at cycle + 6 h. `--cycle latest` then resolves a cycle complete
+  through the window's **end** (f{K+hours}). The cycle horizon is what
+  bounds K: 00/06/12/18Z cycles publish to f48, every other cycle to
+  f18, and a window past that is refused by name before anything is
+  downloaded. `gpuwm domain --source hrrr --forecast-start-hour K`
+  emits the matching config, namelists and printed chain.
+
+  **On the HRRR route the typed time is always the CYCLE.** Every stage
+  takes `--cycle` plus `--forecast-start-hour` and derives model time
+  zero itself; nothing asks you to compute `cycle + K`. Through v1.4.0
+  both preparation stages spelled their time argument `--valid-time`,
+  and they read it differently -- `tools/prepare_hrrr_wrf.py` as the
+  cycle, `gpuwm.hrrr_hierarchy_direct` as model time zero. Those are the
+  same instant only at lead 0, which is the only lead the front doors
+  used to allow. `--valid-time` is still accepted on both, with exactly
+  the meaning it had there, so existing scripts keep working; passing
+  both spellings at once is refused rather than ranked.
 - The fetch prints the complete front-door handoff line
   (`--source-manifest SHA256SUMS --source-manifest-sha256 <digest>`).
 - **Disk:** the default is whole files, so budget **~1.1 GB per
@@ -465,6 +503,63 @@ same `record_bars`, including `inventory_change_accepted`.
   (`gpuwm-fetch-manifest-v1`): source, cycle, area, and per-file
   name/role/bytes/SHA-256. Resume re-verifies existing files against
   the manifest's recorded SHA-256 as well as the per-file record bars.
+
+## The initial-condition provenance a wrfout carries
+
+A `run/report.json` lives in a run directory. A `wrfout` outlives it:
+it is what gets archived, what `gpuwm downscale` reads back, and what
+the pictures are made from. So the statement of what the initial state
+**was** travels in the file, not only in the receipt beside it.
+
+WRF itself has no convention for this. Stock v4.6.1 writes exactly two
+date globals -- `START_DATE` (this file's own start) and
+`SIMULATION_START_DATE` (the simulation's, held across restarts), both
+from `share/output_wrf.F:352-376` -- and both are model-clock times.
+The only provenance-shaped global WRF writes at all is `FLAG_RESTART`
+on a restart file (`output_wrf.F:379-381`). Nothing upstream carries it
+either: metgrid's `met_em` globals are geometry, land-use identity and
+`FLAG_*` presence bits, with no statement of which cycle or which lead
+the fields came from.
+
+So WRF's convention is followed where it exists -- `START_DATE` and
+`SIMULATION_START_DATE` keep their WRF meaning exactly, and the new
+names are `SCREAMING_SNAKE` `NC_CHAR`/`NC_INT` globals like WRF's own,
+with WRF's `%Y-%m-%d_%H:%M:%S` date spelling -- and the gap is filled
+in the `GPUWM_` namespace this writer already uses for `GPUWM_VERSION`
+and `GPUWM_FEEDBACK`. **This is a documented divergence from WRF, not a
+WRF feature.**
+
+| global attribute | type | value |
+|---|---|---|
+| `GPUWM_INITIAL_CONDITION_SCHEMA` | char | `gpuwm-wrfout-initial-condition-v1` |
+| `GPUWM_INITIAL_CONDITION_KIND` | char | `analysis` or `forecast` |
+| `GPUWM_INITIAL_CONDITION_SOURCE` | char | driving model, e.g. `GFS` |
+| `GPUWM_INITIAL_CONDITION_CYCLE` | char | the source cycle, WRF date spelling |
+| `GPUWM_INITIAL_FORECAST_LEAD_HOURS` | int | K (0 for an analysis) |
+| `GPUWM_INITIAL_CONDITION_GENERATING_PROCESS_ID` | int | 81 analysis / 96 forecast |
+| `GPUWM_INITIAL_CONDITION_MODEL_START_DATE` | char | cycle + K, WRF date spelling |
+| `GPUWM_INITIAL_CONDITION_STATEMENT` | char | the receipt's own sentence |
+
+Three rules a reader can rely on:
+
+1. **A forecast lead is never relabelled as an analysis.** The kind,
+   the generating-process id and the lead must agree, and cycle + lead
+   must compose to the model start; a block that fails any of those is
+   refused at the writer rather than transcribed into a file.
+2. **An analysis says `analysis`.** Silence is not a label.
+3. **Absence means unknown, never analysis.** Idealized cases, files
+   written before 1.4.1, and any preparation route that publishes no
+   initial-condition receipt carry none of these attributes at all.
+
+`gpuwm downscale` copies the whole block forward onto the child: the
+child's initial and boundary conditions are the parent's history, so
+the child is no closer to an analysis than its parent was. It also
+prints the parent's statement before the run when the lead is nonzero,
+and records the block in its plan JSON.
+
+The exact attribute set is pinned by
+`tests/data/wrfout_global_attribute_set_v1.json`, regenerated only
+through `tools/regenerate_wrfout_global_attribute_set.py`.
 
 ## Which physics each route can prepare
 

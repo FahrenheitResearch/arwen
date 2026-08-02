@@ -44,6 +44,14 @@ gpuwm-wrf-init --source hrrr \
   --child-workers 8
 ```
 
+`--valid-time` on this door is the **cycle**; add `--forecast-start-hour K`
+when the sealed root preparation began at a lead, and every stage derives
+model time zero (cycle + K) for itself.  The underlying
+`gpuwm.hrrr_hierarchy_direct` takes `--cycle`/`--forecast-start-hour`; its
+own `--valid-time`, which meant model time zero rather than the cycle,
+remains accepted with that meaning for compatibility and refuses to be
+combined with a lead.
+
 The native and stock namelists must be semantically identical after
 normalizing exactly three receipt-bound runtime differences: WRF RRTM
 longwave replaces disabled native longwave, stock WRF consumes the exported

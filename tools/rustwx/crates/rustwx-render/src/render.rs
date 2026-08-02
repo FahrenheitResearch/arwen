@@ -763,6 +763,67 @@ fn centered_text_left(text: &str, center_x: u32, scale: u32, bold: bool) -> i32 
     center_x as i32 - width / 2
 }
 
+/// `ellipsize_text_to_width`, plus whether anything was actually dropped.
+///
+/// The plain form returns a bare `String`, so a caller cannot tell a
+/// subtitle that fitted from one that lost its tail -- which is how the
+/// provenance line came to be cut at "| WRF..." on ordinary domains with
+/// nothing anywhere saying so (B-13).
+fn fit_text_to_width(text: &str, max_width: u32, scale: u32, bold: bool) -> (String, bool) {
+    let fitted = ellipsize_text_to_width(text, max_width, scale, bold);
+    let truncated = fitted != text;
+    (fitted, truncated)
+}
+
+/// Say once, per distinct text, that a subtitle lost its tail.
+///
+/// Deduplicated because a batch render draws the same provenance line on
+/// every product in the catalog, and 150 copies of one warning is a way
+/// of not being read.  Silence was the actual defect: the plot claims to
+/// carry its provenance and the cut is invisible in the image.
+fn warn_subtitle_truncated(slot: &str, full: &str, fitted: &str) {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    let seen = SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let key = format!("{slot}\u{1}{full}");
+    if let Ok(mut set) = seen.lock() {
+        if !set.insert(key) {
+            return;
+        }
+    }
+    eprintln!(
+        "warning: the {slot} subtitle does not fit the plot width and was \
+         drawn as {fitted:?}; the full text is {full:?} -- widen the image \
+         (--size WxH) to keep the whole provenance line"
+    );
+}
+
+/// Width for the left half of the subtitle row, given what the right
+/// half actually needs.
+///
+/// This used to be `subtitle_available / 2` whenever a right subtitle
+/// existed at all.  The right subtitle is the source label -- "source:
+/// ArWen", about a seventh of the row -- so a fixed half-and-half split
+/// spent 50% of the width on it and ellipsized the provenance to fit the
+/// other 50%, while a third of the row stayed empty.  Measure the right
+/// text, give it what it needs, and the left keeps the rest.
+fn subtitle_left_width(
+    available: u32,
+    right: Option<&str>,
+    scale: u32,
+    gap: u32,
+) -> u32 {
+    let Some(right) = right.map(str::trim).filter(|text| !text.is_empty()) else {
+        return available;
+    };
+    let needed = measure_text_width(right, scale, false).saturating_add(gap);
+    // Never give the right MORE than the old even split: a pathologically
+    // long source label must not squeeze the provenance below what it
+    // used to get.
+    let reserved = needed.min(available / 2);
+    available.saturating_sub(reserved).max(1)
+}
+
 fn ellipsize_text_to_width(text: &str, max_width: u32, scale: u32, bold: bool) -> String {
     if measure_text_width(text, scale, bold) <= max_width {
         return text.to_string();
@@ -4374,12 +4435,17 @@ fn draw_chrome_and_colorbar(
             .map(str::trim)
             .filter(|text| !text.is_empty())
         {
-            let left_width = if opts.subtitle_right.is_some() {
-                subtitle_available / 2
-            } else {
-                subtitle_available
-            };
-            let fitted = ellipsize_text_to_width(left, left_width.max(1), layout.text_scale, false);
+            let left_width = subtitle_left_width(
+                subtitle_available,
+                opts.subtitle_right.as_deref(),
+                layout.text_scale,
+                6u32.saturating_mul(layout.text_scale),
+            );
+            let (fitted, truncated) =
+                fit_text_to_width(left, left_width.max(1), layout.text_scale, false);
+            if truncated {
+                warn_subtitle_truncated("left", left, &fitted);
+            }
             text::draw_text(
                 img,
                 &fitted,
@@ -4395,8 +4461,11 @@ fn draw_chrome_and_colorbar(
             .map(str::trim)
             .filter(|text| !text.is_empty())
         {
-            let fitted =
-                ellipsize_text_to_width(center, subtitle_available, layout.text_scale, false);
+            let (fitted, truncated) =
+                fit_text_to_width(center, subtitle_available, layout.text_scale, false);
+            if truncated {
+                warn_subtitle_truncated("center", center, &fitted);
+            }
             text::draw_text(
                 img,
                 &fitted,
@@ -4413,12 +4482,25 @@ fn draw_chrome_and_colorbar(
             .filter(|text| !text.is_empty())
         {
             let right_width = if opts.subtitle_left.is_some() {
-                subtitle_available / 2
+                // The right label is measured first (subtitle_left_width),
+                // so it keeps what it needs; this bound only stops a
+                // pathological label from eating the whole row.
+                subtitle_available
+                    .saturating_sub(subtitle_left_width(
+                        subtitle_available,
+                        Some(right),
+                        layout.text_scale,
+                        6u32.saturating_mul(layout.text_scale),
+                    ))
+                    .max(subtitle_available / 2)
             } else {
                 subtitle_available
             };
-            let fitted =
-                ellipsize_text_to_width(right, right_width.max(1), layout.text_scale, false);
+            let (fitted, truncated) =
+                fit_text_to_width(right, right_width.max(1), layout.text_scale, false);
+            if truncated {
+                warn_subtitle_truncated("right", right, &fitted);
+            }
             text::draw_text_right(
                 img,
                 &fitted,

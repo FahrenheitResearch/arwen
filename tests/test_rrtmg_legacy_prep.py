@@ -795,8 +795,8 @@ def _assert_device_dict(got, want, label):
 
 def test_swrad_prep_batch_cupy_bitwise_deck():
     """cupy == numpy bitwise for swrad_prep_batch over the SW day deck.
-    A mismatch here is a real finding (sm_120 flushes FP32 subnormal
-    results in device arithmetic): report it, never widen it."""
+    A mismatch here is a real finding (cupy-compiled device arithmetic
+    flushes FP32 subnormal results): report it, never widen it."""
     cupy = _cupy_or_skip()
     d = _sw_fixtures()
     for key, cs in _sw_day_groups().items():

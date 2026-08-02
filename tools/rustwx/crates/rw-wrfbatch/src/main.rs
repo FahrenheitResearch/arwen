@@ -34,6 +34,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
+use rustwx_products::shared_context::TitleProvenance;
 use rusty_weather::batch_render::{
     BatchHourScope, BatchRenderDomain, BatchRenderEvent, BatchRenderLimits, BatchRenderRequest,
     inspect_renderable_products, run_batch_render,
@@ -386,6 +387,23 @@ fn native_domain_slug(identity: &GridIdentity) -> Option<String> {
     }
 }
 
+/// `d02 750 m` -- the same identity as the filename slug, spelled for a
+/// human reading the plot's headline.  The spacing is spelled the way the
+/// subtitle spells it, so one grid is not two different numbers on one
+/// image.
+///
+/// This is what the headline's parenthetical is FOR.  Without it the
+/// renderer fell back to the store model's registered source catalog and
+/// stamped that catalog's dataset id -- a dataset this lane never read,
+/// naming an archive these numbers did not come from, on every frame.
+fn domain_title_label(identity: &GridIdentity) -> Option<String> {
+    let domain = identity.domain.as_ref()?;
+    match identity.spacing_m.and_then(spacing_parts) {
+        Some((value, unit)) => Some(format!("{domain} {value} {unit}")),
+        None => Some(domain.clone()),
+    }
+}
+
 fn run(args: Args) -> Result<(), String> {
     let options = WrfProcessOptions {
         heavy_ecape: args.heavy,
@@ -397,6 +415,9 @@ fn run(args: Args) -> Result<(), String> {
     let identity = grid_identity(&args.inputs);
     let domain_slug = native_domain_slug(&identity);
     let spacing = identity.spacing_m.and_then(spacing_subtitle);
+    let title_provenance = TitleProvenance::LocalImport {
+        grid_label: domain_title_label(&identity),
+    };
     let task = spawn_process_paths(args.inputs, args.store_root.clone(), options);
     let import = loop {
         match task
@@ -521,6 +542,7 @@ fn run(args: Args) -> Result<(), String> {
         native_domain_slug: domain_slug,
         subtitle_spacing: spacing,
         source_label: Some(args.source_label),
+        title_provenance,
         date_yyyymmdd: None,
         cycle_utc: None,
         source: None,
@@ -623,7 +645,22 @@ fn list_products(
                     })
                     .collect();
                 if missing.is_empty() {
-                    rows.push((spec.slug, "direct", "renderable", spec.title));
+                    // The title, then the canonical selector the FILL
+                    // resolves to.  A title alone cannot distinguish a
+                    // chart of a quantity from a chart with that
+                    // quantity drawn on top of something else -- "MSLP
+                    // / 10m Winds" reads like a wind product and fills
+                    // with pressure.  Naming the filled field makes the
+                    // listing answer "what am I looking at?" without
+                    // reading the catalog source.
+                    let detail = match requirements
+                        .first()
+                        .and_then(|requirement| requirement.selector)
+                    {
+                        Some(selector) => format!("{} [fill: {}]", spec.title, selector.key()),
+                        None => spec.title.clone(),
+                    };
+                    rows.push((spec.slug, "direct", "renderable", detail));
                 } else {
                     rows.push((
                         spec.slug,

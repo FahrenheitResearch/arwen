@@ -302,7 +302,13 @@ def test_production_binds_root_boundary_clock_at_sanctioned_sites_only():
     launches take the same post-increment dtbc recurrence as the
     production tree root.  Same semantics, third sanctioned site; the
     v1.1 offline-nest lane added the caller without updating this
-    inventory."""
+    inventory.
+
+    Adjudicated 2026-08-01: prepared_domain_tree_forecast.py.  The prepared
+    hierarchy runner also constructs DomainNodes without build_experiment,
+    so it binds its root's already-attached external mirror before restart
+    validation or the first solve.  Same semantics, fourth sanctioned
+    site; the sealed-extension route makes this path production-visible."""
     import ast
 
     package_root = Path(real74_d02.REPOSITORY_ROOT) / "gpuwm"
@@ -311,6 +317,7 @@ def test_production_binds_root_boundary_clock_at_sanctioned_sites_only():
         package_root / "core" / "model.py",
         package_root / "verify" / "cases" / "real74_n5s.py",
         package_root / "offline_child_run.py",
+        package_root / "prepared_domain_tree_forecast.py",
     }
     referencing = set()
     for path in sorted(package_root.rglob("*.py")):
@@ -338,7 +345,7 @@ def test_production_binds_root_boundary_clock_at_sanctioned_sites_only():
     assert not missing and not extra, (
         "bind_lateral_boundary_clock production caller inventory drifted "
         f"(missing {missing}, unadjudicated {extra}); the root bind and "
-        "the N5S builder bind are mandatory, anything else needs "
+        "the adjudicated direct builders are mandatory, anything else needs "
         "adjudication")
 
 

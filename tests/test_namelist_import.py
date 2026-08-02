@@ -1690,3 +1690,61 @@ def test_cli_import_namelist_unported_selector_refuses_without_traceback(
     assert "gpuwm import-namelist: ra_lw_physics=1" in err
     assert "Traceback" not in err
     assert not out.exists()  # refusal precedes any output publication
+
+
+_ONE_DOMAIN_WPS = """\
+&share
+ wrf_core = "ARW",
+ max_dom = {max_dom},
+ interval_seconds = 10800,
+/
+&geogrid
+ parent_id         = 1,
+ parent_grid_ratio = 1,
+ i_parent_start    = 1,
+ j_parent_start    = 1,
+ e_we              = 100,
+ e_sn              = 80,
+ geog_data_res     = "default",
+ dx = 12000,
+ dy = 12000,
+ map_proj = "lambert",
+ ref_lat   = 40.0,
+ ref_lon   = -96.0,
+ truelat1  = 30.0,
+ truelat2  = 50.0,
+ stand_lon = -96.0,
+/
+"""
+
+
+def test_max_dom_beyond_the_declared_arrays_is_refused_by_name(tmp_path):
+    """&share/max_dom and the &geogrid arrays are declared independently,
+    so nothing but a length check stops them disagreeing.
+
+    On 1.4.0 this was `IndexError: list index out of range` -- and since
+    gfs_direct.main catches only (ValueError, OSError), the IndexError
+    escaped the door that turns refusals into sentences and reached the
+    reader as a traceback at rc 1.
+    """
+    wps = tmp_path / "short.namelist.wps"
+    wps.write_text(_ONE_DOMAIN_WPS.format(max_dom=2), encoding="utf-8")
+    with pytest.raises(ValueError) as raised:
+        grids_from_wps_namelist(wps)
+    message = str(raised.value)
+    assert "max_dom = 2" in message
+    # every short array named at once, not one traceback per edit
+    for key in ("e_we", "e_sn", "parent_id", "parent_grid_ratio",
+                "i_parent_start", "j_parent_start"):
+        assert key in message
+    assert "set max_dom to the number of domains" in message
+
+
+def test_max_dom_matching_the_declared_arrays_still_loads(tmp_path):
+    """The negative control: the check refuses a disagreement, not a
+    single-domain namelist."""
+    wps = tmp_path / "ok.namelist.wps"
+    wps.write_text(_ONE_DOMAIN_WPS.format(max_dom=1), encoding="utf-8")
+    grids = grids_from_wps_namelist(wps)
+    assert len(grids) == 1
+    assert grids[0].e_we == 100 and grids[0].e_sn == 80

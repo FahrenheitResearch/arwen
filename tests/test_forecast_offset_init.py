@@ -135,14 +135,81 @@ def test_the_fetch_hint_table_carries_the_lead_and_scopes_it():
     fetch.validate_fetch_hints(
         {"source": "gfs", "hours": 6, "forecast_start_hour": 174},
         source="case.toml")
-    with pytest.raises(ValueError, match="source = gfs\\|gdas only"):
+    fetch.validate_fetch_hints(
+        {"source": "hrrr", "cycle": "2026-07-29T18", "hours": 6,
+         "forecast_start_hour": 3},
+        source="case.toml")
+    with pytest.raises(ValueError, match="source = gfs\\|gdas\\|hrrr only"):
         fetch.validate_fetch_hints(
-            {"source": "hrrr", "hours": 6, "forecast_start_hour": 3},
+            {"source": "era5", "hours": 6, "forecast_start_hour": 3},
             source="case.toml")
     with pytest.raises(ValueError, match="nonnegative forecast lead"):
         fetch.validate_fetch_hints(
             {"source": "gfs", "hours": 6, "forecast_start_hour": -1},
             source="case.toml")
+    # A rotten HRRR hint: a 13Z cycle stops at f18, so f12 + 9 h is a
+    # window NOAA never published.  Caught at config load, not at the
+    # download, and in the words the fetch itself would use.
+    with pytest.raises(ValueError, match="horizon f18"):
+        fetch.validate_fetch_hints(
+            {"source": "hrrr", "cycle": "2026-07-29T13", "hours": 9,
+             "forecast_start_hour": 12},
+            source="case.toml")
+
+
+# ---------------------------------------------------------------------------
+# The same lead, on HRRR
+# ---------------------------------------------------------------------------
+
+def test_an_hrrr_fetch_window_may_begin_at_a_lead_and_f00_is_unchanged():
+    """``--hours`` stays the LENGTH; the default start is still f00.
+
+    The engine below this has been lead-aware since the source-window
+    contract landed -- ``hrrr_source_window`` keys off ``start_hour``,
+    the bridge's series validation keys off ``observed[0]``, and the
+    hierarchy's forcing horizon is model-relative.  What was missing was
+    a way to say it on the front doors: this function took no ``start``
+    at all and hardcoded ``range(0, hours + 1)``.
+    """
+
+    extended = datetime(2026, 7, 29, 18)   # 00/06/12/18Z reach f48
+    standard = datetime(2026, 7, 29, 13)   # every other cycle stops at f18
+
+    assert fetch.hrrr_forecast_hours(3, extended) == (0, 1, 2, 3)
+    assert fetch.hrrr_forecast_hours(3, extended, 0) == (0, 1, 2, 3)
+    assert fetch.hrrr_forecast_hours(3, extended, None) == (0, 1, 2, 3)
+    assert fetch.hrrr_forecast_hours(3, extended, 6) == (6, 7, 8, 9)
+    assert fetch.hrrr_forecast_hours(2, standard, 16) == (16, 17, 18)
+
+
+def test_an_hrrr_lead_past_the_cycle_horizon_is_refused_by_name():
+    standard = datetime(2026, 7, 29, 13)
+    with pytest.raises(ValueError, match="horizon f18"):
+        fetch.hrrr_forecast_hours(3, standard, 16)
+    with pytest.raises(ValueError, match="horizon f48"):
+        fetch.hrrr_forecast_hours(3, datetime(2026, 7, 29, 18), 46)
+    with pytest.raises(ValueError, match="nonnegative forecast lead"):
+        fetch.hrrr_forecast_hours(3, standard, -1)
+
+
+def test_the_hrrr_lead_flag_is_no_longer_refused_for_the_isobaric_ladder(
+        tmp_path, capsys):
+    """The refusal a lead used to meet named a flag nobody had typed.
+
+    ``--forecast-start-hour`` rode the level-ladder bundle, so an HRRR
+    request for f06 was declined with a sentence about isobaric ladders.
+    ERA5 still refuses it -- for the reason that actually applies.
+    """
+
+    from gpuwm.cli import main as cli_main
+
+    assert cli_main(
+        ["fetch", "--source", "era5", "--cycle", "2026-07-29T18",
+         "--hours", "6", "--area", "30,-100,40,-90",
+         "--forecast-start-hour", "6", "--out", str(tmp_path)]) != 0
+    message = capsys.readouterr().err
+    assert "reanalysis" in message
+    assert "isobaric" not in message
 
 
 # ---------------------------------------------------------------------------
@@ -440,3 +507,152 @@ def test_a_lead_the_fetch_carries_is_admitted_with_one_warning(
     assert "must equal experiment start_time" not in err
     # And the unused f000 prefix is named rather than silently decoded.
     assert "before f003" in err and "f000" in err
+
+
+# ---------------------------------------------------------------------------
+# The lead through the front door: cadence, and the two ends of the GFS axis
+#
+# An independent tester drove published 1.4.0 from PyPI and found the lead
+# feature half-reachable: the wizard wrote a cadence its own printed fetch
+# refuses, `gpuwm go` dropped the cadence key entirely so a config asking
+# for hourly boundaries ran with 3-hourly ones at exit 0, and the two ends
+# of the GFS forecast axis -- the f120 cadence break and NOMADS retention --
+# were reported as a publication delay and as a urllib traceback.
+# ---------------------------------------------------------------------------
+
+def test_the_wizard_emits_a_cadence_that_contains_the_lead(tmp_path, capsys):
+    """C-08: `--forecast-start-hour 4` used to write `cadence = 3`.
+
+    Step 1 of the wizard's own printed recipe then exited 2 with "f004 is
+    not on the 3 h cadence", and for two leads in every three the
+    one-command `gpuwm go` path could not be made to work at all.
+    """
+    import tomllib
+    from gpuwm.cli import main as cli_main
+
+    out = tmp_path / "leg4.toml"
+    assert cli_main([
+        "domain", "--point=35.5,-97.5", "--vram-gib", "12", "--root-dx", "12",
+        "--hours", "2", "--source", "gfs", "--cycle", "2026-08-01T00",
+        "--forecast-start-hour", "4", "--out", str(out)]) == 0
+    printed = capsys.readouterr().out
+
+    table = tomllib.loads(out.read_text(encoding="utf-8"))["fetch"]
+    assert table["cadence"] == 1
+    assert table["forecast_start_hour"] == 4
+    # The planner that would refuse it accepts it.
+    assert fetch.gfs_forecast_hours(
+        table["hours"], table["cadence"], table["forecast_start_hour"])[0] == 4
+    # And the printed command carries the cadence, or it downloads a
+    # different window from the one the config was written for.
+    line = next(l for l in printed.splitlines() if "gpuwm fetch" in l)
+    assert "--cadence 1" in line
+    assert "--forecast-start-hour 4" in line
+
+
+def test_a_lead_on_the_default_grid_still_emits_the_default_cadence(
+        tmp_path, capsys):
+    """Unchanged where it was already right: f006 stays a 3 h window."""
+    import tomllib
+    from gpuwm.cli import main as cli_main
+
+    out = tmp_path / "leg6.toml"
+    assert cli_main([
+        "domain", "--point=35.5,-97.5", "--vram-gib", "12", "--root-dx", "12",
+        "--hours", "3", "--source", "gfs", "--cycle", "2026-08-01T00",
+        "--forecast-start-hour", "6", "--out", str(out)]) == 0
+    printed = capsys.readouterr().out
+    assert tomllib.loads(out.read_text(encoding="utf-8"))["fetch"][
+        "cadence"] == 3
+    line = next(l for l in printed.splitlines() if "gpuwm fetch" in l)
+    assert "--cadence" not in line
+
+
+def test_go_carries_the_configs_cadence_into_its_fetch(tmp_path):
+    """C-07: the key `go` executed five of six of."""
+    from gpuwm import go_cli
+
+    plan = {"source": "gfs", "cycle": "2026-08-01T00", "hours": 3,
+            "area": "16,-118,54,-76", "data": tmp_path / "data",
+            "cadence": 1, "forecast_start_hour": 4}
+    command = go_cli.fetch_command(plan)
+    assert command[command.index("--cadence") + 1] == "1"
+    assert command[command.index("--forecast-start-hour") + 1] == "4"
+    # Absent cadence stays absent: HRRR refuses the flag outright.
+    assert "--cadence" not in go_cli.fetch_command({**plan, "cadence": None})
+
+
+def test_go_refuses_a_run_whose_boundaries_are_not_what_the_config_asked(
+        tmp_path):
+    """C-07's other half: exit 0 and "validity PASS" on a 3x coarser clock."""
+    from gpuwm import go_cli
+
+    plan = {"cadence": 1, "config": tmp_path / "cad1.toml",
+            "run": tmp_path / "run"}
+    coarse = {"input": {"boundary_interval_seconds": 10800}}
+    message = go_cli._boundary_interval_refusal(plan, coarse)
+    assert message is not None
+    assert "3 h lateral boundaries" in message
+    assert "cadence = 1" in message
+    # Agreement is silent, and so is a receipt that does not record it.
+    assert go_cli._boundary_interval_refusal(
+        plan, {"input": {"boundary_interval_seconds": 3600}}) is None
+    assert go_cli._boundary_interval_refusal(plan, {}) is None
+    assert go_cli._boundary_interval_refusal(
+        {**plan, "cadence": None}, coarse) is None
+
+
+def test_the_gfs_hourly_cadence_break_is_named_as_a_break(tmp_path):
+    """C-02: f121/f122/f124 are permanent 404s, not a publication delay."""
+    # The last legal hourly window.
+    assert fetch.gfs_forecast_hours(4, 1, 116)[-1] == 120
+    with pytest.raises(ValueError) as caught:
+        fetch.gfs_forecast_hours(4, 1, 118)
+    message = str(caught.value)
+    assert "published every hour only through f120" in message
+    assert "--cadence 3" in message
+    assert "not published" not in message
+    assert "yet" not in message
+    # 3-hourly is unaffected all the way to the horizon.
+    assert fetch.gfs_forecast_hours(3, 3, 381)[-1] == 384
+
+
+def test_an_off_grid_lead_past_f120_is_told_where_the_3h_grid_is():
+    with pytest.raises(ValueError, match="f117 or f120"):
+        fetch.gfs_forecast_hours(6, 1, 118)
+
+
+def test_a_cycle_nomads_no_longer_serves_refuses_in_one_sentence():
+    """C-09: the probe reads S3 (years), the download reads NOMADS (days)."""
+    from urllib.error import HTTPError
+
+    stale = fetch.nomads_reach_refusal(
+        "gfs", datetime(2020, 1, 1), 0,
+        HTTPError("http://x", 403, "Forbidden", {}, None))
+    assert "no longer serves it" in stale
+    assert "HTTP 403" in stale
+    assert "rolling window" in stale
+    # A failure that is not about age keeps the transport's own answer
+    # rather than inventing a retention story.
+    fresh = fetch.nomads_reach_refusal(
+        "gfs", datetime.now(), 0,
+        HTTPError("http://x", 500, "Server Error", {}, None))
+    assert "no longer serves it" not in fresh
+    assert "HTTP 500" in fresh
+
+
+def test_a_rotten_cadence_and_lead_pairing_is_caught_at_config_load():
+    """The 1.4.0 emission, met at load instead of at the download."""
+    with pytest.raises(ValueError, match="not on the 3 h cadence"):
+        fetch.validate_fetch_hints(
+            {"source": "gfs", "hours": 3, "cadence": 3,
+             "forecast_start_hour": 4}, source="case.toml")
+    # The pairing the wizard emits now loads clean.
+    fetch.validate_fetch_hints(
+        {"source": "gfs", "hours": 2, "cadence": 1,
+         "forecast_start_hour": 4}, source="case.toml")
+    # And the f120 break is caught here too.
+    with pytest.raises(ValueError, match="every hour only through f120"):
+        fetch.validate_fetch_hints(
+            {"source": "gfs", "hours": 4, "cadence": 1,
+             "forecast_start_hour": 118}, source="case.toml")

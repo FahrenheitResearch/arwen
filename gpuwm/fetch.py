@@ -180,6 +180,39 @@ HRRR_WAIT_TIMEOUT_DEFAULT_MINUTES = 90.0
 GFS_CYCLE_HOURS = (0, 6, 12, 18)
 GFS_MAX_FORECAST_HOUR = 384
 
+#: The last GFS 0.25-degree ``pgrb2`` lead published EVERY hour.
+#:
+#: NCEP publishes that product hourly through f120 and 3-hourly from
+#: f120 to f384.  f121, f122 and f124 are not late -- they do not exist
+#: and never will, and a HEAD against the archive returns 404 for each
+#: while f120 and f123 return 200.  Modelling that break here is what
+#: lets a window crossing it be refused for what it is: an availability
+#: probe alone reported the permanent gap as "not published yet" and
+#: sent a reader off to wait for data no cycle will ever carry.
+GFS_HOURLY_MAX_FORECAST_HOUR = 120
+
+
+def gfs_cadence_break_refusal(start: int, last: int, cadence: int) -> str:
+    """Why an hourly GFS window may not cross f120, and what does work."""
+
+    return layered(
+        f"--cadence {cadence} reaches f{last:03d}, and the GFS "
+        f"0.25-degree pgrb2 product is published every hour only through "
+        f"f{GFS_HOURLY_MAX_FORECAST_HOUR:03d}.\n"
+        "  What to do: end the window at "
+        f"f{GFS_HOURLY_MAX_FORECAST_HOUR:03d} or earlier, or use "
+        "--cadence 3, which is published all the way to "
+        f"f{GFS_MAX_FORECAST_HOUR}"
+        + ("" if start % 3 == 0 else
+           f" (--forecast-start-hour {start} is not on the 3 h grid "
+           f"either, so a 3 h window would have to begin at "
+           f"f{start - start % 3:03d} or f{start + 3 - start % 3:03d})"),
+        "  Why: this is NCEP's publication cadence, not a delay.  f121, "
+        "f122 and f124 return 404 from the archive today and will still "
+        "return 404 tomorrow; f120 and f123 return 200.  Probing for "
+        "them would report a permanent structural gap as a cycle that "
+        "has not finished uploading.")
+
 #: GDAS is the GFS assimilation cycle's own output, in the *same*
 #: pgrb2.0p25 container: same 0.25-degree regular lat/lon grid, same
 #: variable and level codes, same 124-record census under the certified
@@ -484,6 +517,14 @@ def gfs_forecast_hours(hours: int, cadence: int,
             f"--hours {hours} beginning at f{start:03d} reaches "
             f"f{start + hours:03d}, past the GFS "
             f"f{GFS_MAX_FORECAST_HOUR} horizon")
+    if cadence == 1 and start + hours > GFS_HOURLY_MAX_FORECAST_HOUR:
+        # Refused HERE, before any probe.  The availability probe cannot
+        # tell a permanent publication gap from a cycle still uploading,
+        # so it reported f121/f122/f124 as "not published yet" and
+        # advised passing an explicit --cycle the caller had already
+        # passed.  The cadence break is a property of the product.
+        raise ValueError(
+            gfs_cadence_break_refusal(start, start + hours, cadence))
     return tuple(range(start, start + hours + 1, cadence))
 
 
@@ -516,6 +557,56 @@ def gdas_capability_refusal(requested_hour: int) -> str:
         "failure later, so the refusal is here.")
 
 
+#: What NOMADS keeps, roughly, for the 0.25-degree pgrb2 product.
+#:
+#: Approximate on purpose: it is a rolling window NCEP manages, and this
+#: number is only ever used to name the shape of a refusal the transport
+#: has already made -- never to predict one.  DATA.md states the same
+#: figure.
+NOMADS_RETENTION_DAYS = 10
+
+
+def nomads_reach_refusal(source: str, cycle: datetime, hour: int,
+                         error: HTTPError) -> str:
+    """Why the NOMADS grib filter would not serve one cycle.
+
+    Two probes disagree in this product, and a user in the gap between
+    them met the disagreement as a 42-line ``urllib.error.HTTPError``
+    traceback.  Cycle completeness is checked against the AWS S3 archive,
+    which holds years; the download is the NOMADS grib-filter crop, which
+    holds about :data:`NOMADS_RETENTION_DAYS` days.  Every cycle in
+    between passes the check and then dies in the transport -- measured
+    on one node: 7 days old fetched, 10 days old 404, 31 days old 403.
+
+    The archive's own answer is the ground truth, so it is translated
+    here rather than predicted by a second probe: whatever NCEP's
+    retention is today, this is what it just said.
+    """
+
+    age = datetime.now(timezone.utc).replace(tzinfo=None) - cycle
+    days = age.total_seconds() / 86400.0
+    if error.code in (403, 404) and days > 1.0:
+        return layered(
+            f"{source.upper()} cycle {cycle:%Y-%m-%dT%H}Z is "
+            f"{days:.0f} days old and the NOMADS grib filter no longer "
+            f"serves it (HTTP {error.code} for f{hour:03d}).\n"
+            "  What to do: fetch a cycle inside NOMADS' rolling window "
+            f"-- about {NOMADS_RETENTION_DAYS} days -- or use "
+            "--source hrrr, whose S3 archive this ArWen reads directly.",
+            "  Why: cycle completeness is probed against the AWS S3 "
+            "archive, which holds years, while the GFS/GDAS download is "
+            "the NOMADS grib-filter crop, which holds days.  A cycle in "
+            "between passes the probe and is then refused by the "
+            "transport, which is what this is.  Reading the raw S3 "
+            "objects instead is not a substitute: they are GRIB2 "
+            "template 5.3 (complex packing), and the certified bridge "
+            "admits 5.0 only -- see docs/public/DATA.md.")
+    return layered(
+        f"NOMADS returned HTTP {error.code} for {source.upper()} cycle "
+        f"{cycle:%Y-%m-%dT%H}Z f{hour:03d} ({error.reason}).",
+        f"  The request URL was {error.url}")
+
+
 def gdas_forecast_hours(hours: int, cadence: int = 3,
                         start: int | None = None) -> tuple[int, ...]:
     """The GDAS ladder inside the certified span, or a capability refusal."""
@@ -530,15 +621,28 @@ def gdas_forecast_hours(hours: int, cadence: int = 3,
     return tuple(range(start, start + hours + 1, cadence))
 
 
-def hrrr_forecast_hours(hours: int, cycle: datetime) -> tuple[int, ...]:
-    """The contiguous f00..fNN window, checked against the cycle horizon."""
+def hrrr_forecast_hours(hours: int, cycle: datetime,
+                        start: int | None = None) -> tuple[int, ...]:
+    """The contiguous f{start}..f{start+NN} window, checked against the horizon.
+
+    ``start`` defaults to 0, which is the f00..fNN ladder every prior
+    release fetched, byte for byte.  ``--hours`` stays what it always
+    was -- the LENGTH of the window, not its final lead -- so a window is
+    described the same way here as on the GFS and GDAS ladders above.
+
+    HRRR publishes hourly, so the only cadence a lead can be off is one
+    hour; ``_forecast_start_hour`` is still what checks the value, so a
+    negative or non-integer lead is refused in the same words on every
+    source.
+    """
 
     from gpuwm.hrrr_forecast import validate_hrrr_source_forecast_hours
 
     if hours < 1:
         raise ValueError("--hours must be at least 1 (two hourly frames)")
+    start = _forecast_start_hour(start, 1)
     return validate_hrrr_source_forecast_hours(
-        range(0, hours + 1), cycle=cycle)
+        range(start, start + hours + 1), cycle=cycle)
 
 
 # ---------------------------------------------------------------------------
@@ -1281,7 +1385,11 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
                          f"{path.stat().st_size:,} B verified -- skipped")
             else:
                 started = time.perf_counter()
-                transport._download(url, path)
+                try:
+                    transport._download(url, path)
+                except HTTPError as error:
+                    raise RuntimeError(nomads_reach_refusal(
+                        source, cycle, hour, error)) from None
                 observed = count_grib2_messages(path)
                 if observed != bar.expected:
                     raise ValueError(
@@ -2808,7 +2916,6 @@ def fetch_main(args) -> int:
             flag for flag, value in (
                 ("--p-top-pa", args.p_top_pa),
                 ("--all-levels", args.all_levels or None),
-                ("--forecast-start-hour", args.forecast_start_hour),
             ) if value is not None)
         if gfs_only:
             raise ValueError(
@@ -2817,6 +2924,18 @@ def fetch_main(args) -> int:
                 "on its native hybrid levels (no isobaric ladder to "
                 "choose), and the ERA5 request template carries its own "
                 "level list.")
+    # A separate refusal, with its own reason.  --forecast-start-hour used
+    # to ride the level-ladder bundle above, so `--source hrrr
+    # --forecast-start-hour 6` was declined for having asked about an
+    # isobaric ladder -- a sentence about a flag the user had not typed,
+    # for a source whose whole decode path is already lead-aware.  What
+    # the flag actually needs is a source with forecast leads in it.
+    if args.forecast_start_hour is not None and source == "era5":
+        raise ValueError(
+            "--forecast-start-hour: forecast sources only (gfs/gdas/hrrr).  "
+            "ERA5 is a reanalysis -- every time in it is an analysis, so "
+            "there is no forecast lead for a window to begin at.  Name the "
+            "analysis time you want with --cycle instead.")
     if args.p_top_pa is not None and args.p_top_pa <= 0:
         raise ValueError("--p-top-pa must be a positive pressure in Pa")
 
@@ -3012,24 +3131,41 @@ def fetch_main(args) -> int:
                 "transport only does .idx range subsets.  Build the "
                 "backbone (cd tools/rustwx && cargo build --release "
                 "--locked --offline) or drop --mode.")
+        # The lead is checked before any network round trip: `--cycle
+        # latest` probes for a cycle complete through the END of the
+        # window, and a bad lead should not have to pay for a probe to
+        # be refused.  --hours stays the window LENGTH on every source,
+        # so the window's final lead is lead + length.
+        start_hour = _forecast_start_hour(args.forecast_start_hour, 1)
+        if args.hours < 1:
+            raise ValueError("--hours must be at least 1 (two hourly frames)")
+        last_hour = start_hour + args.hours
+        if start_hour:
+            print(f"fetch hrrr: window begins at forecast lead "
+                  f"f{start_hour:02d}; a model initialized there starts "
+                  f"from a {start_hour} h forecast, not an analysis")
         if args.cycle == "latest":
             if args.wait_for:
                 # Wait mode wants the cycle currently PUBLISHING, so the
                 # completeness probe is f00 (has publication begun?), not
-                # the final requested hour.
+                # the final requested hour.  A lead does not change that
+                # question, and the window's own horizon check below is
+                # what refuses a lead this cycle cannot reach -- in words
+                # that name the horizon, which a failed probe would not.
                 cycle = resolve_latest_cycle("hrrr", 0)
                 print(f"fetch hrrr: latest publishing cycle is "
                       f"{cycle:%Y-%m-%dT%H}Z (f00 probe; --wait-for "
                       "downloads later hours as they appear)")
             else:
-                cycle = resolve_latest_cycle("hrrr", args.hours)
+                cycle = resolve_latest_cycle("hrrr", last_hour)
                 print(f"fetch hrrr: latest complete cycle is "
                       f"{cycle:%Y-%m-%dT%H}Z")
         else:
             cycle = parse_cycle(args.cycle, source)
             require_published_cycle(
-                source, cycle, hrrr_forecast_hours(args.hours, cycle)[-1])
-        hours = hrrr_forecast_hours(args.hours, cycle)
+                source, cycle,
+                hrrr_forecast_hours(args.hours, cycle, start_hour)[-1])
+        hours = hrrr_forecast_hours(args.hours, cycle, start_hour)
         # One lock over the guard and the transfer it authorises; see the
         # GFS branch above.
         with fetch_guard.hold("fetch-out", args.out):
@@ -3094,11 +3230,16 @@ def fetch_main(args) -> int:
         print("fetch hrrr: next: feed the HRRR front door, source "
               "already bound:")
         print(f"  --source-root {args.out} --source-manifest {sums} "
-              f"--source-manifest-sha256 {sha256_file(sums)}")
+              f"--source-manifest-sha256 {sha256_file(sums)} "
+              f"--valid-time {cycle:%Y-%m-%d_%H:%M:%S}"
+              + (f" --forecast-start-hour {hours[0]}" if hours[0] else ""))
         print("  # fetching cannot bind the run's own flags: "
               "--wps-namelist, --geog-root,\n"
-              "  # --experiment-config, --valid-time and --output-root "
-              "are yours to supply.\n"
+              "  # --experiment-config and --output-root are yours to "
+              "supply.  The\n"
+              "  # --valid-time above is the CYCLE these files came from; "
+              "model time zero\n"
+              "  # is cycle + the lead, and every stage derives it.\n"
               "  # `rw-wps --show-source hrrr` lists the full argument "
               "contract.")
     elif args.author_front_door_manifest:
@@ -3218,16 +3359,50 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
         raise ValueError(
             f"forecast_start_hour = {start_hour!r} in [fetch] of {source} "
             "must be a nonnegative forecast lead")
-    if start_hour and table["source"] not in {"gfs", "gdas"}:
+    if start_hour and table["source"] not in {"gfs", "gdas", "hrrr"}:
         raise ValueError(
             f"[fetch] of {source}: forecast_start_hour applies to "
-            "source = gfs|gdas only")
+            "source = gfs|gdas|hrrr only (era5 is a reanalysis, so every "
+            "time in it is an analysis and there is no lead to begin at)")
     if table["source"] == "gdas":
         hours = table.get("hours")
         if isinstance(hours, (int, float))                 and start_hour + hours > GDAS_MAX_FORECAST_HOUR:
             raise ValueError(
                 f"[fetch] of {source}: "
                 f"{gdas_capability_refusal(int(start_hour + hours))}")
+    if table["source"] in GFS_CONTAINER_SOURCES:
+        # The window this table describes, planned by the planner that
+        # would run it.  A hand-written (or 1.4.0-emitted) table pairing
+        # `cadence = 3` with `forecast_start_hour = 4` names a download
+        # `gpuwm fetch` refuses -- and a lead that would cross the f120
+        # hourly publication break names one NCEP never published.
+        hours = table.get("hours")
+        cadence = table.get("cadence")
+        if (isinstance(hours, int) and hours >= 1 and not isinstance(hours, bool)
+                and isinstance(cadence, int) and not isinstance(cadence, bool)
+                and cadence in (1, 3)):
+            try:
+                gfs_forecast_hours(hours, cadence, start_hour)
+            except ValueError as error:
+                raise ValueError(f"[fetch] of {source}: {error}") from error
+    if table["source"] == "hrrr":
+        # Same rotten-hint rule as GDAS above, for the bound a lead can
+        # now cross: a 13Z cycle stops at f18, so `forecast_start_hour =
+        # 12` with `hours = 9` describes a window NOAA never published.
+        # Caught at config load, in the words the fetch itself would use.
+        hours = table.get("hours")
+        raw_cycle = table.get("cycle")
+        if isinstance(hours, int) and hours >= 1 and isinstance(raw_cycle, str):
+            try:
+                cycle = parse_cycle(raw_cycle, "hrrr")
+            except ValueError:
+                cycle = None
+            if cycle is not None:
+                try:
+                    hrrr_forecast_hours(hours, cycle, start_hour)
+                except ValueError as error:
+                    raise ValueError(
+                        f"[fetch] of {source}: {error}") from error
 
 
 def register_cli(subparsers) -> None:
@@ -3403,7 +3578,7 @@ def register_cli(subparsers) -> None:
         help=f"manifest path (default <out>/{GFS_INPUT_MANIFEST_NAME})")
     parser.add_argument(
         "--forecast-start-hour", type=int, default=None, metavar="K",
-        help="gfs/gdas only: the forecast lead the window BEGINS at "
+        help="gfs/gdas/hrrr: the forecast lead the window BEGINS at "
              "(default f000, the analysis).  --hours stays the window "
              "length, so --forecast-start-hour 174 --hours 66 fetches "
              "f174..f240 and nothing before it; an experiment whose "

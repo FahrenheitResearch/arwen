@@ -13,6 +13,7 @@ from gpuwm import hrrr_hierarchy_direct
 from gpuwm.hrrr_hierarchy_direct import (
     _atomic_staging_sibling,
     _compare_stock_experiment,
+    _expected_root_cache_identity,
     _require_raw_stock_delta,
     _require_raw_wps_contract,
     _supported_hierarchy_slice,
@@ -476,6 +477,36 @@ def test_root_cache_reuse_binds_effective_d01_not_child_topology():
     with pytest.raises(ValueError, match="invalid namelist_sha256"):
         _validated_root_preparation_binding(
             {**identity, "namelist_sha256": "editable"}, native.domains[0])
+
+
+def test_hierarchy_expected_identity_preserves_validated_namelist_invariant():
+    native = _native()
+    identity = {
+        "domain_config": asdict(native.domains[0]),
+        "namelist_sha256": "a" * 64,
+        "source_identity": {"source": "fixture"},
+        "namelist_extension_invariant": {
+            "schema": "gpuwm-namelist-extension-invariant-v1",
+            "sha256": "e" * 64,
+        },
+    }
+    expected = _expected_root_cache_identity(
+        identity, root_domain=native.domains[0],
+        bridge_manifest_sha256="b" * 64,
+        source_manifest_sha256="c" * 64,
+        static_cache_sha256="d" * 64,
+        forcing_hours=(0, 1))
+    assert expected["namelist_extension_invariant"] == identity[
+        "namelist_extension_invariant"]
+
+    identity["namelist_extension_invariant"]["unchecked"] = True
+    with pytest.raises(ValueError, match="valid extension invariant"):
+        _expected_root_cache_identity(
+            identity, root_domain=native.domains[0],
+            bridge_manifest_sha256="b" * 64,
+            source_manifest_sha256="c" * 64,
+            static_cache_sha256="d" * 64,
+            forcing_hours=(0, 1))
 
 
 def test_stock_comparison_allows_only_explicit_longwave_runtime_change():

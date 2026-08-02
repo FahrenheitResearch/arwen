@@ -311,6 +311,15 @@ def test_refl_stash_has_no_trajectory_or_restart_reader():
     # install can run a forecast) made an existing reader visible to the
     # pin rather than adding a new one.  It is the third wrfout producer
     # and belongs here on exactly the same grounds as gpuwm/runtime.py.
+    #
+    # The N5S shadow case LEFT this set the same way it entered: without
+    # changing what it does.  Its history callback had hand-rolled a copy
+    # of runtime._submit_tree_history_frame -- the same lines, including
+    # this consume, minus the reset of the nwp_diagnostics running maxima
+    # that the shared helper also performs.  It calls the helper now, so
+    # the consume happens one frame deeper and this file no longer names
+    # it, exactly as gpuwm/prepared_domain_tree_forecast.py (the other
+    # caller of that helper) has never named it.
     consume_hits = {
         path.relative_to(repo).as_posix()
         for path in gpuwm.rglob("*.py")
@@ -321,7 +330,6 @@ def test_refl_stash_has_no_trajectory_or_restart_reader():
         "gpuwm/offline_child_run.py",
         "gpuwm/prepared_single_domain_forecast.py",
         "gpuwm/verify/cases/nest_ideal_common.py",
-        "gpuwm/verify/cases/real74_n5s.py",
     }
 
     # Prevent a direct attribute read or constant-name getattr from bypassing

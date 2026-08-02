@@ -153,7 +153,7 @@ RECORDED: dict[str, tuple[tuple[str, ...], ...]] = {
     # plain `(float)` cast, which is a separate site and a separate argument.
     # tests/test_noahmp_slab_libm.py sweeps the whole band for leaves and
     # fluxprep, tests/test_noahmp_kernel_subnormals.py for the other six, and
-    # both keep a live control showing the hardware conversion still flushing.
+    # both keep a live control showing the compiled conversion still flushing.
     "nmp_d2f_rn": (("bareflux", "fluxprep", "leaves", "radiation", "snow",
                     "soilwater", "vegprecip", "water"),),
     "nmp_exp2_core": (("fluxprep", "leaves"),),
@@ -223,7 +223,7 @@ def test_the_drift_has_not_grown():
     """A cheaper assertion that names the number, for a fast read.
 
     35, not the 34 first recorded: ``nmp_d2f_rn`` was added to recover the
-    subnormal ``expf``/``powf`` results the hardware double-to-float
+    subnormal ``expf``/``powf`` results the compiled double-to-float
     conversion flushes.  It has since spread from two files to eight, and the
     count is *still* 35 -- the row grew, no row appeared.  That is the shape
     this fix was meant to have: eight byte-identical copies are one group, and

@@ -18,7 +18,8 @@ import sys
 import tempfile
 from typing import Mapping, Sequence
 
-from gpuwm.explain import warn
+from gpuwm.experiment import did_you_mean
+from gpuwm.explain import layered, warn
 from gpuwm.mapped_authoring import (
     DESCRIPTOR_SCHEMA,
     _canonical_json,
@@ -80,9 +81,22 @@ def _object(
         raise ValueError(f"{label} must be an object")
     unknown = sorted(set(value) - allowed)
     if unknown:
-        # The required-key check below still catches every typo of a
-        # key that matters; an extra key is named and ignored.
-        warn(f"ignoring unknown key(s) {unknown} in {label}")
+        # This carried the same sentence the [shared]/[[domain]] loader
+        # carried before a4417efb -- "the required-key check below still
+        # catches every typo of a key that matters" -- and it is false
+        # here for the same structural reason: `allowed - required` is
+        # optional by construction, so no check below ever looks.
+        # `descriptor.adapt.soil_policy.target_layers_m` is that gap: a
+        # misspelling of it under `kind = "identity_complete_layers"`
+        # warned once and adapted the source inventory unchanged, which
+        # is not the layer set the descriptor asked for.
+        named = ", ".join(
+            f"{key!r}{did_you_mean(key, allowed)}" for key in unknown)
+        raise ValueError(layered(
+            f"{label} does not have a key {named}; no key is ignored, "
+            "because a dropped key runs a default under the name of "
+            "your value.",
+            f"Known {label} keys: {sorted(allowed)}."))
     missing = sorted(required - set(value))
     if missing:
         raise ValueError(f"{label} is missing required key(s): {missing}")

@@ -154,14 +154,19 @@ results are bitwise equal to the scalar entries at any batch width
 * The batch entries accept cupy arrays (dispatch on the input array
   namespace); the McICA stage always executes on the host (bit-exact
   scalar RNG chain), staged through bit-preserving float32 copies.
-  sm_120 DAZ/FTZ finding (caught by the cupy gate on the SW fixture
-  deck): microphysics mixing ratios traverse the FP32 subnormal range
-  (qi3d+qs3d sums at ~1e-39 on real columns), and the RTX 5090 flushes
-  FP32 subnormal inputs AND results in ALL device arithmetic,
-  comparisons and min/max -- only copies and where-selects preserve
-  them, and even the f64->f32 cast flushes, so FP64 staging cannot
-  materialize a subnormal float32 on the device (measured: ciwpth
-  1.0902803e-33 on numpy vs 0.0 on device).  The moisture ->
+  DAZ/FTZ finding (caught by the cupy gate on the SW fixture deck):
+  microphysics mixing ratios traverse the FP32 subnormal range
+  (qi3d+qs3d sums at ~1e-39 on real columns), and every kernel cupy
+  compiles flushes FP32 subnormal inputs AND results in ALL device
+  arithmetic, comparisons and min/max -- only copies and
+  where-selects preserve them, and even the f64->f32 cast flushes, so
+  FP64 staging cannot materialize a subnormal float32 on the device
+  (measured: ciwpth 1.0902803e-33 on numpy vs 0.0 on device).  The
+  cause is the compile route rather than the card: cupy appends
+  ``-ftz=true`` after the caller's options and the compiler honours
+  the last occurrence, which is why ``--ftz=false`` does not lift it
+  and why the host-side fallback below is the countermeasure rather
+  than a compile flag.  The moisture ->
   effective-radii -> cloud-path block therefore ALWAYS runs on the host
   (numpy-side fallback; its inputs/outputs move as pure data), keeping
   the cupy path bitwise identical to numpy; the remaining device
@@ -1604,9 +1609,10 @@ def lwrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
 
     # The moisture -> effective-radii -> cloud-path block ALWAYS runs on
     # the host: mixing ratios traverse the FP32 subnormal range on real
-    # columns and sm_120 flushes subnormals in every device op except
-    # copies/where-selects (see the module docstring's cupy bullet), so
-    # this is the one prep chain a GPU cannot reproduce bitwise.  For
+    # columns and every cupy-compiled device op flushes subnormals
+    # except copies/where-selects (see the module docstring's cupy
+    # bullet), so this is the one prep chain the device cannot
+    # reproduce bitwise on this compile route.  For
     # numpy inputs _host_f32 is the identity and nothing changes.
     hb = _host_f32
     cldfra_h = hb(cldfra3d)

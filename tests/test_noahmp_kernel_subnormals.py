@@ -1,8 +1,8 @@
 """Every Noah-MP device libm, swept across the band where its results are subnormal.
 
 ``__double2float_rn`` flushes a subnormal result to zero on this toolchain
-(sm_120, CUDA 13.0), and ``--ftz=false`` does not change it -- that flag governs
-FP32 arithmetic, not the double-to-float conversion.  glibc 2.39's ``expf`` and
+(sm_120, CUDA 13.0), and ``--ftz=false`` does not change it -- cupy appends
+``-ftz=true`` after it, and the last occurrence wins.  glibc 2.39's ``expf`` and
 ``powf`` do return subnormals, gfortran at ``-O0`` leaves MXCSR's FTZ and DAZ
 clear, and :mod:`gpuwm.core.noahmp_libm` -- the CPython authority, verified
 against the live glibc over 1,106,247,680 inputs -- returns them too.  So every
@@ -24,7 +24,7 @@ Each sweep is paired with a **negative control that reconstructs the defect**:
 the same source text with ``return nmp_d2f_rn(`` substituted back to ``return
 __double2float_rn(``, compiled and swept, and required to *differ*.  Without it
 "the band is bitwise" would be consistent with the band being empty, with the
-probe not reaching the transcription, or with the hardware conversion having
+probe not reaching the transcription, or with the compiled conversion having
 quietly been fixed and the helper being dead weight.
 
 TWO KERNELS SHIP NO PROBE THAT REACHES THEIR OWN LIBM, and that is recorded
@@ -58,7 +58,7 @@ from gpuwm.core import noahmp_libm as scalar
 from gpuwm.core.noahmp_kernel_sources import KERNEL_DIR, translation_unit_source
 
 #: The largest binary32 that is not normal.  Everything strictly below this in
-#: magnitude, and not zero, is the range the hardware conversion flushes.
+#: magnitude, and not zero, is the range the compiled conversion flushes.
 SMALLEST_NORMAL = np.float32(1.1754944e-38)
 
 #: ``expf`` returns a binary32 subnormal for exactly this closed interval of
@@ -279,7 +279,7 @@ def test_powf_is_bitwise_across_the_subnormal_band(unit):
 def test_the_pre_fix_expf_flushed_the_entire_band_to_zero(unit):
     """What the sweep above would have measured before ``nmp_d2f_rn``.
 
-    Every argument, not merely some: the hardware conversion does not round
+    Every argument, not merely some: the compiled conversion does not round
     towards the subnormals at all, it flushes.  If this ever passes with a
     small count, the toolchain has changed and the claim needs re-deriving; if
     it fails outright, ``__double2float_rn`` has been fixed and the helper can

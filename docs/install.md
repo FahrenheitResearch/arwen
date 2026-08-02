@@ -23,9 +23,17 @@ fails with instructions instead of hanging), build the vendored Rust
 GRIB bridges (`tools/grib1_bridge`) and the production render engine
 (`tools/rustwx`) with `cargo build --release --locked --offline`
 (`--no-render`/`-NoRender` or `GPUWM_INSTALL_NO_RENDER=1` skips the
-renderer build; `gpuwm render` falls back to matplotlib until it is
-built), and finish with `gpuwm doctor`, whose exit status the script
-propagates. Both scripts are idempotent: re-running reuses the existing
+renderer build; `gpuwm render` falls back to matplotlib until a render
+engine exists, and says so on every run that uses the fallback), and
+finish with `gpuwm doctor`, whose exit status the script propagates.
+
+A pip install needs no toolchain for either half: `gpuwm fetch-bridges`
+(or `gpuwm setup`, which runs it first) stages this release's prebuilt
+GRIB bridges and render engine under the SHA-256 pins the wheel carries,
+together with the renderer's Natural Earth and US Census map assets. The
+assets ride in the same bundle as the binary that reads them so the two
+cannot arrive separately -- a renderer without them draws plots with no
+coastlines or borders and reports success. Both scripts are idempotent: re-running reuses the existing
 `.venv` and the incremental cargo build. Run them from the checkout
 root, or standalone (piped from the raw URL), in which case they clone
 https://github.com/FahrenheitResearch/arwen into `./gpuwm`
@@ -102,6 +110,15 @@ stages the same bundle -- or the loose artifacts -- from a local
 directory with identical verification, for air-gapped installs.
 `--dest DIR` stages elsewhere; `GPUWM_BRIDGE_ASSET_URL_BASE` points it
 at a mirror.
+
+The release workflow generates those pins before it builds the supported
+PyPI wheel and sdist. The GitHub-generated source `.zip` and `.tar.gz`
+archives deliberately retain an unpinned document, because their bytes were
+not assembled with the target-native bundles. Consequently,
+`gpuwm fetch-bridges` from an automatic source archive refuses with the
+source-build remedy instead of borrowing another release's hashes. Use the
+PyPI wheel/sdist for prebuilt bundles, or clone the exact tag and build the
+vendored Rust workspaces for a source installation.
 
 Bundles are published for Windows x86-64 and Linux x86-64.  On any
 other platform, and on any release that published no bundle, the

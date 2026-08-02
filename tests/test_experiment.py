@@ -294,14 +294,22 @@ def test_rejects_missing_domain_tables(tmp_path):
         load_experiment(path)
 
 
-def test_warns_and_ignores_unknown_top_level_table(tmp_path, capsys):
-    """Warn-not-block: a stray table is named in one line and dropped."""
-    exp = load_experiment(_write(tmp_path, text=BASE.format(
-        experiment="restart_interval_s = 0.0", shared="", d01="",
-        d02="") + "\n[grid]\nnx = 4\n"))
-    err = capsys.readouterr().err
-    assert "warning:" in err and "grid" in err
-    assert exp.root.run.nx == 100  # the stray [grid] table changed nothing
+def test_refuses_unknown_top_level_table(tmp_path):
+    """A stray table is named and REFUSED, not named and dropped.
+
+    This test used to codify warn-and-drop, and the fleet's
+    hostile-input node showed what that costs: ``[grid]``,
+    ``[dynamics]`` and ``[run]`` are the LEGACY config schema's table
+    names, so pasting a familiar block into an experiment config used
+    to drop every setting in it behind one stderr line and run the
+    defaults under the reader's name for them.  The rest of this bar
+    lives in tests/test_dynamics_key_validation.py.
+    """
+    with pytest.raises(ValueError) as caught:
+        load_experiment(_write(tmp_path, text=BASE.format(
+            experiment="restart_interval_s = 0.0", shared="", d01="",
+            d02="") + "\n[grid]\nnx = 4\n"))
+    assert "grid" in str(caught.value)
 
 
 def test_rejects_non_root_first_domain(tmp_path):
@@ -566,13 +574,37 @@ def test_rejects_hand_typed_child_dx_mismatch(tmp_path):
     assert exp.domain(3).run.dx == float(Fraction(1000, 3))
 
 
-def test_time_step_on_child_is_ignored_with_a_warning(tmp_path, capsys):
-    """Warn-not-block: the chain is authoritative; a child time_step
-    key is named and ignored (dt still derives from the parent)."""
+def test_a_child_time_step_that_matches_the_chain_is_accepted_quietly(
+        tmp_path, capsys):
+    """A child time_step is redundant, not wrong, when it agrees.
+
+    This test used to assert a WARNING here, on the value 20 -- which is
+    exactly what the chain derives in this fixture (60 / 3).  The user
+    wrote 20 and got 20, so the assertion was satisfied identically by
+    "warn and honour what was written" and by "warn and substitute", and
+    it read as a ruling that the substitution was fine.  The disagreeing
+    case, which is the one that mattered, had no test at all.
+    """
     exp = load_experiment(_write(tmp_path, d02="time_step = 20"))
-    err = capsys.readouterr().err
-    assert "warning:" in err and "time_step" in err
+    assert "time_step" not in capsys.readouterr().err
     assert exp.dt_exact(2) == exp.dt_exact(1) / 3
+
+
+def test_a_child_time_step_against_the_chain_is_refused(tmp_path):
+    """The sixth warn-and-drop, and its own sibling contradicted it.
+
+    `dt` on a child refuses through _cross_check; `time_step` on the
+    same table -- the same quantity, the same number -- warned and ran
+    the derived step at exit 0.  The old warning's `why=` even
+    advertised the check it declined to perform.
+
+    That WRF has no per-child time_step is the reason to REFUSE: the
+    model cannot deliver the step that was asked for.
+    """
+    for key in ("time_step = 5", "time_step_fract_num = 1",
+                "time_step_fract_den = 7"):
+        with pytest.raises(ValueError, match="time_step"):
+            load_experiment(_write(tmp_path, d02=key))
 
 
 def test_rejects_root_without_time_step(tmp_path):
@@ -582,13 +614,35 @@ def test_rejects_root_without_time_step(tmp_path):
         load_experiment(_write(tmp_path, text=text))
 
 
-def test_dt_key_on_root_is_ignored_with_a_warning(tmp_path, capsys):
-    """Warn-not-block: time_step is authoritative on the root; a dt
-    key is named and ignored."""
+def test_a_root_dt_that_matches_time_step_is_accepted_quietly(
+        tmp_path, capsys):
+    """Same shape as the child case above, and the same blind spot.
+
+    The old test asserted a warning on `dt = 60.0` in a fixture whose
+    `time_step` IS 60, so the user wrote 60 and got 60 either way.  The
+    warning was also emitted verbatim when the two AGREED, so it carried
+    no information about the only thing worth knowing.
+    """
     exp = load_experiment(_write(tmp_path, d01="dt = 60.0"))
-    err = capsys.readouterr().err
-    assert "warning:" in err and "dt" in err and "time_step" in err
+    assert "dt" not in capsys.readouterr().err
     assert exp.dt_exact(1) == 60
+
+
+def test_a_root_dt_against_its_time_step_is_refused(tmp_path):
+    """Measured on the published 1.4.0 wheel: `dt = 60.0` beside
+    `time_step = 5` warned, loaded, and ran a 5 s step at rc 0 -- the
+    root step was discarded with no comparison performed at all."""
+    with pytest.raises(ValueError, match=r"hand-types dt=5\.0"):
+        load_experiment(_write(tmp_path, d01="dt = 5.0"))
+    # and the fractional part is compared too, not just the integer:
+    # time_step 60 + 1/2 is 60.5 s, so a bare dt = 60.0 disagrees.
+    text = BASE.format(experiment="restart_interval_s = 0.0", shared="",
+                       d01="dt = 60.0", d02="").replace(
+        "time_step = 60\n",
+        "time_step = 60\ntime_step_fract_num = 1\n"
+        "time_step_fract_den = 2\n")
+    with pytest.raises(ValueError, match="hand-types dt"):
+        load_experiment(_write(tmp_path, text=text))
 
 
 def test_rejects_root_without_dx(tmp_path):
@@ -624,19 +678,20 @@ def test_rejects_inconsistent_staggered_and_mass_dims(tmp_path):
         load_experiment(_write(tmp_path, d02="nx = 61"))  # e_we=61 -> 60
 
 
-def test_unknown_keys_warn_and_misplaced_keys_still_refuse(
-        tmp_path, capsys):
-    """Warn-not-block for typos (named + dropped in one line); the
-    MISPLACED keys stay hard -- they name a real value the reader put
-    in the wrong table, and honoring or dropping it silently would
-    change the run."""
-    exp = load_experiment(_write(tmp_path, shared="not_a_key = 1"))
-    err = capsys.readouterr().err
-    assert "warning:" in err and "not_a_key" in err
-    assert exp.root.run.nx == 100
-    load_experiment(_write(tmp_path, d02="hill_height = 5.0"))
-    err = capsys.readouterr().err
-    assert "warning:" in err and "hill_height" in err
+def test_unknown_keys_and_misplaced_keys_both_refuse_by_name(tmp_path):
+    """An unknown key refuses by name, and so does a misplaced one.
+
+    The unknown-key half used to warn and drop.  A key with a default
+    is optional by construction, so no required-key or value check ever
+    catches a misspelling of one -- the run simply integrates with the
+    built-in value under the reader's name for it.  Both halves now say
+    what they refused; only the sentence differs, because a MISPLACED
+    key can additionally say which table it belongs in.
+    """
+    with pytest.raises(ValueError, match=r"does not have a key"):
+        load_experiment(_write(tmp_path, shared="not_a_key = 1"))
+    with pytest.raises(ValueError, match=r"does not have a key"):
+        load_experiment(_write(tmp_path, d02="hill_height = 5.0"))
     # KEEP-HARD negatives: misplaced and retired keys refuse by name.
     with pytest.raises(ValueError, match=r"belongs in \[\[domain\]\]"):
         load_experiment(_write(tmp_path, shared="dx = 1000.0"))
@@ -836,25 +891,57 @@ def test_rejects_non_finite_vertical_and_projection(tmp_path):
         load_experiment(_write(tmp_path, text=text))
 
 
+def _projection_table(name="lambert"):
+    return (f"\n[projection]\nmap_proj = \"{name}\"\nref_lat = 39.7\n"
+            "ref_lon = -83.9\ntruelat1 = 30.0\ntruelat2 = 60.0\n"
+            "stand_lon = -83.9\n")
+
+
 def test_projection_and_map_proj_disagreement(tmp_path, capsys):
     # KEEP-HARD: Lambert experiments (map_proj = 1) REQUIRE a
     # [projection] table -- there is nothing to infer the parameters
     # from.
     with pytest.raises(ValueError, match=r"no \[projection\]"):
         load_experiment(_write(tmp_path, shared="map_proj = 1"))
-    # Warn-not-block: a [projection] table against [shared] map_proj = 0
-    # is a contradiction the table resolves -- it carries the whole
-    # parameter set, so it wins, in one warning line.
+    # OMITTED, not contradicted.  `shared=""` writes no map_proj at all,
+    # so RunConfig's default 0 is the dataclass's, not the user's, and
+    # the table completes the config without anything disagreeing.  This
+    # case previously emitted a warning and this test asserted it,
+    # calling the omission "a contradiction the table resolves" and
+    # citing warn-not-block -- which is how the genuine contradiction
+    # below came to be dropped through the same branch.  An omission
+    # earns no warning.
     text = BASE.format(experiment="restart_interval_s = 0.0", shared="",
-                       d01="", d02="") + (
-        "\n[projection]\nmap_proj = \"lambert\"\nref_lat = 39.7\n"
-        "ref_lon = -83.9\ntruelat1 = 30.0\ntruelat2 = 60.0\n"
-        "stand_lon = -83.9\n")
+                       d01="", d02="") + _projection_table()
     exp = load_experiment(_write(tmp_path, text=text))
     err = capsys.readouterr().err
-    assert "warning:" in err and "map_proj" in err
+    assert "map_proj" not in err
     assert exp.projection is not None
     assert exp.root.run.map_proj == 1
+
+
+def test_declared_map_proj_against_the_table_is_refused(tmp_path):
+    """A [shared] map_proj the user wrote, disagreeing with the
+    [projection] table, is refused rather than replaced.
+
+    Both values are the user's, and the loser names the projection the
+    grid is defined on.  `map_proj = 3` beside a "lambert" table used to
+    warn once and integrate on Lambert anyway, with `gpuwm check` PASS
+    at rc 0 -- measured on the published 1.4.0 wheel.
+    """
+    for declared, table in ((3, "lambert"), (1, "mercator"), (0, "lambert")):
+        text = BASE.format(
+            experiment="restart_interval_s = 0.0",
+            shared=f"map_proj = {declared}", d01="", d02="",
+        ) + _projection_table(table)
+        with pytest.raises(ValueError, match=r"contradicts the \[projection\]"):
+            load_experiment(_write(tmp_path, text=text))
+    # The agreeing case stays quiet and keeps working.
+    text = BASE.format(experiment="restart_interval_s = 0.0",
+                       shared="map_proj = 1", d01="", d02="") \
+        + _projection_table()
+    assert load_experiment(
+        _write(tmp_path, text=text)).root.run.map_proj == 1
 
 
 def test_rejects_moving_nest_keys_in_experiment_table(tmp_path):
@@ -985,3 +1072,18 @@ def test_cli_legacy_path_untouched(monkeypatch, tmp_path):
     assert cli.main(["static", str(legacy),
                      "--output", str(tmp_path / "s.npz")]) == 0
     assert seen and seen[0][0] == "static"
+
+
+@pytest.mark.parametrize("spelling", ["nan", "inf", "-inf"])
+def test_non_finite_root_dx_is_one_refusal_for_every_spelling(
+        tmp_path, spelling):
+    """E-05's dx arm.  Fraction(nan) raises ValueError and Fraction(inf)
+    raises OverflowError -- one branch apart, and only the first is
+    caught -- so the same mistake was a sentence or a traceback depending
+    on how the reader spelled it.  The finiteness test now precedes the
+    conversion, so all three spellings refuse identically."""
+    text = BASE.format(experiment="restart_interval_s = 0.0", shared="",
+                       d01="", d02="").replace(
+        "dx = 12000.0", f"dx = {spelling}")
+    with pytest.raises(ValueError, match=r"must be a positive, finite"):
+        load_experiment(_write(tmp_path, text=text))

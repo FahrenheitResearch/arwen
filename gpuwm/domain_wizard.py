@@ -1,12 +1,12 @@
 """``gpuwm domain``: turn "my location + my GPU" into an experiment TOML.
 
 The wizard emits a complete ``[experiment]``/``[projection]``/``[shared]``/
-``[[domain]]`` TOML centered on ``--point``, with grid dimensions chosen so
+``[[domain]]`` TOML centered on ``--point`` or fitted around a local
+``--polygon`` GeoJSON footprint, with grid dimensions chosen so
 the itemized VRAM estimate (:func:`gpuwm.core.preflight.estimate_experiment`)
-times the observed machine-peak envelope factor for this platform
-(:func:`gpuwm.core.preflight.peak_envelope_factor` -- 1.75 on Windows/WDDM,
-1.45 on Linux and on the experimental small-Windows tier) fits the
-requested card's budget.  Nothing here is a new
+plus the machine-peak envelope over it
+(:func:`gpuwm.core.preflight.machine_peak_envelope_bytes`) fits the
+requested card's budget with headroom to spare.  Nothing here is a new
 model of anything: the
 physics/dynamics block is the product's default suite (the four-domain
 reference configuration's selections with the microphysics slot on
@@ -29,24 +29,28 @@ instead of pretending a pipeline exists.
 
 Sizing conventions (all documented, none silent):
 
-* VRAM budget = card capacity minus a flat reserve (3 GiB at 16, 4 GiB at
-  24, 6 GiB at 32+) covering WDDM/driver/CUDA-context residency and the
-  observed near-capacity instability ceiling of consumer cards.
-* Fit criterion: ``footprint_projection_bytes * envelope <= budget`` --
-  the estimator's own observed peak envelope, measured against the
-  footprint projection (which contains the itemized alloc estimate plus
-  the calibrated retention/overhead terms).  The envelope factor is
-  platform-conditional because WDDM is what it models: 1.75 on Windows,
-  1.45 on Linux (see ``PEAK_ENVELOPE_FACTORS`` for both receipts).  A
-  Windows card at or below
+* VRAM budget = the free VRAM a card of that capacity really presents
+  (:func:`card_assumed_free_gib` -- never the nameplate; see
+  :data:`CARD_UNAVAILABLE_VRAM_GIB`) minus THIS configuration's own
+  reserve (:func:`sizing_budget_bytes`, the same
+  ``ReservePolicy.n0_alloc`` call ``gpuwm check`` makes).  The reserve is
+  not flat: it carries the local-memory backing store of the selected
+  kernel set, which is 1.93 GiB for WSM6+MYNN and 3.94 for NSSL2
+  double-moment, and a fit loop assuming a flat figure emitted configs
+  that failed their own check.
+* Fit criterion: ``peak envelope <= budget - fit_headroom_bytes`` --
+  the estimator's own machine-peak envelope, which is AFFINE (the
+  itemized estimate, plus the non-pool residency that scales with the
+  device rather than the grid, plus a measured constant and a per-nest
+  fraction).  A Windows card keeps its one instrumented x1.75
+  observation as a floor under that sum; a Windows card at or below
   :data:`~gpuwm.core.preflight.WINDOWS_SMALL_CARD_MAX_GIB` takes the
-  EXPERIMENTAL third family instead -- the Linux envelope over the alloc
-  estimate plus one reduced fixed reserve, because the 5090-derived pool
-  constants are a third of such a card before any grid exists -- and
-  every sizing that uses it prints the pioneer warning.  This
-  is exactly the quantity ``gpuwm check`` warns about, so a
-  wizard-emitted config passes ``gpuwm check`` with zero warnings, and it
-  is deliberately stricter than the enforced ``estimate <= budget`` gate.
+  EXPERIMENTAL third family, whose reduced fixed reserve rides in the
+  envelope's intercept, and every sizing that uses it prints the pioneer
+  warning.  The loop stops SHORT of the budget on purpose: a config that
+  exactly touches its budget has nothing left for the machine to be
+  slightly less generous than the model, which is how every v1.4.0
+  ladder came to sit 0.01-0.19 GiB from the wall.
 * Root time step: the certified real-data convention, 5 s per km of grid
   spacing (60 s at 12 km), halved inside the tropics; children divide
   down the ratio chain exactly, and a half-second root clock is carried
@@ -60,23 +64,27 @@ Sizing conventions (all documented, none silent):
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import shlex
 import shutil
 import tomllib
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
 
-from gpuwm.core.preflight import (GIB, INGEST_PEAK_ENVELOPE_BASIS,
-                                  PEAK_ENVELOPE_BASIS,
+from gpuwm.core.preflight import (CUDA_CONTEXT_BYTES,
+                                  ENVELOPE_UNMODELLED_BYTES,
+                                  EXTERNAL_MARGIN_BYTES, GIB,
+                                  INGEST_PEAK_ENVELOPE_BASIS,
+                                  ReservePolicy,
+                                  card_local_memory_profile,
                                   envelope_platform, estimate_experiment,
                                   estimate_phases,
-                                  observed_peak_envelope_bytes,
-                                  peak_envelope_factor,
                                   unknown_platform_note,
                                   windows_small_card_advisory)
 from gpuwm.experiment import ExperimentConfig, build_experiment
@@ -92,8 +100,8 @@ from gpuwm.physics_compat import (MORRISON_PROFILE_ID, MYNN_PROFILE_ID,
 from gpuwm.hrrr_route_inputs import (coverage_advisory, coverage_refusal,
                                      route_input_paths,
                                      write_hrrr_route_inputs)
-from gpuwm.static.projection import (WRF_MAP_PROJ_CODES, _wrap180,
-                                     projection_class)
+from gpuwm.static.projection import (EARTH_RADIUS_M, WRF_MAP_PROJ_CODES,
+                                     _wrap180, projection_class)
 
 #: Card tiers -> total VRAM (GiB).  ``--vram-gib`` accepts anything else.
 CARD_VRAM_GIB = {"12gb": 12.0, "16gb": 16.0, "24gb": 24.0, "32gb": 32.0}
@@ -142,9 +150,72 @@ _CHILD_SPAN_FRACTION = (0.5, 0.36, 0.4)
 _DIFF6_FACTORS = (0.12, 0.10, 0.08, 0.06)
 
 
+#: What a card of nominal capacity NEVER hands to a process: the driver's
+#: own reservation, the display/compositor allocations on a card that has
+#: one, and the gap between a marketing "16 GB" and the 16,376 MiB the
+#: silicon carries.
+#:
+#: MEASURED: an idle headless RTX 4080 (16,376 MiB physical = 15.99 GiB)
+#: presents 15.33 GiB free to a fresh CUDA context -- a 0.66 GiB gap.  The
+#: 16 GiB tier assumed the card would hand over its whole nominal size, so
+#: every ladder it emitted was sized against 0.33 GiB of VRAM that does
+#: not exist, landed 0.13-0.32 GiB over the real budget, and failed the
+#: product's own ``gpuwm check`` minutes after the wizard printed PASS.
+#: 0.75 rounds the measured gap UP: a tier must be conservative against
+#: real cards of its class, not equal to the best one.
+CARD_UNAVAILABLE_VRAM_GIB = 0.75
+
+#: ...and the same gap as a FRACTION, because it is not the same number
+#: of gibibytes on every card.  The one 32 GiB free figure this codebase
+#: has measured is 30.27 of 31.84 -- a 1.57 GiB gap, because that machine
+#: also had a desktop on the card.  A tier has to be conservative against
+#: the cards of its class that exist, not against the best one, so the
+#: larger of the two forms binds.
+CARD_UNAVAILABLE_VRAM_FRACTION = 0.06
+
+#: How much of the budget the fit loop refuses to spend.  The loop grows
+#: the grid until the envelope TOUCHES the budget, which is how every
+#: emitted ladder landed 0.01-0.19 GiB from the wall -- a rounding error
+#: away from a refusal, and with nothing left for the card to be one
+#: driver revision less generous than it was when the config was written.
+FIT_HEADROOM_FRACTION = 0.05
+FIT_HEADROOM_MIN_BYTES = GIB // 4
+
+
+def card_assumed_free_gib(vram_gib: float) -> float:
+    """Free VRAM a card of ``vram_gib`` nominal capacity really presents.
+
+    Never the nominal size: see :data:`CARD_UNAVAILABLE_VRAM_GIB`.
+    """
+
+    unavailable = max(CARD_UNAVAILABLE_VRAM_GIB,
+                      CARD_UNAVAILABLE_VRAM_FRACTION * float(vram_gib))
+    return max(0.0, float(vram_gib) - unavailable)
+
+
+def fit_headroom_bytes(budget_bytes: int) -> int:
+    """Budget the fit loop leaves unspent, so nothing lands on the wall."""
+
+    return max(FIT_HEADROOM_MIN_BYTES,
+               int(FIT_HEADROOM_FRACTION * max(0, int(budget_bytes))))
+
+
 def vram_reserve_gib(vram_gib: float) -> float:
     """Flat VRAM reserve (GiB) by card capacity: WDDM/driver/CUDA context
     plus the near-capacity stability ceiling of consumer cards.
+
+    RETIRED as the sizing path's reserve on 2026-08-01, and kept for the
+    callers that have no experiment to price (``gpuwm downscale``'s
+    standalone child fit) and for the "your card is too small before we
+    even start" refusal.  A FLAT figure was the whole of defect 4: the
+    reserve's overhead term tracks the local-memory backing store of the
+    SELECTED KERNEL SET, which measured 1.93 GiB for WSM6+MYNN and 3.94
+    for NSSL2 double-moment -- so a fit loop assuming a flat 4.0 sized
+    both NSSL2 profiles against one budget and then verified them against
+    a smaller one, at every card size.  The sizing path now prices the
+    reserve from the candidate experiment itself
+    (:func:`gpuwm.core.preflight.ReservePolicy.n0_alloc`), which is the
+    same call ``gpuwm check`` makes, so the two cannot disagree.
 
     The small-card figure was 3.0 GiB and it was a promise the preflight
     would not keep: ``ReservePolicy.n0_alloc`` charges the CUDA context
@@ -221,6 +292,33 @@ def _fetch_margin_deg(source: str) -> float:
 SOURCE_FORCING_INTERVAL_S = {"era5": 21600.0, "gfs": 10800.0,
                              "hrrr": 3600.0}
 _SOURCE_CADENCE_H = {"era5": 6, "gfs": 3}
+
+
+def _fetch_cadence_h(source: str, start_hour: int) -> int | None:
+    """The fetch cadence this window can actually be taken on.
+
+    The default is the source's usual spacing, and for a window starting
+    at f000 that is what every prior release emitted.  A forecast LEAD
+    changes the question: a fetch window must CONTAIN the lead it begins
+    at, and ``gpuwm fetch`` refuses one that does not.  So a config
+    written with ``cadence = 3`` and ``forecast_start_hour = 4`` named a
+    download that could never be made -- step 1 of the wizard's own
+    printed recipe exited 2 with "f004 is not on the 3 h cadence", and
+    for two leads in every three the one-command `gpuwm go` path could
+    not be made to work at all.
+
+    The cadence is therefore chosen to divide the lead.  GFS publishes
+    hourly through f120, so 1 h is available wherever it is needed; a
+    window that would cross f120 hourly is refused by the fetch planner
+    below with the structural reason, before the file is written.
+    """
+
+    cadence = _SOURCE_CADENCE_H.get(source)
+    if cadence is None or not start_hour or start_hour % cadence == 0:
+        return cadence
+    # Hourly divides every integer lead, and is the only other cadence
+    # these sources publish.
+    return 1
 
 #: Grid-scale search bounds.  _MIN_SCALE puts the root at 60 x 48 mass
 #: points, the smallest layout that still hosts the deepest ladder with
@@ -461,7 +559,9 @@ def oversized_footprint_advisory(area: str) -> list[str]:
 
 
 def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
-                        profile: str | None, data_dir: str) -> str:
+                        profile: str | None, data_dir: str,
+                        cycle: "datetime | None" = None,
+                        forecast_start_hour: int = 0) -> str:
     """The HRRR chain, with every file this emission just wrote bound.
 
     HRRR reaches the GPU through the native front door: neither ``gpuwm
@@ -473,17 +573,35 @@ def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
     the HRRR one was ever reached.
 
     Every value this emission knows is bound -- the four input files,
-    the valid time, the run length, the cadence, the profile.  What is
-    left as a placeholder is what cannot exist yet: the WPS_GEOG root,
-    which is the reader's install, and the sha256 of each stage's own
-    receipt, which does not exist until that stage has run and which
+    the cycle, the lead, the run length, the cadence, the profile.  What
+    is left as a placeholder is what cannot exist yet: the WPS_GEOG
+    root, which is the reader's install, and the sha256 of each stage's
+    own receipt, which does not exist until that stage has run and which
     that stage prints.
+
+    **Every time printed here is the CYCLE, and the lead is printed
+    beside it.**  Model time zero (cycle + K) is derived by each stage,
+    never typed.  Both stages used to be handed one ``--valid-time``
+    string, and the two stages read that flag differently -- the
+    preparer as the cycle (it opens ``hrrr.tHHz.wrfnatfNN.grib2``), the
+    hierarchy as the model start (it is compared to the namelist's
+    start_time).  At lead 0 those are the same instant, which is why one
+    string served both for four releases; at lead K one of them is
+    wrong by K hours.  Printing the cycle and the lead separately means
+    the same two values appear on every line of the chain and neither
+    stage has to be told a time the other stage computed.
     """
     paths = route_input_paths(Path(out))
     printed = {key: _printed_path(value) for key, value in paths.items()}
     source_root = _printed_path(data_dir)
     root, tree = "hrrr-root-prep", "hrrr-hierarchy"
-    valid_time = exp.start_time.strftime("%Y-%m-%d_%H:%M:%S")
+    if cycle is None:
+        # No lead was resolved by the caller: the model start IS the
+        # cycle, which is what every pre-lead emission printed.
+        cycle = exp.start_time - timedelta(hours=forecast_start_hour)
+    cycle_text = cycle.strftime("%Y-%m-%d_%H:%M:%S")
+    lead_flag = (f"      --forecast-start-hour {forecast_start_hour} \\\n"
+                 if forecast_start_hour else "")
     run_seconds = int(exp.run_seconds)
     cadence = int(exp.domains[0].history_interval_s)
     profile_flag = (f"      --physics-profile {profile} \\\n"
@@ -497,8 +615,9 @@ def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
         f"      --namelist-input {printed['namelist_input']} \\\n"
         "      --geog-root <your WPS_GEOG> \\\n"
         + profile_flag
-        + f"      --valid-time {valid_time} \\\n"
-        f"      --run-seconds {run_seconds} \\\n"
+        + f"      --cycle {cycle_text} \\\n"
+        + lead_flag
+        + f"      --run-seconds {run_seconds} \\\n"
         f"      --history-interval-seconds {cadence} \\\n"
         "      --skip-stock-wrf-export \\\n"
         f"      --output-root {root}\n")
@@ -512,6 +631,33 @@ def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
         # set that wrapper assembles from artifacts this file cannot
         # name.  Printing a command that refuses is the exact failure
         # this block exists to end, so it says what is true instead.
+        # The forecast stage, written out.  It used to be prose telling
+        # the reader to "re-run it with the ones that wrapper prints",
+        # and doing exactly that fails: the wrapper's own arguments
+        # decode into --bridge, which now exists, so the re-run dies with
+        # "pipeline output already exists".  The second pass restores the
+        # sealed cache instead of decoding again, which is a different
+        # set of flags, so the command is printed rather than described.
+        forecast = (
+            "  python tools/hrrr_single_domain_benchmark.py \\\n"
+            f"      --bridge {root}/native/native-bridge \\\n"
+            "      --manifest-sha256 <bridge_manifest_sha256 printed by "
+            "the preparation> \\\n"
+            f"      --prepared-cache {root}/native/prepared-cache \\\n"
+            f"      --source-root {source_root} \\\n"
+            f"      --source-manifest {source_root}/SHA256SUMS \\\n"
+            "      --source-manifest-sha256 <printed by gpuwm fetch> \\\n"
+            f"      --static-cache {root}/native-static.npz \\\n"
+            f"      --static-receipt {root}/native-static-receipt.json \\\n"
+            f"      --domain-spec {printed['target_domain']} \\\n"
+            f"      --namelist-input {printed['namelist_input']} \\\n"
+            + profile_flag
+            + f"      --cycle {cycle_text} \\\n"
+            + lead_flag
+            + f"      --run-seconds {run_seconds} \\\n"
+            f"      --history-interval-seconds {cadence} \\\n"
+            "      --io-mode history \\\n"
+            "      --outdir hrrr-forecast\n")
         return (
             "# HRRR runs the native route -- not `gpuwm run`, not `gpuwm "
             "go`, and not\n"
@@ -521,19 +667,12 @@ def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
             "digests each\n"
             "#   stage prints when it finishes.\n"
             + prepare
-            + "# that preparation is the whole of what one HRRR domain "
-            "can be driven to\n"
-            "#   from this file.  Its forecast stage is "
-            "tools/hrrr_single_domain_benchmark.py\n"
-            "#   (--io-mode history, no --prepare-only), whose arguments "
-            "the wrapper above\n"
-            "#   assembles from its own output -- so re-run it with the "
-            "ones that\n"
-            "#   wrapper prints.  A ladder with a "
-            "nest (--ladder 12-3,\n"
-            "#   or --root-dx/--chain) instead reaches the nested route, "
-            "which this file\n"
-            "#   drives end to end: hierarchy, then "
+            + forecast
+            + "# the second command restores the cache the first one "
+            "sealed; it does not\n"
+            "#   decode again.  A ladder with a nest (--ladder 12-3, or "
+            "--root-dx/--chain)\n"
+            "#   instead reaches the nested route: hierarchy, then "
             "gpuwm.prepared_domain_tree_forecast.")
     return (
         "# HRRR runs the native route -- not `gpuwm run`, not `gpuwm go`, "
@@ -554,8 +693,9 @@ def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
         "      --geog-root <your WPS_GEOG> \\\n"
         f"      --source-manifest {source_root}/SHA256SUMS \\\n"
         "      --source-manifest-sha256 <printed by gpuwm fetch> \\\n"
-        f"      --valid-time {valid_time} \\\n"
-        f"      --output-root {tree}\n"
+        f"      --cycle {cycle_text} \\\n"
+        + lead_flag
+        + f"      --output-root {tree}\n"
         "  python -m gpuwm.prepared_domain_tree_forecast \\\n"
         f"      --prepared-root {tree} \\\n"
         "      --preparation-receipt-sha256 <printed by the hierarchy> "
@@ -568,7 +708,9 @@ def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
 def final_step_command(out: "Path", *, source: str, profile: str | None,
                        domain_count: int, data_dir: str,
                        case_data: dict | None,
-                       exp: ExperimentConfig | None = None) -> str:
+                       exp: ExperimentConfig | None = None,
+                       cycle: "datetime | None" = None,
+                       forecast_start_hour: int = 0) -> str:
     """Step 3 of the closing block: the command that actually runs THIS file.
 
     It used to be ``gpuwm run <config>`` for every source, and for GFS
@@ -601,22 +743,37 @@ def final_step_command(out: "Path", *, source: str, profile: str | None,
         # to prepare with rw-wps -- the GFS front door -- because this
         # test ran second.  The HRRR chain is its own, and every file it
         # names was just written beside the config.
-        return hrrr_route_commands(out, exp, profile=profile,
-                                   data_dir=data_dir)
+        return hrrr_route_commands(
+            out, exp, profile=profile, data_dir=data_dir, cycle=cycle,
+            forecast_start_hour=forecast_start_hour)
+    # Deferred: go_cli owns the pointer (it is the command that refuses
+    # most often), and importing it at module scope would make the
+    # wizard pay for the whole orchestrator's imports.
+    from gpuwm.go_cli import MANUAL_CHAIN
+
+    # The tree route IS installed -- `gpuwm-prepared-tree-forecast` is a
+    # declared console script -- and no message named it, so a reader was
+    # pointed at a python -m invocation with two bare `...` and at a docs
+    # path a pip install does not contain (B-03).  Name the command that
+    # exists, say where each value comes from, and give a URL that
+    # resolves without a checkout.
     if domain_count > 1:
         return (
             "# this is a " + str(domain_count) + "-domain tree, which the "
             "single-domain chain does not run.\n"
-            "#   prepare it with rw-wps, then:\n"
-            "#   python -m gpuwm.prepared_domain_tree_forecast "
-            "--prepared-root ... --preparation-receipt-sha256 ...\n"
-            "#   the full sequence is docs/public/FIRST-LIGHT.md "
-            "section 3a")
+            "#   prepare it with rw-wps, which prints both values below "
+            "when it finishes, then:\n"
+            "#   gpuwm-prepared-tree-forecast \\\n"
+            "#     --prepared-root <the directory rw-wps wrote> \\\n"
+            "#     --preparation-receipt-sha256 <the sha256 rw-wps "
+            "printed>\n"
+            "#   (same runner, if you prefer the module form: "
+            "python -m gpuwm.prepared_domain_tree_forecast)\n"
+            f"#   the full sequence is {MANUAL_CHAIN}")
     return (
         "# a native single-domain route with no one-command chain for "
         "this source:\n"
-        "#   follow docs/public/FIRST-LIGHT.md section 3a.  The runner "
-        "executes the\n"
+        f"#   follow {MANUAL_CHAIN}.  The runner executes the\n"
         "#   suite in this file as written; --physics-profile is an "
         "optional binding.")
 
@@ -728,14 +885,352 @@ def _parse_point(raw: str) -> tuple[float, float]:
             "pole-capable) -- move --point off the pole")
     if not -180.0 <= lon <= 180.0:
         if -360.0 <= lon <= 360.0:
-            wrapped = _wrap180(lon)
+            # float(): _wrap180 is array code (np.where) and returns a 0-d
+            # ndarray even for a scalar.  Without the cast the wrapped
+            # longitude stays an ndarray all the way into the emitted
+            # artifacts, where _toml_value quotes it as a STRING and the
+            # namelist's {...!r} renders it `array(-160.)` -- neither of
+            # which is the number the user asked for.  The --polygon
+            # sibling below already casts; this path never did.
+            wrapped = float(_wrap180(lon))
             warn(f"--point longitude {lon:g} wrapped to {wrapped:g} "
                  "(the [-180, 180] convention this project uses)")
             lon = wrapped
         else:
+            # Name the range actually enforced.  One wrap is accepted, so
+            # claiming [-180, 180] here described a refusal that does not
+            # happen: --point 40,270 is taken, with a warning.
             raise ValueError(
-                f"--point longitude {lon:g} must lie within [-180, 180]")
+                f"--point longitude {lon:g} must lie within [-180, 180] "
+                "(or one wrap within [-360, 360])")
     return lat, lon
+
+
+@dataclass(frozen=True)
+class PolygonFootprint:
+    """Validated local GeoJSON rings on their minimum longitude branch.
+
+    GeoJSON positions are ``longitude, latitude``.  ``west`` and ``east``
+    are deliberately unwrapped around ``center_lon``; their difference is
+    therefore the small circular span even when the footprint crosses the
+    antimeridian.
+    """
+
+    path: Path
+    rings: tuple[tuple[tuple[float, float], ...], ...]
+    south: float
+    west: float
+    north: float
+    east: float
+    center_lat: float
+    center_lon: float
+
+    @property
+    def longitude_span(self) -> float:
+        return self.east - self.west
+
+
+_POLYGON_TYPES = ("Polygon", "MultiPolygon")
+_POLYGON_SAMPLE_STEP_DEG = 0.25
+_POLYGON_MAX_SAMPLES = 2_000_000
+_POLYGON_FIT_SLACK_CELLS = 1.0
+
+
+def _geojson_position(value, label: str,
+                      wrapped: list[tuple[float, float]]) \
+        -> tuple[float, float]:
+    if not isinstance(value, list) or len(value) < 2:
+        raise ValueError(
+            f"--polygon {label} must be a GeoJSON position [lon, lat]")
+    if isinstance(value[0], bool) or isinstance(value[1], bool):
+        raise ValueError(
+            f"--polygon {label} must contain numeric longitude/latitude")
+    try:
+        lon, lat = float(value[0]), float(value[1])
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"--polygon {label} must contain numeric longitude/latitude"
+        ) from error
+    if not (math.isfinite(lon) and math.isfinite(lat)):
+        raise ValueError(f"--polygon {label} coordinates must be finite")
+    if not -90.0 <= lat <= 90.0:
+        raise ValueError(
+            f"--polygon {label} latitude {lat:g} must lie within [-90, 90]")
+    if abs(lat) == 90.0:
+        raise ValueError(
+            f"--polygon {label} reaches the pole itself; a domain containing "
+            "a pole is unsupported (lat-lon source interpolation and "
+            "static-tile windowing are not pole-capable)")
+    if not -180.0 <= lon <= 180.0:
+        if not -360.0 <= lon <= 360.0:
+            raise ValueError(
+                f"--polygon {label} longitude {lon:g} must lie within "
+                "[-180, 180] (or one wrap within [-360, 360])")
+        normalized = float(_wrap180(lon))
+        wrapped.append((lon, normalized))
+        lon = normalized
+    return lon, lat
+
+
+def _geojson_ring(value, label: str,
+                  wrapped: list[tuple[float, float]]) \
+        -> tuple[tuple[float, float], ...]:
+    if not isinstance(value, list) or len(value) < 4:
+        raise ValueError(
+            f"--polygon {label} must be a linear ring with at least four "
+            "positions")
+    ring = tuple(_geojson_position(position, f"{label}[{index}]", wrapped)
+                 for index, position in enumerate(value))
+    first_lon, first_lat = ring[0]
+    last_lon, last_lat = ring[-1]
+    if first_lat != last_lat or abs(float(
+            _wrap180(last_lon - first_lon))) > 1e-12:
+        raise ValueError(
+            f"--polygon {label} is not closed (its first and last positions "
+            "must match)")
+    distinct = {(float(lon % 360.0), lat) for lon, lat in ring[:-1]}
+    if len(distinct) < 3:
+        raise ValueError(
+            f"--polygon {label} needs at least three distinct positions")
+    branch = first_lon + np.asarray(_wrap180(
+        np.asarray([position[0] for position in ring], dtype=float)
+        - first_lon))
+    latitudes = np.asarray([position[1] for position in ring], dtype=float)
+    twice_area = float(np.sum(
+        branch[:-1] * latitudes[1:] - branch[1:] * latitudes[:-1]))
+    if abs(twice_area) <= 1e-14:
+        raise ValueError(f"--polygon {label} encloses zero area")
+    return ring
+
+
+def _geojson_polygon(value, label: str,
+                     wrapped: list[tuple[float, float]]) \
+        -> list[tuple[tuple[float, float], ...]]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"--polygon {label} has no linear rings")
+    return [_geojson_ring(ring, f"{label}[{index}]", wrapped)
+            for index, ring in enumerate(value)]
+
+
+def _geojson_geometry(value, label: str,
+                      wrapped: list[tuple[float, float]]) \
+        -> list[tuple[tuple[float, float], ...]]:
+    if not isinstance(value, dict):
+        raise ValueError(f"--polygon {label} must be a GeoJSON geometry")
+    kind = value.get("type")
+    if kind == "Polygon":
+        return _geojson_polygon(value.get("coordinates"),
+                                f"{label}.coordinates", wrapped)
+    if kind == "MultiPolygon":
+        polygons = value.get("coordinates")
+        if not isinstance(polygons, list) or not polygons:
+            raise ValueError(f"--polygon {label} has no polygons")
+        rings = []
+        for index, polygon in enumerate(polygons):
+            rings.extend(_geojson_polygon(
+                polygon, f"{label}.coordinates[{index}]", wrapped))
+        return rings
+    raise ValueError(
+        f"--polygon {label} type {kind!r} is unsupported; accepted geometry "
+        f"types are {', '.join(_POLYGON_TYPES)}")
+
+
+def _geojson_rings(document: object,
+                   wrapped: list[tuple[float, float]]) \
+        -> tuple[tuple[tuple[float, float], ...], ...]:
+    if not isinstance(document, dict):
+        raise ValueError("--polygon must contain one GeoJSON object")
+    crs = document.get("crs")
+    if crs not in (None, {}):
+        properties = crs.get("properties", {}) if isinstance(crs, dict) \
+            else {}
+        name = str(properties.get("name", "")).upper()
+        code = properties.get("code")
+        longitude_latitude = (
+            name in {"EPSG:4326", "OGC:CRS84", "CRS84"}
+            or name.endswith(":CRS84")
+            or name.endswith(":EPSG::4326")
+            or code in {4326, "4326"}
+        )
+        if not longitude_latitude:
+            raise ValueError(
+                "--polygon declares a custom coordinate reference system; "
+                "GeoJSON longitude/latitude coordinates are required")
+    kind = document.get("type")
+    if kind in _POLYGON_TYPES:
+        rings = _geojson_geometry(document, "geometry", wrapped)
+    elif kind == "Feature":
+        rings = _geojson_geometry(document.get("geometry"),
+                                  "feature.geometry", wrapped)
+    elif kind == "FeatureCollection":
+        features = document.get("features")
+        if not isinstance(features, list) or not features:
+            raise ValueError("--polygon FeatureCollection has no features")
+        rings = []
+        for index, feature in enumerate(features):
+            if not isinstance(feature, dict) \
+                    or feature.get("type") != "Feature":
+                raise ValueError(
+                    f"--polygon features[{index}] must be a GeoJSON Feature")
+            rings.extend(_geojson_geometry(
+                feature.get("geometry"), f"features[{index}].geometry",
+                wrapped))
+    else:
+        raise ValueError(
+            f"--polygon top-level type {kind!r} is unsupported; use Polygon, "
+            "MultiPolygon, Feature, or FeatureCollection")
+    if not rings:
+        raise ValueError("--polygon contains no polygon coordinates")
+    return tuple(rings)
+
+
+def _minimum_longitude_arc(longitudes) -> tuple[float, float, float]:
+    """Return ``(center, west, east)`` on the minimum circular arc."""
+
+    values = np.unique(np.mod(np.asarray(longitudes, dtype=np.float64),
+                              360.0))
+    if not values.size:
+        raise ValueError("--polygon contains no longitude coordinates")
+    extended = np.concatenate((values, values[:1] + 360.0))
+    gap_index = int(np.argmax(np.diff(extended)))
+    start = float(extended[gap_index + 1])
+    end = float(extended[gap_index] + 360.0)
+    span = end - start
+    if span > 180.0 + 1e-10:
+        raise ValueError(
+            f"--polygon minimum longitude footprint spans {span:.1f} "
+            "degrees; footprints wider than 180 degrees cannot be served "
+            "as one source crop")
+    center = float(_wrap180((0.5 * (start + end)) % 360.0))
+    on_branch = center + np.asarray(
+        _wrap180(np.asarray(longitudes, dtype=np.float64) - center))
+    west, east = float(on_branch.min()), float(on_branch.max())
+    # At an exact 180-degree tie either semicircle is legal.  Pin the
+    # numerically reconstructed span to the law above rather than allowing
+    # a roundoff-scale false refusal.
+    if east - west > 180.0 + 1e-10:
+        raise ValueError(
+            f"--polygon minimum longitude footprint spans {east - west:.1f} "
+            "degrees; footprints wider than 180 degrees cannot be served "
+            "as one source crop")
+    return center, west, east
+
+
+def load_polygon_footprint(path: str | Path) -> PolygonFootprint:
+    """Read and validate a local Polygon-family GeoJSON document."""
+
+    raw_path = str(path)
+    if "://" in raw_path or raw_path.lower().startswith("file:"):
+        raise ValueError(
+            "--polygon accepts a local GeoJSON file path, not a URL")
+    polygon_path = Path(path)
+    if not polygon_path.is_file():
+        raise ValueError(
+            f"--polygon local GeoJSON file does not exist: {polygon_path}")
+    try:
+        document = json.loads(polygon_path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise ValueError(
+            f"--polygon local GeoJSON file could not be read: "
+            f"{polygon_path} ({error})") from error
+    except UnicodeDecodeError as error:
+        raise ValueError(
+            f"--polygon {polygon_path} is not UTF-8 text") from error
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            f"--polygon {polygon_path} is not valid JSON: "
+            f"line {error.lineno}, column {error.colno}") from error
+
+    wrapped: list[tuple[float, float]] = []
+    rings = _geojson_rings(document, wrapped)
+    if wrapped:
+        example, normalized = wrapped[0]
+        warn(f"--polygon wrapped {len(wrapped)} longitude coordinate(s) "
+             f"into [-180, 180] (for example {example:g} to "
+             f"{normalized:g})")
+    positions = [position for ring in rings for position in ring]
+    lons = np.asarray([position[0] for position in positions], dtype=float)
+    lats = np.asarray([position[1] for position in positions], dtype=float)
+    center_lon, west, east = _minimum_longitude_arc(lons)
+    south, north = float(lats.min()), float(lats.max())
+    return PolygonFootprint(
+        path=polygon_path, rings=rings, south=south, west=west,
+        north=north, east=east, center_lat=0.5 * (south + north),
+        center_lon=center_lon)
+
+
+def _polygon_samples(footprint: PolygonFootprint, *,
+                     max_step_deg: float = _POLYGON_SAMPLE_STEP_DEG) \
+        -> tuple[np.ndarray, np.ndarray]:
+    """Densify GeoJSON segments on the footprint's longitude branch."""
+
+    if not math.isfinite(max_step_deg) or max_step_deg <= 0.0:
+        raise ValueError("polygon sampling step must be finite and positive")
+    sample_lons: list[float] = []
+    sample_lats: list[float] = []
+    for ring in footprint.rings:
+        lons = footprint.center_lon + np.asarray(_wrap180(
+            np.asarray([point[0] for point in ring], dtype=float)
+            - footprint.center_lon))
+        lats = np.asarray([point[1] for point in ring], dtype=float)
+        for index in range(len(ring) - 1):
+            lon0, lon1 = float(lons[index]), float(lons[index + 1])
+            lat0, lat1 = float(lats[index]), float(lats[index + 1])
+            steps = max(1, int(math.ceil(max(abs(lon1 - lon0),
+                                               abs(lat1 - lat0))
+                                         / max_step_deg)))
+            if len(sample_lons) + steps + 1 > _POLYGON_MAX_SAMPLES:
+                raise ValueError(
+                    "the polygon and requested grid spacing require more "
+                    f"than {_POLYGON_MAX_SAMPLES:,} containment samples; "
+                    "choose a coarser --root-dx, fewer refinement levels, "
+                    "or a simpler polygon")
+            for fraction in np.arange(steps, dtype=float) / steps:
+                sample_lons.append(lon0 + fraction * (lon1 - lon0))
+                sample_lats.append(lat0 + fraction * (lat1 - lat0))
+        sample_lons.append(float(lons[-1]))
+        sample_lats.append(float(lats[-1]))
+    return (np.asarray(sample_lats, dtype=float),
+            np.asarray(sample_lons, dtype=float))
+
+
+def parse_level_buffers(raw: str | None) -> tuple[float, ...] | None:
+    """Parse comma-separated outer-to-inner buffer distances in km."""
+
+    if raw is None:
+        return None
+    fields = str(raw).split(",")
+    if not fields or any(not field.strip() for field in fields):
+        raise ValueError(
+            "--buffer-km must be one distance or a comma-separated distance "
+            "per domain level")
+    values = []
+    for field in fields:
+        try:
+            value = float(field)
+        except ValueError as error:
+            raise ValueError(
+                f"--buffer-km entry {field!r} is not a number") from error
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(
+                f"--buffer-km entry {field!r} must be finite and "
+                "nonnegative")
+        values.append(value)
+    return tuple(values)
+
+
+def _buffers_for_levels(values: tuple[float, ...] | None,
+                        count: int) -> tuple[float, ...]:
+    if values is None:
+        return (0.0,) * count
+    if len(values) == 1:
+        return values * count
+    if len(values) != count:
+        raise ValueError(
+            f"--buffer-km supplies {len(values)} distances but the selected "
+            f"ladder has {count} domain levels; supply one distance to use "
+            "at every level or exactly one outer-to-inner distance per level")
+    return values
 
 
 def _resolve_cycle(raw: str, *, source: str, hours: int,
@@ -936,7 +1431,37 @@ def _toml_value(value) -> str:
             lines.append("]")
             return "\n".join(lines)
         return "[" + ", ".join(_toml_value(v) for v in value) + "]"
-    return '"' + str(value).replace("\\", "/") + '"'
+    if isinstance(value, (str, Path)):
+        return '"' + str(value).replace("\\", "/") + '"'
+    scalar = _builtin_scalar(value)
+    if scalar is not None:
+        return _toml_value(scalar)
+    # Everything used to land in the quoted branch, so a numeric value of
+    # any type this function did not enumerate was emitted as a STRING
+    # into a typed config file, silently.  That is how a wrapped --point
+    # longitude shipped as ref_lon = "-160.0".  An unrenderable value is
+    # now a loud failure at emission rather than a quiet mistyping.
+    raise TypeError(
+        f"cannot render {value!r} ({type(value).__name__}) into TOML: it "
+        "is neither a scalar, a string/path, nor a list of those.  "
+        "Quoting it would emit a value of the wrong TYPE under the right "
+        "key, which reads as valid TOML and is not what was computed.")
+
+
+def _builtin_scalar(value):
+    """Python bool/int/float for a numpy scalar or 0-d array, else None.
+
+    numpy's scalar types are not all builtins -- np.float64 subclasses
+    float but np.float32 does not, and a 0-d ndarray subclasses nothing
+    -- so array code returning "a number" can hand this module something
+    no isinstance branch above matches.
+    """
+    if isinstance(value, np.generic) or (
+            isinstance(value, np.ndarray) and value.ndim == 0):
+        item = value.item()
+        if isinstance(item, (bool, int, float)):
+            return item
+    return None
 
 
 def _render_table(name: str, entries: dict, array_of_tables: bool = False,
@@ -1125,7 +1650,8 @@ def _root_grid(projection: dict, nx: int, ny: int,
 
 
 def _pole_clearance_refusal(projection: dict, nx: int, ny: int,
-                            root_dx_m: float = ROOT_DX_M) -> None:
+                            root_dx_m: float = ROOT_DX_M,
+                            target_option: str = "--point") -> None:
     """Refuse a root footprint that contains (or nearly touches) the
     projection pole -- a genuine pipeline limit (lat-lon source
     interpolation and static windowing are not pole-capable), not a
@@ -1144,14 +1670,16 @@ def _pole_clearance_refusal(projection: dict, nx: int, ny: int,
             f"{float(root_dx_m) / 1000:g} km) contains or touches the "
             f"{'north' if pole_lat > 0 else 'south'} pole; lat-lon "
             "source interpolation and static-tile windowing are not "
-            "pole-capable -- move --point away from the pole or choose "
+            f"pole-capable -- move {target_option} away from the pole or "
+            "choose "
             "a smaller layout (--vram-gib / a shallower --ladder)")
 
 
 def _fetch_area(projection: dict, nx: int, ny: int,
                 margin_deg: float = _FETCH_MARGIN_DEG,
                 *, notes: list[str] | None = None,
-                root_dx_m: float = ROOT_DX_M
+                root_dx_m: float = ROOT_DX_M,
+                target_option: str = "--point",
                 ) -> tuple[float, float, float, float]:
     """Forcing bbox (S, W, N, E) = root corners + margin, worldwide.
 
@@ -1178,7 +1706,7 @@ def _fetch_area(projection: dict, nx: int, ny: int,
             f"the root domain's forcing footprint spans {span:.1f} "
             "degrees of longitude; boxes wider than 180 degrees cannot "
             "be served as a single source crop -- shrink the "
-            "configuration or move --point equatorward")
+            f"configuration or move {target_option} equatorward")
     # Pole-clear, not pole-touching: the box a user is handed must not
     # name the singularity the pipeline refuses (see POLE_CLEARANCE_DEG).
     pole_clear = max_fetch_abs_lat(root_dx_m)
@@ -1230,7 +1758,8 @@ def render_config(*, name: str, start_time: datetime, hours: int,
                   fetch_hints: dict, case_data: dict | None,
                   root_dx_m: float = ROOT_DX_M,
                   profile: str | None = DEFAULT_PHYSICS_PROFILE,
-                  interactive: bool = False) -> str:
+                  interactive: bool = False,
+                  level_buffers_km: tuple[float, ...] | None = None) -> str:
     """The emitted TOML text (the exact bytes the wizard validates).
 
     ``interactive`` records WHICH front door authored the file -- the
@@ -1252,19 +1781,37 @@ def render_config(*, name: str, start_time: datetime, hours: int,
     shared["map_proj"] = WRF_MAP_PROJ_CODES[projection["map_proj"]]
     time_step = root_time_step_s(projection["ref_lat"], root_dx_m)
     chain_km = _ladder_dx_km(ratios, root_dx_m)
-    header = (
-        "# Emitted by `gpuwm domain`"
-        + (" (interactive session)" if interactive else "")
-        + " -- point "
-        f"{projection['ref_lat']:g},{projection['ref_lon']:g}, ladder "
-        f"{'-'.join(f'{v:g}' for v in chain_km)} km.\n"
-        f"# PHYSICS: {physics_summary(profile)}.\n"
-        "# Taken verbatim from gpuwm.physics_compat, so this file passes "
-        "the prepared-\n"
-        "# forecast runner's profile guard as emitted.  Child dx/dt derive "
-        "exactly from\n"
-        "# the parent chain and are never hand-typed "
-        "(gpuwm/experiment.py).\n")
+    if level_buffers_km is None:
+        # This is the original point header byte-for-byte.  Polygon support
+        # must not perturb existing point-authored artifacts.
+        header = (
+            "# Emitted by `gpuwm domain`"
+            + (" (interactive session)" if interactive else "")
+            + " -- point "
+            f"{projection['ref_lat']:g},{projection['ref_lon']:g}, ladder "
+            f"{'-'.join(f'{v:g}' for v in chain_km)} km.\n"
+            f"# PHYSICS: {physics_summary(profile)}.\n"
+            "# Taken verbatim from gpuwm.physics_compat, so this file passes "
+            "the prepared-\n"
+            "# forecast runner's profile guard as emitted.  Child dx/dt "
+            "derive exactly from\n"
+            "# the parent chain and are never hand-typed "
+            "(gpuwm/experiment.py).\n")
+    else:
+        buffers = ", ".join(f"{value:g}" for value in level_buffers_km)
+        header = (
+            "# Emitted by `gpuwm domain` -- polygon center "
+            f"{projection['ref_lat']:g},{projection['ref_lon']:g}, ladder "
+            f"{'-'.join(f'{v:g}' for v in chain_km)} km.\n"
+            f"# Polygon buffers by domain level (outer to inner): "
+            f"{buffers} km.\n"
+            f"# PHYSICS: {physics_summary(profile)}.\n"
+            "# Taken verbatim from gpuwm.physics_compat, so this file passes "
+            "the prepared-\n"
+            "# forecast runner's profile guard as emitted.  Child dx/dt "
+            "derive exactly from\n"
+            "# the parent chain and are never hand-typed "
+            "(gpuwm/experiment.py).\n")
     per_km = seconds_per_km(projection["ref_lat"])
     if per_km != 5:
         header += (
@@ -1318,20 +1865,51 @@ def experiment_from_text(text: str, *, source: str) -> ExperimentConfig:
     return build_experiment(raw, source=source)
 
 
-def fit_ladder(*, ladder: str | None = None, budget_bytes: int, hours: int,
+def sizing_budget_bytes(exp: ExperimentConfig, *, free_bytes: int,
+                        vram_gib: float | None,
+                        forcing_interval_seconds: float) -> int:
+    """The budget THIS configuration gets out of ``free_bytes``.
+
+    Not a flat number.  ``gpuwm check`` subtracts a reserve computed from
+    the experiment -- its widest kernel's local-memory backing store, the
+    CUDA context, a retention fraction of its own estimate and the
+    external margin -- so a fit loop that assumes a flat reserve is
+    sizing against a budget the verifier will not agree to.  It did, and
+    both NSSL2 profiles emitted configs that failed their own check at
+    every card size.  This is the same call, on the same experiment.
+    """
+
+    estimate = estimate_experiment(
+        exp, forcing_interval_seconds=forcing_interval_seconds,
+        vram_gib=vram_gib)
+    reserve = ReservePolicy.n0_alloc(
+        exp, profile=card_local_memory_profile(vram_gib),
+        estimate_bytes=estimate.alloc_estimate_bytes)
+    return int(free_bytes) - reserve.reserve_bytes
+
+
+def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                start_time: datetime, projection: dict, source: str,
                name: str, ratios: tuple[int, ...] | None = None,
                root_dx_m: float = ROOT_DX_M,
                profile: str | None = DEFAULT_PHYSICS_PROFILE,
                vram_gib: float | None = None,
                ) -> tuple[list[tuple[int, int]], ExperimentConfig]:
-    """Largest centered layout whose peak envelope fits the budget.
+    """Largest centered layout whose peak envelope fits the budget, with
+    headroom left over.
 
     Bisects a continuous scale factor; every candidate is validated by the
     real experiment loader (clearance, cadence, ratio rules) and priced by
     the real estimator -- the wizard owns no memory arithmetic of its own.
     A custom ``--root-dx``/``--chain`` goes through this same loop, so a
     hand-specified ladder is validated and sized exactly like a preset.
+
+    Takes FREE VRAM, not a budget: the reserve is a property of the
+    candidate experiment (see :func:`sizing_budget_bytes`), so it cannot
+    be computed before the candidate exists.  And it stops short of the
+    budget by :func:`fit_headroom_bytes` -- a config that exactly touches
+    its budget is a config with nothing left for the machine to be
+    slightly less generous than the model.
     """
     if (ladder is None) == (ratios is None):
         raise ValueError("fit_ladder takes exactly one of ladder / ratios")
@@ -1356,7 +1934,10 @@ def fit_ladder(*, ladder: str | None = None, budget_bytes: int, hours: int,
         phases = estimate_phases(
             exp, source=source, forcing_interval_seconds=interval,
             vram_gib=vram_gib)
-        return dims, exp, phases.peak_envelope_bytes
+        budget = sizing_budget_bytes(
+            exp, free_bytes=free_bytes, vram_gib=vram_gib,
+            forcing_interval_seconds=interval)
+        return dims, exp, phases.peak_envelope_bytes, budget
 
     def uncovered(exp) -> str | None:
         """Why the SOURCE cannot force this layout, if it cannot.
@@ -1375,7 +1956,18 @@ def fit_ladder(*, ladder: str | None = None, budget_bytes: int, hours: int,
             return None
         return coverage_refusal(exp)
 
-    dims, exp, envelope = candidate(_MIN_SCALE)
+    dims, exp, envelope, budget = candidate(_MIN_SCALE)
+    if budget <= 0:
+        # A capacity is never negative.  Say the reserve alone is the
+        # whole card rather than printing a "-0.7 GiB budget" for the
+        # envelope to be compared against.
+        raise DomainFitError(
+            f"this card has no budget for ladder {label} at all: the "
+            f"suite's reserve (CUDA context + the local-memory backing "
+            f"store of its kernel set + the external margin) is "
+            f"{(free_bytes - budget) / GIB:.2f} GiB against about "
+            f"{free_bytes / GIB:.2f} GiB free.  Choose a physics profile "
+            f"with a smaller kernel set, or a larger card")
     smallest_uncovered = uncovered(exp)
     if smallest_uncovered is not None:
         raise DomainFitError(
@@ -1384,47 +1976,308 @@ def fit_ladder(*, ladder: str | None = None, budget_bytes: int, hours: int,
             f"{smallest_uncovered}.  Move --point away from the edge of "
             f"the {source.upper()} grid, or choose a source whose "
             "coverage includes it")
-    if envelope > budget_bytes:
+    if envelope > budget:
         # Say WHY it does not fit.  "your card is too small" is what the
-        # bare number reads as, and at the minimum layout it is usually
-        # not true: the grid-independent projection constants dominate,
-        # so shrinking further cannot help and the user needs to know
-        # that rather than go hunting for a smaller ladder.
+        # bare number reads as, and at the minimum layout the honest
+        # answer is usually that the grid-independent terms dominate --
+        # but ONLY when they actually do.  The old wording asserted
+        # "so a smaller grid cannot help" beside a printed 0%, which is
+        # a sentence contradicting the number in front of it.
         floor = estimate_experiment(
             exp, forcing_interval_seconds=interval, vram_gib=vram_gib)
         constants = (floor.retention_residual_bytes
-                     + floor.device_overhead_bytes)
-        share = (100.0 * constants / floor.footprint_projection_bytes
-                 if floor.footprint_projection_bytes else 0.0)
+                     + floor.device_overhead_bytes
+                     + floor.non_pool_device_bytes
+                     + ENVELOPE_UNMODELLED_BYTES)
+        share = (100.0 * constants / envelope if envelope else 0.0)
+        if share >= 25.0:
+            why = ("is grid-independent (CUDA context, the local-memory "
+                   "backing store of the selected kernel set, and the "
+                   "measured unmodelled residue), so shrinking the grid "
+                   "moves only the rest")
+        else:
+            why = ("is grid-independent; the grid itself is most of this "
+                   "layout, and this IS the smallest layout the ladder "
+                   "has")
         detail = (
             f"the model itself wants {floor.alloc_estimate_bytes / GIB:.2f} "
             f"GiB at this layout; the other "
-            f"{constants / GIB:.2f} GiB ({share:.0f}% of the projection) "
-            "is grid-independent calibration constants, so a smaller grid "
-            "cannot help")
+            f"{constants / GIB:.2f} GiB ({share:.0f}% of the envelope) "
+            f"{why}.  This is already the minimum layout, so there is no "
+            "smaller grid on this ladder to fall back to")
         phases = estimate_phases(
             exp, source=source, forcing_interval_seconds=interval,
             vram_gib=vram_gib)
         raise DomainFitError(
-            f"ladder {label} does not fit a {budget_bytes / GIB:.1f} GiB "
+            f"ladder {label} does not fit a {budget / GIB:.1f} GiB "
             f"budget even at the minimum layout ({dims[0][0]}x{dims[0][1]} "
-            f"root): {phases.verdict(budget_bytes)}.  {detail}; choose a "
+            f"root): {phases.verdict(budget)}.  {detail}; choose a "
             "shallower ladder or a larger card")
     lo, hi = _MIN_SCALE, _MAX_SCALE
     best = (dims, exp)
     for _ in range(36):
         mid = 0.5 * (lo + hi)
         try:
-            dims, exp, envelope = candidate(mid)
+            dims, exp, envelope, budget = candidate(mid)
         except DomainFitError:
             hi = mid
             continue
-        if envelope <= budget_bytes and uncovered(exp) is None:
+        target = budget - fit_headroom_bytes(budget)
+        if envelope <= target and uncovered(exp) is None:
             best = (dims, exp)
             lo = mid
         else:
             hi = mid
     return best
+
+
+def _maximum_map_factor(grid, south: float, north: float) -> float:
+    """Maximum conformal scale over a latitude interval."""
+
+    latitudes = np.linspace(south, north, 257, dtype=np.float64)
+    map_factors = np.abs(np.asarray(grid.map_factor(latitudes), dtype=float))
+    if not np.all(np.isfinite(map_factors)) or not map_factors.size \
+            or float(map_factors.max()) <= 0.0:
+        raise ValueError(
+            "the polygon cannot be represented finitely in the "
+            f"selected {grid.map_proj} projection")
+    return float(map_factors.max())
+
+
+def _polygon_sample_step_deg(projection: dict,
+                             footprint: PolygonFootprint,
+                             finest_dx_m: float) -> float:
+    """Angular segment step whose projection error fits inside cell slack."""
+
+    grid = _root_grid(projection, 2, 2, finest_dx_m)
+    scale = _maximum_map_factor(grid, footprint.south, footprint.north)
+    # A lon/lat step has spherical path length no greater than
+    # sqrt(2)*R*step radians.  Bound its projected length to one quarter of
+    # the finest cell.  The fitter adds a whole cell outside every sample,
+    # so every point between samples remains inside that proven envelope.
+    step = math.degrees(
+        finest_dx_m / (4.0 * math.sqrt(2.0) * EARTH_RADIUS_M * scale))
+    return min(_POLYGON_SAMPLE_STEP_DEG, step)
+
+
+def _buffer_cells(grid, footprint: PolygonFootprint,
+                  buffer_km: float) -> float:
+    """Conservative projected-cell distance for a ground buffer."""
+
+    if buffer_km == 0.0:
+        return 0.0
+    buffer_m = float(buffer_km) * 1000.0
+    latitude_reach = math.degrees(buffer_m / EARTH_RADIUS_M)
+    south = footprint.south - latitude_reach
+    north = footprint.north + latitude_reach
+    if south <= -90.0 or north >= 90.0:
+        edge = "south" if south <= -90.0 else "north"
+        raise ValueError(
+            f"--buffer-km {buffer_km:g} on this footprint reaches the "
+            f"{edge} pole; lat-lon source interpolation and static-tile "
+            "windowing are not pole-capable")
+    # These projections are conformal and their scale depends on latitude.
+    # Taking the maximum over the whole buffered latitude range makes a
+    # ground-distance buffer no smaller in projected grid cells.
+    scale = _maximum_map_factor(grid, south, north)
+    return buffer_m * scale / float(grid.dx)
+
+
+def _round_up_multiple(value: float, multiple: int) -> int:
+    return int(multiple * max(1, math.ceil(value / multiple - 1e-12)))
+
+
+def polygon_ladder_dims(*, footprint: PolygonFootprint,
+                        projection: dict, ratios: tuple[int, ...],
+                        buffers_km: tuple[float, ...],
+                        root_dx_m: float = ROOT_DX_M
+                        ) -> list[tuple[int, int]]:
+    """Smallest centered legal ladder containing the buffered footprint."""
+
+    count = len(ratios) + 1
+    if len(buffers_km) != count:
+        raise ValueError(
+            f"polygon_ladder_dims needs {count} buffers, got "
+            f"{len(buffers_km)}")
+    baseline = _dims_for_scale(_MIN_SCALE, ratios)
+    finest_dx_m = float(root_dx_m) / math.prod(ratios)
+    sample_step = _polygon_sample_step_deg(
+        projection, footprint, finest_dx_m)
+    sample_lats, sample_lons = _polygon_samples(
+        footprint, max_step_deg=sample_step)
+    dimensions: list[tuple[int, int]] = []
+    dx = float(root_dx_m)
+    for level in range(count):
+        if level:
+            dx /= ratios[level - 1]
+        grid = _root_grid(projection, 2, 2, dx)
+        i, j = grid.latlon_to_ij(sample_lats, sample_lons)
+        i = np.asarray(i, dtype=float)
+        j = np.asarray(j, dtype=float)
+        if not np.all(np.isfinite(i)) or not np.all(np.isfinite(j)):
+            raise ValueError(
+                "the polygon cannot be represented finitely in the "
+                f"selected {projection['map_proj']} projection")
+        margin = _buffer_cells(grid, footprint, buffers_km[level])
+        half_x = (float(np.max(np.abs(i - grid.known_x))) + margin
+                  + _POLYGON_FIT_SLACK_CELLS)
+        half_y = (float(np.max(np.abs(j - grid.known_y))) + margin
+                  + _POLYGON_FIT_SLACK_CELLS)
+        quantum = 2 if level == 0 else 2 * ratios[level - 1]
+        nx = max(baseline[level][0],
+                 _round_up_multiple(2.0 * half_x, quantum))
+        ny = max(baseline[level][1],
+                 _round_up_multiple(2.0 * half_y, quantum))
+        dimensions.append((nx, ny))
+
+    # Every child must also clear its parent's external-boundary and blend
+    # rows.  Propagate that requirement from the innermost level outward;
+    # this can enlarge an outer level beyond its own geometric buffer, but
+    # never makes any requested buffer smaller.
+    for level in range(count - 1, 0, -1):
+        ratio = ratios[level - 1]
+        child_nx, child_ny = dimensions[level]
+        parent_nx, parent_ny = dimensions[level - 1]
+        parent_quantum = 2 if level == 1 else 2 * ratios[level - 2]
+        parent_nx = max(parent_nx, _round_up_multiple(
+            child_nx // ratio + 2 * _CLEARANCE_ROWS, parent_quantum))
+        parent_ny = max(parent_ny, _round_up_multiple(
+            child_ny // ratio + 2 * _CLEARANCE_ROWS, parent_quantum))
+        dimensions[level - 1] = parent_nx, parent_ny
+    return dimensions
+
+
+def verify_polygon_containment(exp: ExperimentConfig,
+                               footprint: PolygonFootprint,
+                               buffers_km: tuple[float, ...]) -> None:
+    """Prove each emitted projected grid contains its requested envelope."""
+
+    from gpuwm.static.projection import grids_from_projection_config
+
+    grids = grids_from_projection_config(exp)
+    if len(grids) != len(buffers_km):
+        raise DomainFitError(
+            "internal polygon fit regression: emitted domain count does not "
+            "match the per-level buffer count")
+    sample_step = _polygon_sample_step_deg(
+        {
+            "map_proj": grids[0].map_proj,
+            "ref_lat": grids[0].ref_lat,
+            "ref_lon": grids[0].ref_lon,
+            "truelat1": grids[0].truelat1,
+            "truelat2": grids[0].truelat2,
+            "stand_lon": grids[0].stand_lon,
+        }, footprint, min(float(grid.dx) for grid in grids))
+    sample_lats, sample_lons = _polygon_samples(
+        footprint, max_step_deg=sample_step)
+    tolerance = 1e-8
+    for level, (grid, buffer_km) in enumerate(zip(grids, buffers_km), 1):
+        i, j = grid.latlon_to_ij(sample_lats, sample_lons)
+        i = np.asarray(i, dtype=float)
+        j = np.asarray(j, dtype=float)
+        margin = _buffer_cells(grid, footprint, buffer_km)
+        clearances = (
+            float(i.min()) - 0.5,
+            (float(grid.e_we) - 0.5) - float(i.max()),
+            float(j.min()) - 0.5,
+            (float(grid.e_sn) - 0.5) - float(j.max()),
+        )
+        if not np.all(np.isfinite(clearances)) \
+                or min(clearances) + tolerance < margin:
+            raise DomainFitError(
+                f"internal polygon fit regression: domain d{level:02d} "
+                f"does not contain the footprint plus its {buffer_km:g} km "
+                "buffer; refusing to emit a partial target domain")
+
+
+def fit_polygon_ladder(*, footprint: PolygonFootprint,
+                       buffers_km: tuple[float, ...],
+                       free_bytes: int, hours: int,
+                       start_time: datetime, projection: dict, source: str,
+                       name: str, ratios: tuple[int, ...],
+                       root_dx_m: float = ROOT_DX_M,
+                       profile: str | None = DEFAULT_PHYSICS_PROFILE,
+                       vram_gib: float | None = None,
+                       ) -> tuple[list[tuple[int, int]], ExperimentConfig]:
+    """Fit one polygon-bound ladder, refusing rather than clipping it.
+
+    Takes FREE VRAM for the same reason :func:`fit_ladder` does: the
+    reserve carries the local-memory backing store of the SELECTED kernel
+    set, so it is a property of the candidate experiment and cannot be
+    computed before that candidate exists.  Sizing this path against a
+    flat reserve is what let the point path emit configs that failed the
+    product's own ``gpuwm check``, and the polygon path priced its layout
+    with the identical arithmetic.
+
+    It does NOT take :func:`fit_headroom_bytes` off the budget, and that
+    asymmetry with :func:`fit_ladder` is deliberate.  That headroom is a
+    property of a BISECTION: the point fitter grows the grid until the
+    envelope touches the budget, so without it every emitted ladder
+    landed a rounding error from the wall.  Here the polygon and its
+    buffers determine the layout outright -- there is no loop to stop
+    short in, and spending the headroom would refuse a user's explicit
+    footprint that the enforced ``estimate <= budget`` gate accepts,
+    which is a narrowing neither this fix nor the polygon route asked
+    for.  The refusal below is still the suite-priced budget, so a
+    layout this accepts is a layout ``gpuwm check`` accepts, and it names
+    the LAYOUT rather than the card: on this route the footprint is the
+    fixed thing the user controls.
+    """
+
+    dims = polygon_ladder_dims(
+        footprint=footprint, projection=projection, ratios=ratios,
+        buffers_km=buffers_km, root_dx_m=root_dx_m)
+    text = render_config(
+        name=name, start_time=start_time, hours=hours,
+        projection=projection, dims=dims, ratios=ratios,
+        fetch_hints={"source": source}, case_data=None,
+        root_dx_m=root_dx_m, profile=profile)
+    exp = experiment_from_text(text, source="<polygon candidate>")
+    if source == "hrrr":
+        refusal = coverage_refusal(exp)
+        if refusal is not None:
+            raise DomainFitError(
+                "polygon plus the requested per-level buffers falls outside "
+                f"HRRR coverage: {refusal}.  Move --polygon inside the HRRR "
+                "grid or choose a source whose coverage includes it")
+    interval = SOURCE_FORCING_INTERVAL_S[source]
+    phases = estimate_phases(
+        exp, source=source,
+        forcing_interval_seconds=interval,
+        vram_gib=vram_gib)
+    budget_bytes = sizing_budget_bytes(
+        exp, free_bytes=free_bytes, vram_gib=vram_gib,
+        forcing_interval_seconds=interval)
+    if budget_bytes <= 0 or phases.peak_envelope_bytes > budget_bytes:
+        layout = ", ".join(
+            f"d{index:02d} {nx}x{ny}"
+            for index, (nx, ny) in enumerate(dims, 1))
+        # A non-positive budget is NOT the card-is-too-small case here --
+        # that one is layout-independent and already refused in `main` by
+        # the CUDA-context-plus-margin floor.  This one is the layout's
+        # own doing: the reserve carries a retention fraction of the
+        # estimate, so a big enough footprint drives its own reserve past
+        # the whole card.  `verdict` would print a negative budget, so
+        # say the arithmetic instead -- but keep naming the LAYOUT first
+        # either way, because on this route the layout is the fixed thing
+        # the user controls and the only thing they can act on.
+        if budget_bytes > 0:
+            detail = phases.verdict(budget_bytes)
+        else:
+            detail = (
+                "this configuration's own reserve (CUDA context + the "
+                "local-memory backing store of its kernel set + a "
+                "retention fraction of its estimate + the external "
+                f"margin) is already "
+                f"{(free_bytes - budget_bytes) / GIB:.2f} GiB against "
+                f"about {free_bytes / GIB:.2f} GiB free")
+        raise DomainFitError(
+            "polygon plus the requested per-level buffers requires "
+            f"{layout}, but {detail}; reduce the "
+            "buffer, choose fewer levels, increase grid spacing, or use a "
+            "larger card")
+    verify_polygon_containment(exp, footprint, buffers_km)
+    return dims, exp
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -1479,12 +2332,33 @@ def render_wps_namelist(projection: dict, dims: list[tuple[int, int]],
         f" dx = {float(root_dx_m):g},\n"
         f" dy = {float(root_dx_m):g},\n"
         f" map_proj = '{projection['map_proj']}',\n"
-        f" ref_lat   = {projection['ref_lat']!r},\n"
-        f" ref_lon   = {projection['ref_lon']!r},\n"
-        f" truelat1  = {projection['truelat1']!r},\n"
-        f" truelat2  = {projection['truelat2']!r},\n"
-        f" stand_lon = {projection['stand_lon']!r},\n"
+        f" ref_lat   = {_namelist_number(projection['ref_lat'])},\n"
+        f" ref_lon   = {_namelist_number(projection['ref_lon'])},\n"
+        f" truelat1  = {_namelist_number(projection['truelat1'])},\n"
+        f" truelat2  = {_namelist_number(projection['truelat2'])},\n"
+        f" stand_lon = {_namelist_number(projection['stand_lon'])},\n"
         "/\n")
+
+
+def _namelist_number(value) -> str:
+    """One projection number, as Fortran will read it.
+
+    `{value!r}` was used here, which is right for a builtin and silently
+    wrong for anything else: a 0-d ndarray reprs as ``array(-160.)``,
+    which the emitted namelist.wps carried verbatim into a file the
+    docstring above promises matches the TOML bit-for-bit.  WPS cannot
+    parse it.
+    """
+    scalar = _builtin_scalar(value)
+    if scalar is not None:
+        value = scalar
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(
+            f"namelist.wps projection value {value!r} "
+            f"({type(value).__name__}) is not a number; the emitted "
+            "namelist has to be readable by WPS, and no repr of a "
+            "non-number is.")
+    return repr(float(value))
 
 
 def _default_name(lat: float, lon: float) -> str:
@@ -1507,8 +2381,7 @@ def sizing_summary(exp: ExperimentConfig, estimate, budget_bytes: int,
     moves to ``--explain``.
     """
 
-    envelope = observed_peak_envelope_bytes(
-        estimate.footprint_projection_bytes, vram_gib=vram_gib)
+    envelope = estimate.peak_envelope_bytes
     phase = ""
     if phases is not None:
         envelope = phases.peak_envelope_bytes
@@ -1525,8 +2398,7 @@ def sizing_summary(exp: ExperimentConfig, estimate, budget_bytes: int,
 def _print_sizing_table(exp: ExperimentConfig, estimate,
                         budget_bytes: int, vram_gib: float,
                         phases=None) -> None:
-    envelope = observed_peak_envelope_bytes(
-        estimate.footprint_projection_bytes, vram_gib=vram_gib)
+    envelope = estimate.peak_envelope_bytes
     print("sizing (itemized preflight estimator, in-process):")
     print("  domain    dx        mass grid      dt         resident")
     for dc, dom in zip(exp.domains, estimate.domains):
@@ -1538,13 +2410,8 @@ def _print_sizing_table(exp: ExperimentConfig, estimate,
               f"{dc.run.nx:4d} x {dc.run.ny:<4d}   {dt_text:>8}   "
               f"{dom.resident_bytes / GIB:6.2f} GiB")
     family = envelope_platform(vram_gib=vram_gib)
-    print(f"  itemized alloc estimate "
-          f"{estimate.alloc_estimate_bytes / GIB:.2f} GiB; footprint "
-          f"projection {estimate.footprint_projection_bytes / GIB:.2f} "
-          f"GiB  x {peak_envelope_factor(vram_gib=vram_gib):.2f} observed peak "
-          f"envelope = {envelope / GIB:.2f} GiB")
-    print(f"    envelope factor: {family} "
-          f"({PEAK_ENVELOPE_BASIS[family]})")
+    print(f"  peak envelope: {estimate.peak_envelope_terms()}")
+    print(f"    envelope basis: {family}; {estimate.envelope_basis}")
     # An unmeasured platform gets the conservative accounting, which is
     # a substitution the user has to be able to see.
     platform_note = unknown_platform_note()
@@ -1557,18 +2424,28 @@ def _print_sizing_table(exp: ExperimentConfig, estimate,
               "above is the forecast phase only")
     elif phases is not None:
         ingest = phases.ingest
-        print(f"  ingest (preprocessing): {ingest.n_forcing_times} forcing "
-              f"times x {ingest.per_time_bytes / GIB:.2f} GiB each, "
-              f"{ingest.resident_times} resident at a time = "
+        nest_ingest = (
+            f" + {len(ingest.nest_state_items)} nest initial state(s) "
+            f"{ingest.nest_state_bytes / GIB:.2f} GiB, all resident for "
+            f"the single export transaction"
+            if ingest.nest_state_items else "")
+        print(f"  ingest (preprocessing): root {ingest.n_forcing_times} "
+              f"forcing times x {ingest.per_time_bytes / GIB:.2f} GiB each, "
+              f"{ingest.resident_times} resident at a time"
+              f"{nest_ingest} = "
               f"{ingest.resident_bytes / GIB:.2f} GiB resident; peak "
               f"envelope {ingest.peak_envelope_bytes / GIB:.2f} GiB")
         print(f"    ingest envelope basis: {INGEST_PEAK_ENVELOPE_BASIS}")
     if phases is not None:
         print(f"  BINDING PHASE: {phases.verdict(budget_bytes)}")
         envelope = phases.peak_envelope_bytes
+    reserve_gib = (card_assumed_free_gib(vram_gib)
+                   - budget_bytes / GIB)
     print(f"  budget {budget_bytes / GIB:.2f} GiB "
-          f"({vram_gib:g} GiB card - {vram_reserve_gib(vram_gib):g} GiB "
-          f"reserve); headroom {(budget_bytes - envelope) / GIB:.2f} GiB")
+          f"({vram_gib:g} GiB card presents about "
+          f"{card_assumed_free_gib(vram_gib):g} GiB free, minus this "
+          f"suite's {reserve_gib:.2f} GiB reserve); headroom "
+          f"{(budget_bytes - envelope) / GIB:.2f} GiB")
     if family == "windows-small":
         for line in windows_small_card_advisory(vram_gib):
             print(line)
@@ -1628,6 +2505,74 @@ def _print_geog_help() -> None:
     print("    " + ", ".join(GEOG_DATASETS))
 
 
+def profile_route_blocker(profile, source) -> str | None:
+    """Why ``source`` cannot prepare ``profile``, or ``None``.
+
+    The registry answer, resolved through the same three calls the front
+    door makes, so a caller asking "can this pairing run" and a runner
+    asking "may this pairing run" cannot give different answers.
+    """
+
+    from gpuwm.physics_compat import (
+        land_surface_component_for_selector, land_surface_route_blocker,
+        single_domain_runtime_switches,
+    )
+
+    if profile is None or source is None:
+        return None
+    try:
+        component = single_domain_runtime_switches(profile).get(
+            "sf_surface_physics")
+    except (KeyError, ValueError):
+        return None
+    named = land_surface_component_for_selector(component)
+    if named is None:
+        return None
+    return land_surface_route_blocker(named, source=str(source))
+
+
+def profiles_blocked_on_source(source: str) -> tuple[str, ...]:
+    """The shipped profiles ``source`` refuses, in listed order.
+
+    Exists so ``--help`` can say which of the eight it advertises are
+    not selectable on a given route.  DERIVED from the registry, never
+    listed: a hard-coded pair would be a second declaration of the same
+    fact and would go stale the moment a route gained the component
+    back, leaving the help lying in the other direction.
+    """
+
+    return tuple(profile for profile in WIZARD_PHYSICS_PROFILES
+                 if profile_route_blocker(profile, source) is not None)
+
+
+def _profile_help_route_note() -> str:
+    """The ``--help`` sentence about profiles a route cannot prepare.
+
+    ``--help`` listed eight profiles with no marker while two of them
+    were refused unconditionally on ``--source gfs`` -- which is the
+    DEFAULT source -- so a reader choosing from the list had a 1-in-4
+    chance of picking something that could never work, and learned it
+    only from the refusal.  The refusal itself is honest and precise;
+    the advertisement was not.
+
+    Empty when every listed profile is preparable on every source,
+    which is what this note existing at all is waiting for.
+    """
+
+    notes = []
+    for source in ("gfs", "hrrr", "era5"):
+        blocked = profiles_blocked_on_source(source)
+        if blocked:
+            notes.append(f"--source {source} cannot prepare "
+                         + " or ".join(blocked))
+    if not notes:
+        return ""
+    return ("  NOT every profile runs on every route: " + "; ".join(notes)
+            + " -- the wizard refuses those pairings and names the "
+              "missing component rather than emitting a config the "
+              "front door would reject.  ")
+
+
 def _refuse_profile_its_source_cannot_prepare(profile, source) -> None:
     """Do not emit a config the named source's front door will refuse.
 
@@ -1644,23 +2589,7 @@ def _refuse_profile_its_source_cannot_prepare(profile, source) -> None:
     declaration still offers.
     """
 
-    from gpuwm.physics_compat import (
-        land_surface_route_blocker, single_domain_runtime_switches,
-    )
-
-    if profile is None or source is None:
-        return
-    try:
-        component = single_domain_runtime_switches(profile).get(
-            "sf_surface_physics")
-    except (KeyError, ValueError):
-        return
-    from gpuwm.physics_compat import land_surface_component_for_selector
-
-    named = land_surface_component_for_selector(component)
-    if named is None:
-        return
-    blocker = land_surface_route_blocker(named, source=str(source))
+    blocker = profile_route_blocker(profile, source)
     if blocker is not None:
         # One sentence at the boundary; the registry pointer and the
         # failure mechanism ride the --explain layer.
@@ -1672,7 +2601,18 @@ def _refuse_profile_its_source_cannot_prepare(profile, source) -> None:
 
 
 def domain_main(args) -> int:
-    lat, lon = _parse_point(args.point)
+    polygon = None
+    level_buffer_values = None
+    polygon_path = getattr(args, "polygon", None)
+    if polygon_path is None:
+        lat, lon = _parse_point(args.point)
+        if getattr(args, "buffer_km", None) is not None:
+            raise ValueError("--buffer-km requires --polygon")
+    else:
+        polygon = load_polygon_footprint(polygon_path)
+        lat, lon = polygon.center_lat, polygon.center_lon
+        level_buffer_values = parse_level_buffers(
+            getattr(args, "buffer_km", None))
     if args.card is not None and args.vram_gib is not None:
         raise ValueError("--card and --vram-gib are mutually exclusive")
     _refuse_profile_its_source_cannot_prepare(
@@ -1680,13 +2620,39 @@ def domain_main(args) -> int:
     vram_gib = (CARD_VRAM_GIB[args.card] if args.card is not None
                 else args.vram_gib if args.vram_gib is not None
                 else CARD_VRAM_GIB["24gb"])
-    if not math.isfinite(vram_gib) \
-            or vram_gib <= vram_reserve_gib(vram_gib):
+    # The floor is the reserve NOTHING can be sized below: one CUDA
+    # context plus the external margin.  Deliberately not the flat
+    # `vram_reserve_gib` any more -- that figure is retired from the
+    # sizing path, and using it here refused cards the suite-priced
+    # reserve would have sized.  Everything above this floor goes to
+    # the fit loop, whose refusal names the layout and the
+    # arithmetic.
+    reserve_floor_gib = (CUDA_CONTEXT_BYTES + EXTERNAL_MARGIN_BYTES) / GIB
+    if not math.isfinite(vram_gib):
+        # Separated from the arithmetic branch below, because that branch
+        # DESCRIBES the card it was given and there is no such card here.
+        # card_assumed_free_gib launders a non-finite value through
+        # max(), which returns the finite operand, so the shared message
+        # reported `--vram-gib nan` as a card presenting "about 0.00 GiB
+        # free" -- a specific, false, plausible number invented for an
+        # input that has no meaning.
         raise ValueError(
-            f"--vram-gib {vram_gib:g} leaves no budget after the "
-            f"{vram_reserve_gib(vram_gib):g} GiB reserve")
-    budget_gib = vram_gib - vram_reserve_gib(vram_gib)
-    budget = int(budget_gib * GIB)
+            f"--vram-gib {vram_gib:g} is not a size: it names no amount "
+            f"of memory, so there is nothing to size a domain against.  "
+            f"Pass the card's capacity in GiB, for example --vram-gib 16.")
+    if card_assumed_free_gib(vram_gib) <= reserve_floor_gib:
+        raise ValueError(
+            f"--vram-gib {vram_gib:g} leaves no budget: a card that size "
+            f"presents about {card_assumed_free_gib(vram_gib):.2f} GiB "
+            f"free, and one CUDA context plus the external margin is "
+            f"already {reserve_floor_gib:.2f} GiB of it")
+    # FREE, not a budget.  The reserve belongs to the candidate experiment
+    # -- it carries that suite's local-memory backing store -- so it is
+    # subtracted inside the fit loop, by the same call `gpuwm check`
+    # makes.  A card also never hands over its nominal capacity: see
+    # CARD_UNAVAILABLE_VRAM_GIB.
+    free_gib = card_assumed_free_gib(vram_gib)
+    free_bytes = int(free_gib * GIB)
     if args.hours < 1:
         raise ValueError("--hours must be at least 1")
     # The model's time zero.  It is the cycle when the run is initialized
@@ -1700,13 +2666,23 @@ def domain_main(args) -> int:
     if start_hour < 0:
         raise ValueError(
             "--forecast-start-hour must be a nonnegative forecast lead")
-    if start_hour and args.source not in {"gfs", "gdas"}:
+    if start_hour and args.source not in {"gfs", "gdas", "hrrr"}:
         raise ValueError(
-            f"--forecast-start-hour: --source gfs/gdas only, not "
-            f"{args.source} (its front door takes its own lead flag)")
+            f"--forecast-start-hour: forecast sources only (gfs/gdas/hrrr), "
+            f"not {args.source} -- ERA5 is a reanalysis, so every time in "
+            "it is an analysis and there is no lead to begin at; name the "
+            "analysis time you want with --cycle")
     cycle = _resolve_cycle(
         args.cycle, source=args.source, hours=args.hours,
         start_hour=start_hour)
+    if args.source == "hrrr":
+        # The cycle horizon is a property of the cycle hour (48 h at
+        # 00/06/12/18Z, 18 h otherwise), so a lead can walk a window off
+        # the end of what NOAA published.  Refused HERE, with the horizon
+        # named, rather than at the fetch after the file has been written.
+        from gpuwm.hrrr_forecast import hrrr_source_window
+        hrrr_source_window(cycle=cycle, start_hour=start_hour,
+                           run_seconds=args.hours * 3600.0)
     start_time = cycle + timedelta(hours=start_hour)
     name = args.name or _default_name(lat, lon)
     projection = _projection_entries(
@@ -1719,28 +2695,65 @@ def domain_main(args) -> int:
         root_dx_km=getattr(args, "root_dx", None),
         chain=getattr(args, "chain", None),
         ladder=args.ladder)
+    level_buffers = None
     if custom is not None:
         root_dx_m, ratios = custom
-        dims, _ = fit_ladder(
-            ratios=ratios, root_dx_m=root_dx_m, budget_bytes=budget,
-            hours=args.hours, start_time=start_time,
-            projection=projection, source=args.source, name=name,
-            profile=profile, vram_gib=vram_gib)
+        if polygon is None:
+            dims, _ = fit_ladder(
+                ratios=ratios, root_dx_m=root_dx_m, free_bytes=free_bytes,
+                hours=args.hours, start_time=start_time,
+                projection=projection, source=args.source, name=name,
+                profile=profile, vram_gib=vram_gib)
+        else:
+            level_buffers = _buffers_for_levels(
+                level_buffer_values, len(ratios) + 1)
+            dims, _ = fit_polygon_ladder(
+                footprint=polygon, buffers_km=level_buffers,
+                ratios=ratios, root_dx_m=root_dx_m, free_bytes=free_bytes,
+                hours=args.hours, start_time=start_time,
+                projection=projection, source=args.source, name=name,
+                profile=profile, vram_gib=vram_gib)
         ladder = "-".join(f"{v:g}" for v in _ladder_dx_km(ratios, root_dx_m))
     else:
         root_dx_m = ROOT_DX_M
         ladders = ([args.ladder] if args.ladder != "auto"
                    else list(_LADDERS_DEEPEST_FIRST))
+        fixed_buffer_depth = False
+        if polygon is not None and level_buffer_values is not None \
+                and len(level_buffer_values) > 1 and args.ladder == "auto":
+            fixed_buffer_depth = True
+            ladders = [candidate for candidate in ladders
+                       if len(LADDER_RATIOS[candidate]) + 1
+                       == len(level_buffer_values)]
+            if not ladders:
+                raise ValueError(
+                    f"--buffer-km supplies {len(level_buffer_values)} "
+                    "per-level distances, but no preset ladder has that "
+                    "many levels; use --root-dx / --chain for a custom "
+                    "ladder")
         chosen = None
         for candidate_ladder in ladders:
             try:
-                dims, _ = fit_ladder(
-                    ladder=candidate_ladder, budget_bytes=budget,
-                    hours=args.hours, start_time=start_time,
-                    projection=projection, source=args.source, name=name,
-                    profile=profile, vram_gib=vram_gib)
+                candidate_ratios = LADDER_RATIOS[candidate_ladder]
+                if polygon is None:
+                    dims, _ = fit_ladder(
+                        ladder=candidate_ladder, free_bytes=free_bytes,
+                        hours=args.hours, start_time=start_time,
+                        projection=projection, source=args.source, name=name,
+                        profile=profile, vram_gib=vram_gib)
+                    candidate_buffers = None
+                else:
+                    candidate_buffers = _buffers_for_levels(
+                        level_buffer_values, len(candidate_ratios) + 1)
+                    dims, _ = fit_polygon_ladder(
+                        footprint=polygon, buffers_km=candidate_buffers,
+                        ratios=candidate_ratios, root_dx_m=root_dx_m,
+                        free_bytes=free_bytes, hours=args.hours,
+                        start_time=start_time, projection=projection,
+                        source=args.source, name=name, profile=profile,
+                        vram_gib=vram_gib)
             except DomainFitError as error:
-                if args.ladder != "auto":
+                if args.ladder != "auto" or fixed_buffer_depth:
                     raise
                 # One line per candidate; the full envelope arithmetic
                 # is the same for every ladder and prints with the
@@ -1749,19 +2762,23 @@ def domain_main(args) -> int:
                 print(f"ladder {candidate_ladder}: does not fit "
                       f"({first_sentence}); trying the next shallower one")
                 continue
-            chosen = (candidate_ladder, dims)
+            chosen = (candidate_ladder, dims, candidate_buffers)
             break
         if chosen is None:
             raise DomainFitError(
                 "no ladder fits the requested card; even the shallowest "
-                f"ladder's smallest layout exceeds the {budget_gib:.1f} GiB "
-                "budget")
-        ladder, dims = chosen
+                f"ladder's smallest layout exceeds the budget a "
+                f"{vram_gib:g} GiB card leaves (about {free_gib:g} GiB "
+                "free, minus this suite's reserve)")
+        ladder, dims, level_buffers = chosen
         ratios = LADDER_RATIOS[ladder]
     # Genuine-limit refusal first (its message names the real problem;
     # a pole-containing footprint would otherwise also trip the
     # 180-degree fetch-span refusal below with a less useful message).
-    _pole_clearance_refusal(projection, *dims[0], root_dx_m)
+    target_option = "--polygon" if polygon is not None else "--point"
+    _pole_clearance_refusal(
+        projection, *dims[0], root_dx_m,
+        target_option=target_option)
 
     # Fetch hints from the fitted root footprint.  The default data
     # directory lives beside the emitted TOML so the declared forcing
@@ -1769,8 +2786,9 @@ def domain_main(args) -> int:
     area_notes: list[str] = []
     area = _fetch_area(projection, *dims[0],
                        margin_deg=_fetch_margin_deg(args.source),
-                       notes=area_notes, root_dx_m=root_dx_m)
-    cadence = _SOURCE_CADENCE_H.get(args.source)
+                       notes=area_notes, root_dx_m=root_dx_m,
+                       target_option=target_option)
+    cadence = _fetch_cadence_h(args.source, start_hour)
     data_dir = (Path(args.data_dir) if args.data_dir
                 else out.parent / "data" / name)
     fetch_hints = {
@@ -1789,6 +2807,15 @@ def domain_main(args) -> int:
         fetch_hints["cadence"] = cadence
     if start_hour:
         fetch_hints["forecast_start_hour"] = start_hour
+    # Plan the download with the REAL fetch planner before writing the
+    # file.  A config the wizard cannot fetch is a config whose printed
+    # step 1 exits 2, and that is what shipped: any lead not a multiple
+    # of three was written with `cadence = 3` and refused by `gpuwm
+    # fetch` as "not on the 3 h cadence".  Running the planner here is
+    # the only check that cannot drift from what the fetch will do.
+    if args.source in {"gfs", "gdas"}:
+        from gpuwm.fetch import gfs_forecast_hours
+        gfs_forecast_hours(int(fetch_hints["hours"]), cadence, start_hour)
 
     # [case_data] only where the config-driven front door can honestly
     # consume the fetched data (the native GRIB1 = ERA5 route).
@@ -1823,7 +2850,8 @@ def domain_main(args) -> int:
         projection=projection, dims=dims, ratios=ratios,
         fetch_hints=fetch_hints, case_data=case_data,
         root_dx_m=root_dx_m, profile=profile,
-        interactive=getattr(args, "interactive", False))
+        interactive=getattr(args, "interactive", False),
+        level_buffers_km=level_buffers)
     # Round-trip the exact bytes through the real loader before writing.
     exp = experiment_from_text(text, source=str(out))
     interval = SOURCE_FORCING_INTERVAL_S[args.source]
@@ -1833,12 +2861,21 @@ def domain_main(args) -> int:
         exp, source=args.source, forcing_interval_seconds=interval,
         vram_gib=vram_gib)
     envelope = phases.peak_envelope_bytes
+    # The budget the EMITTED config gets -- its own reserve, not a flat
+    # one, which is the number `gpuwm check --budget-gib` is handed below
+    # so the two commands cannot disagree about the same file.
+    budget = sizing_budget_bytes(
+        exp, free_bytes=free_bytes, vram_gib=vram_gib,
+        forcing_interval_seconds=interval)
+    budget_gib = budget / GIB
     if envelope > budget:
         raise DomainFitError(
             "internal fit regression: emitted config's "
             f"{phases.binding_phase} envelope "
             f"{envelope / GIB:.2f} GiB exceeds the budget "
             f"{budget_gib:.2f} GiB")
+    if polygon is not None:
+        verify_polygon_containment(exp, polygon, level_buffers)
 
     _write_atomic(out, text)
     wps_text = render_wps_namelist(
@@ -1865,9 +2902,16 @@ def domain_main(args) -> int:
             written.append(vtable_path)
 
     explain = explain_enabled(args)
-    print(f"gpuwm domain: {name!r} at ({lat:g}, {lon:g}), ladder {ladder} "
-          f"({'-'.join(f'{v:g}' for v in _ladder_dx_km(ratios, root_dx_m))} km), "
-          f"card {vram_gib:g} GiB")
+    if polygon is None:
+        print(f"gpuwm domain: {name!r} at ({lat:g}, {lon:g}), ladder {ladder} "
+              f"({'-'.join(f'{v:g}' for v in _ladder_dx_km(ratios, root_dx_m))} km), "
+              f"card {vram_gib:g} GiB")
+    else:
+        buffers = ",".join(f"{value:g}" for value in level_buffers)
+        print(f"gpuwm domain: {name!r}, polygon center ({lat:g}, {lon:g}), "
+              f"ladder {ladder} "
+              f"({'-'.join(f'{v:g}' for v in _ladder_dx_km(ratios, root_dx_m))} km), "
+              f"buffers {buffers} km, card {vram_gib:g} GiB")
     if explain:
         _print_sizing_table(exp, estimate, budget, vram_gib,
                             phases=phases)
@@ -1889,18 +2933,39 @@ def domain_main(args) -> int:
     area_flag = (f"--area={fetch_hints['area']}"
                  if fetch_hints["area"].startswith("-")
                  else f"--area {fetch_hints['area']}")
+    # --cadence is printed whenever it is not the source's own default:
+    # the emitted [fetch] table carries it, and a printed command that
+    # omits it downloads a different window from the one this config was
+    # written for.  At a lead not on the default grid it does not merely
+    # differ -- it is refused.
+    cadence_flag = (
+        f"--cadence {cadence} "
+        if cadence is not None and cadence != _SOURCE_CADENCE_H.get(args.source)
+        else "")
     fetch_command = ("gpuwm fetch "
                      f"--source {args.source} --cycle {fetch_hints['cycle']} "
                      f"--hours {fetch_hints['hours']} {area_flag} "
+                     + cadence_flag
                      + (f"--forecast-start-hour {start_hour} "
                         if start_hour else "")
                      + f"--out {_printed_path(printed_out)}")
-    check_command = (f"gpuwm check {_printed_path(out)} "
-                     f"--budget-gib {budget_gib:g} --vram-gib {vram_gib:g}")
+    # The BARE form is the next step, because it is the one that measures
+    # this machine.  v1.4.0 printed only the declared form, and on a real
+    # 16 GB card the two returned opposite verdicts on the same file --
+    # rc 0 for the declared budget, rc 4 for the measured one -- because
+    # the tier had sized against free VRAM the card does not have.  They
+    # agree now (the tier is conservative against its class), and where
+    # they cannot -- sizing for a card that is not in this machine -- the
+    # declared form is printed beside it and labelled as such.
+    check_command = f"gpuwm check {_printed_path(out)}"
+    check_command_declared = (f"gpuwm check {_printed_path(out)} "
+                              f"--budget-gib {budget_gib:.2f} "
+                              f"--vram-gib {vram_gib:g}")
     run_command = final_step_command(
         out, source=args.source, profile=profile,
         domain_count=len(dims), data_dir=printed_out,
-        case_data=case_data, exp=exp)
+        case_data=case_data, exp=exp, cycle=cycle,
+        forecast_start_hour=start_hour)
 
     for note in area_notes:
         warn(note,
@@ -1951,11 +3016,12 @@ def domain_main(args) -> int:
         # The card size travels with the budget: --budget-gib alone lets
         # check re-derive a notional free larger than the whole card.
         rc = cli_main(["check", str(out), "--budget-gib",
-                       f"{budget_gib:g}", "--vram-gib", f"{vram_gib:g}"])
+                       f"{budget_gib:.2f}", "--vram-gib", f"{vram_gib:g}"])
         if rc != 0:
-            print(f"gpuwm check FAILED (rc {rc}) on the emitted config; "
-                  "the files above were still written -- fix the gap "
-                  "check names, then re-run gpuwm check", flush=True)
+            print(f"gpuwm check FAILED (rc {rc}) on the emitted config.  "
+                  "The files above were still written, so nothing is "
+                  "lost: fix the gap that check names, then re-run "
+                  "`gpuwm check` on the same file.", flush=True)
             return rc
         print("gpuwm check: PASS (rc 0)")
     else:
@@ -1975,24 +3041,28 @@ def domain_main(args) -> int:
         else:
             from gpuwm.cli import main as cli_main
             rc = cli_main(["check", str(out), "--budget-gib",
-                           f"{budget_gib:g}", "--vram-gib", f"{vram_gib:g}"])
+                           f"{budget_gib:.2f}", "--vram-gib",
+                           f"{vram_gib:g}"])
             if rc != 0:
                 print(f"gpuwm check FAILED (rc {rc}) on the emitted "
-                      "config; the files above were still written -- fix "
-                      "the gap check names, then re-run gpuwm check",
+                      "config.  The files above were still written, so "
+                      "nothing is lost: fix the gap that check names, "
+                      "then re-run `gpuwm check` on the same file.",
                       flush=True)
                 return rc
             print("gpuwm check: PASS (rc 0)")
 
     _print_next_steps(fetch_command, check_command, run_command,
                       source=args.source, deferred=bool(deferred),
-                      explain=explain)
+                      explain=explain,
+                      check_command_declared=check_command_declared)
     return 0
 
 
 def _print_next_steps(fetch_command: str, check_command: str,
                       run_command: str, *, source: str, deferred: bool,
-                      explain: bool) -> None:
+                      explain: bool,
+                      check_command_declared: str | None = None) -> None:
     """The last thing the wizard prints: three commands, in order.
 
     Three, numbered, and nothing after them.  Everything above this
@@ -2027,6 +3097,14 @@ def _print_next_steps(fetch_command: str, check_command: str,
                   "prints the account and key steps.")
     print(f"  2. {check_command}"
           + ("   # after the fetch lands" if deferred else ""))
+    if check_command_declared:
+        # The bare form above measures THIS machine.  Say, once, what the
+        # other form is for -- v1.4.0 printed only the declared form and
+        # a reader who ran the documented bare one got the opposite exit
+        # code with no explanation of why two commands disagreed.
+        print(f"     # that measures THIS machine's free VRAM.  Sizing "
+              f"for a card that is not in it (or no GPU here at all):")
+        print(f"     #   {check_command_declared}")
     # Step 3 is a command for most configs and a short route note for
     # the ones no single command finishes; either way it is indented
     # into the numbered block rather than trailing off the end of it.
@@ -2039,27 +3117,47 @@ def _print_next_steps(fetch_command: str, check_command: str,
 def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
         "domain",
-        help="wizard: emit an experiment TOML for a point + GPU budget, "
+        help="wizard: emit an experiment TOML for a point or polygon + GPU budget, "
              "sized by the in-process VRAM estimator")
-    parser.add_argument("--point", required=True, metavar="LAT,LON",
-                        help="domain center in decimal degrees, anywhere "
-                             "except the poles themselves -- a domain "
-                             "containing a pole is unsupported, so |lat| "
-                             "90 is refused; the projection is "
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--point", metavar="LAT,LON",
+                        help="domain center in decimal degrees. |lat| 90 "
+                             "is refused, and so is any center whose "
+                             "FITTED domain reaches the pole -- a domain "
+                             "containing one is unsupported -- so the "
+                             "usable limit is set by the domain's size, "
+                             "not by the center, and lands well short of "
+                             "90 (near |lat| 72 on the default card and "
+                             "ladder, further equatorward as either "
+                             "grows). The refusal names the fitted size "
+                             "when it fires; the projection is "
                              "auto-selected from |lat| (<25 Mercator, "
                              "25-60 Lambert conformal, >60 polar "
                              "stereographic) unless --projection is set. "
                              "Negative (southern/western) values work in "
                              "both forms: --point -33.87,151.21 and "
                              "--point=-33.87,151.21")
+    target.add_argument(
+        "--polygon", type=Path, metavar="GEOJSON",
+        help="local GeoJSON Polygon, MultiPolygon, Feature, or "
+             "FeatureCollection; the minimum antimeridian-aware bounds "
+             "supply the center and every emitted level is fitted around "
+             "the geometry")
+    parser.add_argument(
+        "--buffer-km", default=None, metavar="KM[,KM...]",
+        help="with --polygon, nonnegative geometry buffer in kilometres; "
+             "one value applies to every domain, or supply exactly one "
+             "outer-to-inner value per level. With --ladder auto, a "
+             "multi-value list selects the preset of that depth "
+             "(default: zero)")
     parser.add_argument("--projection", default="auto",
                         choices=("auto", "lambert", "mercator", "polar"),
                         help="map projection override (default: auto by "
-                             "point latitude; all three are oracle-gated "
+                             "center latitude; all three are oracle-gated "
                              "against WRF v4.6.1 module_llxy)")
     parser.add_argument("--name", default=None,
                         help="experiment name (default derived from the "
-                             "point)")
+                             "center)")
     parser.add_argument("--card", choices=sorted(CARD_VRAM_GIB),
                         default=None,
                         help="GPU tier; sets the VRAM budget (default "
@@ -2079,8 +3177,9 @@ def register_cli(subparsers) -> None:
                              "runner validates against, so the emitted "
                              "config passes its guard as written.  Read "
                              "the names: the *-no-radiation-* and "
-                             "*-validation-* profiles run reduced physics "
-                             "(default: full RTE+RRTMGP + Kain-Fritsch)")
+                             "*-validation-* profiles run reduced physics.  "
+                             + _profile_help_route_note()
+                             + "(default: full RTE+RRTMGP + Kain-Fritsch)")
     parser.add_argument("--root-dx", type=float, default=None,
                         metavar="KM",
                         help="custom root grid spacing in km "
@@ -2110,7 +3209,7 @@ def register_cli(subparsers) -> None:
                              "explicit time)")
     parser.add_argument("--forecast-start-hour", type=int, default=None,
                         metavar="K",
-                        help="gfs/gdas only: initialize the run from the "
+                        help="gfs/gdas/hrrr: initialize the run from the "
                              "cycle's f{K} FORECAST lead instead of its "
                              "analysis, so start_time = cycle + K h and "
                              "the boundaries come from f{K+i}.  This is "
@@ -2146,9 +3245,15 @@ __all__ = [
     "LADDER_RATIOS", "MAX_FETCH_ABS_LAT", "POLE_CLEARANCE_DEG",
     "ROOT_DX_M", "ROOT_TIME_STEP_S", "TROPICAL_ROOT_TIME_STEP_S",
     "domain_main", "experiment_from_text", "final_step_command",
-    "fit_ladder", "gray_zone_advisory", "max_fetch_abs_lat",
+    "fit_ladder", "fit_polygon_ladder", "gray_zone_advisory",
+    "load_polygon_footprint", "max_fetch_abs_lat",
     "oversized_footprint_advisory", "parse_chain",
-    "parse_custom_ladder", "pole_clearance_deg", "register_cli",
-    "render_config", "render_wps_namelist", "root_time_step_s",
-    "seconds_per_km", "vram_reserve_gib",
+    "parse_custom_ladder", "parse_level_buffers", "pole_clearance_deg",
+    "polygon_ladder_dims", "register_cli", "render_config",
+    "render_wps_namelist", "root_time_step_s", "seconds_per_km",
+    "verify_polygon_containment", "vram_reserve_gib",
+    "CARD_UNAVAILABLE_VRAM_GIB", "CARD_UNAVAILABLE_VRAM_FRACTION",
+    "FIT_HEADROOM_FRACTION",
+    "FIT_HEADROOM_MIN_BYTES", "card_assumed_free_gib",
+    "fit_headroom_bytes", "sizing_budget_bytes",
 ]

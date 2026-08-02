@@ -9,18 +9,23 @@ contract, and the completed prognostic state is FP32 on device.
 
 from __future__ import annotations
 
-from collections.abc import MutableMapping
+import base64
+import binascii
+from collections.abc import Mapping, MutableMapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import hashlib
+import json
 from time import perf_counter
+import zlib
 
 import numpy as np
 
 from gpuwm.config import RunConfig
 from gpuwm.core import constants as c
 from gpuwm.core.grid import (BaseState, VerticalCoord,
-                             finalize_vertical_coord)
+                             finalize_vertical_coord,
+                             hybrid_column_ordering_refusal)
 from gpuwm.core.state import DomainState
 from gpuwm.ingest.horiz import (
     HorizontalSnapshot,
@@ -77,6 +82,47 @@ def _host(value) -> np.ndarray:
 
 HRRR_ANALYZED_HYDROMETEORS = ("QC", "QR", "QI", "QS", "QG")
 
+HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V1 = (
+    "gpuwm-real-hydrometeor-correspondence-v1")
+HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V2 = (
+    "gpuwm-real-hydrometeor-correspondence-v2")
+HRRR_HYDROMETEOR_VERTICAL_DISPOSITION_SCHEMA = (
+    "gpuwm-wrf-real-hydrometeor-vertical-disposition-v1")
+
+_HRRR_DISPOSITION_CLASSES = {
+    "TARGET_INFLUENCING": 1,
+    "WRF_FORCE_SURFACE_EXCLUDED": 2,
+    "WRF_ZAP_CLOSE_EXCLUDED": 3,
+    "WRF_BELOW_GROUND_OUTSIDE_TARGET_SUPPORT": 4,
+    "WRF_ABOVE_TARGET_TOP_OUTSIDE_TARGET_SUPPORT": 5,
+    "WRF_NO_TARGET_STENCIL": 6,
+}
+_HRRR_DISPOSITION_CLASS_BY_CODE = {
+    value: name for name, value in _HRRR_DISPOSITION_CLASSES.items()}
+_HRRR_DISPOSITION_ENCODING = "base64-zlib-uint8-c-order-v1"
+_HRRR_PRODUCTION_SUPPORT_SCHEMA = (
+    "gpuwm-wrf-q-source-level-production-support-v1")
+_HRRR_PRODUCTION_SUPPORT_ENCODING = (
+    "base64-zlib-packbits-little-c-order-v1")
+_HRRR_DISPOSITION_EXAMPLE_LIMIT = 16
+_HRRR_DISPOSITION_OPERATOR = {
+    "schema": "wrf-v4.6.1-real-linear-q-vertical-operator-v1",
+    "wrf_version": "v4.6.1",
+    "wrf_commit": "d66e442fccc04111067e29274c9f9eaccc3cef28",
+    "source": "dyn_em/module_initialize_real.F:5664-6574",
+    "use_surface": True,
+    "surface_value": "exact-fp32-zero",
+    "use_levels_below_ground": True,
+    "force_sfc_in_vinterp": 1,
+    "zap_close_levels_pa": 500.0,
+    "zap_predicate": "pressure_separation < 500 Pa",
+    "interp_in_logp": True,
+    "lagrange_order": 2,
+    "target_operator": "linear-at-every-target-vboundb=ntarget+1",
+    "below_ground_extrapolation": "constant-deepest-assembled-point",
+    "above_source_top": "fatal",
+}
+
 # WRF v4.6.1, commit d66e442fccc04111067e29274c9f9eaccc3cef28:
 # Registry/Registry.EM_COMMON:3015 gives Kessler only moist:qv,qc,qr.
 # dyn_em/module_initialize_real.F:1859-1977 separately interpolates QR/QC/
@@ -115,6 +161,1007 @@ def array_correspondence_fingerprint(value) -> dict[str, object]:
         "nonzero_count": int(np.count_nonzero(array)),
         "minimum": float(np.min(array)),
         "maximum": float(np.max(array)),
+    }
+
+
+def _canonical_receipt_sha256(value: Mapping[str, object]) -> str:
+    def plain(item):
+        if isinstance(item, Mapping):
+            return {str(key): plain(child) for key, child in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [plain(child) for child in item]
+        if isinstance(item, np.generic):
+            return item.item()
+        return item
+
+    encoded = json.dumps(
+        plain(value), sort_keys=True, separators=(",", ":"),
+        allow_nan=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _packed_mask_sha256(mask) -> str:
+    packed = np.packbits(
+        np.ravel(np.asarray(mask, dtype=np.bool_)), bitorder="little")
+    return hashlib.sha256(packed.tobytes()).hexdigest()
+
+
+def _zero_byte_sha256(length: int) -> str:
+    digest = hashlib.sha256()
+    block = b"\0" * min(length, 1024 * 1024)
+    complete, remainder = divmod(length, len(block)) if block else (0, 0)
+    for _ in range(complete):
+        digest.update(block)
+    if remainder:
+        digest.update(block[:remainder])
+    return digest.hexdigest()
+
+
+def _host_float32(value) -> np.ndarray:
+    if hasattr(value, "get"):
+        value = value.get()
+    return np.ascontiguousarray(value, dtype=np.float32)
+
+
+def _hrrr_operator_geometry(
+        source_pressure, surface_pressure, target_pressure, active_mask):
+    """Classify WRF's assembled Q-column support in exact FP32 geometry.
+
+    ``active_mask`` is the union of positive samples across retained source
+    species.  Assembly is field-independent; restricting target-stencil
+    searches to that union avoids turning sparse HRRR cloud evidence into a
+    dense ``nsource * ntarget * ny * nx`` temporary.
+    """
+
+    source = _host_float32(source_pressure)
+    surface = _host_float32(surface_pressure)
+    target = _host_float32(target_pressure)
+    active = np.ascontiguousarray(active_mask, dtype=np.bool_)
+    if source.ndim != 3 or target.ndim != 3:
+        raise ValueError(
+            "hydrometeor pressure geometry must be (level, y, x)")
+    if (surface.shape != source.shape[1:]
+            or target.shape[1:] != source.shape[1:]
+            or active.shape != source.shape):
+        raise ValueError("hydrometeor disposition geometry shapes differ")
+    if (not np.isfinite(source).all()
+            or not np.isfinite(surface).all()
+            or not np.isfinite(target).all()
+            or np.any(source <= 0.0)
+            or np.any(surface <= 0.0)
+            or np.any(target <= 0.0)):
+        raise ValueError("hydrometeor disposition pressure is invalid")
+    if np.any(np.diff(source, axis=0) >= 0.0):
+        raise ValueError(
+            "hydrometeor disposition source pressure is not descending")
+    if np.any(np.diff(target, axis=0) >= 0.0):
+        raise ValueError(
+            "hydrometeor disposition target pressure is not descending")
+
+    nsource, ny, nx = source.shape
+    ncolumn = ny * nx
+    pd = source.reshape(nsource, ncolumn)
+    psfc = surface.reshape(ncolumn)
+    target_column = target.reshape(target.shape[0], ncolumn)
+    active_column = active.reshape(nsource, ncolumn)
+    above = pd < psfc[None, :]
+    if np.any(~np.any(above, axis=0)):
+        raise ValueError(
+            "hydrometeor disposition has no source level above surface")
+    first_above = np.argmax(above, axis=0).astype(np.int32)
+    level = np.arange(nsource, dtype=np.int32)[:, None]
+    force_candidate = (
+        (level >= first_above[None, :])
+        & (pd <= target_column[0][None, :]))
+    has_force_candidate = np.any(force_candidate, axis=0)
+    first_force_candidate = np.argmax(force_candidate, axis=0)
+    knext = np.where(
+        has_force_candidate, first_force_candidate, first_above).astype(
+            np.int32)
+
+    force_code = _HRRR_DISPOSITION_CLASSES[
+        "WRF_FORCE_SURFACE_EXCLUDED"]
+    zap_code = _HRRR_DISPOSITION_CLASSES["WRF_ZAP_CLOSE_EXCLUDED"]
+    # 255 is deliberately invalid.  Assembly must replace every cell with
+    # included/no-target-yet (0), force exclusion (2), or zap exclusion (3).
+    operator_class = np.full((nsource, ncolumn), 255, dtype=np.uint8)
+    has_below_ground = first_above > 0
+    surface_lowest = ~has_below_ground
+    last_surface_branch_pressure = psfc.copy()
+    for k in range(nsource):
+        pressure = pd[k]
+
+        below = has_below_ground & (k < first_above)
+        close_below = (
+            below & (k == first_above - 1)
+            & ((pressure - psfc) < np.float32(500.0)))
+        operator_class[k, below & ~close_below] = 0
+        operator_class[k, close_below] = zap_code
+
+        above_surface = has_below_ground & (k >= first_above)
+        forced = above_surface & (k < knext)
+        close_above = (
+            above_surface & (k == knext)
+            & ((psfc - pressure) < np.float32(500.0)))
+        operator_class[k, above_surface & ~forced & ~close_above] = 0
+        operator_class[k, forced] = force_code
+        operator_class[k, close_above] = zap_code
+
+        forced_lowest = surface_lowest & (k < knext)
+        candidate_lowest = surface_lowest & (k >= knext)
+        close_lowest = (
+            candidate_lowest
+            & ((last_surface_branch_pressure - pressure)
+               < np.float32(500.0))
+            & (k < nsource - 1))
+        accepted_lowest = candidate_lowest & ~close_lowest
+        operator_class[k, accepted_lowest] = 0
+        operator_class[k, forced_lowest] = force_code
+        operator_class[k, close_lowest] = zap_code
+        last_surface_branch_pressure = np.where(
+            accepted_lowest, pressure, last_surface_branch_pressure)
+
+    if np.any(operator_class == 255):
+        raise AssertionError(
+            "WRF hydrometeor column assembly left an unclassified level")
+
+    # All hydrometeor targets are in WRF's linear branch (vboundb=ntarget+1).
+    # Use FP32 log-pressure because both production implementations do.  A
+    # source sample influences a target only when its computed linear weight
+    # is nonzero; the strict endpoint inequalities below encode that fact.
+    previous_x = np.full(ncolumn, np.nan, dtype=np.float32)
+    has_previous = np.zeros(ncolumn, dtype=np.bool_)
+    surface_x = np.log(surface).reshape(ncolumn)
+    for k in range(nsource):
+        insert_surface = first_above == k
+        previous_x = np.where(insert_surface, surface_x, previous_x)
+        has_previous |= insert_surface
+        relevant = active_column[k] & (operator_class[k] == 0)
+        columns = np.flatnonzero(relevant)
+        if columns.size:
+            if columns.size == ncolumn:
+                current_x = np.log(pd[k])
+                target_x_active = np.log(target_column)
+            else:
+                current_x = np.log(pd[k, columns])
+                target_x_active = np.log(target_column[:, columns])
+            prior = previous_x[columns]
+            prior_exists = has_previous[columns]
+            bracketed = np.any(
+                (target_x_active < prior[None, :])
+                & (target_x_active >= current_x[None, :]), axis=0)
+            deepest = np.any(
+                target_column[:, columns] >= pd[k, columns][None, :],
+                axis=0)
+            influences = np.where(prior_exists, bracketed, deepest)
+            operator_class[k, columns[influences]] = 1
+        accepted = operator_class[k] <= 1
+        current_x_all = np.log(pd[k])
+        previous_x = np.where(
+            accepted, current_x_all, previous_x)
+        has_previous |= accepted
+
+    next_x = np.full(ncolumn, np.nan, dtype=np.float32)
+    has_next = np.zeros(ncolumn, dtype=np.bool_)
+    for k in range(nsource - 1, -1, -1):
+        relevant = active_column[k] & (operator_class[k] <= 1)
+        columns = np.flatnonzero(relevant)
+        if columns.size:
+            if columns.size == ncolumn:
+                current_x = np.log(pd[k])
+                target_x_active = np.log(target_column)
+            else:
+                current_x = np.log(pd[k, columns])
+                target_x_active = np.log(target_column[:, columns])
+            following = next_x[columns]
+            following_exists = has_next[columns]
+            bracketed = np.any(
+                (target_x_active <= current_x[None, :])
+                & (target_x_active > following[None, :]), axis=0)
+            influences = following_exists & bracketed
+            operator_class[k, columns[influences]] = 1
+        accepted = operator_class[k] <= 1
+        current_x_all = np.log(pd[k])
+        next_x = np.where(accepted, current_x_all, next_x)
+        has_next |= accepted
+        insert_surface = first_above == k
+        next_x = np.where(insert_surface, surface_x, next_x)
+        has_next |= insert_surface
+
+    return {
+        "source_pressure": source,
+        "surface_pressure": surface,
+        "target_pressure": target,
+        "first_above": first_above.reshape(ny, nx),
+        "knext": knext.reshape(ny, nx),
+        "operator_class": operator_class.reshape(source.shape),
+    }
+
+
+def _hrrr_disposition_example(
+        *, raw_field, raw_labels, order, ordered_level, y, x,
+        geometry) -> dict[str, object]:
+    """Return inspectable pressure/stencil evidence for one source sample."""
+
+    raw_level = int(order[ordered_level])
+    source = geometry["source_pressure"][:, y, x]
+    surface = float(geometry["surface_pressure"][y, x])
+    target = geometry["target_pressure"][:, y, x]
+    included = geometry["operator_class"][:, y, x] <= 1
+    first_above = int(geometry["first_above"][y, x])
+    assembled: list[tuple[str, int | None, float]] = []
+    for level in range(source.size):
+        if level == first_above:
+            assembled.append(("surface", None, surface))
+        if included[level]:
+            assembled.append(("source", level, float(source[level])))
+    position = next(
+        (index for index, item in enumerate(assembled)
+         if item[0] == "source" and item[1] == ordered_level), None)
+
+    def point(index):
+        if index is None or index < 0 or index >= len(assembled):
+            return None
+        kind, level, pressure = assembled[index]
+        return {
+            "kind": kind,
+            "wrf_ordered_source_level": level,
+            "pressure_pa": pressure,
+        }
+
+    influencing_targets = []
+    if position is not None:
+        pressure_x = np.log(np.asarray(
+            [item[2] for item in assembled], dtype=np.float32))
+        target_x = np.log(np.asarray(target, dtype=np.float32))
+        for target_index, (pt, xt) in enumerate(zip(target, target_x)):
+            participants: set[int] = set()
+            found = None
+            for lower in range(len(assembled) - 1):
+                if ((xt - pressure_x[lower])
+                        * (xt - pressure_x[lower + 1]) <= 0.0):
+                    found = lower
+                    break
+            if found is None:
+                if pt > assembled[0][2] and assembled[0][0] == "source":
+                    participants.add(0)
+            else:
+                if xt != pressure_x[found + 1]:
+                    participants.add(found)
+                if xt != pressure_x[found]:
+                    participants.add(found + 1)
+            if position in participants:
+                influencing_targets.append(target_index)
+
+    code = int(raw_labels[raw_level, y, x])
+    return {
+        "class": _HRRR_DISPOSITION_CLASS_BY_CODE[code],
+        "raw_source_index": [raw_level, int(y), int(x)],
+        "raw_flat_index": int(np.ravel_multi_index(
+            (raw_level, y, x), raw_labels.shape)),
+        "wrf_ordered_source_level": int(ordered_level),
+        "source_value": float(raw_field[raw_level, y, x]),
+        "source_pressure_pa": float(source[ordered_level]),
+        "surface_pressure_pa": surface,
+        "force_target_pressure_pa": float(target[0]),
+        "target_pressure_minimum_pa": float(np.min(target)),
+        "target_pressure_maximum_pa": float(np.max(target)),
+        "previous_assembled_point": (
+            point(position - 1) if position is not None else None),
+        "next_assembled_point": (
+            point(position + 1) if position is not None else None),
+        "influencing_target_indices": influencing_targets,
+    }
+
+
+def build_hrrr_hydrometeor_vertical_disposition(
+        source_fields: Mapping[str, object], source_level_order,
+        source_pressure, surface_pressure, target_pressure,
+        initialized_fields: Mapping[str, object], *,
+        operator_replay) -> dict[str, object]:
+    """Build exhaustive, source-ordered WRF Q-support evidence.
+
+    Every exact nonzero decoded FP32 source sample receives exactly one class:
+    target-influencing, one of WRF's two column-assembly exclusions, or one
+    of three explicit reasons an assembled sample has no target stencil.
+    Labels are stored in decoded-source order and compressed losslessly; their
+    nonzero mask must therefore reproduce the decoded field's independently
+    published mask checksum.
+    """
+
+    if (not source_fields or set(source_fields) != set(initialized_fields)
+            or not callable(operator_replay)):
+        raise ValueError(
+            "hydrometeor disposition source/state/replay inventory differs")
+    order = np.ascontiguousarray(source_level_order, dtype=np.int32)
+    first_shape = tuple(next(iter(source_fields.values())).shape)
+    if (len(first_shape) != 3 or order.shape != (first_shape[0],)
+            or not np.array_equal(np.sort(order), np.arange(first_shape[0]))
+            or any(tuple(value.shape) != first_shape
+                   for value in source_fields.values())):
+        raise ValueError("hydrometeor disposition source inventory is invalid")
+    active = np.zeros(first_shape, dtype=np.bool_)
+    for name in sorted(source_fields):
+        raw = _host_float32(source_fields[name])
+        if not np.isfinite(raw).all() or np.any(raw < 0.0):
+            raise ValueError(
+                f"hydrometeor disposition source {name} is invalid")
+        active |= _ordered_levels(raw, order) != 0.0
+    geometry = _hrrr_operator_geometry(
+        source_pressure, surface_pressure, target_pressure, active)
+    if geometry["source_pressure"].shape != first_shape:
+        raise ValueError(
+            "hydrometeor disposition pressure/source shapes differ")
+    if np.any(~np.isin(
+            geometry["operator_class"], np.asarray([0, 1, 2, 3],
+                                                   dtype=np.uint8))):
+        raise AssertionError(
+            "WRF hydrometeor operator geometry is unclassified")
+
+    # Establish the exact production support of each source sample without
+    # trusting the symbolic pressure classifier.  Vertical interpolation is
+    # column-local, linear, and nonnegative for this Q path, so replaying one
+    # ordered source level of binary ones across every column identifies that
+    # level's support exactly: a source cell participates iff any target in
+    # its column is exact nonzero.  The nsource replays are shared by every
+    # retained hydrometeor species.
+    production_support = np.zeros(first_shape, dtype=np.bool_)
+    level_replays = []
+    level_input = np.zeros(first_shape, dtype=np.bool_)
+    for ordered_level in range(first_shape[0]):
+        level_input[ordered_level] = True
+        level_output = _host_float32(operator_replay(level_input))
+        level_input[ordered_level] = False
+        if (level_output.shape != geometry["target_pressure"].shape
+                or not np.isfinite(level_output).all()
+                or np.any(level_output < 0.0)):
+            raise ValueError(
+                "hydrometeor disposition source-level production replay "
+                f"failed at ordered level {ordered_level}")
+        level_support = np.any(level_output != 0.0, axis=0)
+        production_support[ordered_level] = level_support
+        level_replays.append({
+            "ordered_source_level": ordered_level,
+            "raw_source_level": int(order[ordered_level]),
+            "supported_column_count": int(np.count_nonzero(level_support)),
+            "support_mask_sha256": _packed_mask_sha256(level_support),
+            "output": array_correspondence_fingerprint(level_output),
+        })
+        del level_output, level_support
+    del level_input
+    if not np.array_equal(
+            active & (geometry["operator_class"] == 1),
+            active & production_support):
+        raise ValueError(
+            "hydrometeor disposition falsely excluded or included WRF "
+            "target support in its symbolic pressure partition")
+    del active
+
+    raw_production_support = np.zeros_like(production_support)
+    raw_production_support[order] = production_support
+    packed_production_support = np.packbits(
+        raw_production_support.ravel(), bitorder="little")
+    production_support_receipt = {
+        "schema": _HRRR_PRODUCTION_SUPPORT_SCHEMA,
+        "shape": list(first_shape),
+        "encoding": _HRRR_PRODUCTION_SUPPORT_ENCODING,
+        "mask_base64": base64.b64encode(zlib.compress(
+            packed_production_support.tobytes(), level=9)).decode("ascii"),
+        "mask_sha256": hashlib.sha256(
+            packed_production_support.tobytes()).hexdigest(),
+        "support_count": int(np.count_nonzero(raw_production_support)),
+        "level_replays": level_replays,
+    }
+    del raw_production_support, packed_production_support
+
+    geometry_receipt = {
+        "source_pressure": array_correspondence_fingerprint(
+            geometry["source_pressure"]),
+        "surface_pressure": array_correspondence_fingerprint(
+            geometry["surface_pressure"]),
+        "target_pressure": array_correspondence_fingerprint(
+            geometry["target_pressure"]),
+        "source_level_order": array_correspondence_fingerprint(order),
+        "source_level_order_values": order.tolist(),
+        "production_target_support": production_support_receipt,
+    }
+    species_receipts = {}
+    for name in sorted(source_fields):
+        raw = _host_float32(source_fields[name])
+        ordered = _ordered_levels(raw, order)
+        positive = ordered != 0.0
+        labels = np.zeros(first_shape, dtype=np.uint8)
+        operator_class = geometry["operator_class"]
+        excluded = positive & (operator_class >= 2)
+        labels[excluded] = operator_class[excluded]
+        included_positive = positive & (operator_class <= 1)
+        target_influencing = (
+            included_positive & (operator_class == 1))
+        production_target_influencing = positive & production_support
+        if not np.array_equal(
+                target_influencing, production_target_influencing):
+            raise ValueError(
+                "hydrometeor disposition falsely excluded or included WRF "
+                f"target support for {name}")
+        labels[target_influencing] = _HRRR_DISPOSITION_CLASSES[
+            "TARGET_INFLUENCING"]
+        unsupported = included_positive & ~target_influencing
+        labels[
+            unsupported
+            & (geometry["source_pressure"]
+               >= geometry["surface_pressure"][None, :, :])
+        ] = _HRRR_DISPOSITION_CLASSES[
+            "WRF_BELOW_GROUND_OUTSIDE_TARGET_SUPPORT"]
+        labels[
+            unsupported
+            & (geometry["source_pressure"]
+               < np.min(geometry["target_pressure"], axis=0)[None, :, :])
+        ] = _HRRR_DISPOSITION_CLASSES[
+            "WRF_ABOVE_TARGET_TOP_OUTSIDE_TARGET_SUPPORT"]
+        labels[unsupported & (labels == 0)] = _HRRR_DISPOSITION_CLASSES[
+            "WRF_NO_TARGET_STENCIL"]
+        if np.any(positive & (labels == 0)) or np.any(~positive & (labels != 0)):
+            raise AssertionError(
+                f"hydrometeor disposition partition failed for {name}")
+
+        raw_labels = np.zeros_like(labels)
+        raw_labels[order] = labels
+        encoded = zlib.compress(raw_labels.tobytes(order="C"), level=9)
+        counts = {}
+        mask_hashes = {}
+        examples = {}
+        for class_name, code in _HRRR_DISPOSITION_CLASSES.items():
+            class_mask = raw_labels == code
+            count = int(np.count_nonzero(class_mask))
+            counts[class_name] = count
+            mask_hashes[class_name] = _packed_mask_sha256(class_mask)
+            records = []
+            flat_indices = np.flatnonzero(class_mask.ravel())[
+                :_HRRR_DISPOSITION_EXAMPLE_LIMIT]
+            for flat_index in flat_indices:
+                raw_level, y, x = np.unravel_index(
+                    int(flat_index), first_shape)
+                ordered_level = int(np.flatnonzero(order == raw_level)[0])
+                records.append(_hrrr_disposition_example(
+                    raw_field=raw, raw_labels=raw_labels, order=order,
+                    ordered_level=ordered_level, y=int(y), x=int(x),
+                    geometry=geometry))
+            examples[class_name] = {
+                "complete": count <= _HRRR_DISPOSITION_EXAMPLE_LIMIT,
+                "total_count": count,
+                "records": records,
+            }
+        source_fingerprint = array_correspondence_fingerprint(raw)
+        live_fingerprint = array_correspondence_fingerprint(
+            initialized_fields[name])
+        # This is the independent production-authority check on the symbolic
+        # pressure partition above.  Q interpolation is linear with
+        # nonnegative weights and an exact-zero surface pseudo-level.  Thus a
+        # binary replay of every excluded sample must be identically zero,
+        # while replaying only TARGET_INFLUENCING samples must be byte-equal
+        # to replaying the complete decoded nonzero mask.  The callback uses
+        # the very same prepared backend plan/options as the analyzed field.
+        source_replay = _host_float32(operator_replay(labels != 0))
+        source_replay_fingerprint = array_correspondence_fingerprint(
+            source_replay)
+        if (list(source_replay.shape) != live_fingerprint["shape"]
+                or not np.isfinite(source_replay).all()
+                or np.any(source_replay < 0.0)):
+            raise ValueError(
+                f"hydrometeor disposition operator replay failed for {name}")
+        del source_replay
+        influencing_replay = _host_float32(
+            operator_replay(
+                labels == _HRRR_DISPOSITION_CLASSES[
+                    "TARGET_INFLUENCING"]))
+        if (list(influencing_replay.shape) != live_fingerprint["shape"]
+                or not np.isfinite(influencing_replay).all()
+                or np.any(influencing_replay < 0.0)):
+            raise ValueError(
+                f"hydrometeor disposition operator replay failed for {name}")
+        influencing_replay_fingerprint = array_correspondence_fingerprint(
+            influencing_replay)
+        if source_replay_fingerprint != influencing_replay_fingerprint:
+            raise ValueError(
+                "hydrometeor disposition falsely excluded or included WRF "
+                f"target support for {name}")
+        del influencing_replay
+        excluded_replay = _host_float32(operator_replay(
+            (labels != 0)
+            & (labels != _HRRR_DISPOSITION_CLASSES[
+                "TARGET_INFLUENCING"])))
+        if (list(excluded_replay.shape) != live_fingerprint["shape"]
+                or not np.isfinite(excluded_replay).all()
+                or np.any(excluded_replay < 0.0)):
+            raise ValueError(
+                f"hydrometeor disposition operator replay failed for {name}")
+        if np.any(excluded_replay != 0.0):
+            raise ValueError(
+                "hydrometeor disposition classified target-influencing "
+                f"source mass as excluded for {name}")
+        operator_replay_receipt = {
+            "schema": "gpuwm-wrf-q-binary-mask-production-replay-v1",
+            "source_mask_sha256": _packed_mask_sha256(raw != 0.0),
+            "target_influencing_mask_sha256": _packed_mask_sha256(
+                raw_labels == _HRRR_DISPOSITION_CLASSES[
+                    "TARGET_INFLUENCING"]),
+            "excluded_mask_sha256": _packed_mask_sha256(
+                (raw_labels != 0)
+                & (raw_labels != _HRRR_DISPOSITION_CLASSES[
+                    "TARGET_INFLUENCING"])),
+            "source_output": source_replay_fingerprint,
+            "target_influencing_output": influencing_replay_fingerprint,
+            "excluded_output": array_correspondence_fingerprint(
+                excluded_replay),
+            "source_target_outputs_byte_equal": True,
+            "excluded_output_all_exact_zero": True,
+        }
+        influencing_count = counts["TARGET_INFLUENCING"]
+        if influencing_count > 0 and int(live_fingerprint["nonzero_count"]) == 0:
+            raise ValueError(
+                "WRF target-influencing analyzed hydrometeor source mass "
+                f"was lost for {name}")
+        if influencing_count == 0 and int(live_fingerprint["nonzero_count"]) != 0:
+            raise ValueError(
+                "WRF target-independent hydrometeor source produced "
+                f"unexpected initialized mass for {name}")
+        species_receipts[name] = {
+            "shape": list(first_shape),
+            "encoding": _HRRR_DISPOSITION_ENCODING,
+            "labels_base64": base64.b64encode(encoded).decode("ascii"),
+            "labels_sha256": hashlib.sha256(
+                raw_labels.tobytes(order="C")).hexdigest(),
+            "decoded_source_fingerprint_sha256": (
+                _canonical_receipt_sha256(source_fingerprint)),
+            "initialized_state_fingerprint_sha256": (
+                _canonical_receipt_sha256(live_fingerprint)),
+            "partition_complete": True,
+            "source_nonzero_count": int(source_fingerprint["nonzero_count"]),
+            "target_influencing_source_count": influencing_count,
+            "wrf_excluded_source_count": (
+                int(source_fingerprint["nonzero_count"])
+                - influencing_count),
+            "class_counts": counts,
+            "class_mask_sha256": mask_hashes,
+            "examples": examples,
+            "operator_replay": operator_replay_receipt,
+        }
+
+    receipt = {
+        "schema": HRRR_HYDROMETEOR_VERTICAL_DISPOSITION_SCHEMA,
+        "operator": dict(_HRRR_DISPOSITION_OPERATOR),
+        "geometry": geometry_receipt,
+        "species": species_receipts,
+    }
+    receipt["evidence_sha256"] = _canonical_receipt_sha256(receipt)
+    return receipt
+
+
+def _decode_hrrr_disposition_labels(
+        encoded: object, *, expected_bytes: int) -> np.ndarray:
+    if not isinstance(encoded, str) or expected_bytes < 1:
+        raise ValueError("hydrometeor disposition label encoding is invalid")
+    try:
+        compressed = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError(
+            "hydrometeor disposition label encoding is invalid") from exc
+    decompressor = zlib.decompressobj()
+    try:
+        decoded = decompressor.decompress(compressed, expected_bytes + 1)
+        decoded += decompressor.flush(max(1, expected_bytes + 1 - len(decoded)))
+    except zlib.error as exc:
+        raise ValueError(
+            "hydrometeor disposition labels are not valid zlib data") from exc
+    if (len(decoded) != expected_bytes or not decompressor.eof
+            or decompressor.unused_data or decompressor.unconsumed_tail):
+        raise ValueError(
+            "hydrometeor disposition label payload has the wrong length")
+    return np.frombuffer(decoded, dtype=np.uint8).copy()
+
+
+def _decode_hrrr_production_support(
+        encoded: object, *, expected_bits: int) -> np.ndarray:
+    """Decode one canonical packed production-support certificate."""
+
+    expected_bytes = (expected_bits + 7) // 8
+    try:
+        packed = _decode_hrrr_disposition_labels(
+            encoded, expected_bytes=expected_bytes)
+    except ValueError as exc:
+        raise ValueError(
+            "hydrometeor production support encoding is invalid") from exc
+    support = np.unpackbits(
+        packed, bitorder="little", count=expected_bits).astype(
+            np.bool_, copy=False)
+    if not np.array_equal(
+            np.packbits(support, bitorder="little"), packed):
+        raise ValueError(
+            "hydrometeor production support padding is noncanonical")
+    return support
+
+
+def validate_hrrr_hydrometeor_vertical_disposition(
+        source_fingerprints: Mapping[str, object],
+        initialized_fingerprints: Mapping[str, object],
+        disposition: object) -> dict[str, object]:
+    """Fail closed over a producer's exhaustive WRF-support partition."""
+
+    if not isinstance(disposition, Mapping):
+        raise ValueError("hydrometeor vertical disposition evidence is missing")
+    if set(disposition) != {
+            "schema", "operator", "geometry", "species",
+            "evidence_sha256"}:
+        raise ValueError("hydrometeor vertical disposition fields are invalid")
+    if (disposition.get("schema")
+            != HRRR_HYDROMETEOR_VERTICAL_DISPOSITION_SCHEMA
+            or disposition.get("operator") != _HRRR_DISPOSITION_OPERATOR
+            or not isinstance(disposition.get("geometry"), Mapping)
+            or not isinstance(disposition.get("species"), Mapping)
+            or not isinstance(disposition.get("evidence_sha256"), str)):
+        raise ValueError("hydrometeor vertical disposition schema is invalid")
+    unsigned = dict(disposition)
+    observed_hash = unsigned.pop("evidence_sha256")
+    if observed_hash != _canonical_receipt_sha256(unsigned):
+        raise ValueError("hydrometeor vertical disposition evidence was changed")
+    geometry = disposition["geometry"]
+    if set(geometry) != {
+            "source_pressure", "surface_pressure", "target_pressure",
+            "source_level_order", "source_level_order_values",
+            "production_target_support"}:
+        raise ValueError("hydrometeor disposition geometry is incomplete")
+    for name in (
+            "source_pressure", "surface_pressure", "target_pressure",
+            "source_level_order"):
+        if (not isinstance(geometry[name], Mapping)
+                or not {"shape", "dtype", "sha256",
+                        "nonzero_mask_sha256", "nonzero_count",
+                        "minimum", "maximum"} <= set(geometry[name])):
+            raise ValueError(
+                "hydrometeor disposition geometry fingerprint is invalid")
+    if (set(source_fingerprints) != set(initialized_fingerprints)
+            or set(disposition["species"]) != set(source_fingerprints)
+            or not source_fingerprints):
+        raise ValueError(
+            "hydrometeor disposition species inventory is incomplete")
+    first_source = next(iter(source_fingerprints.values()))
+    first_initialized = next(iter(initialized_fingerprints.values()))
+    source_shape = first_source.get("shape") \
+        if isinstance(first_source, Mapping) else None
+    state_shape = first_initialized.get("shape") \
+        if isinstance(first_initialized, Mapping) else None
+    order_values = geometry["source_level_order_values"]
+    if (not isinstance(source_shape, list) or len(source_shape) != 3
+            or not isinstance(state_shape, list) or len(state_shape) != 3
+            or any(isinstance(value, bool) or not isinstance(value, int)
+                   or value < 1 for value in source_shape + state_shape)
+            or source_shape[0] * source_shape[1] * source_shape[2]
+            > 250_000_000
+            or state_shape[0] * state_shape[1] * state_shape[2]
+            > 250_000_000
+            or not isinstance(order_values, list)
+            or len(order_values) != source_shape[0]
+            or any(isinstance(value, bool) or not isinstance(value, int)
+                   for value in order_values)
+            or sorted(order_values) != list(range(source_shape[0]))
+            or geometry["source_pressure"].get("shape") != source_shape
+            or geometry["source_pressure"].get("dtype") != "float32"
+            or geometry["surface_pressure"].get("shape") != source_shape[1:]
+            or geometry["surface_pressure"].get("dtype") != "float32"
+            or geometry["target_pressure"].get("shape") != state_shape
+            or geometry["target_pressure"].get("dtype") != "float32"
+            or any(float(geometry[key].get("minimum", np.nan)) <= 0.0
+                   for key in ("source_pressure", "surface_pressure",
+                               "target_pressure"))
+            or geometry["source_level_order"]
+            != array_correspondence_fingerprint(
+                np.asarray(order_values, dtype=np.int32))):
+        raise ValueError("hydrometeor disposition geometry is inconsistent")
+
+    required_fingerprint = {
+        "shape", "dtype", "sha256", "nonzero_mask_sha256",
+        "nonzero_count", "minimum", "maximum"}
+    support_receipt = geometry["production_target_support"]
+    if (not isinstance(support_receipt, Mapping)
+            or set(support_receipt) != {
+                "schema", "shape", "encoding", "mask_base64",
+                "mask_sha256", "support_count", "level_replays"}
+            or support_receipt.get("schema")
+            != _HRRR_PRODUCTION_SUPPORT_SCHEMA
+            or support_receipt.get("shape") != source_shape
+            or support_receipt.get("encoding")
+            != _HRRR_PRODUCTION_SUPPORT_ENCODING
+            or not isinstance(support_receipt.get("mask_sha256"), str)
+            or isinstance(support_receipt.get("support_count"), bool)
+            or not isinstance(support_receipt.get("support_count"), int)
+            or not 0 <= support_receipt["support_count"] <= int(
+                np.prod(source_shape, dtype=np.int64))
+            or not isinstance(support_receipt.get("level_replays"), list)
+            or len(support_receipt["level_replays"]) != source_shape[0]):
+        raise ValueError(
+            "hydrometeor production target support evidence is invalid")
+    production_support = _decode_hrrr_production_support(
+        support_receipt.get("mask_base64"),
+        expected_bits=int(np.prod(source_shape, dtype=np.int64))).reshape(
+            source_shape)
+    if (support_receipt["mask_sha256"]
+            != _packed_mask_sha256(production_support)
+            or support_receipt["support_count"]
+            != int(np.count_nonzero(production_support))):
+        raise ValueError(
+            "hydrometeor production target support mask is invalid")
+    ncolumn = source_shape[1] * source_shape[2]
+    ntarget = state_shape[0]
+    for ordered_level, replay in enumerate(
+            support_receipt["level_replays"]):
+        raw_level = order_values[ordered_level]
+        level_support = production_support[raw_level]
+        support_count = int(np.count_nonzero(level_support))
+        if (not isinstance(replay, Mapping)
+                or set(replay) != {
+                    "ordered_source_level", "raw_source_level",
+                    "supported_column_count", "support_mask_sha256",
+                    "output"}
+                or replay.get("ordered_source_level") != ordered_level
+                or replay.get("raw_source_level") != raw_level
+                or isinstance(replay.get("supported_column_count"), bool)
+                or replay.get("supported_column_count") != support_count
+                or support_count > ncolumn
+                or replay.get("support_mask_sha256")
+                != _packed_mask_sha256(level_support)
+                or not isinstance(replay.get("output"), Mapping)
+                or set(replay["output"]) != required_fingerprint
+                or replay["output"].get("shape") != state_shape
+                or replay["output"].get("dtype") != "float32"
+                or isinstance(
+                    replay["output"].get("nonzero_count"), bool)
+                or not isinstance(
+                    replay["output"].get("nonzero_count"), int)
+                or not support_count
+                <= replay["output"]["nonzero_count"]
+                <= support_count * ntarget
+                or not 0.0 <= float(
+                    replay["output"].get("minimum", np.nan))
+                <= float(replay["output"].get("maximum", np.nan))
+                <= 1.0):
+            raise ValueError(
+                "hydrometeor source-level production replay is invalid")
+
+    validated = {}
+    for name in sorted(source_fingerprints):
+        source = source_fingerprints[name]
+        initialized = initialized_fingerprints[name]
+        item = disposition["species"][name]
+        if (not isinstance(source, Mapping)
+                or not isinstance(initialized, Mapping)
+                or not isinstance(item, Mapping)):
+            raise ValueError(
+                f"hydrometeor disposition {name} fingerprints are invalid")
+        if (not required_fingerprint <= set(source)
+                or not required_fingerprint <= set(initialized)):
+            raise ValueError(
+                f"hydrometeor disposition {name} fingerprint is incomplete")
+        if set(item) != {
+                "shape", "encoding", "labels_base64", "labels_sha256",
+                "decoded_source_fingerprint_sha256",
+                "initialized_state_fingerprint_sha256",
+                "partition_complete", "source_nonzero_count",
+                "target_influencing_source_count",
+                "wrf_excluded_source_count", "class_counts",
+                "class_mask_sha256", "examples", "operator_replay"}:
+            raise ValueError(
+                f"hydrometeor disposition {name} fields are incomplete")
+        count_fields = (
+            source.get("nonzero_count"), initialized.get("nonzero_count"),
+            item.get("source_nonzero_count"),
+            item.get("target_influencing_source_count"),
+            item.get("wrf_excluded_source_count"),
+        )
+        if any(isinstance(value, bool) or not isinstance(value, int)
+               or value < 0 for value in count_fields):
+            raise ValueError(
+                f"hydrometeor disposition {name} count is invalid")
+        shape = item.get("shape")
+        if (not isinstance(shape, list) or len(shape) != 3
+                or any(isinstance(value, bool) or not isinstance(value, int)
+                       or value < 1 for value in shape)
+                or shape != source.get("shape")
+                or shape != source_shape
+                or initialized.get("shape") != state_shape
+                or np.prod(shape, dtype=np.int64) > 250_000_000):
+            raise ValueError(
+                f"hydrometeor disposition {name} shape is invalid")
+        expected_bytes = int(np.prod(shape, dtype=np.int64))
+        if item.get("encoding") != _HRRR_DISPOSITION_ENCODING:
+            raise ValueError(
+                f"hydrometeor disposition {name} encoding is invalid")
+        labels = _decode_hrrr_disposition_labels(
+            item.get("labels_base64"), expected_bytes=expected_bytes)
+        labels = labels.reshape(shape)
+        if (item.get("labels_sha256") != hashlib.sha256(
+                labels.tobytes(order="C")).hexdigest()
+                or item.get("decoded_source_fingerprint_sha256")
+                != _canonical_receipt_sha256(source)
+                or item.get("initialized_state_fingerprint_sha256")
+                != _canonical_receipt_sha256(initialized)
+                or item.get("partition_complete") is not True):
+            raise ValueError(
+                f"hydrometeor disposition {name} identity is invalid")
+        allowed_codes = np.asarray(
+            [0, *_HRRR_DISPOSITION_CLASS_BY_CODE], dtype=np.uint8)
+        if np.any(~np.isin(labels, allowed_codes)):
+            raise ValueError(
+                f"hydrometeor disposition {name} has an unknown class")
+        source_count = int(source.get("nonzero_count", -1))
+        if (source_count < 0
+                or item.get("source_nonzero_count") != source_count
+                or int(np.count_nonzero(labels)) != source_count
+                or _packed_mask_sha256(labels != 0)
+                != source.get("nonzero_mask_sha256")):
+            raise ValueError(
+                f"hydrometeor disposition {name} does not partition the "
+                "decoded source mask")
+        counts = item.get("class_counts")
+        mask_hashes = item.get("class_mask_sha256")
+        examples = item.get("examples")
+        if (not isinstance(counts, Mapping)
+                or set(counts) != set(_HRRR_DISPOSITION_CLASSES)
+                or not isinstance(mask_hashes, Mapping)
+                or set(mask_hashes) != set(_HRRR_DISPOSITION_CLASSES)
+                or not isinstance(examples, Mapping)
+                or set(examples) != set(_HRRR_DISPOSITION_CLASSES)):
+            raise ValueError(
+                f"hydrometeor disposition {name} class evidence is invalid")
+        observed_counts = {}
+        for class_name, code in _HRRR_DISPOSITION_CLASSES.items():
+            class_mask = labels == code
+            count = int(np.count_nonzero(class_mask))
+            observed_counts[class_name] = count
+            example = examples[class_name]
+            if (isinstance(counts[class_name], bool)
+                    or not isinstance(counts[class_name], int)
+                    or counts[class_name] != count
+                    or mask_hashes[class_name]
+                    != _packed_mask_sha256(class_mask)
+                    or not isinstance(example, Mapping)
+                    or set(example) != {"complete", "total_count", "records"}
+                    or isinstance(example.get("total_count"), bool)
+                    or not isinstance(example.get("total_count"), int)
+                    or example.get("total_count") != count
+                    or example.get("complete")
+                    is not (count <= _HRRR_DISPOSITION_EXAMPLE_LIMIT)
+                    or not isinstance(example.get("records"), list)
+                    or len(example["records"])
+                    != min(count, _HRRR_DISPOSITION_EXAMPLE_LIMIT)):
+                raise ValueError(
+                    f"hydrometeor disposition {name}/{class_name} "
+                    "evidence is inconsistent")
+            seen = set()
+            for record in example["records"]:
+                if (not isinstance(record, Mapping)
+                        or record.get("class") != class_name
+                        or not isinstance(record.get("raw_flat_index"), int)
+                        or record["raw_flat_index"] in seen
+                        or not 0 <= record["raw_flat_index"] < expected_bytes
+                        or int(labels.ravel()[record["raw_flat_index"]])
+                        != code
+                        or not isinstance(
+                            record.get("influencing_target_indices"), list)
+                        or (class_name == "TARGET_INFLUENCING")
+                        != bool(record["influencing_target_indices"])):
+                    raise ValueError(
+                        f"hydrometeor disposition {name}/{class_name} "
+                        "example is invalid")
+                seen.add(record["raw_flat_index"])
+        influencing_count = observed_counts["TARGET_INFLUENCING"]
+        excluded_count = source_count - influencing_count
+        expected_target = (labels != 0) & production_support
+        if not np.array_equal(
+                labels == _HRRR_DISPOSITION_CLASSES["TARGET_INFLUENCING"],
+                expected_target):
+            raise ValueError(
+                f"hydrometeor disposition {name} contradicts exact "
+                "production target support")
+        if (item.get("target_influencing_source_count") != influencing_count
+                or item.get("wrf_excluded_source_count") != excluded_count):
+            raise ValueError(
+                f"hydrometeor disposition {name} partition totals differ")
+        replay = item.get("operator_replay")
+        if (not isinstance(replay, Mapping)
+                or set(replay) != {
+                    "schema", "source_mask_sha256",
+                    "target_influencing_mask_sha256",
+                    "excluded_mask_sha256", "source_output",
+                    "target_influencing_output", "excluded_output",
+                    "source_target_outputs_byte_equal",
+                    "excluded_output_all_exact_zero"}
+                or replay.get("schema")
+                != "gpuwm-wrf-q-binary-mask-production-replay-v1"
+                or replay.get("source_mask_sha256")
+                != _packed_mask_sha256(labels != 0)
+                or replay.get("target_influencing_mask_sha256")
+                != _packed_mask_sha256(
+                    labels == _HRRR_DISPOSITION_CLASSES[
+                        "TARGET_INFLUENCING"])
+                or replay.get("excluded_mask_sha256")
+                != _packed_mask_sha256(
+                    (labels != 0)
+                    & (labels != _HRRR_DISPOSITION_CLASSES[
+                        "TARGET_INFLUENCING"]))
+                or replay.get("source_output")
+                != replay.get("target_influencing_output")
+                or replay.get("source_target_outputs_byte_equal") is not True
+                or replay.get("excluded_output_all_exact_zero") is not True):
+            raise ValueError(
+                f"hydrometeor disposition {name} production replay is invalid")
+        excluded_output = replay.get("excluded_output")
+        replay_output = replay.get("source_output")
+        state_shape = initialized.get("shape")
+        if (not isinstance(state_shape, list) or len(state_shape) != 3
+                or any(isinstance(value, bool) or not isinstance(value, int)
+                       or value < 1 for value in state_shape)
+                or np.prod(state_shape, dtype=np.int64) > 250_000_000):
+            raise ValueError(
+                f"hydrometeor disposition {name} state shape is invalid")
+        state_size = int(np.prod(state_shape, dtype=np.int64))
+        exact_zero_output = {
+            "shape": state_shape,
+            "dtype": "float32",
+            "sha256": _zero_byte_sha256(4 * state_size),
+            "nonzero_mask_sha256": _zero_byte_sha256((state_size + 7) // 8),
+            "nonzero_count": 0,
+            "minimum": 0.0,
+            "maximum": 0.0,
+        }
+        if (not isinstance(replay_output, Mapping)
+                or not required_fingerprint <= set(replay_output)
+                or replay_output.get("shape") != initialized.get("shape")
+                or replay_output.get("dtype") != "float32"
+                or isinstance(replay_output.get("nonzero_count"), bool)
+                or not isinstance(replay_output.get("nonzero_count"), int)
+                or int(replay_output.get("nonzero_count", -1)) < 0
+                or not np.isfinite(float(
+                    replay_output.get("minimum", np.nan)))
+                or not np.isfinite(float(
+                    replay_output.get("maximum", np.nan)))
+                or not isinstance(excluded_output, Mapping)
+                or any(isinstance(excluded_output.get(key), bool)
+                       for key in ("nonzero_count", "minimum", "maximum"))
+                or dict(excluded_output) != exact_zero_output):
+            raise ValueError(
+                f"hydrometeor disposition {name} excluded replay is nonzero")
+        live_count = int(initialized.get("nonzero_count", -1))
+        if live_count < 0:
+            raise ValueError(
+                f"hydrometeor disposition {name} state count is invalid")
+        if influencing_count > 0 and live_count == 0:
+            raise ValueError(
+                "WRF target-influencing analyzed hydrometeor source mass "
+                f"was lost for {name}")
+        if influencing_count == 0 and live_count != 0:
+            raise ValueError(
+                "WRF target-independent hydrometeor source produced "
+                f"unexpected initialized mass for {name}")
+        if source_count == 0:
+            strength = "VACUOUS"
+        elif influencing_count == 0:
+            strength = "WRF_EXCLUDED"
+        elif excluded_count:
+            strength = "PARTIALLY_WRF_EXCLUDED"
+        else:
+            strength = "PROVEN"
+        validated[name] = {
+            "strength": strength,
+            "source_nonzero_count": source_count,
+            "target_influencing_source_count": influencing_count,
+            "wrf_excluded_source_count": excluded_count,
+            "class_counts": observed_counts,
+            "labels_sha256": item["labels_sha256"],
+        }
+    return {
+        "schema": HRRR_HYDROMETEOR_VERTICAL_DISPOSITION_SCHEMA,
+        "evidence_sha256": disposition["evidence_sha256"],
+        "species": validated,
     }
 
 
@@ -688,7 +1735,8 @@ def _integrate_moisture(qv, pressure, temperature, height, psfc, tsfc, qsfc,
 
 def _make_real_base_serial(coord: VerticalCoord, terrain: np.ndarray,
                            p_top: float, base_temp: float,
-                           hypsometric_opt: int = 1) -> BaseState:
+                           hypsometric_opt: int = 1, *,
+                           row_offset: int = 0) -> BaseState:
     """WRF ``module_initialize_real.F`` analytic hydrostatic base state.
 
     The base geopotential integration is keyed on ``hypsometric_opt``
@@ -710,8 +1758,18 @@ def _make_real_base_serial(coord: VerticalCoord, terrain: np.ndarray,
     mub = ps_base - p_top
     pb = (coord.c3h[:, None, None] * mub[None]
           + coord.c4h[:, None, None] + p_top)
-    if np.any(pb <= 0.0) or not np.all(np.diff(pb, axis=0) < 0.0):
-        raise ValueError("hybrid base pressure is not monotonic")
+    # WRF checks the FULL-level reference column (nest_init_utils.F:1166-1167)
+    # and this base state divides that same column at :732 -- an inverted
+    # full-level pair silently produces a negative-thickness base layer, so
+    # the half-level column alone is not the constraint.
+    pb_full = (coord.c3f[:, None, None] * mub[None]
+               + coord.c4f[:, None, None] + p_top)
+    if (np.any(pb <= 0.0) or not np.all(np.diff(pb, axis=0) < 0.0)
+            or not np.all(np.diff(pb_full, axis=0) < 0.0)):
+        raise ValueError(hybrid_column_ordering_refusal(
+            coord, p_top, ps_base, terrain=terrain,
+            quantity="hybrid base pressure", row_offset=row_offset)
+            or "hybrid base pressure is not monotonic")
     temperature = np.maximum(
         iso_temperature, base_temp + lapse * np.log(pb / c.P0))
     thb = temperature * (c.P0 / pb) ** c.RCP
@@ -741,7 +1799,8 @@ def _fill_real_base_rows(output, coord, terrain, start, stop, p_top,
                          base_temp, hypsometric_opt):
     """Build then immediately copy one independent analytic-base row tile."""
     part = _make_real_base_serial(
-        coord, terrain[start:stop], p_top, base_temp, hypsometric_opt)
+        coord, terrain[start:stop], p_top, base_temp, hypsometric_opt,
+        row_offset=start)
     output.mub[start:stop] = part.mub
     output.pb[:, start:stop] = part.pb
     output.alb[:, start:stop] = part.alb
@@ -1242,8 +2301,14 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         raise ValueError("non-positive dry column mass")
     dry_pressure = (coord.c3h[:, None, None] * dry_mass[None]
                     + coord.c4h[:, None, None] + float(p_top))
-    if not np.all(np.diff(dry_pressure, axis=0) < 0.0):
-        raise ValueError("target dry pressure is not monotonic")
+    dry_pressure_full = (coord.c3f[:, None, None] * dry_mass[None]
+                         + coord.c4f[:, None, None] + float(p_top))
+    if (not np.all(np.diff(dry_pressure, axis=0) < 0.0)
+            or not np.all(np.diff(dry_pressure_full, axis=0) < 0.0)):
+        raise ValueError(hybrid_column_ordering_refusal(
+            coord, float(p_top), dry_mass + float(p_top),
+            quantity="target dry pressure")
+            or "target dry pressure is not monotonic")
     mark_timing("source_moisture_and_dry_mass")
 
     # Backend-selected FP32 vertical interpolation, after the float64
@@ -1278,10 +2343,11 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         return backend_xp.take(
             preprocess.float32(value), order_backend, axis=0)
 
+    mass_source_pd_f32 = preprocess.float32(source_pd)
+    mass_surface_pd_f32 = preprocess.float32(surface_pd)
+    mass_target_pd_f32 = preprocess.float32(dry_pressure)
     mass_vertical_plan = preprocess.prepare_wrf_vertical(
-        preprocess.float32(source_pd),
-        preprocess.float32(surface_pd),
-        preprocess.float32(dry_pressure))
+        mass_source_pd_f32, mass_surface_pd_f32, mass_target_pd_f32)
     temperature = mass_vertical_plan.apply(
         preprocess.float32(source_temperature),
         preprocess.float32(fields["T2"]),
@@ -1394,6 +2460,14 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # target column keeps the shared kernel linear at every eta level.
         zero_surface = backend_xp.zeros(
             (cfg.ny, cfg.nx), dtype=backend_xp.float32)
+
+        def replay_hydrometeor_support(ordered_mask):
+            return mass_vertical_plan.apply(
+                backend_xp.asarray(ordered_mask, dtype=backend_xp.float32),
+                zero_surface,
+                interp_in_logp=True, extrap="constant",
+                vboundb=cfg.nz + 1, values_are_finite=True)
+
         invalid_source = []
         for name in HRRR_ANALYZED_HYDROMETEORS:
             source_value = preprocess.float32(fields[name])
@@ -1433,8 +2507,17 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 }
                 for name in ("QI", "QS", "QG")
             }
+        vertical_disposition = build_hrrr_hydrometeor_vertical_disposition(
+            {name: fields[name] for name in retained_names},
+            order,
+            mass_source_pd_f32,
+            mass_surface_pd_f32,
+            mass_target_pd_f32,
+            hydrometeors,
+            operator_replay=replay_hydrometeor_support,
+        )
         hydrometeor_initialization = {
-            "schema": "gpuwm-real-hydrometeor-correspondence-v1",
+            "schema": HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V2,
             "source": "native-hrrr-horizontal-decoder-output",
             "mp_physics": int(cfg.mp_physics),
             "decoded_source_species": source_fingerprints,
@@ -1442,6 +2525,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 name: name.lower() for name in retained_names
             },
             "discarded_source_species": discarded,
+            "vertical_disposition": vertical_disposition,
         }
 
     alpha = _moist_specific_volume(

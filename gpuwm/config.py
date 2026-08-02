@@ -683,8 +683,12 @@ def radiation_enabled(cfg: RunConfig) -> bool:
 _KNOWN_TABLES = ("grid", "dynamics", "run")
 
 def load_config(path: str | Path) -> RunConfig:
-    with open(path, "rb") as fh:
-        raw = tomllib.load(fh)
+    import io
+
+    from gpuwm.config_authority import read_config_authority
+
+    authority = read_config_authority(path)
+    raw = tomllib.load(io.BytesIO(authority.payload))
     unknown_tables = [name for name in raw if name not in _KNOWN_TABLES]
     if unknown_tables:
         raise ValueError(
@@ -712,6 +716,113 @@ def load_config(path: str | Path) -> RunConfig:
             key_table[key] = table
         merged.update(entries)
     return validate_run_config(RunConfig(**merged))
+
+
+#: ``name -> (predicate, what the value has to be)`` for the dynamics
+#: coefficients.  Each predicate is the range the *scheme* is defined
+#: on, not a taste bound: outside it the solver is not being used, it is
+#: being misused, and the answer that comes back is confident garbage.
+#:
+#: These keys reached ``forecast validity PASS`` at exit 0 through both
+#: loaders in v1.4.0 -- ``epssm = 5.0`` moved 2 m temperature 2.2 K in
+#: two simulated hours, and ``dampcoef = -5.0`` turned the upper damping
+#: layer into an energy source.  Every value the wizard emits, every
+#: value in configs/, and every WRF Registry default passes.
+_DYNAMICS_RANGES: dict[str, tuple] = {
+    # Forward off-centring weight of the vertically implicit acoustic
+    # solve (module_small_step_em.F): a weight in (0, 1].
+    "epssm": (lambda v: 0.0 < v <= 1.0,
+              "an acoustic off-centring weight in (0, 1] "
+              "(WRF Registry default 0.1)"),
+    # 3-D divergence damping coefficient; 0 disables it.
+    "smdiv": (lambda v: v >= 0.0,
+              "a non-negative divergence-damping coefficient "
+              "(WRF Registry default 0.1)"),
+    # External-mode divergence damping (mudf); 0 disables it.
+    "emdiv": (lambda v: v >= 0.0,
+              "a non-negative external-mode damping coefficient "
+              "(WRF Registry default 0.01)"),
+    # Rayleigh/implicit-w damping strength.  Negative is ANTI-damping:
+    # the layer injects the energy it exists to remove.
+    "dampcoef": (lambda v: v >= 0.0,
+                 "a non-negative damping rate in 1/s "
+                 "(WRF Registry default 0.2); a negative coefficient is "
+                 "anti-damping, and the layer adds energy instead of "
+                 "removing it"),
+    # Depth of that layer below the model top; _damp_factors divides by
+    # it, so 0 is a division by zero and negative inverts the profile.
+    "zdamp": (lambda v: v > 0.0,
+              "a positive damping-layer depth in m "
+              "(WRF Registry default 5000)"),
+    # Smagorinsky constant.
+    "c_s": (lambda v: v > 0.0,
+            "a positive Smagorinsky constant (WRF default 0.25)"),
+    # Model-top height: the damping profile is measured down from it.
+    "ztop": (lambda v: v > 0.0,
+             "a positive model-top height in m"),
+    "p_surf": (lambda v: v > 0.0,
+               "a positive reference surface pressure in Pa"),
+    "base_temp": (lambda v: v > 0.0,
+                  "a positive base-state reference temperature in K"),
+    # Exponential lateral-sponge exponent (WRF spec_exp).
+    "spec_exp": (lambda v: v >= 0.0,
+                 "a non-negative lateral-sponge exponent "
+                 "(WRF Registry default 0.0)"),
+    "diff_6th_factor": (lambda v: v >= 0.0,
+                        "a non-negative 6th-order diffusion factor "
+                        "(WRF Registry default 0.12)"),
+}
+
+#: Integer dynamics selectors, with the values this tree IMPLEMENTS.
+#: A selector that is a real WRF choice but unimplemented here is the
+#: worst of the three cases: every damping site tests ``damp_opt == 3``,
+#: so ``damp_opt = 2`` used to run with the damping layer switched off
+#: while the config said it was on.
+_DYNAMICS_CHOICES: dict[str, tuple] = {
+    "damp_opt": ((0, 3),
+                 "0 (no upper damping) or 3 (the Klemp-Dudhia-Hassiotis "
+                 "implicit w-only damper); WRF's damp_opt 1 (diffusive) "
+                 "and 2 (Rayleigh relaxation to the base state) are not "
+                 "implemented here and would silently run undamped"),
+    "w_damping": ((0, 1),
+                  "0 (off) or 1 (WRF's per-stage vertical-velocity "
+                  "limiter)"),
+}
+
+
+def _validate_dynamics_coefficients(cfg: RunConfig) -> None:
+    """Refuse dynamics coefficients outside the range they are defined on.
+
+    The value checks the fleet found missing.  Kept in one table so the
+    next coefficient added to :class:`RunConfig` has an obvious place to
+    declare what it means, rather than joining the set of keys that
+    reach the solver unexamined.
+    """
+
+    for name, (ok, wanted) in _DYNAMICS_RANGES.items():
+        value = float(getattr(cfg, name))
+        if not math.isfinite(value) or not ok(value):
+            raise ValueError(
+                f"{name} = {value!r} must be {wanted}.")
+    for name, (allowed, wanted) in _DYNAMICS_CHOICES.items():
+        value = getattr(cfg, name)
+        if value not in allowed:
+            raise ValueError(f"{name} must be {wanted}, got {value!r}.")
+    if not isinstance(cfg.time_step_sound, int) \
+            or isinstance(cfg.time_step_sound, bool) \
+            or cfg.time_step_sound < 1:
+        raise ValueError(
+            "time_step_sound must be a positive number of acoustic "
+            "substeps per dynamics step (WRF Registry default 4), got "
+            f"{cfg.time_step_sound!r}.")
+    # The damping layer is measured DOWN from the model top; a layer
+    # deeper than the column damps every level, including the ground.
+    if cfg.damp_opt == 3 and cfg.zdamp >= cfg.ztop > 0.0:
+        raise ValueError(
+            f"zdamp = {cfg.zdamp} is the depth of the upper damping "
+            f"layer below the model top ztop = {cfg.ztop}, so it has to "
+            "be smaller than it; as written the damper covers the whole "
+            "column.")
 
 
 def validate_run_config(cfg: RunConfig) -> RunConfig:
@@ -1094,6 +1205,7 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             f"seconds (0 disables restart writing), got "
             f"{cfg.restart_interval_s}."
         )
+    _validate_dynamics_coefficients(cfg)
     if cfg.km_opt not in (1, 4):
         raise ValueError(
             f"km_opt must be 1 (constant K via khdif/kvdif) or 4 "

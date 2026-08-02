@@ -90,6 +90,12 @@ pub enum RenderStyle {
     WeatherStp,
     WeatherScp,
     WeatherEhi,
+    /// Surface elevation.  Distinct from [`RenderStyle::WeatherHeight`],
+    /// which is the isobaric height-analysis style: that one draws the
+    /// heights as contours and fills with the companion wind speed, which
+    /// for orography would produce a plot of the wind over a field that
+    /// does not vary.
+    WeatherTerrain,
 }
 
 fn recipe_lineage(slug: &str, family: ProductFamily) -> ProductLineage {
@@ -2038,6 +2044,23 @@ const FIELD_10M_V: GribFieldSpec = field_spec(
     &["VGRD:10 m above ground"],
 );
 
+/// Instantaneous 10 m wind SPEED -- the scalar the standalone surface
+/// wind product fills with.  It is a first-class field, not a companion
+/// of a pressure chart: every store lane already carries it (the WRF
+/// import publishes wrf-core's `wspd10` under this exact selector, the
+/// post-processed `wrf2d` route computes it from U10/V10, and the GRIB
+/// decoder maps it to parameter 0/2/1), and nothing in the catalog
+/// rendered it until `10m_wind_speed_and_direction` existed.
+const FIELD_10M_WIND_SPEED: GribFieldSpec = field_spec(
+    "wind_speed_10m_agl",
+    "10m AGL Wind Speed",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(10),
+    Some(FieldSelector::height_agl(CanonicalField::WindSpeed, 10)),
+    &["WIND:10 m above ground"],
+);
+
 const FIELD_GEFS_AVG_10M_U: GribFieldSpec = field_spec(
     "gefs_mean_u_10m_agl",
     "GEFS 10m AGL U Wind Mean",
@@ -2065,7 +2088,16 @@ const FIELD_10M_WIND_GUST: GribFieldSpec = field_spec(
     GribLevelKind::HeightAboveGround,
     Some(10),
     Some(FieldSelector::height_agl(CanonicalField::WindGust, 10)),
-    &["GUST:surface", "GUST:10 m above ground", "WSPD10MAX"],
+    // GRIB inventory spellings ONLY.  `WSPD10MAX` used to sit in this
+    // list; it is not a GRIB idx pattern at all but a WRF Registry
+    // variable, and WRF 4.6.1 defines no wind gust: `module_diag_nwp`
+    // titles WSPD10MAX "WIND SPD MAX 10 M", the running maximum of
+    // sqrt(u10^2+v10^2) between history writes.  Matching it here made
+    // a running maximum resolve a field labelled "Wind Gust", which is
+    // a different physical quantity.  A gust reaches this field only
+    // from a source whose own files publish one (GRIB2 discipline 0,
+    // category 2, number 22).
+    &["GUST:surface", "GUST:10 m above ground"],
 );
 
 const FIELD_QMD_10M_WIND_GUST_MEAN: GribFieldSpec = qmd_height_agl_stat_field_spec(
@@ -3069,6 +3101,22 @@ const FIELD_HREF_PROB_UH_ABOVE_150: GribFieldSpec = field_spec(
             .with_probability(ProbabilitySelection::above_milli(150_000)),
     ),
     &["MXUPHL:5000-2000"],
+);
+
+/// Surface elevation.  The WRF import already publishes this plane
+/// (`HGT` -> the store's `orography`, metres) under the surface
+/// geopotential-height selector, so the product needs no ingest work --
+/// only a recipe that asks for it.
+const FIELD_TERRAIN_HEIGHT: GribFieldSpec = field_spec(
+    "terrain_height",
+    "Terrain Height",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(FieldSelector::surface(
+        CanonicalField::GeopotentialHeight,
+    )),
+    &["HGT:surface"],
 );
 
 const FIELD_MSLP: GribFieldSpec = field_spec(
@@ -5298,6 +5346,43 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherPressure,
     },
     PlotRecipe {
+        // Static per domain: this is the ground the forecast is standing
+        // on, and it is what makes a wind or precipitation frame legible
+        // -- a viewer cannot see WHY the wind is where it is without it.
+        // The batch runner renders it once per domain (see
+        // `direct_recipe_is_time_invariant`).
+        slug: "terrain_height",
+        title: "Terrain Height",
+        filled: FIELD_TERRAIN_HEIGHT,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTerrain,
+    },
+    PlotRecipe {
+        // The standalone surface wind chart: 10 m wind SPEED as the fill,
+        // 10 m wind DIRECTION as the barbs, and nothing else on the map.
+        //
+        // Until this entry existed, wind was reachable only as a barb
+        // overlay on somebody else's field (`mslp_10m_winds`,
+        // `2m_temperature_10m_winds`, `2m_dewpoint_10m_winds`,
+        // `2m_relative_humidity_10m_winds`, `theta_e_2m_10m_winds`) or as
+        // a multi-frame window statistic (`10m_wind_1h_max`,
+        // `10m_wind_run_max`), which needs neighbouring hours and
+        // therefore cannot render from a single frame at all.  A person
+        // who wants "the wind right now" had neither.
+        //
+        // It depends on ONE frame: three planes from the hour being
+        // rendered, no accumulator, no window, no neighbour.
+        slug: "10m_wind_speed_and_direction",
+        title: "10m AGL Wind Speed and Direction",
+        filled: FIELD_10M_WIND_SPEED,
+        contours: None,
+        barbs_u: Some(FIELD_10M_U),
+        barbs_v: Some(FIELD_10M_V),
+        style: RenderStyle::WeatherWinds,
+    },
+    PlotRecipe {
         slug: "10m_wind_gusts",
         title: "10m AGL Wind Gusts",
         filled: FIELD_10M_WIND_GUST,
@@ -5919,6 +6004,10 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             VerticalSelector::Surface,
         ) => true,
         (CanonicalField::Visibility, VerticalSelector::Surface) => true,
+        // Surface geopotential height is orography.  Every NWP source in
+        // the catalog carries it (it is the model's own terrain), and the
+        // store lane resolves it from the WRF import's `orography` plane.
+        (CanonicalField::GeopotentialHeight, VerticalSelector::Surface) => true,
         (
             CanonicalField::CategoricalRain
             | CanonicalField::CategoricalFreezingRain
@@ -7611,6 +7700,12 @@ fn canonical_recipe_token(value: &str) -> String {
         "500mb_vorticity_height_winds" => "500mb_absolute_vorticity_height_winds".to_string(),
         "700mb_vorticity_height_winds" => "700mb_absolute_vorticity_height_winds".to_string(),
         "850mb_vorticity_height_winds" => "850mb_absolute_vorticity_height_winds".to_string(),
+        // The spellings a person reaching for "the wind" actually types.
+        // `normalize_token` has already folded hyphens and spaces to
+        // underscores, so `10m-wind-speed-and-direction` and
+        // `10 m wind` arrive here in this form too.
+        "10m_wind" | "10m_winds" | "wind_10m" | "10m_wind_speed" | "surface_wind"
+        | "surface_winds" => "10m_wind_speed_and_direction".to_string(),
         _ => normalized,
     }
 }

@@ -291,6 +291,40 @@ def _jsonable(value):
     return value
 
 
+#: The experiment fields a restart is permitted to differ in.  This IS
+#: the published ``gpuwm run --restart`` contract ("only the forecast
+#: length / output and restart cadence may differ"), held in one place so
+#: every route that builds a restart identity excludes the same set.
+RESTART_TOLERATED_EXPERIMENT_FIELDS = (
+    "run_seconds", "restart_interval_s", "acknowledgements")
+RESTART_TOLERATED_DOMAIN_FIELDS = ("history_interval_s",)
+RESTART_TOLERATED_RUN_FIELDS = (
+    "run_seconds", "output_interval_s", "restart_interval_s")
+
+
+def restart_identity_payload(exp) -> dict:
+    """The experiment, minus everything a restart may legally change.
+
+    Extracted so the prepared domain-tree runner can bind the same
+    identity this function defines instead of hashing the experiment
+    FILE.  A file digest moves when any byte of the TOML moves, which
+    made the tree route refuse every one of the three changes the
+    ``--restart`` contract publishes as permitted -- including extending
+    the run, which is the reason people configure checkpoints at all.
+    """
+
+    experiment = _jsonable(exp)
+    for name in RESTART_TOLERATED_EXPERIMENT_FIELDS:
+        experiment.pop(name, None)
+    for domain in experiment.get("domains", ()):
+        for name in RESTART_TOLERATED_DOMAIN_FIELDS:
+            domain.pop(name, None)
+        run = domain.get("run", {})
+        for name in RESTART_TOLERATED_RUN_FIELDS:
+            run.pop(name, None)
+    return experiment
+
+
 def experiment_fingerprint(exp, catalog) -> str:
     """Hash immutable trajectory setup plus the InputCatalog inventory.
 
@@ -299,15 +333,7 @@ def experiment_fingerprint(exp, catalog) -> str:
     after the checkpoint.  Domain geometry, timestep, physics, nesting,
     forcing provenance, and every other experiment field remain bound.
     """
-    experiment = _jsonable(exp)
-    for name in ("run_seconds", "restart_interval_s", "acknowledgements"):
-        experiment.pop(name, None)
-    for domain in experiment.get("domains", ()):
-        domain.pop("history_interval_s", None)
-        run = domain.get("run", {})
-        for name in ("run_seconds", "output_interval_s",
-                     "restart_interval_s"):
-            run.pop(name, None)
+    experiment = restart_identity_payload(exp)
     payload = {
         "experiment": experiment,
         "input_catalog": _jsonable(catalog.run_provenance),

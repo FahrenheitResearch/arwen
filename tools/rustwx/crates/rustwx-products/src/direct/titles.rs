@@ -112,6 +112,15 @@ fn direct_title_for_request(
     if let Some(stat_label) = native_stat_label_for_request(request, planned_product) {
         title = apply_native_stat_title_prefix(request.model, &stat_label, &title);
     }
+    // Locally imported output first, and for every model: these frames were
+    // never fetched from a source catalog, so the only honest parenthetical
+    // is the grid the importer read out of the file itself.  Deciding this
+    // before the model check keeps the claim tied to the batch's declared
+    // provenance rather than to which model identity the store happens to
+    // carry.
+    if request.title_provenance.is_local_import() {
+        return static_title_with_suffix(request.title_provenance.apply_to_title(title));
+    }
     if request.model != ModelId::WrfGdex || is_local_wrf_netcdf_request(request) {
         return static_title_with_suffix(title);
     }

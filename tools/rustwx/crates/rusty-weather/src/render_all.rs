@@ -20,7 +20,7 @@ use rustwx_products::derived::{
 };
 use rustwx_products::direct::{DirectBatchRequest, store_direct_recipe_slugs};
 use rustwx_products::places::PlaceLabelOverlay;
-use rustwx_products::shared_context::DomainSpec;
+use rustwx_products::shared_context::{DomainSpec, TitleProvenance};
 use rustwx_products::source::ProductSourceMode;
 use rustwx_products::windowed::{
     HrrrWindowedBatchRequest, HrrrWindowedProduct, StoreWindowedGrid,
@@ -213,6 +213,10 @@ pub struct StoreRenderConfig {
     /// Provenance label displacing [`Self::source`] in the subtitle, for
     /// runs that were produced locally rather than fetched.
     pub source_label: Option<String>,
+    /// Where these frames came from, for the plot headline.  A locally
+    /// imported run names its own grid there; a fetched run leaves the
+    /// lane's dataset token alone.
+    pub title_provenance: TitleProvenance,
     pub domain: DomainSpec,
     pub out_dir: PathBuf,
     pub contour_mode: NativeContourRenderMode,
@@ -409,6 +413,7 @@ pub fn render_hour_products(
             output_suffix: presentation.output_suffix.clone(),
             subtitle_left_override: presentation.subtitle_left.clone(),
             subtitle_right_override: source_subtitle_override(config),
+            title_provenance: config.title_provenance.clone(),
         };
         let outcome = store_render::render_direct_recipes_from_store(
             store,
@@ -456,6 +461,7 @@ pub fn render_hour_products(
             output_suffix: presentation.output_suffix.clone(),
             subtitle_left_override: presentation.subtitle_left.clone(),
             subtitle_right_override: source_subtitle_override(config),
+            title_provenance: config.title_provenance.clone(),
         };
         let outcome = store_render::render_derived_recipes_from_store(
             store,
@@ -530,6 +536,7 @@ pub fn render_windowed_products(
         // replacing the whole line.
         subtitle_left_suffix: config.subtitle_spacing.clone(),
         subtitle_right_override: source_subtitle_override(config),
+        title_provenance: config.title_provenance.clone(),
     };
     let grids: Vec<StoreWindowedGrid> = outcome
         .grids
@@ -585,6 +592,7 @@ mod tests {
             source: SourceId::Gdex,
             subtitle_spacing: subtitle_spacing.map(str::to_string),
             source_label: source_label.map(str::to_string),
+            title_provenance: TitleProvenance::default(),
             domain: DomainSpec::new("d02-1km", (-98.0, -95.0, 38.0, 40.0)),
             out_dir: PathBuf::from("out"),
             contour_mode: Default::default(),

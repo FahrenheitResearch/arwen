@@ -93,12 +93,14 @@ documented, production-inert): the generators take `lat` as a scalar
 dummy, so the batch preps group columns by identical `xlat` bits for
 `idcor=1` + `icld 4/5` — degenerating to per-column calls at
 all-distinct latitudes; production is `idcor=0`/`icld=2`, which never
-reads `lat`. Prep-side sm_120 finding: the moisture→radii→cloud-path
+reads `lat`. Prep-side FTZ finding: the moisture→radii→cloud-path
 block always runs host-numpy because real columns drive `ciwpth`
-through FP32-subnormal values and the 5090 flushes ALL device
-arithmetic, comparisons, min/max, AND the f64→f32 cast (FP64 staging
-cannot even produce a subnormal f32) — the sanctioned host-side
-countermeasure, gated bitwise (cupy == numpy on the full decks).
+through FP32-subnormal values and every cupy-compiled kernel flushes
+in ALL device arithmetic, comparisons, min/max, AND the f64→f32 cast
+(FP64 staging cannot even produce a subnormal f32) — cupy appends
+`-ftz=true` after the caller's options, so this is the compile route
+and not the card — the sanctioned host-side countermeasure, gated
+bitwise (cupy == numpy on the full decks).
 
 ## 6. Batched engines
 
@@ -156,11 +158,15 @@ Packaged, SHA-256-pinned (PROVENANCE.md): `RRTMG_LW_DATA`,
 `wrf_rrtmg_lw_data`/`wrf_rrtmg_sw_data` activate with the legacy
 variant. numpy>=2 is a hard dependency of the FP32 contract.
 
-## 9. Documented divergences vs the CPU reference (ifx WRF)
+## 9. Documented divergences vs the CPU reference (gfortran WRF)
 
 1. **Transcendental libm class**: `radconst`/`calc_coszen` use
-   FP32-ordered arithmetic with numpy transcendentals; ifx-WRF uses
-   Intel's libm, gfortran-WRF glibc's — all differ at ~1 ulp. The SW
+   FP32-ordered arithmetic with numpy transcendentals; the CPU
+   reference is a gfortran build and therefore uses glibc's libm, and
+   an ifx build would use Intel's — all differ at ~1 ulp. (This
+   heading and sentence said the reference was ifx through 1.4.0; the
+   pinned binary carries one compiler stamp, GCC 15.2.0. See
+   `docs/public/VERIFICATION.md` section 2.) The SW
    fixtures pin the wrappers from `(xcoszen, declin, solcon)` inward
    (their `in/xcoszen` is the CPU run's own wrfout COSZEN — data, not a
    reproducible function), so no oracle defines "bitwise" here. Same

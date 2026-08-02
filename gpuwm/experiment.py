@@ -33,7 +33,9 @@ The legacy single-domain path is untouched: ``load_config()`` and the
 
 from __future__ import annotations
 
+import difflib
 import math
+import io
 import tomllib
 from dataclasses import dataclass, fields
 from datetime import datetime, timedelta
@@ -44,7 +46,7 @@ import numpy as np
 
 from gpuwm.config import (DEFAULT_COLUMN_CHUNK, RunConfig,
                           radiation_enabled, validate_run_config)
-from gpuwm.explain import warn
+from gpuwm.explain import layered, warn
 
 #: Relative tolerance for cross-checking hand-typed child dx/dt against the
 #: exact chain-derived rational.  Wide enough for a truncated decimal of
@@ -478,11 +480,72 @@ class ExperimentConfig:
         return self.dx_exact(dc.parent_id) / dc.parent_grid_ratio
 
 
+def readable_config_path(path: str | Path) -> Path:
+    """``path`` as a readable regular file, or a refusal saying which
+    kind of thing it actually is.
+
+    A mistyped config path is the commonest error there is, and in
+    v1.4.0 every wrong-KIND of path reached ``open()`` and came back as
+    a Python traceback at exit 1: ``FileNotFoundError`` for a typo,
+    ``IsADirectoryError`` for a directory, an eight-argument
+    ``TypeError: RunConfig.__init__()`` for a zero-byte file, ``OSError
+    [Errno 40]`` for a symlink loop -- and, for a FIFO, no return at
+    all, because ``tomllib`` reads it forever.  Every other refusal in
+    this product is one sentence at exit 2.
+
+    So the kind is decided BEFORE anything opens the path.  ``is_file()``
+    is what separates a regular file from a directory, a FIFO, a device
+    and a broken symlink in one call, and it is the guard the fleet's
+    hostile-input node asked for by name.
+    """
+
+    path = Path(path)
+    try:
+        if path.is_file():
+            if path.stat().st_size == 0:
+                raise ValueError(layered(
+                    f"{path} is empty, so there is no configuration in "
+                    "it to run.\n"
+                    "  remedy: gpuwm domain ... --out "
+                    f"{path}   # re-author it",
+                    "A zero-byte TOML parses to an empty table, which "
+                    "used to reach the RunConfig constructor and come "
+                    "back as its argument list."))
+            return path
+    except OSError as error:
+        # A symlink loop, a permission wall, a dead mount: is_file()
+        # itself is what failed, and its errno is the diagnosis.
+        raise ValueError(
+            f"{path} cannot be read as a configuration file "
+            f"({error.strerror or error}).") from None
+    if path.is_dir():
+        kind = "is a directory"
+    elif path.exists():
+        kind = "is not a regular file (a device, socket or FIFO)"
+    else:
+        kind = "does not exist"
+    raise ValueError(layered(
+        f"{path} {kind}; pass the experiment .toml that `gpuwm domain` "
+        "wrote.",
+        "Nothing is opened until the path is known to be a readable "
+        "regular file: a FIFO would block this process forever, and a "
+        "directory or a missing file used to arrive as a Python "
+        "traceback rather than as a refusal."))
+
+
 def is_experiment_toml(path: str | Path) -> bool:
     """True when ``path`` is an experiment TOML (``[experiment]`` or
     ``[[domain]]`` present) rather than a legacy RunConfig TOML."""
-    with open(path, "rb") as fh:
-        raw = tomllib.load(fh)
+    from gpuwm.config_authority import read_config_authority
+
+    raw = tomllib.load(io.BytesIO(read_config_authority(path).payload))
+    return "experiment" in raw or "domain" in raw
+
+
+def is_experiment_toml_bytes(payload: bytes) -> bool:
+    """Byte-oriented route detection for one already captured config."""
+
+    raw = tomllib.load(io.BytesIO(payload))
     return "experiment" in raw or "domain" in raw
 
 
@@ -495,13 +558,15 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
     :func:`gpuwm.case_data.load_experiment_case`; the experiment schema
     itself stays strict.
     """
-    with open(path, "rb") as fh:
-        raw = tomllib.load(fh)
+    from gpuwm.config_authority import read_config_authority
+
+    authority = read_config_authority(path)
+    raw = tomllib.load(io.BytesIO(authority.payload))
     fetch_table = raw.pop("fetch", None)
     if fetch_table is not None:
         from gpuwm.fetch import validate_fetch_hints
-        validate_fetch_hints(fetch_table, source=str(path))
-    return build_experiment(raw, source=str(path))
+        validate_fetch_hints(fetch_table, source=str(authority.source))
+    return build_experiment(raw, source=str(authority.source))
 
 
 def experiment_from_run_config(cfg: RunConfig,
@@ -560,22 +625,49 @@ def _require_keys(table_name: str, entries: dict, required, source: str):
             f"{missing}; present: {sorted(entries)}.")
 
 
+def did_you_mean(key: str, known) -> str:
+    """`` (did you mean 'dampcoef'?)`` for a near miss, else ``""``.
+
+    Public because every schema in this package that refuses an unknown
+    key owes the reader the same second half of the sentence.  A second
+    copy of this three-liner in :mod:`gpuwm.case_data` would be a second
+    cutoff to keep in step with this one.
+    """
+
+    close = difflib.get_close_matches(key, sorted(known), n=1, cutoff=0.7)
+    return f" (did you mean {close[0]!r}?)" if close else ""
+
+
 def _reject_unknown_keys(table_name: str, entries: dict, known,
                          source: str) -> None:
-    """Warn about (and drop) keys this schema does not know.
+    """Refuse keys this schema does not know, naming each one.
 
-    An unknown key is a typo or a leftover, and neither deserves a
-    refusal: the required-key and value checks around this call still
-    catch every misspelling of a key that matters.  Dropping the key
-    after warning keeps downstream ``**entries`` expansions honest.
+    This used to warn and drop, on the reasoning that the required-key
+    and value checks around it catch every misspelling that matters.
+    They do not, and cannot: every key with a default is optional by
+    construction, so ``damp_coef = 0.4`` passes every one of them and
+    the run integrates with ``dampcoef`` at its built-in 0.2.  The
+    fleet's hostile-input node caught exactly that -- one stderr line
+    among a hundred, then three wrfout frames, 159 product images and
+    ``forecast validity PASS`` at exit 0, computed from a coefficient
+    the user never chose.
+
+    Warn-not-block is for the run that will almost certainly work.  A
+    dropped key is the other case: the answer is confident, complete,
+    and not the answer that was asked for.  So it refuses, it names the
+    key, and it names the key it thinks was meant.  The full known-key
+    list is mechanism, so it sits behind ``--explain``.
     """
     unknown = sorted(set(entries) - set(known))
-    if unknown:
-        warn(f"ignoring unknown key(s) {unknown} in [{table_name}] of "
-             f"{source}",
-             why=f"Known [{table_name}] keys: {sorted(known)}.")
-        for key in unknown:
-            entries.pop(key, None)
+    if not unknown:
+        return
+    named = ", ".join(
+        f"{key!r}{did_you_mean(key, known)}" for key in unknown)
+    raise ValueError(layered(
+        f"[{table_name}] of {source} does not have a key {named}; "
+        "no key is ignored, because a dropped key runs a default "
+        "under the name of your value.",
+        f"Known [{table_name}] keys: {sorted(known)}."))
 
 
 def _positive_int(table_name: str, key: str, value, source: str,
@@ -667,6 +759,37 @@ def _check_cadence(label: str, seconds: Fraction, dt: Fraction, grid_id,
             f"{label} = {float(seconds):g} s on domain grid_id={grid_id} "
             f"of {source} is not a whole number of that domain's steps: "
             f"dt = {dt} s exactly, {seconds}/({dt}) = {steps}.")
+
+
+def _check_run_length_on_step_grid(run_seconds: Fraction, dt: Fraction,
+                                   grid_id, source: str) -> None:
+    """Refuse a forecast length that is not a whole number of d01 steps.
+
+    ``gpuwm.core.clock.resolve_clock`` has always enforced this -- runs
+    end on a root-domain boundary -- but it enforces it at clock
+    resolution, which every route reaches only after preparation.  So a
+    half-step ``run_seconds`` passed ``gpuwm check`` and then died in an
+    unhandled ``ValueError`` at forecast, exiting 1 through a traceback,
+    while the identical arithmetic error on ``history_interval_s`` or
+    ``restart_interval_s`` was refused here in one line at admission,
+    exit 2, before anything was fetched or prepared.  Same error class,
+    same config file, two different user experiences.
+
+    This admits nothing new and refuses nothing that ran: it is the
+    check ``resolve_clock`` already applies, moved to where its siblings
+    live so the refusal arrives before the work rather than after it.
+    """
+    if run_seconds <= 0:
+        return
+    steps = run_seconds / dt
+    if steps.denominator != 1:
+        raise ValueError(
+            f"run_seconds = {float(run_seconds):g} s in [experiment] of "
+            f"{source} is not a whole number of root-domain "
+            f"(grid_id={grid_id}) steps: dt = {dt} s exactly, "
+            f"{run_seconds}/({dt}) = {steps}.  Runs end on a d01 "
+            "boundary, so the forecast length must land on the step "
+            "grid.")
 
 
 def _check_whole_second_cadence(label: str, seconds: Fraction, grid_id,
@@ -798,11 +921,21 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     known_tables = ("experiment", "shared", "projection", "domain")
     unknown_tables = [name for name in raw if name not in known_tables]
     if unknown_tables:
-        warn(f"ignoring unknown table(s)/top-level key(s) "
-             f"{unknown_tables} in experiment config {source}",
-             why=f"Known tables: {list(known_tables)}.")
-        for name in unknown_tables:
-            raw.pop(name, None)
+        # A whole stray table is the same defect as a stray key, one
+        # order of magnitude larger: `[dynamics]` is the LEGACY config's
+        # table name, so pasting a familiar block into an experiment
+        # config used to drop every setting in it behind one line.
+        named = ", ".join(
+            f"{name!r}{did_you_mean(name, known_tables)}"
+            for name in unknown_tables)
+        raise ValueError(layered(
+            f"experiment config {source} does not have a table {named}; "
+            "no table is ignored, because a dropped table runs defaults "
+            "under the name of your settings.",
+            f"Known tables: {list(known_tables)}. The [grid]/[dynamics]/"
+            "[run] table names belong to the single-domain legacy config "
+            "schema; an experiment config carries [experiment], [shared], "
+            "[projection] and one [[domain]] per nest."))
     if "experiment" not in raw:
         raise ValueError(
             f"experiment config {source} must carry an [experiment] "
@@ -991,21 +1124,37 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             f"[shared] of {source} sets map_proj = {map_proj} but no "
             "[projection] table is present; real experiments must carry "
             "the projection parameter set (F1 amendment).")
-    # The [projection] table carries the full parameter set, so when the
-    # [shared] integer disagrees (or is missing), the table wins -- a
-    # one-line warning replaces the old strict-equality refusal.
-    if map_proj == 0 and projection is not None:
-        warn(f"[shared] map_proj = 0 in {source} contradicts the "
-             f"[projection] table ({projection.map_proj!r}); using the "
-             f"table (WRF code {projection.wrf_map_proj})")
+    # The [projection] table carries the full parameter set, so a config
+    # that simply omits the [shared] integer is completed from the table
+    # and nothing is contradicted -- the user wrote one projection, once.
+    #
+    # A config that DECLARES the integer and disagrees with the table is a
+    # different thing, and it used to be a one-line warning that then ran
+    # the table's projection anyway.  That is a wrong answer, not an
+    # inconvenience: writing map_proj = 3 beside a "lambert" table gave a
+    # complete Mercator-labelled request integrated on a Lambert grid, at
+    # exit 0 with `gpuwm check` PASS.  Nothing downstream can recover the
+    # discarded intent, because shared["map_proj"] is overwritten here.
+    # Warn-not-block covers reports we are confident about; it does not
+    # cover "your configuration says two different things and I picked
+    # one".  Its sibling checks already agree -- a nonzero map_proj with
+    # no table raises four lines above, and native_wrf_contract.py raises
+    # on this same disagreement between a WPS namelist and the table.
+    declared_map_proj = "map_proj" in shared
+    if projection is not None and not declared_map_proj:
         map_proj = projection.wrf_map_proj
         shared["map_proj"] = map_proj
     elif projection is not None and map_proj != projection.wrf_map_proj:
-        warn(f"[shared] map_proj = {map_proj} in {source} contradicts "
-             f"the [projection] table ({projection.map_proj!r}, WRF "
-             f"code {projection.wrf_map_proj}); using the table")
-        map_proj = projection.wrf_map_proj
-        shared["map_proj"] = map_proj
+        raise ValueError(
+            f"[shared] map_proj = {map_proj} in {source} contradicts the "
+            f"[projection] table, which selects {projection.map_proj!r} "
+            f"(WRF code {projection.wrf_map_proj}).  No value is chosen "
+            f"for you, because the one that would be dropped is the one "
+            f"naming the projection your grid is defined on.  Set "
+            f"[shared] map_proj = {projection.wrf_map_proj} to keep "
+            f"{projection.map_proj!r}, or change [projection] map_proj to "
+            f"the projection you meant; removing the [shared] key "
+            f"entirely also works, and lets the table speak alone.")
 
     spec_zone = shared.get("spec_zone", RunConfig.spec_zone)
     relax_zone = shared.get("relax_zone", RunConfig.relax_zone)
@@ -1163,14 +1312,6 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
 
         # --- exact-rational dt/dx (never hand-typed on children) -------
         if is_root:
-            if "dt" in dom:
-                warn(f"dt = {dom['dt']!r} on the root [[domain]] of "
-                     f"{source} is ignored; the root step is the "
-                     "time_step key (plus optional "
-                     "time_step_fract_num/den)",
-                     why="Registry.EM_COMMON:2245-2246: WRF carries the "
-                         "head-grid step as rational namelist keys, and "
-                         "this loader is bit-compatible with that.")
             if "time_step" not in dom:
                 raise ValueError(
                     f"the root [[domain]] grid_id = {grid_id} of {source} "
@@ -1192,6 +1333,19 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                     f"{source} resolves a non-positive model step: "
                     f"time_step = {time_step} + {fract_num}/{fract_den} "
                     f"s.")
+            # A root `dt` used to warn "is ignored" and be discarded with
+            # no comparison at all, so `dt = 60.0` beside `time_step = 5`
+            # ran a 5 s step at exit 0 -- and the SAME warning was
+            # emitted when the two agreed, which made it noise on the
+            # harmless case and silent in effect on the harmful one.
+            # Both spellings are the user's and they name one quantity,
+            # so the disagreement is checked exactly the way a child's
+            # hand-typed dt already is, ten lines below.
+            if "dt" in dom:
+                _cross_check(
+                    "dt", grid_id, dom["dt"], dt_ex,
+                    f"time_step {time_step} + {fract_num}/{fract_den} s "
+                    "on this root domain", source)
             # WRF-REAL head-grid dt: single-precision evaluation of the
             # rational namelist keys (Registry.EM_COMMON:2245-2246).
             dt_fp32 = (np.float32(time_step)
@@ -1201,29 +1355,55 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                     f"the root [[domain]] grid_id = {grid_id} of {source} "
                     "must carry dx (metres); children derive theirs from "
                     "the ratio chain.")
-            dx_ex = Fraction(float(dom["dx"]))
-            if dx_ex <= 0:
+            # Finiteness BEFORE Fraction(), not after.  Fraction(nan)
+            # raises ValueError and reaches the front door as rc 2, but
+            # Fraction(inf) raises OverflowError -- one branch apart, and
+            # only the first is caught -- so `dx = inf` and `dx = nan`
+            # produced a sentence and a traceback for the same mistake.
+            dx_value = float(dom["dx"])
+            if not math.isfinite(dx_value) or dx_value <= 0:
                 raise ValueError(
                     f"dx = {dom['dx']!r} on the root domain of {source} "
-                    "must be positive.")
+                    "must be a positive, finite grid spacing in metres.")
+            dx_ex = Fraction(dx_value)
             if "dy" in dom and float(dom["dy"]) != float(dom["dx"]):
                 raise ValueError(
                     f"dy = {dom['dy']!r} on grid_id = {grid_id} of "
                     f"{source} must equal dx = {dom['dx']!r} (Lambert "
                     "grids are isotropic).")
         else:
-            if "time_step" in dom or "time_step_fract_num" in dom \
-                    or "time_step_fract_den" in dom:
-                warn(f"time_step key(s) on child domain grid_id = "
-                     f"{grid_id} of {source} are ignored; the child dt "
-                     "derives from the parent chain exactly",
-                     why="time_step is a head-grid (d01) key "
-                         "(Registry.EM_COMMON:2245 declares it scalar; "
-                         "share/set_timekeeping.F:366-368 derives child "
-                         "dt).  A hand-typed child dt key is still "
-                         "cross-checked against the chain.")
             time_step, fract_num, fract_den = None, 0, 1
             dt_ex = dt_by_id[parent_id] / tratio
+            # `time_step` on a child was warned-and-dropped while `dt` on
+            # the same table refuses through _cross_check ten lines below
+            # -- the same quantity, the same number, one spelling running
+            # a different step at exit 0.  The old warning's own `why=`
+            # advertised the check it declined to perform ("A hand-typed
+            # child dt key is still cross-checked against the chain"): it
+            # was describing the sibling branch, not itself.  That WRF
+            # has no per-child time_step is the reason to refuse, not to
+            # warn: the model cannot deliver what was asked.
+            if ("time_step" in dom or "time_step_fract_num" in dom
+                    or "time_step_fract_den" in dom):
+                child_step = (
+                    Fraction(_positive_int(
+                        "domain", "time_step", dom.get("time_step", 0),
+                        source, 0))
+                    + Fraction(
+                        _positive_int(
+                            "domain", "time_step_fract_num",
+                            dom.get("time_step_fract_num", 0), source, 0),
+                        _positive_int(
+                            "domain", "time_step_fract_den",
+                            dom.get("time_step_fract_den", 1), source)))
+                # float(), not the Fraction: _cross_check reprs what it
+                # is given, and "hand-types time_step=Fraction(5, 1)"
+                # shows the reader this loader's internals rather than
+                # the number they typed.
+                _cross_check(
+                    "time_step", grid_id, float(child_step), dt_ex,
+                    f"parent dt {dt_by_id[parent_id]} s / "
+                    f"parent_time_step_ratio {tratio}", source)
             # CHAINED float32 division down the ratio chain -- WRF's REAL
             # grid%dt = parent%dt / parent_time_step_ratio at every tree
             # edge (share/set_timekeeping.F:368), so the kernel dt
@@ -1350,6 +1530,11 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             _check_whole_second_cadence(
                 "restart_interval_s", Fraction(restart_interval_s), grid_id,
                 source)
+            # The forecast length is on the same step grid its output
+            # cadences are, and is refused in the same place and the
+            # same way.
+            _check_run_length_on_step_grid(
+                Fraction(str(run_seconds)), dt_ex, grid_id, source)
 
         dc = DomainConfig(
             grid_id=grid_id, parent_id=parent_id, i_parent_start=i_start,

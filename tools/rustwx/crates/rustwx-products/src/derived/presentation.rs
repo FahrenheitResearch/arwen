@@ -23,6 +23,11 @@ pub(super) fn derived_title_for_model(model: ModelId, base_title: &str) -> Strin
 }
 
 pub(super) fn derived_title_for_request(request: &DerivedBatchRequest, base_title: &str) -> String {
+    // See `direct::titles`: a locally imported batch names its grid, never a
+    // source catalog's dataset token, whatever model identity the store carries.
+    if request.title_provenance.is_local_import() {
+        return static_title_with_suffix(request.title_provenance.apply_to_title(base_title));
+    }
     if is_local_wrf_netcdf_request(request) {
         return static_title_with_suffix(base_title);
     }

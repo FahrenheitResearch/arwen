@@ -59,10 +59,13 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 import numpy as np
+
+from gpuwm import explain
 
 #: The pip distribution/version the render products are certified against.
 WRF_PACKAGE_REQUIREMENT = "wrf-rust==0.2.35"
@@ -376,14 +379,43 @@ PRODUCTS = {
 }
 
 #: The four shared product names, as the rust engine's catalog slugs.
-#: ``wind10`` maps to the classic MSLP + 10 m wind-barb chart -- the
-#: catalog's standalone surface-wind product.  Any other token is passed
-#: through as a raw catalog slug, which the renderer validates strictly.
+#:
+#: Each value is the slug of a chart whose SUBJECT is what the key
+#: names.  ``wind10`` used to map to ``mslp_10m_winds`` under a comment
+#: calling that "the catalog's standalone surface-wind product"; it is
+#: not.  ``mslp_10m_winds`` is a mean-sea-level PRESSURE analysis with
+#: 10 m barbs drawn over it, so ``--products wind10 --engine rust``
+#: returned a pressure chart to anyone who asked for wind, while the
+#: matplotlib engine's own ``wind10`` drew a genuine wind map.  During a
+#: wildfire that asymmetry is what pushed an operator onto the fallback
+#: engine to get a wind map at all.  The rust catalog now carries a real
+#: standalone wind chart and this points at it.
+#:
+#: Any other token is passed through as a raw catalog slug, which the
+#: renderer validates strictly (see :func:`parse_products_rust`).
 RUST_PRODUCT_ALIASES = {
+    # column-max simulated reflectivity
     "refl": "composite_reflectivity",
+    # 2 m temperature fill
     "t2": "2m_temperature",
-    "wind10": "mslp_10m_winds",
+    # 10 m wind speed fill + 10 m barbs, one frame, nothing else on it
+    "wind10": "10m_wind_speed_and_direction",
+    # run-total accumulated precipitation
     "precip": "total_qpf",
+}
+
+#: What each alias must actually DRAW, as the canonical store selector
+#: its fill resolves to.  This is the assertion a string-equality test
+#: could not make: the ``wind10`` bug was a correct-looking mapping to a
+#: real slug that filled with the wrong quantity, and any test comparing
+#: ``RUST_PRODUCT_ALIASES["wind10"]`` to a hardcoded string would have
+#: agreed with the broken code.  ``tests/test_render_rust.py`` checks
+#: these against the renderer's own catalog, from the built binary.
+RUST_PRODUCT_ALIAS_FILL_SELECTORS = {
+    "refl": "composite_reflectivity_entire_atmosphere",
+    "t2": "temperature_2m_agl",
+    "wind10": "wind_speed_10m_agl",
+    "precip": "total_precipitation_surface",
 }
 
 
@@ -475,18 +507,36 @@ def render_wrfouts(paths, *, products: tuple[str, ...],
                    timeidx: int | None, outdir: Path,
                    dpi: int = 150,
                    source_label: str = DEFAULT_SOURCE_LABEL,
-                   ) -> tuple[list[Path], list[str]]:
-    """Render every requested product/frame; return (written, failures).
+                   ) -> tuple[list[Path], list[str],
+                              list[tuple[str, str]]]:
+    """Render every requested product/frame.
 
-    A missing input variable fails that one product/frame with a recorded
-    message and the remaining work continues, exactly like the matched-
-    figures tool's per-frame skip -- except nothing is silent: every
-    failure is returned for the CLI to print and reflect in its exit code.
+    Returns ``(written, failures, skipped)``.  The third list is the one
+    this function used to fold into the second, and folding them was a
+    wrong answer with an exit code attached: a product whose *declared*
+    inputs (:data:`_MPL_PRODUCT_NEEDS`) are simply not in the file has
+    not failed at anything.  The cold-start history frame is the standing
+    example -- no microphysics call precedes it, so it carries no
+    ``REFL_10CM``, a registered deviation -- and reflectivity coming back
+    empty from it used to fail the render, and with it the whole ``gpuwm
+    go`` chain, on a forecast that had completed.
+
+    The distinction is drawn from the table, not from the exception, so
+    it holds for every product and stays true when the catalog grows:
+
+    * declared inputs absent  -> **skipped**, with the names of what is
+      absent; the caller reports it and the exit code does not move.
+    * declared inputs present -> rendered, or **failed** if it raised.
+      That is a real failure and still is one.
+
+    Nothing is silent either way: both lists come back for the CLI to
+    print.
     """
     wrf = _import_wrf()
     plt = _pyplot()
     written: list[Path] = []
     failures: list[str] = []
+    skipped: list[tuple[str, str]] = []
     #: output path -> the input that claimed it, this invocation.
     claims: dict[Path, Path] = {}
     for path in (Path(p) for p in paths):
@@ -496,6 +546,7 @@ def render_wrfouts(paths, *, products: tuple[str, ...],
         except Exception as exc:
             failures.append(f"{path}: unreadable wrfout ({exc})")
             continue
+        present = _file_variables(path)
         domain = _domain_tag(path)
         spacing_m = _grid_spacing_m(path)
         token = domain_token(domain, spacing_m)
@@ -529,6 +580,12 @@ def render_wrfouts(paths, *, products: tuple[str, ...],
                 lon = center + ((lon - center + 180.0) % 360.0 - 180.0)
             context = plot_context(domain, spacing_m, stamp, source_label)
             for product in products:
+                absent = ([] if present is None
+                          else missing_declared_inputs(present, product))
+                if absent:
+                    skipped.append((product, f"{path}[{index}] carries no "
+                                             f"{', '.join(absent)}"))
+                    continue
                 out_png = outdir / (
                     f"{product}_{token}_{_stamp_for_filename(stamp)}.png")
                 # The token separates nests, but it cannot separate two
@@ -558,18 +615,59 @@ def render_wrfouts(paths, *, products: tuple[str, ...],
                     continue
                 written.append(out_png)
                 print(f"render: {out_png}")
-    return written, failures
+    return written, failures, skipped
 
 
-#: The matplotlib engine's per-product wrfout variable needs, for the
-#: --list-products availability report (rendering itself goes through
-#: wrf.getvar as ever; this is presence, honestly labeled as such).
+#: The matplotlib engine's per-product wrfout variable needs.  Two
+#: readers now: the --list-products availability report, and the render
+#: loop's own pre-check (:func:`missing_declared_inputs`), so the status
+#: a listing prints and the decision a render makes come from one table
+#: rather than from a table and an exception.
 _MPL_PRODUCT_NEEDS = {
     "refl": ("REFL_10CM",),
     "t2": ("T2",),
     "wind10": ("U10", "V10"),
     "precip": ("RAINC|RAINNC",),
 }
+
+
+def missing_declared_inputs(present, product: str) -> list[str]:
+    """This product's declared inputs that ``present`` does not carry.
+
+    ``present`` is the file's variable-name set.  Each entry of
+    :data:`_MPL_PRODUCT_NEEDS` is one requirement, and ``A|B`` means
+    either satisfies it, so what comes back reads as the requirement did.
+
+    Empty means every declared input is there -- which is the whole
+    point of asking: a product that then fails to render failed for a
+    reason this table does not know about, and that is a real failure.
+    """
+
+    missing = []
+    for need in _MPL_PRODUCT_NEEDS.get(product, ()):
+        options = need.split("|")
+        if not any(option in present for option in options):
+            missing.append(" or ".join(options))
+    return missing
+
+
+def _file_variables(path: Path) -> set[str] | None:
+    """The wrfout's variable names, or None when they cannot be read.
+
+    None is not a failure here: it means the pre-check abstains and
+    rendering decides, which is exactly the behaviour that predates the
+    pre-check.  The read is names only -- no field values -- so it is
+    not a derived quantity and does not belong to the mandated ``wrf``
+    package.
+    """
+
+    try:
+        import netCDF4
+
+        with netCDF4.Dataset(path) as dataset:
+            return set(dataset.variables)
+    except Exception:
+        return None
 
 
 def _list_products_matplotlib(path: Path) -> list[tuple[str, str, str, str]]:
@@ -580,12 +678,8 @@ def _list_products_matplotlib(path: Path) -> list[tuple[str, str, str, str]]:
     with netCDF4.Dataset(path) as ds:
         present = set(ds.variables)
     rows = []
-    for product, needs in _MPL_PRODUCT_NEEDS.items():
-        missing = []
-        for need in needs:
-            options = need.split("|")
-            if not any(option in present for option in options):
-                missing.append(" or ".join(options))
+    for product in _MPL_PRODUCT_NEEDS:
+        missing = missing_declared_inputs(present, product)
         if missing:
             rows.append((product, "matplotlib", "missing-fields",
                          f"not in file: {', '.join(missing)}"))
@@ -630,12 +724,61 @@ def list_products_main(args: argparse.Namespace, engine: str) -> int:
     return 1 if failures else 0
 
 
+def catalog_main(args) -> int:
+    """``gpuwm render --list-products`` with no file: the vocabulary.
+
+    Two different questions share the flag.  With a wrfout it means
+    "which of these can THIS file render, and why not the rest" --
+    availability, which needs the file.  Without one it means "what may
+    I put in ``--products``", which needs only the build, and which is
+    the question someone has before they have run anything at all.
+
+    Answered by asking the engine, never from a copy kept here: the rust
+    catalog is the renderer's, and a second list in this module is the
+    enumeration-drift failure this project keeps paying for.  With no
+    rust engine installed, the matplotlib engine's four products are the
+    honest answer, and the notice above already said which engine spoke.
+    """
+
+    from gpuwm import rustwx
+
+    engine, why = _resolve_engine(args.engine)
+    notice = fallback_notice(engine, why)
+    if notice is not None:
+        print(notice, file=sys.stderr)
+    print(f"render: product catalog (engine {engine})")
+    if engine == "matplotlib":
+        for product in PRODUCTS:
+            print(f"  {product}")
+        print(f"render: {len(PRODUCTS)} products")
+        return 0
+    renderer = rustwx.find_renderer()
+    try:
+        result = subprocess.run(
+            [str(renderer), "--list-products"], capture_output=True,
+            text=True, errors="replace", env=rustwx.renderer_env())
+    except OSError as exc:
+        print(f"render: renderer failed to launch: {exc}", file=sys.stderr)
+        return 2
+    if result.returncode != 0:
+        tail = [line for line in (result.stderr or "").splitlines()
+                if line.strip()]
+        print(f"render: {tail[-1] if tail else f'exit {result.returncode}'}",
+              file=sys.stderr)
+        return 2
+    print(result.stdout, end="")
+    print("render: `gpuwm render --list-products WRFOUT` adds which of "
+          "these that file can actually render, and why not the rest")
+    return 0
+
+
 def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
                         outdir: Path, size: tuple[int, int],
                         heavy: bool = False,
                         source_label: str = DEFAULT_SOURCE_LABEL,
-                        ) -> tuple[list[Path], list[str]]:
-    """Render via the vendored Rusty Weather engine; (written, failures).
+                        ) -> tuple[list[Path], list[str],
+                                   list[tuple[str, str]]]:
+    """Rusty Weather engine; ``(written, failures, skipped)``.
 
     One renderer invocation per wrfout file, each with its own scratch
     store (two files in one store would merge into one run's timeline;
@@ -656,11 +799,12 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
     width, height = size
     written: list[Path] = []
     failures: list[str] = []
+    skipped: list[tuple[str, str]] = []
     for path in (Path(p) for p in paths):
         import tempfile
         store = Path(tempfile.mkdtemp(prefix=".rwstore-", dir=outdir))
         try:
-            file_written, file_failures = rustwx.run_renderer(
+            file_written, file_failures, file_skipped = rustwx.run_renderer(
                 renderer, path, store_root=store, out_dir=outdir,
                 products=products, frames=frames, width=width,
                 height=height, heavy=heavy, source_label=source_label)
@@ -668,9 +812,10 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
             _remove_scratch_store(store)
         written.extend(file_written)
         failures.extend(file_failures)
+        skipped.extend(file_skipped)
         for png in file_written:
             print(f"render: {png}")
-    return written, failures
+    return written, failures, skipped
 
 
 def _remove_scratch_store(store: Path) -> None:
@@ -770,6 +915,83 @@ def fallback_notice(engine: str, why: str) -> str | None:
             f"with: {fix}")
 
 
+def skip_notice(skipped: list[tuple[str, str]]) -> str | None:
+    """ONE line for the products this render did not draw, or ``None``.
+
+    A skip is not a failure and must not print as one -- but it must
+    print, and it must print the PRODUCT NAMES.  A bare count is the
+    shape of message a reader cannot act on: it says something is
+    missing from the directory without saying what, so the only way to
+    find out is to diff a listing against the catalog.
+
+    Names in the action half, then; per-item evidence -- which file,
+    which frame, which field -- behind ``--explain``, verbatim from the
+    engine, because paraphrasing "which field was missing" would leave
+    the reader guessing which product lost which input.
+
+    The ``note:`` prefix is load-bearing rather than decorative.  It is
+    this tree's word for "true and worth knowing, not a fault", and
+    ``gpuwm go``'s stage runner surfaces a passing stage's ``warning:``
+    and ``note:`` lines through its output capture -- so without it this
+    sentence is printed by ``gpuwm render`` and swallowed by the chain,
+    which is the silent success this change exists to avoid.
+
+    The action half also states that the exit code is not about this.  A
+    reader who has just watched a chain stop at render needs to know
+    which of the two things they are looking at, and a count with no
+    verdict attached reads as the bad one.
+    """
+
+    if not skipped:
+        return None
+    names = sorted({product for product, _detail in skipped})
+    return explain.layered(
+        f"note: render skipped {len(skipped)} product render(s) "
+        f"({', '.join(names)}) -- the file(s) do not carry their declared "
+        f"input fields.  That is not a failure and does not change the "
+        f"exit code",
+        "\n".join(f"  skipped {product}: {detail}"
+                  for product, detail in skipped))
+
+
+def missing_basemap_notice(renderer) -> str | None:
+    """ONE line when the renderer resolves but its map assets do not.
+
+    The other way to ship a plot believing it is something it is not.
+    A renderer with no basemaps does not fail, warn, or exit non-zero:
+    it draws the weather over a blank rectangle, and 1.4.0 shipped a
+    tropical cyclone with no coastline that way (F4/B-11).  Nothing in
+    the transcript said so, because as far as the renderer is concerned
+    a map with no geography is a map.
+
+    Delivery is fixed -- the bundle carries the shapefiles beside the
+    binary now -- but an install that staged its binaries under 1.4.0
+    and has not re-run ``gpuwm fetch-bridges`` still has the eight
+    executables and no assets, which is exactly the silent state.  So
+    this is checked at render time against the renderer's own
+    resolution ladder, and it names the one command that fixes it.
+    """
+
+    from gpuwm import bridges, rustwx
+
+    if renderer is None or rustwx.resolve_basemap_dir(renderer) is not None:
+        return None
+    if rustwx.cartopy_natural_earth_root() is not None:
+        # The renderer's own last-resort fallback, which it consults per
+        # layer after the candidate roots.  Geography will be drawn, so
+        # warning here would be a false alarm on every workstation that
+        # has ever run cartopy -- and a notice that cries wolf on
+        # developer machines is a notice nobody reads on a real one.
+        return None
+    fix = ("run `gpuwm fetch-bridges`, which stages them beside the "
+           "renderer" if bridges.prebuilt_bundle_offer() is not None
+           else "set RUSTWX_BASEMAP_DIR to a checkout's "
+                "tools/rustwx/assets/basemap")
+    return ("render: WARNING: no basemap assets resolve for this renderer, "
+            "so plots will be drawn with no coastlines, borders or state "
+            f"lines -- {fix}")
+
+
 def _pair_main(args: argparse.Namespace) -> int:
     try:
         from gpuwm.pair_compose import compose_pairs
@@ -801,9 +1023,19 @@ def render_main(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 2
         return _pair_main(args)
+    if not args.wrfout and args.list_products:
+        # "What may I put in --products?" is a question about this build,
+        # not about a file, and a forecaster who has not run anything yet
+        # is exactly who asks it.  Demanding a wrfout first is why the
+        # only way to discover a product slug was to read the source.
+        # The renderer already answers it (`rw_wrfbatch --list-products`
+        # with no inputs prints its vocabulary), so this asks rather than
+        # keeping a second copy of the catalog here to go stale.
+        return catalog_main(args)
     if not args.wrfout:
         print("render: at least one WRFOUT file is required "
-              "(or --pair A_DIR B_DIR)", file=sys.stderr)
+              "(or --list-products alone for the product catalog, or "
+              "--pair A_DIR B_DIR)", file=sys.stderr)
         return 2
     try:
         timeidx = parse_timeidx(args.timeidx)
@@ -819,12 +1051,18 @@ def render_main(args: argparse.Namespace) -> int:
     notice = fallback_notice(engine, why)
     if notice is not None:
         print(notice, file=sys.stderr)
+    if engine == "rust":
+        from gpuwm import rustwx
+
+        blank = missing_basemap_notice(rustwx.find_renderer())
+        if blank is not None:
+            print(blank, file=sys.stderr)
     if args.list_products:
         return list_products_main(args, engine)
     print(f"render: engine {engine} ({why})")
     if engine == "rust":
         try:
-            written, failures = render_wrfouts_rust(
+            written, failures, skipped = render_wrfouts_rust(
                 args.wrfout, products=rust_products, timeidx=timeidx,
                 outdir=args.out, size=size, heavy=args.heavy,
                 source_label=args.source_label)
@@ -832,13 +1070,29 @@ def render_main(args: argparse.Namespace) -> int:
             print(f"render: {exc}", file=sys.stderr)
             return 2
     else:
-        written, failures = render_wrfouts(
+        written, failures, skipped = render_wrfouts(
             args.wrfout, products=products, timeidx=timeidx,
             outdir=args.out, dpi=args.dpi,
             source_label=args.source_label)
     for failure in failures:
         print(f"render FAIL: {failure}", file=sys.stderr)
+    notice = skip_notice(skipped)
+    if notice is not None:
+        print(explain.render(notice, explain=explain.explain_enabled(args),
+                             command="gpuwm render"), file=sys.stderr)
     print(f"render: {len(written)} file(s) -> {args.out}")
+    # Written-and-no-failures, where a SKIP IS NOT A FAILURE.  The two
+    # were one list until 1.4.1 and the exit code could not tell them
+    # apart, so a registered absence -- the cold-start frame's missing
+    # REFL_10CM -- returned 1 from a render that had drawn every product
+    # the file could support, and `gpuwm go` stopped the chain on a
+    # forecast that had succeeded.
+    #
+    # The two arms that still return 1 are the ones that mean something
+    # went wrong: any failure at all, and a render that produced no
+    # image.  The second is what keeps a skip from becoming a silent
+    # success -- ask for one product, have its inputs be absent, and the
+    # answer is still a nonzero exit, because nothing was drawn.
     return 0 if written and not failures else 1
 
 
@@ -914,5 +1168,6 @@ __all__ = ["DEFAULT_SOURCE_LABEL", "PRODUCTS", "RUST_PRODUCT_ALIASES",
            "WRF_PACKAGE_REQUIREMENT", "domain_token", "list_products_main",
            "parse_products", "parse_products_rust", "parse_size",
            "parse_timeidx", "plot_context", "register_cli", "render_main",
+           "missing_basemap_notice", "missing_declared_inputs",
            "render_wrfouts", "render_wrfouts_rust", "resolution_token",
-           "spacing_label"]
+           "skip_notice", "spacing_label"]

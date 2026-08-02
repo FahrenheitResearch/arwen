@@ -62,9 +62,31 @@ one-way nested domains at 12 km / 3 km / 1 km / 500 m, integrated
 YSU PBL, MM5 surface layer, Noah LSM, Kain-Fritsch on the root, and the
 legacy-RRTMG transcription -- the same option set as the CPU reference.
 
-The CPU reference is WRF v4.6.1 at the pinned commit, built with Intel
-ifx, run on 48 MPI ranks. The GPU run is one RTX 5090. Both write the
-same history cadence (d01-d03 hourly, d04 half-hourly).
+The CPU reference is WRF v4.6.1 at the pinned commit, built with **GNU
+gfortran 15.2.0** (WRF `configure` option 34, gfortran/gcc, dmpar; Intel
+oneAPI supplies the MPI layer only), run on 48 MPI ranks. The GPU run is
+one RTX 5090. Both write the same history cadence (d01-d03 hourly, d04
+half-hourly).
+
+> **Corrected in 1.4.1.** This page previously described that build as
+> Intel `ifx`. It was not: the pinned binary's own bytes carry exactly
+> one compiler stamp, `GCC: (Ubuntu 15.2.0-16ubuntu1) 15.2.0`, and no
+> Intel Fortran signature. The measurement, the `configure` transcript
+> and the full flag set are in the
+> [build recipe](wrf-reference/10d6e178d96648e35b826217cc001a1f598232bf6ceabd9ce07074a1f65e2031.build-recipe.md)
+> committed beside the manifest that pins the binary. The reference
+> stream itself is unchanged -- only the description of how it was
+> compiled was wrong.
+>
+> One file in this repository still carries the old wording as a bare
+> statement, and it is named here rather than fixed:
+> `configs/real74_thompson_1218z_rrtmg_legacy_4dom.toml`, whose header
+> comment reads `WRF v4.6.1 d66e442f, ifx, 48 ranks`. That file's
+> SHA-256 **is** the `config_sha256` this manifest, the acceptance band
+> and the certification capsule are all addressed by, so correcting a
+> comment inside it would move a digest the certification chain depends
+> on. Read that line as `gfortran 15.2.0, 48 ranks`; the `48 ranks` and
+> the pinned WRF commit in it are correct.
 
 ### t=0 comparator metrics (all four domains)
 
@@ -353,12 +375,20 @@ Claimed, each with its receipt above or in the linked pages:
   roughly 25 m horizontal and 10 m vertical).
   Everything on this page is convection-permitting to sub-kilometer
   case-study evidence, not a tornado-resolving claim.
-- **FP32 subnormal behavior differs on some GPUs.** On the measured
-  hardware class (sm_120), FP32 subnormals are flushed to zero in
-  arithmetic at the hardware level regardless of compile flags; the
-  specific measured consequences (branch flips on subnormal inputs)
-  and the countermeasures taken are recorded per scheme in the
-  registry.
+- **FP32 subnormals are flushed on the compile route this product
+  uses.** Kernels here are built through CuPy, which appends
+  `-ftz=true` after the options the caller passed, and the compiler
+  honors the last occurrence -- so FP32 subnormals are flushed to
+  zero in arithmetic on those modules even where `--ftz=false` was
+  requested. That is toolchain behavior, not a property of the
+  silicon: on the measured device (sm_120) the same source compiled
+  without the appended flag keeps full IEEE subnormals, and the
+  routes in this codebase that bypass the append measure IEEE
+  agreement on the same card ([HARDWARE.md](HARDWARE.md) records the
+  per-route result). The flushing is real wherever the append
+  reaches, so the countermeasures stand; the specific measured
+  consequences (branch flips on subnormal inputs) and the
+  countermeasures taken are recorded per scheme in the registry.
 
 ## 7. Reproduce this
 

@@ -16,8 +16,8 @@ use rustwx_models::{model_summary, plot_recipe_store_requirements};
 use rustwx_products::derived::{
     is_heavy_derived_recipe_slug, store_derived_recipe_slugs, store_heavy_recipe_slugs,
 };
-use rustwx_products::direct::store_direct_recipe_slugs;
-use rustwx_products::shared_context::DomainSpec;
+use rustwx_products::direct::{direct_recipe_is_time_invariant, store_direct_recipe_slugs};
+use rustwx_products::shared_context::{DomainSpec, TitleProvenance};
 use rustwx_products::windowed::HrrrWindowedProduct;
 use rustwx_render::PngCompressionMode;
 
@@ -96,6 +96,10 @@ pub struct BatchRenderRequest {
     /// registered fetch source.  A locally-imported run was never
     /// fetched from anywhere.
     pub source_label: Option<String>,
+    /// Where these frames came from, for the plot headline.  Defaults to
+    /// the source catalog, so a fetched run's titles are untouched; a
+    /// locally-imported run declares itself here and names its own grid.
+    pub title_provenance: TitleProvenance,
     /// Optional label overrides for nonstandard/local run names.
     pub date_yyyymmdd: Option<String>,
     pub cycle_utc: Option<u8>,
@@ -127,6 +131,7 @@ impl BatchRenderRequest {
             native_domain_slug: None,
             subtitle_spacing: None,
             source_label: None,
+            title_provenance: TitleProvenance::default(),
             date_yyyymmdd: None,
             cycle_utc: None,
             source: None,
@@ -517,6 +522,29 @@ pub fn run_batch_render(
                 completed,
                 total: planned,
             });
+            // A grid property, not a forecast: render it on the first
+            // selected hour and say so for the rest, rather than writing
+            // one identical image per lead.  Announced, because a silent
+            // drop and a deliberate single render look the same in a
+            // directory listing.
+            if matches!(kind, BatchProductKind::Direct)
+                && hour_index > 0
+                && direct_recipe_is_time_invariant(slug)
+            {
+                completed += 1;
+                summary.skipped += 1;
+                emit(BatchRenderEvent::ItemSkipped {
+                    hour: Some(hour),
+                    slug: slug.clone(),
+                    reason: format!(
+                        "static field: does not vary with forecast time, rendered once for this domain at F{:03}",
+                        hours[0]
+                    ),
+                    completed,
+                    total: planned,
+                });
+                continue;
+            }
             let outcome = protected(|| render_hour_item(&config, &store, hour, *kind, slug));
             completed += 1;
             match outcome {
@@ -782,6 +810,7 @@ fn render_config(
         source,
         subtitle_spacing: request.subtitle_spacing.clone(),
         source_label: request.source_label.clone(),
+        title_provenance: request.title_provenance.clone(),
         domain,
         out_dir: request.out_dir.clone(),
         contour_mode: Default::default(),

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import itertools
 import subprocess
 from pathlib import Path
 
@@ -35,9 +36,10 @@ from gpuwm.cli import main as cli_main
 PROFILE = "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1"
 
 
-def _emit(tmp_path, name, *extra, source="gfs", ladder="12", profile=PROFILE):
+def _emit(tmp_path, name, *extra, source="gfs", ladder="12", profile=PROFILE,
+          point="35.3,-97.5"):
     out = tmp_path / f"{name}.toml"
-    argv = ["domain", "--point=35.3,-97.5", "--card", "24gb",
+    argv = ["domain", f"--point={point}", "--card", "24gb",
             "--ladder", ladder, "--source", source,
             "--cycle", "2026-07-29T18", "--hours", "6",
             "--out", str(out), *extra]
@@ -442,6 +444,37 @@ def test_a_missing_proof_is_refused_rather_than_guessed(tmp_path):
 # Stage failure: replay, and stop
 # ---------------------------------------------------------------------------
 
+class _FakePopen:
+    """A ``subprocess.Popen`` double over this file's ``fake_run`` doubles.
+
+    ``_run_stage`` spells ``subprocess.run`` out as ``Popen`` +
+    ``communicate`` -- byte for byte what ``run`` does internally --
+    because the interrupt path has to be able to NAME the pid of the
+    stage gpuwm was waiting on without signalling it.  The seam these
+    tests patch moved with it; nothing else about them changed.
+    """
+
+    _pids = itertools.count(424242)
+
+    def __init__(self, completed):
+        self._completed = completed
+        self.pid = next(self._pids)
+        self.returncode = None
+
+    def communicate(self):
+        self.returncode = self._completed.returncode
+        return self._completed.stdout, self._completed.stderr
+
+
+def _popen_double(fake_run):
+    """Adapt a ``(command, **kwargs) -> CompletedProcess`` double."""
+
+    def factory(command, **kwargs):
+        return _FakePopen(fake_run(command, **kwargs))
+
+    return factory
+
+
 class _FakeCompleted:
     def __init__(self, returncode, stdout="", stderr=""):
         self.returncode = returncode
@@ -455,7 +488,7 @@ class _FakeCompleted:
     (2, "manifest"),
 ])
 def test_a_failing_stage_replays_its_output_and_stops(
-        tmp_path, capsys, monkeypatch, gfs_config, failing_index,
+        tmp_path, capsys, monkeypatch, gfs_config, staged_geog, failing_index,
         failing_label):
     """Tested at more than one stage, because "stops" is the contract.
 
@@ -476,11 +509,12 @@ def test_a_failing_stage_replays_its_output_and_stops(
                 stderr="line two, naming the actual problem\n")
         return _FakeCompleted(0, stdout="chatty success\n")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", _popen_double(fake_run))
     monkeypatch.setattr(go_cli, "resolve_bridge",
                         lambda: tmp_path / "gfs_grib2_bridge")
 
-    rc = cli_main(["go", str(gfs_config), "--outdir", str(tmp_path / "go")])
+    rc = cli_main(["go", str(gfs_config), "--outdir", str(tmp_path / "go"),
+                   "--geog-root", str(staged_geog)])
     printed = capsys.readouterr().out
     assert rc == 3
     assert f"FAILED  {failing_label}" in printed
@@ -494,8 +528,67 @@ def test_a_failing_stage_replays_its_output_and_stops(
     assert "chatty success" not in printed
 
 
+def test_a_failed_chain_says_what_it_left_on_disk(
+        tmp_path, capsys, monkeypatch, gfs_config, staged_geog):
+    """D-05.  A failed prepare leaves a scratch tree of a few hundred MB
+    and said nothing about it anywhere.
+
+    The interrupted arm of this same try/except has always told the
+    reader what is on disk; the failure arm returned the code in
+    silence.  Nothing is deleted -- the tree is the evidence of what
+    failed -- but it is now named, measured, and declared safe to remove.
+    """
+
+    root = tmp_path / "go"
+
+    def fake_run(command, **kwargs):
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "scratch.bin").write_bytes(b"x" * 3_000_000)
+        return _FakeCompleted(3, stdout="the real diagnosis\n")
+
+    monkeypatch.setattr(subprocess, "Popen", _popen_double(fake_run))
+    monkeypatch.setattr(go_cli, "resolve_bridge",
+                        lambda: tmp_path / "gfs_grib2_bridge")
+
+    rc = cli_main(["go", str(gfs_config), "--outdir", str(root),
+                   "--geog-root", str(staged_geog)])
+    captured = capsys.readouterr()
+    assert rc == 3
+    assert str(root) in captured.err
+    assert "partial tree with no certification capsule" in captured.err
+    assert "MiB" in captured.err
+    assert "safe to remove" in captured.err
+    # and it really is still there: the note must not have tidied away
+    # the evidence it is describing
+    assert (root / "scratch.bin").exists()
+
+
+def test_outdir_and_data_dir_naming_one_directory_is_refused(
+        tmp_path, capsys, gfs_config):
+    """E-07.  The default puts the download inside the run root, so only
+    an explicit --data-dir can make the two equal -- and when it does,
+    the create-only run directory and the meant-to-be-reused download
+    cache become the same directory, so the next run refuses against the
+    reader's own cache."""
+
+    shared = tmp_path / "both"
+    shared.mkdir()
+    rc = cli_main(["go", str(gfs_config), "--outdir", str(shared),
+                   "--data-dir", str(shared)])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "cannot be both" in err
+    assert "Traceback" not in err
+
+    # the negative control: different directories still plan fine
+    plan = go_cli.plan_from_config(
+        gfs_config, outdir=tmp_path / "run", data_dir=tmp_path / "dl")
+    assert plan["root"] != plan["data"]
+
+
 def test_a_succeeding_chain_reports_one_line_per_stage(tmp_path, capsys,
                                                        monkeypatch,
+                                                       staged_geog,
                                                        gfs_config):
     plan_root = tmp_path / "go"
 
@@ -525,13 +618,14 @@ def test_a_succeeding_chain_reports_one_line_per_stage(tmp_path, capsys,
                 "", encoding="utf-8")
         return _FakeCompleted(0, stdout="detail nobody asked for\n")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", _popen_double(fake_run))
     monkeypatch.setattr(go_cli, "resolve_bridge",
                         lambda: tmp_path / "gfs_grib2_bridge")
 
     monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
 
-    rc = cli_main(["go", str(gfs_config), "--outdir", str(plan_root)])
+    rc = cli_main(["go", str(gfs_config), "--outdir", str(plan_root),
+                   "--geog-root", str(staged_geog)])
     printed = capsys.readouterr().out
     assert rc == 0
     for label in ("authority", "fetch", "manifest", "prepare", "forecast",
@@ -549,7 +643,60 @@ def test_a_succeeding_chain_reports_one_line_per_stage(tmp_path, capsys,
     assert "go: rendered " in printed
 
 
+def test_a_passing_stages_note_survives_the_output_capture(
+        tmp_path, capsys, monkeypatch, staged_geog, gfs_config):
+    """A skipped product must not become a silent success one level up.
+
+    `gpuwm render` says, in one sentence, when a frame's declared inputs
+    are absent and a product was therefore not drawn -- it exists so
+    that skip is never silent.  `go` captures every stage's output and
+    prints `ok render`, so without this the sentence is produced and
+    swallowed, and the chain re-creates the silence the render change
+    removed.
+
+    `warning:` already survived; `note:` is this tree's word for "true,
+    worth knowing, not a fault", and it survives on the same terms.  The
+    third assertion is the boundary: ordinary chatter still does not.
+    """
+    plan_root = tmp_path / "go"
+
+    def fake_run(command, **kwargs):
+        if "--author-front-door-manifest" in command:
+            manifest = plan_root / "data" / "gfs-input-manifest.json"
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text("{}", encoding="utf-8")
+        if "--output-root" in command:
+            prepared = plan_root / "prepared"
+            prepared.mkdir(parents=True, exist_ok=True)
+            (prepared / "proof.json").write_text(json.dumps({
+                "input_manifest_sha256": "a" * 64,
+                "prepared_cache": {"content_sha256": "b" * 64}}),
+                encoding="utf-8")
+        return _FakeCompleted(0, stdout=(
+            "note: render skipped 1 product render(s) (refl)\n"
+            "warning: something to know\n"
+            "render: /png/t2.png\n"))
+
+    # Popen, not run: `_run_stage` spells subprocess.run out as Popen +
+    # communicate so the interrupt path can NAME the child's pid.  This
+    # test was written against the older seam and merged forward
+    # unchanged -- a patch on `run` is simply inert now, so the stages
+    # ran for real, fetched over the network, and died on the bridge
+    # stub.  Same double as every sibling in this file.
+    monkeypatch.setattr(subprocess, "Popen", _popen_double(fake_run))
+    monkeypatch.setattr(go_cli, "resolve_bridge",
+                        lambda: tmp_path / "gfs_grib2_bridge")
+    assert cli_main(["go", str(gfs_config), "--outdir", str(plan_root),
+                     "--geog-root", str(staged_geog)]) == 0
+    printed = capsys.readouterr().out
+    assert "note: render skipped 1 product render(s) (refl)" in printed
+    assert "warning: something to know" in printed
+    assert "/png/t2.png" not in printed, \
+        "a passing stage's ordinary output still stays behind --explain"
+
+
 def test_explain_replays_every_stage(tmp_path, capsys, monkeypatch,
+                                     staged_geog,
                                      gfs_config):
     plan_root = tmp_path / "go"
 
@@ -567,10 +714,11 @@ def test_explain_replays_every_stage(tmp_path, capsys, monkeypatch,
                 encoding="utf-8")
         return _FakeCompleted(0, stdout="the full receipt\n")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", _popen_double(fake_run))
     monkeypatch.setattr(go_cli, "resolve_bridge",
                         lambda: tmp_path / "gfs_grib2_bridge")
     assert cli_main(["go", str(gfs_config), "--outdir", str(plan_root),
+                     "--geog-root", str(staged_geog),
                      "--explain"]) == 0
     assert "the full receipt" in capsys.readouterr().out
 
@@ -584,7 +732,7 @@ def test_dry_run_prints_five_filled_in_commands_and_runs_nothing(
     def explode(*args, **kwargs):
         raise AssertionError("--dry-run must not run anything")
 
-    monkeypatch.setattr(subprocess, "run", explode)
+    monkeypatch.setattr(subprocess, "Popen", explode)
     monkeypatch.setattr(go_cli, "resolve_bridge",
                         lambda: tmp_path / "gfs_grib2_bridge")
 
@@ -615,7 +763,11 @@ def test_the_fetch_area_keeps_its_equals_form_for_a_negative_box(
 
     monkeypatch.setattr(go_cli, "resolve_bridge",
                         lambda: tmp_path / "gfs_grib2_bridge")
-    assert cli_main(["go", str(gfs_config), "--dry-run",
+    # A point low enough that the forcing box's first corner is a
+    # southern latitude whatever the sizing model of the day emits: this
+    # test is about the "=" joining rule, not about how many cells fit.
+    southern = _emit(tmp_path, "southern", point="12.0,-97.5")
+    assert cli_main(["go", str(southern), "--dry-run",
                      "--outdir", str(tmp_path / "go")]) == 0
     printed = capsys.readouterr().out
     assert "--area=-" in printed
@@ -666,7 +818,7 @@ def test_a_second_go_into_the_same_tree_is_refused_in_its_own_words(
     def fail_if_called(*args, **kwargs):  # pragma: no cover - must not run
         raise AssertionError("a stage ran after an up-front refusal")
 
-    monkeypatch.setattr(subprocess, "run", fail_if_called)
+    monkeypatch.setattr(subprocess, "Popen", fail_if_called)
     monkeypatch.setattr(go_cli, "resolve_bridge",
                         lambda: tmp_path / "gfs_grib2_bridge")
 
@@ -736,6 +888,63 @@ def test_the_memory_gate_refuses_ahead_of_the_fetch_stage(gfs_config,
     assert "--no-memory-gate" in message
 
 
+def test_unstaged_geography_is_refused_ahead_of_the_fetch_stage(
+        gfs_config, tmp_path, monkeypatch):
+    """The first-run wall, measured on the 1.4.0 wheel and closed here.
+
+    `gpuwm doctor` prints `MISSING WPS_GEOG ... -> gpuwm fetch-geog` and
+    exits 0, which is right: a ~16 GB download nobody opted into is not
+    a broken install.  `gpuwm go` then ran three stages, downloaded the
+    forcing, and died in the fourth with the whole of:
+
+        FAILED  prepare (exit 2)
+          rw-wps --source gfs: /.../WPS_GEOG/topo_gmted2010_30s/index.
+
+    No verb, no remedy, and the answer had been on screen a minute
+    earlier from a different command.  `go` asks the same check now, on
+    the same side of the download as the memory gate.
+    """
+    ran: list[str] = []
+    monkeypatch.setattr(go_cli, "_run_stage",
+                        lambda label, command, **kw: ran.append(label))
+    monkeypatch.setattr(go_cli, "resolve_bridge", lambda: Path("bridge"))
+
+    absent = tmp_path / "never-fetched" / "WPS_GEOG"
+    args = _args(gfs_config, tmp_path / "out", geog_root=absent)
+    with pytest.raises(go_cli.GoRefusal) as refusal:
+        go_cli.go_main(args)
+    assert ran == [], "a stage ran before the geography check"
+
+    message = str(refusal.value)
+    assert "gpuwm fetch-geog" in message
+    assert str(absent) in message
+    assert "--geog-root" in message
+    # The layered half carries the why, including the honest account of
+    # doctor's exit 0 on the same gap.
+    assert "before the fetch stage" in message
+    assert "exits 0" in message
+
+
+def test_a_partial_geography_tree_names_what_is_wrong_with_it(tmp_path):
+    """A dataset present but unindexed is a partial download, not a
+    missing opt-in, and the refusal has to distinguish them by name."""
+
+    geog = _staged_geog_tree(tmp_path)
+    victim = sorted(p for p in geog.iterdir() if p.is_dir())[0]
+    (victim / "index").unlink()
+
+    message = go_cli.geography_refusal(geog)
+    assert message is not None
+    assert victim.name in message
+    assert "gpuwm fetch-geog" in message
+
+
+def test_a_staged_geography_tree_passes_the_check(staged_geog):
+    """Non-vacuity: the check says yes to a tree shaped like a real one."""
+
+    assert go_cli.geography_refusal(staged_geog) is None
+
+
 def test_the_memory_gate_warns_without_blocking_and_can_be_skipped(
         gfs_config, tmp_path, monkeypatch, capsys):
     """Over budget but inside free VRAM is an advisory, not a refusal."""
@@ -772,11 +981,50 @@ def test_the_memory_gate_warns_without_blocking_and_can_be_skipped(
     assert ran == ["authority", "fetch", "manifest"]
 
 
-def _args(config, outdir):
-    import argparse
+def _staged_geog_tree(root: Path) -> Path:
+    """A WPS_GEOG tree shaped the way `gpuwm fetch-geog` leaves one.
 
+    Directory names and the `index` file are the whole of what the
+    prepare stage's precondition reads, so the nine empty-but-indexed
+    directories are a faithful stand-in for 16 GB of terrain.  Names
+    come from `geog_assets`, the module that stages the real one -- the
+    same source doctor reads -- so this fixture cannot drift from the
+    check under test.
+    """
+
+    from gpuwm.geog_assets import geog_datasets
+
+    geog = root / "WPS_GEOG"
+    for name in geog_datasets():
+        (geog / name).mkdir(parents=True, exist_ok=True)
+        (geog / name / "index").write_text("", encoding="utf-8")
+    return geog
+
+
+@pytest.fixture(scope="module")
+def staged_geog(tmp_path_factory):
+    return _staged_geog_tree(tmp_path_factory.mktemp("geog"))
+
+
+_DEFAULT_GEOG: list[Path] = []
+
+
+def _args(config, outdir, geog_root=None):
+    import argparse
+    import tempfile
+
+    if geog_root is None:
+        # Every chain test past the memory gate now needs a usable
+        # geography tree, because `go` checks for one there (it used to
+        # find out in the prepare stage, after the download).  One
+        # stand-in for the whole file rather than a fixture threaded
+        # through thirty call sites.
+        if not _DEFAULT_GEOG:
+            _DEFAULT_GEOG.append(
+                _staged_geog_tree(Path(tempfile.mkdtemp(prefix="gowps-"))))
+        geog_root = _DEFAULT_GEOG[0]
     return argparse.Namespace(
-        config=config, outdir=outdir, data_dir=None, geog_root=None,
+        config=config, outdir=outdir, data_dir=None, geog_root=geog_root,
         dry_run=False, no_memory_gate=False, explain=False)
 
 

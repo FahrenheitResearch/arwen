@@ -35,6 +35,7 @@ from gpuwm.ingest.horiz import (
     _regular_coordinates,
     interpolate_era5_to_lambert,
     interpolate_lake_skin_temperature,
+    orient_global_source_longitudes,
 )
 from gpuwm.ingest.lateral_bc import (
     StateBoundaryFrames,
@@ -59,6 +60,10 @@ from gpuwm.native_wrf_contract import (
 )
 from gpuwm.source_hierarchy import (
     initialize_and_export_regular_source_hierarchy,
+)
+from gpuwm.open_files import (
+    ensure_descriptor_headroom,
+    required_descriptors,
 )
 from gpuwm.physics_compat import (
     acknowledgement_delivery,
@@ -172,6 +177,20 @@ def _implementation_sha256() -> dict[str, str]:
     return result
 
 
+class GfsRouteError(ValueError):
+    """A refusal by this door, with a remedy the reader can act on.
+
+    Subclasses ValueError like every other refusal class in the tree
+    (``GoRefusal``, ``HrrrRouteInputError``, ``ManifestError``, ...) so
+    ``main``'s handler renders it as one sentence at rc 2.  The point of
+    the distinct type is what it is NOT used for: a violated internal
+    invariant stays a bare ``RuntimeError`` and keeps its traceback,
+    because that is a defect here rather than a problem with the inputs,
+    and flattening the two together would report our bug as the reader's
+    mistake.
+    """
+
+
 def _distribution_manifest() -> tuple[Path, dict[str, object]]:
     """The sealed manifest, validated against its WHOLE schema."""
 
@@ -179,7 +198,7 @@ def _distribution_manifest() -> tuple[Path, dict[str, object]]:
 
     bound = manifest_from_environment()
     if bound is None:
-        raise RuntimeError(
+        raise GfsRouteError(
             "installed GFS runtime requires GPUWM_NATIVE_DISTRIBUTION_MANIFEST")
     return bound
 
@@ -1081,9 +1100,31 @@ def prepare_gfs_wrf(
         static = _load_static(Path(static_input), grid, cfg.ny, cfg.nx)
         root_static_provider = "prebuilt-hash-bound-cache"
 
+    # One descriptor per decoded array is held for the whole bundle
+    # write, and the array count is forcing-times x fields-per-time --
+    # linear in forecast length.  Ask for the budget now, while the
+    # answer can still be a sentence: past here the shortfall arrives as
+    # an [Errno 24] naming whichever file was next, which is how a hard
+    # ceiling on forecast length looked like a random IO fault.
+    refusal = ensure_descriptor_headroom(
+        required_descriptors(len(records), len(_THREE_D) + len(_TWO_D)),
+        what=f"preparing {len(records)} GFS forcing time(s)")
+    if refusal is not None:
+        raise ValueError(refusal)
+
     decode_started = time.perf_counter()
+    # ignore_cleanup_errors: when the body fails for a reason that also
+    # stops the scratch tree being removed -- descriptor exhaustion is
+    # exactly that, since rmtree needs one per directory it walks -- the
+    # cleanup's exception REPLACES the body's, and the run reports the
+    # rmtree's victim instead of its own fault.  Both measured EMFILE
+    # failures named `decoded/f000`, the first directory the cleanup
+    # reached and a path each run had already read successfully.  The
+    # tree is still removed; only its failure stops overwriting the real
+    # one.
     with tempfile.TemporaryDirectory(
-            prefix="gpuwm-gfs-bridge-", dir=Path(output_root).parent) as temporary:
+            prefix="gpuwm-gfs-bridge-", dir=Path(output_root).parent,
+            ignore_cleanup_errors=True) as temporary:
         decoded = Path(temporary) / "decoded"
         completed = subprocess.run(
             [str(Path(bridge)), "--series", str(Path(series)), str(decoded),
@@ -1091,7 +1132,13 @@ def prepare_gfs_wrf(
             check=False, text=True, capture_output=True,
         )
         if completed.returncode != 0:
-            raise RuntimeError(decode_failure_message(
+            # The bridge already fails closed and says why, including for
+            # a GRIB whose valid time is not the one requested.  Raising
+            # a bare RuntimeError meant that careful, content-based
+            # diagnosis was delivered as a traceback at rc 1, because
+            # main() catches only (ValueError, OSError) -- the detection
+            # was right and only the delivery was wrong.
+            raise GfsRouteError(decode_failure_message(
                 "GFS Rust bridge", completed.stderr))
         expected_source_sha256 = {
             hour: manifest["files"][f"grib-f{hour:03d}"]["sha256"]
@@ -1100,6 +1147,17 @@ def prepare_gfs_wrf(
         decoded_snapshots = _load_bridge_snapshots(
             decoded, cycle_time, records, expected_source_sha256,
             expected_levels_hpa=expected_levels_hpa)
+        # A NOMADS box that crosses the source's own 0/360 origin cannot be
+        # asked for as one subregion, so `Area.as_nomads` widens it to the
+        # whole band (fetch.py:348-362) and the decode returns a ring stored
+        # with an arbitrary cut at longitude 0.  Re-cut it opposite the
+        # target before anything indexes it; a regional crop is untouched.
+        target_longitudes = tuple(
+            pair[1] for pair in (grid.latlon_mass(), grid.latlon_u(),
+                                 grid.latlon_v()))
+        decoded_snapshots = tuple(
+            orient_global_source_longitudes(snapshot, *target_longitudes)
+            for snapshot in decoded_snapshots)
         # From here on the run sees only the window that starts at the
         # experiment's lead.  Each snapshot still carries the SOURCE
         # valid time the bridge decoded (cycle + its own lead), which is

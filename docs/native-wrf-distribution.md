@@ -120,7 +120,13 @@ JSON is the authoritative horizontal output geometry.
 Use either a hash-bound prebuilt native static cache and receipt or
 `--geog-root` plus the domain JSON to build the domain-specific cache natively.
 The requested `--valid-time` must be an exact hourly cycle and must match the
-hour encoded in all 26 source filenames.
+hour encoded in all 26 source filenames.  It is the **cycle**, not the model
+start: with `--forecast-start-hour K` the window is f{K}..f{K+N} and model
+time zero is cycle + K.  Both the root preparation and the nested hierarchy
+below receive that same pair and derive the model clock themselves -- the
+hierarchy's own `--valid-time`, which meant model time zero, is deprecated in
+favour of `--cycle` plus `--forecast-start-hour` and is still accepted with
+its original meaning.
 
 ### ERA5
 

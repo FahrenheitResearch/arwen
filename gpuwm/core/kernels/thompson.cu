@@ -435,23 +435,36 @@ __device__ __forceinline__ void thompson_rain_sediment_impl(
         qr_tendency[k] = 0.0f;
         nr_tendency[k] = 0.0f;
 
-        if (qr[idx] > 1.0e-12f) {
-            float rr = qr[idx] * rain_density;
-            float nn = fmaxf(1.0e-6f, nr[idx] * rain_density);
+        // WRF's rain-presence branch at module_mp_thompson.F:3616 tests the
+        // working rain MASS CONCENTRATION, rr(k) > R1, not a mixing ratio.
+        // rr(k) is formed as q*rho at :3237 only inside the TAU+1 test on the
+        // mixing ratio at :3236, and is floored to R1 at :3252 when that test
+        // fails; the post-evaporation rewrite at :3568 is itself inside the
+        // L_qr(k) gate opened at :3501.  Both halves are load-bearing, so
+        // both are transcribed here.  Testing the mixing ratio alone fired
+        // this branch on levels where WRF's rr(k) sits at or below R1 because
+        // rho < 1 -- 13 634 level-visits of a 2 h 12 km forecast.  Dropping
+        // the R1 floor instead of adding it would have fired on 56 839
+        // level-visits WRF leaves alone, four times as much divergence as it
+        // removes.
+        const float rr = qr[idx] > 1.0e-12f
+            ? qr[idx] * rain_density : 1.0e-12f;
+        if (rr > 1.0e-12f) {
+            const float nn = fmaxf(1.0e-6f, nr[idx] * rain_density);
             const float lambda_arg = am_r * 6.0f * nn / rr;
-            double lambda = (double)powf(lambda_arg, 1.0f / 3.0f);
-            float mvd = (float)(3.672 / lambda);
-            if (mvd > 2.5e-3f) {
-                mvd = 2.5e-3f;
-                lambda = 3.672 / (double)mvd;
-                const float prefix = org3 * rr / am_r;
-                nn = (float)((double)prefix * pow(lambda, 3.0));
-            } else if (mvd < 37.5e-6f) {
-                mvd = 37.5e-6f;
-                lambda = 3.672 / (double)mvd;
-                const float prefix = org3 * rr / am_r;
-                nn = (float)((double)prefix * pow(lambda, 3.0));
-            }
+            // WRF bounds the rain MVD to [0.75*D0r, 2.5 mm] exactly once,
+            // in the TAU+1 block (module_mp_thompson.F:3240-3250), where it
+            // also rewrites nr(k) so the distribution stays self-consistent.
+            // thompson_bound_rain_number carries that single bound across
+            // gpuwm's split source kernels.  WRF then rewrites the rain pair
+            // after evaporation with no bound at all (:3568-3570) and derives
+            // the fall speed from the pair as it stands (:3616-3627); mvd_r
+            // does not appear anywhere between :3251 and :3632.  Re-applying
+            // the bound here is therefore an extra WRF does not have: it is
+            // idempotent wherever nothing has moved the pair since the last
+            // bound call, but it bites on evaporation-narrowed drop spectra,
+            // where it inflated the fall speed by up to 2.888x.
+            const double lambda = (double)powf(lambda_arg, 1.0f / 3.0f);
             rain_mass[k] = rr;
             rain_number[k] = nn;
 

@@ -127,10 +127,47 @@ def _check_set(candidate: CheckpointSet, validate, read_header) -> None:
         validate(candidate.members[grid_id])
 
 
+def route_note(config) -> str:
+    """The route sentence to append when no checkpoint exists at all.
+
+    Empty for a config whose route does write checkpoints -- there the
+    honest advice really is "that run must have written a restart".  On
+    the prepared single-domain route it is never true: the knob the old
+    message pointed at was inert, so pointing at it sent the user in a
+    circle.
+    """
+
+    from gpuwm.checkpoint_routes import (
+        CHECKPOINTLESS_ROUTE_REMEDY, config_has_case_data,
+        route_writes_checkpoints)
+    from gpuwm.experiment import is_experiment_toml
+
+    config = Path(config)
+    if not config.is_file() or not is_experiment_toml(config):
+        return ""
+    import tomllib
+
+    try:
+        with open(config, "rb") as stream:
+            raw = tomllib.load(stream)
+    except (OSError, ValueError):
+        return ""
+    domains = raw.get("domain")
+    domain_count = len(domains) if isinstance(domains, list) else 1
+    if route_writes_checkpoints(
+            domain_count=domain_count,
+            has_case_data=config_has_case_data(config)):
+        return ""
+    return (f".  {config} is a single-domain config with no [case_data] "
+            "table, so it runs on the prepared single-domain forecaster, "
+            "which writes no checkpoints at any restart_interval_s.  "
+            + CHECKPOINTLESS_ROUTE_REMEDY)
+
+
 def resolve_resume_checkpoint(outdir, spec: str | Path = LATEST, *,
                               validate=_default_validate,
-                              read_header=_default_read_header
-                              ) -> ResumeResolution:
+                              read_header=_default_read_header,
+                              config=None) -> ResumeResolution:
     """Resolve ``--from`` to a checkpoint path the run machinery accepts.
 
     An explicit path is returned as-is after an existence check -- the
@@ -140,6 +177,11 @@ def resolve_resume_checkpoint(outdir, spec: str | Path = LATEST, *,
     agrees with the files on disk; every newer set refused on the way is
     recorded so the caller can print why the resume point is older than
     the newest file.
+
+    ``config`` is the experiment being resumed.  It is used for one
+    thing: when no checkpoint exists, naming the route limitation that
+    explains why, instead of advising the user to set a knob that route
+    ignores.
     """
     outdir = Path(outdir)
     if str(spec) != LATEST:
@@ -156,7 +198,8 @@ def resolve_resume_checkpoint(outdir, spec: str | Path = LATEST, *,
         raise ValueError(
             f"no gpuwmrst_d*.npz checkpoint files in {outdir}; resume "
             "needs the --outdir of the run being continued, and that run "
-            "must have written a restart (restart_interval_s)")
+            "must have written a restart (restart_interval_s)"
+            + ("" if config is None else route_note(config)))
     skipped: list[str] = []
     for candidate in candidates:
         try:
@@ -173,4 +216,5 @@ def resolve_resume_checkpoint(outdir, spec: str | Path = LATEST, *,
 
 
 __all__ = ["LATEST", "CheckpointSet", "ResumeResolution",
-           "discover_checkpoint_sets", "resolve_resume_checkpoint"]
+           "discover_checkpoint_sets", "resolve_resume_checkpoint",
+           "route_note"]

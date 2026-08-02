@@ -75,7 +75,7 @@
       "command": "git grep -niE gray.zone|SASE -- docs/public/FIRST-LIGHT.md",
       "exit_code": 0,
       "stderr": "",
-      "stdout": "docs/public/FIRST-LIGHT.md:155:PBL scheme active the wizard prints a **gray-zone advisory** -- not a\ndocs/public/FIRST-LIGHT.md:159:those scales is a 3-D turbulence closure (SASE, planned).\n"
+      "stdout": "docs/public/FIRST-LIGHT.md:172:PBL scheme active the wizard prints a **gray-zone advisory** -- not a\ndocs/public/FIRST-LIGHT.md:176:those scales is a 3-D turbulence closure (SASE, planned).\n"
     }
   },
   "edit_range": {
@@ -156,6 +156,8 @@
         "docs/public/FIRST-LIGHT.md",
         "docs/public/HARDWARE.md",
         "docs/public/PHYSICS.md",
+        "docs/public/REPORTING-A-PROBLEM.md",
+        "docs/public/STREAMING.md",
         "docs/public/VERIFICATION.md",
         "docs/public/WRF-INTEROP.md"
       ],
@@ -169,7 +171,7 @@
       "occurrence_count": 5,
       "occurrences": [
         {
-          "line": 398,
+          "line": 433,
           "line_text": "It does not resolve tornado dynamics: the near-surface corner flow,",
           "match": "resolve tornado",
           "negated_in_line": true,
@@ -178,7 +180,7 @@
           "sentence": "It does not resolve tornado dynamics: the near-surface corner flow, suction vortices, or tornado-scale wind intensity, which the literature on tornado-like vortices places below roughly 25 m horizontal and 10 m vertical spacing."
         },
         {
-          "line": 403,
+          "line": 438,
           "line_text": "and mesocyclone-proxy diagnostic, not as a resolved-tornado claim:",
           "match": "resolved-tornado",
           "negated_in_line": true,
@@ -187,7 +189,7 @@
           "sentence": "Read the STP/UH severe suite as a tornadic-supercell environment and mesocyclone-proxy diagnostic, not as a resolved-tornado claim: these are convection-permitting to sub-kilometer case studies, not tornado-resolving simulations."
         },
         {
-          "line": 405,
+          "line": 440,
           "line_text": "not tornado-resolving simulations.",
           "match": "tornado-resolv",
           "negated_in_line": true,
@@ -196,7 +198,7 @@
           "sentence": "Read the STP/UH severe suite as a tornadic-supercell environment and mesocyclone-proxy diagnostic, not as a resolved-tornado claim: these are convection-permitting to sub-kilometer case studies, not tornado-resolving simulations."
         },
         {
-          "line": 348,
+          "line": 370,
           "line_text": "- **No resolved tornado dynamics.** The 500 m nest and the STP/UH",
           "match": "resolved tornado",
           "negated_in_line": true,
@@ -205,7 +207,7 @@
           "sentence": "- **No resolved tornado dynamics.** The 500 m nest and the STP/UH severe suite characterize the tornadic-supercell environment and mesocyclone-scale morphology; they do not resolve the near-surface corner flow, suction vortices, or tornado-scale wind intensity (tornado-like-vortex resolution in the literature sits below roughly 25 m horizontal and 10 m vertical)."
         },
         {
-          "line": 355,
+          "line": 377,
           "line_text": "case-study evidence, not a tornado-resolving claim.",
           "match": "tornado-resolv",
           "negated_in_line": true,
@@ -234,7 +236,7 @@
       "command": "git grep -inE tornado-resolv|resolv[a-z]* tornado|suction vort|tornadogenesis|tornado-scale -- README.md docs/public/*.md",
       "exit_code": 0,
       "stderr": "",
-      "stdout": "README.md:398:  It does not resolve tornado dynamics: the near-surface corner flow,\nREADME.md:399:  suction vortices, or tornado-scale wind intensity, which the\nREADME.md:405:  not tornado-resolving simulations.\ndocs/public/VERIFICATION.md:348:- **No resolved tornado dynamics.** The 500 m nest and the STP/UH\ndocs/public/VERIFICATION.md:351:  corner flow, suction vortices, or tornado-scale wind intensity\ndocs/public/VERIFICATION.md:355:  case-study evidence, not a tornado-resolving claim.\n"
+      "stdout": "README.md:433:  It does not resolve tornado dynamics: the near-surface corner flow,\nREADME.md:434:  suction vortices, or tornado-scale wind intensity, which the\nREADME.md:440:  not tornado-resolving simulations.\ndocs/public/VERIFICATION.md:370:- **No resolved tornado dynamics.** The 500 m nest and the STP/UH\ndocs/public/VERIFICATION.md:373:  corner flow, suction vortices, or tornado-scale wind intensity\ndocs/public/VERIFICATION.md:377:  case-study evidence, not a tornado-resolving claim.\n"
     },
     "unshipped_performance_claims": {
       "command": "git grep -inE cuda graph|kernel fusion|operator fusion -- README.md docs/public/*.md",
@@ -244,7 +246,7 @@
     }
   },
   "readme_item": {
-    "first_line": 393,
+    "first_line": 428,
     "item_count": 1,
     "line_count": 16,
     "normalized": "- **Resolved scale.** The innermost demonstrated grid is 500 m. That resolves supercell storm structure, cold pools, mesocyclone-scale rotation, and the environmental and morphological severe-weather diagnostics rendered on it -- 2-5 km updraft helicity, the Significant Tornado Parameter, CAPE/CIN/SRH/shear. It does not resolve tornado dynamics: the near-surface corner flow, suction vortices, or tornado-scale wind intensity, which the literature on tornado-like vortices places below roughly 25 m horizontal and 10 m vertical spacing. Read the STP/UH severe suite as a tornadic-supercell environment and mesocyclone-proxy diagnostic, not as a resolved-tornado claim: these are convection-permitting to sub-kilometer case studies, not tornado-resolving simulations. Sub-kilometer nests additionally sit in the PBL gray zone flagged in [FIRST-LIGHT.md](docs/public/FIRST-LIGHT.md) (a 3-D turbulence closure, SASE, is planned).",
@@ -317,8 +319,8 @@
     "stdout": ""
   },
   "verification_item": {
-    "first_line": 348,
-    "follows_no_data_assimilation_bullet_line": 344,
+    "first_line": 370,
+    "follows_no_data_assimilation_bullet_line": 366,
     "item_count": 1,
     "line_count": 8,
     "normalized": "- **No resolved tornado dynamics.** The 500 m nest and the STP/UH severe suite characterize the tornadic-supercell environment and mesocyclone-scale morphology; they do not resolve the near-surface corner flow, suction vortices, or tornado-scale wind intensity (tornado-like-vortex resolution in the literature sits below roughly 25 m horizontal and 10 m vertical). Everything on this page is convection-permitting to sub-kilometer case-study evidence, not a tornado-resolving claim.",
@@ -332,7 +334,7 @@
         "roughly 25 m horizontal and 10 m vertical"
       ]
     },
-    "precedes_fp32_bullet_line": 356,
+    "precedes_fp32_bullet_line": 378,
     "prefix": "- **No resolved tornado dynamics.**",
     "substrings": {
       "all_present": true,

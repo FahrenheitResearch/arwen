@@ -47,6 +47,7 @@ from gpuwm.core.microphysics_transition import (  # noqa: E402
     resolve_microphysics_transition,
 )
 from gpuwm.experiment import load_experiment  # noqa: E402
+from gpuwm.io.restart import RestartMismatchError  # noqa: E402
 from gpuwm.ingest.prepared_cache import (  # noqa: E402
     PreparedCacheReader,
     compare_prepared_domain_config,
@@ -72,6 +73,8 @@ RUNNER = "tools.prepared_domain_tree_forecast"
 ARBITRARY_PLAN_ID = "arbitrary-prepared-one-way-domain-tree-v1"
 THOMPSON_NSSL_PLAN_ID = "thompson-outer-nssl2-inner-mp8-mp18-v1"
 HIERARCHY_SCHEMA = "gpuwm-native-hrrr-hierarchy-direct-v1"
+SEALED_EXTENSION_FINGERPRINT_SCHEMA = \
+    "gpuwm-prepared-tree-sealed-extension-fingerprint-v1"
 # Every source builds its whole domain tree through the same artifact writer,
 # so `hierarchy-artifacts/` is identical across all of them. Only the top-level
 # document differs: HRRR prepares its tree in a separate pass and writes
@@ -169,6 +172,74 @@ def _strict_json(value):
         result = float(value)
         return result if math.isfinite(result) else None
     return value
+
+
+def _without_forecast_stop(exp):
+    """Normalize only the typed experiment's enumerated forecast stops.
+
+    ``ExperimentConfig.run_seconds`` is the one identity field which changes
+    between successively longer legs.  The typed loader also copies that
+    authority into each ``DomainConfig.run.run_seconds``; remove those exact
+    derived paths only after proving they still equal the authority.  Any
+    future nested field with the same spelling remains covered.  Keeping the
+    exceptions explicit prevents a newly introduced control from silently
+    falling outside the restart-extend identity.
+    """
+    value = _strict_json(asdict(exp))
+    if not isinstance(value, Mapping) or "run_seconds" not in value:
+        raise ValueError(
+            "sealed extension identity requires ExperimentConfig.run_seconds")
+    result = dict(value)
+    authoritative_stop = result.pop("run_seconds")
+    domains = result.get("domains")
+    if not isinstance(domains, list) or not domains:
+        raise ValueError(
+            "sealed extension identity requires typed experiment domains")
+    normalized_domains = []
+    for index, domain in enumerate(domains):
+        if not isinstance(domain, Mapping) or not isinstance(
+                domain.get("run"), Mapping):
+            raise ValueError(
+                f"sealed extension identity domain {index} lacks RunConfig")
+        normalized_domain = dict(domain)
+        normalized_run = dict(domain["run"])
+        if normalized_run.get("run_seconds") != authoritative_stop:
+            raise ValueError(
+                f"sealed extension identity domain {index} run_seconds "
+                "diverges from ExperimentConfig.run_seconds")
+        normalized_run.pop("run_seconds")
+        normalized_domain["run"] = normalized_run
+        normalized_domains.append(normalized_domain)
+    result["domains"] = normalized_domains
+    return result
+
+
+def sealed_extension_identity_components(
+    exp, runtime_identity
+) -> dict[str, object]:
+    """The named components whose digest is the sealed-extension identity.
+
+    The sealed-extension counterpart of
+    :func:`tree_restart_identity_components`, and named for the same
+    reason: these are published beside the digest in the checkpoint
+    header, so a refusal can say WHICH component moved instead of only
+    that the hash did.  Both checkpoint routes now carry named
+    components; before this the sealed route carried none, and a
+    horizon extension that failed to line up could only report a bare
+    digest difference.
+    """
+
+    return {
+        "schema": SEALED_EXTENSION_FINGERPRINT_SCHEMA,
+        "experiment": _without_forecast_stop(exp),
+        "runtime_source_identity": _strict_json(runtime_identity),
+    }
+
+
+def sealed_extension_fingerprint(exp, runtime_identity) -> str:
+    """Stable trajectory identity shared by successively longer legs."""
+    payload = sealed_extension_identity_components(exp, runtime_identity)
+    return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
 
 def _atomic_json(path: Path, payload) -> None:
@@ -427,6 +498,79 @@ def _domain_rows(exp) -> list[dict[str, object]]:
         }
         for domain in exp.domains
     ]
+
+
+#: The restart identity this runner binds, component by component.
+#:
+#: Until 1.4.1 the whole experiment TOML's SHA-256 was one of these
+#: components, which made the tree route's restart identity strictly
+#: narrower than the contract `gpuwm run --restart` publishes: "only the
+#: forecast length / output and restart cadence may differ".  All three
+#: of those live in the TOML, so all three moved the digest and all three
+#: were refused -- including extending `run_seconds` from a checkpoint,
+#: the worked example in FIRST-LIGHT section 7.  The single-domain route
+#: never had the problem: `gpuwm.io.restart._require_config_match` diffs
+#: the RunConfig field by field and skips exactly those keys
+#: (`CONFIG_RUN_LENGTH_FIELDS`).
+#:
+#: The experiment component is now the same timing-independent identity
+#: `gpuwm.core.model.experiment_fingerprint` binds on the native route,
+#: so the two restart contracts agree.  Everything else the digest bound
+#: -- preparation receipt, per-domain prepared-cache content, execution
+#: plan, runtime source identity -- is bound exactly as before.
+TREE_RESTART_IDENTITY_COMPONENTS = (
+    "schema", "experiment_identity", "preparation_receipt_sha256",
+    "domain_cache_content_sha256", "execution_plan",
+    "runtime_source_identity",
+)
+
+
+def tree_restart_identity_components(
+    inputs, runtime_identity
+) -> dict[str, object]:
+    """The named components whose digest is the tree restart fingerprint.
+
+    Named, and stored beside the fingerprint in the checkpoint header,
+    so a mismatch can say WHICH component differs.  A bare hash
+    comparison could only ever say that something did -- which is what
+    made the refusal a nine-word traceback with nothing actionable in it.
+    """
+
+    from gpuwm.core.model import restart_identity_payload
+
+    # Strict-JSON at construction, not at hash time: these components are
+    # also written into the checkpoint header, and a MappingProxyType or
+    # a Path reaching json.dump there fails the checkpoint write itself.
+    return _strict_json({
+        "schema": REPORT_SCHEMA,
+        "experiment_identity": restart_identity_payload(inputs.experiment),
+        "preparation_receipt_sha256":
+            inputs.authority_sha256["preparation_receipt"],
+        "domain_cache_content_sha256": {
+            f"d{bundle.grid_id:02d}": bundle.cache_reader.content_sha256
+            for bundle in inputs.domains
+        },
+        "execution_plan": _plan_restart_identity(inputs.execution_plan),
+        "runtime_source_identity": runtime_identity,
+    })
+
+
+def _plan_restart_identity(plan) -> dict[str, object]:
+    """The execution plan as RESTART identity: what it integrates.
+
+    ``_domain_rows`` describes each domain for the receipt, and one of
+    the things it describes is ``history_interval_s`` -- when the run
+    writes.  Hashing the receipt as-is re-bound the output cadence the
+    ``--restart`` contract publishes as free to change, which is the
+    same defect one layer up from the prepared-cache identity.  The plan
+    published in the report is unchanged; only this view drops it.
+    """
+
+    identity = _strict_json(plan)
+    for row in identity.get("domains", ()):
+        if isinstance(row, dict):
+            row.pop("history_interval_s", None)
+    return identity
 
 
 def resolve_execution_plan(exp) -> Mapping[str, object]:
@@ -927,7 +1071,16 @@ def preflight_prepared_tree(
         raise RuntimeError("prepared hierarchy resolved no source identity")
     interval_hours = forcing_hours[1] - forcing_hours[0]
     if exp.run_seconds > forcing_hours[-1] * 3600.0:
-        raise ValueError("experiment duration exceeds prepared forcing hours")
+        # The gate that keeps a longer run_seconds honest.  A restart may
+        # extend the forecast, but only into boundaries this tree was
+        # actually prepared with; naming both numbers is what tells the
+        # user whether to shorten the run or re-prepare from more forcing.
+        raise ValueError(
+            f"experiment run_seconds = {float(exp.run_seconds):g} s exceeds "
+            f"the prepared forcing, which reaches "
+            f"{forcing_hours[-1] * 3600.0:g} s after start_time (f"
+            f"{forcing_hours[-1]:03d}); shorten the run or re-prepare the "
+            "tree from a longer fetch")
     execution_plan = resolve_execution_plan(exp)
     authority_hashes = MappingProxyType(
         {
@@ -1066,6 +1219,7 @@ def run_prepared_tree(
     io_mode: str,
     restart: Path | None = None,
     health_debug: bool = False,
+    sealed_forcing_extension: bool = False,
 ) -> dict[str, object]:
     """Restore the prepared domains and execute the existing tree engine."""
 
@@ -1096,6 +1250,7 @@ def run_prepared_tree(
         build_shared_scratch_arena,
     )
     from gpuwm.ingest.hrrr_physics import initialize_prepared_physics
+    from gpuwm.ingest.lateral_bc import bind_lateral_boundary_clock
     from gpuwm.ingest.prepared_cache import restore_prepared_cache
     from gpuwm.io.restart import restore_tree_restart, write_tree_restart
     from gpuwm.io.wrfout import PerDomainWrfoutWriters
@@ -1217,22 +1372,32 @@ def run_prepared_tree(
             initial_result=restored.initial_result,
         )
         drivers[domain.grid_id] = driver
+    # This runner constructs DomainNodes directly rather than going through
+    # core.model.build_experiment.  Bind the prepared root's already-attached
+    # external mirror before restart validation or the first solve so Davies
+    # consumers use WRF's post-increment dtbc semantic (dt..T), not the
+    # retired elapsed-based compatibility path (0..T-dt).
+    bind_lateral_boundary_clock(
+        nodes[exp.root.grid_id].state, nodes[exp.root.grid_id].clock)
     timing["restore_tree_and_initialize_physics"] = time.perf_counter() - started
 
-    fingerprint_payload = {
-        "schema": REPORT_SCHEMA,
-        "experiment_config_sha256": inputs.authority_sha256["experiment_config"],
-        "preparation_receipt_sha256": inputs.authority_sha256["preparation_receipt"],
-        "domain_cache_content_sha256": {
-            f"d{bundle.grid_id:02d}": bundle.cache_reader.content_sha256
-            for bundle in inputs.domains
-        },
-        "execution_plan": inputs.execution_plan,
-        "runtime_source_identity": runtime_identity,
-    }
-    fingerprint = hashlib.sha256(
-        _canonical(_strict_json(fingerprint_payload)).encode("utf-8")
-    ).hexdigest()
+    if sealed_forcing_extension:
+        # The sealed route keeps its OWN identity and its own digest: it is
+        # deliberately stable across successively longer legs, which is the
+        # whole point of a horizon extension, so it cannot be replaced by the
+        # restart identity below.  What it gains here is named components,
+        # published beside the digest exactly as the restart route's are.
+        sealed_components = sealed_extension_identity_components(
+            exp, runtime_identity)
+        fingerprint = hashlib.sha256(
+            _canonical(sealed_components).encode("utf-8")).hexdigest()
+        fingerprint_components = _strict_json(sealed_components)
+    else:
+        fingerprint_components = tree_restart_identity_components(
+            inputs, runtime_identity)
+        fingerprint = hashlib.sha256(
+            _canonical(_strict_json(fingerprint_components)).encode("utf-8")
+        ).hexdigest()
     model = ExperimentState(
         root=nodes[exp.root.grid_id],
         nodes_by_grid_id=MappingProxyType(nodes),
@@ -1242,6 +1407,9 @@ def run_prepared_tree(
     )
     model._scratch_arena = arena
     model._dycore_state_workspace = rebuilt
+    # Published beside the digest so a checkpoint written here can be
+    # refused BY NAME rather than as an unexplained hash difference.
+    model._experiment_fingerprint_components = fingerprint_components
     model._prepared_by_grid_id = MappingProxyType(prepared)
     model._input_catalog = None
     model._runtime_status = ModelRuntimeStatus()
@@ -1252,7 +1420,9 @@ def run_prepared_tree(
 
     if restart is not None:
         checkpoint = validate_manifest_checkpoint(Path(restart))
-        restore_tree_restart(checkpoint, model)
+        restore_tree_restart(
+            checkpoint, model,
+            sealed_forcing_extension=sealed_forcing_extension)
         model._resumed = True
 
     initial_health = {}
@@ -1283,7 +1453,18 @@ def run_prepared_tree(
             model,
             outdir / "wrfout",
             start_time=exp.start_time,
-            title=f"gpuwm prepared HRRR domain tree {exp.name}",
+            # The title used to say HRRR on every tree, including the GFS
+            # trees this runner has executed since the GFS front door
+            # opened.  A durable artifact does not get to name a source
+            # its run never touched; `inputs.source` is the run's own.
+            title=f"gpuwm prepared {inputs.source.upper()} domain tree "
+                  f"{exp.name}",
+            # Same contract as the single-domain runner: the prepared
+            # cache's source identity carries the initial-condition
+            # provenance for sources whose front door publishes one.
+            initial_condition=inputs.source_identity.get(
+                "initial_condition"),
+            source=inputs.source,
         )
         if io_mode == "history"
         else None
@@ -1307,7 +1488,9 @@ def run_prepared_tree(
 
     def restart_handler(tree, ticks):
         valid = exp.start_time + timedelta(seconds=ticks / tree.schedule.clock.tick_den)
-        tree._last_checkpoint = write_tree_restart(outdir, tree, valid)
+        tree._last_checkpoint = write_tree_restart(
+            outdir, tree, valid,
+            sealed_forcing_extension=sealed_forcing_extension)
 
     def progress_callback(**event):
         record_memory()
@@ -1406,6 +1589,12 @@ def run_prepared_tree(
             "fingerprint": fingerprint,
             "domains": _domain_rows(exp),
         },
+        "restart_contract": {
+            "mode": ("sealed-forcing-extension"
+                     if sealed_forcing_extension else "exact-setup"),
+            "restart_input": (
+                None if restart is None else str(Path(restart).resolve())),
+        },
         "wall_seconds": timing["total"],
         "timing_seconds": timing,
         "executor": {
@@ -1495,7 +1684,18 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiment-config", type=Path, required=True)
     parser.add_argument("--experiment-config-sha256", required=True)
     parser.add_argument("--io-mode", choices=("history", "none"), default="history")
-    parser.add_argument("--restart", type=Path)
+    parser.add_argument(
+        "--restart", type=Path,
+        help="resume from any member of a gpuwmrst checkpoint set written "
+             "by an earlier run of this prepared tree; only the forecast "
+             "length (run_seconds) and the output/restart cadence "
+             "(history_interval_s, restart_interval_s) may differ from "
+             "the run that wrote it -- the same contract `gpuwm run "
+             "--restart` publishes.  Anything else is refused by name")
+    parser.add_argument(
+        "--sealed-forcing-extension", action="store_true",
+        help=("write/restore checkpoints using the explicit append-only "
+              "forcing-prefix contract"))
     parser.add_argument("--health-debug", action="store_true")
     parser.add_argument("--outdir", type=Path, required=True)
     return parser
@@ -1526,12 +1726,28 @@ def main(argv=None) -> int:
             experiment_config=args.experiment_config,
             experiment_config_sha256=args.experiment_config_sha256,
         )
+    except MissingTableAssets as error:
+        print(f"prepared_domain_tree_forecast: refused: {error}",
+              file=sys.stderr)
+        return 2
+    except ValueError as error:
+        # Preflight is the stage whose whole job is to refuse before the
+        # GPU is touched, and every one of its refusals is a ValueError
+        # naming exactly what differs.  They used to escape as tracebacks
+        # exiting 1 -- the same shape the run failures take -- so a
+        # config problem and a crashed forecast were indistinguishable
+        # to the caller.  Nothing has run here, so no failed-run receipt.
+        print(f"prepared_domain_tree_forecast: refused: {error}",
+              file=sys.stderr)
+        return 2
+    try:
         report = run_prepared_tree(
             inputs,
             output_directory=outdir,
             io_mode=args.io_mode,
             restart=args.restart,
             health_debug=args.health_debug,
+            sealed_forcing_extension=args.sealed_forcing_extension,
         )
     except MissingTableAssets as error:
         # A refusal, not a failed run: no failed-run-receipt, because
@@ -1539,6 +1755,15 @@ def main(argv=None) -> int:
         # that stages it -- the shape every other guard in this main
         # already uses.
         print(f"prepared_domain_tree_forecast: refused: {error}",
+              file=sys.stderr)
+        return 2
+    except RestartMismatchError as error:
+        # Also a refusal, and the guard is doing exactly the right
+        # thing -- but it used to arrive as a 40-line traceback exiting
+        # 1, where every sibling refusal in this main is one sentence
+        # exiting 2.  Nothing was integrated, so there is no failed run
+        # to write a receipt about.
+        print(f"prepared_domain_tree_forecast: --restart refused: {error}",
               file=sys.stderr)
         return 2
     except BaseException as error:

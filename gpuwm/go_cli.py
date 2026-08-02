@@ -53,7 +53,7 @@ import threading
 import time
 from pathlib import Path
 
-from gpuwm.explain import explain_enabled
+from gpuwm.explain import explain_enabled, layered, render
 
 #: The runner that owns both the authority materialization and the
 #: forecast, as an importable module rather than a script path.
@@ -100,7 +100,19 @@ HEARTBEAT_SECONDS = 20.0
 ORCHESTRATED_SOURCES = ("gfs",)
 
 #: Where the manual chain points a reader whose config this refuses.
-MANUAL_CHAIN = "docs/public/FIRST-LIGHT.md section 3a"
+#:
+#: A repo-relative path was the whole pointer until 1.4.1, and a pip
+#: install contains no docs tree -- so the one instruction offered to
+#: the reader named a file they provably did not have, with no URL to
+#: reach it by (A-10, and the pointer half of B-03).  The URL is built
+#: from the project's own declared Repository metadata so the two cannot
+#: drift apart, and the local path stays for readers who do have a
+#: checkout.
+DOCS_BASE_URL = (
+    "https://github.com/FahrenheitResearch/arwen/blob/main/")
+MANUAL_CHAIN = (
+    f"docs/public/FIRST-LIGHT.md section 3a "
+    f"({DOCS_BASE_URL}docs/public/FIRST-LIGHT.md)")
 
 
 class GoRefusal(ValueError):
@@ -258,6 +270,28 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     # own business, so they land under its own root unless `--data-dir`
     # names an existing download to reuse.
     data = Path(data_dir) if data_dir is not None else root / "data"
+    # E-07.  The default puts the download INSIDE the run root, so the
+    # two are related by construction and only an explicit --data-dir can
+    # make them equal.  When it does, the run claims the directory the
+    # inputs live in: every stage is create-only, so a re-run then
+    # refuses against a directory the reader thinks of as their download
+    # cache, and the download and the run share a receipt.  Both flags
+    # were the reader's, so neither is dropped -- this refuses and says
+    # which one to move.
+    if outdir is not None and data_dir is not None:
+        try:
+            same = Path(outdir).resolve() == Path(data_dir).resolve()
+        except (OSError, RuntimeError):
+            same = Path(outdir) == Path(data_dir)
+        if same:
+            raise GoRefusal(
+                f"--outdir and --data-dir both name {root}.  The run "
+                f"directory is create-only and the download directory is "
+                f"meant to be reused, so one directory cannot be both: "
+                f"the next run would refuse against your own cache.  "
+                f"Point --outdir at a new directory and leave --data-dir "
+                f"on the download, or drop --data-dir and let the "
+                f"download land under the run root as {root / 'data'}.")
     return {
         "config": config,
         "wps_namelist": base / f"{config.stem}.namelist.wps",
@@ -269,6 +303,18 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         # would download a window the front door then refuses for not
         # carrying the lead the experiment starts from.
         "forecast_start_hour": int(fetch_table.get("forecast_start_hour", 0)),
+        # Load-bearing for the same reason, and dropped until 1.4.1.  It
+        # sets the LATERAL BOUNDARY interval: a config asking for hourly
+        # forcing whose fetch runs without --cadence downloads f000/f003
+        # and the run gets 3-hourly boundaries -- three times coarser
+        # than the file says, with exit 0, "forecast validity PASS", and
+        # nothing anywhere saying the request was not honoured.  A
+        # measured case: [fetch] cadence = 1, report.json
+        # boundary_interval_seconds = 10800.  The block is advisory in
+        # the sense that this command chooses where bytes land; it is
+        # not advisory about what is fetched.
+        "cadence": (int(fetch_table["cadence"])
+                    if fetch_table.get("cadence") is not None else None),
         "area": str(fetch_table["area"]),
         "data": data,
         "profile": profile,
@@ -333,6 +379,8 @@ def fetch_command(plan: dict) -> list[str]:
                "--source", plan["source"], "--cycle", plan["cycle"],
                "--hours", str(plan["hours"]), _area_flag(plan["area"]),
                "--out", str(plan["data"])]
+    if plan.get("cadence") is not None:
+        command.extend(("--cadence", str(plan["cadence"])))
     if plan.get("forecast_start_hour"):
         command.extend(
             ("--forecast-start-hour", str(plan["forecast_start_hour"])))
@@ -592,9 +640,17 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
 
     def _wait() -> None:
         try:
-            box["completed"] = subprocess.run(
-                command, capture_output=True, text=True,
-                errors="replace", cwd=str(_stage_cwd()))
+            # Popen + communicate is exactly what subprocess.run does;
+            # spelling it out is what publishes the child's pid, which
+            # the interrupt path has to be able to NAME (it does not
+            # signal it -- see GoInterrupted).
+            proc = subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, errors="replace", cwd=str(_stage_cwd()))
+            box["pid"] = proc.pid
+            out, err = proc.communicate()
+            box["completed"] = subprocess.CompletedProcess(
+                command, proc.returncode, out, err)
         except BaseException as error:  # re-raised on this thread below
             box["error"] = error
 
@@ -602,14 +658,25 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
                               daemon=True)
     worker.start()
     next_beat = started + heartbeat_seconds
-    while worker.is_alive():
-        worker.join(timeout=0.2)
-        now = time.monotonic()
-        if worker.is_alive() and now >= next_beat:
-            print(f"     .. {label}, {_elapsed_words(now - started)}"
-                  f"{_progress_note(progress)}", flush=True)
-            next_beat = now + heartbeat_seconds
-    worker.join()
+    try:
+        while worker.is_alive():
+            worker.join(timeout=0.2)
+            now = time.monotonic()
+            if worker.is_alive() and now >= next_beat:
+                print(f"     .. {label}, {_elapsed_words(now - started)}"
+                      f"{_progress_note(progress)}", flush=True)
+                next_beat = now + heartbeat_seconds
+        worker.join()
+    except KeyboardInterrupt:
+        # Ctrl-C.  The wait happens on this thread, so the interrupt
+        # lands here; the stage subprocess is on the worker.  Hand the
+        # stage name and that pid up and let go_main say it in one
+        # sentence.  Nothing is signalled from here: in a terminal the
+        # child already received its own SIGINT with the rest of the
+        # foreground process group, and a `kill` issued by gpuwm at a
+        # pid it merely observed is how a tool ends up stopping
+        # something that was never its to stop.
+        raise GoInterrupted(label, box.get("pid")) from None
     if "error" in box:
         raise box["error"]
     completed = box["completed"]
@@ -635,8 +702,17 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
     else:
         # Warnings must not need a flag to be seen: a passing stage's
         # warning lines surface, one line each, nothing else.
+        #
+        # `note:` joins `warning:` here, and for the same reason rather
+        # than for tidiness.  This tree uses `note:` for "true, and worth
+        # knowing, and not a fault" -- the render stage says it when a
+        # frame's declared inputs are absent and a product was therefore
+        # not drawn.  That sentence exists precisely so a skipped product
+        # is not a silent success; a chain that captured it and printed
+        # `ok render` would have re-created the silence one level up.
         for line in output.splitlines():
-            if line.lstrip().lower().startswith("warning:"):
+            head = line.lstrip().lower()
+            if head.startswith("warning:") or head.startswith("note:"):
                 print(f"    {line.strip()}")
 
 
@@ -651,6 +727,69 @@ class GoStageFailed(Exception):
     def __init__(self, code: int):
         super().__init__(f"stage exited {code}")
         self.code = code
+
+
+def _tree_bytes(root) -> int:
+    """Bytes under ROOT, counting what can be counted.
+
+    Best-effort by construction: a tree a failed stage was mid-write in
+    can lose a file between the walk and the stat, and a size is not
+    worth an exception on an error path.
+    """
+    total = 0
+    try:
+        for path in Path(root).rglob("*"):
+            try:
+                if path.is_file() and not path.is_symlink():
+                    total += path.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        return total
+    return total
+
+
+def _human_bytes(count: int) -> str:
+    value = float(count)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024.0 or unit == "TiB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{value:.1f} TiB"
+
+
+def _partial_tree_note(root) -> str:
+    """What a failed run left on disk, and that removing it is safe."""
+    root = Path(root)
+    if not root.exists():
+        return (f"go: {root} was not created, so there is nothing on disk "
+                "from this run.")
+    return (f"go: {root} is a partial tree with no certification capsule, "
+            f"holding {_human_bytes(_tree_bytes(root))}.  It is kept "
+            f"because it is the evidence of what failed; nothing later "
+            f"reads it, so it is safe to remove once you are done with "
+            f"it.  Every stage is create-only, so a re-run needs a new "
+            f"--outdir either way.")
+
+
+#: Ctrl-C's exit code, by the shell convention 128 + SIGINT.
+INTERRUPT_EXIT_CODE = 130
+
+
+class GoInterrupted(Exception):
+    """Ctrl-C arrived while ``label``'s subprocess (``pid``) was running.
+
+    Carries the pid so the message can NAME the process gpuwm was
+    waiting on, and deliberately carries no authority to kill it.  The
+    bounded contract, shared with the multi-GPU orchestration lane:
+    Ctrl-C returns 130, kills no child and no unrelated process, and an
+    unobserved child pid is printed rather than acted on.
+    """
+
+    def __init__(self, label: str, pid: int | None):
+        super().__init__(f"interrupted during {label}")
+        self.label = label
+        self.pid = pid
 
 
 def _physics_words(plan: dict) -> str:
@@ -680,7 +819,9 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
 
     from gpuwm.core.preflight import (ReservePolicy, _load_experiment_any,
                                       config_forcing_source,
-                                      estimate_phases, unpriced_ingest_note)
+                                      estimate_phases,
+                                      live_device_local_memory_profile,
+                                      unpriced_ingest_note)
 
     config = Path(plan["config"])
     source = config_forcing_source(config)
@@ -688,11 +829,17 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
         return {"verdict": unpriced_ingest_note(config, plan.get("source")),
                 "refuse": False, "warn": True, "free_bytes": None}
     exp = _load_experiment_any(config)
+    # This gate is about THIS machine -- it is the last thing between the
+    # user and a download -- so the non-pool terms are priced against the
+    # card that is actually here, not against the 170-SM reference the
+    # module was calibrated on.  `gpuwm check` reads the same profile in
+    # the same situation; the two must not disagree about one card.
+    profile = live_device_local_memory_profile()
     # The cadence the domain was SIZED against, from the same [fetch]
     # table the fetch stage reads, so the two cannot disagree.
     cadence_h = plan.get("cadence")
     phases = estimate_phases(
-        exp, source=source, vram_gib=vram_gib,
+        exp, source=source, vram_gib=vram_gib, profile=profile,
         ingest_forcing_interval_seconds=(
             float(cadence_h) * 3600.0 if cadence_h else None))
 
@@ -707,7 +854,8 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
         return {"verdict": phases.verdict(None), "refuse": False,
                 "warn": False, "free_bytes": None, "phases": phases}
     reserve = ReservePolicy.n0_alloc(
-        exp, estimate_bytes=phases.forecast.alloc_estimate_bytes)
+        exp, profile=profile,
+        estimate_bytes=phases.forecast.alloc_estimate_bytes)
     budget = reserve.budget_bytes(free)
     peak = phases.peak_envelope_bytes
     return {
@@ -718,6 +866,59 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
         "budget_bytes": budget,
         "phases": phases,
     }
+
+
+def geography_refusal(geog_root: Path) -> str | None:
+    """Why the prepare stage cannot build static fields, or ``None``.
+
+    The prepare stage builds every domain's terrain, land use, soil and
+    greenness out of the staged WPS_GEOG tree.  Without it there is no
+    run -- and what a first-time reader used to get for that was three
+    successful stages, a download, and then this, verbatim:
+
+        FAILED  prepare (exit 2)
+          rw-wps --source gfs: /.../WPS_GEOG/topo_gmted2010_30s/index.
+
+    No verb, no remedy, and a sentence that ends in a path and a full
+    stop.  Meanwhile ``gpuwm doctor`` had the whole answer, including
+    the command, and ``go`` never asked it.
+
+    Asked here for the same reason the memory gate is: BEFORE the fetch
+    stage spends the user's bandwidth on forcing data for a run that
+    cannot preprocess.
+
+    This is a hard refusal and stays one.  It is not the warn-not-block
+    case -- nothing here is a prediction that might be wrong.  The
+    input is absent, the stage that needs it is next, and it was
+    measured failing.  ``gpuwm doctor`` correctly exits 0 on the same
+    gap, because a ~16 GB download nobody opted into is not a broken
+    install; that is a statement about the INSTALL.  This is a
+    statement about a RUN, and the two answers differ honestly.
+    """
+
+    from gpuwm.doctor import geography_gaps
+
+    gaps = geography_gaps(Path(geog_root))
+    if not gaps:
+        return None
+    return layered(
+        f"the staged WPS_GEOG tree is not usable: "
+        + "; ".join(gap.brief or gap.detail for gap in gaps) + ".\n"
+        "  Every domain's static fields (terrain, land use, soil, "
+        "greenness) are built from it by the prepare stage, so no "
+        "stage after it can run.\n"
+        "  remedy: gpuwm fetch-geog\n"
+        f"  # stages the nine required datasets into {geog_root}\n"
+        "  # gpuwm go CONFIG --geog-root DIR uses a tree staged elsewhere",
+        "Refusing here, before the fetch stage downloads the forcing "
+        "data, rather than in preprocessing after it.\n\n"
+        "`gpuwm doctor` reports this same gap and still exits 0.  That "
+        "is not a disagreement: the download is an explicit opt-in, so "
+        "an install that did everything its documentation asked is not "
+        "a broken install, and doctor is describing the install.  This "
+        "message describes a RUN, which cannot proceed without the "
+        "tree.\n\n"
+        + "\n".join(f"  {gap.name}: {gap.detail}" for gap in gaps))
 
 
 def go_main(args) -> int:
@@ -805,6 +1006,12 @@ def go_main(args) -> int:
                   "though it fits the free VRAM measured just now.  "
                   "Proceeding; a driver/other-process spike could still "
                   "OOM this run.")
+
+    # Same rule as the memory gate, same side of the download.
+    geography = geography_refusal(geog_root)
+    if geography is not None:
+        raise GoRefusal(geography)
+
     try:
         _run_stage("authority", authority_command(plan), explain=explain)
         _run_stage("fetch", fetch_command(plan), explain=explain)
@@ -825,23 +1032,94 @@ def go_main(args) -> int:
                    progress=plan["run"] / "progress.json")
         rendered = _render_stage(plan, explain=explain)
     except GoStageFailed as failure:
+        # D-05.  The interrupted arm below has always told the reader what
+        # is on disk; this one raised and said nothing, so a failed
+        # prepare left a scratch tree of a few hundred MB with no mention
+        # anywhere that it existed, was incomplete, or could be removed.
+        # Nothing is deleted here: the tree is the only evidence of what
+        # went wrong, and a tool that tidies away the failure a person is
+        # about to report is worse than one that leaves it.
+        print(_partial_tree_note(plan["root"]), file=sys.stderr)
         return failure.code
+    except GoInterrupted as stop:
+        # One sentence, 130, and the truth about what is on disk.  The
+        # partial tree has no certification capsule, which is what makes
+        # its incompleteness visible to every receipt reader.
+        child = ("" if stop.pid is None else
+                 f"  # the {stop.label} process was pid {stop.pid}; gpuwm "
+                 "signalled nothing and killed nothing\n")
+        print(render(layered(
+            f"go: interrupted during {stop.label}; no later stage ran and "
+            f"{plan['root']} is a partial tree with no certification "
+            "capsule.\n"
+            f"{child}"
+            f"  remedy: gpuwm go {_quote(plan['config'])} --outdir "
+            "<a new directory>   # every stage is create-only",
+            "Ctrl-C sends SIGINT to the whole foreground process group, "
+            "so the stage subprocess received it directly and gpuwm did "
+            "not (and will not) signal any pid itself -- a tool that "
+            "kills pids it merely observed is a tool that eventually "
+            "kills the wrong one. If the stage was launched into the "
+            "background by a shell, SIGINT is SIG_IGN for the whole job "
+            "and neither process can see a Ctrl-C at all; send SIGTERM "
+            "there instead."),
+            explain=explain, command="gpuwm go"), file=sys.stderr)
+        return INTERRUPT_EXIT_CODE
 
     # The forecast writes its own validity verdict (health, stability,
     # input-identity gates) into report.json; say it here so the chain
     # ends with the one line a reader is looking for.
     try:
-        verdict = json.loads(
-            (plan["run"] / "report.json").read_text(
-                encoding="utf-8")).get("status")
+        report = json.loads(
+            (plan["run"] / "report.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        verdict = None
+        report = {}
+    verdict = report.get("status")
+    delivered = _boundary_interval_refusal(plan, report)
+    if delivered is not None:
+        print(f"go: {delivered}", file=sys.stderr)
+        return 1
     if verdict:
         print(f"go: forecast validity {verdict}")
     print(f"go: wrote {plan['run']}")
     if rendered:
         print(f"go: rendered {plan['render']}")
     return 0
+
+
+def _boundary_interval_refusal(plan: dict, report: dict) -> str | None:
+    """Refuse a run whose lateral boundaries are not the cadence asked for.
+
+    The forecast records ``input.boundary_interval_seconds`` -- the real
+    spacing of the lateral boundary times it integrated against.  When
+    the ``[fetch]`` table names a cadence, that number is what the
+    config asked for, and the two disagreeing means the run tracked the
+    driving model on a different clock from the one the file declares.
+
+    Checked against the RECEIPT rather than against the fetch command,
+    because the defect this closes was a fetch command that looked right
+    and a run that was three times coarser: exit 0, "forecast validity
+    PASS", and nothing anywhere naming the substitution.  A verdict that
+    can only be reached by reading report.json by hand is not a verdict.
+    """
+
+    cadence = plan.get("cadence")
+    if cadence is None:
+        return None
+    observed = report.get("input", {}).get("boundary_interval_seconds")
+    if not isinstance(observed, (int, float)) or isinstance(observed, bool):
+        return None
+    requested = float(cadence) * 3600.0
+    if float(observed) == requested:
+        return None
+    return (
+        f"the run integrated against {float(observed) / 3600.0:g} h lateral "
+        f"boundaries, but [fetch] cadence = {cadence} in "
+        f"{plan['config'].name} asks for {cadence:g} h.  The boundary clock "
+        "is what ties a limited-area run to its driving model, so this is "
+        "not a rounding difference and the run above is not the run the "
+        "config describes.  Re-run after making the two agree; "
+        f"{plan['run'] / 'report.json'} records what was delivered.")
 
 
 def _cycle_stamp(cycle: str) -> str:

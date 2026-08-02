@@ -217,6 +217,14 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--sealed-prepared-cache", action="store_true",
+        help="opt in to a prefix-sealed operational HRRR root preparation",
+    )
+    parser.add_argument(
+        "--extend-root-preparation", type=Path,
+        help="sealed HRRR predecessor to extend by exactly one forcing hour",
+    )
+    parser.add_argument(
         "--geog-root",
         type=Path,
         help=(
@@ -262,7 +270,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--valid-time",
-        help="initial UTC time in WRF form YYYY-MM-DD_HH:MM:SS",
+        help="initial UTC time in WRF form YYYY-MM-DD_HH:MM:SS.  On "
+             "--source hrrr this is the CYCLE; model time zero is cycle + "
+             "--forecast-start-hour and is derived for every stage",
     )
     parser.add_argument("--output-root", type=Path)
     parser.add_argument("--run-seconds", type=int)
@@ -588,7 +598,13 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
             "--static-receipt": args.static_receipt,
             "--run-seconds": args.run_seconds,
             "--history-interval-seconds": args.history_interval_seconds,
-            "--forecast-start-hour": args.forecast_start_hour,
+            # --forecast-start-hour is NOT unused here.  The hierarchy's
+            # model time zero is cycle + K, and --valid-time on this door
+            # is the cycle, so refusing the lead left the nested route
+            # reachable only at lead 0 -- and reachable WRONGLY at any
+            # other, because the cycle would have been forwarded as the
+            # model start.  --forecast-end-hour stays unused: the
+            # hierarchy reads its forcing horizon off the sealed root.
             "--forecast-end-hour": args.forecast_end_hour,
             "--pipeline-workers": args.pipeline_workers,
             "--prepare-workers": args.prepare_workers,
@@ -619,6 +635,8 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
             "--grib2-inventory": args.grib2_inventory,
             "--grib2-dump": args.grib2_dump,
             "--hierarchy-workers": args.hierarchy_workers,
+            "--sealed-prepared-cache": args.sealed_prepared_cache or None,
+            "--extend-root-preparation": args.extend_root_preparation,
         }
         errors.extend(
             f"{flag} is not used by HRRR hierarchy export"
@@ -627,6 +645,10 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
         )
         if args.child_workers is not None and args.child_workers not in range(1, 33):
             errors.append("--child-workers must be between 1 and 32")
+        if (args.forecast_start_hour is not None
+                and args.forecast_start_hour < 0):
+            errors.append(
+                "--forecast-start-hour must be a nonnegative forecast lead")
         if args.valid_time is not None:
             try:
                 parsed = datetime.strptime(args.valid_time, "%Y-%m-%d_%H:%M:%S")
@@ -646,6 +668,13 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
         "--output-root": args.output_root,
     }
     errors = [flag for flag, value in required.items() if value is None]
+    if args.extend_root_preparation is not None \
+            and not args.sealed_prepared_cache:
+        errors.append(
+            "--extend-root-preparation requires --sealed-prepared-cache")
+    if args.sealed_prepared_cache \
+            and args.forecast_start_hour not in (None, 0):
+        errors.append("--sealed-prepared-cache requires --forecast-start-hour 0")
     if args.geog_root is not None:
         if args.domain_spec is None:
             errors.append("--domain-spec (required with --geog-root)")
@@ -1183,8 +1212,18 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
             str(args.source_sha256s),
             "--source-manifest-sha256",
             str(args.source_sha256s_sha256),
-            "--valid-time",
+            # --valid-time on THIS door is the cycle (it is validated as
+            # "an exact hourly HRRR cycle" above and passed to
+            # hrrr_source_window as one).  The hierarchy's own
+            # --valid-time was model time zero, so forwarding this string
+            # under that name handed it a time K hours early at any
+            # nonzero lead.  Both values go through, spelled for what
+            # they are, and the hierarchy derives its own clock.
+            "--cycle",
             str(args.valid_time),
+            "--forecast-start-hour",
+            str(0 if args.forecast_start_hour is None
+                else args.forecast_start_hour),
             "--output-root",
             str(args.output_root),
             "--workers",
@@ -1205,7 +1244,7 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
         "--physics-profile", (
             WSM6_PROFILE_ID
             if args.physics_profile is None else args.physics_profile),
-        "--valid-time", str(args.valid_time),
+        "--cycle", str(args.valid_time),
         "--output-root", str(args.output_root),
         "--run-seconds", str(43_200 if args.run_seconds is None else args.run_seconds),
         "--forecast-start-hour", str(
@@ -1239,6 +1278,12 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
     if args.cpu_preprocess_bridge is not None:
         command.extend((
             "--cpu-preprocess-bridge", str(args.cpu_preprocess_bridge)))
+    if args.sealed_prepared_cache:
+        command.append("--sealed-prepared-cache")
+    if args.extend_root_preparation is not None:
+        command.extend((
+            "--extend-root-preparation",
+            str(args.extend_root_preparation)))
     for acknowledgement in args.ack:
         command.extend(("--ack", acknowledgement))
     return command
@@ -1731,6 +1776,16 @@ def main(argv: list[str] | None = None) -> int:
         adapter = get_source_adapter(args.source)
     except ValueError as exc:
         parser.error(str(exc))
+
+    if adapter.runner != "hrrr_f00_f12_v1" and (
+            args.sealed_prepared_cache
+            or args.extend_root_preparation is not None):
+        print(
+            "invalid or missing run arguments: --sealed-prepared-cache and "
+            "--extend-root-preparation are only used by --source hrrr",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
 
     if not adapter.runnable:
         # A reason, or nothing.  The status is already on the line, so

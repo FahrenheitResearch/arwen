@@ -469,9 +469,12 @@ def forcing_snapshots(data: CaseDataConfig, input_catalog=None) -> dict:
         for record in getattr(input_catalog, "files", ())
         if record.role == "forcing"
     }
+    forcing_identities = (
+        data.forcing_identity()
+        if hasattr(data, "forcing_identity") else data.forcing)
     content_sha256 = tuple(
         forcing_hashes.get(Path(path).resolve(), "")
-        for path in data.forcing
+        for path in forcing_identities
     )
     if not all(content_sha256):
         content_sha256 = None
@@ -1071,8 +1074,19 @@ def refl_10cm_due(outer_step: int, substep: int,
 def _global_wrf_attrs(
         grid, start_time: datetime,
         geog_selection: GeogSelection | None = None, *, domain=None,
-        coord=None, feedback=None) -> dict[str, object]:
-    from gpuwm.io.wrfout import wrf_global_attrs
+        coord=None, feedback=None, initial_condition=None,
+        source: str | None = None) -> dict[str, object]:
+    """Assemble one domain's wrfout global attributes.
+
+    ``initial_condition`` is the preparation receipt's provenance block
+    (see :func:`gpuwm.io.wrfout.initial_condition_global_attrs`).  It
+    says WHAT the initial state was; ``start_time`` says only WHEN the
+    model clock began, and at a nonzero forecast lead those are two
+    different facts about two different times.  ``None`` writes no
+    provenance attribute at all rather than asserting an analysis.
+    """
+    from gpuwm.io.wrfout import (
+        initial_condition_global_attrs, wrf_global_attrs)
 
     landuse_attrs = (None if geog_selection is None
                      else geog_selection.landuse_global_attrs())
@@ -1104,6 +1118,8 @@ def _global_wrf_attrs(
             GPUWM_FEEDBACK_STOCK_WRF_CERTIFIED=np.int32(0),
             GPUWM_FEEDBACK_CERTIFICATION=str(
                 feedback["stock_wrf_certification"]))
+    attrs.update(initial_condition_global_attrs(
+        initial_condition, source=source))
     return attrs
 
 

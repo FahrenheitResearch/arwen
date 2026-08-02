@@ -178,6 +178,64 @@ def test_rust_engine_maps_shared_product_names(wrfout, tmp_path):
         assert _png_size(png) == (800, 600)
 
 
+@needs_renderer
+def test_wind10_renders_the_wind_not_a_pressure_chart(wrfout, tmp_path):
+    """``--products wind10`` must draw the wind.
+
+    It did not.  ``RUST_PRODUCT_ALIASES["wind10"]`` pointed at
+    ``mslp_10m_winds`` -- a mean-sea-level PRESSURE analysis with 10 m
+    barbs over it -- under a source comment calling that "the catalog's
+    standalone surface-wind product".  Asking the tuned engine for wind
+    returned pressure, so during a wildfire an operator went to the
+    matplotlib fallback (whose own ``wind10`` IS a wind map) to get one.
+
+    A test comparing ``RUST_PRODUCT_ALIASES["wind10"]`` to a hardcoded
+    string would have passed on the broken code, which is why this one
+    goes to the artifact instead: render it, and separately ask the
+    renderer's own catalog what that product FILLS with.
+    """
+
+    from gpuwm import render as render_module
+
+    out = tmp_path / "png"
+    rc = cli.main(["render", str(wrfout), "--engine", "rust",
+                   "--products", "wind10", "--timeidx", "0",
+                   "--size", "800x600", "--out", str(out)])
+    assert rc == 0
+    produced = sorted(p.name for p in out.glob("*.png"))
+    assert len(produced) == 1, produced
+    assert "10m_wind_speed_and_direction" in produced[0], produced
+    assert "mslp" not in produced[0], (
+        "wind10 must not return a mean-sea-level pressure chart")
+
+    rows, _summary = rustwx.list_products(
+        RENDERER, wrfout, store_root=tmp_path / "store")
+    detail = {slug: text for slug, _kind, _status, text in rows}
+    status = {slug: state for slug, _kind, state, _text in rows}
+
+    # What each shared name actually DRAWS, in the renderer's own words.
+    # A renderable row states its fill as "[fill: <selector>]"; a row the
+    # store cannot serve names the same selector as the field it lacks.
+    # Either way the answer to "what is this a chart OF?" is in the row.
+    for alias, selector_key in (
+            render_module.RUST_PRODUCT_ALIAS_FILL_SELECTORS.items()):
+        slug = render_module.RUST_PRODUCT_ALIASES[alias]
+        assert slug in detail, f"{alias} -> {slug} is not in the catalog"
+        assert selector_key in detail[slug], (
+            f"--products {alias} draws {detail[slug]!r}, which is not "
+            f"a chart of {selector_key}")
+
+    # The wind one must additionally be renderable from this store --
+    # three instantaneous 10 m planes, one frame, no neighbours.
+    wind_slug = render_module.RUST_PRODUCT_ALIASES["wind10"]
+    assert status[wind_slug] == "renderable", detail[wind_slug]
+
+    # And the product it must never be confused with again: whatever
+    # `mslp_10m_winds` fills with, it is pressure, and it is not wind10.
+    assert "pressure_reduced_to_mean_sea_level" in detail["mslp_10m_winds"]
+    assert wind_slug != "mslp_10m_winds"
+
+
 # ---------------------------------------------------------------------------
 # Domain + resolution tokens: two domains at one lead must not collide
 # ---------------------------------------------------------------------------
@@ -251,6 +309,56 @@ def test_unknown_domain_identity_keeps_the_native_grid_token(
     assert produced, "the anonymous-domain file rendered nothing"
     for name in produced:
         assert "native_grid" in name, name
+
+
+def test_the_engines_skip_line_is_read_and_is_not_a_failure(monkeypatch,
+                                                            tmp_path):
+    """`rw_wrfbatch` has always emitted three verdicts; two were read.
+
+    A product whose stored fields are absent is `SKIPPED <slug>
+    <reason>` on stdout and is NOT counted in `summary.failed`, so the
+    process still exits 0.  Reading only RENDERED/FAILED made that
+    verdict invisible to every caller, which is why a render could
+    quietly draw one image fewer than the catalog and say nothing.
+
+    Third arm is the negative control: FAILED is still a failure.
+    """
+
+    import subprocess
+
+    class Result:
+        returncode = 0
+        stdout = "\n".join((
+            "RENDERED t2 /tmp/png/t2.png",
+            "SKIPPED refl store carries no REFL_10CM",
+            ""))
+        stderr = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Result())
+    written, failures, skipped = rustwx.run_renderer(
+        tmp_path / "rw_wrfbatch", tmp_path / "wrfout_d01_x.nc",
+        store_root=tmp_path / "store", out_dir=tmp_path / "png",
+        products="all", frames="all", width=800, height=600)
+    assert [p.name for p in written] == ["t2.png"]
+    assert failures == []
+    assert len(skipped) == 1
+    product, detail = skipped[0]
+    assert product == "refl"
+    assert "store carries no REFL_10CM" in detail
+
+    class Failed:
+        returncode = 1
+        stdout = "RENDERED t2 /tmp/png/t2.png\n"
+        stderr = "FAILED refl contour engine panicked\n"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Failed())
+    _written, failures, skipped = rustwx.run_renderer(
+        tmp_path / "rw_wrfbatch", tmp_path / "wrfout_d01_x.nc",
+        store_root=tmp_path / "store", out_dir=tmp_path / "png",
+        products="all", frames="all", width=800, height=600)
+    assert skipped == []
+    assert len(failures) == 1
+    assert "contour engine panicked" in failures[0]
 
 
 def test_source_label_reaches_the_renderer_invocation(monkeypatch,
@@ -345,9 +453,15 @@ def test_engine_auto_falls_back_to_matplotlib(
 
 
 def test_parse_products_rust_mapping():
+    # String equality only.  This test PASSED while `wind10` returned a
+    # pressure chart, which is why it is not the guard against that bug
+    # -- `test_wind10_renders_the_wind_not_a_pressure_chart` is, by
+    # going to the rendered artifact and to the renderer's own statement
+    # of what each product fills with.
     assert parse_products_rust("all") == "all"
     assert parse_products_rust("refl,t2,wind10,precip") == (
-        "composite_reflectivity,2m_temperature,mslp_10m_winds,total_qpf")
+        "composite_reflectivity,2m_temperature,"
+        "10m_wind_speed_and_direction,total_qpf")
     # Raw catalog slugs pass through for the renderer's own validation.
     assert parse_products_rust("sbcape,refl") == (
         "sbcape,composite_reflectivity")
@@ -375,7 +489,8 @@ def test_list_products_reports_the_full_catalog(wrfout, tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     # The complete catalog is enumerated, not just what renders.
-    assert "total=151" in out
+    # 153 = 152 + the standalone 10 m wind chart.
+    assert "total=153" in out
     assert "renderable" in out and "excluded" in out
     # The fixture's fields prove out the reflectivity composite ...
     assert any("composite_reflectivity" in line and "renderable" in line
@@ -388,6 +503,24 @@ def test_list_products_reports_the_full_catalog(wrfout, tmp_path, capsys):
     for line in out.splitlines():
         if line.lstrip().startswith("missing-fields"):
             assert "not stored:" in line, line
+
+
+@needs_renderer
+def test_terrain_product_is_renderable_from_a_wrfout(wrfout, tmp_path, capsys):
+    """Orography is in every wrfout; the catalog must offer it as a product.
+
+    The negative control this pins is a silent skip: before the recipe
+    existed the terrain plane sat in the store as a browse-only raw field
+    and no catalog row mentioned it at all, so "there is no terrain frame"
+    and "the terrain frame failed" were indistinguishable.
+    """
+    rc = cli.main(["render", str(wrfout), "--engine", "rust",
+                   "--list-products", "--out", str(tmp_path)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    rows = [line for line in out.splitlines() if "terrain_height" in line]
+    assert rows, out
+    assert all("renderable" in row for row in rows), rows
 
 
 @needs_renderer

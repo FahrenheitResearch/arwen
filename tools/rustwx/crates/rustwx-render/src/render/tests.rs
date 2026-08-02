@@ -1417,3 +1417,64 @@ fn crates_do_not_reintroduce_legacy_credit_footers() {
         "legacy credit/footer strings remain in crates/: {offenders:?}"
     );
 }
+
+
+#[test]
+fn subtitle_left_keeps_what_the_source_label_does_not_need() {
+    // B-13.  The split was `subtitle_available / 2` whenever a right
+    // subtitle existed, so the provenance line was ellipsized to half
+    // the row while "source: ArWen" -- a small fraction of it -- left the
+    // rest of the row empty.  Measured on a rendered plot the line came
+    // out `Init 04/03 12Z | F006 | Valid 04/03 18Z | WRF...`, and what
+    // was dropped was the grid spacing.
+    let scale = 2u32;
+    let gap = 6u32 * scale;
+    let right = "source: ArWen";
+    let provenance = "Init 04/03 12Z | F006 | Valid 04/03 18Z | WRF | dx 12 km";
+
+    // Widths are measured, not guessed: the row is exactly wide enough
+    // for both, which is the case the old rule got wrong.
+    let prov_w = measure_text_width(provenance, scale, false);
+    let right_w = measure_text_width(right, scale, false);
+    let available = prov_w + right_w + gap;
+
+    let left_width = subtitle_left_width(available, Some(right), scale, gap);
+    assert_eq!(left_width, prov_w);
+    let (fitted, truncated) = fit_text_to_width(provenance, left_width, scale, false);
+    assert!(!truncated, "still truncated: {fitted:?}");
+    assert_eq!(fitted, provenance);
+
+    // Negative control: the old fixed half-split cuts the same line, so
+    // this test fails if the split ever goes back to it.
+    assert!(available / 2 < prov_w, "fixture cannot demonstrate B-13");
+    let (old_fitted, old_truncated) =
+        fit_text_to_width(provenance, available / 2, scale, false);
+    assert!(old_truncated);
+    assert!(old_fitted.ends_with("..."));
+}
+
+#[test]
+fn subtitle_left_never_falls_below_the_even_split() {
+    // A pathological source label must not squeeze the provenance below
+    // what the old fixed split gave it.
+    let scale = 2u32;
+    let available = 400u32;
+    let absurd = "source: ".to_string() + &"x".repeat(400);
+    let left_width = subtitle_left_width(available, Some(absurd.as_str()), scale, 12);
+    assert_eq!(left_width, available - available / 2);
+}
+
+#[test]
+fn a_subtitle_that_does_not_fit_reports_that_it_was_cut() {
+    // The channel B-13 said was missing: the plain helper returns a bare
+    // String, so a caller could not tell a line that fitted from one
+    // that lost its tail.
+    let scale = 2u32;
+    let text = "Init 04/03 12Z | F006 | Valid 04/03 18Z | WRF | dx 12 km";
+    let (fitted, truncated) = fit_text_to_width(text, 60, scale, false);
+    assert!(truncated);
+    assert!(fitted.ends_with("..."));
+    let (whole, untruncated) = fit_text_to_width(text, 100_000, scale, false);
+    assert!(!untruncated);
+    assert_eq!(whole, text);
+}

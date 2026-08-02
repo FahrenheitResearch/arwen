@@ -1202,6 +1202,35 @@ def test_cli_hrrr_hierarchy_routes_to_public_parallel_orchestrator(capsys):
     assert "--cpu-preprocess-bridge /bundle/libgpuwm_preprocess_cpu.so" in command
 
 
+def test_cli_hrrr_hierarchy_forwards_the_cycle_and_the_lead_separately(
+        capsys):
+    """One door flag, two derived clocks.
+
+    ``gpuwm source --source hrrr --valid-time`` is the CYCLE -- it is
+    validated as "an exact hourly HRRR cycle" and passed to
+    ``hrrr_source_window`` as one.  Forwarding that string to the
+    hierarchy under its own ``--valid-time``, which meant MODEL TIME
+    ZERO, handed it a time K hours early at every nonzero lead.  Both
+    values now go through, spelled for what they are.
+    """
+    result = main(
+        _hrrr_hierarchy_args() + ["--forecast-start-hour", "6", "--dry-run"])
+    assert result == 0
+    command = capsys.readouterr().out.replace("\\", "/")
+    assert "--cycle 2026-07-18_00:00:00" in command
+    assert "--forecast-start-hour 6" in command
+    assert "--valid-time" not in command
+
+
+def test_cli_hrrr_hierarchy_at_lead_zero_is_unchanged(capsys):
+    """Backward compatibility: the same instant, by the same arithmetic."""
+    result = main(_hrrr_hierarchy_args() + ["--dry-run"])
+    assert result == 0
+    command = capsys.readouterr().out.replace("\\", "/")
+    assert "--cycle 2026-07-18_00:00:00" in command
+    assert "--forecast-start-hour 0" in command
+
+
 def test_cli_hrrr_hierarchy_rejects_history_interval(capsys):
     result = main(
         _hrrr_hierarchy_args()

@@ -2025,14 +2025,15 @@ mod tests {
         }
 
         // The complete fallback set: u/v barb inputs (surface + isobaric),
-        // compute-only inputs, the contour-only geopotential heights, and
-        // mslp (production contours mslp; its plot fills the companion
-        // 10 m wind speed, so no production colorbar exists for the plane).
+        // compute-only inputs, the contour-only ISOBARIC geopotential
+        // heights, and mslp (production contours mslp; its plot fills the
+        // companion 10 m wind speed, so no production colorbar exists for
+        // the plane).  `orography` left this set when the terrain product
+        // gave the surface plane a production fill of its own.
         let mut expected_fallback: Vec<String> = vec![
             "u_10m".to_string(),
             "v_10m".to_string(),
             "surface_pressure".to_string(),
-            "orography".to_string(),
             "mslp".to_string(),
         ];
         for selector in direct_isobaric_plane_selectors(model) {
@@ -2052,10 +2053,11 @@ mod tests {
         );
         assert_eq!(mapped.len() + fallback.len(), planned.len());
         // Pinned inventory counts (2026-06 full HRRR plan): 42 of the 65
-        // planned 2D planes carry production styling; the 23 fallbacks are
-        // the exact set asserted above.
-        assert_eq!(mapped.len(), 42, "mapped 2D plane count");
-        assert_eq!(fallback.len(), 23, "fallback 2D plane count");
+        // planned 2D planes carry production styling; the 22 fallbacks are
+        // the exact set asserted above.  (43/22, not 42/23: `orography`
+        // moved across when the terrain product was added.)
+        assert_eq!(mapped.len(), 43, "mapped 2D plane count");
+        assert_eq!(fallback.len(), 22, "fallback 2D plane count");
 
         // Derived + heavy store grids resolve through their slug markers.
         for slug in store_derived_recipe_slugs()

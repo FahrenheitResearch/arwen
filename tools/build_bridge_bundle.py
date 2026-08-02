@@ -6,11 +6,19 @@ by hand from a checkout):
 ``pack``
     On each target platform, after ``cargo build --release --locked`` in
     both vendored workspaces, collect the eight artifacts of
-    ``gpuwm.bridge_assets.BUNDLED_ARTIFACTS`` into one zip named for the
-    release and the platform.  The archive is flat and deterministic:
-    members in the declared artifact order, fixed timestamps, no
-    directory entries, so two packs of the same bytes produce the same
-    archive.
+    ``gpuwm.bridge_assets.BUNDLED_ARTIFACTS``, plus the renderer's map
+    assets, into one zip named for the release and the platform.  The
+    archive is deterministic: binaries first in the declared artifact
+    order, then the asset tree in sorted path order, fixed timestamps,
+    no directory entries, so two packs of the same bytes produce the
+    same archive.
+
+    The asset file list is *walked from the tree*, never enumerated
+    here.  An enumeration is what let the packaged basemaps fall out of
+    the distribution in the first place: a list nobody regenerates goes
+    quietly stale, and the plot that results has a storm on it and no
+    coastline.  ``REQUIRED_ASSET_SUBDIRS`` declares the directories, the
+    walk finds the files, and ``pin`` hashes whatever the walk found.
 
 ``pin``
     On one machine, from the bundles ``pack`` produced, compute the
@@ -60,6 +68,51 @@ def _locate(name: str, search: list[Path]) -> Path:
         f"directories: {', '.join(str(d) for d in search)}")
 
 
+def source_asset_dir() -> Path:
+    """The renderer's asset tree in a checkout: ``tools/rustwx/assets``."""
+
+    return REPO_ROOT / "tools" / "rustwx" / "assets"
+
+
+def collect_assets(asset_dir: Path | None = None
+                   ) -> list[tuple[str, Path]]:
+    """Every map asset file, as ``(archive member name, source path)``.
+
+    Walked, not enumerated: each required subdirectory of
+    ``bridge_assets.REQUIRED_ASSET_SUBDIRS`` is descended in full and
+    every regular file in it is carried.  A required subdirectory that
+    does not exist, or that holds no files, is a hard refusal -- packing
+    a bundle whose renderer would draw blank geography is the failure
+    this whole path exists to make impossible.
+
+    Member names are ``assets/<subdir>/...`` with forward slashes on
+    every platform, which is both the zip convention and the exact
+    relative path staging writes to.
+    """
+
+    root = source_asset_dir() if asset_dir is None else Path(asset_dir)
+    collected: list[tuple[str, Path]] = []
+    for subdir in bridge_assets.REQUIRED_ASSET_SUBDIRS:
+        source = root / subdir
+        if not source.is_dir():
+            raise SystemExit(
+                f"build_bridge_bundle: required asset directory {source} "
+                "does not exist; refusing to pack a bundle whose renderer "
+                "would draw plots with no coastlines or borders")
+        found = sorted(p for p in source.rglob("*") if p.is_file())
+        if not found:
+            raise SystemExit(
+                f"build_bridge_bundle: required asset directory {source} "
+                "holds no files; refusing to pack a bundle whose renderer "
+                "would draw plots with no coastlines or borders")
+        for path in found:
+            member = "/".join(
+                (bridge_assets.ASSET_ROOT, subdir,
+                 path.relative_to(source).as_posix()))
+            collected.append((member, path))
+    return collected
+
+
 def pack(release: str, platform: str, search: list[Path],
          out_dir: Path) -> Path:
     if platform not in bridge_assets.SUPPORTED_PLATFORMS:
@@ -72,6 +125,7 @@ def pack(release: str, platform: str, search: list[Path],
                 _locate(bridge_assets.artifact_filename(artifact, platform),
                         search))
                for artifact in bridge_assets.BUNDLED_ARTIFACTS]
+    assets = collect_assets()
     with zipfile.ZipFile(archive, "w",
                          compression=zipfile.ZIP_DEFLATED) as zf:
         for name, source in sources:
@@ -83,11 +137,22 @@ def pack(release: str, platform: str, search: list[Path],
             # hand should get executables.
             info.external_attr = (0o100755 << 16)
             zf.writestr(info, source.read_bytes())
+        for name, source in assets:
+            info = zipfile.ZipInfo(name, date_time=_FIXED_DATE_TIME)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            # Data, not programs: 0o644.
+            info.external_attr = (0o100644 << 16)
+            zf.writestr(info, source.read_bytes())
+    asset_bytes = sum(source.stat().st_size for _, source in assets)
     print(f"build_bridge_bundle: packed {archive} "
           f"({archive.stat().st_size:,} B) from "
-          f"{len(sources)} artifacts")
+          f"{len(sources)} artifacts and {len(assets)} map asset files "
+          f"({asset_bytes:,} B unpacked)")
     for name, source in sources:
         print(f"  {name} <- {source}")
+    print(f"  {bridge_assets.ASSET_ROOT}/ <- {source_asset_dir()} "
+          f"({len(assets)} files under "
+          f"{', '.join(bridge_assets.REQUIRED_ASSET_SUBDIRS)})")
     return archive
 
 
@@ -122,6 +187,35 @@ def _pin_bundle(archive: Path, release: str) -> tuple[str, dict]:
                 "bytes": len(payload),
                 "sha256": hashlib.sha256(payload).hexdigest(),
             })
+        # Whatever asset members the archive actually holds, hashed from
+        # its own bytes.  Nothing is listed here that pack did not put
+        # there, and nothing pack put there can be left out.
+        prefix = f"{bridge_assets.ASSET_ROOT}/"
+        asset_names = sorted(name for name in held
+                             if name.startswith(prefix))
+        assets = []
+        for name in asset_names:
+            payload = zf.read(name)
+            assets.append({
+                "path": name,
+                "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            })
+    if not assets:
+        raise SystemExit(
+            f"build_bridge_bundle: {archive.name} carries no "
+            f"{bridge_assets.ASSET_ROOT}/ members; refusing to pin a "
+            "bundle whose renderer would draw plots with no coastlines "
+            "or borders.  Re-pack it with a `pack` that includes the "
+            "map assets")
+    covered = {name.split("/")[1] for name in asset_names if "/" in name}
+    absent = [subdir for subdir in bridge_assets.REQUIRED_ASSET_SUBDIRS
+              if subdir not in covered]
+    if absent:
+        raise SystemExit(
+            f"build_bridge_bundle: {archive.name} carries no asset files "
+            f"for required subdirectory/-ies {', '.join(absent)}; refusing "
+            "to pin a partial asset set")
     record = {
         "bundle": {
             "filename": archive.name,
@@ -129,6 +223,7 @@ def _pin_bundle(archive: Path, release: str) -> tuple[str, dict]:
             "sha256": bridge_assets.sha256_file(archive),
         },
         "binaries": binaries,
+        "assets": assets,
     }
     return platform, record
 
@@ -164,6 +259,8 @@ def pin(release: str, archives: list[Path], out: Path,
         print(f"  {platform}: {record['bundle']['filename']} "
               f"{record['bundle']['bytes']:,} B "
               f"sha256 {record['bundle']['sha256']}")
+        print(f"    {len(record['binaries'])} binaries, "
+              f"{len(record['assets'])} map asset files")
     if manifest is not None:
         payload = {
             "schema": bridge_assets.BUNDLE_MANIFEST_SCHEMA,

@@ -44,7 +44,7 @@ def _child(source: str, *args: str, env_extra: dict | None = None):
 
 
 _HOLD_THEN_WAIT = """
-    import sys, time
+    import os, sys, time
     from pathlib import Path
     from gpuwm import fetch_guard
 
@@ -52,7 +52,9 @@ _HOLD_THEN_WAIT = """
     flag, seconds = Path(sys.argv[3]), float(sys.argv[4])
     release = flag.with_suffix(".release")
     with fetch_guard.hold(kind, target, timeout_s=30):
-        flag.write_text("held", encoding="utf-8")
+        publishing = flag.with_suffix(".publishing")
+        publishing.write_text(str(os.getpid()), encoding="utf-8")
+        publishing.replace(flag)
         deadline = time.monotonic() + seconds
         while not release.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -116,12 +118,13 @@ def _spawn_holder(kind: str, target: Path, flag: Path, seconds: float):
         cwd=str(Path(__file__).resolve().parents[1]))
 
 
-def _await_flag(flag: Path, child) -> None:
+def _await_flag(flag: Path, child) -> int:
     deadline = time.monotonic() + 60
     while not flag.exists() and time.monotonic() < deadline:
         assert child.poll() is None, child.communicate()
         time.sleep(0.05)
     assert flag.exists(), "child never reported holding the lock"
+    return int(flag.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("kind", ["fetch-out", "fetch-geog", "fetch-tables"])
@@ -138,11 +141,14 @@ def test_a_second_process_cannot_hold_the_same_target(tmp_path, kind, budget):
     flag = tmp_path / "held.flag"
     child = _spawn_holder(kind, target, flag, 30)
     try:
-        _await_flag(flag, child)
+        holder_pid = _await_flag(flag, child)
         with pytest.raises(fetch_guard.FetchLockBusy) as caught:
             fetch_guard.hold(kind, target, timeout_s=budget).acquire()
         assert "refuses rather than interleave" in str(caught.value)
-        assert f"pid {child.pid}" in str(caught.value)
+        # A Windows venv redirector can keep a launcher process around while
+        # the real interpreter owns the OS lock.  The holder's own PID is the
+        # authority recorded by production; Popen.pid can name the launcher.
+        assert f"pid {holder_pid}" in str(caught.value)
     finally:
         flag.with_suffix(".release").write_text("go", encoding="utf-8")
         child.wait(timeout=60)

@@ -121,6 +121,14 @@ def test_real_case_subcommands_dispatch_loaded_config(monkeypatch, tmp_path,
     monkeypatch.setattr(cli, "load_config", lambda path: cfg)
     monkeypatch.setitem(cli._REAL_CASES, "real74_d01", fake)
     config_path = tmp_path / "real74.toml"
+    # A real regular file, because the CLI now decides the KIND of a
+    # config path before anything opens it: a path that is not a
+    # readable regular file is refused in one sentence at exit 2 rather
+    # than falling through to the legacy loader's traceback.  This test
+    # is about DISPATCH -- `load_config` is monkeypatched above, so the
+    # bytes are never parsed -- and it used a path that was never
+    # created only because the old code reached the loader regardless.
+    config_path.write_text("[grid]\n", encoding="utf-8")
     static_path = tmp_path / "static.npz"
     ingest_path = tmp_path / "initial.npz"
     run_dir = tmp_path / "run"

@@ -1,11 +1,11 @@
 """Fresh-process forecast supervision and durable run progress.
 
-The supervisor process never imports CuPy.  It owns the physical-GPU lock,
-preflights active compute processes through ``nvidia-smi``, launches a fresh
-Python worker, and watches an atomically published heartbeat.  A CUDA-fatal
-condition is terminal for that worker process.  Recovery, when possible, is a
-new process restored only from the most recent durable manifest-valid restart;
-there is no in-process retry path.
+Forecast CUDA work runs in a fresh Python worker.  The supervisor owns the
+physical-GPU lock, preflights active compute processes through ``nvidia-smi``,
+launches that worker with the selected UUID mask, and watches an atomically
+published heartbeat.  A CUDA-fatal condition is terminal for that worker
+process.  Recovery, when possible, is a new process restored only from the
+most recent durable manifest-valid restart; there is no in-process retry path.
 """
 
 from __future__ import annotations
@@ -21,13 +21,14 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import traceback
 import uuid
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +53,18 @@ MICROPHYSICS_TRANSITION_RECEIPT_NAME = "microphysics-transitions.json"
 DIRECTORY_HASH_MODES = ("inventory", "content")
 DIRECTORY_HASH_DEFAULT = "inventory"
 DIRECTORY_HASH_ENV = "GPUWM_DIRECTORY_INPUT_HASH"
+
+# ``gpuwm multi-run`` gives every child an isolated TMPDIR.  The physical-GPU
+# lock must remain machine-wide rather than following that per-run temp root,
+# so the orchestrator pins this to the parent's ordinary lock directory.
+# Direct ``gpuwm run`` calls leave it unset and retain the historical path.
+GPU_LOCK_ROOT_ENV = "GPUWM_GPU_LOCK_ROOT"
+INPUT_AUTHORITIES_ENV = "GPUWM_INPUT_AUTHORITIES_JSON"
+SHARED_INPUT_AUTHORITY_ROOT_ENV = "GPUWM_SHARED_INPUT_AUTHORITY_ROOT"
+
+_SNAPSHOT_FILE_ROLES = frozenset({
+    "forcing", "vtable", "wps_namelist", "source_orography",
+})
 
 # Windows sharing violations are normally transient (the supervisor, an
 # editor, or an indexer has the old publication open without FILE_SHARE_DELETE).
@@ -373,8 +386,9 @@ def _hash_directory_manifest(path: Path, *, mode: str = "inventory") -> str:
     return digest.hexdigest()
 
 
-def resolved_input_hashes(config_path: str | Path, *,
-                          directory_hash: str | None = None) -> dict[str, Any]:
+def resolved_input_hashes(
+        config_path: str | Path, *, directory_hash: str | None = None,
+        config_bytes: bytes | None = None) -> dict[str, Any]:
     """Hash declared case inputs before any device import/allocation.
 
     Files are always content-hashed.  Directory inputs follow
@@ -382,26 +396,347 @@ def resolved_input_hashes(config_path: str | Path, *,
     carries the algorithm that produced it so two runs can refuse to
     compare digests that were not computed the same way.
     """
-    from gpuwm.case_data import load_experiment_case
+    from gpuwm.case_data import (load_experiment_case,
+                                 load_experiment_case_bytes)
 
     mode = directory_hash_mode(directory_hash)
-    _, data = load_experiment_case(config_path)
+    path = Path(config_path)
+    if config_bytes is None:
+        _, data = load_experiment_case(path)
+    else:
+        _, data = load_experiment_case_bytes(
+            config_bytes, source=str(path), base_dir=path.parent)
     result: dict[str, Any] = {}
     for record in data.resolved_inputs():
-        path = Path(record.path)
+        path = Path(record.path).resolve()
         key = f"{record.role}:{path}"
+        identity = {
+            "role": record.role,
+            "path": str(path),
+            "detail": record.detail,
+        }
         if path.is_file():
-            result[key] = {"algorithm": "sha256", "digest": _hash_file(path),
-                           "detail": record.detail}
+            entry = {"algorithm": "sha256", "digest": _hash_file(path),
+                     "detail": record.detail, "identities": [identity]}
         elif path.is_dir():
-            result[key] = {
+            entry = {
                 "algorithm": f"sha256-directory-{mode}",
                 "digest": _hash_directory_manifest(path, mode=mode),
                 "detail": record.detail,
+                "identities": [identity],
             }
         else:
             raise FileNotFoundError(f"declared input disappeared: {path}")
+        previous = result.get(key)
+        if previous is None:
+            result[key] = entry
+            continue
+        if (previous.get("algorithm") != entry["algorithm"]
+                or previous.get("digest") != entry["digest"]):
+            raise SupervisorError(
+                "duplicate resolved input identity changed while its parent "
+                f"inventory was hashed: {key}")
+        previous["identities"].append(identity)
     return result
+
+
+def _canonical_input_identity(
+        role: Any, record_path: Any, detail: Any,
+        ) -> tuple[str, str, str]:
+    """Return one canonical provenance identity, retaining multiplicity."""
+
+    if (not isinstance(role, str) or not role
+            or not isinstance(record_path, (str, os.PathLike))
+            or not isinstance(detail, str)):
+        raise SupervisorError(
+            "worker resolved an input with a malformed provenance identity")
+    return role, str(Path(record_path).resolve()), detail
+
+
+def _resolved_input_identity(record: Any) -> tuple[str, str, str]:
+    return _canonical_input_identity(
+        getattr(record, "role", None), getattr(record, "path", None),
+        getattr(record, "detail", None))
+
+
+def _parent_resolved_input_inventory(
+        input_hashes: dict[str, Any],
+        ) -> Counter[tuple[str, str, str]]:
+    """Decode the exact role/path/detail multiset bound by the parent."""
+
+    inventory: Counter[tuple[str, str, str]] = Counter()
+    for key, entry in input_hashes.items():
+        if not isinstance(key, str) or not isinstance(entry, dict):
+            raise SupervisorError(
+                "parent input-hash inventory contains a malformed entry")
+        role, separator, source_text = key.partition(":")
+        if not role or not separator or not source_text:
+            raise SupervisorError(
+                f"parent input-hash inventory key is malformed: {key!r}")
+        algorithm = entry.get("algorithm")
+        digest = entry.get("digest")
+        if (algorithm not in {
+                    "sha256", "sha256-directory-inventory",
+                    "sha256-directory-content",
+                }
+                or not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
+            raise SupervisorError(
+                f"parent input-hash inventory has no valid SHA-256 for {key}")
+        identities = entry.get("identities")
+        if not isinstance(identities, list) or not identities:
+            raise SupervisorError(
+                "parent input-hash inventory has no exact identity multiset "
+                f"for {key}")
+        keyed_path = str(Path(source_text).resolve())
+        for identity in identities:
+            if (not isinstance(identity, dict)
+                    or set(identity) != {"role", "path", "detail"}):
+                raise SupervisorError(
+                    f"parent input identity is malformed for {key}")
+            parsed = _canonical_input_identity(
+                identity.get("role"), identity.get("path"),
+                identity.get("detail"))
+            if parsed[:2] != (role, keyed_path):
+                raise SupervisorError(
+                    "parent input identity disagrees with its hash key: "
+                    f"{key}")
+            inventory[parsed] += 1
+    return inventory
+
+
+def _format_input_inventory_delta(
+        inventory: Counter[tuple[str, str, str]]) -> str:
+    labels: list[str] = []
+    for (role, path, detail), count in sorted(inventory.items()):
+        label = f"{role}:{path}"
+        if detail:
+            label += f" [{detail}]"
+        if count != 1:
+            label += f" x{count}"
+        labels.append(label)
+    return "[" + "; ".join(labels) + "]"
+
+
+def _validate_worker_resolved_input_inventory(
+        data: Any, input_hashes: dict[str, Any]) -> None:
+    """Refuse any worker parse that differs from the parent's exact parse."""
+
+    try:
+        records = data.resolved_inputs()
+    except (AttributeError, TypeError) as exc:
+        raise SupervisorError(
+            "worker case data cannot report its resolved input inventory") \
+            from exc
+    worker = Counter(_resolved_input_identity(record) for record in records)
+    parent = _parent_resolved_input_inventory(input_hashes)
+    missing = parent - worker
+    extra = worker - parent
+    if missing or extra:
+        raise SupervisorError(
+            "worker-resolved input inventory does not match the parent "
+            "SHA-256 inventory; missing="
+            f"{_format_input_inventory_delta(missing)}; extra="
+            f"{_format_input_inventory_delta(extra)}")
+
+
+def _copy_verified_authority(source: Path, destination: Path,
+                             expected_sha256: str) -> None:
+    """Copy one file once while proving the snapshot's exact digest."""
+
+    before = source.stat()
+    before_signature = (
+        before.st_dev, before.st_ino, before.st_size,
+        before.st_mtime_ns, before.st_ctime_ns)
+    digest = hashlib.sha256()
+    try:
+        with source.open("rb") as incoming, destination.open("xb") as outgoing:
+            while chunk := incoming.read(1024 * 1024):
+                digest.update(chunk)
+                outgoing.write(chunk)
+            outgoing.flush()
+            os.fsync(outgoing.fileno())
+        after = source.stat()
+        after_signature = (
+            after.st_dev, after.st_ino, after.st_size,
+            after.st_mtime_ns, after.st_ctime_ns)
+        observed = digest.hexdigest()
+        if before_signature != after_signature:
+            raise SupervisorError(
+                f"declared input changed while it was snapshotted: {source}")
+        if observed != expected_sha256:
+            raise SupervisorError(
+                "declared input changed between hashing and snapshot: "
+                f"{source}; expected {expected_sha256}, observed {observed}")
+    except BaseException:
+        try:
+            if destination.exists():
+                destination.chmod(stat.S_IWRITE | stat.S_IREAD)
+                destination.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _content_authority_path(source: Path, root: Path,
+                            expected_sha256: str) -> Path:
+    """Publish or reuse one verified SHA-keyed file under a blocking lock."""
+
+    destination = root / expected_sha256
+    lock_path = root / ".locks" / f"{expected_sha256}.lock"
+    while True:
+        lock = GPUFileLock(
+            f"input-authority:{expected_sha256}", path=lock_path,
+            run_id=f"input-authority-{os.getpid()}")
+        try:
+            lock.acquire()
+            break
+        except GPUAlreadyLockedError:
+            time.sleep(0.05)
+    try:
+        if destination.exists():
+            observed = _hash_file(destination)
+            if observed != expected_sha256:
+                raise SupervisorError(
+                    "shared input-authority store contains corrupt content: "
+                    f"expected {expected_sha256}, observed {observed} at "
+                    f"{destination}")
+            destination.chmod(stat.S_IREAD)
+            return destination
+        temporary = root / (
+            f".{expected_sha256}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        try:
+            _copy_verified_authority(source, temporary, expected_sha256)
+            try:
+                # Atomic and create-only: a racing publisher's digest path
+                # can never be replaced by this process.
+                os.link(temporary, destination)
+            except FileExistsError:
+                observed = _hash_file(destination)
+                if observed != expected_sha256:
+                    raise SupervisorError(
+                        "racing input-authority publisher produced corrupt "
+                        f"content: expected {expected_sha256}, observed "
+                        f"{observed} at {destination}")
+            _fsync_directory(root)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+        destination.chmod(stat.S_IREAD)
+        return destination
+    finally:
+        lock.release()
+
+
+def snapshot_resolved_input_files(
+        config_path: str | Path, *, config_bytes: bytes,
+        input_hashes: dict[str, Any], snapshot_root: str | Path,
+        ) -> dict[str, dict[str, str]]:
+    """Snapshot every resolved file authority into one content store.
+
+    Each distinct SHA-256 is copied at most once, even if the same file fills
+    several roles or several declared files are byte-identical.  Geography is
+    a directory authority and retains the separately declared directory-hash
+    policy; forcing, Vtable, WPS namelist, and source-orography are immutable
+    file snapshots consumed by the worker.
+    """
+
+    if not input_hashes:
+        # Supervisor unit fixtures with no case data intentionally install an
+        # empty input inventory.  A real case-data config always resolves at
+        # least forcing, Vtable, WPS namelist, and geography records.
+        return {}
+    from gpuwm.case_data import load_experiment_case_bytes
+
+    config_path = Path(config_path)
+    _, data = load_experiment_case_bytes(
+        config_bytes, source=str(config_path), base_dir=config_path.parent)
+    files = [record for record in data.resolved_inputs()
+             if record.role in _SNAPSHOT_FILE_ROLES]
+    root = Path(snapshot_root)
+    root.mkdir(parents=True, exist_ok=True)
+    by_digest: dict[str, Path] = {}
+    manifest: dict[str, dict[str, str]] = {}
+    for record in files:
+        source = Path(record.path).resolve()
+        key = f"{record.role}:{source}"
+        entry = input_hashes.get(key)
+        if not isinstance(entry, dict) or entry.get("algorithm") != "sha256":
+            raise SupervisorError(
+                f"resolved file authority {key} has no parent SHA-256")
+        expected = entry.get("digest")
+        if not isinstance(expected, str) or len(expected) != 64:
+            raise SupervisorError(
+                f"resolved file authority {key} has an invalid SHA-256")
+        snapshot = by_digest.get(expected)
+        if snapshot is None:
+            snapshot = _content_authority_path(source, root, expected)
+            by_digest[expected] = snapshot
+        previous = manifest.get(str(source))
+        authority = {
+            "sha256": expected,
+            "snapshot": str(snapshot.resolve()),
+        }
+        if previous is not None and previous != authority:
+            raise SupervisorError(
+                f"one resolved input path has conflicting authorities: "
+                f"{source}")
+        manifest[str(source)] = authority
+    return manifest
+
+
+def _validated_worker_input_authorities(
+        encoded: str, input_hashes: dict[str, Any],
+        ) -> dict[Path, Path]:
+    """Validate the parent's manifest and return source-to-snapshot paths."""
+
+    try:
+        decoded = json.loads(encoded)
+    except json.JSONDecodeError as exc:
+        raise SupervisorError(
+            "worker received malformed input-authority manifest") from exc
+    if not isinstance(decoded, dict):
+        raise SupervisorError("worker input-authority manifest must be an object")
+    expected_by_source: dict[Path, str] = {}
+    for key, entry in input_hashes.items():
+        if (not isinstance(key, str) or not isinstance(entry, dict)
+                or entry.get("algorithm") != "sha256"):
+            continue
+        _role, separator, source_text = key.partition(":")
+        if not separator:
+            continue
+        source = Path(source_text).resolve()
+        expected = entry.get("digest")
+        if source in expected_by_source and expected_by_source[source] != expected:
+            raise SupervisorError(
+                f"worker input inventory conflicts for {source}")
+        expected_by_source[source] = expected
+    replacements: dict[Path, Path] = {}
+    for source_text, authority in decoded.items():
+        if not isinstance(source_text, str) or not isinstance(authority, dict):
+            raise SupervisorError("worker input-authority entry is malformed")
+        source = Path(source_text).resolve()
+        expected = expected_by_source.get(source)
+        if expected is None or authority.get("sha256") != expected:
+            raise SupervisorError(
+                f"worker input authority is not capsule-bound for {source}")
+        snapshot_text = authority.get("snapshot")
+        if not isinstance(snapshot_text, str):
+            raise SupervisorError(
+                f"worker input authority has no snapshot path for {source}")
+        snapshot = Path(snapshot_text).resolve()
+        observed = _hash_file(snapshot)
+        if observed != expected:
+            raise SupervisorError(
+                "worker input snapshot digest mismatch: expected "
+                f"{expected}, observed {observed} at {snapshot}")
+        replacements[source] = snapshot
+    if set(replacements) != set(expected_by_source):
+        missing = sorted(str(path) for path in set(expected_by_source)
+                         - set(replacements))
+        raise SupervisorError(
+            f"worker input-authority manifest is incomplete; missing {missing}")
+    return replacements
 
 
 def git_commit() -> str:
@@ -614,11 +949,15 @@ def preflight_exclusive_gpu(gpu_uuid: str, *,
 
 def default_lock_path(gpu_uuid: str) -> Path:
     digest = hashlib.sha256(gpu_uuid.encode("utf-8")).hexdigest()[:24]
-    if os.name == "nt":
-        root = Path(os.environ.get("PROGRAMDATA", tempfile.gettempdir()))
+    configured = os.environ.get(GPU_LOCK_ROOT_ENV)
+    if configured:
+        root = Path(configured).expanduser().resolve()
+    elif os.name == "nt":
+        root = (Path(os.environ.get("PROGRAMDATA", tempfile.gettempdir()))
+                / "gpuwm" / "locks")
     else:
-        root = Path(tempfile.gettempdir())
-    return root / "gpuwm" / "locks" / f"gpu-{digest}.lock"
+        root = Path(tempfile.gettempdir()) / "gpuwm" / "locks"
+    return root / f"gpu-{digest}.lock"
 
 
 class GPUFileLock:
@@ -878,15 +1217,61 @@ def _has_worker_failure_capsule(path: Path, *, run_id: str,
         return False
 
 
-def _worker_command(config_path: Path, outdir: Path, *, restart: Path | None,
-                    health_debug: bool) -> list[str]:
+def _worker_command(
+        config_path: Path, config_payload: Path, outdir: Path, *,
+        restart: Path | None, health_debug: bool) -> list[str]:
     command = [sys.executable, "-m", "gpuwm.supervisor", "worker",
-               "--config", str(config_path), "--outdir", str(outdir)]
+               "--config", str(config_path),
+               "--config-payload", str(config_payload),
+               "--outdir", str(outdir)]
     if restart is not None:
         command.extend(("--restart", str(restart)))
     if health_debug:
         command.append("--health-debug")
     return command
+
+
+def _capture_config_payload(outdir: Path, run_id: str,
+                            payload: bytes) -> Path:
+    """Durably create the unique config payload handed to every worker."""
+
+    path = outdir / f"captured-config-{run_id}.toml"
+    with path.open("xb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return path
+
+
+def _validated_config_payload_bytes(path: str | Path,
+                                    expected_sha256: str) -> bytes:
+    """Read once and reject a worker payload that is not parent-bound."""
+
+    payload = Path(path).read_bytes()
+    observed = hashlib.sha256(payload).hexdigest()
+    if observed != expected_sha256:
+        raise SupervisorError(
+            "captured worker config digest mismatch: expected "
+            f"{expected_sha256}, observed {observed}")
+    return payload
+
+
+def _success_run_context(
+        config_path: Path, digest: str, input_hashes: dict[str, Any], *,
+        restart_interval_seconds: float | None) -> dict[str, Any]:
+    """Deterministic capsule pins, excluding transient execution paths."""
+
+    return {
+        "config_bytes": {
+            "path": str(config_path.resolve()), "sha256": digest},
+        "input_artifact_bytes": input_hashes,
+        "runner_route_and_io_mode": {
+            "route": "supervisor:gpuwm run", "io_mode": "history"},
+        "output_and_diagnostic_mode": {
+            "io_mode": "history",
+            "restart_interval_seconds": restart_interval_seconds,
+        },
+    }
 
 
 def _heartbeat_regression(previous: Heartbeat, current: Heartbeat) -> str | None:
@@ -969,8 +1354,22 @@ def supervise_experiment(
     outdir = Path(outdir).resolve()
     outdir.mkdir(parents=True, exist_ok=True)
     run_id = str(uuid.uuid4())
-    digest = config_digest(config_path)
-    inputs = resolved_input_hashes(config_path, directory_hash=directory_hash)
+    from gpuwm.config_authority import read_config_authority
+
+    config_authority = read_config_authority(config_path)
+    config_bytes = config_authority.payload
+    digest = hashlib.sha256(config_bytes).hexdigest()
+    inputs = resolved_input_hashes(
+        config_path, directory_hash=directory_hash,
+        config_bytes=config_bytes)
+    shared_authority_root = os.environ.get(SHARED_INPUT_AUTHORITY_ROOT_ENV)
+    input_authorities = None
+    if shared_authority_root:
+        authority_root = Path(shared_authority_root).expanduser().resolve()
+        input_authorities = snapshot_resolved_input_files(
+            config_path, config_bytes=config_bytes, input_hashes=inputs,
+            snapshot_root=authority_root)
+    config_payload = _capture_config_payload(outdir, run_id, config_bytes)
     gpu = select_gpu(gpu_uuid)
     checkpoint = (None if restart is None
                   else validate_manifest_checkpoint(restart))
@@ -1000,6 +1399,12 @@ def supervise_experiment(
             stderr_logs.append(stderr_path)
             env = os.environ.copy()
             env.update({
+                # ``--gpu-uuid`` used to select and lock a physical card but
+                # left every card visible to the worker, whose CuPy code uses
+                # process-local device ordinal 0.  Mask before Popen so
+                # logical device 0 is the selected UUID before any CUDA import
+                # or context can exist in the fresh worker.
+                "CUDA_VISIBLE_DEVICES": gpu.uuid,
                 "GPUWM_RUN_ID": run_id,
                 "GPUWM_CONFIG_DIGEST": digest,
                 "GPUWM_STARTED_AT_UTC": started_at,
@@ -1009,8 +1414,11 @@ def supervise_experiment(
                 "GPUWM_INPUT_HASHES_JSON": json.dumps(
                     inputs, sort_keys=True, separators=(",", ":")),
             })
+            if input_authorities is not None:
+                env[INPUT_AUTHORITIES_ENV] = json.dumps(
+                    input_authorities, sort_keys=True, separators=(",", ":"))
             command = _worker_command(
-                config_path, outdir, restart=checkpoint,
+                config_path, config_payload, outdir, restart=checkpoint,
                 health_debug=health_debug)
             with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
                 process = subprocess.Popen(
@@ -1185,6 +1593,7 @@ def supervise_experiment(
 def _worker_main(args: argparse.Namespace) -> int:
     """Fresh CUDA worker entry.  Never called inside the supervisor process."""
     config_path = Path(args.config).resolve()
+    config_payload = Path(args.config_payload).resolve()
     outdir = Path(args.outdir).resolve()
     run_id = os.environ["GPUWM_RUN_ID"]
     digest = os.environ["GPUWM_CONFIG_DIGEST"]
@@ -1202,6 +1611,12 @@ def _worker_main(args: argparse.Namespace) -> int:
     progress.preparing("worker-start")
     input_hashes: dict[str, Any] = {}
     try:
+        # Validate the one captured read before importing either the config
+        # loader or the runtime.  The original source path remains metadata
+        # and the relative-path base; its mutable bytes are never reopened.
+        progress.preparing("validate-config")
+        config_bytes = _validated_config_payload_bytes(
+            config_payload, digest)
         encoded_inputs = os.environ.get("GPUWM_INPUT_HASHES_JSON", "{}")
         try:
             decoded_inputs = json.loads(encoded_inputs)
@@ -1213,11 +1628,26 @@ def _worker_main(args: argparse.Namespace) -> int:
                 "worker input-hash inventory must be an object")
         input_hashes = decoded_inputs
         progress.preparing("import-runtime")
-        from gpuwm.case_data import load_experiment_case
+        from gpuwm.case_data import (load_experiment_case_bytes,
+                                     remap_case_data_files)
         from gpuwm import runtime
 
         progress.preparing("load-config")
-        exp, data = load_experiment_case(config_path)
+        exp, data = load_experiment_case_bytes(
+            config_bytes, source=str(config_path),
+            base_dir=config_path.parent)
+        # The captured TOML is immutable, but its forcing globs are resolved
+        # against the original directory.  Seal that parse to the exact
+        # parent role/path/detail multiset before accepting any CAS remap or
+        # entering runtime; a disappearing, appearing, or renamed match must
+        # never make the worker run a subset/superset of the capsule inputs.
+        progress.preparing("validate-input-inventory")
+        _validate_worker_resolved_input_inventory(data, input_hashes)
+        encoded_authorities = os.environ.get(INPUT_AUTHORITIES_ENV)
+        if encoded_authorities is not None:
+            replacements = _validated_worker_input_authorities(
+                encoded_authorities, input_hashes)
+            data = remap_case_data_files(data, replacements)
         progress.preparing("prepare-case")
         summary = runtime.run_experiment(
             exp, data, outdir, restart=args.restart,
@@ -1228,18 +1658,11 @@ def _worker_main(args: argparse.Namespace) -> int:
         # identity all along, and a run that succeeded left only a heartbeat.
         emit_run_capsule(
             outdir, emission_site="supervisor:success",
-            run_context={
-                "config_bytes": {"path": str(Path(config_path).resolve()),
-                                 "sha256": digest},
-                "input_artifact_bytes": input_hashes,
-                "runner_route_and_io_mode": {
-                    "route": "supervisor:gpuwm run", "io_mode": "history"},
-                "output_and_diagnostic_mode": {
-                    "io_mode": "history",
-                    "restart_interval_seconds": (
-                        None if exp.restart_interval_s is None
-                        else float(exp.restart_interval_s))},
-            },
+            run_context=_success_run_context(
+                config_path, digest, input_hashes,
+                restart_interval_seconds=(
+                    None if exp.restart_interval_s is None
+                    else float(exp.restart_interval_s))),
             input_bytes={"entries": input_hashes},
             run_shape={"route": "supervisor:gpuwm run",
                        "domain_count": len(exp.domains),
@@ -1324,7 +1747,7 @@ def supervise_from_cli(args: argparse.Namespace) -> int:
         health_debug=args.health_debug,
         directory_hash=getattr(args, "directory_input_hash", None))
     transition_receipt, transition_sha = _current_transition_receipt(
-        args.outdir, result.run_id, config_digest(args.config))
+        args.outdir, result.run_id, result.heartbeat.config_digest)
     print({"run_id": result.run_id, "status": result.heartbeat.status,
            "attempts": result.attempts,
            "completed_seconds": result.heartbeat.model_elapsed_seconds,
@@ -1367,6 +1790,7 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     worker = sub.add_parser("worker")
     worker.add_argument("--config", type=Path, required=True)
+    worker.add_argument("--config-payload", type=Path, required=True)
     worker.add_argument("--outdir", type=Path, required=True)
     worker.add_argument("--restart", type=Path, default=None)
     worker.add_argument("--health-debug", action="store_true")
@@ -1388,6 +1812,7 @@ __all__ = [
     "COMPUTE_MEMORY_THRESHOLD_MIB", "DIRECTORY_HASH_DEFAULT",
     "DIRECTORY_HASH_ENV", "DIRECTORY_HASH_MODES", "FAILURE_CAPSULE_NAME",
     "GPUAlreadyLockedError", "GPUFileLock", "GPUIdentity",
+    "GPU_LOCK_ROOT_ENV", "INPUT_AUTHORITIES_ENV",
     "GPUPreflightError", "GPUProcess", "HEARTBEAT_NAME",
     "HEARTBEAT_SCHEMA", "Heartbeat", "RollingStepWall", "RuntimeHeartbeat",
     "SupervisorError", "SupervisorResult", "atomic_publish_file",
@@ -1396,6 +1821,7 @@ __all__ = [
     "parse_compute_apps_output", "preflight_exclusive_gpu",
     "quarantine_file", "read_heartbeat", "register_cli",
     "replace_file_with_retry", "resolved_input_hashes", "select_gpu",
+    "SHARED_INPUT_AUTHORITY_ROOT_ENV", "snapshot_resolved_input_files",
     "stale_threshold_seconds", "supervise_experiment",
     "supervise_from_cli", "utc_now", "validate_manifest_checkpoint",
     "write_failure_capsule", "write_heartbeat", "unique_temp_path",

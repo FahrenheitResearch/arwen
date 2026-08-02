@@ -101,11 +101,35 @@ when they are identical; nonzero naming the first field they disagree on, in a
 deterministic path order that is a property of the two documents rather than of
 dictionary iteration.
 
-The comparison is total. There is no ignore list, because every field a
-comparison skips is a field a silent bit flip can hide in. A field that is
-absent and a field that is present carrying `null` are different claims and
-compare unequal; a section emptied of its contents does not vanish from the
-comparison.
+Nothing is skipped, because every field a comparison skips is a field a
+silent bit flip can hide in. A field that is absent and a field that is
+present carrying `null` are different claims and compare unequal; a section
+emptied of its contents does not vanish from the comparison.
+
+Two fields are compared after **normalization** rather than literally, and
+they are the ones that record *where* a run wrote rather than what it
+computed: `output.frames[i].path` and `receipts.<name>.path` are compared by
+their leaf name. Two runs of one configuration must write to different
+directories or they overwrite each other — the procedure above says so, with
+`out/run-a` and `out/run-b` — so comparing the absolute paths literally made
+a clean verdict unreachable for every pair, whatever the physics did. The
+leaf name is still compared: a run that wrote the wrong domain, the wrong
+valid time or a different number of frames still diverges, and a dropped
+path is still a hole rather than a matching basename. Every byte that
+carries physics — each frame's SHA-256 and size, the trajectory digest, the
+pins, the kernel manifest, the input-artifact bytes — is compared verbatim.
+Input paths are *not* normalized: two runs of one configuration read the
+same file, so a difference there is a real finding.
+
+**Both arms must share one preparation.** `numerical_stack.
+input_artifact_bytes` witnesses which input bytes each arm read and is
+compared verbatim, which is exactly what a swapped or corrupted input trips.
+A preparation receipt records its own wall-clock timings and the staging
+directory its decoder used, so two independent preparations of one
+configuration never produce the same bytes and two independently prepared
+arms can never agree. Prepare once; run the forecast twice from that one
+prepared root. When a divergence does land on an input-bytes field,
+`dual-run` says so and names this as the usual cause.
 
 This is also the detector for hardware that cannot report its own errors: on a
 card without ECC, running the same configuration twice and comparing the

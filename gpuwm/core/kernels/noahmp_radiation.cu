@@ -157,12 +157,17 @@ __device__ __forceinline__ float f_sign(float a, float b)
 // Round a double to binary32, INCLUDING into the subnormal range.
 //
 // `__double2float_rn` flushes a subnormal result to zero on this toolchain --
-// measured on sm_120 with CUDA 13.0, and not changed by `--ftz=false`, which
-// only governs FP32 arithmetic and not the double->float conversion.  glibc's
+// measured on sm_120 with CUDA 13.0, and asking for `--ftz=false` does not
+// change it, because CuPy appends `-ftz=true` after the caller's options and
+// the compiler honours the last occurrence.  The flush is the flag, not the
+// SM: the conversion instruction has no flush of its own, so under `-ftz=true`
+// the compiler emits an extra multiply after it to produce one, and built
+// without the append the same conversion keeps the subnormal.  glibc's
 // expf and powf do produce subnormals, gfortran at -O0 leaves MXCSR's FTZ/DAZ
 // clear, and `gpuwm.core.noahmp_libm` -- verified against the live glibc 2.39
-// over 1,106,247,680 inputs -- produces them too.  So the hardware conversion
-// is a divergence from the authority in a narrow but reachable band:
+// over 1,106,247,680 inputs -- produces them too.  So the conversion as
+// compiled here is a divergence from the authority in a narrow but reachable
+// band:
 // expf(x) for x in [-103.616, -87.337), and powf wherever y*log2(x) lands in
 // the same place.  ENERGY's RHSUR (:2203) evaluates exp(PSI*GRAV/(RW*TG)) on
 // very dry soil and can reach it.

@@ -1514,14 +1514,12 @@ def test_declared_free_is_capped_at_the_cards_physical_total(capsys):
         99 * gib, card_total_bytes=None,
         measured_total_bytes=None) == (99 * gib, None)
 
-    # And end to end through the CLI, with the tier's own numbers: a
-    # 16 GB card, the wizard's flat 3 GiB reserve, budget 13 GiB.  The
-    # reserve check adds back is larger than 3 GiB, so the naive free
-    # lands above the card.
-    rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "13",
+    # And end to end through the CLI: a declared budget close enough to
+    # the card that adding the reserve back overshoots its capacity.
+    rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "15",
                      "--vram-gib", "16", "--json"])
     payload = json.loads(capsys.readouterr().out)
-    assert payload["reserve_bytes"] > 3 * gib, "otherwise nothing to cap"
+    assert payload["reserve_bytes"] > gib, "otherwise nothing to cap"
     assert payload["measured_free_bytes"] <= 16 * gib
     assert payload["free_bytes_capped_to_physical_bytes"] is not None
     assert "capped" in payload["free_bytes_source"]
@@ -1532,7 +1530,7 @@ def test_declared_free_is_capped_at_the_cards_physical_total(capsys):
     assert rc != 0, "22.6 GiB of estimate does not fit a 16 GB card"
 
     # Text mode says so out loud rather than only in --json.
-    _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "13",
+    _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "15",
                 "--vram-gib", "16"])
     out = capsys.readouterr().out
     assert "CAPPED" in out
@@ -1569,23 +1567,21 @@ def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     assert rc == 0
     assert payload["observed_peak_envelope_platform"] == "windows"
     assert payload["observed_peak_envelope_factor"] == 1.75
-    assert payload["observed_peak_envelope_bytes"] == int(
+    # The WDDM lane keeps its one instrumented multiplicative observation
+    # as a FLOOR: the affine form may raise it, never discount it.
+    assert payload["observed_peak_envelope_bytes"] >= int(
         payload["footprint_projection_bytes"] * 1.75)
-    assert payload["observed_peak_envelope_bytes"] == (
-        pf.observed_peak_envelope_bytes(
-            payload["footprint_projection_bytes"]))
     # 100 GiB budget: envelope fits, no warning.
     assert payload["observed_peak_envelope_exceeds_budget"] is False
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "OBSERVED PEAK ENVELOPE (x1.75 footprint, windows factor" in out
-    assert "1.746x its footprint projection" in out
+    assert "keeps that multiplier as a FLOOR" in out
     assert "WARNING: observed peak envelope" not in out
     # The forecast is no longer the only phase this report prices, so the
     # historical line must say which phase it is, the preprocessing phase
     # must appear beside it, and one sentence must name the binding one.
-    assert "FORECAST OBSERVED PEAK ENVELOPE" in out
+    assert "FORECAST PEAK ENVELOPE" in out
     assert "INGEST OBSERVED PEAK ENVELOPE" in out
     assert "INGEST (preprocessing, --source era5)" in out
     assert "BINDING PHASE:" in out
@@ -1593,7 +1589,7 @@ def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
 
     # A budget the ESTIMATE fits but the envelope exceeds: the estimate
     # gate still passes, and the warning names the honest number.
-    envelope_gib = payload["observed_peak_envelope_bytes"] / GIB
+    envelope_gib = payload["peak_envelope_bytes"] / GIB
     estimate_gib = payload["alloc_estimate_bytes"] / GIB
     tight = str(math.ceil(estimate_gib) + 1)
     assert float(tight) < envelope_gib
@@ -1702,11 +1698,19 @@ def test_the_projection_constants_are_platform_conditional_too():
     assert pf.platform_projection_constants("linux") == (0, 0)
 
     # On Linux the projection is the itemized alloc estimate, and the
-    # envelope over it clears the worst measured peak/alloc ratio.
-    for alloc_gib, measured_gib in ((7.20, 9.54), (7.29, 8.99),
-                                    (3.51, 4.04)):
-        envelope = pf.observed_peak_envelope_bytes(
-            int(alloc_gib * GIB), platform="linux")
+    # AFFINE envelope over it clears every instrumented run -- the three
+    # 2026-07-30 pilots, each re-read with the non-pool term its own card
+    # carries rather than the 5090's.
+    pilots = ((7.20, 9.54, 128), (7.29, 8.99, 128), (3.51, 4.04, 46))
+    for alloc_gib, measured_gib, sms in pilots:
+        profile = pf.DeviceLocalMemoryProfile(
+            name="pilot", multiprocessor_count=sms,
+            max_threads_per_multiprocessor=1536)
+        non_pool = pf.CUDA_CONTEXT_BYTES + profile.reservation_bytes(
+            pf.LEVEL_SPECIALIZED_KERNEL_FRAMES["kf"].frame_bytes(49))
+        envelope = pf.machine_peak_envelope_bytes(
+            alloc_estimate_bytes=int(alloc_gib * GIB),
+            non_pool_bytes=non_pool, family="linux")
         assert measured_gib * GIB < envelope, (alloc_gib, measured_gib)
 
 
@@ -1721,10 +1725,17 @@ def test_check_cli_prints_the_linux_envelope_factor_when_on_linux(
     assert rc == 0
     assert payload["observed_peak_envelope_platform"] == "linux"
     assert payload["observed_peak_envelope_factor"] == 1.45
-    assert payload["observed_peak_envelope_basis"] == (
-        "measured-preliminary, 3 runs")
-    assert payload["observed_peak_envelope_bytes"] == int(
-        payload["footprint_projection_bytes"] * 1.45)
+    # AFFINE on Linux: estimate + the itemized non-pool residency + the
+    # measured unmodelled constant (+ a per-nest term).  Not a multiple
+    # of the projection -- a multiple has no intercept, and a model with
+    # no intercept changes the SIGN of its error with grid size.
+    assert payload["observed_peak_envelope_bytes"] == (
+        payload["alloc_estimate_bytes"]
+        + payload["non_pool_device_bytes"]
+        + pf.ENVELOPE_UNMODELLED_BYTES
+        + math.ceil(pf.ENVELOPE_PER_NEST_FRACTION
+                    * (len(payload["domains"]) - 1)
+                    * payload["alloc_estimate_bytes"]))
     # And the projection itself dropped the two Windows-pool constants.
     assert payload["footprint_projection_bytes"] == payload[
         "alloc_estimate_bytes"]
@@ -1733,11 +1744,9 @@ def test_check_cli_prints_the_linux_envelope_factor_when_on_linux(
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert ("OBSERVED PEAK ENVELOPE (x1.45 footprint, linux factor; "
-            "measured-preliminary, 3 runs)") in out
-    assert "1.15x to 1.32x the itemized alloc estimate" in out
+    assert "FORECAST PEAK ENVELOPE (estimate" in out
+    assert "affine, not a multiplier" in out
     assert "1.746x its footprint projection" not in out
-    assert "FORECAST OBSERVED PEAK ENVELOPE" in out
     assert "INGEST OBSERVED PEAK ENVELOPE" in out
     assert "BINDING PHASE:" in out
 
@@ -2737,3 +2746,366 @@ def test_an_unpriced_source_is_said_out_loud_not_scored_zero(exp1):
     assert "NOT PRICED" in unpriced.verdict(None)
     assert "hrrr" in unpriced.verdict(None)
     assert pf.estimate_phases(exp1, source=None).ingest is None
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-01 sizing calibration: the affine envelope and the tree ingest
+# ---------------------------------------------------------------------------
+
+#: Every whole-forecast run instrumented on the 16 GiB fleet node (RTX
+#: 4080, Linux, driver 595.58.03, machine-wide ``nvidia-smi`` at 250 ms,
+#: GPU otherwise idle), as ``(label, domains, itemized alloc estimate GiB,
+#: measured machine peak GiB)``.  The 4080 carries 76 SMs, which is what
+#: sizes the non-pool term for every row.
+FLEET_4080_FORECAST_RUNS = (
+    ("s07      170x136",              1,  2.0652,  3.6494),
+    ("small8   224x180",              1,  2.7500,  4.1436),
+    ("small8   224x180 (go route)",   1,  2.7500,  4.3818),
+    ("s11      340x272",              1,  4.8242,  5.9541),
+    ("edge15   448x360 (go route)",   1,  7.5576,  8.7529),
+    ("L12      474x378 (go route)",   1,  8.2683,  9.2510),
+    ("over22   594x476 (go route)",   1, 12.3809, 12.5889),
+    ("big24    630x504 (go route)",   1, 13.7616, 13.8799),
+    ("n10      2-domain tree",        2,  4.1204,  5.8330),
+    ("n2_16    2-domain tree",        2,  8.2162, 10.0928),
+    ("c07      4-domain tree",        4,  2.0612,  3.8564),
+)
+
+#: SM count of the card every row above was measured on.
+FLEET_4080_MULTIPROCESSORS = 76
+
+
+def _fleet_4080_non_pool_bytes(nz: int = 49) -> int:
+    """The non-pool term a 4080 carries for the default suite at ``nz``."""
+
+    profile = pf.DeviceLocalMemoryProfile(
+        name="RTX 4080", multiprocessor_count=FLEET_4080_MULTIPROCESSORS,
+        max_threads_per_multiprocessor=1536)
+    widest = pf.LEVEL_SPECIALIZED_KERNEL_FRAMES["kf"].frame_bytes(nz)
+    return pf.CUDA_CONTEXT_BYTES + profile.reservation_bytes(widest)
+
+
+def test_the_envelope_bounds_every_instrumented_run():
+    """An envelope must never land under a measured peak.
+
+    The x1.45 multiplier did, because it had no intercept: the smallest
+    run in this table was declared 3.99 GiB and peaked at 4.38.  The same
+    model over-predicted the largest by 30%.  One model, no intercept,
+    read at two grid sizes -- which is also why a 5090 datapoint saying
+    "19% under" and this card saying "25-30% over" were never in
+    conflict.
+    """
+    non_pool = _fleet_4080_non_pool_bytes()
+    worst_over = 0.0
+    for label, domains, estimate_gib, measured_gib in (
+            FLEET_4080_FORECAST_RUNS):
+        envelope = pf.machine_peak_envelope_bytes(
+            alloc_estimate_bytes=int(estimate_gib * GIB),
+            non_pool_bytes=non_pool, domains=domains, family="linux")
+        assert envelope >= measured_gib * GIB, label
+        over = envelope / (measured_gib * GIB) - 1.0
+        worst_over = max(worst_over, over)
+    # Conservative, but not absurdly so: the old model reached +30% at
+    # the top of this table while being optimistic at the bottom.
+    assert worst_over < 0.30
+
+
+def test_the_old_multiplier_is_optimistic_where_the_affine_form_is_not():
+    """The negative control for the test above.
+
+    This is the defect, executed: the retired multiplicative envelope
+    lands UNDER the measured peak of the smallest run in the table, and
+    the affine one does not.  If this ever stops failing for the old
+    model, the evidence changed and the calibration needs re-deriving.
+    """
+    label, domains, estimate_gib, measured_gib = FLEET_4080_FORECAST_RUNS[1]
+    footprint = int(estimate_gib * GIB)  # Linux: projection == estimate
+    old = pf.observed_peak_envelope_bytes(footprint, platform="linux")
+    assert old < measured_gib * GIB, (
+        "the retired x1.45 envelope must still be the optimistic one "
+        "this calibration replaced")
+    new = pf.machine_peak_envelope_bytes(
+        alloc_estimate_bytes=footprint,
+        non_pool_bytes=_fleet_4080_non_pool_bytes(), domains=domains,
+        family="linux")
+    assert new >= measured_gib * GIB
+
+
+def test_the_envelope_has_an_intercept_that_does_not_scale_with_the_grid():
+    """The structural property, not a number: doubling the estimate must
+    NOT double the envelope, because part of it is a device constant."""
+
+    non_pool = _fleet_4080_non_pool_bytes()
+    small = pf.machine_peak_envelope_bytes(
+        alloc_estimate_bytes=2 * GIB, non_pool_bytes=non_pool,
+        family="linux")
+    large = pf.machine_peak_envelope_bytes(
+        alloc_estimate_bytes=4 * GIB, non_pool_bytes=non_pool,
+        family="linux")
+    assert large - small == 2 * GIB, "the pool side is 1:1"
+    assert large < 2 * small, "an intercept is not a multiplier"
+    # And the intercept is the thing this module already itemizes.
+    assert small - 2 * GIB == non_pool + pf.ENVELOPE_UNMODELLED_BYTES
+
+
+def test_the_wddm_multiplier_is_a_floor_not_a_discount():
+    """Windows keeps its one instrumented observation.  The affine form
+    may raise that number; it may never lower it."""
+
+    footprint = 20 * GIB
+    windows = pf.machine_peak_envelope_bytes(
+        alloc_estimate_bytes=8 * GIB, non_pool_bytes=GIB,
+        footprint_projection_bytes=footprint, family="windows")
+    assert windows == int(footprint * pf.PEAK_ENVELOPE_FACTORS["windows"])
+    # ...and where the affine form is the larger of the two, it wins.
+    huge = pf.machine_peak_envelope_bytes(
+        alloc_estimate_bytes=40 * GIB, non_pool_bytes=GIB,
+        footprint_projection_bytes=footprint, family="windows")
+    assert huge > int(footprint * pf.PEAK_ENVELOPE_FACTORS["windows"])
+
+
+def test_the_device_profile_follows_the_card_being_sized_for():
+    """The local-memory backing store is a property of the DEVICE.
+
+    Charging a 12 GiB card the 170-SM RTX 5090's backing store is the
+    same error as charging Linux the WDDM pool constants -- an accounting
+    term measured on another machine.  Each tier takes the largest SM
+    count sold at that capacity, so it over-prices every other card in
+    the class rather than under-pricing any.
+    """
+    counts = [pf.card_local_memory_profile(gib).multiprocessor_count
+              for gib in (12.0, 16.0, 24.0, 32.0)]
+    assert counts == [70, 84, 128, 170]
+    assert counts == sorted(counts), "bigger card, never fewer SMs"
+    # Nothing declared keeps the measured reference, which is the largest
+    # row: an unnamed card must not be assumed small.
+    assert (pf.card_local_memory_profile(None)
+            is pf.MEASURED_LOCAL_MEMORY_PROFILE)
+    assert (pf.card_local_memory_profile(999.0)
+            is pf.MEASURED_LOCAL_MEMORY_PROFILE)
+
+
+def test_ingest_prices_every_domain_in_the_tree(exp1, exp4):
+    """v1.4.0 priced this phase on the ROOT alone.
+
+    So the prediction FELL as nests were added -- 5.46 -> 1.89 -> 1.30
+    GiB across one, two and four domains -- while the machine measured it
+    flat at 4.0-4.8, under by 3.4x at four domains and in the unsafe
+    direction, on the very number the before-the-fetch gate half-relies
+    on.  A deeper ladder has a smaller root; only the root was priced;
+    so adding domains made the answer shrink.
+    """
+    one = pf.estimate_ingest(exp1, source="gfs")
+    four = pf.estimate_ingest(exp4, source="gfs")
+
+    assert one.nest_state_bytes == 0, "a single domain has no nests"
+    assert one.nest_state_items == ()
+    assert four.nest_state_bytes > 0
+    assert len(four.nest_state_items) == len(exp4.domains) - 1
+
+    # Every nest carries one complete initial state, and they are all
+    # resident for the single export transaction.
+    assert four.resident_bytes == (
+        four.resident_times * four.per_time_bytes
+        + four.forcing_table_bytes + four.nest_state_bytes)
+
+    # The transient is charged against the WIDEST domain in the tree, not
+    # the root: on a real ladder the widest domain is usually a nest.
+    assert four.transient_basis_bytes >= four.per_time_bytes
+
+    # THE DEFECT, as an inequality: the tree's ingest estimate must not
+    # be reachable by pricing the root alone.
+    root_only = (math.ceil(one.headroom * (
+        four.resident_times * four.per_time_bytes
+        + four.forcing_table_bytes
+        + math.ceil(pf.INGEST_TRANSIENT_PER_TIME_FRACTION
+                    * four.per_time_bytes)))
+        + four.context_bytes + four.device_overhead_bytes)
+    assert four.peak_envelope_bytes > root_only
+
+
+def test_adding_a_nest_never_lowers_the_ingest_estimate():
+    """The falsifiable form of the same defect.
+
+    Same root, one nest added: the answer must go UP.  Under the root-only
+    model a two-domain tree whose root was smaller than the single-domain
+    layout priced LOWER than the single domain, which is how the four-
+    domain ladder came to declare 1.30 GiB and measure 4.39.
+    """
+    root = RunConfig(nx=240, ny=192, nz=49, dx=12000.0, dy=12000.0,
+                     ztop=20000.0, dt=60.0, run_seconds=7200.0,
+                     mp_physics=8, moist=True, terrain_opt=1,
+                     spec_bdy_width=5, specified=True)
+    alone = experiment_from_run_config(root, datetime(2026, 7, 30))
+    one = pf.estimate_ingest(alone, source="gfs")
+
+    child = dataclasses.replace(root, grid_id=2, nx=480, ny=384,
+                                dx=3000.0, dy=3000.0, dt=15.0)
+    from gpuwm.experiment import DomainConfig, ExperimentConfig
+    tree = dataclasses.replace(
+        alone, domains=alone.domains + (DomainConfig(
+            grid_id=2, parent_id=1, i_parent_start=31, j_parent_start=25,
+            parent_grid_ratio=4, parent_time_step_ratio=4,
+            history_interval_s=3600.0, run=child),))
+    two = pf.estimate_ingest(tree, source="gfs")
+
+    assert two.peak_envelope_bytes > one.peak_envelope_bytes
+    # And the nest that was 4.9x the root's cells is visible by name.
+    assert [grid for grid, _ in two.nest_state_items] == [2]
+    assert two.nest_state_bytes > one.per_time_bytes
+
+
+def test_a_negative_budget_is_clamped_and_explained(capsys):
+    """A reserve larger than free VRAM leaves NO budget.
+
+    ``budget = free - reserve`` is unbounded below, and a 4000x4000
+    config drove it to -7.15 GiB, which the report then printed as a
+    capacity to compare an envelope against.
+    """
+    rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "0.001",
+                     "--vram-gib", "1", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["budget_bytes"] >= 0, "a capacity is never negative"
+    assert payload["budget_underwater_bytes"] > 0
+    assert rc != 0
+
+    _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "0.001",
+                "--vram-gib", "1"])
+    out = capsys.readouterr().out
+    assert "NO BUDGET AT ALL" in out
+    assert "the reserve alone is" in out
+    assert " -" not in out.split("NO BUDGET AT ALL")[1].split("\n")[0]
+
+
+def test_the_over_budget_remedy_is_an_action_not_a_design_pointer(capsys):
+    """It used to end "staged residency (DESIGN REOPEN) per section E".
+
+    No pip user has a section E, and the sentence names nothing to do.
+    The actionable form already existed one layer up, in `gpuwm go`'s
+    refusal, and is reused here.
+    """
+    _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "1",
+                "--vram-gib", "32"])
+    out = capsys.readouterr().out
+    assert "OVER BUDGET" in out
+    assert "DESIGN REOPEN" not in out
+    assert "section E" not in out
+    assert "remedy: re-size for this card -- gpuwm domain --vram-gib" in out
+
+
+def test_the_printed_exit_code_is_the_one_the_process_returns(capsys):
+    """The WARNING used to assert "(exit code 4: gates passed)" even when
+    a gate had just failed and the process therefore exited 1."""
+
+    # Envelope over, gates over too: the harder verdict, announced.
+    rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "1",
+                     "--vram-gib", "32"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "exit code 1: a gate above FAILED as well" in out
+    assert "exit code 4: gates passed" not in out
+
+    # Envelope over, every gate passed: 4, and it says 4.
+    payload_rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib",
+                             "100", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload_rc == 0
+    tight = f"{payload['alloc_estimate_bytes'] / GIB + 0.5:.2f}"
+    rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", tight])
+    out = capsys.readouterr().out
+    assert rc == 4, out
+    assert "exit code 4: gates passed, envelope did not" in out
+
+
+def test_the_budget_word_follows_the_platform(capsys, monkeypatch):
+    """"WDDM budget" on a Linux box, in the same report that has just
+    finished explaining there is no WDDM here."""
+
+    monkeypatch.setattr(pf.sys, "platform", "linux")
+    _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "1",
+                "--vram-gib", "32"])
+    out = capsys.readouterr().out
+    assert "WARNING: observed peak envelope" in out
+    assert "exceeds the WDDM budget" not in out
+
+    monkeypatch.setattr(pf.sys, "platform", "win32")
+    _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "1",
+                "--vram-gib", "32"])
+    out = capsys.readouterr().out
+    assert "exceeds the WDDM budget" in out
+
+
+def test_the_unmeasured_small_windows_tier_keeps_its_fixed_term():
+    """Replacing a multiplier with an intercept must not drop a term.
+
+    The Windows small-card tier is EXPERIMENTAL and calibrated on
+    nothing: it stands in for the WDDM residency the CuPy pool never
+    sees with one reduced fixed reserve.  The affine envelope carries
+    that term in its intercept, so the tier does not quietly become more
+    optimistic on the strength of Linux measurements.
+    """
+    assert pf.platform_projection_constants("win32", 12.0) == (
+        0, pf.WINDOWS_SMALL_CARD_RESERVE_BYTES)
+    exp = load_experiment_case(CONFIG_4DOM)[0]
+    small = pf.estimate_experiment(exp, vram_gib=12.0)
+    linux = dataclasses.replace(small, device_overhead_bytes=0,
+                                envelope_family="linux")
+    assert small.envelope_intercept_bytes - linux.envelope_intercept_bytes \
+        == pf.WINDOWS_SMALL_CARD_RESERVE_BYTES
+    assert small.peak_envelope_bytes > linux.peak_envelope_bytes
+    # Linux itself carries no such term: the whole point of the 2026-07-30
+    # amendment was that those constants are Windows-pool artifacts.
+    on_linux = pf.estimate_experiment(exp, vram_gib=24.0)
+    if pf.envelope_platform(vram_gib=24.0) == "linux":
+        assert on_linux.envelope_intercept_bytes == \
+            on_linux.non_pool_device_bytes
+
+
+def test_the_gate_names_printed_on_linux_do_not_say_wddm(monkeypatch):
+    """A-6.  WDDM is a Windows display driver model, and these three gate
+    names are the first `gpuwm check` output a new user reads.  The prose
+    beside them has been platform-correct since envelope_platform was
+    introduced; only the names were left behind."""
+    from gpuwm.core import preflight
+
+    monkeypatch.setattr(preflight.sys, "platform", "linux")
+    shown = [preflight.gate_display_name(m)
+             for m in preflight.N0_GATE_METRICS]
+    assert shown == ["alloc_fits_vram_budget", "alloc_measured_le_estimate",
+                     "alloc_estimate_le_vram_budget"]
+    assert not any("wddm" in name for name in shown)
+
+    monkeypatch.setattr(preflight.sys, "platform", "win32")
+    assert [preflight.gate_display_name(m)
+            for m in preflight.N0_GATE_METRICS] == list(
+                preflight.N0_GATE_METRICS)
+
+
+def test_the_gate_display_name_never_moves_the_receipt_key(monkeypatch):
+    """The negative control, and the reason this is a DISPLAY label.
+
+    These strings are pre-registered N0 ledger record names read by
+    gpuwm/verify/nest_gates.py and written into certification receipts.
+    Renaming them per host would break every receipt written on one
+    platform and read on another, so the tuple itself must not move.
+    """
+    from gpuwm.core import preflight
+    from gpuwm.verify import nest_gates
+
+    for platform in ("linux", "win32", "darwin", "freebsd13"):
+        monkeypatch.setattr(preflight.sys, "platform", platform)
+        assert preflight.N0_GATE_METRICS == (
+            "alloc_fits_wddm_budget", "alloc_measured_le_estimate",
+            "alloc_estimate_le_wddm_budget")
+        # and the evaluated gate dict is still keyed by the record names
+        gates = preflight.evaluate_alloc_gates(
+            estimate_bytes=1, measured_used_bytes=1,
+            measured_free_bytes=1 << 40,
+            reserve=preflight.ReservePolicy(
+                retention_residual_bytes=0, device_overhead_bytes=0))
+        assert tuple(gates) == preflight.N0_GATE_METRICS
+
+    # the verifier reads the keys, not the labels
+    source = Path(nest_gates.__file__).read_text(encoding="utf-8")
+    assert "alloc_fits_wddm_budget" in source
+    assert "alloc_fits_vram_budget" not in source

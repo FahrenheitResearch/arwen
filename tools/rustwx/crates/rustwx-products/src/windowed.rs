@@ -11,8 +11,8 @@ use crate::runtime::{
     BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
 };
 use crate::shared_context::{
-    DomainSpec, ProjectedMap, model_time_subtitle_with_lead_label, source_subtitle,
-    static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
+    DomainSpec, ProjectedMap, TitleProvenance, model_time_subtitle_with_lead_label,
+    source_subtitle, static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
     static_title_with_suffix,
 };
 use crate::windowed_decoder::{
@@ -491,6 +491,9 @@ pub struct HrrrWindowedBatchRequest {
     /// Replaces the `source: <fetch source>` provenance line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subtitle_right_override: Option<String>,
+    /// Where these frames came from, for the headline parenthetical.
+    #[serde(default)]
+    pub title_provenance: TitleProvenance,
 }
 
 impl HrrrWindowedBatchRequest {
@@ -1167,6 +1170,7 @@ fn sampling_windowed_request(
         place_label_overlay: None,
         subtitle_left_suffix: None,
         subtitle_right_override: None,
+        title_provenance: TitleProvenance::default(),
     }
 }
 
@@ -1827,7 +1831,11 @@ fn build_windowed_render_request(
     };
     render_request.width = request.output_width;
     render_request.height = request.output_height;
-    render_request.title = Some(static_title_with_suffix(computed.title.clone()));
+    render_request.title = Some(static_title_with_suffix(
+        request
+            .title_provenance
+            .apply_to_title(computed.title.clone()),
+    ));
     let hour_label = windowed_display_hour_label(product, &computed.metadata, forecast_hour);
     let subtitle_left = model_time_subtitle_with_lead_label(
         model,

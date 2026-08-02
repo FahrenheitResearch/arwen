@@ -50,9 +50,15 @@ def _digest_array(digest, name: str, value) -> None:
     digest.update(host.tobytes())
 
 
-def setup_fingerprint(state, *, error_type: type[Exception] = ValueError) -> str:
-    """Hash deterministic setup state and attached LBC forcing tables."""
-    digest = hashlib.sha256()
+def _update_setup_core(digest, state, *, error_type: type[Exception]) -> bool:
+    """Hash setup that cannot grow; return whether this is a nest.
+
+    The byte stream is deliberately the prefix of :func:`setup_fingerprint`'s
+    long-standing stream.  Keeping that stream byte-for-byte stable preserves
+    every existing exact-restart identity while also exposing the immutable
+    half for the explicit sealed-forcing extension contract.
+    """
+
     for name in STATE_SETUP_ARRAYS:
         _digest_array(digest, name, getattr(state, name))
     for name in STATE_SETUP_SCALARS:
@@ -66,34 +72,133 @@ def setup_fingerprint(state, *, error_type: type[Exception] = ValueError) -> str
             raise error_type(
                 f"unknown nest restart classification {nest_class!r}")
         digest.update(b"nest_tables=REBUILT;")
-    else:
-        boundaries = getattr(state, "lateral_boundaries", None)
-        if boundaries is None:
-            digest.update(b"lateral_boundaries=None;")
-        else:
-            digest.update(
-                f"lbc:width={boundaries.spec_bdy_width};"
-                f"spec={boundaries.spec_zone};relax={boundaries.relax_zone};"
-                f"intervals={len(boundaries.intervals)};".encode())
-            for interval in boundaries.intervals:
-                digest.update(
-                    f"[{interval.start_seconds!r},"
-                    f"{interval.end_seconds!r}]".encode())
-                for name in sorted(interval.fields):
-                    boundary = interval.fields[name]
-                    for side_name in ("west", "east", "south", "north"):
-                        side = getattr(boundary, side_name)
-                        _digest_array(
-                            digest, f"{name}/{side_name}/value", side.value)
-                        _digest_array(
-                            digest, f"{name}/{side_name}/tendency",
-                            side.tendency)
+        return True
+    return False
+
+
+def _update_lateral_fingerprint(digest, state) -> None:
+    """Append the exact historical LBC portion of the setup digest."""
+
+    boundaries = getattr(state, "lateral_boundaries", None)
+    if boundaries is None:
+        digest.update(b"lateral_boundaries=None;")
+        return
+    digest.update(
+        f"lbc:width={boundaries.spec_bdy_width};"
+        f"spec={boundaries.spec_zone};relax={boundaries.relax_zone};"
+        f"intervals={len(boundaries.intervals)};".encode())
+    for interval in boundaries.intervals:
+        digest.update(
+            f"[{interval.start_seconds!r},"
+            f"{interval.end_seconds!r}]".encode())
+        for name in sorted(interval.fields):
+            boundary = interval.fields[name]
+            for side_name in ("west", "east", "south", "north"):
+                side = getattr(boundary, side_name)
+                _digest_array(
+                    digest, f"{name}/{side_name}/value", side.value)
+                _digest_array(
+                    digest, f"{name}/{side_name}/tendency", side.tendency)
+
+
+def setup_core_fingerprint(
+        state, *, error_type: type[Exception] = ValueError) -> str:
+    """Hash immutable setup state without a root's growable LBC inventory."""
+
+    digest = hashlib.sha256()
+    _update_setup_core(digest, state, error_type=error_type)
+    return digest.hexdigest()
+
+
+LATERAL_BOUNDARY_PREFIX_SCHEMA = "gpuwm-lateral-boundary-prefix-v2"
+
+
+def lateral_boundary_prefix_identity(
+        state, *, error_type: type[Exception] = ValueError):
+    """Return interval-level hashes for an append-only forcing proof.
+
+    ``None`` means that this state has no external forcing inventory (a
+    prepared child, or a non-specified root).  Each interval digest includes
+    its exact bounds, field names, shapes, dtypes, and every side's value and
+    tendency bytes.  The compact list is safe to put in a checkpoint header;
+    it proves a later preparation retained the old inventory byte-for-byte
+    without serializing those forcing tables into the checkpoint itself.
+    """
+
+    nest_class = getattr(state, "_nest_restart_classification", None)
+    if nest_class is not None:
+        if nest_class != "REBUILT":
+            raise error_type(
+                f"unknown nest restart classification {nest_class!r}")
+        return None
+    boundaries = getattr(state, "lateral_boundaries", None)
+    if boundaries is None:
+        return None
+    intervals = []
+    for interval in boundaries.intervals:
+        digest = hashlib.sha256()
+        start_frame = hashlib.sha256()
+        end_frame = hashlib.sha256()
+        digest.update(
+            f"[{interval.start_seconds!r},"
+            f"{interval.end_seconds!r}]".encode())
+        duration = float(interval.end_seconds - interval.start_seconds)
+        fields = []
+        for name in sorted(interval.fields):
+            fields.append(name)
+            boundary = interval.fields[name]
+            for side_name in ("west", "east", "south", "north"):
+                side = getattr(boundary, side_name)
+                _digest_array(
+                    digest, f"{name}/{side_name}/value", side.value)
+                _digest_array(
+                    digest, f"{name}/{side_name}/tendency", side.tendency)
+                # The forcing consumer rounds host tables to FP32 before
+                # use.  Seal both endpoint frames in that exact numerical
+                # representation so an appended interval cannot replace the
+                # shared restart-boundary frame while preserving the older
+                # interval row.
+                start = np.asarray(_host(side.value), dtype=np.float32)
+                end = np.asarray(
+                    _host(side.value) + _host(side.tendency) * duration,
+                    dtype=np.float32)
+                _digest_array(
+                    start_frame, f"{name}/{side_name}/value", start)
+                _digest_array(
+                    end_frame, f"{name}/{side_name}/value", end)
+        intervals.append({
+            "start_seconds": interval.start_seconds,
+            "end_seconds": interval.end_seconds,
+            "fields": fields,
+            "sha256": digest.hexdigest(),
+            "start_frame_sha256": start_frame.hexdigest(),
+            "end_frame_sha256": end_frame.hexdigest(),
+        })
+    return {
+        "schema": LATERAL_BOUNDARY_PREFIX_SCHEMA,
+        "spec_bdy_width": boundaries.spec_bdy_width,
+        "spec_zone": boundaries.spec_zone,
+        "relax_zone": boundaries.relax_zone,
+        "intervals": intervals,
+    }
+
+
+def setup_fingerprint(state, *, error_type: type[Exception] = ValueError) -> str:
+    """Hash deterministic setup state and attached LBC forcing tables."""
+
+    digest = hashlib.sha256()
+    nested = _update_setup_core(digest, state, error_type=error_type)
+    if not nested:
+        _update_lateral_fingerprint(digest, state)
     return digest.hexdigest()
 
 
 __all__ = [
+    "LATERAL_BOUNDARY_PREFIX_SCHEMA",
     "STATE_SERIALIZED_ATTRS",
     "STATE_SETUP_ARRAYS",
     "STATE_SETUP_SCALARS",
+    "lateral_boundary_prefix_identity",
+    "setup_core_fingerprint",
     "setup_fingerprint",
 ]

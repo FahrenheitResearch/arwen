@@ -25,6 +25,7 @@ use std::time::Instant;
 
 use crate::publication::artifact_identity_from_path;
 use crate::shared_context::{
+    TitleProvenance,
     DomainSpec, ProjectedMapProvider, model_time_subtitle, source_subtitle,
 };
 use crate::source::direct_route_for_recipe_slug;
@@ -55,8 +56,8 @@ use domain::{
 };
 use fetch::{extract_direct_fetch_group_from_loaded, find_loaded_bytes_for_group};
 pub use planning::{
-    FetchGroup, direct_recipe_requires_explicit_opt_in, store_direct_recipe_slugs,
-    supported_direct_recipe_slugs,
+    FetchGroup, direct_recipe_is_time_invariant, direct_recipe_requires_explicit_opt_in,
+    store_direct_recipe_slugs, supported_direct_recipe_slugs,
 };
 use planning::{
     PlannedDirectRecipe, canonical_fetch_product_for_selectors, group_direct_fetches,
@@ -154,6 +155,7 @@ impl DirectBatchRequest {
             output_suffix: None,
             subtitle_left_override: None,
             subtitle_right_override: None,
+            title_provenance: TitleProvenance::default(),
         }
     }
 
@@ -202,6 +204,7 @@ fn sampling_direct_request(
         output_suffix: None,
         subtitle_left_override: None,
         subtitle_right_override: None,
+        title_provenance: TitleProvenance::default(),
     }
 }
 

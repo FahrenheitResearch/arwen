@@ -16,6 +16,29 @@ real ``pyproject.toml`` rather than re-implementing pattern matching, so what
 it reports is what the wheel would actually contain.  It is a filesystem walk,
 not a ``git ls-files`` walk, so an undeclared file trips it before it is ever
 committed.
+
+Why the walk stops at ``gpuwm/``
+-------------------------------
+``tools`` is a declared package too, but it is not a data directory: it is
+mostly scripts, plus two vendored Rust workspaces whose source is *build
+input* and has no business in a wheel.  A blanket "everything under ``tools``
+must ship" rule would be wrong in 260 MB of ways.
+
+That exemption is exactly how the renderer's map assets disappeared.
+``tools/rustwx/assets/basemap`` holds the Natural Earth and US Census
+shapefiles ``rw_wrfbatch`` draws coastlines and borders from -- runtime data
+living inside a directory this file had decided not to look at -- and the one
+``package-data`` entry still written as an enumeration, ``tools =
+["prepare_hrrr_*.sh"]``, did not name them.  Nothing failed.  A pip install
+rendered a tropical cyclone over a blank rectangle.
+
+So the rule is not "walk more", it is "every *runtime* asset must be
+delivered by some declared mechanism, and the test names which".  For the
+renderer's assets that mechanism is the bridge bundle rather than the wheel
+(the wheel is 74.6 MiB against PyPI's 100 MB per-file cap and the assets
+deflate to 20.2 MiB), which
+:func:`test_the_renderer_asset_tree_is_delivered_by_a_declared_mechanism`
+checks against ``gpuwm.bridge_assets``.
 """
 
 from __future__ import annotations
@@ -220,6 +243,66 @@ def test_externalized_assets_match_the_fetch_contract() -> None:
         if line.startswith("exclude ")
     }
     assert manifest_excludes == set(_EXTERNALIZED_FROM_WHEEL)
+
+
+def test_the_renderer_asset_tree_is_delivered_by_a_declared_mechanism(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No runtime asset under ``tools/`` may be delivered by nothing at all.
+
+    The gap this closes: the wheel-coverage walk above deliberately stops at
+    ``gpuwm/``, so a data directory under ``tools/`` could -- and did -- reach
+    an installed user by no mechanism whatever, silently, and the only symptom
+    was a plot with no geography on it.
+
+    Every file under the renderer's asset root must therefore be accounted
+    for by one of the two mechanisms that exist: the wheel's package-data, or
+    the bridge bundle.  A new asset subdirectory that nobody added to
+    ``bridge_assets.REQUIRED_ASSET_SUBDIRS`` is delivered by neither, and
+    fails here by name rather than months later in an image.
+    """
+
+    _require_source_tree()
+    from gpuwm import bridge_assets
+
+    asset_root = REPO_ROOT / "tools" / "rustwx" / "assets"
+    if not asset_root.is_dir():
+        pytest.skip("no vendored renderer assets in this tree")
+
+    present: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(asset_root):
+        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
+        for name in filenames:
+            present.add(
+                Path(dirpath, name).relative_to(REPO_ROOT).as_posix())
+    assert present, "found no renderer assets -- the walk is broken"
+
+    carried_by_bundle = {
+        path for path in present
+        if Path(path).relative_to(
+            asset_root.relative_to(REPO_ROOT)).parts[0]
+        in bridge_assets.REQUIRED_ASSET_SUBDIRS
+    }
+    shipped_in_wheel = _files_setuptools_would_ship(monkeypatch)
+    undelivered = sorted(present - carried_by_bundle - shipped_in_wheel)
+    assert not undelivered, (
+        f"{len(undelivered)} renderer asset file(s) would reach an installed "
+        "user by no mechanism at all -- not the wheel's "
+        "[tool.setuptools.package-data], and not the bridge bundle's "
+        "gpuwm.bridge_assets.REQUIRED_ASSET_SUBDIRS. A renderer without them "
+        "draws plots with no coastlines or borders:\n  "
+        + "\n  ".join(undelivered))
+
+    # The declaration must also still name something real: a subdirectory
+    # renamed on disk leaves REQUIRED_ASSET_SUBDIRS pointing at nothing, and
+    # the bundle would be packed empty.
+    for subdir in bridge_assets.REQUIRED_ASSET_SUBDIRS:
+        candidate = asset_root / subdir
+        assert candidate.is_dir(), (
+            f"bridge_assets.REQUIRED_ASSET_SUBDIRS names {subdir!r}, which is "
+            f"not a directory at {candidate}")
+        assert any(p.is_file() for p in candidate.rglob("*")), (
+            f"{candidate} holds no files; the bundle would carry no basemaps")
 
 
 def test_no_package_data_pattern_is_dead(monkeypatch: pytest.MonkeyPatch) -> None:

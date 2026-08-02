@@ -17,6 +17,9 @@ from conftest import requires_gpu
 from gpuwm.io.wrfout import WrfoutWriter
 
 
+_HANDOFF_POLL_SECONDS = 0.05
+
+
 class _DoneEvent:
     @staticmethod
     def synchronize():
@@ -65,6 +68,34 @@ def _queue_cpu_ticket(writer, path, *, fields=None, device_refs=(),
         pinned_refs=pinned_refs)
     writer._admit(ticket)
     return ticket
+
+
+def _await_worker(event, writer, *, reaching):
+    """Block until the worker fires ``event``, or until it can no longer.
+
+    The properties these handoff tests assert are orderings and object
+    lifetimes.  None of them has a wall-clock component, so none of them
+    should be decided by one.  A fixed deadline here decides "was the box
+    busy", and it decides it inside a suite that takes ~37 minutes and runs
+    on loaded machines -- so it reports a scheduling delay as a failure of
+    the writer, in the one neighbourhood (corruption detection) where a
+    test nobody believes is worse than no test.
+
+    The wait is therefore bounded by the WORKER's liveness rather than by
+    the clock: a slow machine waits longer and still passes, while a worker
+    that stopped fails at once and with its own recorded cause instead of a
+    timeout.  Only a worker that is alive and permanently wedged can hang,
+    which is a real defect and the one outcome worth hanging for.
+    """
+    while not event.wait(timeout=_HANDOFF_POLL_SECONDS):
+        if not writer._thread.is_alive():
+            if event.is_set():
+                break
+            # Prefer the worker's own exception over a bare assertion.
+            writer._raise_failure()
+            raise AssertionError(
+                f"the wrfout worker stopped without {reaching}")
+    return True
 
 
 def _dead_full_async_writer(failure):
@@ -519,7 +550,17 @@ def test_async_worker_releases_device_refs_after_d2h_before_write(
 
         def write_frame(self, _time_str, _fields):
             write_started.set()
-            assert finish_write.wait(timeout=1.0)
+            # No deadline, and no assertion, on purpose.  This wait spans the
+            # main thread's gc.collect(), whose cost is a function of the heap
+            # the rest of the suite has already built -- not of this writer.
+            # A bound here used to fail INSIDE the worker, where _worker's
+            # `except BaseException` files it as self._failure and sets the
+            # experiment-wide abort event, so a slow collection was reported
+            # as `RuntimeError: per-domain wrfout writer failed`: a false
+            # corruption alarm raised by the corruption detector's own test.
+            # The release below is set unconditionally in this test's finally,
+            # so an unbounded wait cannot outlive the test.
+            finish_write.wait()
 
         def __exit__(self, *_args):
             return False
@@ -529,28 +570,40 @@ def test_async_worker_releases_device_refs_after_d2h_before_write(
 
     monkeypatch.setattr(wrfout, "WrfoutWriter", BlockingWriter)
     writer = _manual_async_writer(threading.Event())
-    device = DeviceArray()
-    pinned_owner = np.zeros((1, 1, 1), dtype=np.float32)
-    field = pinned_owner.view()
-    assert field.base is pinned_owner
-    device_ref = weakref.ref(device)
-    pinned_ref = weakref.ref(pinned_owner)
-    ticket = _queue_cpu_ticket(
-        writer, tmp_path / "d01", fields={"T": field},
-        device_refs=(device,), pinned_refs=(pinned_owner,))
-    ticket_ref = weakref.ref(ticket)
-    del device, pinned_owner, field, ticket
-
     try:
-        assert write_started.wait(timeout=1.0)
+        device = DeviceArray()
+        pinned_owner = np.zeros((1, 1, 1), dtype=np.float32)
+        field = pinned_owner.view()
+        assert field.base is pinned_owner
+        device_ref = weakref.ref(device)
+        pinned_ref = weakref.ref(pinned_owner)
+        # `field` is a view of `pinned_owner`, so numpy's own base chain keeps
+        # the backing alive independently of ticket.pinned_refs -- and in the
+        # production path too, where host_fields come from
+        # np.frombuffer(memory, ...).  Watching only `pinned_owner` therefore
+        # cannot tell "pinned_refs retained it" from "the view's .base did":
+        # dropping ticket.pinned_refs early leaves this test green.  The
+        # unviewed buffer below is reachable ONLY through ticket.pinned_refs,
+        # so it holds the explicit mechanism to its stated contract.
+        unviewed = np.zeros((1, 1, 1), dtype=np.float32)
+        unviewed_ref = weakref.ref(unviewed)
+        ticket = _queue_cpu_ticket(
+            writer, tmp_path / "d01", fields={"T": field},
+            device_refs=(device,), pinned_refs=(pinned_owner, unviewed))
+        ticket_ref = weakref.ref(ticket)
+        del device, pinned_owner, field, ticket, unviewed
+
+        _await_worker(write_started, writer, reaching="entering write_frame")
         gc.collect()
         assert device_ref() is None
         assert pinned_ref() is not None
+        assert unviewed_ref() is not None
         assert ticket_ref() is not None
         finish_write.set()
         writer.drain()
         gc.collect()
         assert pinned_ref() is None
+        assert unviewed_ref() is None
         assert ticket_ref() is None
     finally:
         finish_write.set()
@@ -754,7 +807,7 @@ def test_async_interrupted_admission_after_insert_stays_balanced_and_drains(
                 KeyboardInterrupt, match="injected interrupt after insertion"):
             writer._admit(ticket)
         assert ticket.admitted
-        assert consumed.wait(timeout=1.0)
+        _await_worker(consumed, writer, reaching="consuming the ticket")
         pending_after_consume = writer.pending
 
         def drain():
@@ -953,7 +1006,7 @@ def test_failing_writer_close_joins_every_domain_and_aborts_publication(
     first = _manual_async_writer(abort)
     second = _manual_async_writer(abort)
     _queue_cpu_ticket(first, tmp_path / "d01")
-    assert abort.wait(timeout=1.0), "failing worker did not signal abort"
+    _await_worker(abort, first, reaching="signalling the publication abort")
     with pytest.raises(RuntimeError, match="wrfout writing was aborted"):
         _queue_cpu_ticket(second, tmp_path / "d02")
 

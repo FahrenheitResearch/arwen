@@ -79,6 +79,19 @@ pub fn direct_recipe_requires_explicit_opt_in(slug: &str) -> bool {
         || slug.starts_with("refs_prob_")
 }
 
+/// Direct recipes whose field is a property of the grid, not of the
+/// forecast time: they are identical in every stored hour.
+///
+/// The batch runner renders these once per domain and announces the skip
+/// for every later hour.  Nineteen byte-identical copies of the terrain
+/// are not nineteen frames of information; and a viewer arrow-keying a
+/// time sequence should not have to learn by inspection which frames
+/// never change.  The skip is stated, never silent -- "rendered once, on
+/// purpose" has to be distinguishable from "quietly dropped".
+pub fn direct_recipe_is_time_invariant(slug: &str) -> bool {
+    slug == "terrain_height"
+}
+
 pub(super) fn plan_direct_recipes(
     model: ModelId,
     recipe_slugs: &[String],

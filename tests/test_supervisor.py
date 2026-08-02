@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import threading
@@ -478,9 +479,12 @@ def _install_scripted_supervisor(monkeypatch, tmp_path, scripts, *,
         processes.append(process)
         return process
 
-    monkeypatch.setattr(supervisor, "config_digest", lambda _path: "a" * 64)
-    monkeypatch.setattr(supervisor, "resolved_input_hashes",
-                        lambda _path, **_kwargs: {})
+    def hash_inputs(path, **kwargs):
+        assert Path(path) == config.resolve()
+        assert kwargs["config_bytes"] == config.read_bytes()
+        return {}
+
+    monkeypatch.setattr(supervisor, "resolved_input_hashes", hash_inputs)
     monkeypatch.setattr(supervisor, "select_gpu", lambda _uuid: gpu)
     monkeypatch.setattr(supervisor, "preflight_exclusive_gpu",
                         lambda *args, **kwargs: None)
@@ -508,6 +512,194 @@ def test_supervise_monitor_accepts_normal_complete_exit(monkeypatch, tmp_path):
     assert result.attempts == 1
     assert result.heartbeat.status == "complete"
     assert len(processes) == 1
+
+
+def test_supervise_masks_worker_to_the_selected_physical_uuid(
+        monkeypatch, tmp_path):
+    config, _, processes = _install_scripted_supervisor(
+        monkeypatch, tmp_path, [[
+            {"status": "complete", "step": 1, "exit": 0},
+        ]])
+    supervise_experiment(config, tmp_path / "out", poll_seconds=0.05)
+    assert processes[0].env["CUDA_VISIBLE_DEVICES"] == "GPU-test"
+
+
+def test_supervise_passes_one_create_only_captured_config_to_worker(
+        monkeypatch, tmp_path):
+    config, _, processes = _install_scripted_supervisor(
+        monkeypatch, tmp_path, [[
+            {"status": "complete", "step": 1, "exit": 0},
+        ]])
+    original = config.read_bytes()
+
+    supervise_experiment(config, tmp_path / "out", poll_seconds=0.05)
+
+    command = processes[0].command
+    payload_path = Path(
+        command[command.index("--config-payload") + 1])
+    expected_digest = hashlib.sha256(original).hexdigest()
+    assert payload_path.read_bytes() == original
+    assert processes[0].env["GPUWM_CONFIG_DIGEST"] == expected_digest
+    assert command[command.index("--config") + 1] == str(config.resolve())
+    config.write_bytes(b"mutated original after parent capture\n")
+    assert supervisor._validated_config_payload_bytes(
+        payload_path, expected_digest) == original
+
+
+def test_direct_supervise_does_not_snapshot_inputs_without_multi_run_opt_in(
+        monkeypatch, tmp_path):
+    monkeypatch.delenv(
+        supervisor.SHARED_INPUT_AUTHORITY_ROOT_ENV, raising=False)
+    config, _, processes = _install_scripted_supervisor(
+        monkeypatch, tmp_path, [[
+            {"status": "complete", "step": 1, "exit": 0},
+        ]])
+    monkeypatch.setattr(
+        supervisor, "snapshot_resolved_input_files",
+        lambda *_args, **_kwargs: pytest.fail(
+            "ordinary gpuwm run must not copy forcing into a CAS"))
+
+    supervise_experiment(config, tmp_path / "out", poll_seconds=0.05)
+
+    assert supervisor.INPUT_AUTHORITIES_ENV not in processes[0].env
+    assert not list((tmp_path / "out").glob("input-authorities-*"))
+
+
+def test_captured_config_publication_is_create_only(tmp_path):
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    path = supervisor._capture_config_payload(outdir, "run-id", b"first")
+
+    with pytest.raises(FileExistsError):
+        supervisor._capture_config_payload(outdir, "run-id", b"second")
+
+    assert path.read_bytes() == b"first"
+
+
+def test_transient_capture_paths_and_run_ids_do_not_diverge_capsules(tmp_path):
+    from gpuwm.certify.capsule import build_capsule, emit_capsule
+    from gpuwm.certify.dualrun import compare_capsule_files
+
+    config = tmp_path / "source" / "experiment.toml"
+    config.parent.mkdir()
+    config_bytes = b"same captured config bytes\n"
+    config.write_bytes(config_bytes)
+    digest = hashlib.sha256(config_bytes).hexdigest()
+    run_a = tmp_path / "arm-a"
+    run_b = tmp_path / "arm-b"
+    run_a.mkdir()
+    run_b.mkdir()
+    capture_a = supervisor._capture_config_payload(
+        run_a, "independent-run-a", config_bytes)
+    capture_b = supervisor._capture_config_payload(
+        run_b, "independent-run-b", config_bytes)
+    assert capture_a != capture_b
+
+    context_a = supervisor._success_run_context(
+        config, digest, {}, restart_interval_seconds=None)
+    context_b = supervisor._success_run_context(
+        config, digest, {}, restart_interval_seconds=None)
+    assert context_a == context_b
+    assert "captured_path" not in context_a["config_bytes"]
+
+    common = {
+        "emission_site": "supervisor:success",
+        "run_context": context_a,
+        "run_shape": {
+            "route": "supervisor:gpuwm run", "domain_count": 1,
+            "run_seconds": 60.0},
+        "output": {
+            "frames": [{
+                "path": "wrfout_d01_0000", "bytes": 4,
+                "sha256": "8" * 64}],
+            "trajectory_digest": {"d01": "9" * 64}},
+        "receipts": {"run_progress": {"path": "run-progress.json"}},
+        "require_gpu": False,
+    }
+    capsule_a = emit_capsule(run_a, build_capsule(**common))
+    common["run_context"] = context_b
+    capsule_b = emit_capsule(run_b, build_capsule(**common))
+
+    assert compare_capsule_files(capsule_a, capsule_b).identical is True
+
+
+def test_worker_rejects_captured_config_digest_mismatch_before_loader(
+        monkeypatch, tmp_path):
+    original = tmp_path / "source" / "experiment.toml"
+    original.parent.mkdir()
+    original.write_bytes(b"mutable original\n")
+    payload = tmp_path / "out" / "captured.toml"
+    payload.parent.mkdir()
+    payload.write_bytes(b"tampered captured payload\n")
+    stages = []
+
+    class _Progress:
+        last_phase = "worker-start"
+        last_step = 0
+        last_wrfout = None
+        last_checkpoint = None
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def preparing(self, stage):
+            self.last_phase = stage
+            stages.append(stage)
+
+        def failed(self):
+            stages.append("failed")
+
+    monkeypatch.setattr(supervisor, "RuntimeHeartbeat", _Progress)
+    monkeypatch.setattr(
+        case_data, "load_experiment_case_bytes",
+        lambda *_args, **_kwargs: pytest.fail(
+            "config loader must not run after digest mismatch"))
+    monkeypatch.setattr(
+        supervisor, "write_failure_capsule",
+        lambda path, **_kwargs: Path(path))
+    monkeypatch.setenv("GPUWM_RUN_ID", "run-id")
+    monkeypatch.setenv("GPUWM_CONFIG_DIGEST", hashlib.sha256(
+        b"expected captured payload\n").hexdigest())
+    monkeypatch.setenv("GPUWM_STARTED_AT_UTC", "2026-08-01T00:00:00Z")
+    monkeypatch.setenv("GPUWM_GPU_UUID", "GPU-test")
+    monkeypatch.setenv("GPUWM_GPU_DRIVER", "610.74")
+    monkeypatch.setenv("GPUWM_GPU_NAME", "RTX 5090")
+
+    with pytest.raises(SupervisorError, match="config digest mismatch"):
+        supervisor._worker_main(supervisor.argparse.Namespace(
+            config=original, config_payload=payload, outdir=payload.parent,
+            restart=None, health_debug=False))
+
+    assert stages == ["worker-start", "validate-config", "failed"]
+
+
+def test_captured_config_loader_keeps_original_source_and_relative_base(
+        monkeypatch, tmp_path):
+    source = tmp_path / "source" / "experiment.toml"
+    source.parent.mkdir()
+    captured = (
+        b"[experiment]\nname='captured'\n"
+        b"[case_data]\nforcing='relative.grib2'\n")
+    observed = {}
+
+    def build_experiment(raw, *, source):
+        observed["experiment"] = (raw, source)
+        return "experiment"
+
+    def build_case_data(raw, *, source, base_dir):
+        observed["case_data"] = (raw, source, base_dir)
+        return "case-data"
+
+    monkeypatch.setattr(case_data, "build_experiment", build_experiment)
+    monkeypatch.setattr(case_data, "build_case_data", build_case_data)
+
+    result = case_data.load_experiment_case_bytes(
+        captured, source=str(source), base_dir=source.parent)
+
+    assert result == ("experiment", "case-data")
+    assert observed["experiment"][1] == str(source)
+    assert observed["case_data"][1:] == (str(source), source.parent)
+    assert observed["case_data"][0]["forcing"] == "relative.grib2"
 
 
 def test_supervise_monitor_accepts_windows_redirector_child_pid(
@@ -826,6 +1018,381 @@ def test_resolved_input_hashes_records_the_algorithm_it_used(
     assert hashes[f"geog_root:{tree}"]["algorithm"] == \
         f"sha256-directory-{mode}"
     assert hashes[f"forcing:{forcing}"]["algorithm"] == "sha256"
+
+
+def test_resolved_input_hashes_parses_the_parent_captured_bytes(
+        monkeypatch, tmp_path):
+    forcing = tmp_path / "forcing.grib2"
+    forcing.write_bytes(b"GRIB")
+    captured = b"captured config authority"
+    observed = {}
+
+    class _Case:
+        def resolved_inputs(self):
+            return (case_data.ResolvedInput(role="forcing", path=forcing),)
+
+    def load_bytes(payload, *, source, base_dir):
+        observed.update(
+            payload=payload, source=source, base_dir=base_dir)
+        return None, _Case()
+
+    monkeypatch.setattr(case_data, "load_experiment_case_bytes", load_bytes)
+    monkeypatch.setattr(
+        case_data, "load_experiment_case",
+        lambda _path: pytest.fail("mutable config path must not be reopened"))
+    config = tmp_path / "source" / "case.toml"
+
+    hashes = supervisor.resolved_input_hashes(
+        config, config_bytes=captured)
+
+    assert observed == {
+        "payload": captured,
+        "source": str(config),
+        "base_dir": config.parent,
+    }
+    assert hashes[f"forcing:{forcing}"]["digest"] == hashlib.sha256(
+        b"GRIB").hexdigest()
+
+
+def test_worker_inventory_seal_preserves_roles_details_and_multiplicity(
+        monkeypatch, tmp_path):
+    shared = tmp_path / "shared-input.nc"
+    shared.write_bytes(b"one shared payload")
+    parent_records = (
+        case_data.ResolvedInput(role="forcing", path=shared),
+        case_data.ResolvedInput(
+            role="source_orography", path=shared,
+            detail="variable=HGT;domain=d01"),
+        case_data.ResolvedInput(
+            role="source_orography", path=shared,
+            detail="variable=HGT;domain=d02"),
+    )
+
+    class _Case:
+        def __init__(self, records):
+            self.records = records
+
+        def resolved_inputs(self):
+            return self.records
+
+    monkeypatch.setattr(
+        case_data, "load_experiment_case",
+        lambda _path: (None, _Case(parent_records)))
+    hashes = supervisor.resolved_input_hashes(tmp_path / "case.toml")
+    orography = hashes[f"source_orography:{shared.resolve()}"]
+    assert len(orography["identities"]) == 2
+
+    worker_records = (
+        # The same source path is not enough: this record changed roles.
+        case_data.ResolvedInput(role="vtable", path=shared),
+        case_data.ResolvedInput(
+            role="source_orography", path=shared,
+            detail="variable=HGT;domain=d01"),
+        # Multiplicity is unchanged, but the second duplicate's slot differs.
+        case_data.ResolvedInput(
+            role="source_orography", path=shared,
+            detail="variable=HGT;domain=d03"),
+    )
+    with pytest.raises(SupervisorError) as caught:
+        supervisor._validate_worker_resolved_input_inventory(
+            _Case(worker_records), hashes)
+
+    message = str(caught.value)
+    assert "forcing:" in message and "vtable:" in message
+    assert "domain=d02" in message and "domain=d03" in message
+
+
+@pytest.mark.parametrize("control", ["shrink", "expand", "rename"])
+def test_worker_refuses_forcing_glob_path_set_toctou_after_restore(
+        monkeypatch, tmp_path, control):
+    from gpuwm import runtime
+
+    source = tmp_path / "source"
+    forcing_dir = source / "forcing"
+    geog = source / "geog"
+    outdir = tmp_path / "out"
+    store = tmp_path / "plan-wide-cas"
+    for directory in (forcing_dir, geog, outdir):
+        directory.mkdir(parents=True)
+    forcing_a = forcing_dir / "a.grib"
+    forcing_b = forcing_dir / "b.grib"
+    forcing_c = forcing_dir / "c.grib"
+    outside_b = source / "b.grib.moved"
+    forcing_a.write_bytes(b"forcing-a")
+    forcing_b.write_bytes(b"forcing-b")
+    (source / "Vtable").write_bytes(b"vtable")
+    (source / "namelist.wps").write_bytes(b"wps")
+    payload = (
+        "[experiment]\n"
+        "name = 'fixture'\n"
+        "[case_data]\n"
+        "forcing = 'forcing/*.grib'\n"
+        "vtable = 'Vtable'\n"
+        "wps_namelist = 'namelist.wps'\n"
+        "geog_root = 'geog'\n"
+        "sfcp_to_sfcp = true\n"
+        "output_title = 'fixture'\n"
+    ).encode("utf-8")
+    config = source / "experiment.toml"
+    captured = outdir / "captured.toml"
+    config.write_bytes(payload)
+    captured.write_bytes(payload)
+    monkeypatch.setattr(
+        case_data, "build_experiment", lambda *_args, **_kwargs: object())
+
+    # Parent parse, hashing, and CAS publication all see exactly {a, b}.
+    parent_hashes = supervisor.resolved_input_hashes(
+        config, config_bytes=payload)
+    authorities = supervisor.snapshot_resolved_input_files(
+        config, config_bytes=payload, input_hashes=parent_hashes,
+        snapshot_root=store)
+    parent_forcing = {
+        identity["path"]
+        for entry in parent_hashes.values()
+        for identity in entry["identities"]
+        if identity["role"] == "forcing"
+    }
+    assert parent_forcing == {
+        str(forcing_a.resolve()), str(forcing_b.resolve())}
+
+    events = []
+    restored = False
+
+    def mutate():
+        if control == "shrink":
+            forcing_b.rename(outside_b)
+        elif control == "expand":
+            forcing_c.write_bytes(b"forcing-c")
+        else:
+            forcing_a.rename(forcing_c)
+        events.append("mutate")
+
+    def restore():
+        nonlocal restored
+        if restored:
+            return
+        if control == "shrink":
+            outside_b.rename(forcing_b)
+        elif control == "expand":
+            forcing_c.unlink()
+        else:
+            forcing_c.rename(forcing_a)
+        restored = True
+        events.append("restore")
+
+    mutate()
+    real_load = case_data.load_experiment_case_bytes
+
+    def load_while_mutated(*args, **kwargs):
+        events.append("parse")
+        try:
+            return real_load(*args, **kwargs)
+        finally:
+            # Restore before the worker performs its comparison.  The seal
+            # must use what this parse resolved, not a second filesystem glob.
+            restore()
+
+    real_validate = supervisor._validate_worker_resolved_input_inventory
+
+    def validate_after_restore(data, input_hashes):
+        events.append("validate")
+        assert restored
+        assert forcing_a.is_file() and forcing_b.is_file()
+        assert not forcing_c.exists() and not outside_b.exists()
+        return real_validate(data, input_hashes)
+
+    monkeypatch.setattr(
+        case_data, "load_experiment_case_bytes", load_while_mutated)
+    monkeypatch.setattr(
+        supervisor, "_validate_worker_resolved_input_inventory",
+        validate_after_restore)
+    monkeypatch.setattr(
+        runtime, "run_experiment",
+        lambda *_args, **_kwargs: pytest.fail("runtime must never start"))
+    monkeypatch.setattr(
+        supervisor, "emit_run_capsule",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a success capsule must never be emitted"))
+    monkeypatch.setattr(supervisor, "git_commit", lambda: "test-commit")
+    monkeypatch.setenv("GPUWM_RUN_ID", f"glob-{control}")
+    monkeypatch.setenv(
+        "GPUWM_CONFIG_DIGEST", hashlib.sha256(payload).hexdigest())
+    monkeypatch.setenv("GPUWM_STARTED_AT_UTC", "2026-08-01T00:00:00Z")
+    monkeypatch.setenv("GPUWM_GPU_UUID", "GPU-test")
+    monkeypatch.setenv("GPUWM_GPU_DRIVER", "610.74")
+    monkeypatch.setenv("GPUWM_GPU_NAME", "RTX 5090")
+    monkeypatch.setenv(
+        "GPUWM_INPUT_HASHES_JSON", json.dumps(parent_hashes))
+    monkeypatch.setenv(
+        supervisor.INPUT_AUTHORITIES_ENV, json.dumps(authorities))
+
+    try:
+        with pytest.raises(
+                SupervisorError,
+                match="worker-resolved input inventory") as caught:
+            supervisor._worker_main(supervisor.argparse.Namespace(
+                config=config, config_payload=captured, outdir=outdir,
+                restart=None, health_debug=False))
+    finally:
+        restore()
+
+    expected_missing = {
+        "shrink": (forcing_b,),
+        "expand": (),
+        "rename": (forcing_a,),
+    }[control]
+    expected_extra = {
+        "shrink": (),
+        "expand": (forcing_c,),
+        "rename": (forcing_c,),
+    }[control]
+    message = str(caught.value)
+    for path in expected_missing:
+        assert str(path.resolve()) in message.partition("; extra=")[0]
+    for path in expected_extra:
+        assert str(path.resolve()) in message.partition("; extra=")[2]
+    assert events == ["mutate", "parse", "restore", "validate"]
+    assert supervisor.read_heartbeat(
+        outdir / supervisor.HEARTBEAT_NAME).status == "failed"
+    failure = json.loads((
+        outdir / supervisor.FAILURE_CAPSULE_NAME).read_text(encoding="utf-8"))
+    assert failure["input_hashes"] == parent_hashes
+    assert failure["last_phase"] == "preparing:validate-input-inventory"
+    assert failure["exception"]["type"] == "SupervisorError"
+    assert failure["exception"]["message"] == message
+    assert not (outdir / "certification-capsule.json").exists()
+
+
+def test_plan_cas_deduplicates_and_worker_consumes_all_file_snapshots(
+        monkeypatch, tmp_path):
+    forcing = tmp_path / "forcing.grib2"
+    vtable = tmp_path / "Vtable"
+    wps = tmp_path / "namelist.wps"
+    orography = tmp_path / "orography.nc"
+    geog = tmp_path / "geog"
+    geog.mkdir()
+    (geog / "index").write_bytes(b"geography")
+    payloads = {
+        forcing: b"ORIGINAL-FORCING",
+        vtable: b"VTABLE-CONTENT",
+        # Deliberately identical to Vtable: one CAS file must retain two
+        # distinct declared provenance identities after remapping.
+        wps: b"VTABLE-CONTENT",
+        orography: b"OROGRAPHY-CONTENT",
+    }
+    for path, payload in payloads.items():
+        path.write_bytes(payload)
+    data = case_data.CaseDataConfig(
+        forcing=(forcing,), vtable=vtable, wps_namelist=wps,
+        geog_root=geog,
+        source_orography=case_data.SourceOrography(
+            path=orography, variable="HGT"),
+        sfcp_to_sfcp=True, co2_vmr=None, output_title="fixture")
+    monkeypatch.setattr(
+        case_data, "load_experiment_case_bytes",
+        lambda *_args, **_kwargs: (None, data))
+    config_a = tmp_path / "case-a.toml"
+    config_b = tmp_path / "case-b.toml"
+    hashes = supervisor.resolved_input_hashes(
+        config_a, config_bytes=b"captured")
+    supervisor._validate_worker_resolved_input_inventory(data, hashes)
+    copied = []
+    real_copy = supervisor._copy_verified_authority
+
+    def copy_once(source, destination, expected):
+        copied.append(Path(source).resolve())
+        return real_copy(Path(source), Path(destination), expected)
+
+    monkeypatch.setattr(supervisor, "_copy_verified_authority", copy_once)
+    store = tmp_path / "plan-wide-cas"
+    first = supervisor.snapshot_resolved_input_files(
+        config_a, config_bytes=b"captured", input_hashes=hashes,
+        snapshot_root=store)
+    second = supervisor.snapshot_resolved_input_files(
+        config_b, config_bytes=b"captured", input_hashes=hashes,
+        snapshot_root=store)
+
+    assert first == second
+    assert sorted(copied) == sorted(path.resolve() for path in (
+        forcing, vtable, orography))
+    assert set(first) == {str(path.resolve()) for path in payloads}
+    sha_files = [path for path in store.iterdir()
+                 if path.is_file() and len(path.name) == 64]
+    assert len(sha_files) == len(set(
+        hashlib.sha256(payload).hexdigest()
+        for payload in payloads.values()))
+
+    metadata = forcing.stat()
+    mutated = b"MUTATED!-FORCING"
+    assert len(mutated) == len(payloads[forcing])
+    descriptor = os.open(forcing, os.O_WRONLY | os.O_TRUNC)
+    try:
+        os.write(descriptor, mutated)
+    finally:
+        os.close(descriptor)
+    os.utime(forcing, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+
+    real_path_open = Path.open
+    original_forcing = forcing.resolve()
+
+    def guarded_open(path, *args, **kwargs):
+        if Path(path).resolve() == original_forcing:
+            pytest.fail("worker reopened mutable forcing after snapshot")
+        return real_path_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    replacements = supervisor._validated_worker_input_authorities(
+        json.dumps(first), hashes)
+    remapped = case_data.remap_case_data_files(data, replacements)
+    assert remapped.forcing[0].read_bytes() == payloads[forcing]
+    assert remapped.vtable == Path(first[str(vtable.resolve())]["snapshot"])
+    assert remapped.wps_namelist == Path(first[str(wps.resolve())]["snapshot"])
+    assert remapped.source_orography.path == Path(
+        first[str(orography.resolve())]["snapshot"])
+    assert all(path.resolve() not in payloads for path in (
+        *remapped.forcing, remapped.vtable, remapped.wps_namelist,
+        remapped.source_orography.path))
+    assert {record.path for record in remapped.resolved_inputs()
+            if record.role != "geog_root"} == {
+                path.resolve() for path in payloads}
+    capsule_context = supervisor._success_run_context(
+        config_a, "f" * 64, hashes, restart_interval_seconds=None)
+    assert str(store) not in json.dumps(capsule_context, sort_keys=True)
+
+    descriptor = os.open(forcing, os.O_WRONLY | os.O_TRUNC)
+    try:
+        os.write(descriptor, payloads[forcing])
+    finally:
+        os.close(descriptor)
+    os.utime(forcing, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    assert forcing.stat().st_mtime_ns == metadata.st_mtime_ns
+
+
+def test_content_authority_publication_preserves_racing_winner(
+        monkeypatch, tmp_path):
+    source = tmp_path / "forcing.grib2"
+    payload = b"one exact forcing payload"
+    source.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    store = tmp_path / "cas"
+    store.mkdir()
+    real_link = supervisor.os.link
+    calls = []
+
+    def publish_winner_then_report_race(temporary, destination):
+        calls.append((Path(temporary), Path(destination)))
+        real_link(temporary, destination)
+        raise FileExistsError("simulated racing create-only winner")
+
+    monkeypatch.setattr(supervisor.os, "link",
+                        publish_winner_then_report_race)
+    authority = supervisor._content_authority_path(source, store, digest)
+
+    assert authority == store / digest
+    assert authority.read_bytes() == payload
+    assert authority.stat().st_mode & stat.S_IWRITE == 0
+    assert len(calls) == 1
+    assert not list(store.glob(".*.tmp"))
 
 
 @pytest.mark.parametrize(

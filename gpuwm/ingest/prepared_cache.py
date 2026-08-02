@@ -23,7 +23,7 @@ No pickle or object arrays are accepted.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields as dataclass_fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -39,9 +39,11 @@ from gpuwm.vertical_contract import (
     validate_coordinate_shapes,
     validate_explicit_eta_grid,
 )
+from gpuwm.namelist_seal import validated_namelist_extension_invariant
 
 
 PREPARED_CACHE_SCHEMA = "gpuwm-prepared-real-cache-v1"
+SEALED_PREPARED_EXTENSION_MODE = "sealed-prefix-v1"
 _HEADER_NAME = "header.json"
 _MET_REQUIRED = frozenset({
     "LANDSEA", "SKINTEMP", "T2", "U10", "V10",
@@ -182,9 +184,31 @@ def undelayed_identity_defaults(experiment) -> dict[str, object]:
 #: history cadence was 900 s beside d01's 3600 s, and a hierarchy whose
 #: namelist carried ``restart_interval = 60``: both are output cadences,
 #: neither changes one model step.
+#:
+#: ``run.run_seconds`` belongs to the same partition and was missing
+#: from it: a prepared cache is an initial state plus the boundary
+#: tables for the times it decoded, and the forecast LENGTH changes
+#: neither.  Its omission is what made "extend a run from its
+#: checkpoint" -- the worked example in FIRST-LIGHT section 7 -- refuse
+#: on the prepared routes: the length moved this identity, so the cache
+#: had to be re-prepared to run one hour longer.  Whether the prepared
+#: forcing actually REACHES the requested length is a separate gate and
+#: is unchanged; both prepared runners already refuse a run past their
+#: prepared coverage (``prepared_single_domain_forecast`` at its
+#: cadence/coverage check, ``prepared_domain_tree_forecast`` at
+#: "experiment duration exceeds prepared forcing hours"), so tolerating
+#: the field here widens nothing.
+#: The DOMAIN-level ``history_interval_s`` is the same knob as
+#: ``run.output_interval_s`` under its other spelling, and this document
+#: carries both.  Dropping only the ``run.`` one left the cadence bound
+#: after all: a tree restarted with a changed history cadence -- one of
+#: the three changes ``--restart`` publishes as permitted -- was refused
+#: naming a field that says nothing about the prepared state.
 NON_TRAJECTORY_IDENTITY_FIELDS = frozenset({
+    "run.run_seconds",
     "run.output_interval_s",
     "run.restart_interval_s",
+    "history_interval_s",
 })
 
 #: Trajectory-inert diagnostic toggles, on the same footing as the
@@ -224,13 +248,20 @@ def effective_prepared_domain_config(document):
     if not isinstance(document, Mapping):
         return document
     normalized = _plain(document)
+    # Top-level (domain) entries first: the output cadence lives here as
+    # well as under ``run``, and a document may carry it with no ``run``
+    # section at all.
+    for path in sorted(NON_TRAJECTORY_IDENTITY_FIELDS
+                       | INERT_DIAGNOSTIC_IDENTITY_FIELDS):
+        if "." not in path:
+            normalized.pop(path, None)
     run = normalized.get("run")
     if not isinstance(run, dict):
         return normalized
     for path in sorted(NON_TRAJECTORY_IDENTITY_FIELDS
                        | INERT_DIAGNOSTIC_IDENTITY_FIELDS):
         section, _, key = path.partition(".")
-        if section == "run":
+        if section == "run" and key:
             run.pop(key, None)
     if run.get("radt", 0.0) > 0.0:
         run["radt_minutes"] = run["radt"]
@@ -442,6 +473,37 @@ class _BundleWriter:
         }
         self.payload_bytes += int(array.nbytes)
 
+    def link_verified(self, key: str, reader: "PreparedCacheReader") -> None:
+        """Reuse one already-verified immutable payload without copying it.
+
+        Extension bundles are siblings in the operational work tree, so a
+        hard link is both atomic and space-constant.  We deliberately do not
+        fall back to a byte copy: silently doing so would turn an hourly
+        append into quadratic disk traffic.  The completed staging bundle is
+        verified again before publication, which catches a predecessor that
+        changed while its links were being assembled.
+        """
+        if not isinstance(key, str) or not key or key in self.manifest:
+            raise ValueError(f"invalid or duplicate prepared-cache key {key!r}")
+        try:
+            source_spec = reader.arrays[key]
+        except KeyError as exc:
+            raise PreparedCacheCorruptError(
+                f"prepared cache is missing array {key!r}") from exc
+        filename = f"a{len(self.manifest):05d}.npy"
+        source = reader.path / source_spec["file"]
+        destination = self.temporary / filename
+        try:
+            os.link(source, destination)
+        except OSError as exc:
+            raise PreparedCacheMismatchError(
+                "prepared-cache extension requires same-filesystem hard-link "
+                "reuse; refusing a quadratic payload copy") from exc
+        spec = _json_copy(source_spec)
+        spec["file"] = filename
+        self.manifest[key] = spec
+        self.payload_bytes += int(spec["nbytes"])
+
 
 class PreparedCacheReader:
     """Validated cache manifest with checked, one-array-at-a-time reads."""
@@ -622,7 +684,9 @@ def prepared_cache_identity(*, bridge_manifest_sha256: str,
                             namelist_sha256: str, domain_config,
                             forcing_hours=None,
                             forcing_offsets_seconds=None,
-                            source_identity) -> dict[str, object]:
+                            source_identity,
+                            namelist_extension_invariant=None,
+                            ) -> dict[str, object]:
     """Canonical identity callers must reproduce exactly on every restore."""
     if (forcing_hours is None) == (forcing_offsets_seconds is None):
         raise ValueError(
@@ -633,7 +697,7 @@ def prepared_cache_identity(*, bridge_manifest_sha256: str,
         if forcing_hours is not None else
         {"forcing_offsets_seconds": [
             int(offset) for offset in forcing_offsets_seconds]})
-    return _json_copy({
+    identity = {
         "bridge_manifest_sha256": str(bridge_manifest_sha256).lower(),
         "source_manifest_sha256": str(source_manifest_sha256).lower(),
         "static_cache_sha256": str(static_cache_sha256).lower(),
@@ -641,7 +705,11 @@ def prepared_cache_identity(*, bridge_manifest_sha256: str,
         "domain_config": prepared_domain_config_identity(domain_config),
         **forcing_identity,
         "source_identity": source_identity,
-    })
+    }
+    if namelist_extension_invariant is not None:
+        identity["namelist_extension_invariant"] = \
+            namelist_extension_invariant
+    return _json_copy(identity)
 
 
 def _coord_metadata(coord) -> dict[str, object]:
@@ -717,7 +785,9 @@ def _prepared_cache_staging_path(path: Path, *, nonce: str | None = None
 
 def write_prepared_cache(path, *, identity, initial_result, met,
                          boundaries, surface=None,
-                         metadata=None) -> dict[str, object]:
+                         metadata=None,
+                         sealed_forcing_extension: bool = False
+                         ) -> dict[str, object]:
     """Write one immutable prepared-state bundle and publish atomically.
 
     Root-domain caches require external lateral boundaries.  A cache may omit
@@ -726,8 +796,8 @@ def write_prepared_cache(path, *, identity, initial_result, met,
     standalone forecast root.
     """
     from gpuwm.state_serialization_contract import (
-        STATE_SERIALIZED_ATTRS,
-        setup_fingerprint,
+        STATE_SERIALIZED_ATTRS, lateral_boundary_prefix_identity,
+        setup_core_fingerprint, setup_fingerprint,
     )
 
     path = Path(path)
@@ -820,6 +890,17 @@ def write_prepared_cache(path, *, identity, initial_result, met,
             "hydrometeor_initialization": _json_copy(
                 getattr(initial_result, "hydrometeor_initialization", {})),
         }
+        if sealed_forcing_extension:
+            if boundaries is None:
+                raise ValueError(
+                    "sealed prepared-cache forcing requires root LBCs")
+            cache_metadata.update({
+                "forcing_extension_mode": SEALED_PREPARED_EXTENSION_MODE,
+                "setup_core_fingerprint": setup_core_fingerprint(
+                    initial_result.state),
+                "lateral_boundary_prefix": lateral_boundary_prefix_identity(
+                    initial_result.state),
+            })
         basis = {
             "schema": PREPARED_CACHE_SCHEMA,
             "identity": _json_copy(identity),
@@ -860,6 +941,422 @@ def write_prepared_cache(path, *, identity, initial_result, met,
     }
 
 
+def _reader_boundaries(reader: PreparedCacheReader):
+    from gpuwm.ingest.lateral_bc import (
+        BoundaryInterval, FieldBoundary, LateralBoundaries, SideBoundary,
+    )
+
+    lbc = reader.header.get("metadata", {}).get("lbc")
+    if not isinstance(lbc, dict) or not isinstance(lbc.get("intervals"), list):
+        raise PreparedCacheMismatchError(
+            f"prepared cache {reader.path} has no external LBC inventory")
+    intervals = []
+    for index, row in enumerate(lbc["intervals"]):
+        if (not isinstance(row, dict) or set(row) != {
+                "start_seconds", "end_seconds", "fields"}
+                or not isinstance(row["fields"], list)
+                or not row["fields"]):
+            raise PreparedCacheCorruptError(
+                f"prepared cache LBC interval {index} is malformed")
+        fields = {}
+        for name in row["fields"]:
+            sides = {}
+            for side_name in ("west", "east", "south", "north"):
+                prefix = f"lbc/{index}/{name}/{side_name}"
+                sides[side_name] = SideBoundary(
+                    reader.read_array(f"{prefix}/value"),
+                    reader.read_array(f"{prefix}/tendency"))
+            fields[name] = FieldBoundary(**sides)
+        intervals.append(BoundaryInterval(
+            float(row["start_seconds"]), float(row["end_seconds"]), fields))
+    return LateralBoundaries(
+        tuple(intervals), int(lbc["spec_bdy_width"]),
+        int(lbc["spec_zone"]), int(lbc["relax_zone"]))
+
+
+def _forcing_prefix(boundaries):
+    from gpuwm.state_serialization_contract import (
+        lateral_boundary_prefix_identity,
+    )
+
+    return lateral_boundary_prefix_identity(
+        SimpleNamespace(lateral_boundaries=boundaries))
+
+
+def _without_run_window(value, *, omit_start_time=False):
+    result = _json_copy(value)
+    if isinstance(result, dict) and isinstance(result.get("run"), dict):
+        result["run"].pop("run_seconds", None)
+    if isinstance(result, dict) and omit_start_time:
+        result.pop("start_time", None)
+    return result
+
+
+def _without_source_window(value, *, omit_model_start=False):
+    result = _json_copy(value)
+    if isinstance(result, dict):
+        for key in ("source_forecast_hours", "model_forcing_hours"):
+            result.pop(key, None)
+        if omit_model_start:
+            result.pop("model_start_time", None)
+    return result
+
+
+def _identity_time(value, *, label):
+    if not isinstance(value, str):
+        raise PreparedCacheMismatchError(
+            f"prepared-cache {label} must be an ISO timestamp")
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise PreparedCacheMismatchError(
+            f"prepared-cache {label} must be an ISO timestamp") from exc
+
+
+def _domain_run_seconds(identity, *, label):
+    domain = identity.get("domain_config") if isinstance(identity, dict) \
+        else None
+    run = domain.get("run") if isinstance(domain, dict) else None
+    value = run.get("run_seconds") if isinstance(run, dict) else None
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not np.isfinite(value)):
+        raise PreparedCacheMismatchError(
+            f"prepared-cache {label} has no finite run_seconds")
+    return float(value)
+
+
+def _namelist_extension_invariant(identity, *, label):
+    invariant = identity.get("namelist_extension_invariant") \
+        if isinstance(identity, dict) else None
+    try:
+        return validated_namelist_extension_invariant(
+            invariant, context=f"prepared-cache {label}")
+    except ValueError:
+        raise PreparedCacheMismatchError(
+            f"prepared-cache {label} has no valid namelist extension "
+            "invariant") from None
+
+
+def extend_prepared_cache(path, *, predecessor, suffix, identity,
+                          metadata, source_manifest_extension,
+                          bridge_manifest_extension,
+                          ) -> dict[str, object]:
+    """Publish one cache by appending exactly one verified LBC interval.
+
+    ``suffix`` is a normal two-time cache prepared only for the old endpoint
+    and the newly arrived hour.  Initial state, static-derived setup, and all
+    old forcing arrays come from ``predecessor``; only the suffix interval is
+    admitted, after its shared FP32 endpoint frame matches cryptographically.
+    """
+    from gpuwm import __version__
+    from gpuwm.ingest.lateral_bc import BoundaryInterval, LateralBoundaries
+
+    path = Path(path)
+    predecessor = Path(predecessor)
+    suffix = Path(suffix)
+    if path.exists():
+        raise FileExistsError(f"refusing to overwrite prepared cache {path}")
+    prior_header_path = predecessor / _HEADER_NAME
+    suffix_header_path = suffix / _HEADER_NAME
+    prior_header_before = hashlib.sha256(
+        prior_header_path.read_bytes()).hexdigest()
+    suffix_header_before = hashlib.sha256(
+        suffix_header_path.read_bytes()).hexdigest()
+    prior_header = json.loads(prior_header_path.read_text(encoding="utf-8"))
+    suffix_header = json.loads(suffix_header_path.read_text(encoding="utf-8"))
+    prior_reader = PreparedCacheReader(
+        predecessor, expected_identity=prior_header.get("identity"))
+    suffix_reader = PreparedCacheReader(
+        suffix, expected_identity=suffix_header.get("identity"))
+    prior_reader.verify_all()
+    suffix_reader.verify_all()
+    prior_meta = prior_reader.header["metadata"]
+    if (prior_meta.get("forcing_extension_mode")
+            != SEALED_PREPARED_EXTENSION_MODE):
+        raise PreparedCacheMismatchError(
+            "predecessor cache was not intentionally sealed for extension")
+
+    old_identity = prior_reader.header["identity"]
+    new_identity = _json_copy(identity)
+    old_hours = old_identity.get("forcing_hours")
+    new_hours = new_identity.get("forcing_hours")
+    if (not isinstance(old_hours, list) or not old_hours
+            or old_hours != list(range(len(old_hours)))
+            or new_hours != old_hours + [len(old_hours)]):
+        raise PreparedCacheMismatchError(
+            "prepared-cache extension must append exactly one contiguous "
+            "forcing hour")
+    for key in ("static_cache_sha256",):
+        if new_identity.get(key) != old_identity.get(key):
+            raise PreparedCacheMismatchError(
+                f"prepared-cache extension changes immutable {key}")
+    old_namelist_invariant = _namelist_extension_invariant(
+        old_identity, label="predecessor identity")
+    if (_namelist_extension_invariant(
+            new_identity, label="extended identity")
+            != old_namelist_invariant):
+        raise PreparedCacheMismatchError(
+            "prepared-cache extension changes immutable namelist fields")
+    if (_without_run_window(new_identity.get("domain_config"))
+            != _without_run_window(old_identity.get("domain_config"))):
+        raise PreparedCacheMismatchError(
+            "prepared-cache extension changes immutable domain config")
+    old_source = old_identity.get("source_identity")
+    new_source = new_identity.get("source_identity")
+    if _without_source_window(old_source) != _without_source_window(new_source):
+        raise PreparedCacheMismatchError(
+            "prepared-cache extension changes immutable source identity")
+    if (not isinstance(new_source, dict)
+            or new_source.get("source_forecast_hours") != new_hours
+            or new_source.get("model_forcing_hours") != new_hours):
+        raise PreparedCacheMismatchError(
+            "prepared-cache extension source window is not the full prefix")
+
+    suffix_identity = suffix_reader.header["identity"]
+    if suffix_identity.get("forcing_hours") != [0, 1]:
+        raise PreparedCacheMismatchError(
+            "prepared-cache suffix must contain exactly two source frames")
+    for key in ("static_cache_sha256",):
+        if suffix_identity.get(key) != old_identity.get(key):
+            raise PreparedCacheMismatchError(
+                f"prepared-cache suffix changes immutable {key}")
+    if (_namelist_extension_invariant(
+            suffix_identity, label="suffix identity")
+            != old_namelist_invariant):
+        raise PreparedCacheMismatchError(
+            "prepared-cache suffix changes immutable namelist fields")
+    if suffix_identity.get("namelist_sha256") != new_identity.get(
+            "namelist_sha256"):
+        raise PreparedCacheMismatchError(
+            "prepared-cache suffix does not use the extended namelist bytes")
+    if suffix_identity.get("source_manifest_sha256") != new_identity.get(
+            "source_manifest_sha256"):
+        raise PreparedCacheMismatchError(
+            "prepared-cache suffix is not bound to the extended source "
+            "manifest")
+    expected_bridge_extension = {
+        "schema": "gpuwm-bridge-manifest-prefix-extension-v1",
+        "predecessor_sha256": old_identity.get("bridge_manifest_sha256"),
+        "suffix_sha256": suffix_identity.get("bridge_manifest_sha256"),
+        "extended_sha256": new_identity.get("bridge_manifest_sha256"),
+        "old_source_forecast_hours": old_source.get(
+            "source_forecast_hours") if isinstance(old_source, dict) else None,
+        "new_source_forecast_hours": new_source.get(
+            "source_forecast_hours") if isinstance(new_source, dict) else None,
+        "suffix_source_forecast_hours": [len(old_hours) - 1, len(old_hours)],
+    }
+    bridge_extension = _json_copy(bridge_manifest_extension)
+    if (not isinstance(bridge_extension, dict)
+            or any(bridge_extension.get(key) != value
+                   for key, value in expected_bridge_extension.items())
+            or not isinstance(bridge_extension.get("retained_entries"), int)
+            or bridge_extension["retained_entries"] <= 0
+            or not isinstance(bridge_extension.get("added_entries"), list)
+            or not bridge_extension["added_entries"]):
+        raise PreparedCacheMismatchError(
+            "prepared-cache bridge-manifest prefix proof is malformed or "
+            "belongs to another extension")
+    if (_without_run_window(
+            suffix_identity.get("domain_config"), omit_start_time=True)
+            != _without_run_window(
+                old_identity.get("domain_config"), omit_start_time=True)):
+        raise PreparedCacheMismatchError(
+            "prepared-cache suffix changes immutable domain config")
+    suffix_source = suffix_identity.get("source_identity")
+    if (_without_source_window(suffix_source, omit_model_start=True)
+            != _without_source_window(old_source, omit_model_start=True)):
+        raise PreparedCacheMismatchError(
+            "prepared-cache suffix changes executable source identity")
+    suffix_source_hours = [len(old_hours) - 1, len(old_hours)]
+    if (not isinstance(suffix_source, dict)
+            or suffix_source.get("source_forecast_hours")
+            != suffix_source_hours
+            or suffix_source.get("model_forcing_hours") != [0, 1]):
+        raise PreparedCacheMismatchError(
+            "prepared-cache suffix does not contain the old terminal source "
+            "frame and exactly one new hour")
+    old_model_start = _identity_time(
+        old_source.get("model_start_time") if isinstance(old_source, dict)
+        else None, label="predecessor model_start_time")
+    new_model_start = _identity_time(
+        new_source.get("model_start_time"), label="extended model_start_time")
+    suffix_model_start = _identity_time(
+        suffix_source.get("model_start_time"), label="suffix model_start_time")
+    if new_model_start != old_model_start:
+        raise PreparedCacheMismatchError(
+            "prepared-cache extension changes model time zero")
+    expected_suffix_start = old_model_start + timedelta(
+        hours=len(old_hours) - 1)
+    if suffix_model_start != expected_suffix_start:
+        raise PreparedCacheMismatchError(
+            "prepared-cache suffix model start is not the old terminal hour")
+    suffix_domain = suffix_identity.get("domain_config")
+    if (not isinstance(suffix_domain, dict)
+            or _identity_time(
+                suffix_domain.get("start_time"),
+                label="suffix domain start_time") != expected_suffix_start):
+        raise PreparedCacheMismatchError(
+            "prepared-cache suffix domain start is not the old terminal hour")
+    if (_domain_run_seconds(old_identity, label="predecessor identity")
+            != float(len(old_hours) - 1) * 3600.0
+            or _domain_run_seconds(new_identity, label="extended identity")
+            != float(len(new_hours) - 1) * 3600.0
+            or _domain_run_seconds(suffix_identity, label="suffix identity")
+            != 3600.0):
+        raise PreparedCacheMismatchError(
+            "prepared-cache run windows do not exactly cover their forcing")
+    expected_manifest_extension = {
+        "schema": "gpuwm-source-manifest-prefix-extension-v1",
+        "predecessor_sha256": old_identity.get("source_manifest_sha256"),
+        "extended_sha256": new_identity.get("source_manifest_sha256"),
+        "old_source_forecast_hours": old_source.get(
+            "source_forecast_hours"),
+        "new_source_forecast_hours": new_source.get(
+            "source_forecast_hours"),
+        "suffix_source_forecast_hours": suffix_source_hours,
+    }
+    manifest_extension = _json_copy(source_manifest_extension)
+    if (not isinstance(manifest_extension, dict)
+            or any(manifest_extension.get(key) != value
+                   for key, value in expected_manifest_extension.items())
+            or not isinstance(manifest_extension.get("retained_entries"), int)
+            or manifest_extension["retained_entries"] <= 0
+            or not isinstance(manifest_extension.get("added_entries"), list)
+            or not manifest_extension["added_entries"]):
+        raise PreparedCacheMismatchError(
+            "prepared-cache source-manifest prefix proof is malformed or "
+            "belongs to another extension")
+
+    prior_boundaries = _reader_boundaries(prior_reader)
+    suffix_boundaries = _reader_boundaries(suffix_reader)
+    if len(suffix_boundaries.intervals) != 1:
+        raise PreparedCacheMismatchError(
+            "prepared-cache suffix must contain one boundary interval")
+    old_prefix = _forcing_prefix(prior_boundaries)
+    if old_prefix != prior_meta.get("lateral_boundary_prefix"):
+        raise PreparedCacheMismatchError(
+            "predecessor cache forcing prefix differs from its seal")
+    old_end = float(len(old_hours) - 1) * 3600.0
+    if float(prior_boundaries.intervals[-1].end_seconds) != old_end:
+        raise PreparedCacheMismatchError(
+            "predecessor forcing is not sealed at its advertised endpoint")
+    suffix_interval = suffix_boundaries.intervals[0]
+    if (float(suffix_interval.start_seconds) != 0.0
+            or float(suffix_interval.end_seconds) != 3600.0):
+        raise PreparedCacheMismatchError(
+            "prepared-cache suffix interval is not one hour")
+    if (suffix_boundaries.spec_bdy_width
+            != prior_boundaries.spec_bdy_width
+            or suffix_boundaries.spec_zone != prior_boundaries.spec_zone
+            or suffix_boundaries.relax_zone != prior_boundaries.relax_zone
+            or set(suffix_interval.fields)
+            != set(prior_boundaries.intervals[-1].fields)):
+        raise PreparedCacheMismatchError(
+            "prepared-cache suffix changes boundary geometry or fields")
+    shifted = BoundaryInterval(
+        old_end, old_end + 3600.0, dict(suffix_interval.fields))
+    combined = LateralBoundaries(
+        prior_boundaries.intervals + (shifted,),
+        prior_boundaries.spec_bdy_width, prior_boundaries.spec_zone,
+        prior_boundaries.relax_zone)
+    combined_prefix = _forcing_prefix(combined)
+    if (old_prefix["intervals"][-1]["end_frame_sha256"]
+            != combined_prefix["intervals"][-1]["start_frame_sha256"]):
+        raise PreparedCacheMismatchError(
+            "prepared-cache suffix changes the shared endpoint frame")
+
+    combined_lbc = _json_copy(prior_meta["lbc"])
+    combined_lbc["intervals"].append({
+        "start_seconds": old_end,
+        "end_seconds": old_end + 3600.0,
+        "fields": list(prior_meta["lbc"]["intervals"][-1]["fields"]),
+    })
+    cache_metadata = _json_copy(prior_meta)
+    cache_metadata.update({
+        "user": _json_copy(metadata),
+        "lbc": combined_lbc,
+        "setup_fingerprint": None,
+        "forcing_extension_mode": SEALED_PREPARED_EXTENSION_MODE,
+        "lateral_boundary_prefix": combined_prefix,
+        "bridge_manifest_extension": bridge_extension,
+        "source_manifest_extension": manifest_extension,
+    })
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = _prepared_cache_staging_path(path)
+    temporary.mkdir()
+    writer = _BundleWriter(temporary)
+    try:
+        for key in sorted(prior_reader.arrays):
+            writer.link_verified(key, prior_reader)
+        old_count = len(prior_boundaries.intervals)
+        for key in sorted(suffix_reader.arrays):
+            if not key.startswith("lbc/0/"):
+                continue
+            output_key = f"lbc/{old_count}/" + key[len("lbc/0/"):]
+            writer.add(output_key, suffix_reader.read_array(key))
+        basis = {
+            "schema": PREPARED_CACHE_SCHEMA,
+            "identity": new_identity,
+            "metadata": cache_metadata,
+            "arrays": writer.manifest,
+            "payload_bytes": writer.payload_bytes,
+        }
+        header = {
+            **basis,
+            "status": "READY",
+            "created_utc": datetime.now(timezone.utc).isoformat(),
+            CACHE_WRITER_KEY: {"gpuwm_version": __version__},
+            "content_sha256": hashlib.sha256(
+                _canonical(basis).encode("utf-8")).hexdigest(),
+        }
+        (temporary / _HEADER_NAME).write_text(
+            json.dumps(header, indent=2, sort_keys=True, allow_nan=False)
+            + "\n", encoding="utf-8")
+        # The predecessor payloads are hard-linked by design.  Verify the
+        # complete staged authority after all links and the new header exist;
+        # a concurrent mutation therefore refuses publication rather than
+        # blessing bytes that no longer match the inherited manifest.
+        PreparedCacheReader(
+            temporary, expected_identity=new_identity).verify_all()
+        prior_header_after = hashlib.sha256(
+            prior_header_path.read_bytes()).hexdigest()
+        suffix_header_after = hashlib.sha256(
+            suffix_header_path.read_bytes()).hexdigest()
+        if (prior_header_after != prior_header_before
+                or suffix_header_after != suffix_header_before):
+            raise PreparedCacheMismatchError(
+                "prepared-cache authority changed during extension")
+        os.replace(temporary, path)
+    except BaseException:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    return {
+        "schema": "gpuwm-prepared-cache-extension-v1",
+        "status": "BUILT",
+        "path": str(path.resolve()),
+        "content_sha256": header["content_sha256"],
+        "array_count": len(writer.manifest),
+        "payload_bytes": writer.payload_bytes,
+        "predecessor": {
+            "path": str(predecessor.resolve()),
+            "content_sha256": prior_reader.content_sha256,
+            "header_sha256": prior_header_before,
+        },
+        "suffix": {
+            "path": str(suffix.resolve()),
+            "content_sha256": suffix_reader.content_sha256,
+            "header_sha256": suffix_header_before,
+        },
+        "bridge_manifest_extension": bridge_extension,
+        "bridge_manifest_sha256": new_identity["bridge_manifest_sha256"],
+        "source_manifest_extension": manifest_extension,
+        "appended_interval": [old_end, old_end + 3600.0],
+        "sealed_prefix_sha256": hashlib.sha256(
+            _canonical(combined_prefix).encode("utf-8")).hexdigest(),
+    }
+
+
 def restore_prepared_cache(path, *, expected_identity, cfg, static,
                            allow_nested_without_lbc: bool = False
                            ) -> RestoredPreparedCache:
@@ -890,8 +1387,8 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
         attach_lateral_boundaries,
     )
     from gpuwm.state_serialization_contract import (
-        STATE_SERIALIZED_ATTRS,
-        setup_fingerprint,
+        STATE_SERIALIZED_ATTRS, lateral_boundary_prefix_identity,
+        setup_core_fingerprint, setup_fingerprint,
     )
 
     coord_shapes = {
@@ -968,7 +1465,19 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
             int(lbc_meta["spec_zone"]), int(lbc_meta["relax_zone"]))
         attach_lateral_boundaries(state, boundaries)
     observed_setup = setup_fingerprint(state)
-    if observed_setup != metadata["setup_fingerprint"]:
+    if metadata.get("forcing_extension_mode") == \
+            SEALED_PREPARED_EXTENSION_MODE:
+        if (setup_core_fingerprint(state)
+                != metadata.get("setup_core_fingerprint")):
+            raise PreparedCacheMismatchError(
+                "sealed prepared cache reconstructed a different immutable "
+                "setup core")
+        if (lateral_boundary_prefix_identity(state)
+                != metadata.get("lateral_boundary_prefix")):
+            raise PreparedCacheMismatchError(
+                "sealed prepared cache reconstructed a different forcing "
+                "inventory")
+    elif observed_setup != metadata["setup_fingerprint"]:
         raise PreparedCacheMismatchError(
             "prepared cache reconstructed a different setup fingerprint")
 
@@ -1011,12 +1520,13 @@ __all__ = [
     "INERT_DIAGNOSTIC_IDENTITY_FIELDS",
     "NON_TRAJECTORY_IDENTITY_FIELDS", "PREPARED_CACHE_SCHEMA",
     "PreparedCacheCorruptError", "PreparedCacheMismatchError",
-    "PreparedCacheReader", "RestoredPreparedCache", "UNSTAMPED_WRITER",
+    "PreparedCacheReader", "RestoredPreparedCache",
+    "SEALED_PREPARED_EXTENSION_MODE", "UNSTAMPED_WRITER",
     "cache_writer_version", "compare_prepared_domain_config",
     "compare_prepared_identity", "effective_prepared_domain_config",
     "prepared_cache_identity",
     "prepared_domain_config_identity", "prepared_identity_refusal",
-    "restore_prepared_cache",
+    "extend_prepared_cache", "restore_prepared_cache",
     "select_prepared_met_fields", "undelayed_identity_defaults",
     "write_prepared_cache",
 ]

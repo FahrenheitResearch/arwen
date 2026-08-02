@@ -1262,3 +1262,62 @@ def test_the_front_door_says_plainly_when_the_bonus_export_did_not_happen():
         {"wrf_manifest": {"status": "NOT_REQUESTED"}})
     assert any("no stock-WRF export was requested" in line
                for line in skipped)
+
+
+def test_a_bridge_decode_refusal_reaches_the_reader_as_a_sentence(
+        monkeypatch, tmp_path, capsys):
+    """E-06: the detection was already right; only the delivery was wrong.
+
+    The Rust bridge diagnoses a GRIB whose valid time is not the one
+    requested by CONTENT, and decode_failure_message turns its stderr
+    into a remedy.  That careful diagnosis was then raised as a bare
+    RuntimeError, which ``main`` does not catch -- it catches
+    (ValueError, OSError) -- so the reader got a 42-line traceback at
+    rc 1 where every neighbouring refusal prints one line at rc 2.
+    """
+    from gpuwm import gfs_direct
+
+    assert issubclass(gfs_direct.GfsRouteError, ValueError)
+
+    def prepare(**_kwargs):
+        raise gfs_direct.GfsRouteError(decode_failure_message(
+            "GFS Rust bridge",
+            "f006 valid 2026-07-29 12:00 does not match requested "
+            "2026-07-29 06:00\n"))
+
+    monkeypatch.setattr(gfs_direct, "prepare_gfs_wrf", prepare)
+    rc = gfs_direct.main([
+        "--series", "series.tsv", "--cycle", "2026-07-29_06:00:00",
+        "--bridge", "bridge.exe", "--wps-namelist", "namelist.wps",
+        "--experiment-config", "experiment.toml",
+        "--input-manifest", "manifest.json",
+        "--input-manifest-sha256", "a" * 64,
+        "--output-root", str(tmp_path / "prep"),
+    ])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "Traceback" not in err
+    assert err.startswith("rw-wps --source gfs:")
+    # the bridge's own words survive the delivery
+    assert "does not match requested" in err
+
+
+def test_an_internal_invariant_keeps_its_traceback(monkeypatch, tmp_path):
+    """The negative control for the commit above: widening the handler to
+    swallow RuntimeError would have reported OUR defect as the reader's
+    mistake.  A violated internal invariant is still uncaught."""
+    from gpuwm import gfs_direct
+
+    def prepare(**_kwargs):
+        raise RuntimeError("direct-WRF export physics provenance differs")
+
+    monkeypatch.setattr(gfs_direct, "prepare_gfs_wrf", prepare)
+    with pytest.raises(RuntimeError, match="provenance differs"):
+        gfs_direct.main([
+            "--series", "series.tsv", "--cycle", "2026-07-29_06:00:00",
+            "--bridge", "bridge.exe", "--wps-namelist", "namelist.wps",
+            "--experiment-config", "experiment.toml",
+            "--input-manifest", "manifest.json",
+            "--input-manifest-sha256", "a" * 64,
+            "--output-root", str(tmp_path / "prep"),
+        ])

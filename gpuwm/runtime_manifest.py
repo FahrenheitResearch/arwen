@@ -286,6 +286,13 @@ def installed_distribution(package: str = "gpuwm"):
     return None
 
 
+def _is_compiled_bytecode(item) -> bool:
+    """True for a ``__pycache__``/``.pyc``/``.pyo`` RECORD entry."""
+
+    text = str(item).replace("\\", "/")
+    return text.endswith((".pyc", ".pyo")) or "__pycache__/" in text
+
+
 def wheel_record_identity(*, verify: bool = False) -> dict[str, object]:
     """This install's identity, read from the wheel pip actually wrote.
 
@@ -308,6 +315,23 @@ def wheel_record_identity(*, verify: bool = False) -> dict[str, object]:
     unhashed = 0
     verified = 0
     for item in dist.files or ():
+        if _is_compiled_bytecode(item):
+            # Bytecode is DERIVED from the source this identity already
+            # binds, and it materializes lazily: `__pycache__` entries
+            # appear as modules are first imported, so counting them
+            # makes this identity a function of how far the process has
+            # got rather than of what is installed.
+            #
+            # Measured on a fresh `pip install gpuwm[all]`: the count
+            # went 109 -> 358 across one process that imported the
+            # package tree.  The forecast runner snapshots this identity
+            # at the start of a run and compares it at the END, so a
+            # long first run died on `RuntimeError: forecast runtime
+            # implementation changed during run` with the physics
+            # complete and the frames on disk -- reproducibly, on the
+            # shipped 1.4.0 wheel, whenever bytecode was not already
+            # warm.  That is the new-user path exactly.
+            continue
         digest = item.hash
         if digest is None:
             unhashed += 1

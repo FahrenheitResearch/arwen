@@ -13,6 +13,7 @@ from copy import deepcopy
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -39,7 +40,29 @@ NSSL2_LEGACY_RRTMG_TEMPLATE_ID = (
 #: this template's components so the two cannot drift apart.
 DEFAULT_TEMPLATE_ID = THOMPSON_KF_TEMPLATE_ID
 
-_REGISTRY_PATH = Path(__file__).with_name("physics_registry_v2.json")
+_PINNED_REGISTRY_ENV = "GPUWM_PINNED_PHYSICS_REGISTRY"
+_PINNED_REGISTRY_SHA256_ENV = "GPUWM_PINNED_PHYSICS_REGISTRY_SHA256"
+_pinned_path = os.environ.get(_PINNED_REGISTRY_ENV)
+_pinned_sha256 = os.environ.get(_PINNED_REGISTRY_SHA256_ENV)
+if (_pinned_path is None) != (_pinned_sha256 is None):
+    raise RuntimeError(
+        "pinned physics registry path and SHA-256 must be supplied together")
+_REGISTRY_PATH = Path(
+    _pinned_path or Path(__file__).with_name("physics_registry_v2.json")
+).resolve()
+try:
+    _REGISTRY_BYTES = _REGISTRY_PATH.read_bytes()
+except OSError as exc:
+    raise RuntimeError(
+        f"GPUWM physics registry is unreadable: {_REGISTRY_PATH}") from exc
+if _pinned_sha256 is not None:
+    if (len(_pinned_sha256) != 64
+            or any(character not in "0123456789abcdef"
+                   for character in _pinned_sha256)
+            or hashlib.sha256(_REGISTRY_BYTES).hexdigest()
+            != _pinned_sha256):
+        raise RuntimeError(
+            "pinned physics registry raw SHA-256 differs before JSON decode")
 
 
 def _reject_json_constant(value: str) -> None:
@@ -165,10 +188,11 @@ def _enforce_evidence_axes(registry: Mapping[str, object]) -> None:
 
 
 def _load_registry() -> dict[str, object]:
-    value = json.loads(
-        _REGISTRY_PATH.read_text(encoding="utf-8"),
-        parse_constant=_reject_json_constant,
-    )
+    try:
+        text = _REGISTRY_BYTES.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError("GPUWM physics registry is not UTF-8") from exc
+    value = json.loads(text, parse_constant=_reject_json_constant)
     if not isinstance(value, dict) or value.get("schema") != REGISTRY_SCHEMA:
         raise RuntimeError("bundled GPUWM physics registry v2 schema drift")
     if value.get("plan_schema") != PLAN_SCHEMA:

@@ -1553,8 +1553,11 @@ and its very first gate failed at one argument out of 16,390: `expf(-88.0)`.
 
 `__double2float_rn` **flushes a subnormal result to zero on this toolchain**.
 Measured on sm_120 with CUDA 13.0, and `--ftz=false` does not change it,
-because that flag governs FP32 arithmetic and not the double-to-float
-conversion.  glibc 2.39's `expf` and `powf` do return subnormals; gfortran at
+because CuPy appends `-ftz=true` after the caller's options and the compiler
+honours the last occurrence.  The conversion instruction has no flush of its
+own; under `-ftz=true` the compiler emits an extra multiply after it to
+produce one, and without the append the same conversion keeps the subnormal.
+glibc 2.39's `expf` and `powf` do return subnormals; gfortran at
 `-O0` leaves MXCSR's FTZ and DAZ clear; and `gpuwm.core.noahmp_libm`, verified
 against the live glibc over 1,106,247,680 inputs, returns them too.
 

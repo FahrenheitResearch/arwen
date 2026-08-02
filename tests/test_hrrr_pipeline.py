@@ -1,3 +1,4 @@
+import io
 import os
 from pathlib import Path
 import stat
@@ -162,7 +163,10 @@ def test_killed_producer_trees_are_refused_while_live_then_restart_cleaned(
 
     def fake_popen(command, **options):
         launched.append((command, options))
-        return SimpleNamespace(pid=os.getpid(), poll=lambda: 0)
+        # The producer drains its child's output through a pipe, so even a
+        # stand-in has to hand back a readable stream.
+        return SimpleNamespace(
+            pid=os.getpid(), poll=lambda: 0, stdout=io.BytesIO(b""))
 
     monkeypatch.setattr("tools.hrrr_pipeline.subprocess.Popen", fake_popen)
     producer = HrrrPipelineProducer(

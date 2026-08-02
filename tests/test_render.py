@@ -96,20 +96,124 @@ def test_render_product_and_frame_selection(wrfout, tmp_path):
         [f"refl_d02-1km_{stamp}.png", f"t2_d02-1km_{stamp}.png"])
 
 
-def test_render_missing_variable_fails_that_product_only(tmp_path):
-    """A file with no REFL_10CM: refl fails loudly, t2 still renders."""
-    path = tmp_path / "wrfout_d01_1974-04-03_18-00-00.nc"
+def _wrfout_without(tmp_path, *drop: str, name="wrfout_d01_x.nc"):
+    """A one-frame wrfout with ``drop`` removed from the field set."""
+
+    path = tmp_path / name
     fields = _frame(seed=3)
-    del fields["REFL_10CM"]
+    for field in drop:
+        del fields[field]
     with WrfoutWriter(path, nx=_NX, ny=_NY, nz=_NZ,
                       dx=1000.0, dy=1000.0) as writer:
         writer.write_frame(_STAMPS[0], fields)
+    return path
+
+
+def test_a_field_the_file_does_not_carry_skips_that_product_at_rc_0(
+        tmp_path, capsys):
+    """The cold-start frame's shape: no REFL_10CM, and that is not an error.
+
+    A history frame written before any microphysics call carries no
+    ``REFL_10CM`` -- a registered deviation, not a fault -- and this used
+    to come back as ``render FAIL`` with exit 1, which stopped the whole
+    ``gpuwm go`` chain on a forecast that had completed and a render that
+    had drawn every product the file could support.
+
+    The contract now: the products whose declared inputs are present are
+    drawn, the one whose input is absent is SKIPPED BY NAME, and the exit
+    code is 0.  Named, because a skip nobody prints is the silent success
+    this project refuses.
+    """
+    path = _wrfout_without(tmp_path, "REFL_10CM")
     out = tmp_path / "png"
-    rc = cli.main(["render", "--engine", "matplotlib", str(path), "--products", "refl,t2",
-                   "--out", str(out)])
-    assert rc == 1
+    rc = cli.main(["render", "--engine", "matplotlib", str(path),
+                   "--products", "refl,t2", "--out", str(out)])
+    assert rc == 0
     produced = [p.name for p in out.glob("*.png")]
     assert produced == [f"t2_d01-1km_{_STAMPS[0].replace(':', '-')}.png"]
+
+    err = capsys.readouterr().err
+    assert "render FAIL" not in err
+    assert "skipped" in err
+    # The default layer names the PRODUCT -- a bare count is not
+    # actionable -- and says which of the two things this is.
+    assert "refl" in err
+    assert "not a failure" in err
+    assert "REFL_10CM" not in err, "the field detail belongs behind --explain"
+
+    # --explain restores the per-item evidence: which file, which field.
+    rc = cli.main(["render", "--engine", "matplotlib", str(path),
+                   "--products", "refl,t2", "--out", str(tmp_path / "png2"),
+                   "--explain"])
+    assert rc == 0
+    explained = capsys.readouterr().err
+    assert "REFL_10CM" in explained
+    assert "skipped refl" in explained
+
+
+def test_a_skip_still_exits_1_when_it_leaves_nothing_drawn(tmp_path):
+    """The arm that keeps a skip from becoming a silent success.
+
+    Ask for exactly the product whose input is absent and no image is
+    produced at all.  A render that drew nothing is a failed render
+    however honest its reason, so the exit code stays 1.
+    """
+    path = _wrfout_without(tmp_path, "REFL_10CM")
+    out = tmp_path / "png"
+    rc = cli.main(["render", "--engine", "matplotlib", str(path),
+                   "--products", "refl", "--out", str(out)])
+    assert rc == 1
+    assert not list(out.glob("*.png"))
+
+
+def test_a_product_whose_inputs_are_present_still_fails_loudly(
+        tmp_path, monkeypatch, capsys):
+    """Negative control: the skip branch must not swallow a real fault.
+
+    Every declared input is in the file, so the availability table has
+    no opinion; the product raises anyway.  That is an unregistered
+    failure and it must stay one -- ``render FAIL``, exit 1 -- or this
+    change would be the fourth warn-and-drop to disable a deliberate
+    refusal on this release line.
+    """
+    from gpuwm import render as render_module
+
+    path = _wrfout_without(tmp_path)          # nothing dropped
+    out = tmp_path / "png"
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("colormap exploded")
+
+    monkeypatch.setitem(render_module.PRODUCTS, "t2", explode)
+    rc = cli.main(["render", "--engine", "matplotlib", str(path),
+                   "--products", "refl,t2", "--out", str(out)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "render FAIL" in err
+    assert "colormap exploded" in err
+
+
+def test_the_availability_table_is_the_one_the_listing_prints(tmp_path):
+    """One table, two readers -- the listing and the render decision.
+
+    The skip exists because ``--list-products`` already knew the answer
+    and the render loop was asking an exception instead.  If these two
+    ever disagree, a file would list a product as ``missing-fields`` and
+    then fail the run for not having it.
+    """
+    from gpuwm import render as render_module
+
+    path = _wrfout_without(tmp_path, "REFL_10CM")
+    rows = {slug: status
+            for slug, _kind, status, _detail
+            in render_module._list_products_matplotlib(path)}
+    assert rows["refl"] == "missing-fields"
+    assert rows["t2"] == "renderable"
+
+    present = render_module._file_variables(path)
+    assert render_module.missing_declared_inputs(present, "refl") \
+        == ["REFL_10CM"]
+    assert render_module.missing_declared_inputs(present, "t2") == []
 
 
 def test_render_timeidx_out_of_range_is_an_error(wrfout, tmp_path):
@@ -307,7 +411,7 @@ def test_the_matplotlib_fallback_announces_itself(monkeypatch, capsys):
         out=Path("out"), dpi=110, heavy=False,
         source_label=render_module.DEFAULT_SOURCE_LABEL)
     monkeypatch.setattr(render_module, "render_wrfouts",
-                        lambda *a, **k: ([], []))
+                        lambda *a, **k: ([], [], []))
     render_module.render_main(args)
     captured = capsys.readouterr()
     # (the stub writes nothing, so the exit code is the empty-output one;

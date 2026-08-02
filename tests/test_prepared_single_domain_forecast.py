@@ -2237,6 +2237,59 @@ def test_output_claim_refuses_to_modify_the_prepared_input_tree(tmp_path):
     assert not (prepared / "forecast").exists()
 
 
+def test_output_claim_delivers_an_unresolvable_path_as_a_sentence(tmp_path):
+    """E-12: this function's whole subject is turning an OS-level
+    exception into a sentence, and resolve() -- the line BEFORE its first
+    refusal -- was the one it let through.
+
+    A --outdir whose symlink points into its own chain raised OSError
+    (Errno 40) straight past the caller's (ValueError, FileExistsError)
+    handler, so it reached the reader as a traceback at rc 1.
+    """
+    import os
+
+    loop = tmp_path / "loop"
+    try:
+        os.symlink(str(loop), str(loop))
+    except (OSError, NotImplementedError, AttributeError) as error:
+        # Unprivileged Windows cannot create one.  Skip rather than
+        # weaken: the fleet that filed this runs Linux, where it runs.
+        pytest.skip(f"cannot create a looping symlink here: {error}")
+    with pytest.raises(ValueError, match="cannot be resolved") as raised:
+        runner.claim_output_directory(loop, flag="--output-directory")
+    message = str(raised.value)
+    # the flag the reader actually typed, and the errno, both survive
+    assert "--output-directory" in message
+    # pathlib raises RuntimeError("Symlink loop from ...") here, not
+    # OSError(ELOOP) -- an OSError-only guard misses it, which is what
+    # the first version of this fix did.  Either cause is acceptable;
+    # neither may escape as itself.
+    assert isinstance(raised.value.__cause__, (OSError, RuntimeError))
+    assert "cannot be resolved" in message
+
+
+@pytest.mark.parametrize("failure", [
+    RuntimeError("Symlink loop from '/x'"),
+    OSError(40, "Too many levels of symbolic links"),
+])
+def test_output_claim_converts_either_resolve_failure(
+        tmp_path, monkeypatch, failure):
+    """Runs everywhere, including where the symlink test above skips.
+
+    pathlib reports a symlink loop as RuntimeError on some paths and
+    OSError(ELOOP) on others; a guard that knows only one of them leaves
+    the other as a traceback.  Both are pinned because the platform that
+    can create the real loop is not the platform this is written on.
+    """
+    def boom(self, *_a, **_k):
+        raise failure
+
+    monkeypatch.setattr(Path, "resolve", boom)
+    with pytest.raises(ValueError, match="cannot be resolved") as raised:
+        runner.claim_output_directory(tmp_path / "out")
+    assert raised.value.__cause__ is failure
+
+
 def test_durable_wrfout_inventory_reads_atomic_writer_subdirectory(tmp_path):
     output = tmp_path / "model-output"
     wrfout = output / "wrfout"

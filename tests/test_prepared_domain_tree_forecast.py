@@ -152,6 +152,40 @@ def _write_two_domain_config(tmp_path: Path) -> Path:
     return path
 
 
+def test_sealed_extension_identity_omits_only_enumerated_forecast_stops(
+    tmp_path,
+):
+    first = load_experiment(_write_two_domain_config(tmp_path))
+    later_domains = tuple(
+        replace(domain, run=replace(domain.run, run_seconds=7200.0))
+        for domain in first.domains
+    )
+    later = replace(first, run_seconds=7200.0, domains=later_domains)
+    runtime = {"source": "prepared-tree", "identity": "stable"}
+
+    assert runner.sealed_extension_fingerprint(first, runtime) == \
+        runner.sealed_extension_fingerprint(later, runtime)
+
+    changed_history = replace(
+        later,
+        domains=(replace(
+            later.domains[0], history_interval_s=1800.0),
+            *later.domains[1:]),
+    )
+    assert runner.sealed_extension_fingerprint(later, runtime) != \
+        runner.sealed_extension_fingerprint(changed_history, runtime)
+
+    divergent_copy = replace(
+        later,
+        domains=(replace(
+            later.domains[0],
+            run=replace(later.domains[0].run, run_seconds=7100.0)),
+            *later.domains[1:]),
+    )
+    with pytest.raises(ValueError, match="diverges"):
+        runner.sealed_extension_fingerprint(divergent_copy, runtime)
+
+
 def test_capability_query_is_side_effect_free_and_warning_only(capsys):
     assert runner.main(["--show-capabilities"]) == 0
     payload = json.loads(capsys.readouterr().out)

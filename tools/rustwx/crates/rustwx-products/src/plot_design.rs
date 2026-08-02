@@ -147,12 +147,89 @@ fn high_detail_fill_density() -> LevelDensity {
     }
 }
 
+/// Which hemisphere's sign convention a plot should be drawn in.
+///
+/// Only vorticity needs this today.  Absolute vorticity is dominated by
+/// the planetary term `f = 2*omega*sin(lat)`, which changes sign at the
+/// equator, so CYCLONIC rotation is positive in the north and negative
+/// in the south.  A single fixed ramp can only give its structured
+/// colours to one of those.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hemisphere {
+    Northern,
+    Southern,
+}
+
+impl Hemisphere {
+    /// The hemisphere a domain sits in, from its (W, E, S, N) bounds.
+    ///
+    /// The midpoint of the latitude span, so a domain straddling the
+    /// equator takes the side it mostly occupies rather than flipping on
+    /// one row of cells.
+    pub fn for_bounds(bounds: (f64, f64, f64, f64)) -> Self {
+        if 0.5 * (bounds.2 + bounds.3) < 0.0 {
+            Self::Southern
+        } else {
+            Self::Northern
+        }
+    }
+}
+
+/// Absolute-vorticity fill, in the sign convention of the hemisphere the
+/// domain is in.
+///
+/// The northern ramp is `-40..60` with the RelVort palette, whose
+/// structured half (orange -> red -> purple -> cyan) sits above zero
+/// because that is where northern cyclonic vorticity is.  Rendered over
+/// South America that produced a nearly uniform grey chart: the whole
+/// synoptic cyclonic signal was negative, i.e. in the flat end of the
+/// ramp, and the only coloured features were minor positive streaks --
+/// the least significant signal on the plot (B-07).
+///
+/// The southern form is the northern one mirrored: the range reflects
+/// about zero and the palette is reversed, so cyclonic rotation gets the
+/// same colours, in the same order, that a northern forecaster reads.
+/// The northern scale is returned unchanged, byte for byte.
+fn vorticity_scale_for_hemisphere(hemisphere: Hemisphere) -> DiscreteColorScale {
+    match hemisphere {
+        Hemisphere::Northern => DiscreteColorScale {
+            levels: range_step(-40.0, 60.1, 1.0),
+            colors: weather_palette(WeatherPalette::RelVort),
+            extend: ExtendMode::Both,
+            mask_below: None,
+        },
+        Hemisphere::Southern => {
+            let mut colors = weather_palette(WeatherPalette::RelVort);
+            colors.reverse();
+            DiscreteColorScale {
+                levels: range_step(-60.0, 40.1, 1.0),
+                colors,
+                extend: ExtendMode::Both,
+                mask_below: None,
+            }
+        }
+    }
+}
+
 pub fn operational_fill_scale_for_recipe(
     recipe: &PlotRecipe,
     filled_selector: FieldSelector,
 ) -> ColorScale {
+    operational_fill_scale_for_recipe_in(
+        recipe, filled_selector, Hemisphere::Northern)
+}
+
+pub fn operational_fill_scale_for_recipe_in(
+    recipe: &PlotRecipe,
+    filled_selector: FieldSelector,
+    hemisphere: Hemisphere,
+) -> ColorScale {
     if recipe.slug == "mslp_10m_winds" || recipe.slug == "gefs_avg_mslp_10m_winds" {
         return ColorScale::Discrete(ten_meter_wind_speed_scale());
+    }
+
+    if recipe.slug == "10m_wind_speed_and_direction" {
+        return ColorScale::Discrete(standalone_ten_meter_wind_speed_scale());
     }
 
     if filled_selector.field == CanonicalField::SmokeMassDensity {
@@ -206,12 +283,7 @@ pub fn operational_fill_scale_for_recipe(
             extend: ExtendMode::Both,
             mask_below: None,
         },
-        RenderStyle::WeatherVorticity => DiscreteColorScale {
-            levels: range_step(-40.0, 60.1, 1.0),
-            colors: weather_palette(WeatherPalette::RelVort),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
+        RenderStyle::WeatherVorticity => vorticity_scale_for_hemisphere(hemisphere),
         RenderStyle::WeatherDewpoint => dewpoint_scale_for_selector(filled_selector),
         RenderStyle::WeatherPressure => mslp_pressure_fill_scale(),
         RenderStyle::WeatherHeight => DiscreteColorScale {
@@ -262,6 +334,7 @@ pub fn operational_fill_scale_for_recipe(
             extend: ExtendMode::Both,
             mask_below: Some(0.0),
         },
+        RenderStyle::WeatherTerrain => terrain_elevation_scale(),
         RenderStyle::WeatherCloudCover => cloud_cover_scale(),
         RenderStyle::WeatherPrecipitableWater => precipitable_water_inches_scale(),
         RenderStyle::WeatherQpf => crate::qpf::qpf_inches_scale(),
@@ -489,6 +562,29 @@ fn ten_meter_wind_speed_scale() -> DiscreteColorScale {
     }
 }
 
+/// Fill scale for the STANDALONE 10 m wind chart (knots).
+///
+/// Deliberately NOT [`ten_meter_wind_speed_scale`].  That one masks
+/// everything below 10 kt because it is an OVERLAY on an MSLP analysis:
+/// the pressure pattern is the subject and the colour only marks where
+/// the wind is strong enough to matter, so blanking the calm half of the
+/// map is the right call there.
+///
+/// On a chart whose whole subject IS the wind, the same mask draws an
+/// empty map on exactly the day a forecaster most needs to see the
+/// field -- a light-wind morning, or the calm side of a wind shift.  So
+/// this scale starts at zero, masks nothing, and steps at 2.5 kt so the
+/// low end is resolved rather than lumped.  It still extends past the
+/// top of the ramp rather than clipping.
+fn standalone_ten_meter_wind_speed_scale() -> DiscreteColorScale {
+    DiscreteColorScale {
+        levels: range_step(0.0, 60.0, 2.5),
+        colors: winds_palette_segments(60),
+        extend: ExtendMode::Max,
+        mask_below: None,
+    }
+}
+
 fn dewpoint_scale_for_selector(selector: FieldSelector) -> DiscreteColorScale {
     match selector.vertical {
         VerticalSelector::HeightAboveGroundMeters(2) => {
@@ -606,6 +702,75 @@ fn precipitable_water_inches_scale() -> DiscreteColorScale {
         extend: ExtendMode::Both,
         mask_below: None,
     }
+}
+
+/// Surface elevation in metres, on a hypsometric ramp.
+///
+/// The level set is deliberately non-uniform -- 25 m near sea level,
+/// 250 m above 2 km -- because a linear ramp sized for the Rockies
+/// renders a coastal or plains domain as one flat colour, and the whole
+/// point of the product is to show a viewer the relief that is steering
+/// the wind.  Fixed levels (not per-frame autoscaling) match every other
+/// operational scale in this module: two domains stay comparable.
+fn terrain_elevation_scale() -> DiscreteColorScale {
+    let levels = terrain_elevation_levels_m();
+    let colors = terrain_palette(levels.len().saturating_sub(1));
+    DiscreteColorScale {
+        levels,
+        colors,
+        extend: ExtendMode::Both,
+        mask_below: None,
+    }
+}
+
+fn terrain_elevation_levels_m() -> Vec<f64> {
+    vec![
+        0.0, 25.0, 50.0, 75.0, 100.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0, 600.0, 700.0,
+        800.0, 900.0, 1000.0, 1200.0, 1400.0, 1600.0, 1800.0, 2000.0, 2250.0, 2500.0, 2750.0,
+        3000.0, 3250.0, 3500.0, 3750.0, 4000.0, 4250.0, 4500.0,
+    ]
+}
+
+/// `n` interpolated bands across the hypsometric control points, so the
+/// palette always has exactly one colour per level interval rather than
+/// relying on the colormap's coarse index sampling.
+fn terrain_palette(n: usize) -> Vec<Color> {
+    const CONTROL: &[(u8, u8, u8)] = &[
+        (63, 122, 90),
+        (104, 155, 92),
+        (150, 179, 97),
+        (196, 199, 114),
+        (222, 205, 140),
+        (217, 184, 138),
+        (198, 152, 112),
+        (171, 122, 92),
+        (146, 104, 88),
+        (170, 155, 150),
+        (216, 214, 216),
+        (247, 247, 250),
+    ];
+    if n == 0 {
+        return Vec::new();
+    }
+    if n == 1 {
+        let (r, g, b) = CONTROL[0];
+        return vec![Color::rgba(r, g, b, 255)];
+    }
+    (0..n)
+        .map(|index| {
+            let t = index as f64 / (n - 1) as f64;
+            let scaled = t * (CONTROL.len() - 1) as f64;
+            let lower = scaled.floor() as usize;
+            let upper = (lower + 1).min(CONTROL.len() - 1);
+            let frac = scaled - lower as f64;
+            let mix = |a: u8, b: u8| -> u8 {
+                (f64::from(a) + (f64::from(b) - f64::from(a)) * frac).round() as u8
+            };
+            let (ar, ag, ab) = CONTROL[lower];
+            let (br, bg, bb) = CONTROL[upper];
+            Color::rgba(mix(ar, br), mix(ag, bg), mix(ab, bb), 255)
+        })
+        .collect()
 }
 
 fn smoke_scale_colors() -> Vec<Color> {
@@ -886,5 +1051,84 @@ mod tests {
         assert_eq!(column_smoke_scale.levels.first().copied(), Some(20.0));
         assert_eq!(column_smoke_scale.mask_below, Some(20.0));
         assert!(column_smoke_scale.colors[0].a < 80);
+    }
+
+    #[test]
+    fn the_southern_vorticity_scale_is_the_northern_one_mirrored() {
+        // B-07.  Absolute vorticity is dominated by the planetary term,
+        // which changes sign at the equator, so cyclonic rotation is
+        // POSITIVE in the north and NEGATIVE in the south.  The single
+        // fixed -40..60 ramp gave its structured colours (orange, red,
+        // purple, cyan) to the positive half, so a South American domain
+        // rendered as a near-uniform grey sheet: the whole synoptic
+        // cyclonic signal sat in the flat end of the ramp.
+        let north = vorticity_scale_for_hemisphere(Hemisphere::Northern);
+        let south = vorticity_scale_for_hemisphere(Hemisphere::Southern);
+
+        // The northern scale is the one that shipped, unchanged.
+        assert_eq!(north.levels.first().copied(), Some(-40.0));
+        assert_eq!(north.levels.last().copied(), Some(60.0));
+
+        // The southern range is the northern one reflected about zero.
+        assert_eq!(south.levels.first().copied(), Some(-60.0));
+        assert_eq!(south.levels.last().copied(), Some(40.0));
+        assert_eq!(south.levels.len(), north.levels.len());
+
+        // ... and so is the palette, so cyclonic rotation gets the same
+        // colours in the same order a northern forecaster reads.
+        assert_eq!(south.colors.len(), north.colors.len());
+        let mut reversed = north.colors.clone();
+        reversed.reverse();
+        assert_eq!(south.colors, reversed);
+        assert_ne!(south.colors, north.colors, "the palette must actually move");
+    }
+
+    #[test]
+    fn the_hemisphere_comes_from_the_middle_of_the_domain() {
+        // (west, east, south, north)
+        assert_eq!(Hemisphere::for_bounds((-80.0, -60.0, -40.0, -20.0)),
+                   Hemisphere::Southern);
+        assert_eq!(Hemisphere::for_bounds((-100.0, -80.0, 25.0, 50.0)),
+                   Hemisphere::Northern);
+        // Straddling the equator takes the side it mostly occupies,
+        // rather than flipping on a single row of cells.
+        assert_eq!(Hemisphere::for_bounds((-10.0, 10.0, -30.0, 5.0)),
+                   Hemisphere::Southern);
+        assert_eq!(Hemisphere::for_bounds((-10.0, 10.0, -5.0, 30.0)),
+                   Hemisphere::Northern);
+        // Exactly symmetric about the equator is northern by convention,
+        // and pinned so the tie does not drift silently.
+        assert_eq!(Hemisphere::for_bounds((-10.0, 10.0, -20.0, 20.0)),
+                   Hemisphere::Northern);
+    }
+
+    #[test]
+    fn only_vorticity_is_hemisphere_dependent() {
+        // The negative control for the threading: every other product
+        // must be identical in both hemispheres, so this fails if a
+        // future scale starts keying on latitude without a test.
+        let cases: [(&str, FieldSelector); 3] = [
+            (
+                "composite_reflectivity",
+                FieldSelector::surface(CanonicalField::CompositeReflectivity),
+            ),
+            (
+                "2m_temperature",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2),
+            ),
+            (
+                "mslp_10m_winds",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10),
+            ),
+        ];
+        for (slug, selector) in cases {
+            let recipe = rustwx_models::plot_recipe(slug)
+                .unwrap_or_else(|| panic!("recipe {slug} should exist"));
+            let north = operational_fill_scale_for_recipe_in(
+                recipe, selector, Hemisphere::Northern);
+            let south = operational_fill_scale_for_recipe_in(
+                recipe, selector, Hemisphere::Southern);
+            assert_eq!(format!("{north:?}"), format!("{south:?}"), "{slug}");
+        }
     }
 }

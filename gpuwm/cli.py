@@ -21,6 +21,10 @@ WRFOUT...`` renders product PNGs (:mod:`gpuwm.render`); ``gpuwm enprod
 ENS_ROOT`` renders the ensemble suite -- mean, spread, exceedance
 probability, paintball, probability-matched mean -- over a manifest-
 declared ensemble of member run directories (:mod:`gpuwm.da.enprod`).
+``gpuwm report [RUNDIR]`` collects one anonymous diagnostic bundle --
+receipts, the failure, stage logs, this install's provenance, the card,
+free space -- into a readable zip a reporter can open before they send
+it (:mod:`gpuwm.report_bundle`).
 ``gpuwm import-namelist WPS INPUT`` translates WRF namelists into a
 resolved experiment TOML and prints the substitution report.  ``gpuwm
 verify CASE`` runs either an idealized benchmark or a real case, prints
@@ -54,14 +58,19 @@ from gpuwm.doctor import register_cli as doctor_register_cli
 from gpuwm.domain_wizard import register_cli as domain_register_cli
 from gpuwm.downscale import register_cli as downscale_register_cli
 from gpuwm import domain_interactive
-from gpuwm.experiment import is_experiment_toml
-from gpuwm.explain import add_explain_flag, explain_enabled, render
+from gpuwm.experiment import (is_experiment_toml,  # noqa: F401 - API compat
+                              is_experiment_toml_bytes)
+from gpuwm.explain import (add_explain_flag, explain_enabled, render,
+                           warn)
 from gpuwm.fetch import register_cli as fetch_register_cli
 from gpuwm.geog_assets import register_cli as geog_register_cli
 from gpuwm.go_cli import register_cli as go_register_cli
 from gpuwm.ingest.preflight import register_cli as ingest_register_cli
+from gpuwm.multi_run import register_cli as multi_run_register_cli
 from gpuwm.render import register_cli as render_register_cli
+from gpuwm.report_bundle import register_cli as report_register_cli
 from gpuwm.setup_cli import register_cli as setup_register_cli
+from gpuwm.stream import register_cli as stream_register_cli
 from gpuwm.table_assets import register_cli as table_assets_register_cli
 from gpuwm.verify import cases
 
@@ -160,6 +169,57 @@ _CONFIG_HELP = (
     "RunConfig naming a registered case is also accepted.")
 
 
+#: Ctrl-C's exit code, by the shell convention 128 + SIGINT.
+_INTERRUPT_EXIT_CODE = 130
+
+#: Commands that can run for minutes, where "Ctrl-C does nothing" is a
+#: surprise worth one line rather than a discovery.
+_LONG_RUNNING_COMMANDS = frozenset({
+    "go", "run", "resume", "fetch", "fetch-geog", "fetch-tables",
+    "fetch-bridges", "setup", "verify", "downscale", "enprod", "render",
+    "dual-run", "certify",
+})
+
+
+def _warn_if_interrupt_is_ignored(command: str) -> None:
+    """Say so when this process cannot see a Ctrl-C at all.
+
+    A shell that starts a job in the BACKGROUND sets SIGINT (and
+    SIGQUIT) to ``SIG_IGN`` for it, so a Ctrl-C at the terminal cannot
+    stop the background job -- that is POSIX job control working as
+    designed.  CPython then declines to install its own SIGINT handler
+    over an inherited ``SIG_IGN``, so no ``KeyboardInterrupt`` is ever
+    raised and every interrupt path in this file is unreachable.
+
+    That is exactly what the fleet's hostile-input node measured when it
+    filed "``gpuwm go`` ignores SIGINT": the runs were launched into the
+    background, so SIGINT was ignored before gpuwm's first bytecode ran,
+    while SIGTERM and SIGKILL -- which a shell does not mask -- worked.
+
+    Re-installing a handler here would defeat the shell's intent, so the
+    disposition is left alone and named instead.  One line, stderr,
+    warn-not-block; nothing about the run changes.
+    """
+
+    if command not in _LONG_RUNNING_COMMANDS:
+        return
+    try:
+        import signal
+        if signal.getsignal(signal.SIGINT) is not signal.SIG_IGN:
+            return
+    except (ImportError, ValueError, OSError, AttributeError):
+        return  # no signal support here; nothing to say
+    warn("SIGINT is set to ignore in this process, so Ctrl-C cannot "
+         f"stop `gpuwm {command}`; send SIGTERM to stop it",
+         why="A shell that starts a job in the background masks SIGINT "
+             "and SIGQUIT for it (POSIX job control), and Python does "
+             "not install its own SIGINT handler over an inherited "
+             "SIG_IGN -- so no interrupt reaches this process at all. "
+             "Run it in the foreground for Ctrl-C, or stop this one "
+             "with `kill -TERM <pid>`, which is not masked and which "
+             "every stage handles.")
+
+
 def _layer(error: BaseException, args) -> str:
     """One refusal, at the layer this invocation asked for.
 
@@ -194,6 +254,7 @@ def build_parser() -> argparse.ArgumentParser:
         func=lambda args: args.ingest_preflight_handler(args)
         or check_main(args))
     fetch_register_cli(sub)
+    stream_register_cli(sub)
     geog_register_cli(sub)
     domain_register_cli(sub)
     render_register_cli(sub)
@@ -206,6 +267,8 @@ def build_parser() -> argparse.ArgumentParser:
     go_register_cli(sub)
     adapt_register_cli(sub)
     certify_register_cli(sub)
+    multi_run_register_cli(sub)
+    report_register_cli(sub)
     lst = sub.add_parser(
         "cases", help="list the discovered verification cases and the "
                       "entry points each one declares")
@@ -339,8 +402,24 @@ def main(argv: list[str] | None = None) -> int:
     from gpuwm.explain import set_explain
     set_explain(explain_enabled(args))
 
+    _warn_if_interrupt_is_ignored(args.command)
+
     try:
         return _dispatch(args)
+    except KeyboardInterrupt:
+        # Ctrl-C.  Every subcommand gets the same bounded contract: one
+        # sentence, exit 130 (the shell's 128 + SIGINT), no child and no
+        # unrelated process signalled by us.  Without this the natural
+        # gesture ends in a KeyboardInterrupt traceback, which reads as
+        # a crash rather than as the thing the user just asked for.
+        #
+        # `go` catches its own interrupt one layer down so it can name
+        # the stage and the pid it was waiting on; this is the floor
+        # under every other command.
+        print(f"\ngpuwm {args.command}: interrupted (Ctrl-C); stopping "
+              "here. Any partial output carries no completion receipt.",
+              file=sys.stderr)
+        return _INTERRUPT_EXIT_CODE
     except ModuleNotFoundError as error:
         # The base install ships no GPU runtime.  A missing cupy is a
         # documented install gap with one remedy, not a traceback.
@@ -380,16 +459,23 @@ def main(argv: list[str] | None = None) -> int:
               + _layer(error, args), file=sys.stderr)
         return 2
     except RuntimeError as error:
-        if args.command in ("fetch", "fetch-geog", "fetch-tables",
-                            "fetch-bridges"):
+        if args.command in ("fetch", "stream", "fetch-geog", "fetch-tables",
+                            "fetch-bridges", "report"):
             # fetch-family RuntimeErrors are operational outcomes
             # with a stated remedy (no complete latest cycle on the
             # mirrors; a --wait-for window that timed out with its
             # resume story; a download that must be re-run to resume;
             # another writer holding the staging lock), not
-            # programming errors.  Scoped to the fetch commands:
-            # elsewhere a RuntimeError (including CUDA runtime
-            # failures) must keep its traceback.
+            # programming errors.  `report` is here for the same
+            # reason and only that reason: its single RuntimeError is
+            # ReportWriteError, an operational outcome ("every volume
+            # refused the write") whose message is already layered
+            # with the remedy.  Without this it printed both layers
+            # glued by the explain sentinel inside a traceback, and
+            # exited 1 where its own documentation promised a
+            # refusal.  Scoped to these commands: elsewhere a
+            # RuntimeError (including CUDA runtime failures) must
+            # keep its traceback.
             print(f"gpuwm {args.command}: "
                   + _layer(error, args), file=sys.stderr)
             return 2
@@ -397,10 +483,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _dispatch(args) -> int:
-    if args.command in ("check", "fetch", "fetch-geog", "domain", "render",
+    if args.command in ("check", "fetch", "stream", "fetch-geog", "domain", "render",
                         "enprod", "downscale", "doctor", "fetch-tables",
                         "fetch-bridges", "setup", "go", "adapt", "certify",
-                        "dual-run"):
+                        "dual-run", "multi-run", "report"):
         return args.func(args)
 
     if args.command == "cases":
@@ -466,7 +552,7 @@ def _dispatch(args) -> int:
         # is the run machinery's own and runs on the path set here.
         from gpuwm.resume import resolve_resume_checkpoint
         resolution = resolve_resume_checkpoint(
-            args.outdir, args.from_checkpoint)
+            args.outdir, args.from_checkpoint, config=args.config)
         for note in resolution.skipped:
             print(f"resume: skipped newer checkpoint {note}",
                   file=sys.stderr)
@@ -476,8 +562,26 @@ def _dispatch(args) -> int:
 
     # [[domain]]/[experiment] tables route to the experiment path; the
     # legacy [grid]/[dynamics]/[run] shape stays on the frozen case path.
-    # (A missing file falls through to the legacy loader's own error.)
-    if args.config.exists() and is_experiment_toml(args.config):
+    #
+    # A path that is not a readable regular file is refused HERE, in one
+    # sentence, before anything opens it.  It used to "fall through to
+    # the legacy loader's own error", which meant a typo surfaced as
+    # FileNotFoundError, a directory as IsADirectoryError, a zero-byte
+    # file as an eight-argument `RunConfig.__init__()` TypeError, and a
+    # FIFO as no return at all -- four tracebacks at exit 1 where every
+    # other refusal in this product is a sentence at exit 2.
+    #
+    # The environment-bound branch is deliberately NOT guarded: a
+    # multi-run worker is handed the ORIGINAL config path purely as the
+    # identity its payload is bound to, and `read_config_authority`
+    # checks that binding itself.  Requiring that path to still be a
+    # readable file on the worker would refuse a legitimate run.
+    config_authority = None
+    from gpuwm.config_authority import (CONFIG_PAYLOAD_ENV,
+                                        read_config_authority)
+    config_authority = read_config_authority(args.config)
+    if (config_authority is not None
+            and is_experiment_toml_bytes(config_authority.payload)):
         from gpuwm import runtime
         from gpuwm.case_data import load_experiment_case
         exp, data = load_experiment_case(args.config)

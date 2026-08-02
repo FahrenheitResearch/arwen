@@ -49,6 +49,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SANCTIONED_BINDER_MODULES = (
     Path("ingest") / "lateral_bc.py",
     Path("core") / "model.py",
+    Path("prepared_domain_tree_forecast.py"),
     Path("verify") / "cases" / "real74_n5s.py",
     Path("offline_child_run.py"),
 )
@@ -124,6 +125,14 @@ def test_n5s_restored_builder_binds_root_external_boundary_clock():
     assert _function_calls_binder(n5s_py, "build_restored_model"), (
         "real74_n5s.build_restored_model does not bind the restored "
         "root's external boundary clock")
+
+
+def test_prepared_tree_runner_binds_root_external_boundary_clock():
+    """The manual prepared-tree builder binds before restore/execution."""
+    runner_py = REPO_ROOT / "gpuwm" / "prepared_domain_tree_forecast.py"
+    assert _function_calls_binder(runner_py, "run_prepared_tree"), (
+        "prepared_domain_tree_forecast.run_prepared_tree manually constructs "
+        "the production root but does not bind its external Davies clock")
 
 
 def test_binder_references_are_exactly_the_sanctioned_callers():

@@ -2,5 +2,5 @@
   "schema": "gpuwm-bridge-pins-v1",
   "release": null,
   "platforms": {},
-  "note": "Size + SHA-256 pins for the prebuilt Rust bundles `gpuwm fetch-bridges` stages. Generated at release time by `python tools/build_bridge_bundle.py pin`, from the exact bytes the release workflow built and uploaded, before the wheel is built. A tree that has not been through that step declares no platforms and no release, which is what an unpinned document must say rather than carrying a hash nobody computed."
+  "note": "Size + SHA-256 pins for the prebuilt Rust bundles gpuwm fetch-bridges stages. Generated at release time by python tools/build_bridge_bundle.py pin, from the exact bytes the release workflow built and uploaded, before the wheel is built. A tree that has not been through that step declares no platforms and no release, which is what an unpinned document must say rather than carrying a hash nobody computed."
 }

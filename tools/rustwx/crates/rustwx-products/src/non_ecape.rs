@@ -11,6 +11,7 @@ use crate::direct::{
     run_direct_batch_from_loaded, run_direct_batch_from_prepared,
 };
 use crate::hrrr::{DomainSpec, resolve_hrrr_run};
+use crate::shared_context::TitleProvenance;
 use crate::planner::ExecutionPlanBuilder;
 use crate::publication::{
     default_run_manifest_path, finalize_and_publish_run_manifest, publish_run_manifest_with_attempt,
@@ -503,6 +504,7 @@ fn prepare_non_ecape_hour(
             output_suffix: None,
             subtitle_left_override: None,
             subtitle_right_override: None,
+            title_provenance: TitleProvenance::default(),
         };
         crate::direct::plan_direct_fetch_groups(&direct_request)?
     };
@@ -546,6 +548,7 @@ fn prepare_non_ecape_hour(
         output_suffix: None,
         subtitle_left_override: None,
         subtitle_right_override: None,
+        title_provenance: TitleProvenance::default(),
     });
 
     let mut shared_load_decode_ms = 0u128;
@@ -711,6 +714,7 @@ fn prepare_non_ecape_hour(
                 output_suffix: None,
                 subtitle_left_override: None,
                 subtitle_right_override: None,
+                title_provenance: TitleProvenance::default(),
             };
             Some(Arc::new(prepare_direct_batch_from_loaded(
                 &direct_request,
@@ -757,6 +761,7 @@ fn prepare_non_ecape_hour(
                 place_label_overlay: None,
                 subtitle_left_suffix: None,
                 subtitle_right_override: None,
+                title_provenance: TitleProvenance::default(),
             };
             Some(Arc::new(prepare_hrrr_windowed_batch_with_context(
                 &windowed_request,
@@ -987,6 +992,7 @@ fn run_prepared_non_ecape_domain(
             output_suffix: None,
             subtitle_left_override: None,
             subtitle_right_override: None,
+            title_provenance: TitleProvenance::default(),
         });
 
     let derived_request = (!prepared.normalized.derived_recipe_slugs.is_empty()).then(|| {
@@ -1015,6 +1021,7 @@ fn run_prepared_non_ecape_domain(
                 output_suffix: None,
                 subtitle_left_override: None,
                 subtitle_right_override: None,
+                title_provenance: TitleProvenance::default(),
             },
             prepared.derived_recipes.clone(),
         )
@@ -1041,6 +1048,7 @@ fn run_prepared_non_ecape_domain(
             place_label_overlay: request.place_label_overlay.clone(),
             subtitle_left_suffix: None,
             subtitle_right_override: None,
+            title_provenance: TitleProvenance::default(),
         });
 
     let lane_result = run_fanout3(

@@ -134,6 +134,42 @@ fn derived_catalog_includes_intentional_blockers() {
 }
 
 #[test]
+fn direct_catalog_offers_terrain_and_never_silently_drops_it() {
+    // The terrain frame is what makes a wind or precipitation frame
+    // legible.  It renders from a plane the WRF import has always
+    // published; what was missing was a catalog row asking for it.  This
+    // asserts the row exists AND is not blocked -- the two failure modes
+    // that look identical to a viewer staring at a directory with no
+    // terrain image in it.
+    let catalog = build_supported_products_catalog();
+    let entry = catalog
+        .direct
+        .iter()
+        .find(|entry| entry.slug == "terrain_height")
+        .expect("terrain_height must be in the direct catalog");
+    assert_eq!(entry.title, "Terrain Height");
+    assert_eq!(entry.render_style.as_deref(), Some("weather_terrain"));
+    // The model identity the wrfout store lane carries.  HREF is the one
+    // blocked target, for the pre-existing reason that it serves only its
+    // explicit ensprod recipes -- a restriction terrain shares with every
+    // other deterministic product, not a terrain-specific gap.
+    let wrf = entry
+        .support
+        .iter()
+        .find(|target| target.model == Some(ModelId::WrfGdex))
+        .expect("the wrfout store lane's model must appear in the support matrix");
+    assert_eq!(wrf.status, ProductTargetStatus::Supported, "{wrf:?}");
+    assert!(wrf.blockers.is_empty(), "{wrf:?}");
+    let blocked: Vec<&str> = entry
+        .support
+        .iter()
+        .filter(|target| target.status == ProductTargetStatus::Blocked)
+        .map(|target| target.target.as_str())
+        .collect();
+    assert_eq!(blocked, vec!["href"], "{:?}", entry.support);
+}
+
+#[test]
 fn derived_catalog_includes_depth_specific_ehi_products() {
     let catalog = build_supported_products_catalog();
     let entry = catalog

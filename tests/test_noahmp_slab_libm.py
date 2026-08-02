@@ -310,10 +310,10 @@ def test_expf_is_bitwise_across_the_whole_subnormal_band():
 def test_the_hardware_conversion_still_flushes_which_is_why_the_fix_exists():
     """The negative control for the fix, kept as a live measurement.
 
-    ``nmp_d2f_rn`` is only worth its lines while ``__double2float_rn`` is
-    wrong.  If a future toolchain stops flushing, this test fails and the
-    helper can be retired -- which is the outcome to want, and is not
-    something a comment could tell anyone.
+    The name says "hardware"; the flush is cupy's appended ``-ftz=true``.
+    ``nmp_d2f_rn`` is worth its lines only while this route flushes; if a
+    future toolchain stops, this test fails and the helper can be retired
+    -- the outcome to want, and not something a comment could tell anyone.
     """
     import cupy as cp
 

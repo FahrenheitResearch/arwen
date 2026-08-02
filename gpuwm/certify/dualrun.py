@@ -10,11 +10,23 @@ documents rather than of dictionary iteration order.
 The same command is what compares the trajectory-digest instrumentation's
 on and off arms: two capsules from the same short window, one with the digest
 enabled, and a divergence anywhere outside the digest itself is a finding.
+
+The one place the comparison is not literal is where a field records WHERE a
+run wrote rather than WHAT it computed.  Two runs of one configuration must
+write to different directories -- otherwise they overwrite each other -- so a
+literal comparison of the absolute output paths made a clean verdict
+unreachable for every control pair, which is the opposite of what this
+command is for.  Those fields are NORMALIZED to the leaf name and still
+compared: a run that wrote the wrong domain, the wrong valid time or the
+wrong number of frames still diverges, and nothing is skipped.  Every byte
+that carries physics -- the per-frame SHA-256 set, the trajectory digest, the
+pins, the kernel manifest, the input bytes -- is compared verbatim.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -158,11 +170,117 @@ def flatten_capsule(document: Mapping[str, Any] | Any,
     return flat
 
 
+#: Leaf paths that record the DIRECTORY a run wrote into rather than any
+#: computed value.  ``output.frames[i].path`` is where a history frame
+#: landed -- its bytes are compared through ``.sha256`` and ``.bytes`` right
+#: beside it -- and ``receipts.<name>.path`` is where a receipt landed.  A
+#: capsule field is on this list only when the value is fully determined by
+#: ``--outdir``; the config path under ``numerical_stack`` is an INPUT and
+#: stays compared verbatim, because two runs of one configuration read the
+#: same file and a difference there is a real finding.
+OUTPUT_PATH_FIELDS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^output\.frames\[\d+\]\.path$"),
+    re.compile(r"^receipts\.[^.]+\.path$"),
+)
+
+#: Both separators, because a capsule written on Windows is read on Linux
+#: and a leaf name split by the reader's own convention would depend on the
+#: reader rather than on the document.
+_PATH_SEPARATORS = re.compile(r"[\\/]")
+
+
+def is_output_path_field(path: str) -> bool:
+    """Whether ``path`` names a pure output-location field."""
+    return any(pattern.fullmatch(path) for pattern in OUTPUT_PATH_FIELDS)
+
+
+def normalize_output_path(value: Any) -> Any:
+    """The leaf name of an output path; anything else passes through.
+
+    Passing a non-string through unchanged is deliberate: a path field that
+    arrived as ``null``, or absent, must stay distinguishable from one that
+    arrived as a string, or a dropped field would normalize into agreement.
+    """
+    if not isinstance(value, str):
+        return value
+    return _PATH_SEPARATORS.split(value)[-1]
+
+
+def normalized_leaves(document: Mapping[str, Any]) -> dict[str, Any]:
+    """Flatten a capsule with its output-location fields normalized."""
+    flat = flatten_capsule(document)
+    for path in flat:
+        if is_output_path_field(path):
+            flat[path] = normalize_output_path(flat[path])
+    return flat
+
+
+#: Leaves that witness WHICH INPUT BYTES a run read.  A divergence here is
+#: always a real finding -- it is what a corrupted or swapped input looks
+#: like -- so nothing on this list is ever normalized or skipped.  It exists
+#: only so the refusal can say what the finding usually MEANS, because the
+#: commonest cause is a procedural one with a one-line remedy.
+INPUT_BYTES_FIELDS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^numerical_stack\.input_artifact_bytes\.value(\..+)?$"),
+    re.compile(r"^input_bytes\..+$"),
+)
+
+#: Input artifacts a PREPARATION stage writes.  Their bytes legitimately
+#: differ between two independent preparations of one configuration: a
+#: preparation receipt records wall-clock timings and the decoder's own
+#: stdout, which carries the staging directory it used.  That is not
+#: corruption and it is not physics -- it is two different preparations,
+#: and two arms of a dual run are supposed to share ONE.
+_PREPARATION_ARTIFACTS = ("proof", "preparation_receipt", "artifact_receipt",
+                          "artifact_manifest", "run_receipt", "report")
+
+
+def input_bytes_divergence_note(divergences) -> str | None:
+    """What an input-bytes divergence usually means, or ``None``.
+
+    The comparison itself is unchanged and total: this only reads the
+    divergences that were already found and adds the sentence a tester
+    spent hours not being told.  A dual run whose two arms each ran their
+    OWN preparation is comparing two preparations as well as two
+    forecasts, and a preparation receipt can never repeat -- it records
+    how long the preparation took and where it staged.  The screen's
+    subject is the forecast; the preparation is an input to it, like the
+    geography tree, and both arms must read the same one.
+    """
+
+    culprits = sorted({
+        divergence.field_path for divergence in divergences
+        if any(pattern.fullmatch(divergence.field_path)
+               for pattern in INPUT_BYTES_FIELDS)})
+    if not culprits:
+        return None
+    preparation = [path for path in culprits
+                   if path.rsplit(".", 1)[-1] in _PREPARATION_ARTIFACTS]
+    note = (
+        "the two arms read DIFFERENT INPUT BYTES: "
+        + ", ".join(culprits[:6])
+        + (f" (+{len(culprits) - 6} more)" if len(culprits) > 6 else "")
+        + ".  This is compared verbatim and always will be -- it is what a "
+        "swapped or corrupted input looks like.")
+    if preparation:
+        note += (
+            "  The commonest cause is procedural: "
+            + ", ".join(sorted(preparation))
+            + " names a PREPARATION receipt, and two independent "
+            "preparations of one configuration never produce the same "
+            "bytes -- a preparation receipt records its own wall-clock "
+            "timings and the staging directory it used.  Prepare ONCE and "
+            "run the forecast twice from that one prepared root, into two "
+            "--outdir directories.  See docs/public/DETERMINISM.md "
+            "section 6.")
+    return note
+
+
 def compare_capsules(left: Mapping[str, Any],
                      right: Mapping[str, Any]) -> DualRunComparison:
     """Compare two capsules leaf for leaf, in a deterministic path order."""
-    flat_left = flatten_capsule(left)
-    flat_right = flatten_capsule(right)
+    flat_left = normalized_leaves(left)
+    flat_right = normalized_leaves(right)
     divergences = []
     for path in sorted(set(flat_left) | set(flat_right)):
         a = flat_left.get(path, ABSENT)
@@ -193,6 +311,9 @@ def capsule_field_paths(document: Mapping[str, Any]) -> tuple[str, ...]:
 
 __all__ = [
     "ABSENT",
+    "INPUT_BYTES_FIELDS",
+    "OUTPUT_PATH_FIELDS",
+    "input_bytes_divergence_note",
     "Divergence",
     "DualRunComparison",
     "capsule_field_paths",
@@ -202,7 +323,10 @@ __all__ = [
     "delete_leaf",
     "encode_key",
     "flatten_capsule",
+    "is_output_path_field",
     "leaf_value",
+    "normalize_output_path",
+    "normalized_leaves",
     "set_leaf",
     "split_path",
 ]

@@ -1897,7 +1897,7 @@ class PhysicsDriver:
         self._pending_rainbl[...] = 0.0
         SurfacePrecipitationForcing.from_fields(f).clear()
 
-    def _refresh_surface_diagnostics(self) -> None:
+    def _refresh_surface_diagnostics(self, atmosphere) -> None:
         """Transcribe WRF v4.6.1 SFCDIAGS for the supported Noah path.
 
         Noah updates TSK/HFX/QFX/QSFC after SFCLAY has diagnosed T2/Q2/TH2.
@@ -1905,6 +1905,31 @@ class PhysicsDriver:
         (module_surface_driver.F:2983-3000; module_sf_sfcdiags.F:45-72).
         gpuwm does not expose WRF's UA_PHYS or HWRF compile-time branches, so
         this is their standard false/non-HWRF formulation used by real74.
+
+        One documented divergence, on the lower bound only.  WRF's flux
+        inversion ``Q2 = QSFC - QFX/(RHO*CQS2)`` (module_sf_sfcdiags.F:56)
+        carries no bound at all, while Noah's own surface value
+        ``QSFC = Q1/(1-Q1)`` with ``Q1 = qv(k=1) + QFX/(RHO*CHS)``
+        (module_sf_noahlsm.F:795,801) is likewise unbounded.  Under downward
+        moisture flux over very cold snow -- the Antarctic-plateau regime,
+        where the surface is radiatively colder than the air above it and
+        frost deposits -- the correction exceeds the whole vapour content of
+        the lowest model level and both go negative.  A mixing ratio cannot
+        be negative, and every consumer of Q2 (relative humidity, dewpoint,
+        vapour-pressure deficit) needs the log of a positive number, so the
+        engine cannot simply publish WRF's arithmetic here.
+
+        WRF authored the remedy itself and left it commented out at
+        module_sf_noahdrv.F:1276-1282: "prevent diagnostic ground q (q1) ...
+        as happens over snow cover where the cqs2 value also becomes
+        irrelevant / by setting cqs2=chs in this situation the 2m q should
+        become just qv(k=1)".  Setting ``CQS2 = CHS`` makes the two
+        corrections cancel exactly, leaving ``Q2 = qv(k=1)``.  That is what
+        this does, and only where the published value would otherwise leave
+        the physical range -- so a column whose flux inversion is meaningful
+        is bit-for-bit WRF's.  WRF's two OTHER surface-diagnostic
+        implementations bound the same quantity for the same reason
+        (module_sf_mynn.F:1148, module_sf_sfcdiags_ruclsm.F:125-127).
         """
         f = self.fields
         rho = f["psfc"] / (DTYPE(c.RD) * f["tsk"])
@@ -1912,10 +1937,17 @@ class PhysicsDriver:
         t_active = f["chs2"] >= DTYPE(1.0e-5)
         safe_cqs2 = cp.where(q_active, f["cqs2"], DTYPE(1.0))
         safe_chs2 = cp.where(t_active, f["chs2"], DTYPE(1.0))
-        f["q2"][...] = cp.where(
+        diagnosed = cp.where(
             q_active,
             f["qsfc"] - f["qfx"] / (rho * safe_cqs2),
             f["qsfc"])
+        # Only where the published number is not a mixing ratio at all.  A
+        # column whose surface endpoint is negative but whose 2 m value lands
+        # inside the range keeps WRF's arithmetic, bit for bit: the divergence
+        # is scoped to the declared-range violation and to nothing else.
+        representable = diagnosed > DTYPE(0.0)
+        f["q2"][...] = cp.where(representable, diagnosed,
+                                atmosphere["qv"][0])
         f["t2"][...] = cp.where(
             t_active,
             f["tsk"] - f["hfx"] / (rho * DTYPE(c.CP) * safe_chs2),
@@ -2063,7 +2095,7 @@ class PhysicsDriver:
                 getattr(self, land_method)(atmosphere, cfg, itimestep)
                 if int(cfg.sf_surface_physics) in \
                         LAND_SURFACE_SFCDIAGS_SCHEMES:
-                    self._refresh_surface_diagnostics()
+                    self._refresh_surface_diagnostics(atmosphere)
                 self.call_counts["noah"] += 1
             pbl_method = dispatch["bl_pbl_physics"]
             if pbl_method is not None:

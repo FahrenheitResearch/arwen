@@ -27,6 +27,108 @@ impl DomainSpec {
     }
 }
 
+/// Where a batch's frames came from, as far as the plot headline is
+/// concerned.
+///
+/// A batch fetched from a model's registered source catalog may stamp that
+/// catalog's dataset token into the title, because for those frames the
+/// token is the only thing that names which archive the numbers came from.
+/// A batch imported from local model output has no such archive: stamping
+/// one is a lie, and it is the lie a viewer screenshots.  What that viewer
+/// needs instead is which grid the frame is on -- something only the
+/// importer, which read the file's own grid attributes, can supply.
+///
+/// The variants are therefore not a style choice; they are two different
+/// factual claims about the same parenthetical.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TitleProvenance {
+    /// Fetched from the model's registered source catalog.  Title
+    /// composition is unchanged: whichever dataset token the lane already
+    /// derived still applies.
+    #[default]
+    SourceCatalog,
+    /// Imported from local model output.  No catalog dataset token is ever
+    /// stamped.  `grid_label` is the headline parenthetical when the
+    /// importer could read a grid identity (`d02 750 m`); when it could
+    /// not, the headline simply carries no parenthetical, which is honest
+    /// where a borrowed dataset token would not be.
+    LocalImport {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grid_label: Option<String>,
+    },
+}
+
+impl TitleProvenance {
+    /// A locally imported batch, whose titles must never carry a source
+    /// catalog's dataset token.
+    pub fn is_local_import(&self) -> bool {
+        matches!(self, Self::LocalImport { .. })
+    }
+
+    /// The headline parenthetical this provenance contributes, if any.
+    /// Blank labels are treated as absent so a caller that plumbs an empty
+    /// string cannot produce `Title ()`.
+    pub fn title_parenthetical(&self) -> Option<&str> {
+        match self {
+            Self::SourceCatalog => None,
+            Self::LocalImport { grid_label } => grid_label
+                .as_deref()
+                .map(str::trim)
+                .filter(|label| !label.is_empty()),
+        }
+    }
+
+    /// `base` with this provenance's parenthetical appended, when it has
+    /// one.  The shared entry point for every lane, so one grid identity
+    /// cannot be spelled three ways.
+    pub(crate) fn apply_to_title(&self, base: impl Into<String>) -> String {
+        let base = base.into();
+        match self.title_parenthetical() {
+            Some(label) => format!("{base} ({label})"),
+            None => base,
+        }
+    }
+}
+
+/// The run's initial-condition disclosure, when its initial state was
+/// itself a forecast rather than an analysis.
+///
+/// A process-wide value on purpose.  `rw_wrfbatch` renders exactly one
+/// forecast run per invocation -- the timeline planner refuses sources
+/// that disagree on their reference time, so "which run" is a constant
+/// for the lifetime of the process -- and every one of the nine product
+/// lanes that builds a subtitle must disclose it identically.  Threading
+/// a parameter through all nine would let one lane forget, and "one
+/// product did not disclose" is precisely the finding (C-03) this
+/// closes: a 174-hour-lead run and a genuine analysis run were
+/// indistinguishable in all 159 rendered PNGs.  Set once, honoured at
+/// the single place the `Init` token is spelled.
+static INITIAL_CONDITION_DISCLOSURE: std::sync::RwLock<Option<String>> =
+    std::sync::RwLock::new(None);
+
+/// Record what this run was initialized from, or clear it with `None`.
+///
+/// The caller supplies the already-composed parenthetical body (e.g.
+/// `GFS 08/01 00Z f174`); this module owns only where it appears.  A
+/// blank string clears rather than rendering `Init 08/08 06Z ()`.
+pub fn set_initial_condition_disclosure(disclosure: Option<String>) {
+    let value = disclosure
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    if let Ok(mut slot) = INITIAL_CONDITION_DISCLOSURE.write() {
+        *slot = value;
+    }
+}
+
+/// The disclosure in force, if any.
+pub fn initial_condition_disclosure() -> Option<String> {
+    INITIAL_CONDITION_DISCLOSURE
+        .read()
+        .ok()
+        .and_then(|slot| slot.clone())
+}
+
 pub fn model_time_subtitle(
     model: ModelId,
     date_yyyymmdd: &str,
@@ -52,10 +154,20 @@ pub fn model_time_subtitle_with_lead_label<S: AsRef<str>>(
     let valid = valid_time_label(date_yyyymmdd, cycle_utc, forecast_hour)
         .unwrap_or_else(|| "unknown".to_string());
     let init = init_date_label(date_yyyymmdd).unwrap_or_else(|| date_yyyymmdd.to_string());
+    // The `Init` token names when THIS model run started; `F` counts hours
+    // into it.  Neither changes here.  What is added is the second, different
+    // time a viewer cannot otherwise recover: what that initial state itself
+    // was.  Absent a disclosure the subtitle is byte-identical to before, so
+    // an analysis run's plots do not move.
+    let disclosure = match initial_condition_disclosure() {
+        Some(text) => format!(" ({text})"),
+        None => String::new(),
+    };
     format!(
-        "Init {} {:02}Z | {} | Valid {} | {}",
+        "Init {} {:02}Z{} | {} | Valid {} | {}",
         init,
         cycle_utc,
+        disclosure,
         lead_label.as_ref(),
         valid,
         model.to_string().to_ascii_uppercase()
@@ -383,10 +495,43 @@ mod tests {
 
     #[test]
     fn model_time_subtitle_includes_init_lead_and_valid_time() {
+        set_initial_condition_disclosure(None);
         assert_eq!(
             model_time_subtitle(ModelId::Gfs, "20260424", 22, 4),
             "Init 04/24 22Z | F004 | Valid 04/25 02Z | GFS"
         );
+    }
+
+    /// C-03: a run started from a 174-hour forecast printed exactly what a
+    /// genuine analysis run prints, in all 159 of its PNGs.  The lead
+    /// belongs in the picture, not only in `run/report.json`.
+    #[test]
+    fn a_forecast_initialized_run_discloses_its_source_cycle_and_lead() {
+        set_initial_condition_disclosure(Some("GFS 08/01 00Z f174".to_string()));
+        assert_eq!(
+            model_time_subtitle(ModelId::WrfGdex, "20260808", 6, 0),
+            "Init 08/08 06Z (GFS 08/01 00Z f174) | F000 | Valid 08/08 06Z | WRF"
+        );
+        // F still counts hours into THIS run, and Valid still tracks it.
+        assert_eq!(
+            model_time_subtitle(ModelId::WrfGdex, "20260808", 6, 3),
+            "Init 08/08 06Z (GFS 08/01 00Z f174) | F003 | Valid 08/08 09Z | WRF"
+        );
+        set_initial_condition_disclosure(None);
+    }
+
+    /// An analysis run, and every file written before the provenance block
+    /// existed, must be byte-identical to 1.4.0.  Absence is UNKNOWN, and
+    /// UNKNOWN is never stamped as anything.
+    #[test]
+    fn an_undisclosed_run_is_byte_identical_to_before() {
+        set_initial_condition_disclosure(None);
+        let plain = model_time_subtitle(ModelId::WrfGdex, "20260808", 6, 0);
+        assert_eq!(plain, "Init 08/08 06Z | F000 | Valid 08/08 06Z | WRF");
+        // A blank disclosure clears rather than rendering "Init ... ()".
+        set_initial_condition_disclosure(Some("   ".to_string()));
+        assert_eq!(model_time_subtitle(ModelId::WrfGdex, "20260808", 6, 0), plain);
+        set_initial_condition_disclosure(None);
     }
 
     #[test]

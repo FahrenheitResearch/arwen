@@ -22,6 +22,19 @@ somewhere else; the per-artifact environment variables keep overriding
 everything, and a set override is reported rather than silently
 shadowed.
 
+A bundle also carries the renderer's map assets -- the Natural Earth
+and US Census shapefiles ``rw_wrfbatch`` draws coastlines, borders,
+state lines and counties from -- under :data:`ASSET_ROOT`, staged
+beside the binaries as ``<dest>/assets/basemap/...``.  That is not a
+new lookup: ``rw_wrfbatch`` already resolves ``assets/basemap`` under
+its own ancestors, so a renderer staged at ``~/.gpuwm/bridges`` finds
+the shapefiles itself, with no environment variable set and no Python
+in the loop.  They travel in the bundle rather than the wheel because
+the wheel has no room: it is 74.6 MiB against PyPI's 100 MB per-file
+cap and the assets deflate to 20.2 MiB.  Binary and basemaps arriving
+by one mechanism is the point -- a renderer that draws a cyclone over
+a blank rectangle is what happens when they arrive by two.
+
 Platform support is a capability check on the OS and machine
 architecture -- can this box run the bytes in that bundle -- and never
 an identity gate.  A platform with no published bundle is told so by
@@ -107,6 +120,22 @@ ASSET_URL_BASE_ENV = "GPUWM_BRIDGE_ASSET_URL_BASE"
 #: Subdirectory of the staging destination holding in-flight and
 #: verified bundle archives (kept only under ``--keep-bundle``).
 ARCHIVE_SUBDIR = ".fetch-bridges"
+
+#: Prefix, inside a bundle and inside the staging destination, of every
+#: data file the renderer reads.  ``rw_wrfbatch`` searches
+#: ``assets/basemap`` under the first eight ancestors of its own
+#: directory, so staging under this prefix puts the shapefiles where the
+#: binary already looks -- the reason the asset half needs no new
+#: resolution logic, no environment variable, and no cooperation from
+#: the Python half at all.
+ASSET_ROOT = "assets"
+
+#: The asset subtrees a bundle is required to carry, relative to
+#: :data:`ASSET_ROOT`.  Directories, never filenames: the file list is
+#: generated from the tree at pack time and pinned by hash, so it cannot
+#: drift the way a hand-maintained enumeration does.  This tuple is the
+#: declaration a release is checked against.
+REQUIRED_ASSET_SUBDIRS = ("basemap",)
 
 _BLOCK_BYTES = 8 * 1024 * 1024
 _USER_AGENT = "gpuwm-fetch-bridges/1"
@@ -234,14 +263,39 @@ class BinaryPin:
 
 
 @dataclass(frozen=True)
+class AssetPin:
+    """One data file inside a bundle, pinned by exact size and SHA-256.
+
+    ``path`` is the archive member name and, unchanged, the path the
+    file is staged to under the destination -- a relative POSIX path
+    beginning with :data:`ASSET_ROOT`.  Unlike a :class:`BinaryPin` it
+    names no artifact, no environment variable and no ABI marker: a
+    shapefile is data, identical on every platform, and the only
+    questions worth asking of it are how many bytes it is and whether
+    they hash to what the release published.
+    """
+
+    path: str
+    bytes: int
+    sha256: str
+
+
+@dataclass(frozen=True)
 class BundlePin:
-    """One platform's bundle: the archive, pinned, and its contents."""
+    """One platform's bundle: the archive, pinned, and its contents.
+
+    ``assets`` defaults to empty so a pins document written before the
+    asset half existed still parses; a *release* with no assets is
+    refused by ``tools/build_bridge_bundle.py pin``, which is where that
+    staleness would otherwise be introduced.
+    """
 
     platform: str
     filename: str
     bytes: int
     sha256: str
     binaries: tuple[BinaryPin, ...]
+    assets: tuple[AssetPin, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -312,12 +366,23 @@ def parse_pins(payload: object, *, origin: str = "pins") -> BridgePins:
                 filename=_string(entry, "filename", key),
                 bytes=_size(entry, key),
                 sha256=_digest(entry, key)))
+        assets_raw = record.get("assets", [])
+        _require(isinstance(assets_raw, list),
+                 f"{key}: assets must be a list")
+        assets: list[AssetPin] = []
+        for entry in assets_raw:
+            _require(isinstance(entry, dict),
+                     f"{key}: an assets entry is not an object")
+            assets.append(AssetPin(
+                path=_asset_path(entry, key),
+                bytes=_size(entry, key),
+                sha256=_digest(entry, key)))
         _require(release is not None,
                  f"{key}: a platform is pinned but the release is null")
         platforms[key] = BundlePin(
             platform=key, filename=_string(bundle, "filename", key),
             bytes=_size(bundle, key), sha256=_digest(bundle, key),
-            binaries=tuple(binaries))
+            binaries=tuple(binaries), assets=tuple(assets))
     return BridgePins(release=release, platforms=platforms)
 
 
@@ -326,6 +391,27 @@ def _string(record: dict, field: str, where: str) -> str:
     _require(isinstance(value, str) and value,
              f"{where}: {field} must be a non-empty string")
     assert isinstance(value, str)
+    return value
+
+
+def _asset_path(record: dict, where: str) -> str:
+    """A relative asset path under :data:`ASSET_ROOT`, or a refusal.
+
+    The pins document decides where staging writes, so it is the place
+    to refuse a path that could escape the destination.  Absolute paths,
+    drive letters, backslashes and ``..`` components are all rejected
+    here rather than left for the filesystem to interpret; staging then
+    joins a path it already knows is contained.
+    """
+
+    value = _string(record, "path", where)
+    parts = value.split("/")
+    _require(
+        not value.startswith("/") and "\\" not in value and ":" not in value
+        and all(part not in ("", ".", "..") for part in parts)
+        and parts[0] == ASSET_ROOT and len(parts) > 1,
+        f"{where}: asset path {value!r} must be a relative path under "
+        f"{ASSET_ROOT!r}/ with no '..' component")
     return value
 
 
@@ -471,6 +557,30 @@ def classify_destination(dest: Path, bundle: BundlePin
     return staged, stale, absent
 
 
+def classify_assets(dest: Path, bundle: BundlePin
+                    ) -> tuple[list[AssetPin], list[AssetPin],
+                               list[AssetPin]]:
+    """(already pinned, present but different, absent) for the assets.
+
+    Separate from :func:`classify_destination` because the two answer
+    different questions for the caller: eight binaries are listed
+    individually in a report, and several dozen shapefiles are counted.
+    """
+
+    staged: list[AssetPin] = []
+    stale: list[AssetPin] = []
+    absent: list[AssetPin] = []
+    for pin in bundle.assets:
+        path = dest / pin.path
+        if not path.is_file():
+            absent.append(pin)
+        elif matches_pin(path, pin):
+            staged.append(pin)
+        else:
+            stale.append(pin)
+    return staged, stale, absent
+
+
 # ---------------------------------------------------------------------------
 # Download (resumable, restartable)
 # ---------------------------------------------------------------------------
@@ -558,6 +668,27 @@ def _install(temp: Path, final: Path, pin: BinaryPin) -> None:
     os.replace(temp, final)
 
 
+def _install_asset(temp: Path, final: Path, pin: AssetPin) -> None:
+    """Verify ``temp`` by size and hash, then atomically install it.
+
+    Two checks, not three, and no execute bit: a shapefile has no ABI
+    marker to match and nothing should ever run it.  Everything else --
+    verify before install, delete on failure, atomic replace -- is what
+    :func:`_install` does for a binary.
+    """
+
+    try:
+        verify_pinned_file(temp, expected_bytes=pin.bytes,
+                           expected_sha256=pin.sha256, label=pin.path)
+    except BridgeAssetError:
+        temp.unlink(missing_ok=True)
+        raise
+    if os.name != "nt":
+        os.chmod(temp, 0o644)
+    final.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(temp, final)
+
+
 def _bundle_members(archive: Path) -> list[str]:
     try:
         with zipfile.ZipFile(archive) as zf:
@@ -586,6 +717,14 @@ def stage_from_bundle(archive: Path, bundle: BundlePin, dest: Path,
         raise BridgeAssetError(
             f"{archive.name} does not carry {', '.join(missing)} -- it "
             f"holds {listed}.  This is not the {bundle.platform} bundle")
+    absent_assets = [pin.path for pin in bundle.assets
+                     if pin.path not in present]
+    if absent_assets:
+        raise BridgeAssetError(
+            f"{archive.name} is missing {len(absent_assets)} pinned map "
+            f"asset(s), starting with {absent_assets[0]}.  A bundle whose "
+            "assets do not match its pins would render geography-less "
+            "plots; refusing it")
     dest.mkdir(parents=True, exist_ok=True)
     work = dest / f"{ARCHIVE_SUBDIR}-stage"
     work.mkdir(parents=True, exist_ok=True)
@@ -604,6 +743,25 @@ def stage_from_bundle(archive: Path, bundle: BundlePin, dest: Path,
                 progress(
                     f"gpuwm fetch-bridges: {'replaced' if replaced else 'staged'}"
                     f" {final} ({pin.bytes:,} B, SHA-256 {pin.sha256[:12]}...)")
+            staged_assets = 0
+            asset_bytes = 0
+            for pin in bundle.assets:
+                # The pinned path is validated relative and contained by
+                # parse_pins, so the join cannot leave dest.
+                temp = work / "asset.part"
+                with zf.open(pin.path) as source, temp.open("wb") as sink:
+                    shutil.copyfileobj(source, sink, _BLOCK_BYTES)
+                final = dest / pin.path
+                _install_asset(temp, final, pin)
+                installed.append(final)
+                staged_assets += 1
+                asset_bytes += pin.bytes
+            if staged_assets:
+                progress(
+                    f"gpuwm fetch-bridges: staged {staged_assets} map asset "
+                    f"file(s) ({asset_bytes / (1024 * 1024):.1f} MiB) under "
+                    f"{dest / ASSET_ROOT}; the renderer finds them there "
+                    "without any environment variable")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return installed
@@ -649,6 +807,30 @@ def stage_from_loose_files(source_dir: Path, bundle: BundlePin, dest: Path,
             progress(
                 f"gpuwm fetch-bridges: {'replaced' if replaced else 'staged'}"
                 f" {final} ({pin.bytes:,} B, SHA-256 {pin.sha256[:12]}...)")
+        # The map assets keep their layout in a loose directory too, so
+        # an operator who unzipped a bundle by hand and an operator who
+        # copied a checkout's assets/ both land here.
+        staged_assets = 0
+        missing_assets: list[str] = []
+        for pin in bundle.assets:
+            origin = source_dir / pin.path
+            if not origin.is_file():
+                missing_assets.append(pin.path)
+                continue
+            temp = work / "asset.part"
+            shutil.copyfile(origin, temp)
+            final = dest / pin.path
+            _install_asset(temp, final, pin)
+            installed.append(final)
+            staged_assets += 1
+        if staged_assets:
+            progress(f"gpuwm fetch-bridges: staged {staged_assets} map "
+                     f"asset file(s) under {dest / ASSET_ROOT}")
+        if missing_assets:
+            warn(f"{source_dir} carries no {ASSET_ROOT}/ tree for "
+                 f"{len(missing_assets)} pinned map asset file(s); the "
+                 "renderer will draw plots without coastlines or borders "
+                 "unless it finds them elsewhere")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return installed
@@ -761,6 +943,14 @@ def _print_listing(pins: BridgePins, bundle: BundlePin, dest: Path) -> None:
               f"({pin.bytes:,} B)")
     print(f"gpuwm fetch-bridges: {len(staged)} of "
           f"{len(bundle.binaries)} artifacts already staged and pin-valid")
+    if bundle.assets:
+        held, differs, needed = classify_assets(dest, bundle)
+        total = sum(pin.bytes for pin in bundle.assets)
+        print(f"gpuwm fetch-bridges: {len(held)} of {len(bundle.assets)} map "
+              f"asset files staged and pin-valid under {dest / ASSET_ROOT} "
+              f"({total / (1024 * 1024):.1f} MiB packed)"
+              + (f"; {len(differs)} differ, {len(needed)} needed"
+                 if (differs or needed) else ""))
 
 
 def fetch_bridges_main(args) -> int:
@@ -782,12 +972,24 @@ def fetch_bridges_main(args) -> int:
         return 0
 
     staged, stale, absent = classify_destination(dest, bundle)
-    if not stale and not absent:
-        print(f"gpuwm fetch-bridges: all {len(staged)} artifacts at {dest} "
-              "verified (exact size + SHA-256); nothing to fetch")
+    held_assets, stale_assets, absent_assets = classify_assets(dest, bundle)
+    if not stale and not absent and not stale_assets and not absent_assets:
+        print(f"gpuwm fetch-bridges: all {len(staged)} artifacts and "
+              f"{len(held_assets)} map asset file(s) at {dest} verified "
+              "(exact size + SHA-256); nothing to fetch")
         for note in _override_warnings(bundle):
             print(note)
         return 0
+    if (stale_assets or absent_assets) and not stale and not absent:
+        # The exact shape of the bug this asset half exists to close: a
+        # complete set of binaries staged by an older release, and no
+        # map assets beside them.  Say so, rather than reporting a
+        # generic re-fetch.
+        print(f"gpuwm fetch-bridges: the {len(staged)} artifacts at {dest} "
+              f"are current, but {len(stale_assets) + len(absent_assets)} of "
+              f"{len(bundle.assets)} map asset file(s) are missing or stale "
+              "-- without them the renderer draws plots with no coastlines "
+              "or borders")
     if stale:
         print(f"gpuwm fetch-bridges: {len(stale)} artifact(s) at {dest} do "
               "not match this release's pins and will be replaced once the "
@@ -824,10 +1026,20 @@ def fetch_bridges_main(args) -> int:
              f"staged ({', '.join(remaining)}); gpuwm doctor names "
              "the remedy for each")
     verified = len(bundle.binaries) - len(remaining)
-    print(f"gpuwm fetch-bridges: {len(installed)} artifact(s) staged at "
-          f"{dest}; {verified} of {len(bundle.binaries)} verified "
+    print(f"gpuwm fetch-bridges: {len(installed)} file(s) staged at "
+          f"{dest}; {verified} of {len(bundle.binaries)} artifacts verified "
           "against the packaged pins.  `gpuwm doctor` re-checks the "
           "full estate")
+    unstaged_assets = [pin.path for pin in bundle.assets
+                       if not matches_pin(dest / pin.path, pin)]
+    if unstaged_assets:
+        warn(f"{len(unstaged_assets)} of {len(bundle.assets)} pinned map "
+             "asset file(s) are still not staged; the renderer will draw "
+             "plots without coastlines or borders unless it finds them "
+             "elsewhere")
+    elif bundle.assets:
+        print(f"gpuwm fetch-bridges: {len(bundle.assets)} map asset file(s) "
+              f"verified under {dest / ASSET_ROOT}")
     for note in _override_warnings(bundle):
         print(note)
     return 0
@@ -864,11 +1076,13 @@ def register_cli(subparsers) -> None:
 
 
 __all__ = [
-    "ARCHIVE_SUBDIR", "ASSET_URL_BASE_ENV", "BUNDLED_ARTIFACTS",
-    "BUNDLE_MANIFEST_SCHEMA", "BinaryPin", "BridgeAssetError", "BridgePins",
+    "ARCHIVE_SUBDIR", "ASSET_ROOT", "ASSET_URL_BASE_ENV",
+    "BUNDLED_ARTIFACTS", "BUNDLE_MANIFEST_SCHEMA", "REQUIRED_ASSET_SUBDIRS",
+    "AssetPin", "BinaryPin", "BridgeAssetError", "BridgePins",
     "BundlePin", "BundledArtifact", "PINS_RESOURCE", "PINS_SCHEMA",
     "SUPPORTED_PLATFORMS", "artifact_filename", "asset_url_base",
-    "bundle_url", "classify_destination", "download_bundle", "fetch_bundle",
+    "bundle_url", "classify_assets", "classify_destination",
+    "download_bundle", "fetch_bundle",
     "fetch_bridges_main", "host_platform", "host_platform_description",
     "load_pins", "matches_pin", "packaged_pins_path", "parse_pins",
     "register_cli", "sha256_file", "stage_from_bundle", "stage_from_dir",

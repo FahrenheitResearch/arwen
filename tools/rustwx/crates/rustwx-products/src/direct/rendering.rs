@@ -17,6 +17,7 @@ use crate::shared_context::{
     static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
     static_title_with_suffix,
 };
+use crate::plot_design::Hemisphere;
 use crate::viewer::UnitConvert;
 
 use super::domain::{
@@ -108,7 +109,12 @@ pub(super) fn build_render_request(
     } else {
         MapRenderRequest::new(
             filled_field.clone().into(),
-            scale_for_filled_selector(recipe, filled.selector, &filled_field.values),
+            scale_for_filled_selector_in(
+                recipe,
+                filled.selector,
+                &filled_field.values,
+                Hemisphere::for_bounds(bounds),
+            ),
         )
     };
     crate::plot_design::StaticPlotDesign::new(bounds, visual_mode)
@@ -525,7 +531,13 @@ pub(super) fn should_render_overlay_only(
     if has_explicit_contours {
         return false;
     }
+    // An isobaric geopotential height is a contour-analysis field: the
+    // convention is heights as contours, colour reserved for the wind.
+    // The SURFACE member of the same canonical field is a different
+    // physical quantity -- orography -- and reads only as a fill; sending
+    // it down the contour-analysis path would draw a blank map.
     matches!(selector.field, CanonicalField::GeopotentialHeight)
+        && !matches!(selector.vertical, VerticalSelector::Surface)
 }
 
 pub(super) fn scale_for_filled_selector(
@@ -533,10 +545,20 @@ pub(super) fn scale_for_filled_selector(
     filled_selector: FieldSelector,
     values: &[f32],
 ) -> ColorScale {
+    scale_for_filled_selector_in(
+        recipe, filled_selector, values, Hemisphere::Northern)
+}
+
+pub(super) fn scale_for_filled_selector_in(
+    recipe: &PlotRecipe,
+    filled_selector: FieldSelector,
+    values: &[f32],
+    hemisphere: Hemisphere,
+) -> ColorScale {
     if selector_is_spread_product(filled_selector) {
         return ensemble_spread_scale(values);
     }
-    scale_for_recipe(recipe, filled_selector)
+    scale_for_recipe_in(recipe, filled_selector, hemisphere)
 }
 
 fn ensemble_spread_scale(values: &[f32]) -> ColorScale {
@@ -613,7 +635,16 @@ fn ensemble_spread_colors() -> Vec<Color> {
 }
 
 pub(super) fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> ColorScale {
-    crate::plot_design::operational_fill_scale_for_recipe(recipe, filled_selector)
+    scale_for_recipe_in(recipe, filled_selector, Hemisphere::Northern)
+}
+
+pub(super) fn scale_for_recipe_in(
+    recipe: &PlotRecipe,
+    filled_selector: FieldSelector,
+    hemisphere: Hemisphere,
+) -> ColorScale {
+    crate::plot_design::operational_fill_scale_for_recipe_in(
+        recipe, filled_selector, hemisphere)
 }
 
 fn build_contour_layers(

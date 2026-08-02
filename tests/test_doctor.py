@@ -535,8 +535,8 @@ def test_the_sealer_and_the_doctor_share_one_bridge_contract(monkeypatch):
 
 
 @pytest.mark.parametrize("windows", (False, True))
-def test_the_pip_bootstrap_wires_what_it_builds(monkeypatch, tmp_path,
-                                                windows):
+def test_the_unpinned_pip_bootstrap_wires_what_it_builds(
+        monkeypatch, tmp_path, windows):
     """Running every command must actually close the gap it was for.
 
     A node-8 validation run pasted the whole report on a pip-only
@@ -547,9 +547,12 @@ def test_the_pip_bootstrap_wires_what_it_builds(monkeypatch, tmp_path,
     default and the environment variable the commented alternative, so
     the literal paste finishes.
 
-    The destination is asserted to be `default_bridge_dir()` itself, not
-    a lookalike: what makes the copy work is that it lands in the exact
-    directory `artifact_candidates` searches.
+    This is specifically the unpinned-release arm.  A pinned release is
+    separately watched by `test_the_pip_remedy_offers_the_prebuilt_bundle_first`:
+    its only live command is `gpuwm fetch-bridges` and this source route is
+    deliberately retained as comments.  The destination here is asserted to
+    be `default_bridge_dir()` itself, not a lookalike: what makes the copy work
+    is that it lands in the exact directory `artifact_candidates` searches.
     """
 
     from gpuwm import bridges
@@ -559,6 +562,7 @@ def test_the_pip_bootstrap_wires_what_it_builds(monkeypatch, tmp_path,
     monkeypatch.setattr(bridges, "crate_dir",
                         lambda: tmp_path / "tools" / "grib1_bridge")
     monkeypatch.setattr(bridges, "cargo_is_installed", lambda: True)
+    monkeypatch.setattr(bridges, "prebuilt_bundle_offer", lambda: None)
     remedy = bridges.bridge_remedy("grib1_bridge")
     _assert_remedy_lines_are_commands_or_comments(remedy, windows=windows)
 
@@ -1404,7 +1408,7 @@ def test_the_pip_remedy_offers_the_prebuilt_bundle_first(
     a reader who pastes the report runs exactly one of them.
     """
 
-    from gpuwm import bridge_assets, bridges
+    from gpuwm import bridges
 
     _force_shell(monkeypatch, windows)
     monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path / "wheel")
@@ -1934,3 +1938,38 @@ def test_the_other_two_probes_share_the_same_gate(tmp_path, monkeypatch):
         ok, evidence = probe(fake)
         assert not ok
         assert "corrupt" in evidence
+
+
+def test_the_gap_count_agrees_with_the_exit_code():
+    """The reported ``gpuwm setup`` 1.3.1 -> 1.4.0 exit regression.
+
+    1.3.1 exited 1 on an unfetched WPS_GEOG tree and 1.4.0 exits 0, with
+    the gap text unchanged.  Exiting 0 is the right answer -- that ~16 GB
+    download is an explicit opt-in and an install that did everything its
+    documentation asked must not fail an installer.  What made it read as
+    a silent regression is that both reports printed the same "1 gap(s)"
+    line, so the only visible difference between the two versions was the
+    exit code.  The severity has to be in the report.
+    """
+    opt_in = doctor.Check(
+        "WPS_GEOG", "missing", "the default geog_root does not exist",
+        action="gpuwm fetch-geog", brief="not staged", blocking=False)
+    broken = doctor.Check(
+        "bridge x", "missing", "not staged", action="gpuwm fetch-bridges",
+        brief="not staged")
+
+    only_opt_in = [doctor.Check("python", "verified", "3.13"), opt_in]
+    assert doctor.blocking_gaps(only_opt_in) == []
+    brief = doctor.format_brief(only_opt_in)
+    full = doctor.format_report(only_opt_in)
+    # The count that matters is stated, and it is the exit code.
+    assert "0 of them blocking (exit 0)" in brief
+    assert "0 of them blocking (the exit code is 0)" in full
+    # ...and the finding itself is not softened away: MISSING stays
+    # MISSING and the command that closes it still prints.
+    assert "MISSING WPS_GEOG" in brief and "gpuwm fetch-geog" in brief
+
+    both = [doctor.Check("python", "verified", "3.13"), opt_in, broken]
+    assert len(doctor.blocking_gaps(both)) == 1
+    brief = doctor.format_brief(both)
+    assert "2 gap(s), 1 of them blocking (exit 1)" in brief

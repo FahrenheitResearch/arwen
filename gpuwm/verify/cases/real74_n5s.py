@@ -1233,8 +1233,8 @@ def run_restored_experiment(wrf_inputs: str | Path, outdir: str | Path, *,
                             registration: Mapping[str, object] | None = None
                             ) -> dict[str, object]:
     import cupy as cp
+    from gpuwm import runtime
     from gpuwm.core.model import execute_experiment
-    from gpuwm.core.refl import consume_refl_10cm
     from gpuwm.io.wrfout import PerDomainWrfoutWriters
 
     outdir = Path(outdir)
@@ -1256,12 +1256,17 @@ def run_restored_experiment(wrf_inputs: str | Path, outdir: str | Path, *,
         model._io_manager = writers
 
         def history_handler(tree, node, ticks):
-            refl_field = None
-            if (ticks != 0 and node.state.qv is not None
-                    and node.state.physics.mp_physics
-                    in REFLECTIVITY_MICROPHYSICS):
-                refl_field = consume_refl_10cm(node.state)
-            writers.submit(node, ticks, refl_field=refl_field)
+            # The production tree handoff, not a second copy of it.
+            # These were the same three lines minus one: the shared
+            # helper also performs WRF's history-interval reset of the
+            # nwp_diagnostics running maxima, and this copy did not.
+            # It is a no-op for this case as it stands -- no
+            # verification case sets nwp_diagnostics, so there is no
+            # accumulator to zero -- which is exactly why the divergence
+            # could sit here unnoticed until someone turned the knob on.
+            # Its reflectivity predicate is `frozenset({1, 6, 8, 10,
+            # 18})` on both sides.
+            runtime._submit_tree_history_frame(writers, node, ticks)
 
         report = execute_experiment(model, history_handler=history_handler)
         writers.drain()

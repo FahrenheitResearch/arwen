@@ -101,9 +101,12 @@ from gpuwm.core.nssl2_contract import (
     WRF_REFERENCE_VERSION as NSSL2_WRF_REFERENCE_VERSION,
 )
 from gpuwm.state_serialization_contract import (
+    LATERAL_BOUNDARY_PREFIX_SCHEMA,
     STATE_SERIALIZED_ATTRS,
     STATE_SETUP_ARRAYS,
     STATE_SETUP_SCALARS,
+    lateral_boundary_prefix_identity as _lateral_boundary_prefix_identity,
+    setup_core_fingerprint as _shared_setup_core_fingerprint,
     setup_fingerprint as _shared_setup_fingerprint,
 )
 
@@ -161,6 +164,12 @@ CONFIG_RUN_LENGTH_FIELDS = frozenset({
 #: tolerant in both directions (missing in file -> zeroed with a note;
 #: present in file under a diagnostics-off resume -> dropped with a note).
 CONFIG_DIAGNOSTIC_FIELDS = frozenset({"nwp_diagnostics"})
+
+#: An opt-in tree-checkpoint contract for restart-extend orchestration.  It
+#: admits exactly one setup change: appending future root LBC intervals after
+#: the sealed interval inventory recorded in the checkpoint.  Ordinary
+#: restart readers never consult this marker and retain exact setup matching.
+SEALED_FORCING_EXTENSION_MODE = "sealed-prefix-v1"
 
 #: Root external-LBC clock semantic identity (Davies clock bind,
 #: 2026-07-28).  Which dtbc the root's external Davies consumers took is
@@ -763,6 +772,18 @@ def setup_fingerprint(state) -> str:
     rejected instead of silently integrating different boundary forcing.
     """
     return _shared_setup_fingerprint(
+        state, error_type=RestartManifestError)
+
+
+def setup_core_fingerprint(state) -> str:
+    """SHA-256 over immutable setup, excluding a root's LBC inventory."""
+    return _shared_setup_core_fingerprint(
+        state, error_type=RestartManifestError)
+
+
+def lateral_boundary_prefix_identity(state):
+    """Compact byte identity for the root forcing interval inventory."""
+    return _lateral_boundary_prefix_identity(
         state, error_type=RestartManifestError)
 
 
@@ -1679,7 +1700,8 @@ def root_external_lbc_clock_identity(state, cfg) -> str | None:
 
 
 def write_restart(path, state, cfg, *, run_trackers=None,
-                  tree_header: dict | None = None) -> Path:
+                  tree_header: dict | None = None,
+                  sealed_forcing_extension: bool = False) -> Path:
     """Serialize the complete cross-step model state to ``path``.
 
     ``run_trackers`` (optional JSON-able dict) carries the caller's
@@ -1689,6 +1711,11 @@ def write_restart(path, state, cfg, *, run_trackers=None,
     """
     path = Path(path)
     _validate_nssl2_live_restart_state(state, cfg)
+    if sealed_forcing_extension:
+        _require_sealable_forcing_prefix(
+            state, cfg, path=path,
+            elapsed=_admissible_elapsed_seconds(
+                state.elapsed_seconds, "sealed restart write"))
     manifest: dict[str, object] = {}
     manifest.update(state_manifest(state))
     manifest.update(_scratch_manifest(state))
@@ -1732,6 +1759,12 @@ def write_restart(path, state, cfg, *, run_trackers=None,
                          else dict(run_trackers)),
         "array_manifest": array_manifest,
     }
+    if sealed_forcing_extension:
+        header.update({
+            "forcing_extension_mode": SEALED_FORCING_EXTENSION_MODE,
+            "setup_core_fingerprint": setup_core_fingerprint(state),
+            "lateral_boundary_prefix": lateral_boundary_prefix_identity(state),
+        })
     lbc_clock_identity = root_external_lbc_clock_identity(state, cfg)
     if lbc_clock_identity is not None:
         header["root_external_lbc_clock"] = lbc_clock_identity
@@ -2082,8 +2115,49 @@ def require_tree_checkpoint_legal(model) -> tuple[int, int]:
     return ticks, tick_den
 
 
+def _fingerprint_components(model):
+    """The named restart-identity components, when the route publishes them."""
+
+    return getattr(model, "_experiment_fingerprint_components", None)
+
+
+def tree_fingerprint_mismatch_reason(gid: int, header, model) -> str:
+    """Name what actually differs, and what a restart is allowed to change.
+
+    ``gpuwm run --restart`` publishes a tolerance -- only the forecast
+    length and the output/restart cadence may differ -- and until 1.4.1
+    the tree route enforced something strictly narrower without saying
+    so, refusing every one of those three changes as nine words and a
+    traceback.  The tolerance is honoured now; this message is what the
+    remaining, genuine mismatches say.
+    """
+
+    stored = header.get("experiment_fingerprint_components")
+    live = _fingerprint_components(model)
+    prefix = f"tree restart d{gid:02d} was written for a different run"
+    if not isinstance(stored, Mapping) or not isinstance(live, Mapping):
+        return (f"{prefix} (experiment fingerprint mismatch); a checkpoint "
+                "resumes only into the run that wrote it")
+    _absent = object()
+    differing = sorted(
+        name for name in set(stored) | set(live)
+        if stored.get(name, _absent) != live.get(name, _absent))
+    if not differing:
+        # Equal components, unequal digest: the digest itself moved, which
+        # is a format change rather than a configuration change.
+        return (f"{prefix} (fingerprint differs but every named component "
+                "matches; the checkpoint predates this restart-identity "
+                "format and must be rerun from the start)")
+    named = ", ".join(differing)
+    return (f"{prefix}: {named} differ(s) from the checkpoint.  A restart "
+            "may change the forecast length and the output/restart cadence; "
+            "everything else -- geometry, timestep, physics, nesting, "
+            "prepared inputs -- must be the run that wrote the checkpoint")
+
+
 def write_tree_restart(directory, model, valid_time: datetime, *,
-                       run_trackers_by_grid_id=None) -> Path:
+                       run_trackers_by_grid_id=None,
+                       sealed_forcing_extension: bool = False) -> Path:
     """Publish one immutable generation per domain, with d01 last.
 
     Every generation has UUID-qualified member names.  Publishing the root
@@ -2101,6 +2175,16 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
     ids = sorted(int(node.cfg.grid_id) for node in nodes)
     trackers = dict(run_trackers_by_grid_id or {})
     paths: dict[int, Path] = {}
+    if sealed_forcing_extension:
+        # Validate the whole generation before assigning its UUID or writing
+        # even a child member.  A malformed root prefix must never leave an
+        # orphan child that looks like part of a publish attempt.
+        sealed_elapsed = ticks / tick_den
+        for node in nodes:
+            _require_sealable_forcing_prefix(
+                node.state, node.cfg.run,
+                path=directory / f"d{int(node.cfg.grid_id):02d}",
+                elapsed=sealed_elapsed)
     checkpoint_set_id = uuid.uuid4().hex
     published: list[Path] = []
     try:
@@ -2117,6 +2201,15 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
                 else node.cfg.start_time)
             tree_header = {
                 "experiment_fingerprint": model.experiment_fingerprint,
+                # The named components the fingerprint is a digest of,
+                # when the building route publishes them.  Stored so a
+                # mismatch on restore can say WHICH one moved instead of
+                # reporting that a hash differs.  Absent for routes that
+                # build the fingerprint some other way; the comparison
+                # below degrades to the bare-hash message.
+                **({} if _fingerprint_components(model) is None else {
+                    "experiment_fingerprint_components":
+                        _fingerprint_components(model)}),
                 "checkpoint_set_id": checkpoint_set_id,
                 "grid_id": gid,
                 "parent_id": int(node.cfg.parent_id),
@@ -2138,7 +2231,8 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
             path = directory / member
             paths[gid] = write_restart(
                 path, node.state, node.cfg.run,
-                run_trackers=trackers.get(gid), tree_header=tree_header)
+                run_trackers=trackers.get(gid), tree_header=tree_header,
+                sealed_forcing_extension=sealed_forcing_extension)
             published.append(paths[gid])
     except BaseException:
         # These names are unique to this uncommitted generation, so cleanup
@@ -2182,7 +2276,9 @@ def _tree_restart_paths(path: Path, expected_ids: set[int]
     return found
 
 
-def restore_tree_restart(path, model) -> TreeRestartInfo:
+def restore_tree_restart(path, model, *,
+                         sealed_forcing_extension: bool = False
+                         ) -> TreeRestartInfo:
     """Validate the complete current-format set, then restore all domains."""
     from gpuwm.core.model import PERIOD_BEGIN, ModelRuntimeStatus
 
@@ -2195,10 +2291,21 @@ def restore_tree_restart(path, model) -> TreeRestartInfo:
     # touching any live domain.  The validated objects retain the exact host
     # arrays that will be applied, so a later member cannot be swapped or
     # become unreadable after an earlier domain has mutated.
-    validated = {
-        gid: _validate_restart(paths[gid], node.state, node.cfg.run)
-        for gid, node in nodes.items()
-    }
+    if sealed_forcing_extension:
+        validated = {
+            gid: _validate_restart(
+                paths[gid], node.state, node.cfg.run,
+                sealed_forcing_extension=True)
+            for gid, node in nodes.items()
+        }
+    else:
+        # Preserve the historical default call shape as well as its exact
+        # semantics.  A few out-of-tree diagnostic wrappers substitute this
+        # private validator with the original three-argument signature.
+        validated = {
+            gid: _validate_restart(paths[gid], node.state, node.cfg.run)
+            for gid, node in nodes.items()
+        }
     headers = {gid: member.header for gid, member in validated.items()}
 
     elapsed_pairs = set()
@@ -2210,10 +2317,15 @@ def restore_tree_restart(path, model) -> TreeRestartInfo:
                 f"tree restart d{gid:02d} must be "
                 f"v{RESTART_FORMAT_VERSION}, got "
                 f"{header.get('format_version')!r}; v2 is single-domain only")
+        if sealed_forcing_extension and header.get(
+                "forcing_extension_mode") != SEALED_FORCING_EXTENSION_MODE:
+            raise RestartMismatchError(
+                f"tree restart d{gid:02d} was not intentionally sealed for "
+                "forcing extension")
         if header.get("experiment_fingerprint") != \
                 model.experiment_fingerprint:
             raise RestartMismatchError(
-                f"tree restart d{gid:02d} experiment fingerprint mismatch")
+                tree_fingerprint_mismatch_reason(gid, header, model))
         checkpoint_set_id = header.get("checkpoint_set_id")
         if (not isinstance(checkpoint_set_id, str)
                 or not checkpoint_set_id):
@@ -2492,7 +2604,179 @@ def _validate_driver_payload(stored, header, state, driver, elapsed,
                      "radiation/o33d_grid")
 
 
-def _validate_restart(path, state, cfg) -> _ValidatedRestart:
+def _validated_forcing_prefix(value, *, label: str, path: Path):
+    """Validate and normalize one append-only LBC identity document."""
+    if not isinstance(value, dict):
+        raise RestartMismatchError(
+            f"restart file {path} has no {label} forcing inventory")
+    expected_keys = {
+        "schema", "spec_bdy_width", "spec_zone", "relax_zone", "intervals",
+    }
+    if set(value) != expected_keys:
+        missing = sorted(expected_keys - set(value))
+        extra = sorted(set(value) - expected_keys)
+        raise RestartMismatchError(
+            f"restart file {path} has malformed {label} forcing document "
+            f"(missing {missing}, extra {extra})")
+    if value.get("schema") != LATERAL_BOUNDARY_PREFIX_SCHEMA:
+        raise RestartMismatchError(
+            f"restart file {path} has unknown {label} forcing schema "
+            f"{value.get('schema')!r}")
+    controls = []
+    for key in ("spec_bdy_width", "spec_zone", "relax_zone"):
+        item = value.get(key)
+        if isinstance(item, bool) or not isinstance(item, int) or item < 0:
+            raise RestartMismatchError(
+                f"restart file {path} has invalid {label} forcing "
+                f"control {key}={item!r}")
+        controls.append(item)
+    raw_intervals = value.get("intervals")
+    if not isinstance(raw_intervals, list) or not raw_intervals:
+        raise RestartMismatchError(
+            f"restart file {path} has an empty/malformed {label} forcing "
+            "inventory")
+    intervals = []
+    field_inventory = None
+    for index, row in enumerate(raw_intervals):
+        if not isinstance(row, dict) or set(row) != {
+                "start_seconds", "end_seconds", "fields", "sha256",
+                "start_frame_sha256", "end_frame_sha256"}:
+            raise RestartMismatchError(
+                f"restart file {path} has malformed {label} forcing "
+                f"interval {index}")
+        start = row["start_seconds"]
+        end = row["end_seconds"]
+        if (isinstance(start, bool) or not isinstance(start, (int, float))
+                or isinstance(end, bool) or not isinstance(end, (int, float))
+                or not math.isfinite(float(start))
+                or not math.isfinite(float(end))
+                or float(start) < 0.0 or float(end) <= float(start)):
+            raise RestartMismatchError(
+                f"restart file {path} has invalid {label} forcing bounds "
+                f"at interval {index}: {(start, end)!r}")
+        if intervals and float(start) != float(intervals[-1]["end_seconds"]):
+            raise RestartMismatchError(
+                f"restart file {path} has non-contiguous {label} forcing "
+                f"inventory at interval {index}")
+        fields = row["fields"]
+        if (not isinstance(fields, list) or not fields
+                or any(not isinstance(name, str) or not name for name in fields)
+                or fields != sorted(set(fields))):
+            raise RestartMismatchError(
+                f"restart file {path} has malformed {label} forcing field "
+                f"inventory at interval {index}")
+        if field_inventory is None:
+            field_inventory = fields
+        elif fields != field_inventory:
+            raise RestartMismatchError(
+                f"restart file {path} changes {label} forcing fields at "
+                f"interval {index}")
+        for digest_key in (
+                "sha256", "start_frame_sha256", "end_frame_sha256"):
+            sha = row[digest_key]
+            if (not isinstance(sha, str) or len(sha) != 64
+                    or any(char not in "0123456789abcdef" for char in sha)):
+                raise RestartMismatchError(
+                    f"restart file {path} has invalid {label} forcing "
+                    f"{digest_key} at interval {index}")
+        if intervals and intervals[-1]["end_frame_sha256"] != \
+                row["start_frame_sha256"]:
+            raise RestartMismatchError(
+                f"restart file {path} has a discontinuous {label} forcing "
+                f"frame at interval {index}")
+        intervals.append({
+            "start_seconds": start,
+            "end_seconds": end,
+            "fields": fields,
+            "sha256": row["sha256"],
+            "start_frame_sha256": row["start_frame_sha256"],
+            "end_frame_sha256": row["end_frame_sha256"],
+        })
+    if float(intervals[0]["start_seconds"]) != 0.0:
+        raise RestartMismatchError(
+            f"restart file {path} {label} forcing does not begin at zero")
+    return tuple(controls), intervals
+
+
+def _require_sealable_forcing_prefix(state, cfg, *, path: Path,
+                                     elapsed: float) -> None:
+    """Refuse an invalid sealed checkpoint before any bytes are published."""
+    prefix = lateral_boundary_prefix_identity(state)
+    if getattr(cfg, "specified", False):
+        _, intervals = _validated_forcing_prefix(
+            prefix, label="live", path=path)
+        if float(intervals[-1]["end_seconds"]) != elapsed:
+            raise RestartMismatchError(
+                f"restart file {path} forcing inventory is not sealed at "
+                f"its checkpoint boundary "
+                f"({intervals[-1]['end_seconds']!r} != {elapsed!r})")
+        return
+    if getattr(cfg, "nested", False):
+        if prefix is not None:
+            raise RestartMismatchError(
+                f"restart file {path} nested child unexpectedly carries "
+                "an external forcing prefix")
+        return
+    raise RestartMismatchError(
+        f"restart file {path} cannot use sealed forcing extension: the "
+        "domain is neither a specified external-boundary root nor a nested "
+        "child")
+
+
+def _require_sealed_forcing_extension(header, state, *, path: Path,
+                                      elapsed: float) -> None:
+    """Admit only a byte-identical sealed prefix plus contiguous future LBCs."""
+    if header.get("forcing_extension_mode") != SEALED_FORCING_EXTENSION_MODE:
+        raise RestartMismatchError(
+            f"restart file {path} was not intentionally sealed for forcing "
+            "extension")
+    stored_core = header.get("setup_core_fingerprint")
+    live_core = setup_core_fingerprint(state)
+    if stored_core != live_core:
+        raise RestartMismatchError(
+            f"restart file {path} immutable setup changed while extending "
+            "forcing (base state / coordinates / map factors mismatch)")
+    stored_value = header.get("lateral_boundary_prefix")
+    live_value = lateral_boundary_prefix_identity(state)
+    stored_controls, stored = _validated_forcing_prefix(
+        stored_value, label="sealed", path=path)
+    live_controls, live = _validated_forcing_prefix(
+        live_value, label="live", path=path)
+    if stored_controls != live_controls:
+        raise RestartMismatchError(
+            f"restart file {path} changes specified-boundary controls while "
+            "extending forcing")
+    if float(stored[-1]["end_seconds"]) != elapsed:
+        raise RestartMismatchError(
+            f"restart file {path} forcing inventory was not sealed at its "
+            f"checkpoint boundary ({stored[-1]['end_seconds']!r} != "
+            f"{elapsed!r})")
+    if len(live) <= len(stored):
+        raise RestartMismatchError(
+            f"restart file {path} forcing extension must append at least one "
+            "future interval")
+    if live[:len(stored)] != stored:
+        raise RestartMismatchError(
+            f"restart file {path} forcing extension changed a sealed interval "
+            "or its byte digest")
+    suffix = live[len(stored):]
+    if float(suffix[0]["start_seconds"]) != elapsed:
+        raise RestartMismatchError(
+            f"restart file {path} forcing suffix does not begin at the "
+            "checkpoint boundary")
+    if any(float(row["start_seconds"]) < elapsed for row in suffix):
+        raise RestartMismatchError(
+            f"restart file {path} forcing suffix is not strictly future")
+    if stored[-1]["end_frame_sha256"] != suffix[0][
+            "start_frame_sha256"]:
+        raise RestartMismatchError(
+            f"restart file {path} forcing suffix changes the shared "
+            "checkpoint-boundary frame")
+
+
+def _validate_restart(path, state, cfg, *,
+                      sealed_forcing_extension: bool = False
+                      ) -> _ValidatedRestart:
     """Load one archive and perform all refusal checks without mutation."""
     path = Path(path)
     header, stored = _load_restart(path, with_arrays=True)
@@ -2528,7 +2812,45 @@ def _validate_restart(path, state, cfg) -> _ValidatedRestart:
                 "(a header without the key is a pre-bind file).")
     _require_nssl2_restart_contract(header, cfg, path)
     _require_physics_setup_match(header, state, cfg, path)
-    if header["setup_fingerprint"] != setup_fingerprint(state):
+    try:
+        elapsed = _admissible_elapsed_seconds(
+            header["elapsed_seconds"], f"restart file {path}")
+    except (TypeError, ValueError, KeyError, RestartManifestError) as exc:
+        raise RestartMismatchError(
+            f"restart file {path} has an invalid elapsed_seconds") from exc
+    live_setup_fingerprint = setup_fingerprint(state)
+    if sealed_forcing_extension:
+        if header.get("forcing_extension_mode") != \
+                SEALED_FORCING_EXTENSION_MODE:
+            raise RestartMismatchError(
+                f"restart file {path} was not intentionally sealed for "
+                "forcing extension")
+        stored_prefix = header.get("lateral_boundary_prefix")
+        if getattr(cfg, "specified", False):
+            if stored_prefix is None:
+                raise RestartMismatchError(
+                    f"restart file {path} specified root has no sealed "
+                    "forcing inventory")
+            _require_sealed_forcing_extension(
+                header, state, path=path, elapsed=elapsed)
+        elif getattr(cfg, "nested", False):
+            if stored_prefix is not None:
+                raise RestartMismatchError(
+                    f"restart file {path} nested child unexpectedly carries "
+                    "a sealed external forcing inventory")
+            if (header.get("setup_core_fingerprint")
+                    != setup_core_fingerprint(state)
+                    or header["setup_fingerprint"]
+                    != live_setup_fingerprint):
+                raise RestartMismatchError(
+                    f"restart file {path} changed immutable child/nest setup "
+                    "while extending root forcing")
+        else:
+            raise RestartMismatchError(
+                f"restart file {path} cannot use sealed forcing extension: "
+                "the live domain is neither a specified root nor a nested "
+                "child")
+    elif header["setup_fingerprint"] != live_setup_fingerprint:
         raise RestartMismatchError(
             f"restart file {path} was written on a different model setup "
             "(base state / coordinates / map factors fingerprint "
@@ -2554,12 +2876,6 @@ def _validate_restart(path, state, cfg) -> _ValidatedRestart:
             raise RestartMismatchError(
                 f"restart member {key} does not match its manifest entry")
 
-    try:
-        elapsed = _admissible_elapsed_seconds(
-            header["elapsed_seconds"], f"restart file {path}")
-    except (TypeError, ValueError, KeyError, RestartManifestError) as exc:
-        raise RestartMismatchError(
-            f"restart file {path} has an invalid elapsed_seconds") from exc
     _validate_nssl2_stored_restart_state(
         header, stored, state, cfg, path, elapsed)
     stored_state = {key[len("state/"):]: value
@@ -2869,6 +3185,7 @@ __all__ = [
     "READABLE_RESTART_FORMAT_VERSIONS", "REBUILT_SCRATCH_SLOTS",
     "RESTART_FORMAT_VERSION", "ROOT_EXTERNAL_LBC_CLOCK_IDENTITY",
     "ROOT_EXTERNAL_LBC_CLOCK_LEGACY", "RestartInfo", "TreeRestartInfo",
+    "SEALED_FORCING_EXTENSION_MODE",
     "RestartManifestError", "RestartMismatchError",
     "SERIALIZED_SCRATCH_SLOTS", "STATE_REBUILT_ATTRS",
     "STATE_SERIALIZED_ATTRS", "STATE_SETUP_ARRAYS", "STATE_SETUP_SCALARS",
@@ -2877,6 +3194,7 @@ __all__ = [
     "root_external_lbc_clock_identity",
     "read_restart_header", "require_tree_checkpoint_legal",
     "restart_filename", "restore_restart", "restore_tree_restart",
+    "lateral_boundary_prefix_identity", "setup_core_fingerprint",
     "setup_fingerprint", "state_manifest", "write_restart",
     "write_tree_restart",
 ]

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::derived::NativeContourRenderMode;
 use crate::places::PlaceLabelOverlay;
 use crate::publication::{ArtifactContentIdentity, PublishedFetchIdentity};
-use crate::shared_context::DomainSpec;
+use crate::shared_context::{DomainSpec, TitleProvenance};
 use crate::source::ProductSourceRoute;
 
 use super::planning::PlannedDirectRecipe;
@@ -72,6 +72,9 @@ pub struct DirectBatchRequest {
     pub subtitle_left_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subtitle_right_override: Option<String>,
+    /// Where these frames came from, for the headline parenthetical.
+    #[serde(default)]
+    pub title_provenance: TitleProvenance,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
