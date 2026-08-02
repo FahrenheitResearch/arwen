@@ -135,19 +135,43 @@ def main() -> int:
             expected_sha256=bundle.sha256,
             label=bundle.filename,
         )
+        # A bundle carries the eight binaries AND the renderer's map assets --
+        # that is the whole point of the asset half, since a bridge binary
+        # without its basemaps draws weather over a blank rectangle.  This
+        # membership test predates the assets and compared against the binary
+        # pins alone, so it refused every bundle the current packer produces.
+        # It is not enough to widen it to "at least the binaries": a bundle
+        # must contain exactly what the release pinned and nothing else, so
+        # both halves are named and the equality is kept.
+        assert bundle.assets, (platform, "bundle pins no map assets")
+        expected_members = (
+            {pin.filename for pin in bundle.binaries}
+            | {pin.path for pin in bundle.assets}
+        )
         with zipfile.ZipFile(archive_path) as archive:
-            assert set(archive.namelist()) == {
-                pin.filename for pin in bundle.binaries
-            }
+            members = set(archive.namelist())
+            assert members == expected_members, (
+                platform,
+                f"unexpected: {sorted(members - expected_members)}",
+                f"missing: {sorted(expected_members - members)}",
+            )
             for pin in bundle.binaries:
                 payload = archive.read(pin.filename)
                 assert len(payload) == pin.bytes, (platform, pin.filename)
-                assert hashlib.sha256(payload).hexdigest() == pin.sha256
+                assert hashlib.sha256(payload).hexdigest() == pin.sha256, (
+                    platform, pin.filename)
+            for pin in bundle.assets:
+                payload = archive.read(pin.path)
+                assert len(payload) == pin.bytes, (platform, pin.path)
+                assert hashlib.sha256(payload).hexdigest() == pin.sha256, (
+                    platform, pin.path)
         bundle_receipts[platform] = {
             "filename": bundle.filename,
             "bytes": bundle.bytes,
             "sha256": bundle.sha256,
-            "members": len(bundle.binaries),
+            "members": len(bundle.binaries) + len(bundle.assets),
+            "binaries": len(bundle.binaries),
+            "assets": len(bundle.assets),
         }
 
     offer = bridges.prebuilt_bundle_offer()
