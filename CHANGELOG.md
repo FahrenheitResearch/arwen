@@ -76,9 +76,8 @@ Three themes:
   wheel measures 74.6 MiB against PyPI's 100 MB per-file cap and the
   asset tree deflates to 20.2 MiB, so putting them in the wheel would
   leave about half a megabyte of headroom before uploads start being
-  rejected. It is also the safer placement, because the binary and its
-  map data can no longer arrive separately -- which is exactly how a
-  cyclone with no coastline got drawn.
+  rejected. It is also the safer placement: the binary and its map
+  data can no longer arrive separately.
 
 - **An unrecognized `[case_data]` key refuses instead of being
   dropped.** This was the third appearance of one defect, and the most
@@ -115,8 +114,7 @@ Three themes:
 - **A renderer with no map data now says so instead of drawing a blank
   rectangle.** Missing basemap assets caused no failure, no warning and
   no non-zero exit — the weather was drawn over an empty frame and
-  reported as success, which is how a tropical cyclone with no
-  coastline was delivered as a finished product. The state is still
+  reported as success. The state is still
   reachable after upgrading if bridges were staged under 1.4.0 and
   never re-staged, so the check runs at render time against the
   renderer's own resolution ladder and prints one line naming the
@@ -527,9 +525,9 @@ one that outlives the run directory, the one `gpuwm downscale` reads
 back and the one the pictures are made from -- carried nothing: a run
 initialized from a cycle's 174 h forecast and a run initialized from
 that cycle's analysis produced the same global-attribute set, differing
-only in the model clock. Separate a chart from its run directory, which
-is exactly what publishing it does, and the provenance was gone
-silently.
+only in the model clock. Separated from its run directory, as happens
+whenever a chart is published on its own, a frame carried no record of
+what it was initialized from.
 
 Every `wrfout` now states what its initial state WAS as well as when its
 clock began: `GPUWM_INITIAL_CONDITION_KIND`, `_SOURCE`, `_CYCLE`,
