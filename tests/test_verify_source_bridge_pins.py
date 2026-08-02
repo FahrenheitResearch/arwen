@@ -100,7 +100,22 @@ def test_publish_workflow_has_one_draft_publication_ingress() -> None:
     assert "/git/ref/tags/" in text
     assert "/git/tags/" in text
     assert "RELEASE_COMMIT" in text
-    assert "immutable' <<<\"$after\")\" != \"true\"" in text
+    # Immutability is opt-in rather than a hard gate: it is a repository
+    # setting with no API to set it, and every release through v1.4.0 shipped
+    # without it, so refusing the cut over it blocked a working publication.
+    # What must not quietly disappear is the enforcement itself, so all three
+    # parts are pinned -- the read, the opt-in branch, and the hard failure
+    # inside it.  Deleting any one of them turns a confirmed claim into a
+    # comment.
+    assert "after_immutable=$(jq -r '.immutable' <<<\"$after\")" in text
+    assert 'if [ "$IMMUTABLE_RELEASES_CONFIRMED" = "true" ]; then' in text
+    assert 'if [ "$after_immutable" != "true" ]; then' in text
+    assert (
+        "immutability was confirmed at dispatch but GitHub reports the "
+        "published release as mutable"
+    ) in text
+    # ...and the un-opted-in path reports rather than asserting.
+    assert "immutability was not opted into for this cut" in text
     assert "\n  release:\n" in text
     assert "needs: [cut, publish]" in text
     assert "is already public at the captured id" in text
