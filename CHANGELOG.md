@@ -39,9 +39,9 @@ Three themes:
 - **`--products wind10` returns a wind map.** On the rust engine it
   returned `mslp_10m_winds` -- a mean-sea-level PRESSURE analysis with
   barbs drawn over it -- while the matplotlib engine's `wind10` drew a
-  real wind map. The asymmetry left an operator without a wind map
-  during an active wildfire. The catalog had no standalone surface-wind
-  chart to point at, so one was written:
+  real wind map, so the same flag gave different products depending on
+  the engine. The catalog had no standalone surface-wind chart to point
+  at, so one was written:
   `10m_wind_speed_and_direction`, speed fill plus barbs and streamlines
   from one frame, on its own 0-60 kt scale with no mask (the MSLP
   overlay's ramp blanks below 10 kt and would draw an empty map on a
