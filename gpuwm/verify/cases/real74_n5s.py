@@ -43,7 +43,15 @@ ETA_LEVELS = (
 N5S_START_TIME = datetime(1974, 4, 3, 12, 0, 0)
 N5S_FORCING_INTERVAL_SECONDS = 6 * 60 * 60
 N5S_SOIL_LAYERS = 4
-REFLECTIVITY_MICROPHYSICS = frozenset((1, 6, 8, 10, 18))
+#: 28 (Thompson aerosol-aware) is admitted on the same grounds as 8: WRF's
+#: ``calc_refl10cm`` has no ``is_aerosol_aware`` arm and takes no droplet
+#: number (module_mp_thompson.F:5710-5711), and gpuwm's mp=28 adapter stages
+#: the field through the identical ``compute_and_stash_refl_10cm`` seam, so
+#: an mp=28 shadow run produces the same one-frame handoff an mp=8 one does.
+#: Leaving 28 out here would not skip a diagnostic -- it would leave a
+#: computed field unconsumed, which ``refl.py``'s consume-once contract then
+#: raises on at the NEXT history frame.
+REFLECTIVITY_MICROPHYSICS = frozenset((1, 6, 8, 10, 18, 28))
 
 # Every science-field entry below has one explicit gpuwm consumer.  The
 # importer is intentionally closed-world: variables outside these inventories
@@ -74,6 +82,14 @@ MOISTURE_MAP = {
     "QICE": "qi", "QSNOW": "qs", "QGRAUP": "qg",
     "QNRAIN": "nr", "QNICE": "ni", "QNSNOW": "ns",
     "QNGRAUPEL": "ng", "QNCLOUD": "nc",
+    # mp_physics=28 (Thompson aerosol-aware).  QNCLOUD is already above --
+    # Morrison declares the same Registry name -- but for mp=28 it stops
+    # being an optional diagnosed field and becomes a REQUIRED prognostic
+    # (see MP28_REQUIRED_QNCLOUD below).  QNWFA/QNIFA are new here; WRF
+    # declares them as scalars with the input stream in their IO string
+    # (Registry/registry.new3d_wif:87-90, ``i0rhusdf=(bdy_interp:dt)``), so
+    # real.exe writes them into wrfinput exactly as it writes QNRAIN.
+    "QNWFA": "nwfa", "QNIFA": "nifa",
 }
 
 # NSSL reuses several WRF Registry names carried by Morrison, but the state
@@ -103,6 +119,26 @@ ICE_MASS_WRFINPUT = ("QICE", "QSNOW", "QGRAUP")
 MORRISON_NUMBER_WRFINPUT = ("QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL")
 MORRISON_OPTIONAL_MOISTURE_WRFINPUT = ("QNCLOUD",)
 THOMPSON_NUMBER_WRFINPUT = ("QNRAIN", "QNICE")
+#: mp_physics=28 adds the prognostic droplet number and the two aerosol
+#: number tracers to classic Thompson's two moments.  All three are
+#: transported scalars in WRF's own Registry (Registry.EM_COMMON:3036's
+#: ``scalar:qni,qnr,qnc,qnwfa,qnifa,qnbca``; qnbca is out of scope, WRF only
+#: activates it at wif_input_opt=2, module_mp_thompson.F:3983-3988) and all
+#: three carry the wrfinput stream in their IO strings
+#: (Registry.EM_COMMON:542 for QNCLOUD, registry.new3d_wif:87-90 for
+#: QNWFA/QNIFA).  Unlike Morrison's QNCLOUD -- which WRF diagnoses and gpuwm
+#: therefore treats as optional -- an mp=28 wrfinput that lacked QNCLOUD
+#: would start every column at nc = 0, and WRF's terminal clamp
+#: (module_mp_thompson.F:3976) would silently hold it at 2/rho rather than
+#: raising.  Required, not optional.
+THOMPSON_AEROSOL_NUMBER_WRFINPUT = ("QNRAIN", "QNICE", "QNCLOUD",
+                                    "QNWFA", "QNIFA")
+#: The schemes for which QNCLOUD is a required prognostic rather than the
+#: optional diagnosed Morrison field.  Consulted by
+#: :func:`_restore_active_moisture`, whose "missing is tolerated" branch
+#: keys on ``MORRISON_OPTIONAL_MOISTURE_WRFINPUT`` alone and would otherwise
+#: extend Morrison's exemption to mp=28.
+MP28_REQUIRED_QNCLOUD = frozenset({28})
 NSSL_MOISTURE_WRFINPUT = (
     "QHAIL", "QNDROP", "QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL",
     "QNHAIL", "QNCCN", "QVGRAUPEL", "QVHAIL",
@@ -362,7 +398,7 @@ def _active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
         raise TypeError("cfg.mp_physics must be an integer")
     moist = bool(cfg.moist)
     mp_physics = int(cfg.mp_physics)
-    if mp_physics not in (0, 1, 6, 8, 10, 18):
+    if mp_physics not in (0, 1, 6, 8, 10, 18, 28):
         raise ValueError(
             f"unsupported active wrfinput mp_physics={mp_physics}")
     if not moist:
@@ -371,10 +407,14 @@ def _active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
                 f"mp_physics={mp_physics} requires cfg.moist=True")
         return frozenset(), frozenset()
     required = BASE_MOISTURE_WRFINPUT
-    if mp_physics in (6, 8, 10, 18):
+    if mp_physics in (6, 8, 10, 18, 28):
         required += ICE_MASS_WRFINPUT
     if mp_physics == 8:
         required += THOMPSON_NUMBER_WRFINPUT
+    elif mp_physics == 28:
+        # Thompson aerosol-aware: classic Thompson's two moments plus the
+        # prognostic droplet number and the two aerosol tracers.
+        required += THOMPSON_AEROSOL_NUMBER_WRFINPUT
     elif mp_physics == 10:
         required += MORRISON_NUMBER_WRFINPUT
     elif mp_physics == 18:
@@ -508,6 +548,14 @@ def _first(raw: Mapping[str, np.ndarray], names: Sequence[str], *,
 def _restore_active_moisture(state, raw: Mapping[str, np.ndarray], cfg,
                              array_module) -> None:
     """Restore the scheme-native moisture fields and their RK ``*0`` copies."""
+    # The QNCLOUD exemption is Morrison's alone (WRF diagnoses cloud number
+    # there).  For mp=28 QNCLOUD is the prognostic droplet number the whole
+    # scheme turns on, and a wrfinput without it must fail here rather than
+    # start every column at WRF's 2/rho terminal clamp floor
+    # (module_mp_thompson.F:3976), which is finite, bounded and wrong.
+    optional_moisture = frozenset(MORRISON_OPTIONAL_MOISTURE_WRFINPUT)
+    if cfg is not None and int(cfg.mp_physics) in MP28_REQUIRED_QNCLOUD:
+        optional_moisture = frozenset()
     state_names = []
     for wrf_name, state_name in _active_moisture_map(cfg).items():
         target = getattr(state, state_name, None)
@@ -520,7 +568,7 @@ def _restore_active_moisture(state, raw: Mapping[str, np.ndarray], cfg,
             _expect_shape(wrf_name, raw[wrf_name], target.shape)
             target[...] = array_module.asarray(
                 raw[wrf_name], dtype=array_module.float32)
-        elif wrf_name not in MORRISON_OPTIONAL_MOISTURE_WRFINPUT:
+        elif wrf_name not in optional_moisture:
             raise ValueError(
                 f"WRF input lacks active mp_physics={cfg.mp_physics} "
                 f"field {wrf_name}")

@@ -67,6 +67,16 @@ Classic Thompson (mp_physics=8) uses ``calc_refl10cm`` from
 moment distribution and wet-snow Blahak integration, and its private
 same-call classic-graupel number moment.  That graupel moment is supplied as
 an output-due scratch shadow; it is not transported model state.
+
+Aerosol-aware Thompson (mp_physics=28) uses the SAME routine with the same
+inputs.  ``calc_refl10cm`` is not duplicated or specialized in WRF: one
+subroutine serves both packages, it takes no droplet-number argument, and
+its only cloud-water local is dead (see :func:`compute_refl_10cm`).  So
+REFL_10CM under mp=28 is a function of qv/qr/nr/qs/qg/T/p exactly as it is
+under mp=8, and the prognostic ``nc`` that defines mp=28 has no influence on
+it whatsoever.  This is the one user-facing product field the aerosol port
+adds no new numerics to, and stating that is more useful than a branch that
+implies otherwise.
 """
 
 from __future__ import annotations
@@ -457,20 +467,40 @@ def compute_refl_10cm(
     standalone diagnostic over the current state, but production history
     output uses the explicit microphysics-time pair (PROVENANCE.md D2).
     Dispatches like ``microphysics.apply``: 1 = Kessler fallback, 6 =
-    WSM6 ``refl10cm_wsm6``, 8 = classic Thompson ``calc_refl10cm``, and
+    WSM6 ``refl10cm_wsm6``, 8 and 28 = Thompson ``calc_refl10cm``, and
     10 = Morrison ``refl10cm_hm``.  Thompson requires its output-due private
     graupel-number scratch through ``thompson_graupel_number``.  Results
     land in the persistent
     ``refl_10cm`` scratch slot and are returned.
+
+    mp=28 shares the mp=8 branch VERBATIM, and that is WRF's own structure,
+    not a convenience.  ``calc_refl10cm``
+    (module_mp_thompson.F:5710-6028) is ONE routine with no
+    ``is_aerosol_aware`` branch, reached from the single call site
+    ``mp_gt_driver:1458`` -- which is itself gated only on
+    ``diagflag .and. do_radar_ref == 1`` (:1449), never on the scheme.
+    Its complete argument list
+    (:5710-5711) is ``qv1d, qc1d, qr1d, nr1d, qs1d, qg1d, ng1d, qb1d, t1d,
+    p1d, dBZ, kts, kte, ii, jj, ke_diag``: no ``nc1d``, no ``nwfa``, no
+    ``nifa`` anywhere in the routine's 319 lines.  Cloud water enters only
+    as ``rc(k) = MAX(R1, qc1d(k)*rho(k))`` at :5764, and ``rc`` is READ
+    NOWHERE ELSE in the routine -- it is a dead local, so no cloud-water and
+    no droplet-number information reaches any of the four Rayleigh sums.
+    The prognostic droplet number that distinguishes mp=28 from mp=8
+    therefore contributes EXACTLY ZERO to REFL_10CM in WRF, and a future
+    "improvement" folding cloud water or nc into the sum would be a
+    divergence from WRF, not a refinement.  Pinned by
+    ``tests/test_mp28_runnable.py::
+    test_refl_10cm_is_bit_identical_under_two_very_different_nc_fields``.
     """
     import cupy as cp
 
     from gpuwm.core import constants as c
     from gpuwm.core.state import DTYPE
 
-    if cfg.mp_physics not in (1, 6, 8, 10):
+    if cfg.mp_physics not in (1, 6, 8, 10, 28):
         raise ValueError("do_radar_ref needs an active microphysics scheme "
-                         f"(mp_physics 1, 6, 8, or 10), got "
+                         f"(mp_physics 1, 6, 8, 10, or 28), got "
                          f"{cfg.mp_physics}")
     if state.qv is None:
         raise ValueError("reflectivity requires a moist state")
@@ -500,17 +530,22 @@ def compute_refl_10cm(
                                  state.qs, state.ns, state.qg, state.ng,
                                  t, p, refl,
                                  morr_rimed_ice=cfg.morr_rimed_ice)
-    elif cfg.mp_physics == 8:
+    elif cfg.mp_physics in (8, 28):
+        # ONE branch for both Thompson schemes.  See the docstring: WRF's
+        # calc_refl10cm has no aerosol-aware arm and reads no droplet
+        # number, so a separate mp=28 branch could only ever differ from
+        # WRF.  The required-field list is identical too -- mp=28 allocates
+        # a strict superset of mp=8's state.
         missing = [name for name in ("qr", "nr", "qs", "qg")
                    if getattr(state, name, None) is None]
         if missing:
             raise ValueError(
-                "mp_physics=8 reflectivity lacks Thompson fields: "
-                + ", ".join(missing))
+                f"mp_physics={cfg.mp_physics} reflectivity lacks Thompson "
+                "fields: " + ", ".join(missing))
         if thompson_graupel_number is None:
             raise ValueError(
-                "mp_physics=8 reflectivity requires the same-call classic "
-                "graupel number shadow")
+                f"mp_physics={cfg.mp_physics} reflectivity requires the "
+                "same-call classic graupel number shadow")
         launch_refl10cm_thompson(
             state.qv, state.qr, state.nr, state.qs, state.qg,
             thompson_graupel_number, t, p, refl)

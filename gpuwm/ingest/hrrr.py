@@ -601,6 +601,38 @@ class _CpuMaskedBilinearStencil:
         return np.asarray(result, dtype=np.float32)
 
 
+#: Exact nearest-donor distances are measured per unresolved point when
+#: the fallback search fails; beyond this many failing points the domain
+#: is misplaced rather than under-radiused, and the measurement (whose
+#: cost is points x valid cells) says nothing a placement fix needs.
+_DONOR_ANALYSIS_MAX_POINTS = 512
+
+
+class SurfaceDonorSearchError(ValueError):
+    """No surface-matched donor within the configured fallback radius.
+
+    Carries the facts remediation has to be computed from: the failing
+    target cells and the smallest integer radius whose donor disk
+    reaches a valid source cell for all of them (``None`` when the
+    window holds no valid donor at any radius, or when the failure is
+    too large for per-point measurement).  The stencil builder is
+    generic and states facts only; the caller that knows WHICH grid was
+    being mapped -- and where its window sits on the native HRRR grid --
+    turns them into advice validated against the coverage guard.
+    """
+
+    def __init__(self, message, *, fallback_radius_cells,
+                 required_radius_cells, unresolved_targets):
+        super().__init__(message)
+        self.fallback_radius_cells = int(fallback_radius_cells)
+        self.required_radius_cells = (
+            None if required_radius_cells is None
+            else int(required_radius_cells))
+        self.unresolved_targets = tuple(
+            tuple(int(index) for index in target)
+            for target in unresolved_targets)
+
+
 def _build_masked_bilinear_stencil(
         x, y, source_valid, target_apply, *, fallback_radius=8):
     """Build a convex, surface-type-aware bilinear stencil on the CPU.
@@ -681,10 +713,29 @@ def _build_masked_bilinear_stencil(
                 donor_y[improve] = candidate_y[improve]
                 best_distance2[improve] = distance2[improve]
         if np.any(donor_x < 0):
-            unresolved = int(np.count_nonzero(donor_x < 0))
-            raise ValueError(
+            unresolved_mask = donor_x < 0
+            unresolved = int(np.count_nonzero(unresolved_mask))
+            unresolved_targets = tuple(zip(*np.unravel_index(
+                flat_missing[unresolved_mask], x.shape)))
+            # The smallest integer radius whose donor disk reaches a
+            # valid cell for EVERY failing point -- measured, so the
+            # refusal's remediation can be validated instead of guessed.
+            required_radius = None
+            valid_cells_y, valid_cells_x = np.nonzero(source_valid)
+            if valid_cells_y.size and unresolved <= _DONOR_ANALYSIS_MAX_POINTS:
+                worst_distance2 = max(
+                    float(np.min((valid_cells_x - point_x) ** 2
+                                 + (valid_cells_y - point_y) ** 2))
+                    for point_x, point_y in zip(
+                        missing_x[unresolved_mask],
+                        missing_y[unresolved_mask]))
+                required_radius = int(np.ceil(np.sqrt(worst_distance2)))
+            raise SurfaceDonorSearchError(
                 f"no valid surface-matched HRRR donor within "
-                f"{fallback_radius} cells for {unresolved} target point(s)")
+                f"{fallback_radius} cells for {unresolved} target point(s)",
+                fallback_radius_cells=fallback_radius,
+                required_radius_cells=required_radius,
+                unresolved_targets=unresolved_targets)
         flat_x = indices_x.reshape(4, -1)
         flat_y = indices_y.reshape(4, -1)
         flat_weights = weights.reshape(4, -1)
@@ -819,6 +870,100 @@ def _require_source_physical_ranges(source: Mapping[str, np.ndarray]) -> None:
 #: coastal-domain owner nothing about WHICH of four independently mapped
 #: boundary strips, on which domain, was being talked about.
 DEFAULT_SOIL_TARGET_NAME = "the HRRR target grid"
+
+
+def _validated_donor_remediation(error: SurfaceDonorSearchError,
+                                 snapshot: HrrrNativeSnapshot,
+                                 target_name: str,
+                                 target_shape: tuple[int, int]) -> str:
+    """Advice that survives the guard it names, computed before printing.
+
+    Field 2026-08: a fitter-maximum 3 km root sat with its radius-8
+    source window exactly on HRRR's native top edge, two land cells had
+    no donor within 8 cells, and the refusal recommended raising
+    ``surface_fallback_radius_cells`` -- a setting the coverage guard
+    (``required_hrrr_source_window``) refuses at ANY sufficient value
+    there, because a larger radius enlarges the required window past
+    the native edge.  Advice is therefore checked against the same
+    limits first:
+
+    * the radius that reaches a donor for every unfilled cell was
+      measured by the stencil builder;
+    * the window a raise needs is contained in this snapshot's window
+      grown by the radius increase on every side (the fallback bound
+      moves cell-for-cell with the radius, the parabolic bound not at
+      all), so when THAT stays inside the native grid the guard
+      provably accepts the raise;
+    * otherwise the raise is named impossible and the computed trim is
+      printed instead: removing exactly the rows or columns that carry
+      the unfillable cells changes no remaining cell's donor disk, so
+      the trimmed domain maps for precisely the reason this one could
+      not, and its smaller window passes the guard by construction.
+    """
+    from gpuwm.ingest.hrrr_target import (HRRR_SOURCE_NX, HRRR_SOURCE_NY,
+                                          SURFACE_FALLBACK_RADIUS_MAX)
+
+    move = ("move the domain so its land sits inside HRRR's land "
+            "coverage")
+    required = error.required_radius_cells
+    if required is None:
+        return ("Raising surface_fallback_radius_cells cannot help: the "
+                "decoded HRRR source window holds no surface-matched "
+                f"donor for these cells at any radius.  Instead, {move}.")
+
+    growth = required - error.fallback_radius_cells
+    grown_i = (snapshot.i_start - growth,
+               snapshot.i_start + snapshot.nx - 1 + growth)
+    grown_j = (snapshot.j_start - growth,
+               snapshot.j_start + snapshot.ny - 1 + growth)
+    overflows = [
+        (side, gap) for side, gap in (
+            ("west", -grown_i[0]),
+            ("east", grown_i[1] - (HRRR_SOURCE_NX - 1)),
+            ("south", -grown_j[0]),
+            ("north", grown_j[1] - (HRRR_SOURCE_NY - 1)),
+        ) if gap > 0]
+    if required <= SURFACE_FALLBACK_RADIUS_MAX and not overflows:
+        return (f"Raising surface_fallback_radius_cells to {required} "
+                "reaches a surface-matched donor for every unfilled "
+                "cell, and the enlarged source window (within "
+                f"i={grown_i[0]}..{grown_i[1]}, "
+                f"j={grown_j[0]}..{grown_j[1]}) stays inside the native "
+                f"HRRR grid i=0..{HRRR_SOURCE_NX - 1}, "
+                f"j=0..{HRRR_SOURCE_NY - 1}, so the coverage guard "
+                f"accepts it.  Alternatively, {move}.")
+
+    if overflows:
+        named = ", ".join(f"{gap} cell(s) at its {side} edge"
+                          for side, gap in overflows)
+        reason = (f"the enlarged source window would leave the native "
+                  f"HRRR grid i=0..{HRRR_SOURCE_NX - 1}, "
+                  f"j=0..{HRRR_SOURCE_NY - 1} by {named}, so the "
+                  "coverage guard refuses that setting")
+    else:
+        reason = (f"that exceeds the supported maximum of "
+                  f"{SURFACE_FALLBACK_RADIUS_MAX}")
+    advice = (f"Raising surface_fallback_radius_cells cannot work here: "
+              f"the nearest donors need radius {required}, and {reason}.")
+
+    rows = [target[0] for target in error.unresolved_targets
+            if len(target) == 2]
+    cols = [target[1] for target in error.unresolved_targets
+            if len(target) == 2]
+    if rows and len(rows) == len(error.unresolved_targets):
+        target_rows, target_cols = int(target_shape[0]), int(target_shape[1])
+        trim, side = min(
+            (target_rows - min(rows), "north (j-max)"),
+            (max(rows) + 1, "south (j-min)"),
+            (target_cols - min(cols), "east (i-max)"),
+            (max(cols) + 1, "west (i-min)"),
+        )
+        advice += (f"  What works: trim {trim} cell(s) from its {side} "
+                   f"side, which removes every unfillable land cell of "
+                   f"{target_name}, or {move}.")
+    else:
+        advice += f"  Instead, {move}."
+    return advice
 
 
 def _record_soil_field_stats(report, name, source, candidate,
@@ -977,19 +1122,22 @@ def interpolate_hrrr_to_lambert(
         land_stencil = mass_plan.masked_bilinear_stencil(
             source_land, target_land,
             fallback_radius=surface_fallback_radius)
-    except ValueError as error:
+    except SurfaceDonorSearchError as error:
         # The one soil case that genuinely cannot be mapped: this target
         # has land cells and the HRRR window has no land within reach of
-        # them.  The stencil builder is generic and counts the points;
-        # only here is it known WHICH grid was being mapped, which is
-        # the whole difference between an actionable refusal and a
-        # coastal-domain owner guessing at four identical-looking
-        # boundary strips.
+        # them.  The stencil builder is generic and measures the facts;
+        # only here is it known WHICH grid was being mapped and where
+        # its window sits on the native HRRR grid, which is the whole
+        # difference between an actionable refusal and one whose advice
+        # the coverage guard refuses -- the field met exactly that: a
+        # recommended radius raise that could never pass
+        # required_hrrr_source_window on a fitter-maximum domain.
         raise ValueError(
             f"HRRR soil mapping for {target_name} cannot fill its land "
-            f"cells: {error}.  Either move the domain so its land is "
-            "inside HRRR's land coverage, or raise the catalog's "
-            "surface_fallback_radius_cells") from error
+            f"cells: {error}.  "
+            + _validated_donor_remediation(
+                error, snapshot, target_name, target_land.shape)
+        ) from error
     out: dict[str, object] = {}
     for name in (
             "PRES", "HGT", "TT",

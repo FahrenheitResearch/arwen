@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 import hashlib
 import json
 import math
@@ -20,6 +21,54 @@ TARGET_DOMAIN_SCHEMA = "gpuwm-hrrr-target-domain-v1"
 # the canonical HRRR GRIB mass grid and Rust bridge contract nx=1799/ny=1059.
 HRRR_SOURCE_NX = 1799
 HRRR_SOURCE_NY = 1059
+
+#: The largest surface-donor search radius any target-domain policy may
+#: declare.  Both the domain document and the window override enforce
+#: it, and validated remediation advice (gpuwm/ingest/hrrr.py) must not
+#: recommend a raise beyond it.
+SURFACE_FALLBACK_RADIUS_MAX = 64
+
+
+@lru_cache(maxsize=1)
+def hrrr_coverage_envelope() -> tuple[float, float, float, float]:
+    """``(south, west, north, east)``: the lat/lon envelope of the native
+    HRRR mass grid, computed from the grid definition itself.
+
+    THE one HRRR coverage definition.  ``gpuwm fetch``'s ``--area`` gate
+    and ``gpuwm domain``'s suggested fetch box both consume this (via
+    :func:`gpuwm.fetch.source_coverage_envelope`), so the two sides of
+    that contract cannot disagree the way the retired hand-held box in
+    gpuwm/fetch.py (lat 21.1..52.7, lon -134.2..-60.8) disagreed with a
+    wizard box that clamped only at the pole: the real grid tops out at
+    52.6157 N -- north of every mass point the 52.70 cap admitted, and
+    south of the 54.39 a fitted 3 km CONUS root's margined box named.
+
+    Computed over the boundary ring of the 1799 x 1059 mass grid, which
+    is exact, not an approximation: the projected north pole lies
+    outside the grid rectangle, latitude is monotone in projected
+    distance from the pole point and longitude in angle around it, so
+    every lat/lon extreme over the (convex) rectangle is attained on
+    its boundary.  A full-grid scan agrees to the last bit
+    (tests/test_fetch.py).
+    """
+
+    # Local import, matching required_hrrr_source_window: hrrr.py also
+    # consumes target geometry, so a module-scope import would be a cycle.
+    from gpuwm.ingest.hrrr import hrrr_source_grid
+
+    grid = hrrr_source_grid()
+    # One-based mass coordinates, as LambertGrid registers them.
+    i = np.arange(1, HRRR_SOURCE_NX + 1, dtype=np.float64)
+    j = np.arange(1, HRRR_SOURCE_NY + 1, dtype=np.float64)
+    ring_x = np.concatenate((i, i, np.full(j.size, 1.0),
+                             np.full(j.size, float(HRRR_SOURCE_NX))))
+    ring_y = np.concatenate((np.full(i.size, 1.0),
+                             np.full(i.size, float(HRRR_SOURCE_NY)), j, j))
+    latitude, longitude = grid.ij_to_latlon(ring_x, ring_y)
+    if not (np.isfinite(latitude).all() and np.isfinite(longitude).all()):
+        raise ValueError("HRRR native grid produced a non-finite envelope")
+    return (float(latitude.min()), float(longitude.min()),
+            float(latitude.max()), float(longitude.max()))
 
 
 @dataclass(frozen=True)
@@ -124,10 +173,11 @@ class HrrrTargetDomain:
             raise ValueError("Lambert target requires dx_m == dy_m")
         if self.time_step_seconds <= 0:
             raise ValueError("target-domain time_step_seconds must be positive")
-        if not 0 <= self.surface_fallback_radius_cells <= 64:
+        if not (0 <= self.surface_fallback_radius_cells
+                <= SURFACE_FALLBACK_RADIUS_MAX):
             raise ValueError(
                 "target-domain surface_fallback_radius_cells must be in "
-                "[0, 64]")
+                f"[0, {SURFACE_FALLBACK_RADIUS_MAX}]")
         if not -89.0 < self.ref_lat < 89.0:
             raise ValueError("target-domain ref_lat must be inside (-89, 89)")
         if not -180.0 <= self.ref_lon <= 180.0:
@@ -255,8 +305,10 @@ def required_hrrr_source_window(
         raise TypeError("target must be HrrrTargetDomain or LambertGrid")
     radius = (declared_radius if surface_fallback_radius is None
               else int(surface_fallback_radius))
-    if not 0 <= radius <= 64:
-        raise ValueError("surface_fallback_radius must be in [0, 64]")
+    if not 0 <= radius <= SURFACE_FALLBACK_RADIUS_MAX:
+        raise ValueError(
+            "surface_fallback_radius must be in "
+            f"[0, {SURFACE_FALLBACK_RADIUS_MAX}]")
     if (isinstance(target, HrrrTargetDomain)
             and surface_fallback_radius is not None
             and radius != declared_radius):
@@ -335,9 +387,11 @@ def required_hrrr_source_window(
 __all__ = [
     "HRRR_SOURCE_NX",
     "HRRR_SOURCE_NY",
+    "SURFACE_FALLBACK_RADIUS_MAX",
     "HrrrSourceWindow",
     "HrrrTargetDomain",
     "TARGET_DOMAIN_SCHEMA",
+    "hrrr_coverage_envelope",
     "load_hrrr_target_domain",
     "required_hrrr_source_window",
 ]

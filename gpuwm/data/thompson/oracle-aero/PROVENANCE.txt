@@ -1,0 +1,96 @@
+# WRF v4.6.1 aerosol-aware (mp_physics=28) column-oracle receipt
+# Written by tools/thompson_wrf461_oracle/build_aero.sh.
+
+[wrf_source]
+commit = d66e442fccc04111067e29274c9f9eaccc3cef28
+tag = v4.6.1
+origin = https://github.com/wrf-model/WRF.git
+phys/module_mp_thompson.F = fabf19e2a9073cff886e882b187080bfdf089d3fd40c0fce1d19bc93b1e5e802
+phys/module_mp_radar.F = aa99da858be41efa579966680708d230123a7417560af0eb2e24f4c94e253688
+
+[aerosol_asset]
+CCN_ACTIVATE.BIN = f2b8d3916560f9046f89f8ac5f32c5292a1800498fd75301e422f147c82a3dbd
+CCN_ACTIVATE.BIN.bytes = 35288
+
+[harness_source]
+build_aero.sh = 42380220e4d3fb148cc155cda848fa278876dcc5d5ef3d2312fdd8f544de0b79
+stub_wrf.F90 = cbc95d1c823a7cfc5aa8bc0841e9058d235b21d6a0261f2814a98325ff02520f
+generate_tables.F90 = 700d50933a94a7ca0dab7e26e8ee1e215401c2dc3069dbda5aad9e439aecac96
+dump_ccn_table.F90 = 917e3687d541fecb966ab22885313848de5772882a75b08a927b3385021c0631
+probe_aero_functions.F90 = b0a04eb0dc5872d31c60d895743cbeaf7b905bce3d2c09255a530beb1c89d9ca
+run_column_aero.F90 = aae65226b508131e571a91b74d5a70b7d8a60543dd7e27148086c4d30d88e1a4
+
+[toolchain]
+fortran = GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+libc = ldd (Ubuntu GLIBC 2.39-0ubuntu8.8) 2.39
+uname = Linux 6.8.0-79-generic x86_64
+opt_flags = -O2 -fno-tree-vectorize
+compile = gfortran -c -O2 -fno-tree-vectorize -ffree-form -ffree-line-length-none SOURCE
+compile_thompson = gfortran -c -O2 -fno-tree-vectorize -cpp -DWRF_CHEM=0 -ffree-form -ffree-line-length-none SOURCE
+link = gfortran -O2 -fno-tree-vectorize -o PROGRAM stub_wrf.o module_mp_radar.o module_mp_thompson.o PROGRAM.o
+libmvec_symbols = 0
+
+[binaries]
+dump_ccn_table = 1d42dcc8d5369d1f173682514de1e818634ec15fa29ec99ce270eaa59b9b2b35
+probe_aero_functions = 31a8930ebf61887dc3894c91d35cfd6d1197c366bb71fd6115609481c48fccd1
+run_column_aero = 55147cd540bf100666d30e47cbd5f01190da9a410156a772fd3b6815403c5b30
+
+[table_cache]
+qr_acr_qg_V4.dat = 89b779855847b2acdca1b40e24c5f1bd89b0c6ed105ca91a5a076d80c2437c3f
+qr_acr_qsV2.dat = 47350be20bd59c9f31378dd5805ce7d35fd14bebcfafb4ade56626f6eed818d7
+freezeH2O.dat = c235d1ce6f8750a671b2273d0e216ed3acf9a869bfd52a14676826f87aab5c02
+
+[fixtures]
+count = 49
+rollup = 5c1a6d2680c6beb54249ca103ed7045ab67e960779572de27fa6e8e5aa68a419
+
+[fixture_sha256]
+aero-ccn-activate-column.csv = 9295a75c12c0c9ddfe5b919b5f7e19e66c82624b53c6e1aea8078eecdd723fd6
+aero-ccn-activate-surface.csv = d63d04e2ad83e9f9a58157330cdede06f588954ee7116ccfe6ef0dd4409e5b89
+aero-ccn-sweep-column.csv = e2a1cba0b2279e9881513175870e424e4ecec868b55488719be796bfad2c71a5
+aero-ccn-sweep-surface.csv = c1c977748263f99fbf15a6583f6d1360768b96d5e809812333dd8b11b771ee2f
+aero-cloud-freeze-nc-column.csv = 70aa2d9018b204cb0cfffba6c6b342a5e6d8e94b81ac793ef86dbc4d76213946
+aero-cloud-freeze-nc-surface.csv = 3f700e29cafbf7d0ba29b685a1919f750abf61b9c7a67726b50f3e2edf1a3f49
+aero-cold-overlap-column.csv = 435b8dfb048b9678195d8467be6f179ffb30035360c7fce8da039083f22c4bd7
+aero-cold-overlap-surface.csv = 6665a634473b3e02ae0e7b9e59082a66aceacf051a70efc973a0353ed993a06e
+aero-drop-evap-column.csv = 5b4e7cd7f8c4cdbc66ac41f82eb41ebb2979da9ec26d3264f0fe7a5106e67b3a
+aero-drop-evap-surface.csv = 0ce8b25baa58203a1cac55a0365a717721e95fb798392d042c87ac0857f9dbd7
+aero-ice-demott-dep-column.csv = ce1fc81caa1ff3c974829f12a29ee704a1fdfe905a099dd223a20d53b4a4329f
+aero-ice-demott-dep-surface.csv = f1c3a117a50e9eae8dbe8f1da3ac8962f15dd012609341b26215a56043835d2d
+aero-ice-demott-idxin-column.csv = 2a6f9f5cc35d93ef54e11423022462b7cfbf88927c5e9f097153d2816334ff11
+aero-ice-demott-idxin-surface.csv = f663390dead6c90963f19ea4839113dfc7802bb1fed95b50a51001b50b2f0286
+aero-ice-koop-column.csv = 7099b8f4bf08801601b73a5c67ca30155f8eb959ed4271f5c792372b06eaf1ab
+aero-ice-koop-surface.csv = c9c93fd20f131a1b1938fd9147d3b48d2eeba4529dc081892cecd209c496e83c
+aero-init-profile-column.csv = a0c6d616057ddb3eac8cb4fde6ee26501d922747ffbe06a3263fe361bde1ea7e
+aero-init-profile-surface.csv = 8a6da0aa7e59b644d0d7ee8f2dcbd3da669e04e4d9a74c012838b8db2aae292f
+aero-nc-accrete-column.csv = 3dfcb6be029c1996e5553170a418c09530117b2c84256893fffb2c3a8581b645
+aero-nc-accrete-surface.csv = c88f680c676074bdc1a3db965d037a36a45823ee4f29afbfe840af27522d9c88
+aero-nc-auto-column.csv = 86f88c7161d0d6081fd00a75425548f0acd8d706c25a65b05926821f213f7e74
+aero-nc-auto-surface.csv = e3f83d62225ff09fa83cccdf2d31d951d154e864fd8ad5fe1454a8a6e6cd54fa
+aero-nc-cap-column.csv = 5a1520172beb659e7f549f0ebd94c8537bba3c822208debb546bb34e30b5647f
+aero-nc-cap-surface.csv = d7b707ed18a94eab300a14e50ff82be1c80f75992310fe7add186ad2f2d130fe
+aero-nc-effrad-column.csv = 72f31cb7ed4df8b17f8bc7d070e379851de820008a4fe54f9245cc895f6e80a6
+aero-nc-effrad-surface.csv = f4dff57cfafd408072b02e78d77c5d8a1c7051c6407e5479d8c948fc8295efd3
+aero-nc-sed-column.csv = e5110d0ea0b6ecccd58a3affa00ff0e7617523b2f2cda639cc4f0360b6a3f6b7
+aero-nc-sed-surface.csv = 7a10ca880a52f80090214efa4cc4022277b4ac2623a7d7929a7329b4affa5ebe
+aero-reduces-to-classic-column.csv = 5a5e29dc7350597f1bdd07b7e8c079083ef0d4fb82ac3a53a322cd802106923b
+aero-reduces-to-classic-surface.csv = 816ab75df1acf1b3c335dba37110fae0a9fceb444280c5258688e37b1f1cbad6
+aero-scav-frozen-column.csv = 9a0b0fb5dd68b29af1bebbe00fedf27c40e2d3e7f2be7b62cb7b85b0abd64e19
+aero-scav-frozen-surface.csv = b28d899cb78c020d61f494bd67d29f871721ff2d04a7653f7bbea940fd1cbc6e
+aero-scav-rain-column.csv = b68c0317e57c8290c6d514ef203a47fbbaafa3530208cdd3949439682b359557
+aero-scav-rain-surface.csv = dda0e50c640d4ce830bfaf2d0ab5ae6f0ec18fa3206346e66c4a398438f8472a
+aero-sfc-emit-column.csv = 1848c1b10889e84e6f33c3288562ad33912440ae6fc68d2918ac67f36498666e
+aero-sfc-emit-surface.csv = c47bbcc221c098ff10ffd240b27afea4243b6bd3fb4ff8105f369215582f2a14
+aero-warm-overlap-column.csv = fefa65da5bf16041082ff8b464dfb0958bb834fff789dac46ae016311bbf5abc
+aero-warm-overlap-surface.csv = bcda43e7471e0c27cabffad0bdfe3d9d447b95bd8dbc7ab5e56c513fa36d539c
+probe-activncloud.csv = b1b8d97d52d0a8052c89520e46254ce80145b63054e2e9fda9291e23362bf57c
+probe-effaero.csv = 46d91ce78f1ce84c65354b9e781f395c9d52ee10ece2a176a9a623b3ae4d049f
+probe-effectrad.csv = 0413894242c1b2079ef67364c155f8ff02e0d07a824cdcdc7a960bc70f8ca15a
+probe-icedemott.csv = 842332b29eee1be7bd065922a177da50cc05c6038c219c4e1cb68e5e419fd371
+probe-icekoop.csv = 08e4a07b362cec87682590c80f6474423dadc8f98f126c6988e789efa4c22b7e
+wp08-freeze-column.csv = 9dbf215c6d2fb04a935fb89e2f99c078734d4e743591b0303d4054ac38e60947
+wp08-freeze-surface.csv = c35601da807a5bdf29358363d8215229457b658089b85428967968b8d1b1d800
+wp08-melt-column.csv = fb25e3f0aaf7e00b3df2f8714d9309bdd1c639322ef076636948e5345798a259
+wp08-melt-surface.csv = d7819d6d17be730d71a70d7494164fbf6b97711d90a3ebba4b53699af8057b70
+wp08-nusweep-column.csv = 642666cae89ae60bc80d8fedfc4657bacf9068577c8201a9db2ff570ab7f5837
+wp08-nusweep-surface.csv = c0b0923927aa1d06ab4f952f7cd1e6bfd6fe1a264a0bd25801ceecfce371d176

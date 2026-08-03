@@ -1,0 +1,768 @@
+{
+  "boundary": {
+    "absent_sides": [
+      "candidate",
+      "reference"
+    ],
+    "domains": {},
+    "reason": "no lateral-boundary file staged on the candidate and reference side",
+    "status": "unavailable"
+  },
+  "covered_groups": [
+    "dry_dynamics",
+    "moisture"
+  ],
+  "domains": {
+    "d01": {
+      "groups": {
+        "accumulation": {
+          "aggregate": null,
+          "required": false,
+          "scored_arrays": 0,
+          "status": "unavailable",
+          "unscored": {
+            "ACSNOM": "absent from candidate",
+            "ACSNOW": "absent from candidate",
+            "GRAUPELNC": "absent from candidate",
+            "HAILNC": "absent from candidate",
+            "I_RAINC": "absent from candidate",
+            "I_RAINNC": "absent from candidate",
+            "RAINC": "absent from candidate",
+            "RAINNC": "absent from candidate",
+            "RAINSH": "absent from candidate",
+            "SFROFF": "absent from candidate",
+            "SNOWNC": "absent from candidate",
+            "UDROFF": "absent from candidate"
+          },
+          "variables": {},
+          "verdict": null
+        },
+        "diagnostic": {
+          "aggregate": null,
+          "required": false,
+          "scored_arrays": 0,
+          "status": "unavailable",
+          "unscored": {
+            "CLDFRA": "absent from candidate",
+            "EXCH_H": "absent from candidate",
+            "GLW": "absent from candidate",
+            "GRDFLX": "absent from candidate",
+            "HFX": "absent from candidate",
+            "LH": "absent from candidate",
+            "LWDNB": "absent from candidate",
+            "LWUPB": "absent from candidate",
+            "OLR": "absent from candidate",
+            "PBLH": "absent from candidate",
+            "QFX": "absent from candidate",
+            "REFL_10CM": "absent from candidate",
+            "SWDNB": "absent from candidate",
+            "SWDOWN": "absent from candidate",
+            "SWUPB": "absent from candidate",
+            "TKE_PBL": "absent from candidate"
+          },
+          "variables": {},
+          "verdict": null
+        },
+        "dry_dynamics": {
+          "aggregate": {
+            "count": 2932800,
+            "max_ulp": 0,
+            "mean_signed_ulp": 0.0,
+            "p99_ulp": 0,
+            "pass": true,
+            "reason": null
+          },
+          "required": true,
+          "scored_arrays": 6,
+          "status": "scored",
+          "unscored": {
+            "AL": "absent from candidate",
+            "ALB": "absent from candidate",
+            "MUB": "absent from candidate",
+            "P": "absent from candidate",
+            "PB": "absent from candidate",
+            "PHB": "absent from candidate",
+            "P_HYD": "absent from candidate",
+            "T_INIT": "absent from candidate"
+          },
+          "variables": {
+            "MU": {
+              "count": 14400,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                120,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            },
+            "PH": {
+              "count": 590400,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                41,
+                120,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            },
+            "T": {
+              "count": 576000,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                40,
+                120,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            },
+            "U": {
+              "count": 580800,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                40,
+                120,
+                121
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            },
+            "V": {
+              "count": 580800,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                40,
+                121,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            },
+            "W": {
+              "count": 590400,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                41,
+                120,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            }
+          },
+          "verdict": "PASS"
+        },
+        "moisture": {
+          "aggregate": {
+            "count": 6336000,
+            "max_ulp": 0,
+            "mean_signed_ulp": 0.0,
+            "p99_ulp": 0,
+            "pass": true,
+            "reason": null
+          },
+          "required": true,
+          "scored_arrays": 11,
+          "status": "scored",
+          "unscored": {
+            "QHAIL": "absent from candidate",
+            "QNBCA": "absent from candidate",
+            "QNGRAUPEL": "absent from candidate",
+            "QNHAIL": "absent from candidate",
+            "QNSNOW": "absent from candidate",
+            "QVOLG": "absent from candidate",
+            "QVOLH": "absent from candidate"
+          },
+          "variables": {
+            "QCLOUD": {
+              "count": 576000,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                40,
+                120,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            },
+            "QGRAUP": {
+              "count": 576000,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                40,
+                120,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            },
+            "QICE": {
+              "count": 576000,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                40,
+                120,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            },
+            "QNCLOUD": {
+              "count": 576000,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                40,
+                120,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            },
+            "QNICE": {
+              "count": 576000,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                40,
+                120,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            },
+            "QNIFA": {
+              "count": 576000,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                40,
+                120,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            },
+            "QNRAIN": {
+              "count": 576000,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                40,
+                120,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            },
+            "QNWFA": {
+              "count": 576000,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                40,
+                120,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            },
+            "QRAIN": {
+              "count": 576000,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                40,
+                120,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            },
+            "QSNOW": {
+              "count": 576000,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                40,
+                120,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            },
+            "QVAPOR": {
+              "count": 576000,
+              "max_abs_diff": 0.0,
+              "max_ulp": 0,
+              "mean_signed_ulp": 0.0,
+              "p99_ulp": 0,
+              "pass": true,
+              "reason": null,
+              "shape": [
+                40,
+                120,
+                120
+              ],
+              "signed_ulp_extrema": [
+                0,
+                0
+              ]
+            }
+          },
+          "verdict": "PASS"
+        },
+        "soil": {
+          "aggregate": null,
+          "required": true,
+          "scored_arrays": 0,
+          "status": "unavailable",
+          "unscored": {
+            "CANWAT": "absent from candidate",
+            "DZS": "absent from candidate",
+            "LANDMASK": "absent from candidate",
+            "SEAICE": "absent from candidate",
+            "SH2O": "absent from candidate",
+            "SMCREL": "absent from candidate",
+            "SMOIS": "absent from candidate",
+            "SNOW": "absent from candidate",
+            "SNOWALB": "absent from candidate",
+            "SNOWH": "absent from candidate",
+            "TMN": "absent from candidate",
+            "TSLB": "absent from candidate",
+            "ZS": "absent from candidate"
+          },
+          "variables": {},
+          "verdict": null
+        },
+        "surface": {
+          "aggregate": null,
+          "required": true,
+          "scored_arrays": 0,
+          "status": "unavailable",
+          "unscored": {
+            "ALBBCK": "absent from candidate",
+            "ALBEDO": "absent from candidate",
+            "COSALPHA": "absent from candidate",
+            "E": "absent from candidate",
+            "EMISS": "absent from candidate",
+            "F": "absent from candidate",
+            "HGT": "absent from candidate",
+            "ISLTYP": "absent from candidate",
+            "IVGTYP": "absent from candidate",
+            "LAI": "absent from candidate",
+            "LU_INDEX": "absent from candidate",
+            "MAPFAC_M": "absent from candidate",
+            "MAPFAC_U": "absent from candidate",
+            "MAPFAC_V": "absent from candidate",
+            "MOL": "absent from candidate",
+            "PSFC": "absent from candidate",
+            "Q2": "absent from candidate",
+            "SINALPHA": "absent from candidate",
+            "SNOWC": "absent from candidate",
+            "SST": "absent from candidate",
+            "T2": "absent from candidate",
+            "TH2": "absent from candidate",
+            "TSK": "absent from candidate",
+            "U10": "absent from candidate",
+            "UST": "absent from candidate",
+            "V10": "absent from candidate",
+            "VEGFRA": "absent from candidate",
+            "XICE": "absent from candidate",
+            "XLAND": "absent from candidate",
+            "XLAT": "absent from candidate",
+            "XLAT_U": "absent from candidate",
+            "XLAT_V": "absent from candidate",
+            "XLONG": "absent from candidate",
+            "XLONG_U": "absent from candidate",
+            "XLONG_V": "absent from candidate",
+            "ZNT": "absent from candidate"
+          },
+          "variables": {},
+          "verdict": null
+        }
+      },
+      "scored_carriers": 17,
+      "valid_time": "0001-01-01_00_30_00"
+    }
+  },
+  "evaluator_commit": "555f0498cd1f74cb4bbaee95b8b982d221e20ef3",
+  "inputs": [
+    {
+      "domain": "d01",
+      "name": "wrfout_d01_0001-01-01_00_30_00",
+      "role": "wrfout",
+      "sha256": "a22ca8a3722e897f09dcccbe17b7bf3ae0838a16a28ec7553203a49fa494183b",
+      "side": "candidate",
+      "size_bytes": 37158630,
+      "valid_time": "0001-01-01_00_30_00"
+    },
+    {
+      "domain": "d01",
+      "name": "wrfout_d01_0001-01-01_00_30_00",
+      "role": "wrfout",
+      "sha256": "c7984ef2c5c912d94cdabac970854c74761920662a7b952bd18281bd7f07a402",
+      "side": "reference",
+      "size_bytes": 127629995,
+      "valid_time": "0001-01-01_00_30_00"
+    }
+  ],
+  "records": [
+    [
+      "d01",
+      "MU"
+    ],
+    [
+      "d01",
+      "PH"
+    ],
+    [
+      "d01",
+      "QCLOUD"
+    ],
+    [
+      "d01",
+      "QGRAUP"
+    ],
+    [
+      "d01",
+      "QICE"
+    ],
+    [
+      "d01",
+      "QNCLOUD"
+    ],
+    [
+      "d01",
+      "QNICE"
+    ],
+    [
+      "d01",
+      "QNIFA"
+    ],
+    [
+      "d01",
+      "QNRAIN"
+    ],
+    [
+      "d01",
+      "QNWFA"
+    ],
+    [
+      "d01",
+      "QRAIN"
+    ],
+    [
+      "d01",
+      "QSNOW"
+    ],
+    [
+      "d01",
+      "QVAPOR"
+    ],
+    [
+      "d01",
+      "T"
+    ],
+    [
+      "d01",
+      "U"
+    ],
+    [
+      "d01",
+      "V"
+    ],
+    [
+      "d01",
+      "W"
+    ]
+  ],
+  "registration": {
+    "boundary_file_pattern": "^wrfbdy_d(?P<domain>\\d{2})$",
+    "boundary_group": {
+      "description": "lateral-boundary value and tendency tables, discovered from the staged boundary file",
+      "discovery_pattern": "^(?P<field>[A-Z0-9_]+?)_B(?P<tendency>T?)(?P<side>XS|XE|YS|YE)$",
+      "name": "boundary",
+      "required": false,
+      "status_values": [
+        "scored",
+        "unavailable"
+      ]
+    },
+    "carrier_groups": {
+      "accumulation": {
+        "description": "precipitation and runoff accumulators",
+        "required": false,
+        "variables": [
+          "RAINC",
+          "RAINNC",
+          "RAINSH",
+          "SNOWNC",
+          "GRAUPELNC",
+          "HAILNC",
+          "ACSNOW",
+          "ACSNOM",
+          "SFROFF",
+          "UDROFF",
+          "I_RAINC",
+          "I_RAINNC"
+        ]
+      },
+      "diagnostic": {
+        "description": "radiative, flux and boundary-layer diagnostics",
+        "required": false,
+        "variables": [
+          "REFL_10CM",
+          "SWDOWN",
+          "GLW",
+          "OLR",
+          "SWDNB",
+          "SWUPB",
+          "LWDNB",
+          "LWUPB",
+          "HFX",
+          "LH",
+          "QFX",
+          "GRDFLX",
+          "PBLH",
+          "CLDFRA",
+          "EXCH_H",
+          "TKE_PBL"
+        ]
+      },
+      "dry_dynamics": {
+        "description": "prognostic wind, geopotential, perturbation potential temperature and the dry-air mass column, with their base states",
+        "required": true,
+        "variables": [
+          "U",
+          "V",
+          "W",
+          "PH",
+          "PHB",
+          "T",
+          "T_INIT",
+          "MU",
+          "MUB",
+          "P",
+          "PB",
+          "ALB",
+          "AL",
+          "P_HYD"
+        ]
+      },
+      "moisture": {
+        "description": "water-substance mixing ratios and number concentrations",
+        "required": true,
+        "variables": [
+          "QVAPOR",
+          "QCLOUD",
+          "QRAIN",
+          "QICE",
+          "QSNOW",
+          "QGRAUP",
+          "QHAIL",
+          "QNCLOUD",
+          "QNICE",
+          "QNRAIN",
+          "QNSNOW",
+          "QNGRAUPEL",
+          "QNHAIL",
+          "QNWFA",
+          "QNIFA",
+          "QNBCA",
+          "QVOLG",
+          "QVOLH"
+        ]
+      },
+      "soil": {
+        "description": "soil column, snowpack and canopy storage",
+        "required": true,
+        "variables": [
+          "TSLB",
+          "SMOIS",
+          "SH2O",
+          "SMCREL",
+          "ZS",
+          "DZS",
+          "TMN",
+          "SNOW",
+          "SNOWH",
+          "SNOWALB",
+          "CANWAT",
+          "SEAICE",
+          "LANDMASK"
+        ]
+      },
+      "surface": {
+        "description": "near-surface diagnostics, skin state and the static surface characterization",
+        "required": true,
+        "variables": [
+          "T2",
+          "Q2",
+          "TH2",
+          "PSFC",
+          "U10",
+          "V10",
+          "TSK",
+          "SST",
+          "HGT",
+          "XLAND",
+          "LU_INDEX",
+          "IVGTYP",
+          "ISLTYP",
+          "VEGFRA",
+          "LAI",
+          "ALBEDO",
+          "ALBBCK",
+          "EMISS",
+          "ZNT",
+          "UST",
+          "MOL",
+          "XICE",
+          "SNOWC",
+          "F",
+          "E",
+          "SINALPHA",
+          "COSALPHA",
+          "XLAT",
+          "XLONG",
+          "XLAT_U",
+          "XLONG_U",
+          "XLAT_V",
+          "XLONG_V",
+          "MAPFAC_M",
+          "MAPFAC_U",
+          "MAPFAC_V"
+        ]
+      }
+    },
+    "ceilings": {
+      "max_ulp": 8,
+      "mean_signed_ulp_max_abs": 0.25,
+      "p99_ulp": 2,
+      "source": "gpuwm.verify.nest_gates"
+    },
+    "comparator": {
+      "kind": "fp32_state_equiv",
+      "module": "gpuwm.verify.state_equiv",
+      "report_function": "fp32_state_equiv_report",
+      "ulp_function": "fp32_signed_ulp"
+    },
+    "frame_pattern": "^wrfout_d(?P<domain>\\d{2})_(?P<stamp>\\d{4}-\\d{2}-\\d{2}[_:]\\d{2}[_:]\\d{2}[_:]\\d{2})$",
+    "schema": "gpuwm.t0-state-digest/v1"
+  },
+  "registration_sha256": "148b8442ec6367c8433e08df6e01a47e9469a18766b363e2332e7cd498c287fa",
+  "schema": "gpuwm.t0-state-digest/v1",
+  "uncovered_required_groups": [
+    "surface",
+    "soil"
+  ],
+  "verdict": "PASS"
+}

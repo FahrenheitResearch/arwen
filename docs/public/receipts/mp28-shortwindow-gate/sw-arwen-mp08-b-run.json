@@ -1,0 +1,26 @@
+{
+ "model": "gpuwm",
+ "mp_physics": 8,
+ "nx": 120,
+ "ny": 120,
+ "nz": 40,
+ "dx": 2000.0,
+ "dt": 12.0,
+ "steps": 50,
+ "frame_steps": 5,
+ "wrfinput": "mp28sw/runs/ic-mp08/wrfinput_d01",
+ "wrfinput_attrs": {
+  "TITLE": " OUTPUT FROM IDEAL V4.6.1 PREPROCESSOR",
+  "MP_PHYSICS": "8",
+  "DIFF_OPT": "2",
+  "KM_OPT": "4",
+  "DAMP_OPT": "3",
+  "DT": "2.0"
+ },
+ "p_top": 5717.49072265625,
+ "mub": 94272.8046875,
+ "microphysics_init_receipt": {},
+ "wall_seconds": 2.7279903888702393,
+ "cupy": "14.1.1",
+ "device": "NVIDIA GeForce RTX 5090"
+}

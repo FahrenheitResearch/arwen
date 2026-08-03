@@ -5,6 +5,9 @@ from target-native bundle bytes before building the supported wheel and
 sdist. GitHub's automatic source archives, however, are snapshots of the
 tagged tree. Their packaged pins document must therefore stay explicitly
 unpinned instead of pointing at a candidate or a different release.
+
+Kept as a hard gate by owner ruling 2026-08-03: the failure mode is a source
+archive impersonating pinned release bytes.
 """
 
 from __future__ import annotations

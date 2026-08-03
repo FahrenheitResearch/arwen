@@ -144,6 +144,17 @@ PHYSICS_PROFILES = (
     MYNN_NOAHMP_PHYSICS_PROFILE,
 )
 SUPPORTED_SOURCES = frozenset({"gfs", "era5", "20crv3"})
+
+#: ``mp_physics`` values whose microphysics call stages a scheme-native
+#: REFL_10CM field, i.e. exactly ``gpuwm.runtime.REFL_10CM_MICROPHYSICS``.
+#: Duplicated rather than imported: ``gpuwm.runtime`` pulls in the GRIB,
+#: static-geography and ERA5 ingest stack, and this runner deliberately
+#: imports none of it.  The duplication is held equal by
+#: ``tests/test_mp28_runtime_reachability.py``, which imports both and
+#: asserts they are the same set -- and which fails on ANY surviving
+#: ``mp_physics in (1, 6, 8, 10, 18)`` literal anywhere under ``gpuwm/``,
+#: so a fifth copy of this gate cannot be added silently.
+REFL_10CM_MICROPHYSICS = (1, 6, 8, 10, 18, 28)
 _SOURCE_PHYSICS_PROFILES = MappingProxyType({
     # REPORTED METADATA, NOT A GATE (owner ruling 2026-07-31): these
     # per-source lists name the shipped profiles whose verification
@@ -3477,7 +3488,7 @@ def _consume_due_native_refl_10cm(state, ticks: int, consumer):
     """Consume the scheme-native field staged by an output-due MP call."""
 
     if (ticks != 0 and state.qv is not None
-            and state.physics.mp_physics in (1, 6, 8, 10, 18)):
+            and state.physics.mp_physics in REFL_10CM_MICROPHYSICS):
         return consumer(state)
     return None
 
@@ -3528,6 +3539,9 @@ def run_prepared_forecast(
 
     from gpuwm.core.clock import build_schedule, resolve_clock
     from gpuwm.core.dycore import stability_gate_failed, stability_report
+    from gpuwm.core.gpu_mem_watch import (
+        GpuPeakMemoryWatcher, default_cupy_probes,
+    )
     from gpuwm.core.health import StateHealthValidator
     from gpuwm.core.model import (
         DomainNode, ExperimentState, ModelRuntimeStatus, execute_experiment,
@@ -3610,15 +3624,14 @@ def run_prepared_forecast(
             f"prepared forecast initial health failed: {initial_health}")
 
     history = []
-    gpu_peak_used = 0
-    pool_peak_total = 0
-
-    def record_memory():
-        nonlocal gpu_peak_used, pool_peak_total
-        free, total = cp.cuda.runtime.memGetInfo()
-        gpu_peak_used = max(gpu_peak_used, int(total - free))
-        pool_peak_total = max(
-            pool_peak_total, int(cp.get_default_memory_pool().total_bytes()))
+    # Boundary-only sampling under-reported the peak: the executor trims
+    # the CuPy pool per STEP and at period commit BEFORE the progress
+    # callback fires, so samples taken only in those callbacks missed
+    # the intra-step transient working set (19.41 GiB reported against
+    # 22.34 GiB true on the four-domain tree shape).  The watcher polls
+    # from a daemon thread as well, and the boundary/end-of-run
+    # sample() calls below fold into the same maxima.
+    memory_watch = GpuPeakMemoryWatcher(default_cupy_probes())
 
     writers = PerDomainWrfoutWriters(
         model, outdir / "wrfout", start_time=exp.start_time,
@@ -3670,14 +3683,14 @@ def run_prepared_forecast(
         # later default-stream mutation, so zeroing here cannot race the
         # staged copy.
         reset_up_heli_max(current.state)
-        record_memory()
+        memory_watch.sample()
 
     def progress_callback(**event):
         outer_step = int(event["outer_step"])
         elapsed = float(event["model_elapsed_seconds"])
         if outer_step == 1 or outer_step % 60 == 0 \
                 or elapsed == float(exp.run_seconds):
-            record_memory()
+            memory_watch.sample()
             durable_paths = writers.paths
             _atomic_json(progress_path, {
                 "schema": PROGRESS_SCHEMA,
@@ -3687,13 +3700,15 @@ def run_prepared_forecast(
                 "outer_step": outer_step,
                 "requested_run_seconds": float(exp.run_seconds),
                 "forecast_wall_seconds": time.perf_counter() - forecast_started,
-                "gpu_peak_used_bytes_observed": gpu_peak_used,
+                "gpu_peak_used_bytes_observed": memory_watch.peak_bytes(
+                    "cuda_device_used"),
                 "last_durable_wrfout": (
                     None if not durable_paths
                     else str(durable_paths[-1].resolve())),
             })
 
     try:
+        memory_watch.start()
         with writers:
             execution = execute_experiment(
                 model, history_handler=history_handler,
@@ -3709,8 +3724,9 @@ def run_prepared_forecast(
         timing["forecast_and_io_inclusive"] = (
             time.perf_counter() - forecast_started)
     finally:
+        memory_watch.stop()
         model._io_manager = None
-    record_memory()
+    memory_watch.sample()
 
     cadence_seconds = float(exp.root.history_interval_s)
     cadence_receipt = _validate_hash_bound_history_cadence(
@@ -3805,9 +3821,16 @@ def run_prepared_forecast(
             "rainnc_max_mm": float(cp.max(driver.microphysics.rainnc).get()),
         },
         "memory": {
-            "gpu_peak_used_bytes_observed": gpu_peak_used,
-            "cupy_pool_peak_total_bytes_observed": pool_peak_total,
+            "gpu_peak_used_bytes_observed": memory_watch.peak_bytes(
+                "cuda_device_used"),
+            "cupy_pool_peak_total_bytes_observed": memory_watch.peak_bytes(
+                "cupy_pool_total"),
+            "cupy_pool_peak_used_bytes_observed": memory_watch.peak_bytes(
+                "cupy_pool_used"),
             "cpu_peak_rss_bytes": _peak_rss_bytes(),
+            # What each number above actually measured, how often it was
+            # sampled, and whether observation stayed complete.
+            "gpu_peak_sampling": memory_watch.summary(),
         },
         "gridded_output": {
             "cadence_seconds": cadence_seconds,

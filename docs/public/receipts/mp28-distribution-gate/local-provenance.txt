@@ -1,0 +1,88 @@
+== local node (ArWen + gate evaluation) ==
+DESKTOP-6T8MA71
+NVIDIA GeForce RTX 5090, 610.74, 12.0
+Python 3.13.7
+numpy 2.2.6 netCDF4 1.7.4 cupy 14.0.1
+arwen source commit: d66ae147e6cc9d33e86c329789711417341bab86
+git status clean of tracked changes: 0 modified
+== table root ==
+f2b8d3916560f9046f89f8ac5f32c5292a1800498fd75301e422f147c82a3dbd *gpuwm/data/thompson/tables/CCN_ACTIVATE.BIN
+a1bda803cdb53aedce8a2970c04c355fad19e3744398e1c9b13a876f09730547 *gpuwm/data/thompson/tables/thompson_aux_tables.dat
+c235d1ce6f8750a671b2273d0e216ed3acf9a869bfd52a14676826f87aab5c02 *gpuwm/data/thompson/tables/freezeH2O.dat
+89b779855847b2acdca1b40e24c5f1bd89b0c6ed105ca91a5a076d80c2437c3f *gpuwm/data/thompson/tables/qr_acr_qg_V4.dat
+47350be20bd59c9f31378dd5805ce7d35fd14bebcfafb4ade56626f6eed818d7 *gpuwm/data/thompson/tables/qr_acr_qsV2.dat
+== canonical derived constants ==
+79250a4e6964f51539f0cd0e9332a6cf832d3baac948f307499bc62ae05a28ea *gpuwm/data/thompson/derived_constants_v1.npz
+derived sha: 21d142c1ebea8b2f28c446006d3cd34b032ef80b0e588350e7f4cac0bbef9720
+pin ok: True
+local libm drift: ('t_Nc',)
+== transferred inputs (post-transfer hashes) ==
+c0f461d33eeb6ecaddd4a2f7488aeabaaaf1d7b35394616b3f8a826f77c4bb0a *runs/ic-mp08/namelist.input
+231a2dc8c082de8ee8cbc9935a769cab6507dbb1e84ba41c98f3fc8baba6a6be *runs/ic-mp08/wrfinput_d01
+f148de3ae0e65239c7f4be858c1d8bd2918d1ae9636a3d8ef72df28d8386cc0b *runs/ic-mp28/namelist.input
+41fc5aad1bd0a7befd01fdccea52806c40d8c24c6eedee736483af4acf6986b7 *runs/ic-mp28/wrfinput_d01
+a2eca705c0be5bd1210bcf39ef082febeac40e3eef3dfab65786bf1eece9b5cd *runs/sw-wrf-mp08/namelist.input
+f3fba1abdaa386f39c17635c4394f9783434cde38fbf677b6a94dcf7a2592f53 *runs/sw-wrf-mp08/wrfout_d01_0001-01-01_00_30_00
+a355dd838973527fb53cbf8c27ba1eba5393e819c80f89305fab9f6cebbc109c *runs/sw-wrf-mp28/namelist.input
+d6b35b43ad9b7aea572bf7c5649fb91505bf24e46e5b141578af874463e54b9f *runs/sw-wrf-mp28/wrfout_d01_0001-01-01_00_30_00
+a2eca705c0be5bd1210bcf39ef082febeac40e3eef3dfab65786bf1eece9b5cd *runs/sw-wrf-novec-mp08/namelist.input
+235c151498feaa65757888801047ef3ad1c79c76b870dd8b09ae909bb14614d9 *runs/sw-wrf-novec-mp08/wrfout_d01_0001-01-01_00_30_00
+a355dd838973527fb53cbf8c27ba1eba5393e819c80f89305fab9f6cebbc109c *runs/sw-wrf-novec-mp28/namelist.input
+7016eda380d42e3b41ea7566eea94e44ef01f488d4f537e29edec10915e99c4e *runs/sw-wrf-novec-mp28/wrfout_d01_0001-01-01_00_30_00
+f3fba1abdaa386f39c17635c4394f9783434cde38fbf677b6a94dcf7a2592f53 *runs/sw-wrf-mp08/wrfout_d01_0001-01-01_00_30_00  [node2]
+d6b35b43ad9b7aea572bf7c5649fb91505bf24e46e5b141578af874463e54b9f *runs/sw-wrf-mp28/wrfout_d01_0001-01-01_00_30_00  [node2]
+235c151498feaa65757888801047ef3ad1c79c76b870dd8b09ae909bb14614d9 *runs/sw-wrf-novec-mp08/wrfout_d01_0001-01-01_00_30_00  [node2]
+7016eda380d42e3b41ea7566eea94e44ef01f488d4f537e29edec10915e99c4e *runs/sw-wrf-novec-mp28/wrfout_d01_0001-01-01_00_30_00  [node2]
+== arwen outputs ==
+a391c73c44c68b34c7e4f121df96421807c4f063edddcee2dd1fd0416d933eef *runs/sw-arwen-mp08-b/frame_t0.npz
+beacd25c0a943fe14e641b3894b3a2dba8681bbd3f4a4bb924e8c6aeda1600b5 *runs/sw-arwen-mp08-b/frame_t120.npz
+9289939fc33ba94adc341e63cd2115e8937bf07b3e9842ebe2251172a1d2d8d8 *runs/sw-arwen-mp08-b/frame_t180.npz
+a6c4efa33b6e67263553f279ba8276ed50429072ad17026e5a26f0bdec9eab36 *runs/sw-arwen-mp08-b/frame_t240.npz
+f47b338170bf15871051c5e1d072728f301229a9efcd9da8b997045319398056 *runs/sw-arwen-mp08-b/frame_t300.npz
+f567f44c42f24abacf228392d134f5856b21c93794898587c73c0a45069b1121 *runs/sw-arwen-mp08-b/frame_t360.npz
+9e52b1806ea3cc3329fb073e3e3352ed4f4f2ebf7f774a7ab6aa06d9fa8867dd *runs/sw-arwen-mp08-b/frame_t420.npz
+4e2b48571b3f56a79f8a95df899926174127f63d3f4a31e25d000473cae55f4e *runs/sw-arwen-mp08-b/frame_t480.npz
+df2ab84942da162daf22cfc1757d72541dc012d391f10dc7750a0c35b61eb995 *runs/sw-arwen-mp08-b/frame_t540.npz
+3281356900589dc407c1d25f996a3a0da06d15f7538769d02b010f3fe2702334 *runs/sw-arwen-mp08-b/frame_t60.npz
+ab62953c91a9a4af28b525a04015761d5ca4e064fd7423f5c8e792631b4f4ab2 *runs/sw-arwen-mp08-b/frame_t600.npz
+a391c73c44c68b34c7e4f121df96421807c4f063edddcee2dd1fd0416d933eef *runs/sw-arwen-mp08/frame_t0.npz
+beacd25c0a943fe14e641b3894b3a2dba8681bbd3f4a4bb924e8c6aeda1600b5 *runs/sw-arwen-mp08/frame_t120.npz
+9289939fc33ba94adc341e63cd2115e8937bf07b3e9842ebe2251172a1d2d8d8 *runs/sw-arwen-mp08/frame_t180.npz
+a6c4efa33b6e67263553f279ba8276ed50429072ad17026e5a26f0bdec9eab36 *runs/sw-arwen-mp08/frame_t240.npz
+f47b338170bf15871051c5e1d072728f301229a9efcd9da8b997045319398056 *runs/sw-arwen-mp08/frame_t300.npz
+f567f44c42f24abacf228392d134f5856b21c93794898587c73c0a45069b1121 *runs/sw-arwen-mp08/frame_t360.npz
+9e52b1806ea3cc3329fb073e3e3352ed4f4f2ebf7f774a7ab6aa06d9fa8867dd *runs/sw-arwen-mp08/frame_t420.npz
+4e2b48571b3f56a79f8a95df899926174127f63d3f4a31e25d000473cae55f4e *runs/sw-arwen-mp08/frame_t480.npz
+df2ab84942da162daf22cfc1757d72541dc012d391f10dc7750a0c35b61eb995 *runs/sw-arwen-mp08/frame_t540.npz
+3281356900589dc407c1d25f996a3a0da06d15f7538769d02b010f3fe2702334 *runs/sw-arwen-mp08/frame_t60.npz
+ab62953c91a9a4af28b525a04015761d5ca4e064fd7423f5c8e792631b4f4ab2 *runs/sw-arwen-mp08/frame_t600.npz
+34b50209e36a590ca5fd2b5fc21ba88bda5c9cdeab65c87b71769b6f43897840 *runs/sw-arwen-mp28-b/frame_t0.npz
+c9e8fa63420f278b7ac68947c36a5f9600ec161d0a3aa607a9c8c9f70bb7cebd *runs/sw-arwen-mp28-b/frame_t120.npz
+9fee88d285153b7b0fa88a2985d73630c29385ae8f3bb0e3d94aa6ae2bfc275a *runs/sw-arwen-mp28-b/frame_t180.npz
+a6b0cbc4366e77270548b5e9f79a1c2f7617fe935a4b5f353b00febe243e0416 *runs/sw-arwen-mp28-b/frame_t240.npz
+836e1d4c0e17414d59f53d08f21a8f923e32e79c233bf39d78b39ba38cb3bc08 *runs/sw-arwen-mp28-b/frame_t300.npz
+47e33132d5f9582bbdc5a38b018fb0be1a984129d464ea415a1e9f1cf460fb6e *runs/sw-arwen-mp28-b/frame_t360.npz
+565f72662a8cf9418279dbd71c7daeb4642f09124f505c7028a202d67f6c2399 *runs/sw-arwen-mp28-b/frame_t420.npz
+d6f35dc437c07b629ad03d49931dbad1838b9848efefc92c114ff20df0c26a89 *runs/sw-arwen-mp28-b/frame_t480.npz
+332e9eedaa8a4c8dfa4803856f85ba2e75a8d0fde5ed81e7b4515e7a76101f86 *runs/sw-arwen-mp28-b/frame_t540.npz
+9725e01b213a376338dd2c14957763afcd2d14469c3f01e24f3c05c9fe814dc8 *runs/sw-arwen-mp28-b/frame_t60.npz
+9f06be7e05d05cb480a04db311460e70bdf6717e7cc5129876a507e41768515a *runs/sw-arwen-mp28-b/frame_t600.npz
+34b50209e36a590ca5fd2b5fc21ba88bda5c9cdeab65c87b71769b6f43897840 *runs/sw-arwen-mp28/frame_t0.npz
+c9e8fa63420f278b7ac68947c36a5f9600ec161d0a3aa607a9c8c9f70bb7cebd *runs/sw-arwen-mp28/frame_t120.npz
+9fee88d285153b7b0fa88a2985d73630c29385ae8f3bb0e3d94aa6ae2bfc275a *runs/sw-arwen-mp28/frame_t180.npz
+a6b0cbc4366e77270548b5e9f79a1c2f7617fe935a4b5f353b00febe243e0416 *runs/sw-arwen-mp28/frame_t240.npz
+836e1d4c0e17414d59f53d08f21a8f923e32e79c233bf39d78b39ba38cb3bc08 *runs/sw-arwen-mp28/frame_t300.npz
+47e33132d5f9582bbdc5a38b018fb0be1a984129d464ea415a1e9f1cf460fb6e *runs/sw-arwen-mp28/frame_t360.npz
+565f72662a8cf9418279dbd71c7daeb4642f09124f505c7028a202d67f6c2399 *runs/sw-arwen-mp28/frame_t420.npz
+d6f35dc437c07b629ad03d49931dbad1838b9848efefc92c114ff20df0c26a89 *runs/sw-arwen-mp28/frame_t480.npz
+332e9eedaa8a4c8dfa4803856f85ba2e75a8d0fde5ed81e7b4515e7a76101f86 *runs/sw-arwen-mp28/frame_t540.npz
+9725e01b213a376338dd2c14957763afcd2d14469c3f01e24f3c05c9fe814dc8 *runs/sw-arwen-mp28/frame_t60.npz
+9f06be7e05d05cb480a04db311460e70bdf6717e7cc5129876a507e41768515a *runs/sw-arwen-mp28/frame_t600.npz
+dab83dba65f7bba8ae86aaf23365f9211ee93d1a082970ec349efdc0e39b13a5 *runs/sw-arwen-mp08-b/run.json
+e614a59c999947bad41a31dfd8c1c8971aeae6b01f709d060b177a01ccf1215b *runs/sw-arwen-mp08-b/series.json
+2f433d333bab064c533ab61bf0b31f4c8eb4a09149e2dc817c41e1689c5f0733 *runs/sw-arwen-mp08/run.json
+e614a59c999947bad41a31dfd8c1c8971aeae6b01f709d060b177a01ccf1215b *runs/sw-arwen-mp08/series.json
+830c1c45d481987f79d54c72a5ebe33a56559bbfc86894707958334903088fbe *runs/sw-arwen-mp28-b/run.json
+e28fda017c84afa90ffc1e8f9c494ae4d1dc9adeb6db46b0cd286d6f6ecbeb13 *runs/sw-arwen-mp28-b/series.json
+3162c01dbcd4eda74250be1cbeca642261460e70f627fed3d42ba515c4c660bc *runs/sw-arwen-mp28/run.json
+e28fda017c84afa90ffc1e8f9c494ae4d1dc9adeb6db46b0cd286d6f6ecbeb13 *runs/sw-arwen-mp28/series.json

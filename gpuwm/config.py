@@ -16,6 +16,11 @@ from gpuwm.physics_compat import (
 from collections.abc import Mapping as _Mapping
 from importlib import import_module as _import_module
 
+# The closure's two cross-layer constants.  Deliberately NOT
+# gpuwm.verify.sase_ref: that tree is developer verification and the
+# standalone CPU preprocessing distribution omits it.
+from gpuwm.core import sase_limits as _sase_limits
+
 DEFAULT_COLUMN_CHUNK = 3125
 
 
@@ -49,7 +54,8 @@ class RunConfig:
     hybrid_opt: int = 0          # 0/1 = B(eta)=eta (Phase 1); 2 = WRF cubic-B hybrid
     etac: float = 0.2
     moist: bool = False
-    # 0 off, 1 Kessler, 6 WSM6, 8 Thompson, 10 Morrison, 18 NSSL
+    # 0 off, 1 Kessler, 6 WSM6, 8 Thompson, 10 Morrison, 18 NSSL,
+    # 28 Thompson aerosol-aware (Registry/Registry.EM_COMMON:3036)
     mp_physics: int = 0
     moist_adv_opt: int = 1       # PD limiter on when moist
     # WRF no_mp_heating (Registry.EM_COMMON:2630, default 0): 1 disables
@@ -119,7 +125,7 @@ class RunConfig:
     sf_surface_physics: int = 0
     # --- Phase 3 (Task 11): planetary boundary layer physics.  The physics
     # driver arrives in Task 12; this option selects its PBL registry entry.
-    bl_pbl_physics: int = 0     # 0 = none, 1 = YSU
+    bl_pbl_physics: int = 0     # 0 = none, 1 = YSU, 5 = MYNN, 900 = SASE
     # WRF v4.6.1 Registry.EM_COMMON default; consumes radiative heating.
     ysu_topdown_pblmix: int = 1
     # --- Phase 4 (Task 1): non-timesplit radiation and cumulus slots.
@@ -347,6 +353,149 @@ class RunConfig:
     # Noah LSMINIT snow-albedo source.  True preserves the supplied geogrid
     # SNOALB field; false transcribes WRF's MAXALB(IVGTYP)*0.01 branch.
     rdmaxalb: bool = True
+    # --- km_opt=3 (3-D Smagorinsky) LES closure knobs, WRF's own names.
+    # Appended last to preserve positional construction (the config-freeze
+    # discipline); each default is WRF's Registry default, so every frozen
+    # km_opt=1/4 trajectory is unchanged.
+    #
+    # WRF mix_isotropic (Registry.EM_COMMON:2896, "0=anistropic,
+    # 1=isotropic", default 0): selects smag_km's mixing-length branch for
+    # km_opt=3 -- separate horizontal sqrt(dx*dy) / vertical dz lengths at
+    # 0, the single (dx*dy*dz)^(1/3) length at 1.  The em_les reference
+    # namelist sets 1.
+    mix_isotropic: int = 0
+    # WRF mix_upper_bound (Registry.EM_COMMON:2897, default 0.1): the
+    # non-dimensional K cap K <= mix_upper_bound * len^2 / dt applied per
+    # direction inside smag_km (module_diffusion_em.F:1890-1927).
+    mix_upper_bound: float = 0.1
+    # WRF tke_heat_flux / tke_drag_coefficient (Registry.EM_COMMON:
+    # 2900-2901, defaults 0., per-domain): the prescribed-flux lower
+    # boundary consumed by vertical_diffusion_2's SELECT CASE(isfflx)
+    # blocks under diff_opt=2 with the PBL off -- constant kinematic heat
+    # flux (K m s-1) for isfflx in {0,2}, constant drag coefficient for
+    # isfflx=0 (module_diffusion_em.F:4155-4200, :4286-4305).
+    tke_heat_flux: float = 0.0
+    tke_drag_coefficient: float = 0.0
+    # WRF c_k (Registry.EM_COMMON:2863, default 0.15): the TKE-closure
+    # exchange-coefficient constant K = c_k * sqrt(e) * l for km_opt=2.
+    # The em_les reference namelist sets 0.10 (README.les: recommended
+    # with LES).  Appended last per the config-freeze discipline.
+    c_k: float = 0.15
+    # WRF tke_upper_bound (Registry.EM_COMMON:2899, default 1000., per
+    # domain): the ceiling in ``bound_tke`` (dyn_em/module_em.F:2490-2520),
+    # which clamps the prognostic TKE into [0, tke_upper_bound] over the
+    # whole mass grid after EVERY rk_update_scalar pass
+    # (dyn_em/solve_em.F:2434-2440) -- on periodic domains too, not only
+    # at lateral boundaries.
+    tke_upper_bound: float = 1000.0
+    # Report-only per-step TKE budget accumulation (km_opt=2): writes the
+    # term-by-term decomposition into diagnostic scratch and reduces it on
+    # device once per step.  Trajectory-inert by construction -- it reads
+    # model state and writes only its own slots -- so it is a restart-
+    # boundary-adjustable diagnostic toggle exactly like nwp_diagnostics
+    # (gpuwm/io/restart.py CONFIG_DIAGNOSTIC_FIELDS).
+    tke_budget: int = 0
+    # --- Aerosol-aware Thompson (mp_physics=28) aerosol-source selectors ---
+    #
+    # Both defaults are WRF's own Registry defaults, and that is load-bearing
+    # rather than cosmetic: gpuwm/physics_compat.py's
+    # _SINGLE_DOMAIN_RUNTIME_SWITCHES rows are compared for EXACT equality by
+    # the prepared-forecast runner, so a nonzero default here would silently
+    # change every shipped profile.
+    #
+    # aer_init_opt -- Registry/Registry.EM_COMMON:2656, default 0.  WRF
+    # declares it ``derived`` (real.exe sets it from use_aero_icbc /
+    # use_rap_aero_icbc), not ``namelist``: 0 = no IC/BC aerosol, 1 = climo,
+    # 2 = first guess.  ArWen exposes it as a settable field ONLY so that a
+    # request for 1 or 2 is refused by name instead of being unrepresentable
+    # and therefore silently ignored.  0 is the only implemented value:
+    # 1 and 2 both read WIF fields real.exe interpolated from metgrid, and
+    # ArWen has no such ingest (see MP28_AEROSOL_SOURCE_DEVIATION).
+    aer_init_opt: int = 0
+    # wif_input_opt -- Registry/registry.new3d_wif:17, default 0.
+    # 0 = do not process the Water/Ice Friendly aerosol input from metgrid;
+    # 1 = use_wif_input; 2 = use_wif_input_bc, which additionally allocates
+    # the black-carbon scalar qnbca.  ArWen implements neither: there is no
+    # WIF metgrid stream and no nbca species anywhere in the port, so any
+    # nonzero value fails closed.
+    wif_input_opt: int = 0
+    # --- SASE closure knobs (bl_pbl_physics = SASE_PBL_SCHEME only).
+    # Appended last, per the config-freeze discipline in
+    # tests/test_config_freeze.py.  Every one is FAIL-CLOSED on its
+    # NON-DEFAULT value: the default is admitted under every PBL scheme,
+    # so no existing configuration moves, and the non-default is refused
+    # anywhere it would name a seam that does not exist.
+    #
+    # Split subgrid-flux diagnostic (output-only, per domain).  True adds
+    # four face-registered history fields recording the closure's own
+    # vertical subgrid fluxes with the conditional-venting channel
+    # separated from the K_v implicit-diffusion channel.  It reads no
+    # prognostic and writes none, so the prognostic state is bitwise
+    # identical either way; per domain because the cost scales with the
+    # grid (four planes per frame).
+    sase_flux_diag: bool = False
+    # Moist-N2 substitution (physics selector, run-wide).  True is the
+    # closure as built: the saturated Brunt-Vaisala N^2_m replaces the dry
+    # N^2 at the stability lengths, the subgrid-energy buoyancy source and
+    # the K_v/K_h stability suppression.  False consumes the dry N^2 at
+    # all three points, isolating the diffusion channel from the venting
+    # channel.  Not a per-domain override: a nest whose domains ran
+    # different closures could not be compared across its own boundary.
+    sase_moist_n2: bool = True
+    # Stable-limb dissipation decoupling (physics selector, run-wide).
+    # True rides the Deardorff lambda << Delta dissipation coefficient
+    # where the stability length binds the dissipation length, instead of
+    # the neutral-wall value.  DEFAULT FALSE FOR A MEASURED REASON, not
+    # merely for caution: with it True the closure's own registered
+    # stable-boundary-layer calibration gate exits its observation band
+    # (tests/test_sase.py::
+    # test_jet_decoupling_stable_dissipation_exits_obs_band pins that
+    # RED).  What is falsified is the PAIR of stable-limb coefficients,
+    # which enter the stability ratio jointly; neither may be
+    # re-registered or tuned alone.  Do not flip this default without
+    # that joint re-registration.
+    sase_stable_dissipation: bool = False
+    # SASE S3-12 ADDITIVE e^{3/2} DISSIPATION CHANNEL.  True ADDS the
+    # second, grid-scale member of Deardorff's length-dependent
+    # coefficient (C_ED = 0.51) to whichever base the key above selects,
+    # divided by a STATE-INDEPENDENT reference length.  Where the
+    # stability length binds, HEAD's subgrid-energy equation is exactly
+    # homogeneous in e and has no equilibrium amplitude at all -- below a
+    # critical Richardson number of 0.1647 the energy grows exponentially
+    # with nothing in the closure to stop it (measured on real data:
+    # 1.62 m2/s2 at 13.1 km, still doubling every ~3 min at t+60 min).
+    # This channel carries no e in its length, so it gives that limb a
+    # finite, attracting fixed point.
+    #
+    # It is the OPPOSITE MOVE from the key above and composes with it:
+    # sase_stable_dissipation LOWERS the coefficient (and is RED on the
+    # closure's own stable-boundary-layer gate for exactly that reason),
+    # this one ADDS to it, so dissipation is nowhere weaker than the
+    # default path's.  Both registered calibration gates hold with it
+    # True and the jet gate gains margin; the lake gate's margin
+    # narrows from 28% to 9% and that is recorded at the fixture.
+    # DEFAULT FALSE because flipping it moves bitwise goldens and five
+    # RED legs that pin historical formulations, which is a separate
+    # decision with its own evidence (authority module docstring, S3-12
+    # section, "DEFAULT FALSE, AND WHY").
+    sase_additive_dissipation: bool = False
+    # --- Horizontal-mixing diagnostic and the km_opt = 0 acknowledgement.
+    #
+    # Horizontal eddy-viscosity diagnostic (output-only, per domain).  True
+    # adds the horizontal eddy viscosities the run's OWN mixing producer
+    # used, under the name of that producer: XKMH/XKHH for the km_opt = 4
+    # Smagorinsky operator, SASE_KMH/SASE_KHH for the SASE closure's
+    # governed horizontal diffusivity.  Both are m2 s-1 on the mass grid
+    # and mean the same thing, so a run that removes one producer and adds
+    # the other can be MEASURED on the channel it swapped rather than
+    # argued about.  Reads no prognostic and writes none.
+    hmix_k_diag: bool = False
+    # Expert acknowledgement admitting km_opt = 0 with a PBL scheme that
+    # does not itself produce horizontal mixing -- i.e. a run with NO
+    # horizontal mixing operator at all.  Must be set to the exact id
+    # KM_OPT_ZERO_ACK; anything else (including True) is refused.  See
+    # KM_OPT_ZERO_ACK for what it means and why the default refuses.
+    km_opt_zero_acknowledgement: str = ""
 
 
 #: The Noah-MP option identity gpuwm admits, field -> the only accepted
@@ -493,8 +642,56 @@ RUC_OPTION_IDENTITY: dict[str, object] = {
 SURFACE_LAYER_SCHEMES = (0, 1, 5, 91)
 #: WRF sf_surface_physics values in gpuwm's schema.
 LAND_SURFACE_SCHEMES = (0, 2, 3, 4)
-#: WRF bl_pbl_physics values in gpuwm's schema.
-PBL_SCHEMES = (0, 1, 5)
+#: ``bl_pbl_physics`` value selecting the SASE closure.
+#:
+#: SASE is an ArWen-only scheme -- a Scale-Adaptive Stress-Energetics
+#: closure with no WRF v4.6.1 counterpart -- so it cannot take a WRF
+#: number without claiming to be a transcription of something.  WRF's own
+#: ``bl_pbl_physics`` namespace runs to 99 (99 = MRF), so a value above it
+#: can never collide with a scheme WRF adds later, and it deliberately
+#: falls outside :data:`gpuwm.wrf461_compatibility.PBL_OPTIONS` so the
+#: WRF PBL/surface-layer compatibility matrix -- which states what *WRF*
+#: admits -- is not consulted about a scheme WRF does not have.  The
+#: readiness authority is the registry entry and the constraints below.
+SASE_PBL_SCHEME = 900
+
+#: Deepest column the SASE vertical solve accepts, read from the closure's
+#: own authority module so the device define, the launcher's rejection and
+#: this admission check cannot drift apart.  ``sase_ref`` is NumPy-only, so
+#: importing it here costs the config layer no CuPy dependency.
+SASE_MAX_NZ = _sase_limits.MAX_COLUMN_LEVELS
+
+#: ``bl_pbl_physics`` values in gpuwm's schema.  0/1/5 are WRF's; 900 is
+#: :data:`SASE_PBL_SCHEME`, ArWen-only (see there).
+PBL_SCHEMES = (0, 1, 5, SASE_PBL_SCHEME)
+
+#: The exact id :attr:`RunConfig.km_opt_zero_acknowledgement` must carry.
+#:
+#: ONE SENTENCE, the one the refusal prints: ``km_opt = 0`` with a PBL
+#: scheme that produces no horizontal mixing of its own leaves the run
+#: with NO horizontal mixing operator, so the only thing damping
+#: grid-scale horizontal structure is the sixth-order numerical filter,
+#: and that is normally refused because it is what a mis-set switch
+#: looks like rather than what a forecast wants.
+#:
+#: WHY IT IS ADMITTED AT ALL.  This is a real configuration, not an
+#: impossible one: it is WRF's own ``diff_opt = 0``, and it is the
+#: control the SASE attribution needs.  SASE is admitted at ``km_opt =
+#: 0`` because its closure supplies the horizontal mixing the operator
+#: would otherwise apply.  That admission, on its own, made the
+#: single-variable control UNWRITABLE -- every SASE run necessarily
+#: changed the PBL scheme AND removed the Smagorinsky operator, so no
+#: run could say which of the two a difference came from.  Holding the
+#: PBL scheme fixed and removing only the mixing is the missing cell.
+#:
+#: THIS IS NOT A GATE WIDENED TO PASS A TEST.  The gate's job is to stop
+#: an unwitting misconfiguration, and it still does: the default still
+#: refuses, the refusal still names the missing producer, and nothing
+#: passes by accident.  What changed is that a user who states in
+#: writing that the absent operator is the point can now write the run.
+#: The id is a literal string rather than a boolean precisely so it
+#: cannot be reached by a stray ``= true`` or an inherited default.
+KM_OPT_ZERO_ACK = "no-horizontal-mixing-operator-v1"
 #: sf_surface_physics -> the soil-layer counts that scheme defines.
 #:
 #: This is WRF's own table.  ``share/module_check_a_mundo.F`` subroutine
@@ -680,6 +877,101 @@ def radiation_enabled(cfg: RunConfig) -> bool:
     """Whether either resolved radiation component is active."""
     return any(radiation_scheme_ids(cfg))
 
+
+# --------------------------------------------------------------------------
+# mp_physics = 28 aerosol source: the one deliberate deviation, published.
+# --------------------------------------------------------------------------
+
+#: What ArWen's ONLY implemented mp=28 aerosol source is, and the exact WRF
+#: line that refuses the same configuration.
+#:
+#: This is not a footnote.  ``mp_physics = 28`` with ``wif_input_opt = 0``
+#: is a combination WRF's own initializer FATALs
+#: (``dyn_em/module_initialize_real.F:2735-2736``:
+#: ``ELSE IF (config_flags%mp_physics .EQ. THOMPSONAERO .and.
+#: config_flags%wif_input_opt .EQ. 0 ) THEN
+#: CALL wrf_error_fatal ('wif_input_opt=0 but mp_physics=28')``), because
+#: real.exe expects the water/ice-friendly aerosol fields to have been
+#: interpolated from a metgrid WIF stream.  ArWen has no such stream, so it
+#: runs the synthetic CCN/IN profile ``thompson_init`` itself fills
+#: (``phys/module_mp_thompson.F:482-559``; the CCN branch at :493-515 and
+#: the IN branch at :531-551, each taken when ``MAXVAL(nwfa)``/
+#: ``MAXVAL(nifa)`` is below ``eps``) -- the same code path WRF uses when the
+#: aerosol fields arrive unset.
+#:
+#: The PHYSICS is therefore WRF's, unmodified.  What differs is the
+#: INITIALIZATION: a WRF user cannot reach this state through real.exe, and
+#: an ArWen mp=28 run is consequently not directly comparable to a WRF mp=28
+#: run initialized from a WIF-bearing met_em.  Anyone comparing the two must
+#: know that, which is why this string is carried in the namelist importer's
+#: printed receipt (:class:`gpuwm.namelist_import.AppliedDefault`) rather
+#: than only in a comment.
+MP28_AEROSOL_SOURCE_DEVIATION = (
+    "mp_physics=28 takes its aerosol initial state from ArWen's port of "
+    "thompson_init, which installs WRF's synthetic CCN/IN profile "
+    "(phys/module_mp_thompson.F:482-559) once per domain from "
+    "gpuwm/core/physics.py::initialize_physics. It does NOT come from a "
+    "metgrid WIF stream: ArWen has no QNWFA/QNIFA ingest lane, and no "
+    "aerosol crosses a specified lateral boundary either. WRF's own "
+    "real.exe FATALs exactly this configuration "
+    "(dyn_em/module_initialize_real.F:2735-2736, 'wif_input_opt=0 but "
+    "mp_physics=28'), so the microphysics is WRF's unmodified aerosol-aware "
+    "Thompson while the aerosol INITIALIZATION is one WRF's initializer "
+    "refuses to produce. Column physics is oracle-measured against "
+    "unmodified WRF Fortran; a whole-forecast comparison against a "
+    "WIF-initialized WRF run is NOT equivalent and must not be reported as "
+    "one."
+)
+
+#: The only implemented value of each mp=28 aerosol-source selector, and the
+#: named capability a user would need for anything else.  Read by
+#: :func:`validate_aerosol_source_options`, by the namelist importer's
+#: aerosol-key sweep, and by the mp=28 admission test -- one table, so a
+#: refusal message and a namelist refusal cannot drift apart.
+MP28_AEROSOL_SOURCE_OPTIONS: dict[str, tuple[int, str, str]] = {
+    "aer_init_opt": (
+        0,
+        "Registry/Registry.EM_COMMON:2656",
+        "aer_init_opt=1 (climo) and 2 (first guess) both consume the "
+        "water/ice-friendly aerosol arrays real.exe interpolates from a "
+        "metgrid WIF stream (dyn_em/module_initialize_real.F:2327-2732 3-D, "
+        ":4499-4653 2-D); "
+        "ArWen has NO WIF metgrid ingest, so there is nothing for either "
+        "branch to read and no oracle fixture covers them",
+    ),
+    "wif_input_opt": (
+        0,
+        "Registry/registry.new3d_wif:17",
+        "wif_input_opt=1 activates the use_wif_input package (13 monthly "
+        "WIF levels per species, Registry/registry.new3d_wif:80) and "
+        "wif_input_opt=2 additionally allocates the black-carbon scalar "
+        "qnbca (:82); ArWen implements NEITHER -- there is no WIF metgrid "
+        "ingest and no nbca species anywhere in the mp=28 port",
+    ),
+}
+
+
+def validate_aerosol_source_options(cfg: RunConfig) -> None:
+    """Fail closed on any mp=28 aerosol-source selector ArWen cannot honour.
+
+    Both selectors default to WRF's Registry default 0, which is also the
+    only implemented value, so this refuses rather than reinterprets.  The
+    check is unconditional on ``mp_physics``: under any other scheme the two
+    keys are inert in WRF as well, and accepting a nonzero inert value here
+    would let a configuration that MEANS something under mp=28 be carried
+    silently into an mp=28 restart or nest.
+    """
+    for name, (only, citation, why) in MP28_AEROSOL_SOURCE_OPTIONS.items():
+        value = getattr(cfg, name)
+        if value == only:
+            continue
+        raise NotImplementedError(
+            f"{name}={value!r} is not implemented; ArWen honours "
+            f"{name}={only!r} only (WRF Registry default, {citation}). "
+            f"{why}. "
+            + MP28_AEROSOL_SOURCE_DEVIATION
+        )
+
 _KNOWN_TABLES = ("grid", "dynamics", "run")
 
 def load_config(path: str | Path) -> RunConfig:
@@ -716,6 +1008,109 @@ def load_config(path: str | Path) -> RunConfig:
             key_table[key] = table
         merged.update(entries)
     return validate_run_config(RunConfig(**merged))
+
+
+#: SASE's structural requirements: attribute -> (admitted value, why).
+#:
+#: These are the closure's ACTUAL dependencies, and each one is a thing
+#: the code reads or a thing that would be double-counted -- not a record
+#: of which suite it happened to be smoke-tested with.  The lane that
+#: built SASE admitted exactly one physics combination (one microphysics
+#: id, one radiation id, one land-surface id) because a development lane
+#: wants its evidence ladder narrow.  Those three are NOT dependencies:
+#: the closure never reads a hydrometeor tendency, a radiative flux or a
+#: soil layer, and pinning them would refuse combinations that work while
+#: claiming a coupling that does not exist.  Re-scoping the gate to the
+#: real dependency set is what makes the scheme experimentable; every
+#: genuine constraint below is kept, and the ones that are about
+#: correctness (double-counted mixing, the missing surface fluxes) refuse
+#: rather than warn.
+_SASE_REQUIREMENTS: tuple[tuple[str, object, str], ...] = (
+    ("km_opt", 0,
+     "SASE computes its own horizontal mixing from the closure's own "
+     "diffusivities, so a km_opt mixing operator would double-count it"),
+    ("khdif", 0.0,
+     "constant-K diffusion may not silently stack on the SASE mixing"),
+    ("kvdif", 0.0,
+     "constant-K diffusion may not silently stack on the SASE mixing"),
+    ("bldt", 0.0,
+     "SASE produces a w tendency that is rebuilt every step rather than "
+     "carried across a PBL call interval, so it must run every step"),
+)
+
+
+def validate_sase_config(cfg: RunConfig) -> None:
+    """Admission for the SASE closure and its three knobs.
+
+    Warn-not-block applies to *maturity*, never to coherence: an
+    experimental scheme still refuses a configuration it cannot honestly
+    execute.  What is refused here is only what the closure genuinely
+    needs -- see :data:`_SASE_REQUIREMENTS` for why the development
+    lane's wider whitelist is not reproduced.
+    """
+    sase = cfg.bl_pbl_physics == SASE_PBL_SCHEME
+    if sase:
+        for name, admitted, why in _SASE_REQUIREMENTS:
+            value = getattr(cfg, name)
+            if value != admitted:
+                raise ValueError(
+                    f"bl_pbl_physics={SASE_PBL_SCHEME} (SASE) is not "
+                    f"admitted with {name}={value!r}: {why}. Set "
+                    f"{name}={admitted!r}.")
+        if not cfg.sf_sfclay_physics:
+            # Not a taste question: the closure reads u*, the heat and
+            # moisture fluxes and the gust-corrected wind speed from the
+            # surface layer, and its lower boundary condition is those
+            # four fields.  With the slot off they do not exist.
+            raise ValueError(
+                f"bl_pbl_physics={SASE_PBL_SCHEME} (SASE) requires a "
+                "surface-layer scheme (sf_sfclay_physics != 0): the "
+                "closure's lower boundary condition is the surface "
+                "layer's friction velocity, heat and moisture fluxes and "
+                "gust-corrected wind speed.")
+        if not cfg.moist:
+            raise ValueError(
+                f"bl_pbl_physics={SASE_PBL_SCHEME} (SASE) requires "
+                "moist=true: the closure mixes water vapour, cloud water "
+                "and cloud ice alongside potential temperature and forms "
+                "its stability from the saturated Brunt-Vaisala "
+                "frequency.")
+        if cfg.nz > SASE_MAX_NZ:
+            # A compile-time bound, not a policy: the vertical solve keeps
+            # three FP64 columns of this depth in per-thread local memory.
+            raise ValueError(
+                f"bl_pbl_physics={SASE_PBL_SCHEME} (SASE) is limited to "
+                f"nz <= {SASE_MAX_NZ}, got nz={cfg.nz}: the closure's "
+                "implicit vertical solve carries its tridiagonal columns "
+                "in per-thread local memory at that fixed depth.")
+    # The three knobs are fail-closed on their NON-default value only, so
+    # every existing configuration keeps validating unchanged.
+    for name, default, what in (
+            ("sase_flux_diag", False,
+             "the split subgrid-flux diagnostic records the SASE venting "
+             "and K_v channels, which no other turbulence path computes"),
+            ("sase_moist_n2", True,
+             "the moist-N2 substitution it disables exists only inside "
+             "the SASE closure, so switching it off elsewhere would "
+             "disable nothing"),
+            ("sase_stable_dissipation", False,
+             "the stable-limb dissipation coefficient it decouples lives "
+             "in the SASE analytic decay substep, so setting it "
+             "elsewhere would decouple nothing"),
+            ("sase_additive_dissipation", False,
+             "the additive e^{3/2} dissipation channel it enables lives "
+             "in the SASE analytic decay substep, so setting it "
+             "elsewhere would add nothing")):
+        value = getattr(cfg, name)
+        if type(value) is not bool:
+            raise ValueError(f"{name} must be boolean, got {value!r}.")
+        if value != default and not sase:
+            raise ValueError(
+                f"{name}={value!r} requires bl_pbl_physics="
+                f"{SASE_PBL_SCHEME} (SASE), got "
+                f"bl_pbl_physics={cfg.bl_pbl_physics}: {what} -- a key "
+                "that names a seam this run does not have would read as "
+                "a setting that took effect.")
 
 
 #: ``name -> (predicate, what the value has to be)`` for the dynamics
@@ -825,6 +1220,134 @@ def _validate_dynamics_coefficients(cfg: RunConfig) -> None:
             "column.")
 
 
+#: PBL schemes that produce horizontal mixing of their OWN.
+#:
+#: The whole content of the ``km_opt = 0`` question: with ``km_opt = 0``
+#: the dycore runs no horizontal mixing operator, so whether the run has
+#: horizontal mixing at all depends entirely on whether something else
+#: produces it.  Exactly one scheme in this tree does -- SASE, whose
+#: governed horizontal diffusivity serves its stress, its subgrid-energy
+#: transport and its scalar channel.  YSU, MYNN and PBL-off are all
+#: vertical-only, and on any of them ``km_opt = 0`` means no horizontal
+#: mixing operator anywhere.
+HMIX_PRODUCING_PBL_SCHEMES: tuple[int, ...] = (SASE_PBL_SCHEME,)
+
+
+def km_opt_zero_producer(cfg: RunConfig) -> str | None:
+    """What supplies horizontal mixing at ``km_opt = 0``, or None."""
+    if cfg.bl_pbl_physics == SASE_PBL_SCHEME:
+        return (f"bl_pbl_physics={SASE_PBL_SCHEME} (SASE), whose closure "
+                "supplies the mixing the km_opt operator would otherwise "
+                "apply")
+    return None
+
+
+def validate_km_opt(cfg: RunConfig) -> None:
+    """Admission for ``km_opt``, shared by the loaders and the dycore.
+
+    ONE function so the loader's refusal and the dycore's refusal cannot
+    drift: the dycore's is the fail-closed one (it is what actually
+    decides whether a mixing operator runs), and a config that got past
+    the loader must get past it too.
+
+    ``km_opt = 0`` is admitted on two distinct grounds, and they are not
+    the same kind of thing:
+
+    * A PBL scheme in :data:`HMIX_PRODUCING_PBL_SCHEMES` supplies the
+      horizontal mixing itself.  Nothing is missing, so nothing is
+      acknowledged -- the operator is redundant, and running it too
+      would double-count.
+    * :data:`KM_OPT_ZERO_ACK`, written out in full by the user.  Here
+      the horizontal mixing operator really is absent and the run really
+      does have none, which is the RESEARCH CONTROL the acknowledgement
+      exists for and the thing the default refusal exists to prevent
+      happening by accident.  See :data:`KM_OPT_ZERO_ACK`.
+    """
+    ack = cfg.km_opt_zero_acknowledgement
+    producer = km_opt_zero_producer(cfg)
+    if not isinstance(ack, str):
+        raise ValueError(
+            "km_opt_zero_acknowledgement must be the exact string "
+            f"{KM_OPT_ZERO_ACK!r} or absent, got {ack!r}.")
+    if ack and ack != KM_OPT_ZERO_ACK:
+        raise ValueError(
+            f"km_opt_zero_acknowledgement={ack!r} is not the "
+            f"acknowledgement id. Write it exactly: "
+            f"km_opt_zero_acknowledgement = {KM_OPT_ZERO_ACK!r}. It is a "
+            "literal id and not a boolean so that it cannot be reached "
+            "by a stray `= true`.")
+    if cfg.km_opt not in (0, 1, 2, 3, 4):
+        # Checked BEFORE the acknowledgement's placement, so an
+        # unimplemented selector reports itself rather than reporting
+        # that the acknowledgement is in the wrong place: the id opens
+        # km_opt = 0 and nothing else, and cannot shadow this.
+        raise ValueError(
+            f"km_opt must be 1 (constant K via khdif/kvdif), 2 (1.5-order "
+            f"prognostic TKE), 3 (3-D Smagorinsky), or 4 "
+            f"(2-D Smagorinsky), got {cfg.km_opt}. 0 is admitted with "
+            f"bl_pbl_physics={SASE_PBL_SCHEME} (SASE), whose closure "
+            "supplies the mixing the km_opt operator would otherwise "
+            f"apply, or with km_opt_zero_acknowledgement = "
+            f"{KM_OPT_ZERO_ACK!r}.")
+    if ack and cfg.km_opt != 0:
+        raise ValueError(
+            f"km_opt_zero_acknowledgement is set with km_opt={cfg.km_opt}, "
+            "which runs a horizontal mixing operator; the acknowledgement "
+            "admits km_opt = 0 and acknowledges nothing here. A key that "
+            "names a seam this run does not have would read as a setting "
+            "that took effect.")
+    if ack and producer is not None:
+        raise ValueError(
+            "km_opt_zero_acknowledgement is set with "
+            f"{producer.split(',')[0]}, which already supplies the "
+            "horizontal mixing; km_opt = 0 is admitted here without any "
+            "acknowledgement, and the id would record an absence this "
+            "run does not have.")
+    if cfg.km_opt == 2:
+        if cfg.bl_pbl_physics != 0:
+            raise ValueError(
+                "km_opt=2 (prognostic TKE) is admitted with "
+                "bl_pbl_physics=0 only: WRF evolves TKE with the PBL on, "
+                "but that combination has no vertical TKE mixing "
+                "(vertical_diffusion_2 is PBL-off-gated) and is not "
+                "ported; select the LES topology or km_opt 3/4."
+            )
+        # km_opt=2 on a NEST child is no longer refused here.  This
+        # function sees one domain at a time and cannot see the parent,
+        # and the parent is what decides whether the question is even
+        # live: WRF gives tke no ``i`` (nest-interpolation) and no ``f``
+        # (feedback) Registry flag (Registry.EM_COMMON:312), so a child
+        # cold-starts its own TKE and never returns it.  Under a parent
+        # that carries no TKE at all there is nothing to interpolate and
+        # nothing to feed back, and that case has now been run and scored
+        # (7 h, 250 m child under a km_opt=4 parent, status PASS; see
+        # docs/superpowers/receipts/les/nested-les-km2-2026-08-02.md).
+        # The residual case -- a km_opt=2 child under a km_opt=2 parent,
+        # where the parent really does hold a field WRF declines to hand
+        # down -- is refused in gpuwm.experiment, which is the only place
+        # that knows the parent.  A single-domain RunConfig cannot tell
+        # the two apart, so refusing here would refuse the measured case
+        # along with the unmeasured one.
+    if cfg.km_opt in (1, 2, 3, 4):
+        return
+    if producer is None and ack != KM_OPT_ZERO_ACK:
+        raise ValueError(
+            f"km_opt = 0 runs NO horizontal mixing operator, and "
+            f"bl_pbl_physics={cfg.bl_pbl_physics} produces none of its "
+            "own, so this run would damp grid-scale horizontal structure "
+            "with nothing but the sixth-order numerical filter. That is "
+            "refused by default because it is what a mis-set switch "
+            "looks like. It is also a legitimate research control -- it "
+            "is WRF's own diff_opt = 0, and it is the only way to vary "
+            "the PBL closure while holding the horizontal mixing fixed "
+            "at none. To run it deliberately, write the acknowledgement "
+            f"out in full: km_opt_zero_acknowledgement = "
+            f"{KM_OPT_ZERO_ACK!r}. Otherwise set km_opt = 4 (2-D "
+            f"Smagorinsky) or 1 (constant K via khdif/kvdif), or select "
+            f"bl_pbl_physics={SASE_PBL_SCHEME} (SASE), which supplies "
+            "horizontal mixing from its own closure.")
+
+
 def validate_run_config(cfg: RunConfig) -> RunConfig:
     """The RunConfig invariant battery, shared by BOTH loaders.
 
@@ -885,9 +1408,11 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     soil_layer_count(cfg)
     if cfg.bl_pbl_physics not in PBL_SCHEMES:
         raise ValueError(
-            f"bl_pbl_physics must be 0 (none), 1 (YSU), or 5 (MYNN), got "
+            f"bl_pbl_physics must be 0 (none), 1 (YSU), 5 (MYNN), or "
+            f"{SASE_PBL_SCHEME} (SASE, experimental), got "
             f"{cfg.bl_pbl_physics}."
         )
+    validate_sase_config(cfg)
     require_ready_wrf_physics(
         mp_physics=cfg.mp_physics,
         sf_sfclay_physics=cfg.sf_sfclay_physics,
@@ -917,17 +1442,32 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "(McCumber-Pielke, clamped for soiltyp 4), got "
             f"{cfg.opt_thcnd}."
         )
-    if cfg.isfflx not in (0, 1):
+    if cfg.isfflx not in (0, 1, 2):
         raise ValueError(
-            "isfflx must be 0 (surface heat/moisture fluxes off) or 1 "
-            "(on), got "
-            f"{cfg.isfflx}; WRF value 2 also needs the unported prescribed-"
-            "flux/diffusion forcing path."
+            "isfflx must be 0 (prescribed tke_drag_coefficient/"
+            "tke_heat_flux under the PBL-off Smagorinsky path; surface-"
+            "scheme fluxes off), 1 (surface-scheme fluxes on), or 2 "
+            "(surface-scheme drag/moisture with prescribed tke_heat_flux), "
+            f"got {cfg.isfflx}."
         )
-    if cfg.isfflx == 0 and cfg.sf_sfclay_physics == 0:
+    _prescribed_flux_consumer = (
+        cfg.km_opt in (2, 3, 4) and cfg.bl_pbl_physics == 0)
+    if cfg.isfflx == 0 and cfg.sf_sfclay_physics == 0 \
+            and not _prescribed_flux_consumer:
         raise ValueError(
-            "isfflx=0 has no consumer when sf_sfclay_physics=0; gpuwm "
-            "implements the gate in its MM5 and MYNN surface-layer paths."
+            "isfflx=0 has no consumer when sf_sfclay_physics=0 unless the "
+            "PBL-off turbulence path (km_opt=2/3/4, bl_pbl_physics=0) is "
+            "active to take the prescribed tke_drag_coefficient/"
+            "tke_heat_flux forcing; gpuwm otherwise implements the gate "
+            "in its MM5 and MYNN surface-layer paths."
+        )
+    if cfg.isfflx == 2 and not _prescribed_flux_consumer:
+        raise ValueError(
+            "isfflx=2 (prescribed tke_heat_flux) is consumed only by "
+            "WRF's diff_opt=2 vertical_diffusion_2 path, which gpuwm "
+            "runs under km_opt=2/3/4 with bl_pbl_physics=0 "
+            "(module_diffusion_em.F:4286-4305); enable that path or "
+            "choose isfflx 0/1."
         )
     if cfg.o3input not in (0, 2):
         raise ValueError(
@@ -1139,13 +1679,14 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "form, calc_p_rho_phi), got "
             f"{cfg.hypsometric_opt}."
         )
-    if cfg.mp_physics not in (0, 1, 6, 8, 10, 18):
+    if cfg.mp_physics not in (0, 1, 6, 8, 10, 18, 28):
         raise ValueError(
             "mp_physics must be 0 (off), 1 (Kessler), 6 (WSM6), 8 "
-            "(Thompson), 10 (Morrison two-moment), or 18 "
-            "(NSSL two-moment), got "
+            "(Thompson), 10 (Morrison two-moment), 18 "
+            "(NSSL two-moment), or 28 (Thompson aerosol-aware), got "
             f"{cfg.mp_physics}."
         )
+    validate_aerosol_source_options(cfg)
     if cfg.mp_physics != 0 and not cfg.moist:
         raise ValueError(
             f"mp_physics={cfg.mp_physics} requires moist=true; the dry "
@@ -1206,11 +1747,7 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             f"{cfg.restart_interval_s}."
         )
     _validate_dynamics_coefficients(cfg)
-    if cfg.km_opt not in (1, 4):
-        raise ValueError(
-            f"km_opt must be 1 (constant K via khdif/kvdif) or 4 "
-            f"(2-D Smagorinsky), got {cfg.km_opt}."
-        )
+    validate_km_opt(cfg)
     for name in ("khdif", "kvdif"):
         value = getattr(cfg, name)
         if not math.isfinite(value) or value < 0.0:
@@ -1218,10 +1755,54 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
                 f"{name} must be a finite non-negative constant-K "
                 f"diffusivity, got {value}."
             )
-    if cfg.km_opt == 4 and (cfg.khdif > 0.0 or cfg.kvdif > 0.0):
+    if cfg.km_opt in (2, 3, 4) and (cfg.khdif > 0.0 or cfg.kvdif > 0.0):
         raise ValueError(
-            "km_opt=4 selects WRF Smagorinsky mixing; khdif/kvdif are "
-            "constant-K controls for km_opt=1 and cannot also be active."
+            f"km_opt={cfg.km_opt} selects WRF turbulence mixing; "
+            "khdif/kvdif are constant-K controls for km_opt=1 and cannot "
+            "also be active."
+        )
+    if not math.isfinite(cfg.c_k) or cfg.c_k <= 0.0:
+        raise ValueError(
+            f"c_k must be a finite positive TKE-closure constant, got "
+            f"{cfg.c_k}."
+        )
+    if not math.isfinite(cfg.tke_upper_bound) or cfg.tke_upper_bound <= 0.0:
+        raise ValueError(
+            f"tke_upper_bound must be a finite positive TKE ceiling in "
+            f"m2 s-2 (WRF Registry default 1000.0), got "
+            f"{cfg.tke_upper_bound}."
+        )
+    if cfg.tke_budget not in (0, 1):
+        raise ValueError(
+            f"tke_budget must be 0 (off) or 1 (per-step term-by-term TKE "
+            f"budget accumulation), got {cfg.tke_budget}."
+        )
+    if cfg.tke_budget == 1 and cfg.km_opt != 2:
+        raise ValueError(
+            "tke_budget=1 requires km_opt=2: the budget decomposes the "
+            f"prognostic TKE equation, and km_opt={cfg.km_opt} carries no "
+            "TKE."
+        )
+    if cfg.mix_isotropic not in (0, 1):
+        raise ValueError(
+            f"mix_isotropic must be 0 (anisotropic mixing lengths) or 1 "
+            f"(isotropic (dx*dy*dz)^(1/3)), got {cfg.mix_isotropic}."
+        )
+    if not math.isfinite(cfg.mix_upper_bound) or cfg.mix_upper_bound <= 0.0:
+        raise ValueError(
+            f"mix_upper_bound must be a finite positive non-dimensional K "
+            f"cap, got {cfg.mix_upper_bound}."
+        )
+    if not math.isfinite(cfg.tke_heat_flux):
+        raise ValueError(
+            f"tke_heat_flux must be a finite kinematic heat flux "
+            f"(K m s-1), got {cfg.tke_heat_flux}."
+        )
+    if not math.isfinite(cfg.tke_drag_coefficient) \
+            or cfg.tke_drag_coefficient < 0.0:
+        raise ValueError(
+            f"tke_drag_coefficient must be a finite non-negative drag "
+            f"coefficient, got {cfg.tke_drag_coefficient}."
         )
     if cfg.diff_6th_slopeopt not in (0, 1):
         raise ValueError(

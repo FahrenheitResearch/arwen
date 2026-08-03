@@ -2476,6 +2476,10 @@ _CQ_MASS_SPECIES_BY_MP = {
     8: _CQ_MASS_SPECIES,
     10: _CQ_MASS_SPECIES,
     18: _CQ_NSSL_MASS_SPECIES,
+    # Thompson aerosol-aware (Registry.EM_COMMON:3036) adds qnc/qnwfa/qnifa
+    # to the ``scalar`` package only, so its ``moist`` package -- and thus
+    # its calc_cq sum -- is byte-for-byte mp=8's.
+    28: _CQ_MASS_SPECIES,
 }
 
 
@@ -2483,8 +2487,9 @@ def np_calc_cq(moisture, mp_physics):
     """WRF ``calc_cq`` factors for the configured Registry moist package.
 
     ``mp_physics`` selects qv only for 0, qv/qc/qr for Kessler (1), all six
-    mass species through qg for WSM6 (6), Thompson (8), or Morrison (10),
-    and those six plus hail mass qh for NSSL option 18.
+    mass species through qg for WSM6 (6), Thompson (8), Morrison (10) or
+    aerosol-aware Thompson (28), and those six plus hail mass qh for NSSL
+    option 18.
     Number moments deliberately do not participate: WRF registers them as
     ``scalar``, outside
     the ``moist`` array traversed by ``calc_cq``.  Surface/top cqw entries are
@@ -10158,3 +10163,748 @@ def np_copy_fcni(cfld, nfld, *, i_parent_start, j_parent_start, nri, nrj,
     out = _copy_pick(out, nf, int(i_parent_start), int(j_parent_start),
                      int(nri), int(nrj), int(spec_zone), xstag, ystag)
     return out[0] if squeeze else out
+
+
+# ---------------------------------------------------------------------------
+# WRF v4.6.1 km_opt=3 (3-D Smagorinsky) float64 mirrors -- periodic grid,
+# map factors 1, full total-geopotential metrics.  Pointwise transliterations
+# of module_diffusion_em.F: calculate_N2 (:1485-1713), smag_km (:1777-1929),
+# vertical_diffusion_s (:4789-4907), and vertical_diffusion_2's prescribed-
+# flux surface branches (:4155-4200 vflux CASE(0), :4286-4305 hflux
+# CASE(0,2)).  Deliberately loop-based: each value is assembled exactly as
+# the Fortran assembles it, independent of the CUDA traversal.
+# ---------------------------------------------------------------------------
+
+def _wrf_column_geometry(phi):
+    """Closures for the phi-derived vertical metrics on a periodic grid."""
+    phi = np.asarray(phi, dtype=np.float64)
+    nzp1, ny, nx = phi.shape
+    nz = nzp1 - 1
+    G = 9.81
+
+    def ph(kw, j, i):
+        return phi[min(max(kw, 0), nz), j % ny, i % nx]
+
+    def rdzw(k, j, i):
+        kk = min(max(k, 0), nz - 1)
+        return G / (ph(kk + 1, j, i) - ph(kk, j, i))
+
+    def rdz(kw, j, i):
+        if kw <= 0:
+            return 2.0 * G / (ph(1, j, i) - ph(0, j, i))
+        if kw >= nz:
+            return 2.0 * G / (ph(nz, j, i) - ph(nz - 1, j, i))
+        return 2.0 * G / (ph(kw + 1, j, i) - ph(kw - 1, j, i))
+
+    return ph, rdzw, rdz
+
+
+def np_wrf_calc_n2(thp, thb, p, phi, *, cf1, cf2, cf3,
+                   qv=None, qc=None, qi=None):
+    """Mirror of ``wrf_calc_n2`` (WRF ``calculate_N2``).
+
+    ``thp (nz, ny, nx)`` is gpuwm's theta perturbation against ``thb``
+    ((nz,) or (nz, ny, nx)); ``p`` the full pressure; ``phi (nz+1, ny, nx)``
+    the total geopotential; ``qv/qc/qi`` optional mixing ratios (None =
+    absent, the dry reduction).  Returns BN2 ``(nz, ny, nx)`` float64 with
+    WRF's three level branches: centered interior (kts+1..ktf-1), the
+    MARTA/WCS one-sided surface form, saturated moist-adiabatic branch when
+    ``qv >= qvs or qc >= 1e-5``, and the ktf copy of ktf-1.
+    """
+    G, RD, RV = 9.81, 287.0, 461.6
+    CP = 7.0 * RD / 2.0
+    RCP = RD / CP
+    P0 = 1.0e5
+    XLV = 2.5e6
+    SVP1, SVP2, SVP3, SVPT0 = 0.6112, 17.67, 29.65, 273.15
+    EP2 = RD / RV
+
+    thp = np.asarray(thp, dtype=np.float64)
+    thb = np.asarray(thb, dtype=np.float64)
+    p = np.asarray(p, dtype=np.float64)
+    nz, ny, nx = thp.shape
+    theta = thb[:, None, None] + thp if thb.ndim == 1 else thb + thp
+    zero = np.zeros_like(thp)
+    qv = zero if qv is None else np.asarray(qv, dtype=np.float64)
+    qc = zero if qc is None else np.asarray(qc, dtype=np.float64)
+    qi = zero if qi is None else np.asarray(qi, dtype=np.float64)
+    qtot = qv + qc + qi
+    moist = bool(qv.any() or qc.any() or qi.any())
+
+    t = theta * (p / P0) ** RCP
+    tc = t - SVPT0
+    es = 1000.0 * SVP1 * np.exp(SVP2 * tc / (t - SVP3))
+    qvs = EP2 * es / (p - es)
+    saturated = ((qv >= qvs) | (qc >= 1.0e-5) if moist
+                 else np.zeros(thp.shape, dtype=bool))
+
+    _, rdzw, rdz = _wrf_column_geometry(phi)
+    phi = np.asarray(phi, dtype=np.float64)
+
+    def coefa_at(k, j, i):
+        xlvqv = XLV * qv[k, j, i]
+        return ((1.0 + xlvqv / RD / t[k, j, i])
+                / (1.0 + XLV * xlvqv / CP / RV / t[k, j, i] / t[k, j, i])
+                / theta[k, j, i])
+
+    def theta_e(k, j, i):
+        return theta[k, j, i] * (
+            1.0 + XLV * qvs[k, j, i] / CP / t[k, j, i])
+
+    bn2 = np.zeros_like(thp)
+    for j in range(ny):
+        for i in range(nx):
+            for k in range(1, nz - 1):
+                tmpdz = 1.0 / rdz(k, j, i) + 1.0 / rdz(k + 1, j, i)
+                if saturated[k, j, i]:
+                    bn2[k, j, i] = G * (
+                        coefa_at(k, j, i)
+                        * (theta_e(k + 1, j, i) - theta_e(k - 1, j, i))
+                        / tmpdz
+                        - (qtot[k + 1, j, i] - qtot[k - 1, j, i]) / tmpdz)
+                else:
+                    bn2[k, j, i] = G * (
+                        (theta[k + 1, j, i] - theta[k - 1, j, i])
+                        / theta[k, j, i] / tmpdz
+                        + 1.61 * (qv[k + 1, j, i] - qv[k - 1, j, i]) / tmpdz
+                        - (qtot[k + 1, j, i] - qtot[k - 1, j, i]) / tmpdz)
+            # Surface level kts.
+            k = 0
+            qtot_sfc = (cf1 * qtot[0, j, i] + cf2 * qtot[1, j, i]
+                        + cf3 * qtot[2, j, i])
+            if saturated[k, j, i]:
+                tmpdz = 1.0 / rdz(1, j, i) + 0.5 / rdzw(0, j, i)
+                z0 = phi[0, j, i] / G
+                z1 = 0.5 * (phi[0, j, i] + phi[1, j, i]) / G
+                z2 = 0.5 * (phi[1, j, i] + phi[2, j, i]) / G
+                w1 = (z0 - z2) / (z1 - z2)
+                w2 = 1.0 - w1
+                p8w0 = w1 * p[0, j, i] + w2 * p[1, j, i]
+                t8w0 = w1 * t[0, j, i] + w2 * t[1, j, i]
+                thetasfc = t8w0 / (p8w0 / P0) ** RCP
+                qvsfc = (cf1 * qvs[0, j, i] + cf2 * qvs[1, j, i]
+                         + cf3 * qvs[2, j, i])
+                thetaesfc = thetasfc * (1.0 + XLV * qvsfc / CP / t8w0)
+                bn2[k, j, i] = G * (
+                    coefa_at(k, j, i)
+                    * (theta_e(1, j, i) - thetaesfc) / tmpdz
+                    - (qtot[1, j, i] - qtot_sfc) / tmpdz)
+            else:
+                qvsfc = (cf1 * qv[0, j, i] + cf2 * qv[1, j, i]
+                         + cf3 * qv[2, j, i])
+                tmpdz = 1.0 / rdzw(0, j, i)
+                bn2[k, j, i] = G * (
+                    (theta[1, j, i] - theta[0, j, i])
+                    / theta[0, j, i] / tmpdz
+                    + 1.61 * (qv[1, j, i] - qvsfc) / tmpdz
+                    - (qtot[1, j, i] - qtot_sfc) / tmpdz)
+            bn2[nz - 1, j, i] = bn2[nz - 2, j, i]
+    return bn2
+
+
+def np_wrf_smag3d_km(u, v, w, phi, bn2, *, dx, dy, dt, c_s,
+                     mix_upper_bound, mix_isotropic,
+                     fnm, fnp, dn, dnw, cf1, cf2, cf3,
+                     prandtl=1.0 / 3.0):
+    """Mirror of ``wrf_smag3d_km`` (WRF ``smag_km``), periodic, msf = 1.
+
+    Assembles the FULL deformation invariant -- D11/D22/D12 from
+    ``cal_deform_and_div``'s metric-aware forms, D13/D23 with their w-level
+    slope terms, D33 = 2*dw/dz -- averages the off-diagonal tensors to mass
+    points BEFORE squaring (average-then-square), applies the buoyancy
+    reduction ``sqrt(max(0, D^2 - BN2/prandtl))`` and WRF's two
+    ``mix_isotropic`` branches with the exact floors and
+    ``mix_upper_bound/dt`` caps.  Returns ``(xkmh, xkhh, xkmv, xkhv)``.
+    """
+    u = np.asarray(u, dtype=np.float64)
+    v = np.asarray(v, dtype=np.float64)
+    w = np.asarray(w, dtype=np.float64)
+    phi = np.asarray(phi, dtype=np.float64)
+    bn2 = np.asarray(bn2, dtype=np.float64)
+    fnm = np.asarray(fnm, dtype=np.float64)
+    fnp = np.asarray(fnp, dtype=np.float64)
+    dn = np.asarray(dn, dtype=np.float64)
+    dnw = np.asarray(dnw, dtype=np.float64)
+    nz, ny, nx = bn2.shape
+    rdx, rdy = 1.0 / dx, 1.0 / dy
+    G = 9.81
+    ph, rdzw, rdz = _wrf_column_geometry(phi)
+
+    def uhat(k, j, i):
+        return u[k, j % ny, i % nx]
+
+    def vhat(k, j, i):
+        return v[k, j % ny, i % nx]
+
+    def what(kw, j, i):
+        return w[min(max(kw, 0), nz), j % ny, i % nx]
+
+    def zx(kw, j, iface):
+        return rdx * (ph(kw, j, iface) - ph(kw, j, iface - 1)) / G
+
+    def zy(kw, jface, i):
+        return rdy * (ph(kw, jface, i) - ph(kw, jface - 1, i)) / G
+
+    def full_weights(kw, pair):
+        if kw <= 0:
+            return cf1 * pair(0) + cf2 * pair(1) + cf3 * pair(2)
+        if kw >= nz:
+            cft2 = -0.5 * dnw[nz - 1] / dn[nz - 1]
+            return (1.0 - cft2) * pair(nz - 1) + cft2 * pair(nz - 2)
+        return fnm[kw] * pair(kw) + fnp[kw] * pair(kw - 1)
+
+    def u_w_xcenter(kw, j, i):
+        return 0.5 * full_weights(
+            kw, lambda k: uhat(k, j, i) + uhat(k, j, i + 1))
+
+    def v_w_ycenter(kw, j, i):
+        return 0.5 * full_weights(
+            kw, lambda k: vhat(k, j, i) + vhat(k, j + 1, i))
+
+    def u_w_corner(kw, j, i):
+        return 0.5 * full_weights(
+            kw, lambda k: uhat(k, j - 1, i) + uhat(k, j, i))
+
+    def v_w_corner(kw, j, i):
+        return 0.5 * full_weights(
+            kw, lambda k: vhat(k, j, i - 1) + vhat(k, j, i))
+
+    def defor11(k, j, i):
+        tmpzx = 0.25 * (zx(k, j, i) + zx(k, j, i + 1)
+                        + zx(k + 1, j, i) + zx(k + 1, j, i + 1))
+        slope = ((u_w_xcenter(k + 1, j, i) - u_w_xcenter(k, j, i))
+                 * tmpzx * rdzw(k, j, i))
+        return 2.0 * (rdx * (uhat(k, j, i + 1) - uhat(k, j, i)) - slope)
+
+    def defor22(k, j, i):
+        tmpzy = 0.25 * (zy(k, j, i) + zy(k, j + 1, i)
+                        + zy(k + 1, j, i) + zy(k + 1, j + 1, i))
+        slope = ((v_w_ycenter(k + 1, j, i) - v_w_ycenter(k, j, i))
+                 * tmpzy * rdzw(k, j, i))
+        return 2.0 * (rdy * (vhat(k, j + 1, i) - vhat(k, j, i)) - slope)
+
+    def defor12(k, j, i):
+        rr = (rdzw(k, j, i) + rdzw(k, j, i - 1)
+              + rdzw(k, j - 1, i - 1) + rdzw(k, j - 1, i))
+        tmpzy = 0.25 * (zy(k, j, i - 1) + zy(k, j, i)
+                        + zy(k + 1, j, i - 1) + zy(k + 1, j, i))
+        uslope = ((u_w_corner(k + 1, j, i) - u_w_corner(k, j, i))
+                  * 0.25 * tmpzy * rr)
+        tmpzx = 0.25 * (zx(k, j - 1, i) + zx(k, j, i)
+                        + zx(k + 1, j - 1, i) + zx(k + 1, j, i))
+        vslope = ((v_w_corner(k + 1, j, i) - v_w_corner(k, j, i))
+                  * 0.25 * tmpzx * rr)
+        return (rdy * (uhat(k, j, i) - uhat(k, j - 1, i)) - uslope
+                + rdx * (vhat(k, j, i) - vhat(k, j, i - 1)) - vslope)
+
+    def w_xavg(k, j, i):
+        return 0.25 * (what(k, j, i) + what(k + 1, j, i)
+                       + what(k, j, i - 1) + what(k + 1, j, i - 1))
+
+    def w_yavg(k, j, i):
+        return 0.25 * (what(k, j, i) + what(k + 1, j, i)
+                       + what(k, j - 1, i) + what(k + 1, j - 1, i))
+
+    def defor13(kw, j, i):
+        if kw <= 0 or kw >= nz:
+            return 0.0
+        rz = 0.5 * (rdz(kw, j, i) + rdz(kw, j, i - 1))
+        slope = ((w_xavg(kw, j, i) - w_xavg(kw - 1, j, i))
+                 * zx(kw, j, i) * rz)
+        dwdx = rdx * (what(kw, j, i) - what(kw, j, i - 1)) - slope
+        dudz = (uhat(kw, j, i) - uhat(kw - 1, j, i)) * rz
+        return dwdx + dudz
+
+    def defor23(kw, j, i):
+        if kw <= 0 or kw >= nz:
+            return 0.0
+        rz = 0.5 * (rdz(kw, j, i) + rdz(kw, j - 1, i))
+        slope = ((w_yavg(kw, j, i) - w_yavg(kw - 1, j, i))
+                 * zy(kw, j, i) * rz)
+        dwdy = rdy * (what(kw, j, i) - what(kw, j - 1, i)) - slope
+        dvdz = (vhat(kw, j, i) - vhat(kw - 1, j, i)) * rz
+        return dwdy + dvdz
+
+    xkmh = np.zeros((nz, ny, nx))
+    xkhh = np.zeros_like(xkmh)
+    xkmv = np.zeros_like(xkmh)
+    xkhv = np.zeros_like(xkmh)
+    for j in range(ny):
+        for i in range(nx):
+            for k in range(nz):
+                d11 = defor11(k, j, i)
+                d22 = defor22(k, j, i)
+                d33 = 2.0 * (w[k + 1, j, i] - w[k, j, i]) * rdzw(k, j, i)
+                d12 = 0.25 * (defor12(k, j, i) + defor12(k, j + 1, i)
+                              + defor12(k, j, i + 1)
+                              + defor12(k, j + 1, i + 1))
+                d13 = 0.25 * (defor13(k + 1, j, i) + defor13(k, j, i)
+                              + defor13(k + 1, j, i + 1)
+                              + defor13(k, j, i + 1))
+                d23 = 0.25 * (defor23(k + 1, j, i) + defor23(k, j, i)
+                              + defor23(k + 1, j + 1, i)
+                              + defor23(k, j + 1, i))
+                def2 = (0.5 * (d11 * d11 + d22 * d22 + d33 * d33)
+                        + d12 * d12 + d13 * d13 + d23 * d23)
+                tmp = np.sqrt(max(
+                    0.0, def2 - bn2[k, j, i] / prandtl))
+                if mix_isotropic == 0:
+                    mlen_h2 = dx * dy
+                    mlen_v = 1.0 / rdzw(k, j, i)
+                    mlen_v2 = mlen_v * mlen_v
+                    kmh = max(c_s * c_s * mlen_h2 * tmp, 1.0e-6 * mlen_h2)
+                    kmh = min(kmh, mix_upper_bound * mlen_h2 / dt)
+                    kmv = max(c_s * c_s * mlen_v2 * tmp, 1.0e-6 * mlen_v2)
+                    kmv = min(kmv, mix_upper_bound * mlen_v2 / dt)
+                    khh = min(kmh / prandtl,
+                              mix_upper_bound * mlen_h2 / dt)
+                    khv = min(kmv / prandtl,
+                              mix_upper_bound * mlen_v2 / dt)
+                else:
+                    rz = rdzw(k, j, i)
+                    deltas = (dx * dy / rz) ** 0.33333333
+                    deltas2 = deltas * deltas
+                    kmh = max(c_s * c_s * deltas2 * tmp, 1.0e-6 * deltas2)
+                    kmh = min(kmh, mix_upper_bound * dx * dy / dt)
+                    kmv = min(kmh, mix_upper_bound / rz / rz / dt)
+                    khh = min(kmh / prandtl,
+                              mix_upper_bound * dx * dy / dt)
+                    khv = min(kmv / prandtl,
+                              mix_upper_bound / rz / rz / dt)
+                xkmh[k, j, i] = kmh
+                xkhh[k, j, i] = khh
+                xkmv[k, j, i] = kmv
+                xkhv[k, j, i] = khv
+    return xkmh, xkhh, xkmv, xkhv
+
+
+def np_wrf_vertical_diffusion_s(var, khv, rho, phi, *, fnm, fnp, dnw,
+                                thb=None):
+    """Mirror of ``wrf_smag_vd_s`` (WRF ``vertical_diffusion_s``,
+    doing_tke=.false.): H3 fluxes on w levels with fnm/fnp K and density
+    averages, H3 = 0 at surface and top, tendency += g*dH3/dnw.  ``thb``
+    (1-D or 3-D), when given, reconstructs the full-theta difference from
+    perturbation storage (the T0 offset cancels in the k difference).
+    Returns the tendency increment ``(nz, ny, nx)`` float64.
+    """
+    G = 9.81
+    var = np.asarray(var, dtype=np.float64)
+    khv = np.asarray(khv, dtype=np.float64)
+    rho = np.asarray(rho, dtype=np.float64)
+    fnm = np.asarray(fnm, dtype=np.float64)
+    fnp = np.asarray(fnp, dtype=np.float64)
+    dnw = np.asarray(dnw, dtype=np.float64)
+    nz, ny, nx = var.shape
+    if thb is None:
+        full = var
+    else:
+        thb = np.asarray(thb, dtype=np.float64)
+        full = var + (thb[:, None, None] if thb.ndim == 1 else thb)
+    _, _, rdz = _wrf_column_geometry(phi)
+
+    h3 = np.zeros((nz + 1, ny, nx))
+    for kw in range(1, nz):
+        xkx = fnm[kw] * khv[kw] + fnp[kw] * khv[kw - 1]
+        xkx = xkx * (fnm[kw] * rho[kw] + fnp[kw] * rho[kw - 1])
+        for j in range(ny):
+            for i in range(nx):
+                h3[kw, j, i] = (-xkx[j, i]
+                                * (full[kw, j, i] - full[kw - 1, j, i])
+                                * rdz(kw, j, i))
+    tend = np.zeros_like(var)
+    for k in range(nz):
+        tend[k] = G * (h3[k + 1] - h3[k]) / dnw[k]
+    return tend
+
+
+def np_wrf_surface_heat_const(heat_flux, rho0, dnw0):
+    """Mirror of ``wrf_smag_surface_heat_const`` (hflux CASE(0,2),
+    use_theta_m=0): the k=0 coupled-theta increment
+    ``-g*heat_flux*rho(kts)/dnw(kts)`` (positive for positive flux since
+    WRF's dnw < 0)."""
+    return -9.81 * float(heat_flux) * np.asarray(
+        rho0, dtype=np.float64) / float(dnw0)
+
+
+def np_wrf_surface_mom_cd0(u0, v0, rho0, cd0, dnw0):
+    """Mirror of the ``vflux CASE(0)`` constant-drag wall stress: the k=0
+    ru/rv increments ``g*tao*rho_avg/dnw`` with ``tao = cd0*|V|*u``.
+
+    ``u0 (ny, nx+1)`` / ``v0 (ny+1, nx)`` are the k=0 staggered winds
+    (periodic core), ``rho0 (ny, nx)`` the k=0 density.  Returns
+    ``(ru0, rv0)`` on the staggered shapes.
+    """
+    G, eps = 9.81, 1.0e-15
+    u0 = np.asarray(u0, dtype=np.float64)
+    v0 = np.asarray(v0, dtype=np.float64)
+    rho0 = np.asarray(rho0, dtype=np.float64)
+    ny, nx = rho0.shape
+    ru = np.zeros_like(u0)
+    rv = np.zeros_like(v0)
+    for j in range(ny):
+        for i in range(nx + 1):
+            ic, im = i % nx, (i - 1) % nx
+            vv = 0.25 * (v0[j, ic] + v0[(j + 1) % ny, ic]
+                         + v0[j, im] + v0[(j + 1) % ny, im])
+            uu = u0[j, min(i, nx)]
+            speed = np.sqrt(uu * uu + vv * vv) + eps
+            stress = cd0 * speed * uu
+            rhoavg = 0.5 * (rho0[j, ic] + rho0[j, im])
+            ru[j, i] = G * stress * rhoavg / dnw0
+    for j in range(ny + 1):
+        for i in range(nx):
+            jc, jm = j % ny, (j - 1) % ny
+            uu = 0.25 * (u0[jc, i] + u0[jc, (i + 1) % nx]
+                         + u0[jm, i] + u0[jm, (i + 1) % nx])
+            vv = v0[min(j, ny), i]
+            speed = np.sqrt(vv * vv + uu * uu) + eps
+            stress = cd0 * speed * vv
+            rhoavg = 0.5 * (rho0[jc, i] + rho0[jm, i])
+            rv[j, i] = G * stress * rhoavg / dnw0
+    return ru, rv
+
+
+def _wrf_deformation_closures(u, v, w, phi, *, dx, dy,
+                              fnm, fnp, dn, dnw, cf1, cf2, cf3):
+    """Shared float64 closures for the metric-aware WRF deformations on a
+    periodic msf=1 grid (cal_deform_and_div transliteration).  Returns a
+    dict of pointwise functions; used by the km_opt=2/3 mirrors."""
+    u = np.asarray(u, dtype=np.float64)
+    v = np.asarray(v, dtype=np.float64)
+    w = np.asarray(w, dtype=np.float64)
+    phi = np.asarray(phi, dtype=np.float64)
+    fnm = np.asarray(fnm, dtype=np.float64)
+    fnp = np.asarray(fnp, dtype=np.float64)
+    dn = np.asarray(dn, dtype=np.float64)
+    dnw = np.asarray(dnw, dtype=np.float64)
+    nz = phi.shape[0] - 1
+    ny, nx = phi.shape[1:]
+    rdx, rdy = 1.0 / dx, 1.0 / dy
+    G = 9.81
+    ph, rdzw, rdz = _wrf_column_geometry(phi)
+
+    def uhat(k, j, i):
+        return u[k, j % ny, i % nx]
+
+    def vhat(k, j, i):
+        return v[k, j % ny, i % nx]
+
+    def what(kw, j, i):
+        return w[min(max(kw, 0), nz), j % ny, i % nx]
+
+    def zx(kw, j, iface):
+        return rdx * (ph(kw, j, iface) - ph(kw, j, iface - 1)) / G
+
+    def zy(kw, jface, i):
+        return rdy * (ph(kw, jface, i) - ph(kw, jface - 1, i)) / G
+
+    def full_weights(kw, pair):
+        if kw <= 0:
+            return cf1 * pair(0) + cf2 * pair(1) + cf3 * pair(2)
+        if kw >= nz:
+            cft2 = -0.5 * dnw[nz - 1] / dn[nz - 1]
+            return (1.0 - cft2) * pair(nz - 1) + cft2 * pair(nz - 2)
+        return fnm[kw] * pair(kw) + fnp[kw] * pair(kw - 1)
+
+    def u_w_xcenter(kw, j, i):
+        return 0.5 * full_weights(
+            kw, lambda k: uhat(k, j, i) + uhat(k, j, i + 1))
+
+    def v_w_ycenter(kw, j, i):
+        return 0.5 * full_weights(
+            kw, lambda k: vhat(k, j, i) + vhat(k, j + 1, i))
+
+    def u_w_corner(kw, j, i):
+        return 0.5 * full_weights(
+            kw, lambda k: uhat(k, j - 1, i) + uhat(k, j, i))
+
+    def v_w_corner(kw, j, i):
+        return 0.5 * full_weights(
+            kw, lambda k: vhat(k, j, i - 1) + vhat(k, j, i))
+
+    def defor11(k, j, i):
+        tmpzx = 0.25 * (zx(k, j, i) + zx(k, j, i + 1)
+                        + zx(k + 1, j, i) + zx(k + 1, j, i + 1))
+        slope = ((u_w_xcenter(k + 1, j, i) - u_w_xcenter(k, j, i))
+                 * tmpzx * rdzw(k, j, i))
+        return 2.0 * (rdx * (uhat(k, j, i + 1) - uhat(k, j, i)) - slope)
+
+    def defor22(k, j, i):
+        tmpzy = 0.25 * (zy(k, j, i) + zy(k, j + 1, i)
+                        + zy(k + 1, j, i) + zy(k + 1, j + 1, i))
+        slope = ((v_w_ycenter(k + 1, j, i) - v_w_ycenter(k, j, i))
+                 * tmpzy * rdzw(k, j, i))
+        return 2.0 * (rdy * (vhat(k, j + 1, i) - vhat(k, j, i)) - slope)
+
+    def defor12(k, j, i):
+        rr = (rdzw(k, j, i) + rdzw(k, j, i - 1)
+              + rdzw(k, j - 1, i - 1) + rdzw(k, j - 1, i))
+        tmpzy = 0.25 * (zy(k, j, i - 1) + zy(k, j, i)
+                        + zy(k + 1, j, i - 1) + zy(k + 1, j, i))
+        uslope = ((u_w_corner(k + 1, j, i) - u_w_corner(k, j, i))
+                  * 0.25 * tmpzy * rr)
+        tmpzx = 0.25 * (zx(k, j - 1, i) + zx(k, j, i)
+                        + zx(k + 1, j - 1, i) + zx(k + 1, j, i))
+        vslope = ((v_w_corner(k + 1, j, i) - v_w_corner(k, j, i))
+                  * 0.25 * tmpzx * rr)
+        return (rdy * (uhat(k, j, i) - uhat(k, j - 1, i)) - uslope
+                + rdx * (vhat(k, j, i) - vhat(k, j, i - 1)) - vslope)
+
+    def w_xavg(k, j, i):
+        return 0.25 * (what(k, j, i) + what(k + 1, j, i)
+                       + what(k, j, i - 1) + what(k + 1, j, i - 1))
+
+    def w_yavg(k, j, i):
+        return 0.25 * (what(k, j, i) + what(k + 1, j, i)
+                       + what(k, j - 1, i) + what(k + 1, j - 1, i))
+
+    def defor13(kw, j, i):
+        if kw <= 0 or kw >= nz:
+            return 0.0
+        rz = 0.5 * (rdz(kw, j, i) + rdz(kw, j, i - 1))
+        slope = ((w_xavg(kw, j, i) - w_xavg(kw - 1, j, i))
+                 * zx(kw, j, i) * rz)
+        dwdx = rdx * (what(kw, j, i) - what(kw, j, i - 1)) - slope
+        dudz = (uhat(kw, j, i) - uhat(kw - 1, j, i)) * rz
+        return dwdx + dudz
+
+    def defor23(kw, j, i):
+        if kw <= 0 or kw >= nz:
+            return 0.0
+        rz = 0.5 * (rdz(kw, j, i) + rdz(kw, j - 1, i))
+        slope = ((w_yavg(kw, j, i) - w_yavg(kw - 1, j, i))
+                 * zy(kw, j, i) * rz)
+        dwdy = rdy * (what(kw, j, i) - what(kw, j - 1, i)) - slope
+        dvdz = (vhat(kw, j, i) - vhat(kw - 1, j, i)) * rz
+        return dwdy + dvdz
+
+    def defor33(k, j, i):
+        return 2.0 * (w[k + 1, j % ny, i % nx]
+                      - w[k, j % ny, i % nx]) * rdzw(k, j, i)
+
+    return {"defor11": defor11, "defor22": defor22, "defor12": defor12,
+            "defor13": defor13, "defor23": defor23, "defor33": defor33,
+            "rdzw": rdzw, "rdz": rdz, "ph": ph}
+
+
+def _np_l_scale(tke_v, bn2_v, deltas):
+    """WRF calc_l_scale, one point (module_diffusion_em.F:2341-2406)."""
+    l = deltas
+    if bn2_v > 1.0e-6:
+        tmp = np.sqrt(max(tke_v, 1.0e-6))
+        l = 0.76 * tmp / np.sqrt(bn2_v)
+        l = min(l, deltas)
+        l = max(l, 0.001 * deltas)
+    return l
+
+
+def np_wrf_tke_km(thp, thb, p, tke, bn2, phi, *, dx, dy, dt, c_k,
+                  mix_upper_bound, mix_isotropic, tke_seed,
+                  cf1, cf2, cf3, prandtl=1.0 / 3.0):
+    """Mirror of ``wrf_tke_km`` (WRF ``tke_km``, :2049-2260), periodic,
+    msf = 1: both mix_isotropic branches, the dthrdn stability length with
+    phy_prep's surface/top p8w-t8w extrapolations, the tke_seed floor, and
+    WRF's limiter asymmetry (anisotropic xkhh/xkhv uncapped).  Returns
+    ``(xkmh, xkhh, xkmv, xkhv)``.
+    """
+    G, RD = 9.81, 287.0
+    CP = 7.0 * RD / 2.0
+    RCP = RD / CP
+    P0 = 1.0e5
+    thp = np.asarray(thp, dtype=np.float64)
+    thb = np.asarray(thb, dtype=np.float64)
+    p = np.asarray(p, dtype=np.float64)
+    tke = np.asarray(tke, dtype=np.float64)
+    bn2 = np.asarray(bn2, dtype=np.float64)
+    phi = np.asarray(phi, dtype=np.float64)
+    nz, ny, nx = thp.shape
+    theta = thb[:, None, None] + thp if thb.ndim == 1 else thb + thp
+    t = theta * (p / P0) ** RCP
+    _, rdzw, rdz = _wrf_column_geometry(phi)
+
+    xkmh = np.zeros((nz, ny, nx))
+    xkhh = np.zeros_like(xkmh)
+    xkmv = np.zeros_like(xkmh)
+    xkhv = np.zeros_like(xkmh)
+    for j in range(ny):
+        for i in range(nx):
+            for k in range(nz):
+                tmp = np.sqrt(max(tke[k, j, i], tke_seed))
+                rz = rdzw(k, j, i)
+                if mix_isotropic == 0:
+                    if k == 0:
+                        tmpdz = (1.0 / rdzw(1, j, i)
+                                 + 1.0 / rdzw(0, j, i))
+                        z0 = phi[0, j, i] / G
+                        z1 = 0.5 * (phi[0, j, i] + phi[1, j, i]) / G
+                        z2 = 0.5 * (phi[1, j, i] + phi[2, j, i]) / G
+                        w1 = (z0 - z2) / (z1 - z2)
+                        w2 = 1.0 - w1
+                        p8w0 = w1 * p[0, j, i] + w2 * p[1, j, i]
+                        t8w0 = w1 * t[0, j, i] + w2 * t[1, j, i]
+                        thetasfc = t8w0 / (p8w0 / P0) ** RCP
+                        dthrdn = (theta[1, j, i] - thetasfc) / tmpdz
+                    elif k == nz - 1:
+                        tmpdz = (1.0 / rdz(nz - 1, j, i)
+                                 + 0.5 / rdzw(nz - 1, j, i))
+                        z0 = phi[nz, j, i] / G
+                        z1 = 0.5 * (phi[nz - 1, j, i]
+                                    + phi[nz, j, i]) / G
+                        z2 = 0.5 * (phi[nz - 2, j, i]
+                                    + phi[nz - 1, j, i]) / G
+                        w1 = (z0 - z2) / (z1 - z2)
+                        w2 = 1.0 - w1
+                        p8wt = np.exp(w1 * np.log(p[nz - 1, j, i])
+                                      + w2 * np.log(p[nz - 2, j, i]))
+                        t8wt = (w1 * t[nz - 1, j, i]
+                                + w2 * t[nz - 2, j, i])
+                        thetatop = t8wt / (p8wt / P0) ** RCP
+                        dthrdn = ((thetatop - theta[nz - 2, j, i])
+                                  / tmpdz)
+                    else:
+                        tmpdz = (1.0 / rdz(k + 1, j, i)
+                                 + 1.0 / rdz(k, j, i))
+                        dthrdn = ((theta[k + 1, j, i]
+                                   - theta[k - 1, j, i]) / tmpdz)
+                    mlen_h = np.sqrt(dx * dy)
+                    deltas = 1.0 / rz
+                    mlen_v = deltas
+                    if dthrdn > 0.0:
+                        mlen_s = 0.76 * tmp / np.sqrt(
+                            abs(G / theta[k, j, i] * dthrdn))
+                        mlen_v = min(mlen_v, mlen_s)
+                    kmh = max(c_k * tmp * mlen_h, 1.0e-6 * mlen_h ** 2)
+                    kmh = min(kmh, mix_upper_bound * mlen_h ** 2 / dt)
+                    kmv = max(c_k * tmp * mlen_v, 1.0e-6 * deltas ** 2)
+                    kmv = min(kmv, mix_upper_bound * deltas ** 2 / dt)
+                    khh = kmh / prandtl                 # uncapped (WRF)
+                    khv = kmv * (1.0 + 2.0 * mlen_v / deltas)
+                else:
+                    deltas = (dx * dy / rz) ** 0.33333333
+                    l = _np_l_scale(tke[k, j, i], bn2[k, j, i], deltas)
+                    kmh = min(mix_upper_bound * dx * dy / dt,
+                              c_k * tmp * l)
+                    kmv = min(mix_upper_bound / rz / rz / dt,
+                              c_k * tmp * l)
+                    pr_inv = 1.0 + 2.0 * l / deltas
+                    khh = min(mix_upper_bound * dx * dy / dt,
+                              kmh * pr_inv)
+                    khv = min(mix_upper_bound / rz / rz / dt,
+                              kmv * pr_inv)
+                xkmh[k, j, i] = kmh
+                xkhh[k, j, i] = khh
+                xkmv[k, j, i] = kmv
+                xkhv[k, j, i] = khv
+    return xkmh, xkhh, xkmv, xkhv
+
+
+def np_wrf_tke_rhs(u, v, w, phi, thp, thb, tke, bn2, kmh, kmv, khv,
+                   mut, c1h, c2h, *, dx, dy, dt, c_k, isfflx,
+                   cd0=0.0, heat_flux=0.0, ustm=None, hfx=None, qv=None,
+                   rho0=None, fnm=None, fnp=None, dn=None, dnw=None,
+                   cf1=0.0, cf2=0.0, cf3=0.0, return_terms=False):
+    """Mirror of ``wrf_tke_rhs`` (WRF tke_shear + tke_buoyancy +
+    tke_dissip + the positivity limiter): the once-per-step coupled TKE
+    source on a periodic msf=1 grid.  ``return_terms=True`` additionally
+    returns the (shear, buoyancy, dissipation) components BEFORE the
+    limiter -- the budget-receipt decomposition.
+    """
+    G, RD = 9.81, 287.0
+    CP = 7.0 * RD / 2.0
+    d = _wrf_deformation_closures(u, v, w, phi, dx=dx, dy=dy,
+                                  fnm=fnm, fnp=fnp, dn=dn, dnw=dnw,
+                                  cf1=cf1, cf2=cf2, cf3=cf3)
+    thp = np.asarray(thp, dtype=np.float64)
+    thb = np.asarray(thb, dtype=np.float64)
+    tke = np.asarray(tke, dtype=np.float64)
+    bn2 = np.asarray(bn2, dtype=np.float64)
+    kmh = np.asarray(kmh, dtype=np.float64)
+    kmv = np.asarray(kmv, dtype=np.float64)
+    khv = np.asarray(khv, dtype=np.float64)
+    mut = np.asarray(mut, dtype=np.float64)
+    c1h = np.asarray(c1h, dtype=np.float64)
+    c2h = np.asarray(c2h, dtype=np.float64)
+    u = np.asarray(u, dtype=np.float64)
+    v = np.asarray(v, dtype=np.float64)
+    nz, ny, nx = thp.shape
+    theta = thb[:, None, None] + thp if thb.ndim == 1 else thb + thp
+    ce1 = (c_k / 0.10) * 0.19
+    ce2 = max(0.0, 0.93 - ce1)
+
+    shear = np.zeros((nz, ny, nx))
+    buoy = np.zeros_like(shear)
+    dissip = np.zeros_like(shear)
+    for j in range(ny):
+        for i in range(nx):
+            for k in range(nz):
+                chm = c1h[k] * mut[j, i] + c2h[k]
+                s = 0.0
+                d11 = d["defor11"](k, j, i)
+                d22 = d["defor22"](k, j, i)
+                d33 = d["defor33"](k, j, i)
+                s += 0.5 * chm * kmh[k, j, i] * d11 * d11
+                s += 0.5 * chm * kmh[k, j, i] * d22 * d22
+                s += 0.5 * chm * kmv[k, j, i] * d33 * d33
+                s12 = [d["defor12"](k, j, i), d["defor12"](k, j + 1, i),
+                       d["defor12"](k, j, i + 1),
+                       d["defor12"](k, j + 1, i + 1)]
+                s += chm * kmh[k, j, i] * 0.25 * sum(x * x for x in s12)
+                s13 = [d["defor13"](k + 1, j, i), d["defor13"](k, j, i),
+                       d["defor13"](k + 1, j, i + 1),
+                       d["defor13"](k, j, i + 1)]
+                s += chm * kmv[k, j, i] * 0.25 * sum(x * x for x in s13)
+                s23 = [d["defor23"](k + 1, j, i), d["defor23"](k, j, i),
+                       d["defor23"](k + 1, j + 1, i),
+                       d["defor23"](k, j + 1, i)]
+                s += chm * kmv[k, j, i] * 0.25 * sum(x * x for x in s23)
+                if k == 0:
+                    usum = u[0, j, i] + u[0, j, (i + 1) % nx]
+                    vsum = v[0, j, i] + v[0, (j + 1) % ny, i]
+                    absU = 0.5 * np.sqrt(usum * usum + vsum * vsum)
+                    if isfflx == 0:
+                        Cd = cd0
+                    else:
+                        absU += 1.0e-15
+                        us = 0.0 if ustm is None else float(
+                            np.asarray(ustm)[j, i])
+                        Cd = us * us / (absU * absU)
+                    d13s = 0.5 * (d["defor13"](1, j, i)
+                                  + d["defor13"](1, j, i + 1))
+                    s += chm * (0.5 * usum * Cd * absU * d13s)
+                    d23s = 0.5 * (d["defor23"](1, j, i)
+                                  + d["defor23"](1, j + 1, i))
+                    s += chm * (0.5 * vsum * Cd * absU * d23s)
+                shear[k, j, i] = s
+
+                if k >= 1:
+                    buoy[k, j, i] = -chm * khv[k, j, i] * bn2[k, j, i]
+                else:
+                    if isfflx in (0, 2):
+                        hf = heat_flux
+                    else:
+                        vapor = 0.0 if qv is None else float(
+                            np.asarray(qv)[0, j, i])
+                        cpm = CP * (1.0 + 0.8 * vapor)
+                        hfx_v = 0.0 if hfx is None else float(
+                            np.asarray(hfx)[j, i])
+                        # WRF CASE(1): heat_flux = (hfx/cpm)/rho with the
+                        # vapor-loaded diffusion density at k=kts.
+                        rr = 1.0 if rho0 is None else float(
+                            np.asarray(rho0)[j, i])
+                        hf = hfx_v / cpm / rr
+                    buoy[k, j, i] = -chm * (
+                        (khv[0, j, i] * bn2[0, j, i])
+                        - (G / theta[0, j, i]) * hf) * 0.5
+                rz = d["rdzw"](k, j, i)
+                deltas = (dx * dy / rz) ** 0.33333333
+                l = _np_l_scale(tke[k, j, i], bn2[k, j, i], deltas)
+                coefc = 3.9 if (k == 0 or k == nz - 1) else (
+                    ce1 + ce2 * l / deltas)
+                tketmp = max(tke[k, j, i], 1.0e-6)
+                dissip[k, j, i] = -chm * coefc * tketmp ** 1.5 / l
+    total = shear + buoy + dissip
+    chm3 = c1h[:, None, None] * mut[None] + c2h[:, None, None]
+    total = np.maximum(total, -chm3 * np.maximum(0.0, tke) / dt)
+    if return_terms:
+        return total, shear, buoy, dissip
+    return total

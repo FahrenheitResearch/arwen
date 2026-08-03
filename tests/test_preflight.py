@@ -66,14 +66,51 @@ def est4(exp4):
 def test_state_manifest_matches_restart_classification(d01_cfg):
     """The state shape manifest and the restart manifest classify the SAME
     attribute set: a DomainState field added to state.py without updating
-    both fails here (full-featured config exercises every conditional)."""
+    both fails here (full-featured config exercises every conditional).
+
+    The union must span every scheme that allocates something no other
+    scheme does, because it is asserted as an EQUALITY in both directions.
+    ``mp_physics=18`` covers the NSSL scalars; ``mp_physics=28`` covers
+    Thompson aerosol-aware's nwfa/nifa/nc0/nwfa0/nifa0 and the two 2-D
+    surface emission fields.  Widening this union is the sanctioned way to
+    admit a new scheme; TRIMMING the classification sets is not -- an
+    attribute dropped from the restart manifest is a field that silently
+    vanishes across a checkpoint.
+    """
+    from gpuwm.config import SASE_PBL_SCHEME
+
     nssl_cfg = dataclasses.replace(d01_cfg, mp_physics=18)
+    # km_opt=2 is the only configuration that allocates the prognostic-TKE
+    # carrier, so the union needs an LES-closure arm or tke/tke0 would be
+    # classified in the restart manifest and unaccounted for in the VRAM
+    # projection (validate_run_config is deliberately not run here -- this
+    # is a shape manifest, not an admissible run).
+    les_cfg = dataclasses.replace(
+        d01_cfg, km_opt=2, bl_pbl_physics=0, khdif=0.0, kvdif=0.0)
+    aerosol_cfg = dataclasses.replace(d01_cfg, mp_physics=28)
+    # The SASE closure owns one conditional prognostic that no other
+    # configuration allocates, so it joins the union for the same reason
+    # NSSL does: this test's whole claim is that every conditional is
+    # exercised.
+    sase_cfg = dataclasses.replace(d01_cfg,
+                                   bl_pbl_physics=SASE_PBL_SCHEME,
+                                   km_opt=0, khdif=0.0, kvdif=0.0,
+                                   bldt=0.0)
     names = (set(pf.state_array_shapes(d01_cfg))
-             | set(pf.state_array_shapes(nssl_cfg)))
+             | set(pf.state_array_shapes(nssl_cfg))
+             | set(pf.state_array_shapes(les_cfg))
+             | set(pf.state_array_shapes(aerosol_cfg))
+             | set(pf.state_array_shapes(sase_cfg)))
     classified = (set(restart.STATE_SERIALIZED_ATTRS)
                   | set(restart.STATE_REBUILT_ATTRS)
                   | set(restart.STATE_SETUP_ARRAYS))
     assert names == classified
+    # And the specific names this port added, so a later edit cannot make
+    # the equality hold again by deleting them from BOTH sides.
+    for name in ("nwfa", "nifa", "nwfa2d", "nifa2d"):
+        assert name in restart.STATE_SERIALIZED_ATTRS
+    for name in ("nc0", "nwfa0", "nifa0"):
+        assert name in restart.STATE_REBUILT_ATTRS
 
 
 def test_state_shape_formulas_staggering():
@@ -377,6 +414,12 @@ def test_scratch_lifetime_audit_covers_registry_and_manifest(d01_cfg, exp4):
         RunConfig(**_TINY, moist=True, mp_physics=1, open_x=True,
                   open_y=True, khdif=1.0, kvdif=1.0, emdiv=0.01),
         RunConfig(**_TINY, sf_sfclay_physics=1),
+        # Every microphysics scheme with slots of its own, so a new family
+        # cannot land unaudited.  km_opt=4 turns on the smag_r* held
+        # tendencies, which is where the mp=28 number/aerosol rows live.
+        RunConfig(**_TINY, moist=True, mp_physics=8, km_opt=4),
+        RunConfig(**_TINY, moist=True, mp_physics=18, km_opt=4),
+        RunConfig(**_TINY, moist=True, mp_physics=28, km_opt=4),
     ]
     slots = set()
     for cfg in configs:
@@ -646,8 +689,17 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
                 RunConfig(**_TINY, moist=True, mp_physics=6),
                 RunConfig(**_TINY, moist=True, mp_physics=8),
                 RunConfig(**_TINY, moist=True, mp_physics=18),
+                RunConfig(**_TINY, moist=True, mp_physics=28),
                 RunConfig(**_TINY, sf_sfclay_physics=1),
-                RunConfig(**_TINY, nwp_diagnostics=1)):
+                RunConfig(**_TINY, nwp_diagnostics=1),
+                # LES closures: km_opt=3 owns the vertical exchange-
+                # coefficient pair, km_opt=2 adds the prognostic-TKE
+                # carrying slots and (with the toggle on) the report-only
+                # budget family.  Without these arms the whole LES slot
+                # family is invisible to this completeness gate.
+                RunConfig(**_TINY, km_opt=3, bl_pbl_physics=0),
+                RunConfig(**_TINY, km_opt=2, bl_pbl_physics=0,
+                          tke_budget=1)):
         known |= set(pf.scratch_slot_registry(cfg, n_lbc_intervals=2))
     exp = load_experiment_case(CONFIG_4DOM)[0]
     for dc in exp.domains:
@@ -770,6 +822,700 @@ def test_experimental_thompson_scratch_registry_is_complete():
             "mp_thompson_snow_velocity_boost",
             "mp_thompson_graupel_number_shadow"):
         assert pf.scratch_slot_uses_arena(slot)
+
+
+# ---------------------------------------------------------------------------
+# mp_physics=28 -- Thompson aerosol-aware.  These pin the state, scratch,
+# nest and pricing inventories the rest of the port builds on, and they pin
+# the two places a mistake would be invisible: the transport discriminator
+# and the mp=8/mp=10 non-interference.
+# ---------------------------------------------------------------------------
+
+_MP28 = dict(moist=True, moist_cq=True, mp_physics=28)
+
+
+def test_mp28_state_allocation_inventory():
+    cfg = RunConfig(**_TINY, **_MP28)
+    shapes = pf.state_array_shapes(cfg)
+    mass = (cfg.nz, cfg.ny, cfg.nx)
+    surface = (cfg.ny, cfg.nx)
+    # Prognostic scalars + their RK time-t copies.
+    for name in ("nc", "nr", "ni", "nwfa", "nifa",
+                 "nc0", "nr0", "ni0", "nwfa0", "nifa0",
+                 "qi", "qs", "qg", "qi0", "qs0", "qg0",
+                 "effc", "effi", "effs"):
+        assert shapes[name] == mass, name
+    # Surface emission tendencies, 2-D and cross-step constant.
+    assert shapes["nwfa2d"] == surface
+    assert shapes["nifa2d"] == surface
+    # Thompson has no effr; Morrison/NSSL-only fields must not appear.
+    for name in ("effr", "ns", "ng", "ns0", "ng0", "qh", "qnn"):
+        assert name not in shapes, name
+
+
+def test_mp28_state_allocation_matches_the_real_domain_state():
+    """The shape manifest is a transcription of state.py; prove it.
+
+    A manifest that drifts from the constructor is worse than no manifest:
+    the arena is sized from the manifest and bound to the constructor.
+    """
+    import types
+
+    import gpuwm.core.state as state_mod
+
+    cfg = RunConfig(**_TINY, **_MP28)
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(state_mod, "cp", np)
+        state = state_mod.DomainState(cfg)
+    finally:
+        monkey.undo()
+    declared = pf.state_array_shapes(cfg)
+    actual = {name: tuple(value.shape)
+              for name, value in vars(state).items()
+              if isinstance(value, np.ndarray)}
+    assert actual == declared
+    assert isinstance(state, types.SimpleNamespace) is False  # sanity
+
+
+def test_mp28_transports_droplet_and_aerosol_number_but_mp10_does_not():
+    """The transport gate.  This is the one mp=28 decision whose mistake is
+    both silent and expensive: mp_physics=10 ALREADY allocates ``state.nc``
+    and deliberately does not transport it, so a presence-of-``nc`` test
+    would start advecting Morrison's diagnostic droplet number through every
+    generic dycore consumer and move a validated trajectory.  The
+    discriminator must be ``nwfa``, which exactly one scheme allocates.
+    """
+    import gpuwm.core.state as state_mod
+    from gpuwm.core import moist
+
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(state_mod, "cp", np)
+        mp8 = state_mod.DomainState(
+            RunConfig(**_TINY, moist=True, mp_physics=8))
+        mp10 = state_mod.DomainState(
+            RunConfig(**_TINY, moist=True, mp_physics=10))
+        mp28 = state_mod.DomainState(RunConfig(**_TINY, **_MP28))
+    finally:
+        monkey.undo()
+
+    # The frozen receipts (tests/test_mp8_frozen.py R3) restated here so a
+    # change to moist.py fails in its own test file too.
+    assert moist.extra_moist_species(mp8) == ("qi", "qs", "qg", "nr", "ni")
+    assert moist.extra_moist_species(mp10) == (
+        "qi", "qs", "qg", "nr", "ni", "ns", "ng")
+    assert moist.extra_moist_species(mp28) == (
+        "qi", "qs", "qg", "nr", "ni", "nc", "nwfa", "nifa")
+
+    # Morrison really does own an nc that is really not transported.
+    assert getattr(mp10, "nc", None) is not None
+    assert "nc" not in moist.extra_moist_species(mp10)
+    assert getattr(mp10, "nc0", None) is None
+    # ... and the discriminator is unique to mp=28.
+    assert getattr(mp8, "nwfa", None) is None
+    assert getattr(mp10, "nwfa", None) is None
+    assert getattr(mp28, "nwfa", None) is not None
+    # The generic filter itself must not have been widened.
+    assert moist.TRANSPORTED_NUMBER_SPECIES == ("nr", "ni", "ns", "ng")
+
+
+def test_mp28_scratch_registry_is_complete():
+    cfg = RunConfig(**_TINY, **_MP28)
+    slots = pf.scratch_slot_registry(cfg)
+    mass = (cfg.nz, cfg.ny, cfg.nx)
+    surface = (cfg.ny, cfg.nx)
+    classic = {
+        "mp_th": mass,
+        "mp_pii": mass,
+        "mp_dz8w": mass,
+        "mp_z8w": (cfg.nz + 1, cfg.ny, cfg.nx),
+        "mp_thompson_temperature": mass,
+        "mp_thompson_frozen_reference_density": mass,
+        "mp_thompson_frozen_reference_temperature": mass,
+        "mp_thompson_rain_reference_density": mass,
+        "mp_thompson_snow_melt_marker": mass,
+        "mp_thompson_graupel_melt_marker": mass,
+        "mp_thompson_snow_velocity_boost": mass,
+        "mp_thompson_graupel_number_shadow": mass,
+        "mp_rainnc": surface,
+        "mp_rainncv": surface,
+        "mp_snownc": surface,
+        "mp_snowncv": surface,
+        "mp_graupelnc": surface,
+        "mp_graupelncv": surface,
+        "mp_sr": surface,
+        "refl_t": mass,
+        "refl_10cm": mass,
+    }
+    assert classic.items() <= slots.items()
+    aerosol = {name: mass for name in (
+        "mp_thompson_aero_ncten",
+        "mp_thompson_aero_nwfaten",
+        "mp_thompson_aero_nifaten",
+        "mp_thompson_aero_entry_density",
+        "mp_thompson_aero_nwfa_entry_m3",
+        "mp_thompson_aero_nifa_entry_m3",
+        "mp_thompson_aero_tau1_density",
+        "mp_thompson_aero_nwfa_work_m3",
+        "mp_thompson_aero_qc_entry",
+        "mp_thompson_aero_ni_entry",
+        "mp_thompson_aero_rc_entry",
+        "mp_thompson_aero_nc_entry_m3",
+        "mp_thompson_aero_nu_c_entry",
+        "mp_thompson_aero_l_qc_entry",
+        "mp_thompson_aero_condensation_rate",
+    )}
+    assert aerosol.items() <= slots.items()
+    # All fifteen are arena-eligible, and the audit row that says so is a
+    # write_before_read row with real evidence.
+    for slot in aerosol:
+        assert pf.scratch_slot_uses_arena(slot), slot
+        row = pf.scratch_slot_lifetime(slot)
+        assert row is not None and row.kind == "write_before_read"
+        assert row.evidence and row.rationale
+    # mp=28 owns qi/qs, so the physics prep must NOT substitute zero planes.
+    assert "physics_qi" not in slots and "physics_qs" not in slots
+    # The aerosol slots belong to mp=28 alone.
+    mp8_slots = set(pf.scratch_slot_registry(
+        RunConfig(**_TINY, moist=True, moist_cq=True, mp_physics=8)))
+    assert not (set(aerosol) & mp8_slots)
+
+
+def test_mp28_every_scratch_slot_is_classified_for_restart():
+    """gpuwm/io/restart.py.  ``classify_scratch_slot`` fails CLOSED, and its
+    ``mp_`` rule is exact-names-only precisely so a new accumulator cannot be
+    silently dropped from a checkpoint.  Every slot mp=28 can create must
+    therefore carry an explicit classification.
+
+    All fifteen aerosol slots are ``rebuild``, and that is the physics: WRF
+    zeroes ncten/nwfaten/nifaten at the top of every column call
+    (module_mp_thompson.F:1679-1681) and applies them once before returning
+    (:3972-4021).  Serializing a tendency that has already been applied would
+    apply it a second time on the resumed step.
+    """
+    from gpuwm.io import restart as restart_mod
+
+    slots = set(pf.scratch_slot_registry(
+        RunConfig(**_TINY, **_MP28, km_opt=4, diff_6th_opt=2,
+                  specified=True), n_lbc_intervals=2))
+    assert slots
+    for slot in sorted(slots):
+        kind = restart_mod.classify_scratch_slot(slot)
+        assert kind in ("serialize", "rebuild"), (slot, kind)
+    for slot in sorted(s for s in slots if s.startswith("mp_thompson_aero_")):
+        assert restart_mod.classify_scratch_slot(slot) == "rebuild", slot
+        assert slot not in restart_mod.SERIALIZED_SCRATCH_SLOTS
+
+
+def test_mp28_smag_held_tendencies_cover_every_transported_species():
+    from gpuwm.core import moist
+
+    cfg = RunConfig(**_TINY, **_MP28, km_opt=4)
+    slots = pf.scratch_slot_registry(cfg)
+    import gpuwm.core.state as state_mod
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(state_mod, "cp", np)
+        state = state_mod.DomainState(cfg)
+    finally:
+        monkey.undo()
+    for name in moist.moist_species(state):
+        assert "smag_r" + name in slots, name
+    # Morrison's untransported nc keeps no held tendency.
+    mp10 = pf.scratch_slot_registry(
+        RunConfig(**_TINY, moist=True, mp_physics=10, km_opt=4))
+    assert "smag_rnc" not in mp10
+
+
+def test_mp28_nest_field_kinds_and_pricing():
+    cfg = RunConfig(**_TINY, **_MP28)
+    assert pf.nest_field_kinds(cfg) == (
+        "u", "v", "w", "t", "ph", "mu",
+        "qv", "qc", "qr", "qi", "qs", "qg",
+        "nr", "ni", "nc", "nwfa", "nifa")
+    # mp=10 stays exactly as ratified -- no nc.
+    assert pf.nest_field_kinds(
+        RunConfig(**_TINY, moist=True, mp_physics=10)) == (
+        "u", "v", "w", "t", "ph", "mu",
+        "qv", "qc", "qr", "qi", "qs", "qg", "nr", "ni", "ns", "ng")
+
+
+def test_mp28_is_priced_and_never_falls_through_to_a_guess():
+    """``domain_kernel_modules`` fails closed on an unpriced selector; mp=28
+    must be a priced row, and it must name the modules the adapter really
+    launches -- including the frozen mp=8 ``thompson`` module, whose
+    sedimentation launchers mp=28 reuses byte-for-byte."""
+    from datetime import datetime as _dt
+
+    from gpuwm.experiment import experiment_from_run_config
+
+    cfg = RunConfig(**_TINY, **_MP28, output_interval_s=1.0)
+    exp = experiment_from_run_config(cfg, _dt(1974, 4, 3, 12))
+    modules = pf.physics_kernel_modules(exp)
+    for name in ("thompson", "thompson_aerosol_state", "thompson_aerosol_sat",
+                 "thompson_aerosol_cold", "thompson_aerosol_warm",
+                 "thompson_aerosol_sed"):
+        assert name in modules, name
+    # The probe translation unit is oracle-only and must never be priced
+    # into a forecast's local-memory reservation.
+    assert "thompson_aerosol_probe" not in modules
+    # Every priced module has a driver-measured frame.
+    frames = pf.kernel_local_frame_bytes(exp)
+    for name in modules:
+        assert name in frames, name
+    assert pf.kernel_local_memory_bytes(exp) >= 0
+
+
+# ---------------------------------------------------------------------------
+# mp_physics=28 -- the PhysicsDriver budgets.
+#
+# Deliberately built from ``_TINY`` rather than from the four-domain flagship
+# fixture: the flagship configs reference an external ERA5 forcing file that a
+# clean checkout does not carry, so every test keyed on them ERRORS at
+# collection and could not gate anything.  These three run anywhere.
+# ---------------------------------------------------------------------------
+
+_MP28_PBL = dict(bl_pbl_physics=1, sf_sfclay_physics=1)
+
+
+def test_mp28_physics_driver_budget_admits_the_pbl_ice_tendency():
+    """``pbl_tendencies/rqi`` is priced for mp=28 + YSU.
+
+    BEFORE THIS TEST: ``preflight.py:1400`` read ``(6, 8, 10, 18)`` and an
+    mp=28 + YSU domain's ``rqi`` stack was neither budgeted nor materialized,
+    so the ``--alloc`` measurement understated that run's persistent driver
+    set by one mass-grid array (two with a separate composed target).
+
+    ``Registry/Registry.EM_COMMON:3036`` declares the ``thompsonaero``
+    package as ``moist:qv,qc,qr,qi,qs,qg``, which is what makes WRF's
+    ``F_QI`` true and ``module_first_rk_step_part1.F:1112``'s
+    ``CALL pbl_driver`` pass ``moist(...,P_QI), F_QI=F_QI`` (:1199).
+    """
+    cfg = RunConfig(**_TINY, **_MP28, **_MP28_PBL)
+    shapes = pf.physics_array_shapes(cfg)
+    assert shapes["pbl_tendencies/rqi"] == (cfg.nz, cfg.ny, cfg.nx)
+
+
+def test_the_pbl_rqi_budget_matches_the_runtime_predicate_for_every_scheme():
+    """The budget and the runtime must not be able to disagree.
+
+    ``preflight.physics_array_shapes`` restates the membership test that
+    ``physics._pbl_optional_tendency_components`` decides at run time, and
+    ``preflight._materialize_physics`` restates it a third time.  Two of the
+    three were updated for mp=18 in an earlier wave and this file never
+    checked the agreement; asserting it over every accepted selector is what
+    stops the next scheme landing in two of three places.
+    """
+    from gpuwm.core.physics import _pbl_optional_tendency_components
+
+    for mp in (0, 1, 6, 8, 10, 18, 28):
+        cfg = RunConfig(**_TINY, moist=True, moist_cq=True, mp_physics=mp,
+                        **_MP28_PBL)
+        priced = "pbl_tendencies/rqi" in pf.physics_array_shapes(cfg)
+        at_runtime = "rqi" in _pbl_optional_tendency_components(cfg)
+        assert priced == at_runtime, (
+            f"mp_physics={mp}: preflight prices pbl_tendencies/rqi="
+            f"{priced} but physics.py composes rqi={at_runtime}")
+    # And the PBL-off case prices none of it, for any scheme.
+    assert "pbl_tendencies/rqi" not in pf.physics_array_shapes(
+        RunConfig(**_TINY, **_MP28))
+
+
+def test_mp28_driver_aliases_the_scheme_accumulators_instead_of_copies():
+    """No private ``microphysics/*`` arrays for a scheme with a slot row.
+
+    BEFORE THIS TEST: ``microphysics_scratch_slots(28)`` returned ``()``, so
+    the mp=28 PhysicsDriver allocated three private zero-filled surface
+    arrays (``microphysics/rainnc``, ``/rainncv``, ``/sr``) and
+    ``accept_microphysics`` copied the scheme's result into them on every
+    step, instead of aliasing the seven canonical ``mp_*`` scratch
+    accumulators the aerosol adapter writes.
+
+    The mp=0 control keeps its three: with no scheme there is no canonical
+    set to alias, which is what the three arrays are for.
+    """
+    from gpuwm.core.physics import microphysics_scratch_slots
+
+    shapes = pf.physics_array_shapes(RunConfig(**_TINY, **_MP28, **_MP28_PBL))
+    assert not any(name.startswith("microphysics/") for name in shapes), (
+        "mp=28 still budgets private driver-owned precipitation arrays")
+
+    control = pf.physics_array_shapes(
+        RunConfig(**_TINY, moist=True, mp_physics=0, **_MP28_PBL))
+    assert {name for name in control if name.startswith("microphysics/")} == {
+        "microphysics/rainnc", "microphysics/rainncv", "microphysics/sr"}
+
+    slots = dict(microphysics_scratch_slots(28))
+    assert slots == {
+        "rainnc": "mp_rainnc", "rainncv": "mp_rainncv", "sr": "mp_sr",
+        "snownc": "mp_snownc", "snowncv": "mp_snowncv",
+        "graupelnc": "mp_graupelnc", "graupelncv": "mp_graupelncv"}
+    # Every one of those slots is in the mp=28 scratch registry already, so
+    # the aliasing adds no allocation anywhere -- it removes three.
+    registry = pf.scratch_slot_registry(RunConfig(**_TINY, **_MP28),
+                                        n_lbc_intervals=2)
+    for slot in slots.values():
+        assert slot in registry, slot
+
+
+def test_mp28_rrtmgp_column_inventory_carries_the_effective_radii():
+    """WRF's ``use_mp_re`` table lists THOMPSONAERO; the columns are priced.
+
+    ``phys/module_physics_init.F:1005`` (THOMPSON) and ``:1006``
+    (THOMPSONAERO) sit in the same disjunction, and the P3/Jensen-Ishmael
+    ``has_reqs = 0`` override at ``:1026-1033`` does not touch either, so all
+    three of ``has_reqc``/``has_reqi``/``has_reqs`` are 1 for mp=28.
+
+    BEFORE THIS TEST: ``preflight.py:2708`` read ``(6, 8, 18)`` and an mp=28
+    RTE+RRTMGP domain priced no radii columns at all.
+
+    Thompson has no ``effr`` (that is Morrison's), and the legacy-RRTMG 4/4
+    variant is priced as one shared call-peak envelope rather than through
+    this function -- both asserted so a future edit cannot quietly widen the
+    row into either.
+    """
+    cfg = RunConfig(**_TINY, **_MP28, ra_physics=4)
+    shapes = pf.rrtmgp_column_shapes(cfg)
+    ncol, nz = cfg.ny * cfg.nx, cfg.nz
+    for name in ("effc", "effi", "effs"):
+        assert shapes[f"columns/{name}"] == ((ncol, nz), 4), name
+    assert "columns/effr" not in shapes
+    assert "columns/nc" not in shapes
+
+    # mp=8's row is untouched, and Morrison still gets its four radii.
+    assert "columns/effc" in pf.rrtmgp_column_shapes(
+        RunConfig(**_TINY, moist=True, mp_physics=8, ra_physics=4))
+    assert "columns/effr" in pf.rrtmgp_column_shapes(
+        RunConfig(**_TINY, moist=True, mp_physics=10, ra_physics=4))
+    # Kessler declares no radii in WRF's table and must not price any.
+    assert not any("eff" in name for name in pf.rrtmgp_column_shapes(
+        RunConfig(**_TINY, moist=True, mp_physics=1, ra_physics=4)))
+
+
+# ---------------------------------------------------------------------------
+# mp_physics=28 -- the rest of the WP-10 infrastructure surface.
+#
+# These are not preflight tests.  They live here because tests/test_preflight
+# .py is the ONE test file WP-10 owns, and the alternative is shipping the
+# state/transport/restart/nesting/pricing work with no regression coverage at
+# all.  Each one names the module it actually guards.
+# ---------------------------------------------------------------------------
+
+def _host_mp28_state(**overrides):
+    """A real ``DomainState`` on numpy, so no device is required."""
+    import gpuwm.core.state as state_mod
+
+    cfg = RunConfig(**_TINY, **{**_MP28, **overrides})
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(state_mod, "cp", np)
+        return state_mod.DomainState(cfg), cfg
+    finally:
+        monkey.undo()
+
+
+def test_mp28_acoustic_cq_sums_six_masses_and_no_number_moment():
+    """gpuwm/core/acoustic.py.  WRF's calc_cq sums the Registry ``moist``
+    package only; mp=28's qnc/qnwfa/qnifa are ``scalar``.  A droplet number
+    of order 1e8 leaking into q_tot would not be subtle, but n_mass is an
+    integer passed to a kernel and a wrong value is invisible from Python.
+    """
+    from gpuwm.core import acoustic
+
+    captured = {}
+
+    def fake_get_kernel(module, func):
+        assert (module, func) == ("acoustic", "calc_cq")
+
+        def launch(_grid, _block, args):
+            captured["n_mass"] = int(args[10])
+            captured["fields"] = args[:7]
+        return launch
+
+    state, cfg = _host_mp28_state()
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(acoustic, "get_kernel", fake_get_kernel)
+        monkey.setattr(acoustic, "cp", np, raising=False)
+        _, _, _, use = acoustic.prepare_moist_cq(state, cfg)
+    finally:
+        monkey.undo()
+    assert use is True
+    # Identical to mp=8: qv, qc, qr, qi, qs, qg.
+    assert captured["n_mass"] == 6
+    # And the seventh slot (qh) is the qv placeholder, never an aerosol.
+    assert captured["fields"][6] is state.qv
+    for moment in (state.nc, state.nwfa, state.nifa):
+        assert not any(moment is arg for arg in captured["fields"])
+
+
+def test_mp28_npref_cq_species_match_mp8_exactly():
+    """gpuwm/verify/npref.py -- the CPU mirror must make the same choice."""
+    from gpuwm.verify import npref
+
+    assert (npref._CQ_MASS_SPECIES_BY_MP[28]
+            == npref._CQ_MASS_SPECIES_BY_MP[8])
+    moisture = {name: np.full((2, 2, 2), 0.001) for name in
+                ("qv", "qc", "qr", "qi", "qs", "qg")}
+    # Adding aerosol fields to the dict must not change the answer.
+    polluted = dict(moisture, nc=np.full((2, 2, 2), 1.0e8),
+                    nwfa=np.full((2, 2, 2), 3.0e8),
+                    nifa=np.full((2, 2, 2), 5.0e3))
+    for clean, dirty in zip(npref.np_calc_cq(moisture, 28),
+                            npref.np_calc_cq(polluted, 28), strict=True):
+        np.testing.assert_array_equal(np.asarray(clean), np.asarray(dirty))
+
+
+def test_mp28_health_rules_cover_the_aerosol_tracers():
+    """gpuwm/core/health.py.  An uncovered field is a field the integration
+    health gate silently ignores -- the exact failure mode this port is most
+    exposed to, since a wrong aerosol number stays finite and bounded."""
+    from gpuwm.core import health
+
+    state, _ = _host_mp28_state()
+    names = {f.name for f in health.collect_state_fields(state)}
+    for name in ("nc", "nwfa", "nifa", "nr", "ni", "qi", "qs", "qg"):
+        assert name in names, name
+    for leaf in ("nwfa", "nifa"):
+        rule = health.rule_for_field(leaf)
+        assert rule.status_class == "moment"
+        assert rule.lower == 0.0
+        # WRF's own terminal ceiling is 9999.E6 with an unclamped surface
+        # emission on top (module_mp_thompson.F:3977-3982, :1310-1327), so
+        # the rule must sit well above it without being unbounded.
+        assert rule.upper >= 9999.0e6
+    # The census must not have started covering Morrison's untransported nc
+    # differently, and must not have picked up the 2-D emission fields
+    # (those are constants, not integration state).
+    assert "nwfa2d" not in names and "nifa2d" not in names
+
+
+def test_mp28_lateral_boundary_allow_lists_accept_the_new_scalars():
+    """gpuwm/ingest/lateral_bc.py -- the three allow-lists."""
+    import inspect
+
+    from gpuwm.ingest import lateral_bc
+
+    for func in (lateral_bc.apply_specified_relaxation,
+                 lateral_bc.couple_nest_field,
+                 lateral_bc.uncouple_feedback_field):
+        source = inspect.getsource(func)
+        for name in ("nc", "nwfa", "nifa"):
+            assert f'"{name}"' in source, (func.__name__, name)
+
+
+def test_mp28_external_lbc_carries_only_qv_and_says_so():
+    """The registered deviation, pinned so it cannot be un-registered by
+    accident.  ArWen gives every non-qv scalar a flow-dependent boundary with
+    ZERO inflow; for aerosols that monotonically depletes nwfa/nifa in the
+    upstream boundary zone, which WRF does not do (its Registry gives
+    qnwfa/qnifa real bdy arrays).  If someone extends
+    ``_coupled_device_fields``, this test fails and the prose that explains
+    the deviation must be retired in the same diff."""
+    import inspect
+
+    from gpuwm.core import moist
+    from gpuwm.ingest import lateral_bc
+
+    source = inspect.getsource(lateral_bc._coupled_device_fields)
+    coupled = {line.split('"')[1] for line in source.splitlines()
+               if line.strip().startswith('result["')
+               or line.strip().startswith('"')}
+    for name in ("nwfa", "nifa", "nc", "qc", "qr", "qi", "qs", "qg"):
+        assert name not in coupled, name
+    assert "qv" in coupled
+    # The deviation is written down where a reader will find it.
+    assert "ZERO AEROSOL INFLOW" in moist.__doc__
+    assert "REGISTERED DEVIATION" in source
+
+
+def test_mp28_mixed_nest_edge_is_refused_by_name():
+    """gpuwm/core/microphysics_transition.py.
+
+    v1 refuses rather than inventing an entry closure for nc/nwfa/nifa
+    across a scheme boundary.  The refusal must (a) fire for BOTH
+    directions and every partner scheme, (b) name mp=28 and its moments
+    rather than reading as "mp=28 is not implemented", and (c) NOT touch
+    the same-scheme mp28 -> mp28 nest, which is a supported configuration.
+    """
+    import types
+
+    from gpuwm.core import microphysics_transition as mt
+
+    def run(mp, policy=mt.SAME_SCHEME_POLICY):
+        return types.SimpleNamespace(
+            mp_physics=mp, moist=True, moist_cq=True,
+            nest_microphysics_transition=policy,
+            morr_rimed_ice=1, wsm6_hail_opt=0)
+
+    same = mt.resolve_microphysics_transition(run(28), run(28))
+    assert same.mixed is False
+    assert same.policy_id == mt.SAME_SCHEME_POLICY
+
+    partners = [mp for mp in mt.PORTED_MP_PHYSICS]
+    assert partners, "PORTED_MP_PHYSICS became empty"
+    for other in partners:
+        for parent, child in ((other, 28), (28, other)):
+            with pytest.raises(ValueError) as excinfo:
+                mt.resolve_microphysics_transition(
+                    run(parent), run(child, mt.EDGE_MATRIX_POLICY))
+            message = str(excinfo.value)
+            assert "REFUSED" in message
+            assert "MP28" in message
+            for moment in ("nc", "nwfa", "nifa"):
+                assert moment in message, (parent, child, moment)
+            # It must not masquerade as "scheme not ported".
+            assert "ported selectors are" not in message
+
+    # And the ratified MP8 -> MP18 edge codes are untouched.
+    assert mt._EDGE_FIELD_CODES["qvolh"] == 19
+    assert len(mt._EDGE_FIELD_CODES) == 20
+    assert 28 not in mt.PORTED_MP_PHYSICS
+
+
+def test_mp28_survives_a_restart_round_trip(tmp_path):
+    """gpuwm/io/restart.py + gpuwm/state_serialization_contract.py.
+
+    Every mp=28 field must be classified, written, and restored bit-for-bit
+    -- including the two 2-D surface emission constants, which nothing in the
+    forecast writes and which would therefore come back as zeros (silently
+    switching off surface aerosol emission for the rest of the run) if they
+    were merely 'rebuilt'.
+    """
+    import gpuwm.core.state as state_mod
+    from gpuwm.io import restart as restart_mod
+
+    state, cfg = _host_mp28_state()
+    rng = np.random.default_rng(28)
+    written = {}
+    for name in ("nc", "nr", "ni", "nwfa", "nifa", "qc", "qi",
+                 "nwfa2d", "nifa2d"):
+        array = getattr(state, name)
+        array[...] = rng.random(array.shape).astype(np.float32) * 1.0e8
+        written[name] = array.copy()
+
+    manifest = restart_mod.state_manifest(state)
+    for name in written:
+        assert f"state/{name}" in manifest, name
+    # No mp=28 attribute may be unclassified -- state_manifest walks every
+    # instance attribute through classify_state_attr and raises otherwise,
+    # so reaching this line already proves it, but name the new ones.
+    for name in ("nwfa", "nifa", "nwfa2d", "nifa2d"):
+        assert restart_mod.classify_state_attr(name) == "serialize"
+    for name in ("nc0", "nwfa0", "nifa0"):
+        assert restart_mod.classify_state_attr(name) == "rebuild"
+
+    # Restore into a fresh state and compare.
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(state_mod, "cp", np)
+        restored = state_mod.DomainState(cfg)
+    finally:
+        monkey.undo()
+    for name, value in written.items():
+        assert not np.array_equal(getattr(restored, name), value)
+        getattr(restored, name)[...] = manifest[f"state/{name}"]
+        np.testing.assert_array_equal(getattr(restored, name), value)
+
+
+def test_mp28_nest_init_interpolates_and_seeds_every_new_field():
+    """gpuwm/ingest/nest_init.py -- the interpolation list and the RK seed
+    list.  A field missing from the seed list starts its first child RK step
+    with a zero time-t copy, which is a one-step transient no bound catches.
+    """
+    import inspect
+
+    from gpuwm.ingest import nest_init
+
+    source = inspect.getsource(nest_init)
+    for entry in ('("nwfa", "")', '("nifa", "")',
+                  '("nwfa2d", "")', '("nifa2d", "")',
+                  '("nc", "nc0")', '("nwfa", "nwfa0")',
+                  '("nifa", "nifa0")'):
+        assert entry in source, entry
+
+    # The RK seed loop is None-guarded, so a Morrison child (nc present,
+    # nc0 absent) must be unaffected by the new ("nc", "nc0") row.
+    import gpuwm.core.state as state_mod
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(state_mod, "cp", np)
+        mp10 = state_mod.DomainState(
+            RunConfig(**_TINY, moist=True, mp_physics=10))
+    finally:
+        monkey.undo()
+    assert getattr(mp10, "nc", None) is not None
+    assert getattr(mp10, "nc0", None) is None
+
+
+@pytest.mark.gpu
+def test_mp28_scalars_actually_advect_on_the_device():
+    """The transport claim, run rather than asserted.
+
+    ``extra_moist_species`` returning the right tuple only proves the loop
+    would VISIT nc/nwfa/nifa.  This drives the real positive-definite
+    advection stage on the GPU with a uniform x-flow at face Courant 0.5 and
+    requires that each of the five mp=28 number moments (a) moves, (b) stays
+    finite, (c) stays non-negative, and (d) conserves its coupled mass under
+    the periodic flux telescope.  A field that silently never entered the
+    stage loop would sit unchanged and fail (a).
+    """
+    cp = pytest.importorskip("cupy")
+
+    from gpuwm.core.grid import make_base_state, make_vertical_coord
+    from gpuwm.core.moist import (
+        advance_scalars_stage, extra_moist_species, init_moist_balanced)
+
+    nx, ny, nz = 16, 8, 12
+    cfg = RunConfig(nx=nx, ny=ny, nz=nz, dx=500.0, dy=500.0, ztop=6000.0,
+                    dt=10.0, run_seconds=0.0, moist=True, mp_physics=28)
+    vc = make_vertical_coord(nz)
+    base = make_base_state(vc, lambda z: 300.0 + 0.003 * np.asarray(z, float),
+                           p_surf=cfg.p_surf, ztop=cfg.ztop)
+    state = init_moist_balanced(cfg, vc, base, lambda z: np.full(nz, 1.0e-3))
+
+    assert extra_moist_species(state) == (
+        "qi", "qs", "qg", "nr", "ni", "nc", "nwfa", "nifa")
+
+    # Plausible magnitudes, deliberately spanning nine decades so an FP32
+    # transport bug in the aerosol fields cannot hide behind qv's scale.
+    blobs = {"nc": 1.0e8, "nwfa": 3.0e8, "nifa": 5.0e3,
+             "nr": 1.0e4, "ni": 1.0e5}
+    for name, amplitude in blobs.items():
+        host = np.zeros((nz, ny, nx), dtype=np.float32)
+        host[4:8, 3:6, 6:10] = amplitude
+        getattr(state, name)[...] = cp.asarray(host)
+        getattr(state, name + "0")[...] = getattr(state, name)
+
+    chm = (state.c1h[:, None, None] * state.total_mu()[None]
+           + state.c2h[:, None, None])
+    dt_eff = cfg.dt
+    ru = cp.zeros((nz, ny, nx + 1), cp.float32)
+    ru[...] = 0.5 * (cfg.dx / dt_eff) * chm[:, :, :1]
+    rv = cp.zeros((nz, ny + 1, nx), cp.float32)
+    ww = cp.zeros((nz + 1, ny, nx), cp.float32)
+
+    dnw_abs = -state.dnw[:, None, None]
+
+    def coupled_mass(field):
+        return float(cp.sum((chm * field * dnw_abs).astype(cp.float64)))
+
+    before = {name: coupled_mass(getattr(state, name)) for name in blobs}
+    advance_scalars_stage(state, cfg, ru, rv, ww, dt_eff, final=True)
+    cp.cuda.Stream.null.synchronize()
+
+    for name, amplitude in blobs.items():
+        field = getattr(state, name)
+        assert bool(cp.isfinite(field).all()), name
+        assert float(field.min()) >= 0.0, name
+        # (a) it MOVED: the blob's leading edge has advanced in +x.
+        moved = float(cp.abs(field - getattr(state, name + "0")).max())
+        assert moved > 0.01 * amplitude, (
+            f"{name} did not advect -- it is allocated but not transported")
+        # (d) coupled mass is conserved by the periodic telescope.
+        residual = abs(coupled_mass(field) - before[name]) / before[name]
+        assert residual < 1e-5, (name, residual)
 
 
 def test_scratch_scanner_catches_the_review_bypasses():
@@ -3109,3 +3855,88 @@ def test_the_gate_display_name_never_moves_the_receipt_key(monkeypatch):
     source = Path(nest_gates.__file__).read_text(encoding="utf-8")
     assert "alloc_fits_wddm_budget" in source
     assert "alloc_fits_vram_budget" not in source
+
+
+# ---------------------------------------------------------------------------
+# The subprocess device probe: the memory gate's only device access
+# ---------------------------------------------------------------------------
+
+class _CompletedProbe:
+    """The slice of CompletedProcess the probe reads."""
+
+    def __init__(self, returncode: int = 0, stdout: str = ""):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def test_the_device_probe_asks_everything_in_a_new_interpreter():
+    """``memGetInfo``/``deviceGetLimit`` stand up a CUDA primary context
+    wherever they are asked, so the probe must ask them in a NEW
+    interpreter whose context dies with it -- a long-lived caller (the
+    ``gpuwm go`` orchestrator, which outlives its gate as a progress
+    printer) then holds no device memory at all."""
+    import sys as _sys
+
+    seen = {}
+
+    def _runner(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        payload = {"free_bytes": 7 * GIB, "total_bytes": 8 * GIB,
+                   "profile": {"name": "probe card",
+                               "multiprocessor_count": 84,
+                               "max_threads_per_multiprocessor": 1536,
+                               "default_stack_limit_bytes": 1024}}
+        return _CompletedProbe(stdout=json.dumps(payload) + "\n")
+
+    payload = pf.device_memory_probe_subprocess(run=_runner)
+    assert seen["command"][0] == _sys.executable
+    assert seen["command"][1] == "-c"
+    source = seen["command"][2]
+    for question in ("memGetInfo", "getDeviceProperties", "deviceGetLimit"):
+        assert question in source
+    compile(source, "<device probe>", "exec")  # the source must parse
+    assert (seen["kwargs"]["timeout"]
+            == pf.DEVICE_MEMORY_PROBE_TIMEOUT_SECONDS)
+    assert payload["free_bytes"] == 7 * GIB
+
+    profile = pf.profile_from_device_probe(payload)
+    assert profile is not None
+    assert profile.name == "probe card"
+    assert profile.multiprocessor_count == 84
+    assert profile.max_threads_per_multiprocessor == 1536
+    assert profile.default_stack_limit_bytes == 1024
+    assert profile.resident_thread_capacity == 84 * 1536
+
+
+def test_a_probe_that_cannot_answer_reads_as_no_device():
+    """Every way the probe can fail is 'no card here', never a throw:
+    the gate must never refuse on a card it could not see."""
+    import subprocess
+
+    for outcome in (
+            _CompletedProbe(returncode=3),           # no cupy / no device
+            _CompletedProbe(stdout="not json"),
+            _CompletedProbe(stdout=""),
+            _CompletedProbe(stdout=json.dumps({"free_bytes": "many"})),
+            _CompletedProbe(stdout=json.dumps({"free_bytes": True})),
+            _CompletedProbe(stdout=json.dumps(["free_bytes"]))):
+        assert pf.device_memory_probe_subprocess(
+            run=lambda *_a, _o=outcome, **_k: _o) is None
+
+    def _timeout(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout", 0))
+
+    assert pf.device_memory_probe_subprocess(run=_timeout) is None
+
+    def _unlaunchable(command, **kwargs):
+        raise OSError("no interpreter")
+
+    assert pf.device_memory_probe_subprocess(run=_unlaunchable) is None
+
+    # ...and the profile half is as defensive as the free half.
+    assert pf.profile_from_device_probe(None) is None
+    assert pf.profile_from_device_probe({"free_bytes": 1}) is None
+    assert pf.profile_from_device_probe({"profile": "a 5090"}) is None
+    assert pf.profile_from_device_probe(
+        {"profile": {"name": "half a card"}}) is None

@@ -118,11 +118,51 @@ _SHARED_FORBIDDEN = {
 #: Per-domain RunConfig scalars a [[domain]] table may override
 #: (architecture section A: cu_physics/cudt on d01 only per the bundle
 #: namelist, radt 12/3/1/1, bldt, epssm's Registry-default tail, and
-#: diff_6th_factor 0.12/0.10/0.08/0.06).
+#: diff_6th_factor 0.12/0.10/0.08/0.06).  The turbulence row (km_opt
+#: through tke_drag_coefficient) is the per-domain closure selection the
+#: design doc reserved ("turbulence treatment stays configurable per
+#: domain"): a PBL parent may carry a PBL-off Smagorinsky child.  Every
+#: per-domain RunConfig still passes the full validate_run_config battery,
+#: so cross-key refusals (PBL requires a surface layer, km_opt=3/4
+#: excludes khdif/kvdif, isfflx=0/2 need their consumer) apply per domain
+#: with the same messages as a single-domain config.  Per-domain LES
+#: selection is a configuration capability, implemented-unverified for
+#: nested LES children: no evidence covers a nested, specified-boundary,
+#: moist, or terrain-following LES domain.
+#: One entry here is a gpuwm capability WRF cannot express, and it is
+#: called out rather than left to be rediscovered: ``isfflx`` is
+#: ``nentries=1`` in WRF (Registry.EM_COMMON:2644) -- a SCALAR namelist
+#: rconfig, where ``km_opt`` (:2993) and ``bl_pbl_physics`` (:2617) are
+#: ``max_domains`` columns.  ``isfflx = 1, 1, 0`` is therefore not a WRF
+#: namelist at all: a Fortran namelist read of a list into a scalar is an
+#: error, not a per-domain selection.  Admitting it per domain HERE is a
+#: deliberate gpuwm-over-WRF extension of the TOML schema, and it is
+#: reachable only by writing the TOML directly -- ``gpuwm.namelist_import``
+#: reads ``isfflx`` as the scalar WRF spells (commit a0ef9d29 reverted the
+#: column reader for inventing a spelling WRF does not have), and
+#: ``hrrr_hierarchy_direct``'s certified raw runtime contract pins
+#: ``("physics", "isfflx")`` to the scalar ``[1]`` and refuses a column.
+#: So no namelist-driven route can produce a per-domain isfflx, and none
+#: should: a config that uses it has left WRF-expressible territory and
+#: cannot be round-tripped back to a namelist.
 _DOMAIN_RUN_OVERRIDES = (
     "cu_physics", "cudt_minutes", "radt", "radt_minutes", "bldt",
     "diff_6th_factor", "epssm", "spec_exp", "mp_physics", "moist",
     "moist_cq", "nest_microphysics_transition",
+    "km_opt", "bl_pbl_physics", "sf_sfclay_physics", "c_s", "c_k",
+    "diff_6th_opt", "mix_isotropic", "mix_upper_bound", "isfflx",
+    "tke_heat_flux", "tke_drag_coefficient", "tke_upper_bound",
+    # Output-only, and per domain because its cost scales with the grid:
+    # four extra (nz+1, ny, nx) planes per frame, so the finest domains
+    # of a tree can be left off while the domains whose subgrid fluxes
+    # are being read carry it.  The two SASE PHYSICS selectors are
+    # deliberately absent: a nest whose domains ran different closures
+    # could not be compared across its own boundary.
+    "sase_flux_diag",
+    # Output-only on the same terms: two extra (nz, ny, nx) planes per
+    # frame, so a tree can carry the horizontal viscosity on the domain
+    # whose mixing is being read and leave it off the rest.
+    "hmix_k_diag",
 )
 
 #: Per-domain vertical keys are REJECTED outright (F1 amendment: the
@@ -712,6 +752,37 @@ def _mass_dims(dom: dict, grid_id, source: str) -> tuple[int, int]:
     return dims[0], dims[1]
 
 
+def _reject_misplaced_run_keys(dom: dict, grid_id, source: str) -> None:
+    """A real run setting written into [[domain]] refuses, never drops.
+
+    ``_reject_unknown_keys`` warns and drops, and for a typo or a
+    leftover that is right.  A key that IS a ``RunConfig`` field is
+    neither: the user wrote a setting this model really has, in a table
+    that does not carry it, and dropping it silently would run the
+    OTHER value -- the one in ``[shared]`` -- while the file on disk
+    says otherwise.  That is a confidently-delivered wrong answer, and
+    the one class of configuration mistake this loader refuses rather
+    than warns about.
+
+    Measured case: ``bl_pbl_physics`` on a ``[[domain]]`` table used to
+    warn and drop, so a tree that named an experimental PBL closure on
+    one nest ran the shared scheme on every nest and reported success.
+    Nothing in the run receipt would have contradicted the file.
+    """
+    known = {f.name for f in fields(RunConfig)}
+    misplaced = sorted(key for key in dom
+                       if key in known and key not in _DOMAIN_KEYS)
+    if misplaced:
+        raise ValueError(
+            f"key(s) {misplaced} on [[domain]] grid_id={grid_id} of "
+            f"{source} are run settings that are NOT per domain: they "
+            f"belong in [shared], where they apply to every domain of "
+            f"the tree.  Refused rather than ignored -- a physics or "
+            f"run key that parsed here and was dropped would run the "
+            f"[shared] value while this file said otherwise.  Per-domain "
+            f"keys are {sorted(_DOMAIN_RUN_OVERRIDES)}.")
+
+
 def _reject_domain_vertical_keys(dom: dict, grid_id, source: str) -> None:
     """ANY per-domain vertical key is rejected (F1 amendment, §A).
 
@@ -1180,6 +1251,8 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         _reject_moving_nest_keys("domain", dom, source)
         _reject_domain_vertical_keys(dom, dom.get("grid_id", index + 1),
                                      source)
+        _reject_misplaced_run_keys(dom, dom.get("grid_id", index + 1),
+                                   source)
         _reject_unknown_keys("domain", dom, _DOMAIN_KEYS, source)
         _require_keys(f"domain #{index + 1}", dom, _DOMAIN_REQUIRED, source)
         grid_id = _positive_int("domain", "grid_id", dom["grid_id"], source)
@@ -1482,6 +1555,21 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         for key in _DOMAIN_RUN_OVERRIDES:
             if key in dom:
                 kw[key] = dom[key]
+        # bl_pbl_physics is per-domain for the WRF schemes and PBL-off
+        # (the measured PBL-parent/PBL-off-LES-child trees), but SASE is
+        # run-wide, never per-nest: the closure is measured single-domain
+        # and a tree whose domains ran different closures could not be
+        # compared across its own boundary.  A per-domain 900 that parsed
+        # here would be exactly that tree, so it is refused by name.
+        from gpuwm.config import SASE_PBL_SCHEME
+        if dom.get("bl_pbl_physics") == SASE_PBL_SCHEME:
+            raise ValueError(
+                f"bl_pbl_physics = {SASE_PBL_SCHEME} (SASE) on [[domain]] "
+                f"grid_id={grid_id} of {source} is refused: the SASE "
+                "closure is selected run-wide in [shared], never per "
+                "nest.  A nest whose domains ran different closures "
+                "could not be compared across its own boundary, and no "
+                "nested SASE tree has been run.")
         # Nonzero spec_exp on a NESTED domain is forced to 0 with a
         # warning: WRF's nested lbc_fcx_gcx branch has NO exponential
         # sponge term -- only the specified branch applies spec_exp
@@ -1557,6 +1645,57 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     )
     for dc in domains[1:]:
         resolve_microphysics_transition(by_id[dc.parent_id].run, dc.run)
+
+    # km_opt=2 on a nest child: refused only where the nest COUPLING of the
+    # prognostic TKE carrier is actually exercised, which is when the parent
+    # carries one too.
+    #
+    # WRF gives tke no ``i`` (nest-interpolation) and no ``f`` (feedback)
+    # Registry flag (Registry.EM_COMMON:312), so a child cold-starts its own
+    # TKE and never returns it.  Where the PARENT runs km_opt != 2 it has no
+    # TKE field at all, so there is nothing to interpolate down and nothing
+    # to feed back: the coupling question is void, not unverified, and
+    # cold-starting is the only behaviour available to WRF or to ArWen.
+    # That case has now been RUN -- a 402x402 250 m km_opt=2 PBL-off child
+    # under a km_opt=4 750 m parent, 7 h, status PASS, 31 frames, carrying
+    # 4.8x-9.9x the parent's resolved w variance over the same ground and
+    # developing it FASTER than the km_opt=3 child on the identical tree
+    # (8.34x against 4.17x one hour in), so cold-starting the carrier
+    # demonstrably does not handicap the child
+    # (docs/superpowers/receipts/les/nested-les-km2-2026-08-02.md).
+    #
+    # Where the parent IS km_opt=2 the parent holds a live TKE field that
+    # WRF pointedly does not hand down, and no such tree has been run.  That
+    # is the configuration this refusal now names, and it is the only one.
+    for dc in domains[1:]:
+        parent = by_id[dc.parent_id].run
+        if dc.run.km_opt == 2 and parent.km_opt == 2:
+            raise NotImplementedError(
+                f"km_opt=2 on domain grid_id = {dc.run.grid_id} whose "
+                f"parent grid_id = {parent.grid_id} also runs km_opt=2 is "
+                "refused: the parent then holds a prognostic TKE field "
+                "that WRF's Registry flags do not interpolate to the child "
+                "and do not feed back, and no such tree has been run here. "
+                "A km_opt=2 child under a parent that carries no TKE "
+                "(km_opt 1/3/4) is admitted and measured. Lift with "
+                "evidence, not with a code change alone.")
+
+    # SASE is not usable at nest width: the closure is measured
+    # single-domain (GABLS1) and no nested SASE tree has been run, so a
+    # multi-domain experiment selecting it anywhere -- even uniformly via
+    # [shared] -- is refused rather than silently integrating an
+    # unmeasured coupling.  (Per-domain 900 is already refused above.)
+    if len(domains) > 1:
+        from gpuwm.config import SASE_PBL_SCHEME
+        for dc in domains:
+            if dc.run.bl_pbl_physics == SASE_PBL_SCHEME:
+                raise NotImplementedError(
+                    f"bl_pbl_physics = {SASE_PBL_SCHEME} (SASE) on domain "
+                    f"grid_id = {dc.run.grid_id} of a {len(domains)}-domain "
+                    "tree is refused: the SASE closure is selectable "
+                    "run-wide on a single domain only; it is not usable at "
+                    "nest width, and no nested SASE tree has been run. "
+                    "Lift with evidence, not with a code change alone.")
 
     experiment = ExperimentConfig(
         name=name, start_time=start_time, run_seconds=run_seconds,

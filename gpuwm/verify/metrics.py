@@ -107,6 +107,103 @@ def _dcomputeseaprs(pressure_pa, temperature, qv, height_msl) -> np.ndarray:
         2.0 * g_slp * height_msl[0] / (rd_slp * (t_sea_level + t_surf)))
 
 
+#: Terrain band (metres MSL) over which the MSLP display treatment ramps
+#: in.  Below the floor the reduction increment ln(SLP/p_sfc) is small
+#: (<= ~0.06 at 500 m) so its noise is visually negligible and the
+#: treatment is the exact identity; above the ceiling the increment is
+#: large enough that its grid-scale noise dominates the contour field
+#: and the smoothed increment is used in full.  Keyed on terrain height
+#: only -- never on region or case identity.
+MSLP_SMOOTH_TERRAIN_FLOOR_M = 500.0
+MSLP_SMOOTH_TERRAIN_CEILING_M = 1500.0
+
+#: Nine-point smoother policy for the display treatment: three passes
+#: with centre weight 4 (the Shuman 1957 smoother family; the same
+#: shape and pass count wrf-python's documented SLP plotting workflow
+#: applies via ``smooth2d(slp, 3)``).  A grid-scale checkerboard is
+#: attenuated by (1/3)**3 = 1/27 per interior cell.
+MSLP_SMOOTH_PASSES = 3
+MSLP_SMOOTH_CENTER_WEIGHT = 4.0
+
+
+def _nine_point_smooth(field: np.ndarray, passes: int,
+                       center_weight: float) -> np.ndarray:
+    """``passes`` applications of the standard nine-point smoother.
+
+    Kernel: centre ``center_weight``, each of the eight neighbours 1,
+    normalised; edges are handled by replicating the boundary row and
+    column (no field is invented outside the domain).
+    """
+    out = np.asarray(field, dtype=np.float64)
+    for _ in range(passes):
+        padded = np.pad(out, 1, mode="edge")
+        out = (center_weight * out
+               + padded[:-2, 1:-1] + padded[2:, 1:-1]
+               + padded[1:-1, :-2] + padded[1:-1, 2:]
+               + padded[:-2, :-2] + padded[:-2, 2:]
+               + padded[2:, :-2] + padded[2:, 2:]) / (center_weight + 8.0)
+    return out
+
+
+def terrain_smoothed_mslp(mslp_hpa: np.ndarray,
+                          surface_pressure_pa: np.ndarray,
+                          terrain_m: np.ndarray, *,
+                          passes: int = MSLP_SMOOTH_PASSES,
+                          center_weight: float = MSLP_SMOOTH_CENTER_WEIGHT,
+                          ) -> np.ndarray:
+    """Display-grade MSLP: smooth the below-terrain extrapolation only.
+
+    The sea-level reduction ends with ``SLP = p_sfc * exp(r)`` where the
+    increment ``r = 2 g z_sfc / (Rd (T_sl + T_sfc))`` is reconstructed
+    here as ``ln(SLP / p_sfc)``.  ``r`` is proportional to terrain
+    height, so grid-scale variation in the fictitious below-ground
+    temperatures that is invisible at sea level (fractions of an hPa)
+    scribbles multi-hPa noise across high terrain -- the published
+    failure mode of station-style reductions (Benjamin & Miller 1990,
+    Mon. Wea. Rev. 118, 2099-2116, who replace or smooth the
+    below-ground extrapolation for exactly this reason).  wrf-rust
+    0.2.35 exposes only the raw reduction (``slp``), so the standard
+    display treatment is applied here, from the published algorithm:
+
+    1. ``r`` is smoothed with the standard nine-point smoother
+       (:data:`MSLP_SMOOTH_PASSES` passes, Shuman 1957 family -- the
+       treatment wrf-python's SLP plotting workflow documents).
+    2. The smoothed candidate ``p_sfc * exp(smooth(r))`` is blended
+       with the raw field on a weight that ramps 0 -> 1 across
+       :data:`MSLP_SMOOTH_TERRAIN_FLOOR_M` ..
+       :data:`MSLP_SMOOTH_TERRAIN_CEILING_M`, keyed on terrain height
+       ONLY.  At or below the floor the result is the input, exactly
+       (``np.where`` identity, zero tolerance): over low terrain the
+       raw field is already clean and must not move.
+
+    The scored/gated ``mslp`` is deliberately NOT this field: gates
+    stay on the frozen raw DCOMPUTESEAPRS transcription (audit R16).
+
+    ``mslp_hpa`` is the raw reduction (hPa), ``surface_pressure_pa``
+    the pressure the reduction started from (Pa, the lowest mass
+    level, i.e. ``pressure_pa[0]``), ``terrain_m`` the surface height
+    (m MSL).  All three share one 2-D grid.
+    """
+    mslp = np.asarray(mslp_hpa, dtype=np.float64)
+    p_sfc = np.asarray(surface_pressure_pa, dtype=np.float64)
+    terrain = np.asarray(terrain_m, dtype=np.float64)
+    if (mslp.ndim != 2 or mslp.shape != p_sfc.shape
+            or mslp.shape != terrain.shape):
+        raise ValueError(
+            "mslp, surface pressure, and terrain must share one "
+            "two-dimensional grid")
+    weight = np.clip(
+        (terrain - MSLP_SMOOTH_TERRAIN_FLOOR_M)
+        / (MSLP_SMOOTH_TERRAIN_CEILING_M - MSLP_SMOOTH_TERRAIN_FLOOR_M),
+        0.0, 1.0)
+    if not np.any(weight > 0.0):
+        return mslp.copy()
+    increment = np.log(mslp / (0.01 * p_sfc))
+    candidate = 0.01 * p_sfc * np.exp(
+        _nine_point_smooth(increment, passes, center_weight))
+    return np.where(weight > 0.0, mslp + weight * (candidate - mslp), mslp)
+
+
 def _wrf_diagnostics(path: Path) -> dict[str, object]:
     """Read comparison and map fields without a wrf-python dependency."""
     import netCDF4
@@ -132,6 +229,11 @@ def _wrf_diagnostics(path: Path) -> dict[str, object]:
         # gate on DCOMPUTESEAPRS instead.
         mslp = _dcomputeseaprs(pressure_pa, temperature, qv,
                                0.5 * (phi[:-1] + phi[1:]) / 9.80665)
+        # Display twin of ``mslp``: the below-terrain extrapolation is
+        # smoothed, keyed on terrain height (the staggered surface
+        # geopotential level).  Scoring and gates keep the raw field.
+        mslp_display = terrain_smoothed_mslp(
+            mslp, pressure_pa[0], phi[0] / 9.80665)
         levels = {}
         for level in (500, 700, 850):
             levels[level] = {
@@ -143,6 +245,7 @@ def _wrf_diagnostics(path: Path) -> dict[str, object]:
             }
         return {
             "pressure": pressure, "levels": levels, "mslp": mslp,
+            "mslp_display": mslp_display,
             "lat": _read_wrf_field(ds, "XLAT"),
             "lon": _read_wrf_field(ds, "XLONG"),
             "t2": _read_wrf_field(ds, "T2"),
@@ -235,7 +338,10 @@ def make_synoptic_maps(final_path, accumulation_start_path, output_dir,
     fig, ax = plt.subplots(figsize=(11, 7), constrained_layout=True)
     shading = ax.pcolormesh(lon, lat, final["t2"] - 273.15,
                             shading="auto", cmap="coolwarm")
-    contours = ax.contour(lon, lat, final["mslp"], colors="black",
+    # Contour the display twin: the raw reduction scribbles grid-scale
+    # noise over high terrain (see terrain_smoothed_mslp); over low
+    # terrain the two fields are identical by construction.
+    contours = ax.contour(lon, lat, final["mslp_display"], colors="black",
                           linewidths=0.8)
     ax.clabel(contours, inline=True, fontsize=7, fmt="%.0f")
     fig.colorbar(shading, ax=ax, label="2 m temperature (degC)")
@@ -338,8 +444,10 @@ wrf_diagnostics = _wrf_diagnostics
 
 
 __all__ = [
-    "ReflectivityMapSpec", "SynopticMapSpec", "boundary_zone_blowup",
-    "interior_region", "interpolate_to_pressure",
-    "make_composite_reflectivity_map", "make_synoptic_maps",
-    "pattern_correlation", "rmse", "score_pair", "wrf_diagnostics",
+    "MSLP_SMOOTH_PASSES", "MSLP_SMOOTH_TERRAIN_CEILING_M",
+    "MSLP_SMOOTH_TERRAIN_FLOOR_M", "ReflectivityMapSpec",
+    "SynopticMapSpec", "boundary_zone_blowup", "interior_region",
+    "interpolate_to_pressure", "make_composite_reflectivity_map",
+    "make_synoptic_maps", "pattern_correlation", "rmse", "score_pair",
+    "terrain_smoothed_mslp", "wrf_diagnostics",
 ]

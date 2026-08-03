@@ -2838,3 +2838,518 @@ def test_the_chunk_invariance_gate_fails_on_a_chunk_dependent_seed(
         "the negative control did not fire: either the masks stopped "
         "reaching the fluxes or this state has no cloud left"
     )
+
+
+# ---------------------------------------------------------------------------
+# Microphysics -> cloud-optics coupling.
+#
+# gpuwm/core/rrtmgp.py used to resolve the scheme with
+# ``{6: "wsm6", 8: "thompson", 10: "morrison", 18: "nssl"}.get(
+#     mp_physics, "kessler")``.
+# mp_physics=28 (THOMPSONAERO) therefore landed on "kessler" on the DEFAULT
+# radiation engine, which does three things at once: hydrometeor_paths takes
+# the constant 10 um / 50 um branch, the scheme's effc/effi/effs are never
+# read out of state, and cal_cldfra1 is called with f_qi = f_qs = False so an
+# overcast ice cloud produces CLDFRA 0 and radiates as clear sky.  The tests
+# below pin each of those three consequences shut, plus the fail-closed
+# default that let it happen silently.
+# ---------------------------------------------------------------------------
+
+#: Every mp_physics selector ``validate_run_config`` accepts
+#: (gpuwm/config.py:1151).  Asserted against the validator below so this
+#: tuple cannot drift away from the contract it claims to mirror.
+_ACCEPTED_MP_PHYSICS = (0, 1, 6, 8, 10, 18, 28)
+
+
+def test_the_accepted_selector_list_this_module_uses_is_the_real_one():
+    """``_ACCEPTED_MP_PHYSICS`` must be exactly what RunConfig admits.
+
+    The three cross-checks below iterate this tuple; if it silently drifted
+    away from ``gpuwm/config.py`` they would stop covering a selector
+    without failing.
+    """
+    from gpuwm.config import RunConfig, validate_run_config
+
+    def admits(mp_physics):
+        try:
+            validate_run_config(RunConfig(
+                nx=4, ny=3, nz=12, dx=2000.0, dy=2000.0, ztop=8000.0,
+                dt=10.0, run_seconds=0.0, time_step_sound=4, moist=True,
+                mp_physics=mp_physics))
+        except ValueError as error:
+            if "mp_physics must be" in str(error):
+                return False
+            raise
+        return True
+
+    admitted = tuple(mp for mp in range(0, 60) if admits(mp))
+    assert admitted == _ACCEPTED_MP_PHYSICS
+
+
+def test_thompsonaero_mp28_resolves_to_the_thompson_cloud_optics_coupling():
+    """mp_physics=28 must get classic Thompson's radiative coupling.
+
+    WRF v4.6.1 authority, all in the stock tree:
+
+    * ``Registry/Registry.EM_COMMON:3036`` --
+      ``package thompsonaero mp_physics==28 - moist:qv,qc,qr,qi,qs,qg;
+      scalar:...;state:re_cloud,re_ice,re_snow`` -- the same ``moist``
+      inventory and the same three ``re_*`` state fields as line 3024's
+      ``package thompson mp_physics==8``.
+    * ``phys/module_physics_init.F:1005-1006`` names THOMPSON and
+      THOMPSONAERO in ONE disjunction setting
+      ``has_reqc = has_reqi = has_reqs = 1`` (:1021-1023); the P3 /
+      Jensen-Ishmael ``has_reqs = 0`` override (:1027-1033) does not list
+      THOMPSONAERO.
+    * ``phys/module_radiation_driver.F``'s ``cal_cldfra1`` branches on
+      ``mp_physics`` only for Ferrier (:3926-3937); both Thompson packages
+      take the ``F_QI .and. F_QC .and. F_QS`` arm at :3870-3877.  The RRTMG
+      wrappers likewise test the selector only for Ferrier/HWRF
+      (``module_ra_rrtmg_lw.F:12131-12136``,
+      ``module_ra_rrtmg_sw.F:10732-10737``).
+    """
+    from gpuwm.core.rrtmgp import (
+        _MP_CLOUD_OPTICS_SCHEME, cloud_optics_scheme, scheme_is_ice_active)
+
+    assert cloud_optics_scheme(28) == "thompson"
+    assert cloud_optics_scheme(28) == cloud_optics_scheme(8)
+    assert scheme_is_ice_active(cloud_optics_scheme(28)) is True
+    # Every accepted selector is judged; nothing falls through.
+    assert tuple(sorted(_MP_CLOUD_OPTICS_SCHEME)) == _ACCEPTED_MP_PHYSICS
+
+
+def test_cloud_optics_scheme_fails_closed_on_an_unmapped_selector():
+    """No silent Kessler default.
+
+    A ``.get(mp, "kessler")`` default is exactly how mp=28 spent four waves
+    radiating its ice clouds as clear sky, so an unmapped selector must
+    raise instead of inheriting constant radii and an ice-free cloud
+    fraction.
+    """
+    from gpuwm.core.rrtmgp import cloud_optics_scheme
+
+    for unmapped in (2, 5, 50, 51, 95):
+        with pytest.raises(NotImplementedError, match="cloud-optics"):
+            cloud_optics_scheme(unmapped)
+
+
+def test_both_radiation_engines_agree_on_which_schemes_carry_ice():
+    """The RTE+RRTMGP and legacy-RRTMG adapters must not disagree.
+
+    ``gpuwm/core/rrtmg_legacy.py`` already carried the WRF judgement for
+    mp=28 (``_MP_DECLARES_RADII[28] = True``,
+    ``_LEGACY_ICE_ACTIVE_MICROPHYSICS`` contains 28) while the default
+    engine did not, so an operator's ice clouds appeared or vanished
+    depending on which radiation engine they selected.  Both sides derive
+    from the same Registry ``moist`` package, so they are pinned equal here
+    for every selector gpuwm accepts.
+    """
+    from gpuwm.core.rrtmgp import cloud_optics_scheme, scheme_is_ice_active
+    from gpuwm.core.rrtmg_legacy import (
+        _MP_DECLARES_RADII, legacy_ice_active)
+
+    for mp_physics in _ACCEPTED_MP_PHYSICS:
+        scheme = cloud_optics_scheme(mp_physics)
+        assert scheme_is_ice_active(scheme) == legacy_ice_active(mp_physics), (
+            f"mp_physics={mp_physics}: RTE+RRTMGP says ice_active="
+            f"{scheme_is_ice_active(scheme)} (scheme {scheme!r}) while the "
+            f"legacy RRTMG adapter says {legacy_ice_active(mp_physics)}")
+        # One-way implication: a scheme WRF hands its radii to
+        # (module_physics_init.F:1005-1024 has_req*) must not land on
+        # Kessler's constant 10 um / 50 um pair here.  Morrison is False in
+        # the legacy table by WRF's own omission and is exempt from the
+        # converse -- the RRTMGP adapter reconstructs its radii from the
+        # number moments instead.
+        if _MP_DECLARES_RADII[mp_physics]:
+            assert scheme != "kessler", (
+                f"mp_physics={mp_physics} declares effective radii to WRF's "
+                "radiation but resolves to the constant-radius branch")
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_mp28_ice_cloud_is_radiatively_visible_and_matches_mp8():
+    """End-to-end through the shipped adapter, on an ice-and-snow column.
+
+    Three columns of identical thermodynamics; column 0 is clear, columns 1
+    and 2 carry the same cloud ice and snow.  The run is driven twice with
+    the SAME state and the same effective radii, once as mp_physics=8 and
+    once as mp_physics=28.
+
+    * mp=28 must equal mp=8 bit for bit -- WRF gives the two packages the
+      same radiative coupling (see the citations on
+      ``test_thompsonaero_mp28_resolves_to_the_thompson_cloud_optics_
+      coupling``).
+    * under mp=28 the cloudy columns must not radiate like the clear one.
+    * mp_physics=1 on the SAME state is the negative control that shows
+      what the defect was: Kessler's resolution calls ``cal_cldfra1`` with
+      f_qi = f_qs = False, an ice-only column has QCLD = QC = 0 < QCLDMIN
+      everywhere, CLDFRA is 0, every McICA subcolumn is clear, and the
+      cloudy columns come back BIT-IDENTICAL to the clear one.
+
+    Measured on this tree: SWDOWN 810.4371 W/m2 in the cloudy columns under
+    mp=28 against 829.9672 W/m2 clear -- a 19.53 W/m2 shortwave signal that
+    the pre-fix mp=28 threw away entirely.  Before the scheme table was
+    fixed the first two assertions failed: mp=28 was byte-identical to
+    mp_physics=1 and differed from mp_physics=8.
+    """
+    from datetime import datetime
+    from types import SimpleNamespace
+    import cupy as cp
+    from gpuwm.core.rrtmgp import RRTMGPRadiation
+
+    nz, ny, nx = 30, 1, 3
+    plev_col = np.geomspace(100000.0, 1.1, nz + 1)
+    play_col = np.sqrt(plev_col[:-1] * plev_col[1:])
+    t_col = np.linspace(290.0, 210.0, nz)
+    exner_col = (play_col / 100000.0) ** (287.0 / 1004.0)
+    shape = (nz, ny, nx)
+
+    def expand(x):
+        return cp.asarray(
+            np.broadcast_to(x[:, None, None], shape).copy(), dtype=cp.float32)
+
+    qi = cp.zeros(shape, cp.float32)
+    qs = cp.zeros(shape, cp.float32)
+    qi[14:20, 0, 1:] = 3.0e-4
+    qs[14:20, 0, 1:] = 5.0e-4
+    atmosphere = {
+        "pressure": expand(play_col),
+        "p_interface": cp.asarray(np.broadcast_to(
+            plev_col[:, None, None], (nz + 1, ny, nx)).copy(),
+            dtype=cp.float32),
+        "temperature": expand(t_col),
+        "theta": expand(t_col / exner_col),
+        "exner": expand(exner_col),
+        "qv": expand(np.geomspace(8.0e-3, 1.0e-6, nz)),
+        "qc": cp.zeros(shape, cp.float32),
+        "qi": qi,
+    }
+    fields = {
+        "tsk": cp.full((ny, nx), 288.0, cp.float32),
+        "albedo": cp.full((ny, nx), 0.18, cp.float32),
+        "emiss": cp.full((ny, nx), 0.96, cp.float32),
+    }
+    # The mp=8/mp=28 state contract: micron effective radii written every
+    # step by launch_effective_radius / launch_aerosol_effective_radius.
+    state = SimpleNamespace(
+        elapsed_seconds=0.0, qc=atmosphere["qc"], qi=qi, qs=qs,
+        qr=cp.zeros(shape, cp.float32),
+        effc=cp.full(shape, 2.49, cp.float32),
+        effi=cp.full(shape, 60.0, cp.float32),
+        effs=cp.full(shape, 300.0, cp.float32))
+
+    def run(mp_physics):
+        radiation = RRTMGPRadiation(
+            datetime(1974, 4, 3, 18), cp.asarray([[40.0] * nx]),
+            cp.asarray([[-100.0] * nx]),
+            trace_gas_overrides={"co2": 330.0e-6})
+        result = radiation(
+            atmosphere=atmosphere, fields=fields, state=state,
+            cfg=SimpleNamespace(mp_physics=mp_physics, dt=60.0, radt=12.0,
+                                radt_minutes=12.0))
+        return {name: cp.asnumpy(getattr(result, name))
+                for name in ("rthratenlw", "rthratensw", "swdown", "glw")}
+
+    aero = run(28)
+    classic = run(8)
+    kessler = run(1)
+
+    for name, value in aero.items():
+        np.testing.assert_array_equal(value, classic[name], err_msg=(
+            f"mp_physics=28 and mp_physics=8 disagree on {name}; WRF gives "
+            "thompson and thompsonaero the same radiative coupling"))
+
+    # Column 0 carries no condensate in any run and is the control.
+    assert aero["swdown"][0, 0] == kessler["swdown"][0, 0], (
+        "the clear control column moved; the two runs are not comparable")
+    # The cloudy columns must actually be cloudy under mp=28.
+    shading = aero["swdown"][0, 0] - aero["swdown"][0, 1:]
+    assert (shading > 1.0).all(), (
+        "an ice-and-snow column is radiatively indistinguishable from the "
+        f"clear column under mp_physics=28: dSWDOWN={shading}")
+    assert (np.abs(aero["rthratensw"][14:20, 0, 1:]
+                   - aero["rthratensw"][14:20, 0, :1]) > 0.0).all(), (
+        "the ice cloud produced no shortwave heating signature")
+    # The negative control: under Kessler's resolution -- which is what
+    # mp_physics=28 silently got before this was fixed -- the very same ice
+    # and snow are invisible, bit for bit.
+    for name, value in kessler.items():
+        cloudy = value[..., 1:]
+        clear = np.broadcast_to(value[..., :1], cloudy.shape)
+        np.testing.assert_array_equal(cloudy, clear, err_msg=(
+            f"{name}: the Kessler negative control stopped being a control "
+            "-- it now sees the ice cloud, so the assertion above proves "
+            "nothing"))
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_cal_cldfra1_ice_flags_decide_whether_an_ice_cloud_exists():
+    """The mechanism behind the adapter test above, measured directly.
+
+    ``cal_cldfra1`` with ``f_qi = f_qs = False`` (what mp=28 got while it
+    resolved to Kessler) takes WRF's ``F_QC .and. .not. F_QI .and. .not.
+    F_QS`` arm (module_radiation_driver.F:3891-3899), where QCLD = QC.  On a
+    column with no cloud water that is below QCLDMIN everywhere, so CLDFRA
+    is 0 no matter how much ice and snow the column carries.
+    """
+    import cupy as cp
+    from gpuwm.core.rrtmgp import cal_cldfra1
+
+    qv = cp.asarray([[3.0e-4, 8.0e-5]], dtype=np.float32)
+    qc = cp.zeros((1, 2), dtype=np.float32)
+    qi = cp.asarray([[3.0e-4, 2.0e-4]], dtype=np.float32)
+    qs = cp.asarray([[5.0e-4, 4.0e-4]], dtype=np.float32)
+    tlay = cp.asarray([[258.0, 240.0]], dtype=np.float32)
+    play = cp.asarray([[60000.0, 40000.0]], dtype=np.float32)
+
+    with_ice = cp.asnumpy(cal_cldfra1(
+        qv, qc, qi, qs, tlay, play, f_qc=True, f_qi=True, f_qs=True))
+    without_ice = cp.asnumpy(cal_cldfra1(
+        qv, qc, qi, qs, tlay, play, f_qc=True, f_qi=False, f_qs=False))
+    assert (with_ice > 0.5).all(), with_ice
+    assert (without_ice == 0.0).all(), without_ice
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_mp28_effective_radii_reach_cloud_optics_instead_of_constants():
+    """The second consequence: the scheme's radii, not 10 um / 50 um.
+
+    ``hydrometeor_paths``'s Kessler branch returns constant reliq = 10 um
+    and dgice = 50 um (the two ``cp.full_like`` values), discarding
+    effc/effi/effs entirely.  On the ice-and-snow column below the Thompson
+    branch instead produces the mass-weighted ice diameter clipped to 180 um
+    -- a 3.6x difference in the quantity cloud optics interpolates on.
+    """
+    import cupy as cp
+    from gpuwm.core.rrtmgp import cloud_optics_scheme, hydrometeor_paths
+
+    plev = cp.asarray([[70000.0, 50000.0, 30000.0]], dtype=np.float32)
+    qc = cp.zeros((1, 2), dtype=np.float32)
+    qi = cp.asarray([[3.0e-4, 2.0e-4]], dtype=np.float32)
+    qs = cp.asarray([[5.0e-4, 4.0e-4]], dtype=np.float32)
+    effc = cp.full((1, 2), 2.49, dtype=np.float32)
+    effi = cp.asarray([[60.0, 90.0]], dtype=np.float32)
+    effs = cp.asarray([[300.0, 400.0]], dtype=np.float32)
+
+    scheme = cloud_optics_scheme(28)
+    got = hydrometeor_paths(plev, qc, None, qi, qs, microphysics=scheme,
+                            effc=effc, effi=effi, effs=effs)
+    kess = hydrometeor_paths(plev, qc, None, qi, qs, microphysics="kessler")
+    assert np.allclose(cp.asnumpy(got.dgice), 180.0)
+    assert np.allclose(cp.asnumpy(kess.dgice), 50.0)
+    # And the ice water path is unchanged by the branch -- only the size is,
+    # so the difference above is a pure optics change, not a mass change.
+    np.testing.assert_array_equal(
+        cp.asnumpy(got.ciwp), cp.asnumpy(kess.ciwp))
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_mp28_ice_cloud_is_visible_through_the_production_physics_driver():
+    """The same defect, through the runtime an operator actually reaches.
+
+    ``initialize_physics`` resolves ``ra_physics=4`` to
+    :class:`RRTMGPRadiation` (gpuwm/core/physics.py), and
+    ``PhysicsDriver.compute`` calls it at the WRF radiation cadence.  The
+    default template ships that radiation engine, and the tree route allows
+    a per-domain microphysics override to mp_physics=28, so this is the
+    path a user gets -- not a synthetic adapter call.
+
+    MEASURED on this 6x2x16 domain, surface values, with an identical
+    seeded ice-and-snow cloud in every "cloudy" run:
+
+        run                                        SWDOWN      GLW
+        mp_physics=28, before the scheme-table fix  871.5204  350.0330
+        mp_physics=28, after                        399.1432  372.6432
+        mp_physics=8   (unaffected either way)      399.1432  372.6432
+        mp_physics=28, no cloud at all              871.5332  350.0275
+
+    i.e. an mp=28 run put 472.38 W/m2 too much shortwave on the ground
+    (2.18x the correct value) and 22.61 W/m2 too little downwelling
+    longwave, while the identical mp=8 run was right.  Compare the last
+    row: the pre-fix cloudy mp=28 answer sat 0.013 W/m2 from the fully
+    clear-sky one, so the ice cloud was not merely mis-sized -- it was
+    99.997% invisible.
+    """
+    from datetime import datetime
+    import cupy as cp
+
+    from gpuwm.config import RunConfig
+    from gpuwm.core.grid import make_base_state, make_vertical_coord
+    from gpuwm.core.moist import init_moist_balanced
+    from gpuwm.core.physics import initialize_physics
+
+    def run(mp_physics, *, cloudy):
+        cfg = RunConfig(
+            nx=6, ny=2, nz=16, dx=2000.0, dy=2000.0, ztop=8000.0, dt=10.0,
+            run_seconds=0.0, time_step_sound=4, moist=True,
+            mp_physics=mp_physics, sf_sfclay_physics=1,
+            sf_surface_physics=2, bl_pbl_physics=1, ra_physics=4, radt=12.0)
+        coord = make_vertical_coord(cfg.nz)
+        base = make_base_state(
+            coord, lambda z: 298.0 + 0.004 * np.asarray(z, np.float64),
+            p_surf=cfg.p_surf, ztop=cfg.ztop)
+        state = init_moist_balanced(
+            cfg, coord, base,
+            lambda z: 0.010 * np.exp(-np.asarray(z, np.float64) / 2400.0))
+        state.u[...] = cp.float32(6.0)
+        state.v[...] = cp.float32(0.5)
+        if cloudy:
+            # A cold ice-and-snow cloud with the scheme's own radii, exactly
+            # what launch_effective_radius / launch_aerosol_effective_radius
+            # leave in state after a microphysics step.
+            state.qi[10:14, :, :] = cp.float32(3.0e-4)
+            state.qs[10:14, :, :] = cp.float32(5.0e-4)
+            state.effi[10:14, :, :] = cp.float32(60.0)
+            state.effs[10:14, :, :] = cp.float32(300.0)
+        landmask = np.ones((cfg.ny, cfg.nx))
+        landmask[:, -1] = 0.0
+        tsk = np.full((cfg.ny, cfg.nx), 299.0)
+        tsk[:, landmask[0] == 0.0] = 296.0
+        soil_t = np.stack([tsk - 0.5, tsk - 1.0, tsk - 1.5, tsk - 2.0])
+        soil_m = np.full((4, cfg.ny, cfg.nx), 0.31)
+        soil_m[:, landmask == 0.0] = 1.0
+        driver = initialize_physics(
+            state, cfg, landmask=landmask, tsk=tsk,
+            soil_temperature=soil_t, soil_moisture=soil_m,
+            liquid_moisture=soil_m,
+            ivgtyp=np.where(landmask, 10, 17),
+            isltyp=np.where(landmask, 6, 14), vegfra=55.0, tmn=286.0,
+            swdown=450.0, glw=310.0, pblh=700.0,
+            radiation_start_time=datetime(1974, 4, 3, 18),
+            radiation_latitude=np.full((cfg.ny, cfg.nx), 40.0),
+            radiation_longitude=np.full((cfg.ny, cfg.nx), -100.0))
+        from gpuwm.core.rrtmgp import RRTMGPRadiation
+        assert isinstance(driver.radiation_callable, RRTMGPRadiation), (
+            "ra_physics=4 no longer resolves to RTE+RRTMGP; this test is "
+            "measuring a different engine")
+        driver.compute(state, cfg)
+        return {name: cp.asnumpy(driver.fields[name]).copy()
+                for name in ("swdown", "glw")}
+
+    aero = run(28, cloudy=True)
+    classic = run(8, cloudy=True)
+    clear = run(28, cloudy=False)
+
+    for name, value in aero.items():
+        np.testing.assert_array_equal(value, classic[name], err_msg=(
+            f"{name}: mp_physics=28 and mp_physics=8 disagree on the "
+            "production radiation path"))
+    # The ice cloud must shade the surface.  Before the fix mp=28's SWDOWN
+    # was the clear-sky answer to within 0.4 W/m2.
+    shading = clear["swdown"] - aero["swdown"]
+    assert (shading > 100.0).all(), (
+        "the seeded ice cloud changes surface shortwave by less than "
+        f"100 W/m2 under mp_physics=28: dSWDOWN={shading.ravel()}")
+    assert (aero["glw"] > clear["glw"]).all(), (
+        "the seeded ice cloud added no downwelling longwave under "
+        "mp_physics=28")
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_preflight_prices_radius_columns_for_exactly_the_schemes_that_use_them():
+    """The allocation rail and the adapter must budget the same thing.
+
+    ``gpuwm/core/preflight.py::rrtmgp_column_shapes`` prices
+    ``columns/effc``, ``columns/effi`` and ``columns/effs`` for every scheme
+    whose radii the RTE+RRTMGP adapter reads, and its own comment records
+    that mp=28 was priced there BEFORE the adapter routed it -- deliberately
+    over-pricing, because an over-priced rail refuses a run that would have
+    fit while an under-priced one lets a run breach the budget.  With the
+    scheme table fixed the two must now agree exactly.
+
+    "Consumes" is MEASURED, not read off the same table preflight is being
+    checked against: the adapter is driven twice on one ice-and-snow column
+    with two different ``effi`` values, and a scheme consumes its radii if
+    and only if the fluxes move.  The probe deliberately keeps the merged
+    ice+snow diameter inside the adapter's [10, 180] um clip on both legs --
+    a snow radius large enough to saturate that clip would hide the effect
+    of ``effi`` entirely and make the probe report False for every scheme.
+    """
+    from datetime import datetime
+    from types import SimpleNamespace
+    import cupy as cp
+
+    from gpuwm.config import RunConfig
+    from gpuwm.core.preflight import rrtmgp_column_shapes
+    from gpuwm.core.rrtmgp import RRTMGPRadiation
+
+    nz, ny, nx = 20, 1, 1
+    plev_col = np.geomspace(100000.0, 1.1, nz + 1)
+    play_col = np.sqrt(plev_col[:-1] * plev_col[1:])
+    t_col = np.linspace(290.0, 215.0, nz)
+    exner_col = (play_col / 100000.0) ** (287.0 / 1004.0)
+    shape = (nz, ny, nx)
+
+    def expand(x):
+        return cp.asarray(
+            np.broadcast_to(x[:, None, None], shape).copy(), dtype=cp.float32)
+
+    qi = cp.zeros(shape, cp.float32)
+    qs = cp.zeros(shape, cp.float32)
+    qc = cp.zeros(shape, cp.float32)
+    qi[10:14] = 3.0e-4
+    qs[10:14] = 5.0e-4
+    qc[4:8] = 4.0e-4
+    atmosphere = {
+        "pressure": expand(play_col),
+        "p_interface": cp.asarray(np.broadcast_to(
+            plev_col[:, None, None], (nz + 1, ny, nx)).copy(),
+            dtype=cp.float32),
+        "temperature": expand(t_col),
+        "theta": expand(t_col / exner_col),
+        "exner": expand(exner_col),
+        "qv": expand(np.geomspace(8.0e-3, 1.0e-6, nz)),
+        "qc": qc,
+        "qi": qi,
+    }
+    fields = {
+        "tsk": cp.full((ny, nx), 288.0, cp.float32),
+        "albedo": cp.full((ny, nx), 0.18, cp.float32),
+        "emiss": cp.full((ny, nx), 0.96, cp.float32),
+    }
+
+    def flux(mp_physics, effi_um):
+        # One state carrying every field any scheme's coupling asks for, so
+        # the only thing that varies between the two calls is effi.
+        state = SimpleNamespace(
+            elapsed_seconds=0.0, qc=qc, qi=qi, qs=qs,
+            qr=cp.zeros(shape, cp.float32),
+            nc=cp.full(shape, 1.0e8, cp.float32),
+            nr=cp.full(shape, 1.0e3, cp.float32),
+            ni=cp.full(shape, 1.0e5, cp.float32),
+            ns=cp.full(shape, 1.0e3, cp.float32),
+            effc=cp.full(shape, 8.0, cp.float32),
+            effr=cp.full(shape, 100.0, cp.float32),
+            effi=cp.full(shape, np.float32(effi_um), cp.float32),
+            effs=cp.full(shape, 20.0, cp.float32),
+            physics=SimpleNamespace(microphysics_updates=1))
+        radiation = RRTMGPRadiation(
+            datetime(1974, 4, 3, 18), cp.asarray([[40.0]]),
+            cp.asarray([[-100.0]]),
+            trace_gas_overrides={"co2": 330.0e-6})
+        result = radiation(
+            atmosphere=atmosphere, fields=fields, state=state,
+            cfg=SimpleNamespace(mp_physics=mp_physics, dt=60.0, radt=12.0,
+                                radt_minutes=12.0))
+        return np.concatenate([
+            np.ravel(cp.asnumpy(getattr(result, name)))
+            for name in ("rthratenlw", "rthratensw", "swdown", "glw")])
+
+    for mp_physics in _ACCEPTED_MP_PHYSICS:
+        cfg = RunConfig(
+            nx=4, ny=3, nz=12, dx=2000.0, dy=2000.0, ztop=8000.0, dt=10.0,
+            run_seconds=0.0, time_step_sound=4, moist=True,
+            mp_physics=mp_physics, ra_physics=4, radt=12.0)
+        priced = {"columns/effc", "columns/effi",
+                  "columns/effs"} <= set(rrtmgp_column_shapes(cfg))
+        consumes = not np.array_equal(flux(mp_physics, 5.0),
+                                      flux(mp_physics, 40.0))
+        assert priced == consumes, (
+            f"mp_physics={mp_physics}: preflight prices effc/effi/effs "
+            f"columns={priced}, but changing effi from 5 to 40 um moved "
+            f"the radiation answer={consumes}")

@@ -728,6 +728,7 @@ def test_the_bundle_tool_refuses_to_pin_a_partial_bundle(tmp_path):
         zf.writestr("grib1_bridge", b"only one of eight")
     result = subprocess.run(
         [sys.executable, str(BUNDLE_TOOL), "pin", "--release", "v0.0.0-test",
+         "--source-rev", "ab12" * 10,
          "--bundle", str(archive), "--out", str(tmp_path / "pins.json")],
         capture_output=True, text=True)
     assert result.returncode != 0
@@ -742,6 +743,7 @@ def test_the_bundle_tool_refuses_a_bundle_named_for_another_release(tmp_path):
         zf.writestr("grib1_bridge", b"payload")
     result = subprocess.run(
         [sys.executable, str(BUNDLE_TOOL), "pin", "--release", "v0.0.0-test",
+         "--source-rev", "ab12" * 10,
          "--bundle", str(archive), "--out", str(tmp_path / "pins.json")],
         capture_output=True, text=True)
     assert result.returncode != 0
@@ -829,6 +831,32 @@ def real_bundle(tmp_path_factory):
     if directories is None:
         pytest.skip("no complete set of built Rust artifacts on this machine")
     host = bridge_assets.host_platform()
+
+    # ``pin`` refuses any binary whose embedded GPUWM_BRIDGE_SOURCE_REV
+    # stamp does not name the revision being released, so the revision
+    # these artifacts really were built from is read out of their own
+    # bytes.  Artifacts from before the stamped builds prove nothing and
+    # skip; artifacts from two different revisions are exactly the
+    # mixed-revision bundle the release check exists to refuse, and no
+    # honest --source-rev exists for them.
+    revisions: set[str] = set()
+    for artifact in bridge_assets.BUNDLED_ARTIFACTS:
+        name = bridge_assets.artifact_filename(artifact, host)
+        path = next(directory / name for directory in directories
+                    if (directory / name).is_file())
+        found = bridge_assets.embedded_source_revisions(path.read_bytes())
+        if not found:
+            pytest.skip(f"{path} predates the stamped bridge builds; "
+                        "rebuild with cargo build --release to run the "
+                        "real-bundle integration tests")
+        revisions.update(found)
+    if len(revisions) != 1:
+        pytest.skip("this machine's built artifacts are from "
+                    f"{len(revisions)} different source revisions "
+                    f"({', '.join(sorted(revisions))}); rebuild both "
+                    "workspaces from one checkout")
+    source_rev = revisions.pop()
+
     work = tmp_path_factory.mktemp("bridge-bundle")
     release = "v0.0.0-test"
     pack = subprocess.run(
@@ -844,6 +872,7 @@ def real_bundle(tmp_path_factory):
     manifest_path = work / "bridge-bundle-manifest.json"
     pin = subprocess.run(
         [sys.executable, str(BUNDLE_TOOL), "pin", "--release", release,
+         "--source-rev", source_rev,
          "--bundle", str(archive), "--out", str(pins_path),
          "--manifest", str(manifest_path)],
         capture_output=True, text=True)

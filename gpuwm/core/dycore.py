@@ -33,7 +33,7 @@ import math
 import cupy as cp
 import numpy as np
 
-from gpuwm.config import RunConfig
+from gpuwm.config import RunConfig, validate_km_opt
 from gpuwm.core import constants as c
 from gpuwm.core.acoustic import (prepare_acoustic_coefficients,
                                  prepare_acoustic_substep_launch,
@@ -48,6 +48,7 @@ from gpuwm.core.microphysics import apply as apply_microphysics
 from gpuwm.core.moist import (SPECIES, extra_moist_species,
                               advance_scalars_stage)
 from gpuwm.core.physics import physics_enabled
+from gpuwm.core import tke_budget
 from gpuwm.core.state import (DTYPE, DomainState, mu_at_u_faces,
                               mu_at_v_faces)
 from gpuwm.core.uh_diag import update_up_heli_max
@@ -763,6 +764,200 @@ def launch_wrf_smag2d_km(state: DomainState, cfg: RunConfig,
     return d11, d22, d12
 
 
+def launch_wrf_calc_n2(state: DomainState, cfg: RunConfig, bn2, *,
+                       time_t: bool) -> None:
+    """WRF v4.6.1 ``calculate_N2`` on device (module_diffusion_em.F:
+    1485-1713): moist Brunt-Vaisala frequency at mass points into ``bn2``,
+    with the saturated moist-adiabatic branch (qv >= qvs or qc >= 1e-5),
+    the unsaturated qv/qtot form, the MARTA/WCS one-sided surface level,
+    and the ktf copy.  Mirror: ``gpuwm.verify.npref.np_wrf_calc_n2``.
+    """
+    nz, ny, nx = bn2.shape
+    common = _wrf_smag_grid_args(state, cfg, time_t=time_t)
+    dims = [np.int32(nz), np.int32(ny), np.int32(nx),
+            np.int32(state.phb.ndim == 3),
+            np.int32(_boundary_x(cfg)), np.int32(_boundary_y(cfg))]
+    grid = ((nx + _TPB - 1) // _TPB, ny, nz)
+    suffix = "0" if time_t else ""
+    thp = getattr(state, "thp" + suffix)
+    moist = state.qv is not None
+    qc = getattr(state, "qc" + suffix) if moist else None
+    qi = (getattr(state, "qi" + suffix)
+          if moist and getattr(state, "qi", None) is not None else None)
+    dummy = state.alt
+    get_kernel("smag2d", "wrf_calc_n2")(
+        grid, (_TPB, 1, 1),
+        tuple(common + [
+            thp, state.thb, np.int32(state.thb.ndim == 3), state.p,
+            qc if qc is not None else dummy,
+            qi if qi is not None else dummy,
+            np.int32(qc is not None), np.int32(qi is not None),
+            bn2,
+        ] + dims))
+
+
+def _tke_seed(cfg: RunConfig) -> float:
+    """WRF tke_km's seed rule (module_diffusion_em.F:2162-2174): without
+    surface drag or a surface heat flux there is no way to generate TKE
+    from nothing, so isfflx=0 with both prescribed constants off seeds at
+    1e-6; any other isfflx leaves the seed at zero."""
+    if cfg.isfflx != 0:
+        return 0.0
+    if cfg.bl_pbl_physics == 0:          # the diff_opt=2 PBL-off branch
+        if (cfg.tke_drag_coefficient < 1.0e-10
+                and cfg.tke_heat_flux < 1.0e-10):
+            return 1.0e-6
+        return 0.0
+    return 1.0e-6
+
+
+def launch_wrf_tke_km(state: DomainState, cfg: RunConfig,
+                      xkmh, xkhh, *, time_t: bool):
+    """WRF v4.6.1 km_opt=2: ``cal_deform_and_div`` + ``calculate_N2`` +
+    ``tke_km`` (module_diffusion_em.F:2049-2260) on device, then the
+    ``tke_rhs`` forward source (shear + buoyancy + dissipation + the
+    positivity limiter) into the ``smag_rtke`` carrying buffer.
+
+    Fills the four exchange coefficients from the time-t prognostic TKE
+    (``smag_km``/``smag_kh`` plus the vertical pair ``smag_kmv``/
+    ``smag_khv``).  BN2 borrows the ``diff6_x`` prefix exactly as the
+    km_opt=3 launcher and stays live through the tke_rhs launch (both
+    precede the u/v horizontal staging).  Returns the (d11, d22, d12)
+    deformation triple.
+    """
+    nz, ny, nx = xkmh.shape
+    n_mass = nz * ny * nx
+    d11 = state.scratch((nz + 1, ny, nx), "smag_rw").reshape(-1)[:n_mass]
+    d22 = state.scratch((nz, ny, nx + 1), "smag_ru").reshape(-1)[:n_mass]
+    d12 = state.scratch((nz, ny + 1, nx), "smag_rv").reshape(-1)[:n_mass]
+    d11 = d11.reshape((nz, ny, nx))
+    d22 = d22.reshape((nz, ny, nx))
+    d12 = d12.reshape((nz, ny, nx))
+    xkmv = state.scratch((nz, ny, nx), "smag_kmv")
+    xkhv = state.scratch((nz, ny, nx), "smag_khv")
+    common = _wrf_smag_grid_args(state, cfg, time_t=time_t)
+    dims = [np.int32(nz), np.int32(ny), np.int32(nx),
+            np.int32(state.phb.ndim == 3),
+            np.int32(_boundary_x(cfg)), np.int32(_boundary_y(cfg))]
+    grid = ((nx + _TPB - 1) // _TPB, ny, nz)
+    get_kernel("smag2d", "wrf_smag_deform")(
+        grid, (_TPB, 1, 1), tuple(common + [d11, d22, d12] + dims))
+
+    bn2 = state.scratch((nz, ny, nx + 1), "diff6_x").reshape(-1)[:n_mass]
+    bn2 = bn2.reshape((nz, ny, nx))
+    launch_wrf_calc_n2(state, cfg, bn2, time_t=time_t)
+
+    suffix = "0" if time_t else ""
+    thp = getattr(state, "thp" + suffix)
+    tke = getattr(state, "tke" + suffix)
+    get_kernel("smag2d", "wrf_tke_km")(
+        grid, (_TPB, 1, 1),
+        tuple(common + [
+            thp, state.thb, np.int32(state.thb.ndim == 3), state.p,
+            tke, bn2,
+            DTYPE(cfg.c_k), DTYPE(_PRANDTL), DTYPE(cfg.dt),
+            DTYPE(cfg.mix_upper_bound), np.int32(cfg.mix_isotropic),
+            DTYPE(_tke_seed(cfg)),
+            xkmh, xkhh, xkmv, xkhv,
+        ] + dims))
+    if _boundary_x(cfg) or _boundary_y(cfg):
+        for pair in ((xkmh, xkhh), (xkmv, xkhv)):
+            get_kernel("smag2d", "wrf_smag_km_bc")(
+                grid, (_TPB, 1, 1),
+                (*pair, np.int32(nz), np.int32(ny), np.int32(nx),
+                 np.int32(_boundary_x(cfg)), np.int32(_boundary_y(cfg))))
+
+    # tke_rhs: the once-per-step forward TKE source, before the borrowed
+    # deformation prefixes are replaced by the u/v stress staging.
+    fields = (
+        state.physics.fields
+        if state.physics is not None and hasattr(state.physics, "fields")
+        else {}
+    )
+    dummy = state.mup0
+    ustm = fields.get("ustm", dummy)
+    hfx = fields.get("hfx", dummy)
+    rtke = state.scratch((nz, ny, nx), "smag_rtke")
+    mut = state.scratch((ny, nx), "smag_mut")
+    mut[...] = state.mub2d + (state.mup0 if time_t else state.mup)
+    budget_on = tke_budget.enabled(cfg)
+    budget_terms = [tke_budget.term(state, cfg, name)
+                    for name in ("shear", "buoyancy", "dissipation",
+                                 "limiter")] if budget_on else [rtke] * 4
+    get_kernel("smag2d", "wrf_tke_rhs")(
+        grid, (_TPB, 1, 1),
+        tuple(common + [
+            thp, state.thb, np.int32(state.thb.ndim == 3),
+            tke, bn2, d11, d22, d12,
+            xkmh, xkmv, xkhv,
+            mut, state.c1h, state.c2h,
+            ustm, hfx,
+            np.int32("ustm" in fields), np.int32("hfx" in fields),
+            DTYPE(cfg.c_k), DTYPE(cfg.dt),
+            DTYPE(cfg.tke_drag_coefficient), DTYPE(cfg.tke_heat_flux),
+            np.int32(cfg.isfflx),
+            rtke,
+        ] + budget_terms + [np.int32(budget_on)] + dims))
+    return d11, d22, d12
+
+
+def launch_wrf_smag3d_km(state: DomainState, cfg: RunConfig,
+                         xkmh, xkhh, *, time_t: bool):
+    """WRF v4.6.1 km_opt=3: ``cal_deform_and_div`` + ``calculate_N2`` +
+    ``smag_km`` on device (module_diffusion_em.F:1485-1713, :1777-1929).
+
+    Fills the four exchange-coefficient fields -- ``xkmh``/``xkhh`` in the
+    shared ``smag_km``/``smag_kh`` slots plus the km_opt=3-only vertical
+    pair in ``smag_kmv``/``smag_khv`` -- from the FULL deformation
+    invariant (D13/D23/D33 included, off-diagonal tensors averaged to mass
+    points before squaring), the ``sqrt(max(0, D^2 - N^2/Pr))`` buoyancy
+    reduction, and WRF's two ``mix_isotropic`` mixing-length branches with
+    their exact floors and ``mix_upper_bound/dt`` caps.  BN2 briefly
+    borrows the ``diff6_x`` face workspace prefix (dead until the u/v
+    horizontal staging that follows the K computation).  Returns the
+    (d11, d22, d12) deformation triple exactly as the km_opt=4 launcher.
+    """
+    nz, ny, nx = xkmh.shape
+    n_mass = nz * ny * nx
+    d11 = state.scratch((nz + 1, ny, nx), "smag_rw").reshape(-1)[:n_mass]
+    d22 = state.scratch((nz, ny, nx + 1), "smag_ru").reshape(-1)[:n_mass]
+    d12 = state.scratch((nz, ny + 1, nx), "smag_rv").reshape(-1)[:n_mass]
+    d11 = d11.reshape((nz, ny, nx))
+    d22 = d22.reshape((nz, ny, nx))
+    d12 = d12.reshape((nz, ny, nx))
+    xkmv = state.scratch((nz, ny, nx), "smag_kmv")
+    xkhv = state.scratch((nz, ny, nx), "smag_khv")
+    common = _wrf_smag_grid_args(state, cfg, time_t=time_t)
+    dims = [np.int32(nz), np.int32(ny), np.int32(nx),
+            np.int32(state.phb.ndim == 3),
+            np.int32(_boundary_x(cfg)), np.int32(_boundary_y(cfg))]
+    grid = ((nx + _TPB - 1) // _TPB, ny, nz)
+    get_kernel("smag2d", "wrf_smag_deform")(
+        grid, (_TPB, 1, 1), tuple(common + [d11, d22, d12] + dims))
+
+    # calculate_N2 inputs: time-t prognostic theta/moisture, current
+    # diagnostic p (refreshed against the time-t state by step() before
+    # prepare_fixed_tendencies, exactly as alt in the common args).
+    bn2 = state.scratch((nz, ny, nx + 1), "diff6_x").reshape(-1)[:n_mass]
+    bn2 = bn2.reshape((nz, ny, nx))
+    launch_wrf_calc_n2(state, cfg, bn2, time_t=time_t)
+
+    get_kernel("smag2d", "wrf_smag3d_km")(
+        grid, (_TPB, 1, 1),
+        tuple(common + [
+            DTYPE(cfg.c_s), DTYPE(_PRANDTL), DTYPE(cfg.dt),
+            DTYPE(cfg.mix_upper_bound), np.int32(cfg.mix_isotropic),
+            d11, d22, d12, bn2, xkmh, xkhh, xkmv, xkhv,
+        ] + dims))
+    if _boundary_x(cfg) or _boundary_y(cfg):
+        for pair in ((xkmh, xkhh), (xkmv, xkhv)):
+            get_kernel("smag2d", "wrf_smag_km_bc")(
+                grid, (_TPB, 1, 1),
+                (*pair, np.int32(nz), np.int32(ny), np.int32(nx),
+                 np.int32(_boundary_x(cfg)), np.int32(_boundary_y(cfg))))
+    return d11, d22, d12
+
+
 def launch_wrf_smag2d_hd(state: DomainState, cfg: RunConfig, f, xk, tend,
                           *, stagger: str, time_t: bool,
                           full_theta: bool = False,
@@ -813,30 +1008,56 @@ def launch_wrf_smag2d_hd(state: DomainState, cfg: RunConfig, f, xk, tend,
 
 def launch_wrf_smag2d_vertical(
         state: DomainState, cfg: RunConfig, km, *,
-        ru, rv, rw, rth, rqv, time_t: bool) -> None:
-    """Add WRF v4.6.1 ``vertical_diffusion_2`` for PBL-off km_opt=4.
+        ru, rv, rw, rth, rqv, time_t: bool,
+        kmv=None, khv=None, scalar_rows=None) -> None:
+    """Add WRF v4.6.1 ``vertical_diffusion_2`` for the PBL-off diff_opt=2
+    path (module_first_rk_step_part2.F:1011-1074).
 
-    ``smag2d_km`` defines ``xkmv=xkmh`` and ``xkhv=0`` for this option, so
-    only u/v/w have interior vertical stresses.  The explicit ``isfflx=1``
-    wall stress, sensible-heat flux, and water-vapour flux are nevertheless
-    active and use the surface driver's held USTM/HFX/QFX fields.  A
-    surface-layer-free LES supplies cold-zero fields, exactly the no-writer
-    WRF state.
+    km_opt=4: ``smag2d_km`` defines ``xkmv=xkmh`` and ``xkhv=0``, so only
+    u/v/w have interior vertical stresses (``kmv``/``khv`` omitted).
+    km_opt=3 passes ``kmv`` (vertical momentum K, consumed by the tau13/
+    tau23 operators -- WRF hands ``xkmv`` to vertical_diffusion_u_2/v_2
+    but ``xkmh`` to vertical_diffusion_w_2, transcribed exactly) and
+    ``khv`` plus ``scalar_rows`` -- ``(field, tendency, full_theta)``
+    triples mixed by ``vertical_diffusion_s`` with the vertical scalar K.
+
+    Surface forcing follows WRF's ``SELECT CASE(isfflx)`` matrix:
+    isfflx=0 takes the prescribed ``tke_drag_coefficient`` wall stress and
+    ``tke_heat_flux`` heat flux with no moisture flux; isfflx=1 takes
+    USTM/HFX/QFX from the surface driver; isfflx=2 takes USTM/QFX from
+    the driver but the constant ``tke_heat_flux`` heat.  A surface-layer-
+    free run supplies no fields and the ust-based arms stay cold-zero,
+    exactly the no-writer WRF state.
     """
     nz, ny, nx = km.shape
     common = _wrf_smag_grid_args(state, cfg, time_t=time_t)
     tail = [np.int32(nz), np.int32(ny), np.int32(nx),
             np.int32(state.phb.ndim == 3),
             np.int32(_boundary_x(cfg)), np.int32(_boundary_y(cfg))]
+    if kmv is None:
+        kmv = km
     launches = (
-        ("wrf_smag_vd_u", ru, (nx + 1, ny, nz)),
-        ("wrf_smag_vd_v", rv, (nx, ny + 1, nz)),
-        ("wrf_smag_vd_w", rw, (nx, ny, nz + 1)),
+        ("wrf_smag_vd_u", kmv, ru, (nx + 1, ny, nz)),
+        ("wrf_smag_vd_v", kmv, rv, (nx, ny + 1, nz)),
+        # DIVERGENCE, deliberate.  WRF hands vertical_diffusion_w_2 xkmh
+        # (module_diffusion_em.F:4145-4155); gpuwm hands it xkmv.  See
+        # this function's docstring for the derivation and the evidence.
+        ("wrf_smag_vd_w", kmv, rw, (nx, ny, nz + 1)),
     )
-    for name, tendency, (nxs, nys, nlev) in launches:
+    for name, xk, tendency, (nxs, nys, nlev) in launches:
         grid = ((nxs + _TPB - 1) // _TPB, nys, nlev)
         get_kernel("smag2d", name)(
-            grid, (_TPB, 1, 1), tuple(common + [km, tendency] + tail))
+            grid, (_TPB, 1, 1), tuple(common + [xk, tendency] + tail))
+
+    mass_grid = ((nx + _TPB - 1) // _TPB, ny, nz)
+    if khv is not None and scalar_rows:
+        for field, tendency, full_theta in scalar_rows:
+            get_kernel("smag2d", "wrf_smag_vd_s")(
+                mass_grid, (_TPB, 1, 1),
+                tuple(common + [
+                    field, state.thb, np.int32(bool(full_theta)),
+                    np.int32(state.thb.ndim == 3), khv, tendency,
+                ] + tail))
 
     fields = (
         state.physics.fields
@@ -846,40 +1067,89 @@ def launch_wrf_smag2d_vertical(
     active = int(
         cfg.sf_sfclay_physics != 0
         and all(name in fields for name in ("ustm", "hfx", "qfx")))
+    isfflx = cfg.isfflx
     dummy = state.mup0
     ustm = fields.get("ustm", dummy)
     hfx = fields.get("hfx", dummy)
     qfx = fields.get("qfx", dummy)
-    for name, tendency, nxs, nys in (
-            ("wrf_smag_surface_u", ru, nx + 1, ny),
-            ("wrf_smag_surface_v", rv, nx, ny + 1)):
-        grid = ((nxs + _TPB - 1) // _TPB, nys, 1)
-        get_kernel("smag2d", name)(
-            grid, (_TPB, 1, 1),
-            tuple(common + [ustm, np.int32(active), tendency] + tail))
+    if isfflx == 0:
+        # vflux CASE(0): constant drag coefficient, no surface scheme.
+        cd0 = DTYPE(cfg.tke_drag_coefficient)
+        for name, tendency, nxs, nys in (
+                ("wrf_smag_surface_u_cd0", ru, nx + 1, ny),
+                ("wrf_smag_surface_v_cd0", rv, nx, ny + 1)):
+            grid = ((nxs + _TPB - 1) // _TPB, nys, 1)
+            get_kernel("smag2d", name)(
+                grid, (_TPB, 1, 1),
+                tuple(common + [cd0, tendency] + tail))
+    else:
+        # vflux CASE(1,2): ustar from the surface routine (USTM).
+        for name, tendency, nxs, nys in (
+                ("wrf_smag_surface_u", ru, nx + 1, ny),
+                ("wrf_smag_surface_v", rv, nx, ny + 1)):
+            grid = ((nxs + _TPB - 1) // _TPB, nys, 1)
+            get_kernel("smag2d", name)(
+                grid, (_TPB, 1, 1),
+                tuple(common + [ustm, np.int32(active), tendency] + tail))
     scalar_grid = ((nx + _TPB - 1) // _TPB, ny, 1)
+    if isfflx in (0, 2):
+        # hflux CASE(0,2): prescribed constant kinematic heat flux.
+        get_kernel("smag2d", "wrf_smag_surface_heat_const")(
+            scalar_grid, (_TPB, 1, 1),
+            tuple(common + [DTYPE(cfg.tke_heat_flux), rth] + tail))
+    apply_heat = int(isfflx == 1) and active
+    apply_moist = int(isfflx in (1, 2)) and active
     get_kernel("smag2d", "wrf_smag_surface_scalars")(
         scalar_grid, (_TPB, 1, 1),
         tuple(common + [
-            hfx, qfx, np.int32(active), rth,
+            hfx, qfx, np.int32(apply_heat), np.int32(apply_moist), rth,
             rqv if rqv is not None else rth,
         ] + tail))
 
 
-def _smag2d_specs(state: DomainState, km, kh, *, time_t: bool = False):
+def _horizontal_w_km(state: DomainState, cfg: RunConfig):
+    """WRF's ``xkmv`` where ``horizontal_diffusion_w_2`` needs it.
+
+    ``None`` for km_opt=4 (and for the diff6-only path, which consumes no
+    K at all): ``smag2d_km`` defines ``xkmv = xkmh``
+    (module_diffusion_em.F:2035), so the caller's ``xkmh`` IS ``xkmv``
+    there.  km_opt=2/3 fill a separate vertical pair in ``smag_kmv``
+    (``tke_km`` :2049-2260 / ``smag_km`` :1890-1908), and on an
+    anisotropic grid it is smaller than ``xkmh`` by (dz/dx)^2 -- the whole
+    point of ``mix_isotropic = 0``.
+    """
+    if cfg.km_opt not in (2, 3):
+        return None
+    return state.scratch(state.p.shape, "smag_kmv")
+
+
+def _smag2d_specs(state: DomainState, km, kh, *, time_t: bool = False,
+                  kmv=None):
     """(field, tend-or-None, K, c1, c2, scratch slot, stagger) rows for the
     km_opt=4 package: momentum takes K_m, scalars (WRF ``theta - T0`` and
     moisture) take K_h = K_m/prandtl; moisture rows carry no state tendency array (their
     increment folds into the scalar update).  ``time_t`` binds the saved
-    ``*0`` fields used by WRF's once-per-step forward tendencies."""
+    ``*0`` fields used by WRF's once-per-step forward tendencies.
+
+    ``kmv`` is the w row's horizontal K.  WRF's ``horizontal_diffusion_2``
+    hands ``xkmh`` to ``horizontal_diffusion_u_2``/``_v_2`` but ``xkmv`` to
+    ``horizontal_diffusion_w_2`` (module_diffusion_em.F:2978-3006; the
+    dummy argument is spelled ``xkmv`` at :3524), because that operator is
+    the divergence of tau13/tau23 and those stresses take the VERTICAL
+    momentum coefficient everywhere else too (``vertical_diffusion_u_2``/
+    ``_v_2``, :4128-4147).  ``smag2d_km`` sets ``xkmv = xkmh`` for km_opt=4
+    (:2035, "v4.2 and later, this is used for hor. diff. of w"), so the
+    default ``None`` -- pass ``xkmh`` -- is that identity, not a shortcut.
+    km_opt=2/3 compute a genuinely different vertical pair and must pass
+    it."""
     def field(name):
         return getattr(state, name + "0" if time_t else name)
     specs = [(field("u"), state.ru_t, km, state.c1h, state.c2h,
               "smag_ru", "x"),
              (field("v"), state.rv_t, km, state.c1h, state.c2h,
               "smag_rv", "y"),
-             (field("w"), state.rw_t, km, state.c1f, state.c2f,
-              "smag_rw", "z"),
+             (field("w"), state.rw_t, km if kmv is None else kmv,
+              state.c1f, state.c2f, "smag_rw", "z"),
              (field("thp"), state.rth_t, kh, state.c1h, state.c2h,
               "smag_rth", "")]
     if state.qv is not None:
@@ -902,8 +1172,15 @@ def _compute_wrf_smag_tendencies(state: DomainState, cfg: RunConfig,
     produced normally.  The scalar operator uses the same face workspaces for
     its two explicit metric flux passes.
     """
-    deformation = launch_wrf_smag2d_km(
-        state, cfg, km, kh, time_t=time_t)
+    if cfg.km_opt == 2:
+        deformation = launch_wrf_tke_km(
+            state, cfg, km, kh, time_t=time_t)
+    elif cfg.km_opt == 3:
+        deformation = launch_wrf_smag3d_km(
+            state, cfg, km, kh, time_t=time_t)
+    else:
+        deformation = launch_wrf_smag2d_km(
+            state, cfg, km, kh, time_t=time_t)
 
     # u/v must both see the complete deformation set before either borrowed
     # carrying buffer is replaced by its final stress divergence.
@@ -927,11 +1204,45 @@ def _compute_wrf_smag_tendencies(state: DomainState, cfg: RunConfig,
                              time_t=time_t,
                              full_theta=(slot == "smag_rth"))
         _zero_open_strips(buf, cfg, 1)
+
+    if cfg.km_opt == 2:
+        # TKE self-diffusion: horizontal with 2*Km_h regardless of the PBL
+        # (module_diffusion_em.F:3020-3032, doubling :3988-3996 -- WRF's
+        # doing_tke tendency = tmptendf + 2*(tendency - tmptendf)).
+        nz_, ny_, nx_ = km.shape
+        tke_t = getattr(state, "tke0" if time_t else "tke")
+        rtke = state.scratch((nz_, ny_, nx_), "smag_rtke")
+        tmp = state.scratch((nz_, ny_, nx_), "smag_tke_tmp")
+        if not getattr(cfg, "tke_mix2_off", False):
+            tmp[...] = 0
+            launch_wrf_smag2d_hd(state, cfg, tke_t, km, tmp, stagger="",
+                                 time_t=time_t, full_theta=False)
+            _zero_open_strips(tmp, cfg, 1)
+            rtke += 2.0 * tmp
+            budget_h = tke_budget.term(state, cfg, "diffusion_h")
+            if budget_h is not None:
+                budget_h[...] = 2.0 * tmp
+
     if cfg.bl_pbl_physics == 0:
         buffers = {
             slot: state.scratch(f.shape, slot)
             for f, _tend, _xk, _c1, _c2, slot, _stag in specs
         }
+        kmv = khv = None
+        scalar_rows = None
+        if cfg.km_opt in (2, 3):
+            # The closure's vertical pair, filled by launch_wrf_tke_km /
+            # launch_wrf_smag3d_km above.  Interior vertical scalar mixing
+            # covers WRF's rt_tendf row (theta reconstructed from thp+thb)
+            # and every moist species (vertical_diffusion_2's moist_loop).
+            nz_, ny_, nx_ = km.shape
+            kmv = state.scratch((nz_, ny_, nx_), "smag_kmv")
+            khv = state.scratch((nz_, ny_, nx_), "smag_khv")
+            scalar_rows = [
+                (f, buffers[slot], slot == "smag_rth")
+                for f, _tend, _xk, _c1, _c2, slot, stag in specs
+                if stag == ""
+            ]
         launch_wrf_smag2d_vertical(
             state, cfg, km,
             ru=buffers["smag_ru"],
@@ -940,7 +1251,33 @@ def _compute_wrf_smag_tendencies(state: DomainState, cfg: RunConfig,
             rth=buffers["smag_rth"],
             rqv=buffers.get("smag_rqv"),
             time_t=time_t,
+            kmv=kmv, khv=khv, scalar_rows=scalar_rows,
         )
+        if cfg.km_opt == 2:
+            # Vertical TKE self-diffusion with 2*Km_v (vertical_diffusion_2
+            # :4332-4341, doubling :4896-4904), PBL-off only like the rest
+            # of vertical_diffusion_2.  Same vertical_diffusion_s operator
+            # as the scalars, with Km_v in place of Kh_v and the doubled
+            # increment.
+            tke_t = getattr(state, "tke0" if time_t else "tke")
+            rtke = state.scratch((nz_, ny_, nx_), "smag_rtke")
+            tmp = state.scratch((nz_, ny_, nx_), "smag_tke_tmp")
+            tmp[...] = 0
+            common = _wrf_smag_grid_args(state, cfg, time_t=time_t)
+            tail = [np.int32(nz_), np.int32(ny_), np.int32(nx_),
+                    np.int32(state.phb.ndim == 3),
+                    np.int32(_boundary_x(cfg)), np.int32(_boundary_y(cfg))]
+            mass_grid = ((nx_ + _TPB - 1) // _TPB, ny_, nz_)
+            get_kernel("smag2d", "wrf_smag_vd_s")(
+                mass_grid, (_TPB, 1, 1),
+                tuple(common + [
+                    tke_t, state.thb, np.int32(0),
+                    np.int32(state.thb.ndim == 3), kmv, tmp,
+                ] + tail))
+            rtke += 2.0 * tmp
+            budget_v = tke_budget.term(state, cfg, "diffusion_v")
+            if budget_v is not None:
+                budget_v[...] = 2.0 * tmp
         for f, _tend, _xk, _c1, _c2, slot, _stag in specs:
             _zero_open_strips(
                 buffers[slot], cfg, 1)
@@ -958,7 +1295,7 @@ def prepare_fixed_tendencies(state: DomainState, cfg: RunConfig) -> None:
     retaining a second full set of per-species buffers.
     """
     nz, ny, nx = state.p.shape
-    include_smag = cfg.km_opt == 4
+    include_smag = cfg.km_opt in (2, 3, 4)
     include_diff6 = cfg.diff_6th_opt > 0
     if not (include_smag or include_diff6):
         return
@@ -971,9 +1308,17 @@ def prepare_fixed_tendencies(state: DomainState, cfg: RunConfig) -> None:
         kh = state.scratch((nz, ny, nx), "smag_kh")
     else:
         km = kh = None
-    specs = _smag2d_specs(state, km, kh, time_t=True)
+    specs = _smag2d_specs(state, km, kh, time_t=True,
+                          kmv=_horizontal_w_km(state, cfg))
     for f0, _tend, _xk, _c1, _c2, slot, _stag in specs:
         state.scratch(f0.shape, slot)[...] = 0
+    if cfg.km_opt == 2:
+        # The prognostic-TKE forward tendency (tke_rhs + self-diffusion),
+        # consumed by advance_tke_stage on every RK pass.
+        state.scratch((nz, ny, nx), "smag_rtke")[...] = 0
+        # A term this configuration never produces must read as an honest
+        # zero for the step, not as the previous step's value.
+        tke_budget.clear_fields(state, cfg)
 
     mu_t = state.mub2d + state.mup0
     if include_smag:
@@ -984,7 +1329,14 @@ def prepare_fixed_tendencies(state: DomainState, cfg: RunConfig) -> None:
         factor = _clock_scaled_diff6_factor(cfg)
         temp_slot = {"x": "diff6_x", "y": "diff6_y",
                      "z": "diff6_z", "": "diff6_m"}
-        for f0, _tend, _xk, c1, c2, slot, stag in specs:
+        diff6_rows = list(specs)
+        if cfg.km_opt == 2:
+            # WRF applies the 6th-order filter to tke through
+            # rk_scalar_tend unless tke_mix6_off (Registry default
+            # .false., Registry.EM_COMMON:2893).
+            diff6_rows.append((state.tke0, None, None, state.c1h,
+                               state.c2h, "smag_rtke", ""))
+        for f0, _tend, _xk, c1, c2, slot, stag in diff6_rows:
             tmp = state.scratch(f0.shape, temp_slot[stag])
             tmp[...] = 0
             launch_diff6(f0, tmp, mu_t, c1, c2, factor, cfg.dt,
@@ -1000,11 +1352,15 @@ def prepare_fixed_tendencies(state: DomainState, cfg: RunConfig) -> None:
                          bnd_x=_boundary_x(cfg), bnd_y=_boundary_y(cfg))
             _zero_open_strips(tmp, cfg, 3)
             state.scratch(f0.shape, slot)[:] += tmp
+            if slot == "smag_rtke":
+                budget_6 = tke_budget.term(state, cfg, "diffusion_6th")
+                if budget_6 is not None:
+                    budget_6[...] = tmp
 
 
 def add_fixed_dry_tendencies(state: DomainState, cfg: RunConfig) -> None:
     """Add the held time-t forward tendencies to one RK slow pass."""
-    if cfg.km_opt != 4 and cfg.diff_6th_opt <= 0:
+    if cfg.km_opt not in (2, 3, 4) and cfg.diff_6th_opt <= 0:
         return
     # K values are not consumed here; the specs provide shapes/targets.
     for f0, tend, _xk, _c1, _c2, slot, _stag in _smag2d_specs(
@@ -1015,7 +1371,8 @@ def add_fixed_dry_tendencies(state: DomainState, cfg: RunConfig) -> None:
 
 def fixed_scalar_tendencies(state: DomainState, cfg: RunConfig):
     """Return held scalar forward tendencies by Registry field name."""
-    if state.qv is None or (cfg.km_opt != 4 and cfg.diff_6th_opt <= 0):
+    if state.qv is None or (cfg.km_opt not in (2, 3, 4)
+                            and cfg.diff_6th_opt <= 0):
         return None
     names = list(SPECIES)
     names += list(extra_moist_species(state))
@@ -1041,7 +1398,8 @@ def add_smag2d_tendencies(state: DomainState, cfg: RunConfig,
     nz, ny, nx = state.p.shape
     km = state.scratch((nz, ny, nx), "smag_km")
     kh = state.scratch((nz, ny, nx), "smag_kh")
-    specs = _smag2d_specs(state, km, kh)
+    specs = _smag2d_specs(state, km, kh,
+                          kmv=_horizontal_w_km(state, cfg))
     if first:
         _compute_wrf_smag_tendencies(
             state, cfg, km, kh, specs, time_t=False)
@@ -1826,14 +2184,16 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
             "dt/time_step_sound, which mis-times the dt/2 stage for odd "
             "values."
         )
-    if cfg.km_opt not in (1, 4):
+    # THE fail-closed km_opt decision: this is the site that actually
+    # decides whether a horizontal mixing operator runs, so it asks the
+    # same shared question the loaders ask rather than restating it (the
+    # two used to be separate transcriptions of one rule).
+    validate_km_opt(cfg)
+    if cfg.km_opt in (2, 3, 4) and (cfg.khdif > 0.0 or cfg.kvdif > 0.0):
         raise ValueError(
-            f"km_opt={cfg.km_opt} is not supported: 1 (constant K via "
-            "khdif/kvdif) and 4 (2-D Smagorinsky) are wired")
-    if cfg.km_opt == 4 and (cfg.khdif > 0.0 or cfg.kvdif > 0.0):
-        raise ValueError(
-            "km_opt=4 selects WRF Smagorinsky mixing; khdif/kvdif are "
-            "constant-K controls for km_opt=1 and cannot also be active")
+            f"km_opt={cfg.km_opt} selects WRF Smagorinsky mixing; "
+            "khdif/kvdif are constant-K controls for km_opt=1 and cannot "
+            "also be active")
     if cfg.mp_physics != 0 and getattr(state, "h_diabatic", None) is None:
         raise ValueError(
             f"mp_physics={cfg.mp_physics} requires cfg.moist=True: the "
@@ -1875,6 +2235,8 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
         if getattr(state, "qi", None) is not None:
             for name in extra_moist_species(state):
                 getattr(state, name + "0")[...] = getattr(state, name)
+    if getattr(state, "tke", None) is not None:       # km_opt=2 carrier
+        state.tke0[...] = state.tke
 
     # WRF solve_em: non-timesplit physics is evaluated once during the
     # first RK pass and held fixed for all three passes.  EOS/phy_prep must
@@ -1895,11 +2257,11 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
                 "moist transport requires the acoustic dycore path "
                 "(step(acoustic=False) is the Phase-1 dry advection test "
                 "path)")
-        if cfg.km_opt == 4:
+        if cfg.km_opt in (2, 3, 4):
             raise NotImplementedError(
-                "km_opt=4 Smagorinsky mixing requires the acoustic dycore "
-                "path (step(acoustic=False) is the Phase-1 dry advection "
-                "test path)")
+                f"km_opt={cfg.km_opt} Smagorinsky mixing requires the "
+                "acoustic dycore path (step(acoustic=False) is the "
+                "Phase-1 dry advection test path)")
         for istage, dt_eff in enumerate((cfg.dt / 3.0, cfg.dt / 2.0,
                                          cfg.dt)):
             for name in _TENDENCIES:
@@ -1924,7 +2286,7 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
     # loading, rho=(1+qv)/alt (exactly 1/alt for a dry state).  A freshly
     # initialized state has not otherwise run phy_prep/EOS yet, so refresh
     # the time-t diagnostics before evaluating K and its forward tendencies.
-    if cfg.km_opt == 4:
+    if cfg.km_opt in (2, 3, 4):
         update_diagnostics(state, cfg.hypsometric_opt)
     prepare_fixed_tendencies(state, cfg)
     fixed_scalars = fixed_scalar_tendencies(state, cfg)
@@ -1987,7 +2349,12 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
         # consistent mass-conserving scalar advection".  Scalars only;
         # theta/momentum keep the stage fluxes exactly as WRF does.
         moist = state.qv is not None
-        if moist:
+        # Prognostic TKE (km_opt=2) advects with the same acoustic
+        # time-averaged mass fluxes as the moist scalars (WRF
+        # rk_scalar_tend for tke, solve_em.F:2362-2399), so a dry TKE run
+        # accumulates sumflux too.
+        scalars = moist or getattr(state, "tke", None) is not None
+        if scalars:
             ru_m = state.scratch((nzs, nys, nxs + 1), "rk_ru_m")
             rv_m = state.scratch((nzs, nys + 1, nxs), "rk_rv_m")
             ww_m = state.scratch((nzs + 1, nys, nxs), "rk_ww_m")
@@ -2002,7 +2369,7 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
                                                       # mudf (zero only on
                                                       # step's 1st substep)
             launch_acoustic_substep(first=(i == 0))
-            if moist:                                 # WRF sumflux: post-
+            if scalars:                               # WRF sumflux: post-
                 launch_sumflux_accumulation()
             if mass_flux_observer is not None and istage == 2:
                 mass_flux_observer(
@@ -2016,7 +2383,7 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
         # WRF small_step_finish: the h_diabatic removal runs on the final RK
         # step only, over dts*number_of_small_timesteps = dt.
         small_step_finishes[istage]()
-        if moist:                                     # stage length nsub*dtau
+        if scalars:                                   # stage length nsub*dtau
             # WRF sumflux (iteration == number_of_small_timesteps): the
             # substep mean plus the stage-reference coupled fluxes --
             # ru_m = mean(u'') + C(muu)*u_t*/msfuy (F:1584-1592), ww_m =
@@ -2025,12 +2392,26 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
             # against the acoustic mu update (SK2008 D11).
             _sumflux_launch(
                 "finish_sumflux", (ru_m, rv_m, ww_m), (ru, rv, ww), nsub)
-            advance_scalars_stage(state, cfg, ru_m, rv_m, ww_m, nsub * dtau,
-                                  final=(istage == len(stages) - 1),
-                                  apply_relax=(istage == 0),
-                                  physics_tendencies=physics_tendencies,
-                                  fixed_tendencies=fixed_scalars)
+            if moist:
+                advance_scalars_stage(
+                    state, cfg, ru_m, rv_m, ww_m, nsub * dtau,
+                    final=(istage == len(stages) - 1),
+                    apply_relax=(istage == 0),
+                    physics_tendencies=physics_tendencies,
+                    fixed_tendencies=fixed_scalars)
+            if getattr(state, "tke", None) is not None:
+                from gpuwm.core.moist import advance_tke_stage
+                advance_tke_stage(
+                    state, cfg, ru_m, rv_m, ww_m, nsub * dtau,
+                    final=(istage == len(stages) - 1),
+                    fixed_tendency=state.scratch(
+                        state.p.shape, "smag_rtke"))
         apply_open_zero_gradient(state, cfg)          # radiative-open BCs
+    # km_opt=2 budget: one device reduction over the completed step, taken
+    # here because state.mup is still the mass the final RK scalar update
+    # divided by.  Report-only (gpuwm/core/tke_budget.py); a no-op unless
+    # cfg.tke_budget is on.
+    tke_budget.accumulate(state, cfg)
     apply_state_boundary_values(state, cfg,
                                 state.elapsed_seconds + cfg.dt)
     set_w_surface(state, cfg)                         # WRF solve_em epilogue

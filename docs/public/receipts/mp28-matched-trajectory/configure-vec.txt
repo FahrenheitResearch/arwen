@@ -1,0 +1,4 @@
+SFC             =       gfortran
+SCC             =       gcc
+FCOPTIM         =       -O2 -ftree-vectorize -funroll-loops
+FCBASEOPTS_NO_G =       -w $(FORMAT_FREE) $(BYTESWAPIO) $(FCCOMPAT)

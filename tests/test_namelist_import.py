@@ -1195,9 +1195,16 @@ def test_rejects_implausible_max_dom(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _import_with(tmp_path, extra_dynamics="", extra_physics="",
-                 extra_input=""):
-    """INPUT_TEXT with lines appended inside &dynamics / &physics."""
+                 extra_input="", inp_filter=None):
+    """INPUT_TEXT with lines appended inside &dynamics / &physics.
+
+    ``inp_filter`` rewrites existing columns first (e.g. turning the
+    second domain into an LES child) so the appended lines land in a
+    namelist that actually selects the scheme under test.
+    """
     inp = INPUT_TEXT
+    if inp_filter is not None:
+        inp = inp_filter(inp)
     if extra_dynamics:
         inp = inp.replace(" hybrid_opt = 2,",
                           " hybrid_opt = 2,\n" + extra_dynamics)
@@ -1748,3 +1755,145 @@ def test_max_dom_matching_the_declared_arrays_still_loads(tmp_path):
     grids = grids_from_wps_namelist(wps)
     assert len(grids) == 1
     assert grids[0].e_we == 100 and grids[0].e_sn == 80
+
+
+# --------------------------------------------------------------------
+# The km_opt=2/3 turbulence parameter row.
+#
+# Every key below is `max_domains` in Registry.EM_COMMON and sits in
+# gpuwm.experiment._DOMAIN_RUN_OVERRIDES.  Before the row was read, an
+# LES child had NO expressible pair of inputs: omitting c_k resolved
+# gpuwm's RunConfig default 0.15 against an LES TOML's em_les 0.10 and
+# the prepared cache refused the forecast on `run.c_k`, while supplying
+# c_k in the namelist hit the unmapped-key refusal.  Both directions
+# were closed, and with them the whole km_opt=2 hierarchy gate.
+# --------------------------------------------------------------------
+
+def _les_child(inp: str) -> str:
+    """The base pair with an LES (km_opt=3, PBL-off) nested second domain.
+
+    km_opt=3 and not 2 because validate_run_config refuses km_opt=2 on a
+    NEST child outright (no nested LES domain has been run), and that
+    refusal stands -- this fixture exercises the namelist bridge, not the
+    gate.  km_opt=3 is the closure the nested LES probe actually ran.
+    """
+    return (inp.replace(" km_opt = 4, 4,", " km_opt = 4, 3,")
+               .replace(" bl_pbl_physics = 11, 11,",
+                        " bl_pbl_physics = 11, 0,"))
+
+
+def _les_root(inp: str) -> str:
+    """The base pair whose ROOT selects km_opt=2 (prognostic TKE).
+
+    The root is the only domain km_opt=2 is admitted on today: the gate
+    requires bl_pbl_physics=0 and refuses ``nested``.
+    """
+    return (inp.replace(" km_opt = 4, 4,", " km_opt = 2, 4,")
+               .replace(" bl_pbl_physics = 11, 11,",
+                        " bl_pbl_physics = 0, 11,"))
+
+
+def test_turbulence_row_reaches_every_per_domain_run_config(tmp_path):
+    """Booby-trap reach test: a NON-UNIFORM turbulence row must land per
+    domain, which is the whole point of `a PBL parent may carry a PBL-off
+    LES child`.  c_k is the key that closed the km_opt=2 gate."""
+    toml_text, report = _import_with(
+        tmp_path,
+        inp_filter=_les_child,
+        extra_dynamics=(" c_s = 0.25, 0.18,\n"
+                        " c_k = 0.15, 0.10,\n"
+                        " mix_isotropic = 0, 1,\n"
+                        " mix_upper_bound = 0.1, 0.25,\n"
+                        " tke_upper_bound = 1000., 200.,\n"
+                        " tke_heat_flux = 0., 0.24,\n"
+                        " tke_drag_coefficient = 0., 0.0013,\n"))
+    exp = _load(tmp_path, toml_text)
+    assert [dc.run.km_opt for dc in exp.domains] == [4, 3]
+    assert [dc.run.c_s for dc in exp.domains] == [0.25, 0.18]
+    assert [dc.run.c_k for dc in exp.domains] == [0.15, 0.10]
+    assert [dc.run.mix_isotropic for dc in exp.domains] == [0, 1]
+    assert [dc.run.mix_upper_bound for dc in exp.domains] == [0.1, 0.25]
+    assert [dc.run.tke_upper_bound for dc in exp.domains] == [1000.0, 200.0]
+    assert [dc.run.tke_heat_flux for dc in exp.domains] == [0.0, 0.24]
+    assert [dc.run.tke_drag_coefficient
+            for dc in exp.domains] == [0.0, 0.0013]
+    translated = {(t.section, t.key) for t in report.translated}
+    for key in ("c_s", "c_k", "mix_isotropic", "mix_upper_bound",
+                "tke_upper_bound", "tke_heat_flux",
+                "tke_drag_coefficient"):
+        assert ("dynamics", key) in translated, key
+    # mix_isotropic must stay an INT through the TOML round trip.
+    assert "mix_isotropic = 1" in toml_text
+    assert all(isinstance(dc.run.mix_isotropic, int) for dc in exp.domains)
+
+
+def test_turbulence_row_absent_emits_nothing(tmp_path):
+    """Every Registry default equals gpuwm's frozen RunConfig default, so
+    omission resolves identically and established imports stay
+    byte-identical."""
+    toml_text, _ = import_namelists(*_pair(tmp_path))
+    for key in ("c_s", "c_k", "mix_isotropic", "mix_upper_bound",
+                "tke_upper_bound", "tke_heat_flux",
+                "tke_drag_coefficient"):
+        assert key not in toml_text, key
+    root = _load(tmp_path, toml_text).root.run
+    assert (root.c_s, root.c_k) == (0.25, 0.15)
+    assert (root.mix_isotropic, root.mix_upper_bound) == (0, 0.1)
+    assert root.tke_upper_bound == 1000.0
+    assert (root.tke_heat_flux, root.tke_drag_coefficient) == (0.0, 0.0)
+
+
+def test_uniform_turbulence_row_emits_shared_only(tmp_path):
+    """A uniform column is a [shared] value with no per-domain override --
+    the same rule epssm follows."""
+    toml_text, _ = _import_with(
+        tmp_path, extra_dynamics=" c_k = 0.12, 0.12,\n")
+    assert toml_text.count("c_k") == 1
+    exp = _load(tmp_path, toml_text)
+    assert [dc.run.c_k for dc in exp.domains] == [0.12, 0.12]
+
+
+@pytest.mark.parametrize("key,bad", [
+    ("c_s", "0.25, -1.0,"),
+    ("c_k", "0.15, 0.0,"),
+    ("mix_upper_bound", "0.1, 0.0,"),
+    ("tke_upper_bound", "1000., -5.,"),
+    ("tke_drag_coefficient", "0., -0.1,"),
+    ("mix_isotropic", "0, 2,"),
+])
+def test_turbulence_row_refuses_out_of_range_values(tmp_path, key, bad):
+    """Namelist-anchored refusal, not a downstream RunConfig traceback."""
+    with pytest.raises(ValueError, match=key):
+        _import_with(tmp_path, extra_dynamics=f" {key} = {bad}\n")
+
+
+def test_tke_adv_opt_is_pinned_when_a_domain_selects_km_opt_2(tmp_path):
+    """gpuwm advects the km_opt=2 TKE carrier through WRF's
+    positive-definite RK3 rows (gpuwm/core/moist.py advance_tke_stage)
+    and implements no other transport, so tke_adv_opt = 1 is PINNED --
+    not dropped as inert, which is what it was until km_opt=2 falsified
+    that rationale."""
+    _, report = _import_with(tmp_path, inp_filter=_les_root,
+                             extra_dynamics=" tke_adv_opt = 1, 1,\n")
+    fixed = {(f.section, f.key): f for f in report.fixed}
+    assert ("dynamics", "tke_adv_opt") in fixed
+    assert "positive-definite" in fixed[("dynamics", "tke_adv_opt")].reason
+    assert ("dynamics", "tke_adv_opt") not in {
+        (d.section, d.key) for d in report.dropped}
+
+
+def test_tke_adv_opt_refuses_a_transport_gpuwm_does_not_implement(tmp_path):
+    """A key that changes the answer must be refused, never dropped."""
+    with pytest.raises(ValueError, match="tke_adv_opt"):
+        _import_with(tmp_path, inp_filter=_les_root,
+                     extra_dynamics=" tke_adv_opt = 0, 0,\n")
+
+
+def test_tke_adv_opt_stays_inert_without_a_prognostic_tke_domain(tmp_path):
+    """With no km_opt=2 domain there is no TKE carrier to transport, so
+    WRF would not consume it either."""
+    _, report = _import_with(tmp_path,
+                             extra_dynamics=" tke_adv_opt = 0, 0,\n")
+    dropped = {(d.section, d.key): d for d in report.dropped}
+    assert ("dynamics", "tke_adv_opt") in dropped
+    assert "km_opt = 2" in dropped[("dynamics", "tke_adv_opt")].reason

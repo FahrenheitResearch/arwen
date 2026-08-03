@@ -10,8 +10,14 @@ suite is bitwise unaffected), 1 is Kessler
 ``gpuwm.verify.npref.np_kessler_column``), 6 is WSM6, 8 is the classic
 Thompson CUDA path (packaged byte-validated WRF v4.6.1 tables, env-var
 table-root override honored), 10 is Morrison two-moment
-(``gpuwm.core.morrison`` / ``kernels/morrison.cu``), and 18 is NSSL
-two-moment through its persistent production binding.
+(``gpuwm.core.morrison`` / ``kernels/morrison.cu``), 18 is NSSL
+two-moment through its persistent production binding, and 28 is
+aerosol-aware Thompson (``gpuwm.core.microphysics_aerosol`` and the eight
+``kernels/thompson_aerosol_*.cu`` translation units; WRF
+Registry/Registry.EM_COMMON:3036).  mp=28 is a SIBLING of the mp=8 path,
+never a branch inside it: ``kernels/thompson.cu`` and
+``gpuwm.core.thompson`` are byte-frozen and gain nothing from this port,
+which is what makes the mp=8 non-regression a statement about bytes.
 
 The scheme inputs follow WRF ``moist_physics_prep_em``
 (dyn_em/module_big_step_utilities_em.F) with ``use_theta_m = 0`` (gpuwm's
@@ -98,9 +104,17 @@ KESSLER_VERTICAL_LEVEL_BOUNDS = (None, _KMAX)
 #: place.  Attributes the configured scheme does not allocate are skipped.
 #: h_diabatic is deliberately absent: its ring value is pinned to WRF's
 #: exact 0 in :func:`_restore_spec_zone_ring` instead of being restored.
+#: ``nwfa``/``nifa`` join the list for mp=28: the aerosol adapter's terminal
+#: apply (module_mp_thompson.F:3972-4021) and its surface emission
+#: (mp_gt_driver:1310-1327) both write them in place, so an unrestored ring
+#: would accumulate aerosol WRF's clipped tiles never touch.  Presence
+#: guards mean every other scheme is unaffected -- no state but mp=28's
+#: allocates them (gpuwm/core/moist.py, ``nwfa`` is the mp=28 discriminator).
+#: ``nwfa2d``/``nifa2d`` are deliberately absent: they are INTENT(IN) in WRF
+#: and the microphysics never writes them.
 _RING_STATE_FIELDS = (
     "thp", "qv", "qc", "qr", "qi", "qs", "qg",
-    "nc", "nr", "ni", "ns", "ng",
+    "nc", "nr", "ni", "ns", "ng", "nwfa", "nifa",
     "effc", "effr", "effi", "effs",
 )
 
@@ -167,13 +181,19 @@ def spec_zone_ring_save_slots(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
         return {}
     nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
     fields = ["thp", "qv", "qc", "qr"]
-    if cfg.mp_physics in (6, 8, 10):
+    if cfg.mp_physics in (6, 8, 10, 28):
         fields += ["qi", "qs", "qg"]
     if cfg.mp_physics == 8:
         fields += ["nr", "ni"]
     if cfg.mp_physics == 10:
         fields += ["nc", "nr", "ni", "ns", "ng"]
-    if cfg.mp_physics in (6, 8, 10):
+    if cfg.mp_physics == 28:
+        # The exact mp=28 moment set (gpuwm/core/state.py's mp==28 arm and
+        # gpuwm/core/moist.py::THOMPSON_AERO_NUMBER_SPECIES).  nwfa2d/nifa2d
+        # are NOT here: WRF passes them INTENT(IN) and no microphysics
+        # kernel writes them, so the guard has nothing to restore.
+        fields += ["nr", "ni", "nc", "nwfa", "nifa"]
+    if cfg.mp_physics in (6, 8, 10, 28):
         fields += ["effc", "effi", "effs"]
     if cfg.mp_physics == 10:
         fields += ["effr"]
@@ -678,6 +698,17 @@ def _dispatch_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
         from gpuwm.core.morrison import apply as apply_morrison
         return apply_morrison(
             state, cfg, dt, refl_10cm_due=refl_10cm_due)
+    elif cfg.mp_physics == 28:
+        # Thompson aerosol-aware.  A SIBLING adapter, not a branch inside
+        # _apply_thompson: the classic body stays textually diffable against
+        # its model-validated form, which is what makes "mp=8 is frozen" a
+        # statement about bytes (tests/test_mp8_frozen.py) rather than about
+        # control flow.  Lazy import for the same reason the Morrison arm
+        # uses one -- the aerosol module pulls in eight new CUDA translation
+        # units that an mp=8 or Kessler run must never compile.
+        from gpuwm.core.microphysics_aerosol import _apply_thompson_aerosol
+        return _apply_thompson_aerosol(
+            state, cfg, dt, refl_10cm_due=refl_10cm_due)
     else:
         # Branch-local imports avoid the microphysics -> nssl2_runtime ->
         # microphysics partial-initialization cycle.
@@ -707,14 +738,65 @@ def _dispatch_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
         )
 
 
+def microphysics_init(state: DomainState, cfg: RunConfig) -> dict[str, object]:
+    """WRF ``microphysics_init``'s ONE-TIME, per-domain scheme setup.
+
+    The analogue of ``phys/module_physics_init.F::microphysics_init``, which
+    WRF calls once per domain at construction and never again.  It is
+    separate from :func:`apply` for the reason WRF keeps it separate: what
+    it does is not a tendency, and doing it twice is not idempotent in
+    general.  Returns a RECEIPT -- a mapping naming what actually ran --
+    rather than ``None``, so a caller can print it and a test can assert on
+    it.  ``{}`` means "this scheme needs no domain-construction step", which
+    is true of every scheme gpuwm shipped before mp=28.
+
+    ``mp_physics = 28`` is the first scheme with real work here.  WRF's
+    ``thompson_init`` fills a SYNTHETIC CCN/IN profile whenever the
+    water/ice-friendly aerosol fields arrive unset
+    (module_mp_thompson.F:482-559; the CCN decision at :493 and the IN
+    decision at :530 are two independent ``MAXVAL`` tests), and derives the
+    surface emission ``nwfa2d`` from it at :509-510.  Nothing inside
+    ``mp_gt_driver`` ever refills that profile.  Without this call an mp=28
+    domain integrates with ``nwfa``/``nifa`` at whatever the state
+    allocation left -- exactly zero on a cold start -- which is not an
+    error anywhere: the terminal apply's clamps
+    (:3972-4021) simply hold the aerosol at its floors, the run stays
+    finite, and the aerosol-aware physics is silently inert.  That is the
+    single most dangerous failure mode this scheme has, which is why the
+    hook is a named, receipt-returning function rather than a line inside
+    an adapter.
+
+    THE CALLER.  Domain construction, once, before the first step, beside
+    the other one-time physics initializations --
+    ``gpuwm/core/physics.py::initialize_physics``, which is gpuwm's
+    ``module_physics_init.F`` and which every mp-bearing configuration
+    already reaches (``physics_driver_required`` is true whenever
+    ``cfg.mp_physics`` is nonzero, physics.py:241-250).  WP-11a does not own
+    that file; until the call lands there, an mp=28 forecast started from a
+    zero-aerosol state runs the inert-aerosol configuration described above.
+    Calling this per step would be worse than not calling it: it would
+    overwrite an advected, activated and scavenged aerosol field with the
+    synthetic profile every step while leaving every bound intact.
+    """
+    if cfg.mp_physics != 28:
+        # Kessler/WSM6/Thompson/Morrison/NSSL have no domain-construction
+        # step in gpuwm: their tables are loaded lazily at first launch and
+        # their state is initialized by gpuwm/core/state.py.  Returning an
+        # empty receipt (rather than raising) is what lets the caller be an
+        # unconditional line in the init path.
+        return {}
+    from gpuwm.core.microphysics_aerosol import thompson_aerosol_init_fill
+    return {"thompson_aerosol_profile": thompson_aerosol_init_fill(state, cfg)}
+
+
 def apply(state: DomainState, cfg: RunConfig, dt: float, *,
           refl_10cm_due: bool = False) -> MicrophysicsDiagnostics | None:
     """Apply the configured microphysics to ``state`` over ``dt`` seconds.
 
     ``cfg.mp_physics = 0`` returns immediately (bitwise no-op); ``1`` runs
     Kessler, ``6`` runs WSM6, ``8`` runs classic Thompson, ``10`` runs
-    Morrison two-moment, and ``18`` runs NSSL two-moment (all require
-    moisture); anything else raises.
+    Morrison two-moment, ``18`` runs NSSL two-moment, and ``28`` runs
+    aerosol-aware Thompson (all require moisture); anything else raises.
     ``refl_10cm_due`` is gpuwm's history-step
     ``diagflag`` equivalent.  The active adapter computes from its unchanged
     prepared pressure and post-scheme temperature before
@@ -736,11 +818,11 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
         if refl_10cm_due:
             raise ValueError("REFL_10CM is due without active microphysics")
         return None
-    if cfg.mp_physics not in (1, 6, 8, 10, 18):
+    if cfg.mp_physics not in (1, 6, 8, 10, 18, 28):
         raise ValueError(f"unknown mp_physics={cfg.mp_physics} "
                          "(0 = none, 1 = Kessler, 6 = WSM6, "
                          "8 = Thompson, 10 = Morrison, "
-                         "18 = NSSL)")
+                         "18 = NSSL, 28 = Thompson aerosol-aware)")
     if state.qv is None:
         raise ValueError(f"mp_physics={cfg.mp_physics} requires "
                          "cfg.moist=True: the state "

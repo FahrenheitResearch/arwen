@@ -265,11 +265,15 @@ GFS_CONTAINER_PREFIX = {"gfs": "gfs", "gdas": "gdas"}
 #: re-certification event.  See :mod:`gpuwm.fetch_bars`.
 GFS_SUBSET_RECORD_COUNT = fetch_bars.CERTIFIED_RECORD_BARS["gfs"]
 
-#: Approximate HRRR CONUS domain coverage (Lambert grid corners, outward
-#: bound).  Requests outside this box cannot be served by HRRR at all, so
-#: they fail closed here instead of at ingest.
-HRRR_CONUS_LAT = (21.1, 52.7)
-HRRR_CONUS_LON = (-134.2, -60.8)
+# HRRR CONUS coverage is NOT a constant here.  It is derived from the
+# native Lambert grid definition -- the single source of truth in
+# :func:`gpuwm.ingest.hrrr_target.hrrr_coverage_envelope` -- via
+# :func:`source_coverage_envelope` below.  The hand-held box this
+# replaces (lat 21.1..52.7, lon -134.2..-60.8) was a second definition
+# of coverage beside the one `gpuwm domain` sized against, and the two
+# disagreed in both directions: its 52.70 cap admitted latitudes north
+# of the grid's real 52.6157 top, and refused the wizard's own emitted
+# next command for a legal, source-coverable 3 km CONUS root.
 
 #: The full ERA5 pressure-level ladder (hPa).  Requesting all 37 levels
 #: keeps the template independent of any one experiment's p_top.
@@ -456,6 +460,95 @@ def area_from_point(raw_point: str, radius_km: float) -> Area:
     # antimeridian this produces a lon_west > lon_east crossing box.
     return Area(lat_south, _wrap_lon(lon - dlon),
                 lat_north, _wrap_lon_east(lon + dlon))
+
+
+#: Decimal places of an emitted ``--area`` hint: the wizard's printed
+#: command and its [fetch] table both carry this fixed-point form, and
+#: :func:`area_bounds_inward` quantizes coverage bounds to the same
+#: precision so a formatted hint can never round back out of coverage.
+AREA_HINT_DECIMALS = 2
+
+
+def source_coverage_envelope(source: str
+                             ) -> tuple[float, float, float, float] | None:
+    """``(south, west, north, east)`` the source's native grid actually
+    covers, or ``None`` for a source with no coverage box (global).
+
+    Data, not policy, and ONE definition per source: HRRR's envelope is
+    computed from the native Lambert grid itself
+    (:func:`gpuwm.ingest.hrrr_target.hrrr_coverage_envelope`), and both
+    sides of the area contract -- this module's ``--area`` gate and
+    ``gpuwm domain``'s suggested fetch box -- consume it here, so they
+    cannot drift apart the way the retired hand-held CONUS box did.
+    The import is deferred so a base install stays importable without
+    the ingest subpackage loaded.
+    """
+
+    if source == "hrrr":
+        from gpuwm.ingest.hrrr_target import hrrr_coverage_envelope
+        return hrrr_coverage_envelope()
+    return None
+
+
+def area_bounds_inward(envelope: tuple[float, float, float, float],
+                       decimals: int = AREA_HINT_DECIMALS
+                       ) -> tuple[float, float, float, float]:
+    """ENVELOPE rounded INWARD to DECIMALS places.
+
+    The tightest ``(south, west, north, east)`` box that both lies
+    inside the envelope and survives fixed-point formatting: a value
+    clamped to these bounds and printed at the same precision parses
+    back inside the true envelope, whereas clamping to the exact
+    envelope and then rounding to the printed form can cross it (e.g.
+    52.615653 prints as 52.62, north of the grid).
+    """
+
+    south, west, north, east = envelope
+    scale = 10.0 ** decimals
+    return (math.ceil(south * scale) / scale,
+            math.ceil(west * scale) / scale,
+            math.floor(north * scale) / scale,
+            math.floor(east * scale) / scale)
+
+
+#: Per-source remedy sentence for a coverage refusal.  Source-specific
+#: words live in data, next to the sources this module already names.
+_COVERAGE_REMEDY = {
+    "hrrr": "use --source gfs for domains outside HRRR's CONUS coverage",
+}
+
+
+def validate_fetch_area(source: str, area: Area) -> None:
+    """The per-source ``--area`` coverage gate ``gpuwm fetch`` applies.
+
+    One seam for every front door that wants to prove an area before
+    paying for a download (the wizard proves each emitted hint through
+    it).  A source with a coverage envelope refuses, fail-closed, any
+    box extending beyond what its native grid carries; global sources
+    accept every parseable box.  An antimeridian-crossing box cannot
+    lie inside a non-crossing envelope, so it is refused too (the old
+    corner-order arithmetic waved a Pacific-crossing box through the
+    HRRR gate).
+    """
+
+    envelope = source_coverage_envelope(source)
+    if envelope is None:
+        return
+    south, west, north, east = envelope
+    if (area.crosses_antimeridian
+            or area.lat_south < south or area.lat_north > north
+            or area.lon_west < west or area.lon_east > east):
+        # Printed bounds are quantized INWARD so the remedy box the
+        # message names is itself accepted.
+        say_s, say_w, say_n, say_e = area_bounds_inward(envelope)
+        remedy = _COVERAGE_REMEDY.get(
+            source, "choose a source whose coverage includes the request")
+        raise ValueError(
+            f"requested area extends beyond {source.upper()} coverage: "
+            f"the native grid's own lat/lon envelope is "
+            f"lat {say_s:.2f}..{say_n:.2f}, lon {say_w:.2f}..{say_e:.2f} "
+            f"(derived from the grid definition, not a hand-held box); "
+            f"{remedy}")
 
 
 def parse_cycle(raw: str, source: str) -> datetime:
@@ -1927,18 +2020,6 @@ def _force_quarantine_output(out: Path, progress, label: str) -> list[str]:
     return moved
 
 
-def _validate_hrrr_area(area: Area) -> None:
-    if (area.lat_south < HRRR_CONUS_LAT[0]
-            or area.lat_north > HRRR_CONUS_LAT[1]
-            or area.lon_west < HRRR_CONUS_LON[0]
-            or area.lon_east > HRRR_CONUS_LON[1]):
-        raise ValueError(
-            "requested area extends beyond HRRR CONUS coverage "
-            f"(lat {HRRR_CONUS_LAT[0]}..{HRRR_CONUS_LAT[1]}, "
-            f"lon {HRRR_CONUS_LON[0]}..{HRRR_CONUS_LON[1]}); "
-            "use --source gfs for domains outside CONUS")
-
-
 def resolve_fetch_engine(requested: str, *, progress=print
                          ) -> tuple[str, Path | None]:
     """Resolve ``--engine`` to ``('rust', binary)`` or ``('python', None)``.
@@ -2366,7 +2447,7 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
     if probe is None:
         probe = _head_ok
     if area is not None:
-        _validate_hrrr_area(area)
+        validate_fetch_area("hrrr", area)
     out.mkdir(parents=True, exist_ok=True)
     if force:
         # Receipts first, then every other existing file -- including the
@@ -3354,6 +3435,27 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
     # A hint table that advertises a fetch this ArWen would refuse is a
     # rotten hint: catch it at config load, in the same words the CLI
     # would use, rather than at the download.
+    area = table.get("area")
+    if area is not None:
+        # The hint the fetch reads as a box, through the REAL parser and
+        # the per-source coverage gate.  The field defect class this
+        # closes: `gpuwm domain --source hrrr` printed an --area its own
+        # fetch refused, because the wizard and the guard held two
+        # definitions of HRRR coverage.  Both now derive from the native
+        # grid (source_coverage_envelope), and every emission round-trips
+        # through this check before the file is written.
+        try:
+            validate_fetch_area(table["source"], parse_area(str(area)))
+        except ValueError as error:
+            raise ValueError(f"[fetch] of {source}: {error}") from error
+    point, radius = table.get("point"), table.get("radius_km")
+    if point is not None and radius is not None:
+        # The --point/--radius-km spelling of the same box, same gate.
+        try:
+            validate_fetch_area(
+                table["source"], area_from_point(str(point), float(radius)))
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"[fetch] of {source}: {error}") from error
     start_hour = table.get("forecast_start_hour", 0)
     if not isinstance(start_hour, int) or start_hour < 0:
         raise ValueError(
@@ -3592,7 +3694,8 @@ def register_cli(subparsers) -> None:
 
 
 __all__ = [
-    "Area", "Era5ValidationReport", "FETCH_HINT_KEYS",
+    "AREA_HINT_DECIMALS", "Area", "Era5ValidationReport", "FETCH_HINT_KEYS",
+    "area_bounds_inward", "source_coverage_envelope", "validate_fetch_area",
     "FETCH_MANIFEST_SCHEMA", "GFS_FRONT_DOOR_MANIFEST_SCHEMA",
     "GFS_INPUT_MANIFEST_NAME", "GFS_LAKE_DONOR_MARGIN_DEG",
     "HRRR_DEFAULT_MODE", "FETCH_ENGINES", "FETCH_MODES",

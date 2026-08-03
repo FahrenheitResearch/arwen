@@ -548,7 +548,10 @@ def test_the_snow_species_path_is_exact_against_the_wrf_driver_oracle():
 
 @pytest.mark.parametrize(
     ("mp_physics", "expected"),
-    ((0, False), (1, False), (6, True), (8, True), (10, True), (18, True)),
+    ((0, False), (1, False), (6, True), (8, True), (10, True), (18, True),
+     # Registry.EM_COMMON:3036, package thompsonaero:
+     # moist:qv,qc,qr,qi,qs,qg -- F_QS is true, exactly as for 8.
+     (28, True)),
 )
 def test_mynn_flag_qs_matches_wrf_registry_packages(mp_physics, expected):
     """Exercise multiple selectors on both sides of WRF Registry ``F_QS``."""
@@ -587,8 +590,18 @@ def test_the_registry_publishes_the_mynn_snow_species_contract():
     species = option["extensions"]["supplied_moisture_species"]
     assert species["supplied"] == ["qv", "qc", "qi", "qs"]
     assert "qs" not in species["withheld"]
-    assert species["flag_qs_true_microphysics_selectors"] == [6, 8, 10, 18]
+    # 28 is here because Registry.EM_COMMON:3036 gives package thompsonaero
+    # moist:qv,qc,qr,qi,qs,qg, so WRF's generated F_QS is true for it.  This
+    # list is the WRF-derived classification and must equal the set the
+    # shipped runtime applies (mynn_pbl_runtime.MYNN_SNOW_MICROPHYSICS),
+    # which is asserted directly below.
+    assert species["flag_qs_true_microphysics_selectors"] == [6, 8, 10, 18, 28]
     assert species["flag_qs_false_microphysics_selectors"] == [0, 1]
+
+    from gpuwm.core.mynn_pbl_runtime import MYNN_SNOW_MICROPHYSICS
+
+    assert sorted(MYNN_SNOW_MICROPHYSICS) == species[
+        "flag_qs_true_microphysics_selectors"]
     # Every microphysics option gpuwm implements must be classified, and the
     # split must match the moist packages: WRF's F_QS is true exactly for the
     # packages that carry qs.

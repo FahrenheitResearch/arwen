@@ -272,6 +272,19 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "Not a WRF v4.6.1 namelist option. CU_USED is derived by WRF from "
         "the selected cumulus scheme and domain state, not legally set by a "
         "user."),
+    "dust_emis": (
+        "c",
+        "Dust emission outside WRF-Chem feeds the ice-friendly aerosol "
+        "surface source. gpuwm allocates nifa2d and leaves it exactly zero, "
+        "matching thompson_init, and carries no dust inventory, emission "
+        "operator, or surface-flux coupling for it."),
+    "grav_settling": (
+        "c",
+        "Gravitational settling of fog droplets is a PBL-side operator gpuwm "
+        "has not ported. WRF SILENTLY forces this to 0 on every mp_physics=28 "
+        "domain, at debug verbosity "
+        "(share/module_check_a_mundo.F:2459-2474); gpuwm's posture is to "
+        "refuse where WRF overwrites, so a nonzero value is an error."),
     "fractional_seaice": (
         "b",
         "The component branches exist only partially: land-use initialization "
@@ -307,9 +320,18 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "fixtures."),
     "naer": (
         "c",
-        "This Thompson aerosol-aware droplet mode requires prognostic aerosol/"
-        "CCN number state and activation coupling that the ported fixed-"
-        "aerosol Thompson component does not allocate or restart."),
+        "NAER seeds WRF's naer-based droplet mode inside classic Thompson "
+        "(thompson-mp8), which is a fixed-droplet port. The prognostic "
+        "aerosol path lives in components.microphysics.options."
+        "thompson-aerosol-mp28, whose nc/nwfa/nifa come from CCN activation "
+        "rather than from this scalar, so honouring it here would be a "
+        "different scheme."),
+    "num_wif_levels": (
+        "c",
+        "This sizes the WIF (water/ice-friendly aerosol) metgrid input "
+        "stream. components.microphysics.options.thompson-aerosol-mp28 runs "
+        "thompson_init's synthetic CCN/IN profile because gpuwm has no WIF "
+        "ingest, so the count would size an array nothing reads."),
     "nssl_2moment_on": (
         "c",
         "Disabling NSSL two-moment changes the scheme identity, prognostic "
@@ -389,9 +411,24 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "tables, validation, and allocations rather than a scalar branch."),
     "progn": (
         "c",
-        "Thompson prognostic cloud-droplet number requires additional "
-        "prognostic number/aerosol state, activation equations, restart and "
-        "wrfout fields; the ported Thompson identity uses diagnostic droplets."),
+        "PROGN switches classic Thompson (thompson-mp8) onto WRF's "
+        "chemistry-driven droplet source, which needs a QNDROPSOURCE carrier "
+        "gpuwm has no writer for. Prognostic droplet number itself IS ported, "
+        "as components.microphysics.options.thompson-aerosol-mp28 "
+        "(mp_physics=28), where it is driven by CCN activation instead."),
+    "qna_update": (
+        "c",
+        "Updating aerosol number from a wrfqnainp auxiliary stream needs an "
+        "auxiliary input subsystem, an update cadence, restart position and "
+        "field ownership; gpuwm writes one fixed wrfout frame per domain and "
+        "reads no auxiliary input streams at all."),
+    "scalar_pblmix": (
+        "c",
+        "This mixes WRF's 4-D scalar array -- qnc/qnwfa/qnifa -- with the PBL "
+        "scheme (phys/module_pbl_driver.F:2251). gpuwm supplies no scalar "
+        "array to any PBL component and withholds those species from MYNN, so "
+        "the selector has nothing to act on. See the thompson-aerosol-mp28 "
+        "warnings for the resulting divergence."),
     "scm_force_flux": (
         "c",
         "This belongs to WRF's single-column-model forcing subsystem; gpuwm "
@@ -512,9 +549,35 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "Noah LSM driver only."),
     "use_aero_icbc": (
         "c",
-        "This belongs to Thompson aerosol-aware microphysics (WRF option 28) "
-        "and requires aerosol initial/boundary-condition species, ingest, "
-        "nesting, restart, and activation kernels; that scheme is not ported."),
+        "GOCART climatological 3-D aerosol IC/BC for "
+        "components.microphysics.options.thompson-aerosol-mp28. The scheme is "
+        "ported; this ingest is not -- gpuwm has no GOCART reader and no "
+        "aerosol lateral-boundary carrier, so mp_physics=28 runs on "
+        "thompson_init's synthetic profile only."),
+    "use_rap_aero_icbc": (
+        "c",
+        "The RAP-sourced variant of the GOCART climatological aerosol IC/BC "
+        "above, and blocked on the same absent reader and lateral-boundary "
+        "carrier; components.microphysics.options.thompson-aerosol-mp28 runs "
+        "thompson_init's synthetic profile only."),
+    "wif_fire_emit": (
+        "c",
+        "Biomass-burning aerosol emissions for Thompson-MP-Aero need a fire "
+        "inventory, an emission cadence and the derived aer_fire_emit_opt "
+        "state WRF computes from this flag; gpuwm carries none of them."),
+    "wif_fire_inj": (
+        "c",
+        "This selects the vertical injection profile for the biomass-burning "
+        "aerosol emissions above. It is a branch inside a subsystem gpuwm "
+        "does not have, so there is nothing for it to distribute."),
+    "wif_input_opt": (
+        "c",
+        "This selects WRF's WIF metgrid aerosol input stream. gpuwm has no "
+        "WIF ingest and no QNWFA/QNIFA initial/boundary carrier. NOTE the "
+        "asymmetry recorded on thompson-aerosol-mp28: WRF's real.exe FATALs "
+        "mp_physics=28 with wif_input_opt=0 "
+        "(dyn_em/module_initialize_real.F:2734-2736) while gpuwm runs it on "
+        "thompson_init's synthetic profile."),
 }
 
 NOISE = re.compile(
@@ -917,6 +980,1049 @@ def _surface_coupling_warnings(registry: dict) -> None:
                 and mynn_noahmp_id not in declared
             ):
                 declared.append(mynn_noahmp_id)
+
+
+# ------------------------------------------ aerosol-aware Thompson (mp=28)
+#: G3 -- the whole aerosol column deck driven end to end through the shipped
+#: adapter -- measured on this tree, one RTX 5090, FP32, gate 2.0e-6 relative
+#: on every one of the 16 compared fields (15 column + rainnc).
+#:
+#: THE DECK IS TWENTY-TWO COLUMNS, NOT NINETEEN, and the registry now says so.
+#: ``_FIXTURES`` in the gate is a glob over
+#: ``gpuwm/data/thompson/oracle-aero/*-column.csv``: the nineteen ``aero-*``
+#: scenarios MP28_PORT_SPEC.md specifies (ids 101-119) PLUS three ``wp08-*``
+#: columns (ids 120-122) that the same ``build_aero.sh`` invocation produced
+#: in the same format and that pin every reachable ``nu_c`` and both branches
+#: of the terminal phase cleanup.  Waves 1-4 published "nineteen" while the
+#: gate drove twenty-two, which understated the deck AND hid two residuals
+#: (``wp08-freeze``, ``wp08-nusweep``) in no published class at all.
+#:
+#: These are RE-MEASURED, not transcribed: ``tests/test_physics_registry.py::
+#: test_mp28_published_residuals_still_equal_a_live_adapter_measurement``
+#: reruns every fixture through the shipped adapter on the device and
+#: rebuilds this partition.  Regenerate the numbers, never round them.
+#:
+#: WHAT MOVED SINCE THE LAST PUBLISHED SET, all of it re-measured on
+#: 2026-08-01 through the shipped adapter.  TWO production changes did it,
+#: both in mp=28-owned kernels, and the attribution below is the gate's own
+#: (tests/test_thompson_aerosol_adapter.py::_G3_RESIDUALS records the
+#: per-change deltas) rather than a summary invented here:
+#:
+#:   WP-13a, THE SEDIMENTATION DENSITY.  WRF builds the working rain mass and
+#:   number sedimentation consumes in two places: at
+#:   module_mp_thompson.F:3237-3238 from the :3193 TAU+1 density, for every
+#:   level with L_qr, and again at :3568/:3570 from the :3490 POST-
+#:   condensation density -- but only inside the :3501-3502 gate
+#:   (``ssatw < -eps .and. L_qr .and. .not. prw_vcd > 0``).
+#:   gpuwm/core/kernels/thompson_aerosol_sat.cu wrote the post-condensation
+#:   density into its ``reference_density`` output unconditionally, so every
+#:   level got the :3568 answer including the levels WRF never rewrote; it now
+#:   defaults to the :3237 density and overwrites it level by level from its
+#:   own transcription of those three gates.
+#:
+#:   WP-13b, CONTRACTION PINNING OF THE SOURCE-NETWORK APPLY.  WRF's
+#:   :3973-4023 terminal apply is ``q1d(k) = q1d(k) + qten(k)*DT`` and the
+#:   gfortran -O2 baseline-x86-64 oracle has no FMA instruction, so qten*DT is
+#:   rounded to REAL(4) before the add; nvrtc contracted the same expression
+#:   in thompson_aerosol_cold.cu and thompson_aerosol_warm.cu and never
+#:   rounded it.  Both now round it, as thompson_aerosol_sat.cu's rain-
+#:   evaporation apply already did.
+#:
+#: WHAT THAT DID TO THE PUBLISHED PARTITION:
+#:   * ``aero-drop-evap`` LEFT the residual list entirely and is published
+#:     CLEAN -- WP-13a alone: rainnc 5.165e-04 -> 0.000e+00 (BIT-EXACT),
+#:     qr 3.533e-05 -> 7.346e-08, nr 2.258e-05 -> 3.919e-07.
+#:   * ``aero-ice-demott-idxin`` LEFT it too, and needed BOTH changes: WP-13a
+#:     took sr and rainnc/rainncv 1.279e-04 -> 3.5e-07 and qr 2.894e-05 ->
+#:     1.35e-06, then WP-13b took rainnc/rainncv and sr to BITWISE 0.000e+00
+#:     and qr to 6.416e-07.  Its nr now measures 3.243e-07.
+#:   * ``aero-cloud-freeze-nc`` lost three of the four rows this table
+#:     published -- qr 2.800e-05 -> 8.973e-08, nr 1.797e-05 -> 2.594e-07,
+#:     rainnc 1.162e-05 -> 0.000e+00, all WP-13a -- and is published with
+#:     ``qc`` 4.926e-06 alone.
+#:   * ``aero-reduces-to-classic``'s carve-out lost its ``qr`` FIELD:
+#:     7.813e-05 -> 1.788e-07, inside the FLAT 2.0e-6 gate, so the gate's
+#:     ``_END_TO_END_BOUNDS`` now names ``nr_per_kg`` only and the bound on it
+#:     went 1.0e-04 -> 1.0e-05 (ten times stricter) on a measurement of
+#:     5.700e-06.  The registry published {qr, nr_per_kg} against a gate that
+#:     applies {nr_per_kg}; that is corrected here.
+#:   * ``_REFL_DB_BOUNDS`` was RETIRED, not widened: the reflectivity residual
+#:     it covered went 5.283e-04 dB -> 3.242e-05 dB, inside the flat 2.0e-4 dB
+#:     gate.  The published allowance list is therefore TWO entries where it
+#:     was three.
+#:   * ``aero-cold-overlap`` GOT WORSE ON ONE FIELD and is published that way:
+#:     qr 3.667e-05 -> 4.443e-05 at 0-based level 6.  That growth is WP-13b's,
+#:     bisected to a single line -- the cold network's qr apply -- and it was
+#:     KEPT rather than reverted because reverting it also loses all four of
+#:     aero-ice-demott-idxin's improvements above, two of which are bitwise.
+#:     In ulps of the entry value, the scale this cell is recorded at because
+#:     99.5% of the level's rain is consumed in the step, the move is 1.477 ->
+#:     1.789 ulp.  The same change IMPROVED this fixture's nr, 1.340e-04 ->
+#:     1.261e-04, and its level-4 rows are unchanged.  The wave-5 registry
+#:     published 3.667e-05, which UNDERSTATED the port's own error by 21%;
+#:     publishing the larger number is the point of re-measuring.
+#:
+#: WHAT MOVED IN THE WAVE BEFORE THAT, kept because the number it retires is
+#: still quoted in the public documents:
+#:   * ``aero-ice-koop`` LEFT the residual list.  Its published qi 1.612e-03 /
+#:     ni 1.764e-03 / effi 5.093e-05 -- called "the largest genuine gap" by
+#:     the registry, PHYSICS.md, PROVENANCE.md D9k and the evidence page --
+#:     now measure 1.534e-07 / 3.396e-07 / 1.886e-07 and the fixture is
+#:     CLEAN.  IT WAS NOT CLOSED BY A KERNEL.  It was closed by correcting
+#:     the ORACLE HARNESS: tools/thompson_wrf461_oracle/run_column_aero.F90
+#:     built the Exner function with rd_over_cp = 287.0/1004.0 where WRF's
+#:     own rcp is r_d/cp = 287./(7.*287./2.) = 2/7
+#:     (share/module_model_constants.F:19,:20,:31), 4774 float32 ulps away,
+#:     so the recorded (p, theta) pair could not be inverted exactly on the
+#:     gpuwm side and the adapter drove dozens of the deck's 528 entry
+#:     levels (47 as re-pinned 2026-08-03; first published as 40, the
+#:     original environment's libm) from a perturbed pressure.  The deck was regenerated with WRF's own
+#:     constant, with no change to any .cu or .cuh file.  The registry was
+#:     10,500x pessimistic about its own worst number, and about a residual
+#:     that its own reference harness had manufactured.  See
+#:     docs/public/validation/mp28-column-evidence.md section 3.4.
+#:   * ``aero-cloud-freeze-nc`` lost its ``effc_m`` row (5.018e-06 ->
+#:     1.619e-06, inside the gate) and its ``qc`` fell 1.478e-05 -> 4.926e-06.
+#:   * ``aero-ice-demott-idxin`` lost its ``qc`` row (6.031e-06 -> 7.556e-08)
+#:     and its ``qr`` fell 3.895e-05 -> 2.894e-05.
+#:   * ``aero-cold-overlap`` got WORSE and is published that way: a new
+#:     ``qc``/``nc_per_kg`` pair at 1.000e+00 and ``effc_m`` at 8.102e-01.
+#:     See the note on that entry -- it is one mechanism at one level, not
+#:     three failures, and it is a full-scale relative number on a ONE-ULP
+#:     absolute difference.
+#:   * ``wp08-freeze`` and ``wp08-nusweep`` were published for the first time.
+#:
+#: THE UNEXCEPTIONED CLEAN SET.  17 of 22: sixteen of the nineteen spec'd
+#: ``aero-*`` fixtures plus ``wp08-melt``.  The 1.4.1 merge did NOT change
+#: this set -- ``aero-reduces-to-classic`` still needs level 6 taken in ULPs
+#: -- but it did retire the OTHER allowance that fixture rested on, so the
+#: gated count of 18 now costs one allowance instead of two.  This tuple is asserted EQUAL to
+#: the gate's own ``_G3_UNEXCEPTIONED_CLEAN`` by
+#: ``tests/test_physics_md_aerosol_claims.py::
+#: test_the_published_clean_counts_are_the_gates_own_counts``, so it cannot be
+#: a transcription that drifts.
+MP28_G3_CLEAN = (
+    "aero-ccn-activate", "aero-ccn-sweep", "aero-drop-evap",
+    "aero-ice-demott-dep", "aero-ice-demott-idxin", "aero-ice-koop",
+    "aero-init-profile", "aero-nc-accrete", "aero-nc-auto", "aero-nc-cap",
+    "aero-nc-effrad", "aero-nc-sed", "aero-scav-frozen", "aero-scav-rain",
+    "aero-sfc-emit", "aero-warm-overlap", "wp08-melt",
+)
+
+#: Fixtures that do NOT clear 2e-6 on every field, with every field that
+#: misses and its measured maximum relative difference.  FOUR of twenty-two.
+#:
+#: ``aero-cold-overlap``'s 1.000e+00 rows are the honest publication of a
+#: sub-ulp disagreement and are recorded rather than allowanced.  MEASURED
+#: at 0-based level 4: the level enters with qc = 2.3252160e-04 kg/kg and
+#: nc = 9.1306704e+07 per kg; WRF ends the step with qc =
+#: 1.4551915228366852e-11 kg/kg -- which is EXACTLY 2**-36, exactly 1.000
+#: float32 ulp of the entry value -- and nc = 1.8333361 per kg, while gpuwm
+#: ends at exactly 0.0.  module_mp_thompson.F:4007-4009 is
+#: ``if (qc1d(k) .le. R1) then qc1d = 0.0 ; nc1d = 0.0`` with R1 = 1.E-12
+#: (:183), so WRF takes the ELSE branch and its :4011-4020 nu_c/lamc/xDc size
+#: bound hands back nc = 1.833336 per kg where gpuwm takes the THEN branch and
+#: zeroes it.  A relative metric therefore reports 1.0 (qc, nc) on
+#: an absolute difference of one ulp and 0.229 ulp respectively, and effc
+#: reports 8.102e-01 because :5638 does the same thing again: a level with
+#: rc <= R1 CYCLEs and keeps RE_QC_BG = 2.49 um
+#: (share/module_model_constants.F:62, installed at :5619) while WRF's
+#: 1.455e-11 kg/kg remainder gives 1.31176e-05 m.  One branch flip, three
+#: views.  The fixture's OTHER residual is separate and real: nr 1.261e-04 /
+#: qr 4.443e-05 at level 6, where the rain number falls 255.407 -> 0.0739 per
+#: kg (99.97% consumed) and the difference is 0.611 ulp (nr) / 1.789 ulp (qr)
+#: of the entry value.
+#:
+#: ``wp08-freeze`` nr and ``wp08-nusweep`` qr are both fields CREATED FROM
+#: EXACTLY ZERO inside the step, at 1.4x and 2.3x the gate.  ONE of the two
+#: has a traced mechanism and it is in a file mp=28 may not touch:
+#: gpuwm/core/kernels/thompson.cu:438 gates rain sedimentation on
+#: ``qr > 1.0e-12``, a MIXING RATIO, where module_mp_thompson.F:3616 tests
+#: ``rr(k) > R1``, a MASS CONCENTRATION, so at wp08-freeze level 1 -- qr =
+#: 8.5265e-13 kg/kg but rr = 1.1748e-12 kg/m3 -- WRF gives the level a real
+#: fall speed and ArWen treats it as rain-free.  That kernel is the frozen,
+#: model-validated mp=8 one, so the residual is recorded and filed as an
+#: integration request rather than fixed here.
+#:
+#: THE TWO wp08 CELLS SWAPPED PLACES AT THE 1.4.1 MERGE.
+#:
+#: ``wp08-nusweep`` qr level 12 -- the cell this comment used to say NO
+#: MECHANISM IS CLAIMED for -- is now explained, by CONDITIONING.  Perturbing
+#: the level's entry state by exactly one float32 ulp and re-running the
+#: adapter moves the exit qr by 128 ulp (entry qc +1), 32 ulp (entry qc -1)
+#: or 256 ulp (entry nc, either direction).  The disagreement is 60 ulp,
+#: smaller than a single-ulp input change produces, and the 2.0e-06 gate is
+#: about 26 ulp there -- below the cell's own condition number.  No FP32
+#: implementation can hold it, and |got - want| is 1.04e-16 kg/kg, still the
+#: smallest absolute disagreement in this table by nine decades.
+#:
+#: ``wp08-freeze`` nr level 0 is EXPLAINED and the explanation is measured,
+#: not argued.  29 of its 34 ulp are the frozen mp=8 kernel gating rain
+#: presence on a mixing ratio (thompson.cu:438, qr > 1.0e-12f) where WRF
+#: gates on a mass concentration (:3616, rr .gt. R1).  Forcing ArWen's gate
+#: open at the one level where the two disagree moves level 0's nr from 34
+#: ulp away from WRF to 5, and a same-sized mass change that does not flip
+#: the gate leaves the output bit-identical.
+#:
+#: It was published as falsified for part of 2026-08-01 and that was wrong:
+#: the falsification read qr1d + qrten*DT at the END of the step and took it
+#: for the value :3236 tested, while :3501's evaporation block subtracts
+#: from qrten in between.  Instrumented WRF records L_qr = .true. there.
+#: cb765336 did not move the residual because it reconciled the
+#: sedimentation DENSITY, not the gate's UNITS.  NOT FIXED: thompson.cu is
+#: byte-frozen and mp=8 shares it, so the correction owes 92 classic
+#: fixtures a re-measurement and is not mp=28's to make.
+MP28_G3_RESIDUALS: dict[str, dict[str, float]] = {
+    "aero-cloud-freeze-nc": {"qc": 4.926e-06},
+    "aero-cold-overlap": {
+        "qc": 1.000e+00, "nc_per_kg": 1.000e+00, "effc_m": 8.102e-01,
+        "qr": 4.443e-05, "nr_per_kg": 1.261e-04},
+    "wp08-freeze": {"nr_per_kg": 2.724e-06},
+    "wp08-nusweep": {"qr": 4.642e-06},
+}
+
+#: The one fixture that clears the gate only through a carved-out bound, and
+#: the ONE FIELD that bound still covers.
+#:
+#: THE FIELD SET IS PART OF THE PUBLICATION, not decoration.  ``carved_out_
+#: bound`` is what a reader is told the port bought itself, so publishing
+#: {qr, nr_per_kg} against a gate whose ``_END_TO_END_BOUNDS`` names
+#: {nr_per_kg} overstates the relaxation by a whole quantity.  It is bound to
+#: the gate's own dict by ``tests/test_physics_registry.py::
+#: test_mp28_evidence_matches_the_bound_the_adapter_gate_actually_applies``,
+#: which compares the SETS and not only the values.
+#:
+#: THE HISTORY, because two successive tightenings are easy to mistake for a
+#: widening.  The bound was 2.5e-03 on {qr, nr_per_kg}, accommodating a
+#: 1.915e-03 / 1.922e-03 residual at 0-based level 5.  WP-12a found the cause
+#: -- module_mp_thompson.F:3490 overwrites rho(k) inside the condensation
+#: loop and :3505-3520's orho/rhof/vsc2/rvs read THAT one, so prv_rev scales
+#: with the PRE-condensation density and the adapter was not passing it --
+#: and the bound went 2.5e-03 -> 1.0e-04, twenty-five times stricter, on a
+#: re-measured 7.813e-05 / 4.832e-05.  WP-13a then restored WRF's level-wise
+#: :3237-vs-:3568 sedimentation density, ``qr`` fell to 1.788e-07 and LEFT
+#: the dict entirely (it clears the FLAT 2.0e-06 gate), and the surviving
+#: ``nr_per_kg`` bound went 1.0e-04 -> 1.0e-05, ten times stricter again, on
+#: a measurement of 5.700e-06.  The sequence is 2.5e-03 -> 1.0e-04 -> (qr
+#: deleted, nr 1.0e-05).  Nothing was widened at any point.
+#:
+#: WHAT THE SURVIVING NUMBER IS.  0-based level 5 is the one level of this
+#: column where the step removes a large fraction of the rain number without
+#: emptying it (49.75%: 3.000000e+05 -> 1.507546e+05 per kg), and 5.700e-06
+#: is 27.5 ulps of the entry value; every other unexcluded level is 0-3 ulps.
+#: RE-MEASURED on 2026-08-01 through the shipped adapter: 5.7005e-06.
+MP28_G3_CARVED_OUT: dict[str, dict[str, float]] = {
+    # EMPTY.  RETIRED AT THE 1.4.1 MERGE, not narrowed again.
+    #
+    # It read {"aero-reduces-to-classic": {"nr_per_kg": 5.700e-06}} and its
+    # gate-side bound was _END_TO_END_BOUNDS = 1.0e-5.  Merging
+    # integration/release-1.4.1 inherited the mp=8 lane's two rain
+    # sedimentation reconciliations -- 5e4af4e3 ("the rain MVD bound belongs
+    # to TAU+1, not to sedimentation") and cb765336 ("the rain-presence gate
+    # is a mass concentration, floor included") -- into the byte-frozen
+    # thompson.cu mp=28 shares for rain fallout.  No mp=28 file changed.
+    # RE-MEASURED through the shipped adapter on the merged tree, 0-based
+    # level 5: nr_per_kg 4.146e-07, inside the FLAT 2.0e-06 gate by a factor
+    # of 4.8.  The bound had nothing left to buy and was deleted.
+    #
+    # The full sequence, none of it a widening: 2.5e-03 on {qr, nr_per_kg}
+    # -> 1.0e-04 -> (qr deleted, nr 1.0e-05) -> GONE.
+    #
+    # aero-reduces-to-classic is still NOT in MP28_G3_CLEAN: it still needs
+    # _NEAR_CANCELLATION_LEVELS, which holds 0-based level 6 to 32 ULP of the
+    # entry value rather than to a relative bound, and that is now the port's
+    # only remaining departure from the flat gate anywhere in the deck.
+}
+
+MP28_OPTION_ID = "thompson-aerosol-mp28"
+
+
+def _thompson_aerosol_mp28(registry: dict) -> None:
+    """Register aerosol-aware Thompson at the maturity its evidence earns.
+
+    Three declarations carry the whole claim and are worth stating together,
+    because a reader who takes any one of them alone gets a wrong answer:
+
+    ``implemented: true`` -- gpuwm has the component.  The scheme runs on the
+    device through ``gpuwm/core/microphysics_aerosol.py`` and is dispatched by
+    ``gpuwm/core/microphysics.py`` on ``mp_physics == 28``.
+
+    ``maturity: implemented-unverified`` -- and no higher.  PHYSICS.md's
+    published definition of that label is exactly this option's state: column
+    -oracle-measured against unmodified WRF Fortran, with no forecast
+    -trajectory comparison.  It may not claim ``validation-candidate`` (no
+    ratified reference comparison exists) and certainly not
+    ``model-validated`` (no matched multi-hour run, no decay tables).  What it
+    also may not do is claim the column evidence is CLEAN, so the measured G3
+    residuals are published on the option itself rather than left in a test
+    file: four of twenty-two fixtures miss the 2e-6 gate and a fifth clears
+    it only under a carved-out bound.
+
+    ``reachability: component-override`` -- computed, not chosen.  The tree
+    route already lists ``microphysics`` in ``allowed_component_overrides``,
+    so an implemented microphysics option carrying no template is reachable
+    exactly one way: as a per-domain experiment override.  Registering no
+    template and leaving ``DEFAULT_TEMPLATE_ID`` alone is what keeps it out of
+    every default suite; ``tests/test_registry_reachability.py`` recomputes
+    the state from the routes and would fail on any other declaration.
+    """
+
+    options = registry["components"]["microphysics"]["options"]
+    options[MP28_OPTION_ID] = {
+        "asset_requirements": [
+            {
+                # ``kind`` stays ``operator-supplied-table-set`` even though
+                # gpuwm now ships the file (2026-08-01): the requirement is
+                # satisfied by a table an operator may point anywhere via
+                # GPUWM_THOMPSON_CCN_ACTIVATE, and it is deliberately NOT a
+                # member of the packaged CLASSIC table set that mp=8 resolves
+                # through TABLE_SET_ID.  ``redistributed_by_gpuwm`` is the
+                # field that says whether the wheel carries it.
+                "id": "wrf-v4.6.1-aerosol-thompson-mp28-v1",
+                "kind": "operator-supplied-table-set",
+                "assets": [
+                    {
+                        "filename": "CCN_ACTIVATE.BIN",
+                        "bytes": 35288,
+                        "sha256": (
+                            "f2b8d3916560f9046f89f8ac5f32c5292a1800498fd75"
+                            "301e422f147c82a3dbd"),
+                    },
+                ],
+                "redistributed_by_gpuwm": True,
+                "source": (
+                    "WRF v4.6.1 (git tag v4.6.1, commit "
+                    "d66e442fccc04111067e29274c9f9eaccc3cef28), file "
+                    "run/CCN_ACTIVATE.BIN"),
+                "search_root": "gpuwm/data/thompson/tables",
+                "root_environment_override": "GPUWM_THOMPSON_TABLE_ROOT",
+                "path_environment_override": "GPUWM_THOMPSON_CCN_ACTIVATE",
+                "regenerable": False,
+                "note": (
+                    "table_ccnAct (phys/module_mp_thompson.F:5110-5166) READS "
+                    "this file; it computes nothing. The numbers are offline "
+                    "parcel-model output (Feingold & Heymsfield as modified "
+                    "by Eidhammer and Kreidenweis, WRF's own comment at "
+                    ":5102-5108), so no recompilation of WRF, no re-run of "
+                    "thompson_init and no gpuwm code path regenerates it. "
+                    "gpuwm redistributes WRF's file verbatim -- it is "
+                    "committed under search_root, listed in that directory's "
+                    "MANIFEST.sha256 and shipped in the wheel, under WRF's "
+                    "public-domain dedication whose notice travels in "
+                    "gpuwm/data/wrf_radiation/LICENSE-WRF.txt -- so a default "
+                    "install satisfies this requirement and the environment "
+                    "overrides exist to bind a run to another copy instead. "
+                    "It "
+                    "is not in thompson_contract.CLASSIC_TABLE_ASSETS and "
+                    "TABLE_SET_ID is unchanged, so no mp_physics=8 launch "
+                    "acquires a dependency on it. Size and SHA-256 are pinned "
+                    "in gpuwm/core/thompson_aerosol_contract.py and checked "
+                    "on every load; absence is fatal and never defaulted, and "
+                    "a byte-different table is refused rather than used."),
+            },
+        ],
+        "constraints": {"required_settings": {"moist": True}},
+        "extensions": {
+            "wrf_package": (
+                "Registry/Registry.EM_COMMON:3036 binds mp_physics==28 to the "
+                "thompsonaero package: moist qv,qc,qr,qi,qs,qg and scalar "
+                "qni,qnr,qnc,qnwfa,qnifa,qnbca"),
+            "prognostic_species": {
+                "transported": ["qi", "qs", "qg", "nr", "ni", "nc",
+                                "nwfa", "nifa"],
+                "surface_emission_2d": ["nwfa2d", "nifa2d"],
+                "not_ported": ["qnbca", "taod5502d", "taod5503d"],
+                "note": (
+                    "qnbca (black-carbon aerosol number) is out of scope for "
+                    "v1 and refused rather than zero-filled; taod5502d/"
+                    "taod5503d are radiation-side aerosol optical-depth "
+                    "diagnostics that mp_gt_driver does not produce."),
+            },
+            "column_oracle_evidence": {
+                "authority": (
+                    "unmodified WRF v4.6.1 phys/module_mp_thompson.F at "
+                    "commit d66e442fccc04111067e29274c9f9eaccc3cef28, "
+                    "compiled by gfortran 13.3.0 -O2"),
+                # 22 columns, not 19.  ``spec_fixtures`` is the count
+                # MP28_PORT_SPEC.md names (the aero-* ids 101-119);
+                # ``fixtures`` is what the gate actually drives, which is
+                # that set plus three wp08-* columns (ids 120-122) from the
+                # same build_aero.sh run.  Publishing only the smaller
+                # number is how wp08-freeze and wp08-nusweep sat above the
+                # gate in no published class for four waves.
+                "fixtures": 22,
+                "spec_fixtures": 19,
+                "compared_fields": 16,
+                # The 16 above are the contract shape the residual table is
+                # published in (15 prognostic column fields + rainnc_mm).
+                # The GATE compares 23 and asserts that width so it cannot be
+                # narrowed back: the 15, six more surface diagnostics
+                # (rainncv, snownc, snowncv, graupelnc, graupelncv, sr) plus
+                # rainnc, and REFL_10CM against WRF's own calc_refl10cm at a
+                # 2.0e-4 dB gate.
+                "compared_quantities": 23,
+                "compared_quantities_breakdown": {
+                    "column_prognostic": 15,
+                    "surface_accumulation": 7,
+                    "reflectivity_db": 1,
+                },
+                "gate_relative": 2.0e-6,
+                "gate_reflectivity_db": 2.0e-4,
+                "clean_fixtures": list(MP28_G3_CLEAN),
+                "residual_fixtures": {
+                    name: dict(fields)
+                    for name, fields in sorted(MP28_G3_RESIDUALS.items())},
+                "carved_out_bound": {
+                    name: dict(fields)
+                    for name, fields in sorted(MP28_G3_CARVED_OUT.items())},
+                # The gate's SECOND relaxation, published because an
+                # unpublished one is indistinguishable from a hidden one.
+                # It is not a widened tolerance: it is a different metric at
+                # one level where the relative one is below float32
+                # resolution, and it is bound to the gate's own constants by
+                # tests/test_physics_registry.py::
+                # test_mp28_publishes_the_near_cancellation_relaxation_too.
+                "near_cancellation_bound": {
+                    "fixtures": {"aero-reduces-to-classic": [6]},
+                    "ulps_of_entry_value": 32.0,
+                    "measured": {
+                        "aero-reduces-to-classic": {
+                            "qr_ulp": 0.585, "nr_per_kg_ulp": 0.159}},
+                    "why": (
+                        "aero-reduces-to-classic level 6 enters with qr = "
+                        "3.1695777e-07 kg/kg and evaporates 99.958% of it in "
+                        "one 10 s step, so the surviving value is the "
+                        "difference of two nearly equal float32 numbers and "
+                        "the relative error in the difference is the "
+                        "relative error in the rate amplified by 1/(1 - "
+                        "0.99958) = 2370 -- which puts a 2e-06 relative gate "
+                        "below the float32 resolution of the entry value "
+                        "itself. The bound is therefore stated in ULPS OF "
+                        "THE ENTRY VALUE. This level used to be skipped "
+                        "outright; it is bounded rather than skipped because "
+                        "mp=28 now produces 1.3384e-10 there against WRF's "
+                        "1.3426e-10, where it used to produce exactly 0."),
+                },
+                # EVERY DEPARTURE FROM THE FLAT GATE, NAMED.  ONE, on one
+                # fixture, and it is needed for that one fixture.
+                # Published here because an unpublished allowance is
+                # indistinguishable from a hidden one, and because every one
+                # that ever moved in this port moved STRICTER.
+                #
+                # THIS LIST WAS THREE, THEN TWO, AND IS NOW ONE.  The
+                # 1.4.1 merge retired ``_END_TO_END_BOUNDS``: it carried
+                # aero-reduces-to-classic's nr_per_kg at 2.5e-03, then
+                # 1.0e-04, then 1.0e-05, and the inherited mp=8 rain
+                # sedimentation reconciliations (5e4af4e3, cb765336) took
+                # the residual it covered from 5.700e-06 to 4.146e-07 --
+                # inside the flat 2.0e-06 gate -- so the dict buys nothing
+                # and is now empty.  Before that, ``_REFL_DB_BOUNDS``
+                # was RETIRED, not relaxed: it carried aero-reduces-to-
+                # classic at 1.0e-02 dB, then 1.0e-03 dB, and WP-13a's
+                # level-wise sedimentation density took the residual it
+                # covered to 3.242e-05 dB -- inside the flat 2.0e-4 dB gate
+                # -- so the dict buys nothing and is now empty.  The gate's
+                # own ``_G3_ALLOWANCES`` is the authority and
+                # tests/test_physics_registry.py::
+                # test_mp28_evidence_publishes_the_allowances_the_gate_
+                # actually_has reads it back.
+                "allowances": [
+                    {"name": "near_cancellation_bound",
+                     "gate_constant": "_NEAR_CANCELLATION_LEVELS",
+                     "fixtures": ["aero-reduces-to-classic"],
+                     "was": "level 6 skipped outright",
+                     "is": "level 6 held to 32 ulps of the entry value",
+                     "direction": "strictly more than the skip asserted"},
+                ],
+                "retired_allowances": [
+                    {"name": "carved_out_bound",
+                     "gate_constant": "_END_TO_END_BOUNDS",
+                     "fixtures": ["aero-reduces-to-classic"],
+                     "was": 1.0e-05,
+                     "is": None,
+                     "direction": "retired at the 1.4.1 merge; the residual "
+                                  "it covered is now 4.146e-07, inside the "
+                                  "flat 2.0e-06 gate"},
+                    {"name": "reflectivity_bound_db",
+                     "gate_constant": "_REFL_DB_BOUNDS",
+                     "fixtures": ["aero-reduces-to-classic"],
+                     "was": 1.0e-03,
+                     "is": None,
+                     "direction": "retired; the residual it covered is now "
+                                  "3.242e-05 dB, inside the flat 2.0e-4 dB "
+                                  "gate"},
+                ],
+                # The two counts, stated separately, because conflating them
+                # is how a port claims a clean number it did not earn.
+                "clean_unexceptioned": 17,
+                "clean_as_gated": 18,
+                "clean_counts_note": (
+                    "17 of 22 clear a FLAT 2.0e-6 relative / 2.0e-4 dB gate "
+                    "on all 23 quantities with no bounds dict, no excluded "
+                    "level and no per-fixture carve-out -- 16 of the 19 "
+                    "spec'd aero-* fixtures plus wp08-melt. 18 of 22 clear "
+                    "it with the ONE allowance above applied; that allowance "
+                    "buys exactly one fixture, aero-reduces-to-classic, and "
+                    "is required for it. The second allowance this note used "
+                    "to name was retired at the 1.4.1 merge and is in "
+                    "retired_allowances. clean_fixtures below is the "
+                    "UNEXCEPTIONED list."),
+                # No longer None.  docs/public/validation/
+                # mp28-matched-trajectory.md is a matched IDEALIZED forecast
+                # against unmodified WRF v4.6.1, and it publishes its own
+                # FAILED gate rather than a summary of the parts that passed.
+                "forecast_trajectory_comparison": {
+                    "document": ("docs/public/validation/"
+                                 "mp28-matched-trajectory.md"),
+                    "kind": "idealized single-domain doubly-periodic forecast",
+                    "not_nested_not_real_data": (
+                        "A matched nested real-data forecast is not possible "
+                        "and was not attempted. WRF's real.exe is a fatal "
+                        "error on wif_input_opt=0 with mp_physics=28 "
+                        "(dyn_em/module_initialize_real.F:2734-2736), and "
+                        "gpuwm has no aerosol lateral boundary condition -- "
+                        "the measured depletion front advances at 0.993 of "
+                        "the wind speed, so a 100 km nest sits at WRF's "
+                        "aerosol floor within 83 minutes. Both blockers are "
+                        "BOUNDARY blockers and neither exists on a periodic "
+                        "domain."),
+                    "case": (
+                        "WRF's own em_quarter_ss initializer with the "
+                        "hodograph removed: a 3 K cos^2 thermal, 10 km "
+                        "radius, centred at z = 1500 m, in an unsheared WK82 "
+                        "sounding. 120 x 120 x 40, dx = dy = 2000 m, "
+                        "ztop = 20000 m, dt = 12 s, time_step_sound = 6, 600 "
+                        "steps = 7200 s, periodic_x = periodic_y = .true., "
+                        "microphysics the only physics."),
+                    "initial_condition": (
+                        "gpuwm is initialised FROM WRF's own wrfinput_d01, "
+                        "not from a transcription of WRF's initializer, so a "
+                        "transcription difference cannot enter the "
+                        "trajectory disguised as a microphysics difference. "
+                        "MEASURED: the t = 0 normalised RMS field difference "
+                        "is exactly 0.0 in ten of the thirteen compared "
+                        "fields, in both configurations. The three that are "
+                        "not are the three gpuwm derives rather than copies: "
+                        "T at 2.510e-09 (WRF stores theta - 300 and gpuwm "
+                        "stores an absolute base plus a perturbation, so the "
+                        "field is split and recombined once each way), and "
+                        "QNWFA at 2.176e-08 / QNIFA at 1.731e-08, which both "
+                        "models overwrite with thompson_init's synthetic "
+                        "profile -- so what is compared there is CUDA's "
+                        "evaluation of WRF's analytic CCN/IN profile against "
+                        "gfortran's. One float32 rounding each."),
+                    "wrf_reference": (
+                        "WRF v4.6.1 release tarball sha256 b8ec11b2..., "
+                        "gfortran 13.3.0, glibc 2.39, netCDF 4.9.2, "
+                        "configure option 32 (serial) / nesting 0, built "
+                        "TWICE from identical source: build A with WRF's own "
+                        "default -O2 -ftree-vectorize -funroll-loops and "
+                        "build B with -O2 -fno-tree-vectorize. Build B is "
+                        "the control: it measures how far WRF's own answer "
+                        "moves under one optimization flag."),
+                    "design": (
+                        "difference-in-differences. The tested quantity is "
+                        "the aerosol SIGNATURE M(mp28) - M(mp8) measured "
+                        "inside each model, read against two published "
+                        "floors: the mp=8 model-pair disagreement (gpuwm is "
+                        "wrf-matched-run there) and WRF's own flag "
+                        "sensitivity. Six runs; every gpuwm configuration "
+                        "run twice and byte-compared, the 5090 having no "
+                        "ECC."),
+                    "declared_verdict": "HOLD",
+                    "declared_verdict_detail": (
+                        "V1 sign agreement PASS 43/47 = 91.5% (threshold "
+                        "90%); V2 floor-calibrated magnitude PASS 9/9; V3 no "
+                        "scheme-level amplification FAIL, 7 of 197 rows over "
+                        "3x (V3 as declared spans M1-M4 and M8: 111 scalar "
+                        "rows and 86 field-difference rows; all seven "
+                        "failures are scalar); V4 "
+                        "bounded/finite/no-depletion PASS. The rule "
+                        "declared before the runs was that any failure holds "
+                        "mp=28 out of 1.5. It is not being rewritten."),
+                    "control_result": (
+                        "THE SAME MACHINERY APPLIED TO WRF AGAINST ITSELF "
+                        "ALSO FAILS V3 -- build B vs build A, identical "
+                        "source, one optimization flag, 17 of 195 rows over "
+                        "3x, worst ratio 808. A gate unmodified WRF cannot "
+                        "pass against its own recompilation is not measuring "
+                        "the port; past t ~ 2400 s this case is chaotic and "
+                        "the scalar metrics compare two samples rather than "
+                        "two answers. V3 as written was mis-specified."),
+                    "diagnostic_results": {
+                        "aerosol_budget_agreement_2h_relative": 1.530e-04,
+                        "aerosol_budget_agreement_2h_relative_nifa": 2.451e-04,
+                        "dual_run_byte_identical": True,
+                        "dual_run_frames_byte_compared": {
+                            "long_run": 13, "short_window": 11},
+                        "long_run_median_mp28_over_mp8_disagreement": 0.691,
+                        "long_run_median_scalar_rows_only": 0.628,
+                        "short_window_v3_pass": True,
+                        "short_window_v3_worst_ratio": 2.195,
+                        "short_window_w_rms_5_steps_mp08": 1.800e-02,
+                        "short_window_w_rms_5_steps_mp28": 1.797e-02,
+                        "short_window_v3_second_worst_ratio": 1.501,
+                        "t0_field_rms_difference_exact_zero_fields": 10,
+                        "t0_field_rms_difference_max": 2.176e-08,
+                    },
+                    "short_window_note": (
+                        "ADDED AFTER the long runs and labelled as such in "
+                        "the document: both models restarted from the SAME "
+                        "mature WRF state at t = 1800 s and run 50 steps, "
+                        "which is the only regime in which a matched "
+                        "trajectory can mean what it says. The statistic "
+                        "(M8) and the condition (V3) are the pre-declared "
+                        "ones; only the window is new."),
+                    "what_it_establishes": (
+                        "mp=28's per-step disagreement with unmodified WRF "
+                        "is the disagreement mp=8 already has -- 1.797e-02 "
+                        "vs 1.800e-02 RMS in w after five steps from a "
+                        "mature state -- so the aerosol-aware scheme adds no "
+                        "error of its own that this test can see; nwfa and "
+                        "nifa are the best-agreeing 3-D fields measured; and "
+                        "the domain aerosol budget matches WRF's to "
+                        "1.530e-04 over two hours with no depletion trend."),
+                    "what_it_does_not_establish": (
+                        "nothing about a real-data or nested forecast, "
+                        "nothing about aerosol crossing a lateral boundary "
+                        "(there is none), nothing past t ~ 2400 s where the "
+                        "trajectories have decorrelated, nothing about "
+                        "radiative feedback, PBL interaction, heterogeneous "
+                        "surface emission or sheared convection (all physics "
+                        "but microphysics is off), and nothing about "
+                        "correctness against observations. One case, one "
+                        "resolution, one sounding, one bubble."),
+                },
+                # Named so the "UNVERIFIED" warning cannot be read as "never
+                # integrated": it HAS been, against itself, and the row says
+                # which gate did it and what that gate can and cannot see.
+                "self_forecast_gate": {
+                    "test": (
+                        "tests/test_mp28_forecast_smoke.py::"
+                        "test_g4_multistep_specified_bc_forecast_is_finite"
+                        "_and_bounded"),
+                    "steps": 150,
+                    "timestep_s": 12.0,
+                    "checks": (
+                        "every prognostic and every radiation-facing "
+                        "effective radius finite each step, WRF's terminal "
+                        "apply bounds holding in the microphysics-updated "
+                        "interior, spec-zone ring bit-restored"),
+                    "does_not_check": (
+                        "agreement with WRF. There is no reference "
+                        "trajectory to compare against, so a finite, bounded "
+                        "and wrong forecast passes it."),
+                    "longest_integration": {
+                        "test": (
+                            "tests/test_mp28_forecast_smoke.py::"
+                            "test_g4_a_two_hour_forecast_stays_finite"
+                            "_bounded_and_ring_clean"),
+                        "steps": 600,
+                        "seconds": 7200.0,
+                        "measured": (
+                            "0 non-finite values, 0 bound violations and 0 "
+                            "spec-zone ring violations across all 600 "
+                            "microphysics calls; peak |w| 56.10 m/s; "
+                            "domain-total RAINNC 1.9055 mm; final "
+                            "domain-interior mean nwfa 1.3395e+07 kg^-1 "
+                            "against a floor of 1.110e+07 and nifa "
+                            "5.9041e+03 against a floor of 5.000e+03 -- i.e. "
+                            "entirely inflow air after 2.6 domain "
+                            "ventilation times, exactly as the lateral-"
+                            "boundary deviation below predicts"),
+                    },
+                },
+                "test": (
+                    "tests/test_thompson_aerosol_adapter.py::"
+                    "test_g3_end_to_end_against_all_nineteen_oracle_fixtures"),
+            },
+            # WHAT AN mp=28 RUN ACTUALLY STARTS FROM.  Published as structure
+            # rather than prose, and DERIVED rather than transcribed:
+            # tests/test_physics_registry.py scans gpuwm/ for callers of
+            # microphysics_init and fails if this row disagrees with the scan
+            # in EITHER direction.
+            #
+            # THIS ROW FLIPPED ON 2026-08-01.  For four waves
+            # ``production_call_site`` was null and the option carried a "NO
+            # AEROSOL INITIALISATION" warning: microphysics_init implemented
+            # WRF's fill, was oracle-gated against it, and nothing called it,
+            # so every mp=28 forecast integrated from nwfa = nifa = 0 under
+            # WRF's floors.  gpuwm/core/physics.py::initialize_physics now
+            # calls it once per domain, exactly where WRF's phy_init calls
+            # mp_init.  The measured numbers below did NOT change -- they are
+            # the same two forecasts -- but what they mean did: they were the
+            # measured COST of the missing call and they are now the measured
+            # VALUE of the profile, i.e. how much of an mp=28 forecast the
+            # CCN/IN loading owns.
+            "aerosol_initialisation": {
+                "wrf_source": (
+                    "phys/module_mp_thompson.F:493-558 fills a synthetic "
+                    "CCN/IN profile at domain construction whenever "
+                    "MAXVAL(nwfa) / MAXVAL(nifa) come in below eps -- two "
+                    "independent tests, at :493 and :530 -- and :509-510 "
+                    "derives the surface emission nwfa2d from the filled "
+                    "lowest level. Nothing inside mp_gt_driver ever refills "
+                    "it."),
+                "wrf_call_site": (
+                    "phys/module_physics_init.F::microphysics_init, once per "
+                    "domain, before the first step"),
+                "gpuwm_implementation": (
+                    "gpuwm/core/microphysics.py::microphysics_init"),
+                "gpuwm_implementation_evidence": (
+                    "tests/test_mp28_runnable.py::"
+                    "test_microphysics_init_fills_wrfs_synthetic_ccn_profile"
+                    "_for_mp28 -- the fill itself is measured against WRF and "
+                    "is NOT what is missing"),
+                "production_call_site": (
+                    "gpuwm/core/physics.py::initialize_physics"),
+                "production_call_site_note": (
+                    "once per domain, unconditionally, at the seam WRF uses. "
+                    "gpuwm reaches it through microphysics_cold_start, which "
+                    "returns an empty receipt for every scheme without a "
+                    "domain-construction step. Presence-gated exactly as WRF "
+                    "is: the fill runs only where the domain-wide MAXVAL "
+                    "tests open, so a nest that inherited its parent's "
+                    "aerosol and a restart that is about to be overwritten by "
+                    "a checkpoint are both left alone. WRF: "
+                    "phys/module_physics_init.F:1635 calls mp_init from "
+                    "phy_init, phys/module_physics_init.F:4522-4538 is the "
+                    "CASE (THOMPSONAERO) arm that calls thompson_init, and "
+                    "the presence tests are "
+                    "phys/module_mp_thompson.F:490-493 (CCN) and "
+                    "phys/module_mp_thompson.F:528-531 (IN)."),
+                "shipped_profile": (
+                    "WRF's synthetic thompson_init CCN/IN profile, installed "
+                    "at domain construction: on the aero-init-profile "
+                    "fixture's grid nwfa runs 1.478987e+08 kg^-1 at the "
+                    "lowest level to 5.000000e+07 aloft and nifa 1.254902e+06 "
+                    "to 5.000002e+05, with nwfa2d derived from the filled "
+                    "surface value at :509-510"),
+                "shipped_consequence": (
+                    "a freshly initialised mp=28 domain starts strictly ABOVE "
+                    "the terminal apply's clamps "
+                    "(phys/module_mp_thompson.F:3972-4021, nwfa >= 11.1e6 and "
+                    "nifa >= 5.0e3 per m3) rather than pinned at them, so CCN "
+                    "activation sees a continental aerosol loading that "
+                    "decays with height instead of a maritime-clean floor "
+                    "everywhere. The installed-state pin below asserts the "
+                    "floors of WRF's own profile constants (naCCN1 = 50.0e6 "
+                    "at phys/module_mp_thompson.F:96-97, naIN1 = 0.5e6 at "
+                    "phys/module_mp_thompson.F:94-95) -- 4.5x and 100x above "
+                    "the clamp floors, so a run that started at zero and got "
+                    "clamped cannot satisfy it."),
+                "operator_workaround": (
+                    "none needed: the call is wired. An embedder that builds "
+                    "a DomainState WITHOUT going through initialize_physics "
+                    "gets no profile, and gpuwm.core.microphysics."
+                    "microphysics_init is the entry point to call once per "
+                    "domain before the first step; it is presence-gated, so "
+                    "calling it twice is a no-op, and it returns an empty "
+                    "receipt for every scheme other than 28. Do NOT call it "
+                    "per step: nothing in mp_gt_driver refills the profile, "
+                    "and a per-step call would overwrite an advected, "
+                    "activated and scavenged aerosol field with the synthetic "
+                    "one while leaving every bound intact."),
+                "measured_forecast_sensitivity": {
+                    "test": (
+                        "tests/test_mp28_forecast_smoke.py::"
+                        "test_the_aerosol_profile_changes_the_forecast"
+                        "_measurably"),
+                    "steps": 150,
+                    "timestep_s": 12.0,
+                    "domain": (
+                        "28 x 16 x 24 at dx = 2 km, specified BC, warm "
+                        "bubble, two runs identical but for the init call"),
+                    "initial_mean_nwfa_per_kg_with_profile": 6.6532e7,
+                    "initial_mean_nwfa_per_kg_without_profile": 0.0,
+                    "final_interior_nwfa_per_kg_with_profile": 3.0059e7,
+                    "final_interior_nwfa_per_kg_without_profile": 1.2620e7,
+                    "peak_nc_per_kg_with_profile": 1.5980e8,
+                    "peak_nc_per_kg_without_profile": 2.8439e7,
+                    "droplet_ratio_with_over_without": 5.62,
+                    "domain_total_rainnc_mm_with_profile": 1.781185,
+                    "domain_total_rainnc_mm_without_profile": 3.102043,
+                    "domain_total_rainnc_relative_excess": 0.7416,
+                    "peak_rainnc_mm_with_profile": 0.675036,
+                    "peak_rainnc_mm_without_profile": 0.925492,
+                    "reading": (
+                        "the LEFT column is what a run does today; the RIGHT "
+                        "column is the counterfactual with the profile "
+                        "removed. Removing WRF's CCN/IN loading gives 5.6x "
+                        "fewer cloud droplets and 74.2% MORE domain-total "
+                        "surface rain over 30 minutes. Until 2026-08-01 the "
+                        "right column WAS the shipped behaviour and this was "
+                        "published as the port's largest measured error; it "
+                        "is now the measured sensitivity of an mp=28 forecast "
+                        "to its aerosol initial condition, which is also the "
+                        "magnitude the lateral-boundary deviation below "
+                        "converges to after L/U."),
+                    "note": (
+                        "a SNAPSHOT on this tree, not a physics pin: any "
+                        "legitimate mp=28 numerics change moves these digits. "
+                        "What is published is the sign and the order of "
+                        "magnitude, and tests/test_physics_registry.py::"
+                        "test_the_published_aerosol_initialisation_cost_is"
+                        "_still_the_measured_one re-runs both forecasts to "
+                        "check them."),
+                },
+                "call_site_pin": (
+                    "tests/test_mp28_forecast_smoke.py::"
+                    "test_microphysics_init_has_a_production_call_site"),
+                "installed_state_pin": (
+                    "tests/test_mp28_forecast_smoke.py::"
+                    "test_a_freshly_initialised_mp28_domain_carries_the"
+                    "_profile_not_zero"),
+            },
+            "activation_bin_edge_policy": (
+                "activ_ncloud selects a NEAREST 10 K temperature bin and "
+                "truncates idx_d/idx_c/idx_n with INT(), so nc is a STEP "
+                "function of state. Within one ulp of a bin edge an FP32 GPU "
+                "port and the Fortran reference can select different bins and "
+                "differ by tens of percent in nc while every mass field "
+                "agrees. Fixture states are chosen away from bin edges and "
+                "the behaviour is documented here rather than absorbed into a "
+                "loose tolerance."),
+        },
+        "implemented": True,
+        "label": "Thompson aerosol-aware / MP28",
+        "maturity": "implemented-unverified",
+        # Exactly thompson-mp8's pins.  aer_init_opt and aer_fire_emit_opt are
+        # DERIVED in WRF (Registry.EM_COMMON:2656/:2658), not namelist knobs,
+        # so they are not gpuwm settings and are not pinned here; wif_input_opt
+        # and the rest of the WIF family are published as implemented=false
+        # roadmap rows, and an implemented option may not pin one of those.
+        "parameters": {"moist": True, "moist_cq": True},
+        "reachability": {"state": "component-override"},
+        "selectors": {"mp_physics": 28},
+        "warnings": [
+            "UNVERIFIED against a WRF forecast in the sense that matters "
+            "operationally: there is no matched REAL-DATA or NESTED "
+            "trajectory and no decay table, and both blockers stand until "
+            "an aerosol lateral boundary condition exists. There IS now a "
+            "matched IDEALIZED trajectory -- a doubly periodic "
+            "single-domain warm-bubble forecast against unmodified WRF "
+            "v4.6.1, recorded in extensions.column_oracle_evidence."
+            "forecast_trajectory_comparison -- and its pre-declared gate "
+            "FAILED on one of its four conditions, V3. Read that entry "
+            "before relying on this scheme: it also records that WRF fails "
+            "the same condition against its own recompilation, which is why "
+            "the failure is published rather than acted on. The single-call "
+            "evidence is 22 committed WRF v4.6.1 column fixtures plus "
+            "per-kernel and device-helper oracles. mp_physics=28 has also "
+            "been integrated multi-step against ITSELF: "
+            "tests/test_mp28_forecast_smoke.py::"
+            "test_g4_multistep_specified_bc_forecast_is_finite_and_bounded "
+            "runs 150 steps x 12 s on a specified-BC convective domain and "
+            "checks that every prognostic and every radiation-facing "
+            "effective radius stays finite, that WRF's own terminal bounds "
+            "hold, and that the spec-zone ring is bit-restored; "
+            "test_g4_a_two_hour_forecast_stays_finite_bounded_and_ring_clean "
+            "carries the same domain to 600 steps (7200 s) with 0 non-finite "
+            "values, 0 bound violations and 0 ring violations. Finite and "
+            "bounded is NOT correct: a scheme with a systematically wrong "
+            "activation rate passes every one of those checks for two hours. "
+            "The bounds are WRF's, but they are clamps, not answers.",
+            "THE COLUMN EVIDENCE IS NOT CLEAN, and the numbers are published "
+            "rather than summarised. Driven end to end through the shipped "
+            "adapter, 22 fixtures x 23 quantities, at a flat 2.0e-6 relative "
+            "/ 2.0e-4 dB gate with nothing held out: 17 of 22 clear every "
+            "quantity (16 of the 19 spec'd aero-* fixtures, plus wp08-melt). "
+            "aero-reduces-to-classic clears only through the port's ONE "
+            "surviving named allowance -- 0-based level 6 held to 32 ulps of "
+            "its entry value instead of the relative metric, measured 0.585 "
+            "(qr) and 0.159 (nr) -- taking the gated count to 18 of 22. The "
+            "relative bound that used to sit beside it was RETIRED at the "
+            "1.4.1 merge: the mp=8 lane's two rain sedimentation "
+            "reconciliations (5e4af4e3, cb765336), inherited in the frozen "
+            "kernel mp=28 shares for fallout, took level 5's nr from "
+            "5.700e-06 to 4.146e-07, inside the flat gate. FOUR MISS "
+            "OUTRIGHT -- aero-cold-overlap qc 1.000e+00 / nc 1.000e+00 / "
+            "effc 8.102e-01 (all three are ONE branch flip at 0-based level "
+            "4, where WRF ends with 1.4551915228366852e-11 kg/kg of cloud "
+            "water -- exactly one float32 ulp of the entry value -- and "
+            "gpuwm ends at exactly zero, so the qc1d <= R1 test at "
+            "phys/module_mp_thompson.F:4007 sends "
+            "the two implementations down opposite arms and a relative "
+            "metric reports full scale on a one-ulp difference) plus "
+            "nr 1.261e-04 / qr 4.443e-05 at level 6; "
+            "aero-cloud-freeze-nc qc 4.926e-06; wp08-freeze nr "
+            "2.724e-06 (1.4x the "
+            "gate); wp08-nusweep qr 4.642e-06 (2.3x the gate). Every one of "
+            "the surviving residuals now sits where the field is either "
+            "CREATED FROM ZERO inside the step or driven to near-total "
+            "consumption; after the aero-ice-koop withdrawal recorded at the "
+            "end of this warning there is no surviving residual in the "
+            "rate-disagreement class at all. That is stated, not "
+            "used: no bound is relaxed for it. WHAT MOVED SINCE THE LAST "
+            "PUBLISHED SET, and it is a REAL PORT FIX this time -- TWO of "
+            "them, both in mp=28-owned kernels. WP-13a restored WRF's "
+            "LEVEL-WISE sedimentation density: WRF forms the "
+            "working rain mass and number twice -- "
+            "phys/module_mp_thompson.F:3237-3238 from the :3193 TAU+1 "
+            "density at every L_qr level, and :3568/:3570 from the :3490 "
+            "post-condensation density but ONLY inside the :3501-3502 gate "
+            "-- and gpuwm/core/kernels/thompson_aerosol_sat.cu was exporting "
+            "the post-condensation density unconditionally. WP-13b pinned "
+            "the source-network apply against contraction: WRF's terminal "
+            "apply at phys/module_mp_thompson.F:3973-4023 "
+            "is q1d(k) = q1d(k) + qten(k)*DT and the gfortran -O2 oracle has "
+            "no FMA, so qten*DT is rounded to REAL(4) before the add, while "
+            "nvrtc was fusing it in thompson_aerosol_cold.cu and "
+            "thompson_aerosol_warm.cu. Together they "
+            "took aero-drop-evap (rainnc 5.165e-04, qr 3.533e-05, nr "
+            "2.258e-05; WP-13a alone) and aero-ice-demott-idxin (rainnc "
+            "1.279e-04, qr 2.894e-05, nr 4.594e-06; both changes, RAINNC and "
+            "sr bitwise 0 after WP-13b) to CLEAN, took "
+            "aero-cloud-freeze-nc's qr 2.800e-05 / nr 1.797e-05 / rainnc "
+            "1.162e-05 rows to 8.973e-08 / 2.594e-07 / 0.000e+00, deleted "
+            "qr from the carve-out (7.813e-05 -> 1.788e-07, inside the flat "
+            "gate), tightened the surviving nr bound 1.0e-04 -> 1.0e-05 and "
+            "RETIRED the reflectivity carve-out (5.283e-04 dB -> 3.242e-05 "
+            "dB). One number went the OTHER way and is published as "
+            "measured: aero-cold-overlap qr 3.667e-05 -> 4.443e-05, WP-13b's "
+            "cost, bisected to the cold network's qr apply and KEPT because "
+            "reverting that one line also loses all four of "
+            "aero-ice-demott-idxin's improvements, two of which are bitwise; "
+            "in ulps of the entry value the move is 1.477 -> 1.789. "
+            "AND WHAT MOVED BEFORE THAT, WHICH WAS NOT "
+            "A PHYSICS FIX: aero-ice-koop, published by four waves of this "
+            "registry as the port's largest genuine physics gap at qi "
+            "1.612e-03 / ni 1.764e-03 / effi 5.093e-05, now measures "
+            "1.534e-07 / 3.396e-07 / 1.886e-07 and is CLEAN -- and NO KERNEL "
+            "CHANGED. The cause was this port's own oracle harness: "
+            "tools/thompson_wrf461_oracle/run_column_aero.F90 built the Exner "
+            "function with rd_over_cp = 287.0/1004.0, while WRF's own rcp is "
+            "r_d/cp with r_d=287. and cp=7.*r_d/2.=1004.5 (declared in "
+            "share/module_model_constants.F at lines 19, 20 and 31) -- "
+            "exactly 2/7, and "
+            "4774 float32 ulps from what the harness used. 47 of the deck's "
+            "528 entry levels (first published as 40; re-pinned 2026-08-03, "
+            "owner-ratified -- the count is the host libm's, and "
+            "mp28-column-evidence.md section 3.4 carries the correction "
+            "note) then had no exact float32 theta, the adapter "
+            "perturbed the entry pressure by up to 15 ulps to recover the "
+            "recorded temperature, and that perturbed pressure drove "
+            "different microphysics on 7 fixtures including this one. The "
+            "deck was regenerated with WRF's own constant and the residual "
+            "went with it; the same regeneration made aero-cold-overlap "
+            "WORSE, which is why it can be trusted. See "
+            "extensions.column_oracle_evidence for the full "
+            "table, the allowance list and the two counts, and "
+            "docs/public/validation/mp28-column-evidence.md section 3.4 for "
+            "the re-derivation from the committed fixtures.",
+            "NO AEROSOL INGEST -- but the aerosol INITIALISATION is wired, "
+            "and that distinction is the whole of this warning. INGEST: "
+            "gpuwm has no WIF metgrid stream, no GOCART climatology reader "
+            "and no black-carbon (nbca) species, so use_aero_icbc, "
+            "use_rap_aero_icbc, wif_input_opt, num_wif_levels and qna_update "
+            "are all published implemented=false and refuse. INITIALISATION: "
+            "WRF's own fallback for exactly that case is thompson_init's "
+            "SYNTHETIC CCN/IN profile (phys/module_mp_thompson.F:493-558), "
+            "gpuwm implements it in "
+            "gpuwm/core/microphysics.py::microphysics_init, measures it "
+            "against WRF, and -- since 2026-08-01 -- CALLS it, once per "
+            "domain, from gpuwm/core/physics.py::initialize_physics, at the "
+            "seam WRF calls mp_init from phy_init. A freshly initialised "
+            "mp=28 domain therefore starts on WRF's decaying continental "
+            "profile, strictly above the terminal apply's clamps "
+            "(phys/module_mp_thompson.F:3972-4021), not pinned at them. HOW "
+            "MUCH THAT IS WORTH, measured over 150 steps x 12 s on a "
+            "28 x 16 x 24 2 km specified-BC convective domain against an "
+            "otherwise identical run with the profile removed: initial mean "
+            "nwfa 6.6532e+07 vs 0.0 kg^-1, peak nc 1.5980e+08 vs 2.8439e+07 "
+            "kg^-1 (5.6x fewer droplets without it), domain-total RAINNC "
+            "1.781185 vs 3.102043 mm -- the aerosol-free run rains 74.2% "
+            "MORE. Read that as the sensitivity of an mp=28 forecast to its "
+            "aerosol initial condition; it is also the magnitude the "
+            "lateral-boundary deviation below converges to after the domain "
+            "has ventilated once. See extensions.aerosol_initialisation.",
+            "DIVERGENCE, admission: WRF's own initializer REFUSES the "
+            "configuration gpuwm runs. dyn_em/module_initialize_real.F:"
+            "2734-2736 calls wrf_error_fatal('wif_input_opt=0 but "
+            "mp_physics=28'), so real.exe will not build a wrfinput for the "
+            "synthetic-profile case at all. The PHYSICS is WRF's; the "
+            "admission decision is not.",
+            "DIVERGENCE, lateral boundaries: an external-BC (specified) "
+            "domain carries NO aerosol inflow, and this is the deviation "
+            "that grows with run length. gpuwm couples only qv from external "
+            "boundary snapshots and gives every other scalar flow-dependent "
+            "boundaries with zero inflow, so aerosol-free air advects in at "
+            "the upstream face and monotonically depletes nwfa/nifa for as "
+            "long as the run continues -- with no NaN, no negative and no "
+            "health trip, because WRF's own terminal clamps (nwfa >= 11.1e6, "
+            "nifa >= 5.0e3 per m3) hold the floor. WRF's Registry gives "
+            "qnwfa/qnifa real bdy arrays and forces them from the boundary "
+            "file. MEASURED on a deliberately cloud-free 150-step run, so "
+            "every kilogram lost is the boundary policy and not "
+            "microphysics: with a 20.0 m/s inflow the depletion front "
+            "advances at 19.8638 m/s (0.99319 of the wind), and over 1800 s "
+            "the domain-interior mean nwfa falls to 0.4566 of its initial "
+            "value and nifa to 0.3363. At 10 m/s the front runs at "
+            "9.808 m/s, so this is a law and not one number: the upstream "
+            "U*t of your domain is at WRF's aerosol floor after time t, and "
+            "the whole domain after L/U -- 13.9 hours for a 1000 km domain "
+            "in a 20 m/s flow, 83 minutes for a 100 km nest. The only "
+            "interior source is the fixed surface emission nwfa2d at k=0, "
+            "measured at 5540.14 kg^-1 s^-1, which replaces about 5% of the "
+            "lowest level's initial loading over 1800 s and acts on that "
+            "level only. SEPARATELY, the spec_zone ring itself ends at "
+            "EXACTLY zero aerosol on three of its four faces (west/south/"
+            "north 1.000, east 0.125), because WRF's clipped microphysics "
+            "tile means the terminal clamp never runs there -- a value WRF "
+            "itself cannot produce, and what a nest boundary or a wrfout "
+            "reader sees. This matches gpuwm's existing hydrometeor policy "
+            "and is documented, not fixed.",
+            "DIVERGENCE, PBL: gpuwm passes flag_qnc/flag_qnwfa/flag_qnifa to "
+            "MYNN as literal False (gpuwm/core/mynn_pbl.py), so nc/nwfa/nifa "
+            "are never vertically mixed by the PBL. WRF mixes them when "
+            "bl_mynn_mixscalars=1 (phys/module_bl_mynn.F:4735,:4777,:4957) or "
+            "through scalar_pblmix (phys/module_pbl_driver.F:2251). At "
+            "gpuwm's pinned MYNN identity bl_mynn_mixscalars=0, and WRF's "
+            "check_a_mundo raises scalar_pblmix to 1 ONLY when use_aero_icbc "
+            "or use_rap_aero_icbc is set (share/module_check_a_mundo.F:"
+            "2477-2495) -- both of which gpuwm refuses -- so WRF's own value "
+            "here is 0 too and today the two "
+            "models agree -- but gpuwm's withholding is STRUCTURAL rather "
+            "than a namelist value, and mp_physics=28 is the first "
+            "configuration where those species exist and the withholding is "
+            "physically visible.",
+            "MIXED NESTING IS REFUSED BY NAME. An mp_physics=28 domain may "
+            "only sit under an mp_physics=28 parent. No cross-scheme "
+            "transition rule is registered for it, so the registry refuses "
+            "any mixed edge with unsupported-component-transition and "
+            "gpuwm/core/microphysics_transition.py refuses the same edge at "
+            "runtime with a named message. WRF's own non-aerosol-aware "
+            "fallbacks (nc=100e6/rho, nwfa=11.1e6/rho, nifa=5.0e3/rho) would "
+            "give a nested child fabricated aerosol rather than its parent's, "
+            "and no gate in this tree would flag it.",
+            "DELIBERATE THERMODYNAMIC DIVERGENCE FROM mp_physics=8, and it is "
+            "not a defect on either side. mp=28's RSLF/RSIF saturation Horner "
+            "chains are contraction-pinned while mp=8's stay FMA-contracted, "
+            "so the two schemes' saturation vapour pressures differ by one "
+            "ulp. That matters because module_mp_thompson.F:3401 opens the "
+            "whole condensation/CCN-activation block on ssatw > 1.E-15 (:185) "
+            "-- one ulp flips a branch. mp=28 matches WRF's own gfortran "
+            "-O2 arithmetic; mp=8 stays byte-frozen at its model-validated "
+            "trajectory. The two are deliberately not bit-identical.",
+            "Reachable only as a per-domain microphysics override on the "
+            "experiment-per-domain tree route. No registered template selects "
+            "it, it is no template's default, and the shipped default suite "
+            "is unchanged.",
+            "Launch must byte-validate CCN_ACTIVATE.BIN (35,288 bytes, "
+            "sha256 f2b8d391...) plus the four classic Thompson tables. The "
+            "activation table IS distributed with gpuwm as of 2026-08-01 -- "
+            "WRF v4.6.1's own run/CCN_ACTIVATE.BIN, bit for bit -- so a "
+            "default install has it; GPUWM_THOMPSON_CCN_ACTIVATE and "
+            "GPUWM_THOMPSON_TABLE_ROOT still redirect a run to another copy. "
+            "Absence is fatal, never defaulted, and a byte-different table is "
+            "refused: a different parcel-model table would silently be a "
+            "different activation scheme. The consequence for EVIDENCE, not "
+            "just for launch: every device gate for the scheme, including all "
+            "22 column fixtures, skips by name if the file is ever missing. "
+            "The skip names the one file rather than swallowing a load "
+            "failure, so it can never be mistaken for a pass.",
+        ],
+    }
 
 
 def _unimplemented_specs(known: set[str]) -> dict[str, dict]:
@@ -1354,6 +2460,7 @@ def _composition_exemptions() -> dict:
 def build(registry: dict) -> dict:
     """Apply this pass's tables to ``registry`` in place and return it."""
     _surface_coupling_warnings(registry)
+    _thompson_aerosol_mp28(registry)
     registry["authority"][
         "wrf_v461_compatibility_matrix"
     ] = _wrf_compatibility_authority()
@@ -1409,6 +2516,16 @@ def build(registry: dict) -> dict:
     pbl_options["mynn"]["constraints"]["requires_components"][
         "surface_layer"
     ] = ["revised-mm5", "classic-mm5", "mynn"]
+    # SASE is not in the WRF v4.6.1 table above -- WRF has no such scheme,
+    # which is why it carries an out-of-namespace selector.  Its
+    # surface-layer constraint is therefore NOT a transcription of WRF's
+    # 12-cell matrix but a statement of what the closure reads: any
+    # surface-layer scheme that produces a friction velocity and the
+    # heat/moisture fluxes serves, and only "off" does not.
+    pbl_options["sase"]["constraints"]["requires_components"][
+        "surface_layer"
+    ] = ["revised-mm5", "classic-mm5", "mynn"]
+    pbl_options["sase"]["reachability"] = {"state": "component-override"}
     surface_options["mynn"]["constraints"]["requires_components"][
         "pbl"
     ] = ["off", "mynn"]
@@ -1479,7 +2596,11 @@ def build(registry: dict) -> dict:
     tree_route = registry["runner_routes"][
         "tools.prepared_domain_tree_forecast"]
     tree_route["allowed_component_options"] = {
-        "pbl": ["off", "ysu", "mynn"],
+        # "sase" is listed so the closure is selectable per domain on the
+        # tree route.  No template selects it, so its reachability is
+        # "component-override": a user asks for it explicitly or does not
+        # get it, which is the right posture for an experimental scheme.
+        "pbl": ["off", "ysu", "mynn", "sase"],
         "surface_layer": ["revised-mm5", "classic-mm5", "mynn"],
         "radiation": [
             "off", "dudhia-shortwave", "rte-rrtmgp",
@@ -1589,18 +2710,58 @@ def build(registry: dict) -> dict:
     # mym_condensation.  Radiation then consumes the previous interval's
     # carried MYNN clouds at module_radiation_driver.F:1403-1429.
     mynn = registry["components"]["pbl"]["options"]["mynn"]
+    # ``flag_qs_*_microphysics_selectors`` must partition EVERY implemented
+    # microphysics selector -- tests/test_mynn_pbl.py asserts set equality
+    # against the registry's own options -- so a new scheme lands here in the
+    # same pass that registers it.  mp_physics=28's thompsonaero package
+    # carries qs (Registry.EM_COMMON:3036), so F_QS is true for it.
     mynn["extensions"]["supplied_moisture_species"] = {
         "supplied": ["qv", "qc", "qi", "qs"],
         "withheld": ["qnc", "qni", "qnwfa", "qnifa", "qnbca", "o3"],
-        "flag_qs_true_microphysics_selectors": [6, 8, 10, 18],
+        "flag_qs_true_microphysics_selectors": [6, 8, 10, 18, 28],
         "flag_qs_false_microphysics_selectors": [0, 1],
         "wrf_flag_source": (
             "phys/module_pbl_driver.F:873-878 derives flag_qs from F_QS; "
-            "Registry.EM_COMMON declares qs for mp_physics 6, 8, 10 and 18"),
+            "Registry.EM_COMMON declares qs for mp_physics 6, 8, 10, 18 and "
+            "28"),
+        "gpuwm_runtime_source": (
+            "gpuwm/core/mynn_pbl_runtime.py::MYNN_SNOW_MICROPHYSICS is the "
+            "shipped set this list is checked against, selector by selector, "
+            "by tests/test_physics_registry.py::"
+            "test_the_registry_flag_qs_contract_is_the_one_the_shipped"
+            "_runtime_applies. mp_physics=28 was published here before the "
+            "runtime honoured it: gpuwm passed flag_qs=False for 28, so "
+            "phys/module_bl_mynn.F:734/:876 substituted sqs = 0 and MYNN "
+            "never saw snow under the one Thompson variant whose Registry "
+            "package declares it. MEASURED on the committed WRF MYNN driver "
+            "oracle's snow_anvil column (max sqs 4.08e-05): withholding snow "
+            "drove qi_bl from 5.4863e-07 to exactly 0 and moved qc_bl, "
+            "cldfra_bl, rqvblten, rthblten and exch_h with it. MEASURED "
+            "again as a forecast -- mp_physics=28 + MYNN + SFCLAY + Noah, "
+            "8x6x50 at dx = 3 km, 20 steps of dt = 12 s, two runs identical "
+            "but for FLAG_QS, snow 4.0e-05 kg/kg seeded at 0-based levels "
+            "20-33: max relative difference qr 2.037e-02, qv 7.226e-03, "
+            "qc 4.035e-03, qke 5.593e-02, exch_h 8.380e-01, nc 6.915e-04, "
+            "nwfa 1.142e-04, with qs and qi bitwise identical because "
+            "neither WRF nor gpuwm applies a snow PBL tendency "
+            "(phys/module_bl_mynn.F:1240-1242). The same experiment with the "
+            "snow seeded in the WARM boundary layer instead is BITWISE "
+            "identical, because MYNN's condensation only takes snow into the "
+            "ice branch where the liquid fraction is below 1 -- the flag "
+            "matters exactly where snow exists."),
         "wrf_live_consumer": (
             "phys/module_bl_mynn.F:1104-1106 passes real sqs to "
             "mym_condensation when FLAG_QS is true; mynn_tendencies still "
             "receives kzero at :1240-1242, matching WRF"),
+        "withheld_aerosol_number_note": (
+            "qnc/qnwfa/qnifa stay withheld under mp_physics=28, the first "
+            "configuration where they carry real prognostic values. gpuwm "
+            "passes flag_qnc/flag_qnwfa/flag_qnifa to MYNN as literal False "
+            "(gpuwm/core/mynn_pbl.py), so MYNN never mixes them; WRF mixes "
+            "them at bl_mynn_mixscalars=1 (phys/module_bl_mynn.F:4735,:4777,"
+            ":4957), which gpuwm's MYNN option identity pins to 0. The "
+            "withholding is structural rather than a namelist value; see the "
+            "microphysics thompson-aerosol-mp28 warnings."),
     }
     mynn["extensions"]["radiation_cloud_merge"] = {
         "activation": "bl_pbl_physics=5 and icloud_bl>0",

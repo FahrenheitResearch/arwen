@@ -49,3 +49,8 @@ tools/rustwx/vendor/**/__pycache__/
 
 # Scratch output from tools/da_synthetic_cycle runs (dirs and redirect files).
 .gate-*
+
+# gpuwm/data/thompson/tables/CCN_ACTIVATE.BIN was ignored here until
+# 2026-08-01.  It is now committed and shipped: it is WRF v4.6.1's own
+# run/CCN_ACTIVATE.BIN under WRF's public-domain dedication, and the notice
+# travels with it in LICENSE-WRF.txt.  See gpuwm/data/thompson/PROVENANCE.md.

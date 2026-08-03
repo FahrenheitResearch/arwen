@@ -178,6 +178,45 @@ def test_masked_bilinear_uses_bounded_nearest_valid_fallback():
             target_land, fallback_radius=1)
 
 
+def test_unresolved_donor_search_reports_the_radius_that_works():
+    """The refusal carries the facts remediation must be computed from.
+
+    Field 2026-08: "no valid surface-matched HRRR donor within 8 cells
+    for 2 target point(s)" was followed by advice to raise the radius,
+    and the recommended raise was impossible.  Validating advice needs
+    the failure to say WHAT radius would reach a donor and WHICH target
+    cells failed -- both known here and nowhere else.
+    """
+    source_land = np.zeros((12, 12), dtype=bool)
+    source_land[0, 0] = True
+    target_land = np.ones((2, 2), dtype=bool)
+    x = np.array([[0.0, 7.0], [0.0, 7.0]])
+    y = np.array([[0.0, 0.0], [7.0, 7.0]])
+
+    with pytest.raises(ValueError, match="no valid surface-matched") \
+            as failure:
+        _build_masked_bilinear_stencil(
+            x, y, source_land, target_land, fallback_radius=8)
+    error = failure.value
+    # (0,0) resolves directly; (0,7) and (7,0) are exactly 7 away and
+    # resolve by fallback; (7,7) is sqrt(98) = 9.90 away, so radius 10
+    # is the smallest integer radius whose disk holds a valid donor.
+    assert error.fallback_radius_cells == 8
+    assert error.required_radius_cells == 10
+    assert error.unresolved_targets == ((1, 1),)
+
+    # Negative control: a window with no valid donor at ANY radius says
+    # so, rather than inventing a radius that cannot work.
+    with pytest.raises(ValueError, match="no valid surface-matched") \
+            as hopeless:
+        _build_masked_bilinear_stencil(
+            np.array([[5.0]]), np.array([[5.0]]),
+            np.zeros((12, 12), dtype=bool), np.ones((1, 1), dtype=bool),
+            fallback_radius=8)
+    assert hopeless.value.required_radius_cells is None
+    assert hopeless.value.unresolved_targets == ((0, 0),)
+
+
 def test_ohio_like_lake_edge_requires_explicit_radius_ten():
     source_land = np.zeros((12, 12), dtype=bool)
     source_land[0, 0] = True

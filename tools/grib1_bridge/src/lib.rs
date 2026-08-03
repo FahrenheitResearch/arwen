@@ -13,6 +13,31 @@ pub mod quantization;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicI32, Ordering};
 
+/// `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>`: the source revision this
+/// artifact was built from, embedded so the release cut can prove a
+/// staged binary matches the commit being released by reading bytes
+/// alone (`tools/build_bridge_bundle.py pin --source-rev`), never by
+/// executing it.  `build.rs` injects the value; `unknown` marks a build
+/// the cut must refuse (outside git, or a dirty tree).  Every
+/// executable in this package references this constant from `main` so
+/// the linker cannot discard the bytes.
+pub static SOURCE_REV_STAMP: &str =
+    concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
+
+/// The stamp for C callers, NUL-terminated -- and the exported
+/// reference that keeps the stamp bytes present in the cdylib the
+/// release ships, where no `main` exists to hold them.
+#[no_mangle]
+pub extern "C" fn gpuwm_preprocess_cpu_source_rev()
+-> *const std::os::raw::c_char {
+    static C_STAMP: &str = concat!(
+        "GPUWM_BRIDGE_SOURCE_REV=",
+        env!("GPUWM_BRIDGE_SOURCE_REV"),
+        "\0"
+    );
+    C_STAMP.as_ptr().cast()
+}
+
 const OK: i32 = 0;
 const ERR_NULL: i32 = 1;
 const ERR_DIMENSION: i32 = 2;

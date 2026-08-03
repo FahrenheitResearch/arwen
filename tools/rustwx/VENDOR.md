@@ -197,6 +197,17 @@ command-line bins and their 9.8 MB test fixtures.
     version pin make the governorless copy unable to satisfy the
     requirement at all.  `vendor/crates-io` itself is untouched, as this
     file requires.
+18. `crates/rw-fetch` and `crates/rw-wrfbatch` (the two binaries a
+    gpuwm bridge bundle ships) gain a `build.rs` and a
+    `GPUWM_BRIDGE_SOURCE_REV_STAMP` static: each binary embeds
+    `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>` -- the workspace
+    checkout's clean HEAD -- so the gpuwm release cut
+    (`tools/build_bridge_bundle.py pin --source-rev`) can prove a
+    staged binary was built from the commit being released by reading
+    bytes, never by executing it.  The 1.4.1 cut nearly shipped
+    platform zips from two different source revisions; nothing checked.
+    The stamp is gpuwm release machinery, not renderer behaviour, and
+    is absent upstream.
 
     The pin is belt; the braces are a capability probe.  `wx-core` now
     exports `download::nomads_governor()` (what this build's governor is

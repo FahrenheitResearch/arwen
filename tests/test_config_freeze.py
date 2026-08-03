@@ -48,7 +48,7 @@ def _frozen_constructors():
 def test_new_fields_are_reviewed_defaults_appended_last():
     """New fields remain appended, preserving positional construction."""
     names = [f.name for f in dataclasses.fields(RunConfig)]
-    assert names[-65:] == [
+    assert names[-80:] == [
         "nested", "grid_id", "top_lid", "moist_cq", "morr_rimed_ice",
         "wsm6_hail_opt", "ra_lw_physics", "ra_sw_physics", "icloud",
         "swrad_scat", "wrf_rrtmg_compatibility", "num_soil_layers",
@@ -66,7 +66,50 @@ def test_new_fields_are_reviewed_defaults_appended_last():
         "noahmp_acc_dt",
         "mosaic_lu", "mosaic_soil", "flag_sm_adj", "spp_lsm",
         "nwp_diagnostics", "isfflx", "o3input", "use_mp_re",
-        "seaice_albedo_default", "rdmaxalb"]
+        "seaice_albedo_default", "rdmaxalb",
+        # km_opt=3 LES closure knobs (change record: appended with the 3-D
+        # Smagorinsky port; WRF Registry defaults, frozen paths unchanged).
+        "mix_isotropic", "mix_upper_bound", "tke_heat_flux",
+        "tke_drag_coefficient", "c_k",
+        # km_opt=2 lateral-boundary/bound_tke arm and the report-only
+        # per-step TKE budget toggle (change record: appended with the
+        # prognostic-TKE restart + boundary work; WRF Registry default
+        # tke_upper_bound = 1000., budget off).
+        "tke_upper_bound", "tke_budget",
+        # Aerosol-aware Thompson (mp_physics=28) aerosol-source selectors
+        # (change record: appended with the mp=28 merge onto this line).
+        "aer_init_opt", "wif_input_opt",
+        # The SASE closure's three knobs, appended last exactly as this
+        # discipline requires.  Each is fail-closed on its NON-default
+        # value only, so every configuration that predates them resolves
+        # unchanged -- which is what the golden below re-checks.
+        "sase_flux_diag", "sase_moist_n2", "sase_stable_dissipation",
+        "sase_additive_dissipation",
+        # The horizontal-mixing pair, appended on the same terms.  Both
+        # default to the value the tree already ran: hmix_k_diag = False
+        # publishes nothing, and an EMPTY acknowledgement is the state
+        # every existing configuration is in, so the km_opt gate refuses
+        # exactly what it refused before.
+        "hmix_k_diag", "km_opt_zero_acknowledgement"]
+    # Aerosol-aware Thompson (mp_physics=28) aerosol-source selectors,
+    # appended last.  Both defaults are WRF's own Registry defaults
+    # (Registry/Registry.EM_COMMON:2656 and
+    # Registry/registry.new3d_wif:17), and both are the ONLY value
+    # gpuwm.config.validate_aerosol_source_options admits -- so they cannot
+    # move any trajectory, frozen or otherwise: there is no second value to
+    # move it to.  They exist so that a request for WRF's climo/first-guess
+    # aerosol IC/BC or its WIF metgrid stream is refused BY NAME rather than
+    # being unrepresentable and therefore silently ignored.  Matching WRF's
+    # defaults is load-bearing for a second reason: the prepared-forecast
+    # runner compares physics_compat._SINGLE_DOMAIN_RUNTIME_SWITCHES rows
+    # for exact equality, and a nonzero default would change every shipped
+    # profile.
+    assert RunConfig.__dataclass_fields__["aer_init_opt"].default == 0
+    assert RunConfig.__dataclass_fields__["wif_input_opt"].default == 0
+
+    assert RunConfig.__dataclass_fields__["hmix_k_diag"].default is False
+    assert RunConfig.__dataclass_fields__[
+        "km_opt_zero_acknowledgement"].default == ""
     # Noah option selectors. Each default reproduces the value the launcher
     # previously pinned, so exposing them cannot move a frozen trajectory.
     assert RunConfig.__dataclass_fields__["usemonalb"].default is False
@@ -104,6 +147,15 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     # test (tests/test_uh_lifecycle.py).
     assert RunConfig.__dataclass_fields__["nwp_diagnostics"].default == 0
     assert RunConfig.__dataclass_fields__["isfflx"].default == 1
+    # km_opt=3 knobs: WRF Registry defaults (mix_isotropic 0, upper bound
+    # 0.1, prescribed fluxes 0), consumed only under km_opt=3 or the
+    # PBL-off isfflx=0/2 paths, so frozen trajectories cannot move.
+    assert RunConfig.__dataclass_fields__["mix_isotropic"].default == 0
+    assert RunConfig.__dataclass_fields__["mix_upper_bound"].default == 0.1
+    assert RunConfig.__dataclass_fields__["tke_heat_flux"].default == 0.0
+    assert RunConfig.__dataclass_fields__[
+        "tke_drag_coefficient"].default == 0.0
+    assert RunConfig.__dataclass_fields__["c_k"].default == 0.15
     assert RunConfig.__dataclass_fields__["o3input"].default == 2
     assert RunConfig.__dataclass_fields__["use_mp_re"].default == 1
     assert RunConfig.__dataclass_fields__[

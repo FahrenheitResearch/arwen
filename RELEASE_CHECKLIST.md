@@ -34,30 +34,50 @@ and change only when a table does.  The prebuilt Rust bundles
 their pins are generated during the cut and must land in the package
 *before* the wheel is built.
 
-`.github/workflows/publish.yml` does this from one manual dispatch on the
-exact tag while its GitHub release is still a draft. The final privilege-
-separated job publishes the draft only after the immutable native assets and
-the prevalidated PyPI distributions land. Making a release public is not a
-second workflow trigger. The steps are listed here because a cut driven by
-hand has to reproduce them, not because their proofs are optional:
+`.github/workflows/publish.yml` has two ingresses and one set of proofs.
+**Publishing the GitHub release** triggers it and the tag comes from the
+release payload; that is the motion every release through v1.4.0 used. A
+**manual dispatch** on the exact tag triggers it too, names the tag in the
+required `release_tag` input, and expects a draft release that the final
+privilege-separated job promotes only after the native assets and the
+prevalidated PyPI distributions land. The ingress changes exactly one thing:
+the release state each job expects to see. Every byte proof is identical on
+both paths. The steps are listed here because a cut driven by hand has to
+reproduce them, not because their proofs are optional:
 
 - [ ] The tag and `[project].version` in `pyproject.toml` agree
-      (`vX.Y.Z` and `X.Y.Z`).  The workflow refuses the cut otherwise: a
-      bundle named for one while the wheel says the other is a download
-      nobody can find. This public workflow accepts stable numeric `X.Y.Z`
-      versions only; prerelease cuts require a separately defined contract.
-- [ ] The selected workflow ref and required `release_tag` input name that
-      same tag, and a non-prerelease draft GitHub release already exists for
-      it. Stable PyPI versions are never promoted as GitHub prereleases.
-- [ ] GitHub **release immutability** is enabled in repository or organization
-      settings **before the draft release is created** (the setting applies
-      only to future releases), and the required confirmation input is true.
-      The final job refuses success unless GitHub reports the published
-      release as immutable, which locks its tag and attached assets.
+      (`vX.Y.Z` and `X.Y.Z`).  That equality is a refusal: a bundle named
+      for one while the wheel says the other is a download nobody can find.
+      Whether the version must additionally be a *stable* `X.Y.Z` is the
+      operator's call. Leave the optional `stable_release_expected` input
+      unticked -- the default -- and a non-stable version publishes with a
+      workflow warning naming it; tick it and the cut refuses anything but
+      `X.Y.Z`. It reads this way by owner ruling of 2026-08-03: the
+      stable-only refusal was added on 2026-08-01 with no ruling behind it,
+      and it blocked a motion that had always worked.
+- [ ] The selected workflow ref and the tag name each other, and **exactly
+      one** GitHub release carries that tag, in the state the ingress implies
+      (a draft for a dispatch, an already-public release for the release
+      event). Both are refusals: two releases on one tag means the cut cannot
+      know which one it is publishing, and the wrong state means the motion
+      is not the one the trigger claimed. A release marked **prerelease**
+      warns and continues, and its prerelease state is carried through the
+      cut unchanged rather than silently cleared -- owner ruling 2026-08-03,
+      the same demotion as above.
+- [ ] Optionally, GitHub **release immutability**: enable it in repository or
+      organization settings **before the release is created** (the setting
+      applies only to future releases) and tick `immutable_releases_enabled`.
+      The final job then refuses success unless GitHub reports the published
+      release as immutable, which locks its tag and attached assets. Left
+      unticked -- the default, and how every release through v1.4.0 shipped
+      -- the cut proceeds and reports the release's actual immutable state.
 - [ ] The committed tag has `release: null` and `platforms: {}` in
       `gpuwm/data/bridges/bridge-pins.json`. Official wheel/sdist pins are
       generated later from the exact bundles; GitHub's automatic source
       archives stay honestly unpinned and require a source build.
+      `tools/verify_source_bridge_pins.py` is a hard gate and stays one by
+      owner ruling 2026-08-03: the failure mode is a source archive
+      impersonating pinned release bytes.
 - [ ] `cargo build --release --locked` in `tools/grib1_bridge` and in
       `tools/rustwx`, once per published platform
       (`gpuwm.bridge_assets.SUPPORTED_PLATFORMS`).
@@ -70,10 +90,17 @@ hand has to reproduce them, not because their proofs are optional:
       tag. A retry deletes only an interrupted GitHub `starter` asset, accepts
       only an uploaded asset whose size and SHA-256 match, and refuses changed
       or unexpected bytes.
-- [ ] `python tools/build_bridge_bundle.py pin --release <tag> --bundle
-      <each bundle> --out gpuwm/data/bridges/bridge-pins.json
+- [ ] `python tools/build_bridge_bundle.py pin --release <tag>
+      --source-rev <tag commit> --bundle <each bundle>
+      --out gpuwm/data/bridges/bridge-pins.json
       --manifest dist-bridges/bridge-bundle-manifest.json`, then upload
-      the manifest beside the bundles.
+      the manifest beside the bundles.  `--source-rev` is the full
+      40-hex commit the tag peels to: every binary in every bundle
+      embeds `GPUWM_BRIDGE_SOURCE_REV=<commit>` at build time, and pin
+      refuses a bundle whose stamp is absent or names any other commit.
+      This is the check the 1.4.1 preparation lacked when it nearly
+      shipped platform zips from two different source revisions -- a
+      stale binary hashes perfectly, so only the stamp can catch it.
 - [ ] Build the wheel/sdist *after* that write, from a tree with no
       `build/` directory left over from an earlier build.  `bdist_wheel`
       zips whatever is in `build/lib`, and `build_py` adds to that
@@ -89,6 +116,13 @@ hand has to reproduce them, not because their proofs are optional:
 - [ ] Confirm the built package reads its own pins: the release matches
       the tag, every supported platform is pinned, and each bundle names
       every artifact in `gpuwm.bridge_assets.BUNDLED_ARTIFACTS`.
+      `python tools/verify_release_artifacts.py --dry-run --wheel ... --sdist
+      ... --pins ... --manifest ... --bundles ... --release <tag> --source-rev
+      <commit> --receipt <path>` runs every document, wheel, sdist, and bundle
+      assertion the cut runs, against staged artifacts and before any of it is
+      public. It skips only what needs a wheel installed outside the checkout
+      and executable target-native binaries, and its receipt names those
+      skips, so a dry-run receipt is never mistaken for the cut's.
 - [ ] Confirm the built wheel stamps the release version.  Install it
       into a scratch virtual environment and read it back --
       `python -c "import gpuwm; print(gpuwm.__version__)"` -- because
@@ -103,12 +137,16 @@ hand has to reproduce them, not because their proofs are optional:
 - [ ] After the release is public, one live smoke against the published
       URL: `GPUWM_NETWORK_TESTS=1 python -m pytest -q -m network
       tests/test_bridge_fetch.py`.
-- [ ] Confirm the workflow's final job, rather than an operator racing it,
-      changed the proven draft to a public release. A lost PATCH response is
-      retry-safe by rerunning the failed final job in the same workflow run:
-      the same already-public release ID/tag is success, and a post-PATCH read
-      proves `draft=false` and `immutable=true`. Do not dispatch a new full run
-      after publication; its draft-authority gate correctly refuses.
+- [ ] On the dispatch ingress, confirm the workflow's final job, rather than
+      an operator racing it, changed the proven draft to a public release. A
+      lost PATCH response is retry-safe by rerunning the failed final job in
+      the same workflow run: the same already-public release ID/tag is
+      success, and a post-PATCH read proves `draft=false` and the captured
+      prerelease state (plus `immutable=true` when immutability was opted
+      into). Do not *dispatch* a new full run after publication; that ingress
+      expects a draft and correctly refuses. On the release-event ingress
+      there is nothing to promote -- the release was already public when the
+      event fired, and the final job proves it and exits.
 
 A cut that skips the pin step ships a wheel whose pins declare no
 platform.  That is not a corrupt release -- `gpuwm fetch-bridges` says

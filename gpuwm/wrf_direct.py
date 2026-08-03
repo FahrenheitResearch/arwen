@@ -1523,7 +1523,7 @@ def _prepared_domain_context(artifact: PreparedDomainArtifacts, domain,
     try:
         stock_wrf_physics_inventory(cfg.get("mp_physics"))
     except (TypeError, ValueError) as error:
-        raise ValueError(
+        raise StockWrfExportUnsupported(
             f"unsupported d{domain.grid_id:02d} direct-export "
             f"microphysics: {error}") from None
     required = {
@@ -1542,7 +1542,17 @@ def _prepared_domain_context(artifact: PreparedDomainArtifacts, domain,
         if cfg.get(name) != expected
     }
     if mismatch:
-        raise ValueError(
+        # This IS "the physics slice the profile-free compatibility branch
+        # requires" that StockWrfExportUnsupported's docstring names as its
+        # own third category, so it must be catchable.  As a bare
+        # ValueError it escaped native_hierarchy's stock_wrf_export
+        # ="optional" arm and destroyed the whole preparation: a complete,
+        # verified three-domain GPU hierarchy whose only defect was that
+        # its 250 m LES child runs bl_pbl_physics = 0, which no
+        # unchanged-WRF wrfinput set in the v2 slice can represent.  The
+        # export still refuses exactly what it refused before; a caller
+        # whose product IS the export still fails on it.
+        raise StockWrfExportUnsupported(
             f"unsupported d{domain.grid_id:02d} direct-export "
             f"configuration: {mismatch}")
     prepared_valid_time = datetime.fromisoformat(

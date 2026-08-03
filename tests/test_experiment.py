@@ -690,13 +690,26 @@ def test_unknown_keys_and_misplaced_keys_both_refuse_by_name(tmp_path):
     """
     with pytest.raises(ValueError, match=r"does not have a key"):
         load_experiment(_write(tmp_path, shared="not_a_key = 1"))
+    # The [[domain]] half of the same refusal.  The key here has to be a
+    # genuine NON-key: `hill_height` is a real RunConfig field that is
+    # merely in the wrong table, so it now takes the more specific
+    # misplaced-key branch asserted at the end of this test rather than
+    # the unknown-key one.
     with pytest.raises(ValueError, match=r"does not have a key"):
-        load_experiment(_write(tmp_path, d02="hill_height = 5.0"))
+        load_experiment(_write(tmp_path, d02="not_a_domain_key = 5.0"))
     # KEEP-HARD negatives: misplaced and retired keys refuse by name.
     with pytest.raises(ValueError, match=r"belongs in \[\[domain\]\]"):
         load_experiment(_write(tmp_path, shared="dx = 1000.0"))
     with pytest.raises(ValueError, match="retired"):
         load_experiment(_write(tmp_path, shared="clock_dt = 60.0"))
+    # A real RunConfig field in [[domain]] is NOT a typo, and used to
+    # warn and drop -- so `hill_height = 5.0` on a nest ran the shared
+    # 100 m hill (gpuwm/core/terrain.py:26 reads cfg.hill_height) and
+    # reported success.  That is the docstring's own "honoring or
+    # dropping it silently would change the run", so it refuses now.
+    with pytest.raises(ValueError,
+                       match="are run settings that are NOT per domain"):
+        load_experiment(_write(tmp_path, d02="hill_height = 5.0"))
 
 
 def test_rejects_bad_eta_levels(tmp_path):

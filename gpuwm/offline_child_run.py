@@ -49,7 +49,12 @@ _CAPABILITIES = {
     "parent_producers": ["gpuwm", "stock-wrf"],
     "minimum_parent_frames": 2,
     "physics_evidence": ["gpuwm-restart", "wrf-namelist"],
-    "same_scheme_mp_physics": [6, 8, 10, 18],
+    # 28 (Thompson aerosol-aware) is same-scheme only: an mp=28 parent
+    # forcing an mp=28 child.  Every CROSS-scheme edge touching 28 is
+    # refused by name (gpuwm/offline_child.py::
+    # _CROSS_SCHEME_REFUSED_MP_PHYSICS), matching the online nest lane's
+    # refusal in gpuwm/core/microphysics_transition.py.
+    "same_scheme_mp_physics": [6, 8, 10, 18, 28],
     "cross_scheme_transitions": [],
     "vertical_remapping": False,
     "terrain_policy": "sint-parent-inherited",

@@ -176,6 +176,59 @@ def target_domain(exp):
     return HrrrTargetDomain(**document)
 
 
+def target_coverage_refusal(target) -> str | None:
+    """Why HRRR cannot initialize this d01, or ``None`` when it can.
+
+    Two demands, not one.  The WINDOW demand is the root preparer's own
+    (``required_hrrr_source_window``): every interpolation and donor
+    cell inside the native 1799 x 1059 grid.  The MARGIN demand is the
+    wizard's promise: the required window must stay a further
+    ``surface_fallback_radius_cells`` clear of every native edge,
+    because a domain pinned exactly against the edge is one whose soil
+    donor searches have no remediation left -- the only knob the
+    mapping refusal can name (raising the radius) enlarges the required
+    window past the edge and is refused by this very guard.
+
+    Field 2026-08 (39,-98, 3 km root): the auto-fitted 1234x986 passed
+    the window demand exactly on the top edge (j=36..1058), soil
+    mapping then found two land cells with no donor within 8 cells, and
+    the recommended raise to 16 was refused (j=28..1066 against j max
+    1058).  Trimmed to 1186x938 -- 24 cells a side, exactly this margin
+    -- it prepared, ran, and rendered.
+    """
+    from gpuwm.ingest.hrrr_target import (HRRR_SOURCE_NX, HRRR_SOURCE_NY,
+                                          required_hrrr_source_window)
+
+    try:
+        window = required_hrrr_source_window(target)
+    except ValueError as error:
+        return str(error)
+    radius = window.surface_fallback_radius_cells
+    shortfalls = [
+        (side, gap) for side, gap in (
+            ("west", radius - window.i_start),
+            ("east", window.i_end + radius - (HRRR_SOURCE_NX - 1)),
+            ("south", radius - window.j_start),
+            ("north", window.j_end + radius - (HRRR_SOURCE_NY - 1)),
+        ) if gap > 0]
+    if not shortfalls:
+        return None
+    worst = max(gap for _side, gap in shortfalls)
+    named = ", ".join(f"the {side} side is short {gap} cell(s)"
+                      for side, gap in shortfalls)
+    return (
+        "this domain leaves no usable surface-donor margin: its required "
+        f"source window i={window.i_start}..{window.i_end}, "
+        f"j={window.j_start}..{window.j_end} must stay a further "
+        f"{radius} cells (its own surface_fallback_radius_cells) inside "
+        f"the native HRRR limits i=0..{HRRR_SOURCE_NX - 1}, "
+        f"j=0..{HRRR_SOURCE_NY - 1}, and {named}.  A land cell whose "
+        "donor search fails near that edge would have no acceptable "
+        "remedy -- every larger radius leaves HRRR coverage -- so trim "
+        f"the domain by at least {worst} HRRR cell(s) (~{3 * worst} km) "
+        "on the named side(s), or move it away from the edge")
+
+
 def coverage_refusal(exp) -> str | None:
     """Why HRRR cannot force this d01, or ``None`` when it can.
 
@@ -187,15 +240,15 @@ def coverage_refusal(exp) -> str | None:
     of HRRR's coverage produces.  Asked at sizing time, this makes the
     fit loop pick a domain HRRR can carry; asked at emission, it names
     the overflow instead of leaving it to a root preparation minutes
-    later.
+    later.  The donor-search margin rides along
+    (:func:`target_coverage_refusal`), so what the fit loop accepts is
+    a domain whose soil mapping keeps a usable remediation.
     """
     try:
-        from gpuwm.ingest.hrrr_target import required_hrrr_source_window
-
-        required_hrrr_source_window(target_domain(exp))
+        candidate = target_domain(exp)
     except (HrrrRouteInputError, ValueError) as error:
         return str(error)
-    return None
+    return target_coverage_refusal(candidate)
 
 
 def coverage_advisory(exp) -> list[str]:
@@ -203,26 +256,29 @@ def coverage_advisory(exp) -> list[str]:
 
     The sizing line reports headroom in GiB, so a domain the fit loop
     stopped growing for a reason that is not memory reads as an
-    unexplained shortfall.  When the required source window reaches an
-    edge of HRRR's native grid, that IS the reason.
+    unexplained shortfall.  When the required source window plus the
+    reserved donor-search margin reaches an edge of HRRR's native grid,
+    that IS the reason.
     """
     from gpuwm.ingest.hrrr_target import (HRRR_SOURCE_NX, HRRR_SOURCE_NY,
                                           required_hrrr_source_window)
 
     if coverage_refusal(exp) is not None:
         return []
-    window = required_hrrr_source_window(
-        target_domain(exp)).to_dict()["zero_based_inclusive"]
-    i0, i1 = window["i"]
-    j0, j1 = window["j"]
+    window = required_hrrr_source_window(target_domain(exp))
+    radius = window.surface_fallback_radius_cells
     touched = [name for name, at_edge in (
-        ("west", i0 <= 0), ("east", i1 >= HRRR_SOURCE_NX - 1),
-        ("south", j0 <= 0), ("north", j1 >= HRRR_SOURCE_NY - 1)) if at_edge]
+        ("west", window.i_start - radius <= 0),
+        ("east", window.i_end + radius >= HRRR_SOURCE_NX - 1),
+        ("south", window.j_start - radius <= 0),
+        ("north", window.j_end + radius >= HRRR_SOURCE_NY - 1),
+    ) if at_edge]
     if not touched:
         return []
     return [
         "this domain is bounded by HRRR's own grid, not by your card: "
-        f"its interpolation halo reaches the {'/'.join(touched)} edge of "
+        f"its interpolation window plus the reserved {radius}-cell "
+        f"surface-donor margin reaches the {'/'.join(touched)} edge of "
         f"the {HRRR_SOURCE_NX}x{HRRR_SOURCE_NY} HRRR grid, so headroom "
         "left on the card cannot be spent here"]
 

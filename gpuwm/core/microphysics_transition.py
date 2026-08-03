@@ -28,7 +28,30 @@ MP8_TO_MP18_POLICY = "mp8-to-mp18-mass-diagnosed-v1"
 EDGE_MATRIX_POLICY = "mp-edge-mass-diagnosed-v1"
 TRANSITION_ORDER = "diagnose-parent-then-spatially-interpolate"
 NSSL2_BACKGROUND_CCN_PER_KG = 408163264.0
+#: Selectors with a ported MIXED nest edge.  APPEND ONLY: ``_ALL_EDGE_FIELDS``
+#: iterates this tuple in order and ``_EDGE_FIELD_CODES`` is ``enumerate``
+#: over the result, so inserting a selector anywhere but the end silently
+#: renumbers the stable host field codes ``kernels/nest_microphysics.cu``
+#: switches on -- which would re-point the ratified MP8 -> MP18 nest edge at
+#: different fields with nothing raising.
+#:
+#: mp_physics=28 is DELIBERATELY ABSENT.  It is a fully ported scheme, and
+#: an mp=28 parent forcing an mp=28 child works: ``resolve_microphysics_
+#: transition`` returns the same-scheme contract before this tuple is ever
+#: consulted.  What is absent is a *mixed* edge, because none has been
+#: validated -- see :data:`UNVALIDATED_MIXED_EDGE_SELECTORS`.  Listing 28
+#: here and then refusing all eleven of its mixed pairs would be a
+#: self-contradiction: this tuple's whole meaning is "the mixed edges that
+#: work".  When a closure is ratified, APPEND 28 here; it will contribute
+#: nc/nwfa/nifa at codes 20/21/22 and move nothing.
 PORTED_MP_PHYSICS = (1, 6, 8, 10, 18)
+
+#: Schemes ArWen has ported but whose MIXED nest edges are refused rather
+#: than approximated.  Consulted by :func:`resolve_microphysics_transition`
+#: purely so the refusal names a reason instead of falling through to the
+#: generic "ported selectors are ..." message, which would read as "mp=28 is
+#: not implemented" when in fact only the edge closure is missing.
+UNVALIDATED_MIXED_EDGE_SELECTORS = (28,)
 
 _DYNAMIC_FIELDS = ("u", "v", "w", "t", "ph", "mu")
 _MASS_FIELDS = {
@@ -48,6 +71,14 @@ _MOMENT_FIELDS = {
         "qvolg", "qvolh",
     ),
 }
+
+#: What an mp=28 mixed edge WOULD have to move, recorded so the refusal is
+#: specific and so a future package does not have to rediscover it.  nr/ni
+#: first, so appending 28 to :data:`PORTED_MP_PHYSICS` would extend the
+#: existing code table with nc/nwfa/nifa at 20/21/22 and reorder nothing.
+UNVALIDATED_MIXED_EDGE_MOMENTS = {
+    28: ("nr", "ni", "nc", "nwfa", "nifa"),
+}
 _TARGET_FIELDS = {
     mp: _MASS_FIELDS[mp] + _MOMENT_FIELDS[mp]
     for mp in PORTED_MP_PHYSICS
@@ -57,6 +88,20 @@ _ALL_EDGE_FIELDS = tuple(dict.fromkeys(
     for mp in PORTED_MP_PHYSICS
     for name in _TARGET_FIELDS[mp]
 ))
+#: The stable host field codes ``kernels/nest_microphysics.cu`` switches on:
+#:
+#:   qv/qc/qr/qi/qs/qg = 0..5, nr/ni/ns/ng = 6..9, qh = 10,
+#:   qndrop/qnr/qni/qns/qng/qnh/qnn/qvolg/qvolh = 11..19,
+#:   nc = 20, nwfa = 21, nifa = 22   (mp_physics=28).
+#:
+#: Codes 20..22 are RESERVED for mp_physics=28's nc/nwfa/nifa and are not
+#: allocated today: 28 is absent from :data:`PORTED_MP_PHYSICS` because every
+#: mixed edge touching it is refused, so ``microphysics_edge_field`` can
+#: never be launched with ``target_mp == 28`` nor with ``field >= 20``.  The
+#: kernel's own comment block therefore documents and decodes 0..19 only, and
+#: that is correct rather than stale.  Ratifying the closure means appending
+#: 28 to PORTED_MP_PHYSICS, which extends this table rather than renumbering
+#: it, and adding a kernel arm.
 _EDGE_FIELD_CODES = {
     name: code for code, name in enumerate(_ALL_EDGE_FIELDS)
 }
@@ -90,7 +135,11 @@ def _rimed_category(cfg) -> str | None:
     """Return the physical meaning of a scheme's single ``qg`` category."""
 
     mp = int(getattr(cfg, "mp_physics", 0))
-    if mp == 8:
+    if mp in (8, 28):
+        # Thompson's single rimed category is graupel in both entries:
+        # module_mp_thompson.F declares one rho_g/am_g/bm_g set used by the
+        # classic and the aerosol-aware path alike, and mp=28 adds no hail
+        # category.
         return "graupel"
     if mp == 6:
         return "hail" if int(getattr(cfg, "wsm6_hail_opt", 0)) else "graupel"
@@ -304,7 +353,13 @@ def _canonical_source_sha256(path: Path) -> str:
 
 def resolve_microphysics_transition(
         parent_cfg, child_cfg) -> MicrophysicsTransitionContract:
-    """Resolve one of the 25 ported ordered edges or fail closed."""
+    """Resolve one of the 25 ported ordered edges or fail closed.
+
+    A same-scheme edge resolves for ANY ported ``mp_physics``, including
+    mp=28, before the mixed-edge matrix is consulted.  A MIXED edge with
+    mp=28 on either side is refused by name (see
+    :data:`UNVALIDATED_MIXED_EDGE_SELECTORS`).
+    """
 
     source = int(getattr(parent_cfg, "mp_physics", 0))
     target = int(getattr(child_cfg, "mp_physics", 0))
@@ -319,6 +374,33 @@ def resolve_microphysics_transition(
         return MicrophysicsTransitionContract(
             source_mp_physics=source, target_mp_physics=target,
             policy_id=policy, mixed=False)
+
+    # NAMED refusal before the generic "not a ported selector" message.
+    # mp=28 IS ported; only its cross-scheme entry closure is missing, and an
+    # operator who reads "ported selectors are (1, 6, 8, 10, 18)" would
+    # reasonably conclude the scheme itself is unavailable.
+    unvalidated = sorted(
+        {source, target} & set(UNVALIDATED_MIXED_EDGE_SELECTORS))
+    if unvalidated:
+        mp = unvalidated[0]
+        moments = ", ".join(UNVALIDATED_MIXED_EDGE_MOMENTS[mp])
+        raise ValueError(
+            f"mixed nest microphysics edge MP{source}->MP{target} is REFUSED: "
+            f"MP{mp} (Thompson aerosol-aware) is ported and runs, but it has "
+            f"no validated cross-scheme entry closure for its moments "
+            f"({moments}) -- a prognostic cloud droplet number plus two "
+            "aerosol number tracers that no other ported scheme carries.  "
+            "WRF's own non-aerosol-aware fallbacks -- nc = Nt_c/rho, "
+            "nwfa = 11.1E6/rho, nifa = naIN1*0.01/rho == 5.0E3/rho "
+            "(module_mp_thompson.F:1248-1255, the ELSE branch mp_gt_driver "
+            "takes when is_aerosol_aware is FALSE) -- are the obvious "
+            "candidate, but nothing has measured them across an ArWen nest "
+            "edge, and they would seed the child with the scheme's own floor "
+            "values instead of the parent's aerosol field.  That is a "
+            "different forecast, and it is one no bound, health rule or "
+            "conservation check in this tree would flag.  An honest refusal "
+            f"beats an unvalidated closure: configure both domains with "
+            f"mp_physics={mp}, or keep MP{mp} on a single domain.")
 
     if source not in PORTED_MP_PHYSICS or target not in PORTED_MP_PHYSICS:
         raise ValueError(
@@ -508,6 +590,7 @@ __all__ = [
     "EDGE_MATRIX_POLICY", "MP8_TO_MP18_POLICY",
     "MicrophysicsTransitionContract", "NSSL2_BACKGROUND_CCN_PER_KG",
     "PORTED_MP_PHYSICS", "SAME_SCHEME_POLICY", "TRANSITION_ORDER",
+    "UNVALIDATED_MIXED_EDGE_MOMENTS", "UNVALIDATED_MIXED_EDGE_SELECTORS",
     "launch_microphysics_edge_parent_field",
     "launch_mp8_to_mp18_parent_field", "resolve_microphysics_transition",
     "transition_handles_field", "transition_implementation_identity",

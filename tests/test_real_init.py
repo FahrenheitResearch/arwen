@@ -1087,3 +1087,673 @@ def test_real74_d01_30min_gate_admits_complete_no_pbl_operator():
     supported = validate_run_config(phase3_config(run_seconds=1800.0))
     assert supported.km_opt == 4
     assert supported.bl_pbl_physics == 1
+
+
+# ---------------------------------------------------------------------------
+# mp_physics=28 (Thompson aerosol-aware) real-data ingest.
+#
+# Before this lane existed, gpuwm/ingest/real.py named mp_physics 1, 6, 8, 10
+# and 18 at three separate sites and 28 at none of them.  The consequence was
+# not an error: an mp=28 run from a cloudy HRRR analysis silently produced a
+# condensate-free initial state, because the five analyzed species were never
+# declared required (:1106), never shape-checked (:1150) and never vertically
+# interpolated (:1390).  Each of these tests fails against that tree.
+#
+# WRF authority, v4.6.1 commit d66e442fccc04111067e29274c9f9eaccc3cef28:
+#   Registry/Registry.EM_COMMON:3036   thompsonaero package membership
+#   Registry/Registry.EM_COMMON:3024   thompson, for the moist-list identity
+#   dyn_em/module_initialize_real.F:2332-2345   aer_init_opt=0, 3-D aerosol
+#   dyn_em/module_initialize_real.F:4501-4510   aer_init_opt=0, 2-D emission
+#   dyn_em/module_initialize_real.F:2735-2736   the FATAL ArWen deviates from
+#   phys/module_mp_thompson.F:493,:531          thompson_init's MAXVAL tests
+# ---------------------------------------------------------------------------
+
+
+class _ReferenceVerticalPlan:
+    """WRF-real vertical interpolation through the NumPy reference."""
+
+    def __init__(self, source, surface, target):
+        self.source = np.asarray(source, dtype=np.float32)
+        self.surface = np.asarray(surface, dtype=np.float32)
+        self.target = np.asarray(target, dtype=np.float32)
+
+    def apply(self, field, surface_value, **options):
+        from gpuwm.verify.npref import np_wrf_real_vert_interp
+
+        options.pop("values_are_finite", None)
+        return np.asarray(np_wrf_real_vert_interp(
+            field, surface_value, self.source, self.surface, self.target,
+            **options), dtype=np.float32)
+
+
+class _ReferencePreprocessBackend:
+    """Independent CPU implementation of the preprocessing ABI.
+
+    Deliberately not the packaged Rust CPU bridge: these tests are about the
+    scheme-selection logic in :func:`initialize_real`, and must not skip on a
+    machine where the bridge is unbuilt.
+    """
+
+    name = "cpu-reference-test"
+    array_module = np
+
+    @staticmethod
+    def float32(value):
+        return np.asarray(value, dtype=np.float32)
+
+    @staticmethod
+    def regular_plan(*args, **kwargs):
+        raise AssertionError("horizontal preprocessing is unused here")
+
+    masked_nearest = regular_plan
+    rotate_earth_to_grid = regular_plan
+    era5_rh_to_water = regular_plan
+
+    @staticmethod
+    def prepare_wrf_vertical(source, surface, target):
+        return _ReferenceVerticalPlan(source, surface, target)
+
+    @staticmethod
+    def receipt():
+        return {"backend": "cpu-reference-test"}
+
+
+def _analyzed_hrrr_real_init(
+        mp_physics, *, state_backend="cpu", terrain_m=0.0,
+        drop=(), reshape=None, **config_overrides):
+    """One decoded-native-HRRR real initialization, never a fabricated state.
+
+    ``drop`` removes analyzed species from the decoded snapshot and
+    ``reshape`` truncates one of them, so the required-field and shape gates
+    can be exercised for real rather than asserted about.
+    """
+
+    ny, nx, nz = 2, 3, 8
+    levels = np.array(
+        [100.0, 300.0, 500.0, 700.0, 850.0, 1000.0], dtype=np.float64)
+    pressure = np.broadcast_to(
+        levels[:, None, None] * 100.0, (levels.size, ny, nx)).copy()
+    temperature = np.broadcast_to(
+        215.0 + 75.0 * (pressure / 100000.0) ** 0.22, pressure.shape).copy()
+    height = np.broadcast_to(
+        -7900.0 * np.log(pressure / 100000.0), pressure.shape).copy()
+    height += terrain_m
+    level_index = np.arange(levels.size, dtype=np.float32)[:, None, None]
+    row_index = np.arange(ny, dtype=np.float32)[None, :, None]
+    column_index = np.arange(nx, dtype=np.float32)[None, None, :]
+    analyzed = {}
+    for species_index, name in enumerate(("QC", "QR", "QI", "QS", "QG"), 1):
+        value = np.asarray(
+            species_index * 1.0e-6
+            * (1.0 + level_index + 0.25 * row_index
+               + 0.125 * column_index), dtype=np.float32)
+        # One exact zero so a nonzero-mask fingerprint is a real discriminator.
+        value[0, 0, 0] = np.float32(0.0)
+        analyzed[name] = value
+    for name in drop:
+        analyzed.pop(name)
+    if reshape is not None:
+        analyzed[reshape] = analyzed[reshape][:, :, :-1].copy()
+    fields = {
+        "PRES": pressure.astype(np.float32),
+        "SPFH": np.full(pressure.shape, 0.004, dtype=np.float32),
+        "TT": temperature.astype(np.float32),
+        "GHT": height.astype(np.float32),
+        "UU": np.full((levels.size, ny, nx + 1), 8.0, dtype=np.float32),
+        "VV": np.full((levels.size, ny + 1, nx), -2.0, dtype=np.float32),
+        "PSFC": np.full((ny, nx), 100000.0, dtype=np.float32),
+        "T2": np.full((ny, nx), 289.0, dtype=np.float32),
+        "Q2": np.full((ny, nx), 0.004, dtype=np.float32),
+        "U10": np.full((ny, nx + 1), 7.0, dtype=np.float32),
+        "V10": np.full((ny + 1, nx), -1.0, dtype=np.float32),
+        **analyzed,
+    }
+    snapshot = HorizontalSnapshot(
+        valid_time=datetime(2026, 7, 20, 6), levels_hpa=levels, fields=fields)
+    cfg = RunConfig(
+        nx=nx, ny=ny, nz=nz, dx=12000.0, dy=12000.0, ztop=18000.0,
+        dt=30.0, run_seconds=60.0, hybrid_opt=2, etac=0.2, moist=True,
+        terrain_opt=1, mp_physics=mp_physics, **config_overrides)
+    eta = np.linspace(1.0, 0.0, nz + 1)
+    terrain = np.full((ny, nx), float(terrain_m), dtype=np.float64)
+    result = initialize_real(
+        snapshot, cfg,
+        make_vertical_coord(nz, hybrid_opt=2, etac=0.2, eta_levels=eta),
+        terrain, source_orography=terrain, p_top=10000.0, use_sh_qv=True,
+        preprocess_backend=_ReferencePreprocessBackend(),
+        state_backend=state_backend)
+    return result, cfg
+
+
+def _host_array(value):
+    return np.asarray(value.get() if hasattr(value, "get") else value)
+
+
+def test_mp28_real_ingest_retains_every_analyzed_hydrometeor():
+    """mp=28's Registry moist list is character for character mp=8's.
+
+    Registry.EM_COMMON:3024 gives ``thompson`` moist:qv,qc,qr,qi,qs,qg and
+    :3036 gives ``thompsonaero`` the same six; the aerosol-aware scheme adds
+    only ``scalar:`` members.  So all five decoded HRRR mass species must
+    survive to the state, exactly as for mp=8.  Against the tree that omitted
+    28 from the three mp tuples this state was identically zero and nothing
+    raised.
+    """
+    result, _ = _analyzed_hrrr_real_init(28)
+    state = result.state
+
+    evidence = result.hydrometeor_initialization
+    # v2 since the 1.4.1 merge: the HRRR vertical-disposition work on the
+    # release line moved the correspondence schema while the port was off
+    # the line, and gpuwm/ingest/real.py now emits v2 for every scheme.  The
+    # mp=28 claim this test makes -- that a 28 run retains every analyzed
+    # hydrometeor -- is unchanged; only the schema stamp moved.
+    assert evidence["schema"] == "gpuwm-real-hydrometeor-correspondence-v2"
+    assert evidence["mp_physics"] == 28
+    assert set(evidence["retained_correspondence"]) == {
+        "QC", "QR", "QI", "QS", "QG"}
+    assert evidence["discarded_source_species"] == {}
+    for source_name, state_name in sorted(
+            evidence["retained_correspondence"].items()):
+        live = _host_array(getattr(state, state_name))
+        assert live.dtype == np.float32
+        assert live.shape == (8, 2, 3)
+        assert np.isfinite(live).all()
+        assert live.min() >= 0.0
+        assert np.count_nonzero(live) > 0, (
+            f"{source_name}->{state_name} carried no analyzed mass")
+        assert live.max() <= float(
+            evidence["decoded_source_species"][source_name]["maximum"]
+        ) * (1.0 + 4.0e-7)
+
+    # An mp=8 initialization of the same snapshot is the control: the two
+    # must agree bit for bit on the mass species, because the mass path is
+    # the same code and the only difference is which scalars exist.
+    control, _ = _analyzed_hrrr_real_init(8)
+    for name in ("qc", "qr", "qi", "qs", "qg"):
+        np.testing.assert_array_equal(
+            _host_array(getattr(state, name)),
+            _host_array(getattr(control.state, name)))
+
+
+def test_mp28_real_ingest_requires_the_analyzed_inventory_by_name():
+    """The :1106 required-field gate, exercised rather than asserted."""
+    with pytest.raises(KeyError, match=r"missing real-data field\(s\).*QI"):
+        _analyzed_hrrr_real_init(28, drop=("QI",))
+
+
+def test_mp28_real_ingest_shape_checks_the_analyzed_inventory():
+    """The :1150 mass-shape gate.
+
+    Without 28 in that tuple a truncated QG reached the vertical plan and
+    failed later, inside the interpolation, with a message about neither the
+    field nor the scheme.
+    """
+    with pytest.raises(ValueError, match="mass-field shapes do not match"):
+        _analyzed_hrrr_real_init(28, reshape="QG")
+
+
+def test_mp28_real_ingest_zeroes_the_source_absent_number_moments():
+    """Registry scalars the analysis does not carry begin at exact zero.
+
+    mp=8's arm zeroes ni and nr.  mp=28 adds nc, because the aerosol-aware
+    scheme promotes cloud droplet number from the constant Nt_c to a
+    prognostic Registry scalar (QNCLOUD, Registry.EM_COMMON:3036).  Exact
+    FP32 zero is required, not "small": real.exe initializes absent package
+    members to 0.0 and the scheme owns their first physical update.
+    """
+    result, _ = _analyzed_hrrr_real_init(28)
+    state = result.state
+    for name in ("nc", "nr", "ni"):
+        live = _host_array(getattr(state, name))
+        assert live.dtype == np.float32
+        assert live.shape == (8, 2, 3)
+        assert int(live.view(np.uint32).max()) == 0, (
+            f"state.{name} is not exact FP32 zero")
+
+
+def test_mp28_real_ingest_leaves_the_aerosols_for_the_init_hook():
+    """The aerosol fields must arrive EXACTLY zero, and say so.
+
+    Zero here is not "unset": ``thompson_init`` decides whether to install
+    its synthetic CCN/IN profile by testing MAXVAL(nwfa) < eps
+    (phys/module_mp_thompson.F:493) and MAXVAL(nifa) < eps (:531).  Any
+    nonzero placeholder written by the ingest would flip those tests and
+    permanently suppress the profile, leaving the aerosol-aware physics inert
+    with no error anywhere.  WRF's own initializer writes exactly 0.0 for
+    both 3-D fields (dyn_em/module_initialize_real.F:2332-2345) and both 2-D
+    emissions (:4501-4510) under aer_init_opt=0.
+    """
+    result, cfg = _analyzed_hrrr_real_init(28)
+    state = result.state
+    for name in ("nwfa", "nifa", "nwfa2d", "nifa2d"):
+        live = _host_array(getattr(state, name))
+        assert live.dtype == np.float32
+        assert int(live.view(np.uint32).max()) == 0, (
+            f"state.{name} is not exact FP32 zero")
+
+    receipt = result.aerosol_initialization
+    assert receipt["policy"] == (
+        "aer-init-opt-0-zero-then-thompson-init-synthetic-profile")
+    assert receipt["registry_citation"] == (
+        "Registry/Registry.EM_COMMON:3036")
+    assert receipt["real_citation"] == (
+        "dyn_em/module_initialize_real.F:2332-2345")
+    assert receipt["wrf_real_refuses_this_configuration"] == (
+        "dyn_em/module_initialize_real.F:2735-2736")
+    assert receipt["deferred_to"] == (
+        "gpuwm.core.physics.initialize_physics -> "
+        "gpuwm.core.microphysics.microphysics_init")
+    assert receipt["awaiting_profile_fill"] is True
+    assert receipt["aer_init_opt"] == 0 and receipt["wif_input_opt"] == 0
+    assert set(receipt["not_initialized_here"]) == {
+        "nwfa", "nifa", "nwfa2d", "nifa2d"}
+    fingerprints = receipt["source_absent_state_fields"]
+    assert set(fingerprints) == {
+        "nc", "nr", "ni", "nwfa", "nifa", "nwfa2d", "nifa2d"}
+    assert all(item["nonzero_count"] == 0 for item in fingerprints.values())
+
+    # Every other scheme carries an empty aerosol receipt, so the field can
+    # never be read as "this run has aerosol provenance" when it does not.
+    control, _ = _analyzed_hrrr_real_init(8)
+    assert control.aerosol_initialization == {}
+    assert cfg.mp_physics == 28
+
+
+def test_mp28_real_ingest_refuses_an_aerosol_source_it_cannot_read():
+    """WIF selectors fail closed inside the ingest, not only in the config.
+
+    ``initialize_real`` is reachable with a RunConfig that never went through
+    ``validate_run_config``; accepting wif_input_opt=1 there would promise a
+    metgrid WIF stream this module cannot read and then hand the microphysics
+    an all-zero aerosol field as if it were the requested climatology.
+    """
+    from gpuwm.config import MP28_AEROSOL_SOURCE_DEVIATION
+
+    for overrides, name in (
+            ({"wif_input_opt": 1}, "wif_input_opt"),
+            ({"wif_input_opt": 2}, "wif_input_opt"),
+            ({"aer_init_opt": 1}, "aer_init_opt"),
+            ({"aer_init_opt": 2}, "aer_init_opt")):
+        with pytest.raises(NotImplementedError) as caught:
+            _analyzed_hrrr_real_init(28, **overrides)
+        message = str(caught.value)
+        assert name in message
+        assert MP28_AEROSOL_SOURCE_DEVIATION in message
+
+    # Not a blanket refusal: the same selectors are inert under mp=8 and the
+    # ingest must not start policing another scheme's namelist.
+    result, _ = _analyzed_hrrr_real_init(8)
+    assert result.aerosol_initialization == {}
+
+
+def test_mp28_real_ingest_does_not_call_the_profile_fill_itself():
+    """The ingest is not allowed to be the caller of ``microphysics_init``.
+
+    Proven structurally rather than by comment: the module source contains no
+    call, and the state it returns is empty of aerosol.  The fill belongs to
+    ``gpuwm.core.physics.initialize_physics``, which BOTH production
+    real-data front doors reach with the state this function returns
+    (``gpuwm/ingest/hrrr_physics.py``), so a call here would be the second
+    one.
+    """
+    import inspect
+    import re
+
+    from gpuwm.ingest import hrrr_physics
+    import gpuwm.ingest.real as real_module
+
+    source = inspect.getsource(real_module)
+    assert not re.search(r"\bmicrophysics_init\s*\(", source), (
+        "gpuwm/ingest/real.py must not call microphysics_init")
+    assert not re.search(r"\bthompson_aerosol_init_fill\s*\(", source)
+
+    # The named successor really is on this path.
+    physics_source = inspect.getsource(hrrr_physics)
+    assert "initialize_physics(" in physics_source
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_mp28_real_ingest_then_microphysics_init_fills_exactly_once():
+    """End to end: real ingest -> physics init -> WRF's synthetic profile.
+
+    This is the ownership proof the ingest lane owes.  The ingest leaves the
+    aerosol at exact zero; the FIRST ``microphysics_init`` performs both
+    fills and reports ``{'ccn': True, 'in': True}``; a SECOND call reports
+    ``{'ccn': False, 'in': False}`` and changes not one bit, because
+    ``thompson_init``'s own MAXVAL guard (module_mp_thompson.F:493/:531) now
+    sees a populated field.  So the fill happens exactly once on this path,
+    and an ingest that had populated the aerosol itself would be preserved
+    rather than overwritten.
+
+    The values are checked against WRF's own parameters rather than merely
+    for being nonzero: naCCN1=50.0E6 and naCCN0=300.0E6 (:96-97) bound nwfa
+    to [5.0e7, 3.5e8], naIN1=0.5E6 and naIN0=1.5E6 (:94-95) bound nifa to
+    [5.0e5, 2.0e6], and both profiles decrease monotonically upward from a
+    terrain below the 1000 m ``h_01`` breakpoint (:500-506).
+    """
+    import cupy as cp
+
+    from gpuwm.core.microphysics import microphysics_init
+
+    result, cfg = _analyzed_hrrr_real_init(
+        28, state_backend="cuda", terrain_m=250.0)
+    state = result.state
+    assert isinstance(state.nwfa, cp.ndarray)
+    for name in ("nwfa", "nifa", "nwfa2d"):
+        assert int(cp.asnumpy(getattr(state, name)).view(np.uint32).max()) == 0
+
+    first = microphysics_init(state, cfg)
+    assert first == {"thompson_aerosol_profile": {"ccn": True, "in": True}}
+    nwfa = cp.asnumpy(state.nwfa)
+    nifa = cp.asnumpy(state.nifa)
+    nwfa2d = cp.asnumpy(state.nwfa2d)
+
+    assert nwfa.dtype == np.float32 and nwfa.shape == (8, 2, 3)
+    assert nifa.dtype == np.float32 and nifa.shape == (8, 2, 3)
+    assert nwfa2d.dtype == np.float32 and nwfa2d.shape == (2, 3)
+    assert 50.0e6 <= nwfa.min() and nwfa.max() <= 350.0e6
+    assert 0.5e6 <= nifa.min() and nifa.max() <= 2.0e6
+    assert nwfa2d.min() > 0.0 and np.isfinite(nwfa2d).all()
+    # nifa2d is never assigned anywhere in module_mp_thompson.F; it is not
+    # even a thompson_init dummy argument.  Zero is WRF's behaviour.
+    assert int(cp.asnumpy(state.nifa2d).view(np.uint32).max()) == 0
+    for column in ((0, 0), (1, 2)):
+        profile = nwfa[:, column[0], column[1]]
+        assert np.all(np.diff(profile) <= 0.0)
+        assert np.all(np.diff(nifa[:, column[0], column[1]]) <= 0.0)
+
+    second = microphysics_init(state, cfg)
+    assert second == {"thompson_aerosol_profile": {"ccn": False, "in": False}}
+    np.testing.assert_array_equal(cp.asnumpy(state.nwfa), nwfa)
+    np.testing.assert_array_equal(cp.asnumpy(state.nifa), nifa)
+    np.testing.assert_array_equal(cp.asnumpy(state.nwfa2d), nwfa2d)
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_mp28_real_ingest_through_initialize_physics_fills_exactly_once():
+    """The whole production chain, not the hook in isolation.
+
+    ``initialize_real`` -> ``gpuwm.core.physics.initialize_physics`` is the
+    path every real-data front door takes
+    (``gpuwm/ingest/hrrr_physics.py::initialize_prepared_physics`` calls
+    ``initialize_physics`` on ``result.state``, and
+    ``::initialize_hrrr_physics`` delegates to it), and it is the reason this
+    module must not perform the fill itself.  WRF's own structure is the same
+    one: ``phys/module_physics_init.F:1635`` calls ``mp_init`` as the last
+    physics initializer, and ``mp_init``'s THOMPSONAERO arm calls
+    ``thompson_init``; ``dyn_em/module_initialize_real.F`` never does.
+
+    ANSWER TO THE OWNERSHIP QUESTION, measured: the physics init path is
+    responsible.  The ingest leaves exact zero, the first driver's
+    ``microphysics_init_receipt`` reports both fills ran, and a second
+    ``initialize_physics`` on the same state reports neither ran -- because
+    ``thompson_init``'s own MAXVAL presence tests now see a populated field.
+    So a duplicate call is idempotent rather than destructive, and an ingest
+    that DID carry aerosol would survive the physics init untouched; the
+    reason the ingest still must not call it is structural (WRF's split, and
+    the receipt this function publishes), not a race.
+    """
+    import cupy as cp
+
+    from gpuwm.core.physics import initialize_physics
+
+    result, cfg = _analyzed_hrrr_real_init(
+        28, state_backend="cuda", terrain_m=250.0)
+    state = result.state
+    assert result.aerosol_initialization["awaiting_profile_fill"] is True
+    for name in ("nwfa", "nifa", "nwfa2d", "nifa2d"):
+        assert int(cp.asnumpy(getattr(state, name)).view(np.uint32).max()) == 0
+
+    driver = initialize_physics(state, cfg)
+    assert driver.microphysics_init_receipt == {
+        "thompson_aerosol_profile": {"ccn": True, "in": True}}
+    nwfa = cp.asnumpy(state.nwfa)
+    nifa = cp.asnumpy(state.nifa)
+    nwfa2d = cp.asnumpy(state.nwfa2d)
+    assert 50.0e6 <= nwfa.min() and nwfa.max() <= 350.0e6
+    assert 0.5e6 <= nifa.min() and nifa.max() <= 2.0e6
+    assert nwfa2d.min() > 0.0
+
+    second = initialize_physics(state, cfg)
+    assert second.microphysics_init_receipt == {
+        "thompson_aerosol_profile": {"ccn": False, "in": False}}
+    np.testing.assert_array_equal(cp.asnumpy(state.nwfa), nwfa)
+    np.testing.assert_array_equal(cp.asnumpy(state.nifa), nifa)
+    np.testing.assert_array_equal(cp.asnumpy(state.nwfa2d), nwfa2d)
+
+    # The mass species the ingest DID initialize are untouched by the fill.
+    for name in ("qc", "qr", "qi", "qs", "qg"):
+        live = cp.asnumpy(getattr(state, name))
+        assert np.count_nonzero(live) > 0
+        assert np.isfinite(live).all()
+
+
+def test_mp28_real_ingest_receipt_agrees_with_the_published_deviation():
+    """The ingest receipt and the user-facing deviation cannot drift apart.
+
+    ``gpuwm.config.MP28_AEROSOL_SOURCE_DEVIATION`` is the sentence a user
+    sees in the namelist importer's printed receipt.  It asserts three
+    things this lane is now the production evidence for: the aerosol initial
+    state comes from thompson_init's synthetic profile, ArWen has no
+    QNWFA/QNIFA ingest lane, and WRF's real.exe FATALs this configuration at
+    dyn_em/module_initialize_real.F:2735-2736.  If the ingest ever grew an
+    aerosol source, that sentence would become false somewhere no test looks
+    -- so it is bound here, to the receipt the ingest actually emits.
+    """
+    from gpuwm.config import (
+        MP28_AEROSOL_SOURCE_DEVIATION, MP28_AEROSOL_SOURCE_OPTIONS)
+    from gpuwm.ingest.real import WRF_REAL_MP28_AEROSOL_SOURCE_POLICY
+
+    result, _ = _analyzed_hrrr_real_init(28)
+    receipt = result.aerosol_initialization
+
+    assert receipt["wrf_real_refuses_this_configuration"] in (
+        MP28_AEROSOL_SOURCE_DEVIATION)
+    assert "module_mp_thompson.F" in receipt["microphysics_citation"]
+    assert receipt["awaiting_profile_fill"] is True
+    assert receipt["not_initialized_here"] == (
+        WRF_REAL_MP28_AEROSOL_SOURCE_POLICY["not_initialized_here"])
+    # The receipt reports the selectors it actually ran under, and the only
+    # values it can ever report are the ones the port implements.
+    for name, (only, _citation, _why) in MP28_AEROSOL_SOURCE_OPTIONS.items():
+        assert receipt[name] == only
+    assert set(MP28_AEROSOL_SOURCE_OPTIONS) == {
+        "aer_init_opt", "wif_input_opt"}
+
+
+def _pressure_level_real_init(mp_physics, **config_overrides):
+    """The other production lane: pressure-level TT/RH forcing (ERA5, GFS).
+
+    No analyzed hydrometeors exist on this lane for ANY scheme, which is
+    exactly why the mp=28 aerosol policy cannot live inside the native-HRRR
+    ``if hydrometeors:`` branch -- a user arriving with ERA5 must still get
+    the exact-zero aerosol state thompson_init's presence test needs.
+    """
+    ny, nx, nz = 2, 3, 8
+    levels = np.array(
+        [100.0, 300.0, 500.0, 700.0, 850.0, 1000.0], dtype=np.float64)
+    pressure = np.broadcast_to(
+        levels[:, None, None] * 100.0, (levels.size, ny, nx)).copy()
+    temperature = np.broadcast_to(
+        215.0 + 75.0 * (pressure / 100000.0) ** 0.22, pressure.shape).copy()
+    height = np.broadcast_to(
+        -7900.0 * np.log(pressure / 100000.0), pressure.shape).copy()
+    fields = {
+        "TT": temperature.astype(np.float32),
+        "GHT": height.astype(np.float32),
+        "RH": np.full(pressure.shape, 60.0, dtype=np.float32),
+        "D2": np.full((ny, nx), 283.0, dtype=np.float32),
+        "UU": np.full((levels.size, ny, nx + 1), 8.0, dtype=np.float32),
+        "VV": np.full((levels.size, ny + 1, nx), -2.0, dtype=np.float32),
+        "PSFC": np.full((ny, nx), 100000.0, dtype=np.float32),
+        "T2": np.full((ny, nx), 289.0, dtype=np.float32),
+        "U10": np.full((ny, nx + 1), 7.0, dtype=np.float32),
+        "V10": np.full((ny + 1, nx), -1.0, dtype=np.float32),
+    }
+    snapshot = HorizontalSnapshot(
+        valid_time=datetime(2026, 7, 20, 6), levels_hpa=levels, fields=fields)
+    cfg = RunConfig(
+        nx=nx, ny=ny, nz=nz, dx=12000.0, dy=12000.0, ztop=18000.0,
+        dt=30.0, run_seconds=60.0, hybrid_opt=2, etac=0.2, moist=True,
+        terrain_opt=1, mp_physics=mp_physics, **config_overrides)
+    eta = np.linspace(1.0, 0.0, nz + 1)
+    terrain = np.zeros((ny, nx), dtype=np.float64)
+    return initialize_real(
+        snapshot, cfg,
+        make_vertical_coord(nz, hybrid_opt=2, etac=0.2, eta_levels=eta),
+        terrain, source_orography=terrain, p_top=10000.0,
+        preprocess_backend=_ReferencePreprocessBackend(),
+        state_backend="cpu"), cfg
+
+
+def test_mp28_pressure_level_lane_also_publishes_the_aerosol_policy():
+    """ERA5/GFS forcing reaches mp=28 too, and gets the same policy."""
+    result, _ = _pressure_level_real_init(28)
+    state = result.state
+
+    # No analyzed condensate exists on this lane; qc/qr are explicitly zeroed
+    # and every other species is at its allocation zero.  That is the same
+    # for mp=8 and is not an aerosol question.
+    for name in ("qc", "qr", "qi", "qs", "qg", "nc", "nr", "ni"):
+        live = _host_array(getattr(state, name))
+        assert int(live.view(np.uint32).max()) == 0, name
+    assert result.hydrometeor_initialization == {}
+
+    receipt = result.aerosol_initialization
+    assert receipt["policy"] == (
+        "aer-init-opt-0-zero-then-thompson-init-synthetic-profile")
+    assert receipt["awaiting_profile_fill"] is True
+    for name in ("nwfa", "nifa", "nwfa2d", "nifa2d"):
+        assert int(_host_array(getattr(state, name)).view(
+            np.uint32).max()) == 0
+
+    control, _ = _pressure_level_real_init(8)
+    assert control.aerosol_initialization == {}
+
+
+def test_mp28_pressure_level_lane_refuses_an_unreadable_aerosol_source():
+    with pytest.raises(NotImplementedError, match="wif_input_opt=1"):
+        _pressure_level_real_init(28, wif_input_opt=1)
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_mp28_real_ingest_runs_on_the_production_cuda_preprocessing():
+    """The shipped backend, not only the NumPy reference.
+
+    Everything above selects an independent CPU reference implementation of
+    the preprocessing ABI so the scheme-selection logic can be tested without
+    a GPU.  This one runs the production CUDA vertical interpolation and the
+    device state, then the real physics init, so the mp=28 real-data lane is
+    proven on the code path a user actually gets.
+    """
+    import cupy as cp
+
+    from gpuwm.core.physics import initialize_physics
+    from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
+
+    ny, nx, nz = 2, 3, 8
+    levels = np.array(
+        [100.0, 300.0, 500.0, 700.0, 850.0, 1000.0], dtype=np.float64)
+    pressure = np.broadcast_to(
+        levels[:, None, None] * 100.0, (levels.size, ny, nx)).copy()
+    temperature = np.broadcast_to(
+        215.0 + 75.0 * (pressure / 100000.0) ** 0.22, pressure.shape).copy()
+    height = 250.0 + np.broadcast_to(
+        -7900.0 * np.log(pressure / 100000.0), pressure.shape).copy()
+    level_index = np.arange(levels.size, dtype=np.float32)[:, None, None]
+    fields = {
+        "PRES": pressure.astype(np.float32),
+        "SPFH": np.full(pressure.shape, 0.004, dtype=np.float32),
+        "TT": temperature.astype(np.float32),
+        "GHT": height.astype(np.float32),
+        "UU": np.full((levels.size, ny, nx + 1), 8.0, dtype=np.float32),
+        "VV": np.full((levels.size, ny + 1, nx), -2.0, dtype=np.float32),
+        "PSFC": np.full((ny, nx), 100000.0, dtype=np.float32),
+        "T2": np.full((ny, nx), 289.0, dtype=np.float32),
+        "Q2": np.full((ny, nx), 0.004, dtype=np.float32),
+        "U10": np.full((ny, nx + 1), 7.0, dtype=np.float32),
+        "V10": np.full((ny + 1, nx), -1.0, dtype=np.float32),
+    }
+    for species_index, name in enumerate(("QC", "QR", "QI", "QS", "QG"), 1):
+        fields[name] = np.asarray(
+            species_index * 1.0e-6 * (1.0 + level_index)
+            * np.ones((1, ny, nx), dtype=np.float32), dtype=np.float32)
+    snapshot = HorizontalSnapshot(
+        valid_time=datetime(2026, 7, 20, 6), levels_hpa=levels, fields=fields)
+    cfg = RunConfig(
+        nx=nx, ny=ny, nz=nz, dx=12000.0, dy=12000.0, ztop=18000.0, dt=30.0,
+        run_seconds=60.0, hybrid_opt=2, etac=0.2, moist=True, terrain_opt=1,
+        mp_physics=28)
+    eta = np.linspace(1.0, 0.0, nz + 1)
+    terrain = np.full((ny, nx), 250.0, dtype=np.float64)
+
+    backend = resolve_preprocess_backend("cuda")
+    assert backend.receipt()["backend"] != "cpu-reference-test"
+    result = initialize_real(
+        snapshot, cfg,
+        make_vertical_coord(nz, hybrid_opt=2, etac=0.2, eta_levels=eta),
+        terrain, source_orography=terrain, p_top=10000.0, use_sh_qv=True,
+        preprocess_backend="cuda", state_backend="cuda")
+    state = result.state
+
+    for name in ("qc", "qr", "qi", "qs", "qg"):
+        live = cp.asnumpy(getattr(state, name))
+        assert np.isfinite(live).all() and live.min() >= 0.0
+        assert np.count_nonzero(live) == live.size
+    for name in ("nc", "nr", "ni", "nwfa", "nifa", "nwfa2d", "nifa2d"):
+        assert int(cp.asnumpy(getattr(state, name)).view(np.uint32).max()) == 0
+    assert result.aerosol_initialization["awaiting_profile_fill"] is True
+
+    driver = initialize_physics(state, cfg)
+    assert driver.microphysics_init_receipt == {
+        "thompson_aerosol_profile": {"ccn": True, "in": True}}
+    nwfa = cp.asnumpy(state.nwfa)
+    assert 50.0e6 <= nwfa.min() and nwfa.max() <= 350.0e6
+    assert cp.asnumpy(state.nwfa2d).min() > 0.0
+
+
+def test_mp28_real_ingest_state_is_shaped_typed_and_physical():
+    """Task-level acceptance: shapes, dtypes and ranges of the mp=28 state.
+
+    The scheme is only reachable from real initial conditions if the state it
+    receives is a real one.  Every field mp=28 adds over mp=8 is checked for
+    shape, dtype and value, and the shared thermodynamic state is graded by
+    the same discrete moist-hydrostatic residual mp=8 is graded by -- and
+    required to be IDENTICAL to it, because the aerosol scheme changes no
+    part of the mass/thermodynamic setup.
+    """
+    result, cfg = _analyzed_hrrr_real_init(28)
+    control, _ = _analyzed_hrrr_real_init(8)
+    state = result.state
+    nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
+
+    for name in ("qv", "qc", "qr", "qi", "qs", "qg", "nc", "nr", "ni",
+                 "nwfa", "nifa"):
+        live = _host_array(getattr(state, name))
+        assert live.shape == (nz, ny, nx), name
+        assert live.dtype == np.float32, name
+        assert np.isfinite(live).all(), name
+        assert live.min() >= 0.0, name
+    for name in ("nwfa2d", "nifa2d"):
+        live = _host_array(getattr(state, name))
+        assert live.shape == (ny, nx), name
+        assert live.dtype == np.float32, name
+
+    # WRF's effective-radius cold start, shared with mp=8
+    # (module_model_constants.F RE_QC_BG/RE_QI_BG/RE_QS_BG).
+    assert float(_host_array(state.effc).max()) == pytest.approx(2.49)
+    assert float(_host_array(state.effi).max()) == pytest.approx(4.99)
+    assert float(_host_array(state.effs).max()) == pytest.approx(9.99)
+
+    # Vapour is a real analysis, not a placeholder.
+    qv = _host_array(state.qv)
+    assert 0.0 < qv.min() and qv.max() < 0.05
+
+    residual = hydrostatic_residual(result)
+    control_residual = hydrostatic_residual(control)
+    assert np.isfinite(residual).all()
+    np.testing.assert_array_equal(residual, control_residual)

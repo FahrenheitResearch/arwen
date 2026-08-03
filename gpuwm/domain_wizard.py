@@ -273,8 +273,9 @@ MAX_FETCH_ABS_LAT = max_fetch_abs_lat()
 
 #: Degrees of forcing margin beyond the root domain for the fetch hint.
 #: ERA5 needs only interpolation-halo coverage; HRRR files are CONUS-wide
-#: (a larger request could leave HRRR's own coverage box and be refused
-#: by fetch), so both keep the small margin.  GFS uses
+#: (``--area`` is a coverage check, not a crop, and the hint is clamped
+#: into the grid's own envelope -- see ``fetch_area_hint``), so both
+#: keep the small margin.  GFS uses
 #: :func:`gpuwm.fetch.gfs_suggested_fetch_margin_deg`: the GFS front
 #: door's donor-coverage proof must find every model lake's nearest
 #: source-water donor INSIDE the crop, so the wizard's suggested area
@@ -323,7 +324,21 @@ def _fetch_cadence_h(source: str, start_hour: int) -> int | None:
 #: Grid-scale search bounds.  _MIN_SCALE puts the root at 60 x 48 mass
 #: points, the smallest layout that still hosts the deepest ladder with
 #: full Davies/blend clearance.
-_MIN_SCALE, _MAX_SCALE = 0.55, 8.0
+#:
+#: _MAX_SCALE is deliberately NOT a physical limit -- it exists only so the
+#: bisection has a finite upper bracket, and it must stay far enough above
+#: what any real budget wants that MEMORY is what decides the answer.  It
+#: was 8.0, which is 880 x 704 at the root, and that bound bound: every
+#: single-domain budget at or above 64 GiB returned exactly 880 x 704 and
+#: reported a comfortable fit, so 64, 96 and 180 GiB cards were all sized
+#: like a 64 GiB one.  Raising it to 16.0 changes nothing for budgets that
+#: were not already saturated and lets 96 GiB reach 1178 x 944 and 180 GiB
+#: reach 1674 x 1340; raising it further to 32.0 changes nothing again,
+#: which is the check that the bracket, not the bound, now decides.
+#: 64.0 is chosen with that headroom on purpose.  If it ever binds the
+#: wizard says so out loud rather than silently under-sizing -- see
+#: fit_ladder.
+_MIN_SCALE, _MAX_SCALE = 0.55, 64.0
 
 #: The nine WPS_GEOG dataset directories the static builder opens (the
 #: ``default`` geog_data_res selector; gpuwm/static/build.py).
@@ -1631,11 +1646,123 @@ def gray_zone_advisory(chain_km, shared: dict) -> list[str]:
         f"{GRAY_ZONE_DX_KM:g} km (finest {finest * 1000:.0f} m) with the "
         f"1-D PBL scheme bl_pbl_physics = {shared['bl_pbl_physics']} "
         "active, so boundary-layer eddies are partly resolved by the "
-        "dynamics and simultaneously parameterized as if they were not; "
-        "the proper tool at these scales is a 3-D turbulence closure "
-        "(SASE, planned), and until then treat sub-kilometre PBL "
-        "structure as indicative rather than quantitative.",
+        "dynamics and simultaneously parameterized as if they were not. "
+        "The proper tool at these scales is a 3-D turbulence closure with "
+        "the PBL off: set km_opt = 3 (3-D Smagorinsky) or km_opt = 2 "
+        "(1.5-order prognostic TKE) with bl_pbl_physics = 0 on the "
+        "domain(s) below the gray zone -- both are per-domain, so a PBL "
+        "parent can carry a PBL-off child (see docs/public/LES.md) -- or "
+        "the SASE closure (bl_pbl_physics = 900), which is implemented "
+        "and selectable but EXPERIMENTAL and not WRF-verified. Until "
+        "you do, treat sub-kilometre PBL structure as indicative rather "
+        "than quantitative.",
     ]
+
+
+#: Grid spacing (km) below which operational convection-permitting
+#: practice turns the cumulus parameterization OFF: the dynamics resolve
+#: deep convection at these spacings, and an active scheme convects the
+#: same air a second time.
+CUMULUS_CONVECTION_PERMITTING_DX_KM = 4.0
+
+#: Upper edge (km) of the convective gray zone.  Between
+#: :data:`CUMULUS_CONVECTION_PERMITTING_DX_KM` and this spacing deep
+#: convection is neither fully subgrid (the closure assumption every
+#: cumulus scheme makes) nor well resolved (the convection-permitting
+#: assumption) -- the genuine gray zone, where running the scheme is
+#: common operational practice and still worth one honest sentence.
+CUMULUS_GRAY_ZONE_TOP_DX_KM = 10.0
+
+
+def cumulus_gray_zone_advisory(chain_km, cu_physics_by_domain
+                               ) -> list[str]:
+    """Honest sentences when an active cumulus scheme meets fine grids.
+
+    Advisory, never a refusal -- the same contract, channel and tone as
+    :func:`gray_zone_advisory`: the full sentence lives in the emitted
+    file's header comment, stdout carries the finding (headline) by
+    default and the whole sentence under ``--explain``.  At most one
+    sentence per finding, strong one first:
+
+    * below ~4 km the dynamics resolve deep convection, so an active
+      scheme double-counts it; operational convection-permitting
+      practice runs ``cu_physics = 0`` there.
+    * in the 4-10 km band convection is neither fully subgrid nor well
+      resolved -- the genuine gray zone.  Running the scheme there is
+      common operational practice, so the note is softer.
+
+    ``cu_physics_by_domain`` is per-domain (outer to inner, same order
+    as ``chain_km``) because cumulus is a per-domain switch here, not a
+    ``[shared]`` one -- the wizard activates it on the root only.
+
+    The physics registry's cumulus component offers exactly two options
+    -- off (``cu_physics = 0``) and classic Kain-Fritsch (``cu_physics
+    = 1``; physics_registry_v2.json ``components/cumulus``).  Classic
+    KF is not scale-aware, and the scale-aware variants (multiscale KF,
+    Grell-Freitas) are explicitly unported (``parameters/aercu_opt``),
+    so today there is no gray-zone-tolerant cumulus option to exempt:
+    any active scheme earns the advisory.  If a scale-aware scheme is
+    ever ported, its registry entry is where that distinction belongs,
+    and this function is where it gets honoured.
+    """
+
+    pairs = [(float(dx), int(cu)) for dx, cu
+             in zip(chain_km, cu_physics_by_domain, strict=True)]
+    active = [(dx, cu) for dx, cu in pairs if cu]
+    lines: list[str] = []
+    below = [(dx, cu) for dx, cu in active
+             if dx < CUMULUS_CONVECTION_PERMITTING_DX_KM]
+    if below:
+        finest = min(dx for dx, _ in below)
+        switch = "/".join(str(cu) for cu
+                          in sorted({cu for _, cu in below}))
+        lines.append(
+            f"CUMULUS: {len(below)} domain(s) run at "
+            "convection-permitting spacing below "
+            f"{CUMULUS_CONVECTION_PERMITTING_DX_KM:g} km (finest "
+            f"{finest:g} km) with the cumulus parameterization "
+            f"cu_physics = {switch} active, so deep convection is "
+            "resolved by the dynamics and parameterized by the scheme "
+            "at the same time -- its heating and rainfall counted "
+            "twice; operational convection-permitting practice runs "
+            "cu_physics = 0 below about "
+            f"{CUMULUS_CONVECTION_PERMITTING_DX_KM:g} km and lets the "
+            "resolved dynamics convect (per-domain override in the "
+            "emitted [[domain]] tables).")
+    band = [(dx, cu) for dx, cu in active
+            if CUMULUS_CONVECTION_PERMITTING_DX_KM <= dx
+            <= CUMULUS_GRAY_ZONE_TOP_DX_KM]
+    if band:
+        finest = min(dx for dx, _ in band)
+        switch = "/".join(str(cu) for cu
+                          in sorted({cu for _, cu in band}))
+        lines.append(
+            f"CUMULUS GRAY ZONE: {len(band)} domain(s) sit in the "
+            f"{CUMULUS_CONVECTION_PERMITTING_DX_KM:g}-"
+            f"{CUMULUS_GRAY_ZONE_TOP_DX_KM:g} km convective gray zone "
+            f"(finest {finest:g} km) with cu_physics = {switch} "
+            "active, so deep convection is neither fully subgrid nor "
+            "well resolved and the scheme's closure assumptions only "
+            "partly hold; this pairing is common operational practice "
+            "-- keep it if it is deliberate, and read convective "
+            "placement and intensity on those domains as indicative "
+            "rather than quantitative.")
+    return lines
+
+
+def cumulus_by_domain(dims, ratios, *,
+                      profile: str | None) -> list[int]:
+    """``cu_physics`` per emitted domain, outer to inner.
+
+    Read from the same ``[[domain]]`` tables the emitted file carries
+    (:func:`_domain_tables`: root from the profile, nests pinned to 0),
+    never re-derived, so the advisory cannot disagree with the
+    emission.  ``time_step``/``root_dx_m`` are left at their defaults
+    because they cannot change which cumulus switch a domain carries.
+    """
+
+    return [int(table["cu_physics"])
+            for table in _domain_tables(dims, ratios, profile=profile)]
 
 
 def _root_grid(projection: dict, nx: int, ny: int,
@@ -1680,6 +1807,9 @@ def _fetch_area(projection: dict, nx: int, ny: int,
                 *, notes: list[str] | None = None,
                 root_dx_m: float = ROOT_DX_M,
                 target_option: str = "--point",
+                coverage: tuple[float, float, float, float] | None = None,
+                coverage_label: str = "the source grid",
+                coverage_notes: list[str] | None = None,
                 ) -> tuple[float, float, float, float]:
     """Forcing bbox (S, W, N, E) = root corners + margin, worldwide.
 
@@ -1694,7 +1824,25 @@ def _fetch_area(projection: dict, nx: int, ny: int,
     -- the margin is part of the emitted box, and a box whose margined
     width exceeds 180 degrees would be read back by
     :func:`gpuwm.fetch.parse_area` as the complementary
-    antimeridian-crossing box (the wrong crop, silently)."""
+    antimeridian-crossing box (the wrong crop, silently).
+
+    ``coverage`` is a source's own ``(S, W, N, E)`` lat/lon envelope --
+    :func:`gpuwm.fetch.source_coverage_envelope`'s data, never a source
+    name -- and the box is clamped INTO it, quantized inward to the
+    hint's printed precision so the formatted string cannot round back
+    out of coverage.  Clamp rather than shrink the domain, and clamp
+    rather than refuse: by emission time the DOMAIN is already bounded
+    by source coverage (the fit loop keeps every HRRR candidate's
+    interpolation window inside the native grid), so what overruns here
+    is only the margined lat/lon bbox -- a projection artifact of a
+    Lambert footprint's curved edges plus the fetch margin, not data
+    the preparation needs; for a coverage-boxed source ``--area`` is a
+    coverage check, not a crop.  The field exhibit: a 1234 x 986 root
+    at 3 km (39, -98) fits the HRRR grid with rows to spare, yet its
+    margined bbox named 54.39 N -- north of anything HRRR carries --
+    and the wizard's own printed fetch refused to run.  Every clamp is
+    disclosed through ``coverage_notes``.
+    """
     lat_c, lon_c = _root_grid(projection, nx, ny, root_dx_m).latlon_c()
     center = float(projection["ref_lon"])
     lon_u = center + np.asarray(
@@ -1726,7 +1874,66 @@ def _fetch_area(projection: dict, nx: int, ny: int,
     lon_e = float(_wrap180(float(lon_u.max()) + margin_deg))
     if lon_e == -180.0:
         lon_e = 180.0
+    if coverage is not None and lon_w <= lon_e:
+        # A crossing box (W > E) cannot lie inside a non-crossing
+        # envelope; it is left for the emission-time proof to refuse
+        # loudly rather than silently reshaped here.
+        from gpuwm.fetch import area_bounds_inward
+
+        cov_s, cov_w, cov_n, cov_e = area_bounds_inward(coverage)
+        clamped_box = {
+            "south": (lat_s, max(lat_s, cov_s)),
+            "west": (lon_w, max(lon_w, cov_w)),
+            "north": (lat_n, min(lat_n, cov_n)),
+            "east": (lon_e, min(lon_e, cov_e)),
+        }
+        for edge, (raw, clamped) in clamped_box.items():
+            if raw != clamped and coverage_notes is not None:
+                coverage_notes.append(
+                    f"the suggested forcing box's {edge} edge was "
+                    f"clamped from {raw:.2f} to {clamped:.2f}: "
+                    f"{coverage_label} coverage ends there (grid "
+                    f"envelope lat {cov_s:.2f}..{cov_n:.2f}, "
+                    f"lon {cov_w:.2f}..{cov_e:.2f})")
+        lat_s, lat_n = clamped_box["south"][1], clamped_box["north"][1]
+        lon_w, lon_e = clamped_box["west"][1], clamped_box["east"][1]
+        if lat_s >= lat_n or lon_w >= lon_e:
+            raise ValueError(
+                f"the root domain's forcing footprint lies outside "
+                f"{coverage_label} coverage (grid envelope lat "
+                f"{cov_s:.2f}..{cov_n:.2f}, lon {cov_w:.2f}..{cov_e:.2f})"
+                " entirely; choose a source whose coverage includes "
+                f"{target_option}")
     return lat_s, lon_w, lat_n, lon_e
+
+
+def fetch_area_hint(projection: dict, nx: int, ny: int, *, source: str,
+                    root_dx_m: float = ROOT_DX_M,
+                    target_option: str = "--point",
+                    notes: list[str] | None = None,
+                    coverage_notes: list[str] | None = None) -> str:
+    """The exact ``--area`` string the wizard prints and writes, for SOURCE.
+
+    One seam for the emission and its tests: the fitted root's forcing
+    box (root corners + the source's own margin), bounded by the
+    source's coverage envelope
+    (:func:`gpuwm.fetch.source_coverage_envelope` -- itself derived
+    from the native grid definition, the same data the fetch guard
+    enforces), formatted at the fixed precision the fetch parser reads
+    back.  Every emission is then round-tripped through
+    :func:`gpuwm.fetch.validate_fetch_hints` before the file is
+    written, so a hint this function produces and a command ``gpuwm
+    fetch`` refuses cannot coexist -- the field defect this closes.
+    """
+
+    from gpuwm.fetch import AREA_HINT_DECIMALS, source_coverage_envelope
+
+    area = _fetch_area(
+        projection, nx, ny, margin_deg=_fetch_margin_deg(source),
+        notes=notes, root_dx_m=root_dx_m, target_option=target_option,
+        coverage=source_coverage_envelope(source),
+        coverage_label=source.upper(), coverage_notes=coverage_notes)
+    return ",".join(f"{value:.{AREA_HINT_DECIMALS}f}" for value in area)
 
 
 def _posix(path) -> str:
@@ -1830,6 +2037,9 @@ def render_config(*, name: str, start_time: datetime, hours: int,
             "# called on wall-clock intervals, so extra dynamics steps "
             "are cheap).\n")
     for line in gray_zone_advisory(chain_km, shared):
+        header += f"# {line}\n"
+    for line in cumulus_gray_zone_advisory(
+            chain_km, cumulus_by_domain(dims, ratios, profile=profile)):
         header += f"# {line}\n"
     parts = [
         header,
@@ -2028,6 +2238,22 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             lo = mid
         else:
             hi = mid
+    # A search that converges on its own upper bracket did not find the grid
+    # the budget affords -- it found the largest grid it was willing to look
+    # at.  Those are different answers and they used to be indistinguishable
+    # from the outside, which is how an 8.0 ceiling sized 64, 96 and 180 GiB
+    # cards identically while every one of them reported a comfortable fit.
+    # Saying it costs nothing when the bound does not bind.
+    if lo >= _MAX_SCALE * (1.0 - 1e-6):
+        root = best[0][0]
+        warn(f"domain search reached its scale ceiling at {root[0]}x{root[1]}; "
+             "this is the largest layout considered, not necessarily the "
+             "largest your budget affords",
+             why="The wizard brackets its grid-scale bisection between "
+                 f"_MIN_SCALE and _MAX_SCALE (currently {_MAX_SCALE}).  A "
+                 "result sitting on the upper bracket means memory never "
+                 "became the binding constraint, so a larger card will not "
+                 "buy a larger domain until the ceiling is raised.")
     return best
 
 
@@ -2497,6 +2723,19 @@ def gray_zone_headline(chain_km, shared: dict) -> list[str]:
     return [full[0].split(", so ", 1)[0] + "."]
 
 
+def cumulus_gray_zone_headline(chain_km, cu_physics_by_domain
+                               ) -> list[str]:
+    """Each cumulus finding's first clause -- same contract as
+    :func:`gray_zone_headline`: derived from the same call, never a
+    second transcription of the numbers, so a headline that could
+    disagree with the advisory cannot exist.  The emitted config's
+    header comment carries the full sentences either way."""
+
+    return [line.split(", so ", 1)[0] + "."
+            for line in cumulus_gray_zone_advisory(
+                chain_km, cu_physics_by_domain)]
+
+
 def _print_geog_help() -> None:
     print("  static geography: gpuwm reads a locally staged NCAR WPS_GEOG "
           "tree; `gpuwm fetch-geog` downloads and stages it (~1.3 GB "
@@ -2782,12 +3021,16 @@ def domain_main(args) -> int:
 
     # Fetch hints from the fitted root footprint.  The default data
     # directory lives beside the emitted TOML so the declared forcing
-    # paths stay short and the config directory stays relocatable.
+    # paths stay short and the config directory stays relocatable.  The
+    # area hint is bounded by the SOURCE's own coverage envelope -- the
+    # same grid-derived data the fetch guard enforces -- so the printed
+    # next command cannot name ground the source does not carry.
     area_notes: list[str] = []
-    area = _fetch_area(projection, *dims[0],
-                       margin_deg=_fetch_margin_deg(args.source),
-                       notes=area_notes, root_dx_m=root_dx_m,
-                       target_option=target_option)
+    coverage_notes: list[str] = []
+    area_hint = fetch_area_hint(
+        projection, *dims[0], source=args.source, root_dx_m=root_dx_m,
+        target_option=target_option, notes=area_notes,
+        coverage_notes=coverage_notes)
     cadence = _fetch_cadence_h(args.source, start_hour)
     data_dir = (Path(args.data_dir) if args.data_dir
                 else out.parent / "data" / name)
@@ -2800,19 +3043,26 @@ def domain_main(args) -> int:
         "source": args.source, "cycle": cycle.strftime("%Y-%m-%dT%H"),
         "hours": (args.hours if cadence is None else
                   max(cadence, math.ceil(args.hours / cadence) * cadence)),
-        "area": ",".join(f"{v:.2f}" for v in area),
+        "area": area_hint,
         "out": _relative_or_absolute(data_dir, Path.cwd()),
     }
     if cadence is not None:
         fetch_hints["cadence"] = cadence
     if start_hour:
         fetch_hints["forecast_start_hour"] = start_hour
-    # Plan the download with the REAL fetch planner before writing the
-    # file.  A config the wizard cannot fetch is a config whose printed
-    # step 1 exits 2, and that is what shipped: any lead not a multiple
-    # of three was written with `cadence = 3` and refused by `gpuwm
-    # fetch` as "not on the 3 h cadence".  Running the planner here is
-    # the only check that cannot drift from what the fetch will do.
+    # Prove every emitted hint against the REAL fetch validators before
+    # anything is written.  A config the wizard cannot fetch is a config
+    # whose printed step 1 exits 2, and that shipped twice: any lead not
+    # a multiple of three was written with `cadence = 3` and refused as
+    # "not on the 3 h cadence", and an HRRR emission's --area was
+    # refused by the coverage guard the wizard had never consulted.
+    # Running the fetch's own parsers and planners here is the only
+    # check that cannot drift from what the fetch will do; the whole
+    # [fetch] table (area included, through parse_area and the
+    # per-source coverage gate) is round-tripped again through
+    # `validate_fetch_hints` when `experiment_from_text` re-loads the
+    # rendered bytes below, still before the file lands on disk.
+    parse_cycle(fetch_hints["cycle"], args.source)
     if args.source in {"gfs", "gdas"}:
         from gpuwm.fetch import gfs_forecast_hours
         gfs_forecast_hours(int(fetch_hints["hours"]), cadence, start_hour)
@@ -2972,6 +3222,16 @@ def domain_main(args) -> int:
              why="lat-lon source interpolation and static-tile windowing "
                  "are not pole-capable, so a box touching the pole is "
                  "not a box the pipeline can honour.")
+    for note in coverage_notes:
+        # Advisory, never a refusal: the DOMAIN was already bounded by
+        # source coverage during fitting, so only the margined bbox --
+        # a projection artifact plus the fetch margin -- overran.
+        warn(note,
+             why="`gpuwm fetch` validates --area against the source "
+                 "grid's own lat/lon envelope and refuses a box naming "
+                 "ground the grid does not carry; the clamped box still "
+                 "contains the whole fitted domain, whose source "
+                 "coverage was proven during fitting.")
     for note in oversized_footprint_advisory(fetch_hints["area"]):
         print(f"advisory: {note}")
     if args.source == "hrrr":
@@ -2980,10 +3240,13 @@ def domain_main(args) -> int:
     print(f"physics: {physics_summary(profile)}")
     chain_km = _ladder_dx_km(ratios, root_dx_m)
     shared = shared_physics(profile)
+    cu_by_domain = cumulus_by_domain(dims, ratios, profile=profile)
     if explain:
         for line in prepared_route_physics_notice(profile, args.source):
             print(line)
         for note in gray_zone_advisory(chain_km, shared):
+            print(f"advisory: {note}")
+        for note in cumulus_gray_zone_advisory(chain_km, cu_by_domain):
             print(f"advisory: {note}")
     else:
         # The headline says what was found; the emitted config carries
@@ -2991,6 +3254,8 @@ def domain_main(args) -> int:
         # reasoning is never only one flag away -- it is also in the
         # file, next to the settings it is about.
         for note in gray_zone_headline(chain_km, shared):
+            print(f"advisory: {note}")
+        for note in cumulus_gray_zone_headline(chain_km, cu_by_domain):
             print(f"advisory: {note}")
 
     # ---- gpuwm check, where it can honestly run ----------------------
@@ -3241,9 +3506,13 @@ def register_cli(subparsers) -> None:
 
 
 __all__ = [
-    "CARD_VRAM_GIB", "DomainFitError", "GEOG_DATASETS", "GRAY_ZONE_DX_KM",
+    "CARD_VRAM_GIB", "CUMULUS_CONVECTION_PERMITTING_DX_KM",
+    "CUMULUS_GRAY_ZONE_TOP_DX_KM",
+    "DomainFitError", "GEOG_DATASETS", "GRAY_ZONE_DX_KM",
     "LADDER_RATIOS", "MAX_FETCH_ABS_LAT", "POLE_CLEARANCE_DEG",
     "ROOT_DX_M", "ROOT_TIME_STEP_S", "TROPICAL_ROOT_TIME_STEP_S",
+    "cumulus_by_domain", "cumulus_gray_zone_advisory",
+    "cumulus_gray_zone_headline",
     "domain_main", "experiment_from_text", "final_step_command",
     "fit_ladder", "fit_polygon_ladder", "gray_zone_advisory",
     "load_polygon_footprint", "max_fetch_abs_lat",

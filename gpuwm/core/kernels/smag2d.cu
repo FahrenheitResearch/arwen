@@ -1023,25 +1023,30 @@ void wrf_smag_surface_v(WRF_SMAG_GRID_ARGS, const real* ustm, int active,
     tend[I3S(0, j, i, ny + 1, nx)] += G * stress * rhoavg / dnw[0];
 }
 
-// vertical_diffusion_2's isfflx=1 heat and water-vapour fluxes
+// vertical_diffusion_2's isfflx=1 heat and isfflx=1/2 water-vapour fluxes
 // (dyn_em/module_diffusion_em.F:4288-4310,4384-4400).  ArWen's admitted
 // identity fixes use_theta_m=0, so the theta-m cross term is intentionally
-// absent.
+// absent.  ``apply_heat`` gates the hflux CASE(1) arm and ``apply_moist``
+// the qflux CASE(1,2) arm; isfflx=0/2 heat is the constant-flux kernel
+// below (hflux CASE(0,2)), which is mutually exclusive with apply_heat.
 extern "C" __global__
 void wrf_smag_surface_scalars(
-        WRF_SMAG_GRID_ARGS, const real* hfx, const real* qfx, int active,
+        WRF_SMAG_GRID_ARGS, const real* hfx, const real* qfx,
+        int apply_heat, int apply_moist,
         real* rth, real* rqv, int nz, int ny, int nx, int phb3d,
         int boundary_x, int boundary_y)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
-    if (!active || i >= nx || j >= ny) return;
+    if ((!apply_heat && !apply_moist) || i >= nx || j >= ny) return;
     WRF_SMAG_MAKE_GRID;
     size_t h = (size_t)j * nx + i;
     real vapor = moist ? qv[I3(0, j, i, ny, nx)] : 0.0f;
     real cpm = CP * (1.0f + 0.8f * vapor);
-    rth[I3(0, j, i, ny, nx)] -= G * hfx[h] / cpm / dnw[0];
-    if (moist) rqv[I3(0, j, i, ny, nx)] -= G * qfx[h] / dnw[0];
+    if (apply_heat)
+        rth[I3(0, j, i, ny, nx)] -= G * hfx[h] / cpm / dnw[0];
+    if (apply_moist && moist)
+        rqv[I3(0, j, i, ny, nx)] -= G * qfx[h] / dnw[0];
 }
 
 __device__ __forceinline__
@@ -1273,6 +1278,664 @@ void wrf_smag_hd_s(WRF_SMAG_GRID_ARGS, const real* fx, const real* fy,
               + map * zy_m * (wrf_h2_mavg(q, fy, k + 1, j, i)
                               - wrf_h2_mavg(q, fy, k, j, i)) * rz;
     tend[IDX3(k, j, i)] += G / (dnw[k] * rz) * (divh - divz);
+}
+
+// ---------------------------------------------------------------------------
+// WRF v4.6.1 diff_opt=2 / km_opt=3 (3-D Smagorinsky) closure.
+//
+// Transcribed from module_diffusion_em.F: calculate_N2 (:1485-1713), smag_km
+// (:1777-1929), vertical_diffusion_s (:4789-4907), and the isfflx=0/2
+// prescribed-flux branches of vertical_diffusion_2 (:4155-4250 vflux,
+// :4286-4330 hflux).  The deformation tensors reuse the production
+// cal_deform_and_div device functions above (wrf_defor13/23, defor33
+// inline); D12 reuses the mass-point four-corner average.  km_opt=3 keeps
+// WRF's constant Prandtl treatment (pr = prandtl = 1/3, Kh = 3 Km in BOTH
+// directions -- unlike km_opt=2's stability-dependent vertical Pr) and has
+// no 10*mlen cap and no terrain-slope alpha reduction (both are smag2d_km /
+// km_opt=4 features).  mix_full_fields=.true. semantics throughout (the
+// admitted gpuwm identity); use_theta_m=0 for the surface heat flux.
+// ---------------------------------------------------------------------------
+
+// Temperature at a mass point, WRF phy_prep convention t = theta*(p/p0)^rcp.
+__device__ __forceinline__
+real wrf_n2_temp(real theta_full, real p_full)
+{
+    return theta_full * powf(p_full / P0, RCP);
+}
+
+// Saturation mixing ratio (calculate_N2 :1630-1637): es in Pa from the
+// Tetens form (SVP1 is kPa, hence the 1000 factor), qvs = EP2*es/(p-es).
+__device__ __forceinline__
+real wrf_n2_qvs(real t, real p)
+{
+    real tc = t - SVPT0;
+    real es = 1000.0f * SVP1 * expf(SVP2 * tc / (t - SVP3));
+    return EP2 * es / (p - es);
+}
+
+struct WrfN2Column {
+    const real* thp;   // theta - thb (gpuwm perturbation storage)
+    const real* thb;   // base theta, 1-D (nz,) or 3-D (nz,ny,nx)
+    int thb3d;
+    const real* p;     // full pressure at mass points
+    const real* qc;    // may be null (has_qc = 0)
+    const real* qi;    // may be null (has_qi = 0)
+    int has_qc, has_qi;
+};
+
+__device__ __forceinline__
+real wrf_n2_theta(const WrfSmagGrid& q, const WrfN2Column& n,
+                  int k, int j, int i)
+{
+    int jj = wrf_iy(q, j), ii = wrf_ix(q, i);
+    size_t h = I3(k, jj, ii, q.ny, q.nx);
+    real base = n.thb3d ? n.thb[h] : n.thb[k];
+    return base + n.thp[h];
+}
+
+// qtot = qv + qc + qi (calculate_N2's tmp1: only P_QV/P_QC/P_QI members).
+__device__ __forceinline__
+real wrf_n2_qtot(const WrfSmagGrid& q, const WrfN2Column& n,
+                 int k, int j, int i)
+{
+    if (!q.moist) return 0.0f;
+    int jj = wrf_iy(q, j), ii = wrf_ix(q, i);
+    size_t h = I3(k, jj, ii, q.ny, q.nx);
+    real tot = q.qv[h];
+    if (n.has_qc) tot += n.qc[h];
+    if (n.has_qi) tot += n.qi[h];
+    return tot;
+}
+
+__device__ __forceinline__
+real wrf_n2_qv(const WrfSmagGrid& q, int k, int j, int i)
+{
+    if (!q.moist) return 0.0f;
+    int jj = wrf_iy(q, j), ii = wrf_ix(q, i);
+    return q.qv[I3(k, jj, ii, q.ny, q.nx)];
+}
+
+// WRF calculate_N2, all three level branches (interior kts+1..ktf-1,
+// MARTA surface form at kts, copy at ktf).  Each thread owns one mass
+// point; the k = nz-1 thread evaluates the nz-2 formula (BN2(ktf) =
+// BN2(ktf-1), :1705-1710).
+extern "C" __global__
+void wrf_calc_n2(WRF_SMAG_GRID_ARGS,
+                 const real* thp, const real* thb, int thb3d,
+                 const real* p, const real* qc, const real* qi,
+                 int has_qc, int has_qi,
+                 real* bn2,
+                 int nz, int ny, int nx, int phb3d,
+                 int boundary_x, int boundary_y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+    WRF_SMAG_MAKE_GRID;
+    WrfN2Column n = {thp, thb, thb3d, p, qc, qi, has_qc, has_qi};
+
+    int ke = (k == nz - 1 && nz > 1) ? nz - 2 : k;  // BN2(ktf)=BN2(ktf-1)
+    size_t hp = I3(ke, j, i, ny, nx);
+    real th_c = wrf_n2_theta(q, n, ke, j, i);
+    real p_c = p[hp];
+    real t_c = wrf_n2_temp(th_c, p_c);
+    real qv_c = wrf_n2_qv(q, ke, j, i);
+    real qc_c = (moist && has_qc) ? qc[hp] : 0.0f;
+    bool saturated = moist
+        && (qv_c >= wrf_n2_qvs(t_c, p_c) || qc_c >= 1.0e-5f);
+
+    real value;
+    if (ke > 0) {
+        // Interior centered form, tmpdz = 1/rdz(k) + 1/rdz(k+1).
+        real tmpdz = 1.0f / wrf_rdz(q, ke, j, i)
+                   + 1.0f / wrf_rdz(q, ke + 1, j, i);
+        real th_p = wrf_n2_theta(q, n, ke + 1, j, i);
+        real th_m = wrf_n2_theta(q, n, ke - 1, j, i);
+        real qtot_p = wrf_n2_qtot(q, n, ke + 1, j, i);
+        real qtot_m = wrf_n2_qtot(q, n, ke - 1, j, i);
+        if (saturated) {
+            size_t hpp = I3(ke + 1, j, i, ny, nx);
+            size_t hpm = I3(ke - 1, j, i, ny, nx);
+            real t_p = wrf_n2_temp(th_p, p[hpp]);
+            real t_m = wrf_n2_temp(th_m, p[hpm]);
+            real xlvqv = XLV * qv_c;
+            real coefa = (1.0f + xlvqv / RD / t_c)
+                       / (1.0f + XLV * xlvqv / CP / RV / t_c / t_c)
+                       / th_c;
+            real thetaep1 = th_p
+                * (1.0f + XLV * wrf_n2_qvs(t_p, p[hpp]) / CP / t_p);
+            real thetaem1 = th_m
+                * (1.0f + XLV * wrf_n2_qvs(t_m, p[hpm]) / CP / t_m);
+            value = G * (coefa * (thetaep1 - thetaem1) / tmpdz
+                         - (qtot_p - qtot_m) / tmpdz);
+        } else {
+            real qv_p = wrf_n2_qv(q, ke + 1, j, i);
+            real qv_m = wrf_n2_qv(q, ke - 1, j, i);
+            value = G * ((th_p - th_m) / th_c / tmpdz
+                         + 1.61f * (qv_p - qv_m) / tmpdz
+                         - (qtot_p - qtot_m) / tmpdz);
+        }
+    } else {
+        // Surface level kts.
+        real th_p = wrf_n2_theta(q, n, 1, j, i);
+        real qtot_p = wrf_n2_qtot(q, n, 1, j, i);
+        // tmp1sfc: cf-extrapolated qv+qc+qi.
+        real qtot_sfc = q.cf1 * wrf_n2_qtot(q, n, 0, j, i)
+                      + q.cf2 * wrf_n2_qtot(q, n, 1, j, i)
+                      + q.cf3 * wrf_n2_qtot(q, n, 2, j, i);
+        if (saturated) {
+            real tmpdz = 1.0f / wrf_rdz(q, 1, j, i)
+                       + 0.5f / wrf_rdzw(q, 0, j, i);
+            size_t h1 = I3(1, j, i, ny, nx);
+            size_t h2 = I3(2, j, i, ny, nx);
+            real t_1 = wrf_n2_temp(th_p, p[h1]);
+            real th_2 = wrf_n2_theta(q, n, 2, j, i);
+            real t_2 = wrf_n2_temp(th_2, p[h2]);
+            // phy_prep surface extrapolation for p8w/t8w (z-linear,
+            // module_big_step_utilities_em.F:4916-4923).
+            real z0 = wrf_phi(q, 0, j, i) / G;
+            real z1 = 0.5f * (wrf_phi(q, 0, j, i)
+                              + wrf_phi(q, 1, j, i)) / G;
+            real z2 = 0.5f * (wrf_phi(q, 1, j, i)
+                              + wrf_phi(q, 2, j, i)) / G;
+            real w1 = (z0 - z2) / (z1 - z2);
+            real w2 = 1.0f - w1;
+            real p8w0 = w1 * p_c + w2 * p[h1];
+            real t8w0 = w1 * t_c + w2 * wrf_n2_temp(
+                wrf_n2_theta(q, n, 1, j, i), p[h1]);
+            real thetasfc = t8w0 / powf(p8w0 / P0, RCP);
+            real qvs0 = wrf_n2_qvs(t_c, p_c);
+            real qvs1 = wrf_n2_qvs(t_1, p[h1]);
+            real qvs2 = wrf_n2_qvs(t_2, p[h2]);
+            real qvsfc = q.cf1 * qvs0 + q.cf2 * qvs1
+                       + q.cf3 * qvs2;
+            real xlvqv = XLV * qv_c;
+            real coefa = (1.0f + xlvqv / RD / t_c)
+                       / (1.0f + XLV * xlvqv / CP / RV / t_c / t_c)
+                       / th_c;
+            real thetaep1 = th_p * (1.0f + XLV * qvs1 / CP / t_1);
+            real thetaesfc = thetasfc
+                * (1.0f + XLV * qvsfc / CP / t8w0);
+            value = G * (coefa * (thetaep1 - thetaesfc) / tmpdz
+                         - (qtot_p - qtot_sfc) / tmpdz);
+        } else {
+            // MARTA/WCS surface form (:1690-1698).
+            real qvsfc = q.cf1 * wrf_n2_qv(q, 0, j, i)
+                       + q.cf2 * wrf_n2_qv(q, 1, j, i)
+                       + q.cf3 * wrf_n2_qv(q, 2, j, i);
+            real tmpdz = 1.0f / wrf_rdzw(q, 0, j, i);
+            value = G * ((th_p - th_c) / th_c / tmpdz
+                         + 1.61f * (wrf_n2_qv(q, 1, j, i) - qvsfc) / tmpdz
+                         - (qtot_p - qtot_sfc) / tmpdz);
+        }
+    }
+    bn2[IDX3(k, j, i)] = value;
+}
+
+// WRF smag_km (:1777-1929): the full 3-D deformation invariant with the
+// off-diagonal tensors averaged to mass points BEFORE squaring, the
+// buoyancy reduction sqrt(max(0, D^2 - N^2/pr)), and the two mix_isotropic
+// mixing-length branches with WRF's exact floors and mix_upper_bound caps.
+extern "C" __global__
+void wrf_smag3d_km(WRF_SMAG_GRID_ARGS,
+                   real c_s, real prandtl, real dt, real mix_upper_bound,
+                   int isotropic,
+                   const real* d11a, const real* d22a, const real* d12a,
+                   const real* bn2,
+                   real* xkmh, real* xkhh, real* xkmv, real* xkhv,
+                   int nz, int ny, int nx, int phb3d,
+                   int boundary_x, int boundary_y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+    WRF_SMAG_MAKE_GRID;
+    real d11 = wrf_d(q, d11a, k, j, i);
+    real d22 = wrf_d(q, d22a, k, j, i);
+    real d33 = 2.0f * (q.w[I3(k + 1, j, i, ny, nx)]
+                       - q.w[I3(k, j, i, ny, nx)])
+             * wrf_rdzw(q, k, j, i);
+    real d12 = 0.25f * (wrf_d(q, d12a, k, j, i)
+                         + wrf_d(q, d12a, k, j + 1, i)
+                         + wrf_d(q, d12a, k, j, i + 1)
+                         + wrf_d(q, d12a, k, j + 1, i + 1));
+    real d13 = 0.25f * (wrf_defor13(q, k + 1, j, i)
+                         + wrf_defor13(q, k, j, i)
+                         + wrf_defor13(q, k + 1, j, i + 1)
+                         + wrf_defor13(q, k, j, i + 1));
+    real d23 = 0.25f * (wrf_defor23(q, k + 1, j, i)
+                         + wrf_defor23(q, k, j, i)
+                         + wrf_defor23(q, k + 1, j + 1, i)
+                         + wrf_defor23(q, k, j + 1, i));
+    real def2 = 0.5f * (d11 * d11 + d22 * d22 + d33 * d33)
+              + d12 * d12 + d13 * d13 + d23 * d23;
+    real tmp = sqrtf(fmaxf(0.0f, def2 - bn2[IDX3(k, j, i)] / prandtl));
+
+    real map = msft[(size_t)wrf_iy(q, j) * nx + wrf_ix(q, i)];
+    real dxm = dx / map, dym = dy / map;
+    real rdzw_c = wrf_rdzw(q, k, j, i);
+    real kmh, kmv, khh, khv;
+    if (isotropic == 0) {
+        real mlen_h2 = dxm * dym;
+        real mlen_v = 1.0f / rdzw_c;
+        real mlen_v2 = mlen_v * mlen_v;
+        kmh = fmaxf(c_s * c_s * mlen_h2 * tmp, 1.0e-6f * mlen_h2);
+        kmh = fminf(kmh, mix_upper_bound * mlen_h2 / dt);
+        kmv = fmaxf(c_s * c_s * mlen_v2 * tmp, 1.0e-6f * mlen_v2);
+        kmv = fminf(kmv, mix_upper_bound * mlen_v2 / dt);
+        khh = fminf(kmh / prandtl, mix_upper_bound * mlen_h2 / dt);
+        khv = fminf(kmv / prandtl, mix_upper_bound * mlen_v2 / dt);
+    } else {
+        real deltas = powf(dxm * dym / rdzw_c, 0.33333333f);
+        real deltas2 = deltas * deltas;
+        kmh = fmaxf(c_s * c_s * deltas2 * tmp, 1.0e-6f * deltas2);
+        kmh = fminf(kmh, mix_upper_bound * dxm * dym / dt);
+        kmv = fminf(kmh, mix_upper_bound / rdzw_c / rdzw_c / dt);
+        khh = fminf(kmh / prandtl, mix_upper_bound * dxm * dym / dt);
+        khv = fminf(kmv / prandtl,
+                    mix_upper_bound / rdzw_c / rdzw_c / dt);
+    }
+    xkmh[IDX3(k, j, i)] = kmh;
+    xkmv[IDX3(k, j, i)] = kmv;
+    xkhh[IDX3(k, j, i)] = khh;
+    xkhv[IDX3(k, j, i)] = khv;
+}
+
+// WRF vertical_diffusion_s (:4789-4907), doing_tke=.false.: interior
+// down-gradient vertical scalar flux with density- and K-averages on w
+// levels, H3 = 0 at the surface and top interfaces (the explicit surface
+// fluxes are separate kernels).  ``full_theta`` reconstructs WRF's
+// t_2-like field from gpuwm's thp = theta - thb storage exactly as the
+// horizontal wrf_smag_flux_s does; the T0 offset cancels in the k
+// difference and is omitted.
+__device__ __forceinline__
+real wrf_vd_s_h3(const WrfSmagGrid& q, const real* var,
+                 const real* thb, int full_theta, int thb3d,
+                 const real* khv, int kw, int j, int i)
+{
+    if (kw <= 0 || kw >= q.nz) return 0.0f;
+    int jj = wrf_iy(q, j), ii = wrf_ix(q, i);
+    size_t hc = I3(kw, jj, ii, q.ny, q.nx);
+    size_t hm = I3(kw - 1, jj, ii, q.ny, q.nx);
+    real xkx = q.fnm[kw] * khv[hc] + q.fnp[kw] * khv[hm];
+    xkx *= q.fnm[kw] * wrf_rho(q, kw, j, i)
+         + q.fnp[kw] * wrf_rho(q, kw - 1, j, i);
+    real dvar = var[hc] - var[hm];
+    if (full_theta) {
+        real bc = thb3d ? thb[hc] : thb[kw];
+        real bm = thb3d ? thb[hm] : thb[kw - 1];
+        dvar += bc - bm;
+    }
+    return -xkx * dvar * wrf_rdz(q, kw, j, i);
+}
+
+extern "C" __global__
+void wrf_smag_vd_s(WRF_SMAG_GRID_ARGS,
+                   const real* var, const real* thb,
+                   int full_theta, int thb3d,
+                   const real* khv, real* tend,
+                   int nz, int ny, int nx, int phb3d,
+                   int boundary_x, int boundary_y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+    WRF_SMAG_MAKE_GRID;
+    real lower = wrf_vd_s_h3(q, var, thb, full_theta, thb3d, khv, k, j, i);
+    real upper = wrf_vd_s_h3(q, var, thb, full_theta, thb3d, khv,
+                             k + 1, j, i);
+    tend[IDX3(k, j, i)] += G * (upper - lower) / dnw[k];
+}
+
+// vertical_diffusion_2 vflux CASE(0) (:4155-4200): prescribed constant
+// drag coefficient (namelist tke_drag_coefficient), tao = cd0*|V|*u.
+// WRF epsilon = 1.E-15 (share/module_model_constants.F:10).
+extern "C" __global__
+void wrf_smag_surface_u_cd0(WRF_SMAG_GRID_ARGS, real cd0,
+                            real* tend, int nz, int ny, int nx, int phb3d,
+                            int boundary_x, int boundary_y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i >= nx + 1 || j >= ny) return;
+    WRF_SMAG_MAKE_GRID;
+    int ic = wrf_ix(q, i), im = wrf_ix(q, i - 1), jj = wrf_iy(q, j);
+    real vv = 0.25f * (
+        q.v[I3S(0, wrf_jv(q, j), ic, ny + 1, nx)]
+        + q.v[I3S(0, wrf_jv(q, j + 1), ic, ny + 1, nx)]
+        + q.v[I3S(0, wrf_jv(q, j), im, ny + 1, nx)]
+        + q.v[I3S(0, wrf_jv(q, j + 1), im, ny + 1, nx)]);
+    real uu = q.u[I3S(0, jj, wrf_iu(q, i), ny, nx + 1)];
+    real speed = sqrtf(uu * uu + vv * vv) + 1.0e-15f;
+    real stress = cd0 * speed * uu;
+    real rhoavg = 0.5f * (wrf_rho(q, 0, j, ic) + wrf_rho(q, 0, j, im));
+    tend[I3S(0, j, i, ny, nx + 1)] += G * stress * rhoavg / dnw[0];
+}
+
+extern "C" __global__
+void wrf_smag_surface_v_cd0(WRF_SMAG_GRID_ARGS, real cd0,
+                            real* tend, int nz, int ny, int nx, int phb3d,
+                            int boundary_x, int boundary_y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i >= nx || j >= ny + 1) return;
+    WRF_SMAG_MAKE_GRID;
+    int jc = wrf_iy(q, j), jm = wrf_iy(q, j - 1), ii = wrf_ix(q, i);
+    real uu = 0.25f * (
+        q.u[I3S(0, jc, wrf_iu(q, i), ny, nx + 1)]
+        + q.u[I3S(0, jc, wrf_iu(q, i + 1), ny, nx + 1)]
+        + q.u[I3S(0, jm, wrf_iu(q, i), ny, nx + 1)]
+        + q.u[I3S(0, jm, wrf_iu(q, i + 1), ny, nx + 1)]);
+    real vv = q.v[I3S(0, wrf_jv(q, j), ii, ny + 1, nx)];
+    real speed = sqrtf(vv * vv + uu * uu) + 1.0e-15f;
+    real stress = cd0 * speed * vv;
+    real rhoavg = 0.5f * (wrf_rho(q, 0, jc, i) + wrf_rho(q, 0, jm, i));
+    tend[I3S(0, j, i, ny + 1, nx)] += G * stress * rhoavg / dnw[0];
+}
+
+// vertical_diffusion_2 hflux CASE(0,2) (:4286-4305): prescribed constant
+// kinematic surface heat flux (namelist tke_heat_flux, K m s-1), applied
+// to the coupled theta tendency through the use_theta_m=0 branch
+// rt_tendf -= g*heat_flux*rho(kts)/dnw(kts).  WRF's hfx(i,j) refresh at
+// :4293 is "provided for output only" and is not reproduced here (gpuwm
+// holds hfx on the physics side; documented divergence, output-only).
+extern "C" __global__
+void wrf_smag_surface_heat_const(WRF_SMAG_GRID_ARGS, real heat_flux,
+                                 real* rth, int nz, int ny, int nx,
+                                 int phb3d, int boundary_x, int boundary_y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i >= nx || j >= ny) return;
+    WRF_SMAG_MAKE_GRID;
+    rth[I3(0, j, i, ny, nx)] -=
+        G * heat_flux * wrf_rho(q, 0, j, i) / dnw[0];
+}
+
+// ---------------------------------------------------------------------------
+// WRF v4.6.1 diff_opt=2 / km_opt=2 (1.5-order prognostic TKE) closure.
+//
+// Transcribed from module_diffusion_em.F: tke_km (:2049-2336), calc_l_scale
+// (:2341-2406), tke_rhs = tke_shear + tke_buoyancy + tke_dissip + the
+// positivity limiter (:6099-6229, :6529-6877, :6234-6379, :6384-6524).
+// Constant notes: prandtl = 1/3 enters only the HORIZONTAL heat coefficient
+// (xkhh = xkmh/prandtl, uncapped in the anisotropic branch -- WRF's
+// documented limiter asymmetry); the vertical inverse Prandtl number is the
+// Deardorff stability form 1 + 2*l/deltas.  tke_shear SQUARES the
+// off-diagonal deformations THEN averages (the opposite order from
+// smag_km).  The Deardorff wall coefficient 3.9 applies at BOTH k=kts and
+// k=ktf exactly as the source does (":For LES with fine grid, no need for
+// this wall effect!" -- code applies it anyway).  epsilon in the CASE(1,2)
+// drag speed is module_model_constants' 1.e-15.
+// ---------------------------------------------------------------------------
+
+// calc_l_scale (:2341-2406): the BN2-limited isotropic length.
+__device__ __forceinline__
+real wrf_l_scale(real tke_v, real bn2_v, real deltas)
+{
+    real l = deltas;
+    if (bn2_v > 1.0e-6f) {
+        real tmp = sqrtf(fmaxf(tke_v, 1.0e-6f));
+        l = 0.76f * tmp / sqrtf(bn2_v);
+        l = fminf(l, deltas);
+        l = fmaxf(l, 0.001f * deltas);
+    }
+    return l;
+}
+
+// theta at a mass point from gpuwm's perturbation storage.
+__device__ __forceinline__
+real wrf_theta_full(const WrfSmagGrid& q, const real* thp, const real* thb,
+                    int thb3d, int k, int j, int i)
+{
+    int jj = wrf_iy(q, j), ii = wrf_ix(q, i);
+    size_t h = I3(k, jj, ii, q.ny, q.nx);
+    return (thb3d ? thb[h] : thb[k]) + thp[h];
+}
+
+// tke_km (:2049-2260): the four exchange coefficients from prognostic TKE.
+// dthrdn is the centered d(theta)/dz with the one-sided surface/top forms
+// (:2185-2205); thetasfc/thetatop use phy_prep's p8w/t8w extrapolations
+// (module_big_step_utilities_em.F:4916-4930, log-p at the top).
+extern "C" __global__
+void wrf_tke_km(WRF_SMAG_GRID_ARGS,
+                const real* thp, const real* thb, int thb3d,
+                const real* p, const real* tke, const real* bn2,
+                real c_k, real prandtl, real dt, real mix_upper_bound,
+                int isotropic, real tke_seed,
+                real* xkmh, real* xkhh, real* xkmv, real* xkhv,
+                int nz, int ny, int nx, int phb3d,
+                int boundary_x, int boundary_y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+    WRF_SMAG_MAKE_GRID;
+    size_t idx = IDX3(k, j, i);
+    real map = msft[(size_t)j * nx + i];
+    real dxm = dx / map, dym = dy / map;
+    real rdzw_c = wrf_rdzw(q, k, j, i);
+    real tmp = sqrtf(fmaxf(tke[idx], tke_seed));
+    real kmh, kmv, khh, khv;
+    if (isotropic == 0) {
+        // dthrdn at this level.
+        real theta_c = wrf_theta_full(q, thp, thb, thb3d, k, j, i);
+        real dthrdn;
+        if (k == 0) {
+            real tmpdz = 1.0f / wrf_rdzw(q, 1, j, i)
+                       + 1.0f / wrf_rdzw(q, 0, j, i);
+            real z0 = wrf_phi(q, 0, j, i) / G;
+            real z1 = 0.5f * (wrf_phi(q, 0, j, i)
+                              + wrf_phi(q, 1, j, i)) / G;
+            real z2 = 0.5f * (wrf_phi(q, 1, j, i)
+                              + wrf_phi(q, 2, j, i)) / G;
+            real w1 = (z0 - z2) / (z1 - z2);
+            real w2 = 1.0f - w1;
+            real t0 = wrf_theta_full(q, thp, thb, thb3d, 0, j, i)
+                    * powf(p[IDX3(0, j, i)] / P0, RCP);
+            real t1 = wrf_theta_full(q, thp, thb, thb3d, 1, j, i)
+                    * powf(p[IDX3(1, j, i)] / P0, RCP);
+            real p8w0 = w1 * p[IDX3(0, j, i)] + w2 * p[IDX3(1, j, i)];
+            real t8w0 = w1 * t0 + w2 * t1;
+            real thetasfc = t8w0 / powf(p8w0 / P0, RCP);
+            real th1 = wrf_theta_full(q, thp, thb, thb3d, 1, j, i);
+            dthrdn = (th1 - thetasfc) / tmpdz;
+        } else if (k == nz - 1) {
+            real tmpdz = 1.0f / wrf_rdz(q, nz - 1, j, i)
+                       + 0.5f / wrf_rdzw(q, nz - 1, j, i);
+            real z0 = wrf_phi(q, nz, j, i) / G;
+            real z1 = 0.5f * (wrf_phi(q, nz - 1, j, i)
+                              + wrf_phi(q, nz, j, i)) / G;
+            real z2 = 0.5f * (wrf_phi(q, nz - 2, j, i)
+                              + wrf_phi(q, nz - 1, j, i)) / G;
+            real w1 = (z0 - z2) / (z1 - z2);
+            real w2 = 1.0f - w1;
+            real tm1 = wrf_theta_full(q, thp, thb, thb3d, nz - 1, j, i)
+                     * powf(p[IDX3(nz - 1, j, i)] / P0, RCP);
+            real tm2 = wrf_theta_full(q, thp, thb, thb3d, nz - 2, j, i)
+                     * powf(p[IDX3(nz - 2, j, i)] / P0, RCP);
+            real p8wt = expf(w1 * logf(p[IDX3(nz - 1, j, i)])
+                             + w2 * logf(p[IDX3(nz - 2, j, i)]));
+            real t8wt = w1 * tm1 + w2 * tm2;
+            real thetatop = t8wt / powf(p8wt / P0, RCP);
+            real thm1 = wrf_theta_full(q, thp, thb, thb3d, nz - 2, j, i);
+            dthrdn = (thetatop - thm1) / tmpdz;
+        } else {
+            real tmpdz = 1.0f / wrf_rdz(q, k + 1, j, i)
+                       + 1.0f / wrf_rdz(q, k, j, i);
+            real thp1 = wrf_theta_full(q, thp, thb, thb3d, k + 1, j, i);
+            real thm1 = wrf_theta_full(q, thp, thb, thb3d, k - 1, j, i);
+            dthrdn = (thp1 - thm1) / tmpdz;
+        }
+        real mlen_h = sqrtf(dxm * dym);
+        real deltas = 1.0f / rdzw_c;
+        real mlen_v = deltas;
+        if (dthrdn > 0.0f) {
+            real mlen_s = 0.76f * tmp
+                        / sqrtf(fabsf(G / theta_c * dthrdn));
+            mlen_v = fminf(mlen_v, mlen_s);
+        }
+        kmh = fmaxf(c_k * tmp * mlen_h, 1.0e-6f * mlen_h * mlen_h);
+        kmh = fminf(kmh, mix_upper_bound * mlen_h * mlen_h / dt);
+        kmv = fmaxf(c_k * tmp * mlen_v, 1.0e-6f * deltas * deltas);
+        kmv = fminf(kmv, mix_upper_bound * deltas * deltas / dt);
+        khh = kmh * (1.0f / prandtl);            // uncapped (WRF asymmetry)
+        khv = kmv * (1.0f + 2.0f * mlen_v / deltas);
+    } else {
+        real deltas = powf(dxm * dym / rdzw_c, 0.33333333f);
+        real l = wrf_l_scale(tke[idx], bn2[idx], deltas);
+        kmh = c_k * tmp * l;
+        kmh = fminf(mix_upper_bound * dxm * dym / dt, kmh);
+        kmv = c_k * tmp * l;
+        kmv = fminf(mix_upper_bound / rdzw_c / rdzw_c / dt, kmv);
+        real pr_inv = 1.0f + 2.0f * l / deltas;
+        khh = fminf(mix_upper_bound * dxm * dym / dt, kmh * pr_inv);
+        khv = fminf(mix_upper_bound / rdzw_c / rdzw_c / dt, kmv * pr_inv);
+    }
+    xkmh[idx] = kmh;
+    xkmv[idx] = kmv;
+    xkhh[idx] = khh;
+    xkhv[idx] = khv;
+}
+
+// tke_rhs: shear + buoyancy + dissipation, then the positivity limiter
+// (:6221-6227).  Everything is a coupled tendency (c1*mu+c2 factors).
+// The k=kts shear terms ADD the MARTA surface-drag contributions
+// (:6767-6877, uflux/vflux SELECT CASE) and the k=kts buoyancy takes the
+// averaged surface-flux form (:6340-6365).  ust here is WRF's grid%ustm
+// (module_first_rk_step_part2.F:914).
+extern "C" __global__
+void wrf_tke_rhs(WRF_SMAG_GRID_ARGS,
+                 const real* thp, const real* thb, int thb3d,
+                 const real* tke, const real* bn2,
+                 const real* d11a, const real* d22a, const real* d12a,
+                 const real* kmh_a, const real* kmv_a, const real* khv_a,
+                 const real* mut, const real* c1, const real* c2,
+                 const real* ustm, const real* hfx,
+                 int use_ustm, int use_hfx,
+                 real c_k, real dt, real cd0, real heat_flux_const,
+                 int isfflx,
+                 real* tend,
+                 real* b_shear, real* b_buoy, real* b_diss, real* b_lim,
+                 int budget,
+                 int nz, int ny, int nx, int phb3d,
+                 int boundary_x, int boundary_y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+    WRF_SMAG_MAKE_GRID;
+    size_t idx = IDX3(k, j, i);
+    real chm = c1[k] * mut[(size_t)j * nx + i] + c2[k];
+    real kmh = kmh_a[idx], kmv = kmv_a[idx];
+    real t = 0.0f;
+
+    // --- tke_shear: six squared-deformation production terms.
+    real d11 = wrf_d(q, d11a, k, j, i);
+    real d22 = wrf_d(q, d22a, k, j, i);
+    t += 0.5f * chm * kmh * (d11 * d11);
+    t += 0.5f * chm * kmh * (d22 * d22);
+    real rdzw_c = wrf_rdzw(q, k, j, i);
+    real d33 = 2.0f * (q.w[I3(k + 1, j, i, ny, nx)]
+                       - q.w[I3(k, j, i, ny, nx)]) * rdzw_c;
+    t += 0.5f * chm * kmv * (d33 * d33);
+    real s12a = wrf_d(q, d12a, k, j, i);
+    real s12b = wrf_d(q, d12a, k, j + 1, i);
+    real s12c = wrf_d(q, d12a, k, j, i + 1);
+    real s12d = wrf_d(q, d12a, k, j + 1, i + 1);
+    t += chm * kmh * 0.25f * (s12a * s12a + s12b * s12b
+                              + s12c * s12c + s12d * s12d);
+    real s13a = wrf_defor13(q, k + 1, j, i);
+    real s13b = wrf_defor13(q, k, j, i);
+    real s13c = wrf_defor13(q, k + 1, j, i + 1);
+    real s13d = wrf_defor13(q, k, j, i + 1);
+    t += chm * kmv * 0.25f * (s13a * s13a + s13b * s13b
+                              + s13c * s13c + s13d * s13d);
+    real s23a = wrf_defor23(q, k + 1, j, i);
+    real s23b = wrf_defor23(q, k, j, i);
+    real s23c = wrf_defor23(q, k + 1, j + 1, i);
+    real s23d = wrf_defor23(q, k, j + 1, i);
+    t += chm * kmv * 0.25f * (s23a * s23a + s23b * s23b
+                              + s23c * s23c + s23d * s23d);
+
+    if (k == 0) {
+        // MARTA surface drag additions (u_2/v_2 raw winds, ust at (i,j)).
+        real usum = q.u[I3S(0, j, wrf_iu(q, i), ny, nx + 1)]
+                  + q.u[I3S(0, j, wrf_iu(q, i + 1), ny, nx + 1)];
+        real vsum = q.v[I3S(0, wrf_jv(q, j), i, ny + 1, nx)]
+                  + q.v[I3S(0, wrf_jv(q, j + 1), i, ny + 1, nx)];
+        real absU = 0.5f * sqrtf(usum * usum + vsum * vsum);
+        real Cd;
+        if (isfflx == 0) {
+            Cd = cd0;
+        } else {
+            absU += 1.0e-15f;
+            real us = use_ustm ? ustm[(size_t)j * nx + i] : 0.0f;
+            Cd = (us * us) / (absU * absU);
+        }
+        real d13sum = 0.5f * (wrf_defor13(q, 1, j, i)
+                              + wrf_defor13(q, 1, j, i + 1));
+        t += chm * (0.5f * usum * Cd * absU * d13sum);
+        real d23sum = 0.5f * (wrf_defor23(q, 1, j, i)
+                              + wrf_defor23(q, 1, j + 1, i));
+        t += chm * (0.5f * vsum * Cd * absU * d23sum);
+    }
+
+    // Budget bookkeeping: each term is the running total's increment, so
+    // the four exports sum EXACTLY to the tendency this kernel deposits.
+    real s_shear = t;
+
+    // --- tke_buoyancy.
+    real khv = khv_a[idx];
+    if (k >= 1) {
+        t -= chm * khv * bn2[idx];
+    } else {
+        real heat_flux;
+        if (isfflx == 0 || isfflx == 2) {
+            heat_flux = heat_flux_const;
+        } else {
+            real vapor = moist ? qv[I3(0, j, i, ny, nx)] : 0.0f;
+            real cpm = CP * (1.0f + 0.8f * vapor);
+            real hf = use_hfx ? hfx[(size_t)j * nx + i] : 0.0f;
+            heat_flux = (hf / cpm) / wrf_rho(q, 0, j, i);
+        }
+        real theta_c = wrf_theta_full(q, thp, thb, thb3d, 0, j, i);
+        t -= chm * ((khv * bn2[idx])
+                    - (G / theta_c) * heat_flux) * 0.5f;
+    }
+
+    real s_buoy = t - s_shear;
+
+    // --- tke_dissip (l_scale from calc_l_scale, computed inline).
+    real map = msft[(size_t)j * nx + i];
+    real deltas = powf((dx / map) * (dy / map) / rdzw_c, 0.33333333f);
+    real l = wrf_l_scale(tke[idx], bn2[idx], deltas);
+    real ce1 = (c_k / 0.10f) * 0.19f;
+    real ce2 = fmaxf(0.0f, 0.93f - ce1);
+    real coefc = (k == 0 || k == nz - 1) ? 3.9f
+               : (ce1 + ce2 * l / deltas);
+    real tketmp = fmaxf(tke[idx], 1.0e-6f);
+    t -= chm * coefc * tketmp * sqrtf(tketmp) / l;
+
+    real s_diss = t - s_shear - s_buoy;
+
+    // --- positivity limiter (:6221-6227).
+    real t_limited = fmaxf(t, -chm * fmaxf(0.0f, tke[idx]) / dt);
+    real s_lim = t_limited - t;
+    t = t_limited;
+    tend[idx] += t;
+    if (budget) {
+        b_shear[idx] = s_shear;
+        b_buoy[idx] = s_buoy;
+        b_diss[idx] = s_diss;
+        b_lim[idx] = s_lim;
+    }
 }
 
 #undef WRF_SMAG_MAKE_GRID

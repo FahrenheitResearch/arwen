@@ -79,7 +79,7 @@ _ORACLE_SHA256 = {
     "condense-surface.csv":
         "f0bd26981a13c93a783f3485959aadb6e3386fc4783d37fa731138364d97f866",
     "ice-column.csv":
-        "a7015c29d63a8c7b9712aacc94b08b64b2c8c5544d137ff2b9603a440056a9df",
+        "9c39aaa346862703294f9ee18100cbe252f109b2ee4f85c46daa5fb39f57d072",
     "ice-surface.csv":
         "0207096c26dd4d8064614a52f5b0cef4696b67c3e021e76ca7a13d13093fcec2",
     "ice-sed-column.csv":
@@ -87,9 +87,9 @@ _ORACLE_SHA256 = {
     "ice-sed-surface.csv":
         "a08dbd776fcd97f8c8632a782d8d5f3ce831b86d40389c829810847285dd92ce",
     "mixed-column.csv":
-        "0006e7e0e211c9712bdabbeb11975448c0aa1930cdd6bb4003bd8f3deef7a2e3",
+        "3bb4efd6f006c56ad6686f3bc7945f02bc3825de2133f04df6431ca268c7f793",
     "mixed-surface.csv":
-        "8033ba042a7aaec3e8b4b8f3f604e2078eb5e575dbaa60863316420f2675cd51",
+        "5a76db934273b636a186f79d84e9d7bd1171179730812b3bf931d330a27b1a8a",
     "rain-sed-column.csv":
         "2e73e319fff8818e2ae39bb3f602de99f923c30dc98c5ed14641340d98ec75f8",
     "rain-sed-surface.csv":
@@ -103,7 +103,7 @@ _ORACLE_SHA256 = {
     "snow-sed-surface.csv":
         "24d3f5f7126b393898ae9c812b712075b6edc023c3c48ccb5fc3e788f8029cfb",
     "warm-column.csv":
-        "8755d4979974061f1571f31510bc9f68044a80d0f35c7468d8ff0d5defd63332",
+        "ccd170351b57e81dbc5715f86958faf7ae1e9c2e299349b3fa976866c5409b1e",
     "warm-surface.csv":
         "70b9b973b8813c175fcd525045683ad3f0182d26fbec8bc13e68d33fb5b316ca",
     "warm-auto-column.csv":
@@ -135,7 +135,7 @@ _ORACLE_SHA256 = {
     "frozen-vapor-overlap-surface.csv":
         "b959a14c612389861566d6144787b2f2400a8a7b6ffbc1f95c96fcd76443649c",
     "cold-cloud-overlap-column.csv":
-        "6475f4eca3109ad965187854115578f3e3496fd31bcae86662d02b434357b56f",
+        "012616aefa5e81f7c2bb202868b7352526706842a1cab35b1067927e017ba454",
     "cold-cloud-overlap-surface.csv":
         "8ef4c162e79bbe4858b4b79749002ac7ae7cbb842942e481ce35d25dcfab55e2",
     "frozen-vapor-nucleation-overlap-column.csv":

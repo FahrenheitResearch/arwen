@@ -80,15 +80,24 @@ def _a_card_whose_free_vram_this_file_decides(monkeypatch):
     The gate's own tests below substitute ``memory_gate`` wholesale from
     inside the test body, after this fixture, so they still choose their
     own numbers and are unaffected.
+
+    The pin sits on the gate's subprocess probe seam: the gate asks the
+    card nothing in-process (that stood up a CUDA context the go process
+    then held for the whole chain as its progress printer), so the ONE
+    place the outside world enters is ``device_memory_probe_subprocess``.
+    Pinning it also makes this file identical on every box -- with or
+    without a card, busy or idle -- where the old memGetInfo pin still
+    left the no-device path machine-dependent.  ``profile: None`` prices
+    the non-pool terms against the reference profile, deterministically.
     """
 
-    try:
-        import cupy
-    except Exception:  # no device here: the gate's no-device path is
-        return         # already deterministic
+    from gpuwm.core import preflight
+
     monkeypatch.setattr(
-        cupy.cuda.runtime, "memGetInfo",
-        lambda: (_PINNED_FREE_BYTES, 32 * 1024 ** 3), raising=False)
+        preflight, "device_memory_probe_subprocess",
+        lambda **_kwargs: {"free_bytes": _PINNED_FREE_BYTES,
+                           "total_bytes": 32 * 1024 ** 3,
+                           "profile": None})
 
 
 def test_the_pinned_card_is_what_the_gate_reads(gfs_config, tmp_path):
@@ -96,8 +105,6 @@ def test_the_pinned_card_is_what_the_gate_reads(gfs_config, tmp_path):
 
     plan = go_cli.plan_from_config(gfs_config, outdir=tmp_path / "out")
     gate = go_cli.memory_gate(plan)
-    if gate["free_bytes"] is None:
-        pytest.skip("no CUDA device on this box; gate took its no-device path")
     assert gate["free_bytes"] == _PINNED_FREE_BYTES
     assert not gate["refuse"]
 
@@ -979,6 +986,111 @@ def test_the_memory_gate_warns_without_blocking_and_can_be_skipped(
     assert go_cli.go_main(args) == 9
     assert called == []
     assert ran == ["authority", "fetch", "manifest"]
+
+
+# ---------------------------------------------------------------------------
+# The memory gate must not stand up a CUDA context in the go process
+# ---------------------------------------------------------------------------
+
+#: A card as the subprocess probe reports one: the two device questions
+#: the gate prices against, answered together.
+_PROBE_PROFILE = {
+    "name": "pinned probe card",
+    "multiprocessor_count": 170,
+    "max_threads_per_multiprocessor": 1536,
+    "default_stack_limit_bytes": 1024,
+}
+
+
+@pytest.fixture
+def _in_process_cupy_poisoned(monkeypatch):
+    """Any in-process touch of cupy's CUDA half is the defect, said loudly.
+
+    ``memGetInfo`` and ``deviceGetLimit`` cannot be asked without
+    standing up a CUDA primary context, and the ``gpuwm go`` process
+    outlives its own gate as nothing but the stage orchestrator and
+    progress printer -- so a context stood up there sits on the card for
+    the entire chain (measured 0.486 GiB on the RTX 5090) as a consumer
+    no term of the budget the gate just computed names.  The poison
+    replaces cupy in ``sys.modules``: importing it stays legal (imports
+    allocate nothing), touching any attribute raises.
+    """
+
+    import sys as _sys
+    import types
+
+    poison = types.ModuleType("cupy")
+
+    def _refuse(name):
+        raise AssertionError(
+            f"the go process touched in-process cupy.{name}: that stands "
+            "up a CUDA primary context that then sits on the card for the "
+            "whole chain while this process does nothing but print "
+            "progress")
+
+    poison.__getattr__ = _refuse
+    monkeypatch.setitem(_sys.modules, "cupy", poison)
+
+
+def test_the_gate_asks_the_card_in_a_subprocess_and_prices_its_answer(
+        gfs_config, tmp_path, monkeypatch, _in_process_cupy_poisoned):
+    """The gate's device questions run in a short-lived subprocess.
+
+    The card's answers must be the ones the gate prices -- free VRAM
+    from the probe, the reserve from the probe's device profile -- and
+    in-process cupy (poisoned above) must never be touched.  On code
+    that still asks in-process, the poison sends the gate down its
+    no-device path and the first assertion states the defect: the probe
+    seam was ignored.
+    """
+
+    from gpuwm.core import preflight
+
+    payload = {"free_bytes": 30 * 1024 ** 3, "total_bytes": 32 * 1024 ** 3,
+               "profile": dict(_PROBE_PROFILE)}
+    # raising=False so unfixed code FAILS the assertion below (the
+    # defect, stated) instead of erroring on a not-yet-existing seam.
+    monkeypatch.setattr(preflight, "device_memory_probe_subprocess",
+                        lambda **_kwargs: dict(payload), raising=False)
+    plan = go_cli.plan_from_config(gfs_config, outdir=tmp_path / "probe")
+    gate = go_cli.memory_gate(plan)
+    assert gate["free_bytes"] == payload["free_bytes"]
+
+    from gpuwm.core.preflight import (ReservePolicy, _load_experiment_any,
+                                      profile_from_device_probe)
+
+    profile = profile_from_device_probe(payload)
+    assert profile is not None
+    assert profile.name == _PROBE_PROFILE["name"]
+    exp = _load_experiment_any(plan["config"])
+    reserve = ReservePolicy.n0_alloc(
+        exp, profile=profile,
+        estimate_bytes=gate["phases"].forecast.alloc_estimate_bytes)
+    assert gate["budget_bytes"] == (payload["free_bytes"]
+                                    - reserve.reserve_bytes)
+    peak = gate["phases"].peak_envelope_bytes
+    assert gate["refuse"] == (peak > payload["free_bytes"])
+    assert gate["warn"] == (peak > gate["budget_bytes"])
+
+
+def test_a_card_the_probe_cannot_see_never_refuses(
+        gfs_config, tmp_path, monkeypatch, _in_process_cupy_poisoned):
+    """No readable device (a planning box, a CI runner): the phases are
+    still priced and the verdict still prints, but nothing refuses on a
+    card nobody measured -- through the probe seam, and still without
+    touching in-process cupy."""
+
+    from gpuwm.core import preflight
+
+    monkeypatch.setattr(preflight, "device_memory_probe_subprocess",
+                        lambda **_kwargs: None, raising=False)
+    plan = go_cli.plan_from_config(gfs_config, outdir=tmp_path / "nodev")
+    gate = go_cli.memory_gate(plan)
+    assert gate["free_bytes"] is None
+    assert gate["refuse"] is False
+    assert gate["warn"] is False
+    assert gate["verdict"]
+    assert "phases" in gate
 
 
 def _staged_geog_tree(root: Path) -> Path:

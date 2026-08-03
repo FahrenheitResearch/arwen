@@ -47,6 +47,9 @@ from gpuwm.core.microphysics_transition import (  # noqa: E402
     resolve_microphysics_transition,
 )
 from gpuwm.experiment import load_experiment  # noqa: E402
+from gpuwm.physics_compat import (  # noqa: E402
+    experimental_selection_sentence,
+)
 from gpuwm.io.restart import RestartMismatchError  # noqa: E402
 from gpuwm.ingest.prepared_cache import (  # noqa: E402
     PreparedCacheReader,
@@ -1233,6 +1236,10 @@ def run_prepared_tree(
     from gpuwm.config import radiation_scheme_ids
     from gpuwm.core.clock import build_schedule, resolve_clock
     from gpuwm.core.dycore import stability_report
+    from gpuwm.core.gpu_mem_watch import (
+        GpuPeakMemoryWatcher,
+        default_cupy_probes,
+    )
     from gpuwm.core.health import StateHealthValidator
     from gpuwm.core.model import (
         DomainNode,
@@ -1436,17 +1443,15 @@ def run_prepared_tree(
         if not result["ok"]:
             raise FloatingPointError(f"initial d{grid_id:02d} health failed: {result}")
 
-    gpu_peak_used = 0
-    pool_peak_total = 0
     history = []
-
-    def record_memory():
-        nonlocal gpu_peak_used, pool_peak_total
-        free, total = cp.cuda.runtime.memGetInfo()
-        gpu_peak_used = max(gpu_peak_used, int(total - free))
-        pool_peak_total = max(
-            pool_peak_total, int(cp.get_default_memory_pool().total_bytes())
-        )
+    # Boundary-only sampling under-reported the peak: the executor trims
+    # the CuPy pool per STEP and at period commit BEFORE the progress
+    # callback fires, so samples taken only in those callbacks missed
+    # the intra-step transient working set (19.41 GiB reported against
+    # 22.34 GiB true on the four-domain tree shape).  The watcher polls
+    # from a daemon thread as well, and the boundary/end-of-run
+    # sample() calls below fold into the same maxima.
+    memory_watch = GpuPeakMemoryWatcher(default_cupy_probes())
 
     writers = (
         PerDomainWrfoutWriters(
@@ -1484,7 +1489,7 @@ def run_prepared_tree(
         history.append(_strict_json(sample))
         if writers is not None:
             runtime._submit_tree_history_frame(writers, node, ticks)
-        record_memory()
+        memory_watch.sample()
 
     def restart_handler(tree, ticks):
         valid = exp.start_time + timedelta(seconds=ticks / tree.schedule.clock.tick_den)
@@ -1493,7 +1498,7 @@ def run_prepared_tree(
             sealed_forcing_extension=sealed_forcing_extension)
 
     def progress_callback(**event):
-        record_memory()
+        memory_watch.sample()
         _atomic_json(
             progress_path,
             {
@@ -1503,29 +1508,19 @@ def run_prepared_tree(
                 "outer_step": event["outer_step"],
                 "requested_run_seconds": float(exp.run_seconds),
                 "forecast_wall_seconds": time.perf_counter() - forecast_started,
-                "gpu_peak_used_bytes_observed": gpu_peak_used,
+                "gpu_peak_used_bytes_observed": memory_watch.peak_bytes(
+                    "cuda_device_used"),
                 "last_durable_wrfout": event.get("last_durable_wrfout"),
                 "last_checkpoint": event.get("last_checkpoint"),
             },
         )
 
-    if writers is None:
-        execution = execute_experiment(
-            model,
-            history_handler=None,
-            restart_handler=restart_handler,
-            progress_callback=progress_callback,
-            validate_state=True,
-            health_debug=health_debug,
-            skip_feedback_path=True,
-            pool_trim_per_period=True,
-        )
-        wrfout_paths = ()
-    else:
-        with writers:
+    try:
+        memory_watch.start()
+        if writers is None:
             execution = execute_experiment(
                 model,
-                history_handler=history_handler,
+                history_handler=None,
                 restart_handler=restart_handler,
                 progress_callback=progress_callback,
                 validate_state=True,
@@ -1533,12 +1528,27 @@ def run_prepared_tree(
                 skip_feedback_path=True,
                 pool_trim_per_period=True,
             )
-            writers.drain()
-            wrfout_paths = writers.paths
+            wrfout_paths = ()
+        else:
+            with writers:
+                execution = execute_experiment(
+                    model,
+                    history_handler=history_handler,
+                    restart_handler=restart_handler,
+                    progress_callback=progress_callback,
+                    validate_state=True,
+                    health_debug=health_debug,
+                    skip_feedback_path=True,
+                    pool_trim_per_period=True,
+                )
+                writers.drain()
+                wrfout_paths = writers.paths
+    finally:
+        memory_watch.stop()
     cp.cuda.Stream.null.synchronize()
     timing["forecast_execution"] = time.perf_counter() - forecast_started
     model._io_manager = None
-    record_memory()
+    memory_watch.sample()
 
     transition_path, transition_sha, transitions = (
         runtime._write_microphysics_transition_receipt(
@@ -1615,9 +1625,16 @@ def run_prepared_tree(
             "edges": transitions,
         },
         "memory": {
-            "gpu_peak_used_bytes_observed": gpu_peak_used,
-            "cupy_pool_peak_total_bytes_observed": pool_peak_total,
+            "gpu_peak_used_bytes_observed": memory_watch.peak_bytes(
+                "cuda_device_used"),
+            "cupy_pool_peak_total_bytes_observed": memory_watch.peak_bytes(
+                "cupy_pool_total"),
+            "cupy_pool_peak_used_bytes_observed": memory_watch.peak_bytes(
+                "cupy_pool_used"),
             "preflight_alloc_estimate_bytes": int(estimate.alloc_estimate_bytes),
+            # What each number above actually measured, how often it was
+            # sampled, and whether observation stayed complete.
+            "gpu_peak_sampling": memory_watch.summary(),
         },
         "output": {
             "io_mode": io_mode,
@@ -1726,6 +1743,17 @@ def main(argv=None) -> int:
             experiment_config=args.experiment_config,
             experiment_config_sha256=args.experiment_config_sha256,
         )
+        # An experimental component option warns on every front door it
+        # can be selected through, and this runner is one of them: a
+        # domain tree is not runnable through `gpuwm go`, which refuses
+        # multi-domain configs and drives the single-domain runner.
+        # Without this the tree path was the one way to select an
+        # experimental closure and be told nothing.  One sentence, to
+        # stderr, and the run continues (owner posture: warn-not-block).
+        sentence = experimental_selection_sentence(
+            domain.run for domain in inputs.experiment.domains)
+        if sentence is not None:
+            print(f"prepared tree: {sentence}", file=sys.stderr)
     except MissingTableAssets as error:
         print(f"prepared_domain_tree_forecast: refused: {error}",
               file=sys.stderr)

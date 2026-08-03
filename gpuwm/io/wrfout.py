@@ -27,7 +27,7 @@ import netCDF4
 
 from gpuwm.config import NO_LAND_SURFACE_SOIL_LAYERS, soil_layer_count
 from gpuwm.io.wrf_output_schema import (
-    OUTPUT_FIELDS_BY_NETCDF_NAME, PHYSICS_SELECTOR_GLOBALS,
+    HISTORY_FIELDS_BY_NETCDF_NAME, PHYSICS_SELECTOR_GLOBALS,
     SCHEME_OUTPUT_FIELDS, WRF_FIELD_TYPE_INTEGER, WRF_FIELD_TYPE_REAL,
 )
 from gpuwm.supervisor import (fsync_file, quarantine_file,
@@ -88,6 +88,13 @@ _VAR_META = {
     "QNGRAUPEL": ("Graupel Number concentration", "  kg(-1)"),
     "QNHAIL": ("Hail Number concentration", "# kg(-1)"),
     "QNCCN": ("CCN Number concentration", "# kg(-1)"),
+    # QNWFA/QNIFA/QNWFA2D/QNIFA2D (mp_physics=28) are deliberately NOT here.
+    # They have transcribed rows -- with NetCDF type, FieldType and the
+    # stagger the writer cross-checks -- in
+    # gpuwm.io.wrf_output_schema.THOMPSON_AEROSOL_OUTPUT_FIELDS, which
+    # _create_variable consults BEFORE this fallback table.  Same reason the
+    # precipitation accumulators moved out below: two tables describing one
+    # field is how two tables come to disagree about one field.
     "QVGRAUPEL": ("Graupel Particle Volume", "m(3) kg(-1)"),
     "QVHAIL": ("Hail Particle Volume", "m(3) kg(-1)"),
     # Registry.EM_COMMON:1596 (verified against the reference wrfout's
@@ -124,6 +131,47 @@ _VAR_META = {
     "HFX": ("UPWARD HEAT FLUX AT THE SURFACE", "W m-2"),
     "QFX": ("UPWARD MOISTURE FLUX AT THE SURFACE", "kg m-2 s-1"),
     "LH": ("LATENT HEAT FLUX AT THE SURFACE", "W m-2"),
+    "TKE_SASE": ("SASE prognostic subgrid turbulence kinetic energy",
+                 "m2 s-2"),
+    # The SPLIT SUBGRID-FLUX DIAGNOSTIC (RunConfig sase_flux_diag, off by
+    # default; per domain).  Four z-FACE fields on the mass column --
+    # (nz+1, ny, nx), stagger "Z", registered exactly like W -- carrying
+    # the closure's own vertical subgrid fluxes with the conditional-
+    # venting channel separated from the K_v implicit vertical diffusion
+    # channel.  BOTH CHANNELS ARE POSITIVE UPWARD and both divide by the
+    # SAME lowest-level moist density the venting deposit divides by, so
+    # VENT + DIFF is the closure's total subgrid flux and its
+    # convergence is the model's own scalar increment.  Face 0 is +0.0
+    # by the interface contract: the surface flux is owned by HFX/QFX
+    # and is not double-counted here.
+    "SASE_FQV_VENT": ("SASE vent subgrid water vapor flux, positive up",
+                      "kg m-2 s-1"),
+    "SASE_FQV_DIFF": ("SASE Kv subgrid water vapor flux, positive up",
+                      "kg m-2 s-1"),
+    "SASE_FTH_VENT": ("SASE vent subgrid heat flux, positive up",
+                      "W m-2"),
+    "SASE_FTH_DIFF": ("SASE Kv subgrid heat flux, positive up",
+                      "W m-2"),
+    # The HORIZONTAL EDDY-VISCOSITY DIAGNOSTIC (RunConfig hmix_k_diag,
+    # off by default; per domain).  Two (nz, ny, nx) mass-grid fields
+    # carrying the horizontal mixing coefficients the run's own producer
+    # used, under that producer's name: XKMH/XKHH are WRF's Registry
+    # names for the km_opt = 4 2-D Smagorinsky viscosities, SASE_KMH/
+    # SASE_KHH the SASE closure's governed horizontal diffusivity and
+    # the K_h = KMH/Pr_t(f) its scalar channel rides.  Same units, same
+    # grid, same meaning, so the two are directly comparable -- which is
+    # the point: SASE's claim to replace the km_opt operator is a claim
+    # about this number.  A run with NO horizontal mixing producer (the
+    # acknowledged km_opt = 0 control) publishes NEITHER pair, so an
+    # absent variable says "no operator ran" and can never be misread as
+    # a measured zero.  Instantaneous: the value the last completed
+    # model step used, not a history-interval mean.
+    "XKMH": ("HORIZONTAL MOMENTUM EDDY VISCOSITY", "m2 s-1"),
+    "XKHH": ("HORIZONTAL HEAT EDDY VISCOSITY", "m2 s-1"),
+    "SASE_KMH": ("SASE governed horizontal momentum diffusivity",
+                 "m2 s-1"),
+    "SASE_KHH": ("SASE governed horizontal scalar diffusivity, KMH/Pr_t",
+                 "m2 s-1"),
     "PBLH": ("PBL HEIGHT", "m"),
     "GRDFLX": ("GROUND HEAT FLUX", "W m-2"),
     "PSIM": ("SIMILARITY STABILITY FUNCTION FOR MOMENTUM", ""),
@@ -540,7 +588,30 @@ def _live_state_history_fields(state) -> dict[str, object]:
     for output_name, state_name in (
             ("QICE", "qi"), ("QSNOW", "qs"), ("QGRAUP", "qg"),
             ("QNCLOUD", "nc"), ("QNRAIN", "nr"), ("QNICE", "ni"),
-            ("QNSNOW", "ns"), ("QNGRAUPEL", "ng")):
+            ("QNSNOW", "ns"), ("QNGRAUPEL", "ng"),
+            # Aerosol-aware Thompson's two transported aerosol scalars
+            # (Registry/registry.new3d_wif:87/:89).  Presence-guarded like
+            # every row above, and mp=28 is the only scheme that allocates
+            # them, so no other run's inventory changes.  QNCLOUD is NOT a
+            # new row here -- it has been mapped to state.nc since Morrison
+            # landed; under mp=28 it simply starts carrying a PROGNOSTIC
+            # droplet number instead of Morrison's diagnostic one, which is
+            # a change in the values WRF also makes, not in the inventory.
+            ("QNWFA", "nwfa"), ("QNIFA", "nifa")):
+        value = getattr(state, state_name, None)
+        if value is not None:
+            fields[output_name] = value
+    # The two 2-D surface aerosol emission rates.  Separate loop because
+    # they are (ny, nx), not (nz, ny, nx): _dims_for routes them by shape,
+    # and grouping them with the volume fields above would only obscure
+    # that.  WRF's microphysics never writes either -- both are declared
+    # OPTIONAL, INTENT(IN) on mp_gt_driver
+    # (module_mp_thompson.F:1098) and are only READ, at :1247 and
+    # :1320-1321.  So what a wrfout carries is thompson_init's derived
+    # nwfa2d (:510) and the exactly-zero nifa2d nothing in
+    # module_mp_thompson.F ever fills.
+    for output_name, state_name in (
+            ("QNWFA2D", "nwfa2d"), ("QNIFA2D", "nifa2d")):
         value = getattr(state, state_name, None)
         if value is not None:
             fields[output_name] = value
@@ -553,6 +624,14 @@ def _live_state_history_fields(state) -> dict[str, object]:
         value = getattr(state, state_name, None)
         if value is not None:
             fields[output_name] = value
+    # The SASE closure's prognostic subgrid energy, present only on a
+    # state that selected it.  Scheme-qualified on purpose: WRF's
+    # ``TKE_PBL`` is a Z-staggered MYJ/MYNN field on a different
+    # stagger, and the frame's 2-D ``E`` is the Coriolis cosine term,
+    # not a turbulence quantity.
+    e_sgs = getattr(state, "e_sgs", None)
+    if e_sgs is not None:
+        fields["TKE_SASE"] = e_sgs
 
     p_top = getattr(state, "p_top", None)
     if p_top is not None:
@@ -902,7 +981,7 @@ class WrfoutWriter:
         Only the integer direction is checked: a real field legitimately
         accepts any float width.
         """
-        schema = OUTPUT_FIELDS_BY_NETCDF_NAME.get(name)
+        schema = HISTORY_FIELDS_BY_NETCDF_NAME.get(name)
         if schema is None or schema.dtype != "i4":
             return
         if array.dtype.kind not in ("i", "u"):
@@ -973,7 +1052,7 @@ class WrfoutWriter:
         wrong axis, which is a schema lie a reader cannot detect -- so it is
         refused here instead of published.
         """
-        schema = OUTPUT_FIELDS_BY_NETCDF_NAME.get(name)
+        schema = HISTORY_FIELDS_BY_NETCDF_NAME.get(name)
         if schema is not None:
             dtype, field_type = schema.dtype, schema.field_type
             desc, units = schema.description, schema.units

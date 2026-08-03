@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "1.4.1"
+version = "1.5.0"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -105,6 +105,21 @@ tools = ["prepare_hrrr_*.sh"]
 #    same size + SHA-256 pins every mp8 run enforces
 #    (gpuwm/core/thompson_contract.py).  MANIFEST.in carries the same
 #    two exclusions for the sdist.
+#
+# There WAS a third class -- redistribution-driven -- holding exactly
+# data/thompson/tables/CCN_ACTIVATE.BIN, the aerosol-aware Thompson
+# (mp_physics=28) CCN activation table.  It was removed on 2026-08-01: the
+# file is WRF v4.6.1's own run/CCN_ACTIVATE.BIN bit for bit, WRF's
+# LICENSE.txt is a public-domain dedication with a notice request rather
+# than a condition, and the notice ships in
+# gpuwm/data/wrf_radiation/LICENSE-WRF.txt.  It is now tracked, listed in
+# gpuwm/data/thompson/tables/MANIFEST.sha256, and swept into the wheel by
+# [tool.setuptools.package-data]'s "data/**/*" glob like every other
+# packaged table.  It is still NOT in thompson_contract.CLASSIC_TABLE_ASSETS
+# and TABLE_SET_ID is unchanged, so mp_physics=8 acquires no dependency on
+# it, and the loader still fails closed on a missing or byte-different
+# table.  Do not re-add an exclusion here without also flipping
+# thompson_aerosol_contract.AEROSOL_ASSET_REDISTRIBUTED back.
 [tool.setuptools.exclude-package-data]
 gpuwm = [
     "data/rrtmgp/rfmip-clear-sky-reference-lw-down.nc",

@@ -19,6 +19,17 @@ KF_VERTICAL_LEVEL_BOUNDS = (8, 128)
 KESSLER_VERTICAL_LEVEL_BOUNDS = (None, 256)
 WSM6_VERTICAL_LEVEL_BOUNDS = (2, 80)
 THOMPSON_VERTICAL_LEVEL_BOUNDS = (2, 256)
+#: Aerosol-aware Thompson (mp_physics=28).  Identical to the classic
+#: Thompson bound and NOT a copy of a number: the mp=28 sedimentation
+#: translation unit declares the same ``THOMPSON_AA_KMAX_GENERIC 256``
+#: per-thread column bound as ``kernels/thompson.cu``, and the runtime
+#: counterpart ``gpuwm.core.thompson_aerosol.VERTICAL_LEVEL_BOUNDS`` is
+#: bound to this constant by
+#: ``tests/test_mp28_runnable.py::test_mp28_vertical_bounds_are_the_runtime_bounds``
+#: so the two cannot drift.  Held as its own name rather than aliased to
+#: THOMPSON_VERTICAL_LEVEL_BOUNDS because the two schemes' kernels are
+#: separate translation units that a future change could size differently.
+THOMPSON_AEROSOL_VERTICAL_LEVEL_BOUNDS = (2, 256)
 MORRISON_VERTICAL_LEVEL_BOUNDS = (2, 256)
 NSSL2_VERTICAL_LEVEL_BOUNDS = (3, 256)
 

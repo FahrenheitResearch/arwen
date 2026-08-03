@@ -50,6 +50,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BUNDLE_TOOL = REPO_ROOT / "tools" / "build_bridge_bundle.py"
 SOURCE_ASSETS = REPO_ROOT / "tools" / "rustwx" / "assets"
 
+#: The source revision these tests "release".  Pin verifies every
+#: binary's embedded GPUWM_BRIDGE_SOURCE_REV stamp against it, so the
+#: stubs embed it; these tests are about the asset half and must not
+#: fail (or pass) on the staleness half.
+SOURCE_REV = "5eed" * 10
+
 
 def _require_source_assets() -> None:
     if not SOURCE_ASSETS.is_dir():
@@ -84,8 +90,9 @@ def _stub_artifacts(directory: Path, platform: str) -> Path:
     for artifact in bridge_assets.BUNDLED_ARTIFACTS:
         name = bridge_assets.artifact_filename(artifact, platform)
         marker = bridges.BRIDGE_ABI_MARKERS.get(artifact.name, b"")
+        stamp = bridge_assets.SOURCE_REV_MARKER + SOURCE_REV.encode()
         (directory / name).write_bytes(
-            f"stub::{artifact.name}::".encode() + marker)
+            f"stub::{artifact.name}::".encode() + marker + b"::" + stamp)
     return directory
 
 
@@ -211,12 +218,14 @@ def test_pin_refuses_a_bundle_that_carries_no_map_assets(tmp_path):
     platform = "linux-x86_64"
     release = "v0-assetless"
     archive = tmp_path / _bundle_filename(release, platform)
+    stamp = bridge_assets.SOURCE_REV_MARKER + SOURCE_REV.encode()
     with zipfile.ZipFile(archive, "w") as zf:
         for artifact in bridge_assets.BUNDLED_ARTIFACTS:
             zf.writestr(bridge_assets.artifact_filename(artifact, platform),
-                        f"stub::{artifact.name}")
+                        f"stub::{artifact.name}::".encode() + stamp)
     result = subprocess.run(
         [sys.executable, str(BUNDLE_TOOL), "pin", "--release", release,
+         "--source-rev", SOURCE_REV,
          "--bundle", str(archive), "--out", str(tmp_path / "pins.json")],
         capture_output=True, text=True, cwd=REPO_ROOT)
     assert result.returncode != 0
@@ -232,6 +241,7 @@ def _pin_document(tmp_path: Path, archive: Path, release: str) -> dict:
     out = tmp_path / "pins.json"
     result = subprocess.run(
         [sys.executable, str(BUNDLE_TOOL), "pin", "--release", release,
+         "--source-rev", SOURCE_REV,
          "--bundle", str(archive), "--out", str(out)],
         capture_output=True, text=True, cwd=REPO_ROOT)
     assert result.returncode == 0, result.stdout + result.stderr

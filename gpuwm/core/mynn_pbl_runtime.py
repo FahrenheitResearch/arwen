@@ -72,7 +72,21 @@ VERTICAL_LEVEL_BOUNDS = (5, None)
 
 #: WRF Registry packages whose moist state declares ``F_QS``.  The PBL
 #: driver forwards that generated flag at ``module_pbl_driver.F:873-878``.
-MYNN_SNOW_MICROPHYSICS = frozenset((6, 8, 10, 18))
+#:
+#: ``28`` (Registry.EM_COMMON:3036, package ``thompsonaero``:
+#: ``moist:qv,qc,qr,qi,qs,qg``) belongs here for exactly the reason 8 does,
+#: and was missing while mp_physics=28 was being ported: with the flag false
+#: ``module_bl_mynn.F:734`` and ``:876`` substitute ``sqs = 0``, so MYNN saw
+#: no snow at all under the one Thompson variant whose package declares it,
+#: and ``:1324`` skipped ``rqsblten``.  MEASURED on the committed WRF v4.6.1
+#: MYNN driver oracle's ``snow_anvil`` column (max sqs 4.08e-05): the
+#: substitution drove ``qi_bl`` from 5.4863e-07 to exactly 0 and moved
+#: ``qc_bl``, ``cldfra_bl``, ``rqvblten``, ``rthblten`` and ``exch_h`` with
+#: it.  ``gpuwm/physics_registry_v2.json`` has published 28 as a
+#: flag_qs-true selector since the scheme was registered; the two are bound
+#: together by ``tests/test_physics_registry.py::
+#: test_the_registry_flag_qs_contract_is_the_one_the_shipped_runtime_applies``.
+MYNN_SNOW_MICROPHYSICS = frozenset((6, 8, 10, 18, 28))
 
 
 def mynn_flag_qs(mp_physics: int) -> bool:

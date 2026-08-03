@@ -115,9 +115,15 @@ def test_the_phrase_liveness_heartbeat_appears_nowhere_under_docs_public():
 
 def test_no_public_document_states_a_pin_count_as_a_literal():
     """A typed count stops being true the moment the pin table moves."""
+    # The negative lookbehind keeps a HYPHENATED number out of the
+    # match: "SHA-256 pins" names a hash beside the word, it does not
+    # state a count of pins, and reading it as one made this rule fire
+    # on a sentence that states no count at all.  A real count ("five
+    # pins", "12 pins") never has a hyphen in front of the number.
     pattern = re.compile(
-        r"\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
-        r"thirteen|\d+)\s+(of\s+the\s+)?pins?\b", re.IGNORECASE)
+        r"(?<!-)\b(one|two|three|four|five|six|seven|eight|nine|ten|"
+        r"eleven|twelve|thirteen|\d+)\s+(of\s+the\s+)?pins?\b",
+        re.IGNORECASE)
     offenders = []
     for path in _public_docs():
         for number, line in enumerate(

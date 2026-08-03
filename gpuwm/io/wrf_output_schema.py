@@ -606,6 +606,84 @@ PRECIPITATION_OUTPUT_FIELDS: dict[str, WrfOutputField] = {
         "mm", "Registry.EM_COMMON:1592", wrf_history=True),
 }
 
+#: Aerosol-aware Thompson's four aerosol carriers (``mp_physics=28``,
+#: Registry/Registry.EM_COMMON:3036 binds the ``thompsonaero`` package).
+#:
+#: These are transcribed here rather than added to ``gpuwm.io.wrfout``'s
+#: ``_VAR_META`` for the reason that table's own RAINC/RAINNC comment gives:
+#: two tables describing one field is how two tables come to disagree about
+#: one field.  ``_VAR_META`` is the writer's *fallback* for names with no
+#: transcribed row; these have one, so they belong here, where the row also
+#: carries the NetCDF type, the ``FieldType`` code and the stagger the
+#: writer cross-checks against the dimension table.
+#:
+#: They reach the writer through :data:`HISTORY_FIELDS_BY_NETCDF_NAME` and
+#: NOT through :data:`OUTPUT_FIELDS_BY_NETCDF_NAME`, because these are
+#: transported model state rather than a physics driver's published
+#: diagnostics: no ``PhysicsDriver.fields`` key names them, and the
+#: scheme-inventory count pinned by ``tests/test_wrf_output_schema.py``
+#: counts exactly the driver-published rows.  Both maps enforce the same
+#: no-two-fields-one-name refusal, so the aerosol rows are still checked
+#: against every other row this module carries.
+#:
+#: Every string is WRF's, including the two that are visibly imprecise.
+#: ``QNIFA2D``'s description really does say "dust" for what mp=28 uses as
+#: the generic ice-friendly aerosol emission, and ``QNWFA``/``QNIFA``'s
+#: descriptions really are truncated mid-word at "con".  Transcribe, do not
+#: improve: a gpuwm wrfout must not disagree with a WRF one about a field
+#: they both write.
+#:
+#: THE UNITS ARE NOT WHAT THE REGISTRY LINE SAYS, AND THAT IS CORRECT.
+#: ``Registry/registry.new3d_wif:88`` spells QNWFA's units ``"# kg(-1)"``,
+#: but WRF's Registry parser BLANKS every ``#`` that appears inside double
+#: quotes before tokenizing the line -- ``tools/reg_parse.c:201-208``,
+#: comment and all: "check line and zap any # characters that are in double
+#: quotes", ``else if ( *p == '#' && inquote ) *p = ' ' ;``.  So what WRF
+#: itself writes is ``"  kg(-1)"``, with the hash replaced by a space.  This
+#: is not inference: WRF's own generated table in the built tree reads
+#: ``scalar_units_table( idomain, P_qnwfa ) = '  kg(-1)'``
+#: (``inc/scalar_indices.inc:2586``, and :2600 for ``P_qnifa``), and the
+#: five number-concentration rows in ``gpuwm.io.wrfout._VAR_META`` that were
+#: verified against a stock v4.6.1 wrfout carry exactly that spelling.
+#: Transcribing the Registry LINE here instead of WRF's RESOLVED value would
+#: have shipped a units string no WRF file contains.
+#: ``QNWFA2D``/``QNIFA2D`` have no ``#`` and are unaffected; their strings
+#: are confirmed verbatim by ``inc/allocs_1.f90:6869-6870`` and :6931-6932.
+#:
+#: The two 3-D rows are ``scalar``-array members in WRF (not ``moist``),
+#: which is why ArWen carries them as transported scalars that never enter
+#: cq or the w-equation buoyancy loading.  ``QNWFA2D``/``QNIFA2D`` are 2-D
+#: surface emission rates, INTENT(IN) to the microphysics -- WRF's
+#: ``thompson_init`` derives ``nwfa2d`` once (module_mp_thompson.F:509-510)
+#: and no microphysics call ever writes either of them.
+#:
+#: NOT here, deliberately: ``TAOD5502D``/``TAOD5503D``, the other two
+#: ``state`` members of the thompsonaero package.  They are 550 nm aerosol
+#: optical depth diagnostics produced by the RADIATION side, never by
+#: ``mp_gt_driver``; ArWen computes neither, and their absence is the honest
+#: signal that no aerosol-radiation coupling ran.  ``QNBCA`` is likewise
+#: absent: it exists only under ``wif_input_opt=2``
+#: (Registry/registry.new3d_wif:82), which ``gpuwm.config`` fails closed on.
+THOMPSON_AEROSOL_OUTPUT_FIELDS: dict[str, WrfOutputField] = {
+    "QNWFA": WrfOutputField(
+        "QNWFA", "f4", "",
+        "water-friendly aerosol number con",
+        "  kg(-1)", "registry.new3d_wif:87", wrf_history=True),
+    "QNIFA": WrfOutputField(
+        "QNIFA", "f4", "",
+        "ice-friendly aerosol number con",
+        "  kg(-1)", "registry.new3d_wif:89", wrf_history=True),
+    "QNWFA2D": WrfOutputField(
+        "QNWFA2D", "f4", "",
+        "Surface aerosol number conc emission",
+        "kg-1 s-1", "Registry.EM_COMMON:492", wrf_history=True),
+    "QNIFA2D": WrfOutputField(
+        "QNIFA2D", "f4", "",
+        "Surface dust number conc emission",
+        "kg-1 s-1", "Registry.EM_COMMON:493", wrf_history=True),
+}
+
+
 @dataclass(frozen=True)
 class WrfSelectorGlobal:
     """One WRF physics selector that stock WRF stamps into every history file.
@@ -686,11 +764,20 @@ for _group in (MYNN_PBL_OUTPUT_FIELDS, NOAHMP_OUTPUT_FIELDS,
                 f"{_key!r}: {_clash} and {_field}")
         SCHEME_OUTPUT_FIELDS[_key] = _field
 
-#: Every record this module carries, keyed by the name that reaches the
-#: NetCDF file: the scheme fields plus the always-written accumulators.  This
-#: is what the writer consults.  Two distinct gpuwm fields sharing one
-#: external name would make the wrfout inventory depend on dict order, so the
-#: reverse map refuses it.
+#: Every SCHEME-SELECTOR record this module carries, keyed by the name that
+#: reaches the NetCDF file: the scheme fields plus the always-written
+#: accumulators.  Two distinct gpuwm fields sharing one external name would
+#: make the wrfout inventory depend on dict order, so the reverse map
+#: refuses it.
+#:
+#: This map is deliberately the SELECTOR-DRIVEN inventory only, and its
+#: cardinality is pinned to exactly ``len(SCHEME_OUTPUT_FIELDS) +
+#: len(PRECIPITATION_OUTPUT_FIELDS)`` by
+#: ``tests/test_wrf_output_schema.py::
+#: test_no_two_gpuwm_fields_claim_one_netcdf_name``.  Model-state rows --
+#: which is what mp=28's four aerosol carriers are -- go in
+#: :data:`HISTORY_FIELDS_BY_NETCDF_NAME` below instead of here, so that pin
+#: keeps meaning what it says.  The writer consults the wider map.
 OUTPUT_FIELDS_BY_NETCDF_NAME: dict[str, WrfOutputField] = {}
 for _group in (SCHEME_OUTPUT_FIELDS, PRECIPITATION_OUTPUT_FIELDS):
     for _key, _field in _group.items():
@@ -701,6 +788,31 @@ for _group in (SCHEME_OUTPUT_FIELDS, PRECIPITATION_OUTPUT_FIELDS):
                 f"{_field.netcdf_name!r}: {_clash} and {_field}")
         OUTPUT_FIELDS_BY_NETCDF_NAME[_field.netcdf_name] = _field
 
+#: EVERY record this module carries, keyed by its NetCDF name: the
+#: selector-driven inventory above plus the transcribed model-state rows
+#: that belong to no physics-driver ``fields`` dict.  THIS is what
+#: ``gpuwm.io.wrfout`` consults, so a name described here is described the
+#: same way whichever table it came from, and the same clash refusal covers
+#: the union -- an aerosol row that collided with a scheme diagnostic would
+#: raise at import, not silently win or lose a dict-order race.
+#:
+#: Why two maps instead of one: ``OUTPUT_FIELDS_BY_NETCDF_NAME`` answers
+#: "which fields does a selected SCHEME publish", which is the question the
+#: driver-inventory tests ask and count.  ``HISTORY_FIELDS_BY_NETCDF_NAME``
+#: answers "what does the writer know about this variable name".  mp=28's
+#: aerosol carriers are transported model state (WRF ``scalar``-array
+#: members, plus two ``misc`` 2-D surface fields), not scheme diagnostics,
+#: so only the second question includes them.
+HISTORY_FIELDS_BY_NETCDF_NAME: dict[str, WrfOutputField] = {}
+for _group in (OUTPUT_FIELDS_BY_NETCDF_NAME, THOMPSON_AEROSOL_OUTPUT_FIELDS):
+    for _key, _field in _group.items():
+        _clash = HISTORY_FIELDS_BY_NETCDF_NAME.get(_field.netcdf_name)
+        if _clash is not None and _clash != _field:
+            raise ValueError(
+                "two gpuwm fields both write NetCDF variable "
+                f"{_field.netcdf_name!r}: {_clash} and {_field}")
+        HISTORY_FIELDS_BY_NETCDF_NAME[_field.netcdf_name] = _field
+
 del _group, _key, _field, _clash
 
 
@@ -710,6 +822,7 @@ def netcdf_names(keys) -> tuple[str, ...]:
 
 
 __all__ = [
+    "HISTORY_FIELDS_BY_NETCDF_NAME",
     "MYNN_PBL_OUTPUT_FIELDS",
     "NETCDF_DTYPE_BY_REGISTRY_TYPE",
     "NOAHMP_OUTPUT_FIELDS",
@@ -718,6 +831,7 @@ __all__ = [
     "PRECIPITATION_OUTPUT_FIELDS",
     "RUC_OUTPUT_FIELDS",
     "SCHEME_OUTPUT_FIELDS",
+    "THOMPSON_AEROSOL_OUTPUT_FIELDS",
     "WRF_FIELD_TYPE_INTEGER",
     "WRF_FIELD_TYPE_REAL",
     "WrfOutputField",

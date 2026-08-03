@@ -105,22 +105,33 @@ consumed `RunConfig` field -- the knob-parity battery
 consuming kernel/module rather than being decorative -- and every one
 is importable from a WRF namelist.
 
-**Which keys a `[[domain]]` table may override.** Exactly these twelve,
+**Which keys a `[[domain]]` table may override.** Exactly these 26,
 and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
 
     cu_physics  cudt_minutes  radt  radt_minutes  bldt
-    diff_6th_factor  epssm  spec_exp  mp_physics  moist  moist_cq
-    nest_microphysics_transition
+    diff_6th_factor  diff_6th_opt  epssm  spec_exp  mp_physics  moist
+    moist_cq  nest_microphysics_transition
+    km_opt  bl_pbl_physics  sf_sfclay_physics  isfflx  c_s  c_k
+    mix_isotropic  mix_upper_bound  tke_heat_flux
+    tke_drag_coefficient  tke_upper_bound
+    sase_flux_diag  hmix_k_diag
+
+`sase_flux_diag` and `hmix_k_diag` are output-only diagnostics, and
+they are per domain for the same reason: their cost scales with the
+grid, so a tree can carry them on the domain whose mixing or subgrid
+flux is being read and leave them off the rest.  The turbulence row
+(`km_opt` through `tke_upper_bound`) and the PBL/surface selectors are
+per domain because that is what makes a PBL parent able to carry a
+PBL-off LES child (see `docs/public/LES.md`).
 
 Only `gpuwm domain`'s own emission and hand-written TOML reach some of
 them, so the list is stated here rather than left to be discovered. A
-`[[domain]]` table carrying any other key -- including a physics
-selector such as `bl_pbl_physics`, which WRF *does* carry per domain --
-is **refused** naming the key, not accepted and not silently dropped:
-per-nest selection of those schemes is not implemented, and a config
-that appeared to ask for it while the `[shared]` scheme ran on every
-nest would be a wrong answer reported as a success. Put them in
-`[shared]`.
+`[[domain]]` table carrying any other key is **refused** naming the
+key, not accepted and not silently dropped: a config that appeared to
+ask for it while the `[shared]` value ran on every nest would be a
+wrong answer reported as a success. Put them in `[shared]`.  One
+per-domain VALUE is also refused by name: `bl_pbl_physics = 900`
+(SASE) is selected run-wide in `[shared]`, never per nest.
 
 | TOML key | WRF equivalent | default | allowed | note |
 |---|---|---|---|---|
@@ -128,8 +139,16 @@ nest would be a wrong answer reported as a success. Put them in
 | `epssm` | `epssm` | 0.1 | per-domain | acoustic off-centering; scalar namelist assignment changes d01 only (Registry tail keeps 0.1), preserved per-domain |
 | `smdiv` | `smdiv` | 0.1 | finite | 3-D divergence damping |
 | `emdiv` | `emdiv` | 0.0 (ArWen legacy) | finite | WRF Registry default 0.01 is emitted explicitly on import |
-| `km_opt` | `km_opt` | 1 | 1 (constant K), 4 (2-D Smagorinsky) | `diff_opt=2` form implied; WRF -1 must-set honored: omission refuses. 2 (1.5-order prognostic TKE) and 3 (3-D Smagorinsky) are implemented on the LES lane and are **refused by this build** -- `gpuwm/config.py` admits `{1, 4}` here; the row grows to `{1, 2, 3, 4}` in the release that carries that lane |
-| `c_s` | `c_s` | 0.25 | > 0 | Smagorinsky constant (smag2d kernel) |
+| `km_opt` | `km_opt` | 1 | 1 (constant K), 2 (1.5-order prognostic TKE), 3 (3-D Smagorinsky), 4 (2-D Smagorinsky), 0 (no operator -- with `bl_pbl_physics = 900`, or with `km_opt_zero_acknowledgement`) | `diff_opt=2` form implied; WRF -1 must-set honored: omission refuses. **2 and 3 are the LES closures and carry extra conditions:** `km_opt=2` is admitted only with `bl_pbl_physics=0`, and is refused on a nest child under a TKE-carrying parent (see `gpuwm/experiment.py`). `km_opt=3` has no nest restriction. See `docs/public/LES.md` |
+| `km_opt_zero_acknowledgement` | (none) | `""` | the exact id `no-horizontal-mixing-operator-v1` | admits `km_opt = 0` with a PBL scheme that produces no horizontal mixing of its own -- i.e. a run with NO horizontal mixing operator, WRF's `diff_opt = 0`. Refused by default because that is what a mis-set switch looks like; the acknowledged path is the single-variable research control that varies the closure while holding the mixing at none. A literal id, not a boolean, so no stray `= true` reaches it. Refused where it would acknowledge nothing (`km_opt != 0`, or SASE, which supplies the producer). Not needed with `bl_pbl_physics = 900` |
+| `hmix_k_diag` | (none) | false | bool, per domain | publishes the horizontal eddy viscosities the run's own producer used, under that producer's name: `XKMH`/`XKHH` for `km_opt = 4`, `SASE_KMH`/`SASE_KHH` for the SASE closure. Same units (m2 s-1), same mass grid, so the two are directly comparable. A run with no producer publishes neither pair -- an absent variable cannot be misread as a measured zero. Two extra (nz, ny, nx) planes per frame |
+| `c_s` | `c_s` | 0.25 | > 0 | Smagorinsky constant (smag2d kernel); per-domain |
+| `c_k` | `c_k` | 0.15 | > 0 | km_opt=2 TKE-closure constant, K = c_k sqrt(e) l; the WRF `em_les` reference namelist sets 0.10; per-domain |
+| `mix_isotropic` | `mix_isotropic` | 0 | 0, 1 | 0 = anisotropic mixing lengths, 1 = isotropic (dx dy dz)^(1/3); per-domain |
+| `mix_upper_bound` | `mix_upper_bound` | 0.1 | > 0 | non-dimensional cap K <= mix_upper_bound len^2 / dt, applied per direction; per-domain |
+| `tke_upper_bound` | `tke_upper_bound` | 1000.0 | > 0 | km_opt=2 TKE ceiling in m2 s-2, `bound_tke` clamp; per-domain |
+| `tke_heat_flux` | `tke_heat_flux` | 0.0 | finite | prescribed kinematic surface heat flux, K m s-1; consumed under `isfflx` 0 and 2 with the PBL off; per-domain |
+| `tke_drag_coefficient` | `tke_drag_coefficient` | 0.0 | >= 0 | prescribed surface drag coefficient; consumed under `isfflx=0` with the PBL off; per-domain |
 | `khdif`, `kvdif` | `khdif`, `kvdif` | 0.0 | >= 0 | km_opt=1 only; refused with open/specified boundaries |
 | `diff_6th_opt` | `diff_6th_opt` | 0 | 0, 1, 2 | option 1 refused when moist (PD bypass) |
 | `diff_6th_factor` | `diff_6th_factor` | 0.12 | per-domain | |
@@ -168,7 +187,7 @@ nest would be a wrong answer reported as a success. Put them in
 | `rdlai2d` | `rdlai2d` | false | bool | Noah read-in LAI |
 | `opt_thcnd` | `opt_thcnd` | 1 | 1, 2 | Noah soil thermal conductivity (Johansen/McCumber-Pielke) |
 | `num_soil_layers` | `num_soil_layers` | 4 | scheme-defined | ArWen *refuses* a count the scheme does not define where WRF silently overwrites it |
-| `nest_microphysics_transition` | -- | `same-scheme-only` | + `mp8-to-mp18-mass-diagnosed-v1`, `mp-edge-mass-diagnosed-v1` | ArWen-only, one-way nest MP edges; the first id preserves the ratified Thompson→NSSL path and the matrix id selects the other ported mixed edges |
+| `nest_microphysics_transition` | -- | `same-scheme-only` | + `mp8-to-mp18-mass-diagnosed-v1`, `mp-edge-mass-diagnosed-v1` | ArWen-only, one-way nest MP edges; the first id preserves the ratified Thompson→NSSL path and the matrix id selects the other ported mixed edges. **`mp_physics = 28` is excluded from both mixed ids**: an mp=28 domain may only nest under an mp=28 parent, and a mixed edge is refused by name rather than closed with WRF's non-aerosol-aware fallback constants |
 
 Scheme selectors (`mp_physics`, `bl_pbl_physics`, `ra_lw/sw_physics`,
 `sf_sfclay_physics`, `sf_surface_physics`, `cu_physics`) and their
@@ -205,6 +224,28 @@ value):
   `gpuwm/core/nssl2_contract.py` (`nssl_cccn 0.5e9`, `nssl_alphah 0`,
   `nssl_alphahl 1`, `nssl_cnoh 4e5`, ... `nssl_3moment 0`); tunable
   NSSL parameters are not yet plumbed.
+- **Thompson aerosol-aware** (`&physics`/`&domains`,
+  `mp_physics = 28`): the port runs at exactly one aerosol-forcing
+  identity -- no aerosol IC/BC, no WIF metgrid stream, no fire
+  emissions, no black-carbon species. Concretely `use_aero_icbc
+  .false.`, `use_rap_aero_icbc .false.`, `wif_input_opt 0`,
+  `num_wif_levels` unused, `qna_update 0`, `wif_fire_emit .false.`,
+  `wif_fire_inj` unused, `dust_emis 0`, `grav_settling 0`,
+  `scalar_pblmix 0`. WRF *derives* `aer_init_opt` and
+  `aer_fire_emit_opt` from the first four of those
+  (`Registry.EM_COMMON:2656`, `:2658` are declared `derived`, not
+  `namelist`), so they are not ArWen settings and are not exposed. The
+  activation table `CCN_ACTIVATE.BIN` is a launch prerequisite ArWen
+  ships, byte-validated on every load -- see [PHYSICS.md](PHYSICS.md).
+
+  "No aerosol IC/BC" means no *ingest lane*, not an empty aerosol field:
+  a cold-start mp=28 domain is initialised with WRF's own fallback, the
+  synthetic CCN/IN profile `thompson_init` fills, installed once per
+  domain by `gpuwm/core/physics.py::initialize_physics`. What is missing
+  is any way to *supply* an aerosol field of your own, and any aerosol at
+  a specified lateral boundary -- which matters, because that boundary
+  policy sweeps the initial field out of the domain in `L/U`. Both are
+  quantified in [PHYSICS.md](PHYSICS.md).
 
 ## Fixed by ArWen (WRF has a knob; ArWen has one implemented value)
 
@@ -237,6 +278,13 @@ In the TOML they do not exist at all.
 | `cu_rad_feedback` | .false. | KF cloud fraction does not feed radiation |
 | `kf_edrates` | 0 | no KF rate diagnostics |
 | `sst_update`, `sst_skin`, `tmn_update` | 0 | single-analysis case runs |
+| `use_aero_icbc`, `use_rap_aero_icbc` | .false. | no GOCART climatological aerosol IC/BC reader (`mp_physics = 28` only) |
+| `wif_input_opt` | 0 | no WIF metgrid aerosol stream; `num_wif_levels` is inert with it. **WRF's `real.exe` FATALs `mp_physics = 28` at this value** (`dyn_em/module_initialize_real.F:2734-2736`) while ArWen runs it, taking WRF's own internal fallback — the synthetic CCN/IN profile `thompson_init` installs — as the aerosol initial condition. So an ArWen mp=28 run and a WIF-initialised WRF mp=28 run are **not** directly comparable; see D9a/D9b in [PROVENANCE.md](../../PROVENANCE.md) |
+| `qna_update` | 0 | no auxiliary `wrfqnainp` input stream |
+| `wif_fire_emit`, `wif_fire_inj` | .false. / unused | no biomass-burning aerosol emission inventory |
+| `dust_emis` | 0 | no non-chem dust source; `nifa2d` stays exactly zero, matching `thompson_init` |
+| `grav_settling` | 0 | fog gravitational settling not ported. WRF *silently* forces 0 on every `mp_physics = 28` domain (`share/module_check_a_mundo.F:2459-2474`); ArWen refuses a nonzero value instead |
+| `scalar_pblmix` | 0 | no 4-D scalar PBL mixing path. WRF forces 1 under `mp_physics = 28` **only with** `use_aero_icbc`/`use_rap_aero_icbc` (`:2477-2495`), which ArWen refuses, and forces 0 again under MYNN with `bl_mynn_mixscalars = 1` (`:2497-2511`); at ArWen's identity WRF's own value is 0 too |
 | `interp_method_type` | 2 | SINT nest interpolation only |
 | `input_from_file` | .true. | per-domain real init is the T branch |
 | every `&stoch` selector | 0 | no stochastic physics (seed keys drop as inert) |

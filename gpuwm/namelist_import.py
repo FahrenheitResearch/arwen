@@ -38,7 +38,13 @@ ratified substitutions), FIXED BY ARWEN (the key was validated against
 the single implemented value and recorded with that value and why), or
 NOT IMPLEMENTED (consumed without a counterpart, each with a reason).
 RunConfig-honored keys the importer previously refused as unmapped now
-translate: ``c_s``, ``diff_6th_thresh``, ``no_mp_heating``,
+translate: the per-domain turbulence row ``c_s``, ``c_k``,
+``mix_isotropic``, ``mix_upper_bound``, ``tke_upper_bound``,
+``tke_heat_flux``, ``tke_drag_coefficient`` (every one ``max_domains`` in
+the Registry and admitted per domain by
+``gpuwm.experiment._DOMAIN_RUN_OVERRIDES``, so a PBL parent may carry a
+PBL-off LES child that names its own closure constants), plus
+``diff_6th_thresh``, ``no_mp_heating``,
 ``mp_tend_lim``, ``ysu_topdown_pblmix``, ``isftcflx``, ``iz0tlnd``,
 ``usemonalb``, ``rdlai2d``, ``opt_thcnd`` (each emitted only when the
 namelist supplies it -- their Registry defaults equal gpuwm's frozen
@@ -364,7 +370,88 @@ _MP_MAP = {
     8: (8, "Thompson", "Thompson"),
     10: (10, "Morrison 2-moment", "Morrison 2-moment"),
     18: (18, "NSSL 2-moment", "NSSL 2-moment"),
+    # A TRANSLATION, not a substitution: the mapped value equals the WRF
+    # value, so PHYSICS.md's "exactly three ratified substitutions" claim is
+    # untouched.  Mapping 28 -> 8 would have been the substitution, and it
+    # would have been a lie: classic Thompson pins nc at Nt_c = 100e6 and
+    # runs Cooper nucleation, while 28 carries prognostic nc/nwfa/nifa,
+    # CCN activation and iceDeMott.  Silently downgrading a namelist that
+    # asked for aerosol-aware physics is precisely the failure this map
+    # exists to prevent.
+    28: (28, "Thompson aerosol-aware", "Thompson aerosol-aware"),
     55: (10, "ISHMAEL", "Morrison 2-moment"),
+}
+
+#: WRF's aerosol-aware-Thompson namelist surface, section -> key -> what
+#: ArWen does with it.  ``_Section.finish`` refuses any key it was not
+#: offered, so every one of these must be consumed explicitly; the choice is
+#: only ever between an INERT drop (the key changes nothing under the
+#: selected scheme, in WRF either) and a hard refusal that names what is
+#: missing.
+#:
+#: Under ``mp_physics != 28`` every key here is inert in WRF as well -- the
+#: thompsonaero package is the only consumer -- so they drop with that
+#: reason.  Under ``mp_physics == 28`` each one is refused by name, because
+#: ArWen's established posture is to REFUSE where WRF silently overwrites:
+#: WRF's ``share/module_check_a_mundo.F`` forces ``grav_settling`` to 0
+#: (:2459-2474) and ``scalar_pblmix`` to 1 (:2477-2495) under mp=28 without
+#: failing, and a user who asked for the other value would otherwise be
+#: given a different model than the one they wrote down.
+_MP28_AEROSOL_NAMELIST_KEYS: dict[str, dict[str, str]] = {
+    "physics": {
+        "use_aero_icbc":
+            "ArWen has no aerosol IC/BC ingest: use_aero_icbc=.true. makes "
+            "real.exe derive aer_init_opt=1 and read QNWFA/QNIFA from "
+            "metgrid (dyn_em/module_initialize_real.F:2325-2732), and there "
+            "is no such stream here",
+        "use_rap_aero_icbc":
+            "the same missing aerosol IC/BC ingest as use_aero_icbc, "
+            "RAP-sourced variant (share/module_check_a_mundo.F:2477-2495 "
+            "pairs the two)",
+        "qna_update":
+            "no aerosol IC/BC lane exists to update from; the knob only "
+            "means anything alongside use_aero_icbc",
+        "scalar_pblmix":
+            "PBL scalar mixing of the aerosol scalars qnc/qnwfa/qnifa is "
+            "not wired -- "
+            "gpuwm/core/mynn_pbl.py passes flag_qnc/flag_qnwfa/flag_qnifa "
+            "as literal False.  WRF SILENTLY forces scalar_pblmix=1 under "
+            "mp_physics=28 with use_aero_icbc "
+            "(share/module_check_a_mundo.F:2477-2495); ArWen refuses rather "
+            "than accepting a value it would not honour",
+        "grav_settling":
+            "WRF SILENTLY forces grav_settling=0 under mp_physics=28 "
+            "because the scheme already has gravitational fog settling "
+            "(share/module_check_a_mundo.F:2459-2474); ArWen has no fog "
+            "settling option at all, so it refuses the key instead of "
+            "accepting a request it would overwrite",
+        "wif_fire_emit":
+            "no biomass-burning aerosol emission source "
+            "(Registry.EM_COMMON:2657); ArWen's only nwfa2d is "
+            "thompson_init's derived surface emission "
+            "(phys/module_mp_thompson.F:510)",
+        "wif_fire_inj":
+            "no biomass-burning aerosol injection profile "
+            "(Registry.EM_COMMON:2659), for the same reason.  Refused even "
+            "at its WRF Registry default of 1, because with no emission "
+            "source there is no honest value: 1 describes a vertical "
+            "distribution ArWen never performs",
+        "dust_emis":
+            "no dust emission source (Registry.EM_COMMON:2591); ArWen's "
+            "nifa2d is identically zero, exactly as "
+            "module_mp_thompson.F leaves it",
+    },
+    "domains": {
+        "wif_input_opt":
+            "no WIF metgrid ingest.  WRF FATALs mp_physics=28 with "
+            "wif_input_opt=0 "
+            "(dyn_em/module_initialize_real.F:2735-2736) and ArWen runs "
+            "thompson_init's synthetic profile instead, so no value of this "
+            "key describes a configuration both models can produce",
+        "num_wif_levels":
+            "the WIF vertical axis has no consumer without the ingest "
+            "(Registry/registry.new3d_wif:14-16)",
+    },
 }
 _BL_MAP = {
     0: (0, "none", "none"),
@@ -1143,6 +1230,36 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                              "[case_data], not imported"),
     ):
         drop("domains", key, dm.take(key), reason)
+
+    # ---- the &domains half of the mp=28 aerosol sweep --------------------
+    # It has to run HERE, before dm.finish(), and the &physics half runs
+    # with the rest of the physics block far below.  WRF splits WIF's two
+    # keys into &domains (Registry/registry.new3d_wif:16-17) while every
+    # other aerosol knob is in &physics, and dm.finish() -- which refuses
+    # any unconsumed key -- fires long before mp_physics has been mapped.
+    # So mp_physics is PEEKED off the unconsumed &physics entries rather
+    # than read from the mapped value; peeking cannot consume, so the
+    # physics block below still validates mp_physics itself.
+    # Any domain asking for 28 is enough to refuse: a mixed column is
+    # rejected later by _uniform anyway, and treating the root's value as
+    # the whole answer would let `mp_physics = 6, 28` drop a WIF key as
+    # inert on its way to that rejection.
+    _peeked_mp = ph.entries.get("mp_physics") or ()
+    _selects_28 = any(
+        isinstance(value, int) and not isinstance(value, bool)
+        and value == 28 for value in _peeked_mp)
+    for _aero_key, _why in _MP28_AEROSOL_NAMELIST_KEYS["domains"].items():
+        _values = dm.take(_aero_key)
+        if _values is None:
+            continue
+        if not _selects_28:
+            drop("domains", _aero_key, _values,
+                 "inert: WRF consumes this only inside the thompsonaero "
+                 "package (Registry/Registry.EM_COMMON:3036, "
+                 "mp_physics = 28)")
+            continue
+        raise _err("domains", _aero_key, _values, _why + ".")
+
     dm.finish()
 
     # ---- &geogrid projection ---------------------------------------------
@@ -1215,10 +1332,27 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         values += [values[-1]] * (max_dom - len(values))
         return int(_uniform("physics", key, values))
 
+    def _peek_col_int(key: str) -> list | None:
+        """The padded per-domain column, WRF's repeat-last convention."""
+        values = ph.entries.get(key)
+        if values is None:
+            return None
+        values = list(values[:max_dom])
+        values += [values[-1]] * (max_dom - len(values))
+        return [int(v) for v in values]
+
+    # bl_pbl_physics is a PER-DOMAIN column (see the _mapped call below):
+    # gpuwm.experiment._DOMAIN_RUN_OVERRIDES admits it per domain so a PBL
+    # parent can carry a PBL-off LES child, and the importer has to be able
+    # to read back what the experiment schema can express.  The readiness
+    # preview runs once per DISTINCT value so every domain's suite is
+    # refused on exactly the grounds it was refused on before.
+    bl_preview_col = _peek_col_int("bl_pbl_physics")
     preview = {
         "mp_physics": _peek_uniform_int("mp_physics"),
         "sf_sfclay_physics": _peek_uniform_int("sf_sfclay_physics"),
-        "bl_pbl_physics": _peek_uniform_int("bl_pbl_physics"),
+        "bl_pbl_physics": (None if bl_preview_col is None
+                           else bl_preview_col[0]),
         "sf_surface_physics": _peek_uniform_int("sf_surface_physics", 0),
         # Registry.EM_COMMON:2504 defaults to 5.  The target suite supplies
         # 9 explicitly; retaining the real default here avoids inventing a
@@ -1227,7 +1361,8 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     }
     if all(preview[key] is not None for key in (
             "mp_physics", "sf_sfclay_physics", "bl_pbl_physics")):
-        require_ready_wrf_physics(**preview)
+        for _bl in dict.fromkeys(bl_preview_col):
+            require_ready_wrf_physics(**{**preview, "bl_pbl_physics": _bl})
 
     def _mapped(key: str, table: dict, per_domain=False):
         values = ph.col(key, max_dom)
@@ -1454,7 +1589,40 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             fix("physics", key, values, admitted,
                 f"NSSL parameter pinned at its Registry default by "
                 f"contract {_NSSL_CONTRACT_ID}")
-    bl_wrf, bl_mapped = _mapped("bl_pbl_physics", _BL_MAP)
+
+    # ---- aerosol-aware Thompson keys ------------------------------------
+    # Same shape as the NSSL sweep above and for the same structural
+    # reason: _Section.finish() refuses any unconsumed key, so every one of
+    # WRF's mp=28 aerosol knobs must be answered here or an otherwise valid
+    # namelist becomes unimportable.  Inert under any other scheme; refused
+    # by name under 28.  See _MP28_AEROSOL_NAMELIST_KEYS for the per-key
+    # citation.
+    # The &domains half already ran above, before dm.finish().
+    for _aero_key, _why in _MP28_AEROSOL_NAMELIST_KEYS["physics"].items():
+        _values = ph.take(_aero_key)
+        if _values is None:
+            continue
+        if mp_physics != 28:
+            drop("physics", _aero_key, _values,
+                 "inert: WRF consumes this only inside the "
+                 "thompsonaero package "
+                 "(Registry/Registry.EM_COMMON:3036, mp_physics = 28)")
+            continue
+        raise _err("physics", _aero_key, _values, _why + ".")
+    if mp_physics == 28:
+        # The never-silent last mile.  A user who imports an mp=28 namelist
+        # gets a printed line saying exactly which aerosol initial state
+        # their run will use and which WRF line refuses the same
+        # configuration -- rather than discovering months later that their
+        # ArWen and WRF runs were never comparable.
+        from gpuwm.config import MP28_AEROSOL_SOURCE_DEVIATION
+        defaults_applied.append(AppliedDefault(
+            key="mp28 aerosol initial state",
+            value="thompson_init synthetic CCN/IN profile",
+            reason=MP28_AEROSOL_SOURCE_DEVIATION))
+
+    bl_wrf, bl_mapped = _mapped("bl_pbl_physics", _BL_MAP, per_domain=True)
+    bl_pbl_col = [entry[0] for entry in bl_mapped]
     bl_pbl_physics, wrf_name, gp_name = bl_mapped[0]
     if bl_pbl_physics != bl_wrf[0]:
         substitutions.append(Substitution(
@@ -1814,7 +1982,13 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                    "must-set namelist key (WRF Registry default -1 "
                    "refuses to run); gpuwm will not invent a mixing "
                    "scheme for you.")
-    km_opt = int(_uniform("dynamics", "km_opt", km_opt_col))
+    # PER-DOMAIN, for the same reason bl_pbl_physics is: km_opt is in
+    # gpuwm.experiment._DOMAIN_RUN_OVERRIDES ("a PBL parent may carry a
+    # PBL-off Smagorinsky child"), and a nested LES tree is exactly a
+    # namelist whose km_opt column is not constant.  The root value is the
+    # [shared] one; a domain that differs emits its own override.
+    km_opt_col = [int(value) for value in km_opt_col]
+    km_opt = km_opt_col[0]
     diff_opt = dyn.col("diff_opt", max_dom)
     if diff_opt is not None and any(int(v) != 2 for v in diff_opt):
         raise _err("dynamics", "diff_opt", diff_opt,
@@ -1841,19 +2015,82 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     diff_6th_slopeopt = int(_uniform(
         "dynamics", "diff_6th_slopeopt",
         dyn.col("diff_6th_slopeopt", max_dom, 0)))
-    # RunConfig-honored &dynamics knobs (knob-parity lane): translated
-    # only when supplied; both Registry defaults equal gpuwm's frozen
-    # RunConfig defaults (c_s 0.25, diff_6th_thresh 0.10), so omission
-    # resolves identically and established imports stay byte-identical.
-    # gpuwm carries each as one shared value, so per-domain columns must
-    # be uniform.
-    c_s_col = dyn.col("c_s", max_dom)
-    c_s = (None if c_s_col is None
-           else float(_uniform("dynamics", "c_s", c_s_col)))
-    if c_s is not None and (not math.isfinite(c_s) or c_s <= 0.0):
-        raise _err("dynamics", "c_s", c_s_col,
-                   "must be a finite positive Smagorinsky constant "
-                   "(WRF Registry default 0.25).")
+    # The km_opt=2/3 turbulence parameter row (knob-parity lane).  Every
+    # key here is `max_domains` in Registry.EM_COMMON (c_s :2862, c_k
+    # :2863, mix_isotropic :2896, mix_upper_bound :2897, tke_upper_bound
+    # :2899, tke_drag_coefficient :2900, tke_heat_flux :2901) and every
+    # one sits in gpuwm.experiment._DOMAIN_RUN_OVERRIDES, so each is read
+    # as a COLUMN for the same reason km_opt and bl_pbl_physics are: a PBL
+    # parent carrying a PBL-off LES child is exactly a namelist whose
+    # turbulence columns are not constant.
+    #
+    # Before this, only c_s was read (and it was forced uniform); c_k,
+    # mix_isotropic, mix_upper_bound, tke_upper_bound, tke_heat_flux and
+    # tke_drag_coefficient were not read at all.  That left NO pair of
+    # inputs able to express a km_opt=2 LES child: omitting c_k resolved
+    # gpuwm's RunConfig default 0.15 against an LES TOML's em_les 0.10 and
+    # the prepared cache -- which binds the turbulence row per domain --
+    # refused the forecast on `run.c_k`, while supplying c_k in the
+    # namelist hit _Section.finish()'s unmapped-key refusal instead.  Both
+    # directions were closed, so the whole km_opt=2 hierarchy gate was.
+    #
+    # Each Registry default equals gpuwm's frozen RunConfig default, so an
+    # omitted key resolves identically and established imports stay
+    # byte-identical.  The root value is the [shared] one; a domain that
+    # differs emits its own override, on epssm's existing rule.
+    def _real_col(key: str, ok, why: str) -> list[float] | None:
+        """A supplied per-domain real column, validated element-wise."""
+        raw = dyn.col(key, max_dom)
+        if raw is None:
+            return None
+        values = [float(value) for value in raw]
+        if not all(ok(value) for value in values):
+            raise _err("dynamics", key, raw, why)
+        return values
+
+    c_s_col = _real_col(
+        "c_s", lambda v: math.isfinite(v) and v > 0.0,
+        "must be a finite positive Smagorinsky constant "
+        "(WRF Registry default 0.25).")
+    c_k_col = _real_col(
+        "c_k", lambda v: math.isfinite(v) and v > 0.0,
+        "must be a finite positive TKE-closure constant "
+        "(WRF Registry default 0.15; the em_les reference sets 0.10).")
+    mix_upper_bound_col = _real_col(
+        "mix_upper_bound", lambda v: math.isfinite(v) and v > 0.0,
+        "must be a finite positive non-dimensional K cap "
+        "(WRF Registry default 0.1).")
+    tke_upper_bound_col = _real_col(
+        "tke_upper_bound", lambda v: math.isfinite(v) and v > 0.0,
+        "must be a finite positive TKE ceiling in m2 s-2 "
+        "(WRF Registry default 1000.).")
+    tke_heat_flux_col = _real_col(
+        "tke_heat_flux", math.isfinite,
+        "must be a finite kinematic heat flux in K m s-1 "
+        "(WRF Registry default 0.).")
+    tke_drag_coefficient_col = _real_col(
+        "tke_drag_coefficient", lambda v: math.isfinite(v) and v >= 0.0,
+        "must be a finite non-negative drag coefficient "
+        "(WRF Registry default 0.).")
+    mix_isotropic_raw = dyn.col("mix_isotropic", max_dom)
+    mix_isotropic_col = None
+    if mix_isotropic_raw is not None:
+        if any(isinstance(value, bool) or not isinstance(value, int)
+               or value not in (0, 1) for value in mix_isotropic_raw):
+            raise _err("dynamics", "mix_isotropic", mix_isotropic_raw,
+                       "must be 0 (anisotropic mixing lengths) or 1 "
+                       "(isotropic (dx*dy*dz)^(1/3)).")
+        mix_isotropic_col = [int(value) for value in mix_isotropic_raw]
+    #: The row in emission order: (TOML key, supplied column or None).
+    turbulence_row = (
+        ("c_s", c_s_col),
+        ("c_k", c_k_col),
+        ("mix_isotropic", mix_isotropic_col),
+        ("mix_upper_bound", mix_upper_bound_col),
+        ("tke_upper_bound", tke_upper_bound_col),
+        ("tke_heat_flux", tke_heat_flux_col),
+        ("tke_drag_coefficient", tke_drag_coefficient_col),
+    )
     diff_6th_thresh_col = dyn.col("diff_6th_thresh", max_dom)
     diff_6th_thresh = (None if diff_6th_thresh_col is None else float(
         _uniform("dynamics", "diff_6th_thresh", diff_6th_thresh_col)))
@@ -1888,9 +2125,41 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             raise _err("dynamics", key, raw,
                        f"gpuwm implements {key} = {pin} only ({why}).")
         fix("dynamics", key, raw, pin, why)
-    drop("dynamics", "tke_adv_opt", dyn.take("tke_adv_opt"),
-         "inert: no prognostic-TKE mixing scheme is selectable (km_opt 1 "
-         "and 4 only), so WRF would not consume it either")
+    # tke_adv_opt (Registry.EM_COMMON:2880, max_domains, default 1).  The
+    # old rationale here -- "inert: no prognostic-TKE mixing scheme is
+    # selectable (km_opt 1 and 4 only)" -- was falsified by km_opt=2, and
+    # a dropped key that DOES change the answer is exactly the silent loss
+    # _Section.finish() exists to prevent.  Which of the two it is now
+    # depends on the mixing scheme actually selected:
+    #
+    # * with a km_opt=2 domain in the tree, TKE is a prognostic carrier
+    #   that gpuwm advects through the moist-scalar rows, and it takes
+    #   WRF's POSITIVE-DEFINITE update -- tke_adv_opt = 1's branch
+    #   (gpuwm/core/moist.py advance_tke_stage, WRF solve_em.F:2100-2119)
+    #   -- unconditionally.  gpuwm implements no other transport for it,
+    #   so 1 is pinned and 0/2 are refused rather than dropped;
+    # * with no km_opt=2 domain there is no TKE carrier to transport, so
+    #   WRF would not consume the key either and it is dropped as inert.
+    tke_adv_opt_raw = dyn.take("tke_adv_opt")
+    if 2 in km_opt_col:
+        if tke_adv_opt_raw is not None:
+            column = list(tke_adv_opt_raw[:max_dom])
+            column += [column[-1]] * (max_dom - len(column))
+            if any(isinstance(value, bool) or not isinstance(value, int)
+                   or value != 1 for value in column):
+                raise _err(
+                    "dynamics", "tke_adv_opt", tke_adv_opt_raw,
+                    "gpuwm implements tke_adv_opt = 1 only (the "
+                    "positive-definite RK3 TKE transport of WRF "
+                    "solve_em.F:2100-2119, which km_opt = 2 makes live).")
+            fix("dynamics", "tke_adv_opt", tke_adv_opt_raw, 1,
+                "the km_opt=2 TKE carrier takes WRF's positive-definite "
+                "RK3 transport, the only one gpuwm implements")
+    else:
+        drop("dynamics", "tke_adv_opt", tke_adv_opt_raw,
+             "inert: no domain selects a prognostic-TKE mixing scheme "
+             "(km_opt = 2), so there is no TKE carrier to transport and "
+             "WRF would not consume it either")
     base_temp = float(dyn.scalar("base_temp", 290.0))
     damp_opt = int(dyn.scalar("damp_opt", 3))
     zdamp = float(_uniform("dynamics", "zdamp",
@@ -1901,9 +2170,10 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                            dyn.col("khdif", max_dom, 0)))
     kvdif = float(_uniform("dynamics", "kvdif",
                            dyn.col("kvdif", max_dom, 0)))
-    if km_opt == 4 and (khdif > 0.0 or kvdif > 0.0):
+    if any(value == 4 for value in km_opt_col) and (khdif > 0.0
+                                                    or kvdif > 0.0):
         raise _err(
-            "dynamics", "km_opt", km_opt,
+            "dynamics", "km_opt", km_opt_col,
             "selects WRF Smagorinsky mixing, but khdif/kvdif also enable "
             "the km_opt=1 constant-K operator; choose exactly one mixing "
             "scheme.")
@@ -2072,8 +2342,9 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     # consumed RunConfig field whose default equals the WRF Registry
     # default, so absence emits nothing and the established imports stay
     # byte-identical.
-    if c_s is not None:
-        lines.append(f"c_s = {_fmt(c_s)}")
+    for _turb_key, _turb_col in turbulence_row:
+        if _turb_col is not None:
+            lines.append(f"{_turb_key} = {_fmt(_turb_col[0])}")
     if diff_6th_thresh is not None:
         lines.append(f"diff_6th_thresh = {_fmt(diff_6th_thresh)}")
     lines += [
@@ -2159,6 +2430,19 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                 f"start_time = {start_times[n].isoformat(sep='T')}")
         if epssm[n] != epssm[0]:
             lines.append(f"epssm = {_fmt(epssm[n])}")
+        # The turbulence column, emitted on exactly the same rule as
+        # epssm: only where a domain differs from the root, so every
+        # uniform namelist keeps producing a byte-identical TOML.
+        if km_opt_col[n] != km_opt_col[0]:
+            lines.append(f"km_opt = {km_opt_col[n]}")
+        if bl_pbl_col[n] != bl_pbl_col[0]:
+            lines.append(f"bl_pbl_physics = {bl_pbl_col[n]}")
+        # The km_opt=2/3 turbulence parameter row, same rule: c_k on an
+        # LES child beside its parents' default is the case that opened
+        # this path (see the read side above).
+        for _turb_key, _turb_col in turbulence_row:
+            if _turb_col is not None and _turb_col[n] != _turb_col[0]:
+                lines.append(f"{_turb_key} = {_fmt(_turb_col[n])}")
         if radt[n] > 0.0:
             lines.append(f"radt = {_fmt(radt[n])}")
         else:

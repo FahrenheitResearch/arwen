@@ -61,7 +61,7 @@ class WRFCompatibilityCell:
     silent_reconfiguration: str | None = None
 
 
-MP_OPTIONS = (1, 6, 8, 10, 18)
+MP_OPTIONS = (1, 6, 8, 10, 18, 28)
 PBL_OPTIONS = (0, 1, 5)
 SURFACE_LAYER_OPTIONS = (0, 1, 5, 91)
 LAND_SURFACE_OPTIONS = (0, 2, 3, 4)
@@ -100,6 +100,9 @@ _MP_CITATION = MappingProxyType({
     18: WRFCitation(
         "Registry/Registry.EM_COMMON", "3033",
         "the NSSL two-moment package binds mp_physics=18"),
+    28: WRFCitation(
+        "Registry/Registry.EM_COMMON", "3036",
+        "the aerosol-aware Thompson package binds mp_physics=28"),
 })
 
 _LAND_SURFACE_CITATION = MappingProxyType({
@@ -279,7 +282,8 @@ def compatibility_cell(
 
 
 def iter_compatibility_matrix() -> Iterator[WRFCompatibilityCell]:
-    """Yield the complete 2,400-cell represented cross-product."""
+    """Yield the complete represented cross-product (:data:`MATRIX_CELL_COUNT`
+    cells; 2,880 once mp_physics=28 joined the microphysics axis)."""
 
     for mp, pbl, sfclay, lsm, radiation, cumulus in product(
         MP_OPTIONS,

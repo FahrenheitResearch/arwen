@@ -891,6 +891,108 @@ def test_loaders_reject_bad_fetch_table(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# HRRR area contract: the hint and the guard share ONE grid-derived coverage
+# ---------------------------------------------------------------------------
+
+def test_the_field_hrrr_root_emits_an_area_the_fetch_validator_accepts():
+    """Field repro (2026-08, RTX PRO 6000): center 39,-98, 3 km root,
+    1234 x 986 mass points.  The wizard emitted ``--area
+    21.98,-126.17,54.39,-69.83`` as its own next command and ``gpuwm
+    fetch`` refused it: the wizard's box clamped only at the pole while
+    the fetch guard held a hand-held 52.7 latitude cap
+    (gpuwm/fetch.py HRRR_CONUS_LAT) -- two definitions of HRRR coverage.
+    Both now derive from the native grid, and the proof here is the REAL
+    validator over the exact emitted bytes, post-formatting."""
+
+    from gpuwm import fetch
+    from gpuwm.domain_wizard import (_projection_entries, _root_grid,
+                                     fetch_area_hint)
+
+    projection = _projection_entries(39.0, -98.0)
+    notes: list[str] = []
+    hint = fetch_area_hint(projection, 1234, 986, source="hrrr",
+                           root_dx_m=3000.0, coverage_notes=notes)
+    # The real parser and the real coverage gate, on the exact string.
+    fetch.validate_fetch_area("hrrr", fetch.parse_area(hint))
+    # ...and the loaders' own hint validation, which every emission
+    # round-trips through before the file is written.
+    validate_fetch_hints(
+        {"source": "hrrr", "cycle": "2026-07-28T05", "hours": 3,
+         "area": hint, "out": "data/x"}, source="unit")
+    # The clamp bit only the 2-degree margin, never the footprint: every
+    # root corner still lies inside the emitted box.
+    south, west, north, east = (float(v) for v in hint.split(","))
+    lat_c, lon_c = _root_grid(projection, 1234, 986, 3000.0).latlon_c()
+    assert south <= float(np.min(lat_c)) and float(np.max(lat_c)) <= north
+    assert west <= float(np.min(lon_c)) and float(np.max(lon_c)) <= east
+    # The clamp is disclosed, not silent, and names the edge it moved.
+    assert notes and any("north" in note for note in notes)
+
+
+def test_an_hrrr_area_hint_inside_coverage_is_untouched():
+    """A request the source covers with margin to spare emits exactly the
+    box it always did -- the coverage bound changes nothing inside it."""
+
+    from gpuwm import fetch
+    from gpuwm.domain_wizard import (_fetch_area, _fetch_margin_deg,
+                                     _projection_entries, fetch_area_hint)
+
+    projection = _projection_entries(35.3, -97.5)
+    notes: list[str] = []
+    hint = fetch_area_hint(projection, 60, 48, source="hrrr",
+                           root_dx_m=12000.0, coverage_notes=notes)
+    bare = _fetch_area(projection, 60, 48,
+                       margin_deg=_fetch_margin_deg("hrrr"),
+                       root_dx_m=12000.0)
+    assert hint == ",".join(f"{value:.2f}" for value in bare)
+    assert notes == []
+    fetch.validate_fetch_area("hrrr", fetch.parse_area(hint))
+
+
+def test_a_fetch_hint_area_outside_hrrr_coverage_is_refused_at_load():
+    """The rotten-hint rule the [fetch] table already applies to windows,
+    extended to the area: a hint naming latitudes the native grid does
+    not carry is refused at config load in the fetch's own words.  The
+    box below is the 1.4.1 field workaround -- clamped to the guard's
+    hand-held 52.70 cap, which sits NORTH of every mass point the real
+    grid carries (it tops out at 52.6157)."""
+
+    with pytest.raises(ValueError, match="coverage"):
+        validate_fetch_hints(
+            {"source": "hrrr", "cycle": "2026-07-28T05", "hours": 3,
+             "area": "21.10,-126.17,52.70,-69.83", "out": "d"},
+            source="unit")
+    # An unparseable area hint is equally rotten.
+    with pytest.raises(ValueError, match="lat0,lon0,lat1,lon1"):
+        validate_fetch_hints(
+            {"source": "era5", "area": "21.98,-126.17"}, source="unit")
+
+
+def test_an_hrrr_emission_near_the_grids_north_edge_passes_its_own_fetch(
+        tmp_path, capsys):
+    """The whole product seam: a card-filling 12 km HRRR root against the
+    top of the grid emits a next command whose --area its own fetch
+    accepts, with the clamp disclosed as an advisory (never a refusal:
+    the DOMAIN was already bounded by source coverage during fitting)."""
+
+    from gpuwm import fetch
+
+    rc, out = _run_wizard(tmp_path, point="48.5,-98.0", card="12gb",
+                          ladder="12", source="hrrr",
+                          cycle="2026-07-28T05")
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
+    hints = tomllib.loads(out.read_text(encoding="utf-8"))["fetch"]
+    area_hint = str(hints["area"])
+    # The stored hint and the printed command carry the same string, and
+    # the real fetch validators accept it.
+    assert area_hint in captured.out
+    fetch.validate_fetch_area("hrrr", fetch.parse_area(area_hint))
+    # A box this size was clamped on at least one edge, and said so.
+    assert "clamped" in captured.err
+
+
+# ---------------------------------------------------------------------------
 # Full composed-check integration on staged real inputs (gated)
 # ---------------------------------------------------------------------------
 
@@ -1145,7 +1247,18 @@ def test_the_gray_zone_advisory_warns_and_never_refuses(tmp_path, capsys):
     assert "GRAY ZONE" in lines[0]
     assert "2 domain(s)" in lines[0]
     assert "finest 250 m" in lines[0]
-    assert "SASE" in lines[0]
+    # The advisory must name the REMEDY, not a roadmap item.  It used to
+    # say the proper tool "is a 3-D turbulence closure (SASE, planned)";
+    # every closure it names is implemented now, so pointing a user at
+    # vapourware would be worse than saying nothing.  SASE ships on this
+    # line (lane/sase-sota, bl_pbl_physics = 900), so the old
+    # ``"SASE" not in lines[0]`` vapourware guard is superseded -- what
+    # survives of it is that a SASE mention MUST carry its maturity
+    # label, so nobody is pointed at an unverified closure unlabeled.
+    assert "SASE" in lines[0] and "EXPERIMENTAL" in lines[0]
+    assert "not WRF-verified" in lines[0]
+    assert "km_opt = 3" in lines[0] and "km_opt = 2" in lines[0]
+    assert "bl_pbl_physics = 0" in lines[0]
     assert f"below {GRAY_ZONE_DX_KM:g} km" in lines[0]
 
     # End to end it is an advisory: rc 0, in the file and on stdout.
@@ -1172,6 +1285,84 @@ def test_the_deepest_preset_also_declares_its_gray_zone(tmp_path, capsys):
     assert rc == 0, printed
     assert "advisory: GRAY ZONE" in printed
     assert "finest 500 m" in printed
+
+
+def test_the_cumulus_advisory_warns_at_convection_permitting_dx(
+        tmp_path, capsys):
+    from gpuwm.domain_wizard import (CUMULUS_CONVECTION_PERMITTING_DX_KM,
+                                     cumulus_gray_zone_advisory)
+
+    # 12 km root with active cumulus: the scheme is doing its real job.
+    assert cumulus_gray_zone_advisory([12.0, 3.0], [1, 0]) == []
+    # Cumulus off everywhere: nothing to say at any spacing.
+    assert cumulus_gray_zone_advisory([3.0, 0.75], [0, 0]) == []
+
+    lines = cumulus_gray_zone_advisory([3.0, 0.75], [1, 0])
+    assert len(lines) == 1, "one honest sentence, not a lecture"
+    assert "CUMULUS" in lines[0]
+    assert "1 domain(s)" in lines[0]
+    assert "finest 3 km" in lines[0]
+    assert f"below {CUMULUS_CONVECTION_PERMITTING_DX_KM:g} km" in lines[0]
+    assert "cu_physics = 1" in lines[0]
+    # The remedy is pasteable: name the switch and its off value.
+    assert "cu_physics = 0" in lines[0]
+
+    # End to end: --root-dx 3 with the default suite (Kain-Fritsch on
+    # the root) is an advisory, never a refusal -- rc 0, the finding on
+    # stdout, the full sentence in the emitted file's header.
+    out = tmp_path / "cp.toml"
+    rc = cli_main(["domain", "--point=35.3,-97.5", "--card", "24gb",
+                   "--root-dx", "3", "--chain", "4", "--source", "gfs",
+                   "--cycle", "2026-07-29T18", "--hours", "6",
+                   "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert rc == 0
+    assert "advisory: CUMULUS" in printed
+    assert "CUMULUS" in out.read_text(encoding="utf-8")
+
+
+def test_the_convective_gray_zone_gets_a_softer_note():
+    from gpuwm.domain_wizard import (CUMULUS_CONVECTION_PERMITTING_DX_KM,
+                                     CUMULUS_GRAY_ZONE_TOP_DX_KM,
+                                     cumulus_gray_zone_advisory,
+                                     cumulus_gray_zone_headline)
+
+    # 4-10 km with active cumulus: the genuine gray zone, softer words.
+    for dx in (CUMULUS_CONVECTION_PERMITTING_DX_KM, 9.0,
+               CUMULUS_GRAY_ZONE_TOP_DX_KM):
+        lines = cumulus_gray_zone_advisory([dx], [1])
+        assert len(lines) == 1
+        assert "CUMULUS GRAY ZONE" in lines[0]
+        assert "common operational practice" in lines[0]
+    # Above the band: silent (the shipped 12 km presets stay unchanged).
+    assert cumulus_gray_zone_advisory([12.0], [1]) == []
+    # Off in the band: silent.
+    assert cumulus_gray_zone_advisory([9.0], [0]) == []
+
+    # Both findings at once, strong first; headlines derive from the
+    # same call, first clause only.
+    both = cumulus_gray_zone_advisory([8.0, 2.0], [1, 1])
+    assert len(both) == 2
+    assert "counted twice" in both[0] or "twice" in both[0]
+    assert "CUMULUS GRAY ZONE" in both[1]
+    heads = cumulus_gray_zone_headline([8.0, 2.0], [1, 1])
+    assert len(heads) == 2
+    assert all(head in (line.split(", so ", 1)[0] + ".")
+               for head, line in zip(heads, both))
+
+
+def test_a_twelve_km_root_with_cumulus_stays_silent(tmp_path, capsys):
+    """The shipped preset ladders root at 12 km: no cumulus advisory,
+    and the wizard's output is otherwise unchanged."""
+    out = tmp_path / "preset12.toml"
+    rc = cli_main(["domain", "--point=35.3,-97.5", "--card", "24gb",
+                   "--ladder", "12-3", "--source", "gfs",
+                   "--cycle", "2026-07-29T18", "--hours", "6",
+                   "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert rc == 0, printed
+    assert "advisory: CUMULUS" not in printed
+    assert "CUMULUS" not in out.read_text(encoding="utf-8")
 
 
 def test_custom_root_dx_in_the_tropics_keeps_an_exact_half_second(
@@ -1690,6 +1881,13 @@ def test_hrrr_sizing_respects_hrrrs_own_grid_not_only_the_card(
 
     Sized against the SOURCE's own window function -- the one the root
     preparer calls -- the fit loop stops where HRRR does, and says so.
+
+    Field 2026-08 sharpened "where HRRR does": stopping with the
+    radius-8 window EXACTLY on the native edge left zero surface-donor
+    margin, so the one remediation soil mapping can name (raise
+    surface_fallback_radius_cells) was refused by this very guard.  The
+    fitter-maximum domain must therefore keep the emitted window plus
+    the configured radius inside the native limits.
     """
     from gpuwm.hrrr_route_inputs import coverage_refusal, target_domain
     from gpuwm.ingest.hrrr_target import (HRRR_SOURCE_NY,
@@ -1705,14 +1903,75 @@ def test_hrrr_sizing_respects_hrrrs_own_grid_not_only_the_card(
 
     exp = load_experiment(out)
     assert coverage_refusal(exp) is None
-    window = required_hrrr_source_window(
-        target_domain(exp)).to_dict()["zero_based_inclusive"]
-    assert window["j"][1] <= HRRR_SOURCE_NY - 1
+    full_window = required_hrrr_source_window(target_domain(exp))
+    window = full_window.to_dict()["zero_based_inclusive"]
+    radius = full_window.surface_fallback_radius_cells
 
-    # It stopped AT the grid, with card headroom still unspent, and the
-    # printed advisory says which of the two bounds it hit.
-    assert window["j"][1] == HRRR_SOURCE_NY - 1
+    # The emitted window PLUS the configured donor-search radius stays
+    # inside the native limits: a domain this fitter accepts is one
+    # whose donor searches never pin against HRRR's own edge, and whose
+    # radius knob the coverage guard still has room to accept.
+    assert window["j"][1] + radius <= HRRR_SOURCE_NY - 1
+
+    # It stopped AT the reserved margin -- HRRR's grid, not the card,
+    # was the bound -- and the printed advisory says so.
+    assert window["j"][1] + radius == HRRR_SOURCE_NY - 1
     assert "bounded by HRRR's own grid, not by your card" in printed
+
+
+def test_hrrr_coverage_test_reserves_the_donor_search_margin():
+    """Field 2026-08 (RTX PRO 6000, 1 km nest at 39,-98): the exact bug.
+
+    The auto-fitted 1234x986 3 km root passed the wizard's coverage
+    test -- its radius-8 window is i=250..1523, j=36..1058, EXACTLY on
+    the native top edge -- and HRRR soil mapping then could not fill
+    two land cells within 8 cells.  The error recommended raising
+    surface_fallback_radius_cells; 8 -> 16 fails this same coverage
+    guard (j=28..1066 vs native j max 1058).  So the wizard's PASS
+    promised a preparation with no working remediation.
+
+    The coverage test the fitter and the emission share must therefore
+    demand the donor-search margin too, and its refusal must not
+    recommend the radius knob the guard refuses.  The field workaround
+    (root trimmed to 1186x938, child untouched) is the shape that must
+    stay accepted.
+    """
+    from dataclasses import replace
+
+    from gpuwm.hrrr_route_inputs import target_coverage_refusal
+    from gpuwm.ingest.hrrr_target import (HRRR_SOURCE_NY, HrrrTargetDomain,
+                                          required_hrrr_source_window)
+
+    def field_target(nx, ny):
+        return HrrrTargetDomain(
+            name="field_39n_98w_3km", map_proj="lambert",
+            nx=nx, ny=ny, nz=49, dx_m=3000.0, dy_m=3000.0,
+            ref_lat=39.0, ref_lon=-98.0,
+            truelat1=29.0, truelat2=49.0, stand_lon=-98.0,
+            time_step_seconds=15)
+
+    fitted = field_target(1234, 986)
+    # Preconditions, straight from the field report: the plain window
+    # guard accepts it, sitting exactly on the native top edge, and a
+    # doubled radius is refused by the same guard.
+    window = required_hrrr_source_window(fitted)
+    assert (window.j_start, window.j_end) == (36, HRRR_SOURCE_NY - 1)
+    with pytest.raises(ValueError, match="leaves HRRR coverage"):
+        required_hrrr_source_window(
+            replace(fitted, surface_fallback_radius_cells=16))
+
+    refusal = target_coverage_refusal(fitted)
+    assert refusal is not None
+    assert "surface-donor margin" in refusal
+    assert "north" in refusal
+    # Never recommend the knob this guard refuses: the remediation for
+    # a margin refusal is a smaller or moved domain, computed.
+    assert "raise" not in refusal.lower()
+    assert "8 cell(s)" in refusal          # the shortfall, from the guard
+    assert "24 km" in refusal              # 8 source cells at 3 km
+
+    # The field workaround: 24 cells trimmed from every root side.
+    assert target_coverage_refusal(field_target(1186, 938)) is None
 
 
 def test_a_point_hrrr_cannot_force_at_all_is_refused_by_the_fit_loop(

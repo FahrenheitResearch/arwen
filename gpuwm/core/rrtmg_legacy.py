@@ -233,6 +233,23 @@ _MP_DECLARES_RADII = {
     8: True,     # Thompson
     10: False,   # Morrison two-moment: NOT in WRF's use_mp_re list
     18: True,    # NSSL 2-moment (nssl_2moment_on=1)
+    # Thompson aerosol-aware.  WRF lists it EXPLICITLY and SEPARATELY from
+    # THOMPSON in the same disjunction:
+    #   module_physics_init.F:1005  config_flags%mp_physics .eq. THOMPSON
+    #   module_physics_init.F:1006  config_flags%mp_physics .eq. THOMPSONAERO
+    # (verified in wrf-stock-v461-gate-20260721; THOMPSONAERO is
+    # mp_physics==28 per Registry/Registry.EM_COMMON:3036).  It is not
+    # excluded by the P3/Jensen-Ishmael has_reqs=0 override at :1027-1033
+    # either, so all three of has_reqc/has_reqi/has_reqs are 1.
+    #
+    # The radii themselves are already the mp=8 pair plus the prognostic-nc
+    # dependence: gpuwm's mp=28 adapter calls calc_effectRad and then applies
+    # mp_gt_driver's OWN clamps (:1475-1477, MAX(RE_QC_BG, MIN(re, 50.E-6))
+    # and the 125/999 um pair) -- the identical clamps mp=8 takes, because
+    # mp_gt_driver is ONE driver serving both packages.  So the upper bounds
+    # that keep Morrison out of this table (cldprmc's [5,140] um fatal) are
+    # satisfied by construction for mp=28 exactly as they are for mp=8.
+    28: True,    # Thompson aerosol-aware (THOMPSONAERO)
 }
 
 
@@ -250,7 +267,14 @@ def legacy_scheme_declares_radii(mp_physics, use_mp_re):
         raise ValueError(f"use_mp_re must be 0 or 1, got {use_mp_re!r}")
     return bool(value) and table_declares
 
-_LEGACY_ICE_ACTIVE_MICROPHYSICS = frozenset((6, 8, 10, 18))
+#: WRF Registry ``F_QI``/``F_QS`` membership: the schemes whose package
+#: declaration carries ``qi`` and ``qs`` in ``moist``, which is what
+#: ``cal_cldfra1`` keys on.  28 is a member --
+#: ``Registry/Registry.EM_COMMON:3036`` declares
+#: ``package thompsonaero mp_physics==28 - moist:qv,qc,qr,qi,qs,qg;...``,
+#: character for character the same ``moist:qv,qc,qr,qi,qs,qg`` inventory
+#: line 3024's ``thompson`` (mp=8) carries.
+_LEGACY_ICE_ACTIVE_MICROPHYSICS = frozenset((6, 8, 10, 18, 28))
 
 
 def legacy_ice_active(mp_physics: int) -> bool:

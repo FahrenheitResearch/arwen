@@ -1,4 +1,79 @@
 # Changelog
+
+## 1.5.0 (2026-08-03)
+
+This release makes the model usable at the scales storm work actually
+happens at. Two large-eddy-simulation closures are now selectable —
+`km_opt = 3` (3-D Smagorinsky) and `km_opt = 2` (1.5-order prognostic
+TKE), both per-domain, so a coarse parent running a PBL scheme can carry
+a PBL-off LES child in one tree. Both closures were run head-to-head
+against an independently built WRF v4.6.1 `em_les` reference on the same
+case, same grid, same instrument, across repeated realisations. A nested 250 m LES
+configuration is included so the capability is reachable without
+hand-assembly, and [LES.md](docs/public/LES.md) states plainly what is
+proven and what is not.
+
+Aerosol-aware Thompson microphysics (`mp_physics = 28`) ships with WRF's
+own `CCN_ACTIVATE.BIN` table, so a clean install validates and runs it
+with no extra download. Its honest label is **implemented-unverified**:
+every device kernel is pinned bitwise against an instrumented WRF oracle
+column by column, a matched free-running forecast comparison has been
+run and published with its limits stated, and a t=0 read-back digest
+backs the initial-state numbers — but the matched comparison did not
+meet the bar to raise the maturity label, and the pages say so; a
+third, pre-registered distribution gate across independent runs reached
+the same verdict by its own declared rule
+([validation/mp28-distribution-gate.md](docs/public/validation/mp28-distribution-gate.md)).
+Against
+the 22 pinned oracle fixture columns, 17 of 22 clear a flat bitwise
+gate and 18 of 22 clear it with the three named allowances applied; the
+residuals are itemized, with mechanisms, in the evidence page. Start at
+[validation/mp28-column-evidence.md](docs/public/validation/mp28-column-evidence.md).
+
+A third turbulence option, the SASE closure (`bl_pbl_physics = 900`), is
+selectable and GPU-resident, verified against the GABLS1 stable
+boundary-layer intercomparison. It is **EXPERIMENTAL and not
+WRF-verified**, is selected run-wide only (never per nest), and the
+configuration reference says exactly where it is and is not admitted.
+With it comes `km_opt = 0` as a deliberate research control — no
+horizontal mixing operator at all — behind a written acknowledgement so
+it cannot be reached by a mis-set switch.
+
+The domain wizard stops leaving hardware on the table: its internal
+search ceiling used to size 64, 96 and 180 GiB cards identically, and
+now a larger card buys a larger domain, with an explicit warning in the
+one case the search bound rather than memory decides. Sizing below 4 km
+with a cumulus scheme active earns a printed advisory (double-counted
+convection, and the per-domain switch that fixes it); 4–10 km earns a
+softer note; neither refuses. HRRR-driven runs got a matching cleanup:
+the wizard derives one coverage envelope from the grid itself and clamps
+the emitted fetch area inward so every emitted hint passes the same
+validator that will judge it, the coverage fitter reserves the
+soil-donor search margin instead of discovering it missing later, and
+sub-hour forcing windows use one endpoint convention end to end. One
+tightening to note: a hand-edited fetch area that names ground outside
+the real grid — including clamps that previous releases accepted — is
+now refused; re-emit the area with this release's wizard, which
+produces a valid box unaided.
+
+Receipts and diagnostics got more honest. The VRAM receipt now reports a
+true high-water mark from a 50 ms watcher, labeled as what it is, with a
+separate pool-peak entry — not a post-trim boundary value that
+understated the peak. Sea-level pressure is terrain-robust: the
+below-terrain extrapolation is smoothed with a terrain-keyed filter, so
+high-terrain MSLP fields stop ringing. A first run stages the WPS_GEOG
+datasets through the installer with byte accounting, and `gpuwm go`
+prints what each stage holds and what a failed stage left on disk. An
+interrupt anywhere in the `go` chain — including the pre-download memory
+gate — exits with one sentence and code 130.
+
+The release workflow accepts both cut motions again: a re-run of a
+partially published cut adopts the assets it already uploaded by content
+contract, the post-upload index proof rides out registry lag with
+bounded backoff, and the cut refuses bridge binaries that are not
+provably built from the release commit.
+
+
 ## 1.4.1 (2026-08-02)
 
 A correction and operations release. No new physics scheme and no kernel

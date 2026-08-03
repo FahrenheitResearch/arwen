@@ -99,6 +99,119 @@ def snow_treatment_for_compatibility(token: str) -> str:
             f"snow treatment: {token!r}; known tokens: "
             f"{sorted(_SNOW_TREATMENT_BY_COMPATIBILITY)}") from None
 
+
+# ---------------------------------------------------------------------------
+# Which cloud-optics coupling each microphysics selector gets.
+#
+# This table decides THREE things at once inside
+# :meth:`RRTMGPRadiation.__call__`, which is why it is stated here as data
+# with its WRF citations rather than inlined as a ``.get(mp, "kessler")``
+# default: the branch :func:`hydrometeor_paths` takes (scheme-native radii
+# vs. Kessler's constant 10 um / 50 um pair), whether the scheme's
+# effc/effi/effs columns are read out of state at all, and -- through
+# :data:`_ICE_ACTIVE_SCHEMES` -- the ``f_qi``/``f_qs`` flags
+# :func:`cal_cldfra1` is called with.  A scheme that falls through to
+# "kessler" therefore does not merely lose its radii: its ice and snow stop
+# producing cloud fraction, and an overcast ice cloud radiates as clear sky.
+#
+# THE ENTRY THAT WAS MISSING.  ``28`` (THOMPSONAERO) is the aerosol-aware
+# Thompson package and takes the SAME radiative coupling as classic
+# Thompson.  WRF's authority for that, all in the stock v4.6.1 tree:
+#
+#   * ``Registry/Registry.EM_COMMON:3036`` declares
+#     ``package thompsonaero mp_physics==28 - moist:qv,qc,qr,qi,qs,qg;
+#     scalar:...;state:re_cloud,re_ice,re_snow`` -- character for character
+#     the same ``moist:`` inventory and the same three ``re_*`` state
+#     fields as line 3024's ``thompson`` (mp==8).  ``F_QI``/``F_QS`` are
+#     therefore both true for mp=28, which is exactly what
+#     ``cal_cldfra1`` keys on.
+#   * ``phys/module_physics_init.F:1005-1006`` lists ``THOMPSON`` and
+#     ``THOMPSONAERO`` as two members of ONE disjunction that sets
+#     ``has_reqc = has_reqi = has_reqs = 1`` (:1021-1023); the P3 /
+#     Jensen-Ishmael ``has_reqs = 0`` override at :1027-1033 does not
+#     name THOMPSONAERO.  So mp=28 hands radiation all three radii.
+#     Those same three flags are the ONLY gate on the block that computes
+#     them -- ``module_mp_thompson.F:1466`` opens
+#     ``IF (has_reqc.ne.0 .and. has_reqi.ne.0 .and. has_reqs.ne.0)`` around
+#     calc_effectRad and the :1475-1477 clamps -- so in WRF a scheme
+#     computes re_cloud/re_ice/re_snow if and only if radiation consumes
+#     them.  Computing them for mp=28 and then discarding them at the
+#     radiation boundary is not a WRF configuration at all.
+#   * Neither RRTMG wrapper branches on the selector for any of this:
+#     ``phys/module_ra_rrtmg_lw.F`` tests ``mp_physics`` only at
+#     :12131-12136 and ``_sw.F`` only at :10732-10737, both for
+#     FER_MP_HIRES / FER_MP_HIRES_ADVECT / ETAMP_HWRF.  ``cal_cldfra1``'s
+#     only ``mp_physics`` branch is the same Ferrier one
+#     (``phys/module_radiation_driver.F:3926-3937``); mp=8 and mp=28 both
+#     take the ``F_QI .and. F_QC .and. F_QS`` arm at :3870-3877.
+#
+# gpuwm's own side of the contract is already in place: ``mp_physics == 28``
+# allocates effc/effi/effs and background-fills them with the same
+# RE_QC_BG/RE_QI_BG/RE_QS_BG values mp=8 uses
+# (``gpuwm/core/state.py``), and the mp=28 adapter writes them every step
+# through ``launch_aerosol_effective_radius``
+# (``gpuwm/core/microphysics_aerosol.py``) under mp_gt_driver's OWN clamps
+# (module_mp_thompson.F:1466-1479), which is the identical clamp pair mp=8
+# takes because mp_gt_driver is one driver serving both packages.
+# ``gpuwm/core/rrtmg_legacy.py`` already carried this same judgement
+# (``_MP_DECLARES_RADII[28] = True``, ``_LEGACY_ICE_ACTIVE_MICROPHYSICS``);
+# this table is the RTE+RRTMGP half of it, and the two are pinned equal by
+# ``tests/test_rrtmgp.py``.
+#
+# FAILS CLOSED.  Every selector ``gpuwm/config.py`` accepts has a row.  A
+# selector without one raises instead of silently resolving to Kessler --
+# a silent default is precisely how mp=28 spent four waves radiating its
+# ice clouds as clear sky.
+_MP_CLOUD_OPTICS_SCHEME = {
+    # Registry.EM_COMMON:3014, package passiveqv mp_physics==0 - moist:qv.
+    # No condensate species exist at all, so the constant-radius branch is
+    # inert: it multiplies zero paths.
+    0: "kessler",
+    # Registry.EM_COMMON:3015, package kesslerscheme mp_physics==1 -
+    # moist:qv,qc,qr.  No qi, no qs, no re_* state.
+    1: "kessler",
+    6: "wsm6",       # Registry.EM_COMMON:3021, wsm6scheme
+    8: "thompson",   # Registry.EM_COMMON:3024, thompson
+    10: "morrison",  # Registry.EM_COMMON:3026, morr_two_moment
+    18: "nssl",      # Registry.EM_COMMON:3033, nssl_2mom
+    28: "thompson",  # Registry.EM_COMMON:3036, thompsonaero
+}
+
+#: Schemes whose Registry package carries ``qi`` and ``qs`` in ``moist``,
+#: i.e. the ones for which the radiation driver's ``F_QI``/``F_QS`` are
+#: true and :func:`cal_cldfra1` takes its QCLD = QI + QC + QS arm
+#: (module_radiation_driver.F:3870-3877).  Derived from the table above so
+#: the two can never disagree; Kessler's package has neither species.
+_ICE_ACTIVE_SCHEMES = ("wsm6", "thompson", "morrison", "nssl")
+
+
+def cloud_optics_scheme(mp_physics) -> str:
+    """Resolve an ``mp_physics`` selector to its cloud-optics coupling.
+
+    See :data:`_MP_CLOUD_OPTICS_SCHEME`.  Raises rather than defaulting:
+    an unmapped selector must not silently inherit Kessler's constant
+    radii and ice-free cloud fraction.
+    """
+    selector = int(mp_physics)
+    try:
+        return _MP_CLOUD_OPTICS_SCHEME[selector]
+    except KeyError:
+        raise NotImplementedError(
+            f"mp_physics={selector} has no RTE+RRTMGP cloud-optics coupling; "
+            "add a row to gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME with its "
+            "Registry package (which fixes F_QI/F_QS for cal_cldfra1) and "
+            "its module_physics_init.F use_mp_re membership (which fixes "
+            "whether its effective radii reach cloud optics) rather than "
+            "letting it fall through to Kessler's constant 10 um / 50 um "
+            "radii") from None
+
+
+def scheme_is_ice_active(scheme: str) -> bool:
+    """``F_QI``/``F_QS`` for a resolved cloud-optics scheme name."""
+
+    return scheme in _ICE_ACTIVE_SCHEMES
+
+
 # RRTMGP v1.9's lowest reference pressure.  WRF's wrappers use 0/1e-5 mb
 # at TOA, but the pinned RRTMGP example raises that interface to the gas-table
 # floor before computing dry-column amounts (the same adaptation formerly
@@ -928,8 +1041,14 @@ def hydrometeor_paths(plev, qc, qr=None, qi=None, qs=None, *,
     Kessler uses a 10 micron liquid radius and 50 micron ice diameter.
     WSM6, Thompson, and NSSL consume their scheme-native cloud/ice/snow
     effective radii (MICRONS, the state contract) and merge ice plus snow
-    into the single RRTMGP ice species.  ``snow_treatment`` selects how snow
-    joins that path: ``full-snow-mass-into-ice`` keeps the adapter's original
+    into the single RRTMGP ice species.  ``"thompson"`` serves BOTH Thompson
+    packages: mp_physics=8 (Registry.EM_COMMON:3024) and the aerosol-aware
+    mp_physics=28 (:3036) declare the same ``moist`` inventory and the same
+    ``re_cloud/re_ice/re_snow`` state, and module_physics_init.F:1005-1006
+    lists them together in one ``has_req*`` disjunction, so their radiative
+    coupling is identical -- see :data:`_MP_CLOUD_OPTICS_SCHEME`.
+    ``snow_treatment`` selects how snow joins that path:
+    ``full-snow-mass-into-ice`` keeps the adapter's original
     full-mass merge; ``wrf-rrtmg-130um-snow-discount`` reproduces WRF
     v4.6.1's option-4 explicit-radius coupling -- ice path from cloud ice
     only (module_ra_rrtmg_lw.F:12500-12505, _sw.F:11040-11045), snow mass
@@ -1808,9 +1927,15 @@ class RRTMGPRadiation:
         qi3 = self._field_from_state(state, ("qi",), atmosphere["qi"])
         qs3 = self._field_from_state(state, ("qs",), cp.zeros_like(qi3))
         mp_physics = int(getattr(cfg, "mp_physics", 1))
-        scheme = {6: "wsm6", 8: "thompson", 10: "morrison",
-                  18: "nssl"}.get(
-            mp_physics, "kessler")
+        # Fail-closed table with its WRF citations; see
+        # _MP_CLOUD_OPTICS_SCHEME.  mp=28 (THOMPSONAERO) resolves to
+        # "thompson" -- the same coupling classic Thompson gets, which is
+        # what Registry.EM_COMMON:3036 and module_physics_init.F:1005-1006
+        # say.  Until 2026-08-01 this was a ``.get(mp_physics, "kessler")``
+        # default and mp=28 silently landed on Kessler: no scheme radii,
+        # and f_qi = f_qs = False into cal_cldfra1, so an overcast ice
+        # cloud radiated as clear sky.
+        scheme = cloud_optics_scheme(mp_physics)
         # The snow radiative treatment is bound to the compatibility
         # receipt token (fail closed on unknown values): -v2 selects the
         # WRF option-4 snow discount, -v1 and native 'none' keep the
@@ -1872,7 +1997,7 @@ class RRTMGPRadiation:
         # (module_radiation_driver.F:1320-1332), grid-box paths divided by
         # max(0.01, CLDFRA) into in-cloud paths, and McICA subcolumn masks
         # per g-point in the chunk loops below.
-        ice_active = scheme in ("wsm6", "thompson", "morrison", "nssl")
+        ice_active = scheme_is_ice_active(scheme)
         cldfra = cal_cldfra1(qv, qc_cols, qi_cols, qs_cols, tlay, play,
                              f_qc=True, f_qi=ice_active, f_qs=ice_active)
         active_bl = mynn_bl_cloud_active(

@@ -17,12 +17,42 @@ STATE_SERIALIZED_ATTRS = (
     "u", "v", "w", "thp", "php", "mup",
     "p", "al", "alt",
     "qv", "qc", "qr", "h_diabatic",
+    # WRF's prognostic SGS TKE (Registry.EM_COMMON:312 ``state real tke ikj
+    # dyn_em 2 - r``): the trailing ``r`` puts it in the restart stream, and
+    # nothing reconstructs it -- a resumed km_opt=2 run that re-zeroed the
+    # carrier would cold-start the closure on a fully developed field.
+    # Absent (None) under every other km_opt, so non-LES inventories are
+    # unchanged.
+    "tke",
     "qi", "qs", "qg", "nc", "nr", "ni", "ns", "ng",
     "qh", "qndrop", "qnr", "qni", "qns", "qng", "qnh", "qnn",
     "qvolg", "qvolh",
     "effc", "effr", "effi", "effs",
+    # mp_physics=28 (Thompson aerosol-aware).  ``nc`` is already listed
+    # above (Morrison allocates it).  ``nwfa``/``nifa`` are prognostic
+    # 3-D aerosol number tracers; ``nwfa2d``/``nifa2d`` are the (ny, nx)
+    # surface emission tendencies, which are cross-step CONSTANTS -- they
+    # are INTENT(IN) to WRF's mp_gt_driver (module_mp_thompson.F:1098) and
+    # nothing in the forecast writes them, but they are derived once from
+    # thompson_init's synthetic profile (:510) and a restart that dropped
+    # them would silently resume with zero surface aerosol emission.
+    # WRF agrees: Registry.EM_COMMON:492-493 declares QNWFA2D/QNIFA2D with
+    # the IO string ``i01{17}rhdu``, whose ``r`` puts them in the restart
+    # stream.  Serializing them is transcription, not a gpuwm invention.
+    "nwfa", "nifa", "nwfa2d", "nifa2d",
+    # SASE prognostic subgrid turbulence energy.  Like the optional
+    # microphysics moments above, the attribute is ABSENT on a state that
+    # did not select the closure, and the manifest walk skips what is not
+    # there -- so adding it moves no existing restart.
+    "e_sgs",
 )
 
+# STATE_SETUP_ARRAYS is deliberately NOT extended with nwfa2d/nifa2d, even
+# though they are per-domain constants and read like setup: ``setup_fingerprint``
+# below does an UNCONDITIONAL ``getattr(state, name)`` over this tuple, so a
+# name only some configurations allocate would raise AttributeError on every
+# non-mp28 run.  They are covered as serialized state above instead, where
+# both the writer and the reader skip on ``is None``.
 STATE_SETUP_ARRAYS = (
     "thb", "pb", "alb", "phb", "mub2d", "ht",
     "c1h", "c2h", "c1f", "c2f", "c3h", "c4h", "c3f", "c4f",

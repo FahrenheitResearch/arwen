@@ -1,0 +1,84 @@
+2026-08-03,06:49:42 chain-start
+-- coexistence snapshot (before) --
+ 06:49:42 up 2 days,  3:56,  2 users,  load average: 0.00, 0.00, 0.00
+               total        used        free      shared  buff/cache   available
+Mem:             123           3           9           0         112         119
+    PID COMMAND         %CPU     ELAPSED
+ 143556 sshd-session     2.6       00:00
+  78259 lxd              0.0  1-01:56:11
+ 142969 kworker/u96:3-m  0.0       10:19
+ 142289 kworker/u96:2-e  0.0       39:45
+ 141034 kworker/u96:0-e  0.0    02:18:36
+     15 rcu_preempt      0.0  2-03:56:39
+ 140495 kworker/5:1-eve  0.0    04:10:44
+ 140876 kworker/5:2-eve  0.0    03:09:24
+ 141030 kworker/2:2-eve  0.0    02:19:07
+ 141438 kworker/2:0-eve  0.0    01:59:26
+   1901 snapd            0.0  2-03:56:28
+2026-08-03,06:58:18 build-vec rc=0 wall_s=516
+2026-08-03,07:03:35 build-novec rc=0 wall_s=317
+2026-08-03,07:03:35 MISSING WRF-4.6.1/main/ideal.exe
+2026-08-03,07:07:07 chain-start
+-- coexistence snapshot (before) --
+ 07:07:07 up 2 days,  4:14,  3 users,  load average: 24.13, 22.14, 13.05
+               total        used        free      shared  buff/cache   available
+Mem:             123           5           6           0         112         117
+    PID COMMAND         %CPU     ELAPSED
+ 154319 wrf.exe         96.7       10:40
+ 154312 wrf.exe         96.5       10:40
+ 154318 wrf.exe         96.5       10:40
+ 154321 wrf.exe         96.2       10:40
+ 154304 wrf.exe         95.4       10:40
+ 154308 wrf.exe         95.3       10:40
+ 154314 wrf.exe         95.2       10:40
+ 154324 wrf.exe         95.0       10:40
+ 154322 wrf.exe         94.7       10:40
+ 154306 wrf.exe         94.6       10:40
+ 154325 wrf.exe         94.2       10:40
+2026-08-03,07:21:47 build-vec rc=0 wall_s=880
+2026-08-03,07:26:05 build-novec rc=0 wall_s=258
+2026-08-03,07:26:05 MISSING WRF-4.6.1/main/ideal.exe
+2026-08-03,07:26:19 chain-start
+-- coexistence snapshot (before) --
+ 07:26:19 up 2 days,  4:33,  3 users,  load average: 25.29, 25.94, 22.38
+               total        used        free      shared  buff/cache   available
+Mem:             123           5           7           0         111         117
+    PID COMMAND         %CPU     ELAPSED
+ 174949 wrf.exe         92.8       05:36
+ 174940 wrf.exe         92.8       05:36
+ 174934 wrf.exe         92.4       05:36
+ 174945 wrf.exe         91.8       05:36
+ 174929 wrf.exe         91.5       05:36
+ 174932 wrf.exe         91.4       05:36
+ 174938 wrf.exe         91.3       05:36
+ 174951 wrf.exe         91.3       05:36
+ 174946 wrf.exe         91.2       05:36
+ 174941 wrf.exe         91.0       05:36
+ 174931 wrf.exe         91.0       05:36
+2026-08-03,07:38:56 build-vec rc=0 wall_s=757
+2026-08-03,07:43:16 build-novec rc=0 wall_s=260
+2026-08-03,07:43:16 MISSING WRF-4.6.1/main/ideal.exe
+2026-08-03,07:43:27 chain-start
+-- coexistence snapshot (before) --
+ 07:43:27 up 2 days,  4:50,  2 users,  load average: 15.72, 23.89, 24.31
+               total        used        free      shared  buff/cache   available
+Mem:             123           3           9           0         111         119
+    PID COMMAND         %CPU     ELAPSED
+  78259 lxd              0.0  1-02:49:56
+ 196034 kworker/u96:1-e  0.0       09:21
+ 141034 kworker/u96:0-e  0.0    03:12:21
+     15 rcu_preempt      0.0  2-04:50:23
+ 154289 kworker/u96:4-e  0.0       47:00
+ 174296 kworker/0:1-eve  0.0       26:39
+ 197257 kworker/5:2-eve  0.0       04:30
+ 166695 kworker/2:1-eve  0.0       36:13
+ 174469 kworker/7:1-eve  0.0       23:15
+ 188442 kworker/7:0-eve  0.0       16:57
+   1901 snapd            0.0  2-04:50:13
+2026-08-03,07:51:26 build-vec rc=0 wall_s=479
+2026-08-03,07:54:36 build-novec rc=0 wall_s=190
+2026-08-03,07:54:37 stage rc=0 wall_s=1
+2026-08-03,08:02:04 swwrf rc=0 wall_s=447
+-- coexistence snapshot (after) --
+ 08:02:08 up 2 days,  5:09,  2 users,  load average: 1.45, 2.31, 8.68
+2026-08-03,08:02:08 chain-complete

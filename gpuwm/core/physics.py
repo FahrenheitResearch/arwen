@@ -27,6 +27,7 @@ tendencies cleared near expiry (``solve_em.F:3558-3571`` ->
 from __future__ import annotations
 
 import math
+import weakref
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Mapping
@@ -35,7 +36,7 @@ import cupy as cp
 import numpy as np
 
 from gpuwm.config import (NOAHMP_OPTION_IDENTITY, RUC_OPTION_IDENTITY,
-                          RunConfig,
+                          SASE_PBL_SCHEME, RunConfig,
                           radiation_enabled, radiation_scheme_ids,
                           soil_layer_count)
 from gpuwm.core import constants as c
@@ -85,9 +86,23 @@ from gpuwm.core.mynn_pbl_runtime import (
     mynn_pbl_step,
     validate_mynn_tendencies,
 )
+from gpuwm.core.sase import (launch_bulk_richardson_zi,
+                             launch_diff_flux_diag,
+                             launch_implicit_vertical_diffusion,
+                             launch_moist_n2, launch_n2,
+                             launch_plume_vent_flux, launch_sase_step,
+                             launch_scalar_mix, launch_vent_deposit,
+                             launch_vent_deposit_scale,
+                             launch_vent_flux_diag)
 from gpuwm.core.sfclay import (SFCLAY_OUTPUTS, SFClayResult,
                                launch_sfclay, sfclay)
 from gpuwm.core.state import DTYPE, DomainState
+# NumPy-only authority module: the SASE closure constants are single-
+# sourced from it exactly as gpuwm.core.sase does (no CPU-import cost).
+from gpuwm.verify.sase_ref import (C_K as SASE_C_K,
+                                   CP_AIR as SASE_CP_AIR,
+                                   E_MIN as SASE_E_MIN,
+                                   prandtl_blend as sase_prandtl_blend)
 from gpuwm.core.ysu import launch_ysu, validate_ysu_outputs
 from gpuwm.ingest.soil import NOAH_LAYER_THICKNESS_M
 
@@ -210,6 +225,9 @@ PHYSICS_SLOT_DISPATCH: dict[str, dict[int, str | None]] = {
         0: None,
         1: "_run_ysu",        # YSU
         5: "_run_mynn_pbl",   # MYNN EDMF
+        # SASE: not a WRF scheme and deliberately outside WRF's selector
+        # namespace, so it can never collide with one WRF adds later.
+        SASE_PBL_SCHEME: "_run_sase",
     },
 }
 
@@ -239,6 +257,71 @@ def resolve_physics_dispatch(cfg) -> dict[str, str | None]:
     """Selector name -> runner method for every surface/LSM/PBL slot."""
     return {selector: resolve_physics_slot(selector, getattr(cfg, selector))
             for selector in PHYSICS_SLOT_DISPATCH}
+
+
+
+#: von Karman constant (WRF share/module_model_constants.F ``karman``),
+#: consumed by the SASE flux-consistent lower-boundary e source.
+KARMAN = 0.4
+
+#: SPLIT SUBGRID-FLUX DIAGNOSTIC row table (cfg.sase_flux_diag): the
+#: implicit-solve scalar rows that carry a recorded K_v flux, mapped to
+#: their buffer key and their UNIT factor.  ``1.0`` keeps the row's own
+#: units, so the qv row is recorded in kg m-2 s-1 directly; CP_AIR turns
+#: a theta row [K kg m-2 s-1] into a heat flux [W m-2] -- the exact
+#: inverse of the model's own theta-row convention, whose surface
+#: deposit is dt*HFX/(rho1*CP_AIR*thick_0).  Both POSITIVE UPWARD.  The
+#: qc/qi rows are deliberately absent: the registered question is the
+#: vapour and heat budget, and each extra row costs another
+#: (nz+1, ny, nx) plane per frame.
+_SASE_FLUX_DIAG_ROWS = {"dqv": ("fqv_diff", 1.0),
+                        "dtheta": ("fth_diff", float(SASE_CP_AIR))}
+
+#: SPLIT SUBGRID-FLUX DIAGNOSTIC history names -> buffer key.  Both
+#: channels are z-FACE fields on the mass column (stagger "Z", like W),
+#: POSITIVE UPWARD, and share the deposit's lowest-level moist density
+#: rho1 so that
+#:   (F_vent[k]-F_vent[k+1] + F_diff[k]-F_diff[k+1])*dt/(rho1*thick_k)
+#: reproduces the model's own scalar increment.
+_SASE_FLUX_DIAG_OUTPUT = {"SASE_FQV_VENT": "fqv_vent",
+                          "SASE_FQV_DIFF": "fqv_diff",
+                          "SASE_FTH_VENT": "fth_vent",
+                          "SASE_FTH_DIFF": "fth_diff"}
+
+#: HORIZONTAL EDDY-VISCOSITY DIAGNOSTIC (cfg.hmix_k_diag): the (momentum,
+#: scalar) history names each horizontal mixing producer publishes under.
+#:
+#: Named for the PRODUCER, not for the diagnostic, because that is the
+#: whole point of the field.  ``km_opt = 4`` publishes WRF's own Registry
+#: names for the 2-D Smagorinsky viscosities it computes; SASE publishes
+#: scheme-qualified names for its governed horizontal diffusivity.  Both
+#: are m2 s-1 on the mass grid and both are the coefficient of the same
+#: down-gradient horizontal flux, so a run that removes one producer and
+#: installs the other can be compared field to field on the channel it
+#: swapped -- which is the measurement that decides whether "SASE
+#: supplies the mixing the km_opt operator would otherwise apply" is
+#: true, rather than leaving it as an assertion.
+_HMIX_K_DIAG_NAMES: dict[str, tuple[str, str]] = {
+    "smagorinsky": ("XKMH", "XKHH"),
+    "sase": ("SASE_KMH", "SASE_KHH"),
+}
+
+
+def hmix_k_diag_names(cfg: RunConfig) -> tuple[str, ...]:
+    """The horizontal-K history names this configuration can publish.
+
+    EMPTY when the run has no horizontal mixing producer at all (the
+    acknowledged ``km_opt = 0`` control).  Deliberately empty rather than
+    a pair of zero fields: an absent variable cannot be misread as a
+    measured zero, and "this file has no horizontal viscosity variable"
+    is the strongest available statement that this run ran no horizontal
+    mixing operator.
+    """
+    if cfg.bl_pbl_physics == SASE_PBL_SCHEME:
+        return _HMIX_K_DIAG_NAMES["sase"]
+    if cfg.km_opt == 4:
+        return _HMIX_K_DIAG_NAMES["smagorinsky"]
+    return ()
 
 
 def physics_enabled(cfg: RunConfig) -> bool:
@@ -301,10 +384,79 @@ def _cumulus_optional_tendency_components(
 
 
 def _pbl_optional_tendency_components(cfg: RunConfig) -> tuple[str, ...]:
-    """Canonical optional YSU categories for the configured moist state."""
+    """Canonical optional YSU categories for the configured moist state.
+
+    The set is "every scheme whose moist package carries QI", because that is
+    what makes WRF's ``F_QI`` true and therefore what makes
+    ``module_first_rk_step_part1.F:1112`` (``CALL pbl_driver``) hand
+    ``moist(...,P_QI), F_QI=F_QI`` (:1199) to the PBL driver.  ``mp_physics=28`` belongs by
+    ``Registry/Registry.EM_COMMON:3036``, which declares the ``thompsonaero``
+    package as ``moist:qv,qc,qr,qi,qs,qg`` -- the identical moist inventory
+    ``thompson`` (:3024) declares.  Gated by
+    ``tests/test_physics.py::test_the_pbl_rqi_budget_admits_28``.
+    """
     return (("rqi",)
-            if cfg.bl_pbl_physics and cfg.mp_physics in (6, 8, 10, 18)
+            if cfg.bl_pbl_physics and cfg.mp_physics in (6, 8, 10, 18, 28)
             else ())
+
+
+def microphysics_cold_start(state: DomainState, cfg: RunConfig) -> dict:
+    """WRF ``mp_init``: the microphysics scheme's ONE-TIME per-domain setup.
+
+    ``phys/module_physics_init.F:1635`` calls ``mp_init`` from ``phy_init``,
+    and ``mp_init``'s ``CASE (THOMPSONAERO)`` arm (``:4522-4538``) calls
+    ``thompson_init``.  This is the seam :func:`initialize_physics` reaches
+    it through; the work itself lives in
+    :func:`gpuwm.core.microphysics.microphysics_init`, which returns ``{}``
+    for every scheme with no domain-construction step.
+
+    NAMED ``*_cold_start`` deliberately, matching :func:`ruc_cold_start` and
+    :func:`noahmp_cold_start`: it is the third one-time, per-domain scheme
+    initialisation ``initialize_physics`` performs, and it is the same KIND
+    of thing -- not a tendency, not idempotent in general, run once before
+    the first step where ``module_physics_init.F`` runs it.
+
+    The name is also load-bearing for ``tools/health_field_census.py``, which
+    replaces every ``*_cold_start`` in this module with a no-op so its
+    host-array (NumPy-bound) sweep never executes a kernel.  That
+    substitution is sound here for exactly the reason the census records for
+    the other two: this writes only into ``nwfa``/``nifa``/``nwfa2d``, which
+    ``DomainState`` has already allocated, and creates no ``fields`` key, so
+    the descriptor inventory is identical with and without it.
+
+    The inner call is resolved through the MODULE rather than a from-import
+    so it stays observable: ``tests/test_physics.py`` counts it across a real
+    multi-step integration to prove the once-per-domain property.
+    """
+    from gpuwm.core import microphysics as _microphysics
+
+    return _microphysics.microphysics_init(state, cfg)
+
+
+def microphysics_scheme_sr_available(mp_physics: int) -> bool:
+    """Whether the configured scheme produces WRF's SR (frozen fraction).
+
+    WRF's first-RK surface call supplies the SCHEME's own SR to the land
+    surface model for every precipitating scheme that computes one, and runs
+    Noah with ``FRPCPN=.true.`` when it does.  ``mp_physics=0`` has no scheme
+    and therefore no SR, and gpuwm falls back to WRF's own no-SR proxy
+    (``T(kts) <= 273.15``).
+
+    ``mp_physics=28`` produces SR exactly as ``mp_physics=8`` does:
+    ``phys/module_microphysics_driver.F``'s ``CASE (THOMPSONAERO)`` arm
+    (:1029) binds ``SR=SR`` into ``mp_gt_driver`` at :1091, the same argument
+    ``CASE (THOMPSON)`` binds at :1259.  Before this predicate existed the
+    three land-surface runners spelled the set ``(1, 6, 8, 10, 18)``, so an
+    mp=28 domain silently substituted the temperature proxy AND ran Noah with
+    ``frpcpn=False``.  Gated by ``tests/test_physics.py::
+    test_the_land_surface_seam_takes_28s_own_sr_not_a_temperature_proxy``.
+
+    Kessler (1) is deliberately included even though it produces SR = 0
+    everywhere: WRF's Kessler is warm-rain by construction, so the zero is
+    the scheme's answer and falling back to air temperature would freeze cold
+    rain the scheme says is liquid.
+    """
+    return int(mp_physics) in (1, 6, 8, 10, 18, 28)
 
 
 def _composed_optional_tendency_components(
@@ -317,12 +469,23 @@ def _composed_optional_tendency_components(
 
 def microphysics_scratch_slots(
         mp_physics: int) -> tuple[tuple[str, str], ...]:
-    """Driver diagnostic component -> canonical persistent scratch slot."""
+    """Driver diagnostic component -> canonical persistent scratch slot.
+
+    ``mp_physics=28`` shares mp=8's row, and the authority for that is WRF's
+    own driver arm rather than mp=8's spelling: ``CASE (THOMPSONAERO)``
+    (``phys/module_microphysics_driver.F:1029``) calls ``mp_gt_driver`` with
+    RAINNC (:1085), RAINNCV (:1086), SNOWNC (:1087), SNOWNCV (:1088),
+    GRAUPELNC (:1089), GRAUPELNCV (:1090) and SR (:1091) and with NO hail
+    argument -- the identical seven ``CASE (THOMPSON)`` binds at :1253-:1259.
+    gpuwm's aerosol adapter writes the same seven canonical scratch slots
+    (``gpuwm/core/microphysics_aerosol.py:263-269``), so the driver aliases
+    them here instead of allocating a private zero-filled copy set.
+    """
     if mp_physics == 1:
         return (("rainnc", "mp_rainnc"),
                 ("rainncv", "mp_rainncv"),
                 ("sr", "mp_kessler_sr"))
-    if mp_physics in (6, 8, 10):
+    if mp_physics in (6, 8, 10, 28):
         return (("rainnc", "mp_rainnc"),
                 ("rainncv", "mp_rainncv"),
                 ("sr", "mp_sr"),
@@ -523,6 +686,167 @@ def _specified_mass_mask(array: cp.ndarray) -> None:
     array[..., -1, :] = 0.0
     array[..., :, 0] = 0.0
     array[..., :, -1] = 0.0
+
+
+
+def sase_surface_rho1(*, p1, t1, qv1):
+    """Lowest-level moist air density rho1 = p1/(Rd*T1*(1 + EP_1*qv1)).
+
+    THE shared surface density of the SASE lower-boundary seams
+    (S3-11b): the identical FP32 expression factored out of
+    :func:`sase_surface_e_source` (bitwise -- same operations, same
+    order) so the driver computes it ONCE per due step and threads the
+    one field to BOTH consumers: the surface e source and the S3-11a/b
+    surface scalar-flux deposit (the theta/qv rows of the implicit
+    vertical solve).  The S3-11a report obligation: the deposit and
+    the e source must ride the SAME moist rho1 -- a deposit at a
+    different density would silently rescale HFX/QFX against the e
+    source's own buoyancy bookkeeping of the same fluxes.
+    EP_1 = Rv/Rd - 1 (WRF ``ep_1``).  Strictly positive for physical
+    inputs (p1 > 0, t1 > 0, qv1 >= 0) -- the authority deposit's
+    rho1 > 0 contract.
+    """
+    ep1 = DTYPE(c.RVOVRD - 1.0)
+    return p1 / (DTYPE(c.RD) * t1 * (DTYPE(1.0) + ep1 * qv1))
+
+
+def sase_surface_e_source(*, ust, hfx, qfx, theta1, qv1, p1, t1, dz1,
+                          rho1=None):
+    """Flux-consistent lower-boundary SASE subgrid-energy production.
+
+    Plan Task 6 / spec section 5 form, per surface cell, in m2 s-3::
+
+        e_sfc_source = u*^3 / (kappa * 0.5*dz1) + max(B_s, 0)
+        B_s  = (g / theta1) * (HFX/(rho*cp) + EP_1 * theta1 * QFX/rho)
+        rho  = p1 / (Rd * t1 * (1 + EP_1 * qv1)),  EP_1 = Rv/Rd - 1
+
+    The shear term is the neutral surface-layer production
+    ``u*^3/(kappa z)`` evaluated at the lowest half level ``z = dz1/2``
+    (always >= 0).  The buoyancy term is the surface kinematic
+    virtual-heat-flux production ``(g/theta)*w'thv'_s`` with WRF's EP_1
+    moisture factor, applied CONSERVATIVELY: only a positive (unstable)
+    surface buoyancy flux produces e here -- a stable surface layer
+    never drains e through this source (the interior stability-length
+    dissipation owns that sink), so the source is non-negative by
+    construction and the E_MIN floor cannot be undercut.  Inputs are
+    (ny, nx) surface fields from the live post-SFCLAY state
+    (UST/HFX/QFX) and the lowest atmosphere level (theta, qv, T, the
+    surface interface pressure, and the lowest layer thickness).  This
+    is the named seam the smoke gate introspects.
+
+    ``rho1`` (S3-11b): the precomputed :func:`sase_surface_rho1` field
+    may be threaded in so the driver's ONE density serves this source
+    and the surface scalar-flux deposit alike (the S3-11a
+    rho-consistency obligation); ``None`` computes the identical
+    expression internally (bitwise -- the same factored function).
+    """
+    if rho1 is None:
+        rho1 = sase_surface_rho1(p1=p1, t1=t1, qv1=qv1)
+    ep1 = DTYPE(c.RVOVRD - 1.0)
+    wtv = hfx / (rho1 * DTYPE(c.CP)) + ep1 * theta1 * qfx / rho1
+    buoyancy = cp.maximum((DTYPE(c.G) / theta1) * wtv, DTYPE(0.0))
+    shear = ust * ust * ust / (DTYPE(KARMAN) * DTYPE(0.5) * dz1)
+    return shear + buoyancy
+
+
+def couple_sase_w_tendency(state: DomainState, cfg: RunConfig,
+                           dw: cp.ndarray) -> cp.ndarray:
+    """Mass-couple the A-grid (half-level) SASE w rate to the rw_t form.
+
+    The slow w tendency forces the coupled W = C_f(mu)*w/msft, so the
+    physical rate couples with the FULL-level column mass
+    ``c1f*mut + c2f`` and divides by the mass-point map factor --
+    mirroring :func:`couple_ysu_tendencies`' rk_addtend_dry convention
+    on the w stagger.  The half-level rate averages to interior full
+    levels; the surface and model-top rows stay zero (the kinematic
+    surface BC ``set_w_surface`` owns w[0], and no PBL-slot scheme
+    forces either boundary row).  Specified domains zero the physical-
+    boundary cells exactly like the mass-point mask.
+    """
+    nz, ny, nx = state.p.shape
+    full = cp.zeros((nz + 1, ny, nx), dtype=DTYPE)
+    full[1:nz] = DTYPE(0.5) * (dw[:-1] + dw[1:])
+    chf = (state.c1f[:, None, None] * state.total_mu()[None]
+           + state.c2f[:, None, None])
+    rw = chf * full
+    if cfg.specified:
+        _specified_mass_mask(rw)
+    if state.has_msf:
+        rw = rw / state.msft[None]
+    return cp.ascontiguousarray(rw)
+
+
+#: Producer inputs the closure reads whose value must be STRICTLY
+#: POSITIVE for its arithmetic to mean anything: the friction velocity
+#: divides the surface energy source, the first-layer thickness divides
+#: that source's flux convergence, and pressure and temperature enter a
+#: density.  A zero or negative value in any of them is a degenerate
+#: INPUT, not a closure failure, and the refusal has to say which.
+_SASE_POSITIVE_PRODUCER_INPUTS = frozenset({"ust", "dz1", "p1", "t1"})
+
+
+def _sase_producer_forensics(
+        producer_inputs: Mapping[str, cp.ndarray]) -> list[str]:
+    """Name every producer input that was ALREADY degenerate, with counts.
+
+    Called only after a rate has already failed, so its cost never
+    touches the healthy path.  ``value <= 0`` is False at NaN by IEEE
+    rule, so a NaN cell is reported once as non-finite rather than
+    twice.
+    """
+    notes: list[str] = []
+    for name, value in producer_inputs.items():
+        if value is None:
+            continue
+        parts: list[str] = []
+        nonfinite = int(cp.count_nonzero(~cp.isfinite(value)).item())
+        if nonfinite:
+            parts.append(f"{nonfinite} non-finite")
+        if name in _SASE_POSITIVE_PRODUCER_INPUTS:
+            nonpositive = int(cp.count_nonzero(value <= 0).item())
+            if nonpositive:
+                parts.append(f"{nonpositive} <= 0")
+        if parts:
+            notes.append(f"{name} ({', '.join(parts)})")
+    return notes
+
+
+def validate_sase_tendencies(
+        rates: Mapping[str, cp.ndarray], *,
+        grid_id: int | None = None,
+        producer_inputs: Mapping[str, cp.ndarray] | None = None) -> None:
+    """Reject non-finite SASE rates before they join the RK stack.
+
+    FORENSIC FORM, matching the guard the other PBL-slot schemes carry
+    and going one step past it.  A non-finite PBL tendency is almost
+    never a fact about the tendency: it is the IMAGE of something the
+    producer handed the closure -- a zero friction velocity out of the
+    surface layer, a non-finite surface heat flux, a collapsed first
+    layer.  The rate's name alone sends a reader to the wrong file.  So
+    the refusal names the DOMAIN the rate came from and, when the caller
+    hands over the producer's inputs, which of THOSE were already
+    degenerate before the closure touched them -- and says so explicitly
+    when none of them were, because "the closure's own arithmetic
+    produced this" is the other half of the diagnosis and the one the
+    reader must not have to infer from silence.
+
+    The healthy path is unchanged: one finiteness reduction per rate,
+    exactly as before, and no forensic work until one of them fails.
+    """
+    for name, value in rates.items():
+        if bool(cp.isfinite(value).all()):
+            continue
+        where = "" if grid_id is None else f" on domain {grid_id}"
+        detail = ""
+        if producer_inputs is not None:
+            notes = _sase_producer_forensics(producer_inputs)
+            detail = (
+                "; producer inputs already degenerate: " + ", ".join(notes)
+                if notes else
+                "; every producer input was finite and in range, so the "
+                "closure's own arithmetic produced it")
+        raise FloatingPointError(
+            f"SASE returned non-finite {name} tendency{where}{detail}")
 
 
 def validate_ysu_tendencies(
@@ -728,6 +1052,16 @@ class PhysicsTendencies:
         state.ru_t += self.ru
         state.rv_t += self.rv
         state.rth_t += self.rtheta
+        # SASE-only w forcing.  ``rw`` is deliberately a PLAIN attribute,
+        # never a dataclass field: the restart component manifest
+        # (TENDENCY_COMPONENTS) stays byte-identical, and the held value
+        # is restart-REBUILT under the enforced SASE bldt == 0 invariant
+        # (every compute() replaces it before any read).  Neither YSU nor
+        # MYNN produces a w tendency, so every existing path is
+        # byte-inert here.
+        rw = getattr(self, "rw", None)
+        if rw is not None:
+            state.rw_t += rw
 
     def scalar_for(self, name: str) -> cp.ndarray | None:
         return {"qv": self.rqv, "qc": self.rqc, "qr": self.rqr,
@@ -921,8 +1255,70 @@ def _prepare_atmosphere(state: DomainState) -> dict[str, cp.ndarray]:
             "qi": qi, "qs": qs, "rho": rho}
 
 
+#: WRF ``mp_init`` receipts, by driver.  See
+#: :attr:`PhysicsDriver.microphysics_init_receipt`: this is a side table
+#: rather than an instance attribute ON PURPOSE.
+#:
+#: ``gpuwm/io/restart.py::_driver_manifest`` walks ``vars(driver)`` and
+#: REFUSES to write a checkpoint containing any driver attribute it has not
+#: classified as serialized or rebuilt -- a deliberate exhaustiveness gate on
+#: driver state, and a good one.  The mp_init receipt is not driver state: it
+#: is construction metadata that ``initialize_physics`` reproduces on every
+#: resume, and WRF itself keeps no analogue of it on the grid.  Parking it
+#: here keeps that gate exhaustive over the things it exists to protect
+#: instead of forcing a classification entry in a file this package does not
+#: own.  (An integration request is filed to add
+#: ``"microphysics_init_receipt"`` to ``DRIVER_REBUILT_ATTRS``; when it lands
+#: this may become a plain instance attribute with no behavioural change.)
+#:
+#: Weak-keyed, so a discarded driver's receipt is collected with it.
+_MICROPHYSICS_INIT_RECEIPTS: "weakref.WeakKeyDictionary" = \
+    weakref.WeakKeyDictionary()
+
+
 class PhysicsDriver:
     """Persistent surface state, diagnostics, scheduler, and held tendencies."""
+
+    @property
+    def microphysics_init_receipt(self) -> dict[str, object]:
+        """What WRF's ``mp_init`` did for this domain, as a receipt.
+
+        ``{}`` for every scheme with no domain-construction step, and for a
+        driver built directly rather than through :func:`initialize_physics`.
+        For ``mp_physics = 28`` it is
+        ``{"thompson_aerosol_profile": {"ccn": bool, "in": bool}}`` -- which
+        of ``thompson_init``'s two INDEPENDENT presence-gated fills ran
+        (``module_mp_thompson.F:493`` for CCN, ``:531`` for IN).  A receipt
+        of ``{"ccn": False, "in": False}`` is the normal, correct answer on
+        an aerosol-bearing domain.
+
+        WHAT IT DOES NOT MEAN, on a RESUME.  gpuwm's restart order is
+        prepare -> ``initialize_physics`` -> ``restore_restart``
+        (``gpuwm/runtime.py``'s docstring for the integration loop), so a
+        resumed mp=28 domain is still all-zero aerosol when this runs and
+        the receipt will say both fills happened -- and then
+        ``restore_restart`` overwrites ``nwfa``/``nifa``/``nwfa2d`` with the
+        checkpointed fields.  The resumed forecast therefore integrates the
+        CHECKPOINTED aerosol, not the synthetic profile; the receipt is a
+        record of what the init path did, not of what the run ends up with.
+        Gated by ``tests/test_physics.py::
+        test_a_resumed_mp28_domain_keeps_its_checkpointed_aerosol``.
+        """
+        return _MICROPHYSICS_INIT_RECEIPTS.get(self, {})
+    #: SASE state, declared on the CLASS so it answers on any instance.
+    #:
+    #: ``__init__`` sets all four for a real driver.  Several tests build
+    #: a deliberately partial driver to exercise one seam in isolation,
+    #: and the dispatch path reads ``sase_active`` on every PBL step --
+    #: a class default is what lets those doubles keep working and,
+    #: more to the point, means the hot path can never raise
+    #: AttributeError on a driver someone assembled another way.  False
+    #: and None are the correct answers for a driver that has no
+    #: closure attached.
+    sase_active: bool = False
+    sase_flux_diag: dict[str, cp.ndarray] | None = None
+    last_sase_ledger: dict[str, float] | None = None
+    sase_nan_guard_fires: int = 0
 
     def __init__(self, state: DomainState, cfg: RunConfig,
                  fields: dict[str, cp.ndarray], sfclay_result: SFClayResult,
@@ -1033,6 +1429,55 @@ class PhysicsDriver:
                             "noah": 0, "ysu": 0, "cumulus": 0,
                             "cumulus_history": 0}
         self.ysu_nan_guard_fires = 0
+        # SASE claims the PBL slot when selected.  The ``sase`` count key
+        # and every SASE attribute exist ONLY when it is active, so every
+        # other configuration's driver header stays byte-identical.
+        self.sase_active = cfg.bl_pbl_physics == SASE_PBL_SCHEME
+        self.last_sase_ledger: dict[str, float] | None = None
+        self.sase_nan_guard_fires = 0
+        if self.sase_active:
+            self.call_counts["sase"] = 0
+            # SPLIT SUBGRID-FLUX DIAGNOSTIC (cfg.sase_flux_diag,
+            # output-only).  Four z-FACE fields on the mass column,
+            # (nz + 1, ny, nx) FP32, registered exactly like W, holding
+            # the closure's own vertical subgrid fluxes with the venting
+            # channel SEPARATED from the K_v implicit-diffusion channel:
+            #
+            #   fqv_vent / fqv_diff   water vapour  [kg m-2 s-1]
+            #   fth_vent / fth_diff   heat          [W m-2]
+            #
+            # BOTH POSITIVE UPWARD, both divided by the SAME lowest-level
+            # moist density plane the venting deposit divides by, so the
+            # two channels are summable face by face and their
+            # convergences add up to the model's own scalar increment.
+            # DRIVER PERSISTENTS, not step transients: output needs them
+            # after the step ends.  Allocated as ZEROS at init because
+            # the writer creates a netCDF variable the first time a name
+            # appears and Time is unlimited -- a lazily-created field
+            # would leave frame 0 backfilled with the netCDF fill value
+            # instead of an honest zero (no SASE step has run at the t=0
+            # frame).  Default None: no allocation, one attribute test
+            # per step, and output_fields() keeps its historical key set.
+            self.sase_flux_diag: dict[str, cp.ndarray] | None = (
+                {name: cp.zeros((state.p.shape[0] + 1,) +
+                                state.p.shape[1:], dtype=DTYPE)
+                 for name in ("fqv_vent", "fqv_diff",
+                              "fth_vent", "fth_diff")}
+                if cfg.sase_flux_diag else None)
+        # HORIZONTAL EDDY-VISCOSITY DIAGNOSTIC (cfg.hmix_k_diag,
+        # output-only).  Two (nz, ny, nx) FP32 driver persistents named
+        # for whichever producer this run actually has -- see
+        # _HMIX_K_DIAG_NAMES.  Zeros at init, for the flux diagnostic's
+        # reason: the writer creates a netCDF variable the first time a
+        # name appears, so a lazily created field would leave frame 0
+        # backfilled with the fill value rather than an honest zero.
+        # None when the key is off OR when the run HAS no horizontal
+        # mixing producer -- see hmix_k_diag_names for why the
+        # no-producer case publishes nothing rather than zeros.
+        names = hmix_k_diag_names(cfg)
+        self.hmix_k_diag: dict[str, cp.ndarray] | None = (
+            {name: cp.zeros(state.p.shape, dtype=DTYPE) for name in names}
+            if cfg.hmix_k_diag and names else None)
         self.bldt_seconds = _physics_interval_seconds(cfg.bldt, cfg.dt)
         self.stepbl = max(int(round(self.bldt_seconds / cfg.dt)), 1)
         # Preserve the positive Phase-3 ``radt`` spelling while making the
@@ -1723,7 +2168,7 @@ class PhysicsDriver:
             self.sfclay_result, option=option, dx=cfg.dx,
             isfflx=bool(cfg.isfflx),
             isftcflx=cfg.isftcflx, iz0tlnd=cfg.iz0tlnd)
-        if cfg.km_opt == 4 and cfg.bl_pbl_physics == 0:
+        if cfg.km_opt in (2, 3, 4) and cfg.bl_pbl_physics == 0:
             # module_sf_sfclay.F:799-803 and the corresponding revised-MM5
             # path update UST and USTM from the same PSIX, but USTM uses the
             # wind magnitude without the convective-velocity correction.
@@ -1778,8 +2223,10 @@ class PhysicsDriver:
         # WRF's first-RK surface call always supplies the scheme SR field to
         # Noah for every supported precipitating scheme.  Kessler explicitly
         # produces SR=0 (liquid rain), so falling back to air temperature for
-        # mp_physics=1 incorrectly freezes cold rain.
-        use_scheme_sr = self.mp_physics in (1, 6, 8, 10, 18)
+        # mp_physics=1 incorrectly freezes cold rain.  The membership test is
+        # microphysics_scheme_sr_available (which cites the WRF driver arm
+        # per scheme) rather than a literal tuple repeated three times.
+        use_scheme_sr = microphysics_scheme_sr_available(self.mp_physics)
         f["sr"][...] = (self.microphysics.sr if use_scheme_sr else
                          (atmosphere["temperature"][0] <= DTYPE(273.15)))
         # RAINBL is accumulated explicitly through the named post-RK
@@ -1815,7 +2262,7 @@ class PhysicsDriver:
         registry's citation of this file as their consuming read is true.
         """
         f = self.fields
-        use_scheme_sr = self.mp_physics in (1, 6, 8, 10, 18)
+        use_scheme_sr = microphysics_scheme_sr_available(self.mp_physics)
         f["sr"][...] = (self.microphysics.sr if use_scheme_sr else
                         (atmosphere["temperature"][0] <= DTYPE(273.15)))
         f["rainbl"] += self._pending_rainbl
@@ -1853,7 +2300,7 @@ class PhysicsDriver:
         identity it used.
         """
         f = self.fields
-        use_scheme_sr = self.mp_physics in (1, 6, 8, 10, 18)
+        use_scheme_sr = microphysics_scheme_sr_available(self.mp_physics)
         f["sr"][...] = (self.microphysics.sr if use_scheme_sr else
                         (atmosphere["temperature"][0] <= DTYPE(273.15)))
         f["rainbl"] += self._pending_rainbl
@@ -2048,6 +2495,631 @@ class PhysicsDriver:
         # its diagnostics already persist in ``fields``.
         self.last_ysu = None
 
+    def _run_sase(self, atmosphere: Mapping[str, cp.ndarray],
+                  cfg: RunConfig) -> None:
+        """One SASE-L1 update replacing the YSU slot (stage-3 Task 6).
+
+        Sequence per due surface/PBL step (bldt == 0 is enforced at
+        initialize_physics, so "due" means every model step):
+
+        1. Destagger the C-grid winds to A-grid WORK COPIES -- the
+           atmosphere dict's u/v are read again by cumulus after this
+           slot, so SASE never mutates them; w averages to half levels.
+        2. n2 from the model theta profile: N^2 = (g/theta)*d(theta)/dz
+           on the SAME clamped per-column-dz stencil every SASE vertical
+           operator uses (launch_n2; authority ``brunt_vaisala_n2`` is
+           the pinned discrete form).  SASE-M1 (S4-2): n2_eff =
+           launch_moist_n2 beside it -- the DK82 saturated N^2_m where
+           the registered binary switch fires, the dry bits verbatim
+           elsewhere (authority ``moist_n2``); the step receives BOTH
+           (``n2_moist=n2_eff`` for the three substitution points, dry
+           ``n2`` for the w-sensor screen).  SASE-M1b (S4-3c): the
+           same pair also drives the moist master-length limb inside
+           the step's vertical channel (launch_sase_step passes
+           ``n2_dry=n2`` down exactly when the seam is engaged) -- no
+           additional driver field or call.  ``cfg.sase_moist_n2``
+           (default True = the model as built) gates the seam: False
+           passes ``n2_moist=None`` so the step uses the DRY field at
+           all three substitution points and forms no M1b bound, while
+           the moist field is still computed for the M2 vent's
+           saturation veto (step 5) -- M1 off, M2 standing.
+        3. The named surface source (:func:`sase_surface_e_source`)
+           deposits ``dt*source`` into the lowest ``e_sgs`` level BEFORE
+           the fused step, so this interval's dissipation/clip acts on
+           it (the source is non-negative, so the E_MIN floor holds).
+        4. ``launch_sase_step`` advances the work winds and
+           ``state.e_sgs`` in place through the S3-6c SPLIT scheme
+           (authority ``sase_split_step``): domain-level solve
+           (plan-bound decision 1) on the uniform clamped strain with
+           the representative spacing dz_rep = FP64 mean layer
+           thickness (carry-forward 4); the explicit HORIZONTAL stress
+           divergence plus the implicit backward-Euler K_v vertical
+           channel (per-column FP64 Thomas) run on the per-column
+           ``dz_col`` = the model's live layer thicknesses; delta =
+           sqrt(dx*dy), the horizontal filter scale of the L1
+           sensor/solve operators (they are horizontal-scale operators,
+           spec 4.1); the S3-6f partition bounds run inside the step
+           (bulk-Richardson z_i from the model's own u/v/theta columns
+           -> Delta/z_i cap; N^2-screened w-based resolved-fraction
+           bound riding the SAME n2 field passed for the stability
+           length -- f_used = min(f_solved, f_cap, f_w), diagnostics
+           in the retained ledger); under damp_opt == 3 the config's
+           zdamp engages
+           the S3-6e damping-layer production taper (weight law shared
+           with the audited KDH damper); S3-6j: the live sfclay ``ust``
+           field drives the IMPLICIT surface momentum stress inside
+           the step's u/v Thomas solves (drag conductance
+           u*^2/max(|V1|, SFC_WSPD_FLOOR) folded into the bottom
+           diagonal -- the YSU linearization; authority module
+           docstring, S3-6j section), closing the missing-friction
+           hole where ust fed only the step-3 e source; S3-9c: the
+           live sfclay ``wspd`` field (the gust-enhanced speed u*
+           was computed against) rides beside ust, multiplying the
+           conductance by the audited YSU gustiness factor
+           (spd1/wspd)^2 (authority module docstring, S3-9c
+           section) so gust-inflated u* is not applied at full
+           strength against the resolved wind.  The returned
+           ``kv`` and
+           ``km_h`` fields (popped from the ledger) are the vertical
+           and governed-horizontal diffusivities the scalar channel
+           rides.
+        5. A-grid rates (work - before)/dt; the split scalar channel
+           for theta, qv, qc, qi -- IN THAT ORDER: horizontal K_h
+           down-gradient mixing via launch_scalar_mix riding the split
+           step's exported GOVERNED diffusivity field as K_h =
+           km_h/Pr_t(f) (S3-6e: the identical K the momentum stress
+           and e-transport used, at the post-surface-deposit e^n --
+           flux-consistent by construction, superseding the Task-6
+           pre-step-e kh_coef convention, which survives only as the
+           CPU-shim seam fallback), then the implicit K_v/Pr_t(f)
+           vertical solve of s* = s + dt*T_h on the step's own ``kv``
+           field (the same K_v/Pr_t(f) the split step's buoyancy term
+           used), rate = (s_new - s)/dt.  S3-11b: the theta and qv
+           rows of that solve carry the SURFACE SCALAR-FLUX DEPOSIT
+           (authority ``surface_scalar_flux_deposit``, registered
+           SFC_SCALAR_FLUX = "explicit-deposit-v1") -- the live
+           sfclay HFX/QFX applied to the lowest layer,
+           theta*[0] += dt*HFX/(rho1*CP_AIR*thick_0) and
+           qv*[0] += dt*QFX/(rho1*thick_0), fused into the bottom rhs
+           BEFORE the sweep at the SAME fresh fluxes the step-3 e
+           source consumes and the SAME rho1 (computed once,
+           ``sase_surface_rho1``); qc/qi rows take no deposit and the
+           seam is off only where the fluxes are zero (in-kernel
+           guard, no config flag).  SASE-M2 (S4-5, spec C1-C3): the
+           theta/qv/qc rows ALSO carry the CONDITIONAL VENTING
+           deposit -- the diagnosed shallow mass-flux limb's
+           face-registered profiles (authority ``plume_vent_flux``,
+           launched here as ``launch_plume_vent_flux`` from the FROZEN
+           pre-step state at the step's used f) deposited in flux form,
+           phi*[k] += (Fs[k] - Fs[k+1])*dt/(rho1*thick_k), on the
+           pre-solve state BEFORE the sweep, under the registered
+           cap-family uniform rescale Fs = s*F (authority
+           ``vent_deposit_rescale``, enforced at this seam and nowhere
+           else).  F[0] = F[nz] = +0.0, so the scalar ledger extends
+           with a ZERO net-column term and the surface flux stays owned
+           by the S3-11a deposit above (double-counting ban).  Nothing
+           enters ``sase_split_step`` and no Thomas row moves.  qi takes
+           no vent deposit (authority scope).  Pr_t(f) is the S3-6g
+           regime-blended Prandtl number (authority prandtl_blend)
+           at the step's used f -- recomputed here from the retained
+           ledger f, identical to the step's exported pr_t
+           diagnostic.  Scope is plan-bound
+           decision 2: moist scalars qv/qc/qi mix, number
+           concentrations and qr do NOT (parity with YSU); the
+           legacy CPU-shim fallback (no ``kv`` in the ledger) has no
+           vertical solve and therefore no deposit row -- S4-5b Item 4c:
+           it therefore does not DIAGNOSE the limb either (it used to
+           launch the flux and cap-scale kernels and discard their
+           output silently), and a RuntimeError after the scalar loop
+           enforces that every diagnosed row was deposited.
+        6. Dissipative heating: ``heat`` (m2 s-2 accumulated over dt,
+           = the S3-6d EXACT analytic decay decrement
+           e* - e*/(1 + b*dt)^2 minus clip_gain, plus the S3-6e smag
+           bypass and taper redirect) deposits into internal
+           energy through the theta tendency,
+           dtheta += heat/(dt*cp*exner) -- the spec-4.2 "existing
+           heating pathway" (same slot as h_diabatic-style theta
+           rates).  S3-6f doc fix: since S3-6e ``heat`` is NOT
+           pointwise sign-definite -- the smag bypass share P_h,heat
+           inherits the horizontal pairing's local sign (backscatter
+           cells), beside the rare source-driven floor cells -- exactly
+           as the restated ledger defines it (authority module
+           docstring); domain sums stayed positive in every suite
+           fixture.
+        7. couple_ysu_tendencies mass-couples/staggeres u, v, theta,
+           qv, qc, qi exactly like YSU's rates; the w rate couples
+           through :func:`couple_sase_w_tendency` and rides the pbl
+           stack as the plain ``rw`` attribute (restart-REBUILT:
+           replaced here every step before any read; never a serialized
+           dataclass field, so the restart inventory is unchanged).
+
+        STABILITY -- RESOLVED by S3-6b/6c (implicit vertical).  History
+        (S3-6 review, kept for the record): the v0 SASE diffusion was
+        fully explicit with the viscosity on the horizontal scale
+        (nu ~ 0.3*delta*sqrt(e) at f = 0), so the vertical-diffusion
+        number 2*nu*dt/dz1^2 was unbounded on coarse-Delta domains with
+        thin lowest layers (d01: delta = 12 km, dz1 ~ 50 m, dt = 60 s
+        -> O(10^2) once the surface source spins sqrt(e) up to ~1).
+        The fix landed at the FORMULATION level exactly as required:
+        the vertical channel now rides K_v = C_KV*l_v*sqrt(e) on the
+        Blackadar length (S3-6h: further bounded in the RANS limb by
+        the BL89 displacement lengths and the retained l_s; S3-6i:
+        the RANS limb's coefficient decouples to the stable-limit
+        C_KS where l_s binds, K_v -> C_KS*e/N -- the authority module
+        docstring's S3-6h/S3-6i sections) and every vertical
+        diffusion (momentum, e,
+        scalars) advances backward-Euler through unconditionally stable
+        M-matrix Thomas columns -- no vertical CFL bound exists; the
+        explicit horizontal channel keeps its own 13x CFL margin at d01
+        scale (authority test derivations).
+
+        Registered approximations (controller ledger, 2026-07-20):
+        (1) [RESOLVED by S3-6g] the fixed PR_T = 1/3 put the
+        RANS-regime vertical scalar channel at K_v/PR_T ~ 3*kappa*u**z
+        vs the observed ~1.2*kappa*u**z -- the smoke-c inversion-
+        mixdown/wind-amplification root cause; the blended Pr_t(f)
+        gives K_v/PR_RANS ~ 1.18*kappa*u**z at f = 0 (inside the
+        observed band) while the LES limit keeps PR_LES.
+        (2) The one-constant closure's equilibrium e ~ 1.05*u*^2 sits
+        ~3-5x below the observed 3.3-5.5*u*^2 (sqrt(e) ~2x low),
+        biasing l_s, horizontal K, buoyancy flux, and TKE products --
+        still open; BLOCKS scientific claims about TKE magnitudes
+        until revisited (validation-stage carry).
+
+        Specified-boundary policy (registered adjudication, S3-6
+        review): after the fused step, ``e_sgs`` is held at the E_MIN
+        floor across the outer ``spec_bdy_width`` rows on all four
+        lateral edges (the width covers the widest 4-cell test-filter
+        halo, so the periodic-wrap contamination of the SASE horizontal
+        operators never reaches the interior through e); the same width
+        is excluded from the domain-level solve reductions
+        (``exclude_boundary_width``); the coupled tendencies were
+        already boundary-masked by the coupling helpers.
+        """
+        state = self.state
+        f = self.fields
+        nz, ny, nx = state.p.shape
+        dt = self.bldt_seconds
+        theta = atmosphere["theta"]
+        dzf = atmosphere["dz"]
+        u_a, v_a = atmosphere["u"], atmosphere["v"]
+        u_w = u_a.copy()
+        v_w = v_a.copy()
+        w_a = cp.ascontiguousarray(
+            DTYPE(0.5) * (state.w[:-1] + state.w[1:]))
+        w_w = w_a.copy()
+        n2 = launch_n2(theta, dz_col=dzf)
+        # SASE-M1 (S4-2 device wiring of the authority n2_moist seam;
+        # sase_ref module docstring, SASE-M1 section): n2_eff = the
+        # DK82 saturated moist N^2 where the registered binary switch
+        # fires (qc > 0 OR qv >= qs,liq -- MOIST_STABILITY_SWITCH),
+        # the dry field BITWISE elsewhere, computed from the SAME
+        # theta/dz stencil the dry n2 rides plus the already-resident
+        # qv/qc/full-pressure fields.  The step consumes it at exactly
+        # the authority's three substitution points (l_s, e-budget
+        # buoyancy, K stability suppression) while its w-sensor keeps
+        # the dry n2 -- both fields go down together.  The seam is inert
+        # exactly where the air is unsaturated (bit-copied dry cells make
+        # every substitution a no-op -- the unsaturated bitwise-identity
+        # contract, pinned on device); ``cfg.sase_moist_n2`` (default
+        # True = the model as built) can additionally disable it
+        # OUTRIGHT at the ``n2_moist`` argument below.
+        # SASE-M1b (S4-3c): the SAME two fields also carry the moist
+        # master-length limb -- launch_sase_step hands the dry n2 to
+        # its vertical channel as the substitution mask's other half
+        # (n2_dry) exactly when the seam is engaged, so the RANS-limb
+        # master lengths are min-bounded by the moist parcel-excursion
+        # length in saturated cells (MOIST_MASTER_LENGTH =
+        # "bl89-n2eff-excursion-min-v1"; the G-M3 deck-clearing fix).
+        # No new driver-held field: the limb is computed in-thread
+        # from the fields already resident here (the preflight
+        # sase_workspace_phases transcription is unchanged -- the
+        # S4-3 pairing contract holds as-is).
+        n2_eff = launch_moist_n2(theta, atmosphere["qv"],
+                                 atmosphere["qc"], atmosphere["pressure"],
+                                 n2, dz_col=dzf)
+        # SASE-M1 SWITCH (RunConfig.sase_moist_n2, DEFAULT True = the
+        # model as built -- the argument below is then the SAME object
+        # this line has always passed, so the step is bitwise
+        # unchanged).  False passes ``n2_moist=None``, which is the
+        # launcher's OWN pre-M1 path: n2_eff collapses to the dry n2 for
+        # substitution points 1 and 3, has_moist == 0 gates the point-2
+        # buoyancy branch off in the e-update kernel, and no ``n2_dry``
+        # kwarg is formed so the M1b moist master-length limb never runs
+        # (gpuwm/core/sase.py launch_sase_step, SASE-M1/M1b docstring
+        # sections).  All four entry points hang off this one argument;
+        # there is no second wire into the step.
+        # THE MOIST FIELD IS STILL COMPUTED AND STILL USED BELOW: the
+        # M2 venting limb takes the (moist, dry) pair as its saturation
+        # VETO -- one bitwise-departure comparison in
+        # sase_plume_vent_flux, never a stability value -- so M2 is
+        # deliberately left standing.  This key isolates the M1
+        # diffusion channel; standing M2 down with it would confound the
+        # comparison it exists to make.  Keeping the launch
+        # unconditional also keeps the preflight residency (the
+        # launch_moist_n2 work field) identical either way.
+        n2_moist_arg = n2_eff if getattr(cfg, "sase_moist_n2", True) else None
+        # S3-11b: ONE lowest-level moist density serves BOTH surface
+        # seams -- the e source here and the S3-11a scalar-flux deposit
+        # in the step-5 scalar loop below consume this same field (the
+        # S3-11a report obligation; sase_surface_rho1 docstring).
+        rho1 = sase_surface_rho1(
+            p1=atmosphere["p_interface"][0],
+            t1=atmosphere["temperature"][0], qv1=atmosphere["qv"][0])
+        # SASE-M2 (S4-5 deposit seam, spec C1-C3): the venting limb is
+        # DIAGNOSED FROM THE FROZEN PRE-STEP STATE.  theta/qv/qc/p are
+        # read-only through the whole slot (the split step's ledger
+        # theorem reads theta read-only and the scalar rows are not
+        # written until the coupling), so ``e_sgs`` is the ONLY input
+        # that moves: the surface e source below and the fused step
+        # both write it in place.  One pre-step copy freezes it (the
+        # preflight sase_workspace_phases pairing transcribes this
+        # field; the flux itself cannot be computed here because its
+        # (1 - f) two-product blend needs the step's USED f, which the
+        # step has not yet solved).
+        e_pre = state.e_sgs.copy()
+        source = sase_surface_e_source(
+            ust=f["ust"], hfx=f["hfx"], qfx=f["qfx"], theta1=theta[0],
+            qv1=atmosphere["qv"][0], p1=atmosphere["p_interface"][0],
+            t1=atmosphere["temperature"][0], dz1=dzf[0], rho1=rho1)
+        state.e_sgs[0] += DTYPE(dt) * source
+        heat = cp.empty((nz, ny, nx), dtype=DTYPE)
+        delta = math.sqrt(cfg.dx * cfg.dy)
+        dz_rep = float(dzf.mean(dtype=cp.float64))
+        boundary_width = int(cfg.spec_bdy_width) if cfg.specified else 0
+        # S3-6e damping-layer taper: engaged exactly when the model
+        # runs the damp_opt=3 KDH damper whose weight law it reuses.
+        zdamp = (float(cfg.zdamp)
+                 if cfg.damp_opt == 3 and cfg.zdamp > 0.0 else None)
+        # S3-6j: the sfclay friction velocity now ALSO drives the
+        # implicit surface momentum stress inside the split step's u/v
+        # Thomas solves (authority module docstring, S3-6j section) --
+        # before this seam, ust fed ONLY the surface e source above and
+        # the momentum column ran zero-flux at the ground (the
+        # missing-friction hole Probe 4 isolated).  S3-9c: the live
+        # sfclay gust-ENHANCED speed field rides beside it -- sfclay's
+        # ust is computed against wspd = max(sqrt(|V1|^2 + vconv^2 +
+        # vsgd^2), 0.1), so the drag row carries the audited YSU
+        # gustiness factor (wspd1/wspd)^2 (npref.py:6495-6496; the
+        # same f["wspd"] the YSU seam feeds at its own momentum row).
+        # Both fields are fresh from _run_sfclay in this same due step.
+        ledger = launch_sase_step(
+            u_w, v_w, w_w, theta, state.e_sgs, dx=cfg.dx, dy=cfg.dy,
+            dz=dz_rep, delta=delta, dt=dt, n2=n2, dz_col=dzf, heat=heat,
+            exclude_boundary_width=boundary_width, zdamp=zdamp,
+            ust=f["ust"], wspd_sfc=f["wspd"], n2_moist=n2_moist_arg,
+            # SASE S3-6k SWITCH (RunConfig.sase_stable_dissipation,
+            # DEFAULT False = the model as built -- the launcher then
+            # gates the kernel's decay coefficient back to the literal
+            # C_E, so the state is bitwise unchanged).  True decouples
+            # the stable-limb dissipation coefficient to C_ES on the
+            # SAME rho blend S3-6i built for the diffusivity half
+            # (gpuwm/verify/sase_ref.py module docstring, S3-6k
+            # section).  One argument, one entry point: the coefficient
+            # is formed inside the e-update kernel from state it
+            # already holds, so there is no second wire and no new
+            # device field.
+            stable_dissipation=bool(
+                getattr(cfg, "sase_stable_dissipation", False)),
+            # SASE S3-12 SWITCH (RunConfig.sase_additive_dissipation,
+            # DEFAULT False = the model as built -- the launcher then
+            # gates the kernel's has_ced off and launches no l_B
+            # field, so the state is bitwise unchanged).  True ADDS
+            # Deardorff's second, grid-scale dissipation channel to
+            # whichever base the S3-6k switch above selected, on the
+            # state-independent reference length l_ref = delta**f *
+            # l_B(z+z0)**(1-f) (gpuwm/verify/sase_ref.py module
+            # docstring, S3-12 section; launch_sase_step docstring,
+            # S3-12 seam).  One argument, one entry point, exactly the
+            # S3-6k pattern: the coefficient is formed inside the
+            # e-update kernel, and the one new device field (the
+            # geometry-only Blackadar length) is launched by the step
+            # itself.  Before this wire the switch was authority-side
+            # only -- a GPU run that set it got the channel silently
+            # DROPPED; now the device path carries it (parity pinned
+            # in tests/test_sase_gpu.py, S3-12 section).
+            additive_dissipation=bool(
+                getattr(cfg, "sase_additive_dissipation", False)))
+        # S3-6c/6e: the split step returns the K_v field its vertical
+        # channel used and the governed horizontal diffusivity km_h;
+        # the scalar loop below rides both (K_v/Pr_t(f) implicit
+        # vertical solves; K_h = km_h/Pr_t(f) horizontal fluxes --
+        # S3-6g blended Prandtl number).  Popped so the
+        # retained ledger stays scalar-only (no device-field residency
+        # across steps).  A ledger without kv/km_h (the CPU shim seam
+        # substitutes a scalar-only dict) falls back to the seam's
+        # legacy channels -- the contract is the dict itself.
+        kv = ledger.pop("kv", None)
+        km_h = ledger.pop("km_h", None)
+        # S3-6g regime-consistent Prandtl number: every scalar channel
+        # below divides by Pr_t(f_used), the SAME blend the step's
+        # buoyancy K_h used (authority prandtl_blend; recomputed from
+        # the retained ledger f so the CPU-shim seam's scalar-only
+        # dict needs no new key -- identical FP64 arithmetic to the
+        # step's exported pr_t diagnostic).
+        pr_t = float(sase_prandtl_blend(float(ledger["f"])))
+        # HORIZONTAL EDDY-VISCOSITY DIAGNOSTIC (cfg.hmix_k_diag,
+        # output-only).  ``km_h`` is THE governed horizontal diffusivity
+        # this closure claims replaces the km_opt operator -- the same
+        # field the momentum stress, the subgrid-energy transport and the
+        # scalar channel below all ride -- so recording it here records
+        # the claim itself, in the units and on the grid the Smagorinsky
+        # operator's XKMH is recorded in.  Copied into a driver
+        # persistent because ``km_h`` is a step transient and output
+        # reads it after the step ends.  READ-ONLY in km_h.  The scalar
+        # row is km_h/Pr_t(f), which is what the scalar channel actually
+        # applies -- not a second field but the same field over the
+        # step's own blended Prandtl number, recorded so a reader never
+        # has to reconstruct pr_t to interpret the momentum row.  The
+        # CPU-shim seam (km_h is None) leaves an honest zero: it runs the
+        # legacy coefficient form and has no governed field to record.
+        if self.hmix_k_diag is not None and km_h is not None:
+            self.hmix_k_diag["SASE_KMH"][...] = km_h
+            self.hmix_k_diag["SASE_KHH"][...] = km_h
+            self.hmix_k_diag["SASE_KHH"] *= DTYPE(1.0 / pr_t)
+        # SASE-M2 conditional venting limb (S4-5; authority
+        # plume_vent_flux, sase_ref module docstring SASE-M2 section;
+        # design doc SASE-M section 4).  Diagnosed -- no new prognostic
+        # state -- from the FROZEN PRE-STEP state: the pre-step
+        # theta/qv/qc/pressure the slot has not written, the pre-step
+        # ``e_pre`` copy taken above, the M1 substitution mask as the
+        # bitwise n2_eff != n2 departure (the seam's own mask, never
+        # re-derived -- and passed here whatever cfg.sase_moist_n2 says,
+        # because this is a saturation VETO, not a stability value: M1
+        # off must not silently stand M2 down), and the S3-11a rho1
+        # already computed.  f is the
+        # step's USED partition fraction, which is why this runs AFTER
+        # the step and not beside the frozen copy: the FP-exact
+        # two-product blend M_used = (1 - f)*M_base makes the LES limit
+        # f = 1 a bitwise +0.0 deposit.  The three returned face
+        # profiles carry F[0] = F[nz] = +0.0 exactly, so the S3-11a
+        # boundary-consistent scalar ledger extends with a ZERO
+        # net-column term (the algebra is at launch_vent_deposit).
+        #
+        # S4-5b Item 4c -- WHY THIS IS CONDITIONAL, AND WHY IT IS LOUD.
+        # The deposit lands on the PRE-SOLVE state of the implicit
+        # vertical channel (the registered deposit-then-solve order),
+        # and that state exists only where the split step returned its
+        # K_v field.  The legacy scalar-only seam -- ``kv is None``, the
+        # CPU-shim contract two branches below, reachable by no
+        # production configuration -- has no pre-solve state to deposit
+        # onto, so the limb is not diagnosed there AT ALL.  Before this
+        # fix the flux and cap-scale launches ran on that path and their
+        # output was dropped on the floor with no guard and no comment.
+        # The drop is now impossible to make silently: the assertion
+        # after the scalar loop requires that every row diagnosed here
+        # reached ``launch_vent_deposit``.
+        vent_scale = None
+        vent_rows: dict[str, cp.ndarray] = {}
+        if kv is not None:
+            vent = launch_plume_vent_flux(
+                theta, atmosphere["qv"], atmosphere["qc"],
+                atmosphere["pressure"], e_pre, n2_eff, n2,
+                rho1, f_blend=float(ledger["f"]), dz_col=dzf)
+            # Cap family (VENT_THETA_STEP_CAP / VENT_QT_STEP_CAP,
+            # registered and CONTRACT-ONLY in the authority -- this seam
+            # is where they are enforced): ONE per-column uniform
+            # rescale of all three rows, computed before the scalar loop
+            # because the factor couples them (authority
+            # vent_deposit_rescale).  Uniform is load-bearing: a
+            # per-level clip destroys the telescoping (measured
+            # sum thick*dtheta = -3.74 against 0.0).
+            vent_scale = launch_vent_deposit_scale(
+                *vent, rho1, dt=dt, dz_col=dzf)
+            vent_rows = {"dtheta": vent[0], "dqv": vent[1],
+                         "dqc": vent[2]}
+        # SPLIT SUBGRID-FLUX DIAGNOSTIC, M2 vent channel (output-only,
+        # cfg.sase_flux_diag).  READ-ONLY in every model array and placed
+        # AFTER the cap-scale launch on this line, so it cannot perturb
+        # the state; the K_v half is filled inside the scalar loop below.
+        # The CAP-SCALED product is what is recorded: ``vent`` is the
+        # UNSCALED profile and launch_vent_deposit multiplies by
+        # ``vent_scale`` in-kernel, so the raw profile is a flux the
+        # model did not apply.  ``fac`` carries the units --
+        # kg m-2 s-1 on the qv row, CP_AIR*[K kg m-2 s-1] = W m-2 on the
+        # theta row -- and both stay POSITIVE UPWARD (the deposit's own
+        # convention).  The kv-is-None legacy shim seam diagnoses NO
+        # venting limb at all (the S4-5b Item 4c guard above), so its
+        # honest record is +0.0, not the previous step's residue -- and
+        # it runs no implicit vertical solve either, so the K_v half is
+        # zeroed here too (the scalar loop's fill is unreachable there).
+        flux_diag = self.sase_flux_diag
+        if flux_diag is not None:
+            if kv is None:
+                for buffer in flux_diag.values():
+                    buffer.fill(DTYPE(0.0))
+            else:
+                launch_vent_flux_diag(vent[1], vent_scale,
+                                      flux_diag["fqv_vent"], fac=1.0)
+                launch_vent_flux_diag(vent[0], vent_scale,
+                                      flux_diag["fth_vent"],
+                                      fac=float(SASE_CP_AIR))
+        if boundary_width:
+            # Registered adjudication (S3-6 review): hold the specified
+            # domain's e_sgs at the realizability floor across the outer
+            # spec_bdy_width rows every physics step -- see the method
+            # docstring for the halo argument.
+            floor = DTYPE(SASE_E_MIN)
+            e_sgs = state.e_sgs
+            e_sgs[:, :boundary_width, :] = floor
+            e_sgs[:, -boundary_width:, :] = floor
+            e_sgs[:, :, :boundary_width] = floor
+            e_sgs[:, :, -boundary_width:] = floor
+        inv_dt = DTYPE(1.0 / dt)
+        for work, before in ((u_w, u_a), (v_w, v_a), (w_w, w_a)):
+            work -= before
+            work *= inv_dt
+        du, dv, dw = u_w, v_w, w_w
+        if km_h is None:
+            # Legacy seam fallback (CPU shim path only): the v0
+            # coefficient form on the post-step e, over the S3-6g
+            # blended Prandtl number.
+            kh_coef = ((ledger["f"] * ledger["c_nu"]
+                        + (1.0 - ledger["f"]) * SASE_C_K)
+                       * delta / pr_t)
+        flux = [cp.empty((nz, ny, nx), dtype=DTYPE) for _ in range(2)]
+        # S3-11b surface scalar-flux deposit (authority
+        # surface_scalar_flux_deposit; registered SFC_SCALAR_FLUX =
+        # "explicit-deposit-v1"; G-LAKE root cause
+        # .superpowers/sdd/lake-momentum-root-cause.md): the theta and
+        # qv rows of the implicit vertical solve carry the sfclay
+        # HFX/QFX lowest-layer deposit -- the SAME fresh post-sfclay
+        # f["hfx"]/f["qfx"] objects the step-3 e source consumed
+        # (refreshed by _run_sfclay in this same due step, the
+        # S3-6j/S3-9c freshness argument) at the SAME rho1 (computed
+        # once above), fused in-kernel into the FP64 bottom rhs BEFORE
+        # the sweep (the registered explicit-deposit-BEFORE-solve
+        # order).  sfc_fac carries the authority row constant: CP_AIR
+        # for theta, 1.0 (default) for qv.  qc/qi take NO deposit
+        # (YSU's cloud/ice rows carry no surface source).  The seam is
+        # OFF-able only through the fluxes themselves being zero
+        # (in-kernel guard) -- no config flag: the physics is not
+        # optional.  Until S3-11b these fluxes reached ONLY the e
+        # source and Noah's ground budget -- the scalar channel ran
+        # zero-flux at the ground (the FALSE premise recorded, and
+        # struck, at the authority module docstring).
+        sfc_deposit = {
+            "dtheta": {"sfc_flux": f["hfx"], "sfc_rho1": rho1,
+                       "sfc_fac": float(SASE_CP_AIR)},
+            "dqv": {"sfc_flux": f["qfx"], "sfc_rho1": rho1},
+        }
+        mixed: dict[str, cp.ndarray] = {}
+        vent_deposited = 0
+        for name, field in (("dtheta", theta), ("dqv", atmosphere["qv"]),
+                            ("dqc", atmosphere["qc"]),
+                            ("dqi", atmosphere["qi"])):
+            if km_h is not None:
+                # S3-6e governed scalar channel: K_h = km_h/Pr_t(f),
+                # the SAME governed horizontal diffusivity the momentum
+                # stress and e-transport used (authority scalar_hmix)
+                # over the S3-6g blended Prandtl number.
+                tend = launch_scalar_mix(
+                    field, kh_field=km_h, kh_fac=1.0 / pr_t,
+                    dx=cfg.dx, dy=cfg.dy, flux=flux)
+            else:
+                tend = launch_scalar_mix(
+                    field, state.e_sgs, kh_coef=kh_coef, dx=cfg.dx,
+                    dy=cfg.dy, flux=flux)
+            if kv is not None:
+                # Split scalar channel, vertical half (S3-6c): advance
+                # s* = s + dt*T_h in the tendency buffer, solve the
+                # implicit K_v/Pr_t(f) vertical diffusion in place
+                # (S3-6g blended Prandtl number), and return to rate
+                # form (s_new - s)/dt.  S3-11b: the theta/qv rows
+                # additionally carry the fused surface scalar-flux
+                # deposit (sfc_deposit above) applied to the bottom
+                # rhs before the sweep.  No floor: the M-matrix max
+                # principle bounds the flux-free rows by their own
+                # extrema, and the deposited bottom row by the
+                # physical boundary flux (moisture cannot go negative
+                # here -- a negative QFX can only drain the qv the
+                # column actually holds, at the surface, as in YSU).
+                tend *= DTYPE(dt)
+                tend += field
+                if name in vent_rows:
+                    # SASE-M2 deposit seam (S4-5; spec C1-C3, binding):
+                    # the EXPLICIT flux-form RHS deposit
+                    # phi*[k] += (Fs[k] - Fs[k+1])*dt/(rho1*thick_k)
+                    # lands on the pre-solve state HERE, BEFORE the
+                    # implicit sweep -- the registered deposit-then-
+                    # solve order generalizing SFC_SCALAR_FLUX =
+                    # "explicit-deposit-v1" (the S3-11a seam two lines
+                    # below rides the same order).  It is NOT inside
+                    # sase_split_step (the ledger theorem reads theta
+                    # read-only) and NOT a Thomas row: the solver's
+                    # pinned max principle is exactly what non-local
+                    # transport must be free to violate, and the Thomas
+                    # kernels stay untouched.  qi takes no deposit
+                    # (authority scope: theta/qv/qc only).
+                    launch_vent_deposit(tend, vent_rows[name], vent_scale,
+                                        rho1, dt=dt, dz_col=dzf)
+                    vent_deposited += 1
+                launch_implicit_vertical_diffusion(
+                    tend, kv, dt=dt, kfac=1.0 / pr_t, dz_col=dzf,
+                    **sfc_deposit.get(name, {}))
+                # SPLIT SUBGRID-FLUX DIAGNOSTIC, K_v channel
+                # (output-only).  EXACTLY HERE and nowhere else: the
+                # solve holds its face coefficients in per-thread
+                # registers and materializes no flux, so the flux is
+                # recovered from the POST-SOLVE field -- which backward
+                # Euler is the right state to evaluate the operator at --
+                # and ``tend`` is that field for exactly the one line
+                # between the solve returning and the conversion back to
+                # rate form below.  READ-ONLY in ``tend``/kv/dzf/rho1 and
+                # placed AFTER the state-affecting launch, so it cannot
+                # perturb the state.  Same kfac the solve just used, so
+                # the recorded flux is the solver's own; same rho1 the
+                # vent channel above rides, so the two are summable.
+                if flux_diag is not None and name in _SASE_FLUX_DIAG_ROWS:
+                    key, fac = _SASE_FLUX_DIAG_ROWS[name]
+                    launch_diff_flux_diag(
+                        tend, kv, rho1, flux_diag[key],
+                        kfac=1.0 / pr_t, fac=fac, dz_col=dzf)
+                tend -= field
+                tend *= inv_dt
+            mixed[name] = tend
+        # S4-5b Item 4c: every DIAGNOSED venting row must have been
+        # deposited.  A future edit that reintroduces a branch where the
+        # limb is computed and its deposit skipped fails here instead of
+        # running an inert limb for a whole simulation.
+        if vent_deposited != len(vent_rows):
+            raise RuntimeError(
+                f"SASE-M2 deposit dropped: {vent_deposited} of "
+                f"{len(vent_rows)} diagnosed venting rows reached "
+                f"launch_vent_deposit")
+        # Dissipative-heat deposit (step 6): heat/(dt*cp*exner) K s-1.
+        heat *= inv_dt / DTYPE(c.CP)
+        heat /= atmosphere["exner"]
+        mixed["dtheta"] += heat
+        rates = {"du": du, "dv": dv, **mixed}
+        try:
+            # The forensic set is exactly the closure's LOWER BOUNDARY
+            # CONDITION plus the two thermodynamic fields its surface
+            # density reads -- the fields another component produced
+            # this step and the closure only consumes.  e_sgs is
+            # deliberately absent: the closure owns it, so its state is
+            # not evidence about a producer.
+            validate_sase_tendencies(
+                {**rates, "dw": dw}, grid_id=cfg.grid_id,
+                producer_inputs={
+                    "ust": f["ust"], "wspd": f["wspd"], "hfx": f["hfx"],
+                    "qfx": f["qfx"], "dz1": dzf[0],
+                    "p1": atmosphere["p_interface"][0],
+                    "t1": atmosphere["temperature"][0]})
+        except FloatingPointError:
+            self.sase_nan_guard_fires += 1
+            raise
+        pbl = couple_ysu_tendencies(state, cfg, rates)
+        pbl.rw = couple_sase_w_tendency(state, cfg, dw)
+        self.pbl_tendencies = pbl
+        self.last_sase_ledger = ledger
+
+    def _sase_output_pblh(self) -> cp.ndarray:
+        """Per-column bulk-Richardson BL height for history output (S3-9d).
+
+        OUTPUT-ONLY seam: with ``turb_scheme='sase'`` the YSU slot never
+        runs, so ``fields['pblh']`` stays at its ``initialize_physics``
+        constant -- the value sfclay's convective-velocity term was
+        calibrated against for this configuration.  Rewriting that field
+        with the live z_i would change the surface-layer physics, so the
+        history PBLH is computed HERE instead, from the CURRENT state at
+        frame-build time, with the split step's own per-column kernel
+        (:func:`launch_bulk_richardson_zi`; its interior mean is the
+        ledger's ``zi`` diagnostic) on inputs that mirror
+        ``_prepare_atmosphere``'s destagger and layer thicknesses.
+        """
+        state = self.state
+        theta = cp.ascontiguousarray(state.total_theta())
+        u = cp.ascontiguousarray(0.5 * (state.u[:, :, :-1]
+                                        + state.u[:, :, 1:]))
+        v = cp.ascontiguousarray(0.5 * (state.v[:, :-1, :]
+                                        + state.v[:, 1:, :]))
+        phb = state.phb
+        phb3 = phb[:, None, None] if phb.ndim == 1 else phb
+        z_interface = (phb3 + state.php) / DTYPE(c.G)
+        dz = cp.ascontiguousarray(z_interface[1:] - z_interface[:-1])
+        return launch_bulk_richardson_zi(u, v, theta, dz_col=dz)
+
     def compute(self, state: DomainState,
                 cfg: RunConfig) -> PhysicsTendencies:
         """Run due physics at time t and return the held RK3 tendencies."""
@@ -2100,7 +3172,14 @@ class PhysicsDriver:
             pbl_method = dispatch["bl_pbl_physics"]
             if pbl_method is not None:
                 getattr(self, pbl_method)(atmosphere, cfg)
+                # "ysu" is the historical name of the PBL-slot counter and
+                # every consumer reads it, so every PBL scheme increments
+                # it.  SASE additionally carries its own key, which exists
+                # only when SASE is active -- the shim gate that proves
+                # YSU was not silently run in its place reads the pair.
                 self.call_counts["ysu"] += 1
+                if self.sase_active:
+                    self.call_counts["sase"] += 1
             else:
                 self.pbl_tendencies = PhysicsTendencies.zeros(state)
 
@@ -2186,6 +3265,40 @@ class PhysicsDriver:
         """
         output = {name: self.fields[field]
                   for name, field in _OUTPUT_FIELDS.items()}
+        if self.sase_active:
+            # Each scheme supplies its own boundary-layer height.  YSU
+            # refreshes fields['pblh'] on every due call; SASE has no such
+            # field of its own, so it computes its per-column
+            # bulk-Richardson z_i here without touching the surface-layer
+            # feed (whose convective-velocity term was calibrated against
+            # the initialize_physics constant).
+            output["PBLH"] = self._sase_output_pblh()
+            if self.sase_flux_diag is not None:
+                # SPLIT SUBGRID-FLUX DIAGNOSTIC (cfg.sase_flux_diag).  The
+                # buffers hold the flux of the single step that ended at
+                # this instant -- SASE pins bldt == 0, so its seam runs
+                # every model step and this is an INSTANTANEOUS flux, not
+                # a history-interval mean.  Zeros at the t=0 frame,
+                # before any SASE step has run.
+                output.update(
+                    {name: self.sase_flux_diag[key]
+                     for name, key in _SASE_FLUX_DIAG_OUTPUT.items()})
+        if self.hmix_k_diag is not None:
+            if not self.sase_active:
+                # The km_opt = 4 producer's own buffers live in the
+                # dycore's persistent scratch (prepare_fixed_tendencies
+                # fills smag_km/smag_kh once per model step from the
+                # time-t fields, which is the state WRF's
+                # module_first_rk_step_part2 evaluates them at).  Copied
+                # HERE rather than aliased so the published frame keeps a
+                # constant schema from frame 0, when no step has run yet
+                # and the slots do not exist.  READ-ONLY in the scratch.
+                km = self.state.existing_scratch("smag_km")
+                kh = self.state.existing_scratch("smag_kh")
+                if km is not None and kh is not None:
+                    self.hmix_k_diag["XKMH"][...] = km
+                    self.hmix_k_diag["XKHH"][...] = kh
+            output.update(self.hmix_k_diag)
         if self.radiation_active:
             output.update(SWDOWN=self.fields["swdown"],
                           GLW=self.fields["glw"])
@@ -2327,6 +3440,24 @@ def initialize_physics(
         raise ValueError("PBL physics requires a moist DomainState")
     if cfg.cu_physics and state.qv is None:
         raise ValueError("cumulus physics requires a moist DomainState")
+    if cfg.bl_pbl_physics == SASE_PBL_SCHEME:
+        # Belt-and-braces behind validate_run_config's admission gate: the
+        # driver-level invariants the closure relies on are re-checked at
+        # attachment, so a hand-built RunConfig cannot bypass them.
+        if not hasattr(state, "e_sgs"):
+            raise ValueError(
+                "SASE requires a DomainState allocated with "
+                f"bl_pbl_physics={SASE_PBL_SCHEME} (prognostic e_sgs)")
+        if cfg.bldt != 0.0:
+            raise ValueError(
+                "SASE requires bldt=0: its w tendency rides the PBL "
+                "stack as a plain attribute rebuilt every step rather "
+                "than a serialized field, so a positive PBL cadence "
+                "would carry it across steps unserialized")
+        if cfg.km_opt != 0:
+            raise ValueError(
+                "SASE supplies the mixing the km_opt operator would "
+                f"apply; km_opt must be 0, got {cfg.km_opt}")
     intervals = (cfg.radt, cfg.bldt, cfg.radt_minutes, cfg.cudt_minutes)
     if any(not np.isfinite(value) or value < 0.0 for value in intervals):
         raise ValueError("physics intervals must be finite and non-negative")
@@ -2428,12 +3559,15 @@ def initialize_physics(
                 carrier = f"{name}_sea"
                 if carrier not in f:
                     f[carrier] = cp.ascontiguousarray(f[name].copy())
-    elif cfg.km_opt == 4 and cfg.bl_pbl_physics == 0:
+    elif cfg.km_opt in (2, 3, 4) and cfg.bl_pbl_physics == 0:
         # WRF Registry state USTM is the friction velocity without SFCLAY's
         # convective-wind correction.  vertical_diffusion_2 consumes USTM,
         # not UST, when diff_opt=2 runs with the PBL off.  Keep it scoped to
         # that newly admitted path so established YSU inventories and
-        # certified-profile bytes remain unchanged.
+        # certified-profile bytes remain unchanged.  km_opt=3 joined the
+        # predicate with the 3-D Smagorinsky port: without it the PBL-off
+        # consumer predicate would silently evaluate False and MOST surface
+        # fluxes would vanish under the new closure.
         f["ustm"] = cp.zeros(shape, dtype=DTYPE)
     result = SFClayResult(**{name: f[name] for name in SFCLAY_OUTPUTS})
 
@@ -2598,6 +3732,51 @@ def initialize_physics(
         noahmp_cold_start(f, params=noahmp_params,
                           dzs=NOAH_LAYER_THICKNESS_M)
     state.physics = driver
+    # WRF's mp_init, ONCE per domain, exactly where phy_init runs it:
+    # module_physics_init.F:1635 calls mp_init as the last physics
+    # initializer before fg_init, and mp_init's CASE (THOMPSONAERO) arm
+    # (:4522-4538) calls thompson_init -- which installs the synthetic CCN/IN
+    # profile whenever the water/ice-friendly aerosol fields arrive unset
+    # (module_mp_thompson.F:493-514 for CCN, :531-551 for IN).
+    #
+    # UNCONDITIONAL by design.  microphysics_init returns an empty receipt
+    # for every scheme except 28 (microphysics.py:766-771), so there is no
+    # selector test to keep in sync here.
+    #
+    # ONCE, NOT PER STEP.  Nothing in mp_gt_driver ever refills the profile,
+    # and a per-step call would overwrite an advected, activated and
+    # scavenged aerosol field with the synthetic one on every step while
+    # leaving every clamp and every bound intact -- silent, plausible, and
+    # worse than the defect it replaces.
+    #
+    # PRESENCE-GATED.  thompson_init reaches its two fills only through two
+    # independent domain-wide MAXVAL presence tests (:490/:493 for CCN,
+    # :528/:531 for IN), which gpuwm honours through
+    # thompson_aerosol_state.aerosol_profile_needs_fill.  WRF itself calls
+    # thompson_init on restart as well as on a cold start
+    # (module_physics_init.F:4525: start_of_simulation .or. restart .or.
+    # cycling), so in WRF that presence test -- not the call site -- is what
+    # protects an aerosol-bearing domain.
+    #
+    # WHERE THAT MATTERS IN GPUWM, in call order:
+    #   * a NEST: gpuwm/ingest/nest_init.py interpolates nwfa/nifa/nwfa2d
+    #     from the parent (its ("nwfa", "") .. ("nifa2d", "") rows) and
+    #     gpuwm/core/model.py runs initialize_child BEFORE
+    #     runtime.prepare_child_case calls this function, so a child under an
+    #     aerosol-bearing parent takes thompson_init's has_CCN branch
+    #     (:516-522) exactly as WRF's would -- no refill, and no re-derived
+    #     nwfa2d;
+    #   * a RESUME: gpuwm's order is prepare -> initialize_physics ->
+    #     restore_restart, so the fill DOES run here on the all-zero cold
+    #     state and restore_restart then overwrites it with the checkpointed
+    #     aerosol.  The resumed run integrates the checkpoint, which is the
+    #     property that matters; the receipt records what this call did, not
+    #     what the run ends up with.  Both are gated in tests/test_physics.py.
+    #
+    # An empty receipt is simply not recorded; the property's default is {}.
+    receipt = microphysics_cold_start(state, cfg)
+    if receipt:
+        _MICROPHYSICS_INIT_RECEIPTS[driver] = receipt
     return driver
 
 
@@ -2606,6 +3785,8 @@ __all__ = ["CumulusResult", "LAND_SURFACE_SFCDIAGS_SCHEMES",
            "RadiationResult", "UnroutedPhysicsSelectorError",
            "couple_column_tendencies",
            "couple_ysu_tendencies", "initialize_physics",
+           "microphysics_cold_start",
+           "microphysics_scheme_sr_available",
            "microphysics_scratch_slots", "physics_enabled",
            "physics_driver_required",
            "physics_retains_ysu_output", "physics_reuses_pbl_composition",

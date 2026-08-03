@@ -440,7 +440,7 @@ Stated plainly, up front:
   not tornado-resolving simulations.
   Sub-kilometer nests additionally sit in the PBL gray zone flagged
   in [FIRST-LIGHT.md](docs/public/FIRST-LIGHT.md) (a 3-D turbulence
-  closure, SASE, is planned).
+  closure, SASE, is implemented but experimental -- see PHYSICS.md).
 - **Platforms.** Developed and measured on Windows 11 + RTX 5090 and on
   Linux CUDA 12.x nodes. The sealed Windows archive is CPU-preprocessing
   only; Windows CUDA is exercised via the developer checkout.

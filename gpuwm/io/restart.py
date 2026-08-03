@@ -27,7 +27,9 @@ Classification argument (audit2 restart findings, adjudicated here):
 * SERIALIZED — read across step boundaries and not reconstructable:
   prognostics (+ Morrison moments and effective radii, which feed the NEXT
   radiation call), ``h_diabatic`` (WRF ``rdu``, Registry.EM_COMMON:1389 —
-  re-zeroing drops one step of retained heating), the live microphysics
+  re-zeroing drops one step of retained heating), the km_opt=2 prognostic
+  SGS TKE carrier ``tke`` (WRF ``r``, Registry.EM_COMMON:312 — a developed
+  turbulence field with no reconstruction route), the live microphysics
   accumulators in scratch (``mp_*``; the driver's diagnostic dataclass aliases
   this canonical set), the KF driver persistence (``cu_*`` scratch,
   W0AVG), the held coupled tendencies (mu-coupled at their historical due
@@ -163,7 +165,21 @@ CONFIG_RUN_LENGTH_FIELDS = frozenset({
 #: existed simply lacks the key.  The accumulator payloads themselves stay
 #: tolerant in both directions (missing in file -> zeroed with a note;
 #: present in file under a diagnostics-off resume -> dropped with a note).
-CONFIG_DIAGNOSTIC_FIELDS = frozenset({"nwp_diagnostics"})
+#: ``tke_budget`` joins it on the same argument: the accumulator reads
+#: model state and writes only its own diagnostic scratch, so flipping it
+#: at a restart boundary cannot change the trajectory (inertness pinned by
+#: tests/test_tke_budget.py).
+#:
+#: ``sase_flux_diag`` joins on the same argument: it allocates four
+#: history buffers and fills them from arrays the SASE step already
+#: holds, reading no prognostic and writing none, so resuming with the
+#: diagnostic newly switched on continues the SAME model.  Its two
+#: siblings ``sase_moist_n2``, ``sase_stable_dissipation`` and
+#: ``sase_additive_dissipation`` are deliberately NOT here -- all three
+#: are physics selectors that move the trajectory, and a physics
+#: selector may not change under a resume.
+CONFIG_DIAGNOSTIC_FIELDS = frozenset(
+    {"nwp_diagnostics", "tke_budget", "sase_flux_diag"})
 
 #: An opt-in tree-checkpoint contract for restart-extend orchestration.  It
 #: admits exactly one setup change: appending future root LBC intervals after
@@ -200,7 +216,48 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
         "refl10cm-ng-shadow-snow-rime-mass-number-velocity"),
     10: "morrison-two-moment-v2-kf-number-seeding",
     18: "nssl-two-moment-state-transport-v1-process-boundary-fail-loud",
+    # Thompson AEROSOL-AWARE (WRF v4.6.1 THOMPSONAERO,
+    # Registry/Registry.EM_COMMON:3036).  Named at the granularity the mp=8
+    # row uses -- the trajectory-defining pieces, not the scheme name --
+    # because that is what makes an incompatible resume fail BEFORE restore.
+    # "prognostic-nc" is the change everything else follows from
+    # (module_mp_thompson.F:1795-1812 freezes nc1d at entry and :3972-4021
+    # applies the single terminal ncten/nwfaten/nifaten clamp); "nwfa-nifa"
+    # names the two transported aerosol tracers; "ccn-activate-table" names
+    # the tnccn_act asset the activation reads
+    # (:5102-5108); "demott-koop" names the ice-nucleation pair that replaces
+    # classic Cooper (iceDeMott called at :2574/:2623, iceKoop at :2637;
+    # the functions themselves at :5447 and :5521); "scavenging" names the
+    # six aerosol wet-removal rates; "surface-emission" names the unclamped
+    # nwfa2d/nifa2d injection mp_gt_driver applies AFTER the terminal clamp
+    # (:1310-1327), which is a real ordering choice a reimplementation could
+    # get wrong while leaving every bound intact.  "synthetic-aerosol-init"
+    # records that this build's aerosol profile comes from thompson_init's
+    # fill (:493-551) and not from a WIF metgrid stream: a future
+    # wif_input_opt ingest is a DIFFERENT initial condition and must advance
+    # this tag rather than silently resume onto it.
+    28: ("thompson-aerosol-aware-wrf-v4.6.1-v1-prognostic-nc-nwfa-nifa-"
+         "ccn-activate-table-demott-koop-scavenging-surface-emission-"
+         "synthetic-aerosol-init"),
 }
+
+#: The mp_physics=28 state a restart may NEVER drop.  Every name here is
+#: already in ``STATE_SERIALIZED_ATTRS`` and therefore already written by the
+#: generic loop; this tuple exists so the *absence* of one is a refusal
+#: rather than a silent, finite, wrong resume.  That failure mode is real and
+#: specific to this scheme: WRF's terminal clamps (module_mp_thompson.F:
+#: 3976-3982) hold nwfa/nifa at their floors and nc at 2/rho rather than
+#: raising, so a checkpoint that lost the aerosol state would restore, run,
+#: stay bounded, produce no NaN and no health trip -- and integrate a
+#: measurably different (aerosol-inert) forecast.  ``nwfa2d``/``nifa2d`` are
+#: included because they are cross-step CONSTANTS that nothing in the
+#: forecast rewrites: thompson_init derives nwfa2d once at :509-510 and only
+#: in the "no initial CCN" branch, so a resume that dropped them would run
+#: forever with zero surface aerosol emission.  WRF agrees they belong in the
+#: restart stream: Registry.EM_COMMON:492-493 gives QNWFA2D/QNIFA2D the IO
+#: string ``i01{17}rhdu``, whose ``r`` is the restart stream.
+THOMPSON_AEROSOL_RESTART_STATE = ("nc", "nwfa", "nifa")
+THOMPSON_AEROSOL_RESTART_SURFACE_STATE = ("nwfa2d", "nifa2d")
 SURFACE_LAYER_ALGORITHM_IDENTITIES = {
     0: "disabled",
     1: "revised-mm5-surface-layer-v1",
@@ -217,6 +274,13 @@ PBL_ALGORITHM_IDENTITIES = {
     0: "disabled",
     1: "ysu-v1",
     5: "mynn-edmf-pbl-wrf-v4.6.1-v1",
+    # SASE carries no WRF version in its identity because there is no WRF
+    # scheme it transcribes.  What the identity DOES have to bind is the
+    # closure's constant registry: sase_config_id() is a SHA-256 over
+    # every registered coefficient, so a checkpoint written under one set
+    # of constants cannot be resumed under another -- which is the whole
+    # job of this table.
+    900: "sase-experimental-v1",
 }
 #: sf_surface_physics -> the ``PhysicsDriver`` attribute holding that
 #: scheme's packed parameter bundle, and the packaged-asset roles whose
@@ -329,6 +393,15 @@ STATE_REBUILT_ATTRS = frozenset({
     "qv0", "qc0", "qr0", "qi0", "qs0", "qg0", "nr0", "ni0", "ns0", "ng0",
     "qh0", "qndrop0", "qnr0", "qni0", "qns0", "qng0", "qnh0",
     "qnn0", "qvolg0", "qvolh0",
+    # km_opt=2's TKE time-t copy, written from the serialized ``tke``
+    # carrier by dycore.step before any reader (core/dycore.py:2186-2187),
+    # exactly like thp0 and the moist time-t copies above.  The carrier
+    # itself is SERIALIZED (state_serialization_contract.py).
+    "tke0",
+    # mp_physics=28 (Thompson aerosol-aware) RK time-t copies.  nc0 exists
+    # only for mp=28: mp=10 allocates nc but does not transport it and so
+    # has no nc0 (gpuwm/core/moist.py::THOMPSON_AERO_NUMBER_SPECIES).
+    "nc0", "nwfa0", "nifa0",
     # Slow-tendency slots, zeroed at the top of every RK stage.
     "ru_t", "rv_t", "rw_t", "rth_t", "rph_t", "rmu_t",
     # Acoustic perturbations, reseeded by _init_small_steps each stage
@@ -385,6 +458,32 @@ REBUILT_SCRATCH_SLOTS = frozenset({
     # WRF's private classic-graupel number exists only across one
     # output-due Thompson call and is finalized/consumed by REFL_10CM.
     "mp_thompson_graupel_number_shadow",
+    # mp_physics=28 (Thompson aerosol-aware).  Listed as EXACT names, not a
+    # new "mp_thompson_aero_" prefix, because the prefix rule above exists
+    # precisely to stop a future accumulator from being silently dropped --
+    # and three of these ARE accumulators.  They are nonetheless rebuilt,
+    # not serialized: WRF zeroes ncten/nwfaten/nifaten at the top of every
+    # column call (module_mp_thompson.F:1679-1681) and applies them once
+    # before returning (:3972-4021), so nothing in them survives a call
+    # boundary, let alone a restart.  The entry snapshots are likewise
+    # re-frozen from state at every call entry (:1795-1848).  Serializing
+    # any of them would be the bug: a restored non-zero tendency would be
+    # applied to state a second time.
+    "mp_thompson_aero_ncten",
+    "mp_thompson_aero_nwfaten",
+    "mp_thompson_aero_nifaten",
+    "mp_thompson_aero_entry_density",
+    "mp_thompson_aero_nwfa_entry_m3",
+    "mp_thompson_aero_nifa_entry_m3",
+    "mp_thompson_aero_tau1_density",
+    "mp_thompson_aero_nwfa_work_m3",
+    "mp_thompson_aero_qc_entry",
+    "mp_thompson_aero_ni_entry",
+    "mp_thompson_aero_rc_entry",
+    "mp_thompson_aero_nc_entry_m3",
+    "mp_thompson_aero_nu_c_entry",
+    "mp_thompson_aero_l_qc_entry",
+    "mp_thompson_aero_condensation_rate",
     "nssl2_driver_state", "nssl2_driver_surface_export",
     "nssl2_driver_ignored_accumulator",
     "nssl2_fused_temperature", "nssl2_primary_ice_target",
@@ -411,6 +510,14 @@ REBUILT_SCRATCH_PREFIXES = (
     # restore inside ONE microphysics.apply call (core/microphysics.py);
     # their contents are dead at any restart boundary.
     "mp_ring_save_",
+    # The km_opt=2 TKE budget's own slots (gpuwm/core/tke_budget.py).  The
+    # per-term 3-D fields and the mu totals are rewritten inside every step
+    # before anything reads them.  The slab accumulator and its step counter
+    # ARE carried across steps, but they are a report-only diagnostic window
+    # the caller drains and resets -- never trajectory state -- so a resumed
+    # run restarts the current window rather than continuing it, and the
+    # drained receipt records the step count it actually covered.
+    "tke_budget_",
     # MYNN's declared workspace (gpuwm/core/mynn_pbl_scratch.py).  Every one
     # of these is rebuilt inside the call that reads it; the scheme's carried
     # state is the ten 3-D ``fields`` arrays, which are serialized as fields
@@ -460,6 +567,20 @@ DRIVER_SERIALIZED_ATTRS = frozenset({
 #: minor-loop count are deterministic functions of the resolved
 #: ``mp_physics`` and ``dt`` configuration and are rebuilt with the driver.
 DRIVER_REBUILT_ATTRS = frozenset({
+    # SASE: the active flag and the kernel-module tuple are re-derived
+    # from the resumed RunConfig at driver init; the ledger is a
+    # per-step diagnostic replaced before any consumer reads it; the
+    # flux-diagnostic buffers are output-only and refilled by the first
+    # step after the resume.
+    "sase_active", "last_sase_ledger", "sase_flux_diag",
+    "sase_nan_guard_fires",
+    # The horizontal eddy-viscosity diagnostic, on the SAME terms as the
+    # flux-diagnostic buffers beside it: output-only, never read back by
+    # the physics, and refilled by the first step after a resume (the
+    # SASE half in the closure slot, the Smagorinsky half at the next
+    # output).  A resumed run's first frame therefore carries the
+    # post-resume step's viscosity, which is the value that step used.
+    "hmix_k_diag",
     "state", "sfclay_result", "mynn_sfclay_result",
     "mynn_sfclay_sea_result", "noah_params",
     # Selector-value -> runner-method receipt, re-resolved from the resumed
@@ -637,6 +758,84 @@ def _require_nssl2_array(value, shape: tuple[int, ...], label: str) -> None:
         raise RestartManifestError(
             f"MP18 restart {label!r} has dtype {value.dtype}, expected "
             "float32")
+
+
+def _validate_thompson_aerosol_live_restart_state(state, cfg) -> None:
+    """Fail an mp=28 WRITE that would omit any aerosol state.
+
+    The generic writer loop already picks these up through
+    ``STATE_SERIALIZED_ATTRS`` when they exist; this refuses the write when
+    they DO NOT.  Without it, a build whose ``DomainState`` stopped
+    allocating (say) ``nwfa2d`` would produce a checkpoint that both the
+    writer and the reader consider internally consistent -- the reader's
+    inventory check compares the file against the *resuming* state, so two
+    equally aerosol-less endpoints agree -- and the resumed run would
+    integrate with zero surface aerosol emission forever.  Adding the 28
+    identity string without this guard is exactly the "restart proceeds
+    while silently dropping the aerosol state" outcome that is worse than
+    the previous outright refusal.
+    """
+    if int(cfg.mp_physics) != 28:
+        return
+
+    volume_shape = tuple(state.p.shape)
+    surface_shape = tuple(state.mup.shape)
+    for name, shape in (
+            *((name, volume_shape) for name in
+              THOMPSON_AEROSOL_RESTART_STATE),
+            *((name, surface_shape) for name in
+              THOMPSON_AEROSOL_RESTART_SURFACE_STATE)):
+        value = getattr(state, name, None)
+        if value is None or not _is_array_like(value):
+            raise RestartManifestError(
+                f"mp_physics=28 restart requires array 'state/{name}' "
+                "(Thompson aerosol-aware carries prognostic nc plus the "
+                "nwfa/nifa tracers and their nwfa2d/nifa2d surface "
+                "emission); refusing to write a checkpoint that would "
+                "resume with an aerosol-inert column")
+        if tuple(value.shape) != shape:
+            raise RestartManifestError(
+                f"mp_physics=28 restart 'state/{name}' has shape "
+                f"{tuple(value.shape)}, expected {shape}")
+        if np.dtype(value.dtype) != np.dtype(np.float32):
+            raise RestartManifestError(
+                f"mp_physics=28 restart 'state/{name}' has dtype "
+                f"{value.dtype}, expected float32")
+
+
+def _validate_thompson_aerosol_stored_restart_state(
+        stored: dict[str, np.ndarray], state, cfg, path) -> None:
+    """Reject an mp=28 restart FILE that omits any aerosol state."""
+    if int(cfg.mp_physics) != 28:
+        return
+
+    required = {
+        f"state/{name}" for name in (
+            *THOMPSON_AEROSOL_RESTART_STATE,
+            *THOMPSON_AEROSOL_RESTART_SURFACE_STATE)
+    }
+    stored_state = {key for key in stored if key.startswith("state/")}
+    missing = sorted(required - stored_state)
+    if missing:
+        raise RestartMismatchError(
+            f"restart file {path} omits canonical mp_physics=28 aerosol "
+            f"state {missing}; resuming would silently integrate an "
+            "aerosol-inert Thompson column (the terminal clamps at "
+            "module_mp_thompson.F:3976-3982 keep it finite and bounded, so "
+            "nothing downstream would notice)")
+    for key in sorted(required):
+        name = key[len("state/"):]
+        target = getattr(state, name, None)
+        if target is None:
+            # The RESUMING model has no slot for a field the file carries.
+            # A DomainState built from an mp=28 RunConfig always allocates
+            # all five (gpuwm/core/state.py's mp==28 arm), so reaching this
+            # means the two ends disagree about what mp=28 is -- report it
+            # here rather than raising AttributeError from _check_array.
+            raise RestartMismatchError(
+                f"restart file {path} carries {key} but this build's "
+                f"mp_physics=28 DomainState has no {name!r}")
+        _check_array(stored[key], target, key)
 
 
 def _validate_nssl2_live_restart_state(state, cfg) -> None:
@@ -1348,6 +1547,107 @@ def _thompson_setup_identity() -> dict:
     }
 
 
+def _thompson_aerosol_setup_identity() -> dict:
+    """Resolved implementation/table identity for ``mp_physics=28``.
+
+    mp=8 has carried a ``thompson`` sub-record since it landed, and without
+    the parallel record here an mp=28 checkpoint would bind NO table bytes
+    at all: it would resume against a different ``freezeH2O.dat`` or a
+    different ``CCN_ACTIVATE.BIN`` with every identity check passing.  The
+    scheme is table-driven to an unusual degree -- the activation fraction
+    that sets droplet number is READ from ``tnccn_act``, not computed
+    (module_mp_thompson.F:5229-5230 index it at fixed radius/kappa) -- so a
+    silent table substitution is a silent trajectory substitution.
+
+    Two inventories, deliberately kept apart.  ``classic_tables`` is the
+    SAME four-asset set mp=8 pins, because mp=28 genuinely loads them (its
+    adapter calls ``load_classic_device_tables`` and reuses the frozen mp=8
+    sedimentation and classic-graupel launchers unchanged).
+    ``aerosol_tables`` is the one asset only mp=28 reads, addressed by the
+    path the run resolved rather than by ``root / filename``: gpuwm ships the
+    blob since 2026-08-01 but the file and root overrides let a run bind to a
+    copy in a WRF ``run/`` directory instead, so its LOCATION is not part of
+    the identity but its BYTES are.  Neither is the fact that it ships --
+    see the note beside the record; a packaging fact in a trajectory identity
+    only buys refused resumes.
+
+    The ``aerosol_source`` token records that this build's aerosol initial
+    condition is ``thompson_init``'s synthetic CCN/IN profile
+    (module_mp_thompson.F:493-551) at ``aer_init_opt = wif_input_opt = 0``.
+    A future WIF metgrid ingest is a different initial condition and must
+    move this token rather than resume onto a checkpoint written without it.
+    """
+    from gpuwm.core.thompson_aerosol_contract import (
+        AEROSOL_TABLE_SET_ID,
+        resolve_aerosol_table_root,
+        resolve_ccn_activation_path,
+        validate_ccn_activation_asset,
+    )
+    from gpuwm.physics_compat import thompson_table_root
+
+    root = thompson_table_root()
+    try:
+        classic = _thompson_table_identity(root)
+    except (OSError, TypeError, ValueError) as exc:
+        raise RestartManifestError(
+            f"active Thompson table identity is invalid at {root}") from exc
+    try:
+        # Resolve from the SAME root the adapter used
+        # (gpuwm/core/microphysics_aerosol.py:182 takes
+        # ``physics_compat.thompson_table_root()`` and hands it to BOTH table
+        # owners, so tnccn_act and the four classic caches cannot come from
+        # different WRF builds).  Passing ``root`` explicitly rather than
+        # letting the aerosol contract re-resolve it keeps that guarantee
+        # even if the two resolution orders ever diverge.  The
+        # ``GPUWM_THOMPSON_CCN_ACTIVATE`` file override is still honoured,
+        # because that is the path the adapter would have loaded too.
+        ccn_path = resolve_ccn_activation_path(
+            None, resolve_aerosol_table_root(root))
+        ccn_asset = validate_ccn_activation_asset(ccn_path)
+    except (OSError, TypeError, ValueError) as exc:
+        raise RestartManifestError(
+            "mp_physics=28 restart identity requires the resolved "
+            f"CCN activation table: {exc}") from exc
+    return {
+        "admission": "component-override-mp28-unvendored-ccn-table-v1",
+        "classic_tables": _json_value(
+            classic, "Thompson table identity"),
+        "aerosol_tables": {
+            "schema": 1,
+            "table_set": AEROSOL_TABLE_SET_ID,
+            # DELIBERATELY ABSENT: ``AEROSOL_ASSET_REDISTRIBUTED``.  This
+            # dict is hashed into ``physics_setup_fingerprint``, so anything
+            # placed here becomes part of the trajectory identity and a
+            # change to it refuses every earlier checkpoint.  Whether the
+            # blob arrives inside the wheel or from a WRF ``run/`` directory
+            # is a PACKAGING fact: it cannot move a single float.  It was
+            # briefly written here on 2026-08-01 and removed the same day,
+            # because flipping the constant False -> True would have broken
+            # resume for every mp=28 checkpoint in existence while the bound
+            # bytes stayed identical.  The ``sha256`` below is what actually
+            # determines the trajectory and it is unaffected by delivery.
+            # Do not re-add it; the constant is published on the registry row
+            # (``redistributed_by_gpuwm``), which is where a packaging fact
+            # belongs.
+            "assets": [{
+                "filename": ccn_asset.filename,
+                "bytes": int(ccn_asset.bytes),
+                "sha256": ccn_asset.sha256,
+            }],
+        },
+        "aerosol_source": (
+            "wrf-v4.6.1-thompson-init-synthetic-ccn-in-profile-"
+            "aer-init-opt-0-wif-input-opt-0-v1"),
+        "graupel_number_policy": (
+            "wrf-private-classic-ng-reconstructed-and-transported-per-call-v1"),
+        "reflectivity_policy": (
+            "wrf-v4.6.1-calc-refl10cm-post-fallout-output-only-v1"),
+        "aerosol_tendency_policy": (
+            "wrf-v4.6.1-single-terminal-ncten-nwfaten-nifaten-apply-and-"
+            "clamp-then-unclamped-surface-emission-v1"),
+    }
+
+
 def physics_setup_identity(state, cfg) -> dict:
     """Return the complete JSON-able trajectory-defining physics setup.
 
@@ -1425,6 +1725,8 @@ def physics_setup_identity(state, cfg) -> dict:
         }
     if int(cfg.mp_physics) == 8:
         microphysics["thompson"] = _thompson_setup_identity()
+    if int(cfg.mp_physics) == 28:
+        microphysics["thompson_aerosol"] = _thompson_aerosol_setup_identity()
     if int(cfg.mp_physics) == 18:
         microphysics["restart_contract"] = \
             _nssl2_restart_contract_identity()
@@ -1711,6 +2013,7 @@ def write_restart(path, state, cfg, *, run_trackers=None,
     """
     path = Path(path)
     _validate_nssl2_live_restart_state(state, cfg)
+    _validate_thompson_aerosol_live_restart_state(state, cfg)
     if sealed_forcing_extension:
         _require_sealable_forcing_prefix(
             state, cfg, path=path,
@@ -2878,6 +3181,7 @@ def _validate_restart(path, state, cfg, *,
 
     _validate_nssl2_stored_restart_state(
         header, stored, state, cfg, path, elapsed)
+    _validate_thompson_aerosol_stored_restart_state(stored, state, cfg, path)
     stored_state = {key[len("state/"):]: value
                     for key, value in stored.items()
                     if key.startswith("state/")}
@@ -3189,6 +3493,8 @@ __all__ = [
     "RestartManifestError", "RestartMismatchError",
     "SERIALIZED_SCRATCH_SLOTS", "STATE_REBUILT_ATTRS",
     "STATE_SERIALIZED_ATTRS", "STATE_SETUP_ARRAYS", "STATE_SETUP_SCALARS",
+    "THOMPSON_AEROSOL_RESTART_STATE",
+    "THOMPSON_AEROSOL_RESTART_SURFACE_STATE",
     "TENDENCY_COMPONENTS", "classify_scratch_slot", "classify_state_attr",
     "physics_setup_fingerprint", "physics_setup_identity",
     "root_external_lbc_clock_identity",

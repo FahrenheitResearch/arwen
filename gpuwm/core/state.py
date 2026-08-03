@@ -26,9 +26,13 @@ try:  # Native stock-WRF setup/export has a genuine NumPy-only route.
 except ImportError:  # pragma: no cover - exercised in an isolated subprocess
     cp = None
 
-from gpuwm.config import RunConfig
+from gpuwm.config import SASE_PBL_SCHEME, RunConfig
 from gpuwm.core import constants as c
 from gpuwm.core.grid import BaseState, VerticalCoord, rebalance_hydrostatic
+# Single source for the SASE realizability floor (the e_sgs cold-start
+# fill).  From gpuwm.core, not gpuwm.verify: the standalone CPU
+# preprocessing distribution omits the verification tree.
+from gpuwm.core.sase_limits import E_MIN as SASE_E_MIN
 
 #: Model-field dtype.  FP64 only in setup code and test references.  Keeping
 #: the scalar type available without CuPy lets the Rust/NumPy native-input
@@ -386,7 +390,7 @@ class DomainState:
             # is impossible and re-zeroing silently drops one step of
             # retained heating on the first resumed trajectory.
             self.h_diabatic = zeros(nz, ny, nx)
-            if cfg.mp_physics in (6, 8, 10, 18):
+            if cfg.mp_physics in (6, 8, 10, 18, 28):
                 common = ("qi", "qs", "qg", "effc", "effi", "effs")
                 number_and_radius = (
                     ("nr", "ni") if cfg.mp_physics == 8 else
@@ -394,7 +398,15 @@ class DomainState:
                      if cfg.mp_physics == 10 else
                     (("qh", "qndrop", "qnr", "qni", "qns", "qng",
                       "qnh", "qnn", "qvolg", "qvolh")
-                     if cfg.mp_physics == 18 else ())))
+                     if cfg.mp_physics == 18 else
+                    # mp=28 (Thompson aerosol-aware, Registry.EM_COMMON:3036)
+                    # turns cloud droplet number into a prognostic scalar and
+                    # adds the two aerosol number tracers.  The mp=8 tuple
+                    # above is deliberately NOT shared: a shared tuple is the
+                    # regression risk that would let a future mp=28 field
+                    # silently appear on an mp=8 state.
+                    (("nc", "nr", "ni", "nwfa", "nifa")
+                     if cfg.mp_physics == 28 else ()))))
                 for name in common + number_and_radius:
                     setattr(self, name, zeros(nz, ny, nx))
                 if cfg.mp_physics == 18:
@@ -403,9 +415,18 @@ class DomainState:
                     # Registry default nssl_cccn=0.5e9 m-3; the resulting
                     # dry-mass mixing ratio is exactly this FP32 value.
                     self.qnn[...] = DTYPE(408163264.0)
-                if cfg.mp_physics in (6, 8):
+                if cfg.mp_physics in (6, 8, 28):
                     # module_model_constants.F WSM6/Thompson background radii,
                     # stored in gpuwm's radiation-facing micron convention.
+                    # (RE_QC_BG/RE_QI_BG/RE_QS_BG = 2.49E-6/4.99E-6/9.99E-6
+                    # m, module_model_constants.F:62-64.)  mp=28 shares
+                    # them: module_mp_thompson.F seeds re_qc1d/re_qi1d/
+                    # re_qs1d from those same three parameters and applies
+                    # the same MAX(RE_*_BG, MIN(...)) clamp for BOTH
+                    # entries (:1466-1479 in mp_gt_driver, the single
+                    # driver classic and aerosol-aware Thompson share), so
+                    # the background a radiation call sees before the first
+                    # microphysics step is identical.
                     self.effc[...] = DTYPE(2.49)
                     self.effi[...] = DTYPE(4.99)
                     self.effs[...] = DTYPE(9.99)
@@ -430,12 +451,62 @@ class DomainState:
                     time_copies += (
                         "qh0", "qndrop0", "qnr0", "qni0", "qns0",
                         "qng0", "qnh0", "qnn0", "qvolg0", "qvolh0")
+                elif cfg.mp_physics == 28:
+                    time_copies += ("nc0", "nr0", "ni0", "nwfa0", "nifa0")
                 for name in time_copies:
                     setattr(self, name, rebuilt(name, nz, ny, nx))
+                if cfg.mp_physics == 28:
+                    # QNWFA2D / QNIFA2D: WRF's surface aerosol emission
+                    # TENDENCIES in # kg-1 s-1 (Registry.EM_COMMON; the
+                    # field was redefined from a concentration to a
+                    # tendency on 13 May 2013, module_mp_thompson.F:
+                    # 1313-1315).  They are INTENT(IN) to mp_gt_driver --
+                    # microphysics reads them at :1310-1327 and never
+                    # writes them -- so they are cross-step CONSTANTS, not
+                    # RK-rebuilt copies, and must not go through
+                    # ``rebuilt`` (a shared arena backing would let a
+                    # sibling domain overwrite them between steps).
+                    #
+                    # Both start at exactly zero.  thompson_init derives
+                    # nwfa2d from the synthetic CCN profile at :510, but
+                    # nifa2d is not even a thompson_init dummy argument
+                    # (:424-444 take nwfa2d/nbca2d only) and the whole
+                    # file never assigns it.  A run with no WIF/dust
+                    # ingest therefore keeps nifa2d == 0 for the entire
+                    # forecast -- that is WRF's own behaviour, not an
+                    # ArWen shortcut.
+                    self.nwfa2d = zeros(ny, nx)
+                    self.nifa2d = zeros(ny, nx)
         else:
             self.qv = self.qc = self.qr = None
             self.qv0 = self.qc0 = self.qr0 = None
             self.h_diabatic = None
+
+        # WRF two-time-level prognostic TKE (Registry.EM_COMMON:312,
+        # ``state real tke ikj dyn_em 2 - r``), the km_opt=2 carrier.
+        # Initial value is the allocated zero state exactly as WRF's ideal
+        # path (no start_em writer; tke bootstraps from the surface terms
+        # or the tke_seed).  RESTART: WRF carries tke in the restart stream
+        # (the ``r`` IO flag) and so does gpuwm -- ``tke`` is SERIALIZED and
+        # ``tke0`` is REBUILT (written from tke at every dycore.step entry),
+        # both classified in gpuwm/io/restart.py.
+        if cfg.km_opt == 2:
+            self.tke = zeros(nz, ny, nx)
+            self.tke0 = rebuilt("tke0", nz, ny, nx)
+        else:
+            self.tke = self.tke0 = None
+        # SASE prognostic subgrid turbulence energy.  The attribute is
+        # ``e_sgs`` because ``self.e`` is already the WRF Coriolis cosine
+        # parameter 2*Omega*cos(lat); the closure's symbol ``e`` maps to
+        # this attribute everywhere (restart key ``state/e_sgs``,
+        # preflight item ``e_sgs``).  Cold start fills the realizability
+        # floor exactly as the fused step clips.  Allocated ONLY when the
+        # closure is active, so every other configuration's object graph
+        # stays byte-identical -- the attribute is ABSENT, not None,
+        # matching the pattern the restart manifest walk expects.
+        if cfg.bl_pbl_physics == SASE_PBL_SCHEME:
+            self.e_sgs = zeros(nz, ny, nx)
+            self.e_sgs.fill(DTYPE(SASE_E_MIN))
 
         # RK stage copies (state at the start of the RK3 step).
         self.u0 = rebuilt("u0", nz, ny, nx + 1)

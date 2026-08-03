@@ -1,0 +1,12 @@
+-- local coexistence snapshot (before) --
+NVIDIA GeForce RTX 5090, 610.74, 47 %, 4461 MiB
+gpuwm mp=8: 50 steps in 2.2s -> work\gate\runs\sw-arwen-mp08
+SW-ARWEN-RC-08-a=0
+gpuwm mp=8: 50 steps in 2.1s -> work\gate\runs\sw-arwen-mp08-b
+SW-ARWEN-RC-08-b=0
+gpuwm mp=28: 50 steps in 2.6s -> work\gate\runs\sw-arwen-mp28
+SW-ARWEN-RC-28-a=0
+gpuwm mp=28: 50 steps in 2.9s -> work\gate\runs\sw-arwen-mp28-b
+SW-ARWEN-RC-28-b=0
+-- local coexistence snapshot (after) --
+39 %, 4442 MiB

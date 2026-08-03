@@ -96,7 +96,7 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
-from gpuwm.config import (DEFAULT_COLUMN_CHUNK, RunConfig,
+from gpuwm.config import (DEFAULT_COLUMN_CHUNK, SASE_PBL_SCHEME, RunConfig,
                           radiation_enabled, radiation_scheme_ids,
                           soil_layer_count)
 from gpuwm.experiment import DomainConfig, ExperimentConfig
@@ -822,6 +822,26 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "lbc_state": 0,
     "morrison": 5120,
     "microphysics_validation": 0,
+    # SASE.  MEASURED on an RTX 5090 over all 29 kernels in the module at
+    # the closure's compiled tier (SASE_KMAX = 128): the maximum is
+    # sase_plume_vent_flux at 6,272 B; sase_moist_n2 5,120 B,
+    # sase_vertical_channel 4,096 B, the two Thomas sweeps 3,072 B each,
+    # and the remaining 24 kernels hold no local frame at all.  By the
+    # reservation model at the head of docs/kernel_local_memory_bounds.md
+    # this frame reserves (6272 - 1024) * 1536 * 170 = 1,370,357,760 B
+    # ~ 1.28 GiB on first launch, for the life of the process.
+    #
+    # The frame is EXACTLY LINEAR in the compiled level bound -- measured
+    # 1,568 / 3,136 / 6,272 B at SASE_KMAX 32 / 64 / 128, i.e. 49 B per
+    # level with a zero intercept -- so this module is specializable the
+    # way kf and refl are, and at a 49-level configuration the frame
+    # would be 2,401 B and the reservation ~359 MiB.  It is NOT entered
+    # in LEVEL_SPECIALIZED_KERNEL_FRAMES here, because that table prices
+    # what the launcher actually compiles and this launcher compiles at
+    # the fixed tier.  Specializing it is a real ~0.93 GiB saving and a
+    # separate change; until then the stated bound is the compiled
+    # ceiling, which is the safe direction for a rail gate.
+    "sase": 6272,
     "mynn_pbl": 0,
     "mynn_surface": 0,
     "nest": 0,
@@ -859,6 +879,33 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "smag2d": 0,
     "spec_bdy": 0,
     "thompson": 11264,
+    # mp_physics=28 translation units, measured 2026-07-31 the same way on
+    # the same RTX 5090.  ``thompson_aerosol_sed``'s 9,216 B is its
+    # 256-LEVEL cloud sedimentation variant
+    # (``thompson_aa_cloud_sediment_256``); a run with nz <= 64 launches the
+    # 64-level entry point and a much smaller frame, so this row is the
+    # module CEILING exactly as the header above describes for Morrison.
+    # ``thompson_aerosol_probe`` is a table row but never a priced module:
+    # no ``physics_kernel_modules`` selector names it (it is the
+    # device-helper oracle unit), and it is listed here only so the
+    # driver-regeneration test covers every ``.cu`` in the directory.
+    #
+    # RE-MEASURE THESE SIX before the mp=28 wave closes.  They were taken
+    # while a sibling package was still moving shared device helpers into
+    # thompson_aerosol_common.cuh; sat/state/probe were measured against the
+    # current header and warm/sed reproduce their values with the duplicate
+    # definitions stripped, but ``thompson_aerosol_cold`` was measurable
+    # only against the pre-move header.  Nothing has to be remembered for
+    # that to be caught: ``test_the_recorded_local_frames_match_the_driver``
+    # regenerates the whole table from NVRTC + the driver and fails loudly
+    # on any row that moved.
+    "thompson_aerosol_cold": 0,
+    "thompson_aerosol_probe": 0,
+    "thompson_aerosol_sat": 0,
+    "thompson_aerosol_sed": 9216,
+    "thompson_aerosol_state": 48,
+    "thompson_aerosol_warm": 0,
+    "tke_budget": 0,
     "uh_diag": 0,
     "vert_interp": 768,
     "wsm6": 7216,
@@ -1037,10 +1084,12 @@ CORE_KERNEL_MODULES = frozenset({
     "acoustic", "advection", "coriolis_map", "diagnostics", "diff6",
     "diffusion", "dycore", "health", "lbc_flow", "lbc_state", "nest",
     "nest_microphysics", "openbc", "pd_advection", "saxpy", "smag2d",
-    "spec_bdy", "vert_interp"})
+    "spec_bdy", "tke_budget", "vert_interp"})
 
 #: ``mp_physics`` -> the kernel modules that scheme launches.  Keys are
-#: exactly ``gpuwm/config.py``'s accepted set (0, 1, 6, 8, 10, 18).
+#: exactly ``gpuwm/config.py``'s accepted set (0, 1, 6, 8, 10, 18) plus 28,
+#: which is priced here ahead of its driver dispatch so a run can never
+#: reach ``kernel_local_frame_bytes`` with an unpriced selector.
 _MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (),
     1: ("kessler", "microphysics_validation"),
@@ -1049,6 +1098,15 @@ _MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     10: ("morrison", "microphysics_validation"),
     18: ("nssl2", "nssl2_driver_support", "nssl2_diagnostics",
          "nssl2_fused_gs", "nssl2_nucond", "nssl2_qvexcess"),
+    # Thompson aerosol-aware.  ``thompson`` is genuinely launched: mp=28
+    # reuses the frozen mp=8 ice/snow/graupel/rain sedimentation and classic
+    # graupel-number launchers unchanged.  ``thompson_aerosol_probe`` is
+    # excluded on purpose -- it exists only for the device-helper oracle
+    # gate and no forecast path loads it, so pricing it here would reserve
+    # local memory for a module the run never compiles.
+    28: ("thompson", "thompson_aerosol_state", "thompson_aerosol_sat",
+         "thompson_aerosol_cold", "thompson_aerosol_warm",
+         "thompson_aerosol_sed"),
 }
 
 #: ``mp_physics`` values with a REFL_10CM path in ``gpuwm/core/refl.py``.
@@ -1056,12 +1114,19 @@ _MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
 #: during the run (:func:`refl_diagnostic_reachable`), because the kernel is
 #: launched from the ``refl_10cm_due`` branch of the microphysics drivers and
 #: from nowhere else.
-_REFLECTIVITY_MICROPHYSICS = frozenset({1, 6, 8, 10, 18})
+#: 28 is included: mp=28 routes REFL_10CM through the SAME Thompson
+#: reflectivity kernel as mp=8 (calc_refl10cm takes no droplet number and
+#: never re-reads rc), so the ``refl`` module is loaded on exactly the same
+#: cadence.  Pricing it here before ``gpuwm/core/refl.py`` admits 28 is the
+#: safe direction -- an over-priced rail refuses a run that would have fit,
+#: an under-priced one lets a run breach the budget.
+_REFLECTIVITY_MICROPHYSICS = frozenset({1, 6, 8, 10, 18, 28})
 
 _CUMULUS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (), 1: ("kf", "kf_validation")}
 _PBL_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
-    0: (), 1: ("ysu", "ysu_validation"), 5: ("mynn_pbl",)}
+    0: (), 1: ("ysu", "ysu_validation"), 5: ("mynn_pbl",),
+    SASE_PBL_SCHEME: ("sase",)}
 _SURFACE_LAYER_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (), 1: ("sfclay",), 5: ("mynn_surface",), 91: ("sfclay",)}
 _LAND_SURFACE_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
@@ -1245,7 +1310,8 @@ class MemoryItem:
     """One named device allocation: shape formula result + byte width."""
 
     name: str
-    category: str  # state | physics | scratch | lbc | nest | transient
+    category: str  # state | physics | scratch | lbc | nest | sase
+    #                | transient
     shape: tuple[int, ...]
     itemsize: int = 4
     dtype: str = "float32"
@@ -1335,6 +1401,253 @@ def physics_array_lifetime(name: str) -> PhysicsArrayLifetime | None:
 
 
 
+
+#: Strain/stress component order (sase.py launch_strain / authority) and
+#: the Germano-lift pair order (authority ``_PAIRS``).
+_SASE_S6 = ("xx", "yy", "zz", "xy", "xz", "yz")
+_SASE_P6 = ("uu", "vv", "ww", "uv", "uw", "vw")
+
+
+def sase_workspace_phases(cfg: RunConfig
+                          ) -> dict[str, dict[str, tuple[tuple[int, ...],
+                                                         int]]]:
+    """SASE model-path transient live sets, one dict per phase.
+
+    Exact transcription of the driver-coupled step's per-call device
+    allocations (``gpuwm/core/physics.py`` ``_run_sase`` +
+    ``gpuwm/core/sase.py`` ``launch_sase_step`` and the launchers it
+    composes) on the MODEL path (per-column 3-D ``dz_col``, Task 6).
+    Task-6 decision, documented here per the S3-5 pairing contract: the
+    per-step temporaries REMAIN CuPy-pool allocations at this stage
+    rather than moving into the shared scratch arena -- the pool
+    reuses the freed blocks across steps so the steady-state device
+    footprint equals this transcribed peak, while arena preallocation
+    would require threading an allocator through six nested launchers
+    and re-auditing ~58 slot lifetimes (revisit if the estimate ever
+    pinches).  Any change to either side must update BOTH the launcher/
+    driver and this transcription (the byte pin in tests/test_sase.py
+    enforces the pairing).
+
+    * ``solve`` -- the peak inside ``launch_dynamic_solve`` while
+      ``launch_germano_lift`` runs on the second (width-4) test level:
+      the driver-held work set (u/v A-grid work copies, destaggered w +
+      its work copy, n2 plus its S4-2 M1 moist companion n2_eff -- the
+      ``launch_moist_n2`` output held beside the dry field for the whole
+      step (physics.py ``_run_sase`` step 2; both go down together into
+      ``launch_sase_step``), and the ``heat`` output -- 7 full fields;
+      the S3-6e governed scalar channel rides the step's exported km_h
+      field, so the v0 pre-step e copy is RETIRED), the fused step's
+      three PER-COLUMN z-stencil coefficient FIELDS (3-D dz_col mode;
+      the (nz,) arrays of the shared-column test path are superseded on
+      the model path), the six fine strains, six premultiplied
+      eddy-basis integrands, three filtered velocities, six coarse
+      strains, six refiltered basis fields, the lift's three filtered
+      velocities + six velocity products + six filtered products + six
+      lift outputs, and the width-2 iteration's still-referenced FP64
+      ``(5, nblocks)`` partial-sum buffer: 58 full fields + partials
+      (S4-3 amendment: was 57 pre-M1; the n2_eff field is 1/57 ~ 1.75%
+      of the previous peak -- the S4-2 report note-1 obligation).  The
+      S3-11b ``(ny, nx)`` float32 rho1 surface moist-density plane
+      (``sase_surface_rho1``, computed once before the e source and held
+      by the driver through the step-5 scalar-flux deposit, so alive in
+      BOTH phases) is transcribed with it -- de-minimis at
+      1/(57*nz) ~ 0.04% of the peak (the S3-11b report note-3 flag,
+      absorbed explicitly here rather than left to the (nz,)-pack
+      de-minimis precedent since this touch amends the pairing anyway).
+      S4-5 amendment (the S4-3 in-task pairing law): the SASE-M2 deposit
+      seam holds ONE new driver field in BOTH phases -- the pre-step
+      ``e_sgs`` copy ``e_pre`` that freezes the venting limb's amplitude
+      input (physics.py ``_run_sase``; theta/qv/qc/pressure are
+      read-only through the whole slot, so ``e`` is the only state the
+      limb needs frozen, and the limb cannot be evaluated beside the
+      copy because its (1 - f) two-product blend needs the step's USED
+      f).  One full 4*ncell field, 1/58 ~ 1.72% of the previous peak.
+      It is NOT the v0 pre-step e copy the S3-6e governed scalar channel
+      retired (that one fed ``launch_scalar_mix``'s coefficient mode and
+      stays retired); it is a new field with a new consumer, and it is
+      transcribed under the DISTINCT key ``driver_vent_e_pre``.  S4-5b
+      Item 4b: the S4-5 build gave it the retired field's own key
+      ``driver_e_pre`` and deleted the retirement guard that asserted
+      that key absent, while stating here that ``driver_e_pre`` "is
+      deliberately not its name" -- it was.  The suffixed key restores
+      the guard's meaning: ``driver_e_pre`` is absent because the v0
+      copy is retired, and the M2 seam's frozen copy is a different
+      name.  The byte pin does not move (one ``(nz, ny, nx)`` float32
+      field either way; re-derived at
+      ``test_sase.test_sase_workspace_accounting_is_exact``).
+      The launcher EXPLICITLY drops the previous width's six-field lift
+      binding (``lift = None``) before the next width's allocations --
+      without that drop the peak would be 6 fields higher; this
+      transcription and the launcher are a bound pair (S3-5 review fix),
+      so removing the drop requires re-pinning here.  The S3-6f
+      partition-bound sub-moment (the ``(ny, nx)`` z_i column field and
+      the FP64 ``(5, nblocks)`` w-sensor partials) runs AFTER the solve
+      transients release and drops its references before the apply
+      allocations -- transcribed in this phase as a covering superset
+      (net far below the 57-field peak).
+    * ``apply`` -- re-derived for the S3-6e governed split step's true
+      allocation profile.  The peak sits at the ``sase_split_tendencies``
+      launch: the same driver-held 7 + coefficient 3, the vertical
+      channel's kv + leps fields (S3-6h: leps = the BL89 RANS
+      dissipation limb, formerly the bare l_B), six strains, six
+      stresses, the governed
+      diffusivity km + smag-share r fields (S3-6e), TWO horizontal
+      e-flux integrands (the vertical leg retired with the explicit
+      step), and FIVE tendency fields (du, dv, dw, P_h,e, P_h,heat --
+      the S3-6e production split) -- 33 full fields with the S4-3 M1
+      n2_eff amendment, + the rho1 plane (S3-6f doc fix, kept for the
+      record: the S3-6e text said 33 when the enumeration summed to 32
+      pre-M1; the byte pin never drifted).  The launcher then
+      DROPS the 13-field strain/stress/r binding before the
+      Thomas/production/partials allocations (bound pair with this
+      transcription, the S3-5 idiom), so the later sub-moments
+      (momentum-Thomas FP64 ``(3, nblocks_col)`` partials -- the third
+      row is the S3-6j dKE_sfc drag-work channel -- P_v, the
+      S3-6e damping-taper weight field under damp_opt=3, the e-update
+      FP64 ``(4, nblocks)`` partials) arrive net NEGATIVE; the partials
+      buffers, P_v, and the taper field are transcribed anyway as a
+      covering superset.  S4-5: the SASE-M2 seam's THREE
+      ``(nz + 1, ny, nx)`` float32 face-flux planes and its
+      ``(ny, nx)`` FP64 cap-rescale plane are allocated in this phase,
+      after the split step returns and before the scalar loop, and are
+      transcribed here for the same covering-superset reason (they land
+      after the 13-field strain/stress/r drop, so the apply phase's own
+      peak does not move; the solve phase continues to dominate the
+      category bound by **20.01 full fields** at 49x250x250 and at
+      49x501x501, 19.59 at the test configuration -- S4-5b Item 5b,
+      MEASURED this session from :func:`sase_workspace_phases` itself
+      as ``(sum(solve) - sum(apply))/(4*nz*ny*nx)``; the S4-5 text said
+      "~25", which was never the number.  The M2 seam's own four apply
+      entries are what closed the gap: at the BASE commit a5b8d7e the
+      same probe measures 23.11 (23.21 at the test configuration), and
+      3*(nz + 1)*4 + 8 bytes per column against 4*nz is exactly the
+      3.10-field difference).  The Thomas sweeps themselves hold their
+      r/c'/d' arrays in per-thread registers/local memory (3x SASE_KMAX
+      doubles per thread) -- NO global workspace, which is why no
+      Thomas entry appears here.  S3-12 (the in-task pairing law): the
+      additive dissipation channel's ONE new device field -- the
+      state-independent Blackadar reference length
+      (``launch_blackadar_length``), allocated after the 13-field drop
+      and only under ``cfg.sase_additive_dissipation`` -- is
+      transcribed unconditionally as the covering-superset entry
+      ``lb_ref``, exactly the taper_g idiom; the solve phase keeps
+      dominating (~20-field margin) so neither the category bound nor
+      the byte pin moves.  The post-step scalar phase (kv + km_h
+      held + 2 horizontal flux + 4 mixed rates + the coupled set)
+      stays far below the solve bound.
+
+    The category bound is the MAXIMUM over phases (the
+    :func:`rrtmgp_workspace_phases` idiom); ``solve`` always dominates.
+    The solve-internal (nz,) coefficient packs of its uniform-dz strain
+    calls remain de-minimis and untranscribed, exactly as before.
+    """
+    if cfg.bl_pbl_physics != SASE_PBL_SCHEME:
+        return {}
+    nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
+    m = (nz, ny, nx)
+    ncell = nz * ny * nx
+    # Single-sourced with the device define through the closure's own
+    # compile-time tier, so this transcription's block count cannot
+    # drift from the block size the kernels are actually compiled at.
+    from gpuwm.core.sase import _DEFINE_VALUES as _SASE_DEFINES
+    tpb = _SASE_DEFINES["SASE_TPB"]
+    nblocks = (ncell + tpb - 1) // tpb
+    partials = ((5, nblocks), 8)              # FP64 in-kernel reductions
+
+    common: dict[str, tuple[tuple[int, ...], int]] = {"heat": (m, 4)}
+    for name in ("zcm", "zc0", "zcp"):        # per-column coefficient pack
+        common[name] = (m, 4)
+    # S4-3 amendment (S4-2 report note-1 obligation): n2_eff = the M1
+    # launch_moist_n2 output, the 6th driver-held work field, alive
+    # beside the dry n2 through the whole step (both phases).
+    # S4-5 amendment: the SASE-M2 seam's frozen pre-step e_sgs copy is
+    # the 7th driver-held work field, alive from before the surface e
+    # source through the step-5 scalar loop (both phases).  S4-5b
+    # Item 4b: keyed ``vent_e_pre``, NOT ``e_pre`` -- the latter is the
+    # retired v0 pre-step e copy's name and stays absent by name.
+    for name in ("u_work", "v_work", "w_half", "w_work", "n2", "n2_eff",
+                 "vent_e_pre"):
+        common[f"driver_{name}"] = (m, 4)     # _run_sase held work set
+    # S3-11b note-3 absorbed (same pairing touch): the (ny, nx) float32
+    # rho1 surface moist-density plane (sase_surface_rho1), held from
+    # before the e source through the step-5 scalar-flux deposit.
+    common["driver_rho1"] = ((ny, nx), 4)
+
+    solve = dict(common)
+    for comp in _SASE_S6:
+        solve[f"s_fine_{comp}"] = (m, 4)
+        solve[f"premul_{comp}"] = (m, 4)
+        solve[f"s_coarse_{comp}"] = (m, 4)
+        solve[f"refilt_{comp}"] = (m, 4)
+    for comp in ("u", "v", "w"):
+        solve[f"filt_{comp}"] = (m, 4)
+        solve[f"lift_filt_{comp}"] = (m, 4)
+    for comp in _SASE_P6:
+        solve[f"lift_prod_{comp}"] = (m, 4)
+        solve[f"lift_fprod_{comp}"] = (m, 4)
+        solve[f"lift_{comp}"] = (m, 4)
+    solve["partials"] = partials
+    # S3-6f partition-bound sub-moment (covering superset -- docstring):
+    # the z_i column field and the w-sensor FP64 reduction buffer.
+    solve["zi"] = ((ny, nx), 4)
+    solve["w_partials"] = ((5, nblocks), 8)
+
+    apply_phase = dict(common)
+    for name in ("kv", "leps"):               # vertical-channel fields
+        apply_phase[name] = (m, 4)
+    for comp in _SASE_S6:
+        apply_phase[f"strain_{comp}"] = (m, 4)
+        apply_phase[f"tau_{comp}"] = (m, 4)
+    for name in ("km_h", "r_smag"):           # S3-6e governed stress
+        apply_phase[name] = (m, 4)
+    for comp in ("x", "y"):                   # horizontal e-flux only
+        apply_phase[f"e_hflux_{comp}"] = (m, 4)
+    for comp in ("du", "dv", "dw", "ph_e", "ph_heat"):
+        apply_phase[f"tend_{comp}"] = (m, 4)
+    # Post-drop sub-moments (net below the 32-field peak; covering
+    # superset -- see the docstring): implicit-flux production, the
+    # S3-6e damping-taper weight field, and the two FP64 reduction
+    # buffers.
+    apply_phase["prod_v"] = (m, 4)
+    apply_phase["taper_g"] = (m, 4)
+    # S3-12: the additive channel's state-independent Blackadar
+    # reference field (launch_blackadar_length), allocated after the
+    # 13-field strain/stress/r drop and only under
+    # cfg.sase_additive_dissipation -- transcribed unconditionally as a
+    # covering superset exactly like taper_g (the solve phase dominates
+    # by ~20 fields, so the category bound does not move; the byte pin
+    # rides the solve phase and is untouched).
+    apply_phase["lb_ref"] = (m, 4)
+    # S4-5 SASE-M2 deposit seam: the three face-registered flux planes
+    # and the per-column FP64 cap-rescale plane.
+    for name in ("vent_f_theta", "vent_f_qv", "vent_f_qc"):
+        apply_phase[name] = ((nz + 1, ny, nx), 4)
+    apply_phase["vent_scale"] = ((ny, nx), 8)
+    ncol_blocks = (ny * nx + tpb - 1) // tpb
+    # S3-6j: third row = the dKE_sfc drag-work reduction channel.
+    apply_phase["partials_mom"] = ((3, ncol_blocks), 8)
+    apply_phase["partials_e"] = ((4, nblocks), 8)
+
+    return {"solve": solve, "apply": apply_phase}
+
+
+def sase_workspace_shapes(cfg: RunConfig
+                          ) -> dict[str, tuple[tuple[int, ...], int]]:
+    """The SASE step-transient bound: the phase-maximum simultaneous set,
+    ``{"sase/<phase>/<name>": (shape, itemsize)}`` (see
+    :func:`sase_workspace_phases`)."""
+
+    def total(items):
+        return sum(math.prod(shape) * size for shape, size in items.values())
+
+    phases = sase_workspace_phases(cfg)
+    if not phases:
+        return {}
+    phase = max(phases, key=lambda name: total(phases[name]))
+    return {f"sase/{phase}/{name}": spec
+            for name, spec in phases[phase].items()}
+
+
 def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     """Exact ``DomainState`` allocation list (state.py:52-237 transcribed).
 
@@ -1379,7 +1692,7 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     if cfg.moist:
         for name in ("qv", "qc", "qr", "qv0", "qc0", "qr0", "h_diabatic"):
             shapes[name] = m
-        if cfg.mp_physics in (6, 8, 10, 18):
+        if cfg.mp_physics in (6, 8, 10, 18, 28):
             for name in ("qi", "qs", "qg", "qi0", "qs0", "qg0",
                          "effc", "effi", "effs"):
                 shapes[name] = m
@@ -1397,6 +1710,26 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
                     "qni0", "qns0", "qng0", "qnh0", "qnn0", "qvolg0",
                     "qvolh0"):
                 shapes[name] = m
+        if cfg.mp_physics == 28:
+            # Thompson aerosol-aware: prognostic droplet number plus the two
+            # aerosol number tracers, each with its RK time-t copy
+            # (gpuwm/core/state.py, the mp==28 arms).
+            for name in ("nc", "nr", "ni", "nwfa", "nifa",
+                         "nc0", "nr0", "ni0", "nwfa0", "nifa0"):
+                shapes[name] = m
+            # QNWFA2D / QNIFA2D surface emission tendencies, # kg-1 s-1.
+            # Cross-step constants, allocated once per domain.
+            for name in ("nwfa2d", "nifa2d"):
+                shapes[name] = s2
+    if cfg.km_opt == 2:
+        # WRF's two-time-level prognostic TKE (Registry.EM_COMMON:312):
+        # the SERIALIZED carrier plus its REBUILT time-t copy.
+        shapes["tke"] = m
+        shapes["tke0"] = m
+    if cfg.bl_pbl_physics == SASE_PBL_SCHEME:
+        # The closure's one persistent prognostic (state.py allocates it
+        # under the same condition).
+        shapes["e_sgs"] = m
     return shapes
 
 
@@ -1462,7 +1795,7 @@ def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
     if cfg is not None and int(cfg.sf_sfclay_physics) == 5:
         from gpuwm.core.mynn_sfclay import MYNN_SURFACE_OUTPUTS
         union.update(dict.fromkeys(MYNN_SURFACE_OUTPUTS))
-    elif (cfg is not None and int(cfg.km_opt) == 4
+    elif (cfg is not None and int(cfg.km_opt) in (2, 3, 4)
           and int(cfg.bl_pbl_physics) == 0):
         # vertical_diffusion_2's isfflx=1 wall stress consumes WRF USTM.
         # MM5 surface schemes otherwise do not retain this MYNN-adjacent
@@ -1516,7 +1849,8 @@ def physics_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     placeholders, KF W0AVG/LUT, and RRTMGP setup grids.  Active microphysics
     diagnostics and KF ``cu_*`` persistence live in the scratch registry.
     """
-    from gpuwm.core.physics import (microphysics_scratch_slots,
+    from gpuwm.core.physics import (hmix_k_diag_names,
+                                    microphysics_scratch_slots,
                                     physics_driver_required,
                                     physics_retains_ysu_output,
                                     physics_reuses_pbl_composition)
@@ -1577,9 +1911,14 @@ def physics_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
         for comp in ("rqr", "rqi", "rqs"):
             shapes[f"cumulus_tendencies/{comp}"] = m
             shapes[f"{target}/{comp}"] = m
-    if cfg.bl_pbl_physics and cfg.mp_physics in (6, 8, 10, 18):
+    if cfg.bl_pbl_physics and cfg.mp_physics in (6, 8, 10, 18, 28):
         # Mixed-phase states carry qi; YSU returns dqi and rqi survives
-        # composition (physics.py:263-264, :681-692).
+        # composition (physics.py:263-264, :681-692).  mp=28 belongs by
+        # Registry/Registry.EM_COMMON:3036 -- the thompsonaero package
+        # declares moist:qv,qc,qr,qi,qs,qg, so WRF's F_QI is true and
+        # module_first_rk_step_part1.F:1112's CALL pbl_driver hands
+        # moist(...,P_QI), F_QI=F_QI (:1199) to the PBL driver.  This budget mirrors physics._pbl_optional_tendency_
+        # components; the two sets must stay identical.
         shapes["pbl_tendencies/rqi"] = m
         if (radiation_enabled(cfg) or cfg.cu_physics) and not reuse_pbl:
             shapes["tendencies/rqi"] = m
@@ -1595,6 +1934,30 @@ def physics_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     shapes["rthratenlw"] = m
     shapes["rthratensw"] = m
     shapes["_pending_rainbl"] = s2
+    if cfg.bl_pbl_physics == SASE_PBL_SCHEME and cfg.sase_flux_diag:
+        # SPLIT SUBGRID-FLUX DIAGNOSTIC (physics.py PhysicsDriver
+        # __init__): four z-FACE (nz+1, ny, nx) FP32 driver persistents
+        # holding the venting and K_v channels of the closure's vertical
+        # subgrid moisture/heat flux.  RESIDENT, not step transient --
+        # output reads them after the step ends -- which is why they are
+        # itemized here and NOT in sase_workspace_phases, whose
+        # solve-phase byte pin is therefore unmoved.  Gated on the key,
+        # so every estimate that does not set it is byte-identical by
+        # construction.
+        for name in ("fqv_vent", "fqv_diff", "fth_vent", "fth_diff"):
+            shapes[f"sase_flux_diag/{name}"] = (nz + 1, ny, nx)
+    if cfg.hmix_k_diag and hmix_k_diag_names(cfg):
+        # HORIZONTAL EDDY-VISCOSITY DIAGNOSTIC (physics.py PhysicsDriver
+        # __init__): two mass-grid (nz, ny, nx) FP32 driver persistents.
+        # RESIDENT for the flux diagnostic's reason -- output reads them
+        # after the step ends -- and gated on the key, so every estimate
+        # that does not set it is byte-identical by construction.  The
+        # producer's own K field is NOT counted again here: the km_opt=4
+        # smag_km/smag_kh scratch and the closure's step-transient km_h
+        # are already accounted where they are allocated; these two are
+        # the published copies.
+        for name in hmix_k_diag_names(cfg):
+            shapes[f"hmix_k_diag/{name}"] = m
     # Active microphysics diagnostics alias the carrying mp_* scratch set.
     # With mp_physics=0 there is no canonical set, so the historical three
     # zero-filled output-plumbing arrays remain driver-owned.
@@ -1763,11 +2126,12 @@ def scratch_slot_registry(cfg: RunConfig, *,
     if cfg.emdiv > 0.0:
         slots.update(acoustic_mudf=s2)
 
-    if cfg.moist:
-        # dycore.py:1370-1372 acoustic time-averaged mass fluxes.
+    if cfg.moist or cfg.km_opt == 2:
+        # dycore.py acoustic time-averaged mass fluxes (moist scalars
+        # and/or the km_opt=2 TKE carrier advect with them).
         slots.update(rk_ru_m=xs, rk_rv_m=ys, rk_ww_m=fl)
         slots["moist_rq_t"] = m                     # moist.py:247
-        pd = cfg.moist_adv_opt == 1 and not (cfg.open_x or cfg.open_y)
+        pd = ((cfg.moist and cfg.moist_adv_opt == 1) or cfg.km_opt == 2)             and not (cfg.open_x or cfg.open_y)
         if pd:
             slots.update(pd_fxl=xs, pd_fxc=xs, pd_fyl=ys, pd_fyc=ys,
                          pd_fzl=fl, pd_fzc=fl)      # moist.py:283-288
@@ -1812,6 +2176,89 @@ def scratch_slot_registry(cfg: RunConfig, *,
             mp_graupelnc=s2, mp_graupelncv=s2, mp_sr=s2,
             refl_t=m, refl_10cm=m,
         )
+    if cfg.mp_physics == 28:
+        # Thompson AEROSOL-AWARE (mp=28).  A deliberate near-clone of the
+        # mp=8 block above -- the aerosol adapter reuses every classic
+        # preparation, precipitation, melt-marker and reflectivity slot with
+        # the same shape and the same lifetime -- plus the aerosol-only
+        # working set.  The mp=8 block is NOT shared: mp=8's rows are pinned
+        # byte-for-byte by tests/test_mp8_frozen.py (receipt R4) and a shared
+        # literal is exactly how a future mp=28 slot would leak into the
+        # frozen mp=8 arena layout.
+        slots.update(
+            mp_th=m, mp_pii=m, mp_dz8w=m, mp_z8w=fl,
+            mp_thompson_temperature=m,
+            mp_thompson_frozen_reference_density=m,
+            mp_thompson_frozen_reference_temperature=m,
+            mp_thompson_rain_reference_density=m,
+            mp_thompson_snow_melt_marker=m,
+            mp_thompson_graupel_melt_marker=m,
+            mp_thompson_snow_velocity_boost=m,
+            mp_thompson_graupel_number_shadow=m,
+            mp_rainnc=s2, mp_rainncv=s2, mp_snownc=s2, mp_snowncv=s2,
+            mp_graupelnc=s2, mp_graupelncv=s2, mp_sr=s2,
+            refl_t=m, refl_10cm=m,
+        )
+        # --- The aerosol working set -------------------------------------
+        # WRF runs mp=28 as ONE monolithic column loop that freezes
+        # nc1d/nwfa1d/nifa1d at entry (module_mp_thompson.F:1795-1812),
+        # accumulates ncten/nwfaten/nifaten across widely separated regions,
+        # and applies them exactly ONCE with a shared clamp (:3972-4021).
+        # ArWen's fused network launchers write state in place, so the port
+        # has to materialize that entry-state / accumulator split as device
+        # arrays.  Every slot below is one of those, named for the launcher
+        # parameter it feeds:
+        #
+        #   ncten/nwfaten/nifaten  -- the three shared per-kg-per-second
+        #       accumulators (:1679-1681 zero them; :3972-4021 apply them).
+        #       Written by the cold network, the warm network, the ncten
+        #       balance limiter, the saturation adjustment, rain
+        #       evaporation, cloud sedimentation and the final phase
+        #       cleanup; read by exactly one terminal kernel.
+        #   entry_density          -- WRF's entry rho at :1802, the density
+        #       rc/nc/the ncten limiter/the terminal clamp are all formed
+        #       on.  Distinct from mp_thompson_frozen_reference_density,
+        #       which the saturation adjustment OVERWRITES mid-call.
+        #   nwfa_entry_m3/nifa_entry_m3 -- the per-m3 entry aerosol of
+        #       :1805-1812, consumed by scavenging, iceDeMott and iceKoop.
+        #   tau1_density           -- the REFRESHED density of :3193.
+        #   nwfa_work_m3           -- the :3211 working CCN snapshot, which
+        #       is a genuinely different quantity from nwfa_entry_m3 (no
+        #       9999E6 ceiling, tau+1 density) and feeds activ_ncloud only.
+        #   qc_entry               -- frozen qc1d, required by the ncten
+        #       balance limiter (:2996-3019), which needs BOTH the entry and
+        #       the post-source cloud mass.
+        #   ni_entry               -- frozen ni1d, credited to ncten by the
+        #       cloud-ice melt branch of the final phase cleanup (:3943-3966).
+        #   rc_entry/nc_entry_m3/nu_c_entry/l_qc_entry -- the outputs of the
+        #       entry droplet-distribution diagnosis (:1826-1848), whose
+        #       in-place side effect (zeroing qc1d/nc1d on the qc <= R1
+        #       branch, :1844-1845) is what makes state.nc a legitimate
+        #       "entry number" for every later kernel.
+        #   condensation_rate      -- prw_vcd, held so rain evaporation can
+        #       reproduce the :3502 gate that suppresses evaporation in a
+        #       cell that just condensed.
+        #
+        # nu_c_entry / l_qc_entry are int32; every other row is float32.
+        # Both are 4 bytes per element, so the byte estimate is unchanged by
+        # the dtype and the registry keeps storing shapes only.
+        slots.update(
+            mp_thompson_aero_ncten=m,
+            mp_thompson_aero_nwfaten=m,
+            mp_thompson_aero_nifaten=m,
+            mp_thompson_aero_entry_density=m,
+            mp_thompson_aero_nwfa_entry_m3=m,
+            mp_thompson_aero_nifa_entry_m3=m,
+            mp_thompson_aero_tau1_density=m,
+            mp_thompson_aero_nwfa_work_m3=m,
+            mp_thompson_aero_qc_entry=m,
+            mp_thompson_aero_ni_entry=m,
+            mp_thompson_aero_rc_entry=m,
+            mp_thompson_aero_nc_entry_m3=m,
+            mp_thompson_aero_nu_c_entry=m,
+            mp_thompson_aero_l_qc_entry=m,
+            mp_thompson_aero_condensation_rate=m,
+        )
     if cfg.mp_physics == 10:
         # morrison.py:153-172 (prep + accumulators) + refl.py:324-325.
         slots.update(morr_theta=m, morr_rho=m, morr_pii=m, morr_dz=m,
@@ -1846,20 +2293,48 @@ def scratch_slot_registry(cfg: RunConfig, *,
         # mass-shaped, filled and consumed inside one operator call.
         slots.update(da_nssl_rho=m, da_nssl_t=m)
 
-    if cfg.km_opt == 4:
+    if cfg.km_opt in (2, 3, 4):
         slots.update(smag_km=m, smag_kh=m)
-    if cfg.km_opt == 4 or cfg.diff_6th_opt:
+    if cfg.km_opt in (2, 3):
+        # These closures carry the vertical exchange-coefficient pair; BN2
+        # borrows the diff6_x face-workspace prefix and needs no slot.
+        slots.update(smag_kmv=m, smag_khv=m)
+    if cfg.km_opt == 2:
+        # Prognostic-TKE forward tendency, its doubling temporary, and the
+        # tke_rhs coupled-mass staging.
+        slots.update(smag_rtke=m, smag_tke_tmp=m, smag_mut=s2)
+        if getattr(cfg, "tke_budget", 0):
+            # gpuwm/core/tke_budget.py: the packed per-term field buffer,
+            # the pre-bound_tke carrier snapshot, the two coupled-mass
+            # planes the reduction reads, the FP64 slab accumulator, and
+            # its step counter.  Priced only when the diagnostic is on --
+            # it is a report-only toggle, not part of any trajectory.
+            from gpuwm.core.tke_budget import TERM_FIELDS, TERMS
+            slots.update(
+                tke_budget_terms=(len(TERM_FIELDS), nz, ny, nx),
+                tke_budget_raw=m,
+                tke_budget_mu0=s2, tke_budget_mu=s2,
+                tke_budget_acc=(len(TERMS), nz),
+                tke_budget_steps=(1,))
+    if cfg.km_opt in (2, 3, 4) or cfg.diff_6th_opt:
         # dycore.py prepare_fixed_tendencies: carrying WRF forward
         # tendencies shared by Smagorinsky and sixth-order diffusion.
         slots.update(smag_ru=xs, smag_rv=ys, smag_rw=fl, smag_rth=m)
         if cfg.moist:
             for name in ("qv", "qc", "qr"):
                 slots["smag_r" + name] = m
-            if cfg.mp_physics in (6, 8, 10, 18):
+            if cfg.mp_physics in (6, 8, 10, 18, 28):
                 for name in ("qi", "qs", "qg"):
                     slots["smag_r" + name] = m
             if cfg.mp_physics == 8:
                 for name in ("nr", "ni"):
+                    slots["smag_r" + name] = m
+            if cfg.mp_physics == 28:
+                # One held tendency per TRANSPORTED species; the set is
+                # gpuwm/core/moist.py::THOMPSON_AERO_NUMBER_SPECIES, which
+                # is what prepare_fixed_tendencies iterates.  nc is here
+                # and is NOT here for mp=10, exactly as in moist.py.
+                for name in ("nr", "ni", "nc", "nwfa", "nifa"):
                     slots["smag_r" + name] = m
             if cfg.mp_physics == 10:
                 for name in ("nr", "ni", "ns", "ng"):
@@ -1868,10 +2343,11 @@ def scratch_slot_registry(cfg: RunConfig, *,
                 for name in ("qh", "qndrop", "qnr", "qni", "qns", "qng",
                              "qnh", "qnn", "qvolg", "qvolh"):
                     slots["smag_r" + name] = m
-    if cfg.km_opt == 4 or cfg.diff_6th_opt:
+    if cfg.km_opt in (2, 3, 4) or cfg.diff_6th_opt:
         # Smagorinsky reuses the x/y face workspaces for u/v staging and
-        # metric scalar fluxes; sixth-order diffusion subsequently overwrites
-        # them.  z/m are required only by diff6 itself.
+        # metric scalar fluxes (km_opt=3 additionally stages BN2 in the
+        # diff6_x prefix during the K computation); sixth-order diffusion
+        # subsequently overwrites them.  z/m are required only by diff6.
         slots.update(diff6_x=xs, diff6_y=ys)
     if cfg.diff_6th_opt:
         slots.update(diff6_z=fl, diff6_m=m)
@@ -1883,12 +2359,23 @@ def scratch_slot_registry(cfg: RunConfig, *,
         slots["physics_qtot"] = m                   # physics.py:369
         if not cfg.moist:
             slots.update(physics_dry_qv=m, physics_dry_qc=m)
-        if cfg.mp_physics not in (6, 8, 10, 18):
-            slots["physics_qi"] = m                 # physics.py:395
-            slots["physics_qs"] = m                 # physics.py:400
+        if cfg.mp_physics not in (6, 8, 10, 18, 28):
+            # physics.py:984-993 substitutes a zero-filled scratch plane only
+            # when the state has no qi/qs of its own.  mp=28 allocates both,
+            # so listing them here would price two full 3-D fields the run
+            # never asks for.
+            slots["physics_qi"] = m                 # physics.py:984-988
+            slots["physics_qs"] = m                 # physics.py:989-993
     if (int(cfg.bl_pbl_physics) == 1
-            or int(cfg.mp_physics) in (1, 6, 8, 10)
+            or int(cfg.mp_physics) in (1, 6, 8, 10, 28)
             or int(cfg.cu_physics) == 1):
+        # 28 is here for the same reason 6/8/10 are, and it was found by the
+        # merge rather than by the port: physics.py:1284-1291 takes the
+        # native-diagnostics arm for every scheme whose result IS the
+        # canonical scratch set, and mp=28's adapter writes exactly the
+        # seven canonical slots mp=8 does (physics.py:390-401).  18 is
+        # absent because :1286 excludes it explicitly, not because NSSL
+        # skips validation.
         slots["physics_validation_status"] = (1,)
     if int(cfg.bl_pbl_physics) == 5:
         # MYNN's whole working set, declared in
@@ -1955,9 +2442,18 @@ def nest_field_kinds(cfg: RunConfig) -> tuple[str, ...]:
     moist/scalar species including Thompson/Morrison numbers (architecture
     section D;
     module_bc_em.F:320-345 w coupling; Registry scalar set qnr/qni/qns/
-    qng at Registry.EM_COMMON:3026).  ``nc`` is excluded: it has no
-    advection copy (state.py -- no ``nc0``), matching WRF's default
-    Morrison without prognostic droplet number.
+    qng at Registry.EM_COMMON:3026).
+
+    ``nc`` is scheme-dependent, and the reason is the advection copy.  For
+    mp_physics=10 it is EXCLUDED: Morrison allocates ``nc`` but has no
+    ``nc0``, does not transport it, and diagnoses a fixed 250 cm-3 every
+    call, so forcing it across a nest edge would carry a field the child
+    immediately overwrites.  For mp_physics=28 it is INCLUDED: aerosol-aware
+    Thompson makes droplet number prognostic, allocates ``nc0`` and advects
+    it alongside nwfa/nifa (gpuwm/core/moist.py::THOMPSON_AERO_NUMBER_SPECIES),
+    so it is a real forced boundary field like ``nr``/``ni``.  The two facts
+    are not in tension -- the inventory follows what is transported, not what
+    is allocated.
 
     This inventory contains only REAL prognostic fields handled by WRF
     ``copy_fcn`` (mass-cell or U/V face averaging).  It contains no
@@ -1968,10 +2464,12 @@ def nest_field_kinds(cfg: RunConfig) -> tuple[str, ...]:
     kinds = ["u", "v", "w", "t", "ph", "mu"]
     if cfg.moist:
         kinds += ["qv", "qc", "qr"]
-        if cfg.mp_physics in (6, 8, 10, 18):
+        if cfg.mp_physics in (6, 8, 10, 18, 28):
             kinds += ["qi", "qs", "qg"]
         if cfg.mp_physics == 8:
             kinds += ["nr", "ni"]
+        if cfg.mp_physics == 28:
+            kinds += ["nr", "ni", "nc", "nwfa", "nifa"]
         if cfg.mp_physics == 10:
             kinds += ["nr", "ni", "ns", "ng"]
         if cfg.mp_physics == 18:
@@ -2143,13 +2641,51 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
          "smag_rqs", "smag_rqg", "smag_rnr", "smag_rni", "smag_rns",
          "smag_rng", "smag_rqh", "smag_rqndrop", "smag_rqnr",
          "smag_rqni", "smag_rqns", "smag_rqng", "smag_rqnh",
-         "smag_rqnn", "smag_rqvolg", "smag_rqvolh"),
+         "smag_rqnn", "smag_rqvolg", "smag_rqvolh",
+         # mp=28 transported number/aerosol moments.  Same construction,
+         # same lifetime: prepare_fixed_tendencies writes each held
+         # tendency once before the RK loop and every stage only reads it.
+         "smag_rnc", "smag_rnwfa", "smag_rnifa"),
         "write_before_read",
         "gpuwm/core/dycore.py:prepare_fixed_tendencies",
         "time-t K and its held tendencies are written and consumed before "
         "the RK loop; K is dead before acoustic alpha/gamma overwrite the "
         "borrowed backings, while all three RK stages read only the held "
         "tendencies"),
+    # The km_opt=2/3 closure's own slots.  They were registered by
+    # scratch_slot_registry (km_opt in (2, 3) above) without a row here,
+    # which is invisible to a single-domain run -- only a TREE reaches
+    # shared_scratch_arena_shapes, and no LES tree had been built.  The
+    # first nested LES domain hit it as
+    # `KeyError: scratch slot 'smag_kmv' has no lifetime audit row`.
+    ScratchSlotLifetime(
+        ("smag_kmv", "smag_khv", "smag_rtke", "smag_tke_tmp", "smag_mut"),
+        "write_before_read",
+        "gpuwm/core/dycore.py:836-837,928-929 (written by "
+        "launch_wrf_tke_km / launch_wrf_smag3d_km), :1207-1208 (read by "
+        "launch_wrf_smag2d_vertical), :1288 (smag_rtke zeroed); "
+        "gpuwm/core/moist.py:advance_tke_stage",
+        "the vertical exchange pair is filled and consumed inside one "
+        "prepare_fixed_tendencies call exactly as the horizontal "
+        "smag_km/smag_kh pair above, and smag_rtke is a held time-t "
+        "tendency on the same footing as the smag_r* row -- zeroed before "
+        "the RK loop, read by all three stages, never carried across a "
+        "step; smag_tke_tmp and smag_mut are within-call staging"),
+    ScratchSlotLifetime(
+        ("tke_budget_terms", "tke_budget_raw", "tke_budget_mu0",
+         "tke_budget_mu"), "write_before_read",
+        "gpuwm/core/tke_budget.py:clear_fields,accumulate; "
+        "gpuwm/core/dycore.py:1288,2380",
+        "clear_fields zeroes the packed term buffer at the top of the "
+        "step and accumulate folds it, the pre-bound_tke snapshot and the "
+        "two coupled-mass planes into the accumulator before the same "
+        "step() returns"),
+    ScratchSlotLifetime(
+        ("tke_budget_acc", "tke_budget_steps"), "carrying",
+        "gpuwm/core/tke_budget.py:accumulator,reset,accumulate,drain",
+        "the window accumulator and its step counter are read many steps "
+        "after the step that wrote them (drain ends the window), and both "
+        "are float64 while ScratchArena is float32-only"),
     ScratchSlotLifetime(
         ("diff_u", "diff_v", "diff_w", "diff_th"), "write_before_read",
         "gpuwm/core/diffusion.py:121-130",
@@ -2203,6 +2739,45 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "the fused cold source resets every velocity boost; output-due "
         "graupel number is initialized across the complete field before "
         "source/fallout reads"),
+    # mp=28's aerosol working set.  WRITE-BEFORE-READ, and the evidence is
+    # structural rather than incidental: WRF's own column loop freezes the
+    # entry state and ZEROES the three accumulators at the top of every call
+    # (module_mp_thompson.F:1679-1681), so the adapter must explicitly fill
+    # every one of these at entry before any network runs.  That is not a
+    # convenience -- gpuwm/core/state.py's scratch pool persists across
+    # steps by design, so an accumulator that were merely "usually
+    # overwritten" would carry the previous step's aerosol tendency forward
+    # as a slow, bounded, entirely plausible-looking drift that no
+    # single-step column test could see.  The entry snapshots are written by
+    # the entry kernels over the complete field (no branch leaves a cell
+    # unassigned) before the first consumer, and the terminal apply/clamp
+    # reads each accumulator exactly once.
+    ScratchSlotLifetime(
+        ("mp_thompson_aero_ncten",
+         "mp_thompson_aero_nwfaten",
+         "mp_thompson_aero_nifaten",
+         "mp_thompson_aero_entry_density",
+         "mp_thompson_aero_nwfa_entry_m3",
+         "mp_thompson_aero_nifa_entry_m3",
+         "mp_thompson_aero_tau1_density",
+         "mp_thompson_aero_nwfa_work_m3",
+         "mp_thompson_aero_qc_entry",
+         "mp_thompson_aero_ni_entry",
+         "mp_thompson_aero_rc_entry",
+         "mp_thompson_aero_nc_entry_m3",
+         "mp_thompson_aero_nu_c_entry",
+         "mp_thompson_aero_l_qc_entry",
+         "mp_thompson_aero_condensation_rate"),
+        "write_before_read",
+        "gpuwm/core/thompson_aerosol_state.py:"
+        "zero_aerosol_accumulators,launch_aerosol_entry_snapshot,"
+        "launch_aerosol_entry_cloud_number,launch_tau1_density,"
+        "launch_aerosol_working_number; "
+        "gpuwm/core/kernels/thompson_aerosol_state.cu",
+        "the adapter zeroes the three accumulators and fills every entry "
+        "snapshot at call entry, before any source network reads them; the "
+        "terminal state-finalize kernel is the single consumer of the "
+        "accumulators and runs after every writer"),
     ScratchSlotLifetime(
         ("wsm6_theta", "wsm6_rho", "wsm6_pii", "wsm6_dz",
          "wsm6_z8w"), "write_before_read",
@@ -2569,7 +3144,7 @@ def shared_scratch_arena_aliases(
             and math.prod(shapes["lbc_nested_relax"])
             <= math.prod(shapes["acoustic_a"])):
         aliases["lbc_nested_relax"] = "acoustic_a"
-    smag_uses_xy = any(dc.run.km_opt == 4 for dc in domains)
+    smag_uses_xy = any(dc.run.km_opt in (2, 3, 4) for dc in domains)
     if "diff6_z" in shapes:
         candidates = (("diff6_x", "diff6_m") if smag_uses_xy
                       else ("diff6_x", "diff6_y", "diff6_m"))
@@ -2763,7 +3338,25 @@ def rrtmgp_column_shapes(
            "clwp", "ciwp", "reliq", "dgice"]
     if cfg.mp_physics == 10:
         lay += ["nc", "nr", "ni", "ns", "effc", "effr", "effi", "effs"]
-    elif cfg.mp_physics in (6, 8, 18):
+    elif cfg.mp_physics in (6, 8, 18, 28):
+        # WRF's use_mp_re scheme table lists THOMPSONAERO explicitly and
+        # separately from THOMPSON in the same disjunction
+        # (phys/module_physics_init.F:1005 THOMPSON, :1006 THOMPSONAERO), and
+        # the P3/Jensen-Ishmael has_reqs=0 override at :1026-1033 does not
+        # exclude it, so has_reqc/has_reqi/has_reqs are all 1 for mp=28 --
+        # the same authority gpuwm/core/rrtmg_legacy.py's _MP_DECLARES_RADII
+        # already carries.  The mp=28 state allocates effc/effi/effs on the
+        # same terms as mp=8 (see state_array_shapes above).
+        #
+        # STATED RATHER THAN HIDDEN: the RTE+RRTMGP adapter's own scheme map
+        # (gpuwm/core/rrtmgp.py:1811) does not yet route 28 and currently
+        # falls through to "kessler", which packs no radii columns at all.
+        # Pricing them here first is the SAFE direction and the same
+        # convention _REFLECTIVITY_MICROPHYSICS above already uses: an
+        # over-priced rail refuses a run that would have fit, an under-priced
+        # one lets a run breach the budget.  The legacy-RRTMG 4/4 variant is
+        # unaffected either way -- it returns {} from this function and is
+        # priced as one shared call-peak envelope.
         lay += ["effc", "effi", "effs"]
     for name in lay:
         shapes[f"columns/{name}"] = ((ncol, nz), 4)
@@ -2827,6 +3420,12 @@ def atmosphere_transient_shapes(cfg: RunConfig
             "atmosphere/p_interface": fl, "atmosphere/z_interface": fl}
 
 
+#: PBL schemes that allocate the raw YSU-shaped output bundle.  MYNN
+#: fills the same dict of names through its own launcher; SASE does not
+#: -- it hands its rates straight to the coupling helper.
+_YSU_OUTPUT_BUNDLE_SCHEMES = (1, 5)
+
+
 def ysu_output_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     """Raw per-call YSU outputs before field-copy/coupling consumption.
 
@@ -2834,7 +3433,13 @@ def ysu_output_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     the result after the call (and is also counted as persistent); bldt=0
     releases it at the last consumer, so it appears only in this category.
     """
-    if not cfg.bl_pbl_physics:
+    # Keyed on the SCHEME, never on the truthiness of the selector: SASE
+    # holds the same driver slot but allocates none of YSU's output
+    # bundle -- it returns its rates through the coupling helper
+    # directly -- so a truthiness test priced a SASE run for fifteen
+    # arrays it never asks for.  This mirrors the driver's own rule that
+    # a selector VALUE, not its truthiness, decides what runs.
+    if int(cfg.bl_pbl_physics) not in _YSU_OUTPUT_BUNDLE_SCHEMES:
         return {}
     m = (cfg.nz, cfg.ny, cfg.nx)
     s2 = (cfg.ny, cfg.nx)
@@ -2914,16 +3519,20 @@ class DomainMemoryEstimate:
 
     @property
     def resident_bytes(self) -> int:
-        """Persistent tier-1 residency (state/physics/scratch/lbc/nest)."""
+        """Persistent tier-1 residency (state/physics/scratch/lbc/nest).
+
+        The SASE closure's own working set is a per-step transient like
+        the radiation columns, so it is excluded here and counted below.
+        """
         return sum(item.nbytes for item in self.items
-                   if item.category != "transient")
+                   if item.category not in ("transient", "sase"))
 
     @property
     def transient_bytes(self) -> int:
         """Per-step transients (radiation columns + physics prep/YSU outputs)
         coexisting with the chunk workspace; freed between steps."""
         return sum(item.nbytes for item in self.items
-                   if item.category == "transient")
+                   if item.category in ("transient", "sase"))
 
     @property
     def arena_scratch_bytes(self) -> int:
@@ -2985,6 +3594,16 @@ def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
                    in rrtmgp_column_shapes(
                        run, p_top, column_chunk=column_chunk).items())
     items += _items("transient", dudhia_column_shapes(run))
+    # The SASE closure's step working set gets its OWN category rather
+    # than joining "transient": on a wide domain its dynamic-solve peak
+    # is the single largest transient in the run, and a user reading a
+    # preflight needs to see that it is the closure asking, not the
+    # radiation columns.  It is still counted as a step transient, never
+    # as residency.
+    items += tuple(MemoryItem(name, "sase", shape, size,
+                              "float64" if size == 8 else "float32")
+                   for name, (shape, size)
+                   in sase_workspace_shapes(run).items())
     return DomainMemoryEstimate(dc.grid_id, tuple(items))
 
 
@@ -3952,7 +4571,12 @@ def _materialize_physics(state, cfg: RunConfig, start_time: datetime):
         if adapter is not None and getattr(adapter, "w0avg", None) is None:
             adapter.w0avg = zero_m()          # kf.py:174 shape contract
             adapter._history_state = state
-    if cfg.bl_pbl_physics and cfg.mp_physics in (6, 8, 10, 18):
+    if cfg.bl_pbl_physics and cfg.mp_physics in (6, 8, 10, 18, 28):
+        # The materialization side of the pbl_tendencies/rqi budget above.
+        # 28 belongs for the same reason: Registry/Registry.EM_COMMON:3036
+        # gives the thompsonaero package qi in moist, so WRF's F_QI is true.
+        # This set and physics._pbl_optional_tendency_components must agree,
+        # or the --alloc measurement stops covering true runtime residency.
         if driver.pbl_tendencies.rqi is None:
             driver.pbl_tendencies.rqi = zero_m()
         if ((radiation_enabled(cfg) or cfg.cu_physics)
@@ -4343,6 +4967,119 @@ def live_device_local_memory_profile() -> DeviceLocalMemoryProfile | None:
         return None
 
 
+#: What :func:`device_memory_probe_subprocess` runs in its short-lived
+#: interpreter: both device questions -- the free/total VRAM the budget
+#: subtracts from, and the local-memory profile the non-pool terms are
+#: priced against -- answered in one process that then exits.  Any
+#: failure (no cupy, no device, a wedged driver) is exit 3 with nothing
+#: on stdout, which the parent reads as "no card here".
+_DEVICE_MEMORY_PROBE_SOURCE = """\
+import json
+import sys
+
+try:
+    import cupy as cp
+
+    free, total = cp.cuda.runtime.memGetInfo()
+    props = cp.cuda.runtime.getDeviceProperties(0)
+    name = props["name"]
+    payload = {
+        "free_bytes": int(free),
+        "total_bytes": int(total),
+        "profile": {
+            "name": (name.decode() if isinstance(name, bytes)
+                     else str(name)),
+            "multiprocessor_count": int(props["multiProcessorCount"]),
+            "max_threads_per_multiprocessor": int(
+                props["maxThreadsPerMultiProcessor"]),
+            "default_stack_limit_bytes": int(
+                cp.cuda.runtime.deviceGetLimit(0)),
+        },
+    }
+except Exception:
+    sys.exit(3)
+print(json.dumps(payload))
+"""
+
+#: Long enough for a cold CuPy import plus context creation on a busy
+#: box; a probe that cannot answer inside it reads as "no device", which
+#: only ever under-promises (nothing refuses on a card it cannot see).
+DEVICE_MEMORY_PROBE_TIMEOUT_SECONDS = 120.0
+
+
+def device_memory_probe_subprocess(*, run=None) -> dict | None:
+    """Free/total VRAM and this card's local-memory profile, measured in
+    a SHORT-LIVED subprocess; ``None`` when no card answered.
+
+    ``cudaMemGetInfo`` and ``cudaDeviceGetLimit`` cannot be asked
+    without standing up a CUDA primary context -- the same fact that
+    keeps them out of estimator mode (see
+    :func:`device_physical_total_bytes`).  A process that asks them
+    in-process therefore keeps that context, and its device memory, for
+    the rest of its life.  ``gpuwm check`` can afford that: it exits on
+    the next line.  The ``gpuwm go`` orchestrator cannot: after its
+    memory gate it lives for the entire chain as the stage runner and
+    progress printer, and the context it stood up to ask one question
+    sat on the card for the whole run -- measured 0.486 GiB on the RTX
+    5090 -- as a consumer no term of the budget it had just computed
+    names.  Asked here, the context lives and dies inside the probe
+    process and the caller never touches CUDA at all.
+
+    The numbers are the same ones the in-process readers see (the probe
+    runs ``sys.executable``, so it resolves the same CuPy), which is
+    what keeps this gate and ``gpuwm check`` from disagreeing about one
+    card.  ``run`` is the ``subprocess.run`` seam, for tests.
+    """
+
+    import subprocess
+
+    runner = subprocess.run if run is None else run
+    try:
+        completed = runner(
+            [sys.executable, "-c", _DEVICE_MEMORY_PROBE_SOURCE],
+            capture_output=True, text=True,
+            timeout=DEVICE_MEMORY_PROBE_TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    lines = (completed.stdout or "").strip().splitlines()
+    if not lines:
+        return None
+    try:
+        payload = json.loads(lines[-1])
+    except ValueError:
+        return None
+    free = payload.get("free_bytes") if isinstance(payload, dict) else None
+    if not isinstance(free, int) or isinstance(free, bool):
+        return None
+    return payload
+
+
+def profile_from_device_probe(payload) -> DeviceLocalMemoryProfile | None:
+    """The probe payload's device-profile half, typed, or ``None``.
+
+    ``None`` falls back exactly like :func:`live_device_local_memory_profile`
+    returning ``None``: the callers price against the reference profile,
+    which over-prices rather than under-prices.
+    """
+
+    profile = payload.get("profile") if isinstance(payload, dict) else None
+    if not isinstance(profile, dict):
+        return None
+    try:
+        return DeviceLocalMemoryProfile(
+            name=str(profile["name"]),
+            multiprocessor_count=int(profile["multiprocessor_count"]),
+            max_threads_per_multiprocessor=int(
+                profile["max_threads_per_multiprocessor"]),
+            default_stack_limit_bytes=int(
+                profile["default_stack_limit_bytes"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def check_main(args) -> int:
     """``gpuwm check CONFIG [--alloc]``: memory section of the preflight.
 
@@ -4544,7 +5281,7 @@ def check_main(args) -> int:
                     "transient_bytes": d.transient_bytes,
                     "by_category": {c: d.category_bytes(c) for c in
                                     ("state", "physics", "scratch", "lbc",
-                                     "nest", "transient")},
+                                     "nest", "sase", "transient")},
                 } for d in estimate.domains},
             "k_tables_bytes": estimate.k_tables_bytes,
             "workspace_bytes": estimate.workspace_bytes,
@@ -4669,7 +5406,8 @@ def check_main(args) -> int:
         for d in estimate.domains:
             cats = ", ".join(
                 f"{c} {d.category_bytes(c) / GIB:.3f}"
-                for c in ("state", "physics", "scratch", "lbc", "nest")
+                for c in ("state", "physics", "scratch", "lbc", "nest",
+                          "sase")
                 if d.category_bytes(c))
             print(f"  d{d.grid_id:02d}: resident "
                   f"{d.resident_bytes / GIB:6.2f} GiB ({cats}); step "

@@ -615,6 +615,49 @@ def test_fetch_hrrr_rejects_areas_outside_conus():
             progress=lambda line: None)
 
 
+def test_hrrr_coverage_envelope_matches_the_native_grid_exactly():
+    """The shared coverage definition IS the grid: the boundary-ring
+    shortcut agrees with a full scan of all 1799 x 1059 mass points to
+    the last bit (the projected pole lies outside the grid rectangle,
+    so every lat/lon extreme is attained on the boundary)."""
+
+    from gpuwm.ingest.hrrr import hrrr_source_grid
+    from gpuwm.ingest.hrrr_target import hrrr_coverage_envelope
+
+    latitude, longitude = hrrr_source_grid().latlon_mass()
+    assert hrrr_coverage_envelope() == (
+        float(latitude.min()), float(longitude.min()),
+        float(latitude.max()), float(longitude.max()))
+
+
+def test_hrrr_area_gate_derives_from_the_grid_not_a_hand_cap():
+    """The retired hand-held box (lat 21.1..52.7) admitted latitudes the
+    grid does not carry -- its own 52.70 cap sits north of the real
+    52.6157 top.  The gate now sits exactly on the grid envelope: the
+    inward-quantized envelope box passes, one hint-quantum past any
+    edge fails, and an antimeridian-crossing box (which the old
+    corner-order test waved through) is refused."""
+
+    envelope = fetch.source_coverage_envelope("hrrr")
+    assert envelope is not None
+    south, west, north, east = fetch.area_bounds_inward(envelope)
+    fetch.validate_fetch_area("hrrr", fetch.parse_area(
+        f"{south:.2f},{west:.2f},{north:.2f},{east:.2f}"))
+    for box in (
+            f"{south - 0.01:.2f},{west:.2f},{north:.2f},{east:.2f}",
+            f"{south:.2f},{west - 0.01:.2f},{north:.2f},{east:.2f}",
+            f"{south:.2f},{west:.2f},{north + 0.01:.2f},{east:.2f}",
+            f"{south:.2f},{west:.2f},{north:.2f},{east + 0.01:.2f}",
+    ):
+        with pytest.raises(ValueError, match="coverage"):
+            fetch.validate_fetch_area("hrrr", fetch.parse_area(box))
+    with pytest.raises(ValueError, match="coverage"):
+        fetch.validate_fetch_area("hrrr", fetch.parse_area("30,170,45,-170"))
+    # Global sources carry no coverage box; any parseable area passes.
+    assert fetch.source_coverage_envelope("gfs") is None
+    fetch.validate_fetch_area("gfs", fetch.parse_area("45,-10,55,10"))
+
+
 # ---------------------------------------------------------------------------
 # ERA5: template emission + user-file validation
 # ---------------------------------------------------------------------------

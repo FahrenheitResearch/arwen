@@ -58,20 +58,42 @@ def validate_hrrr_source_forecast_hours(
     return hours
 
 
+def hrrr_forcing_end_hour(run_seconds: float) -> int:
+    """The model-relative forcing hour a run of ``run_seconds`` needs.
+
+    A ceiling with a floor of one, and deliberately THE one endpoint
+    convention on the HRRR chain: boundary forcing is hourly and
+    temporal interpolation brackets every model instant between two
+    frames, so a run whose endpoint lies BETWEEN forcing hours -- 900 s
+    ends at 0.25 h, between f000 and f001 -- still needs the frame above
+    it, and no run can be bracketed by a single frame.
+    ``hrrr_source_window`` sizes the preparer's fetch/decode window with
+    this, and ``gpuwm.hrrr_hierarchy_direct`` checks a sealed root's
+    forcing inventory against it.  Both stages deriving the endpoint
+    here is what keeps them describing the same series: the hierarchy
+    used to recompute it with a floor (``run_seconds // 3600``) and
+    refused the preparer's own sub-hour roots with "expected (0,), got
+    (0, 1)".
+    """
+
+    import math
+
+    if (isinstance(run_seconds, bool)
+            or not isinstance(run_seconds, (int, float))
+            or not math.isfinite(float(run_seconds)) or run_seconds <= 0.0):
+        raise ValueError("run-seconds must be finite and positive")
+    return max(1, math.ceil(float(run_seconds) / 3600.0))
+
+
 def hrrr_source_window(
         *, cycle: datetime, start_hour: int, run_seconds: float,
         end_hour: int | None = None) -> tuple[int, ...]:
     """Resolve source leads for a run and reject duration/window drift."""
 
-    import math
-
     if (isinstance(start_hour, bool) or not isinstance(start_hour, int)
             or start_hour < 0):
         raise ValueError("forecast-start-hour must be a nonnegative integer")
-    if (isinstance(run_seconds, bool) or not isinstance(run_seconds, (int, float))
-            or not math.isfinite(float(run_seconds)) or run_seconds <= 0.0):
-        raise ValueError("run-seconds must be finite and positive")
-    required_end = start_hour + max(1, math.ceil(float(run_seconds) / 3600.0))
+    required_end = start_hour + hrrr_forcing_end_hour(run_seconds)
     if end_hour is not None:
         if isinstance(end_hour, bool) or not isinstance(end_hour, int):
             raise TypeError("forecast-end-hour must be an integer")
@@ -148,6 +170,7 @@ __all__ = [
     "HRRR_STANDARD_HORIZON_HOURS",
     "HRRR_TIME_FORMAT",
     "hrrr_cycle_horizon",
+    "hrrr_forcing_end_hour",
     "hrrr_source_window",
     "parse_hrrr_cycle",
     "resolve_cycle_flags",

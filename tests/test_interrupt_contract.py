@@ -207,8 +207,32 @@ def test_go_reports_the_interrupt_in_one_sentence_and_exits_130(
             returncode = 0
             pid = 99
 
-            def communicate(self):
+            def communicate(self, *args, **kwargs):
                 return "", ""
+
+            # subprocess.run context-manages its Popen (the memory gate
+            # asks the card through subprocess.run since the first-run
+            # staging work), and the real Popen is a context manager, so
+            # the stand-in must be one too.
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def wait(self, *args, **kwargs):
+                return 0
+
+            def poll(self):
+                return 0
+
+            stdout = None
+            stderr = None
+            stdin = None
+            args = ()
+
+            def kill(self):
+                pass
 
         return _Ok()
 

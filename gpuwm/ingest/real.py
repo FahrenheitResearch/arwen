@@ -21,7 +21,7 @@ import zlib
 
 import numpy as np
 
-from gpuwm.config import RunConfig
+from gpuwm.config import RunConfig, validate_aerosol_source_options
 from gpuwm.core import constants as c
 from gpuwm.core.grid import (BaseState, VerticalCoord,
                              finalize_vertical_coord,
@@ -123,6 +123,33 @@ _HRRR_DISPOSITION_OPERATOR = {
     "above_source_top": "fatal",
 }
 
+#: The microphysics ids whose WRF Registry ``moist:`` package can receive the
+#: decoded HRRR analyzed hydrometeor inventory, so the decoder must supply it.
+#:
+#: This is ONE tuple on purpose.  It was three separate literals, and mp=28
+#: was added to none of them: an mp=28 real-data run reached
+#: :func:`initialize_real` with QC/QR/QI/QS/QG present in the snapshot, never
+#: declared them required, never shape-checked them, never interpolated them,
+#: and produced a condensate-free initial state from a cloudy analysis with
+#: no error anywhere.  A single name makes that class of omission impossible.
+#:
+#: Membership is decided by the Registry package, per id, WRF v4.6.1
+#: (commit d66e442fccc04111067e29274c9f9eaccc3cef28):
+#:   1  kesslerscheme   Registry.EM_COMMON:3015  moist:qv,qc,qr
+#:   6  wsm6scheme      Registry.EM_COMMON:3021  moist:qv,qc,qr,qi,qs,qg
+#:   8  thompson        Registry.EM_COMMON:3024  moist:qv,qc,qr,qi,qs,qg
+#:  10  morr_two_moment Registry.EM_COMMON:3026  moist:qv,qc,qr,qi,qs,qg
+#:  18  nssl_2mom       Registry.EM_COMMON:3033  moist:qv,qc,qr,qi,qs,qg
+#:  28  thompsonaero    Registry.EM_COMMON:3036  moist:qv,qc,qr,qi,qs,qg
+#: Kessler is a member because real.exe still requires the decoded inventory
+#: and then discards what its package lacks (WRF_REAL_KESSLER_FROZEN_POLICY);
+#: mp_physics=0 is refused outright above.  mp=28's moist list is character
+#: for character mp=8's -- the aerosol-aware scheme adds only ``scalar:``
+#: members -- so the mass-species handling is the same at all three sites,
+#: and that identity was verified against :3024 and :3036 directly rather
+#: than assumed from the mp=8 arm.
+HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS = (1, 6, 8, 10, 18, 28)
+
 # WRF v4.6.1, commit d66e442fccc04111067e29274c9f9eaccc3cef28:
 # Registry/Registry.EM_COMMON:3015 gives Kessler only moist:qv,qc,qr.
 # dyn_em/module_initialize_real.F:1859-1977 separately interpolates QR/QC/
@@ -136,6 +163,60 @@ WRF_REAL_KESSLER_FROZEN_POLICY = {
     "registry_citation": "Registry/Registry.EM_COMMON:3015",
     "real_citation": "dyn_em/module_initialize_real.F:1859-1977",
 }
+
+#: What a real-data mp_physics=28 initial state does and does NOT contain,
+#: as a receipt rather than as a comment: an mp=28 aerosol field that is
+#: silently zero and an mp=28 aerosol field that is deliberately zero look
+#: identical in the state, and only one of them is correct.
+#:
+#: ``deferred_to`` is the load-bearing entry.  Nothing in this module fills
+#: nwfa/nifa/nwfa2d; the fill is a one-time per-domain step that belongs to
+#: the physics init path, exactly as WRF calls ``thompson_init`` from
+#: ``phys/module_physics_init.F`` and not from ``module_initialize_real.F``.
+WRF_REAL_MP28_AEROSOL_SOURCE_POLICY = {
+    "policy": "aer-init-opt-0-zero-then-thompson-init-synthetic-profile",
+    "wrf_version": "v4.6.1",
+    "wrf_commit": "d66e442fccc04111067e29274c9f9eaccc3cef28",
+    "registry_citation": "Registry/Registry.EM_COMMON:3036",
+    "real_citation": "dyn_em/module_initialize_real.F:2332-2345",
+    "microphysics_citation": (
+        "phys/module_mp_thompson.F:493 (CCN MAXVAL test), :498-515 (CCN "
+        "fill), :509-510 (nwfa2d), :531 (IN MAXVAL test), :536-551 (IN fill)"
+    ),
+    "wrf_real_refuses_this_configuration": (
+        "dyn_em/module_initialize_real.F:2735-2736"),
+    "deferred_to": (
+        "gpuwm.core.physics.initialize_physics -> "
+        "gpuwm.core.microphysics.microphysics_init"),
+    "not_initialized_here": ("nwfa", "nifa", "nwfa2d", "nifa2d"),
+    "zeroed_here": ("nc", "nr", "ni"),
+}
+
+
+def _mp28_aerosol_source_policy(cfg: RunConfig, state) -> dict[str, object]:
+    """Receipt for the mp=28 half of the source-absent initialization.
+
+    Emitted as ``RealInitResult.aerosol_initialization`` so that a
+    consumer can PROVE, from the returned object alone, three things a
+    later reader would otherwise have to take on trust: which aerosol
+    selectors this ingest ran under, that the two aerosol fields left this
+    function at exact FP32 zero, and which named function is expected to
+    fill them next.  The fingerprints are the same
+    :func:`array_correspondence_fingerprint` identity used for the mass
+    species, so an "already filled" state and an "awaiting fill" state are
+    distinguishable after the fact and not only in the moment.
+    """
+    receipt = {
+        **WRF_REAL_MP28_AEROSOL_SOURCE_POLICY,
+        "aer_init_opt": int(cfg.aer_init_opt),
+        "wif_input_opt": int(cfg.wif_input_opt),
+        "awaiting_profile_fill": True,
+    }
+    receipt["source_absent_state_fields"] = {
+        name: array_correspondence_fingerprint(getattr(state, name))
+        for name in ("nc", "nr", "ni", "nwfa", "nifa", "nwfa2d", "nifa2d")
+    }
+    return receipt
 
 
 def array_correspondence_fingerprint(value) -> dict[str, object]:
@@ -2065,6 +2146,13 @@ class RealInitResult:
     #: Immutable source/interpolated/state correspondence for native HRRR
     #: analyzed hydrometeors.  Other real-source routes carry an empty map.
     hydrometeor_initialization: dict[str, object] = field(default_factory=dict)
+    #: mp_physics=28 only: what this initialization did and did not put in
+    #: the aerosol fields, and which named function is expected to fill them
+    #: next.  Empty for every other scheme.  Deliberately NOT folded into
+    #: ``hydrometeor_initialization``: the aerosol policy applies to both the
+    #: native-HRRR lane and the pressure-level/RH lane, and that map only
+    #: exists on the former.
+    aerosol_initialization: dict[str, object] = field(default_factory=dict)
 
 
 def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
@@ -2092,7 +2180,13 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     Classic
     Thompson's source-absent QNICE/QNRAIN moments are initialized to exact
     zero, matching real.exe, while the five analyzed HRRR mass categories are
-    retained.  WRF's default
+    retained.  Aerosol-aware Thompson (mp_physics=28) retains the same five
+    categories -- its Registry moist package is character for character
+    mp=8's (Registry.EM_COMMON:3024 vs :3036) -- adds nc to the exact-zero
+    source-absent moments, and deliberately leaves nwfa/nifa/nwfa2d/nifa2d
+    at exact zero for ``microphysics_init`` to fill from thompson_init's
+    synthetic profile; ``RealInitResult.aerosol_initialization`` is the
+    receipt for that hand-off.  WRF's default
     ``use_sh_qv = .false.`` vertically interpolates HRRR RH and then diagnoses
     qv; direct SPFH/qv interpolation is available only when this function's
     explicit ``use_sh_qv=True`` option is selected.  With WRF's default
@@ -2130,6 +2224,17 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             "copying the input PSFC is not supported")
     if not cfg.moist:
         raise ValueError("real initialization requires cfg.moist=True")
+    if cfg.mp_physics == 28:
+        # The aerosol-source selectors decide what this function is even
+        # allowed to leave in nwfa/nifa, so they are checked HERE and not
+        # only in validate_run_config: initialize_real is reachable with a
+        # RunConfig that never went through it, and an mp=28 ingest that
+        # silently accepted wif_input_opt=1 would promise a WIF metgrid
+        # stream nothing in this module can read and then hand the
+        # microphysics an all-zero aerosol field as if that were the
+        # requested climatology.  Refusing by name is the same posture the
+        # namelist importer already prints (MP28_AEROSOL_SOURCE_DEVIATION).
+        validate_aerosol_source_options(cfg)
     if not isinstance(use_sh_qv, (bool, np.bool_)):
         raise TypeError("use_sh_qv must be boolean")
     use_sh_qv = bool(use_sh_qv)
@@ -2162,7 +2267,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 "carrier is out of scope")
         required = ("TT", "PRES", "SPFH", "GHT", "UU", "VV", "PSFC",
                     "T2", "Q2", "U10", "V10")
-        if cfg.mp_physics in (1, 6, 8, 10, 18):
+        if cfg.mp_physics in HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS:
             required += HRRR_ANALYZED_HYDROMETEORS
     else:
         surface_rh_markers = tuple(
@@ -2206,7 +2311,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     mass_shape = (nsource, cfg.ny, cfg.nx)
     mass_names = ["TT", "GHT"]
     mass_names += (["PRES", "SPFH"] if has_specific_humidity else ["RH"])
-    if cfg.mp_physics in (1, 6, 8, 10, 18) and has_specific_humidity:
+    if (cfg.mp_physics in HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS
+            and has_specific_humidity):
         mass_names += list(HRRR_ANALYZED_HYDROMETEORS)
     if any(fields[name].shape != mass_shape for name in mass_names):
         raise ValueError(
@@ -2453,7 +2559,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
 
     hydrometeors = {}
     hydrometeor_initialization: dict[str, object] = {}
-    if has_specific_humidity and cfg.mp_physics in (1, 6, 8, 10, 18):
+    if (has_specific_humidity
+            and cfg.mp_physics in HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS):
         # WRF's hydrometeor vert_interp calls use var_type='Q' with
         # linear_interp and no dedicated surface analysis.  The metgrid
         # surface pseudo-level is therefore zero; setting vboundb above the
@@ -2575,6 +2682,85 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     else:
         state.qc[...] = 0.0
         state.qr[...] = 0.0
+    aerosol_initialization: dict[str, object] = {}
+    if cfg.mp_physics == 28:
+        # Aerosol-aware Thompson.  Its Registry package
+        # (Registry.EM_COMMON:3036) carries the same six moist mass members
+        # as mp=8 -- so every mass decision above is already correct for it
+        # -- plus SIX scalar members: qni, qnr, qnc, qnwfa, qnifa, qnbca.
+        # No real-data source this module reads supplies any of the six, so
+        # this block is the mp=28 statement of real.exe's ``i0``
+        # source-absent policy.  It runs on BOTH lanes (native HRRR and
+        # pressure-level/RH) because the policy is about the scheme's
+        # scalars, not about analyzed condensate.  It splits into two
+        # halves that must not be confused.
+        #
+        # (a) THE NUMBER MOMENTS -- exact FP32 zero, mp=8's reasoning with
+        # nc added.  mp=28 promotes cloud droplet number from the constant
+        # Nt_c to a prognostic scalar, so nc joins ni and nr as a
+        # transported moment the analysis does not carry and the scheme
+        # owns from its first step.  These are written explicitly rather
+        # than left to the allocator: the value is a policy, and a policy
+        # that is only ever an allocation default is one nobody can find.
+        # qnbca is NOT a gpuwm state field at all -- the port scopes
+        # wif_input_opt=0, which is the only value the refusal above
+        # admits, and Registry/registry.new3d_wif:82 allocates qnbca only
+        # under wif_input_opt==2.
+        state.ni[...] = state_xp.float32(0.0)
+        state.nr[...] = state_xp.float32(0.0)
+        state.nc[...] = state_xp.float32(0.0)
+        # (b) THE AEROSOLS -- deliberately NOT written here, and the
+        # deliberateness is the whole point.  WRF's own initializer, with
+        # aer_init_opt=0, sets QNWFA and QNIFA to 0.0 and nothing else
+        # (dyn_em/module_initialize_real.F:2332-2345).  ``thompson_init``
+        # then tests MAXVAL(nwfa) < eps (phys/module_mp_thompson.F:493) and
+        # MAXVAL(nifa) < eps (:531) and, finding them empty, installs the
+        # synthetic boundary-layer-following CCN profile at :498-515 and
+        # the IN profile at :536-551, deriving the surface emission nwfa2d
+        # at :509-510.  Exact zero is therefore not "unset": it is the
+        # SIGNAL that selects that branch.  Assigning any nonzero
+        # placeholder here -- a floor, a background, a climatology guess --
+        # would flip WRF's own has_CCN/has_IN test and permanently suppress
+        # the profile fill, which is the failure mode that costs 5.6x in
+        # droplet number and +74% in domain-total RAINNC while raising no
+        # error anywhere.
+        #
+        # WHICH CODE ACTUALLY FILLS IT: gpuwm.core.physics.
+        # initialize_physics, via gpuwm.core.microphysics.
+        # microphysics_init -- WRF's own split, where thompson_init is
+        # called from phys/module_physics_init.F and not from
+        # module_initialize_real.F.  Both production real-data front doors
+        # reach it (gpuwm/ingest/hrrr_physics.py::initialize_prepared_physics
+        # and ::initialize_hrrr_physics both call initialize_physics on the
+        # state this function returns), so a fill here would be the FIRST of
+        # two calls, never the only one.
+        #
+        # MEASURED, so the reason given is the real one: a duplicate call is
+        # IDEMPOTENT, not destructive.  thompson_aerosol_init_fill re-runs
+        # WRF's own MAXVAL presence tests every time, so a second
+        # initialize_physics on the same state reports
+        # {'ccn': False, 'in': False} and changes not one bit
+        # (tests/test_real_init.py::
+        # test_mp28_real_ingest_through_initialize_physics_fills_exactly_once
+        # asserts precisely that, on device).  The reason this module still
+        # must not do the fill is structural, not a race: WRF puts
+        # thompson_init in module_physics_init.F and not in
+        # module_initialize_real.F, the domain construction the fill belongs
+        # to has not happened yet here, and filling would make the
+        # "awaiting_profile_fill" receipt this function publishes false.
+        for name in ("nwfa", "nifa", "nwfa2d", "nifa2d"):
+            value = getattr(state, name)
+            if bool((value != 0).any()):
+                raise ValueError(
+                    f"mp_physics=28 real initialization left state.{name} "
+                    "nonzero; exact zero is WRF's aer_init_opt=0 value "
+                    "(dyn_em/module_initialize_real.F:2332-2345) AND the "
+                    "signal thompson_init's MAXVAL test reads "
+                    "(phys/module_mp_thompson.F:493/:531) to install the "
+                    "synthetic profile. A real aerosol ingest must also "
+                    "teach gpuwm.core.microphysics.microphysics_init that "
+                    "the field is already populated.")
+        aerosol_initialization = _mp28_aerosol_source_policy(cfg, state)
     state.u[...] = state_xp.asarray(u, dtype=state_xp.float32)
     state.v[...] = state_xp.asarray(v, dtype=state_xp.float32)
     state.w[...] = 0.0
@@ -2590,7 +2776,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         total_specific_volume=alpha,
         integrated_moisture_pressure=intq,
         hypsometric_opt=cfg.hypsometric_opt,
-        hydrometeor_initialization=hydrometeor_initialization)
+        hydrometeor_initialization=hydrometeor_initialization,
+        aerosol_initialization=aerosol_initialization)
 
 
 def source_orography_from_catalog(catalog, grid, *,
@@ -2640,5 +2827,8 @@ def hydrostatic_residual(result: RealInitResult) -> np.ndarray:
     return np.max(np.abs(residual), axis=0)
 
 
-__all__ = ["RealInitResult", "hydrostatic_residual", "initialize_real",
-           "source_orography_from_catalog", "surface_pressure_from_surface"]
+__all__ = ["HRRR_ANALYZED_HYDROMETEORS",
+           "HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS", "RealInitResult",
+           "WRF_REAL_MP28_AEROSOL_SOURCE_POLICY", "hydrostatic_residual",
+           "initialize_real", "source_orography_from_catalog",
+           "surface_pressure_from_surface"]

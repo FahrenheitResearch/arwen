@@ -57,20 +57,56 @@ def test_non_object_or_malformed_json_is_refused(tmp_path: Path) -> None:
         source_pins.verify_source_pins(broken)
 
 
-def test_publish_workflow_has_one_draft_publication_ingress() -> None:
+def test_publish_workflow_has_two_publication_ingresses() -> None:
     text = (REPO_ROOT / ".github" / "workflows" / "publish.yml").read_text(
         encoding="utf-8"
     )
     trigger_block = text.split("\npermissions:", 1)[0]
+    # Publishing a GitHub release is a cut motion, restored by owner ruling
+    # 2026-08-03; it is how every release through v1.4.0 shipped.  A manual
+    # dispatch is the other ingress and keeps its explicit tag input.  Both
+    # are pinned because losing either one silently is exactly what happened.
+    assert "\n  release:\n    types: [published]\n" in trigger_block
     assert "workflow_dispatch:" in trigger_block
     assert "release_tag:" in trigger_block
+    assert "stable_release_expected:" in trigger_block
     assert "immutable_releases_enabled:" in trigger_block
-    assert "types: [published]" not in trigger_block
-    assert "\n  release:\n" not in trigger_block
+    # One tag expression, used by both jobs that resolve a tag: the input on a
+    # dispatch, the event payload on the release event.
+    assert (
+        text.count("${{ inputs.release_tag || github.event.release.tag_name }}")
+        == 2
+    )
+    # ...and the one thing the ingress changes: which release state each job
+    # expects to see.  A dispatch promotes a draft; the release event fires on
+    # a release that is already public.
+    assert (
+        text.count(
+            "EXPECTED_DRAFT: ${{ github.event_name == 'release' "
+            "&& 'false' || 'true' }}"
+        )
+        == 4
+    )
+    assert text.count('"$EXPECTED_DRAFT"') == 4
     assert "python tools/verify_source_bridge_pins.py" in text
     assert "tests/test_publish_workflow_state_machine.py" in text
-    assert "public release version must be stable X.Y.Z" in text
-    assert "existing draft release" in text
+    assert "tests/test_verify_release_artifacts.py" in text
+    # The stable-X.Y.Z requirement is opt-in, following the immutability
+    # idiom, by the same owner ruling.  All three parts are pinned -- the
+    # input, the branch, and the hard failure inside it -- so the enforcement
+    # cannot quietly become a comment; the un-opted-in path reports instead.
+    assert "STABLE_RELEASE_EXPECTED: ${{ inputs.stable_release_expected }}" in text
+    assert 'if [ "$STABLE_RELEASE_EXPECTED" = "true" ]; then' in text
+    assert "is not a stable X.Y.Z" in text
+    assert "::warning::publishing non-stable version" in text
+    # Non-prerelease is procedure and warns; the tag carrying exactly one
+    # release is integrity and still refuses.
+    assert "exactly one authenticated release must carry tag" in text
+    assert "::warning::release $tag is marked prerelease" in text
+    # Every later job re-proves the captured prerelease state rather than a
+    # literal, so a demoted precondition cannot become an undetected change.
+    assert text.count('"$CAPTURED_PRERELEASE"') == 5
+    assert "-F draft=false -F \"prerelease=$CAPTURED_PRERELEASE\"" in text
     assert "releases/${RELEASE_ID}" in text
     assert "releases?per_page=100" in text
     assert "--paginate --slurp" in text

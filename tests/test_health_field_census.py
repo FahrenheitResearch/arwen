@@ -104,9 +104,18 @@ FOUR_DOMAIN_CONFIG = REPO_ROOT / "configs" / "real74_4dom.toml"
 #: Headroom remains 392 descriptors under the unchanged 1024 ceiling.
 WORST_MEASURED_COUNT = 632
 #: The worst combination(s).  MYNN/RUC with Kain-Fritsch is widest; km_opt
-#: does not change the inventory.
+#: does not change the inventory -- every member here peaks at the SAME 632.
+#:
+#: km3 joined this set when the LES lane made km_opt=3 selectable in
+#: validate_run_config.  The measured peak did NOT move (632, headroom 392
+#: of 1024); the census simply now enumerates one more admissible mixing
+#: option that ties the existing peak, which is what "km_opt does not
+#: change the inventory" predicts.  km_opt=2 is absent because it is
+#: admitted only with bl_pbl_physics=0 and every member of this set is
+#: pbl5 (MYNN), so it is not selectable in this combination at all.
 WORST_SELECTIONS = frozenset({
     "mp18-lsm3-pbl5-sfclay5-cu1-km1",
+    "mp18-lsm3-pbl5-sfclay5-cu1-km3",
     "mp18-lsm3-pbl5-sfclay5-cu1-km4",
 })
 #: The worst combination, per domain.  The root is about 41% of a child:
@@ -237,15 +246,69 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     surface layer, while vertical_diffusion_2 retires the km_opt=4/PBL-off
     rail.  The 96 remaining lsm4 refusals are exactly 72 WRF-fatal pairing
     rows and 24 ArWen structural surface-layer-off rows.
+
+    Re-pinned for the LES lane, 2026-08-02: every count below is EXACTLY
+    1.5x its previous value -- rows 792 -> 1188, rejected 360 -> 540, the
+    lsm4 slice 192 -> 288, lsm4 refusals 96 -> 144 -- and nothing else
+    moved.  ``selectable_scalar_values`` PROBES validate_run_config rather
+    than transcribing it, precisely so it tracks the validator; the
+    validator now admits km_opt=3, so the turbulence axis went from
+    {1, 4} to {1, 3, 4} and every slice grew by exactly one third of its
+    new size.  The lsm4 slice measures a uniform 96 rows per km_opt value.
+
+    km_opt=2 is deliberately absent: the probe replaces one scalar on the
+    REFERENCE config, which runs bl_pbl_physics=1 (YSU), and km_opt=2 is
+    admitted only with the PBL off.  So the census sees three turbulence
+    options here, not four, and would see km_opt=2 only on a PBL-off
+    reference.
+
+    Re-pinned on the 1.5 integration line: three independent movements
+    land at once, and every count is their exact product.  The LES lane's
+    x1.5 (turbulence axis {1, 4} -> {1, 3, 4}) and the mp=28 route's x7/6
+    (microphysics axis grew from 6 to 7 selectable schemes -- the mp28
+    lane never re-measured this census, so its movement surfaces here)
+    give rows 792 -> 1386 and WRF-side rejections 360 -> 630; the SASE
+    closure adds 672 rejections of its own (32 per (km_opt, mp) cell x 3
+    x 7), all km_opt refusals, and zero measured rows.  lsm4: 336 rows
+    (112 per km_opt value), 168 WRF-scheme refusals (Lane C's 96 carried
+    across the axis growth), 168 SASE refusals.
+
+    What did NOT move is the point: the worst selectable descriptor count
+    is unchanged at 632 of 1024.  A new mixing option ties the existing
+    peak instead of raising it, which is what "km_opt does not change the
+    inventory" has always claimed and is now measured across three values
+    rather than two.
     """
     report = four_domain_census
-    assert len(report["rows"]) == 792
-    assert len(report["rejected"]) == 360
+    assert len(report["rows"]) == 1386
+    # Re-pinned when the SASE closure joined the dispatch table.  The
+    # census derives its sweep from PHYSICS_SLOT_DISPATCH on purpose --
+    # "an admitted scheme joins the census the moment it is routed" --
+    # so a new routed selector necessarily moves this number.  The rows
+    # added are accounted for EXACTLY, and the accounting is asserted
+    # below rather than asserted away.  (Union re-pin on the 1.5
+    # integration line: the LES lane widened the km_opt sweep, the SASE
+    # lane added the routed pbl900 selector; both movements land here.)
+    assert len(report["rejected"]) == 1302
+    sase = [row for row in report["rejected"] if "pbl900" in row["selection"]]
+    assert len(sase) == 672, len(sase)  # 32 per (km_opt, mp) cell x 3 x 7
+    # Every one of them is the same refusal, and it is a real one: the
+    # closure supplies the mixing km_opt would apply, so it is admitted
+    # only at km_opt=0 and this census never sweeps km_opt=0.
+    assert all("km_opt" in row["reason"] for row in sase)
+    # THE GAP THIS RECORDS, deliberately, rather than hiding: because the
+    # sweep never tries km_opt=0, the closure contributes ZERO measured
+    # rows.  This census does not cover SASE at all.  Widening the sweep
+    # to pair each PBL scheme with the km_opt values that scheme actually
+    # admits is the fix, and it will move the rows count as well as this
+    # number.
+    assert not [row for row in report["rows"] if "pbl900" in row["selection"]]
     lsm4_rows = [row for row in report["rows"]
                  if row["sf_surface_physics"] == 4]
-    assert len(lsm4_rows) == 192, (
-        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 192 the "
-        "Lane C WRF-authority census recorded; re-run and re-pin")
+    assert len(lsm4_rows) == 336, (
+        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 336 the "
+        "1.5-line census recorded (112 per km_opt value across {1, 3, 4}); "
+        "re-run and re-pin")
     budget_refusals = [entry["selection"] for entry in report["rejected"]
                        if "Noah-MP column budget" in entry["reason"]]
     assert not budget_refusals, (
@@ -254,10 +317,24 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
         f"{budget_refusals[:5]}")
     refused = [entry for entry in report["rejected"]
                if "-lsm4-" in entry["selection"]]
-    assert len(refused) == 96, (
-        f"{len(refused)} lsm4 refusals against the 96 recorded by Lane C "
-        "(72 WRF-fatal PBL/surface-layer rows and 24 active-LSM rows "
-        "without an ArWen surface-exchange writer)")
+    # The Lane C claim is about the WRF authority, so it is asserted on
+    # the WRF schemes and NOT widened to absorb a scheme WRF does not
+    # have.  SASE's own lsm4 refusals are counted beside it: widening
+    # the WRF number would have quietly retired a measured WRF-authority
+    # number to accommodate an unrelated addition, which is the failure
+    # mode this whole census exists to prevent.
+    wrf_refused = [entry for entry in refused
+                   if "pbl900" not in entry["selection"]]
+    assert len(wrf_refused) == 168, (
+        f"{len(wrf_refused)} WRF-scheme lsm4 refusals against the 168 "
+        "recorded on the 1.5 line -- Lane C's 96 (72 WRF-fatal "
+        "PBL/surface-layer rows and 24 active-LSM rows without an ArWen "
+        "surface-exchange writer) carried across the three km_opt values "
+        "and the seven-scheme microphysics axis the validator now admits")
+    sase_refused = [entry for entry in refused
+                    if "pbl900" in entry["selection"]]
+    assert len(sase_refused) == 168, len(sase_refused)
+    assert all("km_opt" in entry["reason"] for entry in sase_refused)
 
 
 def test_worst_selectable_count_stays_inside_the_early_warning_band(

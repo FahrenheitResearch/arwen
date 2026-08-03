@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 from gpuwm import runtime_manifest
 from gpuwm.experiment import build_experiment
+from gpuwm.hrrr_forecast import hrrr_forcing_end_hour
 from gpuwm.hrrr_native_static import (
     sha256_file,
     verified_static_catalog,
@@ -58,7 +59,13 @@ _SUPPORTED_PHYSICS = {
 # qv/qc/qr package.  Native-HRRR initialization retains QC/QR and produces
 # an explicit discard receipt for the source-only frozen species before this
 # direct hierarchy path sees the state.
-_SUPPORTED_MICROPHYSICS = frozenset({1, 6, 8, 10, 18})
+#: 28 is aerosol-aware Thompson (Registry/Registry.EM_COMMON:3036).  It is
+#: admitted here on the same footing as every other entry -- this set answers
+#: "does the direct hierarchy path know this selector", not "is the scheme
+#: mature".  Maturity and reachability are the registry's answer, and mp=28
+#: is registered as a per-domain component override with no template, so
+#: adding it here cannot make it a default anywhere.
+_SUPPORTED_MICROPHYSICS = frozenset({1, 6, 8, 10, 18, 28})
 _DOMAIN_PREPARATION_OVERRIDES = frozenset({
     "cu_physics", "cudt_minutes", "radt", "radt_minutes", "bldt",
     "diff_6th_factor", "epssm", "spec_exp", "mp_physics", "moist",
@@ -77,7 +84,32 @@ _DOMAIN_PREPARATION_OVERRIDES = frozenset({
     # died on "output_interval_s (900.0, 3600.0)".  Preparation itself
     # writes no history frame at all.
     "output_interval_s",
+    # The per-domain turbulence row (gpuwm/experiment.py
+    # _DOMAIN_RUN_OVERRIDES, "a PBL parent may carry a PBL-off
+    # Smagorinsky child").  Same shape of finding as output_interval_s
+    # above: HRRR hierarchy PREPARATION never reads one of these keys.
+    # `grep -rn 'bl_pbl_physics\|km_opt' gpuwm/ingest/ gpuwm/native_hierarchy.py
+    # tools/prepare_hrrr_wrf.py` returns a single hit, and it is a comment.
+    # Preparation writes static fields and an interpolated initial state;
+    # the closure selects tendencies that only the forecast computes.  The
+    # one place the turbulence choice reaches preparation is
+    # DomainState(cfg) allocating km_opt=2's zero-initialised tke/tke0,
+    # which the prepared cache round-trips like any other state array.
+    "bl_pbl_physics", "km_opt", "c_s", "c_k", "diff_6th_opt",
+    "mix_isotropic", "mix_upper_bound", "isfflx",
+    "tke_heat_flux", "tke_drag_coefficient", "tke_upper_bound",
 })
+#: Keys of :data:`_SUPPORTED_PHYSICS` a CHILD may hold away from the
+#: certified HRRR root slice.  The slice is a statement about what the
+#: native-HRRR INITIALIZATION supports, and it is pinned in full on the
+#: root, which is the domain that is actually initialized from HRRR and
+#: the domain the optional stock-WRF export's own v2-slice branch reads.
+#: Nothing in the preparation consumes a child's PBL selection (see the
+#: note in _DOMAIN_PREPARATION_OVERRIDES); pinning it here refused the
+#: PBL-off LES child that the experiment schema, the forecast runner and
+#: the namelist importer all admit, and refused it after the expensive
+#: root preparation had already run.
+_CHILD_PHYSICS_SLICE_OVERRIDES = frozenset({"bl_pbl_physics"})
 _MAX_PUBLIC_DOMAINS = 21
 
 
@@ -370,6 +402,35 @@ def sealed_forcing_horizon_seconds(forcing_hours) -> float:
     return float(hours[-1]) * 3600.0
 
 
+def verified_root_forcing_inventory(
+        forcing_hours, *, run_seconds: float) -> tuple[int, ...]:
+    """Require exactly the inventory the preparer seals for this run.
+
+    ONE endpoint convention on both stages, and it is a ceiling.
+    ``tools.prepare_hrrr_wrf`` sizes its fetch/decode window with
+    :func:`gpuwm.hrrr_forecast.hrrr_forcing_end_hour`: hourly boundary
+    forcing brackets every model instant between two frames, so a 900 s
+    run -- whose endpoint at 0.25 h lies BETWEEN f000 and f001 -- is
+    prepared with model forcing hours (0, 1).  This check used to
+    recompute the endpoint with a floor (``run_seconds // 3600``),
+    expected ``(0,)`` for that same run, and refused every sub-hour root
+    the preparer can build; ``(0,)`` is also a series the tree runner
+    (gpuwm/prepared_domain_tree_forecast.py) rejects outright, because a
+    single frame brackets nothing.  The expectation is derived from the
+    shared ceiling now, and a genuinely truncated, over-long, or gapped
+    inventory still refuses with the same sentence.
+    """
+
+    observed = tuple(forcing_hours)
+    expected = tuple(range(hrrr_forcing_end_hour(run_seconds) + 1))
+    if observed != expected:
+        raise ValueError(
+            "root preparation must contain consecutive hourly HRRR forcing "
+            f"through the forecast endpoint: expected {expected}, "
+            f"got {observed}")
+    return observed
+
+
 def _supported_hierarchy_slice(exp, root_target, *, forcing_hours) -> None:
     """Bind the public adapter to its sealed root and generic valid nests.
 
@@ -479,10 +540,12 @@ def _supported_hierarchy_slice(exp, root_target, *, forcing_hours) -> None:
                 f"d{domain.grid_id:02d} requests MP"
                 f"{domain.run.mp_physics}; HRRR hierarchy preparation "
                 f"supports {sorted(_SUPPORTED_MICROPHYSICS)}")
+        exempt = (frozenset() if domain is root_domain
+                  else _CHILD_PHYSICS_SLICE_OVERRIDES)
         mismatch = {
             name: (getattr(domain.run, name), expected)
             for name, expected in _SUPPORTED_PHYSICS.items()
-            if getattr(domain.run, name) != expected
+            if getattr(domain.run, name) != expected and name not in exempt
         }
         if mismatch:
             raise ValueError(
@@ -760,13 +823,8 @@ def prepare_hrrr_hierarchy(
     static_sha = sha256_file(paths["static_cache"])
     if identity.get("static_cache_sha256") != static_sha:
         raise ValueError("static cache differs from root preparation identity")
-    expected_forcing_hours = tuple(range(
-        0, int(native_exp.run_seconds // 3600) + 1))
-    if forcing_hours != expected_forcing_hours:
-        raise ValueError(
-            "root preparation must contain consecutive hourly HRRR forcing "
-            f"through the forecast endpoint: expected {expected_forcing_hours}, "
-            f"got {forcing_hours}")
+    verified_root_forcing_inventory(
+        forcing_hours, run_seconds=native_exp.run_seconds)
 
     preparation_report = _json(paths["preparation_report"])
     if preparation_report.get("status") != "PASS":
@@ -1020,12 +1078,22 @@ def main(argv=None) -> int:
     # walked without hashing a file by hand.  Print it here, from the
     # published receipt rather than from the payload, so the digest is
     # of the bytes the next stage will read.
+    # The export slot is a READY manifest with a `files` inventory OR the
+    # NOT_REQUESTED/REFUSED document that says why there is none
+    # (gpuwm/native_hierarchy.py: STOCK_WRF_EXPORT_MODES).  Reading
+    # ["files"] unconditionally made the refused shape a KeyError here,
+    # which threw away the prepared hierarchy that the "optional" mode
+    # exists to keep -- the same failure the refusal being uncatchable
+    # caused one layer down.  Report the slot as it is.
+    wrf_manifest = payload["wrf_manifest"]
     print(json.dumps({
         "status": payload["status"],
         "output_root": str(args.output_root.resolve()),
         "workers": payload["workers"],
         "timing_seconds": payload["timing_seconds"],
-        "wrf_files": payload["wrf_manifest"]["files"],
+        "wrf_export_status": wrf_manifest.get("status"),
+        "wrf_files": wrf_manifest.get("files"),
+        "wrf_export_refusal": wrf_manifest.get("reason"),
         "preparation_receipt_sha256": sha256_file(
             args.output_root / "receipt.json"),
     }, indent=2, sort_keys=True, allow_nan=False))

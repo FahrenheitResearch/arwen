@@ -71,6 +71,24 @@ from gpuwm.static.build import (GeogSelection, build_static,
 from gpuwm.static.lambert import grids_from_projection_config
 
 
+#: ``mp_physics`` values whose microphysics call stages a scheme-native
+#: REFL_10CM field for the history writer to consume.  Named, not inlined,
+#: because this runtime carries THREE separate gates on it (case output,
+#: the per-substep ``refl_due`` schedule, and the nested-tree history
+#: handoff) and an inlined tuple that is updated at two of the three is a
+#: silent no-radar-data output frame, not an error.
+#:
+#: 28 (Thompson aerosol-aware) belongs here on WRF's own structure: WRF
+#: reaches ``calc_refl10cm`` from the single call site
+#: ``mp_gt_driver:1458``, gated on ``diagflag .and. do_radar_ref == 1``
+#: (module_mp_thompson.F:1449) and never on ``is_aerosol_aware``.  gpuwm
+#: matches it -- ``gpuwm/core/microphysics_aerosol.py`` stages the field
+#: through the same ``compute_and_stash_refl_10cm`` seam as mp=8 -- so
+#: excluding 28 here does not disable a diagnostic, it strands a field
+#: that the scheme has already computed and that ``refl.py``'s
+#: consume-once contract then reports as an unconsumed stash.
+REFL_10CM_MICROPHYSICS = (1, 6, 8, 10, 18, 28)
+
 MICROPHYSICS_TRANSITION_RECEIPT_NAME = "microphysics-transitions.json"
 FEEDBACK_PROVENANCE_RECEIPT_NAME = "feedback-provenance.json"
 FEEDBACK_EXPERIMENTAL_WARNING = (
@@ -1155,7 +1173,8 @@ def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
     frame.update(_metadata_frame(prepared.grid, prepared.static_fields))
     rainnc = state.physics.microphysics.rainnc
     frame["RAINNC"] = cp.asnumpy(rainnc)
-    if (expect_refl_10cm and prepared.cfg.mp_physics in (1, 6, 8, 10, 18)
+    if (expect_refl_10cm
+            and prepared.cfg.mp_physics in REFL_10CM_MICROPHYSICS
             and state.qv is not None):
         # WRF do_radar_ref=1 equivalent: consume the field computed inside
         # the output-due microphysics call from its prepared p/post-call T.
@@ -1341,7 +1360,7 @@ def integrate_prepared_case(
         outer_started = time.perf_counter()
         forcing_time = start_time + timedelta(seconds=outer_step * cfg.dt)
         for substep in range(dynamics_substeps):
-            refl_due = (cfg.mp_physics in (1, 6, 8, 10, 18)
+            refl_due = (cfg.mp_physics in REFL_10CM_MICROPHYSICS
                         and refl_10cm_due(
                             outer_step, substep, output_outer_steps,
                             dynamics_substeps))
@@ -1740,7 +1759,7 @@ def _submit_tree_history_frame(writers, node, ticks: int) -> None:
     """
     refl_field = None
     if (ticks != 0 and node.state.qv is not None
-            and node.state.physics.mp_physics in (1, 6, 8, 10, 18)):
+            and node.state.physics.mp_physics in REFL_10CM_MICROPHYSICS):
         from gpuwm.core.refl import consume_refl_10cm
         refl_field = consume_refl_10cm(node.state)
     writers.submit(node, ticks, refl_field=refl_field)

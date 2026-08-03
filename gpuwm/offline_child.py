@@ -64,6 +64,30 @@ _WRF_TO_STATE = MappingProxyType({
     "QICE": "qi", "QSNOW": "qs", "QGRAUP": "qg",
     "QNCLOUD": "nc", "QNRAIN": "nr", "QNICE": "ni",
     "QNSNOW": "ns", "QNGRAUPEL": "ng",
+    # mp_physics=28 (Thompson aerosol-aware).  Transported scalars in WRF's
+    # own Registry (Registry.EM_COMMON:3036,
+    # ``scalar:qni,qnr,qnc,qnwfa,qnifa,qnbca``); QNCLOUD is already above
+    # because Morrison declares the same name.  Only the names
+    # ``_transported_source_fields`` asks for are ever read, so adding rows
+    # here cannot change what any other scheme reads.
+    "QNWFA": "nwfa", "QNIFA": "nifa",
+})
+
+#: mp_physics=28 surface aerosol emission tendencies (# kg-1 s-1).  NOT
+#: transported scalars: they are per-domain cross-step CONSTANTS, and the
+#: offline child MUST inherit them from the parent rather than re-derive
+#: them.  WRF's ``thompson_init`` fills ``nwfa2d`` at
+#: module_mp_thompson.F:510 ONLY inside the "no initial CCN" branch
+#: (:493); a child that inherits a parent's nonzero ``nwfa`` takes the
+#: ``has_CCN = .TRUE.`` branch at :516-522 instead, which fills nothing.
+#: So an offline mp=28 child built without these would run its entire
+#: forecast with zero surface aerosol emission and nothing would raise.
+#: This is the same argument, and the same resolution, that
+#: ``gpuwm/ingest/nest_init.py`` already applies to the ONLINE nest lane,
+#: which SINTs both fields on the mass stagger.
+_AEROSOL_SURFACE_EMISSION_WRF = ("QNWFA2D", "QNIFA2D")
+_AEROSOL_SURFACE_EMISSION_STATE = MappingProxyType({
+    "QNWFA2D": "nwfa2d", "QNIFA2D": "nifa2d",
 })
 _NSSL_WRF_TO_STATE = MappingProxyType({
     "QVAPOR": "qv", "QCLOUD": "qc", "QRAIN": "qr",
@@ -79,12 +103,36 @@ _NSSL_WRF_TO_STATE = MappingProxyType({
 #: NOT a profile whitelist -- the four checks below are the ordinary
 #: fail-closed kind the 2026-07-31 suite ruling keeps: the child's
 #: hydrometeor mapping is written against the transported species of
-#: WSM6 (6), Thompson (8), Morrison (10) and NSSL (18), and a parent
-#: outside that set has no mapping to refuse or accept with.  Naming the
-#: set once keeps the four enforcement points from ever disagreeing
-#: about which parents the mapping actually implements; each refusal
-#: still quotes the exact switch and value.
-PARENT_SCHEME_CONTRACT = frozenset({6, 8, 10, 18})
+#: WSM6 (6), Thompson (8), Morrison (10), NSSL (18) and Thompson
+#: aerosol-aware (28), and a parent outside that set has no mapping to
+#: refuse or accept with.  Naming the set once keeps the four enforcement
+#: points from ever disagreeing about which parents the mapping actually
+#: implements; each refusal still quotes the exact switch and value.
+#:
+#: 28 is admitted for the SAME-SCHEME case only: a 28 parent forcing a 28
+#: child.  Its transported inventory is classic Thompson's plus
+#: ``nc``/``nwfa``/``nifa`` (all three declared scalars at
+#: Registry.EM_COMMON:3036) and its two per-domain surface-emission
+#: constants (:492-493); every one of them rides the generic SINT/couple
+#: paths this module already runs for ``nr``/``ni``, with no new numerics.
+#: What is DELIBERATELY NOT admitted is any CROSS-scheme edge touching 28 --
+#: see :data:`_CROSS_SCHEME_REFUSED_MP_PHYSICS`.
+OFFLINE_CHILD_MP_PHYSICS = frozenset({6, 8, 10, 18, 28})
+
+#: Schemes that may not participate in an offline CROSS-physics conversion.
+#: This mirrors ``gpuwm.core.microphysics_transition.
+#: UNVALIDATED_MIXED_EDGE_SELECTORS`` exactly, and it must: the online nest
+#: lane refuses every mixed mp=28 edge because no cross-scheme entry closure
+#: for nc/nwfa/nifa has been measured, and an offline downscale that
+#: performed the same unvalidated closure through a different code path
+#: would defeat that refusal rather than respect it.
+_CROSS_SCHEME_REFUSED_MP_PHYSICS = frozenset({28})
+
+#: The parents a CROSS-scheme conversion has a measured mapping for: every
+#: admitted parent that is not cross-refused.  Derived, never re-spelled, so
+#: the cross-scheme site cannot drift from the same-scheme sites above.
+PARENT_SCHEME_CONTRACT = (
+    OFFLINE_CHILD_MP_PHYSICS - _CROSS_SCHEME_REFUSED_MP_PHYSICS)
 
 
 class OfflineChildContractError(ValueError):
@@ -107,7 +155,7 @@ class ParentPhysicsBinding:
     evidence_sha256: str
 
     def __post_init__(self) -> None:
-        if int(self.mp_physics) not in PARENT_SCHEME_CONTRACT:
+        if int(self.mp_physics) not in OFFLINE_CHILD_MP_PHYSICS:
             raise OfflineChildContractError(
                 f"unsupported bound parent mp_physics={self.mp_physics}")
         if int(self.domain_id) < 1:
@@ -253,6 +301,14 @@ def _hash_array(digest, label: str, value) -> None:
 
 
 def _infer_mp_physics(inventory: frozenset[str]) -> int | None:
+    # mp=28 is tested FIRST because its inventory is a strict superset of
+    # mp=8's: it carries QNRAIN/QNICE too, so the classic-Thompson arm below
+    # would claim an aerosol-aware stream.  This whole function is advisory
+    # (the companion setup/namelist binding is authoritative), but an
+    # advisory value that reports 8 for a 28 stream would be actively
+    # misleading in a receipt.
+    if {"QNWFA", "QNIFA"} <= inventory:
+        return 28
     if {"QNSNOW", "QNGRAUPEL"} <= inventory:
         return 10
     if {"QNRAIN", "QNICE"} <= inventory:
@@ -331,7 +387,7 @@ def inspect_parent_history_frame(
         bound_mp = None
         if source_mp_physics is not None:
             requested = int(source_mp_physics)
-            if requested not in PARENT_SCHEME_CONTRACT:
+            if requested not in OFFLINE_CHILD_MP_PHYSICS:
                 raise OfflineChildContractError(
                     f"unsupported declared parent mp_physics={requested}")
             # Inventory-only inference is advisory. WRF streams may retain
@@ -480,6 +536,24 @@ def map_microphysics_to_nssl18(
     """
 
     source_mp = int(source_mp_physics)
+    if source_mp in _CROSS_SCHEME_REFUSED_MP_PHYSICS:
+        # NAMED refusal, in the same words the online nest lane uses.  mp=28
+        # IS a readable parent here (OFFLINE_CHILD_MP_PHYSICS admits it) --
+        # what is missing is a validated cross-scheme entry closure for its
+        # nc/nwfa/nifa moments, which is exactly why
+        # gpuwm/core/microphysics_transition.py refuses all eleven of its
+        # MIXED nest edges.  Converting them here through a second,
+        # unvalidated path would defeat that refusal.
+        raise OfflineChildContractError(
+            f"offline cross-physics conversion from mp_physics={source_mp} "
+            "(Thompson aerosol-aware) to NSSL mp18 is REFUSED: mp=28 carries "
+            "a prognostic cloud droplet number plus two aerosol number "
+            "tracers (nc, nwfa, nifa) that no other ported scheme has, and "
+            "no cross-scheme entry closure for them has been measured.  The "
+            "online nest lane refuses the same edge "
+            "(gpuwm/core/microphysics_transition.py::"
+            "UNVALIDATED_MIXED_EDGE_SELECTORS); same-scheme 28 -> 28 "
+            "downscaling is supported")
     if source_mp not in PARENT_SCHEME_CONTRACT:
         raise OfflineChildContractError(
             f"NSSL conversion currently accepts source mp 6/8/10/18, got {source_mp}")
@@ -857,10 +931,18 @@ def _to_host(value) -> np.ndarray:
 def _transported_source_fields(source_mp_physics: int) -> tuple[str, ...]:
     source_mp = int(source_mp_physics)
     names = ["qv", "qc", "qr"]
-    if source_mp in {6, 8, 10}:
+    if source_mp in {6, 8, 10, 28}:
         names += ["qi", "qs", "qg"]
     if source_mp == 8:
         names += ["nr", "ni"]
+    elif source_mp == 28:
+        # Thompson aerosol-aware: classic Thompson's two moments plus the
+        # prognostic droplet number and the two aerosol tracers.  Order is
+        # nr/ni first so the shared prefix with mp=8 stays visible; the
+        # tuple is consumed by name everywhere.  nwfa2d/nifa2d are NOT here
+        # -- they are per-domain constants, not transported scalars, and are
+        # handled by _AEROSOL_SURFACE_EMISSION_WRF.
+        names += ["nr", "ni", "nc", "nwfa", "nifa"]
     elif source_mp == 10:
         names += ["nr", "ni", "ns", "ng"]
     elif source_mp == 18:
@@ -893,7 +975,7 @@ def _resolve_source_physics(
         raise OfflineChildContractError(
             "source physics must be bound from a companion setup record")
     source_mp_physics = int(source_mp_physics)
-    if source_mp_physics not in PARENT_SCHEME_CONTRACT:
+    if source_mp_physics not in OFFLINE_CHILD_MP_PHYSICS:
         raise OfflineChildContractError(
             f"unsupported parent mp_physics={source_mp_physics}")
     return source_mp_physics, morr_rimed_ice
@@ -981,9 +1063,16 @@ def interpolate_parent_initial_state(
         raise OfflineChildContractError(
             f"parent history mass grid {actual} != placement parent grid {expected}")
     started = time.perf_counter()
+    initial_fields = _INITIAL_CORE_FIELDS
+    if int(source_mp_physics) == 28:
+        # Read them as REQUIRED.  A missing QNWFA2D is not a stream a child
+        # may be silently built from: nothing downstream re-derives it (see
+        # _AEROSOL_SURFACE_EMISSION_WRF), so tolerating the absence would
+        # produce a finite, bounded, aerosol-emission-free forecast.
+        initial_fields = initial_fields + _AEROSOL_SURFACE_EMISSION_WRF
     with netCDF4.Dataset(path) as dataset:
         raw, moisture = _raw_parent_state(dataset, int(source_mp_physics))
-        for name in _INITIAL_CORE_FIELDS:
+        for name in initial_fields:
             if name not in raw:
                 raw[name] = _read_record(dataset, name)
         coeffs, hybrid_opt, etac, p_top = _vertical_coefficients(raw, dataset)
@@ -994,7 +1083,7 @@ def interpolate_parent_initial_state(
     }
     constants = {"ZNU", "ZNW", "P_TOP"}
     interpolated = {}
-    for name in _INITIAL_CORE_FIELDS:
+    for name in initial_fields:
         value = _backend_array(raw[name], backend)
         interpolated[name] = sint(
             value, registrations[_INITIAL_FIELD_STAGGER.get(name, "")])
@@ -1011,6 +1100,17 @@ def interpolate_parent_initial_state(
             diagnose_missing=diagnose_missing,
         )
         source_mixing = mapped
+    elif (target_mp != int(source_mp_physics)
+            and target_mp in _CROSS_SCHEME_REFUSED_MP_PHYSICS):
+        raise OfflineChildContractError(
+            f"offline cross-physics initialization of an mp_physics="
+            f"{target_mp} (Thompson aerosol-aware) child from an "
+            f"mp_physics={int(source_mp_physics)} parent is REFUSED: no "
+            "cross-scheme entry closure for nc/nwfa/nifa has been measured, "
+            "and the online nest lane refuses the same edge "
+            "(gpuwm/core/microphysics_transition.py::"
+            "UNVALIDATED_MIXED_EDGE_SELECTORS).  Same-scheme 28 -> 28 "
+            "downscaling is supported")
     elif target_mp != int(source_mp_physics):
         raise OfflineChildContractError(
             "cross-physics offline initialization currently targets NSSL mp18")
@@ -1166,13 +1266,35 @@ def build_offline_child_domain_state(
             raise OfflineChildContractError(
                 f"child DomainState has no target microphysics field {name!r}")
         assign(name, value)
+    if target_mp == 28:
+        # The two per-domain surface aerosol emission constants.  They are
+        # NOT in ``initial.microphysics`` because they are not transported
+        # scalars; they arrive through ``initial.fields`` alongside the
+        # geometry.  See _AEROSOL_SURFACE_EMISSION_WRF for why the child
+        # cannot re-derive them.
+        for wrf_name, state_name in _AEROSOL_SURFACE_EMISSION_STATE.items():
+            if getattr(state, state_name, None) is None:
+                raise OfflineChildContractError(
+                    "mp_physics=28 child DomainState has no surface aerosol "
+                    f"emission field {state_name!r}")
+            if wrf_name not in initial.fields:
+                raise OfflineChildContractError(
+                    "mp_physics=28 offline child requires the parent's "
+                    f"{wrf_name}; without it the child would integrate with "
+                    "zero surface aerosol emission and nothing would raise")
+            assign(state_name, initial.fields[wrf_name])
     for current, seed in (
             ("u", "u0"), ("v", "v0"), ("w", "w0"),
             ("thp", "thp0"), ("php", "php0"), ("mup", "mup0"),
             ("qv", "qv0"), ("qc", "qc0"), ("qr", "qr0"),
             ("qi", "qi0"), ("qs", "qs0"), ("qg", "qg0"),
             ("nr", "nr0"), ("ni", "ni0"), ("ns", "ns0"),
-            ("ng", "ng0")):
+            ("ng", "ng0"),
+            # mp=28.  ``nc0`` exists only for mp=28 -- Morrison allocates
+            # ``nc`` and deliberately does not transport it, so it has no
+            # ``nc0`` and the None guard below skips it.  Same rule the
+            # online nest lane applies (gpuwm/ingest/nest_init.py).
+            ("nc", "nc0"), ("nwfa", "nwfa0"), ("nifa", "nifa0")):
         source = getattr(state, current, None)
         target = getattr(state, seed, None)
         if source is not None and target is not None:
@@ -1256,6 +1378,17 @@ def interpolate_parent_boundary_snapshot(
     }
     conversion_receipt = None
     if target_mp != int(source_mp_physics):
+        if (target_mp in _CROSS_SCHEME_REFUSED_MP_PHYSICS
+                or int(source_mp_physics)
+                in _CROSS_SCHEME_REFUSED_MP_PHYSICS):
+            raise OfflineChildContractError(
+                f"offline cross-physics forcing across the mp_physics="
+                f"{int(source_mp_physics)} -> {target_mp} edge is REFUSED: "
+                "mp_physics=28 (Thompson aerosol-aware) has no measured "
+                "cross-scheme entry closure for nc/nwfa/nifa, and the online "
+                "nest lane refuses the same edge "
+                "(gpuwm/core/microphysics_transition.py::"
+                "UNVALIDATED_MIXED_EDGE_SELECTORS)")
         if target_mp != 18:
             raise OfflineChildContractError(
                 "cross-physics offline forcing currently targets NSSL mp18")
@@ -1359,6 +1492,7 @@ def build_offline_lateral_boundaries(
 
 __all__ = [
     "ChildSurfaceState",
+    "OFFLINE_CHILD_MP_PHYSICS",
     "InterpolatedBoundarySnapshot", "InterpolatedInitialState",
     "OfflineBoundaryResult",
     "OfflineChildPlacement",

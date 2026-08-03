@@ -770,6 +770,34 @@ def _partial_tree_note(root) -> str:
             f"reads it, so it is safe to remove once you are done with "
             f"it.  Every stage is create-only, so a re-run needs a new "
             f"--outdir either way.")
+def _experimental_labels(plan: dict) -> tuple[str, ...]:
+    """(label, reason) for the experimental options this plan selects.
+
+    Read from the registry through the config, never from a scheme name,
+    so registering a second experimental option surfaces it here without
+    a further edit.  Any failure to read the config is silent by design:
+    the banner is not the place a broken config is diagnosed, and the
+    loader that IS that place runs a moment later.
+    """
+    try:
+        from gpuwm.experiment import is_experiment_toml, load_experiment
+        from gpuwm.physics_compat import _experimental_components
+
+        path = plan.get("config")
+        if path is None:
+            return ()
+        if is_experiment_toml(path):
+            configs = [dc.run for dc in load_experiment(path).domains]
+        else:
+            from gpuwm.config import load_config
+            configs = [load_config(path)]
+        clauses: dict[str, str] = {}
+        for cfg in configs:
+            for label, reason in _experimental_components(cfg):
+                clauses.setdefault(label, reason)
+        return tuple(sorted(clauses.items()))
+    except Exception:
+        return ()
 
 
 #: Ctrl-C's exit code, by the shell convention 128 + SIGINT.
@@ -795,6 +823,18 @@ class GoInterrupted(Exception):
 def _physics_words(plan: dict) -> str:
     """The banner's physics clause: profile id, or one honest sentence."""
 
+    experimental = _experimental_labels(plan)
+    if experimental:
+        # An experimental option outranks the profile id in the banner.
+        # "supported, not yet WRF-verified" would be the wrong sentence
+        # for a scheme WRF does not have -- it promises a comparison
+        # that is merely outstanding, and there is none to be
+        # outstanding.  Warn-not-block: this is the wording, not a gate.
+        # The REASON comes from physics_compat so the banner and the two
+        # runners cannot say different things; only the shout is local.
+        return ", ".join(
+            f"{label}: {reason.replace('experimental,', 'EXPERIMENTAL,', 1)}"
+            for label, reason in experimental)
     if plan.get("profile") is not None:
         return f"profile {plan['profile']}"
     return ("physics from the config as written (supported, not yet "
@@ -819,8 +859,9 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
 
     from gpuwm.core.preflight import (ReservePolicy, _load_experiment_any,
                                       config_forcing_source,
+                                      device_memory_probe_subprocess,
                                       estimate_phases,
-                                      live_device_local_memory_profile,
+                                      profile_from_device_probe,
                                       unpriced_ingest_note)
 
     config = Path(plan["config"])
@@ -832,9 +873,22 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
     # This gate is about THIS machine -- it is the last thing between the
     # user and a download -- so the non-pool terms are priced against the
     # card that is actually here, not against the 170-SM reference the
-    # module was calibrated on.  `gpuwm check` reads the same profile in
-    # the same situation; the two must not disagree about one card.
-    profile = live_device_local_memory_profile()
+    # module was calibrated on.  `gpuwm check` reads the same numbers off
+    # the same device; the two must not disagree about one card.
+    #
+    # Both device questions -- the free VRAM the budget subtracts from
+    # and the card's local-memory profile -- are asked in ONE short-lived
+    # SUBPROCESS, never in-process.  An in-process memGetInfo or
+    # deviceGetLimit stands up a CUDA primary context, and this process
+    # outlives its gate as the chain's stage runner and progress printer:
+    # that context sat on the card for the entire run -- measured
+    # 0.486 GiB on the RTX 5090 -- as a consumer no term of the budget
+    # computed below names.  The probe's context dies with the probe, so
+    # the printer holds no device memory at all, and the forecast stage
+    # (whose own context IS priced, in the reserve's device-overhead
+    # term) gets the card the verdict described.
+    probe = device_memory_probe_subprocess()
+    profile = profile_from_device_probe(probe)
     # The cadence the domain was SIZED against, from the same [fetch]
     # table the fetch stage reads, so the two cannot disagree.
     cadence_h = plan.get("cadence")
@@ -843,16 +897,12 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
         ingest_forcing_interval_seconds=(
             float(cadence_h) * 3600.0 if cadence_h else None))
 
-    free = None
-    try:
-        import cupy as cp
-
-        free = int(cp.cuda.runtime.memGetInfo()[0])
-    except Exception:
+    if probe is None:
         # No device here (a planning box, a CI runner): price the phases
         # and print the verdict, but never refuse on a card we cannot see.
         return {"verdict": phases.verdict(None), "refuse": False,
                 "warn": False, "free_bytes": None, "phases": phases}
+    free = int(probe["free_bytes"])
     reserve = ReservePolicy.n0_alloc(
         exp, profile=profile,
         estimate_bytes=phases.forecast.alloc_estimate_bytes)
@@ -984,35 +1034,38 @@ def go_main(args) -> int:
           f"{plan['cycle']}, {plan['hours']} h, {_physics_words(plan)}"
           f"{_lead_note(plan)}")
 
-    # BEFORE the download, not after it.  `gpuwm fetch` is the stage that
-    # costs the user gigabytes and minutes; a configuration that cannot
-    # fit has to be told so on this side of it.
-    if not getattr(args, "no_memory_gate", False):
-        gate = memory_gate(plan)
-        print(f"go: memory -- {gate['verdict']}")
-        if gate["refuse"]:
-            raise GoRefusal(
-                f"this configuration will not fit: {gate['verdict']}, and "
-                f"the card has {gate['free_bytes'] / (1024 ** 3):.2f} GiB "
-                "free right now.  Refusing here, BEFORE the fetch stage "
-                "downloads the forcing data, rather than in preprocessing "
-                "after it.\n"
-                "  remedy: re-size for this card -- gpuwm domain "
-                f"--vram-gib {gate['free_bytes'] // (1024 ** 3)} ... -- or "
-                "free VRAM and re-run\n"
-                "  # gpuwm go CONFIG --no-memory-gate runs it anyway")
-        if gate["warn"]:
-            print("go: WARNING -- that is above the reserved budget, "
-                  "though it fits the free VRAM measured just now.  "
-                  "Proceeding; a driver/other-process spike could still "
-                  "OOM this run.")
-
-    # Same rule as the memory gate, same side of the download.
-    geography = geography_refusal(geog_root)
-    if geography is not None:
-        raise GoRefusal(geography)
-
+    # The interrupt contract covers the gate too: the memory probe
+    # is a real subprocess (first-run staging), and a Ctrl-C landing
+    # there deserves the same one sentence and rc 130 as any stage.
     try:
+        # BEFORE the download, not after it.  `gpuwm fetch` is the stage that
+        # costs the user gigabytes and minutes; a configuration that cannot
+        # fit has to be told so on this side of it.
+        if not getattr(args, "no_memory_gate", False):
+            gate = memory_gate(plan)
+            print(f"go: memory -- {gate['verdict']}")
+            if gate["refuse"]:
+                raise GoRefusal(
+                    f"this configuration will not fit: {gate['verdict']}, and "
+                    f"the card has {gate['free_bytes'] / (1024 ** 3):.2f} GiB "
+                    "free right now.  Refusing here, BEFORE the fetch stage "
+                    "downloads the forcing data, rather than in preprocessing "
+                    "after it.\n"
+                    "  remedy: re-size for this card -- gpuwm domain "
+                    f"--vram-gib {gate['free_bytes'] // (1024 ** 3)} ... -- or "
+                    "free VRAM and re-run\n"
+                    "  # gpuwm go CONFIG --no-memory-gate runs it anyway")
+            if gate["warn"]:
+                print("go: WARNING -- that is above the reserved budget, "
+                      "though it fits the free VRAM measured just now.  "
+                      "Proceeding; a driver/other-process spike could still "
+                      "OOM this run.")
+
+        # Same rule as the memory gate, same side of the download.
+        geography = geography_refusal(geog_root)
+        if geography is not None:
+            raise GoRefusal(geography)
+
         _run_stage("authority", authority_command(plan), explain=explain)
         _run_stage("fetch", fetch_command(plan), explain=explain)
         _run_stage("manifest", manifest_command(plan, bridge),

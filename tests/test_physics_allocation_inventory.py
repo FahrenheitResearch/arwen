@@ -345,6 +345,49 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         '_surface_array': 1,
     },
     'gpuwm/core/thompson.py': {},
+    # THE SIX mp_physics=28 MODULES.  Entered here by the commit that merged
+    # the port onto this line, which is the commit that first made them
+    # visible to this scanner; the port itself predates the inventory.
+    #
+    # Every site below is inside a ``probe_*`` or ``_empty_like_*`` entry
+    # point, and none of them is on the forecast path.  The probes exist so
+    # the aerosol oracle harness can call one device helper at a time against
+    # its WRF counterpart (tools/thompson_wrf461_oracle/probe_aero_*.F90),
+    # and they allocate their own output because their caller is a test with
+    # no scratch arena.  The forecast path itself allocates nothing: the two
+    # modules that run every step, thompson_aerosol_state.py and
+    # thompson_aerosol_sed.py, are EMPTY rows, and those two empty rows are
+    # the assertion this block exists to make.
+    'gpuwm/core/thompson_aerosol_cold.py': {
+        'probe_cold_warm_loop': 3,
+    },
+    'gpuwm/core/thompson_aerosol_launch.py': {
+        '_empty_like_float': 1,
+        '_empty_like_int': 1,
+        'probe_cloud_dist': 1,
+        'probe_constant_tables': 1,
+    },
+    'gpuwm/core/thompson_aerosol_sat.py': {
+        'probe_droplet_evaporation_indices': 5,
+        'probe_rain_evaporation_rates': 3,
+    },
+    'gpuwm/core/thompson_aerosol_sed.py': {},
+    'gpuwm/core/thompson_aerosol_state.py': {},
+    'gpuwm/core/thompson_aerosol_warm.py': {
+        'probe_frozen_constants': 1,
+        'probe_warm_frozen_rates': 2,
+        'probe_warm_rates': 3,
+    },
+    # The km_opt=2 TKE budget accumulates term by term into diagnostic
+    # scratch the caller already owns and reduces on device once per step,
+    # so the scanner finds no bare allocation.  Like uh_diag below, this
+    # empty row asserts that rather than reserving a slot to fill later.
+    # It is entered late, and that is the defect this row closes: the
+    # budget landed in 02cfd530 without its inventory row, so the module
+    # set drifted and this gate reported "appeared or vanished" instead of
+    # a bound.  The rule the gate states -- a new module's row belongs in
+    # the commit that adds the allocation -- was not followed then.
+    'gpuwm/core/tke_budget.py': {},
     # UP_HELI_MAX's every-step maximum runs entirely inside the caller's
     # persistent slots -- the scanner finds no bare allocation, and this
     # empty row is the assertion of that, not an unfilled placeholder.

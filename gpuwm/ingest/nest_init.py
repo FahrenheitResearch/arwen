@@ -1121,6 +1121,29 @@ def parent_only_init(child_dc: DomainConfig,
                           ("qi", ""), ("qs", ""), ("qg", ""),
                           ("nc", ""), ("nr", ""), ("ni", ""),
                           ("ns", ""), ("ng", ""),
+                          # mp=28 aerosol number tracers.  Mass-stagger,
+                          # same generic SINT path as every other scalar;
+                          # the loop is None-guarded so no other scheme
+                          # sees them.
+                          ("nwfa", ""), ("nifa", ""),
+                          # mp=28 surface aerosol emission tendencies.
+                          # 2-D mass-stagger, exactly like ``mup`` above.
+                          # This matches WRF: Registry.EM_COMMON:492-493
+                          # gives QNWFA2D/QNIFA2D the IO string
+                          # ``i01{17}rhdu``, whose bare ``d`` is nest-down
+                          # with the DEFAULT mass interpolator (compare the
+                          # explicit ``d=(interp_mask_field:...)`` form at
+                          # :871), so WRF interpolates them to a child too.
+                          #
+                          # It also has to happen here.  They are cross-step
+                          # constants, and an aerosol-aware child whose
+                          # parent already carries CCN takes thompson_init's
+                          # has_CCN branch (module_mp_thompson.F:516-522),
+                          # which does NOT derive nwfa2d -- :510 runs only on
+                          # the fill branch.  Without this row the nest would
+                          # run with zero surface aerosol emission under a
+                          # parent that has it.
+                          ("nwfa2d", ""), ("nifa2d", ""),
                           ("qh", ""), ("qndrop", ""), ("qnr", ""),
                           ("qni", ""), ("qns", ""), ("qng", ""),
                           ("qnh", ""), ("qnn", ""), ("qvolg", ""),
@@ -1161,6 +1184,11 @@ def parent_only_init(child_dc: DomainConfig,
             ("qi", "qi0"), ("qs", "qs0"), ("qg", "qg0"),
             ("nr", "nr0"), ("ni", "ni0"), ("ns", "ns0"),
             ("ng", "ng0"), ("qh", "qh0"),
+            # mp=28.  ``nc0`` exists only for mp=28; a Morrison child has
+            # ``nc`` but no ``nc0`` and the None guard below skips it, so
+            # this row cannot start seeding Morrison's untransported
+            # droplet number.
+            ("nc", "nc0"), ("nwfa", "nwfa0"), ("nifa", "nifa0"),
             ("qndrop", "qndrop0"), ("qnr", "qnr0"),
             ("qni", "qni0"), ("qns", "qns0"), ("qng", "qng0"),
             ("qnh", "qnh0"), ("qnn", "qnn0"),

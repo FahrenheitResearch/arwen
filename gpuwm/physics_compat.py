@@ -179,6 +179,14 @@ require_rrtmg_legacy_executable = require_rrtmg_legacy_ready
 EXPERIMENTAL_THOMPSON_ENV = "GPUWM_EXPERIMENTAL_THOMPSON_MP8"
 THOMPSON_TABLE_ROOT_ENV = "GPUWM_THOMPSON_TABLE_ROOT"
 
+#: The registry option id aerosol-aware Thompson (``mp_physics=28``) resolves
+#: to.  Named once, here, because three different questions have to agree on
+#: it: the vertical-bounds dispatch below, the registry document's
+#: ``components.microphysics.options`` key, and any test that asserts what a
+#: selector resolves to.  A literal repeated in those three places is how a
+#: renamed option silently stops being bounds-checked.
+MP28_REGISTRY_OPTION_ID = "thompson-aerosol-mp28"
+
 
 def packaged_thompson_table_root() -> "Path":
     """The in-package canonical classic-table directory.
@@ -905,6 +913,7 @@ def validate_resolved_physics_vertical_levels(
         MORRISON_VERTICAL_LEVEL_BOUNDS,
         MYNN_VERTICAL_LEVEL_BOUNDS,
         NSSL2_VERTICAL_LEVEL_BOUNDS,
+        THOMPSON_AEROSOL_VERTICAL_LEVEL_BOUNDS,
         THOMPSON_VERTICAL_LEVEL_BOUNDS,
         WSM6_VERTICAL_LEVEL_BOUNDS,
         legacy_radiation_layer_counts,
@@ -923,6 +932,9 @@ def validate_resolved_physics_vertical_levels(
         bounded("WSM6 microphysics", WSM6_VERTICAL_LEVEL_BOUNDS)
     elif microphysics == "thompson-mp8":
         bounded("Thompson microphysics", THOMPSON_VERTICAL_LEVEL_BOUNDS)
+    elif microphysics == MP28_REGISTRY_OPTION_ID:
+        bounded("Thompson aerosol-aware microphysics",
+                THOMPSON_AEROSOL_VERTICAL_LEVEL_BOUNDS)
     elif microphysics == "morrison-mp10":
         bounded("Morrison microphysics", MORRISON_VERTICAL_LEVEL_BOUNDS)
     elif microphysics == "nssl2-mp18":
@@ -1094,11 +1106,120 @@ def validate_single_domain_physics_profile(
 #: never used to refuse a suite the engine implements.
 VERIFICATION_WRF_VERIFIED = "wrf-verified"
 VERIFICATION_SUPPORTED = "supported-not-wrf-verified"
+#: A suite selecting at least one EXPERIMENTAL option.  Distinct from
+#: "supported": that word promises a WRF comparison that is outstanding,
+#: and an ArWen-only scheme has none to be outstanding.
+VERIFICATION_EXPERIMENTAL = "experimental-not-wrf-verified"
+
+#: The maturity rung whose options are experimental.  Read off the
+#: registry ladder rather than spelled twice.
+_EXPERIMENTAL_MATURITY = "experimental-runtime"
+
+#: The SECOND, independent trigger for the experimental warning: an
+#: option the registry declares has no WRF counterpart at all.
+#:
+#: The conformance ladder measures distance from WRF, so an
+#: ArWen-original scheme cannot climb it and sits at
+#: 'implemented-unverified' permanently -- the same rung as a
+#: WRF-transcribed port whose forecast comparison is merely outstanding.
+#: Keying the warning on the rung alone would therefore make the two
+#: indistinguishable and silence the warning for exactly the option that
+#: needs it most.  The declaration is what separates them.
+_NO_WRF_COUNTERPART = "wrf_counterpart"
 VERIFICATION_STATUS_SCHEMA = "gpuwm-physics-verification-status-v1"
 
 #: The registry maturity that constitutes WRF-verification evidence.
 #: Everything else the engine implements is honestly "supported".
 _WRF_VERIFIED_MATURITY = "wrf-matched-run"
+
+
+def _experimental_reason(option) -> str | None:
+    """Why this option warns, or ``None`` when it does not.
+
+    Two independent triggers, and the reason differs because what the
+    reader must not conclude differs.  A table-bound runtime IS a WRF
+    scheme whose comparison is outstanding; an ArWen-original closure
+    has no comparison to be outstanding, and telling a user it is
+    merely "not WRF-verified" invites them to wait for a verification
+    that will never arrive.
+    """
+    counterpart = option.get(_NO_WRF_COUNTERPART)
+    if isinstance(counterpart, Mapping) and counterpart.get("exists") is False:
+        return "experimental, ArWen-original with no WRF counterpart"
+    if option.get("maturity") == _EXPERIMENTAL_MATURITY:
+        return "experimental, not WRF-verified"
+    return None
+
+
+def experimental_component_labels(run_config, registry=None):
+    """Labels of every EXPERIMENTAL component option this config selects.
+
+    Returns a sorted tuple, empty when the suite is entirely
+    non-experimental.  Reads the registry rather than naming any scheme:
+    a second experimental option added later is surfaced by registering
+    it, not by editing this function.
+    """
+    return tuple(sorted(
+        label for label, _ in _experimental_components(run_config, registry)))
+
+
+def _experimental_components(run_config, registry=None):
+    """(label, reason) for every experimental option this config selects."""
+    from gpuwm.physics_registry import physics_registry
+
+    if registry is None:
+        registry = physics_registry()
+    # Matched PER COMPONENT off its own selectors, deliberately, rather
+    # than through a whole-suite capability resolve: that resolve fails
+    # as a unit, so an unrelated mismatch elsewhere in the suite would
+    # silently swallow this warning -- and a warning that disappears
+    # when something else is wrong is worse than no warning.
+    found = []
+    for component in registry.get("components", {}).values():
+        if not isinstance(component, Mapping):
+            continue
+        for option_id, option in component.get("options", {}).items():
+            if not isinstance(option, Mapping):
+                continue
+            reason = _experimental_reason(option)
+            if reason is None:
+                continue
+            selectors = option.get("selectors") or {}
+            if selectors and all(
+                    getattr(run_config, key, None) == value
+                    for key, value in selectors.items()):
+                found.append((str(option.get("label") or option_id), reason))
+    return found
+
+
+def experimental_selection_sentence(run_configs, registry=None) -> str | None:
+    """The one warn-not-block sentence for a run's experimental options.
+
+    ``None`` when nothing experimental is selected.  Takes an ITERABLE
+    of run configs rather than one, because a domain tree has several
+    and the reader is owed the sentence ONCE for the run rather than
+    once per nest -- and because the two runners must not drift into
+    saying different things about the same closure.  Every product
+    surface that prints this sentence gets it from here; the string is
+    defined once.
+    """
+
+    clauses: dict[str, str] = {}
+    for run_config in run_configs:
+        for label, reason in _experimental_components(run_config, registry):
+            clauses.setdefault(label, reason)
+    if not clauses:
+        return None
+    # An experimental option is not "supported, not yet WRF-verified"
+    # -- that phrasing promises a WRF comparison that is merely
+    # outstanding.  For a scheme WRF does not have, no such comparison
+    # exists or can, and saying otherwise would be the most misleading
+    # sentence the product prints.  Warn-not-block: this is the
+    # wording, never a refusal.
+    return ("physics: "
+            + "; ".join(f"{label}: {clauses[label]}"
+                        for label in sorted(clauses))
+            + " -- the run continues.")
 
 
 def single_domain_verification_status(run_config) -> dict[str, object]:
@@ -1139,7 +1260,12 @@ def single_domain_verification_status(run_config) -> dict[str, object]:
                     }
                     break
     verified = matched is not None and maturity == _WRF_VERIFIED_MATURITY
-    if verified:
+    experimental = experimental_component_labels(run_config, registry)
+    if experimental:
+        # One definition, in experimental_selection_sentence, so this
+        # surface and the domain-tree runner cannot drift apart.
+        sentence = experimental_selection_sentence([run_config], registry)
+    elif verified:
         sentence = (
             f"physics: {matched} carries WRF-verification evidence "
             f"(registry maturity {maturity!r}).")
@@ -1154,11 +1280,13 @@ def single_domain_verification_status(run_config) -> dict[str, object]:
     return {
         "schema": VERIFICATION_STATUS_SCHEMA,
         "status": (
-            VERIFICATION_WRF_VERIFIED if verified
+            VERIFICATION_EXPERIMENTAL if experimental
+            else VERIFICATION_WRF_VERIFIED if verified
             else VERIFICATION_SUPPORTED),
         "matched_profile": matched,
         "matched_profile_maturity": maturity,
         "component_matched_template": component_match,
+        "experimental_components": list(experimental),
         "sentence": sentence,
     }
 
@@ -1790,6 +1918,34 @@ def pending_wrf_physics_components(
     # WRF-to-ArWen selector mappings (for example Shin-Hong 11 -> YSU 1).
     # The matrix governs the ported selector set only; an outside raw WRF
     # value continues to the importer's mapping/refusal authority.
+    #
+    # mp_physics == 28 (aerosol-aware Thompson) appends no blocker either,
+    # and that is a decision recorded here rather than an omission.  It has
+    # a dispatch row (gpuwm/core/microphysics.py), a complete adapter
+    # (gpuwm/core/microphysics_aerosol.py) over eight aerosol CUDA
+    # translation units, prognostic nc/nwfa/nifa state with transport,
+    # restart and nesting, a reflectivity route, and a wrfout inventory.
+    # What is NOT admitted is refused by NAME somewhere a user can see it,
+    # never by a silent numeric gate here:
+    #   * the two aerosol-source selectors fail closed in
+    #     gpuwm.config.validate_aerosol_source_options -- aer_init_opt and
+    #     wif_input_opt are honoured at 0 only, because ArWen has no WIF
+    #     metgrid ingest and no nbca species;
+    #   * WRF's real.exe FATALs mp_physics=28 at wif_input_opt=0
+    #     (dyn_em/module_initialize_real.F:2735-2736) while ArWen runs
+    #     thompson_init's synthetic CCN/IN profile.  Same physics, an
+    #     initialization WRF's initializer refuses to produce.  That is
+    #     published as gpuwm.config.MP28_AEROSOL_SOURCE_DEVIATION and is
+    #     carried in the namelist importer's printed receipt;
+    #   * the registry decides REACHABILITY.  mp=28 registers no template
+    #     and appears in no runner_routes source_template_ids (verified
+    #     against the shipped registry), so it is selectable only as a
+    #     per-domain component override -- never a default, never the
+    #     scheme a user gets by accident.
+    # Adding a blocker here instead would be the wrong shape twice over: it
+    # would refuse the whole scheme for a limitation that is really about
+    # the aerosol SOURCE, and it would hide the WRF citation that makes the
+    # limitation checkable.
     if (
         bl_pbl_physics in PBL_OPTIONS
         and sf_sfclay_physics in SURFACE_LAYER_OPTIONS
@@ -1882,6 +2038,7 @@ __all__ = [
     "NOAHMP_MEASURED_SLAB_CALL_SECONDS",
     "SINGLE_DOMAIN_PHYSICS_PROFILES",
     "MORRISON_PROFILE_ID",
+    "MP28_REGISTRY_OPTION_ID",
     "MULTI_DOMAIN_SELECTION_SCHEMA",
     "land_surface_component_for_selector",
     "land_surface_route_blocker",

@@ -6,6 +6,19 @@ environment and Python ``-I`` from outside the checkout.  It intentionally
 uses the installed package's production parsers, staging path, executable
 probes, and CPU-library ABI check.  The checkout supplies only this verifier
 and the expected artifacts.
+
+``--dry-run`` runs the same assertions over locally staged or fixture-built
+artifacts, outside a live cut.  It skips exactly the four that are properties
+of a wheel installed outside the checkout and of executable target-native
+binaries -- the installed module's location, its version, its packaged pins
+bytes, and the host probes -- and runs every document, wheel, sdist, and
+bundle assertion unchanged.  It exists because this verifier could previously
+only ever run mid-cut: a defect in it (the bundle membership test that
+compared against the binary pins alone, and so refused every bundle the
+current packer produces) burned a live 1.4.1 round before anything could
+catch it.  ``tests/test_verify_release_artifacts.py`` drives this mode
+against bundles the real packer produced, so the next such defect fails in
+CI instead.
 """
 
 from __future__ import annotations
@@ -34,29 +47,59 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+#: What ``--dry-run`` cannot prove outside a live cut, named in its receipt so
+#: a dry-run receipt can never be mistaken for the real one.
+DRY_RUN_SKIPS = (
+    "installed module resolves outside the checkout",
+    "installed distribution version equals the release tag",
+    "installed package data carries the exact pins bytes",
+    "host staging, executable probes, and CPU-library ABI",
+)
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--wheel", type=Path, required=True)
     parser.add_argument("--sdist", type=Path, required=True)
     parser.add_argument("--pins", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--bundles", type=Path, required=True)
     parser.add_argument("--release", required=True)
-    parser.add_argument("--repo-root", type=Path, required=True)
-    parser.add_argument("--stage", type=Path, required=True)
+    parser.add_argument(
+        "--source-rev", required=True,
+        help="full 40-hex git commit being released; every binary in "
+             "every bundle must embed a GPUWM_BRIDGE_SOURCE_REV stamp "
+             "naming exactly this commit")
+    parser.add_argument("--repo-root", type=Path)
+    parser.add_argument("--stage", type=Path)
     parser.add_argument("--receipt", type=Path, required=True)
-    return parser.parse_args()
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="run every document, wheel, sdist, and bundle assertion "
+             "against locally staged or fixture-built artifacts, without "
+             "a wheel installed outside the checkout and without "
+             "executing any bundled binary; see DRY_RUN_SKIPS")
+    args = parser.parse_args(argv)
+    if not args.dry_run:
+        missing = [name for name in ("repo_root", "stage")
+                   if getattr(args, name) is None]
+        if missing:
+            parser.error(
+                "a live cut requires "
+                + ", ".join(f"--{name.replace('_', '-')}"
+                            for name in missing))
+    return args
 
 
-def main() -> int:
-    args = _parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
     wheel = args.wheel.resolve(strict=True)
     sdist = args.sdist.resolve(strict=True)
     pins_path = args.pins.resolve(strict=True)
     manifest_path = args.manifest.resolve(strict=True)
     bundles = args.bundles.resolve(strict=True)
-    repo = args.repo_root.resolve(strict=True)
-    stage = args.stage.resolve()
+    repo = None if args.repo_root is None else args.repo_root.resolve(strict=True)
+    stage = None if args.stage is None else args.stage.resolve()
     receipt_path = args.receipt.resolve()
 
     expected_pins = pins_path.read_bytes()
@@ -104,19 +147,23 @@ def main() -> int:
         assert source.read() == expected_pins
 
     # Under ``python -I`` these resolve from the clean wheel installation, not
-    # the checkout beside the verifier.
+    # the checkout beside the verifier.  Under ``--dry-run`` there is no such
+    # installation, so the three assertions that are about it are the first
+    # thing the mode gives up -- and the only reason it reads the pins from
+    # the named file rather than from the installed package data.
     import gpuwm
     from gpuwm import bridge_assets, bridges, doctor
 
     installed = Path(gpuwm.__file__).resolve()
-    assert not installed.is_relative_to(repo), installed
-    assert args.release == f"v{gpuwm.__version__}", (
-        args.release,
-        gpuwm.__version__,
-    )
-    assert bridge_assets.packaged_pins_path().read_bytes() == expected_pins
+    if not args.dry_run:
+        assert not installed.is_relative_to(repo), installed
+        assert args.release == f"v{gpuwm.__version__}", (
+            args.release,
+            gpuwm.__version__,
+        )
+        assert bridge_assets.packaged_pins_path().read_bytes() == expected_pins
 
-    pins = bridge_assets.load_pins()
+    pins = bridge_assets.load_pins(pins_path if args.dry_run else None)
     assert pins.release == args.release, pins.release
     assert set(pins.platforms) == set(bridge_assets.SUPPORTED_PLATFORMS)
     assert len(pins.platforms) == 2
@@ -160,6 +207,13 @@ def main() -> int:
                 assert len(payload) == pin.bytes, (platform, pin.filename)
                 assert hashlib.sha256(payload).hexdigest() == pin.sha256, (
                     platform, pin.filename)
+                # The hash proves these are the pinned bytes; the stamp
+                # proves the bytes were built from the commit being
+                # released.  Both platforms' binaries are provable from
+                # this one machine because the stamp is read, never run.
+                bridge_assets.verify_source_revision(
+                    payload, expected=args.source_rev,
+                    label=f"{platform}: {pin.filename}")
             for pin in bundle.assets:
                 payload = archive.read(pin.path)
                 assert len(payload) == pin.bytes, (platform, pin.path)
@@ -174,63 +228,74 @@ def main() -> int:
             "assets": len(bundle.assets),
         }
 
-    offer = bridges.prebuilt_bundle_offer()
-    assert offer is not None
-    live = [
-        line.strip()
-        for line in offer
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    assert live == ["gpuwm fetch-bridges"], live
-
-    if stage.exists():
-        assert not any(stage.iterdir()), stage
-    fetch_args = SimpleNamespace(
-        dest=str(stage), from_dir=str(bundles), list=False, keep_bundle=False
-    )
-    assert bridge_assets.fetch_bridges_main(fetch_args) == 0
-    host = bridge_assets.host_platform()
-    host_bundle = pins.bundle_for(host)
-    assert host_bundle is not None
+    # Everything past here needs the offer the *installed* wheel makes and
+    # binaries this host can execute.  A dry run has neither, and inventing
+    # either would make its receipt a lie.
+    live: list[str] = []
+    host: str | None = None
     probes: list[dict[str, object]] = []
-    for pin in host_bundle.binaries:
-        path = stage / pin.filename
-        assert bridge_assets.matches_pin(path, pin), path
-        artifact = by_name[pin.artifact]
-        if artifact.kind == "executable":
-            ok, evidence = doctor._exec_probe(path)
-            assert ok, (path, evidence)
-            probes.append(
-                {
-                    "artifact": artifact.name,
-                    "filename": pin.filename,
-                    "kind": artifact.kind,
-                    "evidence": evidence,
-                    "status": "PASS",
-                }
-            )
-        else:
-            library = ctypes.CDLL(str(path))
-            abi = library.gpuwm_preprocess_cpu_abi_version
-            abi.argtypes = []
-            abi.restype = ctypes.c_uint32
-            assert int(abi()) == 1
-            probes.append(
-                {
-                    "artifact": artifact.name,
-                    "filename": pin.filename,
-                    "kind": artifact.kind,
-                    "abi": 1,
-                    "status": "PASS",
-                }
-            )
+    if not args.dry_run:
+        offer = bridges.prebuilt_bundle_offer()
+        assert offer is not None
+        live = [
+            line.strip()
+            for line in offer
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        assert live == ["gpuwm fetch-bridges"], live
+
+        if stage.exists():
+            assert not any(stage.iterdir()), stage
+        fetch_args = SimpleNamespace(
+            dest=str(stage), from_dir=str(bundles), list=False,
+            keep_bundle=False
+        )
+        assert bridge_assets.fetch_bridges_main(fetch_args) == 0
+        host = bridge_assets.host_platform()
+        host_bundle = pins.bundle_for(host)
+        assert host_bundle is not None
+        for pin in host_bundle.binaries:
+            path = stage / pin.filename
+            assert bridge_assets.matches_pin(path, pin), path
+            artifact = by_name[pin.artifact]
+            if artifact.kind == "executable":
+                ok, evidence = doctor._exec_probe(path)
+                assert ok, (path, evidence)
+                probes.append(
+                    {
+                        "artifact": artifact.name,
+                        "filename": pin.filename,
+                        "kind": artifact.kind,
+                        "evidence": evidence,
+                        "status": "PASS",
+                    }
+                )
+            else:
+                library = ctypes.CDLL(str(path))
+                abi = library.gpuwm_preprocess_cpu_abi_version
+                abi.argtypes = []
+                abi.restype = ctypes.c_uint32
+                assert int(abi()) == 1
+                probes.append(
+                    {
+                        "artifact": artifact.name,
+                        "filename": pin.filename,
+                        "kind": artifact.kind,
+                        "abi": 1,
+                        "status": "PASS",
+                    }
+                )
 
     receipt = {
         "schema": "gpuwm-release-artifact-proof-v1",
+        "mode": "dry-run" if args.dry_run else "cut",
+        "not_proven": list(DRY_RUN_SKIPS) if args.dry_run else [],
         "status": "PASS",
         "release": args.release,
+        "source_rev": args.source_rev,
+        "source_rev_stamp_verified_in_every_binary": True,
         "installed_module": str(installed),
-        "installed_version": gpuwm.__version__,
+        "installed_version": gpuwm.__version__ if not args.dry_run else None,
         "wheel": {
             "filename": wheel.name,
             "bytes": wheel.stat().st_size,

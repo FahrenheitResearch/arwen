@@ -272,7 +272,17 @@ def rule_for_field(name: str) -> FieldRule:
     if leaf in ("qv", "qc", "qr", "qi", "qs", "qg", "qh"):
         return FieldRule("moisture", 0.0, 1.0)
     if leaf in ("nc", "nr", "ni", "ns", "ng", "qndrop", "qnr", "qni",
-                "qns", "qng", "qnh", "qnn"):
+                "qns", "qng", "qnh", "qnn",
+                # mp=28 aerosol number tracers, per kilogram.  WRF's own
+                # terminal clamp holds them inside [11.1E6, 9999.E6] and
+                # [5.0E3, 9999.E6] (module_mp_thompson.F:3977-3982), and
+                # the deliberately unclamped surface emission at :1310-1327
+                # can push the lowest level above the ceiling between the
+                # clamp and the next call's entry pack.  The existing
+                # 1.0e15 "moment" ceiling is four decades of headroom over
+                # that, so this rule catches a blow-up without pretending
+                # to enforce the scheme's own bounds.
+                "nwfa", "nifa"):
         return FieldRule("moment", 0.0, 1.0e15)
     if leaf in ("qvolg", "qvolh"):
         return FieldRule("particle_volume", 0.0, 1.0)
@@ -368,7 +378,8 @@ def collect_state_fields(state: Any, *, backend: str = "cpu",
     for name in (
             "u", "v", "w", "thp", "php", "mup", "p", "al", "alt",
             "qv", "qc", "qr", "qi", "qs", "qg", "nc", "nr", "ni",
-            "ns", "ng", "qh", "qndrop", "qnr", "qni", "qns", "qng",
+            "ns", "ng", "nwfa", "nifa",
+            "qh", "qndrop", "qnr", "qni", "qns", "qng",
             "qnh", "qnn", "qvolg", "qvolh", "effc", "effr", "effi",
             "effs", "h_diabatic"):
         value = getattr(state, name, None)

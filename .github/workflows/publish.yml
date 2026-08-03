@@ -5,11 +5,24 @@
 # owner `FahrenheitResearch`, repository `arwen`, workflow `publish.yml`,
 # environment `pypi`.
 #
+# Two ingresses, one set of proofs.  Publishing a GitHub release is a cut
+# motion -- it is how every release through v1.4.0 shipped -- and a manual
+# dispatch on the exact tag is the other.  The tag comes from the release
+# payload on the release event and from the required input on a dispatch;
+# every job then compares it against the selected ref either way.  Which
+# ingress ran changes exactly one thing: the release state each job expects
+# to see (a draft the final job promotes, or a release already public).
+# Every byte proof below is identical on both paths.
+#
 # Order and privilege separation are part of the release contract:
 #
-#   test -> release_authority -> cut
+#   test -> release_authority (also captures assets a previous run
+#           already uploaded to the draft: Rust builds are not
+#           byte-reproducible, so a re-run must adopt those exact bytes)
+#          -> cut
 #          -> bridges (one target-native build/probe per platform)
-#          -> prepare (generate pins; build and prove exact dists)
+#          -> prepare (adopt captured assets by content contract;
+#             generate pins; build and prove exact dists)
 #          -> assets (reconcile the proven bridge payload on the draft)
 #          -> authorize_pypi (re-prove draft, assets, and tag commit)
 #          -> publish (push the already-proven dists to PyPI)
@@ -23,12 +36,27 @@
 name: publish
 
 on:
+  # Publishing a GitHub release cuts a release.  Restored by owner ruling
+  # 2026-08-03: it was the motion for every release through v1.4.0, it was
+  # removed on 2026-08-01 without one, and the tag it carries is exactly the
+  # tag a dispatch has to be told.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
         description: Exact vX.Y.Z tag selected as this workflow's ref
         required: true
         type: string
+      stable_release_expected:
+        description: >-
+          Optional. Tick to require a stable X.Y.Z version; the cut then
+          refuses any other pyproject version. Left unticked -- the default --
+          a non-stable version publishes and the cut prints a workflow warning
+          naming what it is.
+        required: false
+        default: false
+        type: boolean
       immutable_releases_enabled:
         description: >-
           Optional. Tick only if GitHub release immutability was enabled BEFORE
@@ -73,7 +101,9 @@ jobs:
             tests/test_namelist_compat.py \
             tests/test_native_wrf_distribution.py \
             tests/test_publish_workflow_state_machine.py \
-            tests/test_verify_source_bridge_pins.py
+            tests/test_bridge_bundle_adopt.py \
+            tests/test_verify_source_bridge_pins.py \
+            tests/test_verify_release_artifacts.py
 
   # Draft visibility requires push authority. Isolate that authority in a
   # no-checkout, no-OIDC cell and pass only the captured ID/tag/commit on.
@@ -87,10 +117,17 @@ jobs:
       tag: ${{ steps.capture.outputs.tag }}
       release_id: ${{ steps.capture.outputs.release_id }}
       commit: ${{ steps.capture.outputs.commit }}
+      prerelease: ${{ steps.capture.outputs.prerelease }}
     steps:
       - id: capture
         env:
-          DISPATCH_RELEASE_TAG: ${{ inputs.release_tag }}
+          # The release event carries its own tag; a dispatch is told one.
+          DISPATCH_RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
+          # Which release state this ingress implies.  A dispatch expects a
+          # draft it will promote in the final job; the release event fires
+          # on an already-public release, so there is nothing left to promote
+          # and the final job's already-public path is the whole of it.
+          EXPECTED_DRAFT: ${{ github.event_name == 'release' && 'false' || 'true' }}
           IMMUTABLE_RELEASES_CONFIRMED: ${{ inputs.immutable_releases_enabled }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -114,11 +151,31 @@ jobs:
             exit 1
           fi
           matches=$(gh api --paginate --slurp -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" | jq -c --arg tag "$tag" '[.[][] | select(.tag_name == $tag)]')
-          if [ "$(jq 'length' <<<"$matches")" -ne 1 ] \
-             || [ "$(jq -r '.[0].draft' <<<"$matches")" != "true" ] \
-             || [ "$(jq -r '.[0].prerelease' <<<"$matches")" != "false" ]; then
-            echo "exactly one authenticated non-prerelease draft must carry tag $tag" >&2
+          # Integrity, and it stays a refusal: two releases on one tag means
+          # the cut cannot know which one it is publishing, and one release
+          # in the wrong state for this ingress means the motion is not the
+          # one the trigger claimed.
+          if [ "$(jq 'length' <<<"$matches")" -ne 1 ]; then
+            echo "exactly one authenticated release must carry tag $tag" >&2
             exit 1
+          fi
+          if [ "$(jq -r '.[0].draft' <<<"$matches")" != "$EXPECTED_DRAFT" ]; then
+            echo "release $tag must have draft=$EXPECTED_DRAFT for a ${GITHUB_EVENT_NAME:-workflow_dispatch} cut" >&2
+            exit 1
+          fi
+          # Procedure, not integrity, and demoted to a warning by owner ruling
+          # 2026-08-03.  "Stable versions are never GitHub prereleases" is a
+          # convention the operator owns, not a property of these bytes.  The
+          # captured value is carried to every later job, which re-proves the
+          # state is still the one captured here -- so a prerelease publishes
+          # as a prerelease rather than being silently cleared.
+          prerelease=$(jq -r '.[0].prerelease' <<<"$matches")
+          if [[ ! "$prerelease" =~ ^(true|false)$ ]]; then
+            echo "release $tag has a non-boolean prerelease state" >&2
+            exit 1
+          fi
+          if [ "$prerelease" != "false" ]; then
+            echo "::warning::release $tag is marked prerelease; it is published as one and its prerelease state is carried through the cut unchanged"
           fi
           release_id=$(jq -r '.[0].id' <<<"$matches")
           if [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
@@ -147,12 +204,82 @@ jobs:
           echo "tag=$tag" >>"$GITHUB_OUTPUT"
           echo "release_id=$release_id" >>"$GITHUB_OUTPUT"
           echo "commit=$object_sha" >>"$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >>"$GITHUB_OUTPUT"
+      # A re-run's recovery path starts here.  Rust bridge builds are not
+      # byte-reproducible, so a re-dispatched run rebuilds different zips
+      # than the ones a previous run already uploaded -- and the assets
+      # job's byte-identity reconcile would strand the release on that
+      # difference.  This cell is the only one that can see the draft's
+      # assets, so it captures them (with the sizes and digests GitHub
+      # recorded at upload) for `prepare` to adopt by content contract.
+      # A first run captures an empty inventory and changes nothing.
+      - name: capture the assets the draft already carries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ steps.capture.outputs.release_id }}
+          RELEASE_TAG: ${{ steps.capture.outputs.tag }}
+          EXPECTED_DRAFT: ${{ github.event_name == 'release' && 'false' || 'true' }}
+        run: |
+          set -euo pipefail
+          mkdir -p draft-held/assets
+          # Resolve through the full paginated list, never a GET by id:
+          # authority here means the captured id still names exactly one
+          # draft carrying exactly the selected tag.
+          matches=$(gh api --paginate --slurp -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" | jq -c --argjson id "$RELEASE_ID" '[.[][] | select(.id == $id)]')
+          if [ "$(jq 'length' <<<"$matches")" -ne 1 ]; then
+            echo "captured release id no longer resolves exactly once" >&2
+            exit 1
+          fi
+          release_json=$(jq -c '.[0]' <<<"$matches")
+          if [ "$(jq -r '.tag_name' <<<"$release_json")" != "$RELEASE_TAG" ] \
+             || [ "$(jq -r '.draft' <<<"$release_json")" != "$EXPECTED_DRAFT" ]; then
+            echo "captured release changed while capturing its assets" >&2
+            exit 1
+          fi
+          jq '[.assets[] | {name, state, size, digest: (.digest // null)}]' <<<"$release_json" >draft-held/inventory.json
+          count=0
+          while IFS= read -r asset; do
+            [ -n "$asset" ] || continue
+            state=$(jq -r '.state' <<<"$asset")
+            if [ "$state" != "uploaded" ]; then
+              continue
+            fi
+            name=$(jq -r '.name' <<<"$asset")
+            if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+              echo "uploaded draft asset name is not URL-safe: $name" >&2
+              exit 1
+            fi
+            asset_id=$(jq -r '.id' <<<"$asset")
+            if [[ ! "$asset_id" =~ ^[0-9]+$ ]]; then
+              echo "uploaded draft asset $name has a non-numeric id" >&2
+              exit 1
+            fi
+            size=$(jq -r '.size' <<<"$asset")
+            digest=$(jq -r '.digest // ""' <<<"$asset")
+            curl --fail-with-body --silent --show-error --location -H "Accept: application/octet-stream" -H "Authorization: Bearer $GH_TOKEN" -H "X-GitHub-Api-Version: 2026-03-10" --output "draft-held/assets/$name" "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"
+            actual_size=$(stat -c '%s' -- "draft-held/assets/$name")
+            actual_sha=$(sha256sum -- "draft-held/assets/$name" | awk '{print $1}')
+            if [ "$actual_size" != "$size" ] \
+               || { [ -n "$digest" ] && [ "$digest" != "sha256:$actual_sha" ]; }; then
+              echo "downloaded draft asset $name does not match its recorded size and digest" >&2
+              exit 1
+            fi
+            count=$((count + 1))
+          done < <(jq -c '.assets[]' <<<"$release_json")
+          echo "captured $count uploaded asset(s) the draft already carries"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: draft-held-assets
+          path: draft-held
+          if-no-files-found: error
 
   # Resolve one name once, and prove that the event, Git ref, checkout, tag,
   # pyproject, and intentionally-unpinned source archive all describe the same
-  # immutable commit and an existing draft release. Publication has one initial
-  # trigger (manual dispatch from that tag); the last job makes the draft public
-  # only after its assets and PyPI distributions have passed.
+  # immutable commit and the release release_authority captured. Either
+  # ingress lands here identically; on the dispatch ingress the last job makes
+  # the captured draft public only after its assets and PyPI distributions
+  # have passed.
   cut:
     if: github.event_name != 'pull_request'
     needs: [test, release_authority]
@@ -162,6 +289,9 @@ jobs:
       release_id: ${{ steps.resolve.outputs.release_id }}
       version: ${{ steps.resolve.outputs.version }}
       commit: ${{ steps.resolve.outputs.commit }}
+      # Forwarded, not re-read: every later job re-proves the release still
+      # carries the prerelease state release_authority captured.
+      prerelease: ${{ needs.release_authority.outputs.prerelease }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -174,15 +304,27 @@ jobs:
         run: python tools/verify_source_bridge_pins.py
       - id: resolve
         env:
-          DISPATCH_RELEASE_TAG: ${{ inputs.release_tag }}
+          DISPATCH_RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
+          # Empty on any trigger that is not workflow_dispatch, which the
+          # comparison below treats as "not opted in".
+          STABLE_RELEASE_EXPECTED: ${{ inputs.stable_release_expected }}
           CAPTURED_RELEASE_ID: ${{ needs.release_authority.outputs.release_id }}
           CAPTURED_REMOTE_COMMIT: ${{ needs.release_authority.outputs.commit }}
         run: |
           set -euo pipefail
           version=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          # Opt-in, following the immutability idiom.  Whether a public cut
+          # must carry a stable X.Y.Z is the operator's call, not this file's:
+          # tick the input and a non-stable version is refused exactly as
+          # before; leave it unticked -- the default -- and the cut names what
+          # it is publishing and proceeds.  Demoted by owner ruling
+          # 2026-08-03; the refusal was added on 2026-08-01 without one.
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "public release version must be stable X.Y.Z, not $version" >&2
-            exit 1
+            if [ "$STABLE_RELEASE_EXPECTED" = "true" ]; then
+              echo "stable_release_expected was ticked, but $version is not a stable X.Y.Z" >&2
+              exit 1
+            fi
+            echo "::warning::publishing non-stable version $version; tick stable_release_expected to refuse anything but X.Y.Z"
           fi
           tag="$DISPATCH_RELEASE_TAG"
           if [ -z "$tag" ] || [ "$tag" != "$GITHUB_REF_NAME" ]; then
@@ -258,6 +400,7 @@ jobs:
         shell: bash
         env:
           BUNDLE_PLATFORM: ${{ matrix.platform }}
+          BUNDLE_SOURCE_REV: ${{ needs.cut.outputs.commit }}
         run: |
           python - <<'PY'
           import ctypes
@@ -267,6 +410,7 @@ jobs:
           from gpuwm import bridge_assets, doctor
 
           platform = os.environ["BUNDLE_PLATFORM"]
+          source_rev = os.environ["BUNDLE_SOURCE_REV"]
           search = (
               Path("tools/grib1_bridge/target/release"),
               Path("tools/rustwx/target/release"),
@@ -277,6 +421,12 @@ jobs:
                          if (directory / filename).is_file()]
               assert len(matches) == 1, (artifact.name, matches)
               path = matches[0]
+              # The build just ran from this checkout, so its embedded
+              # source-revision stamp must name the cut commit.  Failing
+              # here, on the platform runner, is hours earlier than the
+              # same refusal at the pin step.
+              bridge_assets.verify_source_revision(
+                  path.read_bytes(), expected=source_rev, label=str(path))
               if artifact.kind == "executable":
                   ok, evidence = doctor._exec_probe(path)
                   assert ok, (path, evidence)
@@ -321,10 +471,30 @@ jobs:
           pattern: bridges-*
           merge-multiple: true
           path: dist-bridges
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: draft-held-assets
+          path: draft-held
+      # On a re-run the draft may already carry uploaded bundles from a
+      # previous run's non-reproducible build.  Adopt them by content
+      # contract -- exact member list, map-asset bytes hash-checked
+      # against this checkout, the uploaded manifest pinning them member
+      # by member -- so the pins, the wheel, and the assets job's
+      # byte-identity reconcile all describe the bytes the draft holds.
+      # A diverging member is named and the run refuses.  On a first run
+      # nothing was uploaded and nothing changes.
+      - name: adopt the assets the draft already carries, by content contract
+        run: |
+          python tools/build_bridge_bundle.py adopt \
+            --release '${{ needs.cut.outputs.tag }}' \
+            --held draft-held \
+            --bundles dist-bridges \
+            --source-rev '${{ needs.cut.outputs.commit }}'
       - name: generate pins and manifest from the candidate asset bytes
         run: |
           python tools/build_bridge_bundle.py pin \
             --release '${{ needs.cut.outputs.tag }}' \
+            --source-rev '${{ needs.cut.outputs.commit }}' \
             $(for bundle in dist-bridges/*.zip; do printf -- '--bundle %s ' "$bundle"; done) \
             --out gpuwm/data/bridges/bridge-pins.json \
             --manifest dist-bridges/bridge-bundle-manifest.json
@@ -334,6 +504,7 @@ jobs:
         shell: bash
         env:
           RELEASE_TAG: ${{ needs.cut.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.cut.outputs.commit }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -364,6 +535,7 @@ jobs:
             --manifest "$GITHUB_WORKSPACE/dist-bridges/bridge-bundle-manifest.json" \
             --bundles "$GITHUB_WORKSPACE/dist-bridges" \
             --release "$RELEASE_TAG" \
+            --source-rev "$RELEASE_COMMIT" \
             --repo-root "$GITHUB_WORKSPACE" \
             --stage "$smoke/staged" \
             --receipt "$GITHUB_WORKSPACE/release-proof/release-artifact-proof.json"
@@ -426,6 +598,8 @@ jobs:
           RELEASE_ID: ${{ needs.cut.outputs.release_id }}
           RELEASE_TAG: ${{ needs.cut.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.cut.outputs.commit }}
+          EXPECTED_DRAFT: ${{ github.event_name == 'release' && 'false' || 'true' }}
+          CAPTURED_PRERELEASE: ${{ needs.cut.outputs.prerelease }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -473,10 +647,14 @@ jobs:
             by_id=$(jq -c '.[0]' <<<"$id_matches")
             by_tag=$(jq -c '.[0]' <<<"$tag_matches")
             remote_commit=$(resolve_remote_tag_commit) || return 1
+            # Compared against what release_authority captured, never against
+            # a literal: the property this re-proof owns is "nothing moved
+            # since capture", which is integrity.  Whether the operator marked
+            # the release a prerelease is their call, made once, upstream.
             if [ "$(jq -r '.id' <<<"$by_id")" != "$RELEASE_ID" ] \
                || [ "$(jq -r '.tag_name' <<<"$by_id")" != "$RELEASE_TAG" ] \
-               || [ "$(jq -r '.draft' <<<"$by_id")" != "true" ] \
-               || [ "$(jq -r '.prerelease' <<<"$by_id")" != "false" ] \
+               || [ "$(jq -r '.draft' <<<"$by_id")" != "$EXPECTED_DRAFT" ] \
+               || [ "$(jq -r '.prerelease' <<<"$by_id")" != "$CAPTURED_PRERELEASE" ] \
                || [ "$(jq -r '.id' <<<"$by_tag")" != "$RELEASE_ID" ] \
                || [ "$remote_commit" != "$RELEASE_COMMIT" ]; then
               echo "captured release id/tag/draft/commit authority changed before asset publication" >&2
@@ -536,7 +714,14 @@ jobs:
             echo "immutable release asset already matches: $name"
           done
 
-          for name in "${!local_path[@]}"; do
+          # Bundles first, the manifest last.  The manifest pins the
+          # bundles' exact bytes, so uploading it only after every bundle
+          # it pins means an interrupted run can never leave a manifest
+          # on the draft pinning bundle bytes the draft does not hold --
+          # the one partial state a re-run could never adopt, because a
+          # non-reproducible rebuild cannot recreate those bytes.
+          manifest_name=$(basename "${manifests[0]}")
+          for name in $(printf '%s\n' "${!local_path[@]}" | grep -Fxv -- "$manifest_name" | sort) "$manifest_name"; do
             if [[ -z "${present[$name]:-}" ]]; then
               path="${local_path[$name]}"
               curl --fail-with-body --silent --show-error --request POST -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GH_TOKEN" -H "X-GitHub-Api-Version: 2026-03-10" -H "Content-Type: application/octet-stream" --data-binary "@$path" "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=$name" >/dev/null
@@ -585,6 +770,8 @@ jobs:
           RELEASE_ID: ${{ needs.cut.outputs.release_id }}
           RELEASE_TAG: ${{ needs.cut.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.cut.outputs.commit }}
+          EXPECTED_DRAFT: ${{ github.event_name == 'release' && 'false' || 'true' }}
+          CAPTURED_PRERELEASE: ${{ needs.cut.outputs.prerelease }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -615,9 +802,9 @@ jobs:
           by_tag=$(jq -c '.[0]' <<<"$tag_matches")
           if [ "$(jq -r '.id' <<<"$by_tag")" != "$RELEASE_ID" ] \
              || [ "$(jq -r '.tag_name' <<<"$by_id")" != "$RELEASE_TAG" ] \
-             || [ "$(jq -r '.draft' <<<"$by_id")" != "true" ] \
-             || [ "$(jq -r '.prerelease' <<<"$by_id")" != "false" ]; then
-            echo "captured draft id/tag/state changed before PyPI" >&2
+             || [ "$(jq -r '.draft' <<<"$by_id")" != "$EXPECTED_DRAFT" ] \
+             || [ "$(jq -r '.prerelease' <<<"$by_id")" != "$CAPTURED_PRERELEASE" ]; then
+            echo "captured release id/tag/state changed before PyPI" >&2
             exit 1
           fi
 
@@ -775,7 +962,35 @@ jobs:
           shopt -s nullglob
           files=(dist/*)
           state="$RUNNER_TEMP/pypi-after.json"
-          status=$(curl --silent --show-error --location -H "Accept: application/json" -H "Cache-Control: no-cache" --output "$state" --write-out '%{http_code}' "https://pypi.org/pypi/${PYPI_PROJECT}/${PYPI_VERSION}/json")
+          # The upload above can return 200 OK a beat before PyPI's JSON API
+          # lists the new version -- index lag measured in the hundreds of
+          # milliseconds, occasionally longer.  Retry ONLY this index read,
+          # only while it answers 404, with exponential backoff bounded at
+          # five minutes total.  Any other status, and every exact-state
+          # assertion below, keeps its original single-shot fail-closed
+          # semantics: once the budget is exhausted a 404 is the same hard
+          # failure it always was.
+          budget="${PYPI_INDEX_RETRY_BUDGET_SECONDS:-300}"
+          delay="${PYPI_INDEX_RETRY_INITIAL_DELAY_SECONDS:-1}"
+          if [ "$delay" -lt 1 ]; then
+            delay=1
+          fi
+          elapsed=0
+          while :; do
+            status=$(curl --silent --show-error --location -H "Accept: application/json" -H "Cache-Control: no-cache" --output "$state" --write-out '%{http_code}' "https://pypi.org/pypi/${PYPI_PROJECT}/${PYPI_VERSION}/json")
+            if [ "$status" != "404" ] || [ "$elapsed" -ge "$budget" ]; then
+              break
+            fi
+            pause=$delay
+            remaining=$((budget - elapsed))
+            if [ "$pause" -gt "$remaining" ]; then
+              pause=$remaining
+            fi
+            echo "PyPI index does not list ${PYPI_PROJECT} ${PYPI_VERSION} yet (HTTP 404); retrying in ${pause}s"
+            sleep "$pause"
+            elapsed=$((elapsed + pause))
+            delay=$((delay * 2))
+          done
           if [ "$status" != "200" ]; then
             echo "PyPI exact-state proof returned HTTP $status" >&2
             exit 1
@@ -828,6 +1043,13 @@ jobs:
           RELEASE_COMMIT: ${{ needs.cut.outputs.commit }}
           PYPI_PROJECT: gpuwm
           PYPI_VERSION: ${{ needs.cut.outputs.version }}
+          # The prerelease state release_authority captured.  Promotion
+          # preserves it rather than forcing it to false: with the
+          # non-prerelease check demoted to a warning upstream, clearing the
+          # flag here would publish as stable something the operator marked
+          # otherwise -- a silent state change, which is worse than either
+          # refusing or preserving.
+          CAPTURED_PRERELEASE: ${{ needs.cut.outputs.prerelease }}
           # Empty on any trigger that is not workflow_dispatch, which the
           # comparisons below treat as "not opted in".  Declared here because
           # this step runs under `set -u` and the input is otherwise only in
@@ -853,7 +1075,7 @@ jobs:
           by_tag=$(jq -c '.[0]' <<<"$tag_matches")
           if [ "$(jq -r '.tag_name' <<<"$current")" != "$RELEASE_TAG" ] \
              || [ "$(jq -r '.id' <<<"$by_tag")" != "$RELEASE_ID" ] \
-             || [ "$(jq -r '.prerelease' <<<"$current")" != "false" ]; then
+             || [ "$(jq -r '.prerelease' <<<"$current")" != "$CAPTURED_PRERELEASE" ]; then
             echo "captured release id/tag authority changed before promotion" >&2
             exit 1
           fi
@@ -938,10 +1160,13 @@ jobs:
           # otherwise a retry after a successful promotion would fail this
           # test, fall through to the draft check below, find draft=false and
           # abort with "invalid draft state" on a release that is in fact fine.
+          # This is also the whole of the release-event ingress: that trigger
+          # fires on an already-public release, so everything above proved it
+          # and there is nothing left to promote.
           if [ "$(jq -r '.draft' <<<"$current")" = "false" ] \
              && { [ "$IMMUTABLE_RELEASES_CONFIRMED" != "true" ] \
                   || [ "$(jq -r '.immutable' <<<"$current")" = "true" ]; } \
-             && [ "$(jq -r '.prerelease' <<<"$current")" = "false" ]; then
+             && [ "$(jq -r '.prerelease' <<<"$current")" = "$CAPTURED_PRERELEASE" ]; then
             echo "release ${RELEASE_TAG} is already public at the captured id"
             exit 0
           fi
@@ -949,7 +1174,7 @@ jobs:
             echo "release ${RELEASE_TAG} has an invalid draft state" >&2
             exit 1
           fi
-          gh api --method PATCH -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false -F prerelease=false >/dev/null
+          gh api --method PATCH -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false -F "prerelease=$CAPTURED_PRERELEASE" >/dev/null
           after_releases=$(gh api --paginate --slurp -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/releases?per_page=100")
           after_id_matches=$(jq -c --argjson id "$RELEASE_ID" '[.[][] | select(.id == $id)]' <<<"$after_releases")
           after_tag_matches=$(jq -c --arg tag "$RELEASE_TAG" '[.[][] | select(.tag_name == $tag)]' <<<"$after_releases")
@@ -1013,15 +1238,18 @@ jobs:
             fi
           done
           # Everything that proves THIS cut published what it built stays a hard
-          # gate: the release id, the tag, the public/non-prerelease state, the
-          # tag resolving to the exact commit, and the asset and PyPI byte
-          # checks above.  Immutability is the one leg that is a repo setting
+          # gate: the release id, the tag, the release going public with the
+          # prerelease state it was captured with, the tag resolving to the
+          # exact commit, and the asset and PyPI byte checks above.  What is
+          # not asserted is that the operator chose any particular prerelease
+          # value -- that is procedure, and it warns upstream.
+          # Immutability is the one leg that is a repo setting
           # rather than a property of this cut, so it is asserted only when the
           # operator opted in, and reported otherwise.
           if [ "$(jq -r '.id' <<<"$after")" != "$RELEASE_ID" ] \
              || [ "$(jq -r '.tag_name' <<<"$after")" != "$RELEASE_TAG" ] \
              || [ "$(jq -r '.draft' <<<"$after")" != "false" ] \
-             || [ "$(jq -r '.prerelease' <<<"$after")" != "false" ] \
+             || [ "$(jq -r '.prerelease' <<<"$after")" != "$CAPTURED_PRERELEASE" ] \
              || [ "$(jq -r '.id' <<<"$after_by_tag")" != "$RELEASE_ID" ] \
              || [ "$after_object_type" != "commit" ] \
              || [ "$after_object_sha" != "$RELEASE_COMMIT" ]; then

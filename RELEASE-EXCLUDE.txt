@@ -20,6 +20,15 @@
 # for a file that is genuinely not worth scrubbing -- never the first
 # resort.
 
+# The mp_physics=28 port's own working spec and closing handoff.  The spec
+# is 127 KB of work-package narrative with a developer's WRF checkout path
+# in five places; the handoff is the port author's note to its successor.
+# Both are development-campaign records, and both are tracked here because
+# the port survived only as an unversioned directory -- committing them is
+# what stops the design record from having exactly one copy again.
+MP28_PORT_SPEC.md
+MP28_HANDOFF.md
+
 # Campaign handoffs and internal project history (developer paths inside).
 docs/gpuwm-controller-handoff.md
 docs/lead-handoff-2026-07-26.md
@@ -77,3 +86,12 @@ tools/rrtmg_wrf461_oracle/sw_fixtures/sw-oracle-sha256sums.txt
 # install scripts run that automatically; the development tree keeps
 # the file tracked as the source of truth for the release asset.
 gpuwm/data/thompson/tables/freezeH2O.dat
+
+# Raw test-run transcripts must never ship at repo root: they are triage
+# working evidence (the 1.4.1 battery evidence deliberately lived beside
+# the repo, not in it), and a top-level failure log is the first thing a
+# stranger would open (1.5.0 cut finding, 2026-08-03).
+cpu_suite.log
+gpu_tier.log
+gpu_retry.log
+gpu_failed_ids.txt

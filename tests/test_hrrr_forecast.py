@@ -6,6 +6,7 @@ import pytest
 
 from gpuwm.hrrr_forecast import (
     hrrr_cycle_horizon,
+    hrrr_forcing_end_hour,
     hrrr_source_window,
     validate_hrrr_source_forecast_hours,
 )
@@ -50,3 +51,30 @@ def test_source_lead_validator_rejects_gaps_duplicates_and_global_overrun():
     for hours in ((12, 14), (12, 12), (48, 49)):
         with pytest.raises(ValueError):
             validate_hrrr_source_forecast_hours(hours)
+
+
+def test_forcing_end_hour_is_the_one_shared_endpoint_ceiling():
+    """The endpoint convention both HRRR stages must derive from.
+
+    A sub-hour run's endpoint lies BETWEEN forcing hours -- 900 s ends
+    at 0.25 h, between f000 and f001 -- and hourly boundary forcing
+    brackets every model instant between two frames, so the endpoint is
+    a ceiling with a floor of one, never ``run_seconds // 3600``.  The
+    preparer already sized its window this way; the direct hierarchy
+    recomputed the endpoint with a floor and refused the preparer's own
+    sub-hour roots ("expected (0,), got (0, 1)").
+    """
+
+    assert hrrr_forcing_end_hour(900.0) == 1
+    assert hrrr_forcing_end_hour(3600.0) == 1
+    assert hrrr_forcing_end_hour(3600) == 1
+    assert hrrr_forcing_end_hour(3601.0) == 2
+    assert hrrr_forcing_end_hour(43_200.0) == 12
+    for invalid in (0.0, -900.0, float("nan"), float("inf"), True):
+        with pytest.raises(ValueError, match="finite and positive"):
+            hrrr_forcing_end_hour(invalid)
+    # The preparer's window is this same arithmetic offset by the start
+    # lead: a 900 s run at lead 0 fetches and seals f000 AND f001.
+    assert hrrr_source_window(
+        cycle=datetime(2026, 7, 28, 18), start_hour=0,
+        run_seconds=900.0) == (0, 1)

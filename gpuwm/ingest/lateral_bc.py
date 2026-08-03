@@ -417,8 +417,12 @@ def apply_specified_relaxation(field, tendency, boundary: FieldBoundary, *,
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("CuPy is required for specified boundaries") from exc
     if state is not None:
+        # mp=28 adds nc/nwfa/nifa.  No kernel change is needed: the ``kind``
+        # lookup below falls through to the generic scalar code 7, which is
+        # what every non-qv scalar already uses.
         supported = {"u", "v", "w", "theta", "phi", "mu", "qv", "qc",
                      "qr", "qi", "qs", "qg", "nr", "ni", "ns", "ng",
+                     "nc", "nwfa", "nifa",
                      "qh", "qndrop", "qnr", "qni", "qns", "qng", "qnh",
                      "qnn", "qvolg", "qvolh"}
         if field_name not in supported:
@@ -585,6 +589,15 @@ def _coupled_device_fields(state):
     # WRF specified-domain moisture policy without hydrometeor boundary
     # arrays: only water vapor is carried by the external LBC snapshots.
     # Condensate species use flow_dep_bdy after their RK scalar update.
+    #
+    # REGISTERED DEVIATION, mp_physics=28.  nc/nwfa/nifa are deliberately NOT
+    # added here.  WRF's Registry does give qnwfa/qnifa real ``bdy`` arrays
+    # (fed from the WIF metgrid stream that ArWen has no ingest for), so on a
+    # specified domain ArWen advects AEROSOL-FREE air in through every inflow
+    # face and monotonically depletes nwfa/nifa in the boundary zone.  The
+    # full argument, its bounds and its blast radius are written down once, in
+    # gpuwm/core/moist.py's module docstring; extending this dict is the
+    # change that would retire it, and it must not happen by accident.
     if state.qv is not None:
         result["qv"] = chm * state.qv
     return result
@@ -612,7 +625,8 @@ def couple_nest_field(state, field_name: str, *, out):
             f"nest coupled output for {field_name} has shape {out.shape}, "
             f"expected {expected}")
     scalar_names = {"qv", "qc", "qr", "qi", "qs", "qg",
-                    "nr", "ni", "ns", "ng", "qh", "qndrop", "qnr",
+                    "nr", "ni", "ns", "ng", "nc", "nwfa", "nifa",
+                    "qh", "qndrop", "qnr",
                     "qni", "qns", "qng", "qnh", "qnn", "qvolg", "qvolh"}
     if field_name not in {"u", "v", "w", "t", "ph", "mu"} | scalar_names:
         raise ValueError(f"unsupported nest coupling field {field_name!r}")
@@ -655,7 +669,8 @@ def uncouple_feedback_field(state, field_name: str, coupled, reg, *,
             f"coupled feedback field {field_name} has shape "
             f"{tuple(coupled.shape)}, expected {tuple(target.shape)}")
     scalar_names = {"qv", "qc", "qr", "qi", "qs", "qg",
-                    "nr", "ni", "ns", "ng", "qh", "qndrop", "qnr",
+                    "nr", "ni", "ns", "ng", "nc", "nwfa", "nifa",
+                    "qh", "qndrop", "qnr",
                     "qni", "qns", "qng", "qnh", "qnn", "qvolg", "qvolh"}
     if field_name not in {"u", "v", "w", "t", "ph"} | scalar_names:
         raise ValueError(f"unsupported feedback field {field_name!r}")

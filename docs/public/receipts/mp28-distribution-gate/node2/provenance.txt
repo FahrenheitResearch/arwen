@@ -1,0 +1,42 @@
+== node ==
+weather-node-2
+24
+7.0.0-28-generic
+GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+ldd (Ubuntu GLIBC 2.43-2ubuntu2.3) 2.43
+Python 3.14.4
+netCDF-Fortran 4.6.2
+netCDF 4.9.3
+== tarball ==
+b8ec11b240a3cf1274b2bd609700191c6ec84628e4c991d3ab562ce9dc50b5f2  WRFv4.6.1.tar.gz
+== executables ==
+3814e5a7afa09fa8cae422ea7f4607e2e41f503061eec55d0d2d27ff8b28ae20  WRF-4.6.1/main/ideal.exe
+a7f4209a38d6f7fc5d931eeca99652475e4981f9ae0acd70c2048b07546dfdad  WRF-4.6.1/main/wrf.exe
+325845ac68b458f8b57b589f788199c068bba94d9a613deacebe07409d2384f9  WRF-4.6.1-novec/main/ideal.exe
+6bcc015e426625d0bd5e844cd304cbe3fa11246b342f49d204c48051e6c10cf5  WRF-4.6.1-novec/main/wrf.exe
+== source pins ==
+fabf19e2a9073cff886e882b187080bfdf089d3fd40c0fce1d19bc93b1e5e802  WRF-4.6.1/phys/module_mp_thompson.F
+aa99da858be41efa579966680708d230123a7417560af0eb2e24f4c94e253688  WRF-4.6.1/phys/module_mp_radar.F
+fabf19e2a9073cff886e882b187080bfdf089d3fd40c0fce1d19bc93b1e5e802  WRF-4.6.1-novec/phys/module_mp_thompson.F
+aa99da858be41efa579966680708d230123a7417560af0eb2e24f4c94e253688  WRF-4.6.1-novec/phys/module_mp_radar.F
+f2b8d3916560f9046f89f8ac5f32c5292a1800498fd75301e422f147c82a3dbd  WRF-4.6.1/run/CCN_ACTIVATE.BIN
+== tables ==
+05497b0ed3f8dee78c9db25374f3e7f3da891580b15974453b608631433cce46  runs/sw-wrf-mp08/freezeH2O.dat
+441bd8361b4df2ac6c6007fc7aceb333372496722a50adc94897422905dbfff8  runs/sw-wrf-mp08/qr_acr_qg_V4.dat
+910fb31d5bc53b9b89ba5238b50efd4806a5877c859570b8d5ef3badc3f942c0  runs/sw-wrf-mp08/qr_acr_qsV2.dat
+256259eff8df3e4bf5feb49f4a3ad7c4460733f5244018112c61eca1d4452b7c  runs/sw-wrf-novec-mp08/freezeH2O.dat
+bcef0ef35e7589a49f253458596702ce3061124c33c71eca9e7a978e9be63bd4  runs/sw-wrf-novec-mp08/qr_acr_qg_V4.dat
+5e7438b6148f4b4f0a0bfee832100531dd682703c184c37df1053265efef4dec  runs/sw-wrf-novec-mp08/qr_acr_qsV2.dat
+== initial conditions ==
+231a2dc8c082de8ee8cbc9935a769cab6507dbb1e84ba41c98f3fc8baba6a6be  runs/ic-mp08/wrfinput_d01
+41fc5aad1bd0a7befd01fdccea52806c40d8c24c6eedee736483af4acf6986b7  runs/ic-mp28/wrfinput_d01
+== case inputs ==
+0cb03934204e4fd0bd7cec01781387b3211c7cca3a9755395b5f47814da514ad  input_sounding
+e58ceffac3b01f21d2ceaad17a8914af63d1985bfa1600448e3778388d77ae4b  mknml.sh
+c0f461d33eeb6ecaddd4a2f7488aeabaaaf1d7b35394616b3f8a826f77c4bb0a  runs/ic-mp08/namelist.input
+f148de3ae0e65239c7f4be858c1d8bd2918d1ae9636a3d8ef72df28d8386cc0b  runs/ic-mp28/namelist.input
+a2eca705c0be5bd1210bcf39ef082febeac40e3eef3dfab65786bf1eece9b5cd  runs/sw-wrf-mp08/namelist.input
+a355dd838973527fb53cbf8c27ba1eba5393e819c80f89305fab9f6cebbc109c  runs/sw-wrf-mp28/namelist.input
+a2eca705c0be5bd1210bcf39ef082febeac40e3eef3dfab65786bf1eece9b5cd  runs/sw-wrf-novec-mp08/namelist.input
+a355dd838973527fb53cbf8c27ba1eba5393e819c80f89305fab9f6cebbc109c  runs/sw-wrf-novec-mp28/namelist.input

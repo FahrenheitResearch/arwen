@@ -15,6 +15,9 @@ const DUMP_HEADER: &str = concat!(
 );
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // Keep the release-provenance stamp in the binary: the cut
+    // proves a staged bridge by these bytes (see lib.rs).
+    let _ = std::hint::black_box(gpuwm_preprocess_cpu::SOURCE_REV_STAMP);
     let mut args = env::args().skip(1);
     let input = args
         .next()

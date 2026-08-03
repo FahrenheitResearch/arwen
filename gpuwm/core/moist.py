@@ -46,6 +46,44 @@ default-ON ``moist_cq`` switch exists only for falsification attribution;
 it is not a science-tuning option and production configurations leave it
 enabled.  A dry state has no qv allocation and stays on the exact legacy
 kernel expressions without cq scratch or launch work.
+
+DELIBERATE DEVIATION -- ZERO AEROSOL INFLOW ON A SPECIFIED DOMAIN (mp=28).
+ArWen carries only ``qv`` from an external lateral-boundary snapshot
+(``gpuwm/ingest/lateral_bc.py::_coupled_device_fields``); every other
+transported scalar gets WRF's flow-dependent boundary
+(``module_bc.F::flow_dep_bdy``) with ZERO inflow value, so on an inflow face
+the incoming air carries none of that species.  For the hydrometeors this
+policy predates mp=28 and is already registered.  mp_physics=28 extends it to
+``nc``/``nwfa``/``nifa``, and there the consequence is qualitatively
+different: hydrometeors are locally re-created by microphysics from qv, but
+aerosol number has NO source term anywhere in ``mp_thompson`` except the fixed
+surface emission (``module_mp_thompson.F:1310-1327``) and ``thompson_init``'s
+one-shot profile fill (:493-528, which runs once and only when the field is
+domain-wide < 1e-15).  Aerosol-free inflow therefore MONOTONICALLY DEPLETES
+nwfa/nifa in the upstream boundary zone for as long as the run continues.
+
+WRF does not have this behaviour.  Its Registry declares both tracers with
+the boundary dimension and an explicit boundary interpolator --
+``registry.new3d_wif:87-90``::
+
+    state real qnwfa ikjftb scalar 1 - i0rhusdf=(bdy_interp:dt) "QNWFA" ...
+    state real qnifa ikjftb scalar 1 - i0rhusdf=(bdy_interp:dt) "QNIFA" ...
+
+-- where the trailing ``b`` of ``ikjftb`` is what allocates qnwfa_b*/qnwfa_bt*,
+exactly as for qv.  So WRF really does force aerosol at the boundary from the
+WIF metgrid stream.  The v1 decision is to
+register the divergence rather than extend the LBC ingest, because ArWen has
+no WIF ingest at all (WP-11 fails ``wif_input_opt != 0`` closed) and inventing
+one boundary species' inflow while the other eight stay flow-dependent would
+be a worse, less legible inconsistency.  Consequences, stated so a reader does
+not have to rediscover them: the depletion is bounded below by WRF's own
+terminal clamp (``nwfa >= 11.1E6`` and ``nifa >= naIN1*0.01 == 5.0E3`` at
+:3977-3982, with naIN1 = 0.5E6 at :95), so it
+cannot go negative, cannot NaN, and cannot trip the health gate -- it is a
+slow, silent, physically wrong trend confined to the specified zone plus the
+relaxation zone.  Interior forecasts on a nested or large domain are
+unaffected on any timescale where boundary air has not reached the region of
+interest.
 """
 
 from __future__ import annotations
@@ -59,6 +97,7 @@ from gpuwm.core.advection import launch_flux_div_scalar
 from gpuwm.core.grid import BaseState, VerticalCoord
 from gpuwm.core.kernels import get_kernel
 from gpuwm.core.state import DTYPE, DomainState, init_at_rest
+from gpuwm.core import tke_budget
 
 _TPB = 128  # threads per block along i (i fastest)
 
@@ -83,6 +122,27 @@ MORRISON_SPECIES = ICE_MASS_SPECIES + MORRISON_NUMBER_SPECIES
 THOMPSON_NUMBER_SPECIES = ("nr", "ni")
 TRANSPORTED_NUMBER_SPECIES = MORRISON_NUMBER_SPECIES
 
+# Thompson mp=28 (aerosol-aware) additionally transports the prognostic cloud
+# droplet number and the two aerosol number tracers.  WRF registers qnwfa and
+# qnifa in the same ``scalar`` package as qnc/qnr/qni
+# (Registry.EM_COMMON:3036 binds mp_physics=28 to that package), so all five
+# are dry-mass-coupled advected scalars and none of them enters ``calc_cq``.
+#
+# The ordering keeps ``nr``/``ni`` first so an mp=28 state's leading five
+# transported fields are a prefix-compatible superset of mp=8's two, which is
+# what lets the generic dycore/moist loops discover them without a scheme
+# switch.
+#
+# NOT added to TRANSPORTED_NUMBER_SPECIES.  That tuple is filtered by
+# PRESENCE, and mp_physics=10 already allocates ``state.nc``
+# (gpuwm/core/state.py, the Morrison ``number_and_radius`` tuple) while
+# DELIBERATELY not transporting it -- WRF's default Morrison INUM=1 diagnoses
+# a fixed 250 cm-3 every call (module_mp_morr_two_moment.F:116-124,
+# 1493-1496).  A presence-based ``nc`` would start advecting Morrison's
+# diagnostic droplet number through every generic dycore consumer and move a
+# validated trajectory with nothing raising.
+THOMPSON_AERO_NUMBER_SPECIES = ("nr", "ni", "nc", "nwfa", "nifa")
+
 # Native NSSL option 18 carries hail mass plus cloud/rain/ice/snow/graupel/
 # hail number, predicted CCN, and graupel/hail particle-volume scalars.  All
 # are Registry-transported dry-mass mixing ratios; only the first four ice/
@@ -101,11 +161,20 @@ def extra_moist_species(state: DomainState) -> tuple[str, ...]:
     number, while Morrison owns all four precipitating/ice number moments.
     Presence is checked per field so a Thompson ``nr`` cannot accidentally
     imply Morrison-only ``ns``/``ng`` storage.
+
+    Aerosol-aware Thompson (mp=28) is selected on ``state.nwfa``, NOT on
+    ``state.nc``.  ``nwfa`` is allocated by exactly one scheme, so it is an
+    unambiguous discriminator; ``nc`` is not (mp=10 allocates it and does not
+    transport it -- see :data:`THOMPSON_AERO_NUMBER_SPECIES`).  The mp=28 arm
+    therefore sits BEFORE the generic presence filter and returns its own
+    closed tuple rather than widening that filter.
     """
     if getattr(state, "qi", None) is None:
         return ()
     if getattr(state, "qh", None) is not None:
         return NSSL_SPECIES
+    if getattr(state, "nwfa", None) is not None:
+        return ICE_MASS_SPECIES + THOMPSON_AERO_NUMBER_SPECIES
     numbers = tuple(name for name in TRANSPORTED_NUMBER_SPECIES
                     if getattr(state, name, None) is not None)
     return ICE_MASS_SPECIES + numbers
@@ -592,3 +661,132 @@ def init_moist_balanced(cfg: RunConfig, coord: VerticalCoord,
     # opt-1 discrete hydrostatic inversion, so the default key matches.
     update_diagnostics(s)
     return s
+
+
+def advance_tke_stage(state: DomainState, cfg: RunConfig,
+                      ru, rv, ww, dt_eff: float, final: bool,
+                      fixed_tendency=None) -> None:
+    """Advance the km_opt=2 prognostic TKE one RK stage from ``tke0``.
+
+    WRF advects tke through ``rk_scalar_tend``/``rk_update_scalar[_pd]``
+    exactly like a moist scalar (solve_em.F:2362-2399, PD update at
+    :2100-2119 under tke_adv_opt=1), with the once-per-step forward
+    source (tke_rhs + self-diffusion, held in ``smag_rtke``) folded on
+    every stage and into the PD budget on the final stage.
+
+    Two WRF steps follow every ``rk_update_scalar`` pass, in this order
+    (solve_em.F:2432-2451):
+
+    * ``bound_tke`` (module_em.F:2490-2520) clamps the carrier into
+      ``[0, tke_upper_bound]`` over the whole mass grid -- on EVERY domain
+      including doubly periodic ones, and on EVERY RK stage, not just the
+      final one.  It replaces the plain zero clamp the moist rows use.
+    * ``flow_dep_bdy`` (module_bc.F:2335-2456) fills the specified zone of
+      a ``specified``/``nested`` domain from the flow direction: zero on
+      inflow, zero-gradient from the first interior row/column on outflow.
+      That is the WHOLE lateral-boundary treatment WRF gives TKE -- the
+      Registry row (EM_COMMON:312) has no ``b`` flag, so no wrfbdy stream
+      carries TKE and there is no spec/relax forcing to apply, and no
+      ``i``/``f`` flag, so nests neither inherit nor feed it back.
+      Radiative-open domains get no extra arm in WRF either: the open
+      radiation lives in the advection operator and in ``set_physical_bc3d``,
+      both already routed through ``launch_flux_div_scalar``'s ``open_x``/
+      ``open_y`` and the diffusion tendencies' open-strip zeroing.
+    """
+    nz, ny, nx = state.p.shape
+    c1h = state.c1h[:, None, None]
+    c2h = state.c2h[:, None, None]
+    mu0 = state.mub2d + state.mup0
+    mu = state.mub2d + state.mup
+    chm0 = c1h * mu0[None] + c2h
+    chm = c1h * mu[None] + c2h
+    tend = state.scratch((nz, ny, nx), "moist_rq_t")
+    boundary_x = cfg.open_x or cfg.specified or cfg.nested
+    boundary_y = cfg.open_y or cfg.specified or cfg.nested
+    q = state.tke
+    q0 = state.tke0
+    pd = final and not (cfg.open_x or cfg.open_y)
+    tend[...] = 0
+    if pd:
+        bufs = (state.scratch((nz, ny, nx + 1), "pd_fxl"),
+                state.scratch((nz, ny, nx + 1), "pd_fxc"),
+                state.scratch((nz, ny + 1, nx), "pd_fyl"),
+                state.scratch((nz, ny + 1, nx), "pd_fyc"),
+                state.scratch((nz + 1, ny, nx), "pd_fzl"),
+                state.scratch((nz + 1, ny, nx), "pd_fzc"))
+        q0_eff = _pd_fold_sources(
+            state, cfg, "tke", q0, chm0, dt_eff, None,
+            fixed_tendency=fixed_tendency)
+        launch_pd_fluxes(q, q0_eff, ru, rv, ww, mu, state,
+                         cfg.dx, cfg.dy, dt_eff, *bufs,
+                         msft=state.msft, has_msf=state.has_msf,
+                         open_x=boundary_x, open_y=boundary_y)
+        launch_pd_renorm_apply(q0_eff, mu0, *bufs, tend=tend,
+                               coord=state,
+                               dx=cfg.dx, dy=cfg.dy, dt=dt_eff,
+                               msft=state.msft, has_msf=state.has_msf,
+                               open_x=boundary_x, open_y=boundary_y)
+        if state.has_msf:
+            tend *= state.msft[None]
+        # WRF's PD fold moved the sources into q0_eff, so ``tend`` here is
+        # the pure advective flux divergence -- the budget's transport term.
+        _tke_budget_transport(state, cfg, tend, final=final)
+        q[...] = (chm0 * q0_eff + dt_eff * tend) / chm
+    else:
+        launch_flux_div_scalar(q, ru, rv, ww, tend, state,
+                               cfg.dx, cfg.dy,
+                               open_x=boundary_x, open_y=boundary_y,
+                               msf=state.msft, has_msf=state.has_msf,
+                               spec=(cfg.specified or cfg.nested))
+        if state.has_msf:
+            tend *= state.msft[None]
+        _tke_budget_transport(state, cfg, tend, final=final)
+        if fixed_tendency is not None:
+            tend += fixed_tendency
+        q[...] = (chm0 * q0 + dt_eff * tend) / chm
+
+    # WRF bound_tke (module_em.F:2490-2520), called after EVERY
+    # rk_update_scalar pass on EVERY domain (solve_em.F:2434-2440) over the
+    # whole mass grid -- kts..kte-1 with kte = kpe = kde, i.e. every mass
+    # level.  It subsumes the zero clamp the moist rows apply on the final
+    # stage and adds the ceiling those rows have no analogue for.
+    if final:
+        raw = tke_budget.raw_carrier(state, cfg)
+        if raw is not None:
+            raw[...] = q
+    # Resolved from module globals at call time, so a mutation control can
+    # replace exactly this step (tests/test_tke_budget.py).
+    bound_tke(q, cfg.tke_upper_bound)
+
+    # WRF flow_dep_bdy (module_bc.F:2335-2456): the entire lateral-boundary
+    # treatment TKE gets, applied every stage after the bound.  Nothing
+    # forces it from a parent or a wrfbdy file -- the Registry row
+    # (EM_COMMON:312) carries neither a ``b`` nor an ``i`` flag.
+    if cfg.specified or cfg.nested:
+        from gpuwm.ingest import lateral_bc
+        lateral_bc.apply_flow_dependent_boundaries(
+            (q,), ru, rv, cfg.spec_zone)
+
+
+def bound_tke(tke, upper_bound: float) -> None:
+    """WRF ``bound_tke`` (dyn_em/module_em.F:2490-2520), in place.
+
+    ``tke = min(tke_upper_bound, max(tke, 0))`` over the whole mass grid.
+    Its own named function so a mutation control can remove exactly this
+    step and nothing else.
+    """
+    cp.clip(tke, 0.0, DTYPE(upper_bound), out=tke)
+
+
+def _tke_budget_transport(state, cfg, tend, *, final: bool) -> None:
+    """File the final stage's advective tendency as the transport term.
+
+    Only the final RK stage advances the carrier from ``tke0`` to the new
+    step value, so it is the only stage whose tendency belongs in a
+    per-step budget; stages 1-2 produce discarded provisional estimates.
+    """
+    if not final:
+        return
+    slot = tke_budget.term(state, cfg, "transport")
+    if slot is not None:
+        slot[...] = tend

@@ -227,6 +227,9 @@ fn run(input: &Path, output: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 fn main() {
+    // Keep the release-provenance stamp in the binary: the cut
+    // proves a staged bridge by these bytes (see lib.rs).
+    let _ = std::hint::black_box(gpuwm_preprocess_cpu::SOURCE_REV_STAMP);
     let arguments = env::args_os().collect::<Vec<_>>();
     if arguments.len() != 3 {
         eprintln!("usage: grib1_bridge INPUT.grb OUTPUT_DIR");

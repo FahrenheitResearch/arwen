@@ -137,6 +137,26 @@ ASSET_ROOT = "assets"
 #: declaration a release is checked against.
 REQUIRED_ASSET_SUBDIRS = ("basemap",)
 
+#: Byte marker every bundled artifact's build embeds, followed by the
+#: 40-hex git commit the binary was built from.  The 1.4.1 cut nearly
+#: shipped bundles predating the source tip -- the two platform zips
+#: were not even the same revision -- and every check on the cut path
+#: hashed whatever bytes it was handed, so a stale binary pinned and
+#: verified perfectly.  The stamp is what makes "built from the release
+#: commit" a property of the bytes themselves: the cut extracts it and
+#: refuses a mismatch without executing anything (the same static
+#: string-in-the-binary convention as :data:`gpuwm.bridges
+#: .BRIDGE_ABI_MARKERS` and the renderer's ``GPUWM_INITIAL_*``
+#: attribute literals).  The Rust half lives in the workspace build
+#: scripts (``tools/grib1_bridge/build.rs`` and the ``build.rs`` of the
+#: two bundled ``tools/rustwx`` crates), which inject the checkout's
+#: HEAD as ``GPUWM_BRIDGE_SOURCE_REV`` for each entry point to embed.
+SOURCE_REV_MARKER = b"GPUWM_BRIDGE_SOURCE_REV="
+
+#: Character length of a full git commit hash, which is what the stamp
+#: carries -- an abbreviation can collide, a branch name can move.
+_SOURCE_REV_LENGTH = 40
+
 _BLOCK_BYTES = 8 * 1024 * 1024
 _USER_AGENT = "gpuwm-fetch-bridges/1"
 _TIMEOUT_S = 120
@@ -508,6 +528,79 @@ def verify_pinned_file(path: Path, *, expected_bytes: int,
     if observed != expected_sha256:
         raise BridgeAssetError(
             f"{label}: SHA-256 {observed}, expected {expected_sha256}")
+
+
+def _is_source_revision(text: str) -> bool:
+    return (len(text) == _SOURCE_REV_LENGTH
+            and all(c in "0123456789abcdef" for c in text))
+
+
+def embedded_source_revisions(payload: bytes) -> tuple[str, ...]:
+    """Every distinct well-formed source-revision stamp in ``payload``.
+
+    A stamp is :data:`SOURCE_REV_MARKER` immediately followed by 40
+    lowercase hex characters.  Marker occurrences followed by anything
+    else -- ``unknown`` from a build outside a git checkout, or
+    truncated bytes -- are not revisions and are not returned; the
+    verifier tells those cases apart from a missing marker.  Order of
+    first appearance is preserved so a refusal can name what it saw.
+    """
+
+    found: list[str] = []
+    start = 0
+    while (index := payload.find(SOURCE_REV_MARKER, start)) != -1:
+        begin = index + len(SOURCE_REV_MARKER)
+        token = payload[begin:begin + _SOURCE_REV_LENGTH]
+        text = token.decode("ascii", errors="replace")
+        if _is_source_revision(text) and text not in found:
+            found.append(text)
+        start = begin
+    return tuple(found)
+
+
+def verify_source_revision(payload: bytes, *, expected: str,
+                           label: str) -> None:
+    """``payload`` was built from commit ``expected``, or a refusal.
+
+    Read from the bytes, never by executing the artifact: the cut
+    inspects both platforms' bundles from one machine, and a staleness
+    check that needs to run the binary cannot look at the other
+    platform's.  Refusals name what was found so the remedy (rebuild
+    from the release checkout and repack) is unambiguous.
+    """
+
+    expected = expected.strip().lower()
+    if not _is_source_revision(expected):
+        raise BridgeAssetError(
+            f"{label}: expected source revision {expected!r} is not a "
+            "full 40-hex git commit; pass the exact commit being "
+            "released, never a ref name that can move")
+    marker = SOURCE_REV_MARKER.decode("ascii").rstrip("=")
+    revisions = embedded_source_revisions(payload)
+    if not revisions:
+        if SOURCE_REV_MARKER in payload:
+            raise BridgeAssetError(
+                f"{label}: carries a {marker} stamp with no 40-hex "
+                "revision after it -- it was built outside a git "
+                "checkout, so nothing proves which source produced it; "
+                "rebuild from the release checkout")
+        raise BridgeAssetError(
+            f"{label}: carries no {marker} stamp, so nothing proves it "
+            f"was built from the source revision being released "
+            f"({expected}); it is a stale build predating the stamped "
+            "bridges, or not a gpuwm bridge artifact at all -- rebuild "
+            "from the release checkout and repack")
+    if len(revisions) > 1:
+        raise BridgeAssetError(
+            f"{label}: carries {len(revisions)} distinct source-revision "
+            f"stamps ({', '.join(revisions)}); one binary cannot be from "
+            "two commits, so this build is not trustworthy -- rebuild "
+            "from the release checkout")
+    if revisions[0] != expected:
+        raise BridgeAssetError(
+            f"{label}: was built from source revision {revisions[0]}, "
+            f"not the {expected} being released -- a stale build; "
+            "rebuild from the release checkout and repack")
 
 
 def verify_contract_marker(artifact: str, path: Path) -> None:
@@ -1080,12 +1173,13 @@ __all__ = [
     "BUNDLED_ARTIFACTS", "BUNDLE_MANIFEST_SCHEMA", "REQUIRED_ASSET_SUBDIRS",
     "AssetPin", "BinaryPin", "BridgeAssetError", "BridgePins",
     "BundlePin", "BundledArtifact", "PINS_RESOURCE", "PINS_SCHEMA",
+    "SOURCE_REV_MARKER",
     "SUPPORTED_PLATFORMS", "artifact_filename", "asset_url_base",
     "bundle_url", "classify_assets", "classify_destination",
-    "download_bundle", "fetch_bundle",
+    "download_bundle", "embedded_source_revisions", "fetch_bundle",
     "fetch_bridges_main", "host_platform", "host_platform_description",
     "load_pins", "matches_pin", "packaged_pins_path", "parse_pins",
     "register_cli", "sha256_file", "stage_from_bundle", "stage_from_dir",
     "stage_from_loose_files", "staging_available", "verify_contract_marker",
-    "verify_pinned_file",
+    "verify_pinned_file", "verify_source_revision",
 ]

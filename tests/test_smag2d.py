@@ -648,9 +648,12 @@ def test_wrf_smag_pbl_off_surface_flux_policy():
 
 @requires_gpu
 def test_step_rejects_unsupported_km_opt():
+    # km_opt=3 joined the admitted set with the 3-D Smagorinsky port
+    # (tests/test_smag3d.py) and km_opt=2 with the prognostic-TKE port
+    # (tests/test_tke_km2.py); km_opt=5 (SMS-3DTKE) remains refused.
     from gpuwm.core.dycore import step
     from gpuwm.core.state import init_at_rest
-    cfg, vc, b = _flat_setup(8, 1, 8, km_opt=3)
+    cfg, vc, b = _flat_setup(8, 1, 8, km_opt=5)
     s = init_at_rest(cfg, vc, b)
     with pytest.raises(ValueError, match="km_opt"):
         step(s, cfg)

@@ -83,7 +83,17 @@ def prepare_moist_cq(state: DomainState, cfg: RunConfig) -> tuple:
     elif cfg.mp_physics == 1:
         qi = qs = qg = state.qv              # ice placeholders are never read
         n_mass = 3
-    elif cfg.mp_physics in (6, 8, 10, 18):
+    elif cfg.mp_physics in (6, 8, 10, 18, 28):
+        # mp=28 is numerically IDENTICAL to mp=8 here.  WRF's calc_cq sums
+        # the Registry ``moist`` package only, and Registry.EM_COMMON:3036
+        # gives aerosol-aware Thompson
+        #     moist:qv,qc,qr,qi,qs,qg
+        #     scalar:qni,qnr,qnc,qnwfa,qnifa,qnbca
+        # -- six masses, exactly mp=8's, with every number moment in the
+        # separate ``scalar`` package.  They must therefore stay out of cq
+        # AND out of the w-equation buoyancy loading; a droplet number of
+        # order 1e8 entering q_tot would be a catastrophic, not a subtle,
+        # error.
         qi = state.qi
         qs, qg = state.qs, state.qg
         n_mass = 7 if cfg.mp_physics == 18 else 6

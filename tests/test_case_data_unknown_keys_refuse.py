@@ -192,9 +192,13 @@ def test_the_declared_interval_selects_the_forcing_window():
 # --------------------------------------------------------------------
 
 @pytest.mark.parametrize("key,value", [
-    ("bl_pbl_physics", 5),   # a per-nest PBL scheme WRF does carry
+    # bl_pbl_physics and isfflx were the specimens here until the LES
+    # lane made both genuinely per-domain (a PBL parent carrying a
+    # PBL-off child is measured); the bar is unchanged and holds on
+    # keys that remain shared-only.
+    ("smdiv", 0.2),          # a live shared dynamics setting
     ("hill_height", 100.0),  # a live terrain setting
-    ("isfflx", 1),           # nentries=1 in WRF; no per-domain spelling
+    ("mp_tend_lim", 5.0),    # a shared microphysics clamp
 ])
 def test_an_unsupported_per_domain_key_refuses(tmp_path, key, value):
     """The sibling defect: a `[[domain]]` key this loader does not read.
@@ -215,7 +219,14 @@ def test_an_unsupported_per_domain_key_refuses(tmp_path, key, value):
         load_experiment(_write(tmp_path, d02=f"{key} = {value!r}"))
     message = str(caught.value)
     assert key in message
-    assert "does not have a key" in message
+    # Two refusal sentences reach this, and which one depends on whether
+    # the key is a RunConfig field at all.  An outright NON-key ("not a
+    # key here"); a real shared setting placed per domain ("not per
+    # domain", which additionally says where it belongs).  The bar this
+    # test holds is that NEITHER is dropped, so it accepts either and
+    # requires the key to be named.
+    assert ("does not have a key" in message
+            or "are run settings that are NOT per domain" in message), message
 
 
 def test_the_per_domain_override_list_is_documented(tmp_path):
@@ -224,9 +235,9 @@ def test_the_per_domain_override_list_is_documented(tmp_path):
     side: the user cannot tell what their config will do.
 
     ``docs/public/CONFIGURATION.md`` opens the dynamics table with
-    "shared across domains unless marked per-domain", and only three of
-    the twelve rows carry that mark.  The list is now stated once; this
-    keeps it in step with the code.
+    "shared across domains unless marked per-domain", and only a few of
+    its rows carry that mark.  The list is stated once, with its count;
+    this keeps both in step with the code.
     """
 
     from pathlib import Path
@@ -242,8 +253,24 @@ def test_the_per_domain_override_list_is_documented(tmp_path):
     block = tail.split("Only `gpuwm domain`")[0]
     for key in _DOMAIN_RUN_OVERRIDES:
         assert key in block, f"{key} is per-domain in code, absent from doc"
-    assert f"these {len(_DOMAIN_RUN_OVERRIDES)}" in tail.lower() or (
-        "twelve" in tail and len(_DOMAIN_RUN_OVERRIDES) == 12)
+    # The doc must state the COUNT, and it must be this count.  Spelled
+    # or numeric: the prose reads better spelled, and a hard-coded
+    # single word here would stop checking anything the moment the list
+    # grew -- which is exactly what it did.
+    words = ("zero one two three four five six seven eight nine ten "
+             "eleven twelve thirteen fourteen fifteen sixteen seventeen "
+             "eighteen nineteen twenty").split()
+    count = len(_DOMAIN_RUN_OVERRIDES)
+    spelled = words[count] if count < len(words) else None
+    lowered = tail.lower()
+    assert (f"these {count}" in lowered
+            or (spelled is not None and f"these\n{spelled}" in lowered)
+            or (spelled is not None and f"these {spelled}" in lowered)), (
+        f"the doc must say how many per-domain overrides there are, and "
+        f"say {count}")
+    # ... and it must not still be claiming an older, smaller count.
+    for other in words[:count] + words[count + 1:]:
+        assert f"these {other}" not in lowered, other
 
 
 # --------------------------------------------------------------------

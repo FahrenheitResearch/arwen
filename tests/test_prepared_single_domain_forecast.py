@@ -1280,8 +1280,10 @@ def test_an_unimplemented_mp_selector_still_refuses_naming_the_switch(
         tmp_path):
     """NEGATIVE CONTROL: suite freedom opens nothing the engine lacks.
 
-    mp_physics = 28 (aerosol-aware Thompson) has no kernel path in this
-    tree.  The runner admits an experiment only through
+    mp_physics = 95 (WRF's Ferrier-Aligo) has no kernel path in this
+    tree.  (28 was the specimen until the aerosol-aware Thompson port
+    made it real; a negative control must stay negative.)  The runner
+    admits an experiment only through
     ``load_experiment`` -- preflight's first read of the hash-bound
     config -- and the engine validator refuses it there, naming the
     exact switch and the offending value.  The registry capability
@@ -1293,11 +1295,11 @@ def test_an_unimplemented_mp_selector_still_refuses_naming_the_switch(
     assert text.count("mp_physics = 6") == 1
     bad = tmp_path / "unimplemented-mp.toml"
     bad.write_text(
-        text.replace("mp_physics = 6", "mp_physics = 28"),
+        text.replace("mp_physics = 6", "mp_physics = 95"),
         encoding="utf-8")
     with pytest.raises(ValueError, match="mp_physics") as caught:
         load_experiment(bad)
-    assert "28" in str(caught.value)
+    assert "95" in str(caught.value)
 
     from gpuwm.physics_compat import (
         PhysicsCapabilityError,
@@ -1305,7 +1307,7 @@ def test_an_unimplemented_mp_selector_still_refuses_naming_the_switch(
     )
     selectors = runner.single_domain_runtime_switches(
         runner.WSM6_PROFILE_ID)
-    selectors["mp_physics"] = 28
+    selectors["mp_physics"] = 95
     with pytest.raises(PhysicsCapabilityError, match="mp_physics"):
         validate_physics_capabilities(selectors)
 

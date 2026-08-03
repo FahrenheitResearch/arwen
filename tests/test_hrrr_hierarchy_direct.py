@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
+from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -10,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from gpuwm import hrrr_hierarchy_direct
+from gpuwm.hrrr_forecast import hrrr_forcing_end_hour, hrrr_source_window
 from gpuwm.hrrr_hierarchy_direct import (
     _atomic_staging_sibling,
     _compare_stock_experiment,
@@ -18,6 +20,7 @@ from gpuwm.hrrr_hierarchy_direct import (
     _require_raw_wps_contract,
     _supported_hierarchy_slice,
     _validated_root_preparation_binding,
+    verified_root_forcing_inventory,
 )
 from gpuwm.ingest.hrrr_target import HrrrTargetDomain
 from gpuwm.native_wrf_contract import CERTIFIED_ETA_LEVELS
@@ -199,10 +202,12 @@ def _sealed_forcing(exp) -> tuple[int, ...]:
     The duration ceiling is a property of the sealed root preparation, so
     every gate call needs one.  Tests about geometry and physics say "the
     root that was prepared for this experiment" with this; the tests that
-    are ABOUT the ceiling pass their own inventory explicitly.
+    are ABOUT the ceiling pass their own inventory explicitly.  Derived
+    from the preparer's own endpoint arithmetic so this helper seals what
+    ``tools.prepare_hrrr_wrf`` actually seals, sub-hour runs included.
     """
 
-    return tuple(range(int(exp.run_seconds // 3600) + 1))
+    return tuple(range(hrrr_forcing_end_hour(exp.run_seconds) + 1))
 
 
 def _slice(exp, target) -> None:
@@ -384,6 +389,57 @@ def test_public_gate_runs_the_whole_sealed_forcing_window_not_twelve_hours():
             long_run, target, forcing_hours=(0, 1, 3))
     with pytest.raises(ValueError, match="contiguous hourly leads"):
         _supported_hierarchy_slice(long_run, target, forcing_hours=())
+
+
+def test_sub_hour_run_expects_the_series_the_preparer_actually_seals():
+    """The 900 s field failure: a floor endpoint against a ceiling seal.
+
+    With ``run_seconds = 900`` tools.prepare_hrrr_wrf sizes its window
+    with ``hrrr_source_window`` -- a ceiling, because the endpoint at
+    0.25 h lies BETWEEN forcing hours and boundary temporal
+    interpolation needs the bracketing frame above it -- and seals model
+    forcing hours (0, 1).  This stage recomputed the endpoint with a
+    floor, expected ``(0,)``, and refused every sub-hour root the
+    preparer can build ("expected (0,), got (0, 1)"); ``(0,)`` is also a
+    series the tree runner downstream rejects outright, because a single
+    frame brackets nothing.  Both stages derive the endpoint from
+    :func:`gpuwm.hrrr_forecast.hrrr_forcing_end_hour` now.
+    """
+
+    # What the preparer actually seals for a 900 s run at lead 0.
+    window = hrrr_source_window(
+        cycle=datetime(2026, 7, 28, 18), start_hour=0, run_seconds=900.0)
+    sealed = tuple(range(len(window)))
+    assert sealed == (0, 1)
+
+    # The direct hierarchy accepts exactly that series for the same run,
+    # and its duration gate admits the run against it.
+    assert verified_root_forcing_inventory(
+        sealed, run_seconds=900.0) == sealed
+    _supported_hierarchy_slice(
+        replace(_native(), run_seconds=900.0), _target(),
+        forcing_hours=sealed)
+
+    # Whole-hour runs are unchanged: floor and ceiling agree there.
+    assert verified_root_forcing_inventory(
+        (0, 1), run_seconds=3600.0) == (0, 1)
+    assert verified_root_forcing_inventory(
+        tuple(range(13)), run_seconds=43_200.0) == tuple(range(13))
+
+    # Genuinely wrong inventories still refuse with the same sentence:
+    # truncated, over-long, and gapped.
+    with pytest.raises(ValueError, match="consecutive hourly HRRR forcing"):
+        verified_root_forcing_inventory((0,), run_seconds=900.0)
+    with pytest.raises(ValueError, match="consecutive hourly HRRR forcing"):
+        verified_root_forcing_inventory((0, 1, 2), run_seconds=3600.0)
+    with pytest.raises(ValueError, match="consecutive hourly HRRR forcing"):
+        verified_root_forcing_inventory((0, 2), run_seconds=7200.0)
+    # And in the orchestration a truncated root never even reaches that
+    # check: the sealed-horizon gate refuses it first.
+    with pytest.raises(ValueError, match="forcing horizon"):
+        _supported_hierarchy_slice(
+            replace(_native(), run_seconds=900.0), _target(),
+            forcing_hours=(0,))
 
 
 def test_public_gate_accepts_a_per_domain_history_cadence():

@@ -71,8 +71,25 @@ class KFPhaseMode(IntEnum):
 
 
 def kf_phase_mode_for_microphysics(mp_physics: int) -> KFPhaseMode:
-    """Resolve the supported WRF microphysics-to-KF phase flags."""
-    if int(mp_physics) in (6, 8, 10, 18):
+    """Resolve the supported WRF microphysics-to-KF phase flags.
+
+    ``cu_physics=1`` is WRF's ``kfetascheme``
+    (``Registry/Registry.EM_COMMON:3190``), whose driver arm
+    (``phys/module_cumulus_driver.F:1015``) hands ``KF_eta_CPS`` the pair
+    ``F_QI=f_qi, F_QS=f_qs`` at :1043.  ``KF_eta_CPS`` selects its feedback
+    branch from exactly that pair (``phys/module_cu_kfeta.F:2622-2632``):
+    with ``F_QS`` true it feeds the hydrometeor tendencies back directly, and
+    with ``F_QI`` also true it returns a separate ``DQIDT`` instead of
+    folding the ice into snow.
+
+    ``mp_physics=28`` is therefore SEPARATE_ICE_SNOW for the same reason
+    ``mp_physics=8`` is: ``Registry/Registry.EM_COMMON:3036`` declares the
+    ``thompsonaero`` package as ``moist:qv,qc,qr,qi,qs,qg``, so ``P_QI`` and
+    ``P_QS`` are both allocated and ``F_QI``/``F_QS`` are both true.  Before
+    28 was admitted here, ``initialize_physics`` could not even construct an
+    mp=28 + KF domain -- ``_cumulus_optional_tendency_components`` raised.
+    """
+    if int(mp_physics) in (6, 8, 10, 18, 28):
         return KFPhaseMode.SEPARATE_ICE_SNOW
     if int(mp_physics) == 1:
         return KFPhaseMode.WARM_RAIN

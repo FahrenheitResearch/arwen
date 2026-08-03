@@ -173,7 +173,9 @@ PBL scheme active the wizard prints a **gray-zone advisory** -- not a
 refusal -- into both the file and stdout: below that spacing the largest
 boundary-layer eddies are partly resolved by the dynamics while the PBL
 scheme parameterizes them as if they were not, and the proper tool at
-those scales is a 3-D turbulence closure (SASE, planned).
+those scales is a 3-D turbulence closure -- SASE, `bl_pbl_physics =
+900`, which is implemented and selectable but experimental and not
+WRF-verified. Read [PHYSICS.md](PHYSICS.md) before using it.
 
 The wizard works worldwide: it picks the projection from your point's
 latitude -- Mercator below 25 degrees, hemisphere-correct Lambert

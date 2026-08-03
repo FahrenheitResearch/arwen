@@ -1,0 +1,363 @@
+# Large-eddy simulation in ArWen
+
+ArWen implements two of WRF's resolved-turbulence closures. This page states
+what they are, what has been measured, and — at least as carefully — what has
+**not**.
+
+The one-sentence scope, which the rest of this page only elaborates:
+
+> `km_opt=2` and `km_opt=3` are implemented, FP64-mirror-verified per kernel,
+> restart-bit-identical, and produce canonical CBL statistics on a
+> single-domain dry doubly-periodic idealized case at 100 m on one GPU.
+> **Both** additionally run as a 250 m nested child inside a real moist
+> terrain-following HRRR tree, carrying up to 8.4x (`km_opt=3`) and 9.9x
+> (`km_opt=2`) the 750 m parent's resolved vertical-velocity variance
+> over the same ground.
+
+LES enters ArWen's existing maturity ladder as **implemented-unverified**.
+There is no separate "LES-verified" tier and none is claimed.
+
+---
+
+## 1. The two closures
+
+| `km_opt` | closure | SGS TKE | selectable on a nest |
+|---|---|---|---|
+| 2 | 1.5-order prognostic TKE, `K = c_k sqrt(e) l` | prognostic carrier, advected | yes, unless the **parent** is also `km_opt=2` — see §4 |
+| 3 | 3-D Smagorinsky, `K = (c_s l)^2 \|S\|` | diagnostic | yes |
+
+Both require `diff_opt=2`. `km_opt=2` additionally requires
+`bl_pbl_physics=0`: WRF will evolve TKE with the PBL on, but that combination
+has no vertical TKE mixing, because `vertical_diffusion_2` is PBL-off-gated.
+ArWen refuses it rather than run a half-wired scheme.
+
+The parameter row — `c_s`, `c_k`, `mix_isotropic`, `mix_upper_bound`,
+`tke_upper_bound`, `tke_heat_flux`, `tke_drag_coefficient` — is per-domain,
+matching WRF's `max_domains` Registry spelling, and importable from a WRF
+namelist. `isfflx` is the exception and is discussed in §4.
+
+### Vertical scalar mixing with the PBL off
+
+This is the single most misread property of a PBL-off run, so it is stated
+flatly:
+
+| configuration | vertical **momentum** mixing | vertical **scalar** mixing |
+|---|---|---|
+| `km_opt=2` or `3`, PBL off | yes | **yes** |
+| `km_opt=1` or `4`, PBL off | yes | **no** |
+
+Under `km_opt` 1 and 4 with the PBL off there is no vertical exchange
+coefficient pair at all, so `theta` and every moist species are mixed
+horizontally only — a 2-D Smagorinsky run with the PBL off does not mix heat
+or moisture vertically by any route. Supplying one of the LES closures is
+what fills `smag_kmv`/`smag_khv` and puts the scalar rows into the vertical
+pass (`gpuwm/core/dycore.py`, the `cfg.km_opt in (2, 3)` branch inside
+`if cfg.bl_pbl_physics == 0`).
+
+---
+
+## 2. What has been measured
+
+Hardware: one RTX 5090 (sm_120, 32,607 MiB), driver 575.57.08, CUDA 12.9,
+CuPy 14.1.1. Case: dry convective boundary layer, 96x96x64 at dx = 100 m,
+ztop 2400 m, dt = 0.5 s, 2 h, surface heat flux 0.24 K m s-1.
+
+**Kernel level.** 37 GPU tests across `tests/test_smag3d.py`,
+`tests/test_tke_km2.py` and `tests/test_tke_budget.py` pass on the card. Each
+checks a kernel against an FP64 NumPy mirror of the WRF formula, with the
+formula authority anchored in `handoffs/P6-LES-WPL0-AUTHORITY-RECEIPT.md`.
+
+**Boundary-layer statistics.** `wth_res_max_over_qs` is the resolved buoyancy
+flux as a fraction of the prescribed surface flux; it is the
+closure-independent resolved-fraction measure, because its subgrid
+counterpart comes from the live `smag_khv` field that both closures fill.
+
+Every row below is a receipt committed at
+`docs/superpowers/receipts/les/cbl-2026-08-02/`, produced by the tree
+this page describes. The five older receipts beside that directory come
+from the LES engine branch and an earlier code state; they are kept as
+history and **do not** correspond to this table.
+
+| case | closure | surface | lateral | resolved flux / surface flux | entrainment ratio |
+|---|---|---|---|---|---|
+| `km2` | 2 | prescribed | periodic | 0.8380 | −0.143 |
+| `km3` | 3 | prescribed | periodic | 0.8439 | −0.165 |
+| `km2most` | 2 | MOST (`isfflx=2`) | periodic | 0.8686 | −0.199 |
+| `km3most` | 3 | MOST (`isfflx=2`) | periodic | 0.8322 | −0.218 |
+| `km2walled` | 2 | prescribed | specified | 0.9424 | −0.246 |
+| `km3walled` | 3 | prescribed | specified | 0.9722 | −0.282 |
+
+The entrainment column is `wth_total_min_over_qs_mean`, the mean of the
+trailing 20 samples. **Do not cite the single-frame
+`wth_total_min_over_qs`** that sits beside it in the receipts: measured
+frame by frame over one run's final hour it wanders between −0.072 and
+−0.184, an 81% spread about its own mean, and two receipts differing by
+64% on it are two draws from that distribution rather than two different
+answers.
+
+For `km_opt=2`, which has a prognostic carrier, the TKE-based mixed-layer
+resolved fraction is **0.894** — above the conventional 0.8 threshold for a
+run to be called an LES rather than a very fine mesoscale run. That metric is
+reported as `null` for `km_opt=3`, which has no prognostic SGS TKE to divide
+by; see §5.
+
+**Grid refinement moves the partition the right way.** Halving the spacing —
+192x192x96 at dx = 50 m, dt = 0.25 s, 28,800 steps — raises the `km_opt=2`
+resolved fraction from 0.894 to **0.932** and the resolved flux fraction from
+0.838 to **0.896**, in 858 s on one card. `km_opt=3` moves the same way over
+the same refinement, 0.844 to **0.904**, in 753 s. That direction is the
+property that distinguishes an LES closure from a parameterization: refining
+the mesh moves work from the subgrid model to the resolved field, rather than
+leaving the partition where it was. The TKE budget tightens with it, closing
+to 7.88e-10 relative.
+
+Both 50 m runs are committed beside the 100 m six, at
+`docs/superpowers/receipts/les/cbl-2026-08-02/{km2fine,km3fine}/` — receipt
+and per-minute profile arrays alike, from the same driver and the same code
+state as the 100 m pair, so the refinement is a difference between two runs
+of one instrument rather than between two printed numbers. Every scalar in
+this section is recoverable from those arrays alone. **One exception:
+`resolved_fraction_ml` must not be recomputed from the `km_opt=3` arrays.**
+Its `e_sgs` plane is identically zero there — that closure carries no
+prognostic SGS TKE — so the ratio evaluates to exactly 1.000 from a missing
+denominator. The receipt reports it as `null` for that reason, and
+`wth_res_max_over_qs` is the measure defined under both closures.
+
+Neither 50 m receipt is a single draw. Both were run twice, independently,
+on the same card, and reproduced byte-identically: all 24 arrays for
+`km_opt=2`, all 11 for `km_opt=3`, and every physics field of both receipts.
+On a card without ECC that comparison is the corruption detector, and it is
+clean here as it is at 100 m.
+
+One field did **not** reproduce, and this page previously published it.
+`vram_gib` read 3.11 GiB on the first `km_opt=2` run and 1.84 GiB on its
+byte-identical repeat. It is measured as whole-device occupancy at exit, not
+the run's own footprint, so on a shared card it counts other tenants — the
+committed 100 m `km2` receipt reads 14.6 GiB for a case an eighth the size,
+which is the same artifact. It is not a sizing figure and is no longer cited
+as one.
+
+This is a convergence *direction*, measured at two spacings on one case. It
+is not a grid-convergence study and no order of convergence is claimed.
+
+**TKE budget closure.** With `--tke-budget`, `km_opt=2` accumulates the
+term-by-term budget on device. Over a 120-step window the terms close to a
+relative residual of **2.49e-09** — machine precision for FP32 state
+accumulated in FP64. Shear and dissipation dominate (1.62e7 against
+-1.87e7 in mu-weighted units) with buoyancy 2.46e6, which is the expected
+partition for a sheared CBL.
+
+**Restart bit-identity.** Running straight through, versus checkpointing at
+60 min and restoring into a freshly built state, reproduces the end state
+exactly: 10 members compared for `km_opt=2` and 9 for `km_opt=3`, none
+differing. The comparison is non-trivial — the TKE carrier was 1.98 m2 s-2
+after restore against 0.0 in the cold-started state, so the archive and not
+the trajectory supplied the developed turbulence field.
+
+**Determinism and silent corruption.** Two independent 14,400-step
+`km_opt=2` integrations produced byte-identical state
+(`120ca74150f55b7b…`) and receipts identical in every field but wall time.
+On a card without ECC this dual-run comparison is the corruption detector,
+and it is clean.
+
+### Nested, on a real case
+
+`km_opt=3` has run as a 250 m child inside a 3 km / 750 m HRRR tree —
+moist, terrain-following, one-way nested, PBL off on the child only — for
+seven hours of a real convective afternoon. `status: PASS`, 3010 s wall,
+31 frames. Against the parent's own 134x134-cell footprint, so the two
+cover identical ground:
+
+| valid | mid-CBL z | var(w) child | var(w) parent | ratio | PBLH |
+|---|---|---|---|---|---|
+| 18Z | 670 m | 0.564 | 0.079 | 7.2 | 1256 m |
+| 19Z | 807 m | 1.010 | 0.120 | **8.4** | 1535 m |
+| 21Z | 806 m | 1.311 | 0.212 | 6.2 | 1741 m |
+| 23Z | 803 m | 1.093 | 0.265 | 4.1 | 1563 m |
+
+The spectra converge above ~20 km wavelength — the child inherits its
+large scales through the lateral boundary — and separate only between the
+parent's 7dx limit (5.25 km) and the child's (1.75 km), which is where
+refinement is supposed to add energy. Full detail, including what it does
+not establish, in
+`docs/superpowers/receipts/les/nested-les-scored-2026-08-02.md`.
+
+**A PBL-off domain carries no PBLH.** WRF diagnoses PBLH inside the PBL
+scheme, so an LES child running `bl_pbl_physics=0` has `PBLH` identically
+zero. Anything keyed on boundary-layer depth over such a domain must take
+it from the parent or rediagnose it from the resolved profile. Scoring the
+run above from the child's own PBLH understated the variance ratio by a
+factor of two to three.
+
+### A second regime: does the closure obey mixed-layer similarity?
+
+Everything above is one surface forcing. Driving the same CBL across an
+**eightfold** range of surface heat flux tests whether the closures follow
+the similarity scaling they should — resolved `var(w)` growing as w²,
+where w = (g/θ · Q · zi)^(1/3) — or merely follow the forcing.
+
+| Q (K m s-1) | w* | zi | zi/Δx | peak var(w), km2 | peak var(w), km3 |
+|---|---|---|---|---|---|
+| 0.06 | 1.35 | 1266 m | 12.7 | 0.643 | 0.621 |
+| 0.12 | 1.79 | 1456 m | 14.6 | 1.205 | 1.096 |
+| 0.24 | 2.37 | 1689 m | 16.9 | 2.191 | 2.033 |
+| 0.48 | 3.20 | 2089 m | 20.9 | 4.465 | 3.850 |
+
+Over that range w rises 2.37x, so pure similarity predicts a **5.62x**
+rise in peak `var(w)`. Measured: **6.94x** for `km_opt=2` and **6.20x**
+for `km_opt=3`. Both closures therefore track w² to within 23% and 10%
+respectively over an 8x forcing change, and the CBL deepens
+monotonically (1266 → 2089 m) as it must.
+
+The residual is **not** unexplained. zi/Δx climbs 12.7 → 20.9 across the
+sweep, so the deeper boundary layer is also the better-resolved one at
+fixed 100 m spacing, and the vertical table below shows exactly that
+sense of drift. Similarity and resolution are confounded here by
+construction; separating them would need the grid refined in step with
+the forcing, which was not run. What can be said is that the closures
+reproduce mixed-layer similarity to first order, and that the residual
+has the sign and roughly the size the resolution change predicts.
+
+### What the vertical grid costs — measured, not asserted
+
+The nested child runs its grandparent's 49 shared levels. At peak heating
+that is **18 levels below the 1741 m boundary-layer top, an effective
+dz of 96.7 m**. To price that, the same idealized CBL was run at seven
+vertical resolutions with everything else fixed (96x96 at dx = 100 m,
+`km_opt=2`, 2 h). Every diagnostic is averaged over the last 20 minutes —
+the instantaneous entrainment minimum wanders enough between frames to
+invent a trend that is not there.
+
+| nz | dz | levels in BL | resolved fraction | var(w)peak / w*² | zi |
+|---|---|---|---|---|---|
+| 16 | 150 m | 11.1 | 0.858 | 0.351 | 1670 m |
+| **24** | **100 m** | **17.0** | **0.873** | **0.373** | 1696 m |
+| 32 | 75 m | 22.8 | 0.880 | 0.367 | 1709 m |
+| 48 | 50 m | 34.4 | 0.889 | 0.379 | 1722 m |
+| 64 | 37.5 m | 45.0 | 0.894 | 0.390 | 1689 m |
+| 96 | 25 m | 67.3 | 0.907 | 0.399 | 1683 m |
+| 128 | 18.8 m | 89.6 | **0.921** | 0.439 | 1679 m |
+
+The nested child sits on the bold row. **The cost of the shared vertical
+grid is 4.8 points of resolved TKE fraction**: 0.873 against 0.921 at
+`nz=128`, which is the finest vertical grid ArWen can run at all (§4).
+Put the other way round, the subgrid model carries **12.7% of the
+turbulence instead of 7.9% — about 60% more of it is parameterized** than
+at the ceiling. Peak resolved `var(w)` normalised by w² is 15% low
+(0.373 against 0.439; Deardorff's canonical CBL value is ≈0.4, which the
+grid reaches only above ~45 levels in the boundary layer).
+
+Two things this does **not** show, and both were checked before being
+ruled out:
+
+- **Boundary-layer depth is not measurably biased.** zi spans
+  1670–1722 m across a factor of eight in dz, with no monotonic trend —
+  the scatter is sampling noise, not resolution. An earlier
+  single-snapshot version of this table appeared to show a 6% high bias
+  at coarse dz; time-averaging removed it entirely.
+- **Coarse vertical resolution does not disqualify the run.** Even at
+  11 levels in the boundary layer the resolved fraction is 0.858, above
+  the conventional 0.8 threshold. The vertical grid degrades this LES; it
+  does not demote it to something else.
+
+---
+
+## 3. How to select it
+
+The idealized case is reachable directly:
+
+```
+python -m gpuwm.verify.cases.convective_boundary_layer \
+    --km-opt 2 --minutes 120 --tke-budget --out ./out --tag cbl
+```
+
+For a real, config-driven run see `configs/` — a shipped LES configuration
+selects the closure on a nested child rather than requiring hand-written
+TOML. The parameter row is importable from a WRF namelist, so an existing
+`namelist.input` carrying per-domain `c_s`/`c_k` columns round-trips.
+
+---
+
+## 4. Bounds — what constrains a run today
+
+These are limits of the current build, not opinions about LES.
+
+- **`nz <= 128`.** The acoustic solver carries per-thread stack arrays sized
+  `WPHI_MAX_LEV 129` (`gpuwm/core/kernels/acoustic.cu`). It is enforced on
+  the host in `gpuwm/core/acoustic.py`, which raises before any launch, so
+  it is a loud refusal and not a silently skipped kernel. §2 prices what
+  the vertical grid costs: at the ceiling the resolved fraction is 0.921,
+  and the nested child's shared 49-level grid gives up 4.8 points of it.
+- **Vertical nesting is impossible by construction.** The vertical grid is
+  single-sourced from `ExperimentConfig.vertical`, and per-domain vertical
+  keys are rejected outright (`gpuwm/experiment.py`,
+  `_DOMAIN_VERTICAL_KEYS`). A 250 m LES child therefore runs its parents'
+  level count. It cannot be given more levels than the 3 km domain above it.
+- **`km_opt=2` is refused only under a `km_opt=2` PARENT.** WRF gives
+  `tke` no `i` (nest-interpolation) and no `f` (feedback) Registry flag,
+  so a child cold-starts its own TKE and never feeds it back. Under a
+  parent carrying no TKE there is nothing to interpolate or feed back, and
+  that case has been run: a 250 m `km_opt=2` child under a `km_opt=4`
+  parent, 7 h, PASS, carrying 4.8x–9.9x the parent's resolved w variance
+  and *leading the `km_opt=3` child at every output time* despite the cold
+  start. Under a `km_opt=2` parent the parent does hold a field WRF
+  declines to hand down, no such tree has been run, and it stays refused
+  — in `gpuwm.experiment`, the only place that can see the parent.
+- **`km_opt=2` requires `bl_pbl_physics=0`** (see §1).
+- **Per-domain `isfflx` is an ArWen-over-WRF extension.** `isfflx` is
+  `nentries=1` in the WRF Registry — a scalar. ArWen's TOML schema admits it
+  per domain, which WRF cannot express, so a configuration that uses it has
+  left WRF-expressible territory and cannot be round-tripped back to a
+  namelist. The namelist importer deliberately reads it as the scalar WRF
+  spells.
+- **One registered runtime divergence, D8 — and it is inert in most of
+  what is measured here.** WRF hands `vertical_diffusion_w_2` the
+  *horizontal* momentum coefficient `xkmh`, while every other stress
+  operator takes the coefficient of its own directions. ArWen hands it
+  `xkmv`. That can only change an answer where the two coefficients
+  differ, i.e. `km_opt` 2 or 3 **with `mix_isotropic = 0`**. The
+  idealized CBL case runs `mix_isotropic = 1`, where the two are the same
+  number — the WRF oracle lane measured `XKMH == XKMV` at all 589,824
+  points, maximum difference exactly 0 — so **every idealized result on
+  this page is unaffected by D8**. It is load-bearing on the nested 250 m
+  child, which runs `mix_isotropic = 0`: at dx 250 m against dz 17 m the
+  pairing is roughly two orders of magnitude in the explicit diffusion
+  number, and taking WRF's is unstable. Full argument in `PROVENANCE.md`,
+  section D8.
+
+---
+
+## 5. Open — what is NOT claimed
+
+- **No WRF `em_les` oracle comparison exists.** The work package for it
+  (WP-L7) never ran, and its prerequisite — building `ideal.exe` from
+  pristine v4.6.1 — was authorised but deferred. Everything in §2 is
+  ArWen against its own FP64 mirrors and against canonical CBL phenomenology,
+  not against WRF's own LES output.
+- **No resolved-fraction figure for `km_opt=3`.** The TKE-based metric needs
+  a prognostic SGS TKE and Smagorinsky has none. Until a diagnostic SGS TKE
+  is derived from the Smagorinsky `K`, the flux-based measure in §2 is the
+  only resolved-fraction statement for that closure.
+- **Idealized coverage is moist in transport only, and flat.** The MOST
+  surface mode runs `moist=True` with `mp_physics=0`, so water vapour is
+  advected and mixed by the LES closure through
+  `vertical_diffusion_2`'s moist rows — but nothing condenses, so no
+  phase change or latent heating is exercised idealized. **No idealized
+  terrain LES exists at all.** The nested run is both moist (WSM6) and
+  terrain-following over 225–947 m orography, but it is one case scored
+  against its own parent rather than against a reference, so it
+  demonstrates the closure works there — it does not verify it there.
+- **The nested results are one case, in one window, under one parent
+  closure.** Both `km_opt=3` and `km_opt=2` have run there, but the parent
+  was `km_opt=4` in both; a `km_opt=2` parent is untested and refused.
+- **The nested child is COARSE LES at the gray-zone edge**, because it runs
+  its 3 km grandparent's 49 shared levels — measured, 18 inside the 1741 m
+  boundary layer, an effective dz of 96.7 m. Vertical resolution, not the
+  250 m spacing, is the binding constraint, and §2 now says what it costs
+  rather than leaving it as a caveat.
+- **Per-domain LES selection is a configuration capability,
+  implemented-unverified.**
+- **The WP-L9 archive is not a like-for-like reference.** It holds 18
+  distinct weather cases rather than perturbed realizations of one, and it
+  was produced with `km_opt=5` (SMS-3DTKE) on WRF v4.7.1 — a different
+  closure on a different version. It cannot be used to validate these two.

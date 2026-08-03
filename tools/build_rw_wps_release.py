@@ -92,6 +92,12 @@ _CORE_MODULES = {
     "nest_interp.py",
     "nssl2_contract.py",
     "noah.py",
+    # state.py allocates the SASE prognostic and reads its realizability
+    # floor from here.  A dependency-free constants module, which is why
+    # those two values live in gpuwm/core rather than in the closure's
+    # authority module under gpuwm/verify -- that tree is developer
+    # verification and this distribution omits it.
+    "sase_limits.py",
     "state.py",
     "thompson_contract.py",
 }

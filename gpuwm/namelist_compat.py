@@ -80,7 +80,22 @@ _PHYSICS_STATE_KEYS = {
         # below: only the WRF-default value each certified export actually
         # ran with is accepted.
         "sf_surface_mosaic", "usemonalb", "rdlai2d",
-    }
+        # Aerosol-aware Thompson (mp_physics=28) aerosol source selectors.
+        # State-relevant, not runtime-output: use_aero_icbc is what makes
+        # real.exe derive aer_init_opt and interpolate QNWFA/QNIFA from
+        # metgrid (dyn_em/module_initialize_real.F:2325-2732), so it
+        # changes what an export must have initialized.
+        "use_aero_icbc",
+    },
+    # wif_input_opt lives in &domains, not &physics
+    # (Registry/registry.new3d_wif:17 declares it namelist,domains), and it
+    # is the single most state-relevant key an mp=28 namelist can carry: at
+    # 1 or 2 it activates the use_wif_input packages that allocate the
+    # 13-month WIF stack and, at 2, the qnbca scalar
+    # (Registry/registry.new3d_wif:80-82).  Classified rather than left
+    # unclassified so an mp=28 export is reported against the real rule
+    # instead of the generic "RW-WPS has not proven" placeholder.
+    "domains": {"wif_input_opt", "num_wif_levels"},
 }
 
 _RUNTIME_OUTPUT_KEYS = {
@@ -985,7 +1000,20 @@ def analyze_namelists(
                 # campaign/real74-fixed-nssl merge (product/v1 NSSL lane
                 # 2026-07-29); its registry maturity stays
                 # "wrf-matched-run-candidate", which this report does not restate.
-                runtime_supported = mp[index] in {6, 8, 10, 18}
+                # Thompson aerosol-aware 28 is selectable since the mp=28
+                # port landed its adapter, transport and driver dispatch.
+                # Its registry maturity is a separate question this report
+                # does not restate, exactly as for NSSL 18 above.
+                #
+                # The port wrote this arm believing 28 was unreachable here,
+                # because the enclosing try block calls
+                # stock_wrf_physics_inventory(mp[index]) first and
+                # gpuwm/wrf_physics_inventory.py then carried no mp=28 row.
+                # It carries one now -- the port added it later in its own
+                # run (_INVENTORIES[28], wrf_physics_inventory.py:281) -- so
+                # 28 reaches this line and the value is load-bearing, not
+                # aspirational.
+                runtime_supported = mp[index] in {6, 8, 10, 18, 28}
                 if not runtime_supported:
                     gpuwm_reasons.append(
                         f"d{index + 1:02d}: gpuwm runtime on paired head does not "

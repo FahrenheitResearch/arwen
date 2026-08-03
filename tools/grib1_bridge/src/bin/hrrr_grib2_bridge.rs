@@ -1215,6 +1215,9 @@ fn parse_series_manifest(path: &Path) -> Result<Vec<SeriesInput>, Box<dyn Error>
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // Keep the release-provenance stamp in the binary: the cut
+    // proves a staged bridge by these bytes (see lib.rs).
+    let _ = std::hint::black_box(gpuwm_preprocess_cpu::SOURCE_REV_STAMP);
     let process_started = Instant::now();
     let args: Vec<String> = env::args().skip(1).collect();
     let usage = "usage: hrrr_grib2_bridge WRFNAT_F00 WRFNAT_F01 SOIL_F00 SOIL_F01 OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series SERIES_TSV OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series-workers WORKERS SERIES_TSV OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series-workers-ready WORKERS SERIES_TSV OUTPUT_DIR SIGNAL_DIR EXPECTED_CYCLE I_START I_END J_START J_END";

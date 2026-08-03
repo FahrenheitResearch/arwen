@@ -433,7 +433,8 @@ def test_a_land_target_with_no_reachable_source_land_refuses_by_name():
     Watched firing: the same geometry with source land present is the
     test above's sibling, and it maps.  Here the target has land cells
     and the HRRR window has none, so no donor exists at any radius --
-    the refusal must say WHICH grid and what to do about it.
+    the refusal must say WHICH grid and what to do about it, and must
+    NOT tell the reader to raise a radius no radius can satisfy.
     """
     with pytest.raises(ValueError) as refusal:
         _mapped_with_landmask(np.ones((14, 16)), source_land=False,
@@ -442,6 +443,164 @@ def test_a_land_target_with_no_reachable_source_land_refuses_by_name():
     assert "domain 2" in message
     assert "surface_fallback_radius_cells" in message
     assert "target point(s)" in message
+    assert "cannot help" in message
+    assert "Raising surface_fallback_radius_cells to" not in message
+
+
+def _snapshot_with_water_rows(target, water_rows):
+    """The constant snapshot with whole window rows turned to water."""
+    snapshot, _, _ = _constant_earth_wind_snapshot(target)
+    fields = dict(snapshot.fields)
+    landsea = np.array(fields["LANDSEA"], copy=True)
+    landsea[water_rows, :] = 0.0
+    fields["LANDSEA"] = landsea
+    return HrrrNativeSnapshot(
+        valid_time=snapshot.valid_time,
+        forecast_hour=snapshot.forecast_hour,
+        i_start=snapshot.i_start, j_start=snapshot.j_start,
+        ny=snapshot.ny, nx=snapshot.nx, fields=fields)
+
+
+def _donor_truth(target, landsea, radius):
+    """Independent recount: unresolved land targets and the radius that
+    reaches a donor for all of them (None when no donor exists at all).
+
+    Mirrors the stencil builder's DEFINITION -- integer source cells,
+    surface-matched, distance**2 <= radius**2 -- from the projection
+    geometry alone, so the error's own numbers have a second witness.
+    """
+    source = hrrr.hrrr_source_grid()
+    window = required_hrrr_source_window(target)
+    lat, lon = target.grid().latlon_mass()
+    sx, sy = source.latlon_to_ij(lat, lon)
+    x = np.asarray(sx, dtype=np.float64) - 1.0 - window.i_start
+    y = np.asarray(sy, dtype=np.float64) - 1.0 - window.j_start
+    valid_y, valid_x = np.nonzero(np.asarray(landsea) >= 0.5)
+    unresolved, worst = [], 0.0
+    for row in range(x.shape[0]):
+        for col in range(x.shape[1]):
+            best = float(np.min(
+                (valid_x - x[row, col]) ** 2 + (valid_y - y[row, col]) ** 2))
+            if best > float(radius) ** 2:
+                unresolved.append((row, col))
+                worst = max(worst, best)
+    required = int(np.ceil(np.sqrt(worst))) if unresolved else None
+    return tuple(unresolved), required
+
+
+def test_soil_donor_refusal_recommends_a_radius_the_guard_accepts():
+    """Remediation advice is validated before it is printed (half one).
+
+    An interior domain with a lake-like all-water band: some land
+    target cells have no donor within the configured 8 cells, but a
+    donor exists a couple of cells further and the enlarged source
+    window still fits HRRR's native grid.  The refusal must name that
+    exact radius, and the radius it names must pass the coverage guard
+    it would be checked by (required_hrrr_source_window).
+    """
+    from dataclasses import replace
+
+    target = _target(
+        nx=16, ny=14, ref_lat=35.5, ref_lon=-98.0,
+        truelat1=30.0, truelat2=60.0, stand_lon=-88.0)
+    snapshot, _, _ = _constant_earth_wind_snapshot(target)
+    # A water band across the window, centered on the target's middle
+    # rows, wide enough to defeat radius 8 but not radius 10.
+    window = required_hrrr_source_window(target)
+    lat, _lon = target.grid().latlon_mass()
+    source = hrrr.hrrr_source_grid()
+    _sx, sy = source.latlon_to_ij(*target.grid().latlon_mass())
+    y_mid = float(np.asarray(sy)[7, 8]) - 1.0 - window.j_start
+    band = [row for row in range(snapshot.ny)
+            if abs(row - y_mid) <= 9.4]
+    carved = _snapshot_with_water_rows(target, band)
+
+    unresolved, required = _donor_truth(
+        target, carved.fields["LANDSEA"], 8)
+    assert unresolved, "the carve must defeat the configured radius"
+    assert required is not None and required > 8
+    # Precondition: the raise is feasible -- the window grown by the
+    # difference stays inside the native grid.
+    growth = required - 8
+    assert carved.j_start - growth >= 0
+    assert carved.j_start + carved.ny - 1 + growth <= HRRR_SOURCE_NY - 1
+
+    with pytest.raises(ValueError) as refusal:
+        interpolate_hrrr_to_lambert(
+            carved, target.grid(),
+            target_landmask=np.ones((target.ny, target.nx)),
+            backend=HostBackend(), target_name="domain 1")
+    message = str(refusal.value)
+    assert "domain 1" in message
+    assert f"Raising surface_fallback_radius_cells to {required}" in message
+    # The advice passes the guard it names.
+    required_hrrr_source_window(
+        replace(target, surface_fallback_radius_cells=required))
+
+
+def test_soil_donor_refusal_computes_the_trim_when_no_radius_can_pass():
+    """Remediation advice is validated before it is printed (half two).
+
+    The field shape: a fitter-maximum domain whose radius-8 window sits
+    exactly on HRRR's native top edge.  Unfillable land cells near the
+    top cannot be remedied by ANY radius the coverage guard accepts, so
+    the refusal must not recommend the knob -- it must compute the trim
+    that removes every unfillable cell, and say which side.
+    """
+    from dataclasses import replace
+
+    source = hrrr.hrrr_source_grid()
+    target = None
+    for j_center in np.arange(1041.0, 1053.0, 0.25):
+        ref_lat, ref_lon = source.ij_to_latlon(900.0, float(j_center))
+        candidate = _target(
+            nx=16, ny=14, dx_m=3000.0, dy_m=3000.0,
+            ref_lat=float(ref_lat), ref_lon=float(ref_lon),
+            truelat1=38.5, truelat2=38.5, stand_lon=-97.5)
+        try:
+            window = required_hrrr_source_window(candidate)
+        except ValueError:
+            continue
+        if window.j_end == HRRR_SOURCE_NY - 1:
+            target = candidate
+            break
+    assert target is not None, "no aligned target found on the top edge"
+
+    snapshot, _, _ = _constant_earth_wind_snapshot(target)
+    assert snapshot.j_start + snapshot.ny - 1 == HRRR_SOURCE_NY - 1
+    # Water from just below the topmost target rows to the window top:
+    # their nearest donor sits ~10 cells south, and radius 10 needs
+    # source rows past the native edge -- the impossible raise.
+    _sx, sy = source.latlon_to_ij(*target.grid().latlon_mass())
+    y_top = float(np.asarray(sy)[-1, 8]) - 1.0 - snapshot.j_start
+    band = [row for row in range(snapshot.ny) if row > y_top - 9.4]
+    carved = _snapshot_with_water_rows(target, band)
+
+    unresolved, required = _donor_truth(
+        target, carved.fields["LANDSEA"], 8)
+    assert unresolved and required is not None
+    growth = required - 8
+    assert (snapshot.j_start + snapshot.ny - 1 + growth
+            > HRRR_SOURCE_NY - 1), "the raise must be infeasible here"
+    # The knob setting that reaches the donors is refused by the guard
+    # -- this is the constraint the printed advice must respect.
+    with pytest.raises(ValueError, match="leaves HRRR coverage"):
+        required_hrrr_source_window(
+            replace(target, surface_fallback_radius_cells=required))
+
+    with pytest.raises(ValueError) as refusal:
+        interpolate_hrrr_to_lambert(
+            carved, target.grid(),
+            target_landmask=np.ones((target.ny, target.nx)),
+            backend=HostBackend(), target_name="domain 1")
+    message = str(refusal.value)
+    assert "Raising surface_fallback_radius_cells to" not in message
+    assert "cannot work here" in message
+    # The trim is computed, not guessed: exactly the rows that carry
+    # unfillable cells, counted from the north (j-max) side.
+    trim = target.ny - min(row for row, _col in unresolved)
+    assert f"trim {trim} cell(s) from its north (j-max) side" in message
+    assert all(row >= target.ny - trim for row, _col in unresolved)
 
 
 def test_a_mixed_land_water_target_still_reports_land_statistics():

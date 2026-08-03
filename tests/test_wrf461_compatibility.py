@@ -73,8 +73,22 @@ def _run_config(cell) -> RunConfig:
 
 
 def test_matrix_has_every_cell_every_citation_and_pinned_counts():
+    """Pinned counts, RECOMPUTED when mp_physics=28 joined the mp axis.
+
+    The pins moved 2400 -> 2880 and 1080/360/600/360 ->
+    1296/432/720/432 because MP_OPTIONS gained a sixth value.  That every
+    verdict count scaled by exactly 6/5 is not an assumption used to derive
+    them -- the numbers below were read off the enlarged matrix, and the
+    clean ratio is the EVIDENCE that microphysics is an independent axis of
+    the WRF v4.6.1 authority table: no cell's verdict depends on which
+    microphysics scheme it names, which is exactly what the six per-cell
+    citations say (the mp citation is informational, and only the
+    PBL/surface-layer pair can be FATAL).  A count that had not scaled by
+    6/5 would have meant mp=28 changed a verdict somewhere, and that would
+    need a WRF citation, not a pin update.
+    """
     cells = tuple(iter_compatibility_matrix())
-    assert len(cells) == MATRIX_CELL_COUNT == 2400
+    assert len(cells) == MATRIX_CELL_COUNT == 2880
     assert len({
         (
             cell.mp_physics,
@@ -94,11 +108,14 @@ def test_matrix_has_every_cell_every_citation_and_pinned_counts():
         for cell in cells
     )
     assert Counter(cell.verdict for cell in cells) == {
-        WRFVerdict.LEGAL: 1080,
-        WRFVerdict.LEGAL_RECONFIGURED: 360,
-        WRFVerdict.FATAL: 600,
-        WRFVerdict.NOT_EXPRESSIBLE: 360,
+        WRFVerdict.LEGAL: 1296,
+        WRFVerdict.LEGAL_RECONFIGURED: 432,
+        WRFVerdict.FATAL: 720,
+        WRFVerdict.NOT_EXPRESSIBLE: 432,
     }
+    # Every represented mp value carries its own Registry citation, so the
+    # matrix cannot grow an axis value that is admitted without one.
+    assert {cell.mp_physics for cell in cells} == {1, 6, 8, 10, 18, 28}
     assert WRF_COMMIT == "d66e442fccc04111067e29274c9f9eaccc3cef28"
 
 
@@ -117,7 +134,7 @@ def test_pbl_surface_layer_authority_is_the_complete_twelve_cell_table():
 
 
 def test_every_front_door_tuple_agrees_with_the_wrf_matrix():
-    """Sweep the full 2,400-cell product through RunConfig admission.
+    """Sweep the full 2,880-cell product through RunConfig admission.
 
     The only local refusal of a WRF-legal cell is the separately named
     ArWen structural seam: an active LSM has no exchange-field writer when
@@ -150,8 +167,13 @@ def test_every_front_door_tuple_agrees_with_the_wrf_matrix():
             assert validate_run_config(cfg) is cfg
             observed["admitted"] += 1
 
+    # Recomputed with mp_physics=28 on the axis: 1650/150/600 -> 1980/180/720,
+    # the same 6/5 scaling, which is the front-door half of the statement
+    # the matrix test makes about the authority table.  Concretely: all 480
+    # mp=28 cells reach a verdict for reasons that have nothing to do with
+    # microphysics, so mp=28 adds no new refusal and removes none.
     assert observed == {
-        "admitted": 1650,
-        "arwen-structural": 150,
-        "wrf-fatal": 600,
+        "admitted": 1980,
+        "arwen-structural": 180,
+        "wrf-fatal": 720,
     }

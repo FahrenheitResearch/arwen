@@ -914,9 +914,22 @@ def prepare_idealized_domain(state, dc, grid, start_time):
         radiation_latitude=lat, radiation_longitude=lon)
 
 
+#: ``mp_physics`` values whose microphysics call stages a scheme-native
+#: REFL_10CM field.  Identical to ``gpuwm.runtime.REFL_10CM_MICROPHYSICS``
+#: (held equal by tests/test_mp28_runtime_reachability.py) and named here
+#: for the same reason: this handoff is what makes the ideal-nest cases
+#: exercise production's consume-once contract, and a scheme that stages a
+#: field this function does not consume raises at the NEXT history frame,
+#: far from the omission.  28 belongs here because WRF's calc_refl10cm has
+#: no aerosol-aware arm (module_mp_thompson.F:5710-5711, reached from the
+#: single site :1458 gated on diagflag alone) and gpuwm's mp=28 adapter
+#: stages the field through the same seam as mp=8.
+REFL_10CM_MICROPHYSICS = (1, 6, 8, 10, 18, 28)
+
+
 def consume_history_reflectivity(node, ticks: int) -> None:
     """Complete production's one-frame REFL handoff without writing a file."""
-    if ticks == 0 or node.cfg.run.mp_physics not in (1, 6, 8, 10, 18):
+    if ticks == 0 or node.cfg.run.mp_physics not in REFL_10CM_MICROPHYSICS:
         return
     if getattr(node.state, "physics", None) is None:
         raise RuntimeError(

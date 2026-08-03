@@ -9,9 +9,10 @@
     "cupy.ReductionKernel",
     "cupy.cuda.compiler.compile_using_nvrtc"
   ],
-  "site_count": 49,
+  "site_count": 57,
   "site_count_by_kind": {
-    "cupy.RawModule": 37,
+    "cupy.RawKernel": 1,
+    "cupy.RawModule": 44,
     "cupy.ReductionKernel": 5,
     "cupy.cuda.compiler.compile_using_nvrtc": 7
   },
@@ -22,7 +23,8 @@
       "cupy.cuda.compiler.compile_using_nvrtc": 2
     },
     "tests": {
-      "cupy.RawModule": 23,
+      "cupy.RawKernel": 1,
+      "cupy.RawModule": 30,
       "cupy.cuda.compiler.compile_using_nvrtc": 3
     },
     "tools": {
@@ -55,7 +57,7 @@
   "sites": [
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 20,
+      "line": 64,
       "column": 10,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -75,7 +77,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 51,
+      "line": 95,
       "column": 10,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -822,6 +824,166 @@
       ],
       "options_are_literal": true,
       "text": "mod = cp.RawModule(code=_preamble() + _PHASE1_DIAG_SRC,"
+    },
+    {
+      "file": "tests/test_thompson_aerosol_device_helpers.py",
+      "line": 1052,
+      "column": 13,
+      "surface": "tests",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "test_the_hoisted_mp8_field_fit_really_does_disagree_with_wrf",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "(\"-std=c++17\",)",
+      "options": [
+        "-std=c++17"
+      ],
+      "options_element_expressions": [
+        "\"-std=c++17\""
+      ],
+      "options_are_literal": true,
+      "text": "module = cp.RawModule(code=_MP8_FIELD_SHADOW_SOURCE,"
+    },
+    {
+      "file": "tests/test_thompson_aerosol_device_helpers.py",
+      "line": 1203,
+      "column": 13,
+      "surface": "tests",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "test_snow_number_end_to_end_through_the_fits_is_the_cold_network_path",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "(\"-std=c++17\",)",
+      "options": [
+        "-std=c++17"
+      ],
+      "options_element_expressions": [
+        "\"-std=c++17\""
+      ],
+      "options_are_literal": true,
+      "text": "module = cp.RawModule("
+    },
+    {
+      "file": "tests/test_thompson_aerosol_device_helpers.py",
+      "line": 1795,
+      "column": 13,
+      "surface": "tests",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "test_a_six_parameter_local_copy_of_the_rain_distribution_compiles_silently",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "(\"-std=c++17\",)",
+      "options": [
+        "-std=c++17"
+      ],
+      "options_element_expressions": [
+        "\"-std=c++17\""
+      ],
+      "options_are_literal": true,
+      "text": "module = cp.RawModule(code=source, options=(\"-std=c++17\",))"
+    },
+    {
+      "file": "tests/test_thompson_aerosol_device_helpers.py",
+      "line": 1830,
+      "column": 12,
+      "surface": "tests",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "test_a_six_parameter_local_copy_of_the_rain_distribution_compiles_silently",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "(\"-std=c++17\",)",
+      "options": [
+        "-std=c++17"
+      ],
+      "options_element_expressions": [
+        "\"-std=c++17\""
+      ],
+      "options_are_literal": true,
+      "text": "cp.RawModule(code=module_source(PROBE_MODULE) + \"\\n\" + body,"
+    },
+    {
+      "file": "tests/test_thompson_aerosol_device_helpers.py",
+      "line": 1916,
+      "column": 13,
+      "surface": "tests",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "test_local_reimplementations_of_shared_helpers_have_not_drifted",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "(\"-std=c++17\",)",
+      "options": [
+        "-std=c++17"
+      ],
+      "options_element_expressions": [
+        "\"-std=c++17\""
+      ],
+      "options_are_literal": true,
+      "text": "module = cp.RawModule(code=source, options=(\"-std=c++17\",))"
+    },
+    {
+      "file": "tests/test_thompson_aerosol_device_helpers.py",
+      "line": 2448,
+      "column": 13,
+      "surface": "tests",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "test_promoted_decade_index_double_is_bitwise_identical_to_the_local_copies",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "(\"-std=c++17\",)",
+      "options": [
+        "-std=c++17"
+      ],
+      "options_element_expressions": [
+        "\"-std=c++17\""
+      ],
+      "options_are_literal": true,
+      "text": "module = cp.RawModule(code=source, options=(\"-std=c++17\",))"
+    },
+    {
+      "file": "tests/test_thompson_aerosol_state_gpu.py",
+      "line": 954,
+      "column": 13,
+      "surface": "tests",
+      "constructor": "cp.RawKernel",
+      "constructor_kind": "cupy.RawKernel",
+      "enclosing": "test_state_finalize_rounds_every_real4_subexpression_that_feeds_a_double",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "(\"-std=c++17\",)",
+      "options": [
+        "-std=c++17"
+      ],
+      "options_element_expressions": [
+        "\"-std=c++17\""
+      ],
+      "options_are_literal": true,
+      "text": "kernel = cp.RawKernel(source, \"spellings\", options=(\"-std=c++17\",))"
+    },
+    {
+      "file": "tests/test_thompson_aerosol_warm_gpu.py",
+      "line": 1369,
+      "column": 13,
+      "surface": "tests",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "_golden_comparison_module",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "(\"-std=c++17\",)",
+      "options": [
+        "-std=c++17"
+      ],
+      "options_element_expressions": [
+        "\"-std=c++17\""
+      ],
+      "options_are_literal": true,
+      "text": "module = cp.RawModule(code=source, options=(\"-std=c++17\",))"
     },
     {
       "file": "tools/ftz_receipt/probe.py",

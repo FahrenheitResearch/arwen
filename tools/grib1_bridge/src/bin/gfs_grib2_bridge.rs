@@ -1422,6 +1422,9 @@ fn fnv1a64(values: &[u32]) -> u64 {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // Keep the release-provenance stamp in the binary: the cut
+    // proves a staged bridge by these bytes (see lib.rs).
+    let _ = std::hint::black_box(gpuwm_preprocess_cpu::SOURCE_REV_STAMP);
     let args: Vec<String> = env::args().skip(1).collect();
     if args.len() != 4 || args[0] != "--series" {
         return Err("usage: gfs_grib2_bridge --series SERIES_TSV OUTPUT_DIR EXPECTED_CYCLE".into());
