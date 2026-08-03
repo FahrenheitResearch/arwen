@@ -902,6 +902,32 @@ def test_state_finalize_rounds_every_real4_subexpression_that_feeds_a_double():
     state.  BEFORE the pins were added the same comparison differed at 38 of
     456 states by up to 1.164e-07 relative, and the end-to-end ``nc_per_kg``
     residual sat at 2.4e-07 to 4.2e-07 on nearly every fixture.
+
+    THE CONTROL IS TOOLCHAIN-VERSIONED, AND THE BOUNDARY IS MEASURED, NOT
+    ASSUMED.  Widening is measured on NVRTC 12.8, 12.9 AND 13.0 (all sm_120
+    RTX 5090 hosts; the 13.0 point is driver 610.74, 2026-08-03, on the
+    reference 5090 box), which is what proved the ``.cu`` pins
+    load-bearing.  Exact agreement is measured only at NVRTC 13.1 (RTX 4090
+    sm_89, driver 590.48.01, 2026-08-03, arwen-stress-4090): there all
+    three spellings agree bitwise with the Fortran-faithful answer, 1 FP32
+    ULP away from the widened one.  So the split below is ``>= (13, 1)``,
+    not ``>= (13, 0)`` -- a first cut at this boundary guessed the major
+    version was where the behaviour changed and misclassified 13.0, which
+    the reference box falsified by producing the widened answer under it.
+    Do not move this boundary to a version nobody has run.
+
+    This test fired its own "re-measure before relaxing the pins"
+    instruction on 13.1, and the re-measurement's verdict is recorded per
+    toolchain below: on a widening NVRTC the unpinned spellings must
+    produce the WIDENED answer (the pins are load-bearing); on a
+    non-widening NVRTC they must produce the WRF answer EXACTLY (the pins
+    are belt and suspenders -- they pin behaviour the toolchain now
+    guarantees only by default, and they STAY, because the same wheel
+    still runs on the toolchains of the first class).  Either way the
+    toolchain gets exactly one asserted expectation, so a future NVRTC
+    that behaves like neither class fails loudly instead of being
+    absorbed.  Part 2 is toolchain-independent: the pinned kernel is
+    bitwise against WRF's arithmetic under both classes, measured on both.
     """
     import cupy as cp
 
@@ -976,10 +1002,39 @@ def test_state_finalize_rounds_every_real4_subexpression_that_feeds_a_double():
         "pick operands that do rather than deleting the test")
     assert F(pinned) == wrf_answer, (
         "the rounding intrinsics must reproduce Fortran's REAL(4) prefactor")
-    assert F(inlined) == widened_answer and F(via_named) == widened_answer, (
-        "nvrtc no longer widens the unpinned spellings on this toolchain; "
-        "re-measure before relaxing the pins in "
-        "gpuwm/core/kernels/thompson_aerosol_state.cu")
+    from cupy.cuda import nvrtc
+
+    nvrtc_version = tuple(nvrtc.getVersion())
+    if nvrtc_version >= (13, 1):
+        # Measured on NVRTC 13.1: the toolchain rounds every float32
+        # subexpression to REAL(4) exactly as the pinned spelling does, so
+        # all three spellings agree bitwise and the pins are belt and
+        # suspenders here.  13.1 is the FIRST toolchain measured to do so:
+        # 13.0 still widens (reference RTX 5090, driver 610.74,
+        # 2026-08-03), so the boundary is the minor version, not the major.
+        # Asserted exactly -- an unpinned spelling landing anywhere else is
+        # a new toolchain behaviour to measure, not one to absorb.
+        assert F(inlined) == wrf_answer and F(via_named) == wrf_answer, (
+            f"NVRTC {nvrtc_version} neither widens the unpinned spellings "
+            f"(the 12.8/12.9/13.0 behaviour) nor rounds them to the "
+            f"REAL(4) answer (the 13.1 behaviour); re-measure and record "
+            f"this toolchain's class before touching the pins in "
+            f"gpuwm/core/kernels/thompson_aerosol_state.cu")
+        print("NVRTC %s does not widen the unpinned spellings: all three "
+              "agree with the REAL(4) answer bitwise; the .cu pins are "
+              "belt and suspenders on this toolchain and load-bearing on "
+              "the toolchains measured to widen (12.8, 12.9, 13.0)"
+              % (".".join(str(p) for p in nvrtc_version),))
+    else:
+        # Widening measured at 12.8, 12.9 and 13.0 -- everything below the
+        # 13.1 boundary above.  The pins are load-bearing here.
+        assert (F(inlined) == widened_answer
+                and F(via_named) == widened_answer), (
+            f"NVRTC {nvrtc_version} no longer widens the unpinned "
+            f"spellings, but widening is what was measured on every "
+            f"toolchain below 13.1 (12.8, 12.9, 13.0); re-measure and "
+            f"move the boundary above rather than relaxing the pins in "
+            f"gpuwm/core/kernels/thompson_aerosol_state.cu")
 
     # ---- 2.  The kernel itself, bitwise, over every fixture state. --------
     scenarios = sorted(p.name[: -len("-column.csv")]

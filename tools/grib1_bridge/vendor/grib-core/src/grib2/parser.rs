@@ -141,6 +141,18 @@ pub struct DataRepresentation {
     /// Type of original field values (Code Table 5.1).
     pub original_field_type: u8,
     pub group_splitting_method: u8,
+    /// Missing value management for complex packing (Code Table 5.5,
+    /// octet 23 of Templates 5.2/5.3): 0 = no explicit management (a
+    /// bitmap, if any, carries the missing cells), 1 = primary missing
+    /// value substitute embedded in the packed data, 2 = primary and
+    /// secondary.  The unpackers only implement 0 and refuse the rest;
+    /// before this octet was parsed they silently decoded the
+    /// substitute sentinels as data.
+    pub missing_value_management: u8,
+    /// Primary missing value substitute (octets 24-27), raw bits.
+    pub primary_missing_value: u32,
+    /// Secondary missing value substitute (octets 28-31), raw bits.
+    pub secondary_missing_value: u32,
     pub num_groups: u32,
     pub group_width_ref: u8,
     pub group_width_bits: u8,
@@ -255,6 +267,9 @@ impl Default for DataRepresentation {
             bits_per_value: 0,
             original_field_type: 0,
             group_splitting_method: 0,
+            missing_value_management: 0,
+            primary_missing_value: 0,
+            secondary_missing_value: 0,
             num_groups: 0,
             group_width_ref: 0,
             group_width_bits: 0,
@@ -1208,6 +1223,9 @@ fn parse_drtemplate_complex(sec: &[u8], dr: &mut DataRepresentation) -> Result<(
         return Err("Section 5 complex packing too short".into());
     }
     dr.group_splitting_method = read_u8(sec, 21)?;
+    dr.missing_value_management = read_u8(sec, 22)?;
+    dr.primary_missing_value = read_u32(sec, 23)?;
+    dr.secondary_missing_value = read_u32(sec, 27)?;
     dr.num_groups = read_u32(sec, 31)?;
     dr.group_width_ref = read_u8(sec, 35)?;
     dr.group_width_bits = read_u8(sec, 36)?;

@@ -59,6 +59,7 @@ from gpuwm.physics_compat import (  # noqa: E402
     WRF_RRTMG_TO_RTE_RRTMGP,
     WSM6_PROFILE_ID,
     single_domain_runtime_switches,
+    thompson_guard_exports,
     thompson_runtime_requirements,
     validate_single_domain_physics_profile,
 )
@@ -618,6 +619,26 @@ def _proc_io() -> dict[str, int]:
     return values
 
 
+def _device_name(cp) -> str:
+    """The attached device's name as text, not as a bytes repr.
+
+    ``getDeviceProperties(0)["name"]`` is ``bytes``, and ``str()`` of
+    bytes is its repr: a 1.5.0 field report carries the device as
+    ``b'NVIDIA GeForce RTX 5070 Ti'`` -- quotes, ``b`` prefix and all --
+    in a receipt whose whole job is to say which card produced the
+    numbers.  Decoded the way the identity blocks in
+    :mod:`gpuwm.gpu_stack_identity` and :mod:`gpuwm.report_bundle` decode
+    it, ``errors="replace"`` included, so a driver that returns
+    something undecodable degrades to a readable string instead of
+    raising inside a receipt.
+    """
+
+    name = cp.cuda.runtime.getDeviceProperties(0).get("name", b"")
+    if isinstance(name, (bytes, bytearray)):
+        name = bytes(name).decode("utf-8", errors="replace")
+    return str(name)
+
+
 def _source_identity() -> dict[str, object]:
     paths = (
         REPO / "gpuwm/hrrr_forecast.py",
@@ -991,16 +1012,55 @@ def _native_hrrr_runtime_switches(profile: str) -> dict[str, object]:
             f"unsupported native HRRR physics profile {profile!r}") from None
 
 
+def _guarded_launch_remedy(missing: tuple[str, ...]) -> str:
+    """Name BOTH variables, with values, whichever one is missing.
+
+    The guard is deliberate and unchanged: this runner's launch contract
+    is that the operator states the experimental selection and the table
+    root explicitly.  What was not deliberate is meeting it as two
+    consecutive one-line refusals that named one variable each and
+    carried no value -- a field run of the shipped 1.5.0 wheel set the
+    first, re-ran, was refused for the second, and then had to work out
+    the table root by hand having already downloaded it.
+
+    So a single message names the pair and prints both export lines for
+    the reader's platform.  Nothing is relaxed: an absent variable is
+    still a refusal, and the root that gets set is still byte-validated
+    against the pinned asset set before any GPU setup.
+    """
+
+    exports = "\n".join(f"    {line}"
+                        for line in thompson_guard_exports())
+    return (
+        f"{THOMPSON_PROFILE_ID} is gated on {EXPERIMENTAL_THOMPSON_ENV}=1 "
+        f"and {THOMPSON_TABLE_ROOT_ENV}; this process has neither"
+        if len(missing) == 2 else
+        f"{THOMPSON_PROFILE_ID} is gated on {EXPERIMENTAL_THOMPSON_ENV}=1 "
+        f"and {THOMPSON_TABLE_ROOT_ENV}; this process is missing "
+        f"{missing[0]}") + (
+        ".\n  Export BOTH in the shell that starts the chain -- "
+        "preparation launches this\n"
+        "  runner as a subprocess and it inherits the environment:\n"
+        f"{exports}\n"
+        "  # the root above is this install's own resolution; every "
+        "asset in it is\n"
+        "  # size- and SHA-256-checked before GPU setup, so a wrong root "
+        "still fails closed.")
+
+
 def _thompson_runtime_authority() -> dict[str, object]:
     """Validate the guarded canonical Thompson table bytes before setup."""
 
-    if os.environ.get(EXPERIMENTAL_THOMPSON_ENV) != "1":
-        raise RuntimeError(
-            f"{THOMPSON_PROFILE_ID} requires {EXPERIMENTAL_THOMPSON_ENV}=1")
+    missing = tuple(
+        name for name, satisfied in (
+            (EXPERIMENTAL_THOMPSON_ENV,
+             os.environ.get(EXPERIMENTAL_THOMPSON_ENV) == "1"),
+            (THOMPSON_TABLE_ROOT_ENV,
+             bool(os.environ.get(THOMPSON_TABLE_ROOT_ENV))),
+        ) if not satisfied)
+    if missing:
+        raise RuntimeError(_guarded_launch_remedy(missing))
     raw_root = os.environ.get(THOMPSON_TABLE_ROOT_ENV)
-    if not raw_root:
-        raise RuntimeError(
-            f"{THOMPSON_PROFILE_ID} requires {THOMPSON_TABLE_ROOT_ENV}")
     from gpuwm.core.thompson_contract import (
         TABLE_SET_ID,
         WRF_REFERENCE_COMMIT,
@@ -2264,7 +2324,11 @@ def run(args):
         run_seconds=args.run_seconds, end_hour=args.forecast_end_hour)
     namelist_invariant = _validated_namelist_extension_identity(
         args, cycle=requested_cycle)
-    args.outdir.mkdir(parents=True, exist_ok=False)
+    # The refusal lives in _check_outdir, at parse time; this is only the
+    # creation.  exist_ok follows the explicit opt-in so a direct run()
+    # caller that never went through the parser keeps the old strictness.
+    args.outdir.mkdir(parents=True,
+                      exist_ok=bool(getattr(args, "allow_existing", False)))
     progress_path = args.outdir / "progress.json"
     model_forcing_hours = tuple(range(len(source_forecast_hours)))
     model_start_time = requested_cycle + timedelta(
@@ -2938,7 +3002,7 @@ def run(args):
             "model_forcing_hours": list(model_forcing_hours),
             "io_mode": "prepare-only",
             "device": (
-                str(cp.cuda.runtime.getDeviceProperties(0)["name"])
+                _device_name(cp)
                 if preprocess_is_cuda else "CPU native preprocessing"),
             "geometry": target.to_payload(),
             "target_domain_sha256": target.identity_sha256(),
@@ -3212,6 +3276,11 @@ def run(args):
     integration_key = (
         "forecast_execution" if args.io_mode == "none"
         else "forecast_execution_with_async_io")
+    warmed = _warmed_integration_rates(
+        integration_seconds=timing[integration_key],
+        run_seconds=float(args.run_seconds),
+        steps=int(execution.steps),
+        step_samples=step_samples)
     report = {
         "schema": REPORT_SCHEMA,
         "status": "PASS",
@@ -3226,7 +3295,7 @@ def run(args):
         "io_mode": args.io_mode,
         "history_interval_seconds": (
             None if args.io_mode == "none" else history_interval_seconds),
-        "device": str(cp.cuda.runtime.getDeviceProperties(0)["name"]),
+        "device": _device_name(cp),
         "geometry": target.to_payload(),
         "target_domain_sha256": target.identity_sha256(),
         "hrrr_source_coverage": source_window.to_dict(),
@@ -3251,6 +3320,10 @@ def run(args):
         "integration_wall_seconds_per_simulated_hour": (
             timing[integration_key] / (float(args.run_seconds) / 3600.0)),
         "measured_initial_step_seconds": step_samples,
+        # ADDED beside the two integration rates above, which keep their
+        # exact meaning: whole-run averages including compilation.  These
+        # separate the two populations a short run mixes together.
+        **warmed,
         "executor": {
             "steps": int(execution.steps), "forces": int(execution.forces),
             "feedback_calls": int(execution.feedback_calls),
@@ -3346,6 +3419,110 @@ def run(args):
     return report
 
 
+def _warmed_integration_rates(
+        *, integration_seconds: float, run_seconds: float, steps: int,
+        step_samples: list[float]) -> dict[str, object]:
+    """The cold first step, and the rate the remaining steps ran at.
+
+    A short run reports one number for two populations.  On the field
+    report this runner produced -- 900 simulated seconds in 60 steps --
+    the first step took 22.556 s and the next two took 0.283 s each,
+    because step one pays for every NVRTC compilation the whole forecast
+    needs.  The whole-run average was 2.7498 wall s per simulated
+    minute; the same run excluding step one was 1.2672, and it is the
+    second number that predicts what an hour of forecast costs.
+    Reporting only the first invites a reader to extrapolate a
+    fifteen-minute measurement into a figure that is more than twice the
+    truth.
+
+    Both existing rate fields keep their names and their meaning: they
+    are the honest cost of THIS run, compilation included, which is what
+    a fifteen-minute run actually took.  These are additional.
+
+    ``None`` rather than a fabricated number whenever the arithmetic has
+    no meaning -- a single-step run has no warmed population, and a
+    cold step that somehow exceeded the whole integration would produce
+    a negative denominator.
+    """
+
+    simulated_per_step = (run_seconds / steps) if steps > 0 else 0.0
+    cold = float(step_samples[0]) if step_samples else None
+    result: dict[str, object] = {
+        "cold_first_step_seconds": cold,
+        "warmed_integration_excluded_steps": 1 if cold is not None else 0,
+    }
+    warmed_wall = (
+        None if cold is None else integration_seconds - cold)
+    warmed_simulated = run_seconds - simulated_per_step
+    if (warmed_wall is None or warmed_wall <= 0.0
+            or warmed_simulated <= 0.0 or steps <= 1):
+        result["warmed_integration_seconds"] = None
+        result["warmed_integration_simulated_seconds_per_wall_second"] = None
+        result["warmed_integration_wall_seconds_per_simulated_hour"] = None
+        return result
+    result["warmed_integration_seconds"] = warmed_wall
+    result["warmed_integration_simulated_seconds_per_wall_second"] = (
+        warmed_simulated / warmed_wall)
+    result["warmed_integration_wall_seconds_per_simulated_hour"] = (
+        warmed_wall / (warmed_simulated / 3600.0))
+    return result
+
+
+#: Fixed-name documents this runner publishes into ``--outdir``.
+_PUBLISHED_OUTPUT_NAMES = ("report.json", "progress.json")
+
+#: WRF history frames, whose exact names come from the cadence and the
+#: model start; matched by pattern here because ``--outdir`` is checked
+#: before the namelist and the vertical grid have been read.
+_PUBLISHED_OUTPUT_GLOB = "wrfout_d*"
+
+
+def _existing_published_output(outdir: Path) -> list[str]:
+    """Names in ``outdir`` this run would publish over."""
+
+    names = {name for name in _PUBLISHED_OUTPUT_NAMES
+             if (outdir / name).exists()}
+    names.update(path.name for path in outdir.glob(_PUBLISHED_OUTPUT_GLOB))
+    return sorted(names)
+
+
+def _check_outdir(parser, args) -> None:
+    """Refuse an occupied ``--outdir`` in a sentence, before anything runs.
+
+    ``mkdir(exist_ok=False)`` used to fire in the middle of setup, as a
+    bare ``FileExistsError`` traceback, after the target domain and the
+    source window had already been resolved -- a field run of the shipped
+    1.5.0 wheel met exactly that.  The same file also created its failure
+    report with ``exist_ok=True``, so the two halves disagreed about
+    whether an existing directory was allowed.
+
+    Checked here, at parse time, where every other argument contract in
+    this runner is checked.  ``--allow-existing`` is the explicit way to
+    reuse a directory you made yourself or that holds unrelated files;
+    it is NOT permission to clobber, because silently replacing a
+    benchmark result is worse than either refusing or crashing.
+    """
+
+    outdir = args.outdir
+    if not outdir.exists():
+        return
+    if not outdir.is_dir():
+        parser.error(
+            f"--outdir {outdir} exists and is not a directory; name a "
+            "directory, or a path that does not exist yet")
+    if not args.allow_existing:
+        parser.error(
+            f"--outdir {outdir} already exists; name a directory that does "
+            "not exist yet, or pass --allow-existing to reuse this one "
+            "(output files already in it are still never overwritten)")
+    occupied = _existing_published_output(outdir)
+    if occupied:
+        parser.error(
+            f"--outdir {outdir} already holds output this run publishes "
+            f"({', '.join(occupied)}); benchmark results are not "
+            "overwritten -- move them aside, or name a fresh --outdir")
+
+
 def _positive_finite_seconds(value: str) -> float:
     try:
         seconds = float(value)
@@ -3431,6 +3608,10 @@ def _parse_args(argv=None):
               "with --prepare-only it binds the future forecast cadence into "
               "the prepared-cache identity without writing history output"))
     parser.add_argument("--outdir", type=Path, required=True)
+    parser.add_argument(
+        "--allow-existing", action="store_true",
+        help=("reuse an existing --outdir instead of refusing it; output "
+              "files already in it are still never overwritten"))
     args = parser.parse_args(argv)
     if args.pipeline_series is not None:
         required = {
@@ -3481,6 +3662,7 @@ def _parse_args(argv=None):
             and args.cpu_preprocess_bridge is not None):
         parser.error(
             "--cpu-preprocess-bridge requires --preprocess-backend cpu")
+    _check_outdir(parser, args)
     return args
 
 
@@ -3510,6 +3692,13 @@ def main(argv=None):
     if "integration_simulated_seconds_per_wall_second" in report:
         summary["simulated_seconds_per_wall_second"] = report[
             "integration_simulated_seconds_per_wall_second"]
+        # Printed BESIDE the whole-run rate, never instead of it.  The
+        # stdout summary is what a short run gets extrapolated from, and
+        # on a fifteen-minute run the cold first step is most of it.
+        summary["cold_first_step_seconds"] = report[
+            "cold_first_step_seconds"]
+        summary["warmed_simulated_seconds_per_wall_second"] = report[
+            "warmed_integration_simulated_seconds_per_wall_second"]
     if report.get("prepared_cache") is not None:
         summary["prepared_cache_content_sha256"] = report[
             "prepared_cache"]["content_sha256"]

@@ -74,6 +74,15 @@ WPS_GEOG static tree is not part of it -- `gpuwm setup --with-geog`
 opts in and prints the size before anything downloads, or run
 `gpuwm fetch-geog` later.
 
+To upgrade later, `gpuwm update` prints the exact command for your
+environment -- the distribution that provides this install and the
+interpreter running it -- and nothing else: it downloads nothing and
+replaces nothing, because rewriting a package's files underneath the
+process importing them is how a half-upgraded install happens. Run the
+line it prints from your shell. The staged bridges and physics tables
+live under `~/.gpuwm`, outside the wheel, so an upgrade does not
+re-download them.
+
 Published PyPI wheels and sdists carry bridge pins generated from that
 release's exact native bundles. GitHub's automatic source `.zip` and
 `.tar.gz` archives are intentionally unpinned: install the PyPI artifact to

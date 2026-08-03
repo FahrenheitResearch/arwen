@@ -1,0 +1,75 @@
+{
+  "dx_m": 100.0,
+  "e_sgs_ml_mean": 0.21697675819950255,
+  "entrainment_min_over_qs": -0.12344103298671112,
+  "final_sample": {
+    "e_sgs_volume": 0.1676226089838208,
+    "resolved_fraction_ml_avg": 0.8959040137485477,
+    "resolved_fraction_ml_trunc": 0.8988467481548634,
+    "tke_res_max_avg": 2.132642904476727,
+    "tke_res_max_trunc": 2.2806324675024845,
+    "wth_res_max_over_qs": 0.807761486120869,
+    "wth_total_min_over_qs": -0.1401087548774943,
+    "zi_m": 1813.9121503122456
+  },
+  "flux_fit_intercept": 0.9902629705021533,
+  "flux_fit_rms": 0.003063084546391749,
+  "flux_fit_slope": -1.2032574703045835,
+  "history_dt_s": 60.0,
+  "km_opt": 2,
+  "mass_drift_rel": 2.935010232670291e-10,
+  "n_frames": 121,
+  "n_frames_in_window": 31,
+  "nx": 96,
+  "ny": 96,
+  "nz": 64,
+  "power": {
+    "L_x_m": 9600.0,
+    "L_x_over_zi": 5.664553741583536,
+    "N_h": 32.08716909128803,
+    "N_t": 3.7105725957469886,
+    "T_int_s": 242.5501662550865,
+    "l_c_assumed_m": 1694.7495668593133,
+    "spinup_over_tstar": 7.538262845970744,
+    "tstar_s": 716.3454114479889,
+    "window_over_tstar": 2.5127542819902478
+  },
+  "resolved_fraction_ml_avg": 0.893270740108406,
+  "resolved_fraction_ml_trunc": 0.8964090274255231,
+  "run_dir": "les-oracle-wpl7/runs/spread_km2_100m_r1",
+  "spectrum": {
+    "binned_sum": 2.4612985527792635,
+    "field_variance": 2.4662276354184405,
+    "fit_bins": [
+      6,
+      24
+    ],
+    "level_index": 24,
+    "level_z_m": 862.9979072555764,
+    "n_bins": 49,
+    "parseval_residual_rel": 1.8006821571225917e-16,
+    "slope_Ek": -1.6712725840738054
+  },
+  "surface_heat_flux": 0.24,
+  "t_end_minutes": 120.0,
+  "theta_ml": 301.3260204599275,
+  "tke_res_max_avg": 2.0606285055213207,
+  "tke_res_max_trunc": 2.179593906566666,
+  "tstar_s": 716.3454114479889,
+  "updraft_fraction_low": 0.4215494791666667,
+  "w_absmax_frames": 7.563011169433594,
+  "window_minutes": 30.0,
+  "wmax_over_wstar": 3.1967722275295833,
+  "wrfout_bytes": {
+    "wrfout_d01_0001-01-01_00:00:00": 2478746271
+  },
+  "wrfout_files": [
+    "wrfout_d01_0001-01-01_00:00:00"
+  ],
+  "wrfout_sha256": {
+    "wrfout_d01_0001-01-01_00:00:00": "51d25f70f6c0c670a66b54efb112b15d3b797f277a12ccbafd6682e24efc252e"
+  },
+  "wstar": 2.365827350570476,
+  "wth_res_max_over_qs": 0.8396788614215552,
+  "zi_m": 1694.7495668593133
+}

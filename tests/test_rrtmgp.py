@@ -1948,6 +1948,14 @@ def test_rrtmgp_driver_flux_mapping_matches_float64_mirror_regimes():
         expected = getattr(ref, name)
         tolerance = 8.0 * fp32 * np.maximum(np.abs(expected), 1.0)
         assert np.all(np.abs(actual - expected) <= tolerance), name
+    # OLR is the TOP level's upward longwave off the same bottom-to-top
+    # level stack whose level 0 gives GLW just above -- a selection, so it
+    # is exact rather than toleranced.  The float64 mirror predates the
+    # field and does not carry it, which is why this is asserted against
+    # the input directly.
+    np.testing.assert_array_equal(
+        cp.asnumpy(got.olr),
+        lw_up[:, -1].reshape(ny, nx).astype(np.float32))
 
 
 @pytest.mark.gpu

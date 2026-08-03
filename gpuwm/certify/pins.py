@@ -186,11 +186,31 @@ def _package_pins(entries: dict[str, dict[str, Any]]) -> None:
 def _code_pins(entries: dict[str, dict[str, Any]]) -> None:
     pin = _PIN_BY_KEY["arwen_version_and_commit"]
     import gpuwm
-    from gpuwm.supervisor import git_commit
+    import gpuwm.supervisor as supervisor
 
+    commit = supervisor.git_commit()
+    if commit.startswith("unavailable"):
+        # A pip-installed tree is not a git repository, and this pin used
+        # to say ``resolved`` around exactly that refusal -- the published
+        # wheel's capsule carried status "resolved" wrapping the value
+        # "unavailable: fatal: not a git repository".  Resolved is a claim
+        # that something measured the value; a payload that says
+        # unavailable refutes it in the same breath.  The pin is honestly
+        # unavailable, and the half that DOES exist -- the version, which
+        # ``gpuwm.__version__`` reads from the installed distribution's
+        # metadata -- stays bound in the entry.
+        entries["arwen_version_and_commit"] = {
+            "value": {"version": gpuwm.__version__},
+            "source": pin.source,
+            "status": STATUS_UNAVAILABLE,
+            "reason": ("the git commit half could not be resolved "
+                       f"({commit}); the version half is bound from the "
+                       "installed distribution's metadata"),
+        }
+        return
     entries["arwen_version_and_commit"] = _resolved(pin, {
         "version": gpuwm.__version__,
-        "git_commit": git_commit(),
+        "git_commit": commit,
     })
 
 

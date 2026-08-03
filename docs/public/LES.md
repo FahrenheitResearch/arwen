@@ -135,10 +135,46 @@ byte-identical repeat. It is measured as whole-device occupancy at exit, not
 the run's own footprint, so on a shared card it counts other tenants — the
 committed 100 m `km2` receipt reads 14.6 GiB for a case an eighth the size,
 which is the same artifact. It is not a sizing figure and is no longer cited
-as one.
+as one. The field has since been split so the dual-run screen cannot trip
+on it: `vram_pool_gib` is this process's own live allocation (a run
+property, compared by the screen) and `vram_device_gib` is the device-wide
+figure (environment-dependent, excluded from the comparison along with the
+wall-clock timings). When comparing receipts, compare every field except
+those in `ENVIRONMENTAL_FIELDS` — `vram_gib` in receipts written before
+the split is the device-wide figure and is likewise excluded.
 
 This is a convergence *direction*, measured at two spacings on one case. It
 is not a grid-convergence study and no order of convergence is claimed.
+
+**WRF itself has now run this case.** A WRF v4.6.1 able to initialise
+`em_les` was built independently from pristine source for exactly this
+comparison; the build recipe and every scorer are committed at
+`tools/wrf_em_les_oracle/`, and the machine-readable run receipts ship at
+[receipts/les/](receipts/les/README.md). With both models reduced by one
+routine, the two implementations agree at 100 m to **0.32 %** on z_i,
+**0.11 %** on w\*, **0.15–0.29 %** on the resolved flux fraction and
+**0.27 %** on the prognostic subgrid TKE — the
+`wrf_oracle_same_instrument_*.json` receipts there. No pass band is cut
+anywhere in that comparison: differences are reported, not judged, and the
+comparison is statistical because it can only be — WRF's ideal-case
+perturbation is unseeded and decomposition-dependent, so the two initial
+conditions cannot be made equal.
+
+**WRF also refines the same way — judged against measured noise, not
+assumed noise.** ArWen's own realisation spread (n=18 at 100 m, n=9 at
+50 m) is measured and committed beside WRF's own draws in
+[receipts/les/ARWEN-REALISATION-SPREAD.md](receipts/les/ARWEN-REALISATION-SPREAD.md),
+its correction history kept in place. On the flux-fraction arm ArWen's
+spread is **8.7x** WRF's (0.01414 against 0.00163 stdev at 100 m — an open
+question, recorded rather than diagnosed); on the TKE-based resolved
+fraction the two are at parity (0.00231 against 0.00247). That receipt's
+composite statement is the citable form: *both refinement arms land at or
+below a third of their measured single-draw noise, inside a band registered
+before the data existed; the TKE arm's band is a sharp test and the flux
+arm's is not, because ArWen's own 50 m flux-fraction scatter (0.017, n=9)
+exceeds the band.* An instrument-qualification control (`km_opt=4`, which
+must **not** present a credible LES partition here) and a
+`-fno-tree-vectorize` toolchain arm ship with the same set.
 
 **TKE budget closure.** With `--tke-budget`, `km_opt=2` accumulates the
 term-by-term budget on device. Over a 120-step window the terms close to a
@@ -158,7 +194,13 @@ the trajectory supplied the developed turbulence field.
 `km_opt=2` integrations produced byte-identical state
 (`120ca74150f55b7b…`) and receipts identical in every field but wall time.
 On a card without ECC this dual-run comparison is the corruption detector,
-and it is clean.
+and it is clean. Since extended across hardware: the same seed is
+bit-identical on three different cards — two of them different sm_120
+silicon — and seed-equivalent against a different architecture (sm_89),
+where the worst receipt field differs by 1.81 difference-sigma against the
+n=18 realisation spread. The receipt, its per-card provenance and the
+claim's stated boundary are at
+[receipts/les/ARWEN-CROSS-CARD-DETERMINISM.md](receipts/les/ARWEN-CROSS-CARD-DETERMINISM.md).
 
 ### Nested, on a real case
 
@@ -329,11 +371,16 @@ These are limits of the current build, not opinions about LES.
 
 ## 5. Open — what is NOT claimed
 
-- **No WRF `em_les` oracle comparison exists.** The work package for it
-  (WP-L7) never ran, and its prerequisite — building `ideal.exe` from
-  pristine v4.6.1 — was authorised but deferred. Everything in §2 is
-  ArWen against its own FP64 mirrors and against canonical CBL phenomenology,
-  not against WRF's own LES output.
+- **The WRF `em_les` comparison is measurement, not a maturity
+  promotion.** §2's head-to-head against the independently built v4.6.1
+  reference cut no pass band anywhere; differences are reported, not
+  judged, and the one registered corroboration band was committed before
+  the data existed. The comparison is statistical because it can only be:
+  WRF's ideal-case perturbation is unseeded and decomposition-dependent,
+  so the two initial conditions cannot be made equal and no deterministic
+  run-for-run comparison exists to schedule. No IC-perturbed ensemble was
+  run on either side, so no envelope exists and nothing weaker is
+  reported in its place. LES stays **implemented-unverified**.
 - **No resolved-fraction figure for `km_opt=3`.** The TKE-based metric needs
   a prognostic SGS TKE and Smagorinsky has none. Until a diagnostic SGS TKE
   is derived from the Smagorinsky `K`, the flux-based measure in §2 is the

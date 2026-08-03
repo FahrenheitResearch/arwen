@@ -404,6 +404,69 @@ def test_source_label_reaches_the_renderer_invocation(monkeypatch,
     assert command[command.index("--source-label") + 1] == "WRF-ARW 4.6.1"
 
 
+def test_engine_outputs_are_rebranded_to_the_product_prefix(monkeypatch,
+                                                            tmp_path,
+                                                            capsys):
+    """rustwx_* out of the engine becomes arwen_* out of `gpuwm render`.
+
+    The vendored engine hardcodes ``rustwx_`` into every output
+    filename (rustwx-products' format strings); the product shipping
+    those files is ArWen, and the field run's first question about its
+    own pictures was what "rustwx" meant.  The rename happens at the
+    one seam every wheel render flows through, so the engine binary
+    stays byte-identical to its campaign builds.  Filenames only:
+    a name the engine did not brand passes through untouched, and a
+    RENDERED line naming a file that is not on disk keeps its reported
+    path rather than failing the render over branding.
+    """
+
+    import subprocess
+
+    from gpuwm import render as render_module
+
+    outdir = tmp_path / "png"
+    branded = "rustwx_wrf_19740403_12z_f003_d02-3km_sbcape.png"
+    ghost = "rustwx_wrf_19740403_12z_f003_d02-3km_ghost.png"
+
+    def fake_renderer(command, **kwargs):
+        out = Path(command[command.index("--out-dir") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / branded).write_bytes(b"\x89PNG")
+        (out / "unbranded_extra.png").write_bytes(b"\x89PNG")
+
+        class Result:
+            returncode = 0
+            stdout = (f"RENDERED sbcape {out / branded}\n"
+                      f"RENDERED extra {out / 'unbranded_extra.png'}\n"
+                      f"RENDERED ghost {out / ghost}\n")
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(subprocess, "run", fake_renderer)
+    monkeypatch.setattr("gpuwm.rustwx.find_renderer",
+                        lambda: tmp_path / "rw_wrfbatch.exe")
+
+    written, failures, _skipped = render_module.render_wrfouts_rust(
+        [tmp_path / "wrfout_d02_x.nc"], products="sbcape", timeidx=0,
+        outdir=outdir, size=(800, 600))
+    assert failures == []
+    assert sorted(p.name for p in written) == [
+        "arwen_wrf_19740403_12z_f003_d02-3km_sbcape.png",
+        ghost,
+        "unbranded_extra.png",
+    ]
+    # On disk: the branded file moved and nothing else changed.
+    assert (outdir / "arwen_wrf_19740403_12z_f003_d02-3km_sbcape.png"
+            ).is_file()
+    assert not (outdir / branded).exists()
+    assert (outdir / "unbranded_extra.png").is_file()
+    # The per-file console lines name what is actually on disk.
+    transcript = capsys.readouterr().out
+    assert "arwen_wrf_19740403_12z_f003_d02-3km_sbcape.png" in transcript
+    assert branded not in transcript
+
+
 @needs_renderer
 def test_rust_engine_unknown_slug_fails_loudly(wrfout, tmp_path, capsys):
     rc = cli.main(["render", str(wrfout), "--engine", "rust",
@@ -682,6 +745,20 @@ def test_pair_keys_keep_the_domain_so_nests_do_not_cross_pair(tmp_path):
     assert product_name(
         Path("t2_d02-1km_1974-04-03_18-00-00")
     ) == "t2_d02-1km_1974-04-03_18-00-00"
+    # The shipped brand spelling keys exactly like the engine's own...
+    assert product_name(
+        Path("arwen_wrf_19740403_12z_f003_d02-3km_sbcape")
+    ) == "d02-3km_sbcape"
+    assert product_name(
+        Path("arwen_wrf_19740403_12z_f000_d02-1km_sbcape_valid_"
+             "19740403_183000z_lead_000h30m00s")
+    ) == "d02-1km_sbcape_valid_19740403_183000z_lead_000h30m00s"
+    # ...so a directory rendered before the arwen_ output rebrand still
+    # pairs against one rendered after it.
+    assert product_name(
+        Path("arwen_wrf_19740403_12z_f003_d02-3km_sbcape")
+    ) == product_name(
+        Path("rustwx_wrf_19740403_15z_f006_d02-3km_sbcape"))
 
 
 def test_pair_with_no_common_products_is_exit_2(tmp_path, capsys):

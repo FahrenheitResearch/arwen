@@ -37,6 +37,7 @@ from tools.hrrr_state_proof import (  # noqa: E402
     _source_identity,
     _strict_json,
 )
+from tools.hrrr_single_domain_benchmark import _device_name  # noqa: E402
 from gpuwm.ingest.hrrr_physics import initialize_hrrr_physics  # noqa: E402
 
 
@@ -564,7 +565,11 @@ def run(args):
             "native HRRR d01 3-km external-LBC plus one-way nested d02 "
             "1-km WSM6/Dudhia/YSU/Noah forecast"),
         "run_seconds": float(args.run_seconds),
-        "device": str(cp.cuda.runtime.getDeviceProperties(0)["name"]),
+        # Decoded, not str()'d: the property is bytes, so str() writes the
+        # repr -- b'NVIDIA GeForce RTX 5070 Ti' -- into the one field that
+        # says which card produced these numbers.  Same trap, same fix, as
+        # the single-domain runner's _device_name.
+        "device": _device_name(cp),
         "timing_seconds": timing,
         "setup_records": setup_records,
         "total_wall_seconds": total_wall,

@@ -8,14 +8,20 @@ published file is envelope-verified, sha256-summed, and recorded in a
 
 Per-source transport:
 
-* ``gfs`` -- the NOMADS ``filter_gfs_0p25.pl`` subsetter (spatial subregion
-  + the exact 124-record variable/level selection).  Raw AWS Open Data S3
-  ``noaa-gfs-bdp-pds`` objects are whole-globe north-to-south grids
-  (scan mode 0x00); the certified ``gfs_grib2_bridge`` admits only the
-  west-east/south-north (scan 0x40) regular grids the NOMADS subsetter
-  emits, so neither whole-file S3 downloads nor ``.idx`` byte-range
-  subsets of them can feed the certified pipeline.  S3 is still used for
-  anonymous ``--cycle latest`` resolution (HEAD probes, no HTML scraping).
+* ``gfs`` -- two first-class byte transports.  The default is the NOMADS
+  ``filter_gfs_0p25.pl`` subsetter (spatial subregion + the exact
+  variable/level selection): rate-governed, bandwidth-frugal, re-encoded
+  by NOMADS to south-to-north simple packing.  ``--mode full-file``
+  takes the whole ``pgrb2.0p25`` objects from the AWS Open Data S3
+  archive ``noaa-gfs-bdp-pds`` instead -- whole-globe north-to-south
+  (scan 0x00) complex-packed (DRT 5.3) grids, both certified in
+  ``gfs_grib2_bridge`` by committed matched pairs (the scan-order flip
+  and the SOILW missing-value proof; see
+  ``tests/fixtures/gfs-scan-order/README.md``) -- through either the
+  Rust backbone's parallel range GETs or the stdlib transport.  ``.idx``
+  byte-range subsetting of the raw objects is NOT a certified GFS route.
+  S3 is also used for anonymous ``--cycle latest`` resolution (HEAD
+  probes, no HTML scraping).
 * ``hrrr`` -- NOAA ``.idx`` byte-range subsetting, reusing the proven
   record inventory and range transport in
   :mod:`tools.download_hrrr_native_subset` (native hybrid ``wrfnat``
@@ -764,10 +770,10 @@ def _head_ok(url: str) -> bool:
 def gfs_object_url(cycle: datetime, hour: int, source: str = "gfs") -> str:
     """The raw S3 object URL for one ``pgrb2.0p25`` forecast hour.
 
-    Used for availability probes and for reading the live index behind
-    the record-count bar -- not for the payload, which comes through the
-    NOMADS grib-filter crop (the raw objects are complex-packed; see
-    ``tests/fixtures/gfs-scan-order/README.md``).
+    Availability probes, the live index behind the record-count bar,
+    and -- since the raw complex-packed north-to-south form earned its
+    certification (see ``tests/fixtures/gfs-scan-order/README.md``) --
+    the payload of ``--mode full-file`` itself.
     """
 
     prefix = GFS_CONTAINER_PREFIX[source]
@@ -1549,6 +1555,329 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
     return out / FETCH_MANIFEST_NAME
 
 
+def _gfs_index_record_count(index_url: str, *, progress, label: str
+                            ) -> int | None:
+    """Message count the live ``.idx`` declares for one whole object.
+
+    The full-file transfer's independent census: every index line names
+    one GRIB2 message, so the downloaded object must walk to exactly
+    this many envelopes.  ``None`` when the index cannot be read -- the
+    envelope walk and the fail-closed bridge remain the completeness
+    gates, the same doctrine the HRRR full-file route applies when an
+    index cannot vouch for an object.
+    """
+
+    request = Request(index_url, headers={"User-Agent": _USER_AGENT})
+    try:
+        with paced_urlopen(request, timeout=120) as response:
+            text = response.read().decode("utf-8", errors="replace")
+    except (HTTPError, URLError, OSError, ValueError) as error:
+        progress(f"fetch {label}: could not read {index_url} ({error}); "
+                 "the GRIB2 envelope walk and the fail-closed bridge "
+                 "remain the completeness gates")
+        return None
+    count = sum(1 for line in text.splitlines() if line.strip())
+    return count or None
+
+
+def _rw_fetch_gfs_fullfile(*, binary: Path, cycle: datetime, hour: int,
+                           source: str, out: Path,
+                           cache_dir: Path | None, progress) -> dict:
+    """One whole ``pgrb2.0p25`` object through the Rust backbone.
+
+    No selectors: ``--mode full-file`` takes the object in parallel
+    range GETs, and the backbone names it after the URL, which is
+    already the name the series records.
+    """
+
+    from gpuwm import rustwx_fetch
+
+    record = rustwx_fetch.run_fetch(
+        binary, model=source, date=f"{cycle:%Y%m%d}", cycle=cycle.hour,
+        hours=(hour,), product=RW_FETCH_GFS_PRODUCT, source="aws",
+        mode="full-file", out=out, cache_dir=cache_dir)
+    if len(record["files"]) != 1:
+        raise RuntimeError(
+            f"rw_fetch returned {len(record['files'])} files for one "
+            "forecast hour")
+    entry = record["files"][0]
+    progress(f"fetch {source} f{hour:03d}: {entry['name']} "
+             f"{entry['bytes']:,} B in {entry['wall_seconds']:.1f} s "
+             f"({entry['source']}, {entry['mode']} -- "
+             f"{entry['mode_reason']})")
+    return entry
+
+
+def fetch_gfs_fullfile(*, cycle: datetime, hours: tuple[int, ...],
+                       area: Area | None, out: Path, progress=print,
+                       force: bool = False, source: str = "gfs",
+                       engine: str = "python", engine_bin: Path | None = None,
+                       cache_dir: Path | None = None,
+                       top_pressure_pa: float | None = None,
+                       all_levels: bool = False,
+                       available_levels=gfs_available_levels) -> Path:
+    """Download whole ``pgrb2.0p25`` objects from the AWS S3 archive.
+
+    The full-file transport for the GFS container sources, holding the
+    same output-root lock discipline as :func:`fetch_gfs`.  The raw
+    objects are whole-globe north-to-south DRT 5.3 grids; both forms
+    are certified in ``gfs_grib2_bridge`` (see
+    ``tests/fixtures/gfs-scan-order/README.md``), so no area crop and
+    no NOMADS CGI round trip are involved -- ``area``, when given, is
+    recorded as request identity only.  The decode ladder is still a
+    request property: the manifest records it and the front door
+    declares it to the bridge, so a whole-globe object never drags the
+    mesosphere into a tornado-scale decode.
+    """
+
+    with fetch_guard.hold("fetch-out", out, progress=progress):
+        return _fetch_gfs_fullfile_locked(
+            cycle=cycle, hours=hours, area=area, out=out, progress=progress,
+            force=force, source=source, engine=engine, engine_bin=engine_bin,
+            cache_dir=cache_dir, top_pressure_pa=top_pressure_pa,
+            all_levels=all_levels, available_levels=available_levels)
+
+
+def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
+                               area: Area | None, out: Path, progress,
+                               force: bool, source: str, engine: str,
+                               engine_bin: Path | None,
+                               cache_dir: Path | None,
+                               top_pressure_pa: float | None,
+                               all_levels: bool,
+                               available_levels) -> Path:
+    """The whole-object transfer, with the output-root lock held.
+
+    Per object, three independent bars before the manifest admits it:
+    the GRIB2 envelope walk (every message declares edition 2 and its
+    exact length, and the messages tile the file), the live ``.idx``
+    message census when the index can be read, and -- on resume -- the
+    sha256 the prior manifest recorded.  The series and manifest are
+    refreshed after every verified hour, so an interrupted fetch
+    records its complete prefix and the same command resumes it.
+    """
+
+    from tools import download_gfs_native_subset as transport
+
+    if source not in GFS_CONTAINER_SOURCES:
+        raise ValueError(f"fetch_gfs_fullfile serves {GFS_CONTAINER_SOURCES}, "
+                         f"not {source!r}")
+    if source == "gdas":
+        beyond = [hour for hour in hours if hour > GDAS_MAX_FORECAST_HOUR]
+        if beyond:
+            raise ValueError(gdas_capability_refusal(beyond[0]))
+    if top_pressure_pa is not None and all_levels:
+        raise ValueError(
+            "--p-top-pa names the model top the ladder must reach and "
+            "--all-levels takes every level the product carries; they "
+            "are two answers to the same question, so pass one")
+    prefix = GFS_CONTAINER_PREFIX[source]
+    out.mkdir(parents=True, exist_ok=True)
+    # The ladder is a DECODE declaration here, not a transfer selection:
+    # the whole object carries every published level either way.  It is
+    # resolved exactly as the subset route resolves it, recorded in the
+    # manifest, and handed to the bridge by the front door.
+    index_text = gfs_live_index(cycle, progress=progress, source=source)
+    available = available_levels(cycle, progress=progress, source=source,
+                                 index_text=index_text)
+    if all_levels:
+        levels = tuple(float(level) for level in available)
+        progress(f"fetch {source}: --all-levels declares the whole "
+                 f"published ladder for the decode, {len(levels)} isobaric "
+                 f"levels ({min(levels):g}..{max(levels):g} hPa)")
+    else:
+        levels = transport.levels_for_top(top_pressure_pa,
+                                          available=available)
+        if top_pressure_pa is not None:
+            extra = len(levels) - len(transport.PRESSURE_LEVELS_HPA)
+            progress(
+                f"fetch {source}: model top {float(top_pressure_pa):g} Pa "
+                f"needs {len(levels)} isobaric levels, source top "
+                f"{min(levels) * 100.0:g} Pa"
+                + (f" ({extra} level(s) above the certified 100 hPa "
+                   "ladder)" if extra else " (the certified ladder "
+                   "already reaches it)"))
+    source_top_pa = min(levels) * 100.0
+    if force:
+        _force_quarantine_output(out, progress, source)
+    prior_digests = _prior_manifest_digests(out)
+    files: list[dict] = []
+
+    def publish_manifest() -> Path:
+        # Relative names: gfs_grib2_bridge resolves them against the
+        # TSV's own directory, so the fetched directory stays relocatable.
+        series = out / f"{prefix}-series.tsv"
+        _atomic_write_text(series, "".join(
+            f"{item['forecast_hour']}\t{item['name']}\t"
+            f"{81 if item['forecast_hour'] == 0 else 96}\n"
+            for item in files))
+        entries = files + [{
+            "name": series.name, "role": "series", "forecast_hour": None,
+            "bytes": series.stat().st_size, "sha256": sha256_file(series),
+            "url": None,
+        }]
+        payload = _manifest_payload(
+            source=source, cycle=cycle,
+            hours=tuple(int(item["forecast_hour"]) for item in files),
+            area=area, files=entries)
+        payload["notes"] = (
+            "whole pgrb2.0p25 objects from the AWS S3 archive "
+            "(north-to-south DRT 5.3 grids, certified in "
+            "gfs_grib2_bridge with its scan-order flip and the SOILW "
+            "missing-value matched pair); no area crop is involved")
+        payload["engine"] = engine
+        payload["mode"] = "full-file"
+        payload["transport"] = "s3"
+        # The decode ladder this request declares; the front-door
+        # manifest passes it to the bridge, and the vertical contract
+        # needs the source top to decide whether the case's p_top is
+        # reachable at all.
+        payload["pressure_levels_hpa"] = [
+            float(format(float(level), "g")) for level in levels]
+        payload["source_top_pressure_pa"] = source_top_pa
+        return write_fetch_manifest(out, payload)
+
+    def resume_command() -> str:
+        cadence = hours[1] - hours[0] if len(hours) > 1 else 3
+        command = [
+            "gpuwm", "fetch", "--source", source,
+            "--cycle", cycle.strftime("%Y-%m-%dT%H"),
+            "--hours", str(hours[-1] - hours[0]),
+            "--cadence", str(cadence),
+            "--mode", "full-file", "--out", str(out),
+        ]
+        if area is not None:
+            command.extend(("--area", ",".join(
+                format(value, "g") for value in (
+                    area.lat_south, area.lon_west,
+                    area.lat_north, area.lon_east))))
+        if hours[0]:
+            command.extend(("--forecast-start-hour", str(hours[0])))
+        return shlex.join(command)
+
+    current: tuple[int, str, Path, str] | None = None
+    try:
+        for hour in hours:
+            name = f"{prefix}.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}"
+            path = out / name
+            url = gfs_object_url(cycle, hour, source)
+            current = (hour, name, path, url)
+            idx_records = _gfs_index_record_count(
+                url + ".idx", progress=progress,
+                label=f"{source} f{hour:03d}")
+            if path.exists():
+                observed = count_grib2_messages(path)
+                if idx_records is not None and observed != idx_records:
+                    raise ValueError(
+                        f"existing {name} carries {observed} GRIB2 "
+                        f"messages where the live index lists "
+                        f"{idx_records}; move it aside and re-fetch")
+                digest = sha256_file(path)
+                recorded = prior_digests.get(name)
+                if recorded is not None and digest != recorded:
+                    raise ValueError(
+                        f"existing {name} does not match the sha256 "
+                        "recorded in the prior fetch manifest, so it "
+                        "cannot be resumed for this request; pass "
+                        "--force-refetch to move the existing files aside "
+                        "(nothing is deleted) and re-download")
+                progress(f"fetch {source} f{hour:03d}: {name} exists, "
+                         f"{path.stat().st_size:,} B verified -- skipped")
+            else:
+                started = time.perf_counter()
+                if engine == "rust":
+                    entry = _rw_fetch_gfs_fullfile(
+                        binary=engine_bin, cycle=cycle, hour=hour,
+                        source=source, out=out, cache_dir=cache_dir,
+                        progress=progress)
+                    landed = out / entry["name"]
+                    if landed != path:
+                        raise RuntimeError(
+                            f"rw_fetch landed {entry['name']}, expected "
+                            f"{name}")
+                else:
+                    try:
+                        transport._download(url, path)
+                    except HTTPError as error:
+                        raise RuntimeError(
+                            f"the S3 archive did not serve {url} "
+                            f"({error.code} {error.reason}); "
+                            "`gpuwm fetch --cycle latest` probes the same "
+                            "archive, and a permanent 404 here usually "
+                            "names a lead this cycle never published"
+                        ) from None
+                observed = count_grib2_messages(path)
+                if idx_records is not None and observed != idx_records:
+                    _quarantine_rejected(path, progress,
+                                         f"{source} full-file")
+                    raise ValueError(
+                        f"downloaded {name} carries {observed} GRIB2 "
+                        f"messages where its live .idx lists "
+                        f"{idx_records}; the file has been moved aside, "
+                        "nothing was deleted")
+                digest = sha256_file(path)
+                if engine != "rust":
+                    progress(f"fetch {source} f{hour:03d}: {name} "
+                             f"{path.stat().st_size:,} B in "
+                             f"{time.perf_counter() - started:.1f} s "
+                             "(s3, full-file)")
+            files.append({
+                "name": name, "role": f"{source}-full-file",
+                "forecast_hour": hour, "bytes": path.stat().st_size,
+                "sha256": digest, "url": url,
+                "grib2_messages": observed, "idx_records": idx_records,
+            })
+            publish_manifest()
+    except KeyboardInterrupt:
+        # Same admission bars as the loop: envelope walk, index census
+        # when known, and the prior manifest's digest.  A partial file
+        # never reaches the manifest.
+        if current is not None:
+            hour, name, path, url = current
+            if path.is_file() and not any(
+                    item["name"] == name for item in files):
+                try:
+                    observed = count_grib2_messages(path)
+                    digest = sha256_file(path)
+                    recorded = prior_digests.get(name)
+                    if recorded is None or digest == recorded:
+                        files.append({
+                            "name": name, "role": f"{source}-full-file",
+                            "forecast_hour": hour,
+                            "bytes": path.stat().st_size,
+                            "sha256": digest, "url": url,
+                            "grib2_messages": observed,
+                            "idx_records": None,
+                        })
+                except (OSError, ValueError):
+                    pass
+        publish_manifest()
+        verified = (
+            ", ".join(
+                f"f{item['forecast_hour']:03d} {item['name']} "
+                f"({item['bytes']:,} B, sha256 {item['sha256']})"
+                for item in files)
+            if files else "none")
+        verified_names = {item["name"] for item in files}
+        unverified_paths = sorted(
+            path for path in out.iterdir()
+            if path.is_file()
+            and (path.name.endswith(".part")
+                 or (".pgrb2." in path.name
+                     and path.name not in verified_names)))
+        unverified = (
+            ", ".join(f"{path.name} ({path.stat().st_size:,} B)"
+                      for path in unverified_paths)
+            if unverified_paths else "none")
+        raise RuntimeError(
+            f"interrupted. Verified complete GRIB files on disk and "
+            f"recorded in {out / FETCH_MANIFEST_NAME}: {verified}. "
+            f"Unverified partial/incomplete GRIB files on disk (not "
+            f"recorded): {unverified}.\n"
+            f"  resume exactly with: {resume_command()}") from None
+    return out / FETCH_MANIFEST_NAME
+
+
 def author_gfs_front_door_manifest(
         *, out: Path, bridge: Path, wps_namelist: Path,
         experiment_config: Path, static_input: Path | None = None,
@@ -1625,11 +1954,15 @@ def author_gfs_front_door_manifest(
                 f"{len(hours)} forecast hour(s) in {out}; a run needs its "
                 "initial condition and at least one lateral boundary time")
         series_name = f"{prefix}-series-f{forecast_start_hour:03d}.tsv"
+    # Either transport's payload rows: the NOMADS CGI crop and the
+    # whole-object S3 route feed the same front door and the same
+    # bridge, which selects by exact field identity either way.
+    payload_roles = {f"{source}-subset", f"{source}-full-file"}
     subset_names = {
         item.get("forecast_hour"): item.get("name")
         for item in prior.get("files", ())
         if isinstance(item, dict)
-        and item.get("role") == f"{source}-subset"}
+        and item.get("role") in payload_roles}
     if forecast_start_hour:
         # A real, hash-bound series over the tail, written beside the
         # fetch's own.  The full series is never edited: both remain
@@ -1652,7 +1985,7 @@ def author_gfs_front_door_manifest(
         if not isinstance(name, str):
             raise ValueError(
                 f"fetch manifest in {out} lists forecast hour {hour} "
-                f"without a {source}-subset file entry")
+                f"without a {source}-subset or {source}-full-file entry")
         roles[f"grib-f{hour:03d}"] = out / name
     missing = sorted(
         f"{role}: {path}" for role, path in roles.items()
@@ -2984,14 +3317,56 @@ def fetch_main(args) -> int:
                 ("--transport", args.transport),
                 ("--wait-for", args.wait_for or None),
                 ("--wait-timeout-minutes", args.wait_timeout_minutes),
-                ("--engine", args.engine),
-                ("--mode", args.mode),
             ) if value is not None)
         if hrrr_only:
             raise ValueError(
-                f"{', '.join(hrrr_only)}: --source hrrr only (GFS rides "
-                "the NOMADS grib filter already; ERA5 is a manual CDS "
-                "retrieval)")
+                f"{', '.join(hrrr_only)}: --source hrrr only (the GFS "
+                "container sources have one full-file host, the S3 "
+                "archive; ERA5 is a manual CDS retrieval)")
+    if source not in ("hrrr",) + GFS_CONTAINER_SOURCES:
+        transported = sorted(
+            flag for flag, value in (
+                ("--engine", args.engine),
+                ("--mode", args.mode),
+                ("--cache-dir", args.cache_dir),
+            ) if value is not None)
+        if transported:
+            raise ValueError(
+                f"{', '.join(transported)}: --source hrrr or "
+                f"{'/'.join(GFS_CONTAINER_SOURCES)} only (ERA5 is a "
+                "manual CDS retrieval)")
+    # The GFS container sources have exactly two byte transports, and
+    # --mode is how the second is chosen: the NOMADS grib-filter crop
+    # (the default; spatial subregion + exact record selection) and
+    # --mode full-file (the whole pgrb2.0p25 objects from the S3
+    # archive, the same first-class whole-file doctrine as HRRR).
+    # .idx record subsetting of the raw objects is not a certified GFS
+    # route, and 'auto' has nothing to probe -- the two transports
+    # differ in kind, not in health.
+    gfs_fullfile = False
+    if source in GFS_CONTAINER_SOURCES:
+        if args.mode in ("auto", "idx-subset"):
+            raise ValueError(
+                f"--mode {args.mode}: --source {source} has two byte "
+                "transports -- the NOMADS grib-filter crop (the default, "
+                "no --mode needed) and '--mode full-file' (whole "
+                "pgrb2.0p25 objects from the S3 archive).  .idx record "
+                "subsetting of the raw objects is not a certified GFS "
+                "route, and 'auto' has nothing to probe: the two "
+                "transports differ in kind, not in health.")
+        gfs_fullfile = args.mode == "full-file"
+        if not gfs_fullfile:
+            cgi_extras = sorted(
+                flag for flag, value in (
+                    ("--engine", args.engine),
+                    ("--cache-dir", args.cache_dir),
+                ) if value is not None)
+            if cgi_extras:
+                raise ValueError(
+                    f"{', '.join(cgi_extras)}: these choose how whole "
+                    "objects move and belong to '--mode full-file'; the "
+                    "default NOMADS grib-filter crop has exactly one "
+                    "transport (governed stdlib HTTP)")
     if source not in GFS_CONTAINER_SOURCES:
         gfs_only = sorted(
             flag for flag, value in (
@@ -3116,11 +3491,12 @@ def fetch_main(args) -> int:
         return 0
 
     if source in GFS_CONTAINER_SOURCES:
-        if area is None:
+        if area is None and not gfs_fullfile:
             raise ValueError(
                 f"{source} fetch requires --area or --point --radius-km: "
-                "the NOMADS subsetter needs a subregion (fetching the "
-                "whole globe is never what an experiment needs)")
+                "the NOMADS subsetter needs a subregion (--mode full-file "
+                "takes the whole-globe objects instead, and there --area "
+                "is optional request identity)")
         if source == "gdas":
             if args.cadence is not None and args.hours == 0:
                 raise ValueError(
@@ -3150,16 +3526,51 @@ def fetch_main(args) -> int:
         # writers from passing the guard together and then publishing
         # incompatible receipts into the same directory.  The library
         # call re-enters the same lock (it is re-entrant per process).
+        requested_gfs_mode = ("full-file" if gfs_fullfile
+                              else "nomads-cgi-subset")
         with fetch_guard.hold("fetch-out", args.out):
             if not args.force_refetch:
                 check_prior_request(args.out, source=source, cycle=cycle,
                                     area=area)
-            manifest = fetch_gfs(
-                cycle=cycle, hours=hours, area=area, out=args.out,
-                force=args.force_refetch, source=source,
-                accept_inventory_change=args.accept_inventory_change,
-                top_pressure_pa=args.p_top_pa,
-                all_levels=args.all_levels)
+                prior = _load_fetch_manifest(args.out)
+                if prior is not None:
+                    recorded_mode = prior.get("mode") or "nomads-cgi-subset"
+                    if recorded_mode != requested_gfs_mode:
+                        raise ValueError(layered(
+                            f"--out {args.out} already holds a "
+                            f"{recorded_mode} fetch and this request is "
+                            f"{requested_gfs_mode}.\n"
+                            "  remedy: fetch into a different --out, or "
+                            "pass --force-refetch to move the existing "
+                            "files aside (nothing is deleted) and "
+                            "re-download this request.",
+                            "  why: the two transports name their files "
+                            "differently and verify them against "
+                            "different bars, so resuming one onto the "
+                            "other would publish a manifest mixing two "
+                            "requests' bytes."))
+            if gfs_fullfile:
+                engine, engine_bin = resolve_fetch_engine(
+                    args.engine if args.engine is not None else "auto")
+                print(f"fetch {source}: engine {engine}"
+                      + (f" ({engine_bin})" if engine_bin is not None
+                         else "")
+                      + ", mode full-file (whole pgrb2.0p25 objects from "
+                        "the S3 archive)")
+                manifest = fetch_gfs_fullfile(
+                    cycle=cycle, hours=hours, area=area, out=args.out,
+                    force=args.force_refetch, source=source,
+                    engine=engine, engine_bin=engine_bin,
+                    cache_dir=args.cache_dir,
+                    top_pressure_pa=args.p_top_pa,
+                    all_levels=args.all_levels)
+            else:
+                manifest = fetch_gfs(
+                    cycle=cycle, hours=hours, area=area, out=args.out,
+                    force=args.force_refetch, source=source,
+                    accept_inventory_change=args.accept_inventory_change,
+                    top_pressure_pa=args.p_top_pa,
+                    all_levels=args.all_levels)
     elif source == "hrrr":
         if args.cadence is not None:
             raise ValueError("HRRR is hourly; --cadence does not apply")
@@ -3601,16 +4012,17 @@ def register_cli(subparsers) -> None:
              "cannot serve refuses and names the deepest it can")
     parser.add_argument(
         "--all-levels", action="store_true",
-        help="gfs/gdas only: fetch every isobaric level the product "
-             "publishes instead of choosing a ladder.  The NOMADS grib "
-             "filter IS the transport for this source -- the raw S3 "
-             "objects are north-to-south and the certified bridge "
-             "refuses them -- so this is the full-level-set route, and "
-             "level subsetting stays an opt-in bandwidth saver rather "
-             "than a ceiling on the model top")
+        help="gfs/gdas only: take every isobaric level the product "
+             "publishes instead of choosing a ladder.  On the default "
+             "NOMADS grib-filter transport this selects every level; "
+             "with --mode full-file the whole object already carries "
+             "every level and this declares them all for the decode.  "
+             "Either way level subsetting stays an opt-in bandwidth "
+             "saver rather than a ceiling on the model top")
     parser.add_argument(
         "--engine", default=None, choices=FETCH_ENGINES,
-        help="hrrr only: which downloader moves the bytes.  'rust' is"
+        help="hrrr, and gfs/gdas --mode full-file: which downloader "
+             "moves the bytes.  'rust' is "
              "the vendored rw_fetch backbone (16 MiB parallel range "
              "GETs, .idx coalescing, the cross-process NOMADS rate "
              "governor, a disk cache); 'python' is the stdlib transport "
@@ -3618,21 +4030,26 @@ def register_cli(subparsers) -> None:
              "it is built")
     parser.add_argument(
         "--mode", default=None, choices=FETCH_MODES,
-        help="hrrr --engine rust only: the byte transport, a separate "
-             f"axis from --transport's choice of host.  '{HRRR_DEFAULT_MODE}' "
+        help="the byte transport.  hrrr (--engine rust): "
+             f"'{HRRR_DEFAULT_MODE}' "
              "is the default -- the whole object in parallel range GETs, "
-             "which is the pipeline this product is built on.  "
+             "which is the pipeline this product is built on; "
              "'idx-subset' is the opt-in bandwidth saver: it selects "
              "records instead of taking the file, saves transfer volume, "
              "costs wall clock, and refuses rather than silently "
-             "degrading when the index cannot carry the selection.  "
+             "degrading when the index cannot carry the selection; "
              "'auto' is the probe rule -- take the whole file when the "
              ".idx is absent, malformed, or provably shorter than the "
              "object -- which is what an install without the rust "
-             "backbone falls back to")
+             "backbone falls back to.  gfs/gdas: 'full-file' takes the "
+             "whole pgrb2.0p25 objects from the S3 archive (either "
+             "engine); omitted, the NOMADS grib-filter crop remains the "
+             "default, and 'auto'/'idx-subset' refuse -- .idx record "
+             "subsetting of the raw objects is not a certified GFS route")
     parser.add_argument(
         "--cache-dir", type=Path, default=None, metavar="DIR",
-        help="hrrr --engine rust only: wx-core disk cache root, keyed "
+        help="--engine rust only (hrrr, gfs/gdas --mode full-file): "
+             "wx-core disk cache root, keyed "
              "by URL and byte range, so a re-run or an overlapping "
              "window re-reads bytes instead of re-downloading them")
     parser.add_argument(
@@ -3705,6 +4122,7 @@ __all__ = [
     "GFS_SUBSET_RECORD_COUNT", "Grib1Record", "area_from_point",
     "author_gfs_front_door_manifest", "check_prior_request",
     "count_grib2_messages", "era5_request_template", "fetch_gfs",
+    "fetch_gfs_fullfile",
     "fetch_hrrr", "fetch_main", "gfs_forecast_hours", "gfs_object_url",
     "gfs_suggested_fetch_margin_deg",
     "hrrr_forecast_hours", "hrrr_object_url", "parse_area", "parse_cycle",

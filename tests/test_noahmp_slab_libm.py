@@ -5,21 +5,31 @@ Every claim in :mod:`gpuwm.core.noahmp_slab_libm`'s docstring is a claim about
 :mod:`gpuwm.core.noahmp_libm` -- the scalar CPython transcription the
 unmodified-WRF fixtures pin -- or it is not made.
 
-Three of these tests carry a negative control, because the whole file is one
-long assertion that array arithmetic can stand in for scalar arithmetic, and
-a gate that has never been observed to fail is not evidence:
+Several of these tests carry a negative control, because the whole file is
+one long assertion that array arithmetic can stand in for scalar arithmetic,
+and a gate that has never been observed to fail is not evidence:
 
 * ``cupy.minimum`` is shown FAILING the signed-zero comparison that
   :func:`~gpuwm.core.noahmp_slab_libm.fmn` passes;
-* numpy's own float32 ``power`` is shown FAILING the same sweep the glibc
-  ``powf`` wrapper passes;
+* rounding the FP64 ``pow`` once -- the obvious shim, and the exact wrong
+  function the module docstring of :mod:`gpuwm.core.noahmp_libm` quantifies
+  -- is shown FAILING the same sweep the glibc ``powf`` wrapper passes, on
+  every stack (the boundary-distance derivation is in that test);
+* numpy's own float32 ``power`` is measured against the same sweep with a
+  per-stack pinned verdict: it FAILS the sweep on every stack measured
+  except numpy >= 2.5 on glibc >= 2.39, where it IS glibc ``powf`` and the
+  measured verdict is exact agreement at all 24,582 points;
 * CuPy's ``cupy.exp`` is shown FAILING the ``expf`` sweep.
 
-Without those three, "the wrapper matches" would be consistent with the gate
+Without those, "the wrapper matches" would be consistent with the gate
 comparing nothing.
 """
 
 from __future__ import annotations
+
+import functools
+import math
+import platform
 
 import numpy as np
 import pytest
@@ -117,22 +127,116 @@ def test_powf_reproduces_the_scalar_glibc_transcription():
         f"powf({bases[bad[0]]!r}, {exponents[bad[0]]!r})")
 
 
-@requires_gpu
-def test_numpys_own_float32_power_fails_the_powf_sweep():
-    """The negative control for the test above.
-
-    numpy's float32 ``power`` is not glibc's ``powf``.  If it passed, the
-    sweep would not be observing the transcription at all.
-    """
+@functools.lru_cache(maxsize=1)
+def _powf_sweep_reference():
+    """The sweep and its transcription answers, computed once per session."""
     bases, exponents = _powf_arguments()
     want = np.array([scalar.powf(b, e) for b, e in zip(bases, exponents)],
                     dtype=np.float32)
+    return bases, exponents, want
+
+
+def _numpy_power_is_glibc_powf_here() -> bool:
+    """Whether this stack is in the measured numpy-IS-powf class.
+
+    Measured 2026-08-03 on the first user-zero stress run (RTX 4090 host,
+    numpy 2.5.1, glibc 2.39, arwen-stress-4090): ``numpy.power`` on float32
+    agreed with the glibc 2.39 ``powf`` transcription at ALL 24,582 sweep
+    points -- numpy dispatches to the very powf this module transcribes, so
+    on that class of stack the two are the same function and "fails the
+    sweep" is not a fact about numpy that can be asserted.  Every stack
+    measured before it (Windows UCRT numpy 2.2.6: 20 differing points,
+    re-measured 2026-08-03) disagrees somewhere.
+    """
+    libc, version = platform.libc_ver()
+    if libc != "glibc":
+        return False
+    try:
+        glibc = tuple(int(part) for part in version.split(".")[:2])
+        numpy_version = tuple(int(part)
+                              for part in np.__version__.split(".")[:2])
+    except ValueError:
+        return False
+    return glibc >= (2, 39) and numpy_version >= (2, 5)
+
+
+@requires_gpu
+def test_numpys_own_float32_power_fails_the_powf_sweep():
+    """A per-stack pinned verdict on numpy's float32 ``power``.
+
+    On every stack measured except one class, numpy's float32 ``power`` is
+    not glibc's ``powf`` and must FAIL the sweep -- the original negative
+    control, unchanged where it fires.  On numpy >= 2.5 over glibc >= 2.39
+    the measured verdict is the opposite and is asserted exactly: numpy IS
+    glibc powf there, agreement must be total, and this leg carries no
+    discriminating power; the FP64-shim control below is the one that
+    does, on every stack.  Either way the stack gets exactly one asserted
+    expectation, so a stack behaving like neither measurement fails loudly
+    and gets re-measured instead of being absorbed.
+    """
+    bases, exponents, want = _powf_sweep_reference()
     with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
         naive = np.power(bases, exponents, dtype=np.float32)
     finite = np.isfinite(want) & np.isfinite(naive)
-    assert (fp32_ulp_distance(naive[finite], want[finite]) != 0).any(), (
-        "numpy.power agreed with glibc powf everywhere in this sweep, so the "
-        "sweep cannot tell the two apart and proves nothing")
+    differing = int((fp32_ulp_distance(naive[finite], want[finite]) != 0)
+                    .sum())
+    if _numpy_power_is_glibc_powf_here():
+        assert differing == 0, (
+            f"numpy {np.__version__} on {'.'.join(platform.libc_ver())} "
+            f"disagreed with the glibc 2.39 powf transcription at "
+            f"{differing} sweep points; the measured verdict for this "
+            f"stack class (2026-08-03) is total agreement -- re-measure "
+            f"and re-pin this stack rather than widening either branch")
+        print("numpy.power IS glibc powf on this stack (0/%d differ); "
+              "this leg has no discriminating power here and the FP64-shim "
+              "control is the one guarding the sweep" % int(finite.sum()))
+    else:
+        assert differing > 0, (
+            "numpy.power agreed with glibc powf everywhere in this sweep "
+            "on a stack class where it was measured to differ, so the "
+            "sweep cannot tell the two apart here; re-measure this stack "
+            "and record its class in _numpy_power_is_glibc_powf_here")
+
+
+@requires_gpu
+def test_rounding_the_fp64_pow_once_fails_the_powf_sweep():
+    """The stack-independent negative control for the powf sweep.
+
+    The FP64-then-round shim -- ``f32(pow(x, y))`` computed in double --
+    is the canonical wrong implementation here: it is what the MYNN lane
+    uses, it is the obvious thing to write, and the module docstring of
+    :mod:`gpuwm.core.noahmp_libm` quantifies it at 0.065% disagreement
+    over Noah-MP shapes because glibc's ``powf`` is NOT correctly rounded.
+    If the sweep could not tell the shim from the transcription, agreement
+    over the sweep would be consistent with the GPU gate comparing
+    nothing.
+
+    Unlike the numpy leg this control cannot stop firing when an
+    environment upgrades, and that is checked by construction, not hoped:
+    on the Windows reference box it fires at 18 of the 24,582 points, and
+    at every one of those points the TRUE value of ``pow`` lies 2.7e4 to
+    4.9e5 double-ULPs away from the FP32 rounding boundary that separates
+    the shim's answer from the transcription's (measured with 60-digit
+    decimal arithmetic, 2026-08-03).  Any platform ``pow`` within a few
+    thousand double-ULPs of correct -- every libm in existence -- lands on
+    the same side at all 18, so the control fires on every stack this
+    suite can reach, glibc 2.39 included.
+    """
+    bases, exponents, want = _powf_sweep_reference()
+    finite = np.isfinite(want)
+    shim = want.copy()
+    for i in np.argwhere(finite).ravel():
+        shim[i] = np.float32(
+            scalar.f32(math.pow(float(bases[i]), float(exponents[i]))))
+    differing = int((shim[finite].view(np.int32)
+                     != want[finite].view(np.int32)).sum())
+    assert differing >= 1, (
+        "rounding the FP64 pow once agreed with the glibc powf "
+        "transcription at every sweep point, which contradicts the "
+        "boundary-distance derivation in this docstring; something moved "
+        "under the sweep -- re-measure before trusting it")
+    print("FP64-shim control: %d/%d sweep points distinguish the shim "
+          "from glibc powf" % (differing, int(finite.sum())))
 
 
 @requires_gpu

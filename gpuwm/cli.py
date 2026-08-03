@@ -25,6 +25,10 @@ declared ensemble of member run directories (:mod:`gpuwm.da.enprod`).
 receipts, the failure, stage logs, this install's provenance, the card,
 free space -- into a readable zip a reporter can open before they send
 it (:mod:`gpuwm.report_bundle`).
+``gpuwm update`` prints -- and only prints -- the upgrade command for
+the distribution that provides THIS install and the interpreter running
+it, plus the staged asset directories a wheel replacement leaves alone
+(:mod:`gpuwm.update_cli`).
 ``gpuwm import-namelist WPS INPUT`` translates WRF namelists into a
 resolved experiment TOML and prints the substitution report.  ``gpuwm
 verify CASE`` runs either an idealized benchmark or a real case, prints
@@ -72,6 +76,7 @@ from gpuwm.report_bundle import register_cli as report_register_cli
 from gpuwm.setup_cli import register_cli as setup_register_cli
 from gpuwm.stream import register_cli as stream_register_cli
 from gpuwm.table_assets import register_cli as table_assets_register_cli
+from gpuwm.update_cli import register_cli as update_register_cli
 from gpuwm.verify import cases
 
 #: Discovered verification cases: name -> case module exposing
@@ -269,6 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
     certify_register_cli(sub)
     multi_run_register_cli(sub)
     report_register_cli(sub)
+    update_register_cli(sub)
     lst = sub.add_parser(
         "cases", help="list the discovered verification cases and the "
                       "entry points each one declares")
@@ -486,7 +492,7 @@ def _dispatch(args) -> int:
     if args.command in ("check", "fetch", "stream", "fetch-geog", "domain", "render",
                         "enprod", "downscale", "doctor", "fetch-tables",
                         "fetch-bridges", "setup", "go", "adapt", "certify",
-                        "dual-run", "multi-run", "report"):
+                        "dual-run", "multi-run", "report", "update"):
         return args.func(args)
 
     if args.command == "cases":

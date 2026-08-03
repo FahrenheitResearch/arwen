@@ -1,13 +1,23 @@
 [build-system]
-requires = ["setuptools>=68"]
+# >=77 is the PEP 639 floor: it is what turns the `license` SPDX
+# expression below into a License-Expression metadata field.  Older
+# setuptools would either reject the string or ship it as a bare
+# License field, and the whole point is `pip show gpuwm` answering
+# "Apache-2.0" instead of dumping the license text.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "1.5.0"
+version = "1.5.1"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
-license = { file = "LICENSE" }
+# The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
+# form pasted all 202 lines of Apache-2.0 into the METADATA License
+# field, which is what `pip show gpuwm` prints.  The license text
+# itself still ships in the wheel via `license-files` below.
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11"
 # numpy>=2 is load-bearing: the legacy-RRTMG FP32 max_ulp-0 discipline
 # relies on NEP-50 weak promotion (float32 op python-scalar stays
@@ -20,15 +30,13 @@ requires-python = ">=3.11"
 dependencies = ["numpy>=2.0", "netCDF4>=1.6", "matplotlib>=3.8",
                 "jsonschema>=4.0"]
 keywords = ["WRF", "WPS", "GRIB", "NetCDF", "weather", "CUDA"]
-classifiers = ["License :: OSI Approved :: Apache Software License"]
+# No `License ::` classifier: PEP 639 deprecates them outright and
+# setuptools >=77 refuses to combine one with the SPDX expression above.
 
 [project.urls]
 Homepage = "https://github.com/FahrenheitResearch/arwen"
 Repository = "https://github.com/FahrenheitResearch/arwen"
 Changelog = "https://github.com/FahrenheitResearch/arwen/blob/main/CHANGELOG.md"
-
-[tool.setuptools]
-license-files = ["LICENSE", "NOTICE"]
 
 [project.optional-dependencies]
 gpu = ["cupy-cuda12x>=13.0"]

@@ -836,6 +836,36 @@ def test_native_hrrr_thompson_profile_is_guarded_and_table_bound(
         "filename": "freezeH2O.dat", "bytes": 123, "sha256": "a" * 64}]
 
 
+def test_the_guarded_mp8_refusal_names_both_variables_with_values(
+        tmp_path, monkeypatch):
+    """One refusal carries the whole launch contract, not half of it.
+
+    A field run of the shipped 1.5.0 wheel set the first variable, was
+    refused for the second, and then had to work out the table root by
+    hand -- having already downloaded it.  The guard itself is unchanged:
+    both variables are still required and the root is still byte-checked.
+    """
+    from gpuwm.physics_compat import thompson_guard_exports
+
+    path = tmp_path / "namelist.input"
+    _write_native_physics_namelist(path, mp_physics=8)
+    monkeypatch.delenv("GPUWM_EXPERIMENTAL_THOMPSON_MP8", raising=False)
+    monkeypatch.delenv("GPUWM_THOMPSON_TABLE_ROOT", raising=False)
+
+    for preset in ({}, {"GPUWM_EXPERIMENTAL_THOMPSON_MP8": "1"}):
+        for name, value in preset.items():
+            monkeypatch.setenv(name, value)
+        with pytest.raises(RuntimeError) as raised:
+            _validate_native_hrrr_physics_profile(path, THOMPSON_PROFILE_ID)
+        message = str(raised.value)
+        assert "GPUWM_EXPERIMENTAL_THOMPSON_MP8" in message
+        assert "GPUWM_THOMPSON_TABLE_ROOT" in message
+        # Pasteable, and platform-correct: an `export` line in PowerShell
+        # is a syntax error and the reader then debugs the instructions.
+        for line in thompson_guard_exports():
+            assert line in message
+
+
 @pytest.mark.parametrize(
     ("profile", "selector"),
     ((MORRISON_PROFILE_ID, 10), (NSSL2_PROFILE_ID, 18)),
@@ -1469,3 +1499,196 @@ def test_hrrr_receipt_rejects_zeroed_state_and_pre_fix_mp18_behavior():
     with pytest.raises(ValueError, match="lacks decoded-source"):
         _initial_hrrr_microphysics_receipt(
             state, NSSL2_PROFILE_ID, None)
+
+
+def _outdir_args(outdir, *extra):
+    args = [token for token in _required_args()]
+    args[args.index("--outdir") + 1] = str(outdir)
+    return args + list(extra)
+
+
+def test_an_existing_outdir_is_refused_in_a_sentence_not_a_traceback(
+        tmp_path, capsys):
+    """`mkdir(exist_ok=False)` fired mid-setup as a bare FileExistsError,
+    after the target domain and the source window had been resolved -- a
+    field run of the shipped 1.5.0 wheel met exactly that.  The same file
+    created its FAILURE report with exist_ok=True, so the two halves
+    disagreed about whether an existing directory was allowed."""
+
+    outdir = tmp_path / "already-here"
+    outdir.mkdir()
+    with pytest.raises(SystemExit) as raised:
+        _parse_args(_outdir_args(outdir))
+    assert raised.value.code == 2
+    message = capsys.readouterr().err
+    assert str(outdir) in message
+    assert "already exists" in message
+    assert "--allow-existing" in message
+    assert "Traceback" not in message
+
+
+def test_a_fresh_outdir_is_accepted_unchanged(tmp_path):
+    args = _parse_args(_outdir_args(tmp_path / "fresh"))
+    assert args.outdir == tmp_path / "fresh"
+    assert args.allow_existing is False
+    assert not (tmp_path / "fresh").exists()  # parsing creates nothing
+
+
+def test_allow_existing_reuses_a_directory_that_holds_unrelated_files(
+        tmp_path):
+    outdir = tmp_path / "mine"
+    outdir.mkdir()
+    (outdir / "notes.txt").write_text("kept", encoding="utf-8")
+    args = _parse_args(_outdir_args(outdir, "--allow-existing"))
+    assert args.allow_existing is True
+    assert (outdir / "notes.txt").read_text(encoding="utf-8") == "kept"
+
+
+@pytest.mark.parametrize(
+    "name", ("report.json", "progress.json", "wrfout_d01_2026-08-03_12_00_00"))
+def test_allow_existing_still_refuses_to_overwrite_a_previous_result(
+        tmp_path, capsys, name):
+    """"Warn, don't block" is house style; silently replacing a benchmark
+    result is not warning, it is losing the measurement."""
+
+    outdir = tmp_path / "reused"
+    outdir.mkdir()
+    (outdir / name).write_text("{}", encoding="utf-8")
+    with pytest.raises(SystemExit) as raised:
+        _parse_args(_outdir_args(outdir, "--allow-existing"))
+    assert raised.value.code == 2
+    message = capsys.readouterr().err
+    assert str(outdir) in message and name in message
+    assert "not" in message and "overwritten" in message
+    # The file is still there: a refusal that deleted the thing it was
+    # protecting would be worse than the clobber.
+    assert (outdir / name).exists()
+
+
+def test_an_outdir_that_is_a_file_is_named_as_such(tmp_path, capsys):
+    occupied = tmp_path / "not-a-directory"
+    occupied.write_text("", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        _parse_args(_outdir_args(occupied, "--allow-existing"))
+    assert "is not a directory" in capsys.readouterr().err
+
+
+def test_the_device_name_is_decoded_text_not_a_bytes_repr():
+    """A 1.5.0 field report carries `b'NVIDIA GeForce RTX 5070 Ti'` --
+    quotes, b prefix and all -- in the field whose whole job is to say
+    which card produced the numbers."""
+    from tools.hrrr_single_domain_benchmark import _device_name
+
+    class _Runtime:
+        @staticmethod
+        def getDeviceProperties(index):
+            return {"name": b"NVIDIA GeForce RTX 5070 Ti"}
+
+    cp = SimpleNamespace(cuda=SimpleNamespace(runtime=_Runtime))
+    assert _device_name(cp) == "NVIDIA GeForce RTX 5070 Ti"
+    assert not _device_name(cp).startswith("b'")
+
+
+def test_an_undecodable_device_name_degrades_instead_of_raising():
+    from tools.hrrr_single_domain_benchmark import _device_name
+
+    class _Runtime:
+        @staticmethod
+        def getDeviceProperties(index):
+            return {"name": b"RTX \xff\xfe"}
+
+    cp = SimpleNamespace(cuda=SimpleNamespace(runtime=_Runtime))
+    assert _device_name(cp).startswith("RTX ")
+
+
+def test_an_already_decoded_device_name_passes_through():
+    from tools.hrrr_single_domain_benchmark import _device_name
+
+    class _Runtime:
+        @staticmethod
+        def getDeviceProperties(index):
+            return {"name": "NVIDIA GeForce RTX 5090"}
+
+    cp = SimpleNamespace(cuda=SimpleNamespace(runtime=_Runtime))
+    assert _device_name(cp) == "NVIDIA GeForce RTX 5090"
+
+
+def test_the_cold_first_step_is_reported_apart_from_the_warmed_rate():
+    """Reproduces the shipped-wheel field run: 900 simulated seconds in
+    60 steps, 41.2476 s of integration, a 22.5562 s first step because
+    step one pays for every NVRTC compilation the forecast needs.  The
+    whole-run average is 2.7498 wall s per simulated minute; the same run
+    excluding step one is 1.2672, and it is the second number that
+    predicts what an hour of forecast costs."""
+    from tools.hrrr_single_domain_benchmark import _warmed_integration_rates
+
+    rates = _warmed_integration_rates(
+        integration_seconds=41.247564, run_seconds=900.0, steps=60,
+        step_samples=[22.556234, 0.283061, 0.283068])
+
+    assert rates["cold_first_step_seconds"] == pytest.approx(22.556234)
+    assert rates["warmed_integration_excluded_steps"] == 1
+    assert rates["warmed_integration_seconds"] == pytest.approx(18.69133)
+    # 1.2672 wall s per simulated MINUTE, as the field report computed it.
+    per_minute = rates[
+        "warmed_integration_wall_seconds_per_simulated_hour"] / 60.0
+    assert per_minute == pytest.approx(1.2672, abs=5e-5)
+    # And the whole-run figure this sits beside is the larger one.
+    assert (900.0 / 41.247564) / 60.0 == pytest.approx(0.3637, abs=5e-5)
+    assert rates["warmed_integration_simulated_seconds_per_wall_second"] \
+        == pytest.approx(885.0 / 18.69133)
+
+
+@pytest.mark.parametrize(
+    ("steps", "samples", "integration"),
+    ((1, [3.0], 3.0),          # no warmed population at all
+     (60, [], 41.0),           # no per-step samples collected
+     (60, [99.0], 41.0)),      # cold step exceeds the whole integration
+)
+def test_a_warmed_rate_with_no_meaning_is_none_not_a_fabricated_number(
+        steps, samples, integration):
+    from tools.hrrr_single_domain_benchmark import _warmed_integration_rates
+
+    rates = _warmed_integration_rates(
+        integration_seconds=integration, run_seconds=900.0, steps=steps,
+        step_samples=samples)
+    assert rates["warmed_integration_simulated_seconds_per_wall_second"] \
+        is None
+    assert rates["warmed_integration_wall_seconds_per_simulated_hour"] is None
+
+
+def test_the_printed_summary_carries_both_rates(tmp_path, monkeypatch, capsys):
+    """stdout is what a short run gets extrapolated from, so the split
+    has to reach it -- and the whole-run field keeps its name and its
+    value beside the new ones."""
+    outdir = tmp_path / "run"
+
+    def fake_run(args):
+        args.outdir.mkdir(parents=True, exist_ok=True)
+        return {
+            "schema": "gpuwm-native-hrrr-benchmark-v2", "status": "PASS",
+            "run_seconds": 900.0, "io_mode": "history",
+            "history_interval_seconds": 900.0,
+            "memory": {"gpu_peak_used_bytes_observed": 9_304_276_992},
+            "integration_simulated_seconds_per_wall_second": 900.0 / 41.247564,
+            "cold_first_step_seconds": 22.556234,
+            "warmed_integration_simulated_seconds_per_wall_second":
+                885.0 / 18.69133,
+            "prepared_cache": None,
+        }
+
+    monkeypatch.setattr(hrrr_runner, "run", fake_run)
+    assert hrrr_runner_main(_outdir_args(
+        outdir, "--io-mode", "history",
+        "--history-interval-seconds", "900")) == 0
+    summary = json.loads(capsys.readouterr().out)
+
+    assert summary["simulated_seconds_per_wall_second"] == pytest.approx(
+        900.0 / 41.247564)
+    assert summary["cold_first_step_seconds"] == pytest.approx(22.556234)
+    assert summary["warmed_simulated_seconds_per_wall_second"] \
+        == pytest.approx(885.0 / 18.69133)
+    # The warmed rate is the larger one; a reader extrapolating from the
+    # whole-run figure alone under-counts this machine by a factor of 2.
+    assert (summary["warmed_simulated_seconds_per_wall_second"]
+            > summary["simulated_seconds_per_wall_second"])

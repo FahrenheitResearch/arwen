@@ -3,7 +3,7 @@
   "generator": "tools/ftz_receipt/probe.py",
   "device": {
     "name": "NVIDIA GeForce RTX 5090",
-    "uuid": "e302d74f28a933cb8853ae03ac17c249ba5b01",
+    "uuid": "e302d74f28a933cb8853ae03ac17c2499e5d01",
     "pci_bus_id": "0000:01:00.0",
     "compute_capability": "12.0",
     "cuda_driver_version": 13030,
@@ -165,7 +165,7 @@
       "id": "R1",
       "label": "loader RawModule",
       "constructor": "gpuwm.core.kernels.load_module",
-      "site": "gpuwm/core/kernels/__init__.py:20",
+      "site": "gpuwm/core/kernels/__init__.py:78",
       "site_options": [
         "-std=c++17"
       ],
@@ -177,7 +177,7 @@
       "id": "R1-ftztrue",
       "label": "loader RawModule + explicit --ftz=true (control)",
       "constructor": "cupy.RawModule",
-      "site": "gpuwm/core/kernels/__init__.py:20 + control flag",
+      "site": "gpuwm/core/kernels/__init__.py:78 + control flag",
       "site_options": [
         "-std=c++17"
       ],
@@ -228,7 +228,7 @@
       "id": "R5",
       "label": "inline PTX without .ftz",
       "constructor": "gpuwm.core.kernels.load_module",
-      "site": "gpuwm/core/kernels/__init__.py:20",
+      "site": "gpuwm/core/kernels/__init__.py:78",
       "site_options": [
         "-std=c++17"
       ],

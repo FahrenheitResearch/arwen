@@ -516,12 +516,12 @@ machine-level facts worth knowing:
   13.3 (13030)) across the 6 compile routes the model
   uses, crossed with 6 arithmetic mechanisms.  The answer
   depends on the route:
-  - `R1` loader RawModule (`gpuwm/core/kernels/__init__.py:20`,
+  - `R1` loader RawModule (`gpuwm/core/kernels/__init__.py:78`,
     gpuwm.core.kernels.load_module), effective NVRTC options `-std=c++17`
     `-ftz=true`: `flush-to-zero` on 6 of 6 mechanisms [disassembly
     `tools/ftz_receipt/receipt/sass/r1.sass`]
   - `R1-ftztrue` loader RawModule + explicit --ftz=true (control)
-    (`gpuwm/core/kernels/__init__.py:20 + control flag`, cupy.RawModule),
+    (`gpuwm/core/kernels/__init__.py:78 + control flag`, cupy.RawModule),
     effective NVRTC options `-std=c++17` `--ftz=true` `-ftz=true`:
     `flush-to-zero` on 6 of 6 mechanisms [disassembly
     `tools/ftz_receipt/receipt/sass/r1_ftztrue.sass`]
@@ -537,7 +537,7 @@ machine-level facts worth knowing:
     cupy.ReductionKernel), effective NVRTC options `--std=c++17`
     `-ftz=true`: `flush-to-zero` on 6 of 6 mechanisms [disassembly of 6
     objects, `tools/ftz_receipt/receipt/sass/r4_0.sass` and siblings]
-  - `R5` inline PTX without .ftz (`gpuwm/core/kernels/__init__.py:20`,
+  - `R5` inline PTX without .ftz (`gpuwm/core/kernels/__init__.py:78`,
     gpuwm.core.kernels.load_module), effective NVRTC options `-std=c++17`
     `-ftz=true` (this route rides `R1`'s compile): `ieee-agreement` on 4 of
     6 mechanisms; `not-applicable` on 2 of 6 mechanisms [disassembly

@@ -1419,3 +1419,18 @@ def test_directory_hash_mode_refuses_an_unknown_mode(monkeypatch, bad):
         supervisor.directory_hash_mode()
     with pytest.raises(ValueError, match="is not one of"):
         supervisor._hash_directory_manifest(Path("."), mode=bad)
+
+
+def test_git_commit_survives_a_host_with_no_git_binary(monkeypatch):
+    """A pip-install host need not have git at all; subprocess.run then
+    raises FileNotFoundError, and before the 4090 stress wave that
+    traceback reached the capsule builder.  The sentinel form is the
+    same 'unavailable: <why>' the schema documents."""
+
+    def no_git(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(supervisor.subprocess, "run", no_git)
+    recorded = supervisor.git_commit()
+    assert recorded.startswith("unavailable: ")
+    assert "FileNotFoundError" in recorded

@@ -387,6 +387,7 @@ fn unpack_complex_spatial_scan_normalized_row_window(
     y_end: usize,
 ) -> Result<Vec<f64>, String> {
     let dr = &msg.data_rep;
+    require_no_missing_value_management(dr)?;
     let order = dr.spatial_diff_order as usize;
     let extra_bytes = dr.spatial_diff_bytes as usize;
 
@@ -610,8 +611,28 @@ fn unpack_simple(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f64>, Strin
     Ok(apply_scaling(&raw, dr))
 }
 
+/// Refuse the complex-packing missing-value modes this decoder does not
+/// implement.  Code Table 5.5 values 1 and 2 embed missing-value
+/// substitutes *inside* the packed groups (all-ones group references
+/// and widths become sentinels); decoding them with the mode-0
+/// arithmetic below would silently publish those sentinels as data.
+/// Before octet 23 was parsed that is exactly what happened, so this is
+/// a new positive refusal, not a relaxation.
+fn require_no_missing_value_management(dr: &DataRepresentation) -> Result<(), String> {
+    if dr.missing_value_management != 0 {
+        return Err(format!(
+            "complex packing missing-value management {} is not implemented \
+             (only 0, no embedded missing values, is); decoding would misread \
+             the missing-value substitutes as data",
+            dr.missing_value_management
+        ));
+    }
+    Ok(())
+}
+
 /// Template 5.2: Complex packing.
 fn unpack_complex(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f64>, String> {
+    require_no_missing_value_management(dr)?;
     let ng = dr.num_groups as usize;
     if ng == 0 {
         return Ok(Vec::new());
@@ -677,6 +698,7 @@ fn unpack_complex(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f64>, Stri
 
 /// Template 5.3: Complex packing with spatial differencing.
 fn unpack_complex_spatial(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f64>, String> {
+    require_no_missing_value_management(dr)?;
     let order = dr.spatial_diff_order as usize;
     let extra_bytes = dr.spatial_diff_bytes as usize;
 
@@ -2385,6 +2407,46 @@ mod tests {
         assert!((result[2] - 3.0).abs() < 1e-10);
     }
 
+    // ---- complex-packing missing-value management ----
+
+    #[test]
+    fn test_complex_packing_refuses_embedded_missing_values() {
+        // Code Table 5.5 modes 1 and 2 turn all-ones group references
+        // and widths into missing-value sentinels INSIDE the packed
+        // stream.  None of the decoders below implement that
+        // substitution, so both refuse rather than publish sentinels as
+        // data.  Mode 0 (bitmap-only) keeps decoding.
+        for mode in [1u8, 2] {
+            let dr = DataRepresentation {
+                template: 2,
+                bits_per_value: 8,
+                missing_value_management: mode,
+                num_groups: 1,
+                group_width_bits: 8,
+                group_length_bits: 8,
+                last_group_length: 1,
+                section5_num_data_points: 1,
+                ..make_default_dr()
+            };
+            let refusal = unpack_complex(&[0u8; 16], &dr).unwrap_err();
+            assert!(
+                refusal.contains(&format!("missing-value management {mode}")),
+                "{refusal}"
+            );
+            let spatial = DataRepresentation {
+                template: 3,
+                spatial_diff_order: 2,
+                spatial_diff_bytes: 2,
+                ..dr.clone()
+            };
+            let refusal = unpack_complex_spatial(&[0u8; 16], &spatial).unwrap_err();
+            assert!(
+                refusal.contains(&format!("missing-value management {mode}")),
+                "{refusal}"
+            );
+        }
+    }
+
     // ---- unpack_simple tests ----
 
     #[test]
@@ -2639,6 +2701,9 @@ mod tests {
             bits_per_value: 0,
             original_field_type: 0,
             group_splitting_method: 0,
+            missing_value_management: 0,
+            primary_missing_value: 0,
+            secondary_missing_value: 0,
             num_groups: 0,
             group_width_ref: 0,
             group_width_bits: 0,

@@ -62,6 +62,9 @@ from gpuwm.core.thompson_contract import (  # noqa: E402
 )
 from gpuwm.experiment import build_experiment, load_experiment  # noqa: E402
 from gpuwm.explain import warn  # noqa: E402
+from gpuwm.kernel_compile_notice import (  # noqa: E402
+    COMPILING_STATUS, kernel_compile_notice,
+)
 from gpuwm.ingest.prepared_cache import (  # noqa: E402
     PREPARED_CACHE_SCHEMA,
     PreparedCacheReader,
@@ -1713,7 +1716,8 @@ def _resolve_prepared_layout(
             "this hierarchy preparation published no stock-WRF file set "
             f"({export_slot.get('status')}: {export_slot.get('reason')}); "
             "the prepared domain tree is complete -- run it with "
-            "tools/prepared_domain_tree_forecast.py")
+            "gpuwm-prepared-tree-forecast (module form: python -m "
+            "gpuwm.prepared_domain_tree_forecast)")
     wrf_manifest_path = _require_file(
         prepared_root / "wrf-native-input" / "manifest.json",
         "hierarchy direct-WRF manifest")
@@ -3581,6 +3585,23 @@ def run_prepared_forecast(
             "prepared cache has no source-neutral canonical surface state")
     _validate_restored_source_adapter(restored.metadata, inputs.source)
 
+    # Physics initialization is where a first run pays its one-time
+    # NVRTC compile (~100 s on a modern card), and it used to pay it
+    # under the stale RESTORING status above -- the first field run of
+    # the published wheel watched that silence and concluded a hang.
+    # One line and one status flip, only when the kernel cache says the
+    # compile is actually coming.
+    compile_notice = kernel_compile_notice()
+    if compile_notice is not None:
+        print(compile_notice, flush=True)
+        _atomic_json(progress_path, {
+            "schema": PROGRESS_SCHEMA,
+            "status": COMPILING_STATUS,
+            "source": inputs.source,
+            "model_elapsed_seconds": 0.0,
+            "requested_run_seconds": float(exp.run_seconds),
+        })
+
     started = time.perf_counter()
     driver = initialize_prepared_physics(
         restored.initial_result, cfg, restored.met, restored.surface,
@@ -3898,8 +3919,22 @@ def run_prepared_forecast(
             "output_and_diagnostic_mode": {
                 "io_mode": "history",
                 "history_interval_seconds": cadence_seconds},
+            # DETERMINISM.md lists the configuration bytes as a
+            # load-bearing pin, and this route hash-binds the experiment
+            # TOML before it runs a step -- the published wheel's capsule
+            # still said "the run context did not supply this pin"
+            # because the value was never handed over (the 4090 stress
+            # run's honesty finding).  Both byte pins bind here now,
+            # git or no git.
+            "config_bytes": {
+                "path": str(inputs.experiment_config),
+                "sha256": inputs.file_sha256["experiment_config"]},
             "input_artifact_bytes": dict(inputs.file_sha256),
         },
+        input_bytes={"entries": {
+            name: {"algorithm": "sha256", "digest": digest,
+                   "path": str(inputs.authority_paths[name])}
+            for name, digest in inputs.file_sha256.items()}},
         run_shape={
             "route": "prepared_single_domain_forecast",
             "domain_count": 1,

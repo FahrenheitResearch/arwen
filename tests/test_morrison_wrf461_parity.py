@@ -43,11 +43,15 @@ WRF_SOURCE_SHA256 = {
         "2dcd1c70127ea57c8a2437baf2b8a2388b1722e4d4ead9411834946439b8c273",
 }
 
-# Per-field max_ulp measured on both authorized RTX 5090s.  The Windows driver
-# and Linux/CUDA 12.9 NVRTC produce slightly different transcendental results,
-# although both cards have the same architecture.  Pin both complete signatures
-# rather than making platform-specific mismatch counts part of the physics
-# contract.  fp32_ulp_distance in gpuwm.core.fp32_ulp is the sole ULP owner.
+# Per-field max_ulp measured per platform.  The Windows driver and Linux/CUDA
+# 12.9 NVRTC produce slightly different transcendental results on the same
+# sm_120 card, and sm_89 produces a third distinct vector.  Pin each complete
+# signature rather than making platform-specific mismatch counts part of the
+# physics contract.  fp32_ulp_distance in gpuwm.core.fp32_ulp is the sole ULP
+# owner.  Invariants shared by all three measured platforms: graupelnc stays
+# exactly 0, theta stays 154, sr is the worst field, and 11 of the 19 fields
+# are identical across all three.
+# RTX 5090 (sm_120), Windows driver.
 MEASURED_WINDOWS_MAX_ULP = {
     "graupelnc": 0,
     "graupelncv": 1643044151,
@@ -69,6 +73,7 @@ MEASURED_WINDOWS_MAX_ULP = {
     "sr": 1709094255,
     "theta": 154,
 }
+# RTX 5090 (sm_120), Linux / CUDA 12.9 NVRTC.
 MEASURED_LINUX_MAX_ULP = {
     "graupelnc": 0,
     "graupelncv": 1642221535,
@@ -90,9 +95,39 @@ MEASURED_LINUX_MAX_ULP = {
     "sr": 1706351510,
     "theta": 154,
 }
+# First sm_89 measurement: RTX 4090 (Ada), Linux, driver 590.48.01,
+# CUDA driver/NVRTC 13.1, CUDA runtime 12.9 (cupy-cuda12x 14.1.1),
+# Python 3.12.3, 2026-08-03 -- the first user-zero cross-architecture
+# stress run of the published wheel (arwen-stress-4090 part2-parity,
+# MORRISON-ULP-sm89-vs-sm120.tsv).  Differs from BOTH sm_120 tuples on
+# qi, ns, refl_10cm, snowncv and graupelncv; matches the Windows sm_120
+# tuple (and not the Linux one) on qg, ng and sr; identical to both on
+# the remaining 11 fields.
+MEASURED_SM89_LINUX_MAX_ULP = {
+    "graupelnc": 0,
+    "graupelncv": 1632923731,
+    "ng": 1108899129,
+    "ni": 1219365430,
+    "nr": 1013995714,
+    "ns": 1112428312,
+    "qc": 163796,
+    "qg": 908160525,
+    "qi": 851838674,
+    "qr": 718204424,
+    "qs": 895249780,
+    "qv": 8388606,
+    "rainnc": 4645,
+    "rainncv": 817215992,
+    "refl_10cm": 11477310,
+    "snownc": 5,
+    "snowncv": 815499543,
+    "sr": 1709094255,
+    "theta": 154,
+}
 MEASURED_PLATFORM_MAX_ULP = (
     MEASURED_WINDOWS_MAX_ULP,
     MEASURED_LINUX_MAX_ULP,
+    MEASURED_SM89_LINUX_MAX_ULP,
 )
 
 

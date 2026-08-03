@@ -1703,6 +1703,12 @@ class RRTMGPRadiation:
     interpolated from the median RFMIP climatological profile.
     """
 
+    #: RTE resolves the full level stack, so the top level's upward
+    #: longwave flux IS WRF's OLR; the driver reads this declaration to
+    #: decide whether the run's wrfout carries the field.  Unannotated on
+    #: purpose: this is a class constant, not a dataclass field.
+    publishes_olr = True
+
     start_time: datetime
     latitude_deg: object
     longitude_deg: object
@@ -2445,6 +2451,9 @@ def _fluxes_to_radiation(lw_up, lw_dn, sw_up, sw_dn, plev, exner, *,
         rthratensw=theta_heating(sw_up, sw_dn),
         swdown=cp.ascontiguousarray(sw_dn[:, 0].reshape(ny, nx)),
         glw=cp.ascontiguousarray(lw_dn[:, 0].reshape(ny, nx)),
+        # OLR: the upward longwave flux at the TOP level of the same
+        # bottom-to-top level stack whose level 0 supplies GLW above.
+        olr=cp.ascontiguousarray(lw_up[:, -1].reshape(ny, nx)),
         gsw=cp.ascontiguousarray(
             (sw_dn[:, 0] - sw_up[:, 0]).reshape(ny, nx)),
         coszen=(None if coszen is None else cp.ascontiguousarray(

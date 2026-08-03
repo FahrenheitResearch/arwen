@@ -209,6 +209,7 @@ def test_wrfout_roundtrips_opted_in_physics_surface_fields(tmp_path):
         "RAINC": np.arange(ny * nx, dtype=np.float32).reshape(ny, nx) / 10,
         "SWDOWN": np.full((ny, nx), 625.5, dtype=np.float32),
         "GLW": np.full((ny, nx), 312.25, dtype=np.float32),
+        "OLR": np.full((ny, nx), 241.75, dtype=np.float32),
     }
     with WrfoutWriter(p, nx=nx, ny=ny, nz=nz, dx=12000.0, dy=12000.0) as w:
         w.write_frame("1974-04-03_12:00:00", fields)
@@ -218,6 +219,9 @@ def test_wrfout_roundtrips_opted_in_physics_surface_fields(tmp_path):
             "RAINC": ("mm", "ACCUMULATED TOTAL CUMULUS PRECIPITATION"),
             "SWDOWN": ("W m-2", "DOWNWARD SHORT WAVE FLUX AT GROUND SURFACE"),
             "GLW": ("W m-2", "DOWNWARD LONG WAVE FLUX AT GROUND SURFACE"),
+            # Registry.EM_COMMON:1839, the row a wrf-python/wrf-rust OLR
+            # recipe reads.  Same 2-D mass grid as its two neighbours.
+            "OLR": ("W m-2", "TOA OUTGOING LONG WAVE"),
         }
         for name, expected in fields.items():
             assert name in ds.variables
@@ -225,6 +229,11 @@ def test_wrfout_roundtrips_opted_in_physics_surface_fields(tmp_path):
             assert variable.dtype == np.dtype(np.float32)
             assert (variable.units, variable.description) == expected_metadata[name]
             np.testing.assert_array_equal(np.asarray(variable[0]), expected)
+        olr = ds.variables["OLR"]
+        assert olr.dimensions == ("Time", "south_north", "west_east")
+        assert olr.stagger == ""
+        assert olr.MemoryOrder == "XY "
+        assert int(olr.FieldType) == 104
 
 
 def test_live_state_history_fields_cover_mp10_frozen_precip_and_noah():

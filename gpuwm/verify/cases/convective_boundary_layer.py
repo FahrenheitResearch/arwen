@@ -46,6 +46,82 @@ GATES = {
     "mass_drift_rel": (None, 1.0e-4),
 }
 
+#: Receipt fields the dual-run determinism screen must SKIP, because
+#: they measure the run's ENVIRONMENT rather than the run.  The screen
+#: ("compare every numeric receipt field", ARWEN-REALISATION-SPREAD.md)
+#: is the corruption detector on cards without ECC, so its field set
+#: must contain only quantities two healthy same-seed runs are bound to
+#: agree on.  Wall-clock timings differ between identical runs by
+#: construction.  The device-wide VRAM figure ((total - free) from
+#: ``cudaMemGetInfo``) counts every co-tenant process on the card: the
+#: sm_89 (RTX 4090) stress lane reproduced two same-seed reps that were
+#: byte-identical in every other field and differed ONLY here (0.72 vs
+#: 1.60 GiB) while a forecast shared the card -- a false positive of
+#: the screen, not of the engine.  ``vram_gib`` is the name that figure
+#: carried before the split (receipts through cbl-2026-08-02); it stays
+#: classified so committed receipts partition without being edited.
+#: The per-process ``vram_pool_gib`` is deliberately NOT here: this
+#: process's live pool bytes are a deterministic property of the run
+#: and belong on the screened side (see :func:`_vram_fields`).
+ENVIRONMENTAL_FIELDS = frozenset({
+    "wall_seconds",
+    "steps_per_second",
+    "vram_device_gib",
+    "vram_gib",  # pre-split name of the device-wide figure
+})
+
+
+def partition_receipt_fields(receipt: dict) -> tuple[dict, dict]:
+    """Split a receipt's fields into ``(screened, environmental)``.
+
+    Screened fields are the determinism-comparison surface: two
+    same-seed runs on one card must agree on every one of them, and a
+    disagreement is evidence of silent corruption.  Environmental
+    fields describe the machine at the moment of measurement --
+    comparing them makes the screen fail on healthy runs whenever
+    anything else holds VRAM on the card.  Every field lands in exactly
+    one bucket, so nothing can silently fall out of the screen.
+    """
+    screened = {k: v for k, v in receipt.items()
+                if k not in ENVIRONMENTAL_FIELDS}
+    environmental = {k: v for k, v in receipt.items()
+                     if k in ENVIRONMENTAL_FIELDS}
+    return screened, environmental
+
+
+def _vram_fields(*, pool_used_bytes, device_free_total) -> dict:
+    """Both VRAM receipt figures, from injected readers so the
+    accounting is CPU-testable (the ``gpu_mem_watch`` probe pattern).
+
+    ``vram_pool_gib`` -- this process's live CuPy default-pool bytes:
+    a property of the run itself, identical between two same-seed runs
+    whatever else the card is doing, so it belongs to the determinism
+    screen.
+
+    ``vram_device_gib`` -- whole-card occupancy as the CUDA runtime
+    reports it, ``(total - free)`` from ``cudaMemGetInfo``: co-tenant
+    processes inflate it wherever the platform exposes them, so it is
+    an ENVIRONMENTAL field (:data:`ENVIRONMENTAL_FIELDS`) and the
+    screen must not compare it.  It stays on the receipt because it is
+    the number an operator sizing a card wants -- it was just mislabeled
+    as a run property under its old name ``vram_gib``.
+
+    A failing reader yields ``None`` for its own field and leaves the
+    other alone: a missing memory figure must not kill a finished
+    integration.
+    """
+    fields: dict = {"vram_pool_gib": None, "vram_device_gib": None}
+    try:
+        fields["vram_pool_gib"] = float(pool_used_bytes()) / 2.0**30
+    except Exception:
+        pass
+    try:
+        free_b, total_b = device_free_total()
+        fields["vram_device_gib"] = float(total_b - free_b) / 2.0**30
+    except Exception:
+        pass
+    return fields
+
 #: em_les reference forcing (test/em_les/namelist.input: tke_heat_flux =
 #: 0.24 K m/s; README.les "The turbulence of the free CBL is
 #: driven/maintained by the surface heat flux").  The drag coefficient is
@@ -334,12 +410,12 @@ def _integrate(cfg: RunConfig, seed: int, sample_every_s: float,
     wm = 0.5 * (state.w[k_low] + state.w[k_low + 1])
     updraft_fraction = float((cp.asnumpy(wm) > 0.0).mean())
 
-    vram = None
-    try:
-        free_b, total_b = cp.cuda.runtime.memGetInfo()
-        vram = float(total_b - free_b) / 2.0**30
-    except Exception:
-        pass
+    # Two VRAM figures with opposite screen classifications -- the
+    # per-process pool figure is screened, the device-wide figure is
+    # environmental and excluded (see ENVIRONMENTAL_FIELDS).
+    vram = _vram_fields(
+        pool_used_bytes=cp.get_default_memory_pool().used_bytes,
+        device_free_total=cp.cuda.runtime.memGetInfo)
 
     metrics = {
         "nan": nan,
@@ -398,7 +474,7 @@ def _integrate(cfg: RunConfig, seed: int, sample_every_s: float,
         "wall_seconds": wall,
         "steps": done,
         "steps_per_second": done / wall if wall > 0 else None,
-        "vram_gib": vram,
+        **vram,
     }
     budgets = [s["budget"] for s in samples if s.get("budget") is not None]
     if budgets:

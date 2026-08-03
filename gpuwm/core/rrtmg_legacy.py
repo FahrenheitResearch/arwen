@@ -556,6 +556,13 @@ class RRTMGLegacyRadiation:
     bitwise at any width -- their own gated contracts).
     """
 
+    #: RRTMG_LWRAD's ``OLR`` (TOA outgoing longwave, W m-2) is
+    #: ``TOTUFLUX`` at the top level -- ``lwrad_outputs_batch`` already maps
+    #: it out of ``uflx`` -- so this adapter fills the driver's OLR slot and
+    #: the run's wrfout carries the field.  The declaration is what the
+    #: driver reads to decide whether OLR exists at all.
+    publishes_olr = True
+
     def __init__(self, start_time, latitude_deg, longitude_deg, *,
                  p_top=None, column_chunk=None, ozone_parent=None,
                  o3input=2):
@@ -981,6 +988,7 @@ class RRTMGLegacyRadiation:
         chunk_lw = self.column_chunk or _lw.LW_BATCH_COLUMN_CHUNK
         rthratenlw = np.zeros((ncol, nz), np.float32)
         glw = np.zeros(ncol, np.float32)
+        olr = np.zeros(ncol, np.float32)
         for c0 in range(0, ncol, chunk_lw):
             idx = slice(c0, min(c0 + chunk_lw, ncol))
             pl = _prep.lwrad_prep_batch(
@@ -1008,6 +1016,7 @@ class RRTMGLegacyRadiation:
                 pi3d=pi3d[idx])
             rthratenlw[idx] = outs["rthratenlw"]
             glw[idx] = outs["glw"]
+            olr[idx] = outs["olr"]
             del res, outs
 
         # ---- SW: driver-level zeroing (dossier section 3) + day gather
@@ -1069,4 +1078,5 @@ class RRTMGLegacyRadiation:
             swdown=self._grid2(swdown, ny, nx),
             glw=self._grid2(glw, ny, nx),
             gsw=self._grid2(gsw, ny, nx),
-            coszen=self._grid2(coszen, ny, nx))
+            coszen=self._grid2(coszen, ny, nx),
+            olr=self._grid2(olr, ny, nx))

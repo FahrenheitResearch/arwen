@@ -1,5 +1,94 @@
 # Changelog
 
+## 1.5.1 (2026-08-03)
+
+A hardening release. The published wheel's first week in the field — a
+1 km nest on an RTX PRO 6000, cross-architecture runs on an RTX 4090, a
+5060 Ti, and real HRRR forecasts on an RTX 5070 Ti — sent back every
+rough edge fixed here, and one thing the 1.5.0 notes had to stop
+claiming is now true.
+
+GFS gained the full-file transport HRRR has had all along: `gpuwm fetch
+--source gfs --mode full-file` takes the whole `pgrb2.0p25` objects
+from the AWS S3 archive — no NOMADS rate governor, no spatial crop, and
+the archive's reach is years where NOMADS keeps about ten days —
+through the Rust backbone's parallel range GETs or the stdlib
+transport. The raw objects differ from the NOMADS crops in row order
+*and* packing; both differences are certified in `gfs_grib2_bridge`
+against committed matched pairs of the same fields from the same cycle,
+including a bitmap-carrying SOILW pair that pins complex-packing
+missing-value semantics cell for cell, bit for bit. Everything outside
+that proven envelope still refuses by name, the NOMADS crop remains the
+default transport unchanged, and `gpuwm doctor --source gfs` now
+reports the GFS route — decoder and byte transports — the way it
+reports HRRR's.
+
+The wizard now emits what the runner accepts: a bare `gpuwm domain`
+produces one 12 km domain — the shape `gpuwm go` runs — instead of the
+deepest nest tree that fits the card; nest trees are explicit opt-in,
+and refusals name the tree runner with a complete remedy. Sizing a card
+that is not in the machine is priced against the conservative measured
+reference profile instead of a per-class discount, and is labelled an
+estimate everywhere it appears. **Migration:** a config sized near a
+card's ceiling that previously certified as fitting can now be honestly
+refused — re-run the wizard to get a grid the estimate stands behind.
+
+First-run polish, from the first cross-architecture field run of the
+published wheel: with `GPUWM_CASE_DATA_ROOT` unset, the case-data root
+now follows the platform — the XDG data directory on Linux and macOS
+instead of a literal `~/Downloads`, which stays the Windows default
+unchanged. `gpuwm fetch-geog` announces the whole bill — datasets still
+needed, download bytes, unpacked size — before the first byte moves.
+The first forecast on a machine says up front that it is compiling GPU
+kernels for the local card and what that costs (typically 1–3 minutes,
+cached for every later run), where that time used to pass under a stale
+status and read as a hang. `pip show gpuwm` answers `Apache-2.0` — the
+wheel carries the SPDX license expression; building from source now
+needs setuptools ≥ 77. Rendered PNGs are named `arwen_*`, and `--pair`
+reads both spellings so older render directories still pair.
+
+From the 5070 Ti findings: `gpuwm update` exists — print-only, it names
+the exact upgrade command for your install and what stays preserved
+across upgrades; the generated HRRR chain prints the two experimental
+Thompson-aerosol exports before preparation instead of leaving them to
+be discovered from a refusal; and the benchmarks grew up — an existing
+`--outdir` is refused in a sentence rather than a traceback
+(`--allow-existing` reuses without clobbering), the GPU name is decoded
+text instead of a bytes repr, provenance resolves from the installed
+wheel instead of demanding a git checkout, the aerosol-aware scheme is
+selectable with its fixed 362 MiB table cost priced into the estimate,
+and the cold first step is reported apart from the warmed rate so short
+runs stop extrapolating misleadingly.
+
+wrfout frames now carry `OLR` — the top-of-atmosphere outgoing longwave
+the longwave scheme was already computing — with WRF's registry
+metadata, present exactly when the attached longwave scheme produces it
+and absent with radiation off. It is output-only and rebuilt rather
+than restart-carried, so checkpoints on disk stay loadable; a resumed
+run reports zeros until its next radiation call — a deliberate,
+documented divergence from WRF's restart handling.
+
+The LES comparison receipts ship with the repository — now true: forty
+curated receipts and an index at
+[docs/public/receipts/les/](docs/public/receipts/les/README.md) back
+every WRF-comparison, realisation-spread and determinism number
+[LES.md](docs/public/LES.md) cites, byte-identical to the originals
+except for relativized machine paths, with every omission stated and
+justified. The CBL receipt's VRAM figure splits into `vram_pool_gib`
+(screened) and `vram_device_gib` (environmental), so the documented
+dual-run corruption screen stops false-positiving on a shared card. And
+the single-card determinism known-limit is retired: the same seed is
+bit-identical across three cards — two of them different sm_120
+silicon — and seed-equivalent against sm_89, receipt and claim boundary
+in the same directory.
+
+Bookkeeping regenerated on the assembled line: the flush-to-zero claim
+census and route registers re-keyed after 1.5.0's line drift, and one
+stale kernel frame pin corrected to its measured value — re-measured
+under two NVRTC majors and offline nvcc before it moved. The NVRTC
+widening boundary in the Thompson control tests moves to 13.1, where
+exact agreement was actually measured.
+
 ## 1.5.0 (2026-08-03)
 
 This release makes the model usable at the scales storm work actually

@@ -1825,9 +1825,11 @@ def test_estimate_domain_itemization_pins(exp1):
     # 4*49*(2*250 + 2*198) = 175,616 B, plus 7 surface slots x
     # 4*(2*250 + 2*198) = 3,584 B: 2,985,472 + 25,088 = 3,010,560 B on
     # top of the previous 564,250,212-B scratch pin.
+    # Physics carries the domain's OLR publication buffer, one resident
+    # (ny, nx) FP32 field: 4 * 200 * 250 = 200,000 B.
     assert by_cat == {
         "state": 563557756,
-        "physics": 275706760,
+        "physics": 275906760,
         # KF hold + expiry mask + ring-guard saves, plus the v1.1
         # co-located vertical-CFL reduction field: one extra FP32 word in
         # each of the 256 `integration_health_partial` blocks and in the
@@ -1840,7 +1842,7 @@ def test_estimate_domain_itemization_pins(exp1):
     }
     assert d01.resident_bytes == sum(
         v for c, v in by_cat.items() if c != "transient")
-    assert d01.resident_bytes == 1473642400
+    assert d01.resident_bytes == 1473842400
     assert est.resident_bytes == d01.resident_bytes + est.k_tables_bytes
     assert d01.transient_bytes == 441262500
 
@@ -1889,8 +1891,11 @@ def test_estimate_4dom_golden_pins(exp4, est4):
     # 1,028 B over the ring-lane pins.  Constant per domain because the
     # health reduction's block count does not scale with the grid.  The
     # batched YSU validator adds one four-byte status word per domain.
-    assert per_domain == {1: 1503330600, 2: 5403118992,
-                          3: 6799612696, 4: 9728899968}
+    # OLR publication buffer: one resident (ny, nx) FP32 field per 4/4
+    # domain, so each domain gains exactly 4*ny*nx B -- 200,000 /
+    # 800,000 / 1,004,004 / 1,440,000 on d01--d04 (sum 3,444,004 B).
+    assert per_domain == {1: 1503530600, 2: 5403918992,
+                          3: 6800616700, 4: 9730339968}
     nest = {d.grid_id: d.category_bytes("nest") for d in est4.domains}
     assert nest == {1: 0, 2: 103165552, 3: 149390256, 4: 193084928}
     # The post-CQ request includes both simultaneously live nested-force
@@ -1908,16 +1913,18 @@ def test_estimate_4dom_golden_pins(exp4, est4):
     assert est4.dycore_state_workspace_bytes == 2061345600
     assert est4.dycore_state_saved_bytes == 2869112700
     # Ring snapshot slots are resident (arena-excluded): the ports-branch
-    # residency plus the exact 23,815,680-B ring total.
-    assert est4.resident_bytes == 14433110964
+    # residency plus the exact 23,815,680-B ring total, plus the
+    # 3,444,004-B four-domain OLR publication total.
+    assert est4.resident_bytes == 14436554968
     # The case configures column_chunk = 6250 (byte-identical to 3125,
     # 33% faster per radiation call); the 3125 numbers stay pinned in the
     # ladder below, so the trade this bought is on the record both ways.
     assert est4.workspace_bytes == 2051400000
     assert est4.transient_peak_bytes == 3182840000
-    assert est4.subtotal_bytes == 19667350964
+    # +3,444,004 B: the four-domain OLR publication total.
+    assert est4.subtotal_bytes == 19670794968
     assert est4.alloc_estimate_bytes == math.ceil(
-        1.15 * est4.subtotal_bytes) == 22617453609
+        1.15 * est4.subtotal_bytes) == 22621414214
     # Chunk ladder after arena sharing and physics-persistent reclamation.
     # The 1024-descriptor health-slot registration adds 49,168 B/domain to
     # the audited scratch; the pins below are computed on the merged tree.
@@ -1926,8 +1933,9 @@ def test_estimate_4dom_golden_pins(exp4, est4):
         for chunk in (6250, 3125, 1562, 256)}
     # Every rung carries the ring lane's ceil(1.15 x 23,815,680) =
     # 27,388,032 B on top of the ports-branch ladder.
-    assert ladder == {6250: 22617453609, 3125: 21421913609,
-                      1562: 20823952323, 256: 20324312246}
+    # Every rung also carries ceil(1.15 x 3,444,004) of OLR.
+    assert ladder == {6250: 22621414214, 3125: 21425874214,
+                      1562: 20827912927, 256: 20328272850}
 
 
 def test_d01_calibration_bounds_measured_fixture(exp1):
@@ -2037,8 +2045,10 @@ def test_n0_probe_projection_flags_stale_calibration_after_exact_aliases(
     mp_ring_save_* family then grew the audited scratch by 23,815,680 B
     across the four domains (x1.15 headroom = 27,388,032 B of estimate),
     which consumed that margin: composed with the ports-branch growth
-    (health descriptors, nested-force slots) the stale projection now sits
-    1,316,725 B BELOW the estimate and the measured-bound leg reads True.  The
+    (health descriptors, nested-force slots) and the OLR publication
+    buffers (x1.15 headroom = 3,960,605 B of estimate) the stale
+    projection now sits 5,277,330 B BELOW the estimate and the
+    measured-bound leg reads True.  The
     algebra stays pinned exactly; the operational consequence is that the
     retained pre-alias receipt can no longer flag its own staleness
     through this leg -- the next N0 certification MUST take a fresh probe
@@ -2056,7 +2066,7 @@ def test_n0_probe_projection_flags_stale_calibration_after_exact_aliases(
                       - est.dycore_state_saved_bytes
                       - (3035550000 - est.workspace_bytes)
                       - diff6_alias_saved - 141_120_000)
-    assert projected_used - est.alloc_estimate_bytes == -1_316_725
+    assert projected_used - est.alloc_estimate_bytes == -5_277_330
     legs = pf.evaluate_alloc_gates(
         measured_used_bytes=projected_used,
         estimate_bytes=est.alloc_estimate_bytes,
@@ -2147,8 +2157,9 @@ def test_check_cli_estimator_json(capsys):
     assert payload["column_chunk"] == 6250
     # Ring-guard mp_ring_save_* saves add 23,815,680 B of per-domain
     # (arena-excluded) scratch across the four domains; x1.15 headroom
-    # lands 27,388,032 B above the ports-branch CLI pin.
-    assert payload["alloc_estimate_bytes"] == 22617453609
+    # lands 27,388,032 B above the ports-branch CLI pin; the OLR
+    # publication buffers add a further 3,960,605 B of estimate.
+    assert payload["alloc_estimate_bytes"] == 22621414214
     # All requested moist-CQ slots are represented; the shared arena aliases
     # their lifetimes without changing the exact physical backing.
     assert payload["scratch_arena_saved_bytes"] == 6156502304
@@ -2171,8 +2182,9 @@ def test_check_cli_estimator_json(capsys):
     # now YSU's, and the reservation is 8,208 * 1536 * 170 = 2,143,272,960
     # B.  3,872.9 MiB of the old reserve was a compile-time array bound.
     # retention_residual is 3% of the alloc estimate, which carries the
-    # ring lane's 27,388,032 B: +821,641 B over the ports-branch pin.
-    assert payload["reserve_bytes"] == 3811652313
+    # ring lane's 27,388,032 B: +821,641 B over the ports-branch pin,
+    # and 3% of the OLR estimate is a further +118,818 B.
+    assert payload["reserve_bytes"] == 3811771131
     assert payload["reserve_components"]["device_overhead_bytes"] == (
         pf.CUDA_CONTEXT_BYTES + 2143272960)
     assert payload["kernel_local_memory_bytes"] == 2143272960
@@ -2504,8 +2516,9 @@ def test_check_cli_legacy_config_wraps(capsys):
     assert rc == 0
     assert list(payload["domains"]) == ["d01"]
     # The 1024-descriptor health capacity adds 24,576 B and the ring-guard
-    # saves 3,010,560 B to the pre-assembly pin (itemization-pin derivation).
-    assert payload["domains"]["d01"]["resident_bytes"] == 1473642400
+    # saves 3,010,560 B to the pre-assembly pin, and the OLR publication
+    # buffer a further 200,000 B (itemization-pin derivation).
+    assert payload["domains"]["d01"]["resident_bytes"] == 1473842400
 
 
 def test_check_cli_fails_closed_when_nothing_is_evaluable(capsys,
@@ -3610,25 +3623,67 @@ def test_the_wddm_multiplier_is_a_floor_not_a_discount():
     assert huge > int(footprint * pf.PEAK_ENVELOPE_FACTORS["windows"])
 
 
-def test_the_device_profile_follows_the_card_being_sized_for():
-    """The local-memory backing store is a property of the DEVICE.
+def test_the_absent_card_profile_is_the_conservative_measured_reference():
+    """Sizing a card that is NOT in this machine never discounts the
+    intercept below what a real device measures.
 
-    Charging a 12 GiB card the 170-SM RTX 5090's backing store is the
-    same error as charging Linux the WDDM pool constants -- an accounting
-    term measured on another machine.  Each tier takes the largest SM
-    count sold at that capacity, so it over-prices every other card in
-    the class rather than under-pricing any.
+    The 4090 stress run (2026-08-03) falsified the per-class SM discount:
+    an absent-card sizing priced the non-pool intercept at 1.45 GiB (the
+    12 GiB class's 70-SM row) where the same code on the real RTX 4090
+    measured 2.30 GiB -- a config certified "fits with 0.27 GiB to
+    spare" landed 0.015 GiB from the budget, a margin 18x smaller than
+    advertised.  The class table was a market survey, not a measurement
+    (a 12 GiB RTX 3080 Ti ships 80 SMs against the row's 70), so the
+    absent-card path now prices against the conservative measured
+    reference profile -- the max of known-device intercepts.
     """
-    counts = [pf.card_local_memory_profile(gib).multiprocessor_count
-              for gib in (12.0, 16.0, 24.0, 32.0)]
-    assert counts == [70, 84, 128, 170]
-    assert counts == sorted(counts), "bigger card, never fewer SMs"
-    # Nothing declared keeps the measured reference, which is the largest
-    # row: an unnamed card must not be assumed small.
-    assert (pf.card_local_memory_profile(None)
-            is pf.MEASURED_LOCAL_MEMORY_PROFILE)
-    assert (pf.card_local_memory_profile(999.0)
-            is pf.MEASURED_LOCAL_MEMORY_PROFILE)
+    for gib in (12.0, 16.0, 24.0, 32.0, None, 999.0):
+        assert (pf.card_local_memory_profile(gib)
+                is pf.MEASURED_LOCAL_MEMORY_PROFILE), gib
+
+
+def test_absent_card_sizing_is_never_more_optimistic_than_a_present_card(
+        exp4):
+    """THE stress-run inequality: for the same config, the absent-card
+    estimate must be >= the present-card measurement, for every device
+    this project has measured the law on."""
+    known_devices = (
+        pf.MEASURED_LOCAL_MEMORY_PROFILE,  # RTX 5090, 170 SMs
+        pf.DeviceLocalMemoryProfile(       # the stress run's RTX 4090
+            name="NVIDIA GeForce RTX 4090", multiprocessor_count=128,
+            max_threads_per_multiprocessor=1536),
+        pf.DeviceLocalMemoryProfile(       # the fleet's RTX 4080
+            name="NVIDIA GeForce RTX 4080", multiprocessor_count=76,
+            max_threads_per_multiprocessor=1536),
+    )
+    for gib in (12.0, 16.0, 24.0, 32.0):
+        absent = pf.non_pool_device_bytes(
+            exp4, profile=pf.card_local_memory_profile(gib))
+        for device in known_devices:
+            present = pf.non_pool_device_bytes(exp4, profile=device)
+            assert absent >= present, (
+                f"sizing an absent {gib:g} GiB card priced the non-pool "
+                f"intercept at {absent / GIB:.2f} GiB, below the "
+                f"{present / GIB:.2f} GiB the same config prices on a "
+                f"present {device.name}")
+
+
+def test_declared_budget_sizing_says_it_is_an_estimate_for_absent_hardware(
+        capsys):
+    """--budget-gib is the sizing-for-a-card-you-intend-to-buy path; its
+    report must say the numbers are estimates for hardware not present."""
+    rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "HARDWARE NOT PRESENT" in out
+    assert "declared, not measured" in out
+
+    rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100",
+                     "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["sized_for_hardware_not_present"] is True
+    assert payload["local_memory_profile"] == (
+        pf.MEASURED_LOCAL_MEMORY_PROFILE.name)
 
 
 def test_ingest_prices_every_domain_in_the_tree(exp1, exp4):

@@ -1,13 +1,15 @@
-"""The GFS scan-order matched pair, and whether upstream still agrees.
+"""The GFS matched pairs, and whether upstream still agrees.
 
-``gfs_grib2_bridge`` now accepts both published row orders and
-normalizes to one.  The bit-identity proof behind that lives in Rust,
-where the decoder is
-(``a_flipped_raw_s3_decode_is_bit_identical_to_the_nomads_crop``); what
-lives here is the pair's identity -- so a fixture cannot be swapped for
-something that no longer demonstrates the point -- and one live check
-that upstream has not changed its packing or row order since the pair
-was captured.
+``gfs_grib2_bridge`` accepts both published row orders (normalizing to
+one) and both published packings: the NOMADS crop's DRT 5.0 and the raw
+S3 objects' DRT 5.3, the latter certified by the SOILW missing-value
+pair.  The bit-identity proofs live in Rust, where the decoder is
+(``a_flipped_raw_s3_decode_is_bit_identical_to_the_nomads_crop`` and
+``the_raw_53_bitmap_decode_matches_the_nomads_crop_cell_for_cell``);
+what lives here is each pair's identity -- so a fixture cannot be
+swapped for something that no longer demonstrates the point -- and one
+live check that upstream has not changed its packing or row order since
+the pairs were captured.
 
 See ``tests/fixtures/gfs-scan-order/README.md`` for provenance.
 """
@@ -29,13 +31,19 @@ from gpuwm import bridges
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "gfs-scan-order"
 RAW_S3 = FIXTURES / "s3-raw-tmp2m-20260729t18z-f000.grib2"
 NOMADS_CROP = FIXTURES / "nomads-crop-20260729t18z-f000.grib2"
+RAW_S3_SOILW = FIXTURES / "s3-raw-soilw-20260729t18z-f000.grib2"
+NOMADS_CROP_SOILW = FIXTURES / "nomads-crop-soilw-20260729t18z-f000.grib2"
 
-#: The pair is a scientific artefact, not a convenience file: pin it.
+#: Each pair is a scientific artefact, not a convenience file: pin it.
 FIXTURE_DIGESTS = {
     RAW_S3.name:
         "3cbf77deea57a0f1226c9bff5e3a8651b0e3a07152180c6ac89ea1eabb93bb45",
     NOMADS_CROP.name:
         "1a68737e6fb53256360e208aada933c5f1381b4968813cb519233b04168c6b6c",
+    RAW_S3_SOILW.name:
+        "c854e429091ee95b57878c9c74d6bf780e157c80617b0c0460d0a59aa781db5a",
+    NOMADS_CROP_SOILW.name:
+        "fe4397ef34206dddd2a7404d0e9274e4549de15577fb1674f83753e6dedfc72e",
 }
 
 #: Section 3, Grid Definition Template 3.0: the scanning-mode flags are
@@ -85,16 +93,19 @@ def test_the_matched_pair_is_the_pair_that_was_certified(name):
         "against; re-capture the pair and update both digests together")
 
 
-def test_the_pair_really_carries_the_two_row_orders():
-    """Otherwise the byte-identity test proves nothing about the flip."""
+def test_each_pair_really_carries_the_two_row_orders():
+    """Otherwise the byte-identity tests prove nothing about the flip."""
 
-    raw = _first_grid_section(RAW_S3)
-    crop = _first_grid_section(NOMADS_CROP)
-    # Template 3.0 both, or the octet offsets below mean something else.
-    assert int.from_bytes(raw[12:14], "big") == 0
-    assert int.from_bytes(crop[12:14], "big") == 0
-    assert raw[SCAN_MODE_OFFSET_IN_SECTION3] == NORTH_TO_SOUTH
-    assert crop[SCAN_MODE_OFFSET_IN_SECTION3] == SOUTH_TO_NORTH
+    for raw_path, crop_path in ((RAW_S3, NOMADS_CROP),
+                                (RAW_S3_SOILW, NOMADS_CROP_SOILW)):
+        raw = _first_grid_section(raw_path)
+        crop = _first_grid_section(crop_path)
+        # Template 3.0 both, or the octet offsets below mean something
+        # else.
+        assert int.from_bytes(raw[12:14], "big") == 0
+        assert int.from_bytes(crop[12:14], "big") == 0
+        assert raw[SCAN_MODE_OFFSET_IN_SECTION3] == NORTH_TO_SOUTH
+        assert crop[SCAN_MODE_OFFSET_IN_SECTION3] == SOUTH_TO_NORTH
 
 
 def test_the_first_stored_row_runs_with_each_declared_scan():
@@ -117,24 +128,56 @@ def test_the_first_stored_row_runs_with_each_declared_scan():
     assert (crop_lat1, crop_lat2) == (30.0, 40.0)
 
 
-def test_the_raw_object_is_complex_packed_and_the_crop_is_not():
-    """The gate the scan-order change deliberately did NOT open.
+def _drt(path: Path) -> int:
+    for number, section in _sections(path.read_bytes()):
+        if number == 5:
+            return int.from_bytes(section[9:11], "big")
+    raise AssertionError(f"{path.name} carries no Section 5")
+
+
+def test_the_raw_objects_are_complex_packed_and_the_crops_are_not():
+    """The two packings the pairs certify, one per publisher form.
 
     Raw pgrb2.0p25 objects are DRT 5.3; the NOMADS crop re-encodes to
-    5.0, which is the only template the certified GFS bridge admits.
-    Full-file GFS from S3 therefore still needs a complex-packing
-    missing-value proof -- accepting the row order was necessary, not
-    sufficient.
+    5.0.  Accepting the row order was necessary but not sufficient for
+    full-file GFS -- the 5.3 gate stayed shut until the SOILW pair
+    supplied the complex-packing missing-value proof, and these facts
+    are what make that pair the proof rather than a second copy of the
+    first one.
     """
 
-    def drt(path: Path) -> int:
-        for number, section in _sections(path.read_bytes()):
-            if number == 5:
-                return int.from_bytes(section[9:11], "big")
-        raise AssertionError(f"{path.name} carries no Section 5")
+    assert _drt(RAW_S3) == 3
+    assert _drt(NOMADS_CROP) == 0
+    assert _drt(RAW_S3_SOILW) == 3
+    assert _drt(NOMADS_CROP_SOILW) == 0
 
-    assert drt(RAW_S3) == 3
-    assert drt(NOMADS_CROP) == 0
+
+def test_the_soilw_pair_demonstrates_bitmap_missing_values():
+    """Both SOILW forms carry a bitmap, and the raw record carries NO
+    embedded missing-value management -- NCEP's missing cells travel in
+    the bitmap, which is exactly the envelope the bridge admits."""
+
+    def bitmap_indicator(path: Path) -> int:
+        for number, section in _sections(path.read_bytes()):
+            if number == 6:
+                return section[5]
+        raise AssertionError(f"{path.name} carries no Section 6")
+
+    assert bitmap_indicator(RAW_S3_SOILW) == 0
+    assert bitmap_indicator(NOMADS_CROP_SOILW) == 0
+    # The TMP raw record has no bitmap (indicator 255): the two raw
+    # fixtures cover both branches of the 5.3 decode.
+    assert bitmap_indicator(RAW_S3) == 255
+
+    for number, section in _sections(RAW_S3_SOILW.read_bytes()):
+        if number == 5:
+            # Template 5.3, octet 22 = group splitting method, octet 23
+            # = missing value management (offsets 21 and 22).
+            assert section[21] == 1, "general group splitting"
+            assert section[22] == 0, (
+                "the certified envelope carries no embedded missing-value "
+                "management; if NCEP ever flips this octet the bridge must "
+                "refuse, not decode")
 
 
 BRIDGE = bridges.find_bridge("gfs_grib2_bridge")

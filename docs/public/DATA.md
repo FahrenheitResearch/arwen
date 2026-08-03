@@ -31,17 +31,37 @@ Everything downstream of `fetch` is fail-closed: the Rust GRIB bridges
 validate envelopes, inventories, grids, and hashes before decoding, and
 refuse rather than approximate.
 
-## GFS (0.25-degree, NOMADS)
+## GFS (0.25-degree, NOMADS or the S3 archive)
 
 ```bash
 gpuwm fetch --source gfs --cycle latest --hours 24 \
   --area 25,-110,45,-85 --out data/gfs-latest
+
+# or the whole objects from the S3 archive -- no CGI rate governor,
+# no spatial crop, and the archive keeps years, not 10 days
+gpuwm fetch --source gfs --cycle 2026-07-29T18 --hours 24 \
+  --mode full-file --out data/gfs-full
 ```
 
-- Downloads NOMADS `filter_gfs_0p25.pl` subsets: your spatial window
+- **Two byte transports, both first-class.** The default downloads
+  NOMADS `filter_gfs_0p25.pl` subsets: your spatial window
   plus exactly the 124 records per forecast hour the `gfs_grib2_bridge`
   requires (21 pressure levels x 5 variables, 11 surface, 8 soil).
   Every file passes a 124-message envelope walk before it counts.
+- **`--mode full-file` takes the whole `pgrb2.0p25` objects from the
+  AWS S3 archive** (`noaa-gfs-bdp-pds`) instead -- through the Rust
+  backbone's parallel range GETs when it is built (`--engine auto`
+  finds it; `gpuwm doctor --source gfs` says which engine you get) or
+  the stdlib transport otherwise. About 500 MB per forecast hour
+  against single-digit MB for a regional crop, so the crop stays the
+  default; what the whole file buys is *no NOMADS rate governor, no
+  re-encode, and the archive's reach* (years, against NOMADS' ~10
+  days). Each object is verified three ways before the manifest admits
+  it: the GRIB2 envelope walk, the live `.idx` message census, and --
+  on resume -- the previously recorded SHA-256. `--area` becomes
+  optional request identity (nothing is cropped), and the decode still
+  selects only the ladder your request declared, so a whole-globe
+  object never drags its mesospheric levels into a run.
 - `--cycle latest` resolves the newest cycle whose *final* requested
   hour exists (anonymous S3 HEAD probes, newest first) -- a
   mid-publication cycle can never win.
@@ -77,27 +97,30 @@ gpuwm fetch --source gfs --cycle latest --hours 24 \
   that keeps years.** A cycle in between passed the probe and then died
   inside `urllib` with a raw traceback. The transport's own answer is
   now translated into one refusal naming the age, the HTTP status and
-  the rolling window. Reading the raw S3 objects instead is not a
-  substitute — see *Reach* below.
+  the rolling window. For a cycle past NOMADS retention, `--mode
+  full-file` reads the S3 archive directly -- see *Reach* below.
 - Emits `gfs-series.tsv` (relative paths; the directory is relocatable)
   with each row's certified forecast-process ID, and
   `fetch-manifest.json` with per-file SHA-256.
 - **Disk:** about 3.3 KB per square degree per forecast hour. Measured:
   ~83 KB/h at 5x5 degrees, ~3 MB/h at 30x30, ~16 MB/h at 60x80.
-- **Reach:** NOMADS retention is about 10 days. Older GFS cycles are
-  not fetchable today, and the reason is now narrower than it was.
-  `gfs_grib2_bridge` accepts *both* published row orders -- the
-  grib-filter crop's south-to-north `0x40` and the raw archive's
-  north-to-south `0x00` -- and normalizes to one on decode, proved
-  bit-identical against a committed matched pair
-  (`tests/fixtures/gfs-scan-order/`). What still blocks the raw S3
-  archive is **packing**, not row order: those objects use GRIB2
-  template 5.3 (complex + spatial differencing) where the crop
-  re-encodes to 5.0, and the bridge admits only 5.0 until
-  complex-packing missing-value semantics have an independent
-  real-product proof. Also worth knowing: an *uncropped* grib-filter
-  request is a pure byte-range extractor and returns the raw 5.3
-  north-to-south records, so it is not a substitute for the crop.
+- **Reach:** NOMADS retention is about 10 days; the S3 archive keeps
+  years, and `--mode full-file` reads it directly. Both differences
+  between the two published forms are certified in
+  `gfs_grib2_bridge` against committed matched pairs
+  (`tests/fixtures/gfs-scan-order/`): the row order -- the grib-filter
+  crop's south-to-north `0x40` against the raw archive's
+  north-to-south `0x00`, normalized to one on decode and proved
+  bit-identical on a TMP pair -- and the packing, GRIB2 template 5.3
+  (complex + spatial differencing) against the crop's re-encoded 5.0,
+  proved on a bitmap-carrying SOILW pair whose missing cells land in
+  identical positions and whose present cells decode bit-identically.
+  Everything outside that proven envelope (DRT 5.2, embedded
+  missing-value management, any third scan mode) still refuses by
+  name. Also worth knowing: an *uncropped* grib-filter request is a
+  pure byte-range extractor and returns the raw 5.3 north-to-south
+  records -- which the bridge now reads, but through NOMADS' rate
+  governor; the S3 archive serves the same bytes without one.
 
 ## GDAS (0.25-degree analysis cycle, NOMADS) -- fetch and decode only
 
@@ -588,7 +611,10 @@ gpuwm fetch-geog
 
 - Stages into `$GPUWM_CASE_DATA_ROOT/WPS_GEOG` (exactly the tree
   `gpuwm doctor` checks and wizard configs reference); `--root DIR`
-  overrides.
+  overrides. With the variable unset, the root defaults to
+  `~/Downloads` on Windows and to the XDG data directory
+  (`$XDG_DATA_HOME/gpuwm`, usually `~/.local/share/gpuwm`) everywhere
+  else.
 - **Size:** ~1.3 GB download, ~16 GB unpacked. `--list` previews the
   per-dataset table (and what is already staged) without touching the
   network; `--datasets NAME,NAME` stages a subset.

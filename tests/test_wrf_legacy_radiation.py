@@ -244,6 +244,10 @@ def test_dudhia_adapter_enters_production_driver_radiation_seam(
     cfg = _cfg(ra_lw_physics=0, ra_sw_physics=1, radt_minutes=12.0)
     driver = object.__new__(physics.PhysicsDriver)
     driver.radiation_callable = adapter
+    # Dudhia is shortwave-only, so it never declares publishes_olr and a
+    # real driver leaves the OLR slot empty.  Stated explicitly because a
+    # hand-built driver has to declare every slot the seam reads.
+    driver.olr = None
     driver.fields = {
         "albedo": np.full((1, 2), 0.2, np.float32),
         "glw": np.full((1, 2), 300.0, np.float32),

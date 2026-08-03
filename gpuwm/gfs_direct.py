@@ -1126,9 +1126,22 @@ def prepare_gfs_wrf(
             prefix="gpuwm-gfs-bridge-", dir=Path(output_root).parent,
             ignore_cleanup_errors=True) as temporary:
         decoded = Path(temporary) / "decoded"
+        bridge_command = [
+            str(Path(bridge)), "--series", str(Path(series)), str(decoded),
+            cycle_time.strftime("%Y-%m-%d %H:%M:%S")]
+        if expected_levels_hpa is not None:
+            # Declare the request's ladder rather than letting the
+            # bridge derive one from the file.  A NOMADS subset carries
+            # exactly the requested levels, so this changes nothing
+            # there; a --mode full-file object carries every published
+            # level up to 1 Pa, and deriving the ladder from IT would
+            # decode the mesosphere nobody asked for.  The gate-versus-
+            # manifest ladder comparison below still runs on the
+            # bridge's own report of what it decoded.
+            bridge_command += ["--pressure-levels-pa", ",".join(
+                format(level * 100.0, "g") for level in expected_levels_hpa)]
         completed = subprocess.run(
-            [str(Path(bridge)), "--series", str(Path(series)), str(decoded),
-             cycle_time.strftime("%Y-%m-%d %H:%M:%S")],
+            bridge_command,
             check=False, text=True, capture_output=True,
         )
         if completed.returncode != 0:

@@ -50,19 +50,21 @@ DEFAULT_OUT_DIR = "configs"
 
 #: The nest ladder a bare session emits: one 12 km domain.
 #:
-#: The flag default is ``auto``, which takes the deepest ladder that
-#: fits the card -- four domains down to 500 m on a large one.  That is
-#: the right default for someone who asked for a ladder; it is the wrong
-#: one here, because ``gpuwm go`` drives the SINGLE-domain runner and
-#: refuses a tree, so the short front door was emitting a file the other
-#: new front door would not take.  Two features that do not compose is
-#: not a feature.
+#: ``auto`` -- the deepest ladder that fits the card, four domains down
+#: to 500 m on a large one -- is the right answer for someone who asked
+#: for a ladder; it is the wrong DEFAULT, because ``gpuwm go`` drives
+#: the SINGLE-domain runner and refuses a tree, so a default-following
+#: reader was handed a file the other new front door would not take.
+#: Two features that do not compose is not a feature.  This door ruled
+#: that first; the flags door's ``--ladder`` default was still ``auto``
+#: until the 4090 user-zero run met the same refusal there, and now
+#: both doors default to this shape (register_cli in
+#: :mod:`gpuwm.domain_wizard`).  Nests are explicit opt-in on either:
+#: a deeper preset, ``auto``, or ``--root-dx``/``--chain``.
 #:
 #: This is exactly the shape ``docs/public/FIRST-LIGHT.md`` section 3a's
-#: worked first run uses (``--ladder 12``), so the short path now emits
-#: the documented first run rather than a private variant of it.  A
-#: reader who wants nests passes ``--ladder``, which -- like any flag --
-#: takes the non-interactive path with its own ``auto`` default intact.
+#: worked first run uses (``--ladder 12``), so the short path emits
+#: the documented first run rather than a private variant of it.
 DEFAULT_LADDER = "12"
 
 #: The physics a bare session emits, per source.

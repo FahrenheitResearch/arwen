@@ -24,7 +24,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import subprocess
 import sys
 import time
 from typing import Any, Iterator
@@ -98,7 +97,7 @@ def _arguments() -> argparse.Namespace:
         help="section-attribution steps (default: --steps)",
     )
     parser.add_argument(
-        "--microphysics", type=int, choices=(0, 1, 6, 10, 18), default=0,
+        "--microphysics", type=int, choices=(0, 1, 6, 8, 10, 18), default=0,
         help="optional moist microphysics selector; 0 is the dry core",
     )
     parser.add_argument(
@@ -122,6 +121,37 @@ def _arguments() -> argparse.Namespace:
     return args
 
 
+def microphysics_table_device_bytes(selector: int) -> int:
+    """Device bytes a scheme uploads that scale with NOTHING in the grid.
+
+    Every other allowance in :func:`estimate_run` is a multiple of the
+    cell count, which is right for the state inventories and wrong for a
+    pinned lookup-table set: mp8 uploads the canonical WRF v4.6.1 classic
+    Thompson tables once, and they are 362 MiB whether the domain is
+    64x64x32 or a CONUS nest.  Reusing the moist default for it would
+    under-report a small run's device footprint by more than the entire
+    fixed allowance, which is the opposite of what a launch-safety
+    estimate is for.
+
+    Summed from the contract's own record inventory rather than written
+    down here, so a table set that changes size changes this number with
+    it.  Zero for every selector that uploads no table set -- 1, 6, 10
+    and 18 carry their coefficients in the kernels.
+    """
+
+    if int(selector) != 8:
+        return 0
+    from gpuwm.core.thompson_contract import (AUXILIARY_TABLE_RECORDS,
+                                              GENERATED_TABLE_FILES)
+
+    records = tuple(
+        record
+        for group in GENERATED_TABLE_FILES.values()
+        for record in group
+    ) + AUXILIARY_TABLE_RECORDS
+    return sum(int(record.payload_bytes) for record in records)
+
+
 def estimate_run(args: argparse.Namespace) -> dict[str, int | float]:
     """Return a conservative, setup-free size estimate for this invocation."""
     cells = int(args.nx) * int(args.ny) * int(args.nz)
@@ -134,12 +164,15 @@ def estimate_run(args: argparse.Namespace) -> dict[str, int | float]:
     # state are covered by a fixed allowance.  This is a launch-safety
     # estimate, not the measured resident-byte result emitted after a run.
     device_bytes += 256 * 1024**2
+    table_bytes = microphysics_table_device_bytes(args.microphysics)
+    device_bytes += table_bytes
     traced_steps = args.profile_steps if args.profiler_capture else 0
     trace_bytes = traced_steps * 24 * 1024**2
     return {
         "cells": cells,
         "estimated_device_bytes": int(device_bytes),
         "estimated_device_mib": round(device_bytes / 1024**2, 3),
+        "estimated_microphysics_table_bytes": int(table_bytes),
         "estimated_trace_bytes": int(trace_bytes),
         "estimated_trace_mib": round(trace_bytes / 1024**2, 3),
         "warmup_steps_per_lane": int(args.warmup_steps),
@@ -150,12 +183,29 @@ def estimate_run(args: argparse.Namespace) -> dict[str, int | float]:
     }
 
 
-def _git_head() -> str:
-    return subprocess.check_output(
-        ["git", "-C", str(Path(__file__).resolve().parents[1]),
-         "rev-parse", "HEAD"],
-        text=True,
-    ).strip()
+def _source_identity() -> dict[str, object]:
+    """What this install is, by the one shared resolver.
+
+    This used to be an unguarded ``git rev-parse HEAD`` rooted at the
+    directory above this file, which is a checkout for a developer and
+    ``site-packages`` for everyone else.  A field run of the shipped
+    1.5.0 wheel met it as ``CalledProcessError: returned non-zero exit
+    status 128`` -- after the timed lanes had already run, so the whole
+    measurement was thrown away for a provenance line.
+
+    :func:`gpuwm.runtime_manifest.provenance` already resolves the three
+    real installs in order (sealed manifest, genuine checkout of THIS
+    tree, installed wheel), and the real HRRR benchmark binds its
+    identity through exactly that call.  Same call here rather than a
+    third convention.  ``commit`` is retained beside it so a v1 consumer
+    reading that key still finds it; on a wheel it is honestly ``None``
+    and ``installed_wheel`` carries the identity pip actually installed.
+    """
+
+    from gpuwm import runtime_manifest
+
+    identity = runtime_manifest.provenance(Path(__file__).resolve().parents[1])
+    return {"commit": identity.get("git_commit"), **identity}
 
 
 def _device_name(properties: dict[str, Any]) -> str:
@@ -536,7 +586,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     result = {
         "schema": SCHEMA,
         "source": {
-            "commit": _git_head(),
+            **_source_identity(),
             "python": sys.version.split()[0],
             "platform": platform.platform(),
             "cupy": cp.__version__,

@@ -117,6 +117,24 @@ LADDER_RATIOS = {
 }
 _LADDERS_DEEPEST_FIRST = ("12-3-1-0.5", "12-3-1", "12-3")
 
+#: What a bare invocation emits: one 12 km domain, the shape ``gpuwm
+#: go`` runs end to end and the shape FIRST-LIGHT 3a's worked first run
+#: uses.  ``auto`` -- the deepest preset that fits the card -- was the
+#: default until the first user-zero run of the published wheel piped
+#: the default emission (a 4-domain tree) into the default runner and
+#: was refused; the interactive door had already ruled the same way
+#: (:data:`gpuwm.domain_interactive.DEFAULT_LADDER`, its own constant
+#: because that door imports nothing heavy).  Nest trees are explicit
+#: opt-in: a deeper preset, ``auto``, or --root-dx/--chain.
+#:
+#: The argparse default is ``None``, not this value, and that is
+#: load-bearing: --root-dx/--chain are refused WITH --ladder, and a
+#: reader who typed only the custom form must not be refused for
+#: "combining" it with a flag they never passed.  ``domain_main``
+#: resolves ``None`` to this constant (bare) or to the custom form's
+#: pass-through value (--root-dx/--chain present).
+DEFAULT_LADDER = "12"
+
 ROOT_DX_M = 12000.0
 #: Certified real-data clock convention: 60 s at 12 km = 5 s per km.
 ROOT_TIME_STEP_S = 60
@@ -573,6 +591,38 @@ def oversized_footprint_advisory(area: str) -> list[str]:
         f"--area on its own would starve the domain it feeds"]
 
 
+def _guard_exports_block(profile: str | None) -> str:
+    """Environment the printed chain needs, printed with the chain.
+
+    The mp8 runners under ``tools/`` keep a launch contract the library
+    itself retired: both variables must be set in the SHELL that starts
+    the chain.  Preparation launches the forecast runner as a subprocess
+    and inherits the environment, so one export pair covers both stages
+    -- but only if the reader knows to type it, and nothing printed it.
+    A field run of the shipped 1.5.0 wheel discovered the requirement by
+    failing twice and then went looking for the table root by hand.
+
+    Empty for every other profile, so the emitted block stays exactly as
+    short as it was for the suites that need nothing.
+    """
+
+    if profile != THOMPSON_PROFILE_ID:
+        return ""
+    from gpuwm.physics_compat import thompson_guard_exports
+
+    lines = "".join(f"  {line}\n" for line in thompson_guard_exports())
+    return (
+        "# this suite's runners are gated on two environment variables "
+        "-- export them in\n"
+        "#   THIS shell before the chain: preparation launches the "
+        "forecast runner as a\n"
+        "#   subprocess, so one pair covers both stages.  The root below "
+        "is the one this\n"
+        "#   install resolves; every asset in it is byte-checked before "
+        "GPU setup.\n"
+        + lines)
+
+
 def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
                         profile: str | None, data_dir: str,
                         cycle: "datetime | None" = None,
@@ -622,7 +672,8 @@ def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
     profile_flag = (f"      --physics-profile {profile} \\\n"
                     if profile is not None else "")
     prepare = (
-        "  python -m tools.prepare_hrrr_wrf \\\n"
+        _guard_exports_block(profile)
+        + "  python -m tools.prepare_hrrr_wrf \\\n"
         f"      --source-root {source_root} \\\n"
         f"      --source-manifest {source_root}/SHA256SUMS \\\n"
         "      --source-manifest-sha256 <printed by gpuwm fetch> \\\n"
@@ -2614,11 +2665,18 @@ def sizing_summary(exp: ExperimentConfig, estimate, budget_bytes: int,
         phase = f", binding phase {phases.binding_phase}"
         if not phases.ingest_priced:
             phase += " -- ingest NOT PRICED for this source"
+    # The wizard always sizes a DECLARED card (--card/--vram-gib), never
+    # a measured one, and the 4090 stress run showed what an unlabelled
+    # "fits" costs on that path: a certified 0.27 GiB margin that landed
+    # 0.015 GiB from the budget.  The verdict carries the label.
     return (f"sizing: {len(exp.domains)} domain(s); alloc "
             f"{estimate.alloc_estimate_bytes / GIB:.2f} GiB, peak "
             f"envelope {envelope / GIB:.2f} GiB of a "
             f"{budget_bytes / GIB:.2f} GiB budget "
-            f"({(budget_bytes - envelope) / GIB:.2f} GiB headroom{phase})")
+            f"({(budget_bytes - envelope) / GIB:.2f} GiB headroom{phase}) "
+            f"-- an estimate for a declared {vram_gib:g} GiB card, not a "
+            f"measurement of hardware in this machine; `gpuwm check` on "
+            f"the real card is what measures it")
 
 
 def _print_sizing_table(exp: ExperimentConfig, estimate,
@@ -2672,6 +2730,13 @@ def _print_sizing_table(exp: ExperimentConfig, estimate,
           f"{card_assumed_free_gib(vram_gib):g} GiB free, minus this "
           f"suite's {reserve_gib:.2f} GiB reserve); headroom "
           f"{(budget_bytes - envelope) / GIB:.2f} GiB")
+    print("  ESTIMATE FOR HARDWARE NOT PRESENT: every figure above is an "
+          "estimate for the declared card, not a measurement of hardware "
+          "in this machine.  Non-pool terms are priced against the "
+          "conservative measured reference device profile (the largest "
+          "known-device intercept), so the estimate is never more "
+          "optimistic than a present-card measurement; `gpuwm check` on "
+          "the real card is what measures it.")
     if family == "windows-small":
         for line in windows_small_card_advisory(vram_gib):
             print(line)
@@ -2930,6 +2995,16 @@ def domain_main(args) -> int:
 
     profile = resolved_physics_profile(
         args.source, getattr(args, "physics_profile", None))
+    if args.ladder is None:
+        # Absence, resolved: bare means the single-domain `go` shape
+        # (DEFAULT_LADDER); with --root-dx/--chain it means the custom
+        # form, which has always ridden on the permissive "auto" value
+        # -- the guard below refuses only a --ladder someone TYPED next
+        # to the custom flags.
+        args.ladder = ("auto"
+                       if (getattr(args, "root_dx", None) is not None
+                           or getattr(args, "chain", None) is not None)
+                       else DEFAULT_LADDER)
     custom = parse_custom_ladder(
         root_dx_km=getattr(args, "root_dx", None),
         chain=getattr(args, "chain", None),
@@ -3430,11 +3505,16 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--vram-gib", type=float, default=None,
                         metavar="N",
                         help="total VRAM in GiB (alternative to --card)")
-    parser.add_argument("--ladder", default="auto",
+    parser.add_argument("--ladder", default=None,
                         choices=(*LADDER_RATIOS, "auto"),
-                        help="preset nest dx chain in km; auto picks the "
-                             "deepest preset that fits the card.  For "
-                             "anything else use --root-dx / --chain")
+                        help="preset nest dx chain in km (default: 12 -- "
+                             "one 12 km domain, the shape `gpuwm go` runs "
+                             "end to end, same as the interactive "
+                             "session).  Nest trees are explicit opt-in: "
+                             "a deeper preset, `auto` (the deepest preset "
+                             "that fits the card), or --root-dx / --chain "
+                             "for anything else; their closing block "
+                             "names the tree runner they route to")
     parser.add_argument("--physics-profile", default=None,
                         choices=WIZARD_PHYSICS_PROFILES,
                         help="shipped physics suite to emit; taken verbatim "
@@ -3508,6 +3588,7 @@ def register_cli(subparsers) -> None:
 __all__ = [
     "CARD_VRAM_GIB", "CUMULUS_CONVECTION_PERMITTING_DX_KM",
     "CUMULUS_GRAY_ZONE_TOP_DX_KM",
+    "DEFAULT_LADDER",
     "DomainFitError", "GEOG_DATASETS", "GRAY_ZONE_DX_KM",
     "LADDER_RATIOS", "MAX_FETCH_ABS_LAT", "POLE_CLEARANCE_DEG",
     "ROOT_DX_M", "ROOT_TIME_STEP_S", "TROPICAL_ROOT_TIME_STEP_S",

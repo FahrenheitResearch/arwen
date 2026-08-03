@@ -498,3 +498,51 @@ def test_the_redistributed_table_is_not_excluded_in_the_pyproject_declaration(
         "thompson_aerosol_contract.AEROSOL_ASSET_REDISTRIBUTED claims "
         "otherwise."
     )
+
+
+def test_license_metadata_is_an_spdx_expression_not_the_pasted_text() -> None:
+    """``pip show gpuwm`` must answer ``Apache-2.0``, not 202 pasted lines.
+
+    ``license = { file = "LICENSE" }`` inlines the whole Apache-2.0 text
+    into the METADATA ``License`` field -- the first field run of the
+    published wheel got a screenful from ``pip show``.  PEP 639 spells
+    the fix: ``license`` is the SPDX expression, ``license-files`` ships
+    the actual texts in the wheel, and no deprecated ``License ::``
+    classifier restates either.  setuptools grew that reading at 77, so
+    the build floor must sit there too or an isolated build with an
+    older backend ships the old flood again.
+    """
+
+    _require_source_tree()
+
+    with PYPROJECT.open("rb") as stream:
+        config = tomllib.load(stream)
+
+    project = config["project"]
+    assert project["license"] == "Apache-2.0", (
+        "project.license must be the bare SPDX expression string; a table "
+        "(file= or text=) puts the whole license text into `pip show`")
+
+    shipped = project.get("license-files", [])
+    assert shipped == ["LICENSE", "NOTICE"], shipped
+    for name in shipped:
+        assert (REPO_ROOT / name).is_file(), (
+            f"pyproject names a license file that does not exist: {name}")
+
+    # PEP 639 deprecates License classifiers, and setuptools >=77 refuses
+    # to combine one with an SPDX expression -- a re-added classifier is a
+    # broken release cut, not a cosmetic nit.
+    stray = [entry for entry in project.get("classifiers", [])
+             if entry.startswith("License ::")]
+    assert stray == [], stray
+
+    # The floor that makes all of the above real in an isolated build.
+    requires = config["build-system"]["requires"]
+    assert any(entry.replace(" ", "").startswith("setuptools>=")
+               and float(entry.replace(" ", "").split(">=")[1]) >= 77
+               for entry in requires), requires
+
+    # And the legacy spelling must not linger to fight the PEP 639 one.
+    assert "license-files" not in config.get("tool", {}).get(
+        "setuptools", {}), (
+        "[tool.setuptools] license-files duplicates [project] license-files")

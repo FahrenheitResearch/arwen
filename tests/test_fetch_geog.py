@@ -283,6 +283,48 @@ def test_fetch_stages_verifies_and_writes_manifest(tmp_path, monkeypatch):
     assert not list(root.glob(f"{geog_assets.ARCHIVE_SUBDIR}-extract-*"))
 
 
+def test_fetch_prints_the_total_before_the_first_byte_moves(
+        tmp_path, monkeypatch):
+    """The size total is announced up front, not discovered per dataset.
+
+    ``gpuwm setup --with-geog`` promises "the size is printed before
+    anything downloads"; the engine both entry points share must keep
+    that promise for ``gpuwm fetch-geog`` too -- the first field run
+    watched 16 GB arrive with the only sizes printed as each dataset
+    landed.  The total covers exactly the datasets that still need
+    staging, not ones already valid on disk.
+    """
+    alpha = _build_archive(("alpha_ds",))
+    beta = _build_archive(("beta_ds",))
+    monkeypatch.setattr(geog_assets, "GEOG_ARCHIVES",
+                        (_pin("alpha_ds", alpha), _pin("beta_ds", beta)))
+    root = tmp_path / "WPS_GEOG"
+    staged_dir = root / "alpha_ds"          # alpha is already valid,
+    staged_dir.mkdir(parents=True)          # so only beta counts
+    (staged_dir / "index").write_text(_INDEX_TEXT)
+
+    events: list[str] = []
+    inner = _fake_transport({"beta_ds.tar.bz2": beta})
+
+    def transport(request):
+        events.append("NETWORK")
+        return inner(request)
+
+    fetch_geog(root=root, datasets=("alpha_ds", "beta_ds"), source="hf",
+               progress=events.append, urlopen_fn=transport)
+
+    totals = [line for line in events
+              if isinstance(line, str) and "need staging" in line]
+    assert len(totals) == 1, events
+    total = totals[0]
+    # Only beta's pin is in the total, and both numbers are stated.
+    assert "1 of 2" in total
+    assert f"{len(beta):,} B" in total          # download size
+    assert "~4.0 KiB" in total                  # extracted_bytes pin (4096)
+    # Printed before the first byte moved.
+    assert events.index(total) < events.index("NETWORK")
+
+
 def test_fetch_skips_already_valid_datasets_without_network(
         tmp_path, monkeypatch):
     payload = _build_archive(("alpha_ds",))

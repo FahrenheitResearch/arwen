@@ -183,7 +183,17 @@ def test_vram_below_reserve_rejected(tmp_path, capsys):
     have sized.
     """
     out = tmp_path / "area.toml"
+    # Bare default: one preset ("12"), so the fit loop's own refusal
+    # propagates directly, naming the preset and the reserve arithmetic.
     rc = cli_main(["domain", "--point", "39.7,-96.6", "--vram-gib", "2.5",
+                   "--cycle", "1999-05-03T12", "--out", str(out)])
+    _assert_refused(capsys, "no budget for ladder 12 at all", rc)
+    assert not out.exists()
+
+    # Explicit auto: the walk tries every preset and the final refusal
+    # reports that even the shallowest one's smallest layout is over.
+    rc = cli_main(["domain", "--point", "39.7,-96.6", "--vram-gib", "2.5",
+                   "--ladder", "auto",
                    "--cycle", "1999-05-03T12", "--out", str(out)])
     _assert_refused(capsys, "smallest layout exceeds the budget", rc)
     assert not out.exists()
@@ -677,6 +687,32 @@ def test_auto_picks_deepest_ladder_on_32gb(tmp_path):
     assert len(exp.domains) == 4  # 12-3-1-0.5
     assert [dc.parent_grid_ratio for dc in exp.domains] == [1, 4, 3, 2]
     assert float(exp.dx_exact(4)) == 500.0
+
+
+def test_no_ladder_flag_emits_the_single_domain_go_shape(tmp_path):
+    """The flags door's DEFAULT is one 12 km domain, not the deepest tree.
+
+    `--ladder auto` used to be the default, so `gpuwm domain --point ...
+    --card 24gb --source gfs` -- the obvious first invocation -- emitted
+    a four-domain tree that `gpuwm go` then refused (4090 user-zero
+    stress run, 2026-08-03).  The interactive door was already fixed for
+    exactly this (domain_interactive.DEFAULT_LADDER = "12"); the flags
+    door now agrees.  Trees are explicit opt-in: --ladder (including
+    `auto`, unchanged above) or --root-dx/--chain.
+    """
+
+    out = tmp_path / "bare.toml"
+    rc = cli_main([
+        "domain", "--point=39.7,-96.6", "--card", "24gb",
+        "--source", "gfs", "--cycle", "2026-07-29T18", "--out", str(out)])
+    assert rc == 0
+    exp = experiment_from_text(out.read_text(encoding="utf-8"),
+                               source=str(out))
+    assert len(exp.domains) == 1
+    assert exp.root.run.dx == 12000.0
+    # The single-domain prepared-forecast contract rides along: no
+    # checkpoints on this route.
+    assert exp.restart_interval_s == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -2229,6 +2265,30 @@ def test_an_emitted_config_fits_the_card_it_was_sized_for(
     assert estimate.alloc_estimate_bytes <= budget
 
 
+def test_the_wizard_labels_its_verdict_as_an_estimate_for_a_declared_card(
+        tmp_path, capsys):
+    """The wizard never measures a card; its verdict must say so.
+
+    The 4090 stress run certified "fits with 0.27 GiB to spare" for a
+    card not in the machine and the config landed 0.015 GiB from the
+    budget.  Both renderings of the sizing verdict carry the label now:
+    the one-line summary and the --explain table.
+    """
+    rc, _ = _run_wizard(tmp_path / "s", card="24gb", ladder="12",
+                        source="gfs", cycle="2026-07-28T00")
+    assert rc == 0
+    printed = capsys.readouterr().out
+    assert "estimate for a declared 24 GiB card" in printed
+    assert "not a measurement of hardware in this machine" in printed
+
+    rc, _ = _run_wizard(tmp_path / "e", "--explain", card="24gb",
+                        ladder="12", source="gfs", cycle="2026-07-28T00")
+    assert rc == 0
+    printed = capsys.readouterr().out
+    assert "ESTIMATE FOR HARDWARE NOT PRESENT" in printed
+    assert "never more" in printed and "optimistic" in printed
+
+
 NSSL2_PROFILES = (
     "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1",
     "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1",
@@ -2238,7 +2298,7 @@ NSSL2_PROFILES = (
 @pytest.mark.parametrize("physics_profile", NSSL2_PROFILES)
 @pytest.mark.parametrize("vram", [12.0, 15.0, 24.0, 32.0])
 def test_a_suite_with_a_large_backing_store_still_sizes(
-        tmp_path, physics_profile, vram):
+        tmp_path, physics_profile, vram, capsys):
     """Defect 4: the reserve's overhead term is SUITE-dependent.
 
     It tracks the local-memory backing store of the selected kernel set
@@ -2249,6 +2309,14 @@ def test_a_suite_with_a_large_backing_store_still_sizes(
     config that failed their own check at EVERY card size.  The loop
     prices the reserve from the candidate now, which is the same call
     check makes.
+
+    Since the 2026-08-03 stress finding, an ABSENT card is priced at the
+    conservative measured reference intercept (170 SMs), not a per-class
+    SM discount -- so NSSL2's 15,504 B frame reserves 3.78 GiB before a
+    grid cell exists, and the 12 GiB tier honestly refuses rather than
+    certifying a margin the class discount invented.  The refusal must
+    name the arithmetic; every larger tier must still size and pass its
+    own verifier.
     """
     out = tmp_path / "n.toml"
     rc = cli_main([
@@ -2256,6 +2324,17 @@ def test_a_suite_with_a_large_backing_store_still_sizes(
         "--root-dx", "12", "--hours", "2", "--source", "gfs",
         "--cycle", "2026-07-28T00", "--physics-profile", physics_profile,
         "--out", str(out)])
+    if vram == 12.0:
+        # The honest refusal: grid-independent constants dominate, and
+        # the message says which ones and why shrinking cannot help.
+        assert rc == 2, (
+            f"{physics_profile} at {vram} GiB: expected the honest "
+            f"refusal, got rc {rc}")
+        message = capsys.readouterr().err
+        assert "grid-independent" in message
+        assert "local-memory backing store" in message
+        assert not out.exists(), "a refusal writes no file"
+        return
     assert rc == 0, f"{physics_profile} at {vram} GiB emitted rc {rc}"
 
     exp = experiment_from_text(out.read_text(encoding="utf-8"),
@@ -2416,3 +2495,60 @@ def test_the_help_caveat_is_derived_not_listed(monkeypatch):
                         lambda profile, source: None)
     assert domain_wizard.profiles_blocked_on_source("gfs") == ()
     assert domain_wizard._profile_help_route_note() == ""
+
+
+def test_an_mp8_hrrr_chain_prints_the_two_exports_its_runners_demand(
+        tmp_path, capsys):
+    """The wizard's own generated chain carries its launch environment.
+
+    mp8 is first-class through the library, but the runners under
+    ``tools/`` kept the two-variable launch contract on purpose, and the
+    printed chain said nothing about it.  A field run of the shipped
+    1.5.0 wheel discovered the pair by being refused twice and then had
+    to locate the table root by hand.  The exports are printed BEFORE
+    preparation because preparation launches the forecast runner as a
+    subprocess: one pair in one shell covers both stages.
+    """
+    from gpuwm.physics_compat import (EXPERIMENTAL_THOMPSON_ENV,
+                                      THOMPSON_PROFILE_ID,
+                                      THOMPSON_TABLE_ROOT_ENV,
+                                      thompson_guard_exports,
+                                      thompson_table_root)
+
+    out = tmp_path / "mp8.toml"
+    assert cli_main([
+        "domain", "--point=39.0,-98.0", "--card", "24gb",
+        "--root-dx", "3", "--source", "hrrr",
+        "--physics-profile", THOMPSON_PROFILE_ID,
+        "--cycle", "2026-07-29T18", "--hours", "1",
+        "--out", str(out)]) == 0
+    block = capsys.readouterr().out.split("next:")[-1]
+
+    for line in thompson_guard_exports():
+        assert line in block
+    # Both variables named, and the root is a VALUE, not a placeholder:
+    # the reader pastes it rather than going looking for it.
+    assert EXPERIMENTAL_THOMPSON_ENV in block
+    assert THOMPSON_TABLE_ROOT_ENV in block
+    assert thompson_table_root() in block
+    # Before the stage that reads them, not after it.
+    assert block.index(EXPERIMENTAL_THOMPSON_ENV) \
+        < block.index("tools.prepare_hrrr_wrf")
+
+
+def test_a_chain_for_a_suite_with_no_launch_guard_prints_no_exports(
+        tmp_path, capsys):
+    """Only the guarded suite pays for the block."""
+    from gpuwm.physics_compat import (EXPERIMENTAL_THOMPSON_ENV,
+                                      THOMPSON_TABLE_ROOT_ENV)
+
+    out = tmp_path / "wsm6.toml"
+    assert cli_main([
+        "domain", "--point=39.0,-98.0", "--card", "24gb",
+        "--root-dx", "3", "--source", "hrrr",
+        "--cycle", "2026-07-29T18", "--hours", "1",
+        "--out", str(out)]) == 0
+    block = capsys.readouterr().out.split("next:")[-1]
+    assert "tools.prepare_hrrr_wrf" in block
+    assert EXPERIMENTAL_THOMPSON_ENV not in block
+    assert THOMPSON_TABLE_ROOT_ENV not in block

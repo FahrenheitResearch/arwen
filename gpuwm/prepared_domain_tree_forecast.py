@@ -47,6 +47,9 @@ from gpuwm.core.microphysics_transition import (  # noqa: E402
     resolve_microphysics_transition,
 )
 from gpuwm.experiment import load_experiment  # noqa: E402
+from gpuwm.kernel_compile_notice import (  # noqa: E402
+    COMPILING_STATUS, kernel_compile_notice,
+)
 from gpuwm.physics_compat import (  # noqa: E402
     experimental_selection_sentence,
 )
@@ -1329,6 +1332,7 @@ def run_prepared_tree(
     prepared = {}
     drivers = {}
     started = time.perf_counter()
+    compile_notice = kernel_compile_notice()
     for domain, grid, bundle in zip(exp.domains, inputs.grids, inputs.domains):
         restored = restore_prepared_cache(
             bundle.cache,
@@ -1345,6 +1349,22 @@ def run_prepared_tree(
             raise ValueError(
                 f"d{domain.grid_id:02d} prepared cache lacks canonical surface"
             )
+        # The first domain's physics initialization is where a first
+        # run pays its one-time NVRTC compile (~100 s on a modern
+        # card), and it used to pay it under the stale RESTORING
+        # status -- the first field run of the published wheel watched
+        # that silence and concluded a hang.  One line and one status
+        # flip, only when the kernel cache says the compile is coming.
+        if compile_notice is not None:
+            print(compile_notice, flush=True)
+            _atomic_json(progress_path, {
+                "schema": PROGRESS_SCHEMA,
+                "status": COMPILING_STATUS,
+                "model_elapsed_seconds": 0.0,
+                "requested_run_seconds": float(exp.run_seconds),
+                "execution_plan": inputs.execution_plan,
+            })
+            compile_notice = None
         driver = initialize_prepared_physics(
             restored.initial_result,
             domain.run,
@@ -1667,8 +1687,25 @@ def run_prepared_tree(
             "runner_route_and_io_mode": {
                 "route": "prepared_domain_tree_forecast", "io_mode": io_mode},
             "output_and_diagnostic_mode": {"io_mode": io_mode},
+            # Both DETERMINISM.md byte pins bind here, git or no git:
+            # this route refuses to start unless the experiment TOML
+            # matches --experiment-config-sha256, so the pin's value
+            # exists on every run (the 4090 stress run's honesty
+            # finding was this route's sibling reporting it
+            # "unavailable" on the published wheel).
+            "config_bytes": {
+                "path": str(inputs.experiment_config),
+                "sha256": inputs.authority_sha256["experiment_config"]},
             "input_artifact_bytes": dict(inputs.authority_sha256),
         },
+        input_bytes={"entries": {
+            **{name: {"algorithm": "sha256", "digest": digest}
+               for name, digest in inputs.authority_sha256.items()},
+            **{f"d{bundle.grid_id:02d}:{name}": {
+                   "algorithm": "sha256", "digest": digest}
+               for bundle in inputs.domains
+               for name, digest in bundle.authority_sha256.items()},
+        }},
         run_shape={
             "route": "prepared_domain_tree_forecast",
             "domain_count": len(exp.domains),

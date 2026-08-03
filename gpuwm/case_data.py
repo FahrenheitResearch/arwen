@@ -73,14 +73,31 @@ CASE_DATA_ROOT_ENV = "GPUWM_CASE_DATA_ROOT"
 _PATH_VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
+def _is_windows() -> bool:
+    """Platform seam for :func:`default_case_data_root` (tests patch it)."""
+    return os.name == "nt"
+
+
 def default_case_data_root() -> Path:
     """Where case bundles live when CASE_DATA_ROOT_ENV is unset.
 
-    The download directory -- the same fallback the case modules already
-    use for their own reference-data environment variables, so nothing
-    about resolution changes for a developer who sets no variable.
+    Platform-aware.  On Windows it stays the download directory -- the
+    same fallback the case modules have always used for their
+    reference-data environment variables, so nothing about resolution
+    changes for a developer who sets no variable.  Everywhere else it is
+    the XDG data directory (``$XDG_DATA_HOME/gpuwm``, falling back to
+    ``~/.local/share/gpuwm`` per the basedir spec, which also says a
+    relative ``XDG_DATA_HOME`` must be ignored): ``~/Downloads`` is a
+    Windows convention that a first ``pip install`` on a Linux box used
+    to reproduce under the root account's own home directory -- a place
+    no XDG-following tool would ever put data.
     """
-    return Path.home() / "Downloads"
+    if _is_windows():
+        return Path.home() / "Downloads"
+    raw = os.environ.get("XDG_DATA_HOME", "").strip()
+    if raw and Path(raw).is_absolute():
+        return Path(raw) / "gpuwm"
+    return Path.home() / ".local" / "share" / "gpuwm"
 
 
 #: Path variables that resolve without being set.  Everything else must be

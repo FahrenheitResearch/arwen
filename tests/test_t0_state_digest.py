@@ -102,8 +102,12 @@ def _fields(seed: int) -> dict[str, np.ndarray]:
         "SH2O": arr(NS, NY, NX), "TMN": arr(NY, NX),
         # accumulation
         "RAINC": arr(NY, NX), "RAINNC": arr(NY, NX),
-        # diagnostic
+        # diagnostic.  OLR joined SWDOWN here when the writer started
+        # emitting it: the registration has always claimed the name, so
+        # the only thing that ever kept it in "absent from candidate" was
+        # gpuwm's frame not carrying the field.
         "REFL_10CM": arr(NZ, NY, NX), "SWDOWN": arr(NY, NX),
+        "OLR": arr(NY, NX),
     }
 
 

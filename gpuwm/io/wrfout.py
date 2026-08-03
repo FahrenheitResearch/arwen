@@ -121,6 +121,11 @@ _VAR_META = {
     "SH2O": ("SOIL LIQUID WATER", "m3 m-3"),
     "SWDOWN": ("DOWNWARD SHORT WAVE FLUX AT GROUND SURFACE", "W m-2"),
     "GLW": ("DOWNWARD LONG WAVE FLUX AT GROUND SURFACE", "W m-2"),
+    # Registry.EM_COMMON:1839, transcribed verbatim beside its two
+    # surface-flux neighbours.  ``ij`` mass grid, no stagger, real -- so
+    # the dimension table and the FieldType default already describe it
+    # correctly and it needs no row of its own.
+    "OLR": ("TOA OUTGOING LONG WAVE", "W m-2"),
     "TSK": ("SURFACE SKIN TEMPERATURE", "K"),
     "T2": ("TEMP at 2 M", "K"),
     "TH2": ("POT TEMP at 2 M", "K"),

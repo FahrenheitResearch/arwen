@@ -151,6 +151,39 @@ def test_case_data_root_defaults_and_unknown_variables_are_loud(monkeypatch):
         expand_path_variables("${GPUWM_NO_SUCH_ROOT}/x", "vtable", "f.toml")
 
 
+def test_default_case_data_root_is_platform_aware(monkeypatch, tmp_path):
+    """Windows keeps ~/Downloads; everywhere else is the XDG data dir.
+
+    A pip install on a Linux box used to default the whole case-data
+    estate (16 GB of WPS_GEOG among it) into ~/Downloads -- a Windows
+    convention that on a rented root shell resolves under the root
+    account's own home, which no XDG-following tool would ever look at.
+    """
+    from gpuwm import case_data
+    from gpuwm.case_data import default_case_data_root
+
+    # Windows behavior is unchanged: the download directory.
+    monkeypatch.setattr(case_data, "_is_windows", lambda: True)
+    assert default_case_data_root() == Path.home() / "Downloads"
+
+    # Elsewhere: $XDG_DATA_HOME/gpuwm when the variable names an
+    # absolute directory ...
+    monkeypatch.setattr(case_data, "_is_windows", lambda: False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    assert default_case_data_root() == tmp_path / "gpuwm"
+
+    # ... and the spec fallback ~/.local/share/gpuwm when it is unset,
+    # blank, or relative (the XDG basedir spec says a relative
+    # XDG_DATA_HOME must be ignored).
+    fallback = Path.home() / ".local" / "share" / "gpuwm"
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    assert default_case_data_root() == fallback
+    monkeypatch.setenv("XDG_DATA_HOME", "   ")
+    assert default_case_data_root() == fallback
+    monkeypatch.setenv("XDG_DATA_HOME", "relative/data/dir")
+    assert default_case_data_root() == fallback
+
+
 def test_committed_configs_declare_no_machine_path():
     """Release hygiene: no committed config ships a developer's absolute
     path.  Machine paths in a source distribution are both unportable and

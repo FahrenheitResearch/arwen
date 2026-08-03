@@ -58,6 +58,7 @@ the failure names the missing dependency and the install command.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -810,12 +811,51 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
                 height=height, heavy=heavy, source_label=source_label)
         finally:
             _remove_scratch_store(store)
+        file_written = [_rebrand_engine_output(png) for png in file_written]
         written.extend(file_written)
         failures.extend(file_failures)
         skipped.extend(file_skipped)
         for png in file_written:
             print(f"render: {png}")
     return written, failures, skipped
+
+
+#: What the shipped product calls its rendered files.
+OUTPUT_FILENAME_PREFIX = "arwen_"
+
+#: What the vendored engine calls them: rustwx-products hardcodes
+#: ``rustwx_`` into every output filename format string (e.g.
+#: ``tools/rustwx/crates/rustwx-products/src/derived.rs``).
+_ENGINE_FILENAME_PREFIX = "rustwx_"
+
+
+def _rebrand_engine_output(png: Path) -> Path:
+    """The product's filename for one engine-written PNG.
+
+    The vendored engine stamps its own name into every file it writes;
+    the product these files come out of is ArWen, and a PNG named for
+    the vendored crate is a first-run head-scratcher (the field run
+    asked what "rustwx" was).  The rename happens here -- the one seam
+    every wheel-shipped render flows through -- rather than in the
+    vendored Rust, which keeps the engine byte-identical to its
+    campaign builds.  Filenames only: module names, store identities
+    and the pair-compose lead marker (which reads both spellings) are
+    untouched.
+
+    A name the engine did not brand passes through unchanged, and so
+    does one whose rename fails -- a drawn image under yesterday's name
+    beats a failure over branding.
+    """
+
+    if not png.name.startswith(_ENGINE_FILENAME_PREFIX):
+        return png
+    target = png.with_name(
+        OUTPUT_FILENAME_PREFIX + png.name[len(_ENGINE_FILENAME_PREFIX):])
+    try:
+        os.replace(png, target)
+    except OSError:
+        return png
+    return target
 
 
 def _remove_scratch_store(store: Path) -> None:

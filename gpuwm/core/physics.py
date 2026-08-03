@@ -883,6 +883,16 @@ class RadiationResult:
     # attachment API for schemes whose surface consumer needs neither.
     gsw: cp.ndarray | None = None
     coszen: cp.ndarray | None = None
+    # OLR is WRF's top-of-atmosphere UPWARD longwave flux in W m-2
+    # (Registry.EM_COMMON:1839, "TOA OUTGOING LONG WAVE"), the same number
+    # RRTMG_LWRAD publishes from ``TOTUFLUX`` at the top level
+    # (module_ra_rrtm.F:2296).  Optional because it is a property of the
+    # LONGWAVE scheme, not of radiation being on: a shortwave-only pair and
+    # the surface-flux analytic proxy have no top-of-atmosphere flux to
+    # report, and publishing a zero for them would be a measured-looking
+    # number no scheme computed.  A scheme that declares ``publishes_olr``
+    # must supply it on every call; see ``PhysicsDriver._run_radiation``.
+    olr: cp.ndarray | None = None
 
 
 @dataclass
@@ -1418,6 +1428,20 @@ class PhysicsDriver:
             state, optional_components=cumulus_components)
         self.rthratenlw = cp.zeros(state.p.shape, dtype=DTYPE)
         self.rthratensw = cp.zeros(state.p.shape, dtype=DTYPE)
+        # OLR, WRF's TOA outgoing longwave (Registry.EM_COMMON:1839).  The
+        # buffer exists exactly when the attached longwave scheme declares
+        # it computes a top-of-atmosphere upward flux, so the variable's
+        # presence in a wrfout is the statement "a TOA longwave producer
+        # ran", the same way an absent XKMH says no horizontal mixing
+        # operator ran.  Zero-valued until the first due radiation call --
+        # which is also what WRF publishes in its own t=0 history frame,
+        # because OLR is a plain zero-initialised ``misc`` array and the
+        # time-0 write precedes the first radiation call.
+        self.olr = (
+            cp.zeros(state.p.shape[1:], dtype=DTYPE)
+            if self.radiation_active and getattr(
+                self.radiation_callable, "publishes_olr", False)
+            else None)
         self.tendencies = (
             self.pbl_tendencies
             if (not (radiation_enabled(cfg) or cfg.cu_physics)
@@ -1730,6 +1754,17 @@ class PhysicsDriver:
                     "callable")
             self.fields["coszen"][...] = _checked_array(
                 result.coszen, (ny, nx), "radiation COSZEN")
+        if self.olr is not None:
+            # Fail closed rather than republish the previous call's flux:
+            # the buffer only exists because the attached scheme declared
+            # it computes one, so a missing OLR is a broken scheme, not a
+            # configuration in which OLR is undefined.
+            if result.olr is None:
+                raise ValueError(
+                    "the attached radiation callable declares publishes_olr "
+                    "but returned no OLR (TOA outgoing longwave)")
+            self.olr[...] = _checked_array(
+                result.olr, (ny, nx), "radiation OLR")
 
     def _run_cumulus(self, atmosphere: Mapping[str, cp.ndarray],
                       state: DomainState, cfg: RunConfig) -> None:
@@ -3302,6 +3337,14 @@ class PhysicsDriver:
         if self.radiation_active:
             output.update(SWDOWN=self.fields["swdown"],
                           GLW=self.fields["glw"])
+            # OLR rides the same "only while radiation is running" rule as
+            # SWDOWN/GLW, and additionally only while the LONGWAVE half is
+            # a scheme that computes a top-of-atmosphere flux.  WRF's own
+            # OLR row is core (``misc``, so stock WRF writes it in every
+            # run); gpuwm's radiation diagnostics are absent rather than
+            # zero when nothing produced them, and this follows that.
+            if self.olr is not None:
+                output["OLR"] = self.olr
         output["RAINC"] = (self._zero_accumulator() if self.rainc is None
                            else self.rainc)
         output["RAINSH"] = self._zero_accumulator()

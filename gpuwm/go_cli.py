@@ -195,14 +195,25 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
 
     domains = payload.get("domain")
     if isinstance(domains, list) and len(domains) > 1:
+        # Named by its INSTALLED spelling: a wheel has no tools/
+        # directory, so a tools/-path pointer names a file a pip reader
+        # provably does not have.  And the re-emit remedy is complete
+        # rather than trailing off in "...": the wizard's default IS the
+        # single-domain shape now, so "without --ladder" is the whole
+        # instruction -- a tree config is one this reader explicitly
+        # opted into.
         raise GoRefusal(
             f"{config} declares {len(domains)} domains, and the "
             "single-domain runner this chain drives takes one.  A domain "
             "tree is prepared the same way but run by "
-            "tools/prepared_domain_tree_forecast.py, which binds a "
-            "preparation receipt rather than three digests.\n"
-            f"  remedy: follow {MANUAL_CHAIN}, or re-emit with a single "
-            "domain: gpuwm domain --ladder 12 ...")
+            "gpuwm-prepared-tree-forecast (module form: python -m "
+            "gpuwm.prepared_domain_tree_forecast), which binds a "
+            "preparation receipt rather than three digests; the full "
+            f"tree sequence is {MANUAL_CHAIN}.\n"
+            "  remedy: re-emit the config without --ladder (the wizard's "
+            "default is one 12 km domain, the shape this chain runs end "
+            "to end), or prepare the tree with rw-wps and run "
+            "gpuwm-prepared-tree-forecast on what it wrote")
 
     fetch_table = payload.get("fetch")
     if not isinstance(fetch_table, dict) or "source" not in fetch_table:
@@ -471,7 +482,8 @@ def proof_digests(prepared_root: Path) -> dict:
         raise GoRefusal(
             f"{proof_path} carries no single prepared-cache identity, "
             "which is what a multi-domain hierarchy product looks like.  "
-            f"Its runner is tools/prepared_domain_tree_forecast.py; see "
+            "Its runner is gpuwm-prepared-tree-forecast (module form: "
+            "python -m gpuwm.prepared_domain_tree_forecast); see "
             f"{MANUAL_CHAIN}")
     return {"proof": sha256_file(proof_path),
             "source_manifest": manifest_digest,
@@ -1197,7 +1209,10 @@ def register_cli(subparsers) -> None:
              "asking you to copy them")
     parser.add_argument("config", type=Path, metavar="CONFIG",
                         help="a single-domain GFS experiment TOML emitted "
-                             "by `gpuwm domain --physics-profile <id>`")
+                             "by `gpuwm domain --source gfs` -- the "
+                             "wizard's default emission is exactly this "
+                             "shape (--physics-profile optional: an "
+                             "unbound config's own suite runs as written)")
     parser.add_argument("--outdir", type=Path, default=None, metavar="DIR",
                         help="root for the authority, prepared and run "
                              "trees (default <config-stem>-go beside the "

@@ -366,14 +366,26 @@ def test_cli_refuses_a_byte_transport_the_python_engine_cannot_serve(
     assert "needs the rust fetch backbone" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("flag", ["--engine", "--mode"])
-def test_the_backbone_flags_are_hrrr_only(tmp_path, capsys, flag):
-    value = "rust" if flag == "--engine" else "full-file"
-    rc = cli.main(["fetch", "--source", "gfs", flag, value,
+def test_the_backbone_flags_serve_hrrr_and_the_gfs_fullfile_route(
+        tmp_path, capsys):
+    """--engine/--mode used to be hrrr-only; the GFS full-file route
+    (the 4090 user-zero finding) now takes them too.  What stays
+    refused: ERA5 never moves bytes, and for GFS --engine chooses how
+    WHOLE objects move, so without --mode full-file it names the route
+    it belongs to.  Route selection itself is pinned in test_fetch.py
+    (test_cli_fetch_gfs_fullfile_routes_through_the_new_transport)."""
+
+    rc = cli.main(["fetch", "--source", "era5", "--engine", "rust",
+                   "--cycle", "2026-07-28T00", "--hours", "3",
+                   "--area", "30,-100,40,-90", "--out", str(tmp_path / "e")])
+    assert rc == 2
+    assert "--source hrrr or gfs/gdas only" in capsys.readouterr().err
+
+    rc = cli.main(["fetch", "--source", "gfs", "--engine", "rust",
                    "--cycle", "2026-07-28T00", "--hours", "3",
                    "--area", "30,-100,40,-90", "--out", str(tmp_path / "g")])
     assert rc == 2
-    assert "--source hrrr only" in capsys.readouterr().err
+    assert "belong to '--mode full-file'" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

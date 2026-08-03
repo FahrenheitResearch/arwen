@@ -581,6 +581,17 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # output).  A resumed run's first frame therefore carries the
     # post-resume step's viscosity, which is the value that step used.
     "hmix_k_diag",
+    # OLR (TOA outgoing longwave) on the SAME terms: output-only, never
+    # read back by the physics, and refilled by the next due radiation
+    # call after the resume.  WRF's own row is restart-carried
+    # (Registry.EM_COMMON:1839 flags it ``rh``) and gpuwm's is not, which
+    # is a deliberate scope choice rather than an oversight: adding it to
+    # the archive changes the v5 key layout and would reject every
+    # checkpoint already on disk, which is not a price a diagnostic
+    # nothing consumes gets to charge.  The visible consequence is that a
+    # resumed run publishes zeros for OLR until its next radiation call,
+    # exactly as a cold-started run does before its first one.
+    "olr",
     "state", "sfclay_result", "mynn_sfclay_result",
     "mynn_sfclay_sea_result", "noah_params",
     # Selector-value -> runner-method receipt, re-resolved from the resumed

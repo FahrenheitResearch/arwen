@@ -275,6 +275,7 @@ def _host_result(result):
         "rthratensw": cp.asnumpy(result.rthratensw),
         "swdown": cp.asnumpy(result.swdown),
         "glw": cp.asnumpy(result.glw),
+        "olr": cp.asnumpy(result.olr),
     }
 
 
@@ -442,6 +443,10 @@ def _reference(env):
             swdown.reshape(env.ny, env.nx)),
         "glw": np.ascontiguousarray(
             np.asarray(louts["glw"], np.float32).reshape(env.ny, env.nx)),
+        # RRTMG_LWRAD's OLR: TOTUFLUX at the top level (module_ra_rrtm.F:
+        # 2296), which lwrad_outputs_batch already maps out of uflx.
+        "olr": np.ascontiguousarray(
+            np.asarray(louts["olr"], np.float32).reshape(env.ny, env.nx)),
         "day": day, "coszen": coszen,
     }
 
@@ -450,11 +455,11 @@ def _reference(env):
 def test_composition_bitwise(adapter, env, baseline):
     """Adapter == hand-rolled building-block composition, dual-run."""
     ref = _reference(env)
-    for name in ("rthratenlw", "rthratensw", "swdown", "glw"):
+    for name in ("rthratenlw", "rthratensw", "swdown", "glw", "olr"):
         bits_equal(name, baseline[name], ref[name])
     for _ in range(DUAL_RUNS):
         got = _host_result(_call(adapter, env))
-        for name in ("rthratenlw", "rthratensw", "swdown", "glw"):
+        for name in ("rthratenlw", "rthratensw", "swdown", "glw", "olr"):
             bits_equal(f"dual/{name}", got[name], ref[name])
 
 
@@ -466,8 +471,28 @@ def test_adapter_chunking_is_bitwise_invisible(env, baseline):
         env.lon.reshape(env.ny, env.nx), p_top=env.p_top, column_chunk=8)
     for _ in range(DUAL_RUNS):
         got = _host_result(_call(chunked, env))
-        for name in ("rthratenlw", "rthratensw", "swdown", "glw"):
+        for name in ("rthratenlw", "rthratensw", "swdown", "glw", "olr"):
             bits_equal(f"chunk8/{name}", got[name], baseline[name])
+
+
+@gpu_gate
+def test_olr_is_the_toa_upward_longwave_and_is_physical(adapter, baseline):
+    """The published OLR is a real outgoing flux, not a plumbing artifact.
+
+    ``test_composition_bitwise`` already pins it to the hand-rolled
+    composition; this is the independent statement that the number is the
+    quantity its name claims.  Earth's TOA outgoing longwave spans roughly
+    100 W m-2 over deep cold cloud to 350 W m-2 over a hot clear desert,
+    and the adapter's declaration is what makes the driver publish it at
+    all.
+    """
+    assert adapter.publishes_olr is True
+    olr = baseline["olr"]
+    assert olr.shape == (NY, NX)
+    assert olr.dtype == np.float32
+    assert np.isfinite(olr).all()
+    assert 100.0 <= olr.min() and olr.max() <= 350.0, (
+        f"OLR outside the terrestrial band: {olr.min()} .. {olr.max()}")
 
 
 # ---------------------------------------------------------------------------

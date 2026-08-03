@@ -57,7 +57,7 @@
   "sites": [
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 64,
+      "line": 78,
       "column": 10,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -77,7 +77,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 95,
+      "line": 109,
       "column": 10,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -627,7 +627,7 @@
     },
     {
       "file": "tests/test_noahmp_slab_libm.py",
-      "line": 339,
+      "line": 443,
       "column": 13,
       "surface": "tests",
       "constructor": "cp.RawModule",
@@ -947,7 +947,7 @@
     },
     {
       "file": "tests/test_thompson_aerosol_state_gpu.py",
-      "line": 954,
+      "line": 984,
       "column": 13,
       "surface": "tests",
       "constructor": "cp.RawKernel",

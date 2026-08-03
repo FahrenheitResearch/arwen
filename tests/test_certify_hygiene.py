@@ -113,24 +113,58 @@ def test_the_phrase_liveness_heartbeat_appears_nowhere_under_docs_public():
     assert offenders == [], offenders
 
 
+#: A number that STATES A COUNT of pins.  Two characters in front of the
+#: number take it out of that reading, and each was put here by a real
+#: sentence this rule fired on; both are exclusions rather than an off
+#: switch, and ``test_the_rule_still_catches_a_typed_count`` holds them to
+#: that.
+#:
+#: A HYPHEN: "SHA-256 pins" names a hash beside the word, it does not state
+#: a count of pins.  A real count ("five pins", "12 pins") never has a
+#: hyphen in front of the number.
+#:
+#: A SECTION SIGN: "the section-1 pin", "the inherited section-6 pins" are
+#: cross-references into a numbered section of the document making them --
+#: the validation gate documents number their sections and cite each other
+#: that way throughout -- so the digit belongs to the section it names, not
+#: to the pins.  A real count never has a section sign in front of the
+#: number either.
+PIN_COUNT = re.compile(
+    r"(?<![-§])\b(one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|thirteen|\d+)\s+(of\s+the\s+)?pins?\b",
+    re.IGNORECASE)
+
+
 def test_no_public_document_states_a_pin_count_as_a_literal():
     """A typed count stops being true the moment the pin table moves."""
-    # The negative lookbehind keeps a HYPHENATED number out of the
-    # match: "SHA-256 pins" names a hash beside the word, it does not
-    # state a count of pins, and reading it as one made this rule fire
-    # on a sentence that states no count at all.  A real count ("five
-    # pins", "12 pins") never has a hyphen in front of the number.
-    pattern = re.compile(
-        r"(?<!-)\b(one|two|three|four|five|six|seven|eight|nine|ten|"
-        r"eleven|twelve|thirteen|\d+)\s+(of\s+the\s+)?pins?\b",
-        re.IGNORECASE)
     offenders = []
     for path in _public_docs():
         for number, line in enumerate(
                 path.read_text(encoding="utf-8").splitlines(), start=1):
-            if pattern.search(line):
+            if PIN_COUNT.search(line):
                 offenders.append(f"{path.relative_to(REPO)}:{number}: {line}")
     assert offenders == [], offenders
+
+
+@pytest.mark.parametrize("sentence", [
+    "The capsule carries five pins.",
+    "All 12 pins reproduce on both nodes.",
+    "Three of the pins moved.",
+    "The receipt states one pin.",
+])
+def test_the_rule_still_catches_a_typed_count(sentence):
+    """The control on the carve-outs: a stated count is still caught."""
+    assert PIN_COUNT.search(sentence), sentence
+
+
+@pytest.mark.parametrize("sentence", [
+    "Tarball sha256 equals the §1 pin on both nodes;",
+    "`run/CCN_ACTIVATE.BIN` equal the inherited §6 pins in both trees",
+    "Each row carries the SHA-256 pins listed above.",
+])
+def test_a_reference_that_states_no_count_is_not_read_as_one(sentence):
+    """Each carve-out's own control: the sentence that put it there."""
+    assert PIN_COUNT.search(sentence) is None, sentence
 
 
 def test_the_failure_capsule_pin_coverage_is_counted_from_its_key_list():

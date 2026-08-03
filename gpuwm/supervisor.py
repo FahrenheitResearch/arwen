@@ -741,9 +741,15 @@ def _validated_worker_input_authorities(
 
 def git_commit() -> str:
     root = Path(__file__).resolve().parents[1]
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=root, check=False,
-        capture_output=True, text=True, timeout=10)
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root, check=False,
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as error:
+        # A pip-install host with no git binary at all.  The sentinel is
+        # the same "unavailable: <why>" form the schema documents; a
+        # missing executable must not turn a receipt into a traceback.
+        return f"unavailable: {type(error).__name__}: {error}"
     return (result.stdout.strip() if result.returncode == 0
             else f"unavailable: {result.stderr.strip()}")
 

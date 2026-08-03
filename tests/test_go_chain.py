@@ -127,8 +127,47 @@ def test_a_domain_tree_is_refused_toward_its_own_runner(tmp_path, capsys):
     assert cli_main(["go", str(config), "--dry-run"]) == 2
     error = capsys.readouterr().err
     assert "2 domains" in error
-    assert "prepared_domain_tree_forecast.py" in error
+    # The runner is named by its INSTALLED spelling: a wheel has no
+    # tools/ directory, so a tools/-path pointer names a file the
+    # reader provably does not have.
+    assert "gpuwm-prepared-tree-forecast" in error
     assert go_cli.MANUAL_CHAIN in error
+    # The one-command re-emit remedy is the wizard's own default now,
+    # so the remedy says so instead of trailing off in "...".
+    assert "without --ladder" in error
+    assert "..." not in error.split("remedy:")[1]
+
+
+def test_the_default_emission_is_what_the_default_runner_accepts(
+        tmp_path, capsys):
+    """Default wizard output piped to the default runner composes.
+
+    The 4090 user-zero stress run (2026-08-03) followed the obvious
+    path: `gpuwm domain --point ... --card 24gb --source gfs` with no
+    --ladder, then `gpuwm go` on the file it wrote -- and go refused
+    it, because the flags door's --ladder default was `auto`, the
+    deepest tree that fits.  The interactive door had already ruled on
+    this exact seam (domain_interactive.DEFAULT_LADDER = "12": "two
+    features that do not compose is not a feature"); this test pins
+    the same ruling onto the flags door.
+
+    Real emission, real plan reader, no profile flag: the default
+    suite runs as written (owner ruling 2026-07-31), so nothing here
+    needs one.
+    """
+
+    out = tmp_path / "default.toml"
+    assert cli_main(["domain", "--point=35.3,-97.5", "--card", "24gb",
+                     "--source", "gfs", "--cycle", "2026-07-29T18",
+                     "--hours", "6", "--out", str(out)]) == 0
+    printed = capsys.readouterr().out
+    # The wizard's own closing block names the runner its default
+    # emission is for -- the one-command chain, not the tree route.
+    assert "gpuwm go " in printed
+
+    plan = go_cli.plan_from_config(out)
+    assert plan["source"] == "gfs"
+    assert cli_main(["go", str(out), "--dry-run"]) == 0
 
 
 def test_a_config_with_no_shipped_profile_runs_with_status_stated(

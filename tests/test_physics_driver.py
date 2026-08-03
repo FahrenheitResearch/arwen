@@ -1583,6 +1583,89 @@ def test_noah_receives_wrf_layer_mid_sfcprs(monkeypatch):
 
 @pytest.mark.gpu
 @requires_gpu
+def test_olr_is_published_only_by_a_declaring_longwave_scheme():
+    """OLR's presence is the statement "a TOA longwave producer ran".
+
+    WRF's own OLR row is core (``Registry.EM_COMMON:1839`` is a ``misc``
+    field with no package gate), so stock WRF writes it in every run.
+    gpuwm's radiation diagnostics are instead ABSENT when nothing produced
+    them -- SWDOWN/GLW disappear with ``radiation_active``, XKMH/XKHH
+    disappear with their operator -- and OLR follows that convention one
+    step further: a shortwave-only pair and the surface-flux analytic
+    proxy compute no top-of-atmosphere flux, and a zero for them would be
+    a measured-looking number no scheme evaluated.
+    """
+    import cupy as cp
+
+    from gpuwm.core.diagnostics import update_diagnostics
+    from gpuwm.core.physics import RadiationResult
+    from gpuwm.io import restart
+
+    def surface_only(*, atmosphere, fields, state, cfg):
+        zeros = cp.zeros_like(state.p)
+        surface = cp.full(state.mup.shape, 300.0, cp.float32)
+        return RadiationResult(zeros, zeros, surface, surface)
+
+    def with_toa(*, atmosphere, fields, state, cfg):
+        result = surface_only(atmosphere=atmosphere, fields=fields,
+                              state=state, cfg=cfg)
+        result.olr = cp.full(state.mup.shape, 237.5, cp.float32)
+        return result
+
+    with_toa.publishes_olr = True
+
+    def declared_but_silent(**kwargs):
+        return surface_only(**kwargs)
+
+    declared_but_silent.publishes_olr = True
+
+    # Radiation off: OLR is absent for the same reason GLW is.
+    _, _, off = _full_state()
+    assert off.olr is None
+    assert "GLW" not in off.output_fields()
+    assert "OLR" not in off.output_fields()
+
+    # Radiation on, no TOA producer: the surface fluxes appear, OLR does not.
+    state, cfg, driver = _full_state(
+        nx=1, ny=1, ra_physics=90, radt_minutes=0.0, radiation=surface_only)
+    update_diagnostics(state)
+    driver.compute(state, cfg)
+    assert {"SWDOWN", "GLW"} <= set(driver.output_fields())
+    assert "OLR" not in driver.output_fields()
+    assert driver.olr is None
+
+    # A declaring scheme publishes it, and the pre-first-call value is the
+    # zero WRF's own zero-initialised array carries into its t=0 frame.
+    state, cfg, driver = _full_state(
+        nx=1, ny=1, ra_physics=90, radt_minutes=0.0, radiation=with_toa)
+    published = driver.output_fields()["OLR"]
+    assert published.shape == (cfg.ny, cfg.nx)
+    assert published.dtype == cp.float32
+    assert float(cp.abs(published).max()) == 0.0
+    update_diagnostics(state)
+    driver.compute(state, cfg)
+    # Filled in place, so the writer's frame keeps pointing at one buffer.
+    assert driver.output_fields()["OLR"] is published
+    assert float(published[0, 0]) == 237.5
+
+    # A scheme that declares the flux and then withholds it is a broken
+    # scheme, not a configuration in which OLR is undefined.
+    state, cfg, driver = _full_state(
+        nx=1, ny=1, ra_physics=90, radt_minutes=0.0,
+        radiation=declared_but_silent)
+    update_diagnostics(state)
+    with pytest.raises(ValueError, match="publishes_olr"):
+        driver.compute(state, cfg)
+
+    # Output-only: refilled by the next radiation call after a resume,
+    # never carried in the checkpoint (WRF's row is r-flagged; gpuwm's
+    # divergence is documented where the classification lives).
+    assert "olr" in restart.DRIVER_REBUILT_ATTRS
+    assert "olr" not in restart.DRIVER_SERIALIZED_ATTRS
+
+
+@pytest.mark.gpu
+@requires_gpu
 def test_noah_surface_optics_feed_the_next_radiation_call():
     """WRF ordering exposes aged snow albedo/emissivity one STEPRA later."""
     import cupy as cp

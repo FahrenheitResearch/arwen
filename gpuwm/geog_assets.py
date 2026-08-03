@@ -802,6 +802,22 @@ def _print_listing(datasets: tuple[str, ...], source: str,
           "GiB download (--bundle, NCAR only)")
 
 
+def _human_size(n: int) -> str:
+    """``4096`` -> ``'4.0 KiB'``; adaptive binary units, one decimal."""
+    value = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            return f"{value:.0f} B" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _bytes_label(n: int) -> str:
+    """Exact bytes first (they match Content-Length sums), human after."""
+    exact = f"{n:,} B"
+    return exact if n < 1024 else f"{exact} (~{_human_size(n)})"
+
+
 def fetch_geog(*, root: Path, datasets: tuple[str, ...], source: str,
                bundle: bool = False, keep_archives: bool = False,
                allow_drift: bool = False, progress=print,
@@ -850,6 +866,22 @@ def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
                 f"--bundle cannot serve {', '.join(outside)}: the "
                 "mandatory bundle does not contain them; use the "
                 "per-dataset route (drop --bundle)")
+
+    # The whole bill, announced before the first byte moves.  `gpuwm
+    # setup --with-geog` promises "the size is printed before anything
+    # downloads", and the engine both entry points share is the only
+    # place that can keep that promise for `gpuwm fetch-geog` too --
+    # the first field run watched 16 GB arrive with sizes printed only
+    # as each dataset landed.  Covers exactly the datasets that still
+    # need staging (the ones above were skipped as already valid);
+    # under --bundle the download is the one bundle archive however few
+    # datasets are extracted from it.
+    download = (MANDATORY_BUNDLE_BYTES if bundle else
+                sum(archive_for(name).archive_bytes for name in needed))
+    unpacked = sum(archive_for(name).extracted_bytes for name in needed)
+    progress(f"fetch-geog: {len(needed)} of {len(datasets)} requested "
+             f"datasets need staging: {_bytes_label(download)} download, "
+             f"~{_human_size(unpacked)} unpacked")
 
     archive_dir = root / ARCHIVE_SUBDIR
     archive_dir.mkdir(parents=True, exist_ok=True)

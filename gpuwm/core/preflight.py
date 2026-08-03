@@ -717,54 +717,47 @@ MEASURED_LOCAL_MEMORY_PROFILE = DeviceLocalMemoryProfile(
 )
 
 
-#: UPPER BOUND on the streaming-multiprocessor count shipped at each VRAM
-#: capacity, as of 2026-08.  The local-memory backing store is
-#: ``(frame - default stack) x SMs x threads per SM``, so it is a
-#: property of the DEVICE; pricing every card against the 170-SM RTX 5090
-#: this module was calibrated on is the same error as charging Linux the
-#: WDDM pool constants -- an accounting term measured somewhere else.  On
-#: a 12 GiB card the 5090's 2.49 GiB backing store is a fifth of the card
-#: before a single grid cell exists, and that is what made the wizard
-#: refuse to size a tier it can probably run.
+#: RETIRED 2026-08-03 -- the per-class SM discount for cards not in this
+#: machine.  Each row claimed the LARGEST SM count sold at that capacity
+#: ("(frame - default stack) x SMs x threads per SM" is a property of the
+#: DEVICE), so a 12 GiB tier was priced at 70 SMs instead of the 170-SM
+#: reference.  Two things killed it, both from the first user-zero
+#: cross-architecture stress run (RTX 4090, sm_89):
 #:
-#: Each row is the LARGEST SM count sold at that capacity, so the term is
-#: over-priced rather than under-priced for every other card in the class
-#: (16 GiB: RTX 5080 84, RTX 4080 76, 4080 Super 80, A4000 48).  A live
-#: device always overrides this table -- see
-#: :func:`live_device_local_memory_profile`; it exists only for sizing a
-#: card that is not in this machine.
+#: * IT WAS NOT A BOUND.  The rows were a market survey, not a
+#:   measurement: a 12 GiB RTX 3080 Ti ships 80 SMs against the row's
+#:   70, so the "upper bound" under-priced real cards in the class.
+#: * IT MADE THE ABSENT-CARD PATH MORE OPTIMISTIC THAN THE PRESENT-CARD
+#:   PATH.  Sizing for a card not in the machine used a 1.45 GiB
+#:   non-pool intercept where the same code on the real 4090 measured
+#:   2.30 GiB; a config certified "fits with 0.27 GiB to spare" landed
+#:   0.015 GiB from the budget -- a margin 18x smaller than advertised,
+#:   on exactly the sizing-for-a-card-you-intend-to-buy path, where the
+#:   number cannot be checked until the money is spent.
+#:
+#: Kept because three sizing receipts are written in its terms.  No
+#: caller consults it: :func:`card_local_memory_profile` prices every
+#: absent card against the measured reference profile.
 CARD_CLASS_MULTIPROCESSORS = ((12.0, 70), (16.0, 84), (24.0, 128),
                               (32.0, 170))
 
 
 def card_local_memory_profile(
         vram_gib: float | None) -> DeviceLocalMemoryProfile:
-    """The conservative device profile for a card of ``vram_gib``.
+    """The device profile for a card that is NOT in this machine.
 
-    ``None`` (nothing declared) keeps the measured reference profile,
-    which is the largest row in the table and therefore the safest thing
-    to assume about a card nobody named.
+    Always the measured reference profile -- the max of known-device
+    intercepts -- whatever capacity is declared.  An absent card's SM
+    count is unknown, and the retired per-class discount above priced a
+    certified margin 18x too generous on the one machine that could
+    check it; hardware that cannot be measured gets the conservative
+    intercept, never a discount.  A live device always overrides this
+    (see :func:`live_device_local_memory_profile`): the absent-card path
+    can over-price relative to the card eventually bought, but it can
+    never be MORE optimistic than a present-card measurement.
     """
 
-    if vram_gib is None or not math.isfinite(float(vram_gib)):
-        return MEASURED_LOCAL_MEMORY_PROFILE
-    size = float(vram_gib)
-    smallest = None
-    for capacity, count in CARD_CLASS_MULTIPROCESSORS:
-        if size <= capacity:
-            smallest = (capacity, count)
-            break
-    if smallest is None:
-        return MEASURED_LOCAL_MEMORY_PROFILE
-    capacity, count = smallest
-    return DeviceLocalMemoryProfile(
-        name=f"<{capacity:g} GiB card class, {count} SM upper bound>",
-        multiprocessor_count=count,
-        max_threads_per_multiprocessor=(
-            MEASURED_LOCAL_MEMORY_PROFILE.max_threads_per_multiprocessor),
-        default_stack_limit_bytes=(
-            MEASURED_LOCAL_MEMORY_PROFILE.default_stack_limit_bytes),
-    )
+    return MEASURED_LOCAL_MEMORY_PROFILE
 
 
 def local_memory_profile_from_device(cp) -> DeviceLocalMemoryProfile:
@@ -903,7 +896,15 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "thompson_aerosol_probe": 0,
     "thompson_aerosol_sat": 0,
     "thompson_aerosol_sed": 9216,
-    "thompson_aerosol_state": 48,
+    # RE-MEASURED 2026-08-03 on the reference RTX 5090: 40, not 48.  The
+    # module's only framed kernel is ``thompson_aa_init_profile``, and 40 is
+    # what NVRTC 13.0 (system CUDA 13.0), NVRTC 12.9 (wheel, forced) and an
+    # offline ``nvcc`` 13.0.48 all produce from the byte-identical source, at
+    # every option variant this tree could plausibly use.  Nothing reproduces
+    # 48 -- see the commit message.  The row cannot bind the reservation
+    # either way: it is a MAX over the selected modules, and mp_physics=28
+    # always co-selects ``thompson`` at 11,264 B.
+    "thompson_aerosol_state": 40,
     "thompson_aerosol_warm": 0,
     "tke_budget": 0,
     "uh_diag": 0,
@@ -1984,6 +1985,15 @@ def physics_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
         # (rrtmgp.py:1076-1077): two 60-level FP32 device arrays, 480 B.
         shapes["radiation/_ozone_logp"] = (60,)
         shapes["radiation/_ozone_vmr"] = (60,)
+        # The OLR publication buffer (physics.py PhysicsDriver __init__):
+        # one resident (ny, nx) FP32 driver persistent holding WRF's TOA
+        # outgoing longwave for output, allocated when the attached
+        # longwave adapter declares ``publishes_olr``.  BOTH built-in 4/4
+        # adapters declare it, which is what this gate reproduces; a
+        # caller-injected adapter that does not leaves this counted but
+        # unallocated, and over-counting by one 2-D field is the safe
+        # direction for a VRAM estimate.
+        shapes["olr"] = s2
     return shapes
 
 
@@ -5336,6 +5346,11 @@ def check_main(args) -> int:
             "kernel_modules": sorted(physics_kernel_modules(exp)),
             "measured_free_bytes": free,
             "free_bytes_source": free_source,
+            # A declared budget sizes hardware that is not in this
+            # machine; every figure in this report is then an ESTIMATE
+            # for hardware not present, priced against the conservative
+            # measured reference profile above -- never a measurement.
+            "sized_for_hardware_not_present": args.budget_gib is not None,
             "free_bytes_capped_to_physical_bytes": capped_to,
             "budget_bytes": budget,
             "budget_underwater_bytes": budget_underwater_bytes,
@@ -5497,6 +5512,23 @@ def check_main(args) -> int:
               f"external {reserve.external_margin_bytes / GIB:.2f}); "
               f"{free_source} free {_format_bytes(free)}; budget "
               f"{_format_bytes(budget)}")
+        if args.budget_gib is not None:
+            # The 4090 stress run certified "fits with 0.27 GiB to
+            # spare" off this path and the config landed 0.015 GiB from
+            # the budget on real hardware.  A declared budget is sizing
+            # a card that is not in this machine, and the report has to
+            # say so beside the verdict, not leave "fits" to read as a
+            # measurement.
+            print(f"  ESTIMATE FOR HARDWARE NOT PRESENT: the free figure "
+                  f"above is declared, not measured -- this preflight is "
+                  f"sizing a card that is not in this machine.  Non-pool "
+                  f"terms are priced against the conservative measured "
+                  f"reference device profile ({profile.name}, "
+                  f"{profile.multiprocessor_count} SMs), the largest "
+                  f"known-device intercept, so the estimate is never more "
+                  f"optimistic than a present-card measurement; verify "
+                  f"with `gpuwm check` on the real card before trusting "
+                  f"the margin.")
         if budget_underwater_bytes:
             print(f"  NO BUDGET AT ALL: the reserve alone is "
                   f"{_format_bytes(reserve.reserve_bytes)} against "

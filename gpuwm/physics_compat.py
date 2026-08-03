@@ -276,6 +276,42 @@ def thompson_table_root() -> str:
         return str(staged)
     return str(packaged)
 
+
+def thompson_guard_exports() -> tuple[str, str]:
+    """The two exports the guarded mp8 runners demand, ready to paste.
+
+    Selection through the library is first-class and needs neither
+    variable (see the block above).  The evidence and benchmark runners
+    under ``tools/`` kept the launch contract on purpose, and a field run
+    of the shipped 1.5.0 wheel met it as two consecutive one-line
+    RuntimeErrors with no value in either: the reader had to find the
+    table root themselves, having already downloaded it.
+
+    So the pair is composed ONCE, here, beside the names and the
+    resolver -- the generated command chain prints it before the stage
+    that needs it, and the refusal that fires when it is missing prints
+    the same two lines.  The root is this install's own resolution, so
+    the printed line is the root the loader would have used, not a
+    guess; ``validate_table_assets`` still re-checks every byte, so a
+    root that has been pasted from somewhere else fails closed exactly
+    as it did before.
+
+    The shell form follows the platform, because a POSIX ``export`` line
+    pasted into PowerShell is a syntax error and the reader is then
+    debugging the instructions instead of the run.
+    """
+
+    import shlex
+
+    from gpuwm.bridges import WINDOWS_SHELL
+
+    root = thompson_table_root()
+    if WINDOWS_SHELL:
+        return (f'$env:{EXPERIMENTAL_THOMPSON_ENV} = "1"',
+                f'$env:{THOMPSON_TABLE_ROOT_ENV} = "{root}"')
+    return (f"export {EXPERIMENTAL_THOMPSON_ENV}=1",
+            f"export {THOMPSON_TABLE_ROOT_ENV}={shlex.quote(str(root))}")
+
 # Noah-MP's whole column runs on the DEVICE: the slab orchestration in
 # gpuwm/core/noahmp_column_slab.py answers every land column with no Python
 # per column, in chunks of gpuwm.core.noahmp_runtime.SLAB_COLUMN_CHUNK
@@ -2066,6 +2102,7 @@ __all__ = [
     "implicit_runtime_switches",
     "packaged_thompson_table_root",
     "pending_wrf_physics_components",
+    "thompson_guard_exports",
     "thompson_table_root",
     "require_ready_wrf_physics",
     "require_rrtmg_legacy_executable",

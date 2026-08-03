@@ -130,6 +130,112 @@ def test_the_certification_path_refuses_an_unresolved_pin():
         validate_certification_capsule(capsule, certification_path=True)
 
 
+# --- 4090 stress finding: honest statuses on a no-git (pip install) tree ---
+
+_NO_GIT_SENTINEL = ("unavailable: fatal: not a git repository "
+                    "(or any of the parent directories): .git")
+
+
+def _simulate_no_git(monkeypatch):
+    """A pip-installed tree: the package imports, git answers nothing."""
+    import gpuwm.supervisor as supervisor
+
+    monkeypatch.setattr(supervisor, "git_commit",
+                        lambda: _NO_GIT_SENTINEL)
+
+
+def test_resolved_never_wraps_an_unavailable_payload(monkeypatch):
+    """The published-wheel capsule carried arwen_version_and_commit with
+    status "resolved" wrapping the value "unavailable: fatal: not a git
+    repository".  A resolved status is a claim that something measured
+    the value; a payload that says unavailable refutes the claim in the
+    same breath.  On a no-git tree the pin is honestly unavailable, and
+    the half that DOES exist -- the version, from package metadata -- is
+    still bound in the entry."""
+    _simulate_no_git(monkeypatch)
+    stack = resolve_pins(require_gpu=False)
+    entry = stack["arwen_version_and_commit"]
+    assert entry["status"] == "unavailable"
+    assert "not a git repository" in entry["reason"]
+    import gpuwm
+
+    assert entry["value"] == {"version": gpuwm.__version__}
+    # The general law, over the whole pin set: no resolved entry ever
+    # carries the unavailable sentinel inside its payload.
+    for key, item in stack.items():
+        if item["status"] == "resolved":
+            assert "unavailable:" not in json.dumps(item["value"]), key
+
+
+def test_a_git_tree_still_resolves_the_commit_pin(monkeypatch):
+    import gpuwm.supervisor as supervisor
+
+    monkeypatch.setattr(supervisor, "git_commit", lambda: "ab" * 20)
+    stack = resolve_pins(require_gpu=False)
+    entry = stack["arwen_version_and_commit"]
+    assert entry["status"] == "resolved"
+    assert entry["value"]["git_commit"] == "ab" * 20
+
+
+def test_a_no_git_capsule_still_binds_config_and_input_bytes(monkeypatch):
+    """DETERMINISM.md lists config bytes and input bytes as load-bearing
+    pins, and both exist regardless of git; the stress capsule reported
+    them unavailable because the pip route never handed them over."""
+    _simulate_no_git(monkeypatch)
+    capsule = build_capsule(
+        emission_site="prepared_single_domain_forecast",
+        require_gpu=False,
+        run_context={
+            "config_bytes": {"path": "experiment.toml", "sha256": "0" * 64},
+            "input_artifact_bytes": {"experiment_config": "0" * 64},
+            "runner_route_and_io_mode": {
+                "route": "prepared_single_domain_forecast",
+                "io_mode": "history"},
+            "output_and_diagnostic_mode": {
+                "io_mode": "history", "history_interval_seconds": 3600.0},
+        },
+        input_bytes={"entries": {
+            "experiment_config:experiment.toml": {
+                "algorithm": "sha256", "digest": "0" * 64},
+        }})
+    stack = capsule["numerical_stack"]
+    assert stack["config_bytes"]["status"] == "resolved"
+    assert stack["config_bytes"]["value"]["sha256"] == "0" * 64
+    assert stack["input_artifact_bytes"]["status"] == "resolved"
+    assert capsule["input_bytes"]["entries"]
+    assert capsule["input_bytes"].get("status") != "unavailable"
+    validate_certification_capsule(capsule)
+
+
+def test_both_prepared_routes_hand_the_capsule_config_and_input_bytes():
+    """The seam, held structurally: each prepared runner's
+    emit_run_capsule call passes an input_bytes section and a
+    config_bytes run-context pin.  (The runners need a prepared cache
+    and a GPU to execute, so the call site is what a CPU test can pin.)
+    """
+    for name in ("gpuwm.prepared_single_domain_forecast",
+                 "gpuwm.prepared_domain_tree_forecast"):
+        path = REPO / (name.replace(".", "/") + ".py")
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        calls = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Name)
+                 and node.func.id == "emit_run_capsule"]
+        assert calls, f"{name} no longer emits a capsule"
+        for call in calls:
+            keywords = {keyword.arg: keyword.value
+                        for keyword in call.keywords}
+            assert "input_bytes" in keywords, (
+                f"{name} emits a capsule without binding input_bytes")
+            context = keywords.get("run_context")
+            assert isinstance(context, ast.Dict), name
+            context_keys = {key.value for key in context.keys
+                            if isinstance(key, ast.Constant)}
+            assert "config_bytes" in context_keys, (
+                f"{name} emits a capsule without binding config_bytes")
+            assert "input_artifact_bytes" in context_keys, name
+
+
 # --- F2: the stub measures nothing it cannot measure ------------------------
 
 def test_the_stub_populates_no_stack_field_it_did_not_measure():

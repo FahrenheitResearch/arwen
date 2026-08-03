@@ -1,0 +1,17 @@
+{
+  "entrainment_min_over_qs": -0.11900764832134189,
+  "fit_intercept": 0.9917389649506922,
+  "fit_rms": 0.0012862059729062622,
+  "fit_slope": -1.1881439226248056,
+  "mass_drift_rel": 3.121069995400256e-10,
+  "n_frames_in_window": 31,
+  "parseval_residual_rel": 3.4988924993753714e-16,
+  "parseval_var_realspace": 2.538455868131657,
+  "parseval_var_spectral": 2.5384558681316562,
+  "theta_ml_K": 301.32134102964346,
+  "wstar": 2.3505318864267877,
+  "wth_res_max_over_qs": 0.884214478792676,
+  "zi_flux_min_m": 1662.0653040874074,
+  "zi_flux_zero_crossing_m": 1383.9591691879984,
+  "zi_max_theta_gradient_m": 1832.9163197990115
+}

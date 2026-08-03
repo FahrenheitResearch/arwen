@@ -710,15 +710,64 @@ fn validate_common(
         )
         .into());
     }
-    // The certified public GFS pgrb2.0p25 proof corpus uses simple packing
-    // exclusively.  Do not admit complex/spatial-differencing templates until
-    // their missing-value semantics have an independent real-product proof.
-    if message.data_rep.template != 0 {
-        return Err(format!("unsupported GFS DRT 5.{}", message.data_rep.template).into());
+    // Two packings are certified here, one per publisher form.  The
+    // NOMADS grib-filter `subregion` crop re-encodes to DRT 5.0 (simple
+    // packing), which is what the original proof corpus was built from.
+    // The raw noaa-gfs-bdp-pds S3 objects -- the full-file route -- are
+    // DRT 5.3 (complex packing + second-order spatial differencing),
+    // and their admission has its own real-product proof: a committed
+    // matched pair of the same SOILW field from the same cycle, where
+    // the bitmap-carried missing cells land in identical positions and
+    // every present cell decodes to the identical f64 bit pattern
+    // through both packings
+    // (`the_raw_53_bitmap_decode_matches_the_nomads_crop_cell_for_cell`).
+    // The proof covers exactly the envelope NCEP publishes -- general
+    // group splitting, NO embedded missing-value management (the bitmap
+    // carries the mask), second-order differencing -- so everything
+    // outside that envelope still refuses by name.
+    match message.data_rep.template {
+        0 => {}
+        3 => {
+            if message.data_rep.group_splitting_method != 1 {
+                return Err(format!(
+                    "unsupported GFS complex-packing group splitting method {} \
+                     (only 1, general group splitting, is certified)",
+                    message.data_rep.group_splitting_method
+                )
+                .into());
+            }
+            if message.data_rep.missing_value_management != 0 {
+                return Err(format!(
+                    "unsupported GFS complex-packing missing-value management {} \
+                     (only 0 is certified: GFS missing cells travel in the \
+                     bitmap, never as embedded substitutes)",
+                    message.data_rep.missing_value_management
+                )
+                .into());
+            }
+            if message.data_rep.spatial_diff_order != 2 {
+                return Err(format!(
+                    "unsupported GFS spatial differencing order {} \
+                     (only the second order the product publishes is certified)",
+                    message.data_rep.spatial_diff_order
+                )
+                .into());
+            }
+            if !(1..=4).contains(&message.data_rep.spatial_diff_bytes) {
+                return Err(format!(
+                    "unsupported GFS spatial differencing descriptor width {} bytes",
+                    message.data_rep.spatial_diff_bytes
+                )
+                .into());
+            }
+        }
+        other => {
+            return Err(format!("unsupported GFS DRT 5.{other}").into());
+        }
     }
     if message.data_rep.bits_per_value > 63 {
         return Err(format!(
-            "unsupported GFS simple-packing bits_per_value {}",
+            "unsupported GFS packing bits_per_value {}",
             message.data_rep.bits_per_value
         )
         .into());
@@ -913,9 +962,16 @@ fn observed_pressure_levels(file: &Grib2File) -> Result<Vec<f64>, Box<dyn Error>
             levels.push(level);
         }
     }
+    validate_ladder_shape(&levels, "source")?;
+    Ok(levels)
+}
+
+/// The two clauses every decode ladder must satisfy, whichever side
+/// declared it -- see `observed_pressure_levels` for why they suffice.
+fn validate_ladder_shape(levels: &[f64], what: &str) -> Result<(), Box<dyn Error>> {
     if levels.len() < CERTIFIED_PRESSURE_LEVELS_PA.len() {
         return Err(format!(
-            "source carries {} complete isobaric levels, fewer than the {} \
+            "{what} carries {} complete isobaric levels, fewer than the {} \
              certified levels every GFS subset must have",
             levels.len(),
             CERTIFIED_PRESSURE_LEVELS_PA.len()
@@ -929,14 +985,37 @@ fn observed_pressure_levels(file: &Grib2File) -> Result<Vec<f64>, Box<dyn Error>
         .any(|(observed, expected)| !same_level(*observed, *expected))
     {
         return Err(format!(
-            "source isobaric ladder {tail:?} Pa does not end with the certified \
+            "{what} isobaric ladder {tail:?} Pa does not end with the certified \
              ladder {CERTIFIED_PRESSURE_LEVELS_PA:?} Pa"
         )
         .into());
     }
     if levels.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return Err("source isobaric ladder is not strictly increasing".into());
+        return Err(format!("{what} isobaric ladder is not strictly increasing").into());
     }
+    Ok(())
+}
+
+/// The `--pressure-levels-pa` declaration, parsed and held to the same
+/// shape as a derived ladder.  Levels the file turns out not to carry
+/// refuse by name in the per-hour inventory, so nothing needs checking
+/// against the file here.
+fn requested_pressure_levels(csv: &str) -> Result<Vec<f64>, Box<dyn Error>> {
+    let levels: Vec<f64> = csv
+        .split(',')
+        .map(|item| {
+            let level: f64 = item.trim().parse().map_err(|_| {
+                format!("--pressure-levels-pa entry {item:?} is not a number")
+            })?;
+            if !level.is_finite() || level <= 0.0 {
+                return Err(format!(
+                    "--pressure-levels-pa entry {item:?} is not a positive pressure"
+                ));
+            }
+            Ok(level)
+        })
+        .collect::<Result<_, String>>()?;
+    validate_ladder_shape(&levels, "requested")?;
     Ok(levels)
 }
 
@@ -1426,12 +1505,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     // proves a staged bridge by these bytes (see lib.rs).
     let _ = std::hint::black_box(gpuwm_preprocess_cpu::SOURCE_REV_STAMP);
     let args: Vec<String> = env::args().skip(1).collect();
-    if args.len() != 4 || args[0] != "--series" {
-        return Err("usage: gfs_grib2_bridge --series SERIES_TSV OUTPUT_DIR EXPECTED_CYCLE".into());
+    let usage = "usage: gfs_grib2_bridge --series SERIES_TSV OUTPUT_DIR EXPECTED_CYCLE \
+                 [--pressure-levels-pa PA,PA,...]";
+    if !(args.len() == 4 || args.len() == 6)
+        || args[0] != "--series"
+        || (args.len() == 6 && args[4] != "--pressure-levels-pa")
+    {
+        return Err(usage.into());
     }
     let inputs = parse_series(Path::new(&args[1]))?;
     let output = PathBuf::from(&args[2]);
     let cycle = args[3].trim_end_matches('Z').replace('T', " ");
+    let requested_levels_csv = args.get(5).cloned();
     if output.exists() {
         return Err(format!("refusing to overwrite {output:?}").into());
     }
@@ -1454,7 +1539,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     // to satisfy it. Derived once from f000 and applied to every hour, so a
     // series whose hours disagree about their levels fails the per-hour
     // inventory checks below rather than decoding a ragged column.
-    let pressure_levels_pa = observed_pressure_levels(&loaded[0].0)?;
+    //
+    // `--pressure-levels-pa` is the full-file route's declaration.  A NOMADS
+    // subset carries exactly the requested ladder, so deriving it from the
+    // file IS the request; a whole pgrb2.0p25 object carries every published
+    // level up to 1 Pa, where real geopotential heights sit beyond this
+    // bridge's certified plausibility range and no tornado-scale case has any
+    // use for the mesosphere.  The caller that knows the requested ladder
+    // (the fetch manifest records it) passes it here; the same
+    // certified-tail/strictly-increasing shape is enforced either way, and a
+    // requested level the file does not carry still refuses by name in the
+    // per-hour inventory.
+    let pressure_levels_pa = match requested_levels_csv {
+        Some(csv) => requested_pressure_levels(&csv)?,
+        None => observed_pressure_levels(&loaded[0].0)?,
+    };
     let inventories: Vec<Inventory> = inputs
         .iter()
         .zip(&loaded)
@@ -1991,27 +2090,16 @@ mod tests {
         // The NOMADS crop passes the whole gate, as it always has.
         validate_common(cropped, &cropped.reference_time.to_string(), 0, 81, false).unwrap();
 
-        // The raw S3 object's ROW ORDER is now accepted -- isolate that
-        // by neutralising the one gate it still trips (see below).
-        let mut grid_only = global.clone();
-        grid_only.data_rep.template = 0;
-        validate_common(&grid_only, &global.reference_time.to_string(), 0, 81, false).unwrap();
-
-        // ...but a raw pgrb2.0p25 object is packed with DRT 5.3
-        // (complex + spatial differencing) where the NOMADS crop
-        // re-encodes to 5.0, and that gate is a separate, deliberate
-        // refusal with its own bar: complex-packing missing-value
-        // semantics have not been proved against a real product here.
-        // Accepting the scan order does not open it, and this assertion
-        // exists so nobody discovers that by accident.
-        let still_refused =
-            validate_common(global, &global.reference_time.to_string(), 0, 81, false)
-                .unwrap_err()
-                .to_string();
-        assert!(
-            still_refused.contains("unsupported GFS DRT 5.3"),
-            "{still_refused}"
-        );
+        // The raw S3 object passes the WHOLE gate too: its row order
+        // was certified first, and its DRT 5.3 packing later earned its
+        // own real-product proof (the SOILW matched pair below, which
+        // is where the missing-value semantics the 5.3 gate was waiting
+        // on are pinned).  This fixture is complex-packed with no
+        // bitmap; the SOILW pair is the bitmap case.
+        assert_eq!(global.data_rep.template, 3);
+        assert_eq!(global.data_rep.missing_value_management, 0);
+        assert!(global.bitmap.is_none());
+        validate_common(global, &global.reference_time.to_string(), 0, 81, false).unwrap();
 
         let (global_values, _) = scan_normalized(global).unwrap();
         let (crop_values, _) = scan_normalized(cropped).unwrap();
@@ -2086,6 +2174,91 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_raw_53_bitmap_decode_matches_the_nomads_crop_cell_for_cell() {
+        // THE missing-value proof the DRT 5.3 gate was waiting on.  The
+        // TMP pair proves value arithmetic; it carries no bitmap.  This
+        // pair is the same SOILW 0-0.1 m field from the same cycle in
+        // both published packings -- raw S3 (DRT 5.3, north-to-south,
+        // bitmap over water) and the NOMADS crop (DRT 5.0,
+        // south-to-north, same bitmap semantics) -- and admission
+        // stands on two exact statements over the overlap: the missing
+        // cells land in IDENTICAL positions, and every present cell
+        // decodes to the IDENTICAL f64 bit pattern.  No tolerance on
+        // either statement.
+        let raw = scan_order_fixture("s3-raw-soilw-20260729t18z-f000.grib2");
+        let crop = scan_order_fixture("nomads-crop-soilw-20260729t18z-f000.grib2");
+        let global = &raw.messages[0];
+        let cropped = &crop.messages[0];
+
+        // The raw record is exactly the published envelope the gate
+        // admits -- and nothing wider.
+        assert_eq!(global.grid.scan_mode, NORTH_TO_SOUTH_SCAN);
+        assert_eq!(global.data_rep.template, 3);
+        assert_eq!(global.data_rep.group_splitting_method, 1);
+        assert_eq!(global.data_rep.missing_value_management, 0);
+        assert_eq!(global.data_rep.spatial_diff_order, 2);
+        assert_eq!(global.data_rep.spatial_diff_bytes, 2);
+        assert!(global.bitmap.is_some());
+        assert_eq!(cropped.grid.scan_mode, SOUTH_TO_NORTH_SCAN);
+        assert_eq!(cropped.data_rep.template, 0);
+        assert!(cropped.bitmap.is_some());
+
+        // Both pass the whole gate as the bitmap-carrying soil field
+        // they are.
+        validate_common(global, &global.reference_time.to_string(), 0, 81, true).unwrap();
+        validate_common(cropped, &cropped.reference_time.to_string(), 0, 81, true).unwrap();
+
+        let (global_values, global_present) = scan_normalized(global).unwrap();
+        let (crop_values, crop_present) = scan_normalized(cropped).unwrap();
+        let global_present = global_present.expect("raw SOILW carries a bitmap");
+        let crop_present = crop_present.expect("cropped SOILW carries a bitmap");
+        let (gnx, gny) = (global.grid.nx as usize, global.grid.ny as usize);
+        let (cnx, cny) = (cropped.grid.nx as usize, cropped.grid.ny as usize);
+
+        let row_offset = ((southern_latitude(&cropped.grid) - southern_latitude(&global.grid))
+            / global.grid.dy)
+            .round() as usize;
+        let column_offset =
+            ((cropped.grid.lon1 - global.grid.lon1) / global.grid.dx).round() as usize;
+        assert!(row_offset + cny <= gny && column_offset + cnx <= gnx);
+
+        let mut compared = 0usize;
+        let mut missing = 0usize;
+        for row in 0..cny {
+            for column in 0..cnx {
+                let flat_global = (row_offset + row) * gnx + column_offset + column;
+                let flat_crop = row * cnx + column;
+                assert_eq!(
+                    global_present[flat_global], crop_present[flat_crop],
+                    "row {row} column {column}: the two packings disagree on \
+                     whether the cell is missing"
+                );
+                if global_present[flat_global] {
+                    assert_eq!(
+                        crop_values[flat_crop].to_bits(),
+                        global_values[flat_global].to_bits(),
+                        "row {row} column {column}: crop {} != flipped raw {}",
+                        crop_values[flat_crop],
+                        global_values[flat_global]
+                    );
+                    compared += 1;
+                } else {
+                    assert!(global_values[flat_global].is_nan());
+                    assert!(crop_values[flat_crop].is_nan());
+                    missing += 1;
+                }
+            }
+        }
+        assert_eq!(compared + missing, cnx * cny);
+        assert_eq!(compared + missing, 41 * 41);
+        // The overlap genuinely exercises both branches: the box was
+        // chosen over the Gulf coast so it holds land AND water.
+        assert!(compared > 0, "no present cells compared");
+        assert!(missing > 0, "no missing cells compared; the pair no longer \
+                              demonstrates bitmap semantics");
+    }
+
     /// A file carrying the certified ladder plus ``extra`` levels, minus
     /// ``omit``, with all five 3-D fields on every level it keeps.
     fn pressure_ladder_file(extra: &[f64], omit: &[f64]) -> Grib2File {
@@ -2145,6 +2318,105 @@ mod tests {
         assert!(CERTIFIED_PRESSURE_LEVELS_PA
             .windows(2)
             .all(|pair| pair[0] < pair[1]));
+    }
+
+    /// `--pressure-levels-pa` is how the full-file route keeps a
+    /// whole-globe object from dragging the mesosphere into the decode:
+    /// the request's ladder wins over the file's, under the same shape
+    /// rule, and levels the file lacks still refuse in the inventory.
+    #[test]
+    fn a_requested_ladder_is_parsed_and_held_to_the_certified_shape() {
+        let certified_csv = CERTIFIED_PRESSURE_LEVELS_PA
+            .iter()
+            .map(|level| format!("{level}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            requested_pressure_levels(&certified_csv).expect("certified ladder"),
+            CERTIFIED_PRESSURE_LEVELS_PA.to_vec()
+        );
+        let extended = format!("5000,7000,{certified_csv}");
+        assert_eq!(
+            requested_pressure_levels(&extended).expect("extended ladder")[..2],
+            [5_000.0, 7_000.0]
+        );
+
+        let dropped = requested_pressure_levels(
+            &certified_csv.replace("50000,", ""))
+            .expect_err("a dropped certified level must refuse")
+            .to_string();
+        assert!(dropped.contains("certified") || dropped.contains("fewer than"),
+                "{dropped}");
+        assert!(requested_pressure_levels("")
+            .unwrap_err()
+            .to_string()
+            .contains("not a number"));
+        assert!(requested_pressure_levels(&format!("{certified_csv},nonsense"))
+            .unwrap_err()
+            .to_string()
+            .contains("not a number"));
+        assert!(requested_pressure_levels(&format!("-5,{certified_csv}"))
+            .unwrap_err()
+            .to_string()
+            .contains("not a positive pressure"));
+    }
+
+    /// The requested ladder drives selection: a file carrying MORE
+    /// complete levels than the request decodes exactly the request,
+    /// and a request the file cannot fill refuses by name.
+    #[test]
+    fn a_fuller_file_decodes_only_the_requested_ladder() {
+        // The file carries two levels above the certified top, the way
+        // a whole pgrb2.0p25 object carries everything up to 1 Pa.
+        let file = pressure_ladder_file(&[5_000.0, 7_000.0], &[]);
+        let certified: Vec<f64> = CERTIFIED_PRESSURE_LEVELS_PA.to_vec();
+        let mut messages = file.messages;
+        for spec in SURFACE_SPECS.iter().chain(SOIL_SPECS.iter()) {
+            if spec.name == "LANDSEA" {
+                messages.push(valid_message(218));
+                continue;
+            }
+            let mut message = valid_message(spec.parameter.number);
+            message.discipline = spec.parameter.discipline;
+            message.product.parameter_category = spec.parameter.category;
+            message.product.parameter_number = spec.parameter.number;
+            message.product.level_type = spec.level_type;
+            message.product.level_value = spec.level_value;
+            if spec.level_type == SOIL_LEVEL_TYPE {
+                message.product.second_level_type = SOIL_LEVEL_TYPE;
+                message.product.second_level_value = match spec.level_value {
+                    value if same_level(value, 0.0) => 0.1,
+                    value if same_level(value, 0.1) => 0.4,
+                    value if same_level(value, 0.4) => 1.0,
+                    _ => 2.0,
+                };
+            }
+            if spec.allow_missing {
+                message.bitmap = Some(vec![true; 4]);
+            }
+            messages.push(message);
+        }
+        let file = Grib2File { messages };
+
+        let selected = inventory(&file, "2026-07-20 00:00:00", 0, 81, &certified)
+            .expect("the certified request against a fuller file");
+        assert_eq!(
+            selected.selected.len(),
+            PRESSURE_SPECS.len() * certified.len() + SURFACE_SPECS.len() + SOIL_SPECS.len()
+        );
+        assert!(selected
+            .selected
+            .iter()
+            .all(|field| !same_level(field.level, 5_000.0)
+                && !same_level(field.level, 7_000.0)));
+
+        let mut too_deep = certified.clone();
+        too_deep.insert(0, 3_000.0);
+        let refusal = inventory(&file, "2026-07-20 00:00:00", 0, 81, &too_deep)
+            .expect_err("a level the file lacks must refuse")
+            .to_string();
+        assert!(refusal.contains("missing required GFS field"), "{refusal}");
+        assert!(refusal.contains("3000"), "{refusal}");
     }
 
     /// A ladder with 50 and 70 hPa on top is what a p_top=5000 Pa case
@@ -2272,13 +2544,70 @@ mod tests {
                 .contains("regular GFS grid")
         );
 
-        let mut complex_packing = valid_message(0);
-        complex_packing.data_rep.template = 3;
+        // DRT 5.3 is admitted only inside the envelope NCEP publishes
+        // and the committed matched pairs prove: general group
+        // splitting, no embedded missing-value management, second-order
+        // spatial differencing.  Each departure refuses by name, and
+        // plain complex packing (5.2) has no proof corpus at all.
+        let raw_s3_form = |message: &mut Grib2Message| {
+            message.data_rep.template = 3;
+            message.data_rep.group_splitting_method = 1;
+            message.data_rep.missing_value_management = 0;
+            message.data_rep.spatial_diff_order = 2;
+            message.data_rep.spatial_diff_bytes = 2;
+        };
+        let mut certified_53 = valid_message(0);
+        raw_s3_form(&mut certified_53);
+        validate_common(&certified_53, "2026-07-20 00:00:00", 0, 81, false).unwrap();
+
+        let mut plain_complex = valid_message(0);
+        raw_s3_form(&mut plain_complex);
+        plain_complex.data_rep.template = 2;
         assert!(
-            validate_common(&complex_packing, "2026-07-20 00:00:00", 0, 81, false)
+            validate_common(&plain_complex, "2026-07-20 00:00:00", 0, 81, false)
                 .unwrap_err()
                 .to_string()
-                .contains("unsupported GFS DRT 5.3")
+                .contains("unsupported GFS DRT 5.2")
+        );
+
+        let mut embedded_missing = valid_message(0);
+        raw_s3_form(&mut embedded_missing);
+        embedded_missing.data_rep.missing_value_management = 1;
+        assert!(
+            validate_common(&embedded_missing, "2026-07-20 00:00:00", 0, 81, false)
+                .unwrap_err()
+                .to_string()
+                .contains("missing-value management 1")
+        );
+
+        let mut foreign_splitting = valid_message(0);
+        raw_s3_form(&mut foreign_splitting);
+        foreign_splitting.data_rep.group_splitting_method = 0;
+        assert!(
+            validate_common(&foreign_splitting, "2026-07-20 00:00:00", 0, 81, false)
+                .unwrap_err()
+                .to_string()
+                .contains("group splitting method 0")
+        );
+
+        let mut first_order = valid_message(0);
+        raw_s3_form(&mut first_order);
+        first_order.data_rep.spatial_diff_order = 1;
+        assert!(
+            validate_common(&first_order, "2026-07-20 00:00:00", 0, 81, false)
+                .unwrap_err()
+                .to_string()
+                .contains("spatial differencing order 1")
+        );
+
+        let mut degenerate_descriptor = valid_message(0);
+        raw_s3_form(&mut degenerate_descriptor);
+        degenerate_descriptor.data_rep.spatial_diff_bytes = 0;
+        assert!(
+            validate_common(&degenerate_descriptor, "2026-07-20 00:00:00", 0, 81, false)
+                .unwrap_err()
+                .to_string()
+                .contains("descriptor width 0")
         );
 
         let mut oversized_packing = valid_message(0);

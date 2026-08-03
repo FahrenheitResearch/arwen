@@ -369,6 +369,242 @@ def test_fetch_gfs_discloses_prime_meridian_full_band_amplification(
     assert "longitude_span_amplification" not in manifest
 
 
+# ---------------------------------------------------------------------------
+# GFS full-file route: whole S3 objects, series, manifest, resume, refusals
+# ---------------------------------------------------------------------------
+
+#: One real f000 census (gfs.20260729/18z walked to 696 envelopes), but
+#: the route pins the LIVE index against the walk, not this constant.
+_FULLFILE_MESSAGES = 696
+
+
+def _fullfile_env(monkeypatch, *, idx_records=_FULLFILE_MESSAGES,
+                  payload_messages=_FULLFILE_MESSAGES):
+    """Stub the two network seams of the full-file route.
+
+    Returns the list the object URLs land in.  ``gfs_live_index`` is
+    silenced so the ladder resolves to the certified constants without
+    a network read.
+    """
+
+    urls: list[str] = []
+
+    def download(url, destination, **kwargs):
+        urls.append(url)
+        destination.write_bytes(_grib2_stream(payload_messages))
+
+    monkeypatch.setattr(gfs_transport, "_download", download)
+    monkeypatch.setattr(fetch, "gfs_live_index",
+                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(fetch, "_gfs_index_record_count",
+                        lambda url, **kwargs: idx_records)
+    return urls
+
+
+def test_fetch_gfs_fullfile_takes_whole_objects_and_records_the_route(
+        tmp_path, monkeypatch):
+    urls = _fullfile_env(monkeypatch)
+    out = tmp_path / "gfs-full"
+    manifest_path = fetch.fetch_gfs_fullfile(
+        cycle=datetime(2026, 7, 28, 6), hours=(0, 3), area=None,
+        out=out, progress=lambda line: None)
+
+    assert urls == [fetch.gfs_object_url(datetime(2026, 7, 28, 6), hour)
+                    for hour in (0, 3)]
+    series = (out / "gfs-series.tsv").read_text().splitlines()
+    assert series == [
+        "0\tgfs.t06z.pgrb2.0p25.f000\t81",
+        "3\tgfs.t06z.pgrb2.0p25.f003\t96",
+    ]
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["schema"] == fetch.FETCH_MANIFEST_SCHEMA
+    assert manifest["mode"] == "full-file"
+    assert manifest["transport"] == "s3"
+    assert manifest["engine"] == "python"
+    assert manifest["area"] is None
+    assert manifest["forecast_hours"] == [0, 3]
+    roles = [item["role"] for item in manifest["files"]]
+    assert roles == ["gfs-full-file"] * 2 + ["series"]
+    # The decode ladder is a request property the manifest must carry,
+    # or the front door would let the bridge derive the mesosphere from
+    # the whole-globe object.
+    assert len(manifest["pressure_levels_hpa"]) == 21
+    assert manifest["pressure_levels_hpa"][-1] == 1000.0
+    assert manifest["source_top_pressure_pa"] == 10000.0
+    for item in manifest["files"][:2]:
+        assert item["grib2_messages"] == _FULLFILE_MESSAGES
+        assert item["idx_records"] == _FULLFILE_MESSAGES
+        assert item["url"].startswith(fetch.GFS_S3_BASE)
+        path = out / item["name"]
+        assert item["sha256"] == hashlib.sha256(
+            path.read_bytes()).hexdigest()
+
+
+def test_fetch_gfs_fullfile_census_mismatch_quarantines(
+        tmp_path, monkeypatch):
+    """The live index and the envelope walk must agree, or the payload
+    is set aside (nothing deleted) and the fetch refuses."""
+
+    _fullfile_env(monkeypatch, payload_messages=_FULLFILE_MESSAGES - 1)
+    out = tmp_path / "gfs-full"
+    with pytest.raises(ValueError, match="695 GRIB2 messages"):
+        fetch.fetch_gfs_fullfile(
+            cycle=datetime(2026, 7, 28, 6), hours=(0, 3), area=None,
+            out=out, progress=lambda line: None)
+    rejected = [path.name for path in out.iterdir()
+                if ".rejected-" in path.name]
+    assert rejected, "the mismatched payload must be quarantined"
+
+
+def test_fetch_gfs_fullfile_resumes_verified_objects(tmp_path, monkeypatch):
+    urls = _fullfile_env(monkeypatch)
+    kwargs = dict(cycle=datetime(2026, 7, 28, 6), hours=(0, 3), area=None,
+                  out=tmp_path / "gfs-full")
+    fetch.fetch_gfs_fullfile(progress=lambda line: None, **kwargs)
+    transferred = len(urls)
+    lines: list[str] = []
+    fetch.fetch_gfs_fullfile(progress=lines.append, **kwargs)
+    assert len(urls) == transferred, "verified objects must not re-download"
+    assert sum("skipped" in line for line in lines) == 2
+
+
+def test_fetch_gfs_fullfile_rust_engine_uses_the_backbone(
+        tmp_path, monkeypatch):
+    from gpuwm import rustwx_fetch
+
+    monkeypatch.setattr(fetch, "gfs_live_index",
+                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(fetch, "_gfs_index_record_count",
+                        lambda url, **kwargs: _FULLFILE_MESSAGES)
+    calls: list[dict] = []
+
+    def run_fetch(binary, **kwargs):
+        calls.append(kwargs)
+        name = (f"gfs.t06z.pgrb2.0p25."
+                f"f{kwargs['hours'][0]:03d}")
+        path = kwargs["out"] / name
+        path.write_bytes(_grib2_stream(_FULLFILE_MESSAGES))
+        return {"files": [{
+            "name": name, "bytes": path.stat().st_size,
+            "wall_seconds": 0.1, "source": "aws", "mode": "full-file",
+            "mode_reason": "requested",
+        }]}
+
+    monkeypatch.setattr(rustwx_fetch, "run_fetch", run_fetch)
+    manifest_path = fetch.fetch_gfs_fullfile(
+        cycle=datetime(2026, 7, 28, 6), hours=(0, 3), area=None,
+        out=tmp_path / "gfs-full", engine="rust",
+        engine_bin=tmp_path / "rw_fetch", progress=lambda line: None)
+
+    assert [call["hours"] for call in calls] == [(0,), (3,)]
+    for call in calls:
+        assert call["model"] == "gfs"
+        assert call["product"] == "pgrb2.0p25"
+        assert call["source"] == "aws"
+        assert call["mode"] == "full-file"
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["engine"] == "rust"
+    assert manifest["mode"] == "full-file"
+
+
+def test_cli_fetch_gfs_mode_and_engine_contracts(tmp_path, capsys):
+    def refused(needle: str, argv: list[str]) -> None:
+        assert cli.main(argv) == 2
+        err = capsys.readouterr().err
+        assert needle in err and "Traceback" not in err
+
+    base = ["fetch", "--source", "gfs", "--cycle", "2026-07-28T06",
+            "--hours", "3", "--out", str(tmp_path / "out")]
+    refused("not a certified GFS route", base + ["--mode", "idx-subset"])
+    refused("not a certified GFS route", base + ["--mode", "auto"])
+    refused("belong to '--mode full-file'",
+            base + ["--area", "30,-100,40,-90", "--engine", "rust"])
+    refused("--area is optional request identity", base)
+    refused("--source hrrr or gfs/gdas only",
+            ["fetch", "--source", "era5", "--cycle", "2026-07-28T06",
+             "--hours", "6", "--area", "30,-100,40,-90",
+             "--out", str(tmp_path / "era5"), "--mode", "full-file"])
+
+
+def test_cli_fetch_gfs_fullfile_routes_through_the_new_transport(
+        tmp_path, monkeypatch, capsys):
+    from gpuwm import rustwx_fetch
+
+    _fullfile_env(monkeypatch)
+    monkeypatch.setattr(fetch, "require_published_cycle",
+                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", lambda: None)
+    out = tmp_path / "gfs-full"
+    rc = cli.main(["fetch", "--source", "gfs", "--cycle", "2026-07-28T06",
+                   "--hours", "3", "--mode", "full-file",
+                   "--out", str(out)])
+    assert rc == 0
+    printed = capsys.readouterr().out
+    assert "mode full-file" in printed
+    manifest = json.loads((out / fetch.FETCH_MANIFEST_NAME).read_text())
+    assert manifest["mode"] == "full-file"
+    assert manifest["engine"] == "python"
+
+
+def test_cli_fetch_gfs_mode_switch_refuses_on_a_subset_directory(
+        tmp_path, monkeypatch, capsys):
+    """The two transports name and verify files differently; one --out
+    holds one of them."""
+
+    from gpuwm import rustwx_fetch
+
+    monkeypatch.setattr(gfs_transport, "_download", _fake_gfs_download)
+    monkeypatch.setattr(fetch, "gfs_live_index",
+                        lambda *args, **kwargs: None)
+    out = tmp_path / "gfs"
+    fetch.fetch_gfs(
+        cycle=datetime(2026, 7, 28, 6), hours=(0, 3),
+        area=fetch.parse_area("30,-100,40,-90"), out=out,
+        progress=lambda line: None,
+        derived_bar=lambda cycle, **kwargs: fetch.GFS_SUBSET_RECORD_COUNT)
+
+    monkeypatch.setattr(fetch, "require_published_cycle",
+                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", lambda: None)
+    rc = cli.main(["fetch", "--source", "gfs", "--cycle", "2026-07-28T06",
+                   "--hours", "3", "--mode", "full-file",
+                   "--area", "30,-100,40,-90", "--out", str(out)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "already holds a nomads-cgi-subset fetch" in err
+    assert "Traceback" not in err
+
+
+def test_author_front_door_manifest_binds_a_fullfile_directory(
+        tmp_path, monkeypatch):
+    """The front-door manifest serves both transports: a full-file
+    directory authors the same hash-bound role inventory a subset one
+    does, with the raw object names in the grib-fNNN roles."""
+
+    _fullfile_env(monkeypatch)
+    out = tmp_path / "gfs-full"
+    fetch.fetch_gfs_fullfile(
+        cycle=datetime(2026, 7, 28, 6), hours=(0, 3), area=None,
+        out=out, progress=lambda line: None)
+
+    bridge = tmp_path / "gfs_grib2_bridge.exe"
+    bridge.write_bytes(b"not launched here; only hashed")
+    wps = tmp_path / "namelist.wps"
+    wps.write_text("&share\n/\n")
+    config = tmp_path / "experiment.toml"
+    config.write_text("[run]\n")
+    path, digest = fetch.author_gfs_front_door_manifest(
+        out=out, bridge=bridge, wps_namelist=wps,
+        experiment_config=config, progress=lambda line: None)
+    payload = json.loads(path.read_text())
+    assert payload["schema"] == fetch.GFS_FRONT_DOOR_MANIFEST_SCHEMA
+    assert payload["files"]["grib-f000"]["name"] == "gfs.t06z.pgrb2.0p25.f000"
+    assert payload["files"]["grib-f003"]["name"] == "gfs.t06z.pgrb2.0p25.f003"
+    assert payload["source"]["pressure_levels_hpa"][-1] == 1000.0
+    assert payload["source"]["top_pressure_pa"] == 10000.0
+    assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def test_fetch_gfs_first_hour_interrupt_records_empty_request(
         tmp_path, monkeypatch):
     def interrupt(url, destination, **kwargs):

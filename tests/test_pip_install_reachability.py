@@ -45,6 +45,46 @@ def _venv_python(venv: Path) -> Path:
     return venv / "bin" / "python"
 
 
+def _offline_build_shortfall() -> str | None:
+    """Why this interpreter cannot build the wheel offline, or ``None``.
+
+    The fixture builds with ``--no-build-isolation`` so the suite never
+    reaches an index, which makes the AMBIENT setuptools the build
+    backend.  ``[build-system] requires`` names the floor the backend
+    must meet (setuptools >=77, the PEP 639 license-expression reading);
+    an interpreter below it cannot build the wheel at all, which is an
+    environment prerequisite exactly like having a source tree -- not a
+    reachability verdict.  The skip names the one-line remedy.
+    """
+
+    import tomllib
+    with (ROOT / "pyproject.toml").open("rb") as stream:
+        requires = tomllib.load(stream)["build-system"]["requires"]
+    floor = None
+    for entry in requires:
+        spec = entry.replace(" ", "")
+        if spec.startswith("setuptools>="):
+            floor = spec.split(">=", 1)[1]
+    if floor is None:
+        return None
+    import setuptools
+    have = setuptools.__version__
+
+    def release(version: str) -> tuple[int, ...]:
+        parts = []
+        for piece in version.split("."):
+            if not piece.isdigit():
+                break
+            parts.append(int(piece))
+        return tuple(parts)
+
+    if release(have) >= release(floor):
+        return None
+    return (f"building the wheel offline (--no-build-isolation) needs "
+            f"setuptools>={floor}; this interpreter has {have} "
+            f"(remedy: python -m pip install -U setuptools)")
+
+
 @pytest.fixture(scope="module")
 def wheel_venv(tmp_path_factory):
     """A venv holding the built wheel and its dependencies, and no checkout.
@@ -60,6 +100,9 @@ def wheel_venv(tmp_path_factory):
 
     if not (ROOT / "pyproject.toml").is_file():
         pytest.skip("needs the source tree to build a wheel")
+    shortfall = _offline_build_shortfall()
+    if shortfall is not None:
+        pytest.skip(shortfall)
 
     work = tmp_path_factory.mktemp("pip-reachability")
     wheelhouse = work / "wheelhouse"

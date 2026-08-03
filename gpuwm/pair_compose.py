@@ -29,8 +29,13 @@ from pathlib import Path
 #: The rust renderer's forecast-hour marker.  Everything before it is the
 #: run's identity (model, init date, cycle), which two compared runs are
 #: expected to differ in; everything after it -- domain token and product
-#: slug -- is what has to match.
-LEAD_MARKER = re.compile(r"^rustwx_.+?_f\d{3}_")
+#: slug -- is what has to match.  Both brand spellings key identically:
+#: ``arwen_`` is what the wheel ships since the output-filename rebrand
+#: (:func:`gpuwm.render._rebrand_engine_output`), ``rustwx_`` is what
+#: the vendored engine writes natively and what every directory rendered
+#: before the rebrand still holds -- so an old render pairs against a
+#: new one.
+LEAD_MARKER = re.compile(r"^(?:arwen|rustwx)_.+?_f\d{3}_")
 
 
 def product_name(path: Path) -> str:

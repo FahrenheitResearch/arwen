@@ -1721,6 +1721,37 @@ def test_every_declared_doctor_source_has_route_checks():
         doctor._source_route_checks("not-a-source")
 
 
+def test_the_gfs_route_reports_decoder_and_both_transports():
+    """The 4090 user-zero report showed doctor naming only the hrrr
+    route while gfs_grib2_bridge sat verified with no route around it;
+    --source gfs must now answer with the decoder AND the transports."""
+
+    checks = doctor._source_route_checks("gfs")
+    names = [check.name for check in checks]
+    assert "gfs route decoder" in names
+    assert "gfs route fetch transport" in names
+    transport = next(check for check in checks
+                     if check.name == "gfs route fetch transport")
+    assert transport.status == "verified"
+    assert "NOMADS grib-filter crop" in transport.detail
+    assert "full-file" in transport.detail
+
+
+def test_the_gfs_transport_line_names_the_engine_it_resolved(monkeypatch):
+    """Both installs are healthy; the line says which engine full-file
+    gets.  Negative control: with the backbone unresolvable the check
+    stays verified but names the stdlib transport and the remedy."""
+
+    from gpuwm import rustwx_fetch
+
+    monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", lambda: None)
+    check = doctor._gfs_fetch_path_check()
+    assert check.status == "verified"
+    assert "stdlib transport" in check.detail
+    assert "gpuwm setup" in check.detail
+    assert check.brief == "cgi-subset default; full-file via python"
+
+
 def test_the_default_estate_carries_every_route(monkeypatch):
     """A bare ``gpuwm doctor`` reports the routes, not only the estate.
 

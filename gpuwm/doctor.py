@@ -971,7 +971,7 @@ def _non_git_import_check() -> Check:
 
 #: Doctor's per-source route checks, by the ``--source`` name.  These are
 #: public data products, not cases.
-DOCTOR_SOURCES = ("hrrr",)
+DOCTOR_SOURCES = ("gfs", "hrrr")
 
 #: Fold key for one source's route findings.
 _GROUP_ROUTE = "route"
@@ -1052,6 +1052,43 @@ def _hrrr_fetch_path_check() -> Check:
         group=_GROUP_ROUTE)
 
 
+def _gfs_fetch_path_check() -> Check:
+    """Which byte transports ``gpuwm fetch --source gfs`` can use.
+
+    Two first-class transports, reported the way the HRRR line is: the
+    default NOMADS grib-filter crop (governed stdlib HTTP, always
+    available) and ``--mode full-file`` (whole pgrb2.0p25 objects from
+    the S3 archive, preferring the rust backbone's parallel range
+    GETs).  The report that prompted this line showed doctor naming the
+    hrrr route while ``gfs_grib2_bridge`` sat verified two rows up with
+    no route reported around it.
+    """
+
+    from gpuwm import rustwx_fetch
+
+    name = "gfs route fetch transport"
+    try:
+        found = rustwx_fetch.find_fetch_bin()
+        usable = found is not None and rustwx_fetch.probe_fetch_bin(found)[0]
+    except FileNotFoundError:
+        found, usable = None, False
+    if usable:
+        return Check(
+            name, "verified",
+            "default: NOMADS grib-filter crop (governed stdlib HTTP); "
+            f"--mode full-file: whole S3 objects, engine rust ({found})",
+            brief="cgi-subset default; full-file via rust",
+            group=_GROUP_ROUTE)
+    return Check(
+        name, "verified",
+        "default: NOMADS grib-filter crop (governed stdlib HTTP); "
+        "--mode full-file: whole S3 objects through the stdlib "
+        "transport (the rust backbone is not usable here; `gpuwm "
+        "setup` stages the faster parallel-range-GET engine)",
+        brief="cgi-subset default; full-file via python",
+        group=_GROUP_ROUTE)
+
+
 def _source_route_checks(source: str) -> list[Check]:
     """Everything one data route resolves before it reads a byte."""
 
@@ -1061,6 +1098,8 @@ def _source_route_checks(source: str) -> list[Check]:
     checks = [_decoder_route_check(source)]
     if source == "hrrr":
         checks.append(_hrrr_fetch_path_check())
+    if source == "gfs":
+        checks.append(_gfs_fetch_path_check())
     return checks
 
 
