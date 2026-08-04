@@ -273,6 +273,37 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     (112 per km_opt value), 168 WRF-scheme refusals (Lane C's 96 carried
     across the axis growth), 168 SASE refusals.
 
+    Re-pinned 2026-08-03 for the gray-zone lane: Shin-Hong
+    (``bl_pbl_physics=11``) became routable and this census was never
+    re-run, so the pins were stale rather than wrong -- 1386 is IDENTICAL
+    at ``cf159eb2`` (the shipped 1.5.1), ``cfcfa9a9`` (the pre-merge lane
+    tip that added the route) and ``61488333`` (the merge).  Scheme 11
+    adds ONE pbl value to the sweep and every count below is that value's
+    own slice, measured and not projected:
+
+        rows        1386 -> 1722   (+336)
+        rejected    1302 -> 1638   (+336)
+        lsm4 rows    336 ->  420   ( +84)
+        lsm4 WRF-scheme refusals
+                     168 ->  252   ( +84)
+
+    336 is exactly sfclay {1, 91} x lsm {0, 2, 3, 4} x km_opt {1, 3, 4} x
+    7 microphysics x cu {0, 1}, and the 336 refusals are the same product
+    over the sfclay values WRF v4.6.1's table refuses with this scheme,
+    {0, 5}.  Shin-Hong takes YSU's surface-layer pairing exactly, so its
+    slice is the SAME SIZE as YSU's at every cut: the measured census
+    reads 336 rows and 336 refusals for pbl=1 as well, and 84 of each in
+    the lsm4 slice.  The whole sweep is now the 7 x 4 x 5 x 4 x 2 x 3 =
+    3360 product, and 1722 + 1638 = 3360 accounts for all of it.
+
+    SASE is untouched by this and its numbers are asserted below
+    unchanged: 672 rejections, 168 of them in the lsm4 slice, zero
+    measured rows.  The one thing worth checking beyond arithmetic is the
+    ceiling, and scheme 11 does not approach it -- the widest pbl=11 row
+    measures 608 descriptors against the unchanged 632 peak, so the peak,
+    the peak set and the 392 of 1024 headroom all stay exactly where they
+    were.
+
     What did NOT move is the point: the worst selectable descriptor count
     is unchanged at 632 of 1024.  A new mixing option ties the existing
     peak instead of raising it, which is what "km_opt does not change the
@@ -280,7 +311,7 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     rather than two.
     """
     report = four_domain_census
-    assert len(report["rows"]) == 1386
+    assert len(report["rows"]) == 1722
     # Re-pinned when the SASE closure joined the dispatch table.  The
     # census derives its sweep from PHYSICS_SLOT_DISPATCH on purpose --
     # "an admitted scheme joins the census the moment it is routed" --
@@ -288,8 +319,11 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     # added are accounted for EXACTLY, and the accounting is asserted
     # below rather than asserted away.  (Union re-pin on the 1.5
     # integration line: the LES lane widened the km_opt sweep, the SASE
-    # lane added the routed pbl900 selector; both movements land here.)
-    assert len(report["rejected"]) == 1302
+    # lane added the routed pbl900 selector; both movements land here.
+    # Gray-zone lane, 2026-08-03: the routed Shin-Hong selector adds its
+    # own 336 measured rows and 336 refusals, the second scheme to prove
+    # this sentence by moving these numbers.)
+    assert len(report["rejected"]) == 1638
     sase = [row for row in report["rejected"] if "pbl900" in row["selection"]]
     assert len(sase) == 672, len(sase)  # 32 per (km_opt, mp) cell x 3 x 7
     # Every one of them is the same refusal, and it is a real one: the
@@ -305,10 +339,11 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     assert not [row for row in report["rows"] if "pbl900" in row["selection"]]
     lsm4_rows = [row for row in report["rows"]
                  if row["sf_surface_physics"] == 4]
-    assert len(lsm4_rows) == 336, (
-        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 336 the "
-        "1.5-line census recorded (112 per km_opt value across {1, 3, 4}); "
-        "re-run and re-pin")
+    assert len(lsm4_rows) == 420, (
+        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 420 the "
+        "1.5.2-line census recorded (140 per km_opt value across {1, 3, 4}: "
+        "the 1.5-line's 336 plus Shin-Hong's own 84, the same 84 YSU "
+        "contributes); re-run and re-pin")
     budget_refusals = [entry["selection"] for entry in report["rejected"]
                        if "Noah-MP column budget" in entry["reason"]]
     assert not budget_refusals, (
@@ -325,12 +360,15 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     # mode this whole census exists to prevent.
     wrf_refused = [entry for entry in refused
                    if "pbl900" not in entry["selection"]]
-    assert len(wrf_refused) == 168, (
-        f"{len(wrf_refused)} WRF-scheme lsm4 refusals against the 168 "
-        "recorded on the 1.5 line -- Lane C's 96 (72 WRF-fatal "
+    assert len(wrf_refused) == 252, (
+        f"{len(wrf_refused)} WRF-scheme lsm4 refusals against the 252 "
+        "recorded on the 1.5.2 line -- Lane C's 96 (72 WRF-fatal "
         "PBL/surface-layer rows and 24 active-LSM rows without an ArWen "
         "surface-exchange writer) carried across the three km_opt values "
-        "and the seven-scheme microphysics axis the validator now admits")
+        "and the seven-scheme microphysics axis the validator now admits, "
+        "giving the 1.5 line's 168, plus Shin-Hong's own 84: WRF v4.6.1 "
+        "refuses scheme 11 with the surface layer off and with MYNN's, "
+        "which is the same pairing refusal YSU carries")
     sase_refused = [entry for entry in refused
                     if "pbl900" in entry["selection"]]
     assert len(sase_refused) == 168, len(sase_refused)

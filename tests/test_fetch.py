@@ -347,6 +347,13 @@ def test_fetch_gfs_discloses_prime_meridian_full_band_amplification(
     assert "fetched band lat 40..50, lon 0..360" in notes[0]
     assert "18x longitude-span amplification" in notes[0]
     assert "compressed-byte amplification is data-dependent" in notes[0]
+    # The widening is a handled condition, not a failure, and the line has
+    # to say so: field reports read the bare disclosure as a warning that
+    # something had gone wrong with the fetch.
+    assert notes[0].endswith(
+        "informational only -- the ingest interpolates the domain out of "
+        "the wider band, so the only cost is download size and the run "
+        "continues unchanged")
     manifest = json.loads(manifest_path.read_text())
     assert manifest["nomads_area"]["left_lon"] == 0.0
     assert manifest["nomads_area"]["right_lon"] == 360.0

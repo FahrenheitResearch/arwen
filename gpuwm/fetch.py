@@ -1386,7 +1386,9 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
             "which one NOMADS [0,360] subregion cannot express; fetched "
             f"band {fetched}, a {longitude_amplification:g}x "
             "longitude-span amplification (compressed-byte "
-            "amplification is data-dependent)")
+            "amplification is data-dependent); informational only -- the "
+            "ingest interpolates the domain out of the wider band, so the "
+            "only cost is download size and the run continues unchanged")
         progress(f"fetch {source}: NOTE {longitude_note}")
     files: list[dict] = []
 

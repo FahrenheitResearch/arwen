@@ -45,11 +45,13 @@ def test_dispatch_table_routes_only_values_with_a_real_runner():
                               91: "_run_sfclay"},
         "sf_surface_physics": {0: None, 2: "_run_noah", 3: "_run_ruc",
                                4: "_run_noahmp"},
-        # 900 is SASE, the one ArWen-only scheme: it takes a value
-        # outside WRF's namespace precisely so this table can route it
-        # without ever shadowing a WRF selector.
+        # 11 is Shin-Hong, routed to its own runner by the Phase-D
+        # wiring (max ULP 0 conformance against the byte-frozen WRF
+        # v4.6.1 module); 900 is SASE, the one ArWen-only scheme: it
+        # takes a value outside WRF's namespace precisely so this table
+        # can route it without ever shadowing a WRF selector.
         "bl_pbl_physics": {0: None, 1: "_run_ysu", 5: "_run_mynn_pbl",
-                           900: "_run_sase"},
+                           11: "_run_shinhong", 900: "_run_sase"},
     }
 
 
@@ -91,6 +93,7 @@ def test_routed_values_resolve_to_their_own_runner():
     assert resolve_physics_slot("sf_surface_physics", 4) == "_run_noahmp"
     assert resolve_physics_slot("bl_pbl_physics", 1) == "_run_ysu"
     assert resolve_physics_slot("bl_pbl_physics", 5) == "_run_mynn_pbl"
+    assert resolve_physics_slot("bl_pbl_physics", 11) == "_run_shinhong"
 
 
 # ---------------------------------------------------------------------------
@@ -365,10 +368,14 @@ def test_noahmp_is_admitted_at_four_soil_layers_and_only_there():
 def test_schema_tables_and_soil_geometry():
     assert SURFACE_LAYER_SCHEMES == (0, 1, 5, 91)
     assert LAND_SURFACE_SCHEMES == (0, 2, 3, 4)
-    # 900 is SASE: ArWen-only, deliberately outside WRF's namespace
-    # (which runs to 99) so it can never collide with a scheme WRF
-    # adds later.
-    assert PBL_SCHEMES == (0, 1, 5, 900)
+    # Pin moved (0, 1, 5, 900) -> (0, 1, 5, 11, 900) by the Phase-D
+    # Shin-Hong runtime wiring: 11 is WRF's own bl_pbl_physics number for
+    # module_bl_shinhong.F, admitted with a routed runner, restart
+    # identity and preflight rows in the same change -- exactly the one
+    # widening the registry admission (a5e101c5) enumerated.  900 is
+    # SASE: ArWen-only, deliberately outside WRF's namespace (which runs
+    # to 99) so it can never collide with a scheme WRF adds later.
+    assert PBL_SCHEMES == (0, 1, 5, 11, 900)
     assert LAND_SURFACE_SOIL_LAYERS[2] == (4,)
     assert LAND_SURFACE_SOIL_LAYERS[3] == (6, 9)
     assert LAND_SURFACE_SOIL_LAYERS[4] == (4,)

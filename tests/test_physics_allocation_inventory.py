@@ -344,6 +344,15 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         '_allocate_result': 1,
         '_surface_array': 1,
     },
+    # Shin-Hong (bl_pbl_physics=11): the same shape as YSU's row below --
+    # five allocation sites building the thirteen per-call outputs (one
+    # empty_like comprehension for the nine 3-D fields, four cp.empty for
+    # the 2-D ones), all raw allocations, priced when Phase D wires the
+    # scheme into the driver/preflight the way ysu_output_transient_shapes
+    # prices YSU's.
+    'gpuwm/core/shinhong.py': {
+        'launch_shinhong': 5,
+    },
     'gpuwm/core/thompson.py': {},
     # THE SIX mp_physics=28 MODULES.  Entered here by the commit that merged
     # the port onto this line, which is the commit that first made them

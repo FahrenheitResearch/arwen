@@ -523,6 +523,7 @@ Notes with teeth:
 |---|---|---|---|
 | YSU | 1 | implemented-unverified | 24-column oracle vs unmodified `bl_ysu.F90`: theta tendency 1 ULP, exchange coefficients 7 ULP, PBLH 1 ULP; momentum/moisture tendencies 4.2e-8 m/s2 / 3.1e-11 kg/kg/s (near-total cancellations); part of the model-validated reference suite alongside Thompson |
 | MYNN (EDMF) | 5 | implemented-unverified | assembled driver bitwise on the warm step vs unmodified `module_bl_mynn.F`; 300-step coupled forecast gate; admitted only as the coupled 5/5 pair with the MYNN surface layer |
+| Shin-Hong (scale-aware) | 11 | implemented-unverified | float32 CPU authority reproduces every output field of both `ctopo` arms at **max ULP 0** against the byte-frozen `module_bl_shinhong.F`, over 30 cases x 6 grid spacings x 40 levels; the CUDA mirror's heat tendency is bitwise (0 ULP through both tridiagonal solves), PBLH/WSTAR/DELTA 1 ULP, `EXCH_H` 8; and its resolved/subgrid partition was scored across a 3200-100 m ladder against pre-registered Honnert (2011) envelope bands -- every gated rung inside, 100 m LES anchor held ([receipts](receipts/grayzone/)) |
 | SASE | none: ArWen-only, `bl_pbl_physics = 900` outside WRF's namespace | implemented-unverified, **permanently** | no WRF v4.6.1 counterpart, so no oracle comparison against WRF Fortran exists or can exist and this ladder cannot rank it; numerics self-checked; physics unvalidated -- 2 of 7 frozen acceptance bars met on a single reference case on a single day ([Selecting an experimental scheme](#selecting-an-experimental-scheme)) |
 
 The YSU registry entry records four open items verbatim, including two
@@ -532,6 +533,23 @@ records four of its own, the sharpest being that its CUDA leaves are
 not bitwise twins of the CPU references away from their oracle
 fixtures, and that `phim`/`phih` are still evaluated on the host one
 column at a time (a measured 125 µs per column).
+
+Shin-Hong's entry records four of its own: the `q2xk(kpbl+1)`
+out-of-bounds read WRF performs and ArWen deliberately does not; WRF's
+own `prfac2 = 0/0` NaN reproduced rather than repaired; the sm_120
+subnormal-flush branch, closed at the branch by a double-compare
+countermeasure with 72 residual flush lanes pinned as counts; and the
+CUDA mirror's near-total-cancellation lanes on the momentum and
+moisture tendencies (the worst `du` lane is 3.4966e-06 against
+3.4756e-06 m/s2). It is the only option in this table whose behaviour
+*across grid spacings* has been measured against a published partition
+— see [Receipts: gray zone](receipts/grayzone/) — and that measurement
+is deliberately fenced: one idealized dry convective boundary layer,
+six seeds, one card, one day. It is agreement with a published
+similarity curve, not skill against observations, and it moved no
+maturity rung. Scheme 11 remains `implemented-unverified` for the same
+reason YSU and MYNN do — no matched ArWen-versus-WRF forecast
+trajectory has been run with it.
 
 Earlier revisions of this page said MYNN's registry entry recorded a
 snow deviation — that snow mixing ratio was not passed to the
@@ -904,15 +922,20 @@ example GFS+RUC, which dies at its first surface-temperature call).
 
 ## Namelist import substitutions
 
-`gpuwm import-namelist` maps exactly three unimplemented WRF selections
+`gpuwm import-namelist` maps exactly two unimplemented WRF selections
 to their nearest implemented counterparts, and reports each one in a
 structured substitution report rather than silently rewriting:
 
 | WRF namelist asks for | ArWen substitutes | class |
 |---|---|---|
 | `mp_physics = 55` (ISHMAEL) | Morrison 2-moment (10) | model-form change, no error bound |
-| `bl_pbl_physics = 11` (Shin-Hong) | YSU (1) | model-form change, no error bound |
 | `ra_lw/sw_physics = 4` (RRTMG) | RTE+RRTMGP (default) or legacy RRTMG (`--rrtmg-variant rrtmg_legacy`) | explicit, token-recorded |
+
+`bl_pbl_physics = 11` (Shin-Hong) was the third row of this table until
+the Shin-Hong port: it now imports natively as 11 and runs the scheme
+itself (registry maturity "implemented-unverified" -- its CPU authority
+is bitwise against WRF v4.6.1, and no matched forecast trajectory
+exists yet), so it is no longer a substitution.
 
 Every other unimplemented scheme id is a hard error. Options WRF
 accepts but ArWen has not validated -- moving nests, vertical
@@ -923,7 +946,7 @@ complete register with WRF source citations is
 
 `mp_physics = 28` is a **translation, not a substitution**: it imports
 as 28 and runs the aerosol-aware scheme, so the table above stays at
-exactly three substitutions. The aerosol knobs that surround it
+exactly two substitutions. The aerosol knobs that surround it
 (`use_aero_icbc`, `use_rap_aero_icbc`, `wif_input_opt`,
 `num_wif_levels`, `qna_update`, `scalar_pblmix`, `grav_settling`,
 `dust_emis`, `wif_fire_emit`, `wif_fire_inj`) are published in the

@@ -79,7 +79,39 @@ _NX, _NY, _NZ = 3, 2, 8
 #: 11 refusals with the surface layer off (its one admitted member is
 #: the all-off (0, 0, 0)), plus the 4 remaining WRF-fatal
 #: (bl_pbl=1, sf_sfclay=5) rows -- 15 refused, 33 admitted.
-_ROUTED_COMBINATIONS = 33
+#:
+#: Re-measured 2026-08-03: 33 -> 41, because the gray-zone lane made
+#: Shin-Hong (``bl_pbl_physics=11``) routable and never re-measured this
+#: pin.  It is lane bookkeeping and not a release-line movement: 33 is
+#: IDENTICAL at ``cf159eb2`` (the shipped 1.5.1), ``cfcfa9a9`` (the
+#: pre-merge lane tip that added the route) and ``61488333`` (the merge).
+#: The whole +8 is scheme 11's own admitted slice, and nothing else moved:
+#:
+#:   sfclay {1, 91} x lsm {0, 2, 3, 4} x pbl 11  ->  8 admitted
+#:   sfclay {0, 5}  x lsm {0, 2, 3, 4} x pbl 11  ->  8 refused
+#:
+#: Shin-Hong inherits YSU's surface-layer pairing exactly, which is the
+#: point: WRF v4.6.1's own table admits it with the revised and classic
+#: MM5 surface layers and refuses it with the surface layer off and with
+#: MYNN's, and the refusal names that authority verbatim ("WRF v4.6.1
+#: PBL/surface-layer compatibility ... WRF v4.6.1 refuses this pairing").
+#: pbl=1 measures the same 8 admitted / 8 refused split at this checkout.
+#:
+#: Measured whole rather than as a delta, the sweep is now the
+#: 4 x 4 x 5 = 80 product of the routed selectors:
+#:
+#:   admitted 41 = 13 (pbl 0) + 8 (pbl 1) + 12 (pbl 5) + 8 (pbl 11)
+#:                  + 0 (SASE)
+#:   refused  39 =  3        + 8        + 4        + 8        + 16
+#:
+#: The "4 x 4 x 3 = 48" above was already one axis behind before this
+#: lane: SASE's routed ``pbl900`` selector had made the product 64.  The
+#: 33 it explained stayed correct anyway, because SASE is admitted with
+#: no surface-layer value on this probe's reference config (it wants
+#: km_opt=0, which ``_config`` does not set), so it contributed 16
+#: refusals and zero admissions.  Scheme 11 is the first PBL addition
+#: since that actually lands in the admitted set.
+_ROUTED_COMBINATIONS = 41
 
 #: Every int32 descriptor the routed cross-product actually produces.
 _INT32_DESCRIPTORS = frozenset({

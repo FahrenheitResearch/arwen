@@ -2139,8 +2139,11 @@ def _wrf_compatibility_authority() -> dict:
             "all remaining cells are legal",
         ],
         "verdict_counts": dict(sorted(counts.items())),
+        # The count is computed, not typed: a typed "2,400" survived two
+        # axis widenings (mp=28, bl_pbl=11) as stale prose.
         "test": (
-            "tests/test_wrf461_compatibility.py sweeps all 2,400 cells and "
+            f"tests/test_wrf461_compatibility.py sweeps all "
+            f"{MATRIX_CELL_COUNT:,} cells and "
             "requires every cell to carry all six WRF citations"),
     }
 
@@ -2504,10 +2507,10 @@ def build(registry: dict) -> dict:
         declared.insert(position, kessler_id)
 
     # WRF v4.6.1's actual PBL/surface-layer law is in
-    # phys/module_physics_init.F:3699-3701,3837-3839.  In particular MYNN
+    # phys/module_physics_init.F:3699-3704,3837-3839.  In particular MYNN
     # PBL accepts the revised and classic MM5 surface layers, and the MYNN
     # surface layer is legal with PBL off.  These declarative constraints
-    # mirror the same 12-cell table used by runtime admission.
+    # mirror the same 16-cell table used by runtime admission.
     pbl_options = registry["components"]["pbl"]["options"]
     surface_options = registry["components"]["surface_layer"]["options"]
     pbl_options["ysu"]["constraints"]["requires_components"][
@@ -2516,6 +2519,18 @@ def build(registry: dict) -> dict:
     pbl_options["mynn"]["constraints"]["requires_components"][
         "surface_layer"
     ] = ["revised-mm5", "classic-mm5", "mynn"]
+    # Shin-Hong (bl_pbl_physics=11) requires isfc=1 exactly as YSU does,
+    # through WRF's own SHINHONGSCHEME arm: phys/module_physics_init.F:
+    # 3702-3704 fatals unless sf_sfclay_physics initialized isfc=1, which
+    # only the revised and classic MM5 surface layers do.
+    pbl_options["shinhong"]["constraints"]["requires_components"][
+        "surface_layer"
+    ] = ["revised-mm5", "classic-mm5"]
+    # No template selects Shin-Hong; it is selectable per domain on the
+    # tree route (allowed_component_options below), so its recomputed
+    # reachability is "component-override" -- the sase posture: a user asks
+    # for it explicitly or does not get it.
+    pbl_options["shinhong"]["reachability"] = {"state": "component-override"}
     # SASE is not in the WRF v4.6.1 table above -- WRF has no such scheme,
     # which is why it carries an out-of-namespace selector.  Its
     # surface-layer constraint is therefore NOT a transcription of WRF's
@@ -2539,7 +2554,7 @@ def build(registry: dict) -> dict:
         0,
         "WRF v4.6.1 admits this surface layer with PBL off or MYNN PBL. "
         "MYNN PBL also admits revised/classic MM5 surface layers; the exact "
-        "12-cell authority is phys/module_physics_init.F:3699-3701,"
+        "16-cell authority is phys/module_physics_init.F:3699-3704,"
         "3837-3839 and is published under "
         "authority.wrf_v461_compatibility_matrix.",
     )
@@ -2600,7 +2615,10 @@ def build(registry: dict) -> dict:
         # tree route.  No template selects it, so its reachability is
         # "component-override": a user asks for it explicitly or does not
         # get it, which is the right posture for an experimental scheme.
-        "pbl": ["off", "ysu", "mynn", "sase"],
+        # "shinhong" is listed on the same terms: implemented with a
+        # certified oracle, registered in no template, so it is a legal
+        # per-domain override and never the scheme a user gets by accident.
+        "pbl": ["off", "ysu", "mynn", "sase", "shinhong"],
         "surface_layer": ["revised-mm5", "classic-mm5", "mynn"],
         "radiation": [
             "off", "dudhia-shortwave", "rte-rrtmgp",

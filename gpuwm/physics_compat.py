@@ -1951,9 +1951,13 @@ def pending_wrf_physics_components(
     # Byte validation of the resolved table root still fails closed at
     # setup, which is the guard that was ever load-bearing at run time.
     # Namelist preview invokes this readiness layer before its documented
-    # WRF-to-ArWen selector mappings (for example Shin-Hong 11 -> YSU 1).
-    # The matrix governs the ported selector set only; an outside raw WRF
-    # value continues to the importer's mapping/refusal authority.
+    # WRF-to-ArWen selector mappings (for example ISHMAEL 55 -> Morrison
+    # 10).  Shin-Hong 11 is no longer such a mapping: it imports natively
+    # since the Shin-Hong port, so bl_pbl_physics=11 is inside PBL_OPTIONS
+    # and its four (11, sfclay) cells get their verdict from the WRF matrix
+    # below exactly like 0/1/5.  The matrix governs the ported selector set
+    # only; an outside raw WRF value continues to the importer's
+    # mapping/refusal authority.
     #
     # mp_physics == 28 (aerosol-aware Thompson) appends no blocker either,
     # and that is a decision recorded here rather than an omission.  It has

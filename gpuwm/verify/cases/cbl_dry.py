@@ -45,6 +45,7 @@ import numpy as np
 from gpuwm.config import RunConfig, validate_run_config
 from gpuwm.core.grid import (BaseState, VerticalCoord, make_base_state,
                              make_vertical_coord)
+from gpuwm.verify import gray_zone
 
 #: Surface temperature (K) and the air temperature it sits under.  The
 #: 5 K contrast is what drives the whole case.
@@ -135,7 +136,8 @@ def sounding(z) -> np.ndarray:
     return THETA_SURFACE + LAPSE * np.asarray(z, dtype=np.float64)
 
 
-def build(cfg: RunConfig, coord: VerticalCoord, base: BaseState):
+def build(cfg: RunConfig, coord: VerticalCoord, base: BaseState, *,
+          seed: int = 20260801):
     """At rest apart from a light uniform wind; no theta perturbation.
 
     The boundary layer is driven entirely by the surface contrast, so
@@ -143,13 +145,19 @@ def build(cfg: RunConfig, coord: VerticalCoord, base: BaseState):
     closure under test.  A small deterministic wind perturbation breaks
     exact horizontal homogeneity so a three-dimensional closure has
     something to sense, without seeding the thermodynamics.
+
+    ``seed`` selects the wind-perturbation draw and nothing else; the
+    default is the case's registered seed, so ``run`` is bitwise the run
+    it always was.  Independent draws through this one path are how the
+    partition sweep below builds its seed ensembles (campaign spec
+    2026-08-02, I1 "through the case's existing perturbation path").
     """
     import cupy as cp
 
     from gpuwm.core.state import init_at_rest
 
     state = init_at_rest(cfg, coord, base)
-    rng = np.random.default_rng(20260801)
+    rng = np.random.default_rng(int(seed))
     field = np.full(tuple(state.u.shape), U_INITIAL, dtype=np.float64)
     field += 0.01 * rng.standard_normal(field.shape)
     field[:, :, -1] = field[:, :, 0]                    # periodic seam
@@ -260,6 +268,307 @@ def compare(outdir=None, *, schemes=(1,)) -> dict[str, object]:
         results["schemes"][str(int(selector))] = {
             "metrics": metrics, "pass": bool(passed)}
     return results
+
+
+# ---------------------------------------------------------------------------
+# Gray-zone partition sweep (campaign deliverable D1).
+#
+# The instrument registered by docs/superpowers/specs/
+# 2026-08-02-sase-grayzone-campaign.md section 2 (I1): the same dry CBL,
+# widened to 64 x 64 columns and run across a declared dx ladder, scored
+# by the Honnert et al. (2011) partition construction that
+# ``gpuwm.verify.gray_zone`` transcribes.  The reference module stays a
+# reference -- this runner CONSUMES it for scoring and nothing model-side
+# reads it (the gray_zone.py firewall).
+# ---------------------------------------------------------------------------
+
+#: Columns per side of the sweep domain.  64 x 64 keeps many cells per
+#: boundary-layer depth at every rung (the requirement Honnert's eq. (7)
+#: plane-mean construction carries), and is the width the measured
+#: baseline in handoffs/SASE-STATE-OF-THE-ART-20260802.md section 6 used.
+SWEEP_COLUMNS = 64
+
+#: The declared dx ladder [m], coarse to fine (campaign spec I1).  The
+#: 3200 m rung is ADVISORY: outside the gray zone (Delta/h > 2) with 64
+#: points across a 205 km domain -- recorded, never gated.
+SWEEP_DX = (3200.0, 1600.0, 800.0, 400.0, 200.0, 100.0)
+
+#: Model seconds per sweep run, and the scored tail.  4 h with the FINAL
+#: HOUR scored answers the literature's slow gray-zone spin-up caveat
+#: (campaign spec I1, declared change (i) from the 2 h handoff sweep).
+SWEEP_SECONDS = 14400.0
+SWEEP_SCORE_SECONDS = 3600.0
+#: Scoring cadence inside the final hour: 12 snapshots at 300 s.
+SWEEP_SAMPLE_SECONDS = 300.0
+
+#: Time step per rung [s].  The case's registered operating point is
+#: 3 s at dx = 500 m (6e-3 s/m, the 6*dx acoustic-split rule of thumb
+#: this engine inherits with time_step_sound = 4).  Each rung scales
+#: that ratio with dx and then snaps DOWN where needed so every dt
+#: divides the 300 s scoring cadence, the 3 h spin-up and the 4 h run
+#: into whole steps: never above the registered ratio, so every rung is
+#: at least as stability-conservative as the case itself.
+SWEEP_DT = {3200.0: 15.0, 1600.0: 7.5, 800.0: 4.0,
+            400.0: 2.4, 200.0: 1.2, 100.0: 0.6}
+
+#: Seed ensemble for the perturbation path in :func:`build`; n = 6 per
+#: rung per leg (campaign spec I1).  The first member IS the case's
+#: registered seed, so ensemble member 0 at the case's own geometry is
+#: the case run itself.
+SWEEP_SEEDS = (20260801, 20260802, 20260803, 20260804, 20260805, 20260806)
+
+#: Scored window, z/h: Honnert et al. (2011) eq. (9)'s published
+#: validity range for the MIXED-LAYER fit (gray_zone.TKE_MIXED_LAYER).
+MIXED_LAYER_WINDOW = (0.05, 0.85)
+#: Advisory window, z/h: eq. (10)'s entrainment-zone validity range.
+ENTRAINMENT_WINDOW = (0.85, 1.10)
+
+
+def sweep_config(dx_m: float, bl_pbl_physics: int) -> RunConfig:
+    """One rung's configuration: the case at sweep width and spacing.
+
+    Everything except nx/ny, dx/dy, dt and the run length is
+    :func:`default_config` verbatim -- same sounding, same surface
+    contrast, same km_opt rule -- so a sweep run at 500 m differs from
+    the registered case only by domain width and duration.
+    """
+    from gpuwm.config import SASE_PBL_SCHEME
+
+    dx_m = float(dx_m)
+    if dx_m not in SWEEP_DT:
+        raise ValueError(f"dx={dx_m} is not a declared sweep rung "
+                         f"{sorted(SWEEP_DT)}")
+    # Every non-SASE closure falls through to km_opt=4, and for
+    # Shin-Hong (11) that fall-through is the DECLARED reading, not an
+    # accident: vertical transport from the PBL scheme with horizontal
+    # Smagorinsky is the configuration class Shin & Hong (2015) ran
+    # (registered in docs/superpowers/specs/
+    # 2026-08-03-shinhong-grayzone-expectation.md), so the predicate
+    # stays exactly SASE-only.
+    supplies_own_mixing = bl_pbl_physics == SASE_PBL_SCHEME
+    return validate_run_config(RunConfig(
+        nx=SWEEP_COLUMNS, ny=SWEEP_COLUMNS, nz=40,
+        dx=dx_m, dy=dx_m, ztop=2000.0,
+        dt=SWEEP_DT[dx_m], run_seconds=SWEEP_SECONDS, time_step_sound=4,
+        moist=True, mp_physics=0,
+        bl_pbl_physics=bl_pbl_physics,
+        sf_sfclay_physics=91,
+        sf_surface_physics=0,
+        km_opt=0 if supplies_own_mixing else 4,
+        c_s=0.25,
+        bldt=0.0, radt=0.0, cu_physics=0,
+        case="cbl_dry"))
+
+
+def window_mean(values, z, h: float, window) -> float:
+    """Mean of a per-level quantity over a z/h window, level-weighted.
+
+    The levels whose centers satisfy ``window[0] <= z/h <= window[1]``
+    enter with equal weight -- the plain construction, no interpolation
+    at the window edges, declared as such.  NaN when the window catches
+    no level (an h below the first layer center would do it), so a
+    degenerate run scores as unusable rather than as something.
+    """
+    v = np.asarray(values, dtype=np.float64)
+    zh = np.asarray(z, dtype=np.float64) / float(h)
+    lo, hi = float(window[0]), float(window[1])
+    mask = (zh >= lo) & (zh <= hi) & np.isfinite(v)
+    return float(v[mask].mean()) if mask.any() else float("nan")
+
+
+def sweep_band(envelope, sigma_seed: float, n: int = 6):
+    """The campaign's declared band rule (spec I1).
+
+    ``[env_lo - 2*sigma_seed/sqrt(n), env_hi + 2*sigma_seed/sqrt(n)]``:
+    the published envelope is the observations' own scatter, and the
+    additive term is the standard error of the n-seed mean at two
+    sigma -- the band is honest about our own noise without ever being
+    narrower than the published spread.
+    """
+    lo, hi = (float(v) for v in envelope)
+    half = 2.0 * float(sigma_seed) / float(np.sqrt(n))
+    return lo - half, hi + half
+
+
+def _destagger(state, cfg):
+    """Mass-point FP64 u, v, w, theta, e from the staggered device state."""
+    import cupy as cp
+
+    def host(a):
+        return np.asarray(cp.asnumpy(a), dtype=np.float64)
+
+    u = host(state.u)
+    v = host(state.v)
+    w = host(state.w)
+    u_m = 0.5 * (u[:, :, :cfg.nx] + u[:, :, 1:cfg.nx + 1])
+    v_m = 0.5 * (v[:, :cfg.ny, :] + v[:, 1:cfg.ny + 1, :])
+    w_m = 0.5 * (w[:cfg.nz] + w[1:cfg.nz + 1])
+    thb = host(state.thb).reshape(-1)[:cfg.nz]
+    theta = thb[:, None, None] + host(state.thp)
+    e_sgs = getattr(state, "e_sgs", None)
+    if e_sgs is None:
+        raise ValueError(
+            "the partition instrument needs a closure that carries a "
+            "prognostic subgrid energy field (state.e_sgs)")
+    return u_m, v_m, w_m, theta, host(e_sgs)
+
+
+def _sample_partition(state, cfg) -> dict[str, object]:
+    """One scoring snapshot: Honnert eq. (7) partition + the case's own h.
+
+    h is the domain-mean S3-6f bulk-Richardson boundary-layer depth
+    (:func:`gpuwm.verify.sase_ref.bulk_richardson_zi`, the authority
+    the closure's own partition cap reads), computed host-side in FP64
+    from the same de-staggered fields the partition uses -- the spec's
+    "h from the case's own bulk-Richardson diagnostic".
+    """
+    import cupy as cp
+
+    from gpuwm.verify.sase_ref import bulk_richardson_zi
+
+    u_m, v_m, w_m, theta, e_sgs = _destagger(state, cfg)
+    phb = np.asarray(cp.asnumpy(state.phb), dtype=np.float64)
+    php = np.asarray(cp.asnumpy(state.php), dtype=np.float64)
+    phi = phb.reshape(-1, 1, 1) + php if phb.ndim == 1 else phb + php
+    z_face = phi.mean(axis=(1, 2)) / 9.81
+    z = 0.5 * (z_face[:-1] + z_face[1:])
+    part = gray_zone.partition_from_profiles(e_sgs, u_m, v_m, w_m)
+    h = float(np.mean(bulk_richardson_zi(
+        u_m, v_m, theta, z[:, None, None])))
+    frac = part["subgrid_fraction"]
+    return {"z": z, "h": h,
+            "subgrid_fraction": frac,
+            "e_resolved": part["e_resolved"],
+            "e_subgrid": part["e_subgrid"],
+            "mixed_layer_fraction": window_mean(
+                frac, z, h, MIXED_LAYER_WINDOW),
+            "entrainment_fraction": window_mean(
+                frac, z, h, ENTRAINMENT_WINDOW),
+            "column_fraction": part["subgrid_fraction_column"]}
+
+
+def sweep_digest(samples) -> str:
+    """SHA-256 over the raw sample arrays, for the determinism pair.
+
+    Two runs of the same seed on the same card must produce IDENTICAL
+    bytes here -- the 5090 dual-run screen (no ECC; bitwise comparison
+    is the corruption detector).
+    """
+    import hashlib
+
+    digest = hashlib.sha256()
+    for s in samples:
+        for key in ("z", "subgrid_fraction", "e_resolved", "e_subgrid"):
+            digest.update(np.ascontiguousarray(
+                np.asarray(s[key], dtype=np.float64)).tobytes())
+        digest.update(np.float64(s["h"]).tobytes())
+    return digest.hexdigest()
+
+
+def partition_run(dx_m: float, seed: int, *, bl_pbl_physics: int,
+                  outdir=None, tag: str = "") -> dict[str, object]:
+    """One sweep member: integrate 4 h, score the final hour.
+
+    Returns the run receipt: the scored scalar (final-hour mean of the
+    per-snapshot mixed-layer subgrid TKE fraction), the run's own
+    abscissa ``x = dx/h`` at its measured h, the published target and
+    envelope evaluated AT that x, the advisory arms (entrainment-zone
+    fraction, column-integrated fraction -- the handoff table's
+    quantity), the per-snapshot f ledger retained by the driver
+    (f_solved / f_cap / f_w / f_used / zi -- what makes "binding"
+    checkable), and the determinism digest.
+    """
+    from gpuwm.core.dycore import run_steps
+    from gpuwm.core.physics import initialize_physics
+
+    cfg = sweep_config(dx_m, bl_pbl_physics)
+    coord = make_vertical_coord(cfg.nz)
+    base = make_base_state(coord, sounding, p_surf=cfg.p_surf,
+                           ztop=cfg.ztop)
+    state = build(cfg, coord, base, seed=seed)
+    driver = initialize_physics(state, cfg, landmask=1.0, tsk=TSK)
+    spin_steps = int(round((SWEEP_SECONDS - SWEEP_SCORE_SECONDS) / cfg.dt))
+    chunk = int(round(SWEEP_SAMPLE_SECONDS / cfg.dt))
+    n_samples = int(round(SWEEP_SCORE_SECONDS / SWEEP_SAMPLE_SECONDS))
+    run_steps(state, cfg, spin_steps)
+    samples, ledgers = [], []
+    for k in range(n_samples):
+        run_steps(state, cfg, chunk)
+        sample = _sample_partition(state, cfg)
+        sample["t"] = (spin_steps + (k + 1) * chunk) * cfg.dt
+        samples.append(sample)
+        ledger = getattr(driver, "last_sase_ledger", None)
+        if ledger is not None:
+            ledgers.append({key: float(ledger[key]) for key in
+                            ("f", "f_solved", "f_cap", "f_w", "zi")
+                            if key in ledger})
+    scored = float(np.mean([s["mixed_layer_fraction"] for s in samples]))
+    h_run = float(np.mean([s["h"] for s in samples]))
+    x_run = float(dx_m) / h_run
+    env_lo, env_hi = (float(v) for v in
+                      gray_zone.subgrid_tke_envelope(x_run))
+    receipt = {
+        "dx": float(dx_m), "seed": int(seed),
+        "bl_pbl_physics": int(bl_pbl_physics), "tag": str(tag),
+        "dt": cfg.dt, "columns": SWEEP_COLUMNS, "nz": cfg.nz,
+        "run_seconds": SWEEP_SECONDS,
+        "scored_mixed_layer_fraction": scored,
+        "h": h_run, "x": x_run,
+        "target": float(gray_zone.subgrid_tke_fraction(x_run)),
+        "envelope": (env_lo, env_hi),
+        "entrainment_fraction": float(np.mean(
+            [s["entrainment_fraction"] for s in samples])),
+        "entrainment_target": float(gray_zone.subgrid_tke_fraction(
+            x_run, entrainment_zone=True)),
+        "column_fraction": float(np.mean(
+            [s["column_fraction"] for s in samples])),
+        "samples": [{"t": s["t"], "h": s["h"],
+                     "mixed_layer_fraction": s["mixed_layer_fraction"],
+                     "entrainment_fraction": s["entrainment_fraction"],
+                     "column_fraction": s["column_fraction"]}
+                    for s in samples],
+        "ledger": ledgers,
+        "digest": sweep_digest(samples),
+    }
+    if outdir is not None:
+        outdir = Path(outdir)
+        outdir.mkdir(parents=True, exist_ok=True)
+        stem = (f"cbl_dry_partition_{int(dx_m)}m_seed{int(seed)}"
+                + (f"_{tag}" if tag else ""))
+        np.savez(outdir / f"{stem}.npz",
+                 z=samples[-1]["z"],
+                 subgrid_fraction=np.stack(
+                     [s["subgrid_fraction"] for s in samples]),
+                 e_resolved=np.stack([s["e_resolved"] for s in samples]),
+                 e_subgrid=np.stack([s["e_subgrid"] for s in samples]),
+                 h=np.array([s["h"] for s in samples]),
+                 t=np.array([s["t"] for s in samples]))
+    return receipt
+
+
+def partition_sweep(outdir=None, *, bl_pbl_physics: int,
+                    dx_ladder=SWEEP_DX,
+                    seeds=SWEEP_SEEDS) -> dict[str, object]:
+    """The full ladder: every rung x every seed, seed-mean scored.
+
+    Returns per-rung receipts plus the seed-ensemble mean and stdev of
+    the scored scalar -- sigma_seed is exactly the stdev reported here
+    (ddof=1), the number the campaign's band rule consumes.
+    """
+    rungs = {}
+    for dx_m in dx_ladder:
+        runs = [partition_run(dx_m, seed, bl_pbl_physics=bl_pbl_physics,
+                              outdir=outdir) for seed in seeds]
+        scores = np.array([r["scored_mixed_layer_fraction"] for r in runs],
+                          dtype=np.float64)
+        rungs[str(int(dx_m))] = {
+            "runs": runs,
+            "mean": float(scores.mean()),
+            "sigma_seed": float(scores.std(ddof=1)),
+            "x_mean": float(np.mean([r["x"] for r in runs])),
+        }
+    return {"ladder": list(dx_ladder), "seeds": list(seeds),
+            "bl_pbl_physics": int(bl_pbl_physics), "rungs": rungs}
 
 
 def main(argv=None) -> int:

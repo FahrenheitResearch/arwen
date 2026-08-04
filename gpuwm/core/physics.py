@@ -103,6 +103,7 @@ from gpuwm.verify.sase_ref import (C_K as SASE_C_K,
                                    CP_AIR as SASE_CP_AIR,
                                    E_MIN as SASE_E_MIN,
                                    prandtl_blend as sase_prandtl_blend)
+from gpuwm.core.shinhong import launch_shinhong, validate_shinhong_outputs
 from gpuwm.core.ysu import launch_ysu, validate_ysu_outputs
 from gpuwm.ingest.soil import NOAH_LAYER_THICKNESS_M
 
@@ -225,6 +226,17 @@ PHYSICS_SLOT_DISPATCH: dict[str, dict[int, str | None]] = {
         0: None,
         1: "_run_ysu",        # YSU
         5: "_run_mynn_pbl",   # MYNN EDMF
+        # Shin-Hong scale-aware (WRF v4.6.1 module_bl_shinhong.F).  The
+        # scheme has NO RunConfig knobs on purpose: WRF's
+        # shinhong_tke_diag namelist is deliberately not imported.  The
+        # TKE chain is a pure passenger diagnostic -- the tendencies
+        # never read it, proven on the pinned source (the case-27/case-1
+        # oracle pair in tests/test_shinhong_wrf461_parity.py pins
+        # OFF/ON bitwise-identical tendencies) -- so ArWen computes it
+        # every step under scheme 11 (_run_shinhong passes tke_diag=1
+        # unconditionally) and publishes it as state.e_sgs, the field
+        # the D1 gray-zone instrument scores.
+        11: "_run_shinhong",
         # SASE: not a WRF scheme and deliberately outside WRF's selector
         # namespace, so it can never collide with one WRF adds later.
         SASE_PBL_SCHEME: "_run_sase",
@@ -2530,6 +2542,93 @@ class PhysicsDriver:
         # its diagnostics already persist in ``fields``.
         self.last_ysu = None
 
+    def _run_shinhong(self, atmosphere: Mapping[str, cp.ndarray],
+                      cfg: RunConfig) -> None:
+        """Run the Shin-Hong scale-aware PBL (bl_pbl_physics=11).
+
+        The call cadence, the surface-layer coupling set, the mass
+        coupling and the A-grid-to-C-grid interpolation are all YSU's,
+        because they are properties of WRF's PBL seam rather than of a
+        scheme (the _run_mynn_pbl rationale).  What is Shin-Hong's --
+        the partition functions, the prescribed-profile nonlocal
+        transport, the TKE diagnostic chain -- lives in
+        :mod:`gpuwm.core.shinhong` next to its source anchors.
+
+        Scheme-specific bindings, each with its source of truth:
+
+        * ``psim``/``psih`` receive the FULL similarity denominators
+          ``fm``/``fh`` exactly as YSU's seam does: the scheme
+          reconstructs zol as ``br*fm^2/fh`` from them
+          (module_bl_shinhong.F:751-780, transcribed at
+          gpuwm/verify/shinhong_ref.py:735-737), the same construction
+          WRF's PBL driver feeds both YSU-family wrappers.
+        * ``corf`` is ``state.f``, the per-column Coriolis parameter
+          2*Omega*sin(lat) at mass points -- the SAME field the
+          dycore's Coriolis+curvature kernel consumes
+          (gpuwm/core/dycore.py add_coriolis_curvature; filled by
+          DomainState.set_map_coriolis, zeros on idealized runs).  The
+          scheme reads it only through ``f = max(corf, eps1)``
+          (module_bl_shinhong.F:2001, kernel :453), so the idealized
+          zero lands on WRF's own eps1 floor.
+        * ``tke`` is ``state.e_sgs``, the scheme's own published SGS
+          TKE fed back as next step's ``tke_in`` -- and after the
+          launch the validated ``out["tke"]`` is written back to
+          ``state.e_sgs``, which is the field the D1 gray-zone
+          instrument scores and the restart stream carries.
+        * ``tke_diag=1`` always: the dispatch-row note documents why
+          the WRF namelist knob is not imported (the chain is a
+          passenger diagnostic; tendencies never read it).
+        * ``dx``/``dy`` are the run's own spacings -- the whole point
+          of the scheme is that the answer moves with sqrt(dx*dy), so
+          each nest launches with its own pair.
+        * No ``exch_m``: the WRF wrapper publishes a heat exchange
+          coefficient only (EXCH_H); the driver's exch_m field keeps
+          its allocated zeros rather than inheriting another scheme's.
+        """
+        f = self.fields
+        out = launch_shinhong(
+            atmosphere["u"], atmosphere["v"], atmosphere["theta"],
+            atmosphere["qv"], atmosphere["qc"], atmosphere["qi"],
+            atmosphere["pressure"], atmosphere["p_interface"],
+            atmosphere["exner"], atmosphere["dz"],
+            self.state.e_sgs,
+            psfc=atmosphere["p_interface"][0], znt=f["znt"], ust=f["ust"],
+            hfx=f["hfx"], qfx=f["qfx"], wspd=f["wspd"], br=f["br"],
+            psim=f["fm"], psih=f["fh"], xland=f["xland"],
+            u10=f["u10"], v10=f["v10"], corf=self.state.f,
+            dt=self.bldt_seconds, dx=cfg.dx, dy=cfg.dy, tke_diag=1)
+        # Same validation policy as YSU: one batched device kernel over
+        # every floating-point output through the shared status scratch
+        # word, first-invalid error ordering preserved.  A NaN here is
+        # not always a port defect -- WRF's own prfac2 0/0
+        # (module_bl_shinhong.F:1010) writes NaN heat columns on
+        # purpose-built inputs and the kernel reproduces it -- so the
+        # refusal names the field instead of silently advancing
+        # corrupted state.
+        invalid = validate_shinhong_outputs(
+            out, self.state.scratch(
+                (1,), "physics_validation_status").view(cp.uint32))
+        if invalid is not None:
+            raise FloatingPointError(
+                f"Shin-Hong returned non-finite {invalid} tendency")
+        f["pblh"][...] = out["hpbl"]
+        f["kpbl"][...] = out["kpbl"]
+        f["exch_h"][...] = out["exch_h"]
+        # The scheme's own subgrid energy, written back in place so the
+        # restart alias and every diagnostic reader see the same array.
+        self.state.e_sgs[...] = out["tke"]
+        self.pbl_tendencies = couple_ysu_tendencies(self.state, cfg, out)
+        pbl_components = (
+            _composed_optional_tendency_components(cfg)
+            if physics_reuses_pbl_composition(cfg)
+            else _pbl_optional_tendency_components(cfg))
+        self.pbl_tendencies.materialize(pbl_components)
+        # No counterpart to YSU's positive-cadence raw-output retention
+        # (the _run_mynn_pbl rationale): every consumer of the rates is
+        # the coupling above, and the diagnostics persist in ``fields``
+        # and ``state.e_sgs``.
+        self.last_ysu = None
+
     def _run_sase(self, atmosphere: Mapping[str, cp.ndarray],
                   cfg: RunConfig) -> None:
         """One SASE-L1 update replacing the YSU slot (stage-3 Task 6).
@@ -3483,6 +3582,13 @@ def initialize_physics(
         raise ValueError("PBL physics requires a moist DomainState")
     if cfg.cu_physics and state.qv is None:
         raise ValueError("cumulus physics requires a moist DomainState")
+    if cfg.bl_pbl_physics == 11 and not hasattr(state, "e_sgs"):
+        # Belt-and-braces like SASE's below: state.py allocates e_sgs
+        # under the same selector, so this only fires on a state built
+        # with one config and attached with another.
+        raise ValueError(
+            "Shin-Hong requires a DomainState allocated with "
+            "bl_pbl_physics=11 (its published SGS TKE rides state.e_sgs)")
     if cfg.bl_pbl_physics == SASE_PBL_SCHEME:
         # Belt-and-braces behind validate_run_config's admission gate: the
         # driver-level invariants the closure relies on are re-checked at

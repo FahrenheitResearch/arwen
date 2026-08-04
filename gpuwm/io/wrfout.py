@@ -138,6 +138,8 @@ _VAR_META = {
     "LH": ("LATENT HEAT FLUX AT THE SURFACE", "W m-2"),
     "TKE_SASE": ("SASE prognostic subgrid turbulence kinetic energy",
                  "m2 s-2"),
+    "TKE_SHINHONG": ("Shin-Hong published subgrid turbulence kinetic "
+                     "energy diagnostic", "m2 s-2"),
     # The SPLIT SUBGRID-FLUX DIAGNOSTIC (RunConfig sase_flux_diag, off by
     # default; per domain).  Four z-FACE fields on the mass column --
     # (nz+1, ny, nx), stagger "Z", registered exactly like W -- carrying
@@ -629,14 +631,22 @@ def _live_state_history_fields(state) -> dict[str, object]:
         value = getattr(state, state_name, None)
         if value is not None:
             fields[output_name] = value
-    # The SASE closure's prognostic subgrid energy, present only on a
-    # state that selected it.  Scheme-qualified on purpose: WRF's
-    # ``TKE_PBL`` is a Z-staggered MYJ/MYNN field on a different
-    # stagger, and the frame's 2-D ``E`` is the Coriolis cosine term,
-    # not a turbulence quantity.
+    # The published subgrid energy, present only on a state whose PBL
+    # closure owns one (SASE's prognostic e, or Shin-Hong's per-step TKE
+    # diagnostic).  Scheme-qualified on purpose: WRF's ``TKE_PBL`` is a
+    # Z-staggered MYJ/MYNN field on a different stagger, and the frame's
+    # 2-D ``E`` is the Coriolis cosine term, not a turbulence quantity.
+    # Named for the PRODUCER through the driver's own dispatch receipt,
+    # so a Shin-Hong run can never publish its TKE under the SASE name;
+    # a state without an attached driver keeps the historical SASE
+    # label, which is the only producer such states ever had.
     e_sgs = getattr(state, "e_sgs", None)
     if e_sgs is not None:
-        fields["TKE_SASE"] = e_sgs
+        dispatch = getattr(getattr(state, "physics", None),
+                           "scheme_dispatch", None)
+        runner = (dispatch or {}).get("bl_pbl_physics")
+        fields["TKE_SHINHONG" if runner == "_run_shinhong"
+               else "TKE_SASE"] = e_sgs
 
     p_top = getattr(state, "p_top", None)
     if p_top is not None:

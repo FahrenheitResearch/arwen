@@ -444,10 +444,14 @@ bytes are outside the numerical oracle.
 
 #### D3c — physics substitutions and comparison scope
 
-- The importer maps mp 55 (ISHMAEL) to Morrison 2-moment, bl_pbl 11
-  (Shin-Hong) to YSU, and ra_lw/ra_sw 4 (RRTMG) to RTE+RRTMGP, emitting a
-  structured `SubstitutionReport`; every other unimplemented scheme id is a
-  hard error.  These are **model-form changes with no error bound**.
+- The importer maps mp 55 (ISHMAEL) to Morrison 2-moment and ra_lw/ra_sw 4
+  (RRTMG) to RTE+RRTMGP, emitting a structured `SubstitutionReport`; every
+  other unimplemented scheme id is a hard error.  These are **model-form
+  changes with no error bound**.  bl_pbl 11 (Shin-Hong) was a third
+  substitution (to YSU) until the Shin-Hong port; it now imports natively
+  as 11 and runs the ported scheme.  The campaign-era configs and
+  comparisons below predate that admission and record the substitution
+  they actually ran.
 - Numerical fidelity gates in the N-ladder use the matched-physics
   instrumented oracle in the manifest above (Morrison+YSU, including the
   N1.5 registered tolerance).  Comparisons against the original ISHMAEL +

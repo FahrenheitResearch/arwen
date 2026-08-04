@@ -32,9 +32,9 @@ matching to 3 pixels in 14,227; the numbers behind this figure are in
 
 - Integrates a WRF-ARW-class compressible nonhydrostatic core (RK3,
   split-explicit acoustics, one-way static nesting) in FP32 on CUDA.
-- Runs WRF v4.6.1-transcribed physics: 5 microphysics schemes, YSU and
-  MYNN PBL, Noah / Noah-MP / RUC land surface, RTE+RRTMGP and legacy
-  RRTMG radiation, Kain-Fritsch cumulus
+- Runs WRF v4.6.1-transcribed physics: 5 microphysics schemes, YSU,
+  MYNN and scale-aware Shin-Hong PBL, Noah / Noah-MP / RUC land
+  surface, RTE+RRTMGP and legacy RRTMG radiation, Kain-Fritsch cumulus
   ([PHYSICS.md](docs/public/PHYSICS.md)).
 - Initializes directly from ERA5, GFS, or HRRR with a built-in fetch
   front door and a fail-closed Rust GRIB decode layer -- no WPS, no
@@ -356,7 +356,7 @@ opt-in via `--heavy`.*
 |---|---|
 | Dynamics | WRF-ARW-class RK3 split-explicit core, FP32, CUDA; one-way static nests on Lambert-conformal, Mercator, or polar-stereographic grids |
 | Microphysics | Kessler, WSM6, Thompson (default; WRF tables SHA-256-pinned -- the two largest ship as release assets and `gpuwm fetch-tables` stages whichever are absent, run automatically by install), Morrison 2-moment, NSSL 2-moment |
-| PBL / surface layer | YSU + MM5 (classic); MYNN PBL + MYNN surface layer (coupled pair) |
+| PBL / surface layer | YSU + MM5 (classic); MYNN PBL + MYNN surface layer (coupled pair); Shin-Hong scale-aware, the gray-zone option, with either MM5 surface layer |
 | Land surface | Noah (4-layer), Noah-MP, RUC (9-level) |
 | Radiation | RTE+RRTMGP (default); legacy RRTMG (WRF 4/4 transcription, verification tier); Dudhia SW |
 | Cumulus | Kain-Fritsch (outer domains) |

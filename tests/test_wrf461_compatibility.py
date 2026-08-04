@@ -86,9 +86,18 @@ def test_matrix_has_every_cell_every_citation_and_pinned_counts():
     PBL/surface-layer pair can be FATAL).  A count that had not scaled by
     6/5 would have meant mp=28 changed a verdict somewhere, and that would
     need a WRF citation, not a pin update.
+
+    Re-pinned when bl_pbl_physics=11 (Shin-Hong) joined the PBL axis:
+    2880 -> 3840, and the verdicts moved by exactly the 960 new pbl=11
+    cells -- FATAL +480 (the (11,0) and (11,5) SHINHONGSCHEME fatals at
+    phys/module_physics_init.F:3702-3704 span 240 cells each), LEGAL +288,
+    reconfigured +96 (the no-LSM slice) and not-expressible +96 (the
+    analytic slice).  PBL is NOT an independent axis -- the pair verdict is
+    exactly where it can be FATAL -- so these did not scale uniformly, and
+    each increment was read off the enlarged matrix rather than derived.
     """
     cells = tuple(iter_compatibility_matrix())
-    assert len(cells) == MATRIX_CELL_COUNT == 2880
+    assert len(cells) == MATRIX_CELL_COUNT == 3840
     assert len({
         (
             cell.mp_physics,
@@ -108,10 +117,10 @@ def test_matrix_has_every_cell_every_citation_and_pinned_counts():
         for cell in cells
     )
     assert Counter(cell.verdict for cell in cells) == {
-        WRFVerdict.LEGAL: 1296,
-        WRFVerdict.LEGAL_RECONFIGURED: 432,
-        WRFVerdict.FATAL: 720,
-        WRFVerdict.NOT_EXPRESSIBLE: 432,
+        WRFVerdict.LEGAL: 1584,
+        WRFVerdict.LEGAL_RECONFIGURED: 528,
+        WRFVerdict.FATAL: 1200,
+        WRFVerdict.NOT_EXPRESSIBLE: 528,
     }
     # Every represented mp value carries its own Registry citation, so the
     # matrix cannot grow an axis value that is admitted without one.
@@ -119,8 +128,11 @@ def test_matrix_has_every_cell_every_citation_and_pinned_counts():
     assert WRF_COMMIT == "d66e442fccc04111067e29274c9f9eaccc3cef28"
 
 
-def test_pbl_surface_layer_authority_is_the_complete_twelve_cell_table():
-    assert len(PBL_SURFACE_LAYER_AUTHORITY) == 12
+def test_pbl_surface_layer_authority_is_the_complete_sixteen_cell_table():
+    # Twelve cells until Shin-Hong (bl_pbl_physics=11) was admitted; its
+    # four cells follow the SHINHONGSCHEME case, which is YSU's isfc=1 law
+    # through WRF's own arm (phys/module_physics_init.F:3702-3704).
+    assert len(PBL_SURFACE_LAYER_AUTHORITY) == 16
     legal = {
         pair for pair, (verdict, _citation)
         in PBL_SURFACE_LAYER_AUTHORITY.items()
@@ -130,11 +142,12 @@ def test_pbl_surface_layer_authority_is_the_complete_twelve_cell_table():
         (0, 0), (0, 1), (0, 5), (0, 91),
         (1, 1), (1, 91),
         (5, 1), (5, 5), (5, 91),
+        (11, 1), (11, 91),
     }
 
 
 def test_every_front_door_tuple_agrees_with_the_wrf_matrix():
-    """Sweep the full 2,880-cell product through RunConfig admission.
+    """Sweep the full 3,840-cell product through RunConfig admission.
 
     The only local refusal of a WRF-legal cell is the separately named
     ArWen structural seam: an active LSM has no exchange-field writer when
@@ -172,8 +185,14 @@ def test_every_front_door_tuple_agrees_with_the_wrf_matrix():
     # the matrix test makes about the authority table.  Concretely: all 480
     # mp=28 cells reach a verdict for reasons that have nothing to do with
     # microphysics, so mp=28 adds no new refusal and removes none.
+    #
+    # Re-pinned when bl_pbl_physics=11 (Shin-Hong) joined the PBL axis: its
+    # 960 cells split 480 wrf-fatal (sfclay 0 and 5, the SHINHONGSCHEME
+    # case) and 480 admitted.  arwen-structural does not move, because the
+    # structural seam is sfclay=0 with an active LSM and every (11, 0) cell
+    # is already WRF-fatal before the seam is consulted.
     assert observed == {
-        "admitted": 1980,
+        "admitted": 2460,
         "arwen-structural": 180,
-        "wrf-fatal": 720,
+        "wrf-fatal": 1200,
     }

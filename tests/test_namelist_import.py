@@ -3,10 +3,13 @@
 The bundle gate retains the original namelist as a fail-loud fixture for
 unsupported ``nwp_diagnostics=1`` / default ``use_theta_m=1``, then imports
 an explicit effective copy (both set to 0) and reproduces the committed
-``configs/real74_4dom.toml`` byte-for-byte.  Its SubstitutionReport names
-mp 55 -> 10 (Morrison), bl_pbl 11 -> 1 (YSU), and ra -> RTE+RRTMGP.
-Synthetic fixtures cover the importer's other rejection rules without
-needing the bundle.  All CPU.
+``configs/real74_4dom.toml`` byte-for-byte modulo the enumerated
+importer-behaviour changes (the rrtmg -v2 token; ``bl_pbl_physics = 11``
+importing natively since the Shin-Hong port).  Its SubstitutionReport
+names mp 55 -> 10 (Morrison) and ra -> RTE+RRTMGP; bl_pbl 11 stopped
+being a substitution when the scheme was admitted.  Synthetic fixtures
+cover the importer's other rejection rules without needing the bundle.
+All CPU.
 """
 
 from __future__ import annotations
@@ -38,7 +41,9 @@ requires_bundle = pytest.mark.skipif(
 
 #: Synthetic 2-domain namelist pair mirroring the bundle's shape (child
 #: ratio 3 at (40, 30) inside a 100 x 80 parent; ISHMAEL/Shin-Hong/RRTMG
-#: selections so every ratified substitution fires without the bundle).
+#: selections -- ISHMAEL and RRTMG exercise both ratified substitutions
+#: without the bundle, and Shin-Hong exercises the native bl_pbl=11
+#: import that replaced its former substitution).
 WPS_TEXT = """\
 &share
  wrf_core = 'ARW',
@@ -544,7 +549,11 @@ def test_synthetic_import_resolves_and_reports(tmp_path):
     # A scalar Fortran namelist assignment changes only the first Registry
     # array element; d02 retains WRF's initialized epssm=0.1 default.
     assert [dc.run.epssm for dc in exp.domains] == [0.5, 0.1]
-    assert [dc.run.moist_cq for dc in exp.domains] == [True, True]
+    # RunConfig-default moist_cq: a Morrison + Shin-Hong suite matches no
+    # shipped profile since bl_pbl = 11 imports natively, so the implicit
+    # switch takes implicit_runtime_switches' documented fallback (it was
+    # [True, True] from the Morrison profile while 11 substituted to YSU).
+    assert [dc.run.moist_cq for dc in exp.domains] == [False, False]
     assert toml_text.count("epssm = 0.1") == 1
     assert 'wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-to-rte-rrtmgp-v2"' \
         in toml_text
@@ -559,13 +568,18 @@ def test_synthetic_import_resolves_and_reports(tmp_path):
             for s in report.substitutions}
     assert subs[("mp_physics", 55)] == ("mp_physics", 10,
                                         "Morrison 2-moment")
-    assert subs[("bl_pbl_physics", 11)] == ("bl_pbl_physics", 1, "YSU")
+    # bl_pbl 11 imports natively since the Shin-Hong port: no substitution
+    # row, and the selector reaches every domain as itself (the mp8/mp18
+    # promotion contract shape).
+    assert not any(s.key == "bl_pbl_physics" for s in report.substitutions)
+    assert all(dc.run.bl_pbl_physics == 11 for dc in exp.domains)
     assert subs[("ra_lw_physics/ra_sw_physics", 4)] == (
         "ra_physics", 4, "RTE+RRTMGP")
     formatted = report.format()
     for token in ("mp_physics 55", "Morrison 2-moment",
-                  "bl_pbl_physics 11", "YSU", "RRTMG", "RTE+RRTMGP"):
+                  "RRTMG", "RTE+RRTMGP"):
         assert token in formatted, token
+    assert "bl_pbl_physics 11" not in formatted
     # every consumed-without-counterpart key carries a reason
     assert all(d.reason for d in report.dropped)
     dropped_keys = {(d.section, d.key) for d in report.dropped}
@@ -959,13 +973,26 @@ def test_implicit_switches_come_from_the_shipped_profile_not_the_importer(
     applied = {entry.key: entry for entry in report.defaults_applied}
     assert WSM6_PROFILE_ID in applied["top_lid"].reason
 
-    # The Morrison-family suite the bundle uses is unchanged: its profile
-    # states the other answer, and the importer already agreed with it.
+    # The Morrison-family profile states the other answer, and the importer
+    # agrees with it for the profile's own suite.  The fixture selects
+    # bl_pbl_physics = 1 explicitly: since the Shin-Hong port the base
+    # pair's bl = 11 imports natively, and Morrison + Shin-Hong is NOT a
+    # shipped profile -- so the base pair now exercises the RunConfig
+    # fallback below instead of the Morrison row.
     morrison = single_domain_runtime_switches(MORRISON_PROFILE_ID)
     assert morrison["moist_cq"] is True and morrison["top_lid"] is False
-    bundle_toml, _ = import_namelists(*_pair(tmp_path))
-    assert "moist_cq = true" in bundle_toml
-    assert "top_lid = false" in bundle_toml
+    morrison_inp = INPUT_TEXT.replace(" bl_pbl_physics = 11, 11,",
+                                      " bl_pbl_physics = 1, 1,")
+    profile_toml, _ = import_namelists(*_pair(tmp_path, inp=morrison_inp))
+    assert "moist_cq = true" in profile_toml
+    assert "top_lid = false" in profile_toml
+
+    # And the native Shin-Hong variant of the same suite matches no
+    # shipped profile, so both implicit switches take gpuwm's RunConfig
+    # defaults -- implicit_runtime_switches' documented fallback.
+    shinhong_toml, _ = import_namelists(*_pair(tmp_path))
+    assert "moist_cq = false" in shinhong_toml
+    assert "top_lid = true" in shinhong_toml
 
     # An explicit namelist top_lid still wins over the profile: this is a
     # default, not an override.
@@ -1584,6 +1611,33 @@ def test_effective_bundle_round_trip_reproduces_committed_toml(tmp_path):
     assert committed_line in committed
     assert emitted_line in toml_text
     harmonized = committed.replace(committed_line, emitted_line)
+    # Second enumerated receipt-vs-importer divergence, same shape as the
+    # token above: the campaign ran the ratified Shin-Hong -> YSU
+    # substitution and its receipt records bl_pbl_physics = 1; the importer
+    # imports 11 natively since the Shin-Hong port.  The receipt is never
+    # rewritten, so the comparison harmonizes exactly the lines that one
+    # admission moves: the selector, its substitution-header comment, and
+    # the two profile-implicit switches -- a Morrison + Shin-Hong suite is
+    # not a shipped profile, so implicit_runtime_switches answers with
+    # RunConfig defaults (its documented fallback) instead of the Morrison
+    # profile's moist_cq/top_lid.
+    committed_bl = "\nbl_pbl_physics = 1\n"
+    emitted_bl = "\nbl_pbl_physics = 11\n"
+    assert committed_bl in harmonized
+    assert emitted_bl in "\n" + toml_text
+    harmonized = harmonized.replace(committed_bl, emitted_bl)
+    header_bl = ("\n#   bl_pbl_physics 11 (Shin-Hong) -> "
+                 "bl_pbl_physics 1 (YSU)")
+    assert header_bl in harmonized
+    assert "Shin-Hong" not in toml_text
+    harmonized = harmonized.replace(header_bl, "")
+    for receipt_line, imported_line in (("\ntop_lid = false\n",
+                                         "\ntop_lid = true\n"),
+                                        ("\nmoist_cq = true\n",
+                                         "\nmoist_cq = false\n")):
+        assert receipt_line in harmonized
+        assert imported_line in toml_text
+        harmonized = harmonized.replace(receipt_line, imported_line)
     # The committed flagship config = importer output + the hand-declared
     # [case_data] table (declared inputs are not derivable from namelists)
     # + the hand-declared [experiment] settings named above (gpuwm-only knobs
@@ -1599,9 +1653,11 @@ def test_effective_bundle_round_trip_reproduces_committed_toml(tmp_path):
     assert "column_chunk" not in toml_text
     subs = {(s.key, s.wrf_value, s.gpuwm_key, s.gpuwm_value)
             for s in report.substitutions}
+    # bl_pbl 11 left this set when the Shin-Hong port admitted the scheme;
+    # the two remaining rows are the complete ratified-substitution
+    # inventory.
     assert subs == {
         ("mp_physics", 55, "mp_physics", 10),
-        ("bl_pbl_physics", 11, "bl_pbl_physics", 1),
         ("ra_lw_physics/ra_sw_physics", 4, "ra_physics", 4),
     }
     # the bundle's hand-typed 333.333333 d04 dx cross-checks against the
@@ -1626,6 +1682,17 @@ def test_effective_bundle_import_matches_loaded_committed_experiment(tmp_path):
         'wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-to-rte-rrtmgp-v1"',
         'wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-to-rte-rrtmgp-v2"')
     assert harmonized != committed_text
+    # Same enumerated importer-behaviour changes as the byte round-trip
+    # test above: the campaign receipt records the Shin-Hong -> YSU
+    # substitution; a fresh import is native bl_pbl_physics = 11, and a
+    # Morrison + Shin-Hong suite matches no shipped profile, so the
+    # implicit moist_cq/top_lid answers fall back to RunConfig defaults.
+    with_bl = (harmonized
+               .replace("\nbl_pbl_physics = 1\n", "\nbl_pbl_physics = 11\n")
+               .replace("\ntop_lid = false\n", "\ntop_lid = true\n")
+               .replace("\nmoist_cq = true\n", "\nmoist_cq = false\n"))
+    assert with_bl != harmonized
+    harmonized = with_bl
     harmonized_path = tmp_path / "committed_harmonized.toml"
     harmonized_path.write_text(harmonized)
     # The committed config declares its source-orography pins as

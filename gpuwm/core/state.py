@@ -495,18 +495,40 @@ class DomainState:
             self.tke0 = rebuilt("tke0", nz, ny, nx)
         else:
             self.tke = self.tke0 = None
-        # SASE prognostic subgrid turbulence energy.  The attribute is
-        # ``e_sgs`` because ``self.e`` is already the WRF Coriolis cosine
-        # parameter 2*Omega*cos(lat); the closure's symbol ``e`` maps to
-        # this attribute everywhere (restart key ``state/e_sgs``,
-        # preflight item ``e_sgs``).  Cold start fills the realizability
-        # floor exactly as the fused step clips.  Allocated ONLY when the
-        # closure is active, so every other configuration's object graph
+        # Prognostic/published subgrid turbulence energy.  The attribute
+        # is ``e_sgs`` because ``self.e`` is already the WRF Coriolis
+        # cosine parameter 2*Omega*cos(lat); the owning scheme's symbol
+        # ``e``/``tke`` maps to this attribute everywhere (restart key
+        # ``state/e_sgs``, preflight item ``e_sgs``).  Two owners, one
+        # attribute: SASE (900) integrates it as its prognostic closure
+        # energy, and Shin-Hong (11) publishes its own per-step TKE
+        # diagnostic here -- the scheme's TKE chain IS its subgrid
+        # energy, and the D1 gray-zone instrument reads state.e_sgs
+        # whichever closure produced it.  Allocated ONLY when one of the
+        # two is active, so every other configuration's object graph
         # stays byte-identical -- the attribute is ABSENT, not None,
         # matching the pattern the restart manifest walk expects.
-        if cfg.bl_pbl_physics == SASE_PBL_SCHEME:
+        if cfg.bl_pbl_physics in (SASE_PBL_SCHEME, 11):
             self.e_sgs = zeros(nz, ny, nx)
-            self.e_sgs.fill(DTYPE(SASE_E_MIN))
+            if cfg.bl_pbl_physics == SASE_PBL_SCHEME:
+                # SASE cold start fills the realizability floor exactly
+                # as the fused step clips.
+                self.e_sgs.fill(DTYPE(SASE_E_MIN))
+            else:
+                # Shin-Hong cold start is WRF's own: shinhonginit fills
+                # the TKE carrier at epsq2l/2 = 0.005 (the oracle
+                # driver's documented cold-start value,
+                # tools/shinhong_wrf461_oracle/run_bl_shinhong.F90:414).
+                # Zero would be WRONG, not merely different: q2 = 0
+                # makes mixlen's el collapse and prodq2's q2^1.5/disel
+                # a 0/0, so the very first TKE-diagnostic call would
+                # NaN -- WRF avoids that by never starting at zero.
+                # A literal rather than an import because the authority
+                # (gpuwm/verify/shinhong_ref.py EPSQ2L) lives in the
+                # verification tree this module must not depend on (the
+                # sase_limits note above); the pair is gated equal in
+                # tests/test_shinhong_runtime.py.
+                self.e_sgs.fill(DTYPE(0.005))
 
         # RK stage copies (state at the start of the RK3 step).
         self.u0 = rebuilt("u0", nz, ny, nx + 1)

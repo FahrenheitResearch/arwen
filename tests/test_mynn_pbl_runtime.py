@@ -336,5 +336,7 @@ def test_the_pbl_surface_pairings_the_driver_accepts_are_wrfs_own():
             assert validate_run_config(cfg) is cfg
             seen["legal"] += 1
 
-    # WRF's complete 12-cell table: 9 legal, 3 fatal.
-    assert seen == {"legal": 9, "fatal": 3}
+    # WRF's complete 16-cell table: 11 legal, 5 fatal.  Grew by exactly
+    # Shin-Hong's four cells (2 legal, 2 fatal) when bl_pbl_physics=11 was
+    # admitted; before that, 12 cells at 9 legal / 3 fatal.
+    assert seen == {"legal": 11, "fatal": 5}

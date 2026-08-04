@@ -1,0 +1,19 @@
+# gfortran: GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+# glibc:    ldd (Ubuntu GLIBC 2.43-2ubuntu2.3) 2.43
+# -O0 libm symbols (THE REFERENCE):
+U expf
+U powf
+U tanhf
+# -O2 -ftree-vectorize (WRF's own phys/ setting):
+U expf
+U powf
+U tanhf
+U _ZGVbN4vv_powf
+# -Ofast -ftree-vectorize:
+U cbrtf
+U expf
+U powf
+U tanhf
+# positive control (plain expf loop at -Ofast), proves the grep works:
+U expf
+U _ZGVbN4v_expf

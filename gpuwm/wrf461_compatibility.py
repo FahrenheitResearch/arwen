@@ -62,7 +62,15 @@ class WRFCompatibilityCell:
 
 
 MP_OPTIONS = (1, 6, 8, 10, 18, 28)
-PBL_OPTIONS = (0, 1, 5)
+# 11 (Shin-Hong) joined the PBL axis with the Shin-Hong port: an implemented
+# scheme with a certified oracle (max ULP 0 CPU authority against the
+# byte-frozen WRF v4.6.1 module_bl_shinhong.F,
+# tests/test_shinhong_wrf461_parity.py) joins the matrix, and the matrix
+# claims exactly what WRF's own init enforces -- the SHINHONGSCHEME case at
+# phys/module_physics_init.F:3702-3704.  This is an enumerated admission
+# row, not a relaxation: every (11, sfclay) cell below carries WRF's own
+# verdict and citation.
+PBL_OPTIONS = (0, 1, 5, 11)
 SURFACE_LAYER_OPTIONS = (0, 1, 5, 91)
 LAND_SURFACE_OPTIONS = (0, 2, 3, 4)
 RADIATION_OPTIONS = (
@@ -169,7 +177,11 @@ def _pair(
 # ported selectors.  PBL-off executes no PBL initializer and therefore accepts
 # every represented surface layer.  YSU requires isfc=1, which revised/classic
 # MM5 set.  MYNN PBL accepts isfc in {5,1,2}; the represented values 5,1,91
-# initialize isfc to 5,1,1 respectively.
+# initialize isfc to 5,1,1 respectively.  Shin-Hong requires isfc=1 exactly
+# as YSU does, through its own SELECT CASE arm: the SHINHONGSCHEME case at
+# phys/module_physics_init.F:3702-3704 fatals with 'Use sf_sfclay_physics= 1
+# or 91 for this pbl option' unless the initialized surface-layer class is
+# isfc=1.
 PBL_SURFACE_LAYER_AUTHORITY: Mapping[
     tuple[int, int], tuple[WRFVerdict, WRFCitation]
 ] = MappingProxyType({
@@ -209,6 +221,23 @@ PBL_SURFACE_LAYER_AUTHORITY: Mapping[
     (5, 91): _pair(
         WRFVerdict.LEGAL, "phys/module_physics_init.F", "3140-3142,3837-3839",
         "classic MM5 sets isfc=1, which MYNN PBL explicitly accepts"),
+    # Shin-Hong (bl_pbl_physics=11): the SHINHONGSCHEME case, NOT a copy of
+    # YSU's cells -- WRF's own arm at phys/module_physics_init.F:3702-3704
+    # fatals with 'Use sf_sfclay_physics= 1 or 91 for this pbl option'
+    # unless isfc=1.
+    (11, 0): _pair(
+        WRFVerdict.FATAL, "phys/module_physics_init.F", "3702-3704",
+        "Shin-Hong fatals unless the initialized surface-layer class is "
+        "isfc=1: 'Use sf_sfclay_physics= 1 or 91 for this pbl option'"),
+    (11, 1): _pair(
+        WRFVerdict.LEGAL, "phys/module_physics_init.F", "3143-3152,3702-3704",
+        "revised MM5 sets isfc=1, satisfying Shin-Hong"),
+    (11, 5): _pair(
+        WRFVerdict.FATAL, "phys/module_physics_init.F", "3213-3219,3702-3704",
+        "MYNN surface sets isfc=5, and Shin-Hong fatals unless isfc=1"),
+    (11, 91): _pair(
+        WRFVerdict.LEGAL, "phys/module_physics_init.F", "3140-3142,3702-3704",
+        "classic MM5 sets isfc=1, satisfying Shin-Hong"),
 })
 
 
@@ -283,7 +312,8 @@ def compatibility_cell(
 
 def iter_compatibility_matrix() -> Iterator[WRFCompatibilityCell]:
     """Yield the complete represented cross-product (:data:`MATRIX_CELL_COUNT`
-    cells; 2,880 once mp_physics=28 joined the microphysics axis)."""
+    cells; 2,880 once mp_physics=28 joined the microphysics axis, 3,840 once
+    bl_pbl_physics=11 joined the PBL axis)."""
 
     for mp, pbl, sfclay, lsm, radiation, cumulus in product(
         MP_OPTIONS,

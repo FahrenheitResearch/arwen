@@ -869,6 +869,14 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "ruc": 144,
     "saxpy": 0,
     "sfclay": 0,
+    # Shin-Hong (bl_pbl_physics=11).  MEASURED 2026-08-03 on the RTX 5090
+    # the same NVRTC + driver way as every other row: shinhong_column
+    # holds 14,040 B (its per-thread column work arrays at the module's
+    # fixed SHINHONG_KMAX = 128 tier, one thread per column -- the ysu.cu
+    # shape, one tier up); shinhong_partition_probe and the validation
+    # kernel hold no local frame.
+    "shinhong": 14040,
+    "shinhong_validation": 0,
     "smag2d": 0,
     "spec_bdy": 0,
     "thompson": 11264,
@@ -1127,6 +1135,9 @@ _CUMULUS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (), 1: ("kf", "kf_validation")}
 _PBL_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (), 1: ("ysu", "ysu_validation"), 5: ("mynn_pbl",),
+    # Shin-Hong launches its column kernel plus its own batched output
+    # validator, the YSU pair's shape (gpuwm/core/shinhong.py).
+    11: ("shinhong", "shinhong_validation"),
     SASE_PBL_SCHEME: ("sase",)}
 _SURFACE_LAYER_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (), 1: ("sfclay",), 5: ("mynn_surface",), 91: ("sfclay",)}
@@ -1727,9 +1738,11 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
         # the SERIALIZED carrier plus its REBUILT time-t copy.
         shapes["tke"] = m
         shapes["tke0"] = m
-    if cfg.bl_pbl_physics == SASE_PBL_SCHEME:
-        # The closure's one persistent prognostic (state.py allocates it
-        # under the same condition).
+    if cfg.bl_pbl_physics in (SASE_PBL_SCHEME, 11):
+        # The published subgrid energy (state.py allocates it under the
+        # same two-scheme condition): SASE's prognostic closure energy,
+        # or Shin-Hong's per-step TKE diagnostic -- the D1 gray-zone
+        # instrument reads state.e_sgs whichever closure produced it.
         shapes["e_sgs"] = m
     return shapes
 
@@ -2376,7 +2389,7 @@ def scratch_slot_registry(cfg: RunConfig, *,
             # never asks for.
             slots["physics_qi"] = m                 # physics.py:984-988
             slots["physics_qs"] = m                 # physics.py:989-993
-    if (int(cfg.bl_pbl_physics) == 1
+    if (int(cfg.bl_pbl_physics) in (1, 11)
             or int(cfg.mp_physics) in (1, 6, 8, 10, 28)
             or int(cfg.cu_physics) == 1):
         # 28 is here for the same reason 6/8/10 are, and it was found by the
@@ -2385,7 +2398,9 @@ def scratch_slot_registry(cfg: RunConfig, *,
         # canonical scratch set, and mp=28's adapter writes exactly the
         # seven canonical slots mp=8 does (physics.py:390-401).  18 is
         # absent because :1286 excludes it explicitly, not because NSSL
-        # skips validation.
+        # skips validation.  bl=11 rides the same word as bl=1: Shin-Hong
+        # validates its outputs through the identical batched-status
+        # policy (physics.py:_run_shinhong).
         slots["physics_validation_status"] = (1,)
     if int(cfg.bl_pbl_physics) == 5:
         # MYNN's whole working set, declared in
@@ -2811,9 +2826,11 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
     ScratchSlotLifetime(
         ("physics_validation_status",), "write_before_read",
         "gpuwm/core/physics.py:_run_ysu; "
+        "gpuwm/core/physics.py:_run_shinhong; "
         "gpuwm/core/physics.py:_validate_native_microphysics; "
         "gpuwm/core/physics.py:_validate_native_kf_result; "
-        "gpuwm/core/ysu.py:validate_ysu_outputs",
+        "gpuwm/core/ysu.py:validate_ysu_outputs; "
+        "gpuwm/core/shinhong.py:validate_shinhong_outputs",
         "the float32 backing is viewed as uint32 and reset before every "
         "validation launch; its blocking scalar read completes before the "
         "next sequential domain can reuse the shared-arena word"),
@@ -3458,6 +3475,44 @@ def ysu_output_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     return shapes
 
 
+#: PBL schemes that allocate the Shin-Hong per-call output bundle
+#: (gpuwm/core/shinhong.py launch_shinhong: one empty_like comprehension
+#: for the nine 3-D fields, four cp.empty for the 2-D ones -- the five
+#: allocation sites the physics allocation inventory prices).  Its own
+#: constant rather than a second member of _YSU_OUTPUT_BUNDLE_SCHEMES
+#: because the bundles differ: Shin-Hong returns 9 3-D + 4 2-D fields
+#: against YSU's set, and keying both off one tuple would price the
+#: wrong roster for whichever scheme joined second.
+_SHINHONG_OUTPUT_BUNDLE_SCHEMES = (11,)
+
+#: The launcher's exact per-call output roster (single-sourced by test
+#: against gpuwm/core/shinhong.py, which is CuPy-importing and therefore
+#: not imported here -- the ysu constant-pair idiom above).
+_SHINHONG_3D = ("du", "dv", "dtheta", "dqv", "dqc", "dqi",
+                "exch_h", "tke", "el")
+_SHINHONG_2D = ("hpbl", "kpbl", "wstar", "delta")
+
+
+def shinhong_output_transient_shapes(
+        cfg: RunConfig) -> dict[str, tuple[int, ...]]:
+    """Raw per-call Shin-Hong outputs before field-copy/coupling use.
+
+    The :func:`ysu_output_transient_shapes` contract for scheme 11:
+    these allocations exist on every _run_shinhong call and are released
+    at the last consumer (the scheme has no positive-cadence retention
+    -- ``last_ysu`` stays None -- so no persistent counterpart exists).
+    ``kpbl`` is int32; every other field is float32, so one 4-byte
+    itemsize covers the whole roster.
+    """
+    if int(cfg.bl_pbl_physics) not in _SHINHONG_OUTPUT_BUNDLE_SCHEMES:
+        return {}
+    m = (cfg.nz, cfg.ny, cfg.nx)
+    s2 = (cfg.ny, cfg.nx)
+    shapes = {f"shinhong_output/{name}": m for name in _SHINHONG_3D}
+    shapes.update({f"shinhong_output/{name}": s2 for name in _SHINHONG_2D})
+    return shapes
+
+
 def noahmp_lsm_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     """Noah-MP land-surface per-call device transients, both paths.
 
@@ -3597,6 +3652,7 @@ def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
         items += _nest_items(shapes, nest_slot_dtypes(dc, width, parent))
     items += _items("transient", atmosphere_transient_shapes(run))
     items += _items("transient", ysu_output_transient_shapes(run))
+    items += _items("transient", shinhong_output_transient_shapes(run))
     items += _items("transient", noahmp_lsm_transient_shapes(run),
                     itemsize=1)
     items += tuple(MemoryItem(name, "transient", shape, size)
@@ -5726,7 +5782,8 @@ __all__ = [
     "shared_dycore_state_symbols", "shared_dycore_state_workspace_bytes",
     "shared_dycore_state_workspace_shapes",
     "shared_scratch_arena_aliases", "shared_scratch_arena_bytes",
-    "shared_scratch_arena_shapes", "state_array_shapes",
+    "shared_scratch_arena_shapes", "shinhong_output_transient_shapes",
+    "state_array_shapes",
     "WINDOWS_SMALL_CARD_MAX_GIB", "WINDOWS_SMALL_CARD_RESERVE_BYTES",
     "windows_small_card_advisory",
     "ysu_output_transient_shapes",

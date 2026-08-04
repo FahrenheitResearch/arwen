@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.5.2 (2026-08-03)
+
+ArWen gains its first scale-aware boundary-layer scheme: Shin-Hong 2015,
+`bl_pbl_physics = 11`. A namelist asking for it now gets it — native
+import, no substitution to YSU — and the scheme's subgrid/resolved
+partition adapts continuously with the grid spacing, which is what the
+1 km-to-100 m "gray zone" between mesoscale and LES resolutions needs.
+
+The evidence ships with the claim. The CPU reference implementation is
+bitwise against WRF v4.6.1's own module — max ULP 0, every output
+column, both terrain-flux arms — and the CUDA port holds the heating
+tendency bitwise on top of it. Beyond WRF-fidelity, the partition
+itself was measured: a 3200 m → 100 m grid-spacing ladder, six
+independent seeds per rung, scored against acceptance bands registered
+before any run existed, drawn from the published similarity envelope.
+Every gated rung landed in its band, and at 100 m the scheme reproduces
+standard behaviour to within measured noise — scale-awareness in the
+gray zone without corruption at the LES end. The full ladder — every
+seed, every band, the determinism digests — is at
+[docs/public/receipts/grayzone/](docs/public/receipts/grayzone/README.md),
+and [PHYSICS.md](docs/public/PHYSICS.md) states exactly what is proven
+and what is not. The honest label stays **implemented-unverified**: no
+matched free-running forecast comparison has been run with it, and the
+ladder is one idealized case on one card.
+
+Surface-layer pairing rules mirror WRF's own — Shin-Hong runs with
+`sf_sfclay_physics` 1 or 91, and a namelist pairing it with anything
+else is refused by name with the values that would work, citing the
+line of WRF that enforces the same thing.
+
+One small fix rides along: the note printed when a GFS fetch domain
+crosses 0° longitude now says it is informational — the full-band
+widening is handled, the only cost is download size, and the run
+continues unchanged. Field reports were reading the old wording as an
+error.
+
 ## 1.5.1 (2026-08-03)
 
 A hardening release. The published wheel's first week in the field — a

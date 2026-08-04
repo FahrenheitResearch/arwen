@@ -93,6 +93,7 @@ _WRF = "WRF v4.6.1 @ d66e442fccc04111067e29274c9f9eaccc3cef28, not vendored here
 #: body ``module_bl_ysu.F`` wraps), which is why both spellings appear.
 EXTERNAL: dict[str, str] = {
     "bl_ysu.F90": _WRF,
+    "module_bl_shinhong.F": _WRF,
     "module_bl_ysu.F": _WRF,
     "dyn_em/module_diffusion_em.F": _WRF,
     "dyn_em/module_first_rk_step_part2.F": _WRF,
@@ -133,6 +134,20 @@ RESOLVED: dict[str, tuple[str, str]] = {
     "kernels/ysu.cu:94": (
         "gpuwm/core/kernels/ysu.cu",
         "if (us == 0.0f && hf == 0.0f && qf == 0.0f)"),
+    # Shin-Hong: the two guards on WRF's out-of-bounds q2xk(kpbl+1) read --
+    # the CPU authority's and the CUDA kernel's.  The anchor is the guard
+    # condition the warning is about.
+    "gpuwm/verify/shinhong_ref.py:1275": (
+        "gpuwm/verify/shinhong_ref.py",
+        "kpbl < kte"),
+    "kernels/shinhong.cu:1354": (
+        "gpuwm/core/kernels/shinhong.cu",
+        "kpbl < kte"),
+    # Shin-Hong: the transcription of WRF's br .gt. 0.0 stability-regime
+    # compare -- the compare the sm_120 flush caveat-class warning is about.
+    "gpuwm/verify/shinhong_ref.py:706": (
+        "gpuwm/verify/shinhong_ref.py",
+        "br > F(0.0)"),
     "tests/test_mynn_pbl_runtime.py:49": (
         "tests/test_mynn_pbl_runtime.py",
         "sf_sfclay_physics=5, sf_surface_physics=2"),

@@ -274,6 +274,12 @@ PBL_ALGORITHM_IDENTITIES = {
     0: "disabled",
     1: "ysu-v1",
     5: "mynn-edmf-pbl-wrf-v4.6.1-v1",
+    # Adding a scheme means adding its row, not relaxing the check.  The
+    # identity binds the WRF version whose byte-frozen module_bl_shinhong.F
+    # the certified CPU authority transcribes (max ULP 0, both arms); a
+    # future re-transcription against a different WRF advances the suffix
+    # rather than silently resuming onto this one.
+    11: "shinhong-pbl-wrf-v4.6.1-v1",
     # SASE carries no WRF version in its identity because there is no WRF
     # scheme it transcribes.  What the identity DOES have to bind is the
     # closure's constant registry: sase_config_id() is a SHA-256 over

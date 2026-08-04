@@ -8,8 +8,8 @@ namelist domain is gpuwm's 250 x 200 x 49), maps only implemented physics
 schemes, and emits the resolved TOML text plus a structured
 :class:`SubstitutionReport` -- NEVER silent: every namelist key is either
 translated, recorded as a ratified substitution (mp 55 -> 10 Morrison,
-bl_pbl 11 -> 1 YSU, RRTMG -> RTE+RRTMGP), recorded as consumed-without-
-counterpart, or a hard error.
+RRTMG -> RTE+RRTMGP; bl_pbl 11 imports natively since the Shin-Hong
+port), recorded as consumed-without-counterpart, or a hard error.
 
 Child ``dx``/``dy`` namelist entries (the bundle hand-types
 ``333.333333`` for d04) are cross-checked against the exact parent-chain
@@ -467,7 +467,13 @@ _BL_MAP = {
     # RUC/Noah-MP pairing refusals named in an earlier version of this
     # comment were retired by the surface-driver ownership port.)
     5: (5, "MYNN2.5", "MYNN"),
-    11: (1, "Shin-Hong", "YSU"),
+    # Native since the Shin-Hong port (certified CPU authority, max ULP 0
+    # against WRF v4.6.1; see the physics registry's shinhong option).  The
+    # row was (1, "Shin-Hong", "YSU") -- a ratified substitution -- until
+    # the scheme itself was admitted; per the doc block below, this map row
+    # widens together with the physics_compat readiness row (the WRF
+    # matrix's four (11, sfclay) cells) and the PHYSICS_SLOT_DISPATCH row.
+    11: (11, "Shin-Hong", "Shin-Hong"),
 }
 _RA_LW_MAP = {
     0: (0, "none", "none"),

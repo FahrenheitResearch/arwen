@@ -1,0 +1,179 @@
+"""Shin-Hong scale-aware PBL column kernel (bl_pbl_physics=11).
+
+This module is the device launcher for the WRF v4.6.1 Shin-Hong
+transcription in ``kernels/shinhong.cu`` -- arm A only (``ctopo = ctopo2 =
+1``, the Registry ``topo_wind=0`` default, the only arm this engine can
+reach).  The scheme consumes mass-point wind, potential temperature,
+moisture, pressure/Exner, layer depths, the scheme's own prognostic SGS TKE,
+and the surface-layer coupling fields (UST, HFX/QFX, PSIM/PSIH, plus the
+Coriolis parameter for the QNSE mixing length).  It returns tendencies
+rather than updating the state; the physics driver owns their application
+(Phase D wires it).
+
+Array layout is gpuwm's standard ``(nz, ny, nx)`` with x fastest.  Every
+CUDA thread owns one complete column and performs the implicit vertical
+solves in-thread, matching the acoustic Thomas-solve pattern.  The float32
+authority is :func:`gpuwm.verify.shinhong_ref.np_shinhong_column`, itself
+bitwise against the WRF v4.6.1 oracle; the kernel's measured distance from
+WRF is pinned in ``tests/test_shinhong_wrf461_parity.py``.
+
+``dx``/``dy``/``dt``/``tke_diag`` are launch-wide scalars: the whole point
+of Shin-Hong is that the answer moves with ``sqrt(dx*dy)``, so each nest
+launches with its own spacing.
+"""
+
+from __future__ import annotations
+
+from typing import Mapping
+
+import numpy as np
+import cupy as cp
+
+from gpuwm.core.kernels import get_kernel
+from gpuwm.core.state import DTYPE
+
+_TPB = 32
+_VALIDATE_TPB = 256
+_KMAX = 128
+
+_SHINHONG_3D_FLOAT_OUTPUTS = (
+    "du", "dv", "dtheta", "dqv", "dqc", "dqi", "exch_h", "tke", "el",
+)
+_SHINHONG_2D_OUTPUTS = ("hpbl", "kpbl", "wstar", "delta")
+_SHINHONG_OUTPUTS = _SHINHONG_3D_FLOAT_OUTPUTS + _SHINHONG_2D_OUTPUTS
+_SHINHONG_2D_FLOAT_OUTPUTS = tuple(
+    name for name in _SHINHONG_2D_OUTPUTS if name != "kpbl")
+
+
+def launch_shinhong(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
+                    tke, *,
+                    psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland,
+                    u10, v10, corf,
+                    dt: float, dx: float, dy: float, tke_diag: int = 1):
+    """Launch Shin-Hong for a batch of device columns; return device outputs.
+
+    Three-dimensional inputs have shape ``(nz, ny, nx)`` except
+    ``p_interface`` which is ``(nz+1, ny, nx)``; ``tke`` is the scheme's own
+    prognostic-diagnostic SGS TKE.  Surface inputs have shape ``(ny, nx)``.
+    All are C-contiguous float32 CuPy arrays.  The returned dict contains
+    3-D ``du/dv/dtheta/dqv/dqc/dqi/exch_h/tke/el`` float32 arrays (``dtheta``
+    is the wrapper's ``rthblten``, already divided by the Exner function),
+    2-D ``hpbl/wstar/delta`` float32 arrays, and 2-D one-based ``kpbl``
+    int32.
+    """
+    columns = {"u": u, "v": v, "theta": theta, "qv": qv, "qc": qc,
+               "qi": qi, "p": p, "exner": exner, "dz": dz, "tke": tke}
+    shape = theta.shape
+    if len(shape) != 3:
+        raise ValueError(f"theta must have shape (nz, ny, nx), got {shape}")
+    nz, ny, nx = shape
+    if nz > _KMAX:
+        raise ValueError(f"nz={nz} exceeds SHINHONG_KMAX={_KMAX}")
+    if nz < 4:
+        raise ValueError(f"Shin-Hong requires nz >= 4, got {nz}")
+    for name, arr in columns.items():
+        if not isinstance(arr, cp.ndarray) or arr.shape != shape:
+            raise ValueError(f"{name} must be a CuPy array with shape {shape}")
+        if arr.dtype != DTYPE or not arr.flags.c_contiguous:
+            raise ValueError(f"{name} must be C-contiguous float32")
+    if (not isinstance(p_interface, cp.ndarray)
+            or p_interface.shape != (nz + 1, ny, nx)
+            or p_interface.dtype != DTYPE
+            or not p_interface.flags.c_contiguous):
+        raise ValueError("p_interface must be C-contiguous float32 with shape "
+                         f"{(nz + 1, ny, nx)}")
+    surfaces = {"psfc": psfc, "znt": znt, "ust": ust, "hfx": hfx,
+                "qfx": qfx, "wspd": wspd, "br": br, "psim": psim,
+                "psih": psih, "xland": xland, "u10": u10, "v10": v10,
+                "corf": corf}
+    for name, arr in surfaces.items():
+        if (not isinstance(arr, cp.ndarray) or arr.shape != (ny, nx)
+                or arr.dtype != DTYPE or not arr.flags.c_contiguous):
+            raise ValueError(f"{name} must be a C-contiguous float32 CuPy "
+                             f"array with shape {(ny, nx)}")
+    if not np.isfinite(dt) or dt <= 0.0:
+        raise ValueError(f"Shin-Hong requires a positive finite dt, got {dt}")
+    for label, value in (("dx", dx), ("dy", dy)):
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(
+                f"Shin-Hong requires a positive finite {label}, got {value}")
+    if tke_diag not in (0, 1, False, True):
+        raise ValueError("tke_diag must be 0 or 1")
+
+    out = {name: cp.empty_like(theta) for name in _SHINHONG_3D_FLOAT_OUTPUTS}
+    out.update(hpbl=cp.empty((ny, nx), dtype=DTYPE),
+               kpbl=cp.empty((ny, nx), dtype=cp.int32),
+               wstar=cp.empty((ny, nx), dtype=DTYPE),
+               delta=cp.empty((ny, nx), dtype=DTYPE))
+    ncol = ny * nx
+    blocks = (ncol + _TPB - 1) // _TPB
+    kernel = get_kernel("shinhong", "shinhong_column")
+    kernel((blocks,), (_TPB,),
+           (u, v, theta, qv, qc, qi, p, p_interface, exner, dz, tke,
+            psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland, u10, v10,
+            corf,
+            out["du"], out["dv"], out["dtheta"], out["dqv"], out["dqc"],
+            out["dqi"], out["exch_h"], out["tke"], out["el"],
+            out["hpbl"], out["kpbl"], out["wstar"], out["delta"],
+            DTYPE(dt), DTYPE(dx), DTYPE(dy), np.int32(int(tke_diag)),
+            np.int32(nz), np.int32(ny), np.int32(nx)))
+    return out
+
+
+def validate_shinhong_outputs(
+        out: Mapping[str, cp.ndarray], status: cp.ndarray) -> str | None:
+    """Return the first non-finite native Shin-Hong output name, or ``None``.
+
+    ``launch_shinhong`` owns this exact output layout.  One validation kernel
+    records a bit per floating-point output and one scalar readback preserves
+    the driver's historical first-invalid error ordering.  The integer
+    ``kpbl`` is necessarily finite and needs no device work.  Note that a
+    NaN here is not always a port defect: WRF's own ``prfac2`` 0/0
+    (module_bl_shinhong.F:1010) writes NaN heat columns on purpose-built
+    inputs, and the kernel reproduces it; this validator exists so the
+    driver can say so instead of silently advancing corrupted state.
+    """
+    if tuple(out) != _SHINHONG_OUTPUTS:
+        raise ValueError(
+            "native Shin-Hong validation requires outputs in launcher order "
+            f"{_SHINHONG_OUTPUTS}, got {tuple(out)}")
+    if (not isinstance(status, cp.ndarray) or status.shape != (1,)
+            or status.dtype != cp.uint32 or not status.flags.c_contiguous):
+        raise ValueError(
+            "Shin-Hong validation status must be a C-contiguous uint32 "
+            "device array with shape (1,)")
+
+    shape_3d = out["du"].shape
+    shape_2d = out["hpbl"].shape
+    if len(shape_3d) != 3 or len(shape_2d) != 2:
+        raise ValueError("native Shin-Hong outputs must retain 3-D/2-D shapes")
+    for name in _SHINHONG_3D_FLOAT_OUTPUTS:
+        value = out[name]
+        if (not isinstance(value, cp.ndarray) or value.shape != shape_3d
+                or value.dtype != DTYPE or not value.flags.c_contiguous):
+            raise ValueError(
+                f"native Shin-Hong output {name} must be C-contiguous "
+                f"float32 with shape {shape_3d}")
+    for name in _SHINHONG_2D_FLOAT_OUTPUTS:
+        value = out[name]
+        if (not isinstance(value, cp.ndarray) or value.shape != shape_2d
+                or value.dtype != DTYPE or not value.flags.c_contiguous):
+            raise ValueError(
+                f"native Shin-Hong output {name} must be C-contiguous "
+                f"float32 with shape {shape_2d}")
+
+    status.fill(cp.uint32(0))
+    count_3d = out["du"].size
+    count_2d = out["hpbl"].size
+    blocks = (max(count_3d, count_2d) + _VALIDATE_TPB - 1) // _VALIDATE_TPB
+    kernel = get_kernel("shinhong_validation", "shinhong_validate_outputs")
+    kernel(
+        (blocks,), (_VALIDATE_TPB,),
+        tuple(out[name] for name in _SHINHONG_3D_FLOAT_OUTPUTS)
+        + tuple(out[name] for name in _SHINHONG_2D_FLOAT_OUTPUTS)
+        + (status, np.int64(count_3d), np.int64(count_2d)))
+    invalid = int(status[0].item())
+    for bit, name in enumerate(_SHINHONG_OUTPUTS):
+        if invalid & (1 << bit):
+            return name
+    return None

@@ -125,7 +125,8 @@ class RunConfig:
     sf_surface_physics: int = 0
     # --- Phase 3 (Task 11): planetary boundary layer physics.  The physics
     # driver arrives in Task 12; this option selects its PBL registry entry.
-    bl_pbl_physics: int = 0     # 0 = none, 1 = YSU, 5 = MYNN, 900 = SASE
+    # 0 = none, 1 = YSU, 5 = MYNN, 11 = Shin-Hong, 900 = SASE.
+    bl_pbl_physics: int = 0
     # WRF v4.6.1 Registry.EM_COMMON default; consumes radiative heating.
     ysu_topdown_pblmix: int = 1
     # --- Phase 4 (Task 1): non-timesplit radiation and cumulus slots.
@@ -661,9 +662,12 @@ SASE_PBL_SCHEME = 900
 #: importing it here costs the config layer no CuPy dependency.
 SASE_MAX_NZ = _sase_limits.MAX_COLUMN_LEVELS
 
-#: ``bl_pbl_physics`` values in gpuwm's schema.  0/1/5 are WRF's; 900 is
-#: :data:`SASE_PBL_SCHEME`, ArWen-only (see there).
-PBL_SCHEMES = (0, 1, 5, SASE_PBL_SCHEME)
+#: ``bl_pbl_physics`` values in gpuwm's schema.  0/1/5/11 are WRF's --
+#: 11 is Shin-Hong (module_bl_shinhong.F, ported at max ULP 0 against the
+#: byte-frozen WRF v4.6.1 module; runtime wired by _run_shinhong in
+#: gpuwm/core/physics.py) -- and 900 is :data:`SASE_PBL_SCHEME`,
+#: ArWen-only (see there).
+PBL_SCHEMES = (0, 1, 5, 11, SASE_PBL_SCHEME)
 
 #: The exact id :attr:`RunConfig.km_opt_zero_acknowledgement` must carry.
 #:
@@ -1408,9 +1412,9 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     soil_layer_count(cfg)
     if cfg.bl_pbl_physics not in PBL_SCHEMES:
         raise ValueError(
-            f"bl_pbl_physics must be 0 (none), 1 (YSU), 5 (MYNN), or "
-            f"{SASE_PBL_SCHEME} (SASE, experimental), got "
-            f"{cfg.bl_pbl_physics}."
+            f"bl_pbl_physics must be 0 (none), 1 (YSU), 5 (MYNN), "
+            f"11 (Shin-Hong), or {SASE_PBL_SCHEME} (SASE, experimental), "
+            f"got {cfg.bl_pbl_physics}."
         )
     validate_sase_config(cfg)
     require_ready_wrf_physics(
