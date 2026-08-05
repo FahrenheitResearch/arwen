@@ -1,0 +1,26 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.7) 2.39
+# -O0 libm symbols (THE REFERENCE):
+module_cu_gf_deep U __powisf2
+module_cu_gf_deep U expf
+module_cu_gf_deep U logf
+module_cu_gf_deep U powf
+module_cu_gf_deep U tgammaf
+module_cu_gf_sh U powf
+# -O2 -ftree-vectorize (WRF's own phys/ setting):
+module_cu_gf_deep U _ZGVbN4vv_powf
+module_cu_gf_deep U expf
+module_cu_gf_deep U logf
+module_cu_gf_deep U powf
+module_cu_gf_deep U tgammaf
+module_cu_gf_sh U powf
+# -Ofast -ftree-vectorize:
+module_cu_gf_deep U _ZGVbN4vv_powf
+module_cu_gf_deep U expf
+module_cu_gf_deep U logf
+module_cu_gf_deep U powf
+module_cu_gf_deep U tgammaf
+module_cu_gf_sh U powf
+# positive control (plain expf loop at -Ofast), proves the grep works:
+U _ZGVbN4v_expf
+U expf

@@ -1,7 +1,7 @@
 """``gpuwm fetch-bridges``: staging, verification, and refusal contract.
 
 The wheel ships no compiled Rust, so for a pip install this fetch path
-IS the install path for eight artifacts: every byte must be verified
+IS the install path for nine artifacts: every byte must be verified
 against the packaged pins before anything lands in ``~/.gpuwm/bridges``,
 a mismatch must be refused rather than installed, and the other
 platform's bundle must be recognised as such instead of half-staged.
@@ -725,7 +725,7 @@ def test_the_bundle_tool_refuses_to_pin_a_partial_bundle(tmp_path):
 
     archive = tmp_path / "gpuwm-bridges-v0.0.0-test-linux-x86_64.zip"
     with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("grib1_bridge", b"only one of eight")
+        zf.writestr("grib1_bridge", b"only one of nine")
     result = subprocess.run(
         [sys.executable, str(BUNDLE_TOOL), "pin", "--release", "v0.0.0-test",
          "--source-rev", "ab12" * 10,

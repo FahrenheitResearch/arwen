@@ -14,16 +14,24 @@
 //! dealias, or quality-control: those are the Python stage's, and every
 //! number here is the RDA's own.
 //!
+//! There are two acquisition routes and one decode path.  `list`/`fetch`
+//! read the archive, which only publishes a volume once the volume has
+//! ended.  `live-list`/`live-fetch` read the real-time chunk feed, which
+//! publishes the same bytes as they are collected and can therefore hand
+//! over a scan that is still in progress; [`live`] is where that route and
+//! its refusals live.  Both produce an ordinary Archive-II file on disk, so
+//! `decode` neither knows nor cares which one served it.
+//!
 //! ```text
-//! rw_nexrad list   --site KTLX --start 2023-05-20T20:00:00Z --end 2023-05-20T20:30:00Z
-//! rw_nexrad fetch  --site KTLX --start ... --end ... --out DIR [--limit N]
-//! rw_nexrad decode --volume FILE --out FILE.rdrpack [--moments REF,VEL]
-//! rw_nexrad sites  [--site KTLX]
+//! rw_nexrad list       --site KTLX --start 2023-05-20T20:00:00Z --end 2023-05-20T20:30:00Z
+//! rw_nexrad fetch      --site KTLX --start ... --end ... --out DIR [--limit N]
+//! rw_nexrad live-list  --site KTLX
+//! rw_nexrad live-fetch --site KTLX --out DIR [--allow-partial]
+//! rw_nexrad decode     --volume FILE --out FILE.rdrpack [--moments REF,VEL]
+//! rw_nexrad sites      [--site KTLX]
 //! ```
 
-mod decode;
-mod pack;
-mod s3;
+use rw_nexrad::{decode, live, pack, s3};
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -34,35 +42,59 @@ use serde::Serialize;
 use decode::DecodeRequest;
 use pack::{decode_pack, parse_moment_filter, write_pack};
 use s3::{
-    build_agent, download_volume, iso8601, list_volumes, normalize_bucket, normalize_site,
+    build_agent, download_volume, iso8601, list_volumes_observed, normalize_bucket, normalize_site,
     parse_time, publish_volume, VolumeObject, ARCHIVE_OF_RECORD_BUCKET, DEFAULT_BUCKET,
+    LIVE_DEFAULT_BUCKET,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>`: the source revision this
+/// binary was built from, embedded so the gpuwm release cut can prove a
+/// staged bridge matches the commit being released by reading bytes
+/// alone (`tools/build_bridge_bundle.py pin --source-rev`).  `build.rs`
+/// injects the value; `main` references the constant so the linker
+/// cannot discard it.
+pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
+    concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
 
 pub const LIST_SCHEMA: &str = "gpuwm-obs.nexrad-list.v1";
 pub const FETCH_SCHEMA: &str = "gpuwm-obs.nexrad-fetch.v1";
 pub const DECODE_SCHEMA: &str = "gpuwm-obs.nexrad-decode.v1";
 pub const SITES_SCHEMA: &str = "gpuwm-obs.nexrad-sites.v1";
 pub const VERIFY_SCHEMA: &str = "gpuwm-obs.nexrad-verify.v1";
+pub const LIVE_LIST_SCHEMA: &str = "gpuwm-obs.nexrad-live-list.v1";
+pub const LIVE_FETCH_SCHEMA: &str = "gpuwm-obs.nexrad-live-fetch.v1";
+
+/// The name a receipt calls each acquisition route, so "which feed served
+/// this observation" is a value rather than an inference from a bucket name.
+pub const ARCHIVE_FEED: &str = "archive-volumes";
+pub const LIVE_FEED: &str = "live-chunks";
 
 /// The exact `--abi` line the Python bridge pins, so a bin that drifted out
 /// from under a pinned wrapper is caught at probe time rather than at parse
 /// time three receipts later.
+///
+/// The live half is appended rather than folded in: a wrapper that needs
+/// the real-time route needs a bin that has it, and the marker is the one
+/// place that difference is stated before anything is run.
 const ABI_MARKER: &str = "gpuwm-obs.nexrad-fetch.v1\tsite\twindow\tbucket\tvolumes\tbytes\t\
-cache_hits\tsha256\tgpuwm-obs.radar-sweeps.v1";
+cache_hits\tsha256\tgpuwm-obs.radar-sweeps.v1\tgpuwm-obs.nexrad-live-fetch.v1\tfeed\t\
+volume_id\tchunks\tcomplete\tlag_seconds";
 
 const USAGE: &str = "\
-usage: rw_nexrad <list|fetch|decode|verify|sites> [OPTIONS]
+usage: rw_nexrad <list|fetch|live-list|live-fetch|decode|verify|sites> [OPTIONS]
        rw_nexrad --version | --help | --abi
 
-  list     report the Level-II volumes a (site, window) resolves to, moving no payload
-  fetch    download those volumes and print a fetch record
-  decode   validate one volume and write a `gpuwm-obs.radar-sweeps.v1` pack
-  verify   re-read a pack and re-prove its header, schema and payload digest
-  sites    print the vendored NEXRAD site table (id, name, lat, lon, alt)
+  list        report the Level-II volumes a (site, window) resolves to, moving no payload
+  fetch       download those volumes and print a fetch record
+  live-list   report what the real-time chunk feed holds for a site right now
+  live-fetch  assemble the newest real-time chunks into an Archive-II volume
+  decode      validate one volume and write a `gpuwm-obs.radar-sweeps.v1` pack
+  verify      re-read a pack and re-prove its header, schema and payload digest
+  sites       print the vendored NEXRAD site table (id, name, lat, lon, alt)
 
-acquisition options
+archive acquisition options (list, fetch)
   --site ID               four-character radar id, e.g. KTLX (data, not a gate)
   --bucket NAME           S3 bucket. Default: unidata-nexrad-level2, a mirror
                           of the same key space. It is the default on a
@@ -85,6 +117,32 @@ acquisition options
   --no-cache              always re-download, never read the cache
   --out DIR               fetch: publish the volumes here as well as the cache
 
+real-time options (live-list, live-fetch)
+  --site ID               four-character radar id (data, not a gate)
+  --bucket NAME           chunk bucket. Live default: unidata-nexrad-level2-chunks,
+                          a different KEY SPACE from the archive bucket, not
+                          another mirror of it -- one object per LDM chunk under
+                          {SITE}/{VOLUME_ID}/{YYYYMMDD}-{HHMMSS}-{NNN}-{S|I|E} --
+                          which is why the live subcommands default to it and
+                          list/fetch never do
+  --volumes N             report the newest N volumes (default 1), walking back
+                          through the retained volume ids
+  --volume-id N           name the volume directory instead of discovering it
+  --allow-partial         accept a scan that is still in progress. Without it a
+                          volume with no end-of-volume chunk is refused, because
+                          a partial volume is a real product and not a default
+                          one. A partial is published as
+                          {SITE}{YYYYMMDD}_{HHMMSS}_{FMT}_P{NNN} -- a name the
+                          archive key parser refuses -- so it can never be
+                          mistaken for a finished volume
+  --min-chunks N          refuse an assembly shorter than N chunks (default 2).
+                          The floor is 2 because chunk 1 carries only the volume
+                          header and metadata messages: assembled alone it holds
+                          no Message-31 radial and `decode` refuses it
+  --out DIR               live-fetch: publish the assembled volume here
+  --cache DIR             chunk + assembly cache root
+  --no-cache              always re-download every chunk
+
 decode options
   --volume FILE           one Level-II volume on disk
   --out FILE              pack destination (required)
@@ -102,6 +160,7 @@ sites options
 ";
 
 fn main() -> ExitCode {
+    let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
         Ok(output) => {
@@ -129,6 +188,8 @@ fn run(args: &[String]) -> Result<String, Box<dyn Error>> {
     match first.as_str() {
         "list" => cmd_list(&options),
         "fetch" => cmd_fetch(&options),
+        "live-list" => cmd_live(&options, false),
+        "live-fetch" => cmd_live(&options, true),
         "decode" => cmd_decode(&options),
         "verify" => cmd_verify(&options),
         "sites" => cmd_sites(&options),
@@ -153,6 +214,10 @@ struct Options {
     max_range_km: Option<f64>,
     max_elevation_deg: Option<f64>,
     site_latlon: Option<(f64, f64, f64)>,
+    volumes: Option<usize>,
+    volume_id: Option<u32>,
+    allow_partial: bool,
+    min_chunks: Option<usize>,
 }
 
 impl Options {
@@ -195,6 +260,38 @@ impl Options {
                     let raw = value()?;
                     options.site_latlon = Some(parse_site_latlon(&raw)?)
                 }
+                "--volumes" => {
+                    let raw = value()?;
+                    let count = raw.parse::<usize>().map_err(|_| {
+                        s3::boxed_error(format!("--volumes expects a count, got {raw:?}"))
+                    })?;
+                    if count == 0 {
+                        return Err(s3::boxed_error("--volumes must be at least 1"));
+                    }
+                    options.volumes = Some(count)
+                }
+                "--volume-id" => {
+                    let raw = value()?;
+                    options.volume_id = Some(raw.parse::<u32>().map_err(|_| {
+                        s3::boxed_error(format!(
+                            "--volume-id expects a real-time volume directory number, got {raw:?}"
+                        ))
+                    })?)
+                }
+                "--allow-partial" => options.allow_partial = true,
+                "--min-chunks" => {
+                    let raw = value()?;
+                    let count = raw.parse::<usize>().map_err(|_| {
+                        s3::boxed_error(format!("--min-chunks expects a count, got {raw:?}"))
+                    })?;
+                    if count == 0 {
+                        return Err(s3::boxed_error(
+                            "--min-chunks must be at least 1; a zero-chunk assembly is an \
+                             empty file, not a volume",
+                        ));
+                    }
+                    options.min_chunks = Some(count)
+                }
                 other => {
                     return Err(s3::boxed_error(format!(
                         "unknown option {other:?}\n\n{USAGE}"
@@ -208,6 +305,22 @@ impl Options {
 
     fn bucket(&self) -> Result<String, Box<dyn Error>> {
         normalize_bucket(self.bucket.as_deref().unwrap_or(DEFAULT_BUCKET))
+    }
+
+    /// The real-time route's bucket.  Its default is the chunk feed, not
+    /// the archive: they are different key spaces, and defaulting the live
+    /// subcommands to the archive bucket would list a prefix that does not
+    /// exist and report an empty sky.
+    fn live_bucket(&self) -> Result<String, Box<dyn Error>> {
+        normalize_bucket(self.bucket.as_deref().unwrap_or(LIVE_DEFAULT_BUCKET))
+    }
+
+    fn site_id(&self) -> Result<String, Box<dyn Error>> {
+        normalize_site(
+            self.site
+                .as_deref()
+                .ok_or_else(|| s3::boxed_error("--site is required"))?,
+        )
     }
 
     fn window(&self) -> Result<(String, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>), Box<dyn Error>> {
@@ -346,14 +459,19 @@ fn cmd_list(options: &Options) -> Result<String, Box<dyn Error>> {
     let (site, start, end) = options.window()?;
     let bucket = options.bucket()?;
     let agent = build_agent();
-    let volumes = list_volumes(&agent, &bucket, &site, start, end)?;
+    let (volumes, observed_at) = list_volumes_observed(&agent, &bucket, &site, start, end)?;
     let (kept, matched) = selected(volumes, options.limit);
 
     #[derive(Serialize)]
     struct ListRecord {
         schema: &'static str,
         status: &'static str,
+        feed: &'static str,
         window: WindowRecord,
+        /// The bucket's clock when it answered, so the age of the newest
+        /// volume is a measurement rather than a difference between two
+        /// clocks nobody compared.
+        observed_at: Option<String>,
         matched_volumes: usize,
         volumes: Vec<VolumeRecord>,
         total_bytes: u64,
@@ -362,7 +480,9 @@ fn cmd_list(options: &Options) -> Result<String, Box<dyn Error>> {
     let record = ListRecord {
         schema: LIST_SCHEMA,
         status: if kept.is_empty() { "EMPTY" } else { "READY" },
+        feed: ARCHIVE_FEED,
         window: window_record(&bucket, &site, start, end),
+        observed_at: observed_at.map(iso8601),
         matched_volumes: matched,
         total_bytes: kept.iter().map(|v| v.object.size_bytes).sum(),
         volumes: kept.iter().map(VolumeRecord::from).collect(),
@@ -375,7 +495,7 @@ fn cmd_fetch(options: &Options) -> Result<String, Box<dyn Error>> {
     let bucket = options.bucket()?;
     let cache_dir = options.cache_dir();
     let agent = build_agent();
-    let volumes = list_volumes(&agent, &bucket, &site, start, end)?;
+    let (volumes, observed_at) = list_volumes_observed(&agent, &bucket, &site, start, end)?;
     let (kept, matched) = selected(volumes, options.limit);
     if kept.is_empty() {
         // An empty window on the mirror can mean the mirror's coverage
@@ -415,7 +535,9 @@ fn cmd_fetch(options: &Options) -> Result<String, Box<dyn Error>> {
     struct FetchRecord {
         schema: &'static str,
         status: &'static str,
+        feed: &'static str,
         window: WindowRecord,
+        observed_at: Option<String>,
         matched_volumes: usize,
         cache_dir: String,
         out_dir: Option<String>,
@@ -451,13 +573,289 @@ fn cmd_fetch(options: &Options) -> Result<String, Box<dyn Error>> {
     let record = FetchRecord {
         schema: FETCH_SCHEMA,
         status: "READY",
+        feed: ARCHIVE_FEED,
         window: window_record(&bucket, &site, start, end),
+        observed_at: observed_at.map(iso8601),
         matched_volumes: matched,
         cache_dir: cache_dir.to_string_lossy().to_string(),
         out_dir: options.out.as_ref().map(|p| p.to_string_lossy().to_string()),
         total_bytes: files.iter().map(|f| f.bytes).sum(),
         cache_hits,
         files,
+    };
+    Ok(format!("{}\n", serde_json::to_string_pretty(&record)?))
+}
+
+/// The shortest assembly this client will publish, in chunks.
+///
+/// Two, and the floor is measured rather than chosen: chunk 1 is the
+/// `-S` chunk, which carries the volume header and the metadata messages
+/// and no radials at all.  Assembled alone it is a well-formed Archive-II
+/// file that `decode` refuses with "carried no Message-31 radial" -- a
+/// correct refusal, three requests too late.
+const DEFAULT_MIN_CHUNKS: usize = 2;
+
+/// How much further back than asked the walk looks when the newest volumes
+/// are not admissible, so "the newest complete volume" does not cost a
+/// request per retained id.
+const LOOKBACK_SLACK: usize = 3;
+
+/// Why this volume is not one `live-fetch` will assemble, or `None`.
+fn live_refusal(
+    volume: &live::LiveVolume,
+    allow_partial: bool,
+    min_chunks: usize,
+) -> Option<String> {
+    if !volume.complete && !allow_partial {
+        return Some(format!(
+            "the scan is still in progress ({} of an unknown total chunks, no \
+             end-of-volume chunk); pass --allow-partial to assimilate a volume \
+             that is still being collected",
+            volume.chunks.len()
+        ));
+    }
+    if volume.chunks.len() < min_chunks {
+        return Some(format!(
+            "only {} chunk(s) have been published, below the --min-chunks {} \
+             floor",
+            volume.chunks.len(),
+            min_chunks
+        ));
+    }
+    None
+}
+
+#[derive(Serialize)]
+struct LiveVolumeRecord {
+    volume_id: u32,
+    volume_time: String,
+    chunks: usize,
+    listed_chunks: usize,
+    complete: bool,
+    partial: bool,
+    /// Why the validated prefix stops short of what the listing held, when
+    /// it does.  `null` is "it does not".
+    truncation: Option<String>,
+    bytes: u64,
+    first_chunk_key: Option<String>,
+    newest_chunk_key: Option<String>,
+    newest_chunk_last_modified: Option<String>,
+    /// Seconds from the newest chunk landing in the bucket to the instant
+    /// the bucket answered this listing, on the bucket's clock.  `null`
+    /// when the `Date` header could not be read: an unmeasured lag is
+    /// stated as unmeasured rather than filled in from the local clock.
+    lag_seconds: Option<f64>,
+    keys: Vec<String>,
+    admissible: bool,
+    refusal: Option<String>,
+    // -- fetch only --
+    #[serde(skip_serializing_if = "Option::is_none")]
+    filename: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chunk_cache_hits: Option<usize>,
+}
+
+fn live_volume_record(
+    volume: &live::LiveVolume,
+    observed_at: Option<chrono::DateTime<chrono::Utc>>,
+    refusal: Option<String>,
+) -> LiveVolumeRecord {
+    LiveVolumeRecord {
+        volume_id: volume.volume_id,
+        volume_time: iso8601(volume.volume_time),
+        chunks: volume.chunks.len(),
+        listed_chunks: volume.listed_chunks,
+        complete: volume.complete,
+        partial: !volume.complete,
+        truncation: volume.truncation.clone(),
+        bytes: volume.total_bytes(),
+        first_chunk_key: volume.chunks.first().map(|c| c.object.key.clone()),
+        newest_chunk_key: volume.chunks.last().map(|c| c.object.key.clone()),
+        newest_chunk_last_modified: volume.newest_last_modified().map(iso8601),
+        lag_seconds: volume.lag_seconds(observed_at),
+        keys: volume.keys(),
+        admissible: refusal.is_none(),
+        refusal,
+        filename: None,
+        path: None,
+        cache_path: None,
+        sha256: None,
+        chunk_cache_hits: None,
+    }
+}
+
+/// `live-list` and `live-fetch`: the same discovery, the same policy, and
+/// one of them moves bytes.
+fn cmd_live(options: &Options, fetch: bool) -> Result<String, Box<dyn Error>> {
+    let site = options.site_id()?;
+    let bucket = options.live_bucket()?;
+    let wanted = options.volumes.unwrap_or(1);
+    let min_chunks = options.min_chunks.unwrap_or(DEFAULT_MIN_CHUNKS);
+    let agent = build_agent();
+
+    let discovery = live::discover(&agent, &bucket, &site, options.volume_id)?;
+    let observed_at = discovery.observed_at;
+    let local_now = chrono::Utc::now();
+    let clock_skew_seconds = observed_at
+        .map(|server| (local_now - server).num_milliseconds() as f64 / 1000.0);
+
+    let newest_admissible =
+        live_refusal(&discovery.volume, options.allow_partial, min_chunks).is_none();
+    let mut pool = vec![discovery.volume.clone()];
+    // The fast path -- the newest volume is the one that was asked for and
+    // it qualifies -- costs no extra listing at all, which is the point of
+    // a real-time route.
+    let lookback = if options.volume_id.is_some() {
+        0
+    } else if wanted == 1 && newest_admissible {
+        0
+    } else {
+        wanted - 1 + LOOKBACK_SLACK
+    };
+    if lookback > 0 {
+        pool.extend(live::preceding_volumes(
+            &agent,
+            &bucket,
+            &site,
+            &discovery.ids,
+            &discovery.volume,
+            lookback,
+        )?);
+    }
+
+    let mut records: Vec<LiveVolumeRecord> = Vec::new();
+    let mut chosen: Vec<live::LiveVolume> = Vec::new();
+    for volume in &pool {
+        let refusal = live_refusal(volume, options.allow_partial, min_chunks);
+        if refusal.is_none() && chosen.len() < wanted {
+            chosen.push(volume.clone());
+        }
+        records.push(live_volume_record(volume, observed_at, refusal));
+    }
+
+    #[derive(Serialize)]
+    struct LiveRecord {
+        schema: &'static str,
+        status: &'static str,
+        feed: &'static str,
+        site: String,
+        bucket: String,
+        /// The bucket's own clock when it answered discovery.  Every lag in
+        /// this record is measured against it.
+        observed_at: Option<String>,
+        /// This host's clock minus the bucket's, so a reader can tell a
+        /// stale feed from a wrong wall clock.
+        clock_skew_seconds: Option<f64>,
+        retained_volume_ids: usize,
+        volume_id_runs: Vec<[u32; 2]>,
+        probed_volume_ids: Vec<u32>,
+        requested_volumes: usize,
+        allow_partial: bool,
+        min_chunks: usize,
+        matched_volumes: usize,
+        admissible_volumes: usize,
+        volumes: Vec<LiveVolumeRecord>,
+        total_bytes: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_dir: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        out_dir: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        chunk_cache_hits: Option<usize>,
+    }
+
+    let mut cache_dir = None;
+    let mut out_dir = None;
+    let mut chunk_cache_hits = None;
+    if fetch {
+        if chosen.is_empty() {
+            let why = records
+                .iter()
+                .filter_map(|record| {
+                    record
+                        .refusal
+                        .as_ref()
+                        .map(|reason| format!("volume {} ({}): {reason}", record.volume_id, record.volume_time))
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(s3::boxed_error(format!(
+                "the real-time feed has no volume for {site} that this run will \
+                 assemble. {why}"
+            )));
+        }
+        let root = options.cache_dir();
+        let mut hits = 0usize;
+        for volume in &chosen {
+            let assembled = live::assemble(
+                &agent,
+                &bucket,
+                &root,
+                options.out.as_deref(),
+                volume,
+                !options.no_cache,
+            )?;
+            hits += assembled.chunk_cache_hits;
+            let slot = records
+                .iter_mut()
+                .find(|record| {
+                    record.volume_id == volume.volume_id
+                        && record.volume_time == iso8601(volume.volume_time)
+                })
+                .ok_or_else(|| {
+                    s3::boxed_error("an assembled volume left no record to fill in")
+                })?;
+            slot.filename = Some(assembled.filename);
+            slot.path = Some(assembled.path.to_string_lossy().to_string());
+            slot.cache_path = Some(assembled.cache_path.to_string_lossy().to_string());
+            slot.sha256 = Some(assembled.sha256);
+            slot.chunk_cache_hits = Some(assembled.chunk_cache_hits);
+            slot.bytes = assembled.bytes;
+        }
+        cache_dir = Some(root.to_string_lossy().to_string());
+        out_dir = options.out.as_ref().map(|p| p.to_string_lossy().to_string());
+        chunk_cache_hits = Some(hits);
+    }
+
+    let record = LiveRecord {
+        schema: if fetch { LIVE_FETCH_SCHEMA } else { LIVE_LIST_SCHEMA },
+        status: if chosen.is_empty() { "EMPTY" } else { "READY" },
+        feed: LIVE_FEED,
+        site,
+        bucket,
+        observed_at: observed_at.map(iso8601),
+        clock_skew_seconds,
+        retained_volume_ids: discovery.ids.len(),
+        volume_id_runs: discovery
+            .id_runs
+            .iter()
+            .map(|&(first, last)| [first, last])
+            .collect(),
+        probed_volume_ids: discovery.probed_ids,
+        requested_volumes: wanted,
+        allow_partial: options.allow_partial,
+        min_chunks,
+        matched_volumes: records.len(),
+        admissible_volumes: chosen.len(),
+        total_bytes: if fetch {
+            records
+                .iter()
+                .filter(|record| record.sha256.is_some())
+                .map(|record| record.bytes)
+                .sum()
+        } else {
+            records.iter().map(|record| record.bytes).sum()
+        },
+        volumes: records,
+        cache_dir,
+        out_dir,
+        chunk_cache_hits,
     };
     Ok(format!("{}\n", serde_json::to_string_pretty(&record)?))
 }
@@ -705,13 +1103,125 @@ mod tests {
     fn help_version_and_abi_are_stable_surfaces() {
         assert!(run(&[]).unwrap().contains("usage: rw_nexrad"));
         let help = run(&["--help".to_string()]).unwrap();
-        for subcommand in ["list", "fetch", "decode", "verify", "sites"] {
+        for subcommand in [
+            "list", "fetch", "live-list", "live-fetch", "decode", "verify", "sites",
+        ] {
             assert!(help.contains(subcommand), "usage must document {subcommand}");
         }
         assert!(run(&["--version".to_string()])
             .unwrap()
             .starts_with("rw_nexrad "));
         assert_eq!(run(&["--abi".to_string()]).unwrap(), format!("{ABI_MARKER}\n"));
+    }
+
+    fn flags(args: &[&str]) -> Options {
+        Options::parse(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>()).expect("parses")
+    }
+
+    fn live_volume(chunks: usize, complete: bool) -> live::LiveVolume {
+        let kind = |sequence: usize| {
+            if sequence == 1 {
+                live::ChunkKind::Start
+            } else if complete && sequence == chunks {
+                live::ChunkKind::End
+            } else {
+                live::ChunkKind::Intermediate
+            }
+        };
+        live::LiveVolume {
+            site: "TEST".to_string(),
+            volume_id: 7,
+            volume_time: chrono::Utc::now(),
+            chunks: (1..=chunks)
+                .map(|sequence| live::LiveChunk {
+                    object: s3::S3Object {
+                        key: format!("TEST/7/20260805-073454-{sequence:03}-x"),
+                        size_bytes: 1000,
+                        last_modified: "2026-08-05T07:35:00.000Z".to_string(),
+                    },
+                    sequence: sequence as u32,
+                    kind: kind(sequence),
+                })
+                .collect(),
+            complete,
+            listed_chunks: chunks,
+            truncation: None,
+        }
+    }
+
+    #[test]
+    fn the_help_states_both_defaults_archive_first() {
+        // `tests/test_obs_nexrad.py` reads the FIRST "Default:" out of
+        // --help and binds the Python constant to it, so the archive
+        // default must stay the first one stated.
+        let help = run(&["--help".to_string()]).unwrap();
+        let archive = help.find("Default: unidata-nexrad-level2").expect("stated");
+        let live = help
+            .find("Live default: unidata-nexrad-level2-chunks")
+            .expect("stated");
+        assert!(archive < live, "the archive default must be stated first");
+    }
+
+    #[test]
+    fn the_live_route_defaults_to_the_chunk_bucket_and_the_archive_route_does_not() {
+        let bare = flags(&[]);
+        assert_eq!(bare.bucket().unwrap(), DEFAULT_BUCKET);
+        assert_eq!(bare.live_bucket().unwrap(), LIVE_DEFAULT_BUCKET);
+        assert_ne!(DEFAULT_BUCKET, LIVE_DEFAULT_BUCKET);
+        // Named, both routes honour the name: the chunk feed is a key
+        // space, not a hard-coded endpoint.
+        let named = flags(&["--bucket", "some-other-mirror"]);
+        assert_eq!(named.bucket().unwrap(), "some-other-mirror");
+        assert_eq!(named.live_bucket().unwrap(), "some-other-mirror");
+    }
+
+    #[test]
+    fn the_live_options_parse_and_refuse_meaningless_counts() {
+        let parsed = flags(&[
+            "--volumes", "3", "--volume-id", "571", "--allow-partial", "--min-chunks", "7",
+        ]);
+        assert_eq!(parsed.volumes, Some(3));
+        assert_eq!(parsed.volume_id, Some(571));
+        assert!(parsed.allow_partial);
+        assert_eq!(parsed.min_chunks, Some(7));
+        assert!(!flags(&[]).allow_partial, "partial is opt-in, never a default");
+        for bad in [
+            vec!["--volumes", "0"],
+            vec!["--volumes", "many"],
+            vec!["--min-chunks", "0"],
+            vec!["--volume-id", "-1"],
+        ] {
+            let args: Vec<String> = bad.iter().map(|a| a.to_string()).collect();
+            assert!(Options::parse(&args).is_err(), "{bad:?} must fail closed");
+        }
+    }
+
+    #[test]
+    fn a_scan_still_in_progress_is_refused_unless_the_caller_asked_for_one() {
+        let mid_scan = live_volume(9, false);
+        let refusal = live_refusal(&mid_scan, false, DEFAULT_MIN_CHUNKS)
+            .expect("a partial is not served by default");
+        assert!(refusal.contains("--allow-partial"), "{refusal}");
+        assert!(
+            live_refusal(&mid_scan, true, DEFAULT_MIN_CHUNKS).is_none(),
+            "asked for, a partial is admissible"
+        );
+    }
+
+    #[test]
+    fn an_assembly_below_the_chunk_floor_is_refused_even_when_partials_are_allowed() {
+        // One chunk is the volume header alone: a well-formed Archive-II
+        // file carrying no radial, which `decode` refuses three requests
+        // later.  The floor turns that into a refusal before the fetch.
+        let header_only = live_volume(1, false);
+        let refusal = live_refusal(&header_only, true, DEFAULT_MIN_CHUNKS).expect("refused");
+        assert!(refusal.contains("--min-chunks"), "{refusal}");
+        assert!(live_refusal(&live_volume(2, false), true, DEFAULT_MIN_CHUNKS).is_none());
+    }
+
+    #[test]
+    fn a_finished_volume_needs_no_permission_to_be_served() {
+        assert!(live_refusal(&live_volume(4, true), false, DEFAULT_MIN_CHUNKS).is_none());
     }
 
     #[test]

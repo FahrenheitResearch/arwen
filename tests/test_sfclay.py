@@ -348,3 +348,150 @@ def test_sfclay_public_validation():
         sfclay(*args, option=91, isftcflx=3)
     with pytest.raises(ValueError, match="iz0tlnd"):
         sfclay(*args, option=91, iz0tlnd=3)
+
+
+def _degenerate_roughness_case(z0):
+    """One land column with a degenerate z0; host-built float32 arrays.
+
+    The subnormal must be materialized on the host: a device fill kernel's
+    store would flush it to zero under this compile route, and the point is
+    that the *stored field* can carry a subnormal (e.g. ingested static
+    data), not only an exact zero.
+    """
+    shape = (1, 1)
+    full = lambda v: np.full(shape, v, np.float32)
+    return {
+        "u": full(5.0), "v": full(0.0), "t": full(300.0), "qv": full(0.01),
+        "p": full(100000.0), "dz8w": full(40.0), "psfc": full(100000.0),
+        "tsk": full(303.0), "znt": full(z0), "pblh": full(800.0),
+        "mavail": full(1.0), "xland": full(1.0), "qsfc": full(0.01),
+        "ust": full(0.25), "mol": full(-0.2), "hfx": full(0.0),
+        "qfx": full(0.0), "lakemask": full(0.0),
+    }
+
+
+@pytest.mark.parametrize("z0", [1.0e-38, 0.0])
+@pytest.mark.parametrize("option", [91, 1])
+def test_mirror_degenerate_roughness_is_defined(option, z0):
+    """The float64 authority is finite and pins the defined semantics.
+
+    WRF v4.6.1 has no guard here: module_sf_sfclay.F:494
+    ``GZ1OZ0 = ALOG(ZA/ZNT)`` (and sf_sfclayrev.F90:318) at ``ZNT=0``
+    propagates Inf into ``U10 = Inf/Inf = NaN``.  gpuwm diverges by
+    definition: ``z0 <= 0`` floors the logarithm's roughness at FLT_MIN,
+    so zero roughness is a huge-but-finite contrast, not Inf.
+    """
+    data = _degenerate_roughness_case(z0)
+    out = _run_mirror(data, option)
+    for name, value in out.items():
+        assert np.isfinite(value).all(), name
+    za = 20.0
+    z0_eff = float(np.float64(np.float32(z0))) if z0 > 0.0 \
+        else 1.1754943508222875e-38
+    num = za if option == 91 else za + z0_eff
+    assert out["gz1oz0"][0, 0] == pytest.approx(np.log(num / z0_eff),
+                                                rel=1e-12)
+
+
+@pytest.mark.gpu
+@requires_gpu
+@pytest.mark.parametrize("z0", [1.0e-38, 0.0])
+@pytest.mark.parametrize("option", [91, 1])
+def test_kernel_degenerate_roughness_matches_mirror(option, z0):
+    """z0=1e-38 and z0=0 through the real kernel on the device.
+
+    Pre-guard, ``za/z0`` overflowed FP32 before the log could act (and the
+    f32 division DAZes a subnormal z0 outright on sm_120), so
+    ``gz1oz0 = logf(Inf) = Inf`` poisoned every downstream similarity
+    quantity.  The kernel now rescues the ratio in float64 (bit-decoded
+    widening, since the f32->f64 cvt also DAZes) and must land on the
+    float64 mirror's defined values.
+    """
+    import cupy as cp
+
+    from gpuwm.core.sfclay import SFCLAY_OUTPUTS, sfclay
+
+    data = _degenerate_roughness_case(z0)
+    dev = {name: cp.asarray(value) for name, value in data.items()}
+    got = sfclay(
+        dev["u"], dev["v"], dev["t"], dev["qv"], dev["p"],
+        dev["dz8w"], dev["psfc"], dev["tsk"], dev["znt"],
+        dev["pblh"], dev["mavail"], dev["xland"], option=option,
+        qsfc=dev["qsfc"], ust=dev["ust"], mol=dev["mol"],
+        hfx=dev["hfx"], qfx=dev["qfx"], lakemask=dev["lakemask"],
+        dx=1000.0,
+    )
+    # The device really received the subnormal, not a flushed zero.
+    assert cp.asnumpy(dev["znt"]).view(np.uint32)[0, 0] == \
+        np.asarray(data["znt"]).view(np.uint32)[0, 0]
+    ref = _run_mirror(data, option)
+    for name in SFCLAY_OUTPUTS:
+        actual = cp.asnumpy(getattr(got, name))
+        assert np.isfinite(actual).all(), name
+        if name == "regime":
+            np.testing.assert_array_equal(actual, ref[name], err_msg=name)
+        else:
+            scale = max(float(np.max(np.abs(ref[name]))), 1.0e-7)
+            np.testing.assert_allclose(actual, ref[name], rtol=5.0e-4,
+                                       atol=5.0e-5 * scale, err_msg=name)
+    # And the two degenerate inputs stay distinguishable: the subnormal's
+    # own logarithm, not one shared floor value.
+    za = 20.0
+    z0_eff = float(np.float64(np.float32(z0))) if z0 > 0.0 \
+        else 1.1754943508222875e-38
+    num = za if option == 91 else za + z0_eff
+    assert float(got.gz1oz0.get()[0, 0]) == pytest.approx(
+        np.log(num / z0_eff), rel=1e-6)
+
+def test_mirror_nan_roughness_stays_nan():
+    """A NaN znt must not come back as a plausible number.
+
+    ``_sf_log_zratio``'s degenerate-roughness floor is written
+    ``not z0 > 0.0``, and that predicate is true for NaN as well as for
+    zero.  Without a NaN guard ahead of it, a NaN roughness leaves as
+    ``log(num / FLT_MIN)`` -- roughly 90, a perfectly ordinary contrast
+    that every downstream finiteness check accepts.  The corrupted state
+    would then be invisible: the column would report finite fluxes
+    computed from a roughness nobody has.
+
+    Zero roughness is a physical input this port deliberately defines
+    (see ``test_mirror_degenerate_roughness_is_defined``).  NaN roughness
+    is evidence of a defect upstream, so it must survive as one.
+
+    Pinned on the function rather than through a whole column because the
+    defect and its guard both live here; a column carries unrelated
+    downstream behaviour on NaN input.
+    """
+    from gpuwm.verify.npref import _sf_log_zratio
+
+    assert np.isnan(_sf_log_zratio(20.0, float("nan")))
+    assert np.isnan(_sf_log_zratio(float("nan"), 0.1))
+    # The defined zero-roughness case is untouched by the guard.
+    assert np.isfinite(_sf_log_zratio(20.0, 0.0))
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_kernel_nan_roughness_matches_mirror():
+    """The device half of the same guard.
+
+    ``sf_log_zratio``'s float64 rescue floors with ``!(zd > 0.0)``, true
+    for NaN, so pre-guard the kernel returned ``log(num) - log(FLT_MIN)``
+    for a NaN ``znt`` exactly as the mirror did.  Both now propagate.
+    """
+    import cupy as cp
+
+    from gpuwm.core.sfclay import sfclay
+
+    data = _degenerate_roughness_case(float("nan"))
+    dev = {name: cp.asarray(value) for name, value in data.items()}
+    got = sfclay(
+        dev["u"], dev["v"], dev["t"], dev["qv"], dev["p"],
+        dev["dz8w"], dev["psfc"], dev["tsk"], dev["znt"],
+        dev["pblh"], dev["mavail"], dev["xland"], option=91,
+        qsfc=dev["qsfc"], ust=dev["ust"], mol=dev["mol"],
+        hfx=dev["hfx"], qfx=dev["qfx"], lakemask=dev["lakemask"],
+        dx=1000.0,
+    )
+    assert np.isnan(float(got.gz1oz0.get()[0, 0])), (
+        "NaN roughness was laundered into a finite contrast on the device")

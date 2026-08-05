@@ -43,7 +43,9 @@ translate: the per-domain turbulence row ``c_s``, ``c_k``,
 ``tke_heat_flux``, ``tke_drag_coefficient`` (every one ``max_domains`` in
 the Registry and admitted per domain by
 ``gpuwm.experiment._DOMAIN_RUN_OVERRIDES``, so a PBL parent may carry a
-PBL-off LES child that names its own closure constants), plus
+PBL-off LES child that names its own closure constants), the per-domain
+moist-filter switch ``moist_mix6_off`` (Registry.EM_COMMON:2889,
+divergence-ledger entry L4), plus
 ``diff_6th_thresh``, ``no_mp_heating``,
 ``mp_tend_lim``, ``ysu_topdown_pblmix``, ``isftcflx``, ``iz0tlnd``,
 ``usemonalb``, ``rdlai2d``, ``opt_thcnd`` (each emitted only when the
@@ -271,17 +273,28 @@ def read_namelist_role(path: str | Path, role: str) -> dict[str, dict[str, list]
 
 
 def parse_namelist(path: str | Path) -> dict[str, dict[str, list]]:
-    """Parse a Fortran namelist file into {section: {key: [values]}}.
+    """Parse a Fortran namelist FILE into {section: {key: [values]}}."""
+
+    return parse_namelist_text(Path(path).read_text(encoding="utf-8"))
+
+
+def parse_namelist_text(text: str) -> dict[str, dict[str, list]]:
+    """Parse Fortran namelist TEXT into {section: {key: [values]}}.
 
     Handles the WRF/WPS style: ``&section`` .. ``/`` blocks,
     ``key = v1, v2,`` lines, bare continuation lines carrying further
     values for the previous key (namelist.input eta_levels), repetition
     constants (``3*1.0``), and D-exponent reals (``2.90D2``).
+
+    Split out from :func:`parse_namelist` so a RENDERER can read back
+    what it just produced without writing a file first -- an emitter
+    that checks its own bytes is checking the artifact, and one that
+    checks its own variables is checking its intentions.
     """
     sections: dict[str, dict[str, list]] = {}
     current: dict[str, list] | None = None
     current_key: str | None = None
-    for raw in Path(path).read_text(encoding="utf-8").splitlines():
+    for raw in text.splitlines():
         line = raw.split("!", 1)[0].strip()
         if not line:
             continue
@@ -494,7 +507,7 @@ _RA_SW_MAP = {
 #: PHYSICS_SLOT_DISPATCH row -- never one of the three alone.
 _SFCLAY_ALLOWED = {0, 1, 5, 91}
 _SFSFC_ALLOWED = {0, 2, 3, 4}
-_CU_ALLOWED = {0, 1}
+_CU_ALLOWED = {0, 1, 3}
 
 
 def _port_receipt(**selection) -> str:
@@ -1168,6 +1181,15 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     # (:2323) -- an implicitly two-way namelist therefore selects the
     # experimental runtime path instead of importing as one-way.
     p_top = float(dm.scalar("p_top_requested", 5000))
+    # hypsometric_opt is a &domains SCALAR, not a &dynamics column
+    # (Registry.EM_COMMON:2283, `namelist,domains`, nentries 1;
+    # run/README.namelist documents it inside &domains).  gpuwm read it
+    # from &dynamics, which is a section no real WRF namelist can carry
+    # it in -- wrf.exe fails the &dynamics namelist read outright -- so
+    # the importer could only ever have accepted namelists gpuwm itself
+    # wrote.  Ratified Registry-default binding when the namelist leaves
+    # it unset (Phase-4 native-dt baseline): 2.
+    hypsometric_opt = int(dm.scalar("hypsometric_opt", 2))
 
     _NEST_GUARD_WHY = {
         "interp_method_type":
@@ -1835,6 +1857,31 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                        f"no gpuwm mapping (implemented: "
                        f"{sorted(_CU_ALLOWED)}).")
     cudt = [float(v) for v in ph.col("cudt", max_dom, 0)]
+    # The two Grell-family keys, WRF v4.6.1 Registry defaults (both 0,
+    # single-instance).  Read whenever present; consumed only where
+    # cu_physics = 3, exactly as WRF's cumulus driver reads them only for
+    # the Grell schemes.
+    clos_choice = int(_uniform(
+        "physics", "clos_choice", ph.col("clos_choice", max_dom, 0)))
+    ishallow = int(_uniform(
+        "physics", "ishallow", ph.col("ishallow", max_dom, 0)))
+    if clos_choice != 0:
+        raise _err(
+            "physics", "clos_choice", [clos_choice],
+            "only the 16-member ensemble closure (0, the Registry "
+            "default) is admitted: the single-closure arms carry no GF "
+            "oracle coverage.")
+    if ishallow not in (0, 1):
+        raise _err("physics", "ishallow", [ishallow],
+                   "must be 0 or 1 (CUP_gf_sh off/on).")
+    if (clos_choice or ishallow) and all(value != 3 for value in cu):
+        drop("physics", "clos_choice/ishallow",
+             [clos_choice, ishallow],
+             "Grell-family keys with no Grell scheme selected "
+             "(cu_physics has no 3); WRF's cumulus driver would not read "
+             "them either")
+        clos_choice = 0
+        ishallow = 0
     radt = [float(v) for v in ph.col("radt", max_dom, 0)]
     bldt = float(_uniform("physics", "bldt", ph.col("bldt", max_dom, 0)))
     for key, reason in (
@@ -2021,6 +2068,21 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     diff_6th_slopeopt = int(_uniform(
         "dynamics", "diff_6th_slopeopt",
         dyn.col("diff_6th_slopeopt", max_dom, 0)))
+    # moist_mix6_off (Registry.EM_COMMON:2889, &dynamics, max_domains,
+    # default .false.): WRF's own switch for taking the 6th-order filter
+    # off the moist scalars (dyn_em/module_em.F:1421), mapped 1:1 onto the
+    # RunConfig field of the same name and spelling.  Supplied-only, on
+    # the knob-parity rule: the Registry default equals gpuwm's frozen
+    # RunConfig default, so omission emits nothing and established imports
+    # stay byte-identical.  Per domain on epssm's Fortran-assignment
+    # semantics: an unassigned tail keeps the Registry default rather
+    # than broadcasting the head value.
+    moist_mix6_off_raw = dyn.take("moist_mix6_off")
+    moist_mix6_off_col = None
+    if moist_mix6_off_raw is not None:
+        supplied = _require_bools("dynamics", "moist_mix6_off",
+                                  moist_mix6_off_raw[:max_dom])
+        moist_mix6_off_col = supplied + [False] * (max_dom - len(supplied))
     # The km_opt=2/3 turbulence parameter row (knob-parity lane).  Every
     # key here is `max_domains` in Registry.EM_COMMON (c_s :2862, c_k
     # :2863, mix_isotropic :2896, mix_upper_bound :2897, tke_upper_bound
@@ -2217,11 +2279,25 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                    "requires an explicit even value"))
     smdiv = float(dyn.scalar("smdiv", 0.1))
     # WRF Registry defaults the namelist leaves unset, ratified binding
-    # (Phase-4 native-dt baseline): emdiv 0.01, hypsometric_opt 2,
-    # h_sca_adv_order 5.
+    # (Phase-4 native-dt baseline): emdiv 0.01, h_sca_adv_order 5.
+    # (hypsometric_opt's binding is the same, but it is read from
+    # &domains, where WRF declares it -- see the &domains block above.)
     emdiv = float(dyn.scalar("emdiv", 0.01))
-    hypsometric_opt = int(dyn.scalar("hypsometric_opt", 2))
     h_sca_adv_order = int(dyn.scalar("h_sca_adv_order", 5))
+    # The importer refuses rather than tolerates the old placement.  A
+    # namelist carrying hypsometric_opt in &dynamics is one wrf.exe
+    # cannot read at all, so silently honouring it here would hand a
+    # gpuwm forecast a setting its mirrored WRF arm could never run;
+    # generic "unmapped key" would be true but would not say where the
+    # key belongs, and this refusal has one obvious repair.
+    stale_hypsometric = dyn.take("hypsometric_opt")
+    if stale_hypsometric is not None:
+        raise _err(
+            "dynamics", "hypsometric_opt", stale_hypsometric,
+            "WRF declares hypsometric_opt in &domains as a scalar "
+            "(Registry.EM_COMMON:2283, `namelist,domains`, nentries 1); "
+            "in &dynamics it fails wrf.exe's own namelist read before "
+            "the first timestep.  Move the key to &domains.")
     if h_sca_adv_order != 5:
         raise _err(
             "dynamics", "h_sca_adv_order", h_sca_adv_order,
@@ -2353,6 +2429,8 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             lines.append(f"{_turb_key} = {_fmt(_turb_col[0])}")
     if diff_6th_thresh is not None:
         lines.append(f"diff_6th_thresh = {_fmt(diff_6th_thresh)}")
+    if moist_mix6_off_col is not None:
+        lines.append(f"moist_mix6_off = {_fmt(moist_mix6_off_col[0])}")
     lines += [
         f"spec_zone = {spec_zone}",
         f"relax_zone = {relax_zone}",
@@ -2449,6 +2527,10 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         for _turb_key, _turb_col in turbulence_row:
             if _turb_col is not None and _turb_col[n] != _turb_col[0]:
                 lines.append(f"{_turb_key} = {_fmt(_turb_col[n])}")
+        if moist_mix6_off_col is not None \
+                and moist_mix6_off_col[n] != moist_mix6_off_col[0]:
+            lines.append(
+                f"moist_mix6_off = {_fmt(moist_mix6_off_col[n])}")
         if radt[n] > 0.0:
             lines.append(f"radt = {_fmt(radt[n])}")
         else:
@@ -2461,6 +2543,16 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         lines.append(f"cu_physics = {cu[n]}")
         if cu[n] == 1:
             lines.append(f"cudt_minutes = {_fmt(cudt[n])}")
+        elif cu[n] == 3:
+            # GF runs on the model step (STEPCU = 1, WRF's usual GF
+            # configuration); RunConfig validation enforces the same.
+            lines.append("cudt_minutes = 0.0")
+            lines.append(f"clos_choice = {clos_choice}")
+            lines.append(f"ishallow = {ishallow}")
+            if cudt[n]:
+                drop("physics", f"cudt[{n + 1}]", [cudt[n]],
+                     "GF carries no cudt cadence: WRF's GF runs every "
+                     "model step and so does gpuwm's")
         elif cudt[n]:
             drop("physics", f"cudt[{n + 1}]", [cudt[n]],
                  "cudt is consumed only where cu_physics = 1")

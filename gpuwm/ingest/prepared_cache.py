@@ -222,6 +222,29 @@ INERT_DIAGNOSTIC_IDENTITY_FIELDS = frozenset({
     "run.nwp_diagnostics",
 })
 
+#: Identity fields PREPARATION never reads: they change the trajectory,
+#: not the prepared state.  A prepared cache is an initial state plus
+#: the EXTERNAL boundary stream for the times it decoded
+#: (``run.run_seconds``'s own rationale above).  The P3 inflow-seeding
+#: keys act at runtime FORCE on the child-owned rolling NEST boundary
+#: tables, which preparation never computes -- so a tree prepared
+#: before the field existed, or prepared with any value of it, holds
+#: exactly the prepared state every value of it runs from.  Unlike the
+#: two tables above these fields are trajectory-RELEVANT and stay
+#: INSIDE :func:`gpuwm.core.model.experiment_fingerprint` and the
+#: restart identity; only the prepared-cache comparison drops them.
+#: Entries are added deliberately, one per field, by whoever adds the
+#: field, per this module's schema-growth protocol.  Provenance:
+#: controller ruling 2026-08-03 under Drew's standing delegation,
+#: recorded in docs/superpowers/receipts/les/
+#: INFLOW-GENERATOR-ACCEPTANCE-V2.md item 10.
+PREPARATION_INERT_RUN_FIELDS = frozenset({
+    "run.inflow_perturbation",
+    "run.inflow_perturbation_seed",
+    "run.inflow_perturbation_amplitude_scale",
+    "run.inflow_perturbation_faces",
+})
+
 
 def effective_prepared_domain_config(document):
     """Canonicalize one prepared-domain identity for comparison.
@@ -229,9 +252,10 @@ def effective_prepared_domain_config(document):
     Two documents describe the same prepared d0N when they agree here.
     Three normalizations, each of which was a real refusal:
 
-    * cadence and inert-diagnostic fields (the two tables above) are
-      dropped -- they say when the forecast writes, not what it
-      integrates;
+    * cadence, inert-diagnostic and preparation-inert fields (the three
+      tables above) are dropped -- the first two say when the forecast
+      writes rather than what it integrates, and the third names run
+      mechanisms preparation never reads;
     * ``cudt_minutes`` is pinned to 0 when ``cu_physics == 0``, because a
       cumulus interval with no cumulus scheme is dead namelist state and
       the two producers spell the dead value differently (a WRF importer
@@ -252,14 +276,16 @@ def effective_prepared_domain_config(document):
     # well as under ``run``, and a document may carry it with no ``run``
     # section at all.
     for path in sorted(NON_TRAJECTORY_IDENTITY_FIELDS
-                       | INERT_DIAGNOSTIC_IDENTITY_FIELDS):
+                       | INERT_DIAGNOSTIC_IDENTITY_FIELDS
+                       | PREPARATION_INERT_RUN_FIELDS):
         if "." not in path:
             normalized.pop(path, None)
     run = normalized.get("run")
     if not isinstance(run, dict):
         return normalized
     for path in sorted(NON_TRAJECTORY_IDENTITY_FIELDS
-                       | INERT_DIAGNOSTIC_IDENTITY_FIELDS):
+                       | INERT_DIAGNOSTIC_IDENTITY_FIELDS
+                       | PREPARATION_INERT_RUN_FIELDS):
         section, _, key = path.partition(".")
         if section == "run" and key:
             run.pop(key, None)
@@ -267,6 +293,22 @@ def effective_prepared_domain_config(document):
         run["radt_minutes"] = run["radt"]
     if run.get("cu_physics") == 0:
         run["cudt_minutes"] = 0.0
+    # The historical radiation aggregate is a SPELLING, not a different
+    # selection: gpuwm/config.py documents ``ra_lw_physics = ra_sw_physics
+    # = -1`` as preserving "the historical gpuwm ra_physics aggregate
+    # exactly", and explicit pairs require ``ra_physics = 0``.  The two
+    # producers meet here spelled differently -- a shipped 4/4 profile
+    # writes the explicit (0, 4, 4) triple while the WRF namelist importer
+    # emits the coupled aggregate (4, -1, -1) -- so the aggregate is
+    # canonicalized to its resolved explicit form for comparison.  Mixed
+    # pairs have no aggregate spelling and pass through untouched.
+    if (run.get("ra_lw_physics", -1) == -1
+            and run.get("ra_sw_physics", -1) == -1
+            and run.get("ra_physics", 0) in (0, 4, 90)):
+        aggregate = run.get("ra_physics", 0)
+        run["ra_lw_physics"] = aggregate
+        run["ra_sw_physics"] = aggregate
+        run["ra_physics"] = 0
     return normalized
 
 
@@ -1518,7 +1560,8 @@ __all__ = [
     "CACHE_WRITER_KEY", "CachedInitialResult",
     "DEFAULT_TOLERANT_IDENTITY_FIELDS",
     "INERT_DIAGNOSTIC_IDENTITY_FIELDS",
-    "NON_TRAJECTORY_IDENTITY_FIELDS", "PREPARED_CACHE_SCHEMA",
+    "NON_TRAJECTORY_IDENTITY_FIELDS", "PREPARATION_INERT_RUN_FIELDS",
+    "PREPARED_CACHE_SCHEMA",
     "PreparedCacheCorruptError", "PreparedCacheMismatchError",
     "PreparedCacheReader", "RestoredPreparedCache",
     "SEALED_PREPARED_EXTENSION_MODE", "UNSTAMPED_WRITER",

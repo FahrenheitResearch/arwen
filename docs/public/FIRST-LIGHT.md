@@ -87,7 +87,7 @@ over a blank rectangle, which is why they travel together.
 
 (The `tools/rustwx` build remains skippable: `gpuwm render` falls back to
 matplotlib without any render engine, and doctor labels that state
-`info`, not a gap. It is a fallback, though -- four products against the
+`info`, not a gap. It is a fallback, though -- five products against the
 rust catalog's 151 -- and `gpuwm render` says so on every run that uses
 it.)
 
@@ -392,12 +392,13 @@ without colliding, and the plot subtitle carries the same spacing as
 rendering wrfout files this model did not produce, so the sheet does
 not claim them.
 
-Without that build, the matplotlib fallback renders four products per
+Without that build, the matplotlib fallback renders five products per
 frame -- composite reflectivity (NWS color scale), 2 m temperature,
-10 m wind speed and barbs, accumulated precipitation -- via the
-`wrf-rust` package (`pip install 'gpuwm[render]'` if you skipped the
-extra; the error message names it). In the transcript, 4 files x 4
-products took 2.6 s.
+10 m wind speed and barbs, accumulated precipitation, and TOA outgoing
+longwave as synthetic infrared -- via the `wrf-rust` package
+(`pip install 'gpuwm[render]'` if you skipped the extra; the error
+message names it). The transcript below predates the OLR panel and
+measured the other four: 4 files x 4 products took 2.6 s.
 
 To compare two runs product-by-product (a rerun, a physics variant, a
 CPU WRF twin), render each into its own directory and compose labeled

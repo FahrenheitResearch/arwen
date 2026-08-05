@@ -1,5 +1,175 @@
 # Changelog
 
+## 1.6.0 (2026-08-05)
+
+New:
+
+- LES completion program, packages P1 to P4. Every verdict below was
+  scored against acceptance bands registered before the runs existed.
+  - Moist LES verification (P1): matched cloud-topped boundary layer
+    comparisons against a pristine-source WRF oracle, with the
+    saturation mutation control and both negative controls fired. 29 of
+    32 metric-arm comparisons landed inside the registered bands; the
+    two findings behind the three misses are published beside the
+    passes, and no band was widened.
+  - Vertical levels (P2): the LES level bound is now a compiled tier
+    ladder. Every configuration at or below 128 levels compiles the
+    kernel it always did, proven bit-identical; 160-level and 192-level
+    runs carry a full device acceptance battery including restart
+    bit-identity; above 256 the solver refuses loudly before any launch.
+  - Inflow seeding (P3): an LES nest child can seed inflow turbulence
+    with cell-block boundary perturbations, per domain, default off,
+    and the off path is gated byte-identical to a build without the
+    mechanism. The measured need is on the record: the shipped nested
+    child's turbulence development fetch is larger than its own domain.
+  - Gray-zone chain (P4): the scale-aware parent chain campaign ran end
+    to end and ships with its findings section as the status of record.
+    The gray-zone nest configuration ships unblessed and says so.
+- Observation scoring instrument, first light. A registered reflectivity
+  skill battery (fractions skill score against radar composites, frozen
+  parameters, a measured persistence floor, and a wrong-day negative
+  control measured on real observations) plus the scoring command line.
+  Exactly one end-to-end case is scored: model S_refl 0.4618, above the
+  persistence floor of 0.1598 and below the registered useful-skill line
+  of 0.5249. This is first light for the instrument. No campaign ran and
+  none is claimed.
+- Radar data assimilation foundation, experimental. Ensemble
+  initial-condition perturbations, radar observation operators,
+  hot-start reflectivity increments, a batched LETKF gated by a twin
+  experiment, a hydrometeor positivity policy, ensemble products, and a
+  production NEXRAD Level II pipeline from archive bytes to filter-ready
+  observation files. Every entry point stamps status experimental and
+  nothing is wired into a default forecast route.
+- WoFS at Home (WaH), a radar-DA nowcast that runs on one card. It is
+  demo-grade, and that label is a measurement rather than modesty; the
+  paragraph below it is what the label means. One command takes a
+  WSR-88D site from Level II bytes through ensemble analysis to a
+  rendered forecast gallery. An interactive launcher draws the domain as
+  a box on a map instead of writing one. A daemon cycles the whole thing
+  continuously and says on the page when it stops and why. The
+  observation route reads the real-time chunk feed, which publishes
+  bytes as they are collected rather than when a volume closes, and
+  falls back to the archive when the live prefix is short; a finished
+  volume is byte-identical on the two routes. Nested forecasts ride the
+  same path, and the analysis carries its own Jacobi eigensolver so it
+  does not need cuSOLVER present to solve.
+  Exactly one case is verified. KDMX, ten members plus a never-analysed
+  control, 3 km spacing, six 15-minute cycles and a 90-minute free
+  forecast, 506 s for the whole three-hour exercise on one RTX 5090. One
+  radar. Radial velocity only, which is the weaker half of radar DA,
+  because reflectivity is what places and maintains storms. Two analysis
+  variables, u and v. Fractions skill score 0.72 to 0.77 against 0.24 to
+  0.34 for a cold start that never saw an observation: an internally
+  controlled measurement against doing nothing, and not a comparison
+  against persistence, optical-flow nowcasting, WRFDA, or the
+  operational HRRR. One draw per arm, so no error bar. No dual-run byte
+  comparison was made for any DA run, so the standing no-ECC corruption
+  screen has not been applied to any of these numbers. No velocity
+  dealiasing: fold risk is masked and counted, not unwrapped.
+  [docs/da-nowcast-quickstart.md](docs/da-nowcast-quickstart.md) is the
+  path a stranger can follow, and
+  [docs/da-vs-wofs.md](docs/da-vs-wofs.md) sets the system beside
+  Warn-on-Forecast line by line, including every line where it is
+  smaller.
+- Grell-Freitas cumulus, `cu_physics = 3`. A scale-aware deep and shallow
+  convection scheme, selectable per domain on the tree route. Bitwise
+  against WRF v4.6.1 at the whole-driver boundary over a committed
+  216-column oracle: 208 columns word for word on the float32 CPU
+  authority and on CUDA, the remaining 8 bounded at 34 ULP by the
+  driver's own mixed-precision constants. Never a default and no
+  template selects it. Not verified in any real-case forecast: no scored
+  comparison against observations has been run with it, so the registry
+  label is implemented-unverified with scientific evidence none.
+  Selecting it costs 3.20 GiB of device local-memory backing store,
+  priced by `gpuwm check` under NON-POOL, which today rules out
+  four-domain configurations on a 32 GB card.
+- OLR renders as synthetic satellite infrared in the matplotlib fallback
+  renderer.
+
+Fixed:
+
+- ERA5-forced runs could die at step 0 with a non-finite tendency. An
+  ERA5 soil-moisture value a hair below zero, from GRIB packing or
+  interpolation undershoot, was clipped to exactly 0.0 on a land point.
+  Noah's thermal conductivity divides by soil moisture three times, so
+  one such cell produced NaN conductivity, then NaN ground heat flux,
+  then NaN sensible heat flux, and the run failed blaming the PBL
+  scheme. Each land layer below its soil category's air-dry value is now
+  floored to that value before the derived liquid-water split, on every
+  Noah-geometry source. Water, sea ice and healthy land are byte
+  untouched: on a mixed land, water, ice and frozen domain all ten state
+  arrays hash identically with and without the fix. Where WRF v4.6.1
+  differs it is recorded rather than imitated: WRF resets a whole column
+  to a constant on a top-layer trigger, this floors per layer at the
+  category value, and on the case that was reported 109 of 142,644 land
+  cell-layers differ as a result.
+- The refusal that run produced named the wrong scheme. A non-finite
+  surface heat flux handed to YSU leaves as a non-finite tendency, and
+  the message named only that tendency, so readers went to the
+  boundary-layer scheme when the defect was in the surface layer feeding
+  it. 1,474,560 fuzzed columns of finite input never produce a
+  non-finite tendency at all, so when one appears an input is the cause.
+  The refusal now names the degenerate input it is an image of. Which
+  tendency carries it depends on surface stability: over a stable
+  surface the heat flux reaches the potential temperature tendency and
+  nothing else, which is the shape that run reported; over an unstable
+  surface it also sets the convective velocity scale, so it reaches the
+  momentum and moisture tendencies too and the refusal names the wind
+  tendency instead. The named input is the heat flux either way.
+- Two silent wrong answers on sm_120, where FP32 subnormals are flushed
+  in all arithmetic. A friction velocity of 1e-13 is an ordinary float32
+  whose cube is subnormal and flushes to zero, turning a quotient into
+  NaN and laundering it into an exchange coefficient of 1000 m2/s where
+  the float64 authority says 131; validation saw nothing. And a
+  roughness length small enough to overflow the surface-layer
+  logarithm's quotient sent an infinity into every downstream similarity
+  quantity. Both now have defined answers, proven bit-exact on the
+  healthy path under pinned fixtures and an adversarial sweep. Where WRF
+  v4.6.1 leaves the degenerate case undefined, the defined behaviour is
+  documented as a divergence rather than reproduced.
+- A failure capsule can be read without the tree that produced it. It
+  now embeds its own configuration, namelist and vtable text, size
+  capped. A first-step failure is also labelled as stepping rather than
+  as writer initialization, which had sent one real user-bug diagnosis
+  down the wrong path.
+- Twelve defects in the observation emitters and scoring path, found
+  while hardening the instrument: among them frame selection under radar
+  outages, a frozen station table, an archive manifest that describes
+  the archive rather than one pull, and the WRF comparison arm being
+  told to produce the reflectivity it is scored on.
+- Release receipts record exactly the 16 bytes that are a device UUID;
+  they previously carried three neighbouring bytes that can change when
+  the adapter re-enumerates.
+- The release snapshot builder answers --help instead of running.
+- `gpuwm doctor` checks for the NEXRAD front door by name, and that
+  binary now ships in the bridge bundle. A machine without it previously
+  got a green report while being unable to ingest a single radar
+  observation, which is every DA route, live and archived. Absent blocks
+  and says what it blocks. Stale says to rebuild rather than to
+  re-point, because every such binary reports the same version string,
+  so pointing at another copy fails identically.
+- The NoahMP column-slab preflight priced its device transient by CuPy
+  pool growth, which reads zero whenever the pool already holds a block
+  big enough to serve the request. It now reads allocation demand at the
+  allocator boundary. No gate was widened: the negative controls at
+  1,024 and at 16,384 columns both still fail.
+- 91 restart gates that need no device were being skipped by a
+  whole-module GPU mark, and a collection that crashed under the marker
+  leak gate made that gate pass vacuously instead of failing.
+- One scorer of record for the skill battery. The two scorers already
+  shared the kernel, but each carried its own copy of the constants, and
+  the copies disagreed where it matters: the same named half-width is a
+  27 km box at 3 km spacing and a 13.5 km box at 1.5 km. The constants
+  are now derived in one place, proven inert against the committed
+  composites, and held there by a guard that fails when a literal is put
+  back.
+- A sweep receipt described its scored field as one member when the
+  published figure is the ensemble mean. The label is corrected and no
+  number was recomputed.
+
+High-resolution terrain statics (hash-bound raster overrides for
+topography) are present and unchanged in this release.
+
 ## 1.5.2 (2026-08-03)
 
 ArWen gains its first scale-aware boundary-layer scheme: Shin-Hong 2015,

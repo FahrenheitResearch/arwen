@@ -53,7 +53,9 @@ from gpuwm.physics_compat import (  # noqa: E402
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
     RUC_PROFILE_ID,
+    THOMPSON_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_PROFILE_ID,
+    THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_TABLE_ROOT_ENV,
     WRF_RRTMG_LEGACY,
     WRF_RRTMG_TO_RTE_RRTMGP,
@@ -198,6 +200,22 @@ def runner_capabilities() -> dict[str, object]:
                 # Warnings are informational for executable profiles.  The
                 # exact env/table guards still fail closed at launch.
                 "explicit_expert_consent_required": False,
+            },
+            THOMPSON_LEGACY_RRTMG_PROFILE_ID: {
+                "selector": 8,
+                **thompson,
+                "explicit_expert_consent_required": False,
+                "radiation_solver": "legacy RRTMG",
+            },
+            THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID: {
+                "selector": 8,
+                **thompson,
+                "explicit_expert_consent_required": False,
+                "radiation_solver": "legacy RRTMG",
+                # The one component that differs from the row above.  The
+                # microphysics requirements are identical because the
+                # microphysics is identical.
+                "pbl_solver": "Shin-Hong 2015 scale-aware",
             },
             MORRISON_PROFILE_ID: {
                 "selector": 10,
@@ -898,6 +916,59 @@ _NATIVE_HRRR_NAMELIST_CONTRACTS = MappingProxyType({
             "diff_6th_slopeopt": 1.0,
         }),
     }),
+    # The legacy-RRTMG Thompson twin carries its OWN namelist contract, not
+    # an alias: this table is a hard per-field equality gate on the supplied
+    # namelist, and the twin's registered composition genuinely differs from
+    # the validation row here (ra 0/1 -> 4/4, radt 1.0 -> 12.0,
+    # diff_6th_factor 0.08 -> 0.12; the values are the profile row's, which
+    # is the battery config's as registered).  The NSSL-2 twin CAN alias
+    # because its base row already pins the identical 4/4 + radt 12 values.
+    # The species/cold-start tables below are the radiation-independent
+    # part, and there the twin does alias -- see
+    # _initialization_contract_profile.
+    THOMPSON_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 8.0,
+            "ra_lw_physics": 4.0,
+            "ra_sw_physics": 4.0,
+            "radt": 12.0,
+            "sf_sfclay_physics": 91.0,
+            "sf_surface_physics": 2.0,
+            "bl_pbl_physics": 1.0,
+            "cu_physics": 0.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.12,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
+    # The gray-zone sibling of the row above, TRANSCRIBED for the same
+    # reason that row is not an alias: this table is a hard per-field
+    # equality gate on the supplied namelist, and the two rows genuinely
+    # differ (bl_pbl_physics 1 -> 11).  An alias would pin YSU against a
+    # Shin-Hong namelist and refuse it one gate later on value drift.
+    # They differ in that field and no other, which is the property the
+    # paired comparison rests on.
+    THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 8.0,
+            "ra_lw_physics": 4.0,
+            "ra_sw_physics": 4.0,
+            "radt": 12.0,
+            "sf_sfclay_physics": 91.0,
+            "sf_surface_physics": 2.0,
+            "bl_pbl_physics": 11.0,
+            "cu_physics": 0.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.12,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
     MORRISON_PROFILE_ID: MappingProxyType({
         "physics": MappingProxyType({
             "mp_physics": 10.0,
@@ -986,6 +1057,37 @@ _HRRR_SOURCE_ABSENT_WRF_FIELDS = MappingProxyType({
         "QHAIL", "QNDROP", "QNRAIN", "QNICE", "QNSNOW",
         "QNGRAUPEL", "QNHAIL", "QNCCN", "QVGRAUPEL", "QVHAIL"),
 })
+
+
+#: Which profile's SPECIES/COLD-START tables serve each legacy-RRTMG twin.
+#: The HRRR initialization contract -- which species the source supplies,
+#: which absent WRF fields cold-start, and their exact FP32 defaults -- is
+#: a microphysics property and is radiation-variant-independent: a twin
+#: selects a different 4/4 radiation IMPLEMENTATION and changes nothing
+#: about the analyzed or absent species (the same reasoning as
+#: tools/prepare_hrrr_wrf.py's verbatim _HRRR_COLD_START_CONTRACT reuse;
+#: the NSSL-2 twin was the in-tree precedent, aliased inline at three
+#: sites until the Thompson twin missed all three).  The NAMELIST contract
+#: is deliberately NOT served by this map for the Thompson twin: that
+#: table pins radiation/radt/diffusion values the twins genuinely change,
+#: so each twin either aliases there because its values are identical
+#: (NSSL-2) or carries its own row (Thompson).
+_INITIALIZATION_CONTRACT_ALIASES = MappingProxyType({
+    NSSL2_LEGACY_RRTMG_PROFILE_ID: NSSL2_PROFILE_ID,
+    THOMPSON_LEGACY_RRTMG_PROFILE_ID: THOMPSON_PROFILE_ID,
+    # Same reasoning one component further: which species HRRR supplies
+    # and what the absent ones cold-start to is a microphysics property,
+    # and the gray-zone sibling changes the PBL closure, not the
+    # microphysics.  Its NAMELIST contract is its own row above, because
+    # that table does pin the switch it moves.
+    THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID: THOMPSON_PROFILE_ID,
+})
+
+
+def _initialization_contract_profile(profile: str) -> str:
+    """The profile whose species/cold-start tables serve ``profile``."""
+
+    return _INITIALIZATION_CONTRACT_ALIASES.get(profile, profile)
 
 
 def _native_hrrr_profile_contract(profile: str) -> dict[str, object]:
@@ -1209,11 +1311,7 @@ def _validate_native_hrrr_physics_profile(
     resolved = _native_hrrr_runtime_switches(profile)
     resolved["radiation_scheme_ids"] = [
         resolved["ra_lw_physics"], resolved["ra_sw_physics"]]
-    contract_profile = (
-        NSSL2_PROFILE_ID
-        if profile == NSSL2_LEGACY_RRTMG_PROFILE_ID
-        else profile
-    )
+    contract_profile = _initialization_contract_profile(profile)
     source_absent_defaults = _HRRR_SOURCE_ABSENT_STATE_DEFAULTS[
         contract_profile]
     receipt = {
@@ -1677,9 +1775,7 @@ def _initial_hrrr_microphysics_receipt(
                 "a source-bound WRF-real policy receipt")
     try:
         defaults = _HRRR_SOURCE_ABSENT_STATE_DEFAULTS[
-            NSSL2_PROFILE_ID
-            if profile == NSSL2_LEGACY_RRTMG_PROFILE_ID
-            else profile]
+            _initialization_contract_profile(profile)]
     except KeyError:
         raise ValueError(
             f"unsupported native HRRR physics profile {profile!r}") from None
@@ -1791,9 +1887,7 @@ def _initial_hrrr_microphysics_receipt(
         "discarded_source_species": dict(discarded),
         "source_absent_wrf_fields": list(
             _HRRR_SOURCE_ABSENT_WRF_FIELDS[
-                NSSL2_PROFILE_ID
-                if profile == NSSL2_LEGACY_RRTMG_PROFILE_ID
-                else profile]),
+                _initialization_contract_profile(profile)]),
         "source_absent_state_policy": (
             "profile-defined exact FP32 WRF-real-style cold start"),
         "state_source_absent_fields": exact_fields,

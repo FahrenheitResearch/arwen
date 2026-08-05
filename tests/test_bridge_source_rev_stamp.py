@@ -53,7 +53,7 @@ def _stamp(revision: str) -> bytes:
 
 
 def _bundle(tmp_path: Path, payloads: dict[str, bytes]) -> Path:
-    """A synthetic bundle carrying the eight artifacts and one map asset.
+    """A synthetic bundle carrying the nine artifacts and one map asset.
 
     Only the stamp contents vary per test; everything else satisfies the
     pin step's existing membership and asset requirements so a refusal
@@ -155,7 +155,7 @@ def test_verification_refuses_a_malformed_expected_revision():
 def test_pin_refuses_a_bundle_with_an_unstamped_binary(tmp_path):
     """Point the check at a binary with no stamp and watch it fire.
 
-    This is the 1.4.1 near-miss re-staged: seven current binaries and
+    This is the 1.4.1 near-miss re-staged: eight current binaries and
     one stale one that predates the stamped builds.
     """
 
@@ -219,13 +219,15 @@ _STAMP_SOURCES = {
     "gpuwm_preprocess_cpu": "src/lib.rs",
     "rw_fetch": "crates/rw-fetch/src/main.rs",
     "rw_wrfbatch": "crates/rw-wrfbatch/src/main.rs",
+    "rw_nexrad": "crates/rw-nexrad/src/main.rs",
 }
 
 #: The build script that injects the revision for each artifact.
 _STAMP_BUILDS = {
     bridges.CRATE_RELATIVE: ("build.rs",),
     bridges.RUSTWX_CRATE_RELATIVE: ("crates/rw-fetch/build.rs",
-                                    "crates/rw-wrfbatch/build.rs"),
+                                    "crates/rw-wrfbatch/build.rs",
+                                    "crates/rw-nexrad/build.rs"),
 }
 
 

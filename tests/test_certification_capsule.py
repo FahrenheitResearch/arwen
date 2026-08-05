@@ -479,3 +479,24 @@ def test_both_run_summaries_carry_the_digest_field():
 
     assert "trajectory_digest" in RealCaseRunSummary.__dataclass_fields__
     assert "trajectory_digest" in ExperimentRunSummary.__dataclass_fields__
+
+
+def test_the_gpu_identity_uuid_is_bounded_to_the_sixteen_uuid_bytes():
+    """The capsule's ``gpu_identity`` UUID is the 16 bytes that are the
+    UUID -- the same over-read the FTZ probe fixed (``cudaDeviceProp``
+    places ``luid`` right after ``uuid``, and CuPy's conversion stops at
+    the first zero byte, not the array bound), bounded the same way."""
+    from gpuwm.certify.pins import CUDA_UUID_BYTES, device_uuid_hex
+
+    uuid16 = bytes(range(1, 17))
+    assert CUDA_UUID_BYTES == 16
+    assert device_uuid_hex(uuid16) == uuid16.hex()
+    # No trailing byte -- LUID or otherwise -- can reach the pin.
+    for tail in (b"\x9e\x5d\x01", b"\xff" * 8, b"\x00" * 4):
+        assert device_uuid_hex(uuid16 + tail) == uuid16.hex()
+    for shape in (bytearray, memoryview):
+        assert device_uuid_hex(shape(uuid16 + b"\x01\x02\x03")) \
+            == uuid16.hex()
+    # Absent property stays absent; an already-str value passes through.
+    assert device_uuid_hex(None) is None
+    assert device_uuid_hex("GPU-abc") == "GPU-abc"

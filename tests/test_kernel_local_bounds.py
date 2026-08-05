@@ -314,3 +314,96 @@ def test_the_ceiling_is_still_refused_above_the_compiled_bound():
         kfmod.kernel_capacity(129)
     with pytest.raises(ValueError, match="exceeds REFL_KMAX=256"):
         reflmod.kernel_capacity(257)
+
+
+# ---------------------------------------------------------------------------
+# acoustic.cu's WPHI_MAX_LEV: the same two claims, one tier ladder up
+# ---------------------------------------------------------------------------
+#
+# ``acoustic`` specializes COARSELY -- a short ladder of tiers rather than the
+# exact nz -- because its bound sizes one FP32 column (4 B per level) instead
+# of kf's 47, so per-nz compiles would buy bytes and cost modules.  The two
+# things that must hold are unchanged: the frame the driver reports is the
+# frame ``gpuwm.core.preflight`` prices, and moving the tier moves no bits.
+
+_WPHI_SYMBOLS = ("advance_w_phi", "advance_w_phi_msf")
+
+
+def test_the_acoustic_tier_frames_are_what_preflight_prices():
+    """De-provisionalizes ``preflight.ACOUSTIC_TIER_FRAME``.
+
+    The deeper tiers' frames are extrapolated in the pricing model from the
+    driver-measured shipped tier; only this test can say whether NVRTC agrees
+    at 193 and 257, or spills more than the array.
+    """
+    from gpuwm.core import acoustic as ac
+    from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
+
+    spec = pf.ACOUSTIC_TIER_FRAME
+    assert spec.define == "WPHI_MAX_LEV"
+    for tier in ac.WPHI_LEVEL_TIERS:
+        frames = {}
+        for symbol in _WPHI_SYMBOLS:
+            kernel = (get_kernel("acoustic", symbol)
+                      if tier == ac.UNSPECIALIZED_WPHI_LEVEL_TIER else
+                      get_kernel_int_defines("acoustic", symbol,
+                                             (("WPHI_MAX_LEV", tier),)))
+            frames[symbol] = int(kernel.attributes["local_size_bytes"])
+        assert max(frames.values()) == spec.frame_bytes(tier), (tier, frames)
+
+
+def test_the_unspecialized_acoustic_source_still_compiles_to_its_row():
+    """The ``#ifndef`` guard must not move the shipped tier's frame."""
+    from gpuwm.core.kernels import get_kernel
+
+    assert max(int(get_kernel("acoustic", symbol)
+                   .attributes["local_size_bytes"])
+               for symbol in _WPHI_SYMBOLS) == (
+        pf.KERNEL_MAX_LOCAL_SIZE_BYTES["acoustic"]) == 544
+
+
+def _w_phi_bytes(kernel, seed, nz):
+    """One ``advance_w_phi`` launch against a supplied kernel object.
+
+    Only the compiled bound differs between two calls, so a byte difference
+    in the outputs is a difference the tier caused.
+    """
+    from gpuwm.core import acoustic as acmod
+    from gpuwm.verify.npref import random_acoustic_state
+
+    state, cfg = random_acoustic_state(seed=seed, nz=nz, ny=4, nx=8)
+    real_pick = acmod._w_phi_kernel
+    acmod._w_phi_kernel = lambda name, levels: kernel
+    try:
+        acmod.acoustic_substep(state, cfg, dtau=0.5, first=False)
+    finally:
+        acmod._w_phi_kernel = real_pick
+    return tuple(_raw(getattr(state, name))
+                 for name in ("w_pp", "ph_pp", "p_pp", "al_pp"))
+
+
+def test_a_deeper_acoustic_tier_moves_no_bits_below_the_ceiling():
+    """AC-P2.2's tier-equivalence half, measured rather than asserted.
+
+    A below-ceiling column solved by the 193-tier module must agree bit for
+    bit with the same column solved by the shipped module.  The bound is a
+    pure allocation size, so this is what "by construction" has to mean when
+    a driver is asked.
+    """
+    from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
+
+    nz = 64
+    shipped = get_kernel("acoustic", "advance_w_phi")
+    deep = get_kernel_int_defines("acoustic", "advance_w_phi",
+                                  (("WPHI_MAX_LEV", 193),))
+    assert (int(deep.attributes["local_size_bytes"])
+            > int(shipped.attributes["local_size_bytes"])), (
+        "the two kernels must be different binaries or this proves nothing")
+    assert _w_phi_bytes(shipped, 11, nz) == _w_phi_bytes(deep, 11, nz)
+
+
+def test_the_acoustic_ceiling_is_still_refused_above_the_top_tier():
+    from gpuwm.core import acoustic as acmod
+
+    with pytest.raises(ValueError, match="exceeds the in-thread solve limit"):
+        acmod.wphi_level_tier(acmod.MAX_ACOUSTIC_LEVELS + 1)

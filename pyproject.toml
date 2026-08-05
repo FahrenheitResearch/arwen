@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "1.5.2"
+version = "1.6.0"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 # The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
@@ -44,6 +44,10 @@ gpu = ["cupy-cuda12x>=13.0"]
 # wrf package (pip distribution wrf-rust), pinned to the certified version.
 render = ["wrf-rust==0.2.35"]
 geog = ["rasterio>=1.3", "pyproj>=3.6"]
+# The observation-battery referee (gpuwm.verify.obs): the remap plans in
+# verify/obs/regrid.py build a cKDTree.  Lazily imported, so the base
+# install runs forecasts without it; scoring against observations needs it.
+obs = ["scipy>=1.11"]
 dev = ["pytest>=8.0"]
 # The two extras a person running a forecast on their own card needs,
 # under one name, so the quickstart is one pip line instead of a choice

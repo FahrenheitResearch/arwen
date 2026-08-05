@@ -52,7 +52,7 @@ What this does NOT do (v1, stated plainly)
   the rim by construction.  :func:`recycled_difference_perturbations` and
   :func:`perturbed_lateral_boundaries` are documented stubs, not code.
 * **No perturbation of surface, soil, or physics parameters**, and no
-  perturbation of ``w``, ``mu'``, or any hydrometeor species.
+  perturbation of ``w`` or ``mu'``.
 * **No vertical taper.**  Perturbations reach the model top and the surface
   at full amplitude; only the lateral rim is tapered.
 * **No flow dependence.**  The correlation length is prescribed and uniform,
@@ -75,6 +75,64 @@ What this does NOT do (v1, stated plainly)
   from the filter that was actually used; read them before interpreting
   any top-versus-bottom spread.
 
+Multiplicative perturbations, and why the hydrometeors get them
+--------------------------------------------------------------
+An *additive* Gaussian increment is the wrong instrument for a mixing
+ratio.  It is unbounded below, so it manufactures negative mass that has
+to be clipped (which adds mass, wetward, everywhere it fires); it is
+unbounded above in a variable that spans six orders of magnitude between
+cirrus and a hail core, so one amplitude is either meaningless aloft or
+absurd in the core; and for a two-moment scheme it breaks the pair --
+moving ``qr`` while leaving ``nr`` produces exactly the ``q > 0, N = 0``
+cell whose slope closure evaluates to NaN (see :mod:`gpuwm.da.moments`).
+
+So a hydrometeor species is perturbed **multiplicatively**, by a
+lognormal factor drawn from the same smooth spectrum as everything else:
+
+    ``f = exp(sigma_ln * clip(g, -k, +k) * taper)``,  ``g`` unit-variance,
+
+and that ONE factor multiplies every prognostic moment of the species --
+mass, number, and NSSL's predicted volume.  Four properties follow, and
+each is a property rather than a hope:
+
+* **Positivity is exact, with no clipping.**  ``f > 0`` for any finite
+  exponent, so ``q >= 0`` implies ``q f >= 0`` in IEEE arithmetic.  No
+  mass is added and none is removed by a repair, because there is no
+  repair.
+* **Moment consistency is exact.**  ``q`` and ``N`` are scaled by the
+  same number, so ``q > 0 <=> q f > 0`` and ``N > 0 <=> N f > 0``: the
+  perturbation cannot create a depleted pair.  It is applied only where
+  the background pair is *jointly* active (``q`` above the scheme's own
+  activity threshold AND ``N > 0``), which closes the one remaining
+  route -- a background cell already holding ``q > 0`` with ``N = 0``
+  below the threshold, which scaling up would have promoted into an
+  offender.
+* **The drop size distribution is preserved.**  Morrison's slope is
+  ``lam = (six_c N / q)^(1/3)``; the ratio ``q/N`` is invariant under a
+  common factor, so ``lam`` -- and with it the mean-mass diameter and
+  the scheme's own size-dependent process rates -- is exactly unchanged.
+  What moves is the number density, and therefore ``Z``, by
+  ``10 log10 f`` dB.  A perturbation that moved ``q`` alone would move
+  the particle *size*, which is a much stronger and much less defensible
+  claim about what the background got wrong.
+* **Clear air stays clear.**  Where the species is absent the factor is
+  never applied, so the ensemble does not invent storms the model never
+  made.  That is a real limitation as well as a virtue and it is stated
+  in the provenance: the filter can move echo that exists and cannot
+  create echo that does not.
+
+``sigma_ln`` is a *fractional* amplitude: 0.7 is a factor of two at one
+sigma and about 3 dB of reflectivity spread, which is the order of a
+storm-scale hydrometeor uncertainty.  ``clip_sigmas`` bounds the tail so
+no member gets a factor of a thousand from a three-in-a-million draw.
+
+The same mode is available for ``qv`` through
+``FieldPerturbation(mode="lognormal")``, for the second reason above:
+one additive amplitude cannot be right for a 15 g/kg boundary layer and
+a 0.01 g/kg upper troposphere at once, and a fractional one is.
+Signed fields refuse the mode outright -- a lognormal factor on a
+quantity that changes sign is not a perturbation, it is a bug.
+
 Nothing here is on a certified forecast path.  Every provenance dict this
 module returns carries ``status="experimental"``.
 """
@@ -93,8 +151,11 @@ from gpuwm.da import STATUS
 
 __all__ = [
     "FieldPerturbation",
+    "SpeciesPerturbation",
     "PerturbationConfig",
     "SUPPORTED_FIELDS",
+    "SUPPORTED_SPECIES",
+    "PERTURBATION_MODES",
     "PROVENANCE_SCHEMA",
     "apply_perturbations",
     "gaussian_random_field",
@@ -159,6 +220,22 @@ class _Target:
     #: Exner function before it can be added to the potential-temperature
     #: perturbation the state actually stores.
     exner_from_temperature: bool = False
+    #: False for a field that changes sign, which makes a multiplicative
+    #: (lognormal) perturbation meaningless on it.
+    non_negative: bool = False
+
+
+#: How one field's draw becomes an increment.
+#:
+#: ``"additive"`` -- the classical route: ``x <- x + sigma * g``, with
+#:   ``sigma`` in the field's own units.  The only defensible mode for a
+#:   signed quantity.
+#:
+#: ``"lognormal"`` -- ``x <- x * exp(sigma_ln * g)``, with ``sigma_ln``
+#:   dimensionless.  Positivity-preserving in IEEE arithmetic and scale
+#:   free, which is what a mixing ratio spanning six decades needs.  Only
+#:   available on non-negative fields.
+PERTURBATION_MODES = ("additive", "lognormal")
 
 
 #: The fields this module knows how to perturb.
@@ -172,10 +249,28 @@ class _Target:
 SUPPORTED_FIELDS: Mapping[str, _Target] = {
     "t": _Target("thp", "mass", "K", exner_from_temperature=True),
     "theta": _Target("thp", "mass", "K"),
-    "qv": _Target("qv", "mass", "kg/kg"),
+    "qv": _Target("qv", "mass", "kg/kg", non_negative=True),
     "u": _Target("u", "u_face", "m s-1"),
     "v": _Target("v", "v_face", "m s-1"),
 }
+
+#: The hydrometeor mass fields :class:`SpeciesPerturbation` will scale.
+#:
+#: Spelled as mass-field names because that is the only identity a
+#: checkpoint has; the paired number and volume moments are NOT listed
+#: here and must never be configured directly -- they are discovered from
+#: the state by :func:`gpuwm.da.moments.pairs_present` and scaled by the
+#: species' own factor, which is the whole mechanism by which the
+#: perturbation stays moment-consistent.  ``qv`` is deliberately absent:
+#: it is not a hydrometeor, it has no number moment, and it is perturbed
+#: through :class:`FieldPerturbation` like the other scalars.
+SUPPORTED_SPECIES = ("qc", "qr", "qi", "qs", "qg", "qh")
+
+#: Default mass activity threshold (kg/kg) below which a species is
+#: treated as absent and is not scaled.  This is Morrison's own ``MQSMALL``
+#: and the same gate :mod:`gpuwm.da.moments` counts offenders against, so
+#: "active" means the same thing to the perturbation and to the guard.
+DEFAULT_SPECIES_THRESHOLD = 1.0e-14
 
 #: Fields are applied in this order regardless of the order they appear in
 #: the configuration, so two configurations that list the same perturbations
@@ -207,6 +302,15 @@ class FieldPerturbation:
     amplitude: float
     length_scale_km: float
     vertical_scale_levels: float = 0.0
+    #: ``"additive"`` or ``"lognormal"``; see :data:`PERTURBATION_MODES`.
+    #: Under ``"lognormal"`` ``amplitude`` is a dimensionless log-space
+    #: sigma, not a value in the field's units.
+    mode: str = "additive"
+    #: Log-space draws are clipped to this many sigma before the
+    #: exponential, so the tail cannot produce an absurd factor.  Ignored
+    #: for the additive mode, where the draw is the increment and a large
+    #: draw is exactly as large as the amplitude says.
+    clip_sigmas: float = 3.0
 
     def __post_init__(self) -> None:
         if self.name not in SUPPORTED_FIELDS:
@@ -216,7 +320,8 @@ class FieldPerturbation:
         for label, value in (("amplitude", self.amplitude),
                              ("length_scale_km", self.length_scale_km),
                              ("vertical_scale_levels",
-                              self.vertical_scale_levels)):
+                              self.vertical_scale_levels),
+                             ("clip_sigmas", self.clip_sigmas)):
             if not math.isfinite(float(value)):
                 raise ValueError(
                     f"{self.name}: {label} must be finite, got {value!r}")
@@ -234,12 +339,23 @@ class FieldPerturbation:
                 f"{self.name}: vertical_scale_levels must be non-negative "
                 f"(0 decorrelates the levels), got "
                 f"{self.vertical_scale_levels!r}")
+        _check_mode(self.name, self.mode, self.clip_sigmas)
+        if (self.mode == "lognormal"
+                and not SUPPORTED_FIELDS[self.name].non_negative):
+            raise ValueError(
+                f"{self.name}: mode 'lognormal' multiplies the field by a "
+                "strictly positive factor, which is not a perturbation of a "
+                "quantity that changes sign -- it would scale a headwind and "
+                "a tailwind in opposite physical directions and could never "
+                "move a value through zero. Use mode 'additive' for "
+                + ", ".join(sorted(n for n, t in SUPPORTED_FIELDS.items()
+                                   if not t.non_negative)))
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any]) -> "FieldPerturbation":
         """Build one spec from a configuration table."""
         known = {"name", "amplitude", "length_scale_km",
-                 "vertical_scale_levels"}
+                 "vertical_scale_levels", "mode", "clip_sigmas"}
         unknown = sorted(set(mapping) - known)
         if unknown:
             raise ValueError(
@@ -256,7 +372,122 @@ class FieldPerturbation:
             length_scale_km=float(mapping["length_scale_km"]),
             vertical_scale_levels=float(
                 mapping.get("vertical_scale_levels", 0.0)),
+            mode=str(mapping.get("mode", "additive")),
+            clip_sigmas=float(mapping.get("clip_sigmas", 3.0)),
         )
+
+
+def _check_mode(label: str, mode: str, clip_sigmas: float) -> None:
+    """Shared mode/clip validation for both spec kinds."""
+    if mode not in PERTURBATION_MODES:
+        raise ValueError(
+            f"{label}: unknown perturbation mode {mode!r}; supported: "
+            + ", ".join(PERTURBATION_MODES))
+    if mode == "lognormal" and not (float(clip_sigmas) > 0.0):
+        raise ValueError(
+            f"{label}: clip_sigmas must be positive under mode 'lognormal', "
+            f"got {clip_sigmas!r}; 0 would collapse every factor to exactly "
+            "1 and make the perturbation a silent no-op")
+
+
+@dataclass(frozen=True)
+class SpeciesPerturbation:
+    """One hydrometeor species' multiplicative, moment-consistent draw.
+
+    ``mass_field`` names the species by its mass mixing ratio, which is
+    the only identity a checkpoint carries.  The paired number moment --
+    and NSSL's predicted volume moment where the state has one -- are
+    discovered from the state itself through
+    :func:`gpuwm.da.moments.pairs_present` and scaled by the SAME factor.
+    They are never named here, because a caller who could name them
+    separately could scale them separately, and that is precisely the
+    truncation the pair exists to prevent.
+
+    ``amplitude`` is the log-space sigma: dimensionless, a fractional
+    perturbation.  ``0.7`` is a factor of two at one sigma.
+
+    ``threshold_kg_kg`` is the mass below which the species is treated as
+    absent and left exactly alone; it defaults to the scheme's own
+    activity gate so that "active" means here what it means to the
+    moment-consistency guard.
+    """
+
+    mass_field: str
+    amplitude: float
+    length_scale_km: float
+    vertical_scale_levels: float = 0.0
+    clip_sigmas: float = 3.0
+    threshold_kg_kg: float = DEFAULT_SPECIES_THRESHOLD
+
+    def __post_init__(self) -> None:
+        if self.mass_field not in SUPPORTED_SPECIES:
+            raise ValueError(
+                f"unknown perturbation species {self.mass_field!r}; "
+                "supported hydrometeor mass fields: "
+                + ", ".join(SUPPORTED_SPECIES)
+                + ". Number and volume moments are not configurable: they "
+                "are scaled by their own species' factor, which is what "
+                "keeps the pair consistent")
+        for label, value in (("amplitude", self.amplitude),
+                             ("length_scale_km", self.length_scale_km),
+                             ("vertical_scale_levels",
+                              self.vertical_scale_levels),
+                             ("clip_sigmas", self.clip_sigmas),
+                             ("threshold_kg_kg", self.threshold_kg_kg)):
+            if not math.isfinite(float(value)):
+                raise ValueError(
+                    f"{self.mass_field}: {label} must be finite, got "
+                    f"{value!r}")
+        if self.amplitude < 0.0:
+            raise ValueError(
+                f"{self.mass_field}: amplitude is a log-space sigma and must "
+                f"be non-negative, got {self.amplitude!r}")
+        if self.length_scale_km <= 0.0:
+            raise ValueError(
+                f"{self.mass_field}: length_scale_km must be positive, got "
+                f"{self.length_scale_km!r}")
+        if self.vertical_scale_levels < 0.0:
+            raise ValueError(
+                f"{self.mass_field}: vertical_scale_levels must be "
+                f"non-negative, got {self.vertical_scale_levels!r}")
+        if self.threshold_kg_kg < 0.0:
+            raise ValueError(
+                f"{self.mass_field}: threshold_kg_kg must be non-negative, "
+                f"got {self.threshold_kg_kg!r}")
+        _check_mode(self.mass_field, "lognormal", self.clip_sigmas)
+
+    @property
+    def name(self) -> str:
+        """The spec's identity, for ordering and provenance."""
+        return self.mass_field
+
+    @classmethod
+    def from_mapping(cls, mapping: Mapping[str, Any]
+                     ) -> "SpeciesPerturbation":
+        """Build one species spec from a configuration table."""
+        known = {"mass_field", "amplitude", "length_scale_km",
+                 "vertical_scale_levels", "clip_sigmas", "threshold_kg_kg"}
+        unknown = sorted(set(mapping) - known)
+        if unknown:
+            raise ValueError(
+                "unknown perturbation species keys: " + ", ".join(unknown))
+        missing = sorted({"mass_field", "amplitude", "length_scale_km"}
+                         - set(mapping))
+        if missing:
+            raise ValueError(
+                "perturbation species is missing required keys: "
+                + ", ".join(missing))
+        kwargs: dict[str, Any] = {
+            "mass_field": str(mapping["mass_field"]),
+            "amplitude": float(mapping["amplitude"]),
+            "length_scale_km": float(mapping["length_scale_km"]),
+            "vertical_scale_levels": float(
+                mapping.get("vertical_scale_levels", 0.0)),
+            "clip_sigmas": float(mapping.get("clip_sigmas", 3.0)),
+        }
+        if "threshold_kg_kg" in mapping:
+            kwargs["threshold_kg_kg"] = float(mapping["threshold_kg_kg"])
+        return cls(**kwargs)
 
 
 @dataclass(frozen=True)
@@ -278,6 +509,11 @@ class PerturbationConfig:
     dx_km: float
     dy_km: float
     fields: tuple[FieldPerturbation, ...]
+    #: Hydrometeor species scaled multiplicatively with their moments.
+    #: Empty is the documented v1 behaviour (hydrometeors untouched) and
+    #: is not a defect; it is what leaves the filter with no hydrometeor
+    #: covariance to analyse reflectivity through.
+    species: tuple[SpeciesPerturbation, ...] = ()
     rim_width: int = 5
     rim_taper: str = "cosine"
     qv_floor: float = 0.0
@@ -290,11 +526,27 @@ class PerturbationConfig:
                 raise ValueError(
                     f"{label} must be a positive finite length, got "
                     f"{value!r}")
-        specs = tuple(self.fields)
-        if not specs:
+        species = tuple(self.species)
+        for spec in species:
+            if not isinstance(spec, SpeciesPerturbation):
+                raise TypeError(
+                    "PerturbationConfig.species must hold "
+                    "SpeciesPerturbation instances, got "
+                    f"{type(spec).__name__}")
+        names = [spec.mass_field for spec in species]
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        if duplicates:
             raise ValueError(
-                "PerturbationConfig.fields is empty: a perturbation "
-                "configuration that perturbs nothing is a silent no-op")
+                "duplicate perturbation species: " + ", ".join(duplicates))
+        object.__setattr__(
+            self, "species",
+            tuple(sorted(species, key=lambda s: SUPPORTED_SPECIES.index(
+                s.mass_field))))
+        specs = tuple(self.fields)
+        if not specs and not species:
+            raise ValueError(
+                "PerturbationConfig perturbs nothing: both fields and "
+                "species are empty, which is a silent no-op")
         for spec in specs:
             if not isinstance(spec, FieldPerturbation):
                 raise TypeError(
@@ -344,6 +596,11 @@ class PerturbationConfig:
         configured = {spec.name for spec in self.fields}
         return tuple(n for n in _APPLICATION_ORDER if n in configured)
 
+    @property
+    def species_names(self) -> tuple[str, ...]:
+        """Configured species mass fields, in canonical order."""
+        return tuple(spec.mass_field for spec in self.species)
+
     def spec(self, name: str) -> FieldPerturbation:
         """Return the configured spec for one field name."""
         for candidate in self.fields:
@@ -358,8 +615,8 @@ class PerturbationConfig:
         ``fields`` may be a list of tables (each with ``name``) or a table
         keyed by field name.
         """
-        known = {"dx_km", "dy_km", "fields", "rim_width", "rim_taper",
-                 "qv_floor", "rh_cap", "compute_dtype"}
+        known = {"dx_km", "dy_km", "fields", "species", "rim_width",
+                 "rim_taper", "qv_floor", "rh_cap", "compute_dtype"}
         unknown = sorted(set(mapping) - known)
         if unknown:
             raise ValueError(
@@ -377,10 +634,20 @@ class PerturbationConfig:
         else:
             specs = tuple(FieldPerturbation.from_mapping(entry)
                           for entry in raw)
+        raw_species = mapping.get("species", ())
+        if isinstance(raw_species, Mapping):
+            species = tuple(
+                SpeciesPerturbation.from_mapping(
+                    {"mass_field": name, **dict(entry)})
+                for name, entry in raw_species.items())
+        else:
+            species = tuple(SpeciesPerturbation.from_mapping(entry)
+                            for entry in raw_species)
         kwargs: dict[str, Any] = {
             "dx_km": float(mapping["dx_km"]),
             "dy_km": float(mapping["dy_km"]),
             "fields": specs,
+            "species": species,
         }
         if "rim_width" in mapping:
             kwargs["rim_width"] = int(mapping["rim_width"])
@@ -981,6 +1248,191 @@ def _saturation_mixing_ratio(temperature, pressure, xp):
     return c.EP2 * es / margin
 
 
+def _clip_draw(xp, draw, clip_sigmas: float):
+    """The unit-variance draw, bounded to ``+/- clip_sigmas``.
+
+    A unit Gaussian exceeds three sigma about one point in 370, so on a
+    domain of a few million points thousands of cells would otherwise take
+    a factor of ``exp(3 sigma_ln)`` or worse, and the tail of a lognormal
+    is where a "factor of two" perturbation quietly becomes a factor of a
+    thousand.  Clipping the exponent rather than the factor keeps the
+    bound stated in the units the amplitude is stated in.
+    """
+    limit = draw.dtype.type(float(clip_sigmas))
+    return xp.clip(draw, -limit, limit)
+
+
+def _state_field_names(state) -> tuple[str, ...]:
+    """Every prognostic field the state actually carries, for pair
+    detection.  ``None`` attributes are absent, not empty."""
+    from gpuwm.state_serialization_contract import STATE_SERIALIZED_ATTRS
+
+    return tuple(name for name in STATE_SERIALIZED_ATTRS
+                 if getattr(state, name, None) is not None)
+
+
+def _apply_species_perturbations(state, seed: int, cfg: PerturbationConfig,
+                                 xp, mass_grid) -> list[dict[str, Any]]:
+    """Scale each configured species and its moments by one common factor.
+
+    The pair structure is *detected from the state* through
+    :func:`gpuwm.da.moments.pairs_present` rather than configured, so a
+    Morrison state contributes ``(qr, nr)`` and an NSSL state contributes
+    ``(qr, qnr)`` -- and a single-moment state contributes neither, in
+    which case the mass alone is scaled and the receipt says so.  That is
+    the same detection the increment applier's guard uses, deliberately:
+    two spellings of "which fields are a pair" is how a guard and the
+    thing it guards drift apart.
+
+    Returns one record per species.  Each carries the invariant this
+    perturbation rests on as a MEASURED quantity, not an assertion:
+    ``depleted_pairs_created`` is the number of cells that came out of
+    this call holding mass above the activity threshold with a
+    non-positive number moment, and it is zero by construction.
+    """
+    if not cfg.species:
+        return []
+    from gpuwm.da.moments import pairs_present
+
+    nz, ny, nx = mass_grid
+    available = _state_field_names(state)
+    pairs = {pair.mass: pair for pair in pairs_present(available)}
+    records: list[dict[str, Any]] = []
+    for spec in cfg.species:
+        mass = getattr(state, spec.mass_field, None)
+        if mass is None:
+            raise ValueError(
+                f"cannot perturb species {spec.mass_field!r}: the state does "
+                f"not carry it. The state has "
+                f"{sorted(n for n in available if n.startswith('q'))}; a "
+                "species the scheme does not advance cannot be given spread")
+        shape = tuple(int(e) for e in mass.shape)
+        if shape != (nz, ny, nx):
+            raise ValueError(
+                f"state.{spec.mass_field} has shape {shape} but the mass "
+                f"grid is {(nz, ny, nx)}; a hydrometeor on a staggered grid "
+                "is not something this module knows how to interpret")
+        if _array_module(mass) is not xp:
+            raise TypeError(
+                f"state.{spec.mass_field} is on a different array backend "
+                "than state.thp; a half-migrated state is not a state")
+        pair = pairs.get(spec.mass_field)
+        partners: list[str] = []
+        if pair is not None:
+            partners.append(pair.number)
+            if pair.volume is not None:
+                partners.append(pair.volume)
+        for name in partners:
+            partner = getattr(state, name)
+            if tuple(int(e) for e in partner.shape) != shape:
+                raise ValueError(
+                    f"state.{name} is {tuple(partner.shape)} but its own "
+                    f"mass field {spec.mass_field} is {shape}; a moment pair "
+                    "on two different grids is not a pair")
+
+        _check_resolvable(shape, cfg.dx_km, cfg.dy_km, spec)
+        draw, info = gaussian_random_field(
+            shape, seed=seed, name=f"species:{spec.mass_field}",
+            dx_km=cfg.dx_km, dy_km=cfg.dy_km,
+            length_scale_km=spec.length_scale_km,
+            vertical_scale_levels=spec.vertical_scale_levels,
+            xp=xp, dtype=cfg.compute_dtype)
+        taper = boundary_taper(ny, nx, cfg.rim_width, kind=cfg.rim_taper,
+                               xp=xp, dtype=draw.dtype)
+        exponent = (_clip_draw(xp, draw, spec.clip_sigmas)
+                    * float(spec.amplitude) * taper[None, :, :])
+        factor = xp.exp(exponent)
+
+        # ``active`` is where the background pair is JOINTLY usable.  A
+        # cell whose mass is below the scheme's own gate is left exactly
+        # alone -- scaling it up could promote a background cell that
+        # already held q > 0 with N = 0 (legal below the gate, because the
+        # scheme never reads the number there) into a genuine offender.
+        threshold = mass.dtype.type(spec.threshold_kg_kg)
+        active = mass > threshold
+        if pair is not None:
+            active = active & (getattr(state, pair.number) > 0)
+        active = active & (taper > 0.0)[None, :, :]
+        touched = int(xp.count_nonzero(active))
+
+        applied = [spec.mass_field] + partners
+        before_mass = float(xp.sum(mass.astype(np.float64)))
+        for name in applied:
+            target = getattr(state, name)
+            scaled = target * factor.astype(target.dtype, copy=False)
+            target[...] = xp.where(active, scaled, target)
+        after_mass = float(xp.sum(getattr(state, spec.mass_field)
+                                  .astype(np.float64)))
+
+        # The invariant, measured.  Positivity: a strictly positive factor
+        # cannot take a non-negative field below zero.  Pair consistency:
+        # the same factor on both moments cannot break the pair.  Both are
+        # counted rather than claimed, because a claim in a docstring is
+        # not a receipt.
+        post_mass = getattr(state, spec.mass_field)
+        negative = int(xp.count_nonzero(post_mass < 0))
+        depleted = 0
+        if pair is not None:
+            post_number = getattr(state, pair.number)
+            depleted = int(xp.count_nonzero(
+                (post_mass > threshold) & (post_number <= 0)))
+        record = {
+            "species": spec.mass_field,
+            "fields_scaled": applied,
+            "moment_pair": (None if pair is None else
+                            {"mass": pair.mass, "number": pair.number,
+                             "volume": pair.volume}),
+            "pair_source": ("detected from the state's own field spellings "
+                            "via gpuwm.da.moments.pairs_present"),
+            "amplitude_log_sigma": float(spec.amplitude),
+            "amplitude_units": "log-space sigma (dimensionless)",
+            "length_scale_km": float(spec.length_scale_km),
+            "vertical_scale_levels": float(spec.vertical_scale_levels),
+            "threshold_kg_kg": float(spec.threshold_kg_kg),
+            "clip_sigmas": float(spec.clip_sigmas),
+            "clipped_points": int(xp.count_nonzero(
+                xp.abs(draw) > float(spec.clip_sigmas))),
+            "shape": list(shape),
+            "stream_key_hex": info["stream_key_hex"],
+            "noise_sha256": info["noise_sha256"],
+            "noise_dtype": info["noise_dtype"],
+            "fft_backend": info["fft_backend"],
+            "unit_field_realized_rms": info["realized_rms"],
+            "vertical_wrap": info["vertical_wrap"],
+            "active_points": touched,
+            "total_points": int(nz * ny * nx),
+            "factor_min": float(xp.min(factor)),
+            "factor_max": float(xp.max(factor)),
+            "mass_before_sum": before_mass,
+            "mass_after_sum": after_mass,
+            "negative_points": negative,
+            "depleted_pairs_created": depleted,
+            "invariants": [
+                "positivity: the factor exp(.) is strictly positive, so a "
+                "non-negative field stays non-negative with no clipping and "
+                "no mass repair (negative_points is the measurement)",
+                "moment consistency: mass, number and volume take the SAME "
+                "factor, so q/N -- and with it the scheme's slope closure -- "
+                "is unchanged and no depleted pair can be created "
+                "(depleted_pairs_created is the measurement)",
+                "clear air: the factor is applied only where the background "
+                "pair is jointly active, so the ensemble carries spread in "
+                "the hydrometeors the model made and invents none where the "
+                "model made none",
+            ],
+        }
+        if negative or depleted:
+            raise ValueError(
+                f"species perturbation of {spec.mass_field!r} produced "
+                f"{negative} negative cell(s) and {depleted} depleted "
+                "moment pair(s), which a strictly positive common factor "
+                "cannot do. The background is not what this module assumed "
+                "-- a negative background mass, or a non-finite factor -- "
+                "and the state is now perturbed; do not use it")
+        records.append(record)
+    return records
+
+
 def apply_perturbations(state, seed: int, cfg: PerturbationConfig
                         ) -> dict[str, Any]:
     """Perturb ``state`` in place and return the provenance for that member.
@@ -1079,10 +1531,6 @@ def apply_perturbations(state, seed: int, cfg: PerturbationConfig
         taper = boundary_taper(shape[1], shape[2], cfg.rim_width,
                                kind=cfg.rim_taper, xp=xp,
                                dtype=draw.dtype)
-        increment = draw * float(spec.amplitude) * taper[None, :, :]
-        if SUPPORTED_FIELDS[name].exner_from_temperature:
-            increment = increment / exner
-        increment = increment.astype(target.dtype, copy=False)
         # Write ONLY where the taper is active.  ``target += increment``
         # over the whole array looks like the identity wherever the
         # increment is exactly zero, and is -- except for signed zero:
@@ -1090,9 +1538,33 @@ def apply_perturbations(state, seed: int, cfg: PerturbationConfig
         # numerically equal and byte-different, and the state sha sees
         # bytes.  Selecting with ``where`` keeps the original words.
         active = (taper > 0.0)[None, :, :]
-        target[...] = xp.where(active, target + increment, target)
+        factor_record: dict[str, Any] | None = None
+        if spec.mode == "lognormal":
+            # The taper multiplies the EXPONENT, so a zero taper gives
+            # exactly exp(0) = 1 and the rim is untouched by construction
+            # as well as by the ``where``.
+            exponent = (_clip_draw(xp, draw, spec.clip_sigmas)
+                        * float(spec.amplitude) * taper[None, :, :])
+            factor = xp.exp(exponent)
+            scaled = (target * factor.astype(target.dtype, copy=False))
+            increment = scaled - target
+            target[...] = xp.where(active, scaled, target)
+            factor_record = {
+                "factor_min": float(xp.min(factor)),
+                "factor_max": float(xp.max(factor)),
+                "clip_sigmas": float(spec.clip_sigmas),
+                "clipped_points": int(xp.count_nonzero(
+                    xp.abs(draw) > float(spec.clip_sigmas))),
+            }
+        else:
+            increment = draw * float(spec.amplitude) * taper[None, :, :]
+            if SUPPORTED_FIELDS[name].exner_from_temperature:
+                increment = increment / exner
+            increment = increment.astype(target.dtype, copy=False)
+            target[...] = xp.where(active, target + increment, target)
         if name == "qv":
-            qv_increment = increment
+            qv_increment = xp.where(active, increment,
+                                    xp.zeros_like(increment))
 
         record = {
             "name": name,
@@ -1113,17 +1585,26 @@ def apply_perturbations(state, seed: int, cfg: PerturbationConfig
             "increment_min": float(xp.min(increment)),
             "increment_max": float(xp.max(increment)),
             "vertical_wrap": info["vertical_wrap"],
+            "mode": spec.mode,
         }
+        if factor_record is not None:
+            record["lognormal"] = factor_record
+            record["amplitude_units"] = "log-space sigma (dimensionless)"
         if SUPPORTED_FIELDS[name].exner_from_temperature:
             record["exner_converted"] = True
             record["applied_to"] = "potential temperature (theta')"
         field_records.append(record)
+
+    species_records = _apply_species_perturbations(state, seed, cfg, xp,
+                                                   (nz, ny, nx))
 
     bounds = _enforce_bounds(state, cfg, xp, perturbed=set(names),
                              qv_increment=qv_increment)
 
     combined = hashlib.sha256()
     for record in field_records:
+        combined.update(record["noise_sha256"].encode("ascii"))
+    for record in species_records:
         combined.update(record["noise_sha256"].encode("ascii"))
     return {
         "schema": PROVENANCE_SCHEMA,
@@ -1141,6 +1622,8 @@ def apply_perturbations(state, seed: int, cfg: PerturbationConfig
         "grid_spacing_km": {"dx": float(cfg.dx_km), "dy": float(cfg.dy_km)},
         "application_order": list(names),
         "fields": field_records,
+        "species": species_records,
+        "species_order": list(cfg.species_names),
         "noise_sha256": combined.hexdigest(),
         "taper": {
             "kind": cfg.rim_taper,
@@ -1166,6 +1649,11 @@ def apply_perturbations(state, seed: int, cfg: PerturbationConfig
             "geostrophic/gradient balance with the theta increment",
             "boundary: members share one unperturbed boundary file; only "
             "the rim taper keeps them consistent with it",
+            "hydrometeors: a species factor scales the moments together, "
+            "which preserves the drop size distribution exactly and the "
+            "column's condensate loading not at all -- the perturbed "
+            "member is not re-balanced for the buoyancy its new "
+            "condensate mass implies",
             "vertical: the draw is FFT-periodic in the column and nothing "
             "tapers it, so the top and bottom levels are correlated at the "
             "figure each field record's vertical_wrap.top_to_bottom_seam "

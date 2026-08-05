@@ -1,0 +1,107 @@
+{
+ "bytes": 9349873046,
+ "cache_root": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery",
+ "case_days": 7,
+ "cases": [
+  {
+   "asos_station_table_sha256": "9376fdf7f1b7859480e895e79ec148085e1a8ec34183f3fe4a1bd2683eef1ebc",
+   "asos_stations_frozen": 830,
+   "bytes": 1258090574,
+   "case_day": "2021-12-10",
+   "manifest": "docs/public/receipts/obsbattery/manifests/obs-20211210.json",
+   "manifest_sha256": "52b7d221e997839bb5889d6da855558a51e53dcb205267fb118fa1ac8d020fb5",
+   "mrms_object_list_sha256": "3f0f00dfdac52227435f79a091f65bca62d3dedafde35fd891d0e4cb55c39740",
+   "mrms_objects": 725,
+   "objects": 774,
+   "stage4_object_list_sha256": "d533e965de82074563b555d2418ab5491b865f4fff02509f187c272364a17aeb",
+   "stage4_objects": 46
+  },
+  {
+   "asos_station_table_sha256": "6f3fd13ba8ed8d52738dae051b24e4742cc73f6a1c28a921e26213757c76b003",
+   "asos_stations_frozen": 816,
+   "bytes": 1592512131,
+   "case_day": "2023-03-31",
+   "manifest": "docs/public/receipts/obsbattery/manifests/obs-20230331.json",
+   "manifest_sha256": "02bf164127332fd60be8161660e0a908b6d7922a7169856456f035d6f782fab1",
+   "mrms_object_list_sha256": "c604f852f7a031320571790f0802e8a8416e2dbcbce5c2880f880d58483eb9fb",
+   "mrms_objects": 716,
+   "objects": 765,
+   "stage4_object_list_sha256": "bf63c26e27267fd9c6cd27b21c8d540392d174c0d7e2f85a381465b25b2cdc8a",
+   "stage4_objects": 46
+  },
+  {
+   "asos_station_table_sha256": "c632fe9784fc158f6eaeede1ea0401c763574f585ae46304d054909464ce8d6a",
+   "asos_stations_frozen": 599,
+   "bytes": 1546654804,
+   "case_day": "2024-04-27",
+   "manifest": "docs/public/receipts/obsbattery/manifests/obs-20240427.json",
+   "manifest_sha256": "737382225d3233a1ff83079c3d0775464e85d3cb9ba227b9c977e0c22e33d20c",
+   "mrms_object_list_sha256": "5c89170fffebb805aba6df4dafaae4a32bc01cc75e8e333d502dce4df04d065a",
+   "mrms_objects": 727,
+   "objects": 776,
+   "stage4_object_list_sha256": "3465bfcbc41819959098d022b759a059c759d0eea1d7b04a7b3e6b6200723aeb",
+   "stage4_objects": 46
+  },
+  {
+   "asos_station_table_sha256": "e10ec778da19bf368f146a92e43f4ab2cc94836ed3b344d15039c0ca3efb1ed1",
+   "asos_stations_frozen": 642,
+   "bytes": 1248515914,
+   "case_day": "2024-05-21",
+   "manifest": "docs/public/receipts/obsbattery/manifests/obs-20240521.json",
+   "manifest_sha256": "6b653ff73748b9f7b146b9002c05db65b30b6623cdff3a33ba092c02bb213b43",
+   "mrms_object_list_sha256": "a869577fe592cf41c1e23c49c29d77ae7bcb63afe466d75f5a4bf69a1a0cc31e",
+   "mrms_objects": 727,
+   "objects": 776,
+   "stage4_object_list_sha256": "a86758d9ce551b19c8e9d2333372f6b2788989db28f1b0c072a5c74e9f397a8c",
+   "stage4_objects": 46
+  },
+  {
+   "asos_station_table_sha256": "becc4a44a1f9da17808b4133e83229cfbf3640bc2783b6333b5ab735fef93892",
+   "asos_stations_frozen": 738,
+   "bytes": 1041040609,
+   "case_day": "2024-07-15",
+   "manifest": "docs/public/receipts/obsbattery/manifests/obs-20240715.json",
+   "manifest_sha256": "ff7b31f03d36fd0824b11fd384662425182b75e46476e40079552bb053dca189",
+   "mrms_object_list_sha256": "691cacf1286f3751104e080cefc44ad128d3cc52999a0f73ec4be617a262df5c",
+   "mrms_objects": 727,
+   "objects": 776,
+   "stage4_object_list_sha256": "4dcde450c1fae1c745378148e4c1fc67e7c2ad87d818c182a0e08f02e18f6e84",
+   "stage4_objects": 46
+  },
+  {
+   "asos_station_table_sha256": "78c5900e7edf2e2b1b80562801be1593d1791ecaf70ed6bff45c62829ba48260",
+   "asos_stations_frozen": 782,
+   "bytes": 1226230349,
+   "case_day": "2025-03-14",
+   "manifest": "docs/public/receipts/obsbattery/manifests/obs-20250314.json",
+   "manifest_sha256": "11f5f35d37b3f22605592a6507ca10e4caf537ac8dbdcd56ac45a7421a0e4e33",
+   "mrms_object_list_sha256": "642716856c950f0e5a8fa864a743b78a291775aa0dd224e78fbbff50b561bff1",
+   "mrms_objects": 727,
+   "objects": 776,
+   "stage4_object_list_sha256": "da65366bfdbfaf2d96772ba4d6e14835c9465b5af34f8890a45b145b71086fdd",
+   "stage4_objects": 46
+  },
+  {
+   "asos_station_table_sha256": "c50b61eb70578aebb636aef6f57cb55e0730f8988639d06ce83643585f99cf4d",
+   "asos_stations_frozen": 839,
+   "bytes": 1436828665,
+   "case_day": "2025-05-16",
+   "manifest": "docs/public/receipts/obsbattery/manifests/obs-20250516.json",
+   "manifest_sha256": "d489655b4601724d2eb388612d9af47f04029ff7512e55e6a4979056d2e5aebb",
+   "mrms_object_list_sha256": "bdce7347dc42e2ef460e3d1a525bbcd6efc42d5ec78d0730a78afa7fe4c3ad58",
+   "mrms_objects": 727,
+   "objects": 776,
+   "stage4_object_list_sha256": "6ac6cb49b55da35dffef886babd7edb57ae38d3aefb8648649a8817152b30c76",
+   "stage4_objects": 46
+  }
+ ],
+ "evaluator_commit": "07151846cd4380896294430096a649d26eb10674",
+ "objects": 5419,
+ "retention": "the objects are NOT in the repository; this index and the per-case manifests beside it are what a mirror is verified against",
+ "routes": {
+  "asos": "Iowa Environmental Mesonet asos.py window, station-bounded",
+  "mrms": "AWS Open Data noaa-mrms-pds, anonymous list+get",
+  "stage4": "Iowa Environmental Mesonet archive, anonymous HTTPS (WAVE-ERRATA-20260804 section 1)"
+ },
+ "schema": "gpuwm.obs-battery-archive-manifest-index/v1"
+}

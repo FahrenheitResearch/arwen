@@ -1,0 +1,246 @@
+# gpuwm experiment translated from WRF namelists by `gpuwm import-namelist`
+# (namelist.wps + namelist.input).  WRF staggered e_we/e_sn/e_vert convert
+# to gpuwm mass dimensions nx/ny/nz (one fewer point).  Child dx/dt are NEVER
+# written: gpuwm/experiment.py derives them exactly from the parent chain
+# (the namelist chain is authoritative).
+# Physics substitutions (ratified, never silent):
+#   mp_physics 55 (ISHMAEL) -> mp_physics 10 (Morrison 2-moment)
+#   bl_pbl_physics 11 (Shin-Hong) -> bl_pbl_physics 1 (YSU)
+#   ra_lw_physics/ra_sw_physics 4 (RRTMG) -> ra_physics 4 (RTE+RRTMGP)
+#
+# GRELL-FREITAS ARM of configs/real74_4dom.toml.  A byte-for-byte copy of that
+# config with ONE change: the cumulus selector on the two domains where a
+# cumulus parameterization belongs.  d01 (12 km) moves Kain-Fritsch -> GF and
+# d02 (3 km) moves off -> GF; d03 (1 km) and d04 (1/3 km) stay explicit
+# convection, exactly as the base config leaves them.  Nothing else differs:
+# same grids, same nz/eta ladder, same Morrison/YSU/RTE-RRTMGP stack, same
+# column_chunk = 6250, same [case_data] inputs.
+#
+# cudt_minutes = 0.0 is not a free choice; it is the law
+# gpuwm/config.py::validate_run_config enforces for cu_physics = 3.  GF runs
+# on the model step (WRF's usual GF configuration, STEPCU = 1) and carries no
+# NCA hold, so the Kain-Fritsch cadence knob has no meaning here and a nonzero
+# cudt is refused by name.  clos_choice = 0 (the 16-member ensemble closure)
+# is the only arm the GF oracle covers; ishallow = 0/1 are both covered and 0
+# is the WRF Registry default (Registry.EM_COMMON:2544,2546).  Both keys are
+# written only on the GF domains: they are refused wherever no Grell scheme is
+# selected, which is why d03/d04 carry neither.
+#
+# WHY THIS CONFIG EXISTS.  Grell-Freitas is bitwise against WRF v4.6.1 at the
+# whole-driver boundary on both the CPU and CUDA paths, but the registry label
+# is implemented-unverified because no real-case ArWen trajectory had ever
+# been integrated with cu_physics = 3.  This is that trajectory.  It is run
+# twice and byte-compared: the 5090 has no ECC, so a dual run is the only
+# corruption detector this card has (docs/public/DETERMINISM.md).
+
+[experiment]
+name = "real74_4dom_gf"
+start_time = 1974-04-03T12:00:00
+run_seconds = 43200.0
+feedback = 0
+smooth_option = 0
+blend_width = 5
+spec_bdy_width = 5
+restart_interval_s = 10800.0
+# RRTMGP column chunk.  The library default is the capacity-led 3125
+# (gpuwm/config.py); this case buys speed with the headroom it has.
+#
+#   chunk  d01 call   4-dom footprint    4-dom `check --alloc` measured
+#          (250x200x49)   projection     device footprint, no steps
+#    1563     5.11 s                        (not taken)
+#    3125     2.86 s        24.04 GiB           14.69 GiB
+#    6250     1.91 s        25.16 GiB           15.65 GiB   <- this case
+#   12500     1.54 s        27.38 GiB           17.56 GiB
+#
+# The rail is 29500 MiB (28.81 GiB) on a card with no ECC.  6250 is the knee:
+# it keeps 3.65 GiB of projection margin where 12500 keeps 1.43 GiB.
+#
+# 6250 is byte-identical to 3125: the RRTMGP outputs (rthratenlw, rthratensw,
+# swdown, glw) digest the same at 1563/3125/6250/12500 over three runs, because
+# the chunk loop slices columns only and the McICA seed comes from each
+# column's own bottom-four pressures, never from its index
+# (gpuwm/core/kernels/rrtmgp_mcica.cu:36-45).  Gated by
+# tests/test_rrtmgp.py::test_radiation_is_byte_identical_across_column_chunks.
+# Cost measured here: +978.2 MiB of shared workspace, +1140.2 MiB of footprint
+# projection, leaving 3739.0 MiB under the 29500 MiB no-ECC rail; preflight's
+# recommend_column_chunk still halves it back down if a host has less.
+column_chunk = 6250
+
+[projection]
+map_proj = "lambert"
+ref_lat = 39.6848
+ref_lon = -83.9297
+truelat1 = 30.0
+truelat2 = 60.0
+stand_lon = -83.9297
+
+[shared]
+# WRF e_vert = 50 staggered full levels -> nz = 49 mass levels.
+nz = 49
+# Nominal vertical scaffold height; the real path derives heights from
+# p_top/eta_levels.
+ztop = 20000.0
+p_top = 10000.0
+eta_levels = [
+    1.0, 0.9978, 0.99519, 0.99212, 0.98849,
+    0.98422, 0.97918, 0.97325, 0.96627, 0.95808,
+    0.94846, 0.93719, 0.92402, 0.90866, 0.89079,
+    0.87006, 0.84612, 0.81857, 0.78706, 0.75124,
+    0.7108, 0.66556, 0.61547, 0.56067, 0.50519,
+    0.45474, 0.40886, 0.36713, 0.32918, 0.29466,
+    0.26328, 0.23473, 0.20877, 0.18516, 0.16369,
+    0.14417, 0.12641, 0.11026, 0.09557, 0.08222,
+    0.07007, 0.05902, 0.04898, 0.03984, 0.03153,
+    0.02398, 0.0171, 0.01085, 0.00517, 0.0,
+]
+hybrid_opt = 2
+etac = 0.2
+base_temp = 290.0
+time_step_sound = 4
+epssm = 0.5
+# WRF Registry defaults the namelist leaves unset, ratified binding for the
+# reference configuration (Phase-4 native-dt baseline): emdiv 0.01,
+# hypsometric_opt 2, h_sca_adv_order 5.
+emdiv = 0.01
+hypsometric_opt = 2
+h_sca_adv_order = 5
+smdiv = 0.1
+top_lid = false
+moist = true
+moist_cq = true
+mp_physics = 10
+morr_rimed_ice = 1
+moist_adv_opt = 1
+km_opt = 4
+diff_6th_opt = 2
+diff_6th_slopeopt = 1
+w_damping = 1
+damp_opt = 3
+zdamp = 5000.0
+dampcoef = 0.2
+khdif = 0.0
+kvdif = 0.0
+spec_zone = 1
+relax_zone = 4
+terrain_opt = 1
+map_proj = 1
+sf_sfclay_physics = 91
+sf_surface_physics = 2
+bl_pbl_physics = 1
+ra_physics = 4
+wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-to-rte-rrtmgp-v1"
+bldt = 0.0
+
+[[domain]]
+# WRF e_we = 251, e_sn = 201 (staggered) -> mass dimensions.
+grid_id = 1
+parent_id = 0
+i_parent_start = 1
+j_parent_start = 1
+parent_grid_ratio = 1
+parent_time_step_ratio = 1
+nx = 250
+ny = 200
+time_step = 60
+dx = 12000.0
+spec_exp = 0.0
+specified = true
+nested = false
+history_interval_s = 3600.0
+radt = 12.0
+# Grell-Freitas, the arm under test.  Base config: cu_physics = 1 (KF) with
+# cudt_minutes = 5.0.
+cu_physics = 3
+cudt_minutes = 0.0
+clos_choice = 0
+ishallow = 0
+diff_6th_factor = 0.12
+
+[[domain]]
+# WRF e_we = 501, e_sn = 401 (staggered) -> mass dimensions.
+grid_id = 2
+parent_id = 1
+i_parent_start = 63
+j_parent_start = 51
+parent_grid_ratio = 4
+parent_time_step_ratio = 4
+nx = 500
+ny = 400
+specified = false
+nested = true
+history_interval_s = 900.0
+epssm = 0.1
+radt = 3.0
+# Grell-Freitas, the arm under test.  Base config: cu_physics = 0 (explicit
+# convection).  GF is scale-aware -- the sig = (1-frh)^2 taper is the scheme's
+# own -- so 3 km is inside the band it is written for and carries no dx gate.
+cu_physics = 3
+cudt_minutes = 0.0
+clos_choice = 0
+ishallow = 0
+diff_6th_factor = 0.1
+
+[[domain]]
+# WRF e_we = 502, e_sn = 502 (staggered) -> mass dimensions.
+grid_id = 3
+parent_id = 2
+i_parent_start = 167
+j_parent_start = 117
+parent_grid_ratio = 3
+parent_time_step_ratio = 3
+nx = 501
+ny = 501
+specified = false
+nested = true
+history_interval_s = 900.0
+epssm = 0.1
+radt = 1.0
+cu_physics = 0
+diff_6th_factor = 0.08
+
+[[domain]]
+# WRF e_we = 601, e_sn = 601 (staggered) -> mass dimensions.
+grid_id = 4
+parent_id = 3
+i_parent_start = 151
+j_parent_start = 151
+parent_grid_ratio = 3
+parent_time_step_ratio = 3
+nx = 600
+ny = 600
+specified = false
+nested = true
+history_interval_s = 900.0
+epssm = 0.1
+radt = 1.0
+cu_physics = 0
+diff_6th_factor = 0.06
+
+[case_data]
+# Declared inputs: same reference-bundle artifacts as real74_d01_exp.toml.
+# The four-domain flagship consumes the identical ERA5 forcing + statics.
+forcing = [
+    "${GPUWM_CASE_DATA_ROOT}/WRF_1974_MP55_reference_bundle/era5_grib/era5_19740403.grb",
+]
+vtable = "${GPUWM_CASE_DATA_ROOT}/WRF_1974_MP55_reference_bundle/era5_grib/Vtable.ERA5_CDO"
+forcing_interval_s = 21600.0
+wps_namelist = "${GPUWM_CASE_DATA_ROOT}/WRF_1974_MP55_reference_bundle/namelists/namelist.wps"
+geog_root = "${GPUWM_CASE_DATA_ROOT}/WRF_1974_MP55_reference_bundle/static/WPS_GEOG"
+# Provenance exception: the retained ERA5 GRIB lacks invariant geopotential,
+# so each grid-specific 12Z WPS met_em SOILHGT is declared from repo-local
+# copies retained off the reference run's own WPS chain (weather-node-1
+# Morrison matched run met_em; sfcprs2-forward-verified against the retained
+# wrfinput PSFC to <=0.09 Pa).  The Downloads bundle's met_em SOILHGT is a
+# regenerated artifact byte-equal to HGT_M -- feeding it here silently
+# disables the sfcp_to_sfcp source-orography remap real.exe actually
+# performed (138-299 Pa MAE PSFC/MU seam).  Fresh cases should use the
+# era5_z_invariant provider.
+source_orography.d01 = "real74/soilhgt.d01.nc"
+source_orography.d02 = "real74/soilhgt.d02.nc"
+source_orography.d03 = "real74/soilhgt.d03.nc"
+source_orography.d04 = "real74/soilhgt.d04.nc"
+source_orography_variable = "SOILHGT"
+sfcp_to_sfcp = true
+co2_vmr = 330.0e-6
+output_domain = 1
+output_title = "gpuwm Phase 5 April 3 1974 four-domain Grell-Freitas"

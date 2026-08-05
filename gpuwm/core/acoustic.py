@@ -16,7 +16,8 @@ from __future__ import annotations
 import numpy as np
 
 from gpuwm.config import RunConfig
-from gpuwm.core.kernels import get_kernel
+from gpuwm.core.kernels import (get_kernel, get_kernel_int_defines,
+                                module_source, module_source_int_defines)
 from gpuwm.core.state import DTYPE, DomainState
 
 _THREADS = 256
@@ -214,9 +215,85 @@ def acoustic_substep_explicit(state: DomainState, cfg: RunConfig,
                 np.int32(_mass_w_boundary_zone(cfg))))
 
 
-#: Max full levels of the in-thread tridiagonal solve (acoustic.cu
-#: WPHI_MAX_LEV; plan constraint nz <= 128).
-_MAX_LEV = 129
+#: ``WPHI_MAX_LEV`` tiers ``kernels/acoustic.cu`` is compiled at, ascending.
+#: The bound sizes the one per-thread RHS column in ``advance_w_phi`` and
+#: ``advance_w_phi_msf`` and nothing else, so a tier costs 4 B of per-thread
+#: local frame per admitted full level and moves no arithmetic.
+#:
+#: 129 is the literal the source keeps when nothing overrides it.  Every
+#: ``nz <= 128`` configuration therefore compiles the UNSPECIALIZED module
+#: -- :func:`gpuwm.core.kernels.get_kernel`, no define injected, the exact
+#: string NVRTC received before this ladder existed -- which is what makes
+#: the below-ceiling kernel identical by construction rather than by
+#: measurement.  Higher tiers exist only to admit deeper columns; they are
+#: coarse on purpose, so a sweep over nz does not compile a module per nz.
+WPHI_LEVEL_TIERS = (129, 193, 257)
+
+#: The tier compiled with no define injected (the literal in acoustic.cu).
+UNSPECIALIZED_WPHI_LEVEL_TIER = WPHI_LEVEL_TIERS[0]
+
+#: Deepest ``nz`` the in-thread tridiagonal solve admits, from the top tier.
+#: Mirrored by ``gpuwm.physics_vertical_contract`` for front doors that must
+#: refuse a grid without importing CuPy.
+MAX_ACOUSTIC_LEVELS = WPHI_LEVEL_TIERS[-1] - 1
+
+
+def wphi_level_tier(nz: int) -> int:
+    """The ``WPHI_MAX_LEV`` this ``nz`` compiles the w''-phi'' solve at.
+
+    The solve indexes full levels ``0..nz``, so a configuration needs
+    ``nz + 1`` entries and takes the smallest tier that holds them.
+    """
+    nz = int(nz)
+    if nz < 1:
+        raise ValueError(f"nz must be positive, got {nz}")
+    for tier in WPHI_LEVEL_TIERS:
+        if nz + 1 <= tier:
+            return tier
+    raise ValueError(f"nz={nz} exceeds the in-thread solve limit "
+                     f"({MAX_ACOUSTIC_LEVELS} half levels)")
+
+
+def wphi_module_defines(nz: int) -> tuple[tuple[str, int], ...]:
+    """Integer defines the w''-phi'' module compiles with at this ``nz``.
+
+    EMPTY at the shipped tier.  That emptiness is the whole mechanism: it
+    routes the launcher to the unspecialized loader, which assembles the
+    same string it assembled before the ladder existed, so no ``nz <= 128``
+    configuration can see a different translation unit.  Both the launcher
+    and :func:`wphi_kernel_source` branch here and nowhere else, so the
+    source a test digests is the source the driver compiles.
+    """
+    tier = wphi_level_tier(nz)
+    if tier == UNSPECIALIZED_WPHI_LEVEL_TIER:
+        return ()
+    return (("WPHI_MAX_LEV", tier),)
+
+
+def wphi_kernel_source(nz: int) -> str:
+    """The exact string NVRTC receives for the w''-phi'' solve at ``nz``.
+
+    CPU-only mirror of what :func:`_w_phi_kernel` compiles, so the
+    below-ceiling identity is testable on a host with no device.
+    """
+    defines = wphi_module_defines(nz)
+    if not defines:
+        return module_source("acoustic")
+    return module_source_int_defines("acoustic", defines)
+
+
+def _w_phi_kernel(name: str, nz: int):
+    """The w''-phi'' solve compiled at this configuration's tier.
+
+    At the shipped tier this is :func:`get_kernel` -- the same call, on the
+    same module, that every other acoustic kernel makes -- so a
+    below-ceiling run compiles exactly one acoustic translation unit and it
+    is the pre-ladder one.
+    """
+    defines = wphi_module_defines(nz)
+    if not defines:
+        return get_kernel("acoustic", name)
+    return get_kernel_int_defines("acoustic", name, defines)
 
 
 def prepare_acoustic_coefficients(state: DomainState, cfg: RunConfig,
@@ -229,9 +306,7 @@ def prepare_acoustic_coefficients(state: DomainState, cfg: RunConfig,
     folded back by ``dycore._finish_small_steps``.
     """
     nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
-    if nz + 1 > _MAX_LEV:
-        raise ValueError(f"nz={nz} exceeds the in-thread solve limit "
-                         f"({_MAX_LEV - 1} half levels)")
+    wphi_level_tier(nz)   # refuse a too-deep column before allocating
     c2a = state.scratch((nz, ny, nx), "acoustic_c2a")
     a = state.scratch((nz + 1, ny, nx), "acoustic_a")
     alpha = state.scratch((nz + 1, ny, nx), "acoustic_alpha")
@@ -263,9 +338,7 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
     immutable Python launch containers and scalar wrappers are reused.
     """
     nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
-    if nz + 1 > _MAX_LEV:
-        raise ValueError(f"nz={nz} exceeds the in-thread solve limit "
-                         f"({_MAX_LEV - 1} half levels)")
+    wphi_level_tier(nz)   # refuse a too-deep column before allocating
 
     mu_old = state.scratch((ny, nx), "acoustic_mu_pp_old")
     th_old = state.scratch((nz, ny, nx), "acoustic_th_pp_old")
@@ -329,7 +402,7 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
 
     dampmag = dtau * cfg.dampcoef if cfg.damp_opt == 3 else 0.0
     w_name = "advance_w_phi_msf" if state.has_msf else "advance_w_phi"
-    w_kernel = get_kernel("acoustic", w_name)
+    w_kernel = _w_phi_kernel(w_name, nz)
     w_map_args = (state.msft,) if state.has_msf else ()
     w_args = (
         state.w_pp, state.ph_pp, state.rw_t, state.rph_t, state.ww_pp,
@@ -419,9 +492,7 @@ def acoustic_substep(state: DomainState, cfg: RunConfig,
     their epssm averages (WRF ``muave``/``t_2ave``).
     """
     nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
-    if nz + 1 > _MAX_LEV:
-        raise ValueError(f"nz={nz} exceeds the in-thread solve limit "
-                         f"({_MAX_LEV - 1} half levels)")
+    wphi_level_tier(nz)   # refuse a too-deep column before allocating
 
     if coefficients is None:
         cq = prepare_moist_cq(state, cfg)
@@ -445,7 +516,7 @@ def acoustic_substep(state: DomainState, cfg: RunConfig,
     # Map factors (Task 3): the _msf variant carries WRF advance_w's msfty
     # factors; the msf==1 kernel stays byte-identical to Phase 2.
     name = "advance_w_phi_msf" if state.has_msf else "advance_w_phi"
-    kernel = get_kernel("acoustic", name)
+    kernel = _w_phi_kernel(name, nz)
     args = [state.w_pp, state.ph_pp, state.rw_t, state.rph_t, state.ww_pp,
             state.mu_pp, mu_old, state.th_pp, th_old,
              state.thp, state.thb, state.php, state.phb, state.alt, c2a,

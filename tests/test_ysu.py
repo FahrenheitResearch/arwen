@@ -349,3 +349,401 @@ def test_ysu_kernel_matches_float64_mirror():
     np.testing.assert_array_equal(cp.asnumpy(got["kpbl"]), ref["kpbl"])
     assert (ref["exch_h"][:, :, :] >= 0.0).all()
     assert (ref["exch_m"][:, :, :] >= 0.0).all()
+
+
+def _device_column(args):
+    """Push one ``_column`` dict onto the device in launcher form."""
+    import cupy as cp
+
+    nz = args["theta"].size
+    col = {name: cp.asarray(value[:, None, None], dtype=cp.float32)
+           for name, value in args.items()
+           if isinstance(value, np.ndarray) and value.shape == (nz,)}
+    col["p_interface"] = cp.asarray(
+        args["p_interface"][:, None, None], dtype=cp.float32)
+    surf = {name: cp.asarray([[args[name]]], dtype=cp.float32)
+            for name in ("psfc", "znt", "ust", "hfx", "qfx", "wspd",
+                         "br", "psim", "psih", "xland", "u10", "v10")}
+    return col, surf
+def _single_column_device(args):
+    """Reshape a ``_column`` dict into device ``(nz, 1, 1)`` launch inputs."""
+    import cupy as cp
+
+    f3 = lambda a: cp.asarray(np.ascontiguousarray(
+        np.asarray(a, np.float32).reshape(-1, 1, 1)))
+    f2 = lambda a: cp.asarray(np.full((1, 1), a, np.float32))
+    dev = {name: f3(args[name])
+           for name in ("u", "v", "theta", "qv", "qc", "qi", "p",
+                        "p_interface", "exner", "dz")}
+    dev.update({name: f2(args[name])
+                for name in ("psfc", "znt", "ust", "hfx", "qfx", "wspd",
+                             "br", "psim", "psih", "xland", "u10", "v10")})
+    return dev
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_nonfinite_hfx_surfaces_as_dtheta_and_the_refusal_names_hfx():
+    """The 1.5.2 field report, reproduced ON A STABLE SURFACE.
+
+    A user lost an ERA5-forced run on its FIRST step to ``YSU returned
+    non-finite dtheta tendency``.  The name is a false lead.  ``dtheta``
+    is written from the heat solve, whose ONLY surface term is HFX
+    (kernels/ysu.cu:480 ``rhs[0] = theta0 - 300 + hf/(CP/G)/delp[0]*dt2``),
+    so a non-finite HFX handed IN leaves as a dtheta produced OUT.
+
+    THAT ASYMMETRY IS A PROPERTY OF THE STABLE BRANCH, and this fixture
+    selects it deliberately (``br > 0`` -> ``sfcflg`` false at
+    kernels/ysu.cu:165).  Under ``sfcflg`` the kernel takes
+    ``wstar3 = wstar = 0`` as a literal (:177), so the surface buoyancy
+    flux reaches nothing else and ``rhs[0]`` above is HFX's only route
+    into the column.  Measured on the shipping kernel with entirely
+    finite inputs, perturbing HFX 120 -> 60 and 120 -> 240 moves
+    ``dtheta`` by 48% and 97% and moves ``du``, ``dqv`` and ``exch_m``
+    by exactly 0.0000% -- max|delta| identically 0.  The claim is not
+    approximately true here, it is bitwise true.
+
+    It is FALSE on an unstable surface, where the buoyancy flux sets the
+    convective velocity scale and therefore the mixed-layer diffusivity
+    for momentum and moisture too; the same perturbation moves ``du`` by
+    16% and 73% there.  That branch is pinned by the sibling test
+    ``test_nonfinite_hfx_on_an_unstable_surface_poisons_the_column``.
+    Before the sm_120 DAZ work this test passed with ``br=-0.20``, but
+    only because ``ysu_max(NaN, 0)`` returned 0 and manufactured "zero
+    surface buoyancy flux" out of "no answer"; the float64 authority
+    (gpuwm/verify/npref.py:6340, Python ``max``) never agreed.
+
+    Part 1 reproduces it against the real kernel.  Part 2 pins the
+    refusal to naming HFX, which is what the shipped message did not do.
+    """
+    import cupy as cp
+
+    from gpuwm.core.physics import validate_ysu_tendencies
+    from gpuwm.core.ysu import launch_ysu, validate_ysu_outputs
+
+    # A nocturnal stable column: positive bulk Richardson number with the
+    # downward heat flux that goes with it.
+    args = _column(hfx=-35.0, qfx=1.0e-5, ust=0.20, br=0.20, dt=60.0)
+    col, surf = _device_column(args)
+
+    # -- part 1: the kernel reproduces the user's exact signature --------
+    healthy = launch_ysu(**col, **surf, dt=args["dt"])
+    assert all(bool(cp.isfinite(healthy[name]).all())
+               for name in ("du", "dv", "dtheta")), "control must be clean"
+
+    surf["hfx"][...] = cp.float32(cp.nan)
+    out = launch_ysu(**col, **surf, dt=args["dt"])
+    assert bool(cp.isfinite(out["du"]).all()), "momentum must not read HFX"
+    assert bool(cp.isfinite(out["dv"]).all()), "momentum must not read HFX"
+    assert not bool(cp.isfinite(out["dtheta"]).all())
+    # Every OTHER output stays finite: this is what makes the report
+    # identifiable rather than merely one blowup among many.
+    for name in ("dqv", "dqc", "dqi", "exch_h", "exch_m", "hpbl",
+                 "wstar", "delta", "topdown_radsum", "wstar3_2"):
+        assert bool(cp.isfinite(out[name]).all()), name
+    status = cp.zeros((1,), cp.uint32)
+    assert validate_ysu_outputs(out, status) == "dtheta"
+
+    # -- part 2: the refusal names the degenerate PRODUCER ---------------
+    producers = {
+        "ust": surf["ust"], "hfx": surf["hfx"], "qfx": surf["qfx"],
+        "wspd": surf["wspd"], "br": surf["br"], "znt": surf["znt"],
+        "psim": surf["psim"], "psih": surf["psih"],
+        "dz1": col["dz"][0], "p1": col["p_interface"][0],
+        "dp1": col["p_interface"][0] - col["p_interface"][1],
+    }
+    with pytest.raises(FloatingPointError) as raised:
+        validate_ysu_tendencies(out, status=status, grid_id=1,
+                                producer_inputs=producers)
+    message = str(raised.value)
+
+    def claims(text):
+        return (
+            "non-finite dtheta tendency" in text,     # the output, as before
+            "on domain 1" in text,                    # where
+            "already degenerate" in text,             # something came in bad
+            "hfx (1 non-finite)" in text,             # WHICH one, with a count
+        )
+
+    assert claims(message) == (True, True, True, True), message
+    # A NaN cell is counted once.  ``<= 0`` is False at NaN by IEEE rule.
+    assert "hfx (1 non-finite, " not in message, message
+    # Healthy producers are not accused.  ust/dz1/p1/dp1 are all positive
+    # here, and wspd/br/qfx carry no sign requirement at all.
+    for clean in ("ust", "qfx", "wspd", "br", "znt", "psim", "psih",
+                  "dz1", "p1", "dp1"):
+        assert f"{clean} (" not in message, (clean, message)
+
+    # -- clean producers say so, rather than saying nothing --------------
+    healthy["dtheta"][0, 0, 0] = cp.float32(cp.nan)
+    producers["hfx"] = cp.asarray([[-35.0]], dtype=cp.float32)
+    with pytest.raises(FloatingPointError) as raised_clean:
+        validate_ysu_tendencies(healthy, status=status, grid_id=1,
+                                producer_inputs=producers)
+    clean_message = str(raised_clean.value)
+    assert "scheme's own arithmetic produced it" in clean_message
+    assert "already degenerate" not in clean_message
+
+    # -- the pre-fix message is exactly what the report showed -----------
+    # Without producer inputs the refusal is byte-identical to 1.5.2's,
+    # so every existing caller and test keeps its contract -- and this
+    # line is the control proving the new detail is what closes the gap.
+    with pytest.raises(FloatingPointError) as raised_bare:
+        validate_ysu_tendencies(out, status=status)
+    assert (str(raised_bare.value)
+            == "YSU returned non-finite dtheta tendency")
+
+    # -- MUTATION CONTROLS, each watched failing -------------------------
+    def mutant_output_only(_):
+        return "YSU returned non-finite dtheta tendency"
+
+    def mutant_no_input_name(_):
+        return ("YSU returned non-finite dtheta tendency on domain 1"
+                "; producer inputs already degenerate")
+
+    def mutant_always_blames(_):
+        return ("YSU returned non-finite dtheta tendency on domain 1"
+                "; producer inputs already degenerate: ust (1 <= 0), "
+                "hfx (1 non-finite)")
+
+    assert claims(mutant_output_only(message)) != (True, True, True, True)
+    assert claims(mutant_no_input_name(message)) != (True, True, True, True)
+    assert "ust (" in mutant_always_blames(message)
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_nonfinite_hfx_on_an_unstable_surface_poisons_the_column():
+    """The other branch: HFX reaches momentum and moisture through w*.
+
+    On an unstable surface (``br <= 0`` -> ``sfcflg`` true,
+    kernels/ysu.cu:165) the surface buoyancy flux is not confined to the
+    heat solve.  It sets the convective velocity scale --
+    ``wstar3 = govrth * ysu_max(sflux, 0) * hpbl`` at :173 -- which sets
+    ``wsk`` (:373), which sets ``km`` (:424), which sets the MOMENTUM
+    eddy diffusivity ``xkzm`` (:433) that the u and v solves read at
+    :560/:570/:586.  So "momentum never reads HFX" is not true of YSU
+    here, and this is a fact about the SCHEME, not about NaN semantics:
+    with entirely finite inputs, perturbing HFX 120 -> 60 and 120 -> 240
+    on this fixture moves ``du`` by 16.3% and 73.4%, ``dqv`` by 45.0%
+    and 96.8%, and ``exch_m`` by 40.1% and 109.4%.
+
+    So a non-finite HFX must poison the whole column, and this test pins
+    that it does.  Before the sm_120 DAZ work it did not: ``ysu_max``
+    was ``a > b ? a : b``, which returns ``b`` at a NaN first argument,
+    so ``ysu_max(NaN, 0)`` produced a plausible "zero surface buoyancy
+    flux" and the column came back looking stable-branch clean.  That is
+    the same laundering class as the exch_h = 1000 m2/s pin: a
+    physically meaningful value manufactured from no answer.  WRF's
+    ``amax1`` at a NaN argument is processor-dependent, i.e. undefined,
+    and the defined answer for max(invalid, 0) is invalid.
+
+    The change is strictly LOUDER, never quieter, which is what keeps
+    the user's original bug from returning by this route:
+    ``validate_ysu_outputs`` still fires, and the producer forensics
+    still names ``hfx``.  Only the output LABEL moves, from ``dtheta``
+    to ``du``, because ``du`` is first in launcher order.
+
+    If a future change re-introduces a bound on ``ysu_max(sflux, 0)``
+    this test goes red, and that is intended: the bound would be
+    fabricating surface buoyancy the surface layer never reported.
+    """
+    import cupy as cp
+
+    from gpuwm.core.physics import validate_ysu_tendencies
+    from gpuwm.core.ysu import launch_ysu, validate_ysu_outputs
+    from gpuwm.verify.npref import np_ysu_column
+
+    args = _column(hfx=120.0, qfx=8.0e-5, ust=0.30, br=-0.20, dt=60.0)
+    col, surf = _device_column(args)
+
+    healthy = launch_ysu(**col, **surf, dt=args["dt"])
+    assert all(bool(cp.isfinite(healthy[name]).all())
+               for name in ("du", "dv", "dtheta", "dqv", "exch_m")), \
+        "control must be clean"
+
+    surf["hfx"][...] = cp.float32(cp.nan)
+    out = launch_ysu(**col, **surf, dt=args["dt"])
+
+    # Everything the buoyancy flux reaches goes non-finite.  This is the
+    # list the float64 authority produces for the same fixture, so the
+    # kernel is held to its own mirror rather than to a hand-written
+    # expectation.
+    poisoned = ("du", "dv", "dtheta", "dqv", "dqc", "dqi",
+                "exch_h", "exch_m", "wstar")
+    for name in poisoned:
+        assert not bool(cp.isfinite(out[name]).all()), name
+    ref_args = dict(args)
+    ref_args["hfx"] = float("nan")
+    ref_dt = ref_args.pop("dt")
+    mirror = np_ysu_column(**ref_args, dt=ref_dt)
+    mirror_bad = sorted(
+        name for name, value in mirror.items()
+        if np.asarray(value, float).dtype.kind == "f"
+        and not np.isfinite(np.asarray(value, float)).all())
+    assert mirror_bad == sorted(poisoned), \
+        f"kernel must agree with npref, its authority: {mirror_bad}"
+
+    # hpbl and the geometry survive: they are diagnosed before the flux
+    # enters, so the refusal still has a column to describe.
+    for name in ("hpbl", "delta"):
+        assert bool(cp.isfinite(out[name]).all()), name
+
+    # The refusal is LOUDER, not quieter.  The label moves to du, but
+    # the diagnosis -- which producer was already bad -- is unchanged,
+    # and that is the half the user needed.
+    status = cp.zeros((1,), cp.uint32)
+    assert validate_ysu_outputs(out, status) == "du"
+    producers = {
+        "ust": surf["ust"], "hfx": surf["hfx"], "qfx": surf["qfx"],
+        "wspd": surf["wspd"], "br": surf["br"], "znt": surf["znt"],
+        "psim": surf["psim"], "psih": surf["psih"],
+        "dz1": col["dz"][0], "p1": col["p_interface"][0],
+        "dp1": col["p_interface"][0] - col["p_interface"][1],
+    }
+    with pytest.raises(FloatingPointError) as raised:
+        validate_ysu_tendencies(out, status=status, grid_id=1,
+                                producer_inputs=producers)
+    message = str(raised.value)
+    assert "non-finite du tendency" in message, message
+    assert "on domain 1" in message, message
+    assert "producer inputs already degenerate" in message, message
+    assert "hfx (1 non-finite)" in message, message
+    for clean in ("ust", "qfx", "wspd", "br", "znt", "psim", "psih",
+                  "dz1", "p1", "dp1"):
+        assert f"{clean} (" not in message, (clean, message)
+def test_daz_flushed_ust_cube_keeps_exch_h_physical():
+    """ust=1e-13 through the real kernel: exch_h physical, not the 1000 pin.
+
+    sm_120 flushes FP32 subnormals in all arithmetic, so ``us*us*us`` is
+    exactly 0 for ust=1e-13 (a *normal* float32) and WRF's prfac2 quotient
+    (bl_ysu.F90:948) became Inf/Inf = NaN.  Pre-guard, ``ysu_min`` then
+    laundered the NaN into ``xkzh = xkzmax``: exch_h pinned at 1000 m2/s
+    where the float64 authority says ~131, and validate_ysu_outputs saw
+    nothing.  This test drives the shipping kernel, not a mock, and holds
+    both halves of the fix: the value is the mirror's, and nothing anywhere
+    in the outputs is non-finite or riding the xkzmax rail.
+    """
+    import cupy as cp
+    from gpuwm.core.ysu import launch_ysu, validate_ysu_outputs
+    from gpuwm.verify.npref import np_ysu_column
+
+    args = _column(hfx=240.0, qfx=7.0e-5, ust=1.0e-13, br=-0.08, dt=60.0)
+    ref = np_ysu_column(**args)
+    out = launch_ysu(**_single_column_device(args), dt=args["dt"])
+    assert validate_ysu_outputs(out, cp.zeros(1, cp.uint32)) is None
+
+    exch_h = out["exch_h"].get()[:, 0, 0]
+    exch_m = out["exch_m"].get()[:, 0, 0]
+    assert np.isfinite(exch_h).all() and np.isfinite(exch_m).all()
+    # The laundered failure mode is exactly the xkzmax ceiling.
+    assert not np.any(exch_h == np.float32(1000.0))
+    assert not np.any(exch_m == np.float32(1000.0))
+    np.testing.assert_allclose(exch_h.max(), np.asarray(ref["exch_h"]).max(),
+                               rtol=1.0e-3)
+    np.testing.assert_allclose(
+        exch_h, np.asarray(ref["exch_h"]).reshape(-1), rtol=2e-3, atol=2e-3)
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_ysu_producer_input_view_binds_the_fields_the_kernel_reads():
+    """The lazy view must name WRF's fm/fh bindings and the layer mass."""
+    import cupy as cp
+
+    from gpuwm.core.physics import _YsuProducerInputs
+
+    fields = {name: cp.full((2, 3), 0.5, cp.float32)
+              for name in ("ust", "hfx", "qfx", "wspd", "br", "znt")}
+    fields["fm"] = cp.full((2, 3), 7.0, cp.float32)
+    fields["fh"] = cp.full((2, 3), 9.0, cp.float32)
+    atmosphere = {
+        "dz": cp.full((4, 2, 3), 30.0, cp.float32),
+        "p_interface": cp.asarray(
+            np.broadcast_to(
+                np.array([1.0e5, 9.7e4, 9.4e4, 9.1e4, 8.8e4])[:, None, None],
+                (5, 2, 3)).copy(), dtype=cp.float32),
+    }
+    view = _YsuProducerInputs(fields, atmosphere)
+    assert set(view) == {"ust", "hfx", "qfx", "wspd", "br", "znt", "psim",
+                         "psih", "dz1", "p1", "dp1"}
+    # YSU's PSIM/PSIH dummies are WRF's full similarity denominators.
+    assert float(view["psim"][0, 0]) == 7.0
+    assert float(view["psih"][0, 0]) == 9.0
+    assert float(view["dz1"][0, 0]) == 30.0
+    assert float(view["p1"][0, 0]) == pytest.approx(1.0e5)
+    assert float(view["dp1"][0, 0]) == pytest.approx(3.0e3)
+    assert view["dp1"].shape == (2, 3)
+    with pytest.raises(KeyError):
+        view["tsk"]
+def test_exactly_zero_ust_with_live_fluxes_is_defined():
+    """ust == 0 with nonzero heat flux misses the ysu.cu:104 short circuit;
+    WRF's prfac2 is then 0/0 (the parity suite's case-13 pathology).  The
+    kernel and the float64 mirror now both take the defined algebraic limit
+    instead of laundering or propagating a NaN."""
+    import cupy as cp
+    from gpuwm.core.ysu import launch_ysu, validate_ysu_outputs
+    from gpuwm.verify.npref import np_ysu_column
+
+    args = _column(hfx=240.0, qfx=7.0e-5, ust=0.0, br=-0.08, dt=60.0)
+    ref = np_ysu_column(**args)
+    out = launch_ysu(**_single_column_device(args), dt=args["dt"])
+    assert validate_ysu_outputs(out, cp.zeros(1, cp.uint32)) is None
+    exch_h = out["exch_h"].get()[:, 0, 0]
+    assert np.isfinite(exch_h).all()
+    assert np.isfinite(np.asarray(ref["exch_h"])).all()
+    assert not np.any(exch_h == np.float32(1000.0))
+    np.testing.assert_allclose(
+        exch_h, np.asarray(ref["exch_h"]).reshape(-1), rtol=2e-3, atol=2e-3)
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_ysu_min_max_propagate_nan_and_keep_finite_semantics():
+    """Device-level pin on the real compiled helpers, not a re-implementation.
+
+    ``ysu_min(NaN, xkzmax)`` returning xkzmax is how a poisoned diffusivity
+    became a plausible 1000 m2/s.  The helpers now return the NaN, so it
+    reaches validate_ysu_outputs; and for every non-NaN first argument they
+    are bit-identical to the old ``a < b ? a : b`` (ties and signed zeros
+    still select b).  Compiled from the same module source the model runs.
+    """
+    import cupy as cp
+    from gpuwm.core.kernels import module_source
+
+    probe = """
+extern "C" __global__ void ysu_minmax_probe(
+    const real *a, const real *b, real *mn, real *mx, int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    mn[i] = ysu_min(a[i], b[i]);
+    mx[i] = ysu_max(a[i], b[i]);
+}
+"""
+    mod = cp.RawModule(code=module_source("ysu") + probe,
+                       options=("-std=c++17",))
+    kernel = mod.get_function("ysu_minmax_probe")
+    nan = np.float32(np.nan)
+    pairs = np.array([
+        (nan, 1000.0), (1000.0, nan), (-0.0, 0.0), (0.0, -0.0),
+        (3.0, 7.0), (7.0, 3.0), (5.0, 5.0),
+    ], dtype=np.float32)
+    a = cp.asarray(np.ascontiguousarray(pairs[:, 0]))
+    b = cp.asarray(np.ascontiguousarray(pairs[:, 1]))
+    mn = cp.empty(len(pairs), cp.float32)
+    mx = cp.empty(len(pairs), cp.float32)
+    kernel((1,), (len(pairs),), (a, b, mn, mx, np.int32(len(pairs))))
+    mn, mx = mn.get(), mx.get()
+
+    # The laundering pin: a NaN in either slot comes back out.
+    assert np.isnan(mn[0]) and np.isnan(mx[0])
+    assert np.isnan(mn[1]) and np.isnan(mx[1])
+    # Old finite semantics, including b-selection on ties and signed zeros.
+    view = lambda x: np.asarray(x, np.float32).view(np.uint32)
+    assert view(mn[2]) == view(np.float32(0.0))     # min(-0, +0) -> b
+    assert view(mn[3]) == view(np.float32(-0.0))    # min(+0, -0) -> b
+    assert view(mx[2]) == view(np.float32(0.0))
+    assert view(mx[3]) == view(np.float32(-0.0))
+    assert mn[4] == 3.0 and mn[5] == 3.0 and mn[6] == 5.0
+    assert mx[4] == 7.0 and mx[5] == 7.0 and mx[6] == 5.0

@@ -604,8 +604,27 @@ void advance_mu_th_msf(const real* __restrict__ u_pp,
 // calc_coef_w / advance_w / calc_p_rho, general hybrid/terrain form:
 // kinematic terrain lower BC, configurable WRF top_lid, moist cqw). ----------
 
-// Max full levels for the in-thread solve (plan: nz <= 128).
+/* Max full levels for the in-thread solve.  This bound sizes exactly ONE
+ * per-thread object in this translation unit -- the RHS column
+ * `real rhs[WPHI_MAX_LEV]` that advance_w_phi and advance_w_phi_msf each
+ * declare -- so it costs 4 B of local frame per admitted full level and
+ * nothing else.  No expression in either kernel READS it: every loop runs
+ * to the runtime nz and the highest index any of them forms is nz, so
+ * raising it moves no arithmetic.  The a/alpha/gamma coefficient columns
+ * are global scratch (gpuwm/core/acoustic.py), not in-thread.
+ *
+ * The launcher selects it from a small tier ladder by nz through
+ * gpuwm.core.kernels.get_kernel_int_defines, exactly the way kf.cu's
+ * KF_KMAX is selected.  129 is the tier this source keeps when nothing
+ * overrides it, and every nz <= 128 configuration compiles the
+ * UNSPECIALIZED module -- no define is injected, so the string handed to
+ * NVRTC is byte-identical to what it was before the ladder existed.
+ * gpuwm/core/acoustic.py owns the ladder; tests/test_acoustic_nz_tiers.py
+ * pins both halves of that claim.
+ */
+#ifndef WPHI_MAX_LEV
 #define WPHI_MAX_LEV 129
+#endif
 
 // Linearized-EOS p''/alpha'' diagnosis (WRF calc_p_rho, non-hydrostatic
 // branch; with full theta the WRF t0-offset terms cancel):

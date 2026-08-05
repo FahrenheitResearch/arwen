@@ -102,6 +102,14 @@ _CORE_MODULES = {
     "thompson_contract.py",
 }
 _INGEST_EXCLUDES = {"preflight.py"}
+#: `gpuwm/obs/sources.py` is the seam between the ingest lane and the scoring
+#: lane: it builds the scorer's dataclasses and reaches
+#: `gpuwm.verify.obs.contracts` to do it.  RW-WPS ships no verification
+#: package, and that boundary is absolute rather than exemptible, so the one
+#: module that crosses it stays behind.  Nothing else in `gpuwm/obs` imports
+#: it -- `__init__` pulls radar_grid, superob, sweeps and target_grid -- so
+#: the radar front door `gpuwm doctor` checks for is unaffected.
+_OBS_EXCLUDES = {"sources.py"}
 _ROOT_DATA = {
     "native_wrf_support_v1.json",
     "physics_registry_v2.json",
@@ -423,6 +431,19 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
         _copy_source(REPO / "gpuwm" / name, package / name)
     for subpackage, excludes in (
         ("ingest", _INGEST_EXCLUDES),
+        # Radar observation ingest.  `gpuwm doctor` checks for the NEXRAD
+        # front door by name, unconditionally, so that a green report can
+        # never mean "radar is fine" on a machine that cannot read a radar
+        # volume -- and that check imports `gpuwm.obs.nexrad`.  Staging the
+        # subpackage is what keeps the check unconditional here too: making
+        # the import lazy instead would reintroduce, in a new place, exactly
+        # the silent-green hole the check exists to close.  It costs nothing
+        # a preprocessing wheel should refuse -- the whole subpackage is
+        # stdlib plus numpy, imports only `gpuwm.bridges` and
+        # `gpuwm.static.projection` (both already staged), and contains no
+        # CuPy and no forecast executor.  Turning radar bytes into gridded
+        # observation files is preprocessing, which is what this wheel is.
+        ("obs", _OBS_EXCLUDES),
         ("static", set()),
     ):
         for source in sorted((REPO / "gpuwm" / subpackage).glob("*.py")):

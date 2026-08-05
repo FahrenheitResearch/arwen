@@ -1,0 +1,301 @@
+{
+ "evaluator_commit": "171d294c499fee5583b746c8e3d2826258408aa7",
+ "parameters": {
+  "arms": [
+   {
+    "arm_id": "F",
+    "engine": "arwen",
+    "role": "faithful; the dual-run pair is the standing byte screen",
+    "runs": 2
+   },
+   {
+    "arm_id": "P-L3",
+    "engine": "arwen",
+    "role": "patched: Shin-Hong scale-aware PBL",
+    "runs": 2
+   },
+   {
+    "arm_id": "P-L4",
+    "engine": "arwen",
+    "role": "patched: 6th-order damping exempted from moist scalars",
+    "runs": 2
+   },
+   {
+    "arm_id": "P-all",
+    "engine": "arwen",
+    "role": "full patchset v1; reported, NEVER a promotion basis",
+    "runs": 2
+   },
+   {
+    "arm_id": "P-L5",
+    "conditional": true,
+    "engine": "arwen",
+    "role": "SASE overlay; scored on zero cases until its entry gate passes",
+    "runs": 2
+   },
+   {
+    "arm_id": "W",
+    "engine": "wrf-v4.6.1",
+    "role": "stock control on the pinned campaign build, never rebuilt",
+    "runs": 1
+   },
+   {
+    "arm_id": "W-twin",
+    "engine": "wrf-v4.6.1",
+    "role": "perturbed control; prices chaos at each lead",
+    "runs": 1
+   },
+   {
+    "arm_id": "O1",
+    "engine": "none",
+    "role": "HRRR-operational context row; never a promotion input",
+    "runs": 0
+   },
+   {
+    "arm_id": "persistence",
+    "engine": "none",
+    "role": "zero-skill floor; never a promotion input",
+    "runs": 0
+   }
+  ],
+  "cases": [
+   {
+    "case_day": "2021-12-10",
+    "case_id": "case-20211210",
+    "entry_receipt": "",
+    "init_time": "2021-12-10T12:00:00",
+    "init_time_status": "section 1.3 default (cycle nearest 12 UTC), pending this case's own entry receipt, which may register 15 or 18 UTC for a nocturnal case",
+    "menu_row": "B-01",
+    "phenomenon": "nocturnal long-track supercell outbreak, mid-South",
+    "shakedown": false
+   },
+   {
+    "case_day": "2023-03-31",
+    "case_id": "case-20230331",
+    "entry_receipt": "",
+    "init_time": "2023-03-31T12:00:00",
+    "init_time_status": "section 1.3 default (cycle nearest 12 UTC), pending this case's own entry receipt, which may register 15 or 18 UTC for a nocturnal case",
+    "menu_row": "B-02",
+    "phenomenon": "large mixed-mode outbreak, mid-Mississippi Valley",
+    "shakedown": false
+   },
+   {
+    "case_day": "2024-04-27",
+    "case_id": "case-20240427",
+    "entry_receipt": "",
+    "init_time": "2024-04-27T12:00:00",
+    "init_time_status": "section 1.3 default (cycle nearest 12 UTC), pending this case's own entry receipt, which may register 15 or 18 UTC for a nocturnal case",
+    "menu_row": "B-03",
+    "phenomenon": "nocturnal supercell outbreak, central/southern Oklahoma",
+    "shakedown": false
+   },
+   {
+    "case_day": "2024-05-21",
+    "case_id": "case-20240521",
+    "entry_receipt": "docs/public/receipts/obsbattery/B5-CASE-ENTRY-20240521.md",
+    "init_time": "2024-05-21T12:00:00",
+    "init_time_status": "fixed by its committed entry receipt",
+    "menu_row": "B-04",
+    "phenomenon": "daytime cyclic supercell, southwest/central Iowa",
+    "shakedown": true
+   },
+   {
+    "case_day": "2024-07-15",
+    "case_id": "case-20240715",
+    "entry_receipt": "",
+    "init_time": "2024-07-15T12:00:00",
+    "init_time_status": "section 1.3 default (cycle nearest 12 UTC), pending this case's own entry receipt, which may register 15 or 18 UTC for a nocturnal case",
+    "menu_row": "B-05",
+    "phenomenon": "derecho with embedded QLCS tornadoes, n. Illinois",
+    "shakedown": false
+   },
+   {
+    "case_day": "2025-03-14",
+    "case_id": "case-20250314",
+    "entry_receipt": "",
+    "init_time": "2025-03-14T12:00:00",
+    "init_time_status": "section 1.3 default (cycle nearest 12 UTC), pending this case's own entry receipt, which may register 15 or 18 UTC for a nocturnal case",
+    "menu_row": "B-06",
+    "phenomenon": "high-shear early-spring outbreak, MO/AR/MS",
+    "shakedown": false
+   },
+   {
+    "case_day": "2025-05-16",
+    "case_id": "case-20250516",
+    "entry_receipt": "",
+    "init_time": "2025-05-16T12:00:00",
+    "init_time_status": "section 1.3 default (cycle nearest 12 UTC), pending this case's own entry receipt, which may register 15 or 18 UTC for a nocturnal case",
+    "menu_row": "B-07",
+    "phenomenon": "violent-outbreak day, St. Louis metro / s. Illinois / KY",
+    "shakedown": false
+   }
+  ],
+  "precipitation": {
+   "contingency_scores": "equitable threat score and frequency bias at the same thresholds",
+   "guardrail_half_width_cells": 8,
+   "guardrail_statistic": "case mean over accumulation windows of FSS at the guardrail threshold and neighborhood",
+   "guardrail_threshold_mm": 10.0,
+   "guardrail_window_hours": 6,
+   "model_field": "run-total grid-scale precipitation differenced over the accumulation window",
+   "neighborhood_boundary": "zero",
+   "neighborhood_half_widths_cells": [
+    1,
+    4,
+    8,
+    16
+   ],
+   "observed_quantity": "precipitation_accumulation",
+   "regrid_max_distance_m": 7000.0,
+   "regrid_method": "nearest",
+   "scoring_grid": "the observation analysis grid",
+   "thresholds_mm": [
+    2.5,
+    10.0,
+    25.0
+   ],
+   "window_hours": [
+    1,
+    6
+   ]
+  },
+  "promotion": {
+   "alpha": 0.05,
+   "chaos_floor": "the cross-case median difference must exceed the twin band for the same score",
+   "delegation_reference": "Drew's standing delegation, 2026-08-04: \"just make right calls and keep going\", relayed by the obs-battery lead to this lane on 2026-08-04 with Q1 and Q2 both answered.",
+   "guardrail_rule": "no guardrail may degrade the cross-case median by more than that metric's own twin band",
+   "guardrails": [
+    {
+     "direction": "lower_is_better",
+     "name": "median_station_rmse:temperature_2m",
+     "source": "surface"
+    },
+    {
+     "direction": "lower_is_better",
+     "name": "median_station_rmse:dewpoint_2m",
+     "source": "surface"
+    },
+    {
+     "direction": "lower_is_better",
+     "name": "median_station_rmse:wind_speed_10m",
+     "source": "surface"
+    },
+    {
+     "direction": "higher_is_better",
+     "name": "mean_fss:precipitation",
+     "source": "precipitation"
+    }
+   ],
+   "integrity_rule": "every scored integration passed its dual-run byte screen, every observation re-hashed clean, every receipt carries its registration hash and evaluator commit, and no stand-in input appears anywhere in the evidence",
+   "interaction_rule": "single-patch arms are the promotion evidence; a combined-patch arm is reported and is never a promotion basis",
+   "overrule_window": "the owner may overrule any number in this document until the B6 campaign launches; after launch the registered rule governs the campaign it scored, and a change is a new version beside this one, never an edit",
+   "ratification_reference": "",
+   "rule_status": "ratified-under-delegation",
+   "test": "one-sided exact Wilcoxon signed-rank test on the per-case differences, H1: median > 0",
+   "twin_band_statistic": "median over cases of |S(twin) - S(control)| for the same score",
+   "zero_difference_policy": "exact-zero differences are dropped and the sample size reduced (Wilcoxon 1945); tied magnitudes take average ranks and the null distribution is enumerated over sign assignments of the observed absolute ranks, which keeps the test exact under ties"
+  },
+  "reader": {
+   "artifacts": [
+    {
+     "bytes": 30311,
+     "name": "__init__.py",
+     "sha256": "142f801a4029f8082125f15b597f97f85cf8976080ff9f78d4c3410128f7ec61"
+    },
+    {
+     "bytes": 2293248,
+     "name": "_wrf.cp313-win_amd64.pyd",
+     "sha256": "3ba72379922edf56b182c03034428b5131a8a0742b94aa248b22b41b11a05e52"
+    }
+   ],
+   "distribution_version": "0.2.35",
+   "module_version_attribute": "0.2.34",
+   "module_version_attribute_note": "the module's own __version__ attribute lags the distribution metadata on this install; that is an upstream packaging note and is NOT a gate -- the content pins below are",
+   "pin_rule": "the reader is pinned by CONTENT: the source tree commit the editable install resolves to, plus the SHA-256 of the built extension that answers every diagnostic call. A distribution version alone cannot detect a rebuilt artifact under an unchanged label.",
+   "pinned_distribution_version": "0.2.35",
+   "science_core": "wrf-rust",
+   "source_tree": "C:\\Users\\drew\\wrf-rust-diamomd",
+   "source_tree_clean": true,
+   "source_tree_commit": "fdee84ca4c95ce9af8e56b61b323b84c0bbd301a"
+  },
+  "reflectivity": {
+   "frequency_matched_definition": "the model threshold is the linear-interpolated quantile of the model field over the shared-valid scored cells at 1 - f_obs, so model and observed exceedance coverage agree",
+   "frequency_matched_reported": true,
+   "fss_definition": "Roberts & Lean 2008 with a shared validity mask: neighborhood fraction = boxcar(event AND valid)/boxcar(valid); cells with an empty neighborhood are dropped; FSS = 1 when both fraction fields are identically zero over the scored region",
+   "fss_useful_definition": "0.5 + f_obs/2",
+   "interior_rim_m": 45000.0,
+   "missing_policy": "observed missing or flagged cells are excluded from both fields; an arm with a missing frame fails, it is not skipped",
+   "model_field": "column maximum over k of REFL_10CM, each model's own scheme-consistent reflectivity operator",
+   "neighborhood_boundary": "zero",
+   "neighborhood_half_widths_cells": [
+    1,
+    4,
+    8,
+    16
+   ],
+   "obs_match_tolerance_seconds": 240,
+   "observed_quantity": "composite_reflectivity",
+   "primary_half_width_cells": 4,
+   "primary_scalar": "mean over the scored leads of FSS at the primary threshold and primary neighborhood",
+   "primary_threshold_dbz": 30.0,
+   "regrid_max_distance_m": 4500.0,
+   "regrid_method": "nearest",
+   "thresholds_dbz": [
+    20.0,
+    30.0,
+    40.0,
+    50.0
+   ]
+  },
+  "scored_lead_hours": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11,
+   12,
+   13,
+   14,
+   15,
+   16,
+   17,
+   18
+  ],
+  "spinup_policy": "leads before the first scored hour are reported separately and never scored",
+  "surface": {
+   "elevation_tolerance_m": 100.0,
+   "guardrail_statistic": "median over stations of the per-station RMSE",
+   "interpolation": "bilinear",
+   "match_tolerance_seconds": 600,
+   "maximum_screen_fraction": 0.05,
+   "minimum_reporting_fraction": 0.8,
+   "model_diagnostics": "surface diagnostics come from the mandated science core; the battery reimplements none of them",
+   "pairing": "one frozen station set per case scores every arm; a (station, hour) with no report inside the tolerance is missing for all arms",
+   "reported_unscored": [
+    "mslp"
+   ],
+   "station_admission": "inside the interior mask, land, |model terrain - station elevation| <= tolerance (dropped, never corrected), reporting at least the minimum fraction of scored hours",
+   "variables": [
+    "temperature_2m",
+    "dewpoint_2m",
+    "wind_speed_10m"
+   ]
+  },
+  "twin": {
+   "band_statistic": "median over cases of the paired absolute difference; one pair per case, stated as exactly that",
+   "escalation": "a twin band of exactly zero on the primary score escalates to rung 2 (seeded FP32 noise, 0.01 K, interior theta) as ONE re-registered motion before any campaign case is scored, never per case",
+   "perturbation": "one documented FP ULP on the wrfinput theta field (tools/n5s/perturb_ulp.py)",
+   "rung": "rung-1-one-ulp-theta"
+  }
+ },
+ "ratification_basis": "Q2 ratified under standing delegation. The numbers are byte-for-byte v1-proposed's; only the authority changed, plus the reader content pin added by the same ruling.",
+ "registration_sha256": "11f834d18a61be718458b89114cae9b6ac1c03b2f44c6d3c97d54d3765b3c78f",
+ "registration_version": "v2-ratified-under-delegation",
+ "rule_status": "ratified-under-delegation",
+ "schema": "gpuwm.obs-battery-registration/v1",
+ "supersedes": "v1-proposed (kept beside this file, unedited)"
+}

@@ -1,0 +1,479 @@
+{
+  "battery_case_id": null,
+  "evaluator_commit": "8193cdad54b08aa009a4e396b32a6bc8cd65dafd",
+  "inputs": [
+    {
+      "name": "wrfout_d01_1974-04-03_14_00_00",
+      "sha256": "681a17ee7970f4c2f5709e5599c2f8020a86224c4d685d67b487978a8816375a",
+      "side": "arwen",
+      "size_bytes": 257045165
+    },
+    {
+      "name": "wrfout_d01_1974-04-03_14_00_00",
+      "sha256": "a1c447244e35c987eb6703658075cef9ee56bef7fffff344a2374ec7dc7d6ab6",
+      "side": "wrf461",
+      "size_bytes": 95708620
+    }
+  ],
+  "pairing": {
+    "differing_attributes": {},
+    "distinct_writers": true,
+    "georeference": {
+      "XLAT": {
+        "abs_tol_degrees": 0.0001,
+        "max_abs_diff_degrees": 2.86102294921875e-05,
+        "shapes_agree": true,
+        "status": "scored",
+        "verdict": "PASS"
+      },
+      "XLONG": {
+        "abs_tol_degrees": 0.0001,
+        "max_abs_diff_degrees": 3.0517578125e-05,
+        "shapes_agree": true,
+        "status": "scored",
+        "verdict": "PASS"
+      }
+    },
+    "reason": null,
+    "same_case": true,
+    "status": "paired",
+    "writer_titles": {
+      "arwen": "gpuwm NSSL-2 April 3 1974 four-domain 500 m validation",
+      "wrf461": "OUTPUT FROM WRF V4.6.1 MODEL"
+    }
+  },
+  "readers_agree": true,
+  "registration": {
+    "control": {
+      "auto_mask": false,
+      "dtype": "float64",
+      "independence": "the control never calls the science core; its arithmetic is written out in each quantity's control_recipe",
+      "reader": "netCDF4"
+    },
+    "pairing": {
+      "also_compared": [
+        "valid_time"
+      ],
+      "attributes": [
+        "SIMULATION_START_DATE",
+        "MAP_PROJ",
+        "DX",
+        "DY",
+        "TRUELAT1",
+        "TRUELAT2",
+        "STAND_LON",
+        "WEST-EAST_GRID_DIMENSION",
+        "SOUTH-NORTH_GRID_DIMENSION",
+        "BOTTOM-TOP_GRID_DIMENSION"
+      ],
+      "georeference_abs_tol_degrees": 0.0001,
+      "georeference_fields": [
+        "XLAT",
+        "XLONG"
+      ],
+      "numeric_comparison": "equal after rounding both sides to float32",
+      "other_comparison": "exact"
+    },
+    "quantities": {
+      "refl_10cm_column_max": {
+        "abs_tol": 0.0,
+        "alternate_control": null,
+        "alternate_control_reason": null,
+        "control_inputs": [
+          "REFL_10CM"
+        ],
+        "control_recipe": "REFL_10CM[time_index].max(axis=vertical)",
+        "kind": "reduction",
+        "science_core_call": "getvar(frame, 'REFL_10CM').max(axis=vertical)",
+        "tolerance_reason": "a maximum returns one of its own inputs, so a column maximum over an exactly-widened array introduces no arithmetic; any nonzero difference is a disagreement about the array or about which axis is vertical",
+        "units": "dBZ"
+      },
+      "t2": {
+        "abs_tol": 0.0,
+        "alternate_control": null,
+        "alternate_control_reason": null,
+        "control_inputs": [
+          "T2"
+        ],
+        "control_recipe": "T2[time_index]",
+        "kind": "passthrough",
+        "science_core_call": "getvar(frame, 't2')",
+        "tolerance_reason": "a stored FP32 value widened to FP64 is exact, so the two reads of one array can only differ if they disagree about which bytes the array is",
+        "units": "K"
+      },
+      "uvmet10_u": {
+        "abs_tol": 1e-09,
+        "alternate_control": "U10*COSALPHA + V10*SINALPHA",
+        "alternate_control_reason": "the opposite sign of the same rotation angle; recorded as a diagnostic so agreement under the registered convention is never mistaken for a ruling on which convention is right",
+        "control_inputs": [
+          "U10",
+          "V10",
+          "SINALPHA",
+          "COSALPHA"
+        ],
+        "control_recipe": "U10*COSALPHA - V10*SINALPHA",
+        "kind": "derived",
+        "science_core_call": "getvar(frame, 'uvmet10')[0]",
+        "tolerance_reason": "two FP64 products and one FP64 sum over inputs bounded by 1e2 round to order 1e-14; 1e-9 m s-1 sits five decades above that bound and twelve below any wind difference a forecast reader could act on, so it admits association order and nothing else",
+        "units": "m s-1"
+      },
+      "uvmet10_v": {
+        "abs_tol": 1e-09,
+        "alternate_control": "V10*COSALPHA - U10*SINALPHA",
+        "alternate_control_reason": "the opposite sign of the same rotation angle; recorded as a diagnostic so agreement under the registered convention is never mistaken for a ruling on which convention is right",
+        "control_inputs": [
+          "U10",
+          "V10",
+          "SINALPHA",
+          "COSALPHA"
+        ],
+        "control_recipe": "U10*SINALPHA + V10*COSALPHA",
+        "kind": "derived",
+        "science_core_call": "getvar(frame, 'uvmet10')[1]",
+        "tolerance_reason": "two FP64 products and one FP64 sum over inputs bounded by 1e2 round to order 1e-14; 1e-9 m s-1 sits five decades above that bound and twelve below any wind difference a forecast reader could act on, so it admits association order and nothing else",
+        "units": "m s-1"
+      }
+    },
+    "schema": "gpuwm.obs-cross-reader/v1",
+    "science_core": {
+      "distribution": "wrf-rust",
+      "import_name": "wrf",
+      "role": "mandated core for reading and diagnosing history tapes; this receipt measures it, and never replaces it",
+      "version": "0.2.35"
+    },
+    "time_index": 0,
+    "verdict_rule": "PASS iff every registered quantity scored on every side within its registered tolerance, the science core answered at the pinned distribution version, and the sides agree on every pairing attribute"
+  },
+  "registration_sha256": "44b0fddbb4e4964c01317d60f9c052ccd57fe2e1b1d3ef41f4a5f988cabb5c26",
+  "schema": "gpuwm.obs-cross-reader/v1",
+  "science_core_pin": {
+    "expected": "0.2.35",
+    "observed": "0.2.35",
+    "ok": true,
+    "reason": null,
+    "status": "pinned",
+    "version_attribute_note": "the module's __version__ attribute is '0.2.34' while the installed distribution is '0.2.35'; the distribution is the authority and the attribute is recorded, not gated"
+  },
+  "science_core_provenance": {
+    "distribution": "wrf-rust",
+    "distribution_version": "0.2.35",
+    "import_name": "wrf",
+    "installed_editable": true,
+    "installed_from": "file:///~/wrf-rust-diamomd",
+    "module_file": "~/wrf-rust-diamomd/python/wrf/__init__.py",
+    "module_version_attribute": "0.2.34"
+  },
+  "scope": "reader-qualification",
+  "sides": {
+    "arwen": {
+      "identity": {
+        "attributes": {
+          "BOTTOM-TOP_GRID_DIMENSION": 50,
+          "DX": 12000.0,
+          "DY": 12000.0,
+          "MAP_PROJ": 1,
+          "SIMULATION_START_DATE": "1974-04-03_12:00:00",
+          "SOUTH-NORTH_GRID_DIMENSION": 201,
+          "STAND_LON": -83.9297,
+          "TRUELAT1": 30.0,
+          "TRUELAT2": 60.0,
+          "WEST-EAST_GRID_DIMENSION": 251
+        },
+        "title": "gpuwm NSSL-2 April 3 1974 four-domain 500 m validation",
+        "valid_time": "1974-04-03_14:00:00"
+      },
+      "quantities": {
+        "refl_10cm_column_max": {
+          "abs_tol": 0.0,
+          "kind": "reduction",
+          "metrics": {
+            "differing_elements": 0,
+            "elements": 50000,
+            "max_abs_diff": 0.0,
+            "nonfinite_disagreements": 0,
+            "rms_diff": 0.0,
+            "shape_agrees": true,
+            "shape_control": [
+              200,
+              250
+            ],
+            "shape_core": [
+              200,
+              250
+            ]
+          },
+          "status": "scored",
+          "units": "dBZ",
+          "verdict": "PASS"
+        },
+        "t2": {
+          "abs_tol": 0.0,
+          "kind": "passthrough",
+          "metrics": {
+            "differing_elements": 0,
+            "elements": 50000,
+            "max_abs_diff": 0.0,
+            "nonfinite_disagreements": 0,
+            "rms_diff": 0.0,
+            "shape_agrees": true,
+            "shape_control": [
+              200,
+              250
+            ],
+            "shape_core": [
+              200,
+              250
+            ]
+          },
+          "status": "scored",
+          "units": "K",
+          "verdict": "PASS"
+        },
+        "uvmet10_u": {
+          "abs_tol": 1e-09,
+          "diagnostic_alternate_control": {
+            "gated": false,
+            "metrics": {
+              "differing_elements": 50000,
+              "elements": 50000,
+              "max_abs_diff": 5.9429384720209555,
+              "nonfinite_disagreements": 0,
+              "rms_diff": 1.4419494962671446,
+              "shape_agrees": true,
+              "shape_control": [
+                200,
+                250
+              ],
+              "shape_core": [
+                200,
+                250
+              ]
+            },
+            "reason": "the opposite sign of the same rotation angle; recorded as a diagnostic so agreement under the registered convention is never mistaken for a ruling on which convention is right",
+            "recipe": "U10*COSALPHA + V10*SINALPHA"
+          },
+          "kind": "derived",
+          "metrics": {
+            "differing_elements": 0,
+            "elements": 50000,
+            "max_abs_diff": 0.0,
+            "nonfinite_disagreements": 0,
+            "rms_diff": 0.0,
+            "shape_agrees": true,
+            "shape_control": [
+              200,
+              250
+            ],
+            "shape_core": [
+              200,
+              250
+            ]
+          },
+          "status": "scored",
+          "units": "m s-1",
+          "verdict": "PASS"
+        },
+        "uvmet10_v": {
+          "abs_tol": 1e-09,
+          "diagnostic_alternate_control": {
+            "gated": false,
+            "metrics": {
+              "differing_elements": 50000,
+              "elements": 50000,
+              "max_abs_diff": 4.539246867297777,
+              "nonfinite_disagreements": 0,
+              "rms_diff": 1.0543034071183262,
+              "shape_agrees": true,
+              "shape_control": [
+                200,
+                250
+              ],
+              "shape_core": [
+                200,
+                250
+              ]
+            },
+            "reason": "the opposite sign of the same rotation angle; recorded as a diagnostic so agreement under the registered convention is never mistaken for a ruling on which convention is right",
+            "recipe": "V10*COSALPHA - U10*SINALPHA"
+          },
+          "kind": "derived",
+          "metrics": {
+            "differing_elements": 0,
+            "elements": 50000,
+            "max_abs_diff": 0.0,
+            "nonfinite_disagreements": 0,
+            "rms_diff": 0.0,
+            "shape_agrees": true,
+            "shape_control": [
+              200,
+              250
+            ],
+            "shape_core": [
+              200,
+              250
+            ]
+          },
+          "status": "scored",
+          "units": "m s-1",
+          "verdict": "PASS"
+        }
+      }
+    },
+    "wrf461": {
+      "identity": {
+        "attributes": {
+          "BOTTOM-TOP_GRID_DIMENSION": 50,
+          "DX": 12000.0,
+          "DY": 12000.0,
+          "MAP_PROJ": 1,
+          "SIMULATION_START_DATE": "1974-04-03_12:00:00",
+          "SOUTH-NORTH_GRID_DIMENSION": 201,
+          "STAND_LON": -83.92970275878906,
+          "TRUELAT1": 30.0,
+          "TRUELAT2": 60.0,
+          "WEST-EAST_GRID_DIMENSION": 251
+        },
+        "title": "OUTPUT FROM WRF V4.6.1 MODEL",
+        "valid_time": "1974-04-03_14:00:00"
+      },
+      "quantities": {
+        "refl_10cm_column_max": {
+          "abs_tol": 0.0,
+          "kind": "reduction",
+          "metrics": {
+            "differing_elements": 0,
+            "elements": 50000,
+            "max_abs_diff": 0.0,
+            "nonfinite_disagreements": 0,
+            "rms_diff": 0.0,
+            "shape_agrees": true,
+            "shape_control": [
+              200,
+              250
+            ],
+            "shape_core": [
+              200,
+              250
+            ]
+          },
+          "status": "scored",
+          "units": "dBZ",
+          "verdict": "PASS"
+        },
+        "t2": {
+          "abs_tol": 0.0,
+          "kind": "passthrough",
+          "metrics": {
+            "differing_elements": 0,
+            "elements": 50000,
+            "max_abs_diff": 0.0,
+            "nonfinite_disagreements": 0,
+            "rms_diff": 0.0,
+            "shape_agrees": true,
+            "shape_control": [
+              200,
+              250
+            ],
+            "shape_core": [
+              200,
+              250
+            ]
+          },
+          "status": "scored",
+          "units": "K",
+          "verdict": "PASS"
+        },
+        "uvmet10_u": {
+          "abs_tol": 1e-09,
+          "diagnostic_alternate_control": {
+            "gated": false,
+            "metrics": {
+              "differing_elements": 50000,
+              "elements": 50000,
+              "max_abs_diff": 6.0105925080315785,
+              "nonfinite_disagreements": 0,
+              "rms_diff": 1.4530222425807897,
+              "shape_agrees": true,
+              "shape_control": [
+                200,
+                250
+              ],
+              "shape_core": [
+                200,
+                250
+              ]
+            },
+            "reason": "the opposite sign of the same rotation angle; recorded as a diagnostic so agreement under the registered convention is never mistaken for a ruling on which convention is right",
+            "recipe": "U10*COSALPHA + V10*SINALPHA"
+          },
+          "kind": "derived",
+          "metrics": {
+            "differing_elements": 0,
+            "elements": 50000,
+            "max_abs_diff": 0.0,
+            "nonfinite_disagreements": 0,
+            "rms_diff": 0.0,
+            "shape_agrees": true,
+            "shape_control": [
+              200,
+              250
+            ],
+            "shape_core": [
+              200,
+              250
+            ]
+          },
+          "status": "scored",
+          "units": "m s-1",
+          "verdict": "PASS"
+        },
+        "uvmet10_v": {
+          "abs_tol": 1e-09,
+          "diagnostic_alternate_control": {
+            "gated": false,
+            "metrics": {
+              "differing_elements": 50000,
+              "elements": 50000,
+              "max_abs_diff": 4.518446944038487,
+              "nonfinite_disagreements": 0,
+              "rms_diff": 1.0589725107921275,
+              "shape_agrees": true,
+              "shape_control": [
+                200,
+                250
+              ],
+              "shape_core": [
+                200,
+                250
+              ]
+            },
+            "reason": "the opposite sign of the same rotation angle; recorded as a diagnostic so agreement under the registered convention is never mistaken for a ruling on which convention is right",
+            "recipe": "V10*COSALPHA - U10*SINALPHA"
+          },
+          "kind": "derived",
+          "metrics": {
+            "differing_elements": 0,
+            "elements": 50000,
+            "max_abs_diff": 0.0,
+            "nonfinite_disagreements": 0,
+            "rms_diff": 0.0,
+            "shape_agrees": true,
+            "shape_control": [
+              200,
+              250
+            ],
+            "shape_core": [
+              200,
+              250
+            ]
+          },
+          "status": "scored",
+          "units": "m s-1",
+          "verdict": "PASS"
+        }
+      }
+    }
+  },
+  "unavailable_quantities": [],
+  "verdict": "PASS"
+}

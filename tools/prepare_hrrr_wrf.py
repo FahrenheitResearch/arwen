@@ -28,7 +28,9 @@ from gpuwm.physics_compat import (
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
     RUC_PROFILE_ID,
+    THOMPSON_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_PROFILE_ID,
+    THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
     WSM6_PROFILE_ID,
 )
 from gpuwm.hrrr_forecast import (
@@ -334,6 +336,16 @@ _HRRR_COLD_START_CONTRACT = {
 }
 _HRRR_COLD_START_CONTRACT[NSSL2_LEGACY_RRTMG_PROFILE_ID] = (
     _HRRR_COLD_START_CONTRACT[NSSL2_PROFILE_ID])
+# The cold-start species contract is a microphysics property, not a
+# radiation one (B4-ROUTE-QUALIFICATION.md section 1, item 4), so the
+# legacy-RRTMG Thompson profile reuses the Thompson entry verbatim.
+_HRRR_COLD_START_CONTRACT[THOMPSON_LEGACY_RRTMG_PROFILE_ID] = (
+    _HRRR_COLD_START_CONTRACT[THOMPSON_PROFILE_ID])
+# The same costing one component further: the gray-zone sibling selects a
+# different PBL closure and changes nothing about which species the source
+# supplies or what an absent one cold-starts to.
+_HRRR_COLD_START_CONTRACT[THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID] = (
+    _HRRR_COLD_START_CONTRACT[THOMPSON_PROFILE_ID])
 
 
 def _run(command: list[str], env: dict[str, str],
@@ -409,30 +421,73 @@ def _decoder(env: dict[str, str]) -> Path:
     return bridges.resolve_source_decoder("hrrr")
 
 
-#: The three dispositions :func:`_stock_wrf_export` can report.
-STOCK_WRF_EXPORT_STATES = ("PASS", "SKIPPED", "REFUSED")
+#: The dispositions :func:`_stock_wrf_export` can RETURN.  "REFUSED" left
+#: this tuple with the 2026-08-04 fail-closed ruling: a requested export
+#: that fails now raises instead of returning a receipt, so a PASS report
+#: can never again stand over missing WRF-arm outputs.
+STOCK_WRF_EXPORT_STATES = ("PASS", "SKIPPED")
+
+
+def _verified_export_outputs(output: Path) -> dict[str, object]:
+    """The export's declared outputs, existing and hash-manifested.
+
+    A PASS claim without its artifacts is a lying receipt: the 2026-08-04
+    battery case run lost its WRF-arm inputs to an EMFILE inside the
+    converter subprocess while the step's receipt said PASS-shaped things
+    around it (out/node19-shakedown/b04/B04-EXPORT-REFUSAL.txt).  So PASS
+    is now earned: the manifest must exist, every file it declares must
+    exist, and the manifest's own digest rides in the receipt so a later
+    reader can bind the file set this step vouched for.
+    """
+
+    manifest_path = output / "manifest.json"
+    if not manifest_path.is_file():
+        raise RuntimeError(
+            "stock-WRF export exited 0 but left no manifest at "
+            f"{manifest_path}; refusing to report PASS for outputs that "
+            "do not exist")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    declared = manifest.get("files")
+    if not isinstance(declared, dict) or not declared:
+        raise RuntimeError(
+            f"stock-WRF export manifest {manifest_path} declares no files")
+    missing = sorted(name for name in declared
+                     if not (output / name).is_file())
+    if missing:
+        raise RuntimeError(
+            "stock-WRF export manifest declares file(s) missing on disk: "
+            f"{missing} under {output}")
+    return {
+        "output": str(output),
+        "manifest_sha256": _sha256(manifest_path),
+        "files": sorted(declared),
+    }
 
 
 def _stock_wrf_export(command: list[str], env: dict[str, str], *,
-                      skip: bool, required: bool) -> dict[str, object]:
-    """Run the stock-WRF export; return its disposition, never its veto.
+                      skip: bool, required: bool,
+                      output: Path) -> dict[str, object]:
+    """Run the stock-WRF export: SKIPPED on request, else PASS or refuse.
 
-    The prepared cache and the preparation report are this command's
-    product for the GPU hierarchy, which reads them directly and never
-    opens a ``wrfinput``.  Until now a refusal from ``gpuwm.wrf_direct``
-    -- including its honest, named feature gaps -- propagated straight
-    out of ``subprocess.run(check=True)`` and took the whole wrapper
-    down nonzero, so a field user watched a PASS report scroll past and
-    then got exit 1 with nothing to show for a preparation that had in
-    fact completed.  Discarding finished work because an *optional*
-    downstream converter is not finished yet is the wrong trade.
+    Two postures met here and the second replaced the first.  The
+    original unconditional ``check=True`` took the whole wrapper down on
+    any converter refusal, discarding a completed preparation; the fix
+    for that swung to warn-and-continue -- and the 2026-08-04 battery
+    case run measured the cost: the converter subprocess died on EMFILE
+    (an environmental failure, not a representability gap), one warning
+    scrolled past, the preparation PASS-logged, and the WRF arm had no
+    inputs and no manifest
+    (out/node19-shakedown/b04/B04-EXPORT-REFUSAL.txt).  The subprocess
+    boundary flattens honest typed refusals and environmental deaths
+    into one returncode, so no middle posture can tell them apart.
 
-    So: skipped on request, attempted otherwise, and its refusal is one
-    warning line unless the caller said the export is what they came
-    for.  The converter writes its own refusal to this process's stderr,
-    so nothing is swallowed -- this makes a gap non-fatal, it does not
-    make it invisible, and it does not paper one over inside
-    ``wrf_direct``, where the named refusal stays exactly as it is.
+    Fail-closed, ruled: a REQUESTED export either PASSes with its
+    declared outputs verified on disk and hash-manifested
+    (:func:`_verified_export_outputs`), or this step raises.  The
+    prepared cache and preparation work remain on disk either way --
+    nothing re-runs the expensive part -- and the deliberate opt-out is
+    ``--skip-stock-wrf-export``, recorded in the receipt as SKIPPED
+    rather than dressed as success.
     """
 
     if skip:
@@ -446,33 +501,33 @@ def _stock_wrf_export(command: list[str], env: dict[str, str], *,
     except subprocess.CalledProcessError as error:
         returncode = error.returncode
     else:
-        return {"status": "PASS", "required": required}
-    # The converter writes its own refusal to this process's stderr, so
-    # the reason is already on the terminal, verbatim and unabridged.
-    receipt = {
-        "status": "REFUSED",
-        "required": required,
-        "returncode": returncode,
-        "command": list(command),
-    }
-    if required:
-        raise RuntimeError(
-            "stock-WRF export was required and refused (exit "
-            f"{returncode}); the prepared cache and preparation "
-            "report above are complete and stand")
-    explain.warn(
-        f"stock-WRF export refused (exit {returncode}); the "
-        "prepared cache and PASS report stand and the GPU hierarchy can "
-        "consume them.  Pass --skip-stock-wrf-export to stop attempting "
-        "it, or --require-stock-wrf-export to make this fatal.",
-        "gpuwm.wrf_direct converts a prepared cache into stock-WRF "
-        "wrfinput/wrfbdy files.  Nothing in the GPU route reads those: "
-        "the hierarchy consumes the prepared cache itself, whose "
-        "receipt is the report this run just validated.  The converter's "
-        "own refusal is quoted above and is unchanged -- it is a real "
-        "gap, reported as one, and it no longer destroys the work that "
-        "succeeded before it.")
-    return receipt
+        # PASS is earned, not assumed: the declared outputs must exist
+        # and hash-manifest, or this step refuses loudly.
+        return {"status": "PASS", "required": required,
+                **_verified_export_outputs(output)}
+    # A requested export that fails is FATAL (2026-08-04 ruling, after
+    # the battery case run): the converter died on EMFILE -- an
+    # environmental failure a retry with a higher fd limit fixes, not a
+    # representability gap -- and the old warn-and-continue posture
+    # PASS-logged a preparation that had produced no WRF-arm inputs and
+    # no manifest (out/node19-shakedown/b04/B04-EXPORT-REFUSAL.txt).
+    # The subprocess boundary flattens the converter's honest typed
+    # refusals and environmental deaths into one returncode, so the only
+    # fail-closed reading of a nonzero exit is refusal.  The explicit
+    # opt-outs remain: --skip-stock-wrf-export skips the attempt up
+    # front and says so in the receipt; a caller whose product really
+    # is only the prepared cache passes it deliberately.  The converter
+    # writes its own refusal to this process's stderr, so the reason is
+    # already on the terminal, verbatim; the prepared cache and the
+    # preparation work above are complete and remain on disk either way.
+    raise RuntimeError(
+        f"stock-WRF export was requested and failed (exit {returncode}); "
+        "refusing to PASS a preparation whose declared WRF-arm outputs "
+        "were not produced.  The prepared cache and preparation report "
+        "above are complete and stand on disk; fix the converter's "
+        "refusal (quoted on stderr) and re-run, or pass "
+        "--skip-stock-wrf-export to deliberately not produce WRF-arm "
+        "inputs")
 
 
 def _namelist_start_time(path: Path) -> datetime | None:
@@ -1135,7 +1190,8 @@ def _sealed_extension(args, *, valid_time: datetime,
     export_started = time.perf_counter()
     stock_wrf_export = _stock_wrf_export(
         export_command, env, skip=args.skip_stock_wrf_export,
-        required=args.require_stock_wrf_export)
+        required=args.require_stock_wrf_export,
+        output=output / "wrf-native-input")
     export_seconds = time.perf_counter() - export_started
     # The two-frame cache was construction scratch.  Its header/report are
     # retained above; every old payload and the new decoded hour are already
@@ -1244,10 +1300,11 @@ def _parser() -> argparse.ArgumentParser:
              "whenever stock wrf.exe is not the consumer")
     export.add_argument(
         "--require-stock-wrf-export", action="store_true",
-        help="treat a failed stock-WRF export as this command's failure.  "
-             "Without it the export is attempted, a refusal is one "
-             "warning line, and the prepared cache and PASS report -- "
-             "which are complete and independently usable -- still stand")
+        help="accepted for compatibility; a requested export that fails "
+             "is ALWAYS this command's failure since the 2026-08-04 "
+             "fail-closed ruling (a warn-and-continue posture PASS-logged "
+             "a preparation with no WRF-arm outputs).  The explicit "
+             "opt-out is --skip-stock-wrf-export")
     explain.add_explain_flag(parser)
     return parser
 
@@ -1473,7 +1530,8 @@ def main(argv: list[str] | None = None) -> int:
     stock_wrf_export = _stock_wrf_export(
         export_command, env,
         skip=args.skip_stock_wrf_export,
-        required=args.require_stock_wrf_export)
+        required=args.require_stock_wrf_export,
+        output=output / "wrf-native-input")
     export_seconds = time.perf_counter() - export_started
     result = {
         "status": "PASS",

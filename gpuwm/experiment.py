@@ -44,6 +44,7 @@ from pathlib import Path
 
 import numpy as np
 
+from gpuwm import physics_mode as physics_mode_module
 from gpuwm.config import (DEFAULT_COLUMN_CHUNK, RunConfig,
                           radiation_enabled, validate_run_config)
 from gpuwm.explain import layered, warn
@@ -88,6 +89,11 @@ _EXPERIMENT_KEYS = frozenset({
     "name", "start_time", "run_seconds", "feedback", "smooth_option",
     "blend_width", "spec_bdy_width", "restart_interval_s",
     "column_chunk", "acknowledgements",
+    # The physics-fidelity axis (gpuwm/physics_mode.py).  Experiment-scope
+    # because a tree whose domains ran different ledger entries could not be
+    # compared across its own nest boundary, and because the whole point of
+    # the axis is that one run is one arm.
+    "physics_mode", "patchset", "patches",
 })
 _EXPERIMENT_REQUIRED = ("name", "start_time", "run_seconds",
                         "restart_interval_s")
@@ -146,10 +152,17 @@ _SHARED_FORBIDDEN = {
 #: should: a config that uses it has left WRF-expressible territory and
 #: cannot be round-tripped back to a namelist.
 _DOMAIN_RUN_OVERRIDES = (
-    "cu_physics", "cudt_minutes", "radt", "radt_minutes", "bldt",
+    # clos_choice/ishallow ride with cu_physics: per-domain because the
+    # scheme they configure is, and inert (validated zero) on any domain
+    # that does not select cu_physics = 3.
+    "cu_physics", "cudt_minutes", "clos_choice", "ishallow",
+    "radt", "radt_minutes", "bldt",
     "diff_6th_factor", "epssm", "spec_exp", "mp_physics", "moist",
     "moist_cq", "nest_microphysics_transition",
     "km_opt", "bl_pbl_physics", "sf_sfclay_physics", "c_s", "c_k",
+    # WRF Registry.EM_COMMON:2889 declares moist_mix6_off max_domains, so it
+    # is per domain here for the same reason diff_6th_factor is.
+    "moist_mix6_off",
     "diff_6th_opt", "mix_isotropic", "mix_upper_bound", "isfflx",
     "tke_heat_flux", "tke_drag_coefficient", "tke_upper_bound",
     # Output-only, and per domain because its cost scales with the grid:
@@ -163,6 +176,15 @@ _DOMAIN_RUN_OVERRIDES = (
     # frame, so a tree can carry the horizontal viscosity on the domain
     # whose mixing is being read and leave it off the rest.
     "hmix_k_diag",
+    # LES-nest inflow seeding (P3): per-domain because the mechanism IS
+    # per-edge -- it perturbs one child's rolling nest-boundary tables,
+    # validate_run_config refuses it on a non-nested domain, and like
+    # per-domain isfflx these are TOML-only gpuwm-over-WRF keys with no
+    # namelist spelling (stock 4.6.1's boundary perturbation is the
+    # stoch-package perturb_bdy pattern route, not a cell-perturbation
+    # column; PROVENANCE.md D10).
+    "inflow_perturbation", "inflow_perturbation_seed",
+    "inflow_perturbation_amplitude_scale", "inflow_perturbation_faces",
 )
 
 #: Per-domain vertical keys are REJECTED outright (F1 amendment: the
@@ -434,6 +456,15 @@ class ExperimentConfig:
     domains: tuple[DomainConfig, ...]
     column_chunk: int = DEFAULT_COLUMN_CHUNK
     acknowledgements: tuple[str, ...] = ()
+    #: The resolved physics-fidelity axis (:mod:`gpuwm.physics_mode`).  The
+    #: resolved values are ALSO baked into each domain's RunConfig, so the
+    #: fingerprint would bind the physics without this field; it is carried
+    #: anyway because a receipt that says "arwen-patched, patchset v1,
+    #: patches [L4]" is readable and a pair of selector values is not.
+    #: ``physics_mode.UNGOVERNED`` is the state of every configuration that
+    #: does not name the axis, and it authors nothing.
+    physics_mode: physics_mode_module.PhysicsModeResolution = (
+        physics_mode_module.UNGOVERNED)
 
     def __post_init__(self):
         if self.feedback not in (0, 1):
@@ -676,6 +707,48 @@ def did_you_mean(key: str, known) -> str:
 
     close = difflib.get_close_matches(key, sorted(known), n=1, cutoff=0.7)
     return f" (did you mean {close[0]!r}?)" if close else ""
+
+
+def _reject_axis_authored_keys(table_name: str, entries: dict,
+                               resolution, source: str) -> None:
+    """Refuse a key the physics-fidelity axis is already the author of.
+
+    The axis is sugar over a resolved patch vector, and sugar that MERGES
+    with a hand-written key is how a run ends up integrating a value nobody
+    chose: two authors, one key, and a receipt that can name only one of
+    them.  So the second author is refused by name, in either mode -- there
+    is no "they happen to agree" exemption, because agreeing today is a
+    property of the value, not of the configuration, and the ledger's
+    faithful/patched edge can move under a new patch-set version while the
+    hand-written value stays put.
+
+    The remedy is composition, not a wider schema: a battery arm strips the
+    governed keys and lets the ``[experiment]`` overlay write them
+    (``gpuwm.physics_mode.governed_keys`` is the exact list to strip).
+    """
+
+    if not resolution.governed:
+        return
+    authored = {patch.key: patch for patch in resolution.resolved
+                if patch.key}
+    present = sorted(set(entries) & set(authored))
+    if not present:
+        return
+    named = ", ".join(
+        f"{key!r} (divergence-ledger {authored[key].entry_id}, resolved to "
+        f"{authored[key].value!r})" for key in present)
+    raise ValueError(layered(
+        f"[{table_name}] of {source} sets {named}, but physics_mode = "
+        f"{resolution.mode!r} is already the author of "
+        f"{'that key' if len(present) == 1 else 'those keys'}; a key with "
+        "two authors runs a value neither of them can be shown to have "
+        "chosen.",
+        "Remove the key(s) and let the axis write them, or remove "
+        "physics_mode and configure the keys directly. The axis governs "
+        f"{sorted(authored)} under physics_mode = {resolution.mode!r}, "
+        f"patchset = {resolution.patchset!r}; "
+        "gpuwm.physics_mode.governed_keys() is the same list for a "
+        "composer that has to strip them."))
 
 
 def _reject_unknown_keys(table_name: str, entries: dict, known,
@@ -1077,6 +1150,29 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                 f"must be a non-empty string, got {value!r}.")
         acknowledgements.append(value)
 
+    # ---- the physics-fidelity axis (gpuwm/physics_mode.py) -------------
+    # ABSENT is not the same state as present-and-"wrf-faithful".  Absent
+    # authors nothing, which is what every configuration written before the
+    # axis existed means and what keeps them byte-identical; present makes
+    # the axis the author of every ledger key, in EITHER mode, which is what
+    # lets one case file serve every battery arm through a two-line overlay.
+    if "physics_mode" in exp or "patchset" in exp or "patches" in exp:
+        if "physics_mode" not in exp:
+            named = sorted(set(exp) & {"patchset", "patches"})
+            raise ValueError(
+                f"[experiment] of {source} sets {named} without "
+                "physics_mode; a qualifier on the fidelity axis does not "
+                "select it, and implying the patched mode from one would "
+                "make the most consequential line of a config the one that "
+                "is not written. Add physics_mode = "
+                f"{physics_mode_module.PHYSICS_MODE_WRF_FAITHFUL!r} or "
+                f"{physics_mode_module.PHYSICS_MODE_ARWEN_PATCHED!r}.")
+        physics_mode = physics_mode_module.resolve(
+            exp["physics_mode"], exp.get("patchset"), exp.get("patches"),
+            source=source)
+    else:
+        physics_mode = physics_mode_module.UNGOVERNED
+
     # ---- [projection] ------------------------------------------------
     projection = None
     if "projection" in raw:
@@ -1107,6 +1203,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                     | {"e_vert", "eta_levels", "p_top"}
                     | set(_GUARD_DEFAULTS))
     _reject_unknown_keys("shared", shared, shared_known, source)
+    _reject_axis_authored_keys("shared", shared, physics_mode, source)
 
     for key, default in _GUARD_DEFAULTS.items():
         value = shared.pop(key, default)
@@ -1254,6 +1351,9 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         _reject_misplaced_run_keys(dom, dom.get("grid_id", index + 1),
                                    source)
         _reject_unknown_keys("domain", dom, _DOMAIN_KEYS, source)
+        _reject_axis_authored_keys(
+            f"domain grid_id={dom.get('grid_id', index + 1)}",
+            dom, physics_mode, source)
         _require_keys(f"domain #{index + 1}", dom, _DOMAIN_REQUIRED, source)
         grid_id = _positive_int("domain", "grid_id", dom["grid_id"], source)
         if grid_id in by_id:
@@ -1555,6 +1655,12 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         for key in _DOMAIN_RUN_OVERRIDES:
             if key in dom:
                 kw[key] = dom[key]
+        # The axis writes its resolved vector LAST and onto every domain:
+        # it is the author of these keys (the [shared]/[[domain]] refusal
+        # above guarantees nobody else wrote them), and one experiment is
+        # one arm -- a tree whose domains ran different ledger entries
+        # could not be compared across its own nest boundary.
+        kw.update(physics_mode.settings)
         # bl_pbl_physics is per-domain for the WRF schemes and PBL-off
         # (the measured PBL-parent/PBL-off-LES-child trees), but SASE is
         # run-wide, never per-nest: the closure is measured single-domain
@@ -1704,7 +1810,8 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         blend_width=blend_width, spec_bdy_width=spec_bdy_width,
         restart_interval_s=restart_interval_s, domains=tuple(domains),
         column_chunk=column_chunk,
-        acknowledgements=tuple(acknowledgements))
+        acknowledgements=tuple(acknowledgements),
+        physics_mode=physics_mode)
     from gpuwm.physics_compat import (
         validate_resolved_physics_vertical_levels,
     )

@@ -505,6 +505,36 @@ def test_preflight_reads_a_namelist_driven_source_hierarchy(tmp_path, monkeypatc
     assert set(inputs.authority_sha256) >= {"preparation_receipt", "experiment_config"}
 
 
+def test_single_domain_config_hits_the_designed_two_domain_floor(
+        tmp_path, monkeypatch):
+    """The two-domain floor is a division of labor, pinned as designed.
+
+    This runner's docstring is explicit -- it "does not flatten a nest
+    tree into the single-domain benchmark runner" -- and a rented-node
+    smoke (2026-08-04) proved the floor fires for real after a
+    successful fetch, preparation and tree build.  The floor stays
+    exactly as it is; the route preflight names it up front
+    (tools/battery_route_preflight.py run.runner_selection), and a
+    single-domain forecast runs through its source's single-domain
+    runner instead.
+    """
+
+    prepared, receipt, config = _synthetic_prepared_tree(tmp_path, monkeypatch)
+    two_domain_text = config.read_text(encoding="utf-8")
+    single = tmp_path / "single.toml"
+    head, _, _child = two_domain_text.rpartition("[[domain]]")
+    single.write_text(head.rstrip() + "\n", encoding="utf-8")
+    assert len(load_experiment(single).domains) == 1
+
+    with pytest.raises(ValueError, match="requires at least two domains"):
+        runner.preflight_prepared_tree(
+            prepared_root=prepared,
+            preparation_receipt_sha256=_sha(receipt),
+            experiment_config=single,
+            experiment_config_sha256=_sha(single),
+        )
+
+
 def test_preflight_refuses_an_unrecognized_hierarchy_document(tmp_path, monkeypatch):
     prepared, receipt, config = _synthetic_prepared_tree(tmp_path, monkeypatch)
     preparation = json.loads(receipt.read_text(encoding="utf-8"))

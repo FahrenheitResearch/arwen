@@ -1434,3 +1434,174 @@ def test_git_commit_survives_a_host_with_no_git_binary(monkeypatch):
     recorded = supervisor.git_commit()
     assert recorded.startswith("unavailable: ")
     assert "FileNotFoundError" in recorded
+
+
+def test_worker_failure_capsule_embeds_the_exact_config_and_small_text_inputs(
+        monkeypatch, tmp_path):
+    """A capsule from a real failing run carries the run's own text bytes.
+
+    Support burned a round trip asking a reporter for a sub-100-line TOML
+    the capsule already identified by hash.  The v2 capsule embeds the
+    captured config payload verbatim, plus the declared small-text inputs
+    (Vtable, WPS namelist) keyed exactly as ``input_hashes`` keys them;
+    forcing and geography stay hash-only.
+    """
+    from gpuwm import runtime
+
+    source = tmp_path / "source"
+    forcing_dir = source / "forcing"
+    geog = source / "geog"
+    outdir = tmp_path / "out"
+    for directory in (forcing_dir, geog, outdir):
+        directory.mkdir(parents=True)
+    (forcing_dir / "a.grib").write_bytes(b"forcing-a")
+    vtable = source / "Vtable"
+    wps = source / "namelist.wps"
+    vtable_bytes = b"GRIB1| Level| From |  To  |\r\n  TT  | 100  |\n"
+    wps_bytes = b"&share\n wrf_core = 'ARW',\n/\n"
+    vtable.write_bytes(vtable_bytes)
+    wps.write_bytes(wps_bytes)
+    payload = (
+        "[experiment]\n"
+        "name = 'fixture'\n"
+        "[case_data]\n"
+        "forcing = 'forcing/*.grib'\n"
+        "vtable = 'Vtable'\n"
+        "wps_namelist = 'namelist.wps'\n"
+        "geog_root = 'geog'\n"
+        "sfcp_to_sfcp = true\n"
+        "output_title = 'fixture'\n"
+    ).encode("utf-8")
+    config = source / "experiment.toml"
+    captured = outdir / "captured.toml"
+    config.write_bytes(payload)
+    captured.write_bytes(payload)
+    monkeypatch.setattr(
+        case_data, "build_experiment", lambda *_args, **_kwargs: object())
+    parent_hashes = supervisor.resolved_input_hashes(
+        config, config_bytes=payload)
+
+    def injected_failure(*_args, **_kwargs):
+        raise RuntimeError("injected CPU-path failure")
+
+    monkeypatch.setattr(runtime, "run_experiment", injected_failure)
+    monkeypatch.setattr(supervisor, "git_commit", lambda: "test-commit")
+    monkeypatch.setenv("GPUWM_RUN_ID", "embed-run")
+    monkeypatch.setenv(
+        "GPUWM_CONFIG_DIGEST", hashlib.sha256(payload).hexdigest())
+    monkeypatch.setenv("GPUWM_STARTED_AT_UTC", "2026-08-05T00:00:00Z")
+    monkeypatch.setenv("GPUWM_GPU_UUID", "GPU-test")
+    monkeypatch.setenv("GPUWM_GPU_DRIVER", "610.74")
+    monkeypatch.setenv("GPUWM_GPU_NAME", "RTX 5090")
+    monkeypatch.setenv("GPUWM_INPUT_HASHES_JSON", json.dumps(parent_hashes))
+    monkeypatch.delenv(supervisor.INPUT_AUTHORITIES_ENV, raising=False)
+
+    with pytest.raises(RuntimeError, match="injected CPU-path failure"):
+        supervisor._worker_main(supervisor.argparse.Namespace(
+            config=config, config_payload=captured, outdir=outdir,
+            restart=None, health_debug=False))
+
+    capsule = json.loads((
+        outdir / supervisor.FAILURE_CAPSULE_NAME).read_text(encoding="utf-8"))
+    assert capsule["schema"] == "gpuwm.failure-capsule/v2"
+    config_text = capsule["config_text"]
+    assert config_text["text"].encode("utf-8") == payload
+    assert config_text["truncated"] is False
+    assert config_text["size_bytes"] == len(payload)
+    expected_keys = {
+        f"vtable:{vtable.resolve()}", f"wps_namelist:{wps.resolve()}"}
+    assert set(capsule["input_text"]) == expected_keys
+    assert set(capsule["input_text"]) <= set(capsule["input_hashes"])
+    embedded_vtable = capsule["input_text"][f"vtable:{vtable.resolve()}"]
+    assert embedded_vtable["text"].encode("utf-8") == vtable_bytes
+    assert embedded_vtable["truncated"] is False
+    embedded_wps = capsule["input_text"][f"wps_namelist:{wps.resolve()}"]
+    assert embedded_wps["text"].encode("utf-8") == wps_bytes
+    assert not any(key.startswith(("forcing:", "geog_root:"))
+                   for key in capsule["input_text"])
+
+
+def test_failure_capsule_truncates_oversize_small_text_at_the_cap(
+        monkeypatch, tmp_path):
+    """The 64 KB cap bites with an explicit marker and the full true size."""
+    monkeypatch.setattr(supervisor, "git_commit", lambda: "test-commit")
+    cap = supervisor.FAILURE_CAPSULE_TEXT_CAP_BYTES
+    vtable = tmp_path / "Vtable"
+    vtable_bytes = b"V" * (cap + 4096)
+    vtable.write_bytes(vtable_bytes)
+    config = tmp_path / "case.toml"
+    config_bytes = b"C" * (cap + 1)
+    config.write_bytes(config_bytes)
+    input_hashes = {
+        f"vtable:{vtable.resolve()}": {
+            "algorithm": "sha256",
+            "digest": hashlib.sha256(vtable_bytes).hexdigest(),
+            "detail": None,
+            "identities": [{"role": "vtable",
+                            "path": str(vtable.resolve()),
+                            "detail": None}],
+        },
+    }
+
+    path = supervisor.write_failure_capsule(
+        tmp_path / "failure-capsule.json", run_id="cap-run",
+        config_path=config, config_sha256="a" * 64,
+        input_hashes=input_hashes,
+        gpu=GPUIdentity("GPU-test", "610.74", "RTX 5090"),
+        last_phase="stepping:outer-1", last_step=0,
+        exception_type="RuntimeError", exception_message="boom",
+        exception_traceback="trace", last_durable_wrfout=None,
+        last_checkpoint=None, worker_pid=1234,
+        config_bytes=config_bytes)
+
+    capsule = json.loads(path.read_text(encoding="utf-8"))
+    config_text = capsule["config_text"]
+    assert config_text["truncated"] is True
+    assert config_text["size_bytes"] == cap + 1
+    assert config_text["text"].encode("utf-8") == config_bytes[:cap]
+    embedded = capsule["input_text"][f"vtable:{vtable.resolve()}"]
+    assert embedded["truncated"] is True
+    assert embedded["size_bytes"] == cap + 4096
+    assert embedded["text"].encode("utf-8") == vtable_bytes[:cap]
+
+
+def test_failure_capsule_records_absent_text_instead_of_raising(
+        monkeypatch, tmp_path):
+    """The capsule writer must never be the thing that crashes a crash
+    report: a deleted input, an unwritten config, or a mangled inventory
+    entry each degrade to a recorded absence."""
+    monkeypatch.setattr(supervisor, "git_commit", lambda: "test-commit")
+    missing_vtable = tmp_path / "deleted" / "Vtable"
+    input_hashes = {
+        f"vtable:{missing_vtable}": {
+            "algorithm": "sha256", "digest": "b" * 64, "detail": None,
+            "identities": [{"role": "vtable",
+                            "path": str(missing_vtable), "detail": None}],
+        },
+        "forcing:ignored": {
+            "algorithm": "sha256", "digest": "c" * 64, "detail": None,
+            "identities": [{"role": "forcing", "path": "x",
+                            "detail": None}],
+        },
+        "mangled:entry": "not-an-object",
+        "no-identities:entry": {"algorithm": "sha256", "digest": "d" * 64},
+    }
+
+    path = supervisor.write_failure_capsule(
+        tmp_path / "failure-capsule.json", run_id="absent-run",
+        config_path=tmp_path / "never-written.toml", config_sha256="a" * 64,
+        input_hashes=input_hashes,
+        gpu=GPUIdentity("GPU-test", "610.74", "RTX 5090"),
+        last_phase="preparing:load-config", last_step=0,
+        exception_type="RuntimeError", exception_message="boom",
+        exception_traceback="trace", last_durable_wrfout=None,
+        last_checkpoint=None, worker_pid=1234)
+
+    capsule = json.loads(path.read_text(encoding="utf-8"))
+    config_text = capsule["config_text"]
+    assert config_text["text"] is None
+    assert "FileNotFoundError" in config_text["error"]
+    assert set(capsule["input_text"]) == {f"vtable:{missing_vtable}"}
+    embedded = capsule["input_text"][f"vtable:{missing_vtable}"]
+    assert embedded["text"] is None
+    assert "FileNotFoundError" in embedded["error"]

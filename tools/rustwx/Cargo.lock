@@ -1708,6 +1708,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rw-obs"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "flate2",
+ "grib-core",
+ "rustwx-core",
+ "rustwx-io",
+ "rw-nexrad",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ureq",
+]
+
+[[package]]
 name = "rw-store"
 version = "0.1.0"
 dependencies = [

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import math
 import weakref
+from collections import abc as _abc
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Mapping
@@ -796,15 +797,32 @@ def couple_sase_w_tendency(state: DomainState, cfg: RunConfig,
 #: INPUT, not a closure failure, and the refusal has to say which.
 _SASE_POSITIVE_PRODUCER_INPUTS = frozenset({"ust", "dz1", "p1", "t1"})
 
+#: The same question asked of YSU's producers, answered from YSU's own
+#: divisions rather than by analogy.  ``ust`` cubes into the Prandtl
+#: shape factor's denominator (kernels/ysu.cu:380) and collapses the
+#: velocity scale that divides the countergradient factor (ysu.cu:181,
+#: 185); ``psih`` is the bare divisor of the stability parameter
+#: (ysu.cu:166); ``znt`` divides the over-water critical Richardson
+#: number (ysu.cu:247); ``dz1`` sets the first mass level, which the
+#: entrainment depth divides by (ysu.cu:370); and ``p1``/``dp1`` are the
+#: surface density and the first layer's mass, the latter being the
+#: divisor of the surface heat source that begins the heat solve
+#: (ysu.cu:480).  Each is a degenerate INPUT at zero, not a scheme fault.
+_YSU_POSITIVE_PRODUCER_INPUTS = frozenset(
+    {"ust", "znt", "psih", "dz1", "p1", "dp1"})
 
-def _sase_producer_forensics(
-        producer_inputs: Mapping[str, cp.ndarray]) -> list[str]:
+
+def _producer_forensics(
+        producer_inputs: Mapping[str, cp.ndarray],
+        positive: frozenset[str]) -> list[str]:
     """Name every producer input that was ALREADY degenerate, with counts.
 
     Called only after a rate has already failed, so its cost never
     touches the healthy path.  ``value <= 0`` is False at NaN by IEEE
     rule, so a NaN cell is reported once as non-finite rather than
-    twice.
+    twice.  ``positive`` is the caller's own set of inputs that must be
+    strictly positive, because which divisions exist is a fact about the
+    consuming scheme and not something this helper can assume.
     """
     notes: list[str] = []
     for name, value in producer_inputs.items():
@@ -814,7 +832,7 @@ def _sase_producer_forensics(
         nonfinite = int(cp.count_nonzero(~cp.isfinite(value)).item())
         if nonfinite:
             parts.append(f"{nonfinite} non-finite")
-        if name in _SASE_POSITIVE_PRODUCER_INPUTS:
+        if name in positive:
             nonpositive = int(cp.count_nonzero(value <= 0).item())
             if nonpositive:
                 parts.append(f"{nonpositive} <= 0")
@@ -851,7 +869,8 @@ def validate_sase_tendencies(
         where = "" if grid_id is None else f" on domain {grid_id}"
         detail = ""
         if producer_inputs is not None:
-            notes = _sase_producer_forensics(producer_inputs)
+            notes = _producer_forensics(
+                producer_inputs, _SASE_POSITIVE_PRODUCER_INPUTS)
             detail = (
                 "; producer inputs already degenerate: " + ", ".join(notes)
                 if notes else
@@ -861,19 +880,118 @@ def validate_sase_tendencies(
             f"SASE returned non-finite {name} tendency{where}{detail}")
 
 
+class _YsuProducerInputs(_abc.Mapping):
+    """YSU's producer-input view, materialized only when it is read.
+
+    Every member is a view onto a field another component already owns,
+    except ``dp1`` -- the first layer's pressure thickness -- which is a
+    subtraction.  The guard reads this mapping only after a rate has
+    already failed, so binding it costs one object per PBL step and the
+    subtraction never runs on a healthy one.
+    """
+
+    __slots__ = ("_f", "_atmosphere")
+
+    #: Surface-layer/LSM coupling fields, then the first-layer geometry.
+    _NAMES = ("ust", "hfx", "qfx", "wspd", "br", "znt", "psim", "psih",
+              "dz1", "p1", "dp1")
+
+    def __init__(self, fields, atmosphere) -> None:
+        self._f = fields
+        self._atmosphere = atmosphere
+
+    def __getitem__(self, key: str) -> cp.ndarray:
+        f, atmosphere = self._f, self._atmosphere
+        if key in ("ust", "hfx", "qfx", "wspd", "br", "znt"):
+            return f[key]
+        # WRF's PBL driver binds YSU's PSIM/PSIH to the full similarity
+        # denominators, which the driver holds as fm/fh.
+        if key == "psim":
+            return f["fm"]
+        if key == "psih":
+            return f["fh"]
+        if key == "dz1":
+            return atmosphere["dz"][0]
+        if key == "p1":
+            return atmosphere["p_interface"][0]
+        if key == "dp1":
+            return atmosphere["p_interface"][0] - atmosphere["p_interface"][1]
+        raise KeyError(key)
+
+    def __iter__(self):
+        return iter(self._NAMES)
+
+    def __len__(self) -> int:
+        return len(self._NAMES)
+
+
 def validate_ysu_tendencies(
         ysu: Mapping[str, cp.ndarray], *,
-        status: cp.ndarray | None = None) -> None:
-    """Reject non-finite YSU output without modifying finite tendencies."""
+        status: cp.ndarray | None = None,
+        grid_id: int | None = None,
+        producer_inputs: Mapping[str, cp.ndarray] | None = None) -> None:
+    """Reject non-finite YSU output without modifying finite tendencies.
+
+    FORENSIC FORM, the same one ``validate_sase_tendencies`` already
+    carries, and for a reason this scheme learned from a field report
+    rather than from theory.  A user on 1.5.2 lost an ERA5 run on its
+    FIRST step to ``non-finite dtheta``, and that name is a false lead:
+    the kernel writes ``dtheta`` from one solve whose only surface term
+    is HFX (kernels/ysu.cu:480), so a non-finite HFX handed IN is
+    reported as a dtheta produced OUT.  1.5 million fuzzed columns of
+    finite, extreme, degenerate input never produce a non-finite rate at
+    all, so when one appears an input is overwhelmingly the cause.  The
+    output name alone therefore sent the reader to the PBL scheme when
+    the defect was in the surface layer that fed it.  Naming the
+    degenerate INPUTS is what closes that gap, and it costs nothing
+    until a rate has already failed.
+
+    WHICH output carries the poison depends on surface stability.  The
+    input-poisoning sweep that found ``hfx`` was run before the sm_120
+    DAZ work, so it was re-run against the shipping kernel on both
+    branches, poisoning each of the 22 fixture-supplied inputs in turn:
+
+    - STABLE (``br > 0``): the sweep's result holds exactly.  ``wstar3``
+      is a literal zero (kernels/ysu.cu:177), so the surface buoyancy
+      flux reaches nothing but ``rhs[0]`` (:480), and ``hfx`` is the
+      UNIQUE input whose corruption surfaces as ``dtheta`` and nothing
+      else.  That is the shape the field report described.
+    - UNSTABLE (``br <= 0``): NO input has that signature.  The buoyancy
+      flux sets the convective velocity scale (:173), which sets the
+      mixed-layer diffusivity for momentum and moisture as well as heat,
+      so a non-finite ``hfx`` poisons the whole column and the refusal
+      names ``du``, first in launcher order.
+
+    The producer detail below names ``hfx`` either way, which is the
+    half the reader actually needs; only the output label moves.  Both
+    branches are pinned in tests/test_ysu.py.
+
+    ``status`` keeps the native single-readback path; the forensic work
+    runs only on the failing branch of either path.
+    """
+
+    def _refuse(name: str) -> None:
+        where = "" if grid_id is None else f" on domain {grid_id}"
+        detail = ""
+        if producer_inputs is not None:
+            notes = _producer_forensics(
+                producer_inputs, _YSU_POSITIVE_PRODUCER_INPUTS)
+            detail = (
+                "; producer inputs already degenerate: " + ", ".join(notes)
+                if notes else
+                "; every producer input was finite and in range, so the "
+                "scheme's own arithmetic produced it")
+        raise FloatingPointError(
+            f"YSU returned non-finite {name} tendency{where}{detail}")
+
     if status is not None:
         invalid = validate_ysu_outputs(ysu, status)
         if invalid is not None:
-            raise FloatingPointError(
-                f"YSU returned non-finite {invalid} tendency")
+            _refuse(invalid)
         return
     for name, value in ysu.items():
         if not bool(cp.isfinite(value).all()):
-            raise FloatingPointError(f"YSU returned non-finite {name} tendency")
+            _refuse(name)
 
 
 @dataclass
@@ -1793,6 +1911,11 @@ class PhysicsDriver:
         is the same contract as skipping them.  Results without
         ``nca_seconds`` keep the Task-1 attachment contract.
         """
+        bind = getattr(self.cumulus_callable, "bind_driver", None)
+        if bind is not None:
+            # Optional adapter hook (the update_trigger_history idiom): GF
+            # reads the held radiative rates through it.  Idempotent.
+            bind(self)
         result = self.cumulus_callable(
             atmosphere=atmosphere, fields=self.fields, state=state, cfg=cfg)
         if not isinstance(result, CumulusResult):
@@ -2469,9 +2592,17 @@ class PhysicsDriver:
                 self.rthratenlw + self.rthratensw),
             ysu_topdown_pblmix=cfg.ysu_topdown_pblmix)
         try:
+            # The forensic set is exactly what the scheme CONSUMES and
+            # another component PRODUCED: the surface-layer/LSM coupling
+            # fields, and the first-layer geometry the heat solve's
+            # surface source divides by.  ``dp1`` is materialized only on
+            # the failing branch, inside the guard, so the healthy path
+            # allocates nothing.
             validate_ysu_tendencies(
                 out, status=self.state.scratch(
-                    (1,), "physics_validation_status").view(cp.uint32))
+                    (1,), "physics_validation_status").view(cp.uint32),
+                grid_id=cfg.grid_id,
+                producer_inputs=_YsuProducerInputs(f, atmosphere))
         except FloatingPointError:
             self.ysu_nan_guard_fires += 1
             raise
@@ -3507,8 +3638,10 @@ def initialize_physics(
     if ra_sw_physics not in (0, 1, 4, 90):
         raise ValueError("ra_sw_physics must be 0, 1, 4, or 90")
     radiation_active = bool(ra_lw_physics or ra_sw_physics)
-    if cfg.cu_physics not in (0, 1):
-        raise ValueError("cu_physics must be 0 or 1")
+    if cfg.cu_physics not in (0, 1, 3):
+        raise ValueError(
+            "cu_physics must be 0 (off), 1 (Kain-Fritsch) or "
+            "3 (Grell-Freitas)")
     if radiation_active and radiation is None:
         missing = [name for name, value in (
             ("radiation_start_time", radiation_start_time),
@@ -3567,6 +3700,13 @@ def initialize_physics(
         # mirroring the scheme-ID binding used for radiation above.
         from gpuwm.core.kf import KainFritsch
         cumulus = KainFritsch()
+    elif cfg.cu_physics == 3 and cumulus is None:
+        # cu_physics=3 resolves to the Grell-Freitas adapter around the
+        # oracle-held gf.cu kernels.  The kernel runs the SHIPPED identity
+        # (corrected k22 indexing); the WRF-faithful flag is reachable only
+        # through the parity suites, never from a RunConfig.
+        from gpuwm.core.gf import GrellFreitas
+        cumulus = GrellFreitas()
     elif cfg.cu_physics and cumulus is None:
         raise ValueError("cu_physics requires a cumulus callable")
     if not cfg.cu_physics and cumulus is not None:

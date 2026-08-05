@@ -2051,7 +2051,10 @@ def test_a_route_incompatible_profile_is_refused_at_emission(
     message = captured.err + captured.out
     assert "cannot drive the nested HRRR route" in message
     assert "cu_physics=1" in message
-    assert "ra_sw_physics=4" in message
+    # The profile's resolved 4/4 RRTMG pair is ADMITTED since the B4
+    # route-qualification motion (admitted pairs {(0, 1), (4, 4)}), so
+    # cumulus is the profile's one remaining route incompatibility.
+    assert "ra_sw_physics" not in message
     assert "--physics-profile" in message
     # Watched firing: the wizard's own HRRR default is compatible, so
     # the refusal above is about the profile, not about HRRR.
@@ -2062,6 +2065,68 @@ def test_a_route_incompatible_profile_is_refused_at_emission(
         "2026-07-29T18", "--hours", "3", "--out", str(good)]) == 0
     capsys.readouterr()
     assert route_input_paths(good)["namelist_input"].exists()
+
+
+def test_hypsometric_opt_is_emitted_where_wrf_declares_it(tmp_path):
+    """The key that made wrf.exe FATAL before its first timestep.
+
+    WRF v4.6.1 declares ``hypsometric_opt`` as a &domains SCALAR
+    (Registry.EM_COMMON:2283, ``namelist,domains``, nentries 1; the
+    compiled binary carries ``NAMELIST /domains/ hypsometric_opt``).
+    The emitter wrote it into &dynamics, so the Fortran namelist read of
+    that group failed and every rank died before a timestep -- measured
+    on a campaign node.  Both emitted flavors are checked, section
+    scoped: a whole-file substring would pass on a file that still put
+    the key in the wrong group.
+    """
+    from gpuwm.namelist_import import parse_namelist
+
+    out = tmp_path / "hypsometric.toml"
+    assert cli_main([
+        "domain", "--point=46.4,-118.3", "--card", "24gb",
+        "--ladder", "12-3", "--source", "hrrr", "--cycle",
+        "2026-07-29T18", "--hours", "3", "--out", str(out)]) == 0
+    paths = route_input_paths(out)
+    exp = load_experiment(out)
+    assert len(exp.domains) == 2
+
+    for flavor in ("namelist_input", "stock_namelist_input"):
+        sections = parse_namelist(paths[flavor])
+        assert "hypsometric_opt" not in sections["dynamics"], flavor
+        # A scalar, not a per-domain column: a namelist object declared
+        # with nentries 1 takes exactly one value, so mirroring the
+        # config's per-domain field here would fail the &domains read
+        # for the other reason.
+        assert sections["domains"]["hypsometric_opt"] == [
+            exp.root.run.hypsometric_opt], flavor
+
+
+def test_no_experiment_can_carry_a_per_domain_hypsometric_opt(tmp_path):
+    """What makes the scalar emission above lossless rather than lossy.
+
+    WRF has ONE hypsometric_opt for the whole run, gpuwm's RunConfig
+    carries one per domain, and the emitter writes the root's.  That is
+    safe only because the experiment schema refuses the key as a
+    [[domain]] override -- it reaches every domain from [shared].  Pinned
+    here, so a future widening of the per-domain key set has to answer
+    the namelist question rather than silently leave the WRF arm running
+    d01's choice on every nest.
+    """
+
+    out = tmp_path / "split.toml"
+    assert cli_main([
+        "domain", "--point=46.4,-118.3", "--card", "24gb",
+        "--ladder", "12-3", "--source", "hrrr", "--cycle",
+        "2026-07-29T18", "--hours", "3", "--out", str(out)]) == 0
+    text = out.read_text(encoding="utf-8")
+    assert "hypsometric_opt = 2" in text  # [shared], for the whole tree
+
+    split = tmp_path / "split_nest.toml"
+    split.write_text(
+        text + "\n[[domain]]\ngrid_id = 2\nhypsometric_opt = 1\n",
+        encoding="utf-8")
+    with pytest.raises(ValueError, match="NOT per domain"):
+        load_experiment(split)
 
 
 def test_the_emitted_namelists_are_refused_if_they_drift_from_the_config(

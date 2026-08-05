@@ -28,6 +28,10 @@ Contents (each landed by its own v1.2 lane):
   species holding mass with a zero number concentration.
 - :mod:`gpuwm.da.enprod` -- ensemble products (mean, spread, probability,
   paintball, PMM) over a ``gpuwm-ensemble-manifest.v1`` roster.
+- :mod:`gpuwm.da.radar_assimilation` -- the real-radar ``assimilate()`` for
+  the cycle driver: member checkpoints -> H(x) -> LETKF -> increments in the
+  checkpoint's own (staggered) field vocabulary, plus observation-space
+  innovation statistics.
 
 The deliberate absence of any submodule import here is a design statement, and
 it is load-bearing twice over.  A ``from gpuwm.da import *`` that pulled in

@@ -122,7 +122,7 @@ unexceptioned table reports and the reason the allowance is named.
 | `aero-cold-overlap` | `qc` 1.000e+00, `nc` 1.000e+00, `effc` 8.102e-01 — **one mechanism, three views, and it is a one-ULP disagreement wearing a full-scale number.** At 0-based level 4 WRF ends the step with 1.4551915228366852e-11 kg/kg of cloud water (exactly 2⁻³⁶, exactly 1.000 float32 ULP of the 2.3252160e-04 kg/kg the level entered with) and `nc` = 1.8333361 per kg, while ArWen ends at exactly zero; `effc` then reports 8.102e-01 because with no cloud water ArWen takes the 2.49 µm floor while WRF's remainder gives 1.31176e-05 m. Recorded as a MISS rather than allowanced. Separately and genuinely: `nr` 1.261e-04, `qr` 4.443e-05 at level 6, where the rain number falls 255.407 → 0.0739 per kg (99.97% consumed) and the difference is 0.611 ULP of the entry value (`qr`: 1.789 ULP) |
 | `aero-cloud-freeze-nc` | `qc` 4.926e-06 — the fixture's only surviving row, at level 4, where 98.2% of the entry cloud water is frozen away and the survivor differs by exactly 1.000 ULP of the 8.247212e-05 kg/kg entry value. It is the SECOND float32 rounding of `qc` inside one step: WRF rounds once at `module_mp_thompson.F:3975` from a `qcten` carrying the source network and the condensation together, while ArWen applies the source network to `qc` and then applies the condensation to the already-rounded value |
 | `wp08-nusweep` | `qr` 4.642e-06 — 2.3x the gate, at level 12, created from exactly zero and reaching 2.242e-11 kg/kg; the absolute difference is 1.04e-16 kg/kg. **This cell is ill-conditioned, measured, and no FP32 implementation can hold it to the gate.** Perturbing the level's entry cloud water by ONE float32 ULP moves the exit `qr` by 128 ULP (up) or 32 ULP (down); perturbing the entry droplet number by one ULP moves it by 256 ULP either way. The measured disagreement is 60 ULP — *smaller* than a single-ULP input change produces — so it is consistent with a sub-ULP difference in an intermediate that FP32 cannot represent. The 2.0e-6 gate at that level is ~26 ULP, i.e. below the cell's own condition number. Level 12 is also the only level of this column where the droplet number **rises** across the step (1.417475e+08 → 1.428941e+08 per kg), the signature of the number-weighted cloud sedimentation feeding it from the level above while autoconversion drains it |
-| `wp08-freeze` | `nr` 2.724e-06 — 1.4x the gate, at level 0, created from exactly zero. **Attributed, un-attributed, and now measured: 29 of its 34 ULP are the frozen mp=8 kernel's rain-presence gate comparing a mixing ratio where WRF compares a mass concentration.** `thompson.cu:438` tests `qr > 1.0e-12f`; `module_mp_thompson.F:3616` tests `rr(k) .gt. R1`. At 0-based level 1 of this column ArWen sees qr = 8.526513e-13 (closed, so it inherits the level-above fall speeds) and WRF sees rr = 1.174815e-12 (open, so it computes a real one 5.3x slower in number). Forcing ArWen's gate open on the frozen kernel moves level 0's `nr` from 34 ULP away from WRF to 5, while a mass change of the same size that does *not* flip the gate leaves the output bit-identical — the control that makes it a measurement (`tests/test_thompson_aerosol_adapter.py::test_the_wp08_freeze_residual_is_the_presence_gates_units_measured`). This page published the attribution as falsified for part of 2026-08-01; that falsification read `qr1d + qrten*DT` at the end of the step and took it for the value WRF's `:3236` tested, but the rain-evaporation block at `:3501` subtracts from `qrten` in between — instrumented WRF records `L_qr = .true.` there, so `:3236` took its true branch and `rr` was never floored to R1. `cb765336` did not move the residual because it reconciled the sedimentation *density*, not the gate's *units*. NOT FIXED: `thompson.cu` is byte-frozen and mp=8 shares it, so the correction is an mp=8 change owing its 92 classic fixtures a re-measurement. The residual <=5 ULP left over is not separately attributed |
+| `wp08-freeze` | `nr` 2.724e-06 — 1.4x the gate, at level 0, created from exactly zero. **Attributed, un-attributed, measured, and then narrowed by the fix it prompted: 29 of its 34 ULP are the rain-presence gate, and what is left of that gate's disagreement is that the fallout kernel cannot see WRF's post-evaporation rewrite of `rr(k)`.** The shipped gate at `thompson.cu:450-452` is WRF's conjunction -- the TAU+1 test on the mixing ratio (`module_mp_thompson.F:3236`) with the R1 floor (`:3252`), then `rr(k) .gt. R1` (`:3616`) -- so it compares a mass concentration, as of `cb765336`. At 0-based level 1 of this column ArWen sees qr = 8.526513e-13 (closed, so it inherits the level-above fall speeds) and WRF sees rr = 1.174815e-12 (open, so it computes a real one 5.3x slower in number). Forcing ArWen's gate open on the shipped kernel moves level 0's `nr` from 34 ULP away from WRF to 5, while a mass change of the same size that does *not* flip the gate leaves the output bit-identical — the control that makes it a measurement (`tests/test_thompson_aerosol_adapter.py::test_the_wp08_freeze_residual_is_the_presence_gates_units_measured`). This page published the attribution as falsified for part of 2026-08-01; that falsification read `qr1d + qrten*DT` at the end of the step and took it for the value WRF's `:3236` tested, but the rain-evaporation block at `:3501` subtracts from `qrten` in between — instrumented WRF records `L_qr = .true.` there, so `:3236` took its true branch and `rr` was never floored to R1. `cb765336` DID reconcile the gate's units -- that is what it is -- and it did not move this residual because this level is in the one class that commit enumerated and left standing: `qr <= R1 < qr*rho` with `L_qr` true, 3 627 level-visits of the 2 h 12 km forecast it measured over. WRF's `L_qr` opens the evaporation block at `:3501`, whose rewrite at `:3568` leaves `rr(k)` = 1.174815e-12 above R1; ArWen's fallout kernel sees only qr = 8.526513e-13, fails the TAU+1 test, and floors rr to R1. NOT FIXED, and the reason is now a named change rather than a frozen file: closing it means carrying `L_qr` itself from the evaporation kernel to the fallout kernel, which nothing in the tree does. (An earlier revision of this row said the gate still compared a mixing ratio and that the kernel file was byte-frozen; both were true when the attribution was written and neither survived `cb765336`, so they are replaced rather than edited.) The residual <=5 ULP left over is not separately attributed |
 | `aero-reduces-to-classic` | **clears the gate under the one allowance above** and is listed here only because the flat gate is the yardstick this table uses: level 5 is inside the flat gate now (`nr` 4.146e-07), and what remains is `qr`/`nr` 1.238e-04 at level 6 if that level is measured relatively rather than in ULPs |
 
 **No surface accumulation misses any more, on any fixture.** All seven are
@@ -636,7 +636,37 @@ simulated minute, radt 12/3/1, same card and window). Full dossier:
 | option | WRF id | maturity | notes |
 |---|---|---|---|
 | Kain-Fritsch | 1 | supported | outer (>=10 km) domains; packaged lookup table; cudt 5 min in the certified templates |
+| Grell-Freitas (scale-aware) | 3 | implemented-unverified | whole GFDRV at the WRF v4.6.1 boundary, CPU and CUDA; per-domain override, no template selects it; runs on the model step (cudt pinned 0) |
 | off | 0 | supported | the convection-permitting nests run with cumulus off |
+
+What is certified for Grell-Freitas, and what is not. The certified
+half: the entire driver -- column preparation with its mixed-precision
+GFS constants, the deep cloud model, the shallow one, both `neg_check`
+calls and the output algebra -- reproduces the byte-frozen WRF v4.6.1
+`module_cu_gf_*.F` word for word at the GFDRV boundary over the
+committed 216-column oracle (18 soundings x 6 grid spacings x 2
+`ishallow` arms) on the 208 columns where GFDRV's own decomposition is
+exact, with the 8 remainder bounded to the driver's own
+`module_gfs_physcons` mixed precision (max 34 ULP, 3.8e-6 relative, no
+branch flips). The CUDA path holds that boundary with the gamma
+COMPUTED on the device: its transcribed glibc-2.39 float32
+`tgammaf`/`lgammaf`/`expm1f`/`exp2f`/`powf` are bitwise against 130k
+live-glibc words, which matters because one ULP of the beta-shape
+normalisation moves the deep mass flux by up to 7.3 percent. The
+registry entry records three deviations: the shallow `k22` trigger
+ships with the section-offset indexing corrected (WRF's MAXLOC
+off-by-one lives behind a parity-suite flag; measured on the fixture,
+the correction moves 3 rejected cases and zero output words), the
+inversion-layer search clamps WRF's out-of-bounds `t_cup(kend+8)` read
+(clamp count zero on the fixture, asserted), and the engine seam feeds
+the advective/boundary-layer halves of the forcing as zeros with
+convective momentum tendencies not yet coupled -- the plumb-list any
+label upgrade must clear. The uncertified half is the same sentence
+YSU, MYNN and Shin-Hong carry: no matched ArWen-versus-WRF forecast
+trajectory has been run with `cu_physics = 3`, and no real-case
+verification receipt exists -- which is why the label is
+`implemented-unverified` and the scheme is a per-domain override a
+user must ask for by name, never a default.
 
 ## Map projections (`map_proj`)
 

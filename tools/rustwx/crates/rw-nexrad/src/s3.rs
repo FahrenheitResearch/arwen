@@ -60,6 +60,20 @@ pub const ARCHIVE_OF_RECORD_BUCKET: &str = "noaa-nexrad-level2";
 /// against the archive of record with credentials.
 pub const DEFAULT_BUCKET: &str = "unidata-nexrad-level2";
 
+/// Unidata's **real-time** bucket: the same radars, published one LDM
+/// chunk at a time while the antenna is still turning, instead of one
+/// Archive-II file per finished volume.
+///
+/// This is a different key space, not a different `--bucket` value for the
+/// same one — `{SITE}/{VOLUME_ID}/{YYYYMMDD}-{HHMMSS}-{NNN}-{S|I|E}` — so
+/// it is the default for the `live-list`/`live-fetch` subcommands and is
+/// never the default for `list`/`fetch`.  Measured against the S3 `Date`
+/// header on 2026-08-05: the newest chunk was 0–4 s old on every poll,
+/// while the assembled volume file in [`DEFAULT_BUCKET`] only exists once
+/// the volume ends, so its age at a random poll is half the volume period
+/// and its worst case is the whole period.
+pub const LIVE_DEFAULT_BUCKET: &str = "unidata-nexrad-level2-chunks";
+
 
 /// Bucket names are data, but a malformed one would build a URL that
 /// resolves somewhere unintended, so it is validated as a DNS label set.
@@ -231,13 +245,21 @@ pub fn parse_volume_key(key: &str) -> Option<VolumeKey> {
 
 /// List every Level-II volume for `site` whose scan start falls inside the
 /// inclusive window, sorted by valid time.
-pub fn list_volumes(
+/// [`list_volumes_observed`] returns the roster and the bucket's own clock
+/// when it answered.
+///
+/// The clock is here so a receipt can state how far behind the sky this
+/// route is *in the same terms* the real-time route states its own lag: the
+/// age of the newest object, measured against the clock of the machine that
+/// stamped it.  A lag computed against this host's clock measures the skew
+/// as well as the feed, and the two are not separable afterwards.
+pub fn list_volumes_observed(
     agent: &ureq::Agent,
     bucket: &str,
     site: &str,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
-) -> Result<Vec<VolumeObject>, Box<dyn Error>> {
+) -> Result<(Vec<VolumeObject>, Option<DateTime<Utc>>), Box<dyn Error>> {
     if end < start {
         return Err(boxed_error(format!(
             "time window ends before it starts: {} .. {}",
@@ -246,9 +268,14 @@ pub fn list_volumes(
         )));
     }
     let mut volumes = Vec::new();
+    let mut observed_at = None;
     for day in window_days(start, end) {
         let prefix = day_prefix(site, day);
-        for object in list_s3_objects(agent, bucket, &prefix, None)? {
+        let listing = list_s3(agent, ListRequest::new(bucket, &prefix))?;
+        if observed_at.is_none() {
+            observed_at = listing.server_date;
+        }
+        for object in listing.objects {
             let Some(parsed) = parse_volume_key(&object.key) else {
                 continue;
             };
@@ -272,7 +299,7 @@ pub fn list_volumes(
             .cmp(&b.valid_time)
             .then_with(|| a.object.key.cmp(&b.object.key))
     });
-    Ok(volumes)
+    Ok((volumes, observed_at))
 }
 
 /// Hard ceiling on pages followed for one prefix.
@@ -285,7 +312,62 @@ pub fn list_volumes(
 /// progress.
 const MAX_LIST_PAGES: usize = 10_000;
 
-/// List every object under `prefix`, following continuation tokens.
+/// What one [`list_s3`] call asked the bucket for.
+///
+/// The archive route wants every object under a day directory and nothing
+/// else, which is [`ListRequest::new`].  The live route wants one other
+/// shape, and it is *deliberate* rather than incidental, so it is stated
+/// here rather than inferred from the response: a **delimited** listing,
+/// which rolls the volume-id directories up into `<CommonPrefixes>` and
+/// returns no objects at all.  A rolled-up page is otherwise a refusal
+/// ([`parse_s3_list_xml`]) precisely because it hides objects; asking for
+/// one and then reading the roll-up is a different act from being handed
+/// one nobody asked for, and only the client that sent the delimiter can
+/// tell them apart.
+///
+/// A delimited request still follows every page: the roll-up is the roster
+/// it wants, and a short roll-up hides volume ids exactly as a short object
+/// page hides volumes.
+#[derive(Debug, Clone)]
+pub struct ListRequest<'a> {
+    bucket: &'a str,
+    prefix: &'a str,
+    delimiter: Option<&'a str>,
+}
+
+impl<'a> ListRequest<'a> {
+    /// Every object under `prefix`, all pages, no roll-up.
+    pub fn new(bucket: &'a str, prefix: &'a str) -> Self {
+        Self {
+            bucket,
+            prefix,
+            delimiter: None,
+        }
+    }
+
+    pub fn delimiter(mut self, delimiter: &'a str) -> Self {
+        self.delimiter = Some(delimiter);
+        self
+    }
+}
+
+/// What a listing returned, including the two facts `Vec<S3Object>` cannot
+/// carry: the roll-up prefixes of a delimited request, and the bucket's own
+/// clock.
+///
+/// `server_date` is the `Date` response header, and it is here because the
+/// only honest way to state how old an object is, is against the clock of
+/// the machine that stamped it.  This host's clock is not that clock, and a
+/// lag receipt computed against a skewed local clock reports the skew as
+/// freshness.
+#[derive(Debug, Clone)]
+pub struct S3Listing {
+    pub objects: Vec<S3Object>,
+    pub common_prefixes: Vec<String>,
+    pub server_date: Option<DateTime<Utc>>,
+}
+
+/// Run one [`ListRequest`], following continuation tokens to the end.
 ///
 /// **Every page must prove it is complete before any of it is used.**  This
 /// function's result is the roster a volume selection is made from, and a
@@ -295,13 +377,15 @@ const MAX_LIST_PAGES: usize = 10_000;
 /// continues it, contradicts its own `KeyCount`, or returns a token that
 /// does not advance, is a refusal of the whole listing rather than a
 /// partial answer.  See [`parse_s3_list_xml`] for the per-page contract.
-pub fn list_s3_objects(
-    agent: &ureq::Agent,
-    bucket: &str,
-    prefix: &str,
-    start_after: Option<&str>,
-) -> Result<Vec<S3Object>, Box<dyn Error>> {
+pub fn list_s3(agent: &ureq::Agent, request: ListRequest<'_>) -> Result<S3Listing, Box<dyn Error>> {
+    let ListRequest {
+        bucket,
+        prefix,
+        delimiter,
+    } = request;
     let mut objects = Vec::new();
+    let mut common_prefixes = Vec::new();
+    let mut server_date = None;
     let mut token = None::<String>;
     let mut spent_tokens: Vec<String> = Vec::new();
     let mut pages = 0usize;
@@ -310,32 +394,47 @@ pub fn list_s3_objects(
             "https://{bucket}.s3.amazonaws.com/?list-type=2&prefix={}&max-keys=1000",
             url_query_encode(prefix)
         );
-        match (&token, start_after) {
-            // continuation-token supersedes start-after on follow-up pages.
-            (Some(token), _) => {
-                url.push_str("&continuation-token=");
-                url.push_str(&url_query_encode(token));
-            }
-            (None, Some(after)) => {
-                url.push_str("&start-after=");
-                url.push_str(&url_query_encode(after));
-            }
-            (None, None) => {}
+        if let Some(delimiter) = delimiter {
+            url.push_str("&delimiter=");
+            url.push_str(&url_query_encode(delimiter));
+        }
+        if let Some(token) = &token {
+            url.push_str("&continuation-token=");
+            url.push_str(&url_query_encode(token));
         }
         let mut response = agent
             .get(&url)
             .call()
             .map_err(|err| describe_request_failure(err, bucket, prefix))?;
+        if server_date.is_none() {
+            server_date = response
+                .headers()
+                .get("date")
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_http_date);
+        }
         let xml = response.body_mut().read_to_string()?;
-        let mut page = parse_s3_list_xml(&xml, bucket, prefix)?;
+        // Named at the call site rather than folded into one entry point:
+        // the two are different contracts, and which one a page is being
+        // held to is decided by what this client sent, not by what came
+        // back.
+        let mut page = match delimiter {
+            None => parse_s3_list_xml(&xml, bucket, prefix)?,
+            Some(delimiter) => parse_s3_list_xml_with(&xml, bucket, prefix, Some(delimiter))?,
+        };
         objects.append(&mut page.objects);
+        common_prefixes.append(&mut page.common_prefixes);
         pages += 1;
         token = advance_continuation(token.as_deref(), &page, &mut spent_tokens, pages)?;
         if token.is_none() {
             break;
         }
     }
-    Ok(objects)
+    Ok(S3Listing {
+        objects,
+        common_prefixes,
+        server_date,
+    })
 }
 
 /// Turn a failed listing request into a statement about what the endpoint
@@ -545,20 +644,54 @@ pub fn download_volume(
     volume: &VolumeObject,
     use_cache: bool,
 ) -> Result<DownloadedVolume, Box<dyn Error>> {
-    let target = cached_volume_path(cache_dir, bucket, &volume.object.key)?;
-    if use_cache && target.is_file() && target.metadata()?.len() == volume.object.size_bytes {
+    let cached = download_object(agent, bucket, cache_dir, &volume.object, use_cache)?;
+    Ok(DownloadedVolume {
+        volume: volume.clone(),
+        sha256: cached.sha256,
+        path: cached.path,
+        cache_hit: cached.cache_hit,
+    })
+}
+
+/// One listed object on local disk, with the bytes that were written.
+#[derive(Debug, Clone)]
+pub struct CachedObject {
+    pub path: PathBuf,
+    pub bytes: Vec<u8>,
+    pub cache_hit: bool,
+    pub sha256: String,
+}
+
+/// Download any listed object into the cache with the same rules
+/// [`download_volume`] applies to a whole volume: a cache hit is an existing
+/// file of the exact listed byte size, a short download is a refusal rather
+/// than a shorter file, and the digest is recomputed from the bytes on disk.
+///
+/// Split out from [`download_volume`] because the real-time feed's unit of
+/// acquisition is a chunk rather than a volume, and a chunk that is quietly
+/// short is a hole in the middle of an assembled volume — the one failure
+/// the assembler cannot see afterwards, because a concatenation of the wrong
+/// bytes is still a concatenation.
+pub fn download_object(
+    agent: &ureq::Agent,
+    bucket: &str,
+    cache_dir: &Path,
+    object: &S3Object,
+    use_cache: bool,
+) -> Result<CachedObject, Box<dyn Error>> {
+    let target = cached_volume_path(cache_dir, bucket, &object.key)?;
+    if use_cache && target.is_file() && target.metadata()?.len() == object.size_bytes {
         let bytes = std::fs::read(&target)?;
-        return Ok(DownloadedVolume {
-            volume: volume.clone(),
+        return Ok(CachedObject {
             sha256: hex_sha256(&bytes),
+            bytes,
             path: target,
             cache_hit: true,
         });
     }
-    let url = object_url(bucket, &volume.object.key);
+    let url = object_url(bucket, &object.key);
     let mut response = agent.get(&url).call()?;
-    let limit = volume
-        .object
+    let limit = object
         .size_bytes
         .saturating_add(16 * 1024 * 1024)
         .max(64 * 1024 * 1024);
@@ -567,18 +700,18 @@ pub fn download_volume(
         .with_config()
         .limit(limit)
         .read_to_vec()?;
-    if volume.object.size_bytes > 0 && bytes.len() as u64 != volume.object.size_bytes {
+    if object.size_bytes > 0 && bytes.len() as u64 != object.size_bytes {
         return Err(boxed_error(format!(
             "downloaded byte count mismatch for {}: expected {}, got {}",
-            volume.object.key,
-            volume.object.size_bytes,
+            object.key,
+            object.size_bytes,
             bytes.len()
         )));
     }
     atomic_write_bytes(&target, &bytes)?;
-    Ok(DownloadedVolume {
-        volume: volume.clone(),
+    Ok(CachedObject {
         sha256: hex_sha256(&bytes),
+        bytes,
         path: target,
         cache_hit: false,
     })
@@ -653,9 +786,37 @@ pub fn parse_time(value: &str) -> Result<DateTime<Utc>, Box<dyn Error>> {
     )))
 }
 
+/// Parse an HTTP `Date` header (RFC 9110 IMF-fixdate), the bucket's own
+/// clock at the instant it answered.
+///
+/// Only the fixed-length GMT spelling is accepted: the two obsolete
+/// formats RFC 9110 still tolerates carry a two-digit year, and guessing a
+/// century for a timestamp a lag receipt is computed from is a fabrication.
+/// A header this cannot read is `None`, and every caller states the lag as
+/// unmeasured rather than substituting the local clock.
+pub fn parse_http_date(value: &str) -> Option<DateTime<Utc>> {
+    NaiveDateTime::parse_from_str(value.trim(), "%a, %d %b %Y %H:%M:%S GMT")
+        .ok()
+        .map(|naive| Utc.from_utc_datetime(&naive))
+}
+
+/// Parse the `<LastModified>` an S3 listing stamps on an object.
+pub fn parse_s3_timestamp(value: &str) -> Option<DateTime<Utc>> {
+    let trimmed = value.trim();
+    for format in ["%Y-%m-%dT%H:%M:%S%.fZ", "%Y-%m-%dT%H:%M:%SZ"] {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(trimmed, format) {
+            return Some(Utc.from_utc_datetime(&naive));
+        }
+    }
+    None
+}
+
 #[derive(Debug)]
 struct S3ListPage {
     objects: Vec<S3Object>,
+    /// The `<CommonPrefixes>` roll-up, which is empty unless the request
+    /// sent a delimiter and is a refusal when it did not.
+    common_prefixes: Vec<String>,
     next_continuation_token: Option<String>,
     /// The bucket's own statement about whether more pages follow.  Kept
     /// even though [`advance_continuation`] reads the token, because the
@@ -1821,6 +1982,23 @@ fn parse_s3_list_xml(
     bucket: &str,
     prefix: &str,
 ) -> Result<S3ListPage, Box<dyn Error>> {
+    parse_s3_list_xml_with(xml, bucket, prefix, None)
+}
+
+/// [`parse_s3_list_xml`], plus the one case where a rolled-up page is an
+/// answer instead of a fault: the request sent `delimiter`.
+///
+/// The roll-up refusal is about a page that hides objects *from a client
+/// that asked for all of them*.  A delimited request asks for the roll-up
+/// and reads nothing else, so for it the refusal inverts: a page that does
+/// not echo the delimiter that was sent is a listing of some other key
+/// space, exactly as a page echoing the wrong prefix is.
+fn parse_s3_list_xml_with(
+    xml: &str,
+    bucket: &str,
+    prefix: &str,
+    delimiter: Option<&str>,
+) -> Result<S3ListPage, Box<dyn Error>> {
     // The document's shape first.  Every field check below is a statement
     // about a value; this is the one statement about the page itself, and
     // it is the one the retired parser never made.
@@ -1883,16 +2061,57 @@ fn parse_s3_list_xml(
             )));
         }
     }
-    if document
+    let rolled_up: Vec<usize> = document
         .children(root)
-        .any(|index| document.elements[index].name == "CommonPrefixes")
-    {
-        return Err(boxed_error(format!(
-            "S3 listing for {prefix:?} carries <CommonPrefixes>, so it was \
-             rolled up on a delimiter this client never sent. The objects \
-             under those prefixes are not in the page and would be missing \
-             from the roster"
-        )));
+        .filter(|&index| document.elements[index].name == "CommonPrefixes")
+        .collect();
+    let mut common_prefixes = Vec::with_capacity(rolled_up.len());
+    match delimiter {
+        None => {
+            if !rolled_up.is_empty() {
+                return Err(boxed_error(format!(
+                    "S3 listing for {prefix:?} carries <CommonPrefixes>, so it was \
+                     rolled up on a delimiter this client never sent. The objects \
+                     under those prefixes are not in the page and would be missing \
+                     from the roster"
+                )));
+            }
+        }
+        Some(sent) => {
+            match text("Delimiter")? {
+                Some(echoed) if echoed == sent => {}
+                other => {
+                    return Err(boxed_error(format!(
+                        "S3 listing echoes delimiter {other:?}, this request sent \
+                         {sent:?}; the roll-up boundary decides which prefixes the \
+                         page reports and which objects it withholds, so a page \
+                         rolled up on some other boundary does not answer this \
+                         request"
+                    )));
+                }
+            }
+            for entry in rolled_up {
+                let rolled = document
+                    .child_text(entry, "Prefix")
+                    .map_err(|problem| {
+                        boxed_error(format!("S3 listing for {prefix:?}: {problem}"))
+                    })?
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        boxed_error(format!(
+                            "S3 listing for {prefix:?} has a <CommonPrefixes> entry \
+                             with no <Prefix>"
+                        ))
+                    })?;
+                if !rolled.starts_with(prefix) {
+                    return Err(boxed_error(format!(
+                        "S3 listing for {prefix:?} rolled up {rolled:?}, which is \
+                         outside the prefix that was requested"
+                    )));
+                }
+                common_prefixes.push(rolled);
+            }
+        }
     }
 
     let is_truncated = match text("IsTruncated")?.as_deref() {
@@ -2012,12 +2231,19 @@ fn parse_s3_list_xml(
                  and without it a body that arrived short still parses"
             ))
         })?;
-    if declared != objects.len() {
+    // `KeyCount` is what the bucket says it put in the page, and in a
+    // delimited listing that is the objects *plus* the roll-up prefixes --
+    // the 614 volume directories one live site rolls up arrive as
+    // KeyCount 614 with zero <Contents>.  Counting only the objects there
+    // would refuse every delimited page as short.
+    let counted = objects.len() + common_prefixes.len();
+    if declared != counted {
         return Err(boxed_error(format!(
             "S3 listing for {prefix:?} declares KeyCount {declared} and \
-             carries {} parseable objects; the page is not what it says it \
-             is",
-            objects.len()
+             carries {} parseable objects and {} rolled-up prefixes; the \
+             page is not what it says it is",
+            objects.len(),
+            common_prefixes.len()
         )));
     }
     let max_keys = text("MaxKeys")?
@@ -2036,6 +2262,7 @@ fn parse_s3_list_xml(
 
     Ok(S3ListPage {
         objects,
+        common_prefixes,
         next_continuation_token: token,
         is_truncated,
     })

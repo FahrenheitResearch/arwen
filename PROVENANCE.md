@@ -1178,6 +1178,63 @@ oversight, and each says what would close it.
   The full evidence statement, graded by how strong each class of measurement
   actually is, is `docs/public/validation/mp28-column-evidence.md`.
 
+### D10 — LES-nest inflow perturbation (designed ArWen-over-WRF extension, P3)
+
+- **Status: designed.**  `gpuwm/core/inflow_perturbation.py` seeds a
+  one-way LES child's inflow transition with CPM-style cell-blocked
+  potential-temperature perturbations of the child's rolling
+  nest-boundary VALUE tables, relax-zone rows only, refreshed on the
+  FORCE cadence at `NestCoupler.force`.  Every constant is pinned in
+  `docs/superpowers/receipts/les/INFLOW-GENERATOR-ACCEPTANCE-V2.md`,
+  registered before any perturbed integration existed; the measured
+  need is the D90 receipt beside it (fetch > 55 z_i, contamination
+  verdict CONTAMINATED on the shipped 250 m child).
+- **What stock v4.6.1 ships instead**: `perturb_bdy` (Registry
+  `registry.bdy_perturb`) perturbs U/V/T boundary TENDENCIES with a
+  SKEBS or user-supplied stochastic pattern inside the stoch package.
+  No cell-perturbation (Muñoz-Esparza CPM) path exists in the pinned
+  Registry extracts available on this box; the full source-authority
+  read remains P3 item 2 and is still open — this entry records the
+  extension as designed, not a WRF-parity claim.
+- **WRF-parity safety**: the four `inflow_perturbation*` keys are
+  per-domain, TOML-only (no namelist spelling; a config using them
+  cannot round-trip to a namelist, like per-domain `isfflx`), default
+  OFF, and the OFF path is gated byte-identical to a build without the
+  mechanism (acceptance G1).  The keys are preparation-inert for the
+  prepared-cache identity (`PREPARATION_INERT_RUN_FIELDS`,
+  `gpuwm/ingest/prepared_cache.py`) and remain inside the experiment
+  fingerprint and restart identity.
+
+### D11 — RUC LSM runs the DEFINED one-layer answer where WRF reads an uninitialised `ilnb`
+
+- **WRF-native behaviour, and why it is not a behaviour**: `SFCTMP`
+  declares `ilnb` at `phys/module_sf_ruclsm.F:1385` and never initialises
+  it, then reads it at `if(ilnb.gt.1)` under `if(snhei.gt.0.)` on thin
+  snow.  Inside WRF's column loop the local therefore carries the PREVIOUS
+  COLUMN's snow-layer count, so the selected `tsnav` formula — which feeds
+  snow compaction — depends on grid traversal order.  That is not a physics
+  choice WRF made; it is an undefined read, and Fortran gives it whatever
+  the stack holds.
+- **What ArWen does instead**: every column is passed the DEFINED value
+  `ilnb = 1` with `ilnb_chain = False` (`gpuwm/core/ruc_runtime.py:109-126`
+  `DEFINED_ILNB`, runner binding `:774`, receipt `:559-560`, published
+  statement `:336-341`).  One is the defined answer rather than merely the
+  safe one: a column with `0 < snhei < snth` has exactly one snow layer.
+- **Why this is a deviation and stays one**: where WRF is undefined, ArWen
+  implements the defined behaviour and documents the divergence — a standing
+  rule, and the reason there is no forecast-mode switch back.  The bug chain
+  exists only as an oracle-fixture affordance for reproducing one specific
+  WRF run (`gpuwm/core/ruc.py:8663` `ilnb_chain`, described at `:8717-8726`),
+  and the resident device driver REFUSES it outright
+  (`tests/test_ruc_device_column.py:571-586`): column i's seed is column
+  i-1's answer, a genuine sequential dependence a data-parallel lane cannot
+  reproduce and should not pretend to.
+- **Public statement**: `docs/public/PHYSICS.md:601-603`.
+- **Divergence-ledger status**: entry L2, class A — already the shipped
+  default; no toggle exists and none should.  It earns no observation-battery
+  arm, and the three-way comparison prices it implicitly wherever WRF's RUC
+  runs.
+
 ### Registered deviation — non-mutating force coupling (Phase 5 external review #4)
 
 - **WRF-native transaction and arithmetic**: every `med_force_domain`
@@ -1269,6 +1326,77 @@ oversight, and each says what would close it.
 - **Vanishes when**: the N1.5 instrument gains a lossless
   representation bridge (e.g. WRF-side dumps of gpuwm-native
   `thb/thp`), or N1.5 is superseded by a stronger oracle.
+
+## Divergence ledger v1 (the observation-battery promotion register)
+
+Registered 2026-08-03 with the observation-verification battery
+(`docs/superpowers/specs/2026-08-03-obs-verification-battery.md` section 5.2).
+The D-entries above are deviations ArWen already ships.  THIS register is the
+other half: the places ArWen may deliberately diverge, each with the state of
+its evidence, so that a candidate cannot become a default by accumulating
+confidence instead of receipts.
+
+Its executable half is `gpuwm/physics_mode.py` — the same entry ids, the same
+faithful -> patched edges, and the `physics_mode` axis that resolves them.
+Neither half may move without the other; `tests/test_physics_mode.py` pins the
+entry set, the frozen patch-set membership, and the gates.
+
+**Rewrite, don't append.**  An entry's verdict is EDITED here when its
+receipts land; a superseded claim is replaced and said to be replaced, never
+left standing beside its successor.  A promoted patch changes the ArWen
+default and its entry becomes a numbered D-entry above.
+
+**No verdict exists yet.**  The battery has not run.  Every promotion cell
+below reads UNDECIDED, and that is the honest state of the whole register on
+the day it is created.
+
+### Class A — already the shipped default (no toggle exists or should)
+
+| entry | state | battery consequence |
+|---|---|---|
+| **L1** Thompson rain-presence gate | The gate is WRF's conjunction and compares a mass concentration: `gpuwm/core/kernels/thompson.cu:450-452`, landed `cb765336` (2026-08-01) with `5e4af4e3` beside it.  The roadmap listed this as a patch candidate; it was overtaken by events, and the register says so rather than quietly dropping it.  The one residual class that commit enumerated and left standing (`qr <= R1 < qr*rho` with `L_qr` true) is documented at the `wp08-freeze` row of `docs/public/PHYSICS.md`, reconciled to this kernel on 2026-08-03. | No arm: there is one mp8 path. |
+| **L2** RUC `ilnb` uninitialised read | D10 above. | No arm, and never one — a forecast-mode toggle back onto an undefined read would be bit-exactness to a bug. |
+
+### Class B — toggleable candidates, the battery's arms
+
+| entry | key (mechanism-named) | faithful -> patched | evidence today | promotion |
+|---|---|---|---|---|
+| **L3** gray-zone PBL | `bl_pbl_physics` (existing selector; no new key) | 1 (YSU) -> 11 (Shin-Hong 2015 scale-aware) | 1.5.2 headline; CPU authority max-ULP-0 against the byte-frozen `module_bl_shinhong.F`; partition ladder inside registered Honnert-envelope bands (`docs/public/receipts/grayzone/PHASE1-SHINHONG-20260803.md`); maturity implemented-unverified.  At dx 3000 m the scheme sits above its gated ladder, which is stated in the arm's registration and is exactly what an obs referee is for.  **Route:** the composition an L3 arm resolves to is registered as `thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1` (wrf-matched-run-candidate, template_only, HRRR-only), which is what makes the arm runnable: its three refusing gates — emission physics, root-preparation profile, certified hierarchy slice — now admit it, each by an enumerated admission keyed to that registration rather than a widened rail. | UNDECIDED |
+| **L4** 6th-order filter off the moist scalars | `moist_mix6_off` (WRF's own spelling) | `.false.` -> `.true.` | WRF v4.6.1 `Registry/Registry.EM_COMMON:2889` declares it verbatim: `rconfig   logical  moist_mix6_off   namelist,dynamics  max_domains  .false. rh  "moist_mix6_off"  "de-activate 6th-order horizontal filter for moisture"`.  It gates one call — `sixth_order_diffusion` on the moist array, `dyn_em/module_em.F:1421`, reached from `dyn_em/solve_em.F:2230` — so theta and the WRF `scalar`-package tracers keep their own filters.  This is therefore a **configuration-policy patch**: the WRF arm could be configured to match, and the battery tests it as an ArWen-DEFAULT candidate rather than as a capability.  Precedent: D-L4 ratified diff6 default-OFF in LES configs (`docs/superpowers/specs/P6-LES-DECISIONS-RATIFIED.md:35-39`).  The roadmap's "Sc-deck scales" framing has **no receipt in this tree** (verified: `diff_6th` and stratocumulus never co-occur; the Sc-deck finding is a SASE result, `gpuwm/verify/sase_ref.py:1280-1292`), so the entry is registered on WRF-community evidence plus D-L4 and is measured at 3 km. | UNDECIDED |
+| **L5** SASE closure | `bl_pbl_physics` -> 900 plus six mandatory companions (`docs/public/PHYSICS.md:718-723`) | 1 (YSU + `km_opt` 4) -> 900 | implemented-unverified PERMANENTLY (no WRF counterpart); met 2 of 7 frozen bars on its reference case; its first real-data forecast failed the health gate at 1 h. | **DID NOT QUALIFY.**  Registered entry gate: SASE earns battery arms only after one full 24 h battery-shape integration completes with `status: PASS`.  Until then it is scored on zero cases and reported as "did not qualify" — honest, and cheaper than crashed arms.  It is also not a bit-flip, so it enters as its own overlay and is deliberately not a member of patch-set v1. |
+
+### Class C — knob exists, dormant (not in the battery suite)
+
+| entry | state | when it wakes |
+|---|---|---|
+| **L6** Morrison rimed-ice identity | `morr_rimed_ice: int = 1` (hail, = the WRF default) with validator, import round-trip and receipt binding (`gpuwm/config.py:185-189`, `:1714`). | Only if an mp10 battery arm is ever registered; hail-vs-graupel is then its ablation pair. |
+| **L7** gray-zone partition (SASE-side, Phase 0+) | Nothing to toggle at this tip. | Enters by its own receipt when it lands. |
+
+### Patch-set v1, and how an arm is spelled
+
+`patchset = "v1"` is **{L3, L4}**: the two toggleable entries that are
+bit-flips with a real counterfactual at 3 km.  A registered patch-set version
+is FROZEN — a later ledger entry gets a NEW version beside it, so a receipt
+reading `patchset = "v1"` keeps meaning the vector it meant on the day it was
+written.
+
+| arm | `[experiment]` overlay |
+|---|---|
+| F (ArWen-faithful) | `physics_mode = "wrf-faithful"` |
+| P-L3 | `physics_mode = "arwen-patched"` + `patches = ["L3"]` |
+| P-L4 | `physics_mode = "arwen-patched"` + `patches = ["L4"]` |
+| P-all | `physics_mode = "arwen-patched"` (patches omitted) |
+
+Single-patch arms are the promotion evidence; P-all is reported and is never a
+promotion basis, because interaction credit is not assignable to a patch.  A
+case configuration carries no arm of its own: it omits every governed key and
+the overlay writes them, so one case file serves every arm and the loader
+refuses a second author rather than merging one.
+
+The promotion rule itself (R1-R4, the Wilcoxon direction, the twin band, the
+guardrail list) is registered in the battery spec section 6.5 and is **frozen
+only by the owner's ratification** — an agent-invented gate is not a gate
+until the owner rules.
 
 ## Seam-closure ratchet epoch (Davies clock bind, 2026-07-28)
 

@@ -34,8 +34,22 @@ to diff against before and after any work on these nodes.
 
 ```sh
 python3 gen_namelist.py .               # writes namelist.* + run_matrix.json
+python3 gen_namelist.py . --check-dry <dir with the committed namelists>
 ./run_les.sh match_km3_100m ./namelist.match_km3_100m 24
 ```
+
+`--check-dry` proves the five dry namelists are byte-identical to the
+committed ones. `mp_physics` became a parameter in P1 and the dry family must
+not have moved when it did; that is a check, not a claim.
+
+`run_les.sh` takes an optional 5th argument, the iofields file, and refuses to
+run if it does not match the name the namelist asks for — staging the wrong
+one is how a run silently loses its SGS rows.
+
+A grid smaller than ~10 cells per MPI patch is refused by WRF itself
+("Reduce the MPI rank count, or redistribute the tasks"). The 39-cell stock
+grid needs `-n 9` or fewer; 48 cells needs 4; the 96- and 192-cell matched
+grids take 24.
 
 `run_les.sh` stages the WRF `run/` directory with **`cp -L`**. That is not
 cosmetic: `run/MPTABLE.TBL` is a relative symlink, and a plain `cp` leaves a
@@ -65,3 +79,62 @@ published fit from ArWen's own arrays.
 
 `INSTRUMENT-HISTORY.md` records which parts of the scorer were changed after
 output had been seen, and why. No band is cut anywhere in this lane.
+
+## Moist arm (P1)
+
+```sh
+python3 gen_namelist.py .                      # moist probes come out too
+./run_les.sh moist_smoke_stocksnd_1h ./namelist.moist_smoke_stocksnd_1h 9 \
+             ./input_sounding.wrf_em_les ./iofields_les_moist.txt
+python3 score_moist_les.py <run_dir> <out_prefix> --window-min 30
+python3 same_instrument_moist.py arwen_moist.npz <out_prefix>_moist_profiles.npz <label>
+```
+
+The moist delta from the dry family is three lines and nothing else:
+`mp_physics 0 -> 1` (Kessler), `iofields_les_moist.txt` in place of
+`iofields_les.txt`, and a moist sounding in place of `input_sounding.arwen_cbl`
+(which carries qv ≡ 0). `use_theta_m` stops being moot the moment moisture
+exists; it stays **1** for the stock family (what WRF ships) and **0** for the
+matched family, because gpuwm stores dry theta and says so
+(`gpuwm/core/moist.py:29`, `gpuwm/core/microphysics.py:23`). Matching it is
+not a preference.
+
+`score_moist_les.py` is the moist instrument and `score_wrf_les.py` is
+unchanged by P1 — run **both** on a moist run. The moist one adds exactly what
+the dry one cannot see: resolved and SGS `w'θ_v'` and `w'q_v'`, the qc profile
+and cloud fraction, liquid-water path, precipitation, and the per-level
+fraction of points on WRF's saturated-BN2 arm under WRF's own predicate.
+
+`same_instrument_moist.py` documents, at the top of the file, **the npz
+contract the ArWen-side P1 case module must satisfy** so both sides can be
+reduced by one routine. Read that before writing the ArWen side.
+
+**One name, two heights — the z_i trap.** `zi_thetav_load_m` is the height of
+the total-buoyancy-flux minimum. In a clear CBL that is the inversion; in a
+cloud-topped CBL it is **cloud base**. Measured on two runs of one capped
+family differing only in vapour: the capped-dry anchor reads 1526.3 m (the
+inversion, base at 1500 m), the capped-moist draw reads 1274.4514 m — which is
+`cloud_base_m` to every digit. A moist-vs-dry z_i difference is therefore not
+a boundary-layer depth change, and a cloudy-vs-clear comparison of this metric
+compares two different heights while looking like one quantity. Reduce it the
+same way on both sides, say which meaning applies whenever a cloudy z_i is
+quoted, and use `cloud_top_m` or the theta profile if you want the inversion
+in a cloudy case.
+
+### The matched moist sounding is not chosen here
+
+`gen_namelist.py` emits the matched moist arms only under
+`--matched-moist-sounding <asset>`. That is deliberate: which sounding defines
+the moist case is a case definition with physics consequences, the shipped
+`test/em_les/input_sounding` measurably does not condense under the em_les
+forcing (see `docs/superpowers/receipts/les/moist-oracle-sounding-probe-*.md`),
+and a recipe that quietly picked one would have decided it. Two shipped
+candidates are staged as assets:
+
+| asset | WRF source | sha256 |
+|---|---|---|
+| `input_sounding.wrf_em_les` | `test/em_les/input_sounding` | `6aed509b22519dcd933e3dc6ad57b60dbd0b7aa7a8b0edf983bb3c808a905b90` |
+| `input_sounding.wrf_em_les_shalconv` | `test/em_les/input_sounding_shalconv` | `ff044b473cc56389119357c9a4cb6b89edac5021f0bd043d1d208c410b26c670` |
+
+Neither is committed to this repository: both are WRF v4.6.1 assets,
+identified by the hashes above and reproduced from the pinned tarball.

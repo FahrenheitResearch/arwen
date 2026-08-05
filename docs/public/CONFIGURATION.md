@@ -38,6 +38,9 @@ them.
 | `blend_width` | `blend_width` | 5 | >= 0 | terrain blend zone; enters the parent-row clearance rule |
 | `spec_bdy_width` | `&bdy_control spec_bdy_width` | 5 | >= spec_zone + relax_zone | |
 | `column_chunk` | -- | 3125 | >= 1 | ArWen-only radiation throughput knob; byte-identical across values |
+| `physics_mode` | -- | absent (see note) | `"wrf-faithful"` or `"arwen-patched"` | ArWen-only physics-FIDELITY axis. Present, it becomes the author of every divergence-ledger key and writes the faithful or patched side of each edge onto every domain; an explicit occurrence of one of those keys in `[shared]` or `[[domain]]` is then refused rather than merged, because a key with two authors runs a value neither of them chose. ABSENT it authors nothing, which is what every configuration written before the axis means -- and the reported mode is still `wrf-faithful`, because no registered patch is applied. The register is PROVENANCE.md, "Divergence ledger v1"; the resolved vector lands in the run receipt |
+| `patchset` | -- | `"v1"` | a registered patch-set version | Which frozen ledger set the axis resolves. A version is frozen when it is registered, so a receipt naming `v1` keeps meaning the vector it meant; later entries get a new version beside it |
+| `patches` | -- | the whole set | array of ledger entry ids, e.g. `["L4"]` | The single-patch ablation arms. Only under `physics_mode = "arwen-patched"` -- a subset of the patches APPLIED is meaningless when none is. An entry the ledger holds back (SASE's entry gate; the dormant class-C rows) is refused with the gate as the reason |
 
 ### `[projection]` and WPS geometry
 
@@ -105,16 +108,26 @@ consumed `RunConfig` field -- the knob-parity battery
 consuming kernel/module rather than being decorative -- and every one
 is importable from a WRF namelist.
 
-**Which keys a `[[domain]]` table may override.** Exactly these 26,
+**Which keys a `[[domain]]` table may override.** Exactly these 33,
 and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
 
-    cu_physics  cudt_minutes  radt  radt_minutes  bldt
+    cu_physics  cudt_minutes  clos_choice  ishallow
+    radt  radt_minutes  bldt
     diff_6th_factor  diff_6th_opt  epssm  spec_exp  mp_physics  moist
     moist_cq  nest_microphysics_transition
     km_opt  bl_pbl_physics  sf_sfclay_physics  isfflx  c_s  c_k
     mix_isotropic  mix_upper_bound  tke_heat_flux
     tke_drag_coefficient  tke_upper_bound
+    moist_mix6_off
     sase_flux_diag  hmix_k_diag
+    inflow_perturbation  inflow_perturbation_seed
+    inflow_perturbation_amplitude_scale  inflow_perturbation_faces
+
+`clos_choice` and `ishallow` configure the Grell-Freitas cumulus scheme
+(`cu_physics = 3`): which closure members vote in the ensemble, and
+whether the shallow scheme runs. They are per domain because the scheme
+they configure is, and they are validated inert on any domain that does
+not select `cu_physics = 3`.
 
 `sase_flux_diag` and `hmix_k_diag` are output-only diagnostics, and
 they are per domain for the same reason: their cost scales with the
@@ -122,7 +135,14 @@ grid, so a tree can carry them on the domain whose mixing or subgrid
 flux is being read and leave them off the rest.  The turbulence row
 (`km_opt` through `tke_upper_bound`) and the PBL/surface selectors are
 per domain because that is what makes a PBL parent able to carry a
-PBL-off LES child (see `docs/public/LES.md`).
+PBL-off LES child (see `docs/public/LES.md`).  The four
+`inflow_perturbation*` keys seed an LES nest child's inflow turbulence
+transition (default off; deterministic, seeded, and gated
+byte-identical to a build without the mechanism when off); they are
+per domain because the mechanism is per nest edge — it perturbs one
+child's parent-forced boundary tables — and, like per-domain
+`isfflx`, they have no WRF namelist spelling, so a config using them
+cannot round-trip to a namelist.
 
 Only `gpuwm domain`'s own emission and hand-written TOML reach some of
 them, so the list is stated here rather than left to be discovered. A
@@ -159,7 +179,7 @@ per-domain VALUE is also refused by name: `bl_pbl_physics = 900`
 | `dampcoef` | `dampcoef` | 0.2 | | |
 | `w_damping` | `w_damping` | 0 | 0, 1 | the `w_crit_cfl` threshold itself is fixed at WRF's Registry default 1.0 |
 | `base_temp` | `base_temp` | 290.0 | K | base state; init-time only (see fixed table for `iso_temp`/lapse) |
-| `hypsometric_opt` | `hypsometric_opt` | 1 (ArWen legacy) | 1, 2 | WRF Registry default 2 emitted explicitly on import |
+| `hypsometric_opt` | `hypsometric_opt` | 1 (ArWen legacy) | 1, 2 | WRF Registry default 2 emitted explicitly on import; WRF declares this key in **`&domains`**, as one scalar for the whole run (`Registry.EM_COMMON:2283`) -- a namelist that puts it in `&dynamics` is one `wrf.exe` cannot read, and the importer refuses it there by name |
 | `h_sca_adv_order` | `h_sca_adv_order` | 2 (ArWen legacy) | 2, 5 | **feeds the geopotential equation only**; transported-scalar stencils are fixed 5th/3rd order, so the importer accepts only the Registry default 5 |
 | `moist_adv_opt` | `moist_adv_opt` | 1 | 0, 1 in TOML; import pins 1 | PD limiter; `scalar_adv_opt` must match (WRF option 1 on both) |
 | `top_lid` | `top_lid` | **true** (ArWen) | bool | WRF Registry default is false (open top); ArWen defaults to the rigid lid after the 2026-07-18 open-top NaN probes -- imports emit the Registry value explicitly, flip back only with a stability receipt |

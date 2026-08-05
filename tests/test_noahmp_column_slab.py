@@ -287,6 +287,49 @@ def _tiled_fields(fields, n_source, n):
     return out
 
 
+def _peak_demand_hook():
+    """A hook recording the peak device bytes one region asks the pool for.
+
+    Measuring this call's cost as *pool growth* -- ``total_bytes()`` before
+    and after -- is what a warm process makes a lie.  CuPy's pool serves a
+    request from a cached free block when it has one and only acquires new
+    device memory when it does not, so growth is the acquisition side, not the
+    demand side, and the two coincide only when the pool starts empty.
+    ``free_all_blocks()`` cannot make it start empty: it returns whole free
+    chunks to the driver, and a chunk that was split and still holds one live
+    block is retained with its free remainder inside the pool.  Deep in the
+    GPU suite that retained reserve was measured at 143.3 MiB against a
+    ~170 MiB transient, which the pool then served almost entirely from cache
+    -- growth read 504 B/column for a call that genuinely needs ~2,700.
+
+    ``malloc``/``free`` fire on every pool request whatever its provenance,
+    so the outstanding total across a region, at its high-water, is the
+    demand: exactly the quantity preflight must have device memory for, and
+    the one quantity here that does not depend on what ran before.
+    """
+    import cupy as cp
+
+    class _PeakDemand(cp.cuda.MemoryHook):
+
+        name = "PeakSlabDemand"
+
+        def __init__(self):
+            super().__init__()
+            self.live = 0
+            self.peak = 0
+
+        def malloc_postprocess(self, mem_ptr=0, mem_size=0, **kwargs):
+            if mem_ptr:
+                self.live += mem_size
+                self.peak = max(self.peak, self.live)
+
+        def free_preprocess(self, mem_ptr=0, mem_size=0, **kwargs):
+            if mem_ptr:
+                self.live -= mem_size
+
+    return _PeakDemand()
+
+
 @requires_gpu
 def test_the_chunk_width_is_bitwise_and_its_transient_is_priced():
     """One full SLAB_COLUMN_CHUNK, bitwise, with its VRAM ceiling measured.
@@ -296,10 +339,14 @@ def test_the_chunk_width_is_bitwise_and_its_transient_is_priced():
     * every column of a 65,536-wide slab reproduces its source column's
       scalar-authority answer bitwise -- the end-to-end gate at the exact
       width the runtime launches, not at 12; and
-    * the CuPy pool growth of that launch stays under the
+    * the device memory that launch demands stays under the
       ``SLAB_TRANSIENT_BYTES_PER_COLUMN`` ceiling preflight prices, and the
       ceiling stays within 2x of the measurement, so it can neither lie low
       nor rot into a number nobody can connect to the machine.
+
+    The demand is read at the allocator boundary (:func:`_peak_demand_hook`)
+    rather than from pool growth, so the ceiling is held against the machine
+    and not against whatever happened to leave blocks in the pool first.
     """
     import cupy as cp
 
@@ -320,21 +367,20 @@ def test_the_chunk_width_is_bitwise_and_its_transient_is_priced():
     tiled = _tiled_fields(fields, n_source, n)
     evaluate_sflx_slab(tiled, n)                       # warm: modules, plans
 
-    pool = cp.get_default_memory_pool()
-    pool.free_all_blocks()
+    demand = _peak_demand_hook()
     cp.cuda.Device().synchronize()
-    before = pool.total_bytes()
-    out = evaluate_sflx_slab(tiled, n)
-    cp.cuda.Device().synchronize()
-    grown = pool.total_bytes() - before
-    per_column = grown / n
-    assert grown <= priced, (
-        f"one {n}-column slab call grew the pool by {grown / 2**20:.1f} MiB "
+    with demand:
+        out = evaluate_sflx_slab(tiled, n)
+        cp.cuda.Device().synchronize()
+    needed = demand.peak
+    per_column = needed / n
+    assert needed <= priced, (
+        f"one {n}-column slab call demanded {needed / 2**20:.1f} MiB "
         f"({per_column:.0f} B/column), above the priced "
         f"{priced / 2**20:.1f} MiB; re-measure and move "
         "SLAB_TRANSIENT_BYTES_PER_COLUMN, do not let preflight understate it")
-    assert priced <= 2 * grown, (
-        f"the ceiling is now {priced / max(grown, 1):.1f}x the measured "
+    assert priced <= 2 * needed, (
+        f"the ceiling is now {priced / max(needed, 1):.1f}x the measured "
         f"{per_column:.0f} B/column; tighten "
         "SLAB_TRANSIENT_BYTES_PER_COLUMN so preflight stops overstating it")
 

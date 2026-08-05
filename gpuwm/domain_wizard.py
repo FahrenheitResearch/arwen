@@ -884,7 +884,10 @@ def physics_summary(profile: str | None) -> str:
     """One line naming what the emitted suite actually runs."""
 
     switches = profile_switches(profile)
-    cumulus = ("Kain-Fritsch cumulus" if switches["cu_physics"]
+    cumulus = ({1: "Kain-Fritsch cumulus",
+                3: "Grell-Freitas cumulus"}.get(int(switches["cu_physics"]),
+                                                "parameterized cumulus")
+               if switches["cu_physics"]
                else "NO cumulus parameterization")
     label = profile if profile is not None else (
         "product default suite (supported, not yet WRF-verified; every "
@@ -1746,23 +1749,40 @@ def cumulus_gray_zone_advisory(chain_km, cu_physics_by_domain
     as ``chain_km``) because cumulus is a per-domain switch here, not a
     ``[shared]`` one -- the wizard activates it on the root only.
 
-    The physics registry's cumulus component offers exactly two options
-    -- off (``cu_physics = 0``) and classic Kain-Fritsch (``cu_physics
-    = 1``; physics_registry_v2.json ``components/cumulus``).  Classic
-    KF is not scale-aware, and the scale-aware variants (multiscale KF,
-    Grell-Freitas) are explicitly unported (``parameters/aercu_opt``),
-    so today there is no gray-zone-tolerant cumulus option to exempt:
-    any active scheme earns the advisory.  If a scale-aware scheme is
-    ever ported, its registry entry is where that distinction belongs,
-    and this function is where it gets honoured.
+    Scale awareness is honoured per scheme, as this docstring always
+    promised it would be.  Grell-Freitas (``cu_physics = 3``) carries
+    its own ``sig = (1-frh)**2`` taper -- the parameterized contribution
+    withdraws as dx approaches cloud-resolving spacing, which is the
+    scheme's whole design point -- so a GF domain in the 4-10 km gray
+    zone earns no advisory, and below 4 km it earns the SOFT sentence
+    (the taper is the scheme's own answer there, but no ArWen-vs-WRF
+    trajectory receipt backs it yet, so the wording says measured
+    restraint rather than silence).  Classic KF (``cu_physics = 1``) is
+    not scale-aware and keeps both sentences.
     """
 
     pairs = [(float(dx), int(cu)) for dx, cu
              in zip(chain_km, cu_physics_by_domain, strict=True)]
     active = [(dx, cu) for dx, cu in pairs if cu]
     lines: list[str] = []
+    scale_aware_below = [(dx, cu) for dx, cu in active
+                         if cu == 3
+                         and dx < CUMULUS_CONVECTION_PERMITTING_DX_KM]
+    if scale_aware_below:
+        finest = min(dx for dx, _ in scale_aware_below)
+        lines.append(
+            f"CUMULUS: {len(scale_aware_below)} domain(s) run "
+            "Grell-Freitas (cu_physics = 3) at convection-permitting "
+            f"spacing below {CUMULUS_CONVECTION_PERMITTING_DX_KM:g} km "
+            f"(finest {finest:g} km); the scheme's own sig = (1-frh)^2 "
+            "taper withdraws the parameterized contribution as the grid "
+            "resolves convection, so this is the scheme answering the "
+            "gray zone rather than double-counting it -- but no "
+            "ArWen-versus-WRF trajectory receipt backs GF yet "
+            "(implemented-unverified), so verify convective placement "
+            "against observations before trusting it there.")
     below = [(dx, cu) for dx, cu in active
-             if dx < CUMULUS_CONVECTION_PERMITTING_DX_KM]
+             if cu != 3 and dx < CUMULUS_CONVECTION_PERMITTING_DX_KM]
     if below:
         finest = min(dx for dx, _ in below)
         switch = "/".join(str(cu) for cu
@@ -1781,7 +1801,8 @@ def cumulus_gray_zone_advisory(chain_km, cu_physics_by_domain
             "resolved dynamics convect (per-domain override in the "
             "emitted [[domain]] tables).")
     band = [(dx, cu) for dx, cu in active
-            if CUMULUS_CONVECTION_PERMITTING_DX_KM <= dx
+            if cu != 3
+            and CUMULUS_CONVECTION_PERMITTING_DX_KM <= dx
             <= CUMULUS_GRAY_ZONE_TOP_DX_KM]
     if band:
         finest = min(dx for dx, _ in band)

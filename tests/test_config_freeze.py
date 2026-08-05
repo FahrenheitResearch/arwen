@@ -48,7 +48,7 @@ def _frozen_constructors():
 def test_new_fields_are_reviewed_defaults_appended_last():
     """New fields remain appended, preserving positional construction."""
     names = [f.name for f in dataclasses.fields(RunConfig)]
-    assert names[-80:] == [
+    assert names[-87:] == [
         "nested", "grid_id", "top_lid", "moist_cq", "morr_rimed_ice",
         "wsm6_hail_opt", "ra_lw_physics", "ra_sw_physics", "icloud",
         "swrad_scat", "wrf_rrtmg_compatibility", "num_soil_layers",
@@ -90,7 +90,27 @@ def test_new_fields_are_reviewed_defaults_appended_last():
         # publishes nothing, and an EMPTY acknowledgement is the state
         # every existing configuration is in, so the km_opt gate refuses
         # exactly what it refused before.
-        "hmix_k_diag", "km_opt_zero_acknowledgement"]
+        "hmix_k_diag", "km_opt_zero_acknowledgement",
+        # The LES-nest inflow seeding keys (change record: appended with
+        # the P3 generator, INFLOW-GENERATOR-ACCEPTANCE-V2).  All four
+        # default to the mechanism-off state every existing
+        # configuration is in -- inflow_perturbation = False executes
+        # nothing -- so every pre-change TOML and constructor resolves
+        # unchanged, which the goldens below re-check with the four
+        # reviewed defaults added.
+        "inflow_perturbation", "inflow_perturbation_seed",
+        "inflow_perturbation_amplitude_scale", "inflow_perturbation_faces",
+        # WRF's own &dynamics moist_mix6_off, appended on the same terms.
+        # Its default is WRF's Registry default (.false.,
+        # Registry.EM_COMMON:2889), it is read only where diff_6th_opt > 0,
+        # and at False the diff6 row set is the one the frozen trajectories
+        # ran -- so it cannot move any of them.  It is divergence-ledger
+        # entry L4 (gpuwm/physics_mode.py).
+        "moist_mix6_off",
+        # The Grell-family keys, appended last: read only where
+        # cu_physics = 3, which no frozen configuration selects, and
+        # both defaults are WRF's own (Registry.EM_COMMON:2544,2546).
+        "clos_choice", "ishallow"]
     # Aerosol-aware Thompson (mp_physics=28) aerosol-source selectors,
     # appended last.  Both defaults are WRF's own Registry defaults
     # (Registry/Registry.EM_COMMON:2656 and
@@ -108,8 +128,20 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     assert RunConfig.__dataclass_fields__["wif_input_opt"].default == 0
 
     assert RunConfig.__dataclass_fields__["hmix_k_diag"].default is False
+    # WRF v4.6.1 Registry.EM_COMMON:2889 declares moist_mix6_off .false.,
+    # and matching WRF's default is what makes the field inert: the moist
+    # array keeps its 6th-order filter exactly as every frozen trajectory
+    # ran it.
+    assert RunConfig.__dataclass_fields__["moist_mix6_off"].default is False
     assert RunConfig.__dataclass_fields__[
         "km_opt_zero_acknowledgement"].default == ""
+    # Grell-family keys, WRF v4.6.1 Registry defaults
+    # (Registry.EM_COMMON:2544,2546).  Both are read only where
+    # cu_physics=3, which no frozen configuration selects, so appending
+    # them cannot move a frozen trajectory; validate_run_config refuses
+    # nonzero values without the scheme.
+    assert RunConfig.__dataclass_fields__["clos_choice"].default == 0
+    assert RunConfig.__dataclass_fields__["ishallow"].default == 0
     # Noah option selectors. Each default reproduces the value the launcher
     # previously pinned, so exposing them cannot move a frozen trajectory.
     assert RunConfig.__dataclass_fields__["usemonalb"].default is False

@@ -1384,6 +1384,17 @@ void wrf_calc_n2(WRF_SMAG_GRID_ARGS,
     real qc_c = (moist && has_qc) ? qc[hp] : 0.0f;
     bool saturated = moist
         && (qv_c >= wrf_n2_qvs(t_c, p_c) || qc_c >= 1.0e-5f);
+#ifdef GPUWM_MUTATE_MOIST_N2_FORCE_DRY
+    // MUTATION CONTROL, not a physics option and never a production build.
+    // The line above is left exactly as it was so a reader diffing this file
+    // sees an addition rather than a rewritten predicate.  Reachable only
+    // through gpuwm.core.moist_n2_mutation, which compiles this translation
+    // unit as a SEPARATE module under a separate cache key and a separate
+    // kernel-manifest entry.  Purpose (LES completion spec 3.3): forcing the
+    // saturated branch off must MOVE the committed cloud-layer metrics; if it
+    // does not, the instrument is rejected, not the engine passed.
+    saturated = false;
+#endif
 
     real value;
     if (ke > 0) {

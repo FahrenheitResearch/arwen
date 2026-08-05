@@ -96,11 +96,38 @@ impl ParseMode {
 
 /// What one pass of the message walk produced.
 enum MessageOutcome {
-    Radial(u8, u8, RadialData),
+    Radial(u8, u8, Option<VolSite>, RadialData),
     /// A message this decoder does not read, stepped over.
     Skipped,
     /// No further whole message fits in what remains.
     EndOfData,
+}
+
+/// The radar's own statement of where it is, from the Message-31 VOL block.
+///
+/// This is the self-describing route to the antenna position: every
+/// Message-31 radial points at a VOL block carrying the site latitude,
+/// longitude, the ground elevation of the site (`site_height_m`, metres
+/// MSL) and the height of the feedhorn above it (`feedhorn_height_m`,
+/// metres AGL).  The beam origin — the number every gate height is
+/// computed from — is `site_height_m + feedhorn_height_m`.  The vendored
+/// site table stores neither reliably (130 of 141 elevations are a 0.0
+/// placeholder, and the populated ones are ground elevation without the
+/// feedhorn), so a consumer that has the volume in hand should prefer
+/// this block to any table.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VolSite {
+    pub latitude_deg: f32,
+    pub longitude_deg: f32,
+    pub site_height_m: i16,
+    pub feedhorn_height_m: u16,
+}
+
+impl VolSite {
+    /// Antenna (beam-origin) height above mean sea level, metres.
+    pub fn antenna_height_m(&self) -> f64 {
+        f64::from(self.site_height_m) + f64::from(self.feedhorn_height_m)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +135,9 @@ pub struct Level2File {
     pub station_id: String,
     pub volume_date: u16,
     pub volume_time: u32,
+    /// First VOL block's site statement, when any radial carried one.
+    /// Strict parsing refuses a volume whose radials disagree about it.
+    pub vol_site: Option<VolSite>,
     pub sweeps: Vec<Level2Sweep>,
 }
 
@@ -215,10 +245,23 @@ impl Level2File {
         // and elevation_number changes as fallback to properly separate
         // SAILS/MESO-SAILS duplicate elevations into distinct sweeps.
         let mut all_radials: Vec<(u8, u8, RadialData)> = Vec::new();
+        let mut vol_site: Option<VolSite> = None;
 
         while (cursor.position() as usize) < data.len().saturating_sub(MSG_HEADER_SIZE) {
             match Self::read_message(&mut cursor, &data, mode) {
-                Ok(MessageOutcome::Radial(elev_num, cut_sector, radial)) => {
+                Ok(MessageOutcome::Radial(elev_num, cut_sector, radial_vol, radial)) => {
+                    match (vol_site, radial_vol) {
+                        (None, Some(site)) => vol_site = Some(site),
+                        (Some(first), Some(site)) if site != first && mode.is_strict() => {
+                            return Err(format!(
+                                "corrupt Level-II volume: two Message-31 radials disagree \
+                                 about the radar's own position — one VOL block says \
+                                 {first:?}, another says {site:?}. One antenna cannot be in \
+                                 two places; the volume is not one radar's volume"
+                            ));
+                        }
+                        _ => {}
+                    }
                     all_radials.push((elev_num, cut_sector, radial));
                 }
                 Ok(MessageOutcome::Skipped) => continue,
@@ -252,6 +295,7 @@ impl Level2File {
             station_id: header.station_id,
             volume_date: header.volume_date,
             volume_time: header.volume_time,
+            vol_site,
             sweeps,
         })
     }
@@ -511,6 +555,7 @@ impl Level2File {
 
         let mut moments = Vec::new();
         let mut nyquist_velocity: Option<f32> = None;
+        let mut vol_site: Option<VolSite> = None;
         let (mut saw_vol, mut saw_elv, mut saw_rad) = (false, false, false);
 
         for ptr_offset in &block_pointers {
@@ -555,9 +600,12 @@ impl Level2File {
                 },
                 (b'R', "VOL") => {
                     saw_vol = true;
-                    if let Err(error) = Self::parse_vol_block(data, block_pos, envelope_end) {
-                        if strict {
-                            return Err(error);
+                    match Self::parse_vol_block(data, block_pos, envelope_end) {
+                        Ok(site) => vol_site = Some(site),
+                        Err(error) => {
+                            if strict {
+                                return Err(error);
+                            }
                         }
                     }
                 }
@@ -643,6 +691,7 @@ impl Level2File {
         Ok(MessageOutcome::Radial(
             msg31.elevation_number,
             msg31.cut_sector,
+            vol_site,
             radial,
         ))
     }
@@ -871,7 +920,7 @@ impl Level2File {
     /// them, and four bytes read at the wrong offset almost never do -- so
     /// they are what turns the version table from a label into a statement
     /// about where the fields are.
-    fn parse_vol_block(data: &[u8], offset: usize, envelope_end: usize) -> Result<(), String> {
+    fn parse_vol_block(data: &[u8], offset: usize, envelope_end: usize) -> Result<VolSite, String> {
         if offset + 8 > envelope_end {
             return Err(format!(
                 "corrupt Level-II volume: the VOL block at offset {offset} has no room for its \
@@ -945,7 +994,36 @@ impl Level2File {
                  not the volume's"
             ));
         }
-        Ok(())
+        // ICD 2620002 table XVII: site height (int*2, metres MSL) at 16,
+        // feedhorn height (unsigned int*2, metres AGL) at 18.  The KTLX
+        // survey fixture reads 370 m / 19 m here.  Bounds are arithmetic,
+        // not judgement: no WSR-88D site sits below the Dead Sea or above
+        // 4500 m, and no feedhorn tower is 200 m tall — four bytes read at
+        // the wrong offset almost never satisfy both.
+        let site_height = i16::from_be_bytes([data[offset + 16], data[offset + 17]]);
+        let feedhorn_height = u16::from_be_bytes([data[offset + 18], data[offset + 19]]);
+        if !(-450..=4500).contains(&site_height) {
+            return Err(format!(
+                "corrupt Level-II volume: the VOL block at offset {offset} puts the site \
+                 ground at {site_height} m MSL, which is not a radar site on this planet. \
+                 Either the block is not the {lrtup}-byte version {major}.{minor} layout it \
+                 claims, or its contents are not the volume's"
+            ));
+        }
+        if feedhorn_height > 200 {
+            return Err(format!(
+                "corrupt Level-II volume: the VOL block at offset {offset} puts the feedhorn \
+                 {feedhorn_height} m above the site; real WSR-88D towers run roughly 3-50 m. \
+                 Either the block is not the {lrtup}-byte version {major}.{minor} layout it \
+                 claims, or its contents are not the volume's"
+            ));
+        }
+        Ok(VolSite {
+            latitude_deg: latitude,
+            longitude_deg: longitude,
+            site_height_m: site_height,
+            feedhorn_height_m: feedhorn_height,
+        })
     }
 
     /// Validate a Message-31 "ELV" (Elevation) constant block.
@@ -1769,11 +1847,22 @@ mod tests {
                 block.len(),
                 "LRTUP must account for the whole block"
             );
-            assert_eq!(Level2File::parse_vol_block(block, 0, block.len()), Ok(()));
-            let decoded_lat = f32::from_be_bytes([block[8], block[9], block[10], block[11]]);
-            let decoded_lon = f32::from_be_bytes([block[12], block[13], block[14], block[15]]);
-            assert!((decoded_lat - lat).abs() < 1e-4, "lat {decoded_lat}");
-            assert!((decoded_lon - lon).abs() < 1e-4, "lon {decoded_lon}");
+            let site = Level2File::parse_vol_block(block, 0, block.len()).unwrap();
+            assert!((site.latitude_deg - lat).abs() < 1e-4, "lat {}", site.latitude_deg);
+            assert!((site.longitude_deg - lon).abs() < 1e-4, "lon {}", site.longitude_deg);
+            // The two height fields are the reason the block is now
+            // surfaced instead of merely validated: site ground at 16,
+            // feedhorn AGL at 18, beam origin their sum.
+            assert_eq!(
+                site.site_height_m,
+                i16::from_be_bytes([block[16], block[17]])
+            );
+            assert_eq!(
+                site.feedhorn_height_m,
+                u16::from_be_bytes([block[18], block[19]])
+            );
+            assert!((0..=200).contains(&site.feedhorn_height_m), "{site:?}");
+            assert!(site.antenna_height_m() > f64::from(site.site_height_m));
             assert_eq!(u16::from_be_bytes([block[40], block[41]]), vcp);
         }
         assert_eq!(Level2File::parse_elv_block(&REAL_ELV, 0, REAL_ELV.len()), Ok(()));

@@ -219,6 +219,26 @@ TIGHTEN: dict[str, dict] = {
                         "default": 0.12},
     "moist": {"type": "boolean", "default": False},
     "moist_cq": {"type": "boolean", "default": False},
+    # WRF's own &dynamics switch (Registry.EM_COMMON:2889, max_domains,
+    # default .false.), consumed by gpuwm.core.dycore.diff6_exempt_slots.
+    # Declared here because it is divergence-ledger entry L4: an ArWen
+    # DEFAULT candidate whose promotion is decided by the observation
+    # battery, not by argument.  The warning is what a plan author needs to
+    # know before setting it by hand instead of through the axis.
+    "moist_mix6_off": {
+        "type": "boolean", "default": False,
+        "warnings": [
+            "moist_mix6_off = true removes the 6th-order horizontal filter "
+            "from the WRF moist array only (dyn_em/module_em.F:1421 under "
+            "config_flags%moist_mix6_off); theta keeps its filter and the "
+            "number/volume tracers keep theirs, which is WRF's own per-array "
+            "scoping, not a gpuwm simplification.",
+            "This is divergence-ledger entry L4 and it is UNDECIDED: it is "
+            "a candidate ArWen default with no obs-skill receipt yet. "
+            "Selecting it through the [experiment] physics_mode axis "
+            "(gpuwm/physics_mode.py) records the arm in the run receipt; "
+            "setting it by hand here does not, and a hand-set value beside "
+            "physics_mode is refused rather than merged."]},
     "top_lid": {"type": "boolean", "default": True},
     "morr_rimed_ice": {"type": "integer", "enum": [0, 1], "default": 1},
     "wsm6_hail_opt": {"type": "integer", "enum": [0, 1], "default": 0},
@@ -227,6 +247,15 @@ TIGHTEN: dict[str, dict] = {
     "radt_minutes": {"type": "number", "minimum": 0.0, "default": 12.0},
     "bldt": {"type": "number", "minimum": 0.0, "default": 0.0},
     "cudt_minutes": {"type": "number", "minimum": 0.0, "default": 5.0},
+    # Grell-family keys, WRF v4.6.1 Registry defaults
+    # (Registry.EM_COMMON:2544,2546); read only where cu_physics = 3.
+    "clos_choice": {
+        "type": "integer", "enum": [0], "default": 0,
+        "warnings": [
+            "Only the 16-member ensemble closure (0, the Registry default) "
+            "is admitted: the single-closure arms of cup_forcing_ens_3d "
+            "carry no GF oracle coverage."]},
+    "ishallow": {"type": "integer", "enum": [0, 1], "default": 0},
 }
 
 WRF_TYPE = {"integer": "integer", "real": "number",
@@ -244,8 +273,8 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
     "aercu_fct": (
         "c",
         "This belongs to the unported multiscale Kain-Fritsch aerosol-aware "
-        "cumulus scheme; gpuwm's cu_physics set contains only off and the "
-        "ported KF scheme, which has no AERCU tendency state."),
+        "cumulus scheme; none of gpuwm's cumulus options (off, the ported "
+        "KF, the ported GF) carries AERCU tendency state."),
     "aercu_opt": (
         "c",
         "This selects aerosol-aware behavior in the unported multiscale "
@@ -301,11 +330,6 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "IFSNOW controls snow physics in WRF's slab/thermal-diffusion land "
         "surface schemes; those schemes are not ported, and Noah/RUC/"
         "Noah-MP do not consume this selector."),
-    "ishallow": (
-        "c",
-        "ISHALLOW belongs to the unported Grell 3-D cumulus family, not the "
-        "ported Kain-Fritsch component; exposing it would require that new "
-        "scheme."),
     "kf_edrates": (
         "c",
         "The KF entrainment/detrainment diagnostic output subsystem is "
@@ -2450,6 +2474,35 @@ def _composition_exemptions() -> dict:
                 "The legacy-RRTMG sibling of the entry above, granted on "
                 "the same basis."),
         },
+        "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1": {
+            "owner_decision_id": "D-16",
+            "clause": "C1+C2",
+            "basis": (
+                "The observation battery's registered composition (lead "
+                "ruling, obs-battery integration wave 2026-08-04): "
+                "Thompson mp8 is wrf-matched-run and the legacy RRTMG "
+                "engine is the certified WRF v4.6.1 port, but no receipt "
+                "covers the composed suite yet -- the battery shakedown "
+                "case's stock-WRF-paired t0/case receipt is the named "
+                "payer. " + unverified_land_pbl),
+        },
+        "thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1": {
+            "owner_decision_id": "D-16",
+            "clause": "C1+C2",
+            "basis": (
+                "The gray-zone sibling of the entry above -- the same "
+                "composition with Shin-Hong 2015 in place of YSU -- "
+                "granted on the same basis, with the same payer: this "
+                "composition's first stock-WRF-paired t0/case receipt. "
+                "Shin-Hong's own port is measured bitwise against the "
+                "byte-frozen WRF v4.6.1 module on both halves (max ULP 0 "
+                "on the float32 CPU authority; 0 ULP on the CUDA heat "
+                "tendency), which is conformance evidence and not a "
+                "matched forecast trajectory. Noah and Shin-Hong are "
+                "'implemented-unverified': neither has its own matched "
+                "ArWen-versus-WRF forecast trajectory, so the strict-min "
+                "ceiling for this suite is 'implemented-unverified'."),
+        },
         "wsm6-ysu-mm5-noah-no-radiation-v1": {
             "owner_decision_id": "D-16",
             "clause": "C2",
@@ -2526,11 +2579,16 @@ def build(registry: dict) -> dict:
     pbl_options["shinhong"]["constraints"]["requires_components"][
         "surface_layer"
     ] = ["revised-mm5", "classic-mm5"]
-    # No template selects Shin-Hong; it is selectable per domain on the
-    # tree route (allowed_component_options below), so its recomputed
-    # reachability is "component-override" -- the sase posture: a user asks
-    # for it explicitly or does not get it.
-    pbl_options["shinhong"]["reachability"] = {"state": "component-override"}
+    # Shin-Hong is now selected by a registered template
+    # (thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1, below), which is
+    # the easiest path to it, so its recomputed reachability is
+    # "template".  It remains a legal per-domain override on the tree
+    # route as well (allowed_component_options below); the state names
+    # the easiest path, not the only one.  It stays
+    # "implemented-unverified": the template that selects it is a
+    # composition candidate, not a matched forecast trajectory for this
+    # closure.
+    pbl_options["shinhong"]["reachability"] = {"state": "template"}
     # SASE is not in the WRF v4.6.1 table above -- WRF has no such scheme,
     # which is why it carries an out-of-namespace selector.  Its
     # surface-layer constraint is therefore NOT a transcription of WRF's
@@ -2541,6 +2599,104 @@ def build(registry: dict) -> dict:
         "surface_layer"
     ] = ["revised-mm5", "classic-mm5", "mynn"]
     pbl_options["sase"]["reachability"] = {"state": "component-override"}
+    # Grell-Freitas (cu_physics=3), the first cumulus option admitted
+    # since KF and the first scale-aware one: sig = (1-frh)^2 is the
+    # scheme's own dx taper, so per-domain admission carries no grid gate.
+    # No template selects it -- the shinhong/sase posture: a user asks for
+    # it explicitly or does not get it.
+    cumulus_options = registry["components"]["cumulus"]["options"]
+    cumulus_options["grell-freitas"] = {
+        "asset_requirements": [],
+        "constraints": {
+            "required_settings": {"moist": True},
+            # config.py enforces the same law: the trigger's excesses and
+            # the shallow arm read KPBL and the PBL-maintained surface
+            # fluxes, so a PBL scheme must be active.
+            "requires_components": {
+                "pbl": ["ysu", "mynn", "shinhong", "sase"]},
+        },
+        "extensions": {
+            "arwen_pbl_structural_requirement": {
+                "reason": (
+                    "ArWen's GF adapter reads KPBL and the PBL-maintained "
+                    "surface fluxes for the trigger's excesses and the "
+                    "shallow arm; with bl_pbl_physics=0 nothing writes "
+                    "them (WRF reads KPBL=0 there and indexes below the "
+                    "column base, which ArWen refuses rather than "
+                    "reproduces)"),
+                "classification": (
+                    "ArWen structural constraint; WRF v4.6.1 does not "
+                    "prohibit cu_physics=3 with bl_pbl_physics=0"),
+            },
+        },
+        "implemented": True,
+        "label": "Grell-Freitas",
+        "maturity": "implemented-unverified",
+        "parameters": {
+            "cudt_minutes": 0.0, "clos_choice": 0, "ishallow": 0},
+        "reachability": {"state": "component-override"},
+        "scientific_evidence": "none",
+        "selectors": {"cu_physics": 3},
+        "warnings": [
+            "Grell-Freitas's distance from WRF v4.6.1 is MEASURED on both "
+            "halves of the port and on the whole driver, not a scheme "
+            "fragment. tools/gf_wrf461_oracle drives the byte-frozen "
+            "module_cu_gf_wrfdrv.F/module_cu_gf_deep.F/module_cu_gf_sh.F "
+            "at gfortran -O0 over 18 cases x 6 grid spacings x 2 ishallow "
+            "arms (216 columns); the float32 CPU authority "
+            "(gpuwm/verify/gf_driver.py) reproduces GFDRV word for word "
+            "on the 208 columns where GFDRV's own decomposition is exact, "
+            "and the CUDA translation unit (gpuwm/core/kernels/gf.cu) "
+            "holds the same boundary with the gamma COMPUTED on the "
+            "device: its transcribed glibc-2.39 "
+            "tgammaf/lgammaf/expm1f/exp2f/powf are bitwise against 130k "
+            "live-glibc words, so the fzu normalisation that moves the "
+            "deep mass flux by up to 7.3 per cent per ULP needs no oracle "
+            "pin on the GPU (tests/test_gf_deep_cuda.py, "
+            "tests/test_gf_shallow_cuda.py, tests/test_gf_gfdrv_cuda.py). "
+            "The 8 remaining columns are the driver's own "
+            "module_gfs_physcons mixed precision, inherited and bounded "
+            "(max 34 ULP, 3.8e-6 relative, no branch flips). That is "
+            "conformance evidence, not scientific validation: no "
+            "gpuwm/WRF forecast trajectory comparison exists for this "
+            "scheme, which is why it is 'implemented-unverified' and not "
+            "'supported'.",
+            "DELIBERATE DIVERGENCE, owner ruling (no inherited WRF bugs): "
+            "WRF's shallow k22 trigger is a MAXLOC over the array section "
+            "heo_cup(2:kbmax) whose result module_cu_gf_sh.F uses as an "
+            "absolute level index without adding the section offset, "
+            "leaving k22 one level below the argmax wherever the argmax "
+            "sits above level 2. The SHIPPED kernel uses the corrected "
+            "indexing; the WRF-faithful off-by-one lives behind a launch "
+            "flag only the parity suites set. Measured over the committed "
+            "fixture: k22 moves on 3 of 18 cases (6, 13, 16), all three "
+            "rejected under both modes with identical ierr, and ZERO "
+            "output words differ at the scheme or driver boundary "
+            "(tests/test_gf_shallow_cuda.py, the ledger test).",
+            "DELIBERATE DIVERGENCE, WRF is undefined: "
+            "get_inversion_layers' first-derivative loop reads "
+            "t_cup(kend+8) past the array end whenever kend > ktf-8 "
+            "(module_cu_gf_deep.F, both live call sites pass "
+            "kend = kstabi). The port clamps kend to ktf-8 -- the oracle "
+            "capture clamps identically -- and COUNTS the clamps; the "
+            "count is zero on the whole committed fixture and the gates "
+            "assert it stays zero.",
+            "ENGINE SEAM, recorded deviations of the cu_physics=3 "
+            "adapter (gpuwm/core/gf.py) -- the kernel behind it is "
+            "bitwise; this is what the engine can hand it today, and it "
+            "is the plumb-list for any label upgrade: (1) the advective "
+            "and boundary-layer halves of GFDRV's forcing "
+            "(RTHFTEN/RQVFTEN, RTHBLTEN/RQVBLTEN) are fed as zeros -- "
+            "the dycore does not yet export an advective theta/qv pair "
+            "and the PBL stack couples its rates before the driver "
+            "retains them -- so the forced state carries radiative "
+            "forcing only and, with ishallow=1, the shallow blqe closure "
+            "member sees dhdt = 0; (2) GF's convective momentum "
+            "tendencies are computed but not yet coupled (CumulusResult "
+            "carries no momentum slots); (3) mass-level w is the "
+            "KF-precedent average of the staggered field.",
+        ],
+    }
     surface_options["mynn"]["constraints"]["requires_components"][
         "pbl"
     ] = ["off", "mynn"]
@@ -2615,15 +2771,22 @@ def build(registry: dict) -> dict:
         # tree route.  No template selects it, so its reachability is
         # "component-override": a user asks for it explicitly or does not
         # get it, which is the right posture for an experimental scheme.
-        # "shinhong" is listed on the same terms: implemented with a
-        # certified oracle, registered in no template, so it is a legal
-        # per-domain override and never the scheme a user gets by accident.
+        # "shinhong" is listed so the closure is selectable per domain
+        # here too.  Since the gray-zone template registered it, its
+        # reachability is "template" -- a user can also ask for the whole
+        # registered suite -- and this entry keeps the per-domain override
+        # legal beside it.
         "pbl": ["off", "ysu", "mynn", "sase", "shinhong"],
         "surface_layer": ["revised-mm5", "classic-mm5", "mynn"],
         "radiation": [
             "off", "dudhia-shortwave", "rte-rrtmgp",
             "rte-rrtmgp-legacy-aggregate"],
     }
+    # Grell-Freitas is selectable per domain on the tree route, the same
+    # terms as shinhong/sase above; off and kain-fritsch are listed so the
+    # per-domain override surface names the whole implemented cumulus set.
+    tree_route["allowed_component_options"]["cumulus"] = [
+        "off", "kain-fritsch", "grell-freitas"]
     surface_options["revised-mm5"]["reachability"] = {
         "state": "component-override"}
     radiation_options = registry["components"]["radiation"]["options"]
@@ -2832,6 +2995,128 @@ def build(registry: dict) -> dict:
                 if nssl2_legacy_id in declared:
                     declared.remove(nssl2_legacy_id)
                 declared.insert(declared.index(nssl2_id) + 1, nssl2_legacy_id)
+
+    # The observation battery's registered composition (obs-battery
+    # integration wave, lead ruling 2026-08-04): Thompson + YSU + classic
+    # MM5 + Noah + cumulus off + the exact WRF v4.6.1 legacy RRTMG.  Built
+    # from the Thompson validation template on the nssl2_legacy idiom: the
+    # radiation component is the resolved 4/4 pair ("rte-rrtmgp" is the
+    # registry's spelling of that pair; the ENGINE is named by
+    # ra_rrtmg_variant in parameters, exactly as the NSSL-2 legacy row
+    # does).  Parameters and the single per-domain row are TRANSCRIBED
+    # from configs/battery/shape_3km_thompson_rrtmg_legacy.toml as
+    # registered -- notably radt 12.0 at dx 3000 m, where the KF template
+    # family's ladder carries radt 3.0 at 3 km.  That divergence is
+    # deliberate: this row names what the battery runs, not the ladder.
+    thompson_validation_id = "thompson-mp8-ysu-mm5-noah-validation-v1"
+    thompson_legacy_id = "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1"
+    thompson_legacy = copy.deepcopy(
+        registry["templates"][thompson_validation_id])
+    thompson_legacy["components"]["radiation"] = "rte-rrtmgp"
+    thompson_legacy["label"] = (
+        "Thompson + YSU + classic MM5 + Noah + cumulus off + legacy RRTMG")
+    thompson_legacy["maturity"] = "wrf-matched-run-candidate"
+    thompson_legacy["parameters"]["diff_6th_factor"] = 0.12
+    thompson_legacy["parameters"]["radt"] = 12.0
+    thompson_legacy["parameters"]["wrf_rrtmg_compatibility"] = (
+        "wrf-rrtmg-4-4-legacy-v1")
+    thompson_legacy["parameters"]["ra_rrtmg_variant"] = "rrtmg_legacy"
+    thompson_legacy["per_domain_overrides"] = [
+        {
+            "diff_6th_factor": 0.12,
+            "epssm": 0.5,
+            "nominal_dx_m": 3000.0,
+            "radt": 12.0,
+        },
+    ]
+    thompson_legacy["warnings"] = [
+        "Composition candidate: every component is individually verified "
+        "(Thompson mp8 wrf-matched-run; the legacy RRTMG engine is the "
+        "certified WRF v4.6.1 port) but no receipt covers the composed "
+        "suite.  The upgrade payer is named: the composition's first "
+        "stock-WRF-paired t0/case receipt (the observation battery's "
+        "shakedown case) is what moves this label.",
+        "radt 12.0 at dx 3000 m is transcribed from the battery's "
+        "registered configuration and deliberately diverges from the KF "
+        "template family's per-domain ladder (radt 3.0 at 3 km); it is "
+        "not an oversight.",
+    ]
+    registry["templates"][thompson_legacy_id] = thompson_legacy
+    # HRRR-only registration, on the Kessler precedent: the battery runs
+    # HRRR, and no other source inherits evidence from that run.  The
+    # prepared-single-domain route's per-source lists are the runner's
+    # own VERIFICATION-EVIDENCE metadata (its drift check compares them
+    # to _SOURCE_PHYSICS_PROFILES), and this composition has no receipt
+    # on gfs/era5/20crv3 -- so it is deliberately absent there.
+    for route in registry["runner_routes"].values():
+        for declared in route.get("source_template_ids", {}).values():
+            if thompson_legacy_id in declared:
+                declared.remove(thompson_legacy_id)
+    for route_id in (
+            "tools.hrrr_single_domain_benchmark",
+            "tools.prepared_domain_tree_forecast"):
+        declared = registry["runner_routes"][route_id][
+            "source_template_ids"]["hrrr"]
+        declared.insert(
+            declared.index(thompson_validation_id) + 1, thompson_legacy_id)
+
+    # The gray-zone sibling of the row above: the SAME composition with
+    # Shin-Hong 2015 in place of YSU, which is the single edge the
+    # divergence ledger's L3 entry moves (gpuwm/physics_mode.py).  It is
+    # registered because a physics-fidelity arm that selects L3 resolves
+    # to exactly this suite, and an unregistered suite has no root
+    # preparation -- so the ledger entry that already carries the
+    # strongest scheme-level evidence in the tree had no run route at
+    # all.  Built from the sibling by moving ONE component, so a paired
+    # run of the two isolates the closure and nothing else; the surface
+    # layer stays classic MM5 because WRF v4.6.1's own SHINHONGSCHEME arm
+    # (phys/module_physics_init.F:3702-3704) requires isfc=1 exactly as
+    # YSU does.
+    shinhong_legacy_id = "thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1"
+    shinhong_legacy = copy.deepcopy(thompson_legacy)
+    shinhong_legacy["components"]["pbl"] = "shinhong"
+    shinhong_legacy["label"] = (
+        "Thompson + Shin-Hong + classic MM5 + Noah + cumulus off + "
+        "legacy RRTMG")
+    shinhong_legacy["maturity"] = "wrf-matched-run-candidate"
+    shinhong_legacy["warnings"] = [
+        "Composition candidate: every component is individually verified "
+        "(Thompson mp8 wrf-matched-run; the legacy RRTMG engine is the "
+        "certified WRF v4.6.1 port; Shin-Hong is measured bitwise against "
+        "the byte-frozen WRF v4.6.1 module on both halves of the port, "
+        "max ULP 0 on the float32 CPU authority and 0 ULP on the CUDA "
+        "heat tendency) but no receipt covers the composed suite.  The "
+        "upgrade payer is named: this composition's first stock-WRF-"
+        "paired t0/case receipt -- the first paired case run of the "
+        "gray-zone arm -- is what moves this label.",
+        "This template differs from "
+        "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1 in exactly ONE "
+        "component, the PBL closure, so the pair is a controlled "
+        "gray-zone comparison rather than two independent suites.  Every "
+        "other parameter, including the per-domain row, is transcribed "
+        "from that template.",
+        "Shin-Hong carries the component-level warnings of its option "
+        "(components.pbl.options.shinhong): the entrainment-flux guard "
+        "where WRF reads one element past its array, WRF's own 0/0 NaN "
+        "column reproduced rather than repaired, and the sm_120 "
+        "subnormal-tendency flush.  Selecting this template selects "
+        "those.",
+    ]
+    registry["templates"][shinhong_legacy_id] = shinhong_legacy
+    # HRRR-only, on the same Kessler rule as its sibling: the arm that
+    # selects this composition runs the HRRR route, and no other source
+    # inherits evidence from that run.
+    for route in registry["runner_routes"].values():
+        for declared in route.get("source_template_ids", {}).values():
+            if shinhong_legacy_id in declared:
+                declared.remove(shinhong_legacy_id)
+    for route_id in (
+            "tools.hrrr_single_domain_benchmark",
+            "tools.prepared_domain_tree_forecast"):
+        declared = registry["runner_routes"][route_id][
+            "source_template_ids"]["hrrr"]
+        declared.insert(
+            declared.index(thompson_legacy_id) + 1, shinhong_legacy_id)
 
     # Owner-ratified declaration: the GFS runner has always advertised this
     # profile and retains the existing Noah-MP route acknowledgement.

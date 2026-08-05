@@ -508,7 +508,49 @@ def test_rrtmgp_table_containers_are_explicitly_classified():
          "_C", "_sw_tables", "_cuda_sw", "_ozone_climo",
          "_night_outputs", "_ozone"})
     assert restart.CUMULUS_CALLABLE_CONTAINERS == frozenset(
-        {"_history_state"})
+        {"_history_state", "_driver"})
+
+
+def test_every_cumulus_adapter_attribute_is_classified():
+    """Each selectable cumulus scheme's LIVE adapter passes the walk.
+
+    The classification allowlists are written against the adapters, so the
+    adapters -- not hand-built stand-ins -- are what has to satisfy them.
+    The GF adapter is the reason this test exists: it stores the
+    PhysicsDriver back-reference ``bind_driver`` hands it, the driver is an
+    array-bearing object container, and the walk refused every checkpoint
+    of a ``cu_physics=3`` run until ``_driver`` was classified (the first
+    real-case GF trajectory died at its first restart having integrated
+    179 outer steps).  Constructing each adapter here needs no device.
+    """
+    from gpuwm.core.gf import GrellFreitas
+    from gpuwm.core.kf import KainFritsch
+
+    def check(adapter):
+        restart._callable_state_check(
+            adapter, restart.CUMULUS_CALLABLE_ARRAYS,
+            restart.CUMULUS_CALLABLE_CONTAINERS, "cumulus")
+
+    check(KainFritsch())
+    check(GrellFreitas())
+
+    # Bound, which is the only shape a checkpoint ever sees: PhysicsDriver
+    # calls bind_driver on every cumulus step, so a GF adapter that has run
+    # once always carries the driver.
+    driver_like = SimpleNamespace(
+        rthratenlw=np.zeros((2, 2, 2), np.float32),
+        rthratensw=np.zeros((2, 2, 2), np.float32))
+    bound = GrellFreitas()
+    bound.bind_driver(driver_like)
+    check(bound)
+
+    # The walk is still armed: an adapter that grows real state of its own
+    # must be classified, not absorbed by the container entries above.
+    grown = GrellFreitas()
+    grown.closure_memory = np.zeros((4, 4), np.float32)
+    with pytest.raises(restart.RestartManifestError,
+                       match="closure_memory"):
+        check(grown)
 
 
 def test_surface_audit_carry_in_names_live_in_the_fields_inventory():
@@ -2125,6 +2167,107 @@ def test_sealed_tree_restart_extends_root_and_restores_rebuilt_child(
     assert resumed_child.coupler.valid is False
 
 
+def _grell_freitas_tree(monkeypatch, *, seed=61):
+    """Two ``cu_physics = 3`` domains on the CPU shim, legal for
+    :func:`write_tree_restart`.  No device: the manifest walk that refused
+    the real run is pure Python."""
+    from gpuwm.core.gf import GrellFreitas
+    from gpuwm.core.model import ModelRuntimeStatus
+
+    def build(grid_id, nested, payload):
+        cfg = _cfg(grid_id=grid_id, nested=nested, moist=True,
+                   cu_physics=3, cudt_minutes=0.0, run_seconds=60.0)
+        state, driver = _shim_driver_state(cfg, monkeypatch)
+        _fill_setup(state)
+        _fill_serialized(state, payload)
+        state._nest_restart_classification = "REBUILT"
+        adapter = GrellFreitas()
+        # Exactly what PhysicsDriver._run_cumulus does on every cumulus
+        # step, and therefore the state every real checkpoint sees.
+        adapter.bind_driver(driver)
+        driver.cumulus_callable = adapter
+        return cfg, state
+
+    def clock(dtbc):
+        return SimpleNamespace(
+            ticks=0, tick_den=1, step_count=0,
+            dtbc_fp32=np.float32(dtbc),
+            spec=SimpleNamespace(start_ticks=0, step_ticks=1))
+
+    root_cfg, root_state = build(1, False, seed)
+    child_cfg, child_state = build(2, True, seed + 1)
+    root = SimpleNamespace(
+        cfg=SimpleNamespace(grid_id=1, parent_id=0, run=root_cfg,
+                            start_time=None),
+        state=root_state, clock=clock(7.0), parent=None, children=[],
+        coupler=None, _started=True)
+    child = SimpleNamespace(
+        cfg=SimpleNamespace(grid_id=2, parent_id=1, run=child_cfg,
+                            start_time=None),
+        state=child_state, clock=clock(9.0), parent=root, children=[],
+        coupler=None, _started=True)
+    root.children.append(child)
+    return SimpleNamespace(
+        root=root, experiment_fingerprint="gf-tree-fixture-v1",
+        schedule=SimpleNamespace(
+            period_ticks=1,
+            clock=SimpleNamespace(tick_den=1, run_ticks=60,
+                                  start_time=datetime(1974, 4, 3, 12))),
+        walk_parent_first=lambda: iter((root, child)),
+        _runtime_status=ModelRuntimeStatus(), _io_manager=None,
+        _last_checkpoint=None, _resumed=False,
+        _resume_committed_history_grid_ids=frozenset())
+
+
+def test_tree_checkpoint_publishes_with_grell_freitas_on_every_domain(
+        monkeypatch, tmp_path):
+    """The path the real run actually died on, reproduced without a device.
+
+    The production failure was a TREE checkpoint of two GF domains --
+    ``write_tree_restart`` -> ``write_restart`` -> ``_driver_manifest`` ->
+    ``_callable_state_check`` -- and the tree writer publishes nothing
+    unless every member writes, so one unclassified attribute on one
+    domain refused the entire generation and unlinked what it had already
+    written.  The single-domain bitwise gate cannot see that: it never
+    calls the tree writer.
+
+    Both adapters are bound the way ``_run_cumulus`` binds them, because
+    an unbound adapter is exactly the state that WOULD have passed.
+    """
+    model = _grell_freitas_tree(monkeypatch)
+    for node in model.walk_parent_first():
+        assert node.state.physics.cumulus_callable._driver is \
+            node.state.physics
+
+    root_path = restart.write_tree_restart(
+        tmp_path, model, datetime(1974, 4, 3, 15))
+
+    published = sorted(path.name for path in tmp_path.glob("gpuwmrst_*.npz"))
+    assert len(published) == 2, published
+    assert root_path.exists()
+    for path in tmp_path.glob("gpuwmrst_*.npz"):
+        header = restart.read_restart_header(path)
+        assert header["physics_setup"]["cumulus"]["callable"] == {
+            "class": "gpuwm.core.gf.GrellFreitas",
+            "implementation": "stock"}
+        # GF ships no coefficient table; the KF asset must not be bound
+        # into a GF manifest.
+        assert header["physics_setup"]["cumulus"]["coefficient_table"] is None
+        assert "cumulus/w0avg" not in header["array_manifest"]
+
+    # And the negative, on the same tree: restore the pre-fix
+    # classification and the whole generation is refused, publishing
+    # nothing -- the exact production failure, message included.
+    refused = _grell_freitas_tree(monkeypatch, seed=71)
+    monkeypatch.setattr(restart, "CUMULUS_CALLABLE_CONTAINERS",
+                        frozenset({"_history_state"}))
+    empty = tmp_path / "refused"
+    with pytest.raises(restart.RestartManifestError,
+                       match=r"'_driver' is an object container"):
+        restart.write_tree_restart(empty, refused, datetime(1974, 4, 3, 15))
+    assert not list(empty.glob("gpuwmrst_*.npz"))
+
+
 def test_sealed_tree_writer_preflights_all_members_before_publication(
         monkeypatch, tmp_path):
     source, start = _sealed_tree_fixture(
@@ -2477,12 +2620,14 @@ def test_cli_run_passes_restart_through(monkeypatch, tmp_path, capsys):
 # GPU: live manifest coverage and the cheap bit-identity gate.
 # ---------------------------------------------------------------------------
 
-def _physics_state(**cfg_overrides):
+def _physics_state(cp, **cfg_overrides):
     """Small full-physics state: Morrison + analytic radiation + KF +
     SFCLAY/Noah/YSU, mixed land/water, with a condensate layer so the
-    microphysics accumulators and h_diabatic are non-trivial."""
-    import cupy as cp
+    microphysics accumulators and h_diabatic are non-trivial.
 
+    ``cp`` is the caller's cupy module, passed in rather than imported here.
+    See :func:`_grell_freitas_state` for why that matters.
+    """
     from gpuwm.core.grid import make_base_state, make_vertical_coord
     from gpuwm.core.moist import init_moist_balanced
     from gpuwm.core.physics import initialize_physics
@@ -2525,10 +2670,83 @@ def _physics_state(**cfg_overrides):
     return state, cfg, driver
 
 
-def _thompson_restart_state():
-    """Small guarded-mp8 state with all classic hydrometeor groups active."""
-    import cupy as cp
+def _grell_freitas_state(cp):
+    """Small state in which ``cu_physics=3`` actually convects.
 
+    Deliberately NOT ``_physics_state`` with an override: that state's 2 km
+    grid and 8 km lid are a configuration Grell-Freitas declines (the
+    ``sig = (1-frh)^2`` scale taper, and no room above the LFC), and a
+    restart gate for a scheme that never triggers would compare nothing but
+    zeros on the axis it exists to test.  This is the production family --
+    12 km, RTE+RRTMGP, Morrison, YSU, ``cudt_minutes = 0`` -- over a warm,
+    conditionally unstable, deep-moist column that GF fires on within the
+    first ten steps and is still firing at step 40.  The 14 km lid is the
+    RRTMGP temperature-range floor, not a physics choice.
+
+    ``cp`` is the caller's cupy module.  It is a parameter, not an ``import
+    cupy`` in this body, and that is load-bearing: conftest marks a module
+    ``gpu`` *in its entirety* when any non-test function imports cupy,
+    because a helper's callers are not decidable from the AST.  These three
+    state builders are called only from the five explicitly
+    ``@pytest.mark.gpu`` tests below, but the coarse rule cannot know that,
+    so importing cupy here swept the module's other 91 device-free tests --
+    every restart-manifest classification gate, including the two covering
+    the Grell-Freitas manifest fix -- out of ``-m "not gpu"`` and made them
+    unrunnable without a card.  Keeping the import in the callers puts the
+    device contact where it actually happens.  Do not "tidy" it back.
+    """
+    from gpuwm.config import validate_run_config
+    from gpuwm.core.grid import make_base_state, make_vertical_coord
+    from gpuwm.core.moist import init_moist_balanced
+    from gpuwm.core.physics import initialize_physics
+
+    cfg = validate_run_config(RunConfig(
+        nx=8, ny=6, nz=40, dx=12000.0, dy=12000.0, ztop=14000.0,
+        dt=60.0, run_seconds=0.0, time_step_sound=4, moist=True,
+        mp_physics=10, morr_rimed_ice=1,
+        sf_sfclay_physics=1, sf_surface_physics=2, bl_pbl_physics=1,
+        # radt 6 min on a 60 s step -> stepra 6, so radiation is due at
+        # itimestep % 6 == 1 and the step-20 checkpoint is OFF its calendar.
+        ra_physics=4, radt_minutes=6.0, bldt=0.0,
+        cu_physics=3, cudt_minutes=0.0, ishallow=1))
+    coord = make_vertical_coord(cfg.nz)
+
+    def theta(z):
+        # Well-mixed to 2 km, then conditionally unstable.
+        z = np.asarray(z, np.float64)
+        return 300.0 + 0.0025 * np.maximum(z - 2000.0, 0.0)
+
+    base = make_base_state(coord, theta, p_surf=cfg.p_surf, ztop=cfg.ztop)
+    state = init_moist_balanced(
+        cfg, coord, base,
+        lambda z: 0.019 * np.exp(-np.asarray(z, np.float64) / 5000.0))
+    state.u[...] = cp.float32(4.0)
+    state.v[...] = cp.float32(1.0)
+
+    landmask = np.ones((cfg.ny, cfg.nx), np.float64)
+    landmask[:, -1] = 0.0                      # one water column: XLAND varies
+    tsk = np.full((cfg.ny, cfg.nx), 308.0)
+    tsk[:, -1] = 303.0
+    soil_t = np.stack([tsk - 0.5, tsk - 1.0, tsk - 1.5, tsk - 2.0])
+    soil_m = np.full((4, cfg.ny, cfg.nx), 0.35)
+    soil_m[:, landmask == 0.0] = 1.0
+    driver = initialize_physics(
+        state, cfg, landmask=landmask, tsk=tsk,
+        soil_temperature=soil_t, soil_moisture=soil_m,
+        liquid_moisture=soil_m, ivgtyp=np.where(landmask, 10, 17),
+        isltyp=np.where(landmask, 6, 14), vegfra=55.0, tmn=292.0,
+        swdown=850.0, glw=380.0, pblh=1200.0,
+        radiation_start_time=datetime(1974, 4, 3, 18),
+        radiation_latitude=np.full((cfg.ny, cfg.nx), 39.0),
+        radiation_longitude=np.full((cfg.ny, cfg.nx), -87.0))
+    return state, cfg, driver
+
+
+def _thompson_restart_state(cp):
+    """Small guarded-mp8 state with all classic hydrometeor groups active.
+
+    ``cp`` is the caller's cupy module.  See :func:`_grell_freitas_state`.
+    """
     from gpuwm.core.grid import make_base_state, make_vertical_coord
     from gpuwm.core.physics import initialize_physics
     from gpuwm.core.state import init_theta_perturbation
@@ -2620,9 +2838,11 @@ def _assert_restart_equal(path_a, path_b, *, compare_trackers=False):
 def test_live_full_state_write_covers_every_mechanism(tmp_path):
     """write_restart's internal completeness walk passes on a live
     full-physics state, and the manifest carries every audited mechanism."""
+    import cupy as cp
+
     from gpuwm.core.dycore import run_steps
 
-    state, cfg, driver = _physics_state()
+    state, cfg, driver = _physics_state(cp)
     run_steps(state, cfg, 6)
     path = restart.write_restart(tmp_path / "rst.npz", state, cfg)
     header = restart.read_restart_header(path)
@@ -2664,16 +2884,16 @@ def test_short_full_physics_restart_is_bit_identical(tmp_path):
 
     from gpuwm.core.dycore import run_steps
 
-    state_a, cfg_a, _ = _physics_state()
+    state_a, cfg_a, _ = _physics_state(cp)
     run_steps(state_a, cfg_a, 40)
     reference = restart.write_restart(tmp_path / "reference.npz",
                                       state_a, cfg_a)
 
-    state_b, cfg_b, _ = _physics_state()
+    state_b, cfg_b, _ = _physics_state(cp)
     run_steps(state_b, cfg_b, 20)
     mid = restart.write_restart(tmp_path / "mid.npz", state_b, cfg_b)
 
-    state_c, cfg_c, _ = _physics_state()
+    state_c, cfg_c, _ = _physics_state(cp)
     info = restart.restore_restart(mid, state_c, cfg_c)
     assert info.elapsed_seconds == 200.0
     run_steps(state_c, cfg_c, 20)
@@ -2691,6 +2911,77 @@ def test_short_full_physics_restart_is_bit_identical(tmp_path):
 
 @requires_gpu
 @pytest.mark.gpu
+def test_short_grell_freitas_restart_is_bit_identical(tmp_path):
+    """cu_physics=3, on the same terms: 20 + restart + 20 == 40 steps,
+    FP32-bit-exact on every serialized field.
+
+    The gate the GF selectable wiring shipped without, and the one that
+    would have caught the manifest refusal that killed the first real-case
+    GF trajectory 179 outer steps in.  GF's adapter is stateless, so
+    everything that must cross the boundary crosses it on the DRIVER: the
+    held ``cu_rates``, the RAINC/RAINCV/PRATEC accumulators, and --
+    GF-specific -- the retained radiative heating that ``bind_driver``
+    feeds back into GFDRV's forced state.  ``cudt_minutes=0`` puts GF on
+    every step (its pinned WRF configuration), so the step-21 call is a
+    real cumulus call reading restored inputs; and the step-20 boundary is
+    off the radiation calendar (due at ``itimestep % 6 == 1`` -> 19/25), so
+    that call must consume a DESERIALIZED rthraten rather than one the
+    resume happened to recompute.
+    """
+    import cupy as cp
+
+    from gpuwm.core.dycore import run_steps
+    from gpuwm.core.gf import GrellFreitas
+
+    state_a, cfg_a, driver_a = _grell_freitas_state(cp)
+    assert isinstance(driver_a.cumulus_callable, GrellFreitas)
+    run_steps(state_a, cfg_a, 40)
+    # The adapter is bound by the time any checkpoint is taken -- which is
+    # exactly the shape the manifest walk has to accept.
+    assert driver_a.cumulus_callable._driver is driver_a
+    reference = restart.write_restart(tmp_path / "reference.npz",
+                                      state_a, cfg_a)
+
+    state_b, cfg_b, driver_b = _grell_freitas_state(cp)
+    run_steps(state_b, cfg_b, 20)
+    # THE state the fix is about: at the checkpoint GF is convecting, so
+    # held rates and a RAINC total both have to survive serialization.
+    assert bool(cp.any(driver_b.cu_rates["rthcuten"] != 0.0))
+    assert float(cp.abs(driver_b.rainc).max()) > 0.0
+    mid = restart.write_restart(tmp_path / "mid.npz", state_b, cfg_b)
+
+    state_c, cfg_c, _ = _grell_freitas_state(cp)
+    info = restart.restore_restart(mid, state_c, cfg_c)
+    assert info.elapsed_seconds == 1200.0
+    run_steps(state_c, cfg_c, 20)
+    resumed = restart.write_restart(tmp_path / "resumed.npz",
+                                    state_c, cfg_c)
+
+    _assert_restart_equal(resumed, reference)
+
+    # Non-triviality: GF ran on every one of the 40 steps and left real
+    # numbers behind, and the radiation it reads spans the boundary.
+    assert state_c.physics.call_counts["cumulus"] == 40
+    assert state_c.physics.call_counts["radiation"] == 7   # 1, 7, ..., 37
+    assert float(cp.abs(state_c.physics.rainc).max()) > 0.0
+    assert bool(cp.any(state_c.h_diabatic != 0.0))
+    # The exact sum bind_driver hands GFDRV as its radiative forcing: if it
+    # were zero the boundary-crossing this test is about would be vacuous.
+    held_rthraten = state_c.physics.rthratenlw + state_c.physics.rthratensw
+    assert bool(cp.any(held_rthraten != 0.0))
+
+    keys = set(restart.read_restart_header(reference)["array_manifest"])
+    for expected in ("scratch/cu_rainc", "scratch/cu_raincv",
+                     "scratch/cu_pratec", "scratch/cu_rthcuten",
+                     "scratch/cu_rqvcuten"):
+        assert expected in keys, expected
+    # GF carries no trigger history: the KF-only W0AVG member must not
+    # appear, and its absence must not be mistaken for a lost field.
+    assert "cumulus/w0avg" not in keys
+
+
+@requires_gpu
+@pytest.mark.gpu
 def test_short_thompson_refl_restart_is_bit_identical(tmp_path):
     """Guarded mp8: 10 + restart + 10 equals uninterrupted 20 exactly.
 
@@ -2703,17 +2994,19 @@ def test_short_thompson_refl_restart_is_bit_identical(tmp_path):
     if os.environ.get("GPUWM_EXPERIMENTAL_THOMPSON_MP8") != "1":
         pytest.skip("GPUWM_EXPERIMENTAL_THOMPSON_MP8=1 is required")
 
-    control, control_cfg = _thompson_restart_state()
+    import cupy as cp
+
+    control, control_cfg = _thompson_restart_state(cp)
     _advance_thompson_with_refl(control, control_cfg, 20)
     reference = restart.write_restart(
         tmp_path / "thompson-reference.npz", control, control_cfg)
 
-    split, split_cfg = _thompson_restart_state()
+    split, split_cfg = _thompson_restart_state(cp)
     _advance_thompson_with_refl(split, split_cfg, 10)
     mid = restart.write_restart(
         tmp_path / "thompson-mid.npz", split, split_cfg)
 
-    resumed, resumed_cfg = _thompson_restart_state()
+    resumed, resumed_cfg = _thompson_restart_state(cp)
     info = restart.restore_restart(mid, resumed, resumed_cfg)
     assert info.elapsed_seconds == 20.0
     _advance_thompson_with_refl(resumed, resumed_cfg, 10)

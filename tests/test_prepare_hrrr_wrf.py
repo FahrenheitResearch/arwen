@@ -1538,6 +1538,17 @@ def test_public_wrapper_preserves_absolute_source_leads_and_rebases_model_time(
                 },
                 "pipeline": {"workers": {"requested": "8", "selected": 8}},
             }), encoding="utf-8")
+        elif "gpuwm.wrf_direct" in command:
+            # Behave like the real atomic exporter on success: the
+            # fail-closed step verifies the declared outputs at PASS.
+            export_output = Path(command[command.index("--output") + 1])
+            export_output.mkdir(parents=True)
+            for name in ("wrfinput_d01", "wrfbdy_d01"):
+                (export_output / name).write_bytes(b"exported")
+            (export_output / "manifest.json").write_text(json.dumps({
+                "files": {"wrfinput_d01": {"sha256": "0" * 64},
+                          "wrfbdy_d01": {"sha256": "0" * 64}},
+            }), encoding="utf-8")
 
     monkeypatch.setattr(prepare, "_run", fake_run)
     output = tmp_path / "output"
@@ -1695,6 +1706,18 @@ def _wrapper_case(tmp_path: Path, monkeypatch, *, export_returncode: int = 0):
         elif "gpuwm.wrf_direct" in command and export_returncode:
             raise subprocess_module.CalledProcessError(
                 export_returncode, command)
+        elif "gpuwm.wrf_direct" in command:
+            # The fake converter behaves like the real atomic exporter:
+            # exit 0 means the declared outputs and their manifest exist
+            # (the fail-closed step verifies exactly that at PASS).
+            export_output = Path(command[command.index("--output") + 1])
+            export_output.mkdir(parents=True)
+            for name in ("wrfinput_d01", "wrfbdy_d01"):
+                (export_output / name).write_bytes(b"exported")
+            (export_output / "manifest.json").write_text(json.dumps({
+                "files": {"wrfinput_d01": {"sha256": "0" * 64},
+                          "wrfbdy_d01": {"sha256": "0" * 64}},
+            }), encoding="utf-8")
 
     monkeypatch.setattr(prepare, "_run", fake_run)
     output = tmp_path / "output"
@@ -1714,42 +1737,40 @@ def _wrapper_case(tmp_path: Path, monkeypatch, *, export_returncode: int = 0):
     return argv, commands, output
 
 
-def test_a_refused_stock_wrf_export_no_longer_destroys_the_preparation(
-        tmp_path: Path, monkeypatch, capsys) -> None:
-    """The field failure: PASS report, then exit 1 with nothing to show.
+def test_a_refused_stock_wrf_export_fails_the_command_keeping_the_work(
+        tmp_path: Path, monkeypatch) -> None:
+    """The 2026-08-04 ruling: a requested export that fails is fatal.
 
-    ``gpuwm.wrf_direct`` refused on a real, named feature gap (frozen-soil
-    SH2O setup), and ``subprocess.run(check=True)`` carried that refusal
-    all the way out of a wrapper whose actual product -- the prepared
-    cache and its PASS report -- was already written and correct.  The
-    gap is still reported; it no longer takes the work with it.
+    History in two swings: the original ``check=True`` destroyed a
+    completed preparation on any converter refusal; the warn-and-continue
+    fix for that then PASS-logged the battery case run whose converter
+    died on EMFILE -- no WRF-arm inputs, no manifest, one warning line
+    (out/node19-shakedown/b04/B04-EXPORT-REFUSAL.txt).  Now the command
+    fails LOUDLY, and the preparation's own artifacts stay on disk --
+    the refusal costs a re-run of the export, never the preparation.
     """
 
     argv, commands, output = _wrapper_case(
         tmp_path, monkeypatch, export_returncode=1)
-    assert prepare.main(argv) == 0
+    with pytest.raises(RuntimeError, match="requested and failed"):
+        prepare.main(argv)
 
     assert any("gpuwm.wrf_direct" in command for command in commands)
-    receipt = json.loads(
-        (output / "public-wrapper-result.json").read_text(encoding="utf-8"))
-    assert receipt["status"] == "PASS"
-    assert receipt["stock_wrf_export"]["status"] == "REFUSED"
-    assert receipt["stock_wrf_export"]["returncode"] == 1
-    assert receipt["wrf_input"] is None
-    assert "warning:" in capsys.readouterr().err
+    # The preparation completed before the export and stands on disk.
+    report = (output / "native" / "preparation-report" / "report.json")
+    assert report.is_file()
+    assert json.loads(report.read_text(encoding="utf-8"))["status"] == "PASS"
+    # No wrapper PASS receipt is written over the failure.
+    assert not (output / "public-wrapper-result.json").exists()
 
 
 def test_a_required_stock_wrf_export_still_fails_the_command(
         tmp_path: Path, monkeypatch) -> None:
-    """Negative control, watched firing: asked for, refused, nonzero.
-
-    Without --require-stock-wrf-export the very same refusal exits 0
-    (the test above), so this assertion is not free.
-    """
+    """The legacy flag is honored: failure is fatal with it too."""
 
     argv, _commands, _output = _wrapper_case(
         tmp_path, monkeypatch, export_returncode=1)
-    with pytest.raises(RuntimeError, match="required and refused"):
+    with pytest.raises(RuntimeError, match="requested and failed"):
         prepare.main(argv + ["--require-stock-wrf-export"])
 
 
@@ -1774,6 +1795,11 @@ def test_a_successful_stock_wrf_export_still_names_its_output(
         (output / "public-wrapper-result.json").read_text(encoding="utf-8"))
     assert receipt["stock_wrf_export"]["status"] == "PASS"
     assert receipt["wrf_input"] == str(output / "wrf-native-input")
+    # PASS is earned: the receipt binds the verified outputs by name and
+    # by the manifest's own digest.
+    assert receipt["stock_wrf_export"]["files"] == [
+        "wrfbdy_d01", "wrfinput_d01"]
+    assert len(receipt["stock_wrf_export"]["manifest_sha256"]) == 64
 
 
 def test_the_two_export_flags_are_mutually_exclusive(tmp_path: Path,
@@ -1829,3 +1855,66 @@ def test_an_explicit_decoder_override_is_honored_and_fails_loud(
     monkeypatch.setenv("GPUWM_HRRR_DECODER", str(tmp_path / "absent"))
     with pytest.raises(FileNotFoundError, match="GPUWM_HRRR_DECODER"):
         prepare._decoder({})
+
+
+def test_requested_stock_wrf_export_failure_is_fatal(tmp_path):
+    """The fail-closed contract, driven by an injected converter death.
+
+    The 2026-08-04 battery case run's converter subprocess died on EMFILE
+    and the old warn-and-continue posture PASS-logged a preparation with
+    no WRF-arm inputs and no manifest.  A requested export that fails now
+    refuses loudly, whatever the converter's exit reason -- the subprocess
+    boundary cannot tell an environmental death from a typed refusal.
+    """
+
+    import sys
+
+    with pytest.raises(RuntimeError, match="requested and failed"):
+        prepare._stock_wrf_export(
+            [sys.executable, "-c", "import sys; sys.exit(24)"],
+            dict(os.environ), skip=False, required=False,
+            output=tmp_path / "wrf-native-input")
+
+    # --skip-stock-wrf-export remains the deliberate opt-out, recorded.
+    receipt = prepare._stock_wrf_export(
+        [sys.executable, "-c", "import sys; sys.exit(24)"],
+        dict(os.environ), skip=True, required=False,
+        output=tmp_path / "wrf-native-input")
+    assert receipt == {"status": "SKIPPED",
+                       "reason": "--skip-stock-wrf-export",
+                       "required": False}
+
+
+def test_stock_wrf_export_pass_is_earned_by_manifested_outputs(tmp_path):
+    """PASS requires the declared outputs to exist and hash-manifest."""
+
+    import sys
+
+    output = tmp_path / "wrf-native-input"
+    quiet = [sys.executable, "-c", "pass"]
+
+    # Exit 0 with no manifest at all: refused by name.
+    with pytest.raises(RuntimeError, match="left no manifest"):
+        prepare._stock_wrf_export(quiet, dict(os.environ), skip=False,
+                                  required=False, output=output)
+
+    # A manifest whose declared file is missing on disk: refused by name.
+    output.mkdir(parents=True)
+    (output / "manifest.json").write_text(json.dumps({
+        "files": {"wrfinput_d01": {"sha256": "0" * 64},
+                  "wrfbdy_d01": {"sha256": "0" * 64}},
+    }), encoding="utf-8")
+    (output / "wrfinput_d01").write_bytes(b"present")
+    with pytest.raises(RuntimeError, match="missing on disk.*wrfbdy_d01"):
+        prepare._stock_wrf_export(quiet, dict(os.environ), skip=False,
+                                  required=False, output=output)
+
+    # Every declared file present: PASS, with the manifest's own digest.
+    (output / "wrfbdy_d01").write_bytes(b"present")
+    receipt = prepare._stock_wrf_export(quiet, dict(os.environ), skip=False,
+                                        required=False, output=output)
+    assert receipt["status"] == "PASS"
+    assert receipt["files"] == ["wrfbdy_d01", "wrfinput_d01"]
+    assert receipt["manifest_sha256"] == hashlib.sha256(
+        (output / "manifest.json").read_bytes()).hexdigest()
+    assert "REFUSED" not in prepare.STOCK_WRF_EXPORT_STATES

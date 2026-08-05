@@ -106,6 +106,31 @@ def _distribution_version(name: str) -> str:
     return str(version(name))
 
 
+#: A CUDA device UUID is 16 bytes.  ``cudaUUID_t`` is ``char bytes[16]``
+#: with no terminator, so its length is the array bound and nothing else.
+CUDA_UUID_BYTES = 16
+
+
+def device_uuid_hex(raw):
+    """Hex of the 16 bytes that are the UUID, and of no other bytes.
+
+    The buffer CuPy hands back for ``getDeviceProperties()['uuid']`` is
+    not bounded by that array: the conversion stops at the first zero
+    byte rather than at the array end, and ``cudaDeviceProp`` places
+    ``luid`` immediately after ``uuid``, so an unbounded read can carry
+    bytes of the neighbouring member.  Those bytes are not device
+    identity -- Windows re-issues the LUID when it re-enumerates the
+    adapter, so a pin regenerated on the same physical card could
+    differ: churn that reads exactly like the run having moved to
+    different silicon, which is the one question ``gpu_identity``
+    exists to answer.  Same defect, same bound as
+    ``tools/ftz_receipt/probe.device_uuid_hex``.
+    """
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        return bytes(raw)[:CUDA_UUID_BYTES].hex()
+    return raw
+
+
 def _gpu_pins(entries: dict[str, dict[str, Any]], *, require_gpu: bool) -> None:
     gpu_identity = _PIN_BY_KEY["gpu_identity"]
     driver = _PIN_BY_KEY["cuda_driver_version"]
@@ -124,9 +149,7 @@ def _gpu_pins(entries: dict[str, dict[str, Any]], *, require_gpu: bool) -> None:
         # its selected physical UUID before the worker imports CuPy.
         device = cp.cuda.Device(0)
         properties = cp.cuda.runtime.getDeviceProperties(0)
-        uuid = properties.get("uuid")
-        if isinstance(uuid, (bytes, bytearray)):
-            uuid = bytes(uuid).hex()
+        uuid = device_uuid_hex(properties.get("uuid"))
         identity = {
             "name": block["device_0_name"],
             "compute_capability": str(device.compute_capability),

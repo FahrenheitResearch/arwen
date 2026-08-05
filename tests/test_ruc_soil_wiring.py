@@ -26,6 +26,7 @@ it.
 from __future__ import annotations
 
 import ast
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -282,8 +283,17 @@ def test_noah_and_noahmp_soil_is_bitwise_what_it_was(scheme, source) -> None:
 
     assert type(through_seam) is type(reference) is NoahSoilState
     for name in NoahSoilState.__dataclass_fields__:
-        want = np.asarray(getattr(reference, name))
-        got = np.asarray(getattr(through_seam, name))
+        raw_want = getattr(reference, name)
+        raw_got = getattr(through_seam, name)
+        if isinstance(raw_want, Mapping) or isinstance(raw_got, Mapping):
+            # the moisture-floor receipt is a mapping, not an array; byte
+            # identity for it is VALUE equality, not object-pointer bytes
+            assert raw_got == raw_want, (
+                f"{name} moved for sf_surface_physics={scheme} on the "
+                f"{source} source")
+            continue
+        want = np.asarray(raw_want)
+        got = np.asarray(raw_got)
         assert got.dtype == want.dtype and got.shape == want.shape, name
         assert got.tobytes() == want.tobytes(), (
             f"{name} moved for sf_surface_physics={scheme} on the {source} "

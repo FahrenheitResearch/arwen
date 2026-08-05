@@ -13,6 +13,53 @@
 // with old UST.  Outputs remain FP32 model state;
 // gpuwm.verify.npref.np_sfclay is the float64 transcription mirror.
 
+__device__ __forceinline__ double sf_f2d(real x)
+{
+    // Bit-decoded float->double widening.  The f32->f64 cvt this compile
+    // route emits DAZes subnormal inputs (measured on the RTX 5090, same
+    // finding as rrtmg_sw.cu's rsw_f2d), so (double)z0 of a subnormal
+    // roughness would arrive as 0.0.
+    unsigned int ix = __float_as_uint(x);
+    if (((ix >> 23) & 0xffu) == 0u) {     // zero or subnormal
+        double v = (double)(ix & 0x7fffffu) * 0x1p-149;
+        return (ix & 0x80000000u) ? -v : v;
+    }
+    return (double)x;                     // normal / inf / nan
+}
+
+__device__ __forceinline__ real sf_log_zratio(real num, real z0)
+{
+    // A NaN argument is already-corrupted state, not a degenerate-but-real
+    // roughness, and the rescue below would launder it: its floor is
+    // written !(zd > 0.0), which is true for NaN, so a NaN znt would leave
+    // here as log(num) - log(FLT_MIN) -- an ordinary finite contrast around
+    // 90 that no downstream check can tell from a real answer.  Zero
+    // roughness is a physical input this function defines; NaN roughness is
+    // a defect, and propagating it is what keeps it visible.
+    if (isnan(num) || isnan(z0)) return num + z0;   // NaN, payload preserved
+    // Healthy path first: WRF's own single-quotient spelling, so every
+    // z0 the quotient survives keeps its exact FP32 word
+    // (module_sf_sfclay.F:494 GZ1OZ0 = ALOG(ZA/ZNT);
+    // sf_sfclayrev.F90:318 alog((za+znt)/znt)).
+    real r = logf(num / z0);
+    if (isfinite(r)) return r;
+    // num/z0 overflows FP32 once z0 < num/FLT_MAX (~2.9e-38 for a 10 m
+    // level) -- long before the logarithm itself is out of range -- and
+    // z0 == 0 divides by zero.  WRF v4.6.1 has no guard at either site:
+    // ZNT=0 sends GZ1OZ0=Inf into PSIX and U10 = Inf/Inf = NaN, which is
+    // undefined behaviour, not an answer.  Rescue in float64, where the
+    // quotient of any two nonzero floats is finite: log(num) - log(z0).
+    // FP32 logf is unusable here because this route flushes subnormal
+    // inputs (logf(1e-38f) measures -inf on the 5090), hence sf_f2d and
+    // double log.  z0 <= 0 floors at FLT_MIN, turning zero roughness
+    // into a defined huge-but-finite contrast (gz1 ~ 90) whose drag and
+    // exchange coefficients go to zero smoothly.  Documented divergence:
+    // defined behaviour where WRF is undefined.
+    double zd = sf_f2d(z0);
+    if (!(zd > 0.0)) zd = 1.1754943508222875e-38;   // FLT_MIN
+    return (real)(log((double)num) - log(zd));
+}
+
 __device__ __forceinline__ real sf_psim_classic_full(real z)
 {
     real x = powf(1.0f - 16.0f * z, 0.25f);
@@ -111,15 +158,17 @@ __device__ __forceinline__ real sf_zolri_residual(real &zeta, real ri,
     real zeta0 = zeta * z0 / z;
     real zeta3 = zeta + zeta0;
     real fm, fh;
+    // sf_log_zratio, not bare logf: a degenerate z0 otherwise turns the
+    // residual into zeta*Inf/Inf = NaN and poisons the whole zol solve.
     if (ri < 0.0f) {
-        fm = logf((z + z0) / z0)
+        fm = sf_log_zratio(z + z0, z0)
            - (sf_psim_unstable(zeta3) - sf_psim_unstable(zeta0));
-        fh = logf((z + z0) / z0)
+        fh = sf_log_zratio(z + z0, z0)
            - (sf_psih_unstable(zeta3) - sf_psih_unstable(zeta0));
     } else {
-        fm = logf((z + z0) / z0)
+        fm = sf_log_zratio(z + z0, z0)
            - (sf_psim_stable(zeta3) - sf_psim_stable(zeta0));
-        fh = logf((z + z0) / z0)
+        fh = sf_log_zratio(z + z0, z0)
            - (sf_psih_stable(zeta3) - sf_psih_stable(zeta0));
     }
     return zeta * fh / (fm * fm) - ri;
@@ -210,10 +259,13 @@ void sfclay_column(
     real za = 0.5f * dz8w[idx];
     real gz1, gz2, gz10;
     if (option == 91) {
-        gz1 = logf(za / z0); gz2 = logf(2.0f / z0); gz10 = logf(10.0f / z0);
+        gz1 = sf_log_zratio(za, z0);
+        gz2 = sf_log_zratio(2.0f, z0);
+        gz10 = sf_log_zratio(10.0f, z0);
     } else {
-        gz1 = logf((za + z0) / z0); gz2 = logf((2.0f + z0) / z0);
-        gz10 = logf((10.0f + z0) / z0);
+        gz1 = sf_log_zratio(za + z0, z0);
+        gz2 = sf_log_zratio(2.0f + z0, z0);
+        gz10 = sf_log_zratio(10.0f + z0, z0);
     }
 
     real tskv = thgb * (1.0f + ep1 * qs);

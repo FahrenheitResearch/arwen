@@ -49,6 +49,7 @@ from gpuwm import bridges
 from gpuwm import rustwx
 from gpuwm import rustwx_fetch
 from gpuwm.explain import explain_enabled
+from gpuwm.obs import nexrad
 
 # The pip extras exactly as the README installs them.
 #
@@ -254,6 +255,172 @@ def _cupy_check() -> Check:
                  blocking=False)
 
 
+#: What to install when the device has no cuSOLVER.  Every wheel here is a
+#: dependency OF cusolver, not a nicety: cusolver links cublas and cusparse,
+#: and on Windows a wheel's DLLs are only visible to a compiled extension
+#: through ``os.add_dll_directory``, never through PATH.
+CUSOLVER_HINT = (
+    "# only needed for eigensolver='library', or for an ensemble larger\n"
+    "  # than this project's own kernel supports.  The default analysis\n"
+    "  # does not use cuSOLVER at all, so this is optional.\n"
+    "  #\n"
+    "  # FIRST check whether it is installed but merely unreachable, which\n"
+    "  # is the commoner fault and which installing again will not fix:\n"
+    "  python -c \"import sys,pathlib;print([str(p) for p in pathlib.Path(sys.prefix).rglob('*cusolver*') if p.is_dir()])\"\n"
+    "  # If that prints a directory, the library is present and the loader\n"
+    "  # cannot see it.  On Linux put that directory on $LD_LIBRARY_PATH;\n"
+    "  # on Windows PATH is not enough -- since Python 3.8 a compiled\n"
+    "  # extension resolves its dependants through os.add_dll_directory()\n"
+    "  # only.  If it prints nothing, install it:\n"
+    "  pip install nvidia-cusolver-cu12 nvidia-cublas-cu12 nvidia-cusparse-cu12")
+
+
+#: Solves one tiny symmetric eigenproblem two ways and reports which worked.
+#: Deliberately the SAME two calls the analysis makes, because the fault this
+#: check exists for is invisible to anything cheaper: cupy's core loads
+#: independently of cuBLAS and cuSOLVER, so "cupy imports" and even "cupy
+#: multiplies arrays" are both true on a box where the factorisation cannot
+#: run at all.
+#:
+#: TWO PROPERTIES OF THIS SCRIPT ARE LOAD-BEARING.  Do not tidy them away.
+#:
+#: 1. It runs in a FRESH PROCESS (see :func:`_eigensolver_probe`), and
+#: 2. it calls NOTHING from ``cupy.linalg`` before ``eigh``.
+#:
+#: Measured on a rented Ada node, 2026-08-05, cupy 14.1.1, where the wheel's
+#: ``libcusolver.so.11`` was installed but off the loader path:
+#:
+#:     $ python -c "import cupy; cupy.linalg.eigh(A)"
+#:     ImportError: libcusolver.so.11: cannot open shared object file
+#:
+#:     $ python -c "import cupy; cupy.linalg.inv(A); cupy.linalg.eigh(A)"
+#:     ok
+#:
+#: ``inv`` reaches cuSOLVER through ``cupy_backends.cuda.libs.cusolver``,
+#: whose own link resolution finds the wheel; batched ``eigh`` reaches it
+#: through ``cupyx.cusolver``, whose does not -- and once the first call has
+#: pulled the library into the process, the second one finds it already
+#: loaded.  So cuSOLVER's availability on such a box is a property of what
+#: the process happened to do first, which is why "it worked yesterday" is a
+#: real thing people say about this fault.  A probe that shares a process
+#: with anything else, or that warms up with a different factorisation,
+#: reports green on a box where the analysis will fail.
+_EIGENSOLVER_PROBE = """
+import json, numpy, sys
+out = {}
+try:
+    import cupy
+except Exception as error:
+    sys.stdout.write(json.dumps({"cupy": repr(error)}))
+    raise SystemExit(0)
+rs = numpy.random.RandomState(0)
+b = rs.standard_normal((8, 6, 6))
+a = b @ b.transpose(0, 2, 1) + 6.0 * numpy.eye(6)
+a = 0.5 * (a + a.transpose(0, 2, 1))
+try:
+    from gpuwm.core.jacobi_eigh import batched_eigh
+    w, v = batched_eigh(cupy.asarray(a))
+    got = cupy.asnumpy(v @ (w[:, :, None] * v.transpose(0, 2, 1)))
+    residual = float(numpy.abs(got - a).max() / numpy.abs(a).max())
+    out["jacobi"] = "ok" if residual < 1e-12 else f"residual {residual:.2e}"
+except Exception as error:
+    out["jacobi"] = f"{type(error).__name__}: {error}"
+try:
+    cupy.linalg.eigh(cupy.asarray(a))
+    out["library"] = "ok"
+except Exception as error:
+    out["library"] = f"{type(error).__name__}: {error}"
+sys.stdout.write(json.dumps(out))
+"""
+
+
+def _eigensolver_probe() -> dict:
+    """Run :data:`_EIGENSOLVER_PROBE` out of process; ``{}`` if it could not."""
+    if find_spec("cupy") is None:
+        return {"cupy": "not installed"}
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-c", _EIGENSOLVER_PROBE],
+            capture_output=True, text=True, errors="replace",
+            timeout=_PROBE_TIMEOUT_S * 4)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {"probe": f"did not run: {error}"}
+    try:
+        return json.loads(probe.stdout or "{}")
+    except ValueError:
+        tail = [line for line in (probe.stderr or "").strip().splitlines()
+                if line.strip()]
+        return {"probe": tail[-1] if tail else f"exit {probe.returncode}"}
+
+
+def _da_eigensolver_check() -> Check:
+    """Can the radar-DA analysis factor its matrices, and with what?
+
+    This is the one line in the report that exists because of a specific
+    field failure rather than a category of them.  Twice -- once on a box
+    whose NVIDIA wheels were installed but invisible to a compiled extension,
+    once on a rented node whose CUDA install simply shipped without it -- the
+    DA path died inside cuSOLVER, and both times the surrounding evidence
+    said the GPU was healthy, because for everything except the
+    factorisation it was.  ``gpuwm doctor`` now answers the question
+    directly instead of leaving it to be inferred.
+
+    Not blocking: an install that never runs data assimilation never touches
+    either solver, and an install that does has this project's own kernel.
+    """
+    name = "radar-DA eigensolver"
+    result = _eigensolver_probe()
+    if "cupy" in result:
+        return Check(
+            name, "info",
+            "not judged -- data assimilation runs on the device and cupy is "
+            f"unavailable here ({result['cupy']})",
+            brief="needs cupy", blocking=False)
+    if "probe" in result:
+        return Check(
+            name, "missing",
+            f"the probe could not be run: {result['probe']}",
+            CUSOLVER_HINT, action="pip install nvidia-cusolver-cu12",
+            brief=_short(result["probe"]), blocking=False)
+
+    jacobi = result.get("jacobi", "did not report")
+    library = result.get("library", "did not report")
+    if jacobi == "ok":
+        # The supported path works, so cuSOLVER is genuinely optional and
+        # its absence is news rather than a gap.
+        extra = ("cuSOLVER also available"
+                 if library == "ok"
+                 else f"cuSOLVER unavailable ({_short(library)}), which the "
+                      "default analysis does not need")
+        return Check(
+            name, "verified",
+            f"this project's batched Jacobi kernel solved and reconstructed "
+            f"a test batch; {extra}",
+            None if library == "ok" else CUSOLVER_HINT,
+            action=None if library == "ok" else "pip install nvidia-cusolver-cu12",
+            brief=("jacobi kernel ok, cuSOLVER ok" if library == "ok"
+                   else "jacobi kernel ok, no cuSOLVER"),
+            blocking=False)
+    if library == "ok":
+        return Check(
+            name, "present",
+            f"cuSOLVER works, but this project's own kernel did not: "
+            f"{_short(jacobi)}.  Analyses still run, through "
+            "eigensolver='library'",
+            "# report this: the bundled kernel should build wherever cupy\n"
+            "  # does.  Meanwhile set LetkfConfig(eigensolver='library')\n"
+            "  # or run the analysis on the host",
+            action="set eigensolver='library'",
+            brief=_short(jacobi), blocking=False)
+    return Check(
+        name, "missing",
+        f"neither solver works here -- bundled kernel: {_short(jacobi)}; "
+        f"cuSOLVER: {_short(library)}.  Data assimilation cannot run on "
+        "this device; forecasts are unaffected",
+        CUSOLVER_HINT, action="pip install nvidia-cusolver-cu12",
+        brief="no device eigensolver", blocking=False)
+
+
 def _render_extra_check() -> Check:
     results = {"wrf-rust": _import_probe("wrf", "wrf-rust"),
                "matplotlib": _import_probe("matplotlib")}
@@ -446,6 +613,77 @@ def _fetch_backbone_check() -> Check:
             name, "missing", f"{found} -- {evidence}",
             "# it has to be replaced:\n" + bridges.install_aware_build_hint(
                 rustwx_fetch.CARGO_BUILD_HINT, "tools/rustwx"),
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief=_short(evidence), group=_GROUP_ENGINES)
+    return Check(name, "verified", f"{found} -- {evidence}",
+                 brief=_short(evidence), group=_GROUP_ENGINES)
+
+
+def _nexrad_front_door_check() -> Check:
+    """The radar front door: is it here, and is it current?
+
+    The one bundled binary with **no fallback**.  A missing fetch
+    backbone leaves the Python transport and a missing renderer leaves
+    matplotlib, so both are ``info``; there is no second way to turn a
+    radar volume into observations, so an absent ``rw_nexrad`` is the
+    difference between a box that can assimilate and a box that cannot.
+    It is reported ``missing`` and it blocks, for the same reason the
+    GRIB bridges do: it ships in the bundle ``gpuwm fetch-bridges``
+    stages, so its absence means an incomplete install rather than an
+    unexercised option.
+
+    This check exists because the report used to pass without it.
+    ``rw_nexrad`` was outside both audited sets -- not a GRIB bridge,
+    not a render engine -- so ``gpuwm doctor`` printed a clean estate on
+    installs where every radar route was dead, and the first news came
+    from the launcher refusing to print a plan.
+
+    Staleness is judged, not just presence.  The wrapper pins the exact
+    ``--abi`` contract line it was written against, so a binary built
+    before the live-chunk route fails the probe here rather than at the
+    first live fetch -- and the remedy for that one is *rebuild*, never
+    re-point, which is why the stale branch says so in those words.
+    """
+
+    name = f"radar front door {nexrad.NEXRAD_NAME} (radar observation ingest)"
+    blocks = ("blocks ALL radar observation ingest -- every DA nowcast "
+              "route, live and archived")
+    try:
+        found = nexrad.find_nexrad_bin()
+    except FileNotFoundError as error:
+        return Check(
+            name, "missing", f"{error} -- {blocks}",
+            f"# {nexrad.NEXRAD_ENV} names a missing executable: point it "
+            "at a real build, or unset it and get one --\n"
+            + nexrad.nexrad_remedy(),
+            action=f"unset {nexrad.NEXRAD_ENV}, or point it at a real build",
+            brief=f"{nexrad.NEXRAD_ENV} names a missing file",
+            group=_GROUP_ENGINES)
+    if found is None:
+        crate = nexrad.crate_dir() / "Cargo.toml"
+        if crate.is_file():
+            detail = f"not built yet (checkout crate: {crate.parent})"
+        else:
+            detail = ("no checkout crate and no prebuilt executable "
+                      "(searched "
+                      + ", ".join(str(c)
+                                  for c in nexrad.nexrad_candidates()) + ")")
+        return Check(
+            name, "missing", f"{detail} -- {blocks}",
+            nexrad.nexrad_remedy()
+            + "\n  # without it nothing can read a radar volume: no "
+            "superobs,\n  # no analysis, no nowcast",
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="not staged; no radar ingest", group=_GROUP_ENGINES)
+    ok, evidence = nexrad.probe_nexrad_bin(found)
+    if not ok:
+        return Check(
+            name, "missing", f"{found} -- {evidence}; {blocks}",
+            "# REBUILD it -- do not re-point GPUWM_RW_NEXRAD at another\n"
+            "  # copy: this is a contract change, so every binary older\n"
+            "  # than it fails the same way --\n"
+            + bridges.install_aware_build_hint(
+                nexrad.CARGO_BUILD_HINT, "tools/rustwx"),
             action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
             brief=_short(evidence), group=_GROUP_ENGINES)
     return Check(name, "verified", f"{found} -- {evidence}",
@@ -1126,9 +1364,11 @@ def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
             action="install Python 3.11 or newer",
             brief=f"{version} is below the 3.11 floor"))
     checks.append(_cupy_check())
+    checks.append(_da_eigensolver_check())
     checks.append(_render_extra_check())
     checks.append(_rust_renderer_check())
     checks.append(_fetch_backbone_check())
+    checks.append(_nexrad_front_door_check())
     checks.extend(_bridge_checks())
     checks.append(_cpu_library_check())
     checks.append(_thompson_tables_check())

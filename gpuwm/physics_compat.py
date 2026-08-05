@@ -357,6 +357,32 @@ WSM6_PROFILE_ID = "wsm6-ysu-mm5-noah-no-radiation-v1"
 #: source-frozen-species discard receipt.
 KESSLER_PROFILE_ID = "kessler-mp1-ysu-mm5-noah-dudhia-v1"
 THOMPSON_PROFILE_ID = "thompson-mp8-ysu-mm5-noah-validation-v1"
+#: The observation battery's registered composition (lead ruling,
+#: obs-battery integration wave 2026-08-04): the Thompson validation
+#: suite with the exact WRF v4.6.1 legacy RRTMG in place of no-radiation,
+#: cumulus off, transcribed switch for switch from the battery's
+#: registered configuration.  wrf-matched-run-candidate in the registry:
+#: the composition's first stock-WRF-paired t0/case receipt is the named
+#: upgrade payer.
+THOMPSON_LEGACY_RRTMG_PROFILE_ID = (
+    "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1"
+)
+#: The Shin-Hong sibling of the row above: the SAME composition with the
+#: gray-zone PBL in place of YSU (``bl_pbl_physics`` 1 -> 11), which is
+#: the one edge the divergence ledger's L3 entry moves
+#: (:mod:`gpuwm.physics_mode`).  It is registered because a fidelity-axis
+#: arm that selects L3 resolves to exactly this suite, and an arm whose
+#: physics no profile names cannot have a root prepared for it at all.
+#: Every other switch is the row above's, transcribed rather than
+#: re-derived, so the two rows differ in the PBL and nothing else and a
+#: paired run of them isolates the closure.  wrf-matched-run-candidate in
+#: the registry on the same terms as its sibling: Shin-Hong's own port is
+#: measured bitwise against WRF v4.6.1 on both halves, and the payer that
+#: moves the label is the composition's first stock-WRF-paired t0/case
+#: receipt.
+THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID = (
+    "thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1"
+)
 MORRISON_PROFILE_ID = (
     "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1"
 )
@@ -405,6 +431,8 @@ SINGLE_DOMAIN_PHYSICS_PROFILES = (
     WSM6_PROFILE_ID,
     KESSLER_PROFILE_ID,
     THOMPSON_PROFILE_ID,
+    THOMPSON_LEGACY_RRTMG_PROFILE_ID,
+    THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
     MORRISON_PROFILE_ID,
     NSSL2_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
@@ -511,6 +539,45 @@ _SINGLE_DOMAIN_RUNTIME_SWITCHES = MappingProxyType({
         "bl_pbl_physics": 1, "cu_physics": 0, "cudt_minutes": 0.0,
         "num_soil_layers": 4, "terrain_opt": 1,
         "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
+        "diff_6th_slopeopt": 1,
+    }),
+    # The Thompson row with the exact legacy RRTMG in place of
+    # no-radiation, every value transcribed from
+    # configs/battery/shape_3km_thompson_rrtmg_legacy.toml as registered
+    # (radt 12.0 and diff_6th_factor 0.12 are that config's values, not
+    # the validation row's 1.0/0.08).
+    THOMPSON_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
+        "moist": True, "moist_cq": True, "mp_physics": 8,
+        "top_lid": False, "epssm": 0.5, "morr_rimed_ice": 1,
+        "wsm6_hail_opt": 0, "ra_physics": 0,
+        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
+        "wrf_rrtmg_compatibility": WRF_RRTMG_LEGACY,
+        "ra_rrtmg_variant": RRTMG_VARIANT_LEGACY,
+        "sf_sfclay_physics": 91, "sf_surface_physics": 2,
+        "bl_pbl_physics": 1, "cu_physics": 0, "cudt_minutes": 0.0,
+        "num_soil_layers": 4, "terrain_opt": 1,
+        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.12,
+        "diff_6th_slopeopt": 1,
+    }),
+    # The row above with ONE switch moved: bl_pbl_physics 1 -> 11, the
+    # divergence ledger's L3 edge (gpuwm/physics_mode.py).  Every other
+    # value is transcribed from that row rather than re-derived, because
+    # the pair's whole purpose is that a paired run isolates the closure;
+    # a second value moving here would make the comparison a composition
+    # comparison instead.  sf_sfclay_physics stays 91: WRF v4.6.1's
+    # SHINHONGSCHEME arm (phys/module_physics_init.F:3702-3704) requires
+    # isfc=1 exactly as YSU does, which the classic MM5 surface layer is.
+    THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
+        "moist": True, "moist_cq": True, "mp_physics": 8,
+        "top_lid": False, "epssm": 0.5, "morr_rimed_ice": 1,
+        "wsm6_hail_opt": 0, "ra_physics": 0,
+        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
+        "wrf_rrtmg_compatibility": WRF_RRTMG_LEGACY,
+        "ra_rrtmg_variant": RRTMG_VARIANT_LEGACY,
+        "sf_sfclay_physics": 91, "sf_surface_physics": 2,
+        "bl_pbl_physics": 11, "cu_physics": 0, "cudt_minutes": 0.0,
+        "num_soil_layers": 4, "terrain_opt": 1,
+        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.12,
         "diff_6th_slopeopt": 1,
     }),
     MORRISON_PROFILE_ID: MappingProxyType({
@@ -942,6 +1009,7 @@ def validate_resolved_physics_vertical_levels(
 
     from gpuwm.physics_vertical_contract import (
         KESSLER_VERTICAL_LEVEL_BOUNDS,
+        GF_VERTICAL_LEVEL_BOUNDS,
         KF_VERTICAL_LEVEL_BOUNDS,
         MAX_LEGACY_LONGWAVE_LAYERS,
         MAX_LEGACY_SHORTWAVE_LAYERS,
@@ -960,6 +1028,8 @@ def validate_resolved_physics_vertical_levels(
         bounded("MYNN PBL", MYNN_VERTICAL_LEVEL_BOUNDS)
     if resolved.get("cumulus") == "kain-fritsch":
         bounded("Kain-Fritsch cumulus", KF_VERTICAL_LEVEL_BOUNDS)
+    if resolved.get("cumulus") == "grell-freitas":
+        bounded("Grell-Freitas cumulus", GF_VERTICAL_LEVEL_BOUNDS)
 
     microphysics = resolved.get("microphysics")
     if microphysics == "kessler-mp1":

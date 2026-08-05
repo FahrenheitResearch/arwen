@@ -378,6 +378,26 @@ command-line bins and their 9.8 MB test fixtures.
     reporting success.  Outer LDM framing cannot see that: the enclosing
     block lengths are valid while the inner pointer is not.
 
+13. `vendor/wx-radar/src/level2.rs::parse_vol_block` now RETURNS the
+    site it validates (`VolSite`: latitude, longitude, site ground
+    height at byte 16, feedhorn height AGL at byte 18), and
+    `Level2File` carries it as `vol_site`.  Strict parsing refuses a
+    volume whose radials disagree about the radar's own position.  The
+    two height fields are bounded arithmetically (site -450..4500 m
+    MSL, feedhorn <= 200 m) the same way the lat/lon fields are: real
+    surveys always satisfy them, misaligned bytes almost never do.
+
+    `crates/rw-nexrad`'s site resolution ladder becomes: explicit
+    `--site-latlon` override, then the volume's own VOL block, then the
+    vendored table.  The VOL block is the self-describing route the
+    audit preferred: `site + feedhorn` is the beam origin with no
+    downstream addition, which the table cannot supply (130/141
+    elevations are placeholders and the populated ones are ground-only).
+    A table entry disagreeing with the volume by more than 0.05 deg is
+    named in the fix's `source` string.  KPBZ's longitude, transcribed
+    16.9 km east of the radar, is corrected in `sites.rs` regardless
+    (-80.0178 -> -80.2183, the ROC/NCEI survey value).
+
 ## vendor/crates-io
 
 `cargo vendor --locked vendor/crates-io` output: every crates.io and

@@ -80,7 +80,15 @@ RADIATION_OPTIONS = (
     "rrtmg-legacy",
     "analytic",
 )
-CUMULUS_OPTIONS = (0, 1)
+# 3 (Grell-Freitas) joined the cumulus axis with the GF port: an
+# implemented scheme with a certified oracle (gpuwm/core/kernels/gf.cu,
+# max ULP 0 at the GFDRV boundary on the 208 driver-exact columns).  The
+# cumulus axis is verdict-independent in WRF v4.6.1 -- no SELECT CASE in
+# phys/module_physics_init.F conditions another component's legality on
+# the cumulus choice -- so admitting 3 scales every verdict count by 3/2,
+# and the pinned counts in tests/test_wrf461_compatibility.py were
+# re-measured off the enlarged matrix rather than projected.
+CUMULUS_OPTIONS = (0, 1, 3)
 
 MATRIX_CELL_COUNT = (
     len(MP_OPTIONS)
@@ -135,6 +143,9 @@ _CUMULUS_CITATION = MappingProxyType({
     1: WRFCitation(
         "Registry/Registry.EM_COMMON", "3190",
         "the Kain-Fritsch package binds cu_physics=1"),
+    3: WRFCitation(
+        "Registry/Registry.EM_COMMON", "3192",
+        "the gfscheme package binds cu_physics=3"),
 })
 
 _RADIATION_CITATION = MappingProxyType({

@@ -1619,6 +1619,13 @@ def run_prepared_tree(
             "fingerprint": fingerprint,
             "domains": _domain_rows(exp),
         },
+        # The physics-fidelity axis as this run RESOLVED it, not as it was
+        # requested: the whole vector, every ledger entry, with the value
+        # each one took.  A scoreboard row has to be able to say which arm
+        # produced it without reading the configuration back, and an
+        # ungoverned run says so in the same shape rather than by omission
+        # (the morr_rimed_ice-into-receipt pattern, one axis wider).
+        "physics_mode": exp.physics_mode.receipt(),
         "restart_contract": {
             "mode": ("sealed-forcing-extension"
                      if sealed_forcing_extension else "exact-setup"),

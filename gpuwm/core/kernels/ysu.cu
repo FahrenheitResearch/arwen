@@ -10,8 +10,18 @@
 
 #define YSU_KMAX 128
 
-__device__ __forceinline__ real ysu_min(real a, real b) { return a < b ? a : b; }
-__device__ __forceinline__ real ysu_max(real a, real b) { return a > b ? a : b; }
+// NaN-propagating on purpose.  Fortran's amin1/amax1 spelled as `a < b ?`
+// silently launders a NaN first argument into the bound: ysu_min(NaN,
+// xkzmax) used to return xkzmax, so a poisoned diffusivity became a
+// plausible 1000 m2/s and sailed through validate_ysu_outputs.  For every
+// non-NaN `a` these are bit-identical to the old `a < b ? a : b` /
+// `a > b ? a : b` (ties and signed zeros still select b); only a NaN `a`
+// now comes back out, so it reaches the driver's finiteness check instead
+// of becoming state.
+__device__ __forceinline__ real ysu_min(real a, real b)
+{ return (a != a) ? a : (a < b ? a : b); }
+__device__ __forceinline__ real ysu_max(real a, real b)
+{ return (a != a) ? a : (a > b ? a : b); }
 __device__ __forceinline__ real ysu_clip(real x, real lo, real hi) {
     return ysu_min(ysu_max(x, lo), hi);
 }
@@ -370,6 +380,39 @@ void ysu_column(const real *u, const real *v, const real *theta,
                 prfac2 = 15.9f * (wstar3 + wstar3_2) / ust3
                        / (1.0f + 4.0f * karman
                           * (wstar3 + wstar3_2) / ust3);
+                if (!isfinite(prfac2)) {
+                    // sm_120 flushes FP32 subnormals in all arithmetic
+                    // (--ftz=false is ineffective; CuPy compiles -ftz=true
+                    // anyway), so us*us*us underflows to exactly 0 for
+                    // ust < ~2.3e-13 and the quotient above is Inf/Inf or
+                    // 0/0 = NaN.  Pre-guard, ysu_min then laundered that
+                    // NaN into xkzh = xkzmax: exch_h pinned at 1000 m2/s,
+                    // no error raised.  WRF v4.6.1 has no floor here
+                    // (bl_ysu.F90:674 cubes ust unguarded and :948 divides
+                    // by it; the sfclay land floors, module_sf_sfclay.F:818
+                    // and sf_sfclayrev.F90:772, are upstream and land-only),
+                    // and on IEEE-subnormal hardware the same expression is
+                    // finite: prfac2 -> 15.9/(4*karman) as ust3 -> 0.  So
+                    // this is the rrtmg_sw.cu FP64-emulation countermeasure,
+                    // not a WRF transcription: re-evaluate the same
+                    // expression in float64, where us^3 down to the
+                    // smallest normal float is itself normal.  It runs only
+                    // when the FP32 result is already Inf/NaN, so every
+                    // healthy lane keeps its exact FP32 word.  Where WRF
+                    // itself is non-finite (w/ust3 overflowing FP32, or
+                    // ust3 == 0 exactly), this produces the defined
+                    // algebraic value instead -- never bit-exact to a bug.
+                    double u3 = (double)us * (double)us * (double)us;
+                    double w = (double)wstar3 + (double)wstar3_2;
+                    if (u3 > 0.0)
+                        prfac2 = (real)(15.9 * w / u3
+                                        / (1.0 + 4.0 * (double)karman
+                                           * w / u3));
+                    else
+                        prfac2 = w > 0.0
+                               ? (real)(15.9 / (4.0 * (double)karman))
+                               : 0.0f;
+                }
                 real zz = ysu_max(zq[k + 1] - sfcfrac * hpbl, 0.0f);
                 prnumfac = -3.0f * zz * zz / (hpbl * hpbl);
             } else {

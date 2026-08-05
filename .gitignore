@@ -47,6 +47,10 @@ tools/rustwx/vendor/**/__pycache__/
 # handoff report, and never a build input.
 /cache/
 
+# the object cache the observation front doors default to when a
+# caller names no --cache directory
+.rw-obs-cache/
+
 # Scratch output from tools/da_synthetic_cycle runs (dirs and redirect files).
 .gate-*
 

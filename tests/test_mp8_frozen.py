@@ -200,8 +200,17 @@ THOMPSON_CU_LITERAL_SITES = {
 #: that disappears is a failure.
 FROZEN_MODULE_DIGESTS = {
     'acoustic': (
-        'f1cd7276428f19d6090483a01705258643fd9ea8993974f0f4010721e8c05e8c',
-        'aa7b93e78bb92d9442f3d76b4f37e5d6c7e1470ac325aad1fc79684692229b74'),
+        # Re-pinned for the WPHI_MAX_LEV tier ladder (LES program P2): the
+        # unconditional `#define WPHI_MAX_LEV 129` became an `#ifndef`
+        # guard around the same literal, so the launcher can compile the
+        # implicit w''-phi'' solve deeper than 128 levels.  acoustic is not
+        # an mp=8 translation unit and the mp=8 numerics guarantee is
+        # untouched.  The guard is a preprocessor no-op at the shipped
+        # tier -- proven against a real host preprocessor, with a negative
+        # control, in tests/test_acoustic_nz_tiers.py -- so this pin moves
+        # while the compiled binary does not.
+        '766285639b5379db461db1ca9a81ec12b45d36d097547fb59ab2db541b89768c',
+        '9c8836bfb75aa56ef600dd83e31b6e2ffd0948547f27c13659c345062ac3417f'),
     'advection': (
         '8a88c2fc0ed833e9fc5bd55bd3f3f78752fbb9e68714122c2fb68adc368d2d7e',
         '3449e3bc306ef5ba9a374e0e04b6e0f7601cbe6e3d7b0aa6ba6b8edd91c8d16e'),
@@ -371,15 +380,39 @@ FROZEN_MODULE_DIGESTS = {
         '8637cb5cb0a6878d59a32454a6ae662a8b18c0be4d94c067fbde1e4bf5bad079',
         '7b7083065716a2b3b58d47c3ac456ea8d0c1a38ec771219897917bb0b1b79cb2'),
     'sfclay': (
-        '3c8ce6512c15d480b831e76ece064f94d8ed3ee8ee2a950fc9c74b8daf14b31a',
-        '223f5aaa69f4de5e434467bb517894533e64973c175f4e248609a6eddfbc0179'),
+        # Re-pinned on the 1.6 release line for the sm_120 DAZ hardening.
+        # A roughness small enough to overflow the FP32 quotient sent Inf
+        # into every downstream similarity quantity, so the logarithm is
+        # rescued in float64 and a NaN roughness now propagates instead of
+        # being floored into a plausible finite contrast.  sfclay is not an
+        # mp=8 translation unit and thompson.cu is byte-unchanged across
+        # this line, so the mp=8 numerics guarantee is untouched; the
+        # healthy path is proven bit-exact under pinned fixtures and an
+        # adversarial sweep.
+        '35d6ee87153254719ff64b5691f64515b90548f17936627207b7bd13bb39a655',
+        '7f4e2fecbd39dfaca190ac59016d441cbf606101ae126cdfc401c5886720aeea'),
     'smag2d': (
         # Re-pinned on the 1.5 integration line: feature/les-integration's
         # verified km_opt=2/3 work edits smag2d.cu after this table was
         # frozen on the mp28 lane.  smag2d is not an mp=8 translation unit;
         # the mp=8 numerics guarantee is untouched.
-        '50d824f885452ebb7806c38c1a6ed45e4976c9caea9d6c9d8338e126aa4c50da',
-        '4fef25ab15bddb0847f7a79c54b54a80e6b34217d8747bedfc6fbd67bf682bae'),
+        #
+        # Re-pinned again on the P1 moist lane, which adds the spec 3.3
+        # MUTATION CONTROL to wrf_calc_n2: an `#ifdef
+        # GPUWM_MUTATE_MOIST_N2_FORCE_DRY` block that assigns
+        # `saturated = false` for instrument qualification.  Both digests
+        # move because both are digests of SOURCE TEXT.  The generated code
+        # of the production build does not: the guard's macro is never
+        # defined in the assembly `load_module` builds -- asserted by
+        # tests/test_les_moist_n2_mutation.py
+        # ::test_the_mutation_define_is_absent_from_the_production_assembly
+        # -- so the preprocessor deletes the block before nvrtc sees it, and
+        # the production predicate line above it is byte-identical to what
+        # it was.  The mutant is a SEPARATE translation unit compiled
+        # through load_module_int_defines under its own cache key and its
+        # own kernel-manifest entry; it is never this one.
+        'c57ebd81fc6478ab58f4376043a0931feddf89c4146e7ed88b089133f559332e',
+        '2e5a33dcfd34a46c47d8408206c7e13bb14ee80320858f9c7adf796c118223e8'),
     'spec_bdy': (
         'bcc7090fbbb8ea307bd6dd6c65ab9b8a3f56948c4752ae3d744127b450d20161',
         'bc03ed595bacc546d8e041fbb1d11b5bb3b3b90760ef06ea1dd1f0f18b4de931'),
@@ -396,8 +429,14 @@ FROZEN_MODULE_DIGESTS = {
         '0526192b79d90d3be7c733a475987216d37cc81b17f8de4f1fe3e4220a6b81d7',
         '1a6d20da0d450f235227fe609bdb12b368d96aec5ac231752074ff4dd9cc50e6'),
     'ysu': (
-        '1ae69b78b0cbe9ff572da9dbe5576809ab735288dfcf0c11fc4d66b6d7fb7f91',
-        '2f8256dd2793074df630b8592c1b811263d38d08645db602f0faf0325278e21d'),
+        # Re-pinned on the 1.6 release line for the same DAZ hardening.  A
+        # friction velocity of 1e-13 is an ordinary float32 whose cube is
+        # subnormal and flushes to zero on sm_120, turning WRF's prfac2
+        # quotient into Inf/Inf = NaN and laundering it into an exchange
+        # coefficient of 1000 m2/s where the float64 authority says 131.
+        # ysu is not an mp=8 translation unit; see the sfclay note above.
+        'fb8e359dfb27543da2f79b04dddfaf95a5e5365e0af0cfbc0a583647657854d9',
+        '643b057d6aad2323d5ed7eee139bba867838536dfad0f92289941f98aafc2c6f'),
 }
 
 # -- R2 --------------------------------------------------------------------

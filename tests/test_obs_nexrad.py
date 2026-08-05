@@ -167,6 +167,48 @@ def test_the_default_bucket_matches_the_binarys_own_declared_default():
     assert nexrad.ARCHIVE_OF_RECORD_BUCKET in result.stdout
 
 
+def test_the_live_route_is_a_second_key_space_not_a_second_mirror():
+    """The chunk feed is not another ``--bucket`` value for the archive.
+
+    Its keys are ``{SITE}/{VOLUME_ID}/{YYYYMMDD}-{HHMMSS}-{NNN}-{S|I|E}``,
+    so a live subcommand pointed at the archive bucket would list a prefix
+    that does not exist and report an empty sky.  Two constants, and they
+    are required to differ.
+    """
+
+    assert nexrad.LIVE_DEFAULT_BUCKET == "unidata-nexrad-level2-chunks"
+    assert nexrad.LIVE_DEFAULT_BUCKET != nexrad.DEFAULT_BUCKET
+    assert nexrad.ARCHIVE_FEED != nexrad.LIVE_FEED
+
+
+def test_the_live_wrapper_emits_no_flag_it_was_not_given():
+    """Same rule as ``--bucket``: unset means the front door decides.
+
+    A partial scan in particular must never be requested by omission --
+    ``--allow-partial`` appears only when a caller asked for one.
+    """
+
+    bare = nexrad._live(site="KTLX", bucket=None, volumes=None,
+                        volume_id=None, allow_partial=False, min_chunks=None)
+    assert bare == ["--site", "KTLX"]
+    full = nexrad._live(site="KTLX", bucket="some-chunks-mirror", volumes=3,
+                        volume_id=571, allow_partial=True, min_chunks=7)
+    assert full == ["--site", "KTLX", "--bucket", "some-chunks-mirror",
+                    "--volumes", "3", "--volume-id", "571",
+                    "--allow-partial", "--min-chunks", "7"]
+
+
+def test_the_live_default_bucket_matches_the_binarys_own_declared_default():
+    binary = _binary_or_skip()
+    result = subprocess.run([str(binary), "--help"], capture_output=True,
+                            text=True, errors="replace", timeout=30)
+    assert result.returncode == 0, result.stderr
+    declared = re.search(r"Live default:\s*([A-Za-z0-9][A-Za-z0-9.\-]*)",
+                         result.stdout)
+    assert declared, f"--help states no live default bucket:\n{result.stdout}"
+    assert declared.group(1) == nexrad.LIVE_DEFAULT_BUCKET
+
+
 def test_the_remedy_is_a_command_or_a_comment_on_every_line():
     for line in nexrad.nexrad_remedy().splitlines():
         stripped = line.strip()

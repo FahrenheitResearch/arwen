@@ -11,7 +11,7 @@ use std::error::Error;
 use std::path::Path;
 
 use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
-use wx_radar::level2::{Level2File, Level2Sweep};
+use wx_radar::level2::{Level2File, Level2Sweep, VolSite};
 use wx_radar::products::RadarProduct;
 
 use crate::pack::{
@@ -68,6 +68,31 @@ pub fn resolve_site(
     station_id: &str,
     override_fix: Option<(f64, f64, f64)>,
 ) -> Result<SiteFix, Box<dyn Error>> {
+    resolve_site_from(station_id, override_fix, None)
+}
+
+/// Resolve a site with the volume's own Message-31 VOL block in hand.
+///
+/// Precedence: an explicit `--site-latlon` override, then the volume's
+/// own VOL block, then the vendored table.  The VOL block outranks the
+/// table because it is the radar's own survey riding inside the volume:
+/// latitude, longitude, site ground elevation AND the feedhorn height the
+/// table never carries, so its `antenna_height_m()` is the beam origin
+/// with no downstream addition.  The table's role shrinks to volumes old
+/// or damaged enough to carry no VOL block, where its elevation rules
+/// (placeholder refused, populated value documented as ground-only)
+/// still apply unchanged.
+///
+/// When both are present and the table disagrees with the volume by more
+/// than ~0.05 degrees, the disagreement is recorded in the fix's
+/// `source` string — that is how the KPBZ longitude transcription error
+/// (17 km) surfaces on real volumes instead of silently misplacing
+/// superobs.
+pub fn resolve_site_from(
+    station_id: &str,
+    override_fix: Option<(f64, f64, f64)>,
+    vol_site: Option<&VolSite>,
+) -> Result<SiteFix, Box<dyn Error>> {
     if let Some((lat, lon, alt)) = override_fix {
         if !(-90.0..=90.0).contains(&lat) || !(-180.0..=360.0).contains(&lon) {
             return Err(boxed_error(format!(
@@ -83,12 +108,34 @@ pub fn resolve_site(
             source: "cli-override".to_string(),
         });
     }
+    if let Some(vol) = vol_site {
+        let mut source = "message31-vol-block".to_string();
+        if let Some(site) = wx_radar::sites::find_site(station_id) {
+            let dlat = (site.lat - f64::from(vol.latitude_deg)).abs();
+            let dlon = (site.lon - f64::from(vol.longitude_deg)).abs();
+            if dlat.max(dlon) > 0.05 {
+                source = format!(
+                    "message31-vol-block (vendored table disagrees by                      {dlat:.4} deg lat / {dlon:.4} deg lon)"
+                );
+            }
+        }
+        return Ok(SiteFix {
+            id: station_id.to_string(),
+            name: station_id.to_string(),
+            lat_deg: f64::from(vol.latitude_deg),
+            lon_deg: f64::from(vol.longitude_deg),
+            alt_m: vol.antenna_height_m(),
+            source,
+        });
+    }
     match wx_radar::sites::find_site(station_id) {
         Some(site) if site.elevation == SITE_ELEVATION_UNSET_M => Err(boxed_error(format!(
             "the vendored NEXRAD table has no antenna elevation for site {:?} ({}): it carries \
              the unset placeholder {SITE_ELEVATION_UNSET_M} m, as 130 of its 141 entries do. \
              The antenna height is the ray origin, so accepting it would place every gate in \
-             the volume too low by the site's real elevation. Pass --site-latlon \
+             the volume too low by the site's real elevation. Volumes whose radials carry a \
+             Message-31 VOL block resolve themselves (site plus feedhorn, no table needed), \
+             so this refusal means the volume lacked one. Pass --site-latlon \
              LAT,LON,ALT_M with the antenna height above mean sea level (site elevation plus \
              feedhorn height AGL -- nothing downstream adds the feedhorn)",
             site.id, site.name
@@ -250,7 +297,7 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
     // itself rather than publishing the part of it that happened to decode.
     let file = Level2File::parse_strict(request.raw).map_err(boxed_error)?;
     crate::pack::validate_decoded(&file)?;
-    let site = resolve_site(&file.station_id, request.site_override)?;
+    let site = resolve_site_from(&file.station_id, request.site_override, file.vol_site.as_ref())?;
     let valid_time = volume_time(file.volume_date, file.volume_time).ok_or_else(|| {
         boxed_error(format!(
             "corrupt Level-II volume: volume date {} / time {} is not a calendar instant",
@@ -726,6 +773,70 @@ mod tests {
         let fix = resolve_site("KUEX", Some((40.3208, -98.4419, 602.0))).unwrap();
         assert_eq!(fix.source, "cli-override");
         assert_eq!(fix.alt_m, 602.0);
+    }
+
+    #[test]
+    fn the_volumes_own_vol_block_outranks_the_table_and_needs_no_override() {
+        // KUEX with a VOL block: the site that refused above now resolves
+        // from the volume itself, with the feedhorn already in the height.
+        let vol = VolSite {
+            latitude_deg: 40.3208,
+            longitude_deg: -98.4419,
+            site_height_m: 602,
+            feedhorn_height_m: 20,
+        };
+        let fix = resolve_site_from("KUEX", None, Some(&vol)).unwrap();
+        assert_eq!(fix.source, "message31-vol-block");
+        assert_eq!(fix.alt_m, 622.0);
+        assert!((fix.lat_deg - 40.3208).abs() < 1e-4);
+
+        // The explicit override still outranks the volume: it is the
+        // operator saying "I know better than the data", which is the one
+        // statement a front door must not overrule.
+        let fix = resolve_site_from("KUEX", Some((1.0, 2.0, 3.0)), Some(&vol)).unwrap();
+        assert_eq!(fix.source, "cli-override");
+
+        // A populated table entry loses to the volume too -- the table's
+        // 370 m KTLX value is ground elevation, the VOL block's sum is the
+        // beam origin, and the two differing is the defect, not the tie.
+        let vol_ktlx = VolSite {
+            latitude_deg: 35.33336,
+            longitude_deg: -97.27776,
+            site_height_m: 370,
+            feedhorn_height_m: 19,
+        };
+        let fix = resolve_site_from("KTLX", None, Some(&vol_ktlx)).unwrap();
+        assert_eq!(fix.source, "message31-vol-block");
+        assert_eq!(fix.alt_m, 389.0);
+    }
+
+    #[test]
+    fn a_table_that_disagrees_with_the_volume_is_named_in_the_source() {
+        // The KPBZ longitude was transcribed 0.2 degrees off and shipped
+        // that way; a volume's own VOL block is how a table error of that
+        // kind surfaces on real data.  The fix takes the volume's numbers
+        // and says the table disagreed.
+        let vol = VolSite {
+            latitude_deg: 40.5317,
+            longitude_deg: -80.5183, // deliberately 0.3 deg from the table
+            site_height_m: 361,
+            feedhorn_height_m: 20,
+        };
+        let fix = resolve_site_from("KPBZ", None, Some(&vol)).unwrap();
+        assert!(fix.source.starts_with("message31-vol-block ("), "{}", fix.source);
+        assert!(fix.source.contains("disagrees"), "{}", fix.source);
+        assert_eq!(fix.lon_deg, f64::from(vol.longitude_deg));
+        assert_eq!(fix.alt_m, 381.0);
+
+        // Within survey noise the source stays clean.
+        let close = VolSite {
+            latitude_deg: 40.5317,
+            longitude_deg: -80.2183,
+            site_height_m: 361,
+            feedhorn_height_m: 20,
+        };
+        let fix = resolve_site_from("KPBZ", None, Some(&close)).unwrap();
+        assert_eq!(fix.source, "message31-vol-block");
     }
 
     #[test]

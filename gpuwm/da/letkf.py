@@ -36,6 +36,11 @@ Two departures from a literal transcription, both deliberate and both tested:
   contract promises, and the gate on this module asserts increments are
   EXACTLY zero beyond the localisation cutoff at ``rho = 1``.
 
+  :mod:`gpuwm.core.jacobi_eigh` does promise it -- a diagonal matrix clears
+  no rotation threshold, so ``U`` comes back the literal identity -- but the
+  closed form stays, because the guarantee should not become a property of
+  which eigensolver a caller configured.
+
   What the closed form must NOT do is drop the ``sqrt(rho)`` along with
   the solve.  Prior inflation is a property of the transform, not of the
   observation set: the perturbation stretch applies at every gridpoint,
@@ -53,9 +58,21 @@ R <= ~40.  On its own that is far too small to occupy a GPU -- a single
 40x40 ``eigh`` is microseconds of arithmetic wrapped in tens of microseconds
 of launch overhead, and a loop over 400k gridpoints spends essentially all
 of its wall clock in Python and kernel launches.  Stacking thousands of them
-into one ``(G, R, R)`` array and issuing a single ``cupy.linalg.eigh`` turns
-the launch overhead into a rounding error and lets cuSOLVER's batched Jacobi
-path run all G problems concurrently.  Every array in the inner loop
+into one ``(G, R, R)`` array and issuing a single batched solve turns the
+launch overhead into a rounding error and runs all G problems concurrently.
+
+That batched solve is this project's own kernel --
+:mod:`gpuwm.core.jacobi_eigh`, one thread block per gridpoint, cyclic Jacobi
+in shared memory -- and not a library call.  It is the same ALGORITHM
+cuSOLVER's ``syevj`` uses, so the change is not a numerical opinion; what it
+buys is that the DA path no longer depends on a CUDA library that the rest of
+this project has never needed, and whose absence presents as "elementwise
+CuPy works, the factorisation does not".  ``LetkfConfig.eigensolver`` keeps
+``xp.linalg.eigh`` reachable, and is what the A/B in
+``tests/test_letkf_eigensolver.py`` switches.  See
+``docs/da_jacobi_eigensolver.md``.
+
+Every array in the inner loop
 therefore carries a leading gridpoint axis, and the only Python-level
 iteration is over chunks (see ``LetkfConfig.chunk_points``), sized to bound
 peak memory rather than to bound work.
@@ -99,30 +116,46 @@ increment is formed.  ``alpha = 0`` disables it.  The relaxed spread is
 ``alpha*sigma_b + (1-alpha)*sigma_a``, so ``alpha = 1`` restores the prior
 spread exactly and ``alpha`` outside [0, 1] is refused.
 
-Two alternatives are documented but NOT built, because each needs evidence
-this lane cannot produce alone:
+**RTPP** (relaxation to prior perturbation, Zhang et al. 2004) is now
+available beside it as ``LetkfConfig.relaxation = "rtpp"``:
 
-* **RTPP** (relaxation to prior perturbation, Zhang et al. 2004):
-  ``Xa <- (1-alpha) Xa + alpha Xb``.  Cheaper than RTPS -- it needs no
-  spread diagnostics -- and it relaxes the analysis *covariance* structure,
-  not just its amplitude, which is the reason to prefer it when the
-  localisation is aggressive enough to distort cross-covariances.  It is a
-  four-line change at the same point in :func:`analyze`.  Not shipped
-  because choosing between RTPS and RTPP is an empirical question settled
-  by cycling statistics on a real domain, and shipping a knob with no
-  evidence behind either setting invites the wrong one being chosen by
-  coin flip.
+    Xa <- (1 - alpha) Xa + alpha Xb
+
+It needs no spread diagnostics and it relaxes the analysis *covariance
+structure*, not just its amplitude, which is the reason to prefer it when
+the localisation is aggressive enough to distort cross-covariances -- as
+it is when a rank-``R-1`` ensemble meets a dense radar volume.  The two
+are not interchangeable: RTPS restores a target SPREAD pointwise and is
+blind to which direction in ensemble space lost it, while RTPP restores a
+fraction of the prior PERTURBATION and therefore preserves the prior's
+correlations between fields.  Which one a domain wants is an empirical
+question, so this module ships both and records in
+:class:`LetkfDiagnostics` which one ran, next to the prior and posterior
+spread it produced.
+
+One alternative is documented but NOT built here:
+
 * **Additive inflation** (Mitchell and Houtekamer 2000): add scaled random
-  draws -- typically from a climatological forecast-difference library --
-  to the analysis perturbations.  This is the only one of the three that
-  can restore *rank*, so it is the right answer when the R <= 40 subspace
-  has collapsed rather than merely shrunk.  Not shipped because it needs a
-  perturbation library that is a different lane's deliverable, and a
-  version that draws white noise instead would inject exactly the
+  draws to the analysis perturbations.  This is the only one of the three
+  that can restore *rank*, so it is the right answer when the R <= 40
+  subspace has collapsed rather than merely shrunk -- and, unlike either
+  relaxation, it is the only one that can counteract spread lost in the
+  FORECAST step rather than in the analysis.  It is not in this module
+  because it is not a property of the transform: it is a perturbation
+  drawn on the model grid and added to a state, which is
+  :mod:`gpuwm.da.perturb`'s job and a caller's cycle policy.  A version
+  that drew white noise here instead would inject exactly the
   small-scale imbalance the model then has to reject.
 
 Multiplicative prior inflation is available as ``LetkfConfig.prior_inflation``
 (the ``rho`` of step 5) since it costs one scalar in the batched solve.
+
+Both relaxations leave the inactive-point closed form unchanged, which is
+not a coincidence: at a gridpoint with no localised observation
+``Xa = sqrt(rho) Xb``, so RTPS gives ``[(1-alpha) sqrt(rho) + alpha] Xb``
+and RTPP gives ``[(1-alpha) sqrt(rho) + alpha] Xb`` -- the same scalar.
+The bitwise-zero guarantee beyond the cutoff at ``rho = 1`` therefore
+holds for both.
 
 Fail-closed policy
 ------------------
@@ -147,6 +180,8 @@ import numpy as np
 
 __all__ = [
     "LetkfError",
+    "RELAXATION_MODES",
+    "EIGENSOLVER_MODES",
     "Localization",
     "GridGeometry",
     "GriddedObs",
@@ -159,6 +194,45 @@ __all__ = [
 
 class LetkfError(ValueError):
     """Any refusal by this module.  Never raised for a merely hard problem."""
+
+
+#: Which batched symmetric eigensolver factors ``(R-1)I/rho + C Yb``.
+#:
+#: ``"auto"`` -- this project's own kernel
+#:   (:mod:`gpuwm.core.jacobi_eigh`) whenever the analysis is on the device
+#:   and R is inside its supported range, and the array namespace's
+#:   ``linalg.eigh`` otherwise.  This is the default.  On numpy it always
+#:   means numpy, which is LAPACK in-process and involves no CUDA library
+#:   at all.
+#:
+#: ``"jacobi"`` -- REQUIRE the project kernel and refuse if it cannot take
+#:   the problem.  For a caller that has decided cuSOLVER is not allowed to
+#:   be a silent fallback.
+#:
+#: ``"library"`` -- ``xp.linalg.eigh``, i.e. cuSOLVER on the device and
+#:   LAPACK on the host.  The escape hatch, and what the A/B in
+#:   ``tests/test_jacobi_eigh_gpu.py`` compares against.
+#:
+#: The choice is recorded in :class:`LetkfDiagnostics` because the two
+#: solvers agree to rounding rather than bitwise, so an analysis does not say
+#: on its face which one produced it.
+EIGENSOLVER_MODES = ("auto", "jacobi", "library")
+
+
+#: Posterior relaxation schemes, by name.
+#:
+#: ``"rtps"`` -- relaxation to prior SPREAD, Whitaker and Hamill (2012)
+#:   eq. 6.  Rescales each analysis perturbation so the pointwise spread
+#:   becomes ``alpha sigma_b + (1 - alpha) sigma_a``.
+#:
+#: ``"rtpp"`` -- relaxation to prior PERTURBATION, Zhang et al. (2004).
+#:   Mixes the perturbations themselves, ``(1 - alpha) Xa + alpha Xb``,
+#:   which relaxes the analysis covariance structure rather than only its
+#:   amplitude.
+#:
+#: ``alpha = 0`` is the identity under both, and both reduce to the same
+#: scalar at a gridpoint with no localised observation.
+RELAXATION_MODES = ("rtps", "rtpp")
 
 
 def _get_xp(*arrays):
@@ -594,17 +668,39 @@ class LetkfConfig:
         every kernel cupy compiles -- it appends ``-ftz=true`` after the
         caller's options -- which float64 sidesteps entirely.  The gather
         and the final ``Xb @ W`` stay in the input dtype.
+    eigensolver
+        Which batched symmetric eigensolver factors the R x R matrix; see
+        :data:`EIGENSOLVER_MODES`.  ``"auto"`` -- the default -- prefers
+        this project's own kernel, so nothing on the DA path needs cuSOLVER
+        installed at the ensemble sizes that kernel supports.
     """
 
     localization: Localization
     analysis_fields: tuple[str, ...]
     rtps_alpha: float
     prior_inflation: float = 1.0
+    #: Which posterior relaxation ``rtps_alpha`` drives; see
+    #: :data:`RELAXATION_MODES`.  The parameter keeps its name under both
+    #: because it is the same ``alpha`` of the same published family and
+    #: renaming it per mode would silently reset a caller's tuning.
+    relaxation: str = "rtps"
     chunk_points: int | None = None
     memory_budget_mib: float = 512.0
     solve_dtype: str = "float64"
+    #: See :data:`EIGENSOLVER_MODES`.
+    eigensolver: str = "auto"
 
     def __post_init__(self) -> None:
+        if self.eigensolver not in EIGENSOLVER_MODES:
+            raise LetkfError(
+                f"eigensolver must be one of {EIGENSOLVER_MODES}, got"
+                f" {self.eigensolver!r}."
+            )
+        if self.relaxation not in RELAXATION_MODES:
+            raise LetkfError(
+                f"relaxation must be one of {RELAXATION_MODES}, got"
+                f" {self.relaxation!r}."
+            )
         if not self.analysis_fields:
             raise LetkfError(
                 "LetkfConfig.analysis_fields is empty: an analysis that"
@@ -659,6 +755,21 @@ class LetkfDiagnostics:
     #: one cycle, and only stops working several cycles later.
     prior_inflation: float = 1.0
     rtps_alpha: float = 0.0
+    #: Which relaxation the alpha above drove.  Recorded because RTPS and
+    #: RTPP at the same alpha produce different posteriors and the
+    #: increments do not say which ran.
+    relaxation: str = "rtps"
+    #: Which batched eigensolver actually ran -- ``"jacobi"`` or
+    #: ``"library"`` -- resolved from ``LetkfConfig.eigensolver`` once, before
+    #: the chunk loop.  Recorded for the same reason as ``relaxation``: the
+    #: two agree to rounding, not bitwise, so an increment array does not say
+    #: on its face which produced it, and a reproducibility receipt needs to.
+    eigensolver: str = ""
+    #: Sweeps the project kernel needed on its worst matrix, or 0 when the
+    #: library solver ran.  A number climbing toward
+    #: ``gpuwm.core.jacobi_eigh.SWEEP_CAP`` is the early warning that the
+    #: localised matrix is worse conditioned than the recipe implies.
+    max_jacobi_sweeps: int = 0
     #: Gridpoints with at least one observation inside the cutoff.  Every
     #: other gridpoint never entered a solve and carries the closed-form
     #: inactive-point transform ``(s - 1) x'`` with
@@ -759,6 +870,85 @@ def _vertical_stencil(loc: Localization, grid: GridGeometry):
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
+
+def _resolve_eigensolver(xp, members, solve_dtype, config):
+    """Pick the eigensolver ONCE, before any chunk runs.
+
+    Deciding per chunk would let a single analysis silently mix two solvers
+    -- they agree to rounding, so the seam would be invisible in the
+    increments and visible only as an irreproducible receipt.  Deciding here
+    also means an unsatisfiable ``eigensolver="jacobi"`` refuses before the
+    first gather rather than after the last one.
+    """
+    mode = str(config.eigensolver)
+    if mode == "library":
+        return "library"
+    if xp is np:
+        if mode == "jacobi":
+            raise LetkfError(
+                "eigensolver='jacobi' needs the analysis on the device: the"
+                " kernel is CUDA and this analysis is running in numpy."
+                "  Pass cupy arrays, or use eigensolver='auto', which means"
+                " numpy's own LAPACK here and needs no CUDA library at all."
+            )
+        return "library"
+    from gpuwm.core.jacobi_eigh import supported
+    if supported(members, solve_dtype):
+        return "jacobi"
+    if mode == "jacobi":
+        from gpuwm.core.jacobi_eigh import MAX_K, MIN_K
+        raise LetkfError(
+            f"eigensolver='jacobi' was required but this project's kernel"
+            f" does not take R={members} in {np.dtype(solve_dtype).name}: it"
+            f" supports {MIN_K} <= R <= {MAX_K} in float32 or float64."
+            "  Use eigensolver='auto' to fall back to the array namespace's"
+            " own solver, or reduce the ensemble size."
+        )
+    return "library"
+
+
+def _eigendecompose(xp, amat, which):
+    """``(evals, evecs, sweeps)`` for a batch of symmetric matrices, ascending.
+
+    Both branches promise the same contract -- eigenvalues ascending,
+    eigenvectors in the columns -- so everything downstream is written once.
+    ``sweeps`` is 0 for the library branch, which does not report one.
+    """
+    if which == "jacobi":
+        from gpuwm.core.jacobi_eigh import JacobiEighError, batched_eigh
+        try:
+            return batched_eigh(amat, return_sweeps=True)
+        except JacobiEighError as exc:
+            raise LetkfError(
+                "this project's batched Jacobi eigensolver refused the"
+                f" localised LETKF matrix (R-1)I/rho + C Yb: {exc}"
+                "  No analysis was produced; do not treat the prior as one."
+            ) from exc
+    try:
+        evals, evecs = xp.linalg.eigh(amat)
+        return evals, evecs, 0
+    except Exception as exc:                     # LinAlgError and backend kin
+        # The one failure mode no input check can pre-empt.  A raw
+        # convergence message from LAPACK or cuSOLVER does not name the
+        # analysis that did not happen, and this module promises that every
+        # failure arrives as LetkfError.
+        #
+        # On the device this is also where a MISSING cuSOLVER lands, which is
+        # a different problem wearing the same exception: elementwise CuPy
+        # works, the gather worked, and only the factorisation failed.  Say
+        # so, and name the setting that does not need it.
+        raise LetkfError(
+            "the batched eigensolver failed on the localised LETKF"
+            f" matrix (R-1)I/rho + C Yb: {type(exc).__name__}: {exc}."
+            "  This is eigensolver='library', which on the device is"
+            " cuSOLVER -- a separate CUDA library from the one elementwise"
+            " CuPy uses, so the rest of the analysis working says nothing"
+            " about whether it is installed.  Run `gpuwm doctor` for a"
+            " verdict on it, or use eigensolver='auto' (the default), which"
+            " prefers this project's own kernel and needs no CUDA library."
+            "  No analysis was produced; do not treat the prior as one."
+        ) from exc
+
 
 def _as_grid(xp, a, shape, what):
     arr = xp.asarray(a)
@@ -973,6 +1163,12 @@ def analyze(
     diagnostics.total_points = nz * ny * nx
     diagnostics.prior_inflation = float(config.prior_inflation)
     diagnostics.rtps_alpha = float(config.rtps_alpha)
+    diagnostics.relaxation = str(config.relaxation)
+    # Resolved before anything is gathered, so an unsatisfiable request
+    # refuses at the top and a satisfiable one is recorded even on a cycle
+    # that turns out to have no active gridpoint and never reaches a solve.
+    eigensolver = _resolve_eigensolver(xp, members, solve_dtype, config)
+    diagnostics.eigensolver = eigensolver
 
     # Prior mean and perturbations, once, for the whole domain.  Xb is what
     # step 9 multiplies; nothing downstream needs the members again.
@@ -1155,6 +1351,7 @@ def analyze(
     max_local = 0
     nactive = 0
     nbatch = 0
+    max_sweeps = 0
 
     for start in range(0, npts, chunk):
         stop = min(start + chunk, npts)
@@ -1283,18 +1480,8 @@ def analyze(
         # triangle it reads.
         amat = (amat + xp.swapaxes(amat, 1, 2)) * solve_dtype.type(0.5)
 
-        try:
-            evals, evecs = xp.linalg.eigh(amat)
-        except Exception as exc:                 # LinAlgError and backend kin
-            # The one failure mode no input check can pre-empt.  A raw
-            # convergence message from LAPACK or cuSOLVER does not name the
-            # analysis that did not happen, and this module promises that
-            # every failure arrives as LetkfError.
-            raise LetkfError(
-                "the batched eigensolver failed on the localised LETKF"
-                f" matrix (R-1)I/rho + C Yb: {type(exc).__name__}: {exc}."
-                "  No analysis was produced; do not treat the prior as one."
-            ) from exc
+        evals, evecs, sweeps = _eigendecompose(xp, amat, eigensolver)
+        max_sweeps = max(max_sweeps, sweeps)
         # (R-1)I/rho is positive definite and C Yb is positive semi-definite,
         # so every eigenvalue is >= (R-1)/rho > 0.  A non-positive one means
         # the arithmetic, not the mathematics, failed.
@@ -1323,22 +1510,31 @@ def analyze(
             dbar = xp.einsum("mg,gm->g", xbg, wbar)         # mean increment
             xa = xp.einsum("mg,gmk->kg", xbg, wa)           # (R, G)
             if config.rtps_alpha > 0.0:
-                sb = xp.sqrt((xbg ** 2).sum(axis=0) / (members - 1))
-                sa = xp.sqrt((xa ** 2).sum(axis=0) / (members - 1))
-                # sigma_a == 0 implies sigma_b == 0 (analysis perturbations
-                # are linear combinations of prior ones), so the relaxation
-                # factor is 0/0 on a perturbation that is identically zero.
-                # Any finite factor gives the same answer; 1 is the one that
-                # does not need a special case downstream.
-                relax = xp.where(sa > 0, alpha * (sb - sa) / xp.where(
-                    sa > 0, sa, 1) + 1, 1)
-                xa = xa * relax[None, :]
+                if config.relaxation == "rtpp":
+                    # Zhang et al. (2004): mix the perturbations, not their
+                    # amplitudes.  No spread diagnostic, no 0/0 case -- a
+                    # perturbation that is identically zero relaxes to
+                    # identically zero, which is right.
+                    xa = xa * (1 - alpha) + xbg * alpha
+                else:
+                    sb = xp.sqrt((xbg ** 2).sum(axis=0) / (members - 1))
+                    sa = xp.sqrt((xa ** 2).sum(axis=0) / (members - 1))
+                    # sigma_a == 0 implies sigma_b == 0 (analysis
+                    # perturbations are linear combinations of prior ones),
+                    # so the relaxation factor is 0/0 on a perturbation that
+                    # is identically zero.  Any finite factor gives the same
+                    # answer; 1 is the one that does not need a special case
+                    # downstream.
+                    relax = xp.where(sa > 0, alpha * (sb - sa) / xp.where(
+                        sa > 0, sa, 1) + 1, 1)
+                    xa = xa * relax[None, :]
             incr_flat[f][:, gpts] = (
                 dbar[None, :] + xa - xbg).astype(work_dtype)
 
     diagnostics.active_points = nactive
     diagnostics.max_local_obs = max_local
     diagnostics.batches = nbatch
+    diagnostics.max_jacobi_sweeps = max_sweeps
 
     _finish(xp, fields, pri, increments, members, diagnostics)
     return increments

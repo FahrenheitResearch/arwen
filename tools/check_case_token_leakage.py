@@ -110,6 +110,13 @@ CASE_TOKENS: tuple[str, ...] = (
     "may1999",
     "20cr",
     "1974",
+    # Observation-battery case days.  A battery case IS its UTC day, so the
+    # day is the whole of its identity and there is nothing else to guard:
+    # it lives in configs/battery/case_<day>.toml, in the receipts that
+    # measure that day, and here.  Registered with the case, per the battery
+    # spec section 1.1 ("every new battery case token is appended to
+    # CASE_TOKENS in the same commit that introduces the case").
+    "20240521",
 )
 
 # Zones where a case token must never appear, relative to a repository root.
@@ -145,6 +152,13 @@ PROTECTED_ZONES: tuple[str, ...] = (
     "gpuwm/verify/field_metrics.py",
     "gpuwm/verify/chaos_envelope.py",
     "gpuwm/verify/spectral.py",
+    # the observation scorer: it consumes observations and model fields
+    # through one seam and takes its case as data, so a case token anywhere
+    # in it would mean the referee had been written for one day's weather.
+    # A data-source token is equally disqualifying here -- the ingest side is
+    # where a product name belongs, and by the time bytes reach the scorer
+    # they are "a gridded field with a validity mask".
+    "gpuwm/verify/obs/",
     "tools/matched_wrfout_envelope.py",
     "tools/certify_band_from_ensemble.py",
     # generic simulation layer and runner selection

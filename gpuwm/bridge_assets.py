@@ -2,9 +2,10 @@
 
 The pip wheel ships no compiled Rust.  Until this command existed the
 only way to get the GRIB decoders, the CPU preprocessing library, the
-fetch backbone and the batch renderer onto a wheel install was to clone
+fetch backbone, the batch renderer and the radar front door onto a
+wheel install was to clone
 the repository and run ``cargo build`` twice -- a Rust toolchain, a
-2.5 GB checkout and a few minutes of compiling, for eight files.
+2.5 GB checkout and a few minutes of compiling, for nine files.
 ``gpuwm fetch-bridges`` is the same trade :mod:`gpuwm.table_assets`
 already makes for the externalized physics tables: the artifacts are
 published as versioned GitHub release assets, their exact size and
@@ -13,7 +14,7 @@ byte is verified against those pins *before* anything is installed.
 
 What is staged, and where
 -------------------------
-One bundle per platform, holding the eight artifacts of
+One bundle per platform, holding the nine artifacts of
 :data:`BUNDLED_ARTIFACTS`, staged into :func:`gpuwm.bridges
 .default_bridge_dir` (``~/.gpuwm/bridges``) -- the last rung of the
 resolution ladder every consumer already searches, so nothing else in
@@ -65,7 +66,7 @@ new bytes passing all three checks first.
 Offline and mirrors
 -------------------
 ``--from DIR`` stages from a local directory under identical
-verification: either the bundle archive itself, or the eight artifacts
+verification: either the bundle archive itself, or the nine artifacts
 loose in that directory (what an air-gapped operator has after building
 them on a machine that does have a toolchain).
 ``GPUWM_BRIDGE_ASSET_URL_BASE`` overrides the download base URL; the
@@ -149,7 +150,7 @@ REQUIRED_ASSET_SUBDIRS = ("basemap",)
 #: .BRIDGE_ABI_MARKERS` and the renderer's ``GPUWM_INITIAL_*``
 #: attribute literals).  The Rust half lives in the workspace build
 #: scripts (``tools/grib1_bridge/build.rs`` and the ``build.rs`` of the
-#: two bundled ``tools/rustwx`` crates), which inject the checkout's
+#: three bundled ``tools/rustwx`` crates), which inject the checkout's
 #: HEAD as ``GPUWM_BRIDGE_SOURCE_REV`` for each entry point to embed.
 SOURCE_REV_MARKER = b"GPUWM_BRIDGE_SOURCE_REV="
 
@@ -186,12 +187,21 @@ class BundledArtifact:
     consumer: str
 
 
-#: The eight artifacts a bundle carries, in build order: the five GRIB
+#: The nine artifacts a bundle carries, in build order: the five GRIB
 #: decoders and the CPU preprocessing library from the decoder
-#: workspace, then the fetch backbone and the batch renderer from the
-#: renderer workspace.  The environment variables are the ones the
-#: resolution ladder already honours, so a staged bundle and a
-#: hand-built tree are found by exactly the same code.
+#: workspace, then the fetch backbone, the batch renderer and the radar
+#: front door from the renderer workspace.  The environment variables
+#: are the ones the resolution ladder already honours, so a staged
+#: bundle and a hand-built tree are found by exactly the same code.
+#:
+#: ``rw_nexrad`` joined this list once it was clear that leaving it out
+#: made ``gpuwm doctor`` pass on boxes that could not ingest a single
+#: radar observation: it is the only route into the radar-DA nowcast,
+#: it has no fallback the way the fetch backbone and the renderer do,
+#: and it builds ``--locked --offline`` out of the same vendored
+#: closure on the same two platforms as its two workspace siblings.
+#: The alternative -- telling every user to install a Rust toolchain --
+#: is the one prerequisite this project otherwise never imposes.
 BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "grib1_bridge", "executable", bridges.CRATE_RELATIVE,
@@ -223,6 +233,9 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "rw_wrfbatch", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_WRFBATCH", "gpuwm render --engine rust"),
+    BundledArtifact(
+        "rw_nexrad", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_NEXRAD", "radar observation ingest (the DA nowcast)"),
 )
 
 
@@ -656,7 +669,7 @@ def classify_assets(dest: Path, bundle: BundlePin
     """(already pinned, present but different, absent) for the assets.
 
     Separate from :func:`classify_destination` because the two answer
-    different questions for the caller: eight binaries are listed
+    different questions for the caller: nine binaries are listed
     individually in a report, and several dozen shapefiles are counted.
     """
 
@@ -865,7 +878,7 @@ def stage_from_loose_files(source_dir: Path, bundle: BundlePin, dest: Path,
     """Install the pinned artifacts sitting loose in ``source_dir``.
 
     What an air-gapped operator has after building on a machine that
-    does have a toolchain: eight files, no archive.  Same three checks,
+    does have a toolchain: nine files, no archive.  Same three checks,
     same atomic install.
     """
 
@@ -878,7 +891,7 @@ def stage_from_loose_files(source_dir: Path, bundle: BundlePin, dest: Path,
             f"{source_dir} carries neither {bundle.filename} nor the loose "
             f"artifacts; missing {', '.join(absent)}")
     if absent:
-        # The eight artifacts are independent; an air-gapped operator
+        # The nine artifacts are independent; an air-gapped operator
         # with the decoders but not the renderer gets the decoders,
         # verified, and doctor names what is still missing.
         warn(f"{source_dir} is missing {len(absent)} of "

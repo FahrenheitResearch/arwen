@@ -124,7 +124,11 @@ pub static SITES: &[(&str, &str, f64, f64, f64)] = &[
     ("KOKX", "New York City, NY", 40.8656, -72.8639, 26.0),
     ("KOTX", "Spokane, WA", 47.6806, -117.627, 0.0),
     ("KPAH", "Paducah, KY", 37.0683, -88.7719, 0.0),
-    ("KPBZ", "Pittsburgh, PA", 40.5317, -80.0178, 0.0),
+    // Longitude was transcribed as -80.0178 (16.9 km east of the radar,
+    // median table error elsewhere ~22 m) and shipped that way until a
+    // real-volume cross-check against the Message-31 VOL block surfaced
+    // it; -80.2183 is the ROC/NCEI survey value.
+    ("KPBZ", "Pittsburgh, PA", 40.5317, -80.2183, 0.0),
     ("KPDT", "Pendleton, OR", 45.6906, -118.853, 0.0),
     ("KPOE", "Fort Polk, LA", 31.1556, -92.9758, 0.0),
     ("KPUX", "Pueblo, CO", 38.4594, -104.181, 1600.0),

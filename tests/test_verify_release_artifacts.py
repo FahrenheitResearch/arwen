@@ -208,7 +208,8 @@ def test_dry_run_passes_the_packers_own_output(
     assert receipt["source_rev"] == SOURCE_REV
     assert set(receipt["bundles"]) == set(bridge_assets.SUPPORTED_PLATFORMS)
     for platform in bridge_assets.SUPPORTED_PLATFORMS:
-        assert receipt["bundles"][platform]["binaries"] == 8
+        assert receipt["bundles"][platform]["binaries"] == len(
+            bridge_assets.BUNDLED_ARTIFACTS)
         assert receipt["bundles"][platform]["assets"] >= 1
 
 

@@ -173,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     bundle_receipts: dict[str, object] = {}
     for platform, bundle in sorted(pins.platforms.items()):
-        assert len(bundle.binaries) == len(by_name) == 8
+        assert len(bundle.binaries) == len(by_name)
         assert {pin.artifact for pin in bundle.binaries} == set(by_name)
         archive_path = bundles / bundle.filename
         bridge_assets.verify_pinned_file(
@@ -182,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
             expected_sha256=bundle.sha256,
             label=bundle.filename,
         )
-        # A bundle carries the eight binaries AND the renderer's map assets --
+        # A bundle carries the nine binaries AND the renderer's map assets --
         # that is the whole point of the asset half, since a bridge binary
         # without its basemaps draws weather over a blank rectangle.  This
         # membership test predates the assets and compared against the binary

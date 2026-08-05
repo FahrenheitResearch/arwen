@@ -40,7 +40,26 @@ from gpuwm.certify.capsule import emit_run_capsule
 
 
 HEARTBEAT_SCHEMA = "gpuwm.run-progress/v1"
-FAILURE_CAPSULE_SCHEMA = "gpuwm.failure-capsule/v1"
+FAILURE_CAPSULE_SCHEMA = "gpuwm.failure-capsule/v2"
+
+# Capsule schema ids this module recognizes.  v2 only adds the optional
+# ``config_text``/``input_text`` verbatim small-text captures; it changes
+# nothing a v1 capsule already said, so v1 capsules keep reading unchanged
+# (the same additive convention as ``gpuwm.preserved-input-set/v2``).
+SUPPORTED_FAILURE_CAPSULE_SCHEMAS = (
+    "gpuwm.failure-capsule/v1", FAILURE_CAPSULE_SCHEMA)
+
+# Cap on each verbatim text capture embedded in the failure capsule.  The
+# embedded inputs are the run's own small text files (the experiment TOML,
+# the WPS namelist, the Vtable); anything larger is cut at the cap and says
+# so, keeping a capsule readable rather than multi-megabyte.
+FAILURE_CAPSULE_TEXT_CAP_BYTES = 64 * 1024
+
+# Declared-input roles whose bytes are small text a support reader needs
+# verbatim.  Forcing GRIBs, orography NetCDFs, and the geography tree stay
+# hash-only.
+FAILURE_CAPSULE_TEXT_ROLES = frozenset({"vtable", "wps_namelist"})
+
 HEARTBEAT_NAME = "run-progress.json"
 FAILURE_CAPSULE_NAME = "failure-capsule.json"
 COMPUTE_MEMORY_THRESHOLD_MIB = 64
@@ -1084,19 +1103,76 @@ def is_cuda_fatal(value: BaseException | str) -> bool:
     return any(pattern.search(text) for pattern in _CUDA_FATAL_PATTERNS)
 
 
+def _capsule_embedded_text(path: Any, *, data: bytes | None = None,
+                           cap_bytes: int = FAILURE_CAPSULE_TEXT_CAP_BYTES,
+                           ) -> dict[str, Any]:
+    """One size-capped verbatim text capture for the failure capsule.
+
+    Total by construction: the capsule writer is the crash reporter, so a
+    capture problem (deleted file, permissions, an inventory entry that is
+    not a path) degrades to a recorded absence, never a second crash.
+    """
+    record: dict[str, Any] = {"path": str(path)}
+    try:
+        if data is None:
+            data = Path(path).read_bytes()
+        record["size_bytes"] = len(data)
+        record["truncated"] = len(data) > cap_bytes
+        record["text"] = data[:cap_bytes].decode("utf-8", errors="replace")
+    except Exception as exc:
+        record["text"] = None
+        record["error"] = f"{type(exc).__name__}: {exc}"
+    return record
+
+
+def _capsule_input_text(input_hashes: Any) -> dict[str, Any]:
+    """Verbatim captures for the small-text declared inputs.
+
+    Keyed by the same ``role:path`` keys ``input_hashes`` uses, restricted
+    to :data:`FAILURE_CAPSULE_TEXT_ROLES`.  Never raises: the inventory may
+    be absent, partial, or malformed at the moment of the crash.
+    """
+    captures: dict[str, Any] = {}
+    try:
+        entries = dict(input_hashes)
+    except Exception:
+        return captures
+    for key, entry in entries.items():
+        try:
+            identities = entry.get("identities") or ()
+            capture_path = next(
+                (identity.get("path") for identity in identities
+                 if identity.get("role") in FAILURE_CAPSULE_TEXT_ROLES),
+                None)
+        except Exception:
+            continue
+        if capture_path is not None:
+            captures[str(key)] = _capsule_embedded_text(capture_path)
+    return captures
+
+
 def write_failure_capsule(
         path: str | Path, *, run_id: str, config_path: str | Path,
         config_sha256: str, input_hashes: dict[str, Any], gpu: GPUIdentity,
         last_phase: str, last_step: int, exception_type: str,
         exception_message: str, exception_traceback: str,
         last_durable_wrfout: str | None, last_checkpoint: str | None,
-        worker_pid: int | None = None) -> Path:
+        worker_pid: int | None = None,
+        config_bytes: bytes | None = None) -> Path:
     payload = {
         "schema": FAILURE_CAPSULE_SCHEMA,
         "run_id": run_id,
         "created_at_utc": utc_now(),
         "config_path": str(Path(config_path).resolve()),
         "config_sha256": config_sha256,
+        # Verbatim small-text captures (v2): the config the run actually
+        # used -- the caller's captured payload bytes when it has them,
+        # otherwise a best-effort read of ``config_path`` -- plus the
+        # declared small-text inputs.  These are files the user themselves
+        # put on disk; embedding them saves the support round trip that
+        # asks a reporter to mail back a sub-100-line TOML.
+        "config_text": _capsule_embedded_text(config_path, data=config_bytes),
+        "input_text": _capsule_input_text(input_hashes),
         "input_hashes": input_hashes,
         "git_commit": git_commit(),
         "gpu": dataclasses.asdict(gpu),
@@ -1216,7 +1292,7 @@ def _has_worker_failure_capsule(path: Path, *, run_id: str,
     try:
         with path.open("r", encoding="utf-8") as stream:
             payload = json.load(stream)
-        return (payload.get("schema") == FAILURE_CAPSULE_SCHEMA
+        return (payload.get("schema") in SUPPORTED_FAILURE_CAPSULE_SCHEMAS
                 and payload.get("run_id") == run_id
                 and payload.get("worker_pid") == worker_pid)
     except (OSError, ValueError, json.JSONDecodeError):
@@ -1566,6 +1642,7 @@ def supervise_experiment(
                 write_failure_capsule(
                     capsule_path, run_id=run_id, config_path=config_path,
                     config_sha256=digest, input_hashes=inputs, gpu=gpu,
+                    config_bytes=config_bytes,
                     last_phase=(monitor_failure_kind or "worker-exit"),
                     last_step=0 if hb is None else hb.outer_step,
                     exception_type=("WorkerMonitorFailure"
@@ -1616,6 +1693,7 @@ def _worker_main(args: argparse.Namespace) -> int:
     # the first executable worker action after environment/path setup.
     progress.preparing("worker-start")
     input_hashes: dict[str, Any] = {}
+    config_bytes: bytes | None = None
     try:
         # Validate the one captured read before importing either the config
         # loader or the runtime.  The original source path remains metadata
@@ -1686,6 +1764,7 @@ def _worker_main(args: argparse.Namespace) -> int:
                 outdir / FAILURE_CAPSULE_NAME, run_id=run_id,
                 config_path=config_path, config_sha256=digest,
                 input_hashes=input_hashes, gpu=gpu,
+                config_bytes=config_bytes,
                 last_phase=progress.last_phase, last_step=progress.last_step,
                 exception_type=type(exc).__name__,
                 exception_message=str(exc),

@@ -1,0 +1,127 @@
+{
+  "domains": [
+    {
+      "bl_pbl_physics": 1,
+      "cu_physics": 0,
+      "dt_s": 15.0,
+      "dx_m": 3000.0,
+      "grid_id": 1,
+      "history_interval_s": 3600.0,
+      "mp_physics": 8,
+      "nx": 480,
+      "ny": 400,
+      "nz": 49,
+      "ra_lw_physics": 4,
+      "ra_rrtmg_variant": "rrtmg_legacy",
+      "ra_sw_physics": 4,
+      "sf_sfclay_physics": 91,
+      "sf_surface_physics": 2
+    }
+  ],
+  "experiment_config": "configs/battery/shape_3km_thompson_rrtmg_legacy.toml",
+  "experiment_name": "battery_shape_3km_legacy_rrtmg",
+  "gates": [
+    {
+      "authority": "gpuwm.experiment.load_experiment",
+      "detail": "1 domain(s), 24 h from 2026-07-28 12:00:00",
+      "gate": "experiment.load",
+      "status": "ADMITS"
+    },
+    {
+      "authority": "gpuwm.config.validate_run_config",
+      "detail": "",
+      "gate": "run_config.validate.d01",
+      "status": "ADMITS"
+    },
+    {
+      "authority": "gpuwm.hrrr_route_inputs.coverage_refusal",
+      "detail": "",
+      "gate": "hrrr.coverage",
+      "status": "ADMITS"
+    },
+    {
+      "authority": "gpuwm.hrrr_route_inputs.validate_route_physics",
+      "detail": "",
+      "gate": "hrrr.route_inputs.physics",
+      "status": "ADMITS"
+    },
+    {
+      "authority": "gpuwm.physics_compat.validate_single_domain_physics_profile",
+      "detail": "prepare with --physics-profile thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1",
+      "gate": "hrrr.root_preparation.profile",
+      "status": "ADMITS"
+    },
+    {
+      "authority": "gpuwm.hrrr_hierarchy_direct._supported_hierarchy_slice",
+      "detail": "",
+      "gate": "hrrr.hierarchy.slice",
+      "status": "ADMITS"
+    },
+    {
+      "authority": "gpuwm.prepared_domain_tree_forecast two-domain floor; tools.hrrr_single_domain_benchmark runner_capabilities",
+      "detail": "single-domain config: gpuwm.prepared_domain_tree_forecast REFUSES it ('prepared domain-tree runner requires at least two domains' -- a designed division of labor, not widened here).  The run step is tools/hrrr_single_domain_benchmark.py forecast mode (--io-mode history --history-interval-seconds N), restoring the root preparation's own prepared cache; run it twice for the dual-run byte screen",
+      "gate": "run.runner_selection",
+      "status": "INFO"
+    },
+    {
+      "authority": "resource.getrlimit(RLIMIT_NOFILE); measured EMFILE at 25 h x 8 workers under soft limit 1024",
+      "detail": "not measurable on this platform; the run shell needs a file-descriptor soft limit of at least ~1728 (25 forcing hours x 8 workers, conservative). On the nodes: ulimit -n 4096 before step 1",
+      "gate": "run.fd_budget",
+      "status": "INFO"
+    },
+    {
+      "authority": "gpuwm.core.preflight.estimate_experiment",
+      "detail": "18.43 GiB peak envelope for 9,408,000 cells (9.144 GiB pool request)",
+      "gate": "arwen.device_memory",
+      "status": "INFO"
+    },
+    {
+      "authority": "evidence\\grounding-3km-conus-run-report.json",
+      "detail": "1.4838 s/sim-min -> 0.594 h wall, 16.1 GiB of wrfout",
+      "gate": "arwen.wall_clock_projection",
+      "status": "INFO"
+    },
+    {
+      "authority": "gpuwm.hrrr_forecast.hrrr_forcing_end_hour",
+      "detail": "a root prepared for this run seals f00..f24 (25 HRRR analyses)",
+      "gate": "hrrr.forcing_inventory",
+      "status": "INFO"
+    }
+  ],
+  "projection": {
+    "anchor": "evidence/grounding-3km-conus-run-report.json",
+    "anchor_bytes_per_frame": 1823148192,
+    "anchor_cells": 24806544,
+    "anchor_seconds_per_sim_minute": 3.9124,
+    "available": true,
+    "cells": 9408000,
+    "projected_frames": 25,
+    "projected_output_bytes": 17285940951,
+    "projected_output_gib": 16.1,
+    "projected_seconds_per_sim_minute": 1.4838,
+    "projected_wall_hours": 0.594,
+    "projected_wall_seconds": 2136.7,
+    "scaling": "linear in cells (assumption, not a measurement)"
+  },
+  "refusing_gates": [],
+  "run_seconds": 86400.0,
+  "schema": "gpuwm-battery-route-preflight-v1",
+  "sizing": {
+    "alloc_estimate_bytes": 9818168167,
+    "alloc_estimate_gib": 9.144,
+    "cells": 9408000,
+    "envelope_family": "windows",
+    "fit_source": "evidence/grounding-3km-conus-sizing.md",
+    "independent_fit_gib": {
+      "slope_0.75_kib_per_cell_intercept_2.9_gib": 9.629,
+      "slope_0.75_kib_per_cell_intercept_3.4_gib": 10.129,
+      "slope_0.84_kib_per_cell_intercept_2.9_gib": 10.437,
+      "slope_0.84_kib_per_cell_intercept_3.4_gib": 10.937,
+      "slope_0.8_kib_per_cell_intercept_2.9_gib": 10.078,
+      "slope_0.8_kib_per_cell_intercept_3.4_gib": 10.578
+    },
+    "peak_envelope_bytes": 19789206260,
+    "peak_envelope_gib": 18.43
+  },
+  "status": "ADMITTED"
+}

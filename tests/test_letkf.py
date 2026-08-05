@@ -1173,3 +1173,139 @@ def test_batched_cupy_solve_matches_numpy():
             f, float(np.abs(g - host[f]).max()))
         # The structural zero must survive the device path unchanged.
         assert np.array_equal(g == 0.0, host[f] == 0.0)
+
+
+# ---------------------------------------------------------------------------
+# RTPP, and the claim that both relaxations leave the inactive point alone
+# ---------------------------------------------------------------------------
+
+
+def test_rtpp_alpha_one_restores_the_prior_perturbations_exactly():
+    """alpha = 1 under RTPP puts back the prior PERTURBATION itself.
+
+    Stronger than RTPS's alpha = 1, which only restores the prior
+    spread: RTPP restores each member's own deviation, so the analysis
+    is the prior ensemble rigidly shifted by the mean increment.  That
+    is the difference between relaxing an amplitude and relaxing a
+    covariance structure, and it is why the two knobs are not
+    interchangeable at the same alpha.
+    """
+    fields = ("theta", "qv")
+    grid, prior, obs, members, shape = _tiny_case(fields=fields, n_obs=14)
+    loc = Localization(horizontal_m=4000.0, vertical_m=2000.0)
+    base = analyze(prior, [obs], grid, LetkfConfig(
+        localization=loc, analysis_fields=fields, rtps_alpha=0.0))
+    full = analyze(prior, [obs], grid, LetkfConfig(
+        localization=loc, analysis_fields=fields, rtps_alpha=1.0,
+        relaxation="rtpp"))
+    for f in fields:
+        analysis = prior[f] + full[f]
+        deviation = analysis - analysis.mean(axis=0, keepdims=True)
+        prior_dev = prior[f] - prior[f].mean(axis=0, keepdims=True)
+        assert np.allclose(deviation, prior_dev, rtol=1e-10, atol=1e-12)
+        # The mean still moved, and by exactly what the unrelaxed
+        # analysis moved it by: neither relaxation touches wbar.
+        assert np.allclose(base[f].mean(axis=0), full[f].mean(axis=0),
+                           rtol=1e-10, atol=1e-12)
+        assert np.abs(full[f].mean(axis=0)).max() > 1e-6
+
+
+def test_rtpp_and_rtps_differ_at_the_same_alpha():
+    fields = ("theta",)
+    grid, prior, obs, members, shape = _tiny_case(fields=fields, n_obs=14)
+    loc = Localization(horizontal_m=4000.0, vertical_m=2000.0)
+    common = dict(localization=loc, analysis_fields=fields, rtps_alpha=0.7)
+    rtps = analyze(prior, [obs], grid, LetkfConfig(**common))
+    rtpp = analyze(prior, [obs], grid,
+                   LetkfConfig(relaxation="rtpp", **common))
+    assert not np.allclose(rtps["theta"], rtpp["theta"], atol=1e-10)
+    # Both are relaxations toward the same prior, so both sit between the
+    # unrelaxed analysis spread and the prior spread.
+    unrelaxed = analyze(prior, [obs], grid, LetkfConfig(
+        localization=loc, analysis_fields=fields, rtps_alpha=0.0))
+    sb = prior["theta"].std(axis=0, ddof=1)
+    s0 = (prior["theta"] + unrelaxed["theta"]).std(axis=0, ddof=1)
+    for inc in (rtps["theta"], rtpp["theta"]):
+        s = (prior["theta"] + inc).std(axis=0, ddof=1)
+        assert np.all(s >= np.minimum(s0, sb) - 1e-12)
+        assert np.all(s <= np.maximum(s0, sb) + 1e-12)
+
+
+def test_rtpp_leaves_the_inactive_point_exactly_where_rtps_does():
+    """The docstring's claim, pinned rather than asserted in prose.
+
+    At a gridpoint with no localised observation ``Xa = sqrt(rho) Xb``,
+    so RTPS gives ``[(1-a) sqrt(rho) + a] Xb`` and RTPP gives
+    ``(1-a) sqrt(rho) Xb + a Xb`` -- the same scalar.  If that ever
+    stopped being true, the bitwise-zero-beyond-the-cutoff guarantee
+    would hold for one relaxation and not the other, and the
+    localisation gate would be testing only whichever one it happened to
+    be configured with.
+    """
+    members, nz, ny, nx = 10, 4, 15, 15
+    rng = np.random.default_rng(11)
+    grid = GridGeometry(dx_m=1000.0, dy_m=1000.0,
+                        heights_m=np.array([200.0, 700.0, 1400.0, 2400.0]))
+    fields = ("theta", "qv")
+    prior = {f: rng.standard_normal((members, nz, ny, nx)) + 5.0
+             for f in fields}
+    mask = np.zeros((nz, ny, nx), dtype=bool)
+    ok, oj, oi = 1, 7, 7
+    mask[ok, oj, oi] = True
+    obs = GriddedObs(name="one", values=np.where(mask, 99.0, np.nan),
+                     errors=0.5, simulated=prior["theta"] * 1.5, mask=mask)
+    loc = Localization(horizontal_m=3500.0, vertical_m=900.0)
+
+    zz, yy, xx = np.meshgrid(np.arange(nz), np.arange(ny), np.arange(nx),
+                             indexing="ij")
+    dh = np.hypot((xx - oi) * grid.dx_m, (yy - oj) * grid.dy_m)
+    dv = np.abs(grid.heights_m[zz] - grid.heights_m[ok])
+    reach = (np.asarray(gaspari_cohn(dh, loc.horizontal_m))
+             * np.asarray(gaspari_cohn(dv, loc.vertical_m))) > 0
+
+    # rho = 1: both must be BITWISE zero outside the lens.
+    for mode in ("rtps", "rtpp"):
+        inc = analyze(prior, [obs], grid, LetkfConfig(
+            localization=loc, analysis_fields=fields, rtps_alpha=0.9,
+            relaxation=mode))
+        for f in fields:
+            assert np.all(inc[f][:, ~reach] == 0.0), (mode, f)
+            assert np.abs(inc[f][:, reach]).max() > 1e-6, (mode, f)
+
+    # rho != 1: not zero any more, but identical between the two modes,
+    # and equal to the closed form the module documents.
+    rho, alpha = 1.44, 0.9
+    scale = (1.0 - alpha) * math.sqrt(rho) + alpha
+    out = {}
+    for mode in ("rtps", "rtpp"):
+        out[mode] = analyze(prior, [obs], grid, LetkfConfig(
+            localization=loc, analysis_fields=fields, rtps_alpha=alpha,
+            prior_inflation=rho, relaxation=mode))
+    for f in fields:
+        expected = (prior[f] - prior[f].mean(axis=0, keepdims=True)) * (
+            scale - 1.0)
+        for mode in ("rtps", "rtpp"):
+            assert np.allclose(out[mode][f][:, ~reach],
+                               expected[:, ~reach], rtol=1e-12, atol=1e-14)
+        assert np.allclose(out["rtps"][f][:, ~reach],
+                           out["rtpp"][f][:, ~reach], rtol=0.0, atol=0.0)
+
+
+def test_relaxation_mode_is_validated_and_recorded():
+    fields = ("theta",)
+    grid, prior, obs, members, shape = _tiny_case(fields=fields, n_obs=6)
+    loc = Localization(horizontal_m=4000.0, vertical_m=2000.0)
+    with pytest.raises(LetkfError, match="relaxation must be"):
+        LetkfConfig(localization=loc, analysis_fields=fields,
+                    rtps_alpha=0.5, relaxation="rtpq")
+    diag = LetkfDiagnostics()
+    analyze(prior, [obs], grid, LetkfConfig(
+        localization=loc, analysis_fields=fields, rtps_alpha=0.5,
+        relaxation="rtpp"), diagnostics=diag)
+    assert diag.relaxation == "rtpp"
+    assert diag.rtps_alpha == 0.5
+    # And the prior spread is reported beside the posterior, which is the
+    # pair a cycling run needs to tell the two spread losses apart.
+    assert set(diag.prior_spread) == set(diag.posterior_spread) == set(fields)
+    for f in fields:
+        assert diag.prior_spread[f] > 0.0

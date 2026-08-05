@@ -343,6 +343,10 @@ RADIATION_ABOVE_ATMOSPHERE_POLICIES = {
 CUMULUS_ALGORITHM_IDENTITIES = {
     0: "disabled",
     1: "kain-fritsch-v3-wrf-phase-energy-feedback",
+    # The corrected-k22 identity IS the shipped algorithm (owner ruling);
+    # a restart written under it must never resume under a WRF-faithful
+    # build, which would be a different identity string.
+    3: "grell-freitas-wrf461-gfdrv-corrected-k22-v1",
 }
 RRTMGP_TRACE_GAS_POLICY_IDENTITY = \
     "rfmip-experiment-zero-plus-date-policy-and-overrides-v1"
@@ -678,7 +682,27 @@ RADIATION_CALLABLE_CONTAINERS = frozenset({
     # _ozone is the gpuwm.ingest.wrf_ozone MODULE reference (its globals
     # include cached climatology arrays); modules are code, not state.
     "_ozone"})
-CUMULUS_CALLABLE_CONTAINERS = frozenset({"_history_state"})
+#: Cumulus containers, both back-references rather than state of their own:
+#: the KF adapter's ``_history_state`` is the DomainState (arrays covered by
+#: the state walk), and the GF adapter's ``_driver`` is the PhysicsDriver
+#: THIS FUNCTION is walking -- ``GrellFreitas.bind_driver`` stores it so the
+#: adapter can read the held radiative rates, and the only arrays reachable
+#: through it (``rthratenlw``/``rthratensw``) are serialized by name a few
+#: lines below.  It is rebuild-on-load in the strict sense: a resumed run
+#: constructs a fresh adapter with ``_driver = None`` and
+#: ``PhysicsDriver._run_cumulus`` rebinds it before the adapter can read it,
+#: so nothing crosses the checkpoint through this attribute.
+#:
+#: Nothing else on the GF adapter needs classifying because there is nothing
+#: else: ``cu_physics=3`` is a stateless Task-1 callable (gpuwm/core/gf.py --
+#: no NCA persistence, no trigger history, no closure memory), and every
+#: quantity of GF's that DOES have memory between calls lives on the driver
+#: and is already serialized there -- the held rates through ``cu_rates``'s
+#: ``cu_rthcuten``/``cu_rqvcuten``/``cu_rqccuten``/``cu_rqicuten`` scratch
+#: slots, and the precipitation accumulators through ``cu_rainc``/
+#: ``cu_raincv``/``cu_pratec`` (SERIALIZED_SCRATCH_SLOTS).  A GF adapter that
+#: ever grows real state must be serialized here, not added to this set.
+CUMULUS_CALLABLE_CONTAINERS = frozenset({"_history_state", "_driver"})
 
 
 class RestartManifestError(RuntimeError):
@@ -1770,13 +1794,18 @@ def physics_setup_identity(state, cfg) -> dict:
             raise RestartManifestError(
                 "active cumulus cannot be restart-identified without an "
                 "attached PhysicsDriver")
-        expected = ("gpuwm.core.kf.KainFritsch"
-                    if int(cfg.cu_physics) == 1 else None)
+        expected = {1: "gpuwm.core.kf.KainFritsch",
+                    3: "gpuwm.core.gf.GrellFreitas"}.get(
+            int(cfg.cu_physics))
         callable_identity = _callable_setup_identity(
             driver.cumulus_callable, label="cumulus",
             expected_class=expected)
         cumulus["callable"] = callable_identity
-        if callable_identity["implementation"] == "stock":
+        if (callable_identity["implementation"] == "stock"
+                and int(cfg.cu_physics) == 1):
+            # The coefficient table is a KF asset; GF ships none (its
+            # constants are pinned words inside the kernel source, which
+            # the algorithm identity string already binds).
             from gpuwm.core.kf import load_kf_table
             cumulus["coefficient_table"] = \
                 _resolved_object_setup_identity(

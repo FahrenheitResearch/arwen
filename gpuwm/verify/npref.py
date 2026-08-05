@@ -4282,6 +4282,32 @@ def _sf_psih_unstable(zeta):
                          unstable=True)
 
 
+def _sf_log_zratio(num, z0):
+    """Defined-behaviour ``log(num/z0)``; mirrors ``sfclay.cu sf_log_zratio``.
+
+    In float64 the quotient of float32-ranged inputs never overflows, so the
+    only degenerate case left here is ``z0 <= 0``.  WRF v4.6.1 leaves zero
+    roughness undefined (module_sf_sfclay.F:494 ``GZ1OZ0 = ALOG(ZA/ZNT)`` at
+    ``ZNT=0`` sends Inf into ``U10 = Inf/Inf = NaN``); the port floors the
+    logarithm's roughness at FLT_MIN instead -- a huge-but-finite contrast
+    whose exchange coefficients go smoothly to zero.  Documented divergence.
+
+    A NaN argument is NOT that case and must not be treated as one.  The
+    floor below is written ``not z0 > 0.0``, which is true for NaN, so a NaN
+    roughness would leave here as ``log(num / FLT_MIN)`` -- an ordinary
+    finite contrast around 90, indistinguishable from a real answer.  That
+    is laundering already-corrupted state into a plausible number, and it is
+    the one way a caller can lose the evidence that something upstream broke.
+    Zero roughness is a physical input the port defines; NaN roughness is a
+    defect, so it propagates.
+    """
+    if np.isnan(num) or np.isnan(z0):
+        return num + z0
+    if not z0 > 0.0:
+        z0 = 1.1754943508222875e-38
+    return np.log(num / z0)
+
+
 def _sf_zolri_residual(zeta, ri, z, z0):
     """``zolri2`` from sf_sfclayrev.F90; returns residual and limited zeta."""
     if zeta * ri < 0.0:
@@ -4289,14 +4315,14 @@ def _sf_zolri_residual(zeta, ri, z, z0):
     zeta0 = zeta * z0 / z
     zeta3 = zeta + zeta0
     if ri < 0.0:
-        fm = (np.log((z + z0) / z0)
+        fm = (_sf_log_zratio(z + z0, z0)
               - (_sf_psim_unstable(zeta3) - _sf_psim_unstable(zeta0)))
-        fh = (np.log((z + z0) / z0)
+        fh = (_sf_log_zratio(z + z0, z0)
               - (_sf_psih_unstable(zeta3) - _sf_psih_unstable(zeta0)))
     else:
-        fm = (np.log((z + z0) / z0)
+        fm = (_sf_log_zratio(z + z0, z0)
               - (_sf_psim_stable(zeta3) - _sf_psim_stable(zeta0)))
-        fh = (np.log((z + z0) / z0)
+        fh = (_sf_log_zratio(z + z0, z0)
               - (_sf_psih_stable(zeta3) - _sf_psih_stable(zeta0)))
     return zeta * fh / (fm * fm) - ri, zeta
 
@@ -4369,13 +4395,13 @@ def _np_sfclay_point(u, v, temp, qv, pressure, dz8w, psfc, tsk, znt,
     rho = psfc / (c.RD * tv)
     za = 0.5 * dz8w
     if option == 91:
-        gz1 = np.log(za / znt)
-        gz2 = np.log(2.0 / znt)
-        gz10 = np.log(10.0 / znt)
+        gz1 = _sf_log_zratio(za, znt)
+        gz2 = _sf_log_zratio(2.0, znt)
+        gz10 = _sf_log_zratio(10.0, znt)
     else:
-        gz1 = np.log((za + znt) / znt)
-        gz2 = np.log((2.0 + znt) / znt)
-        gz10 = np.log((10.0 + znt) / znt)
+        gz1 = _sf_log_zratio(za + znt, znt)
+        gz2 = _sf_log_zratio(2.0 + znt, znt)
+        gz10 = _sf_log_zratio(10.0 + znt, znt)
 
     tskv = thgb * (1.0 + ep1 * qsfc)
     dthv = thvx - tskv
@@ -6503,9 +6529,16 @@ def np_ysu_column(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, *,
             wsk2 = np.cbrt(max(phifac * karman * wstar3_2 * zfac, 0.0))
             if sfcflg:
                 prfac = bfac * karman * sfcfrac
-                prfac2 = (15.9 * (wstar3 + wstar3_2) / ust3
-                          / (1.0 + 4.0 * karman
-                             * (wstar3 + wstar3_2) / ust3))
+                if ust3 > 0.0:
+                    prfac2 = (15.9 * (wstar3 + wstar3_2) / ust3
+                              / (1.0 + 4.0 * karman
+                                 * (wstar3 + wstar3_2) / ust3))
+                else:
+                    # ust**3 == 0 exactly makes WRF's own quotient 0/0
+                    # (bl_ysu.F90:948) -- NaN, not an answer.  Take the
+                    # defined algebraic limit instead, as ysu.cu does.
+                    prfac2 = (15.9 / (4.0 * karman)
+                              if wstar3 + wstar3_2 > 0.0 else 0.0)
                 prnumfac = (-3.0 * max(zq[k + 1] - sfcfrac * hpbl, 0.0) ** 2
                             / hpbl ** 2)
             else:
@@ -10200,7 +10233,7 @@ def _wrf_column_geometry(phi):
 
 
 def np_wrf_calc_n2(thp, thb, p, phi, *, cf1, cf2, cf3,
-                   qv=None, qc=None, qi=None):
+                   qv=None, qc=None, qi=None, force_dry_branch=False):
     """Mirror of ``wrf_calc_n2`` (WRF ``calculate_N2``).
 
     ``thp (nz, ny, nx)`` is gpuwm's theta perturbation against ``thb``
@@ -10210,6 +10243,16 @@ def np_wrf_calc_n2(thp, thb, p, phi, *, cf1, cf2, cf3,
     WRF's three level branches: centered interior (kts+1..ktf-1), the
     MARTA/WCS one-sided surface form, saturated moist-adiabatic branch when
     ``qv >= qvs or qc >= 1e-5``, and the ktf copy of ktf-1.
+
+    ``force_dry_branch`` mirrors the spec 3.3 MUTATION CONTROL --
+    ``GPUWM_MUTATE_MOIST_N2_FORCE_DRY`` in ``smag2d.cu``, selected by
+    ``gpuwm.core.moist_n2_mutation``.  It suppresses the saturated branch
+    **with the moisture still present**, which is not the same reduction as
+    passing ``qv=qc=qi=None``: that would also zero ``qtot`` and the
+    ``1.61*(qv_p - qv_m)`` term and so would test a different thing.  The
+    distinction is the whole point of the control -- it isolates the
+    saturated branch from moisture itself.  Off by default; the default
+    path is the unmutated mirror.
     """
     G, RD, RV = 9.81, 287.0, 461.6
     CP = 7.0 * RD / 2.0
@@ -10237,6 +10280,10 @@ def np_wrf_calc_n2(thp, thb, p, phi, *, cf1, cf2, cf3,
     qvs = EP2 * es / (p - es)
     saturated = ((qv >= qvs) | (qc >= 1.0e-5) if moist
                  else np.zeros(thp.shape, dtype=bool))
+    if force_dry_branch:
+        # Mutation control (see the docstring): the branch is suppressed,
+        # the moisture is not.
+        saturated = np.zeros(thp.shape, dtype=bool)
 
     _, rdzw, rdz = _wrf_column_geometry(phi)
     phi = np.asarray(phi, dtype=np.float64)

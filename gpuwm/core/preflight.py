@@ -787,7 +787,12 @@ def local_memory_profile_from_device(cp) -> DeviceLocalMemoryProfile:
 #: Two modules do not launch at their unspecialized bound: ``kf`` and
 #: ``refl`` compile their column arrays to the configuration's own level
 #: count (:data:`LEVEL_SPECIALIZED_KERNEL_FRAMES`), so their rows here are
-#: the CEILING, not the price.  Everything else launches as compiled.
+#: the CEILING, not the price.  ``acoustic`` is a third case and the only
+#: one that can price ABOVE its row: it compiles the implicit w''-phi''
+#: solve at a coarse ``WPHI_MAX_LEV`` tier chosen by ``nz``
+#: (:data:`ACOUSTIC_TIER_FRAME`), so this row is its price at the shipped
+#: 129 tier -- every ``nz <= 128`` configuration -- and the deeper tiers add
+#: to it.  Everything else launches as compiled.
 #:
 #: A module maximum is an UPPER bound over the kernels a scheme can launch --
 #: e.g. Morrison's launched sedimentation kernel measures 1,280 B against the
@@ -807,7 +812,18 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # kernels directory, so the local-frame sweep sees it like any model
     # module; it holds no local frame.
     "ftz_probe": 0,
+    # Grell-Freitas: one thread owns one whole GFDRV column, so the frame
+    # is the deep+shallow local-array stack (measured on the driver probe,
+    # nz=40 tier).
+    "gf": 22416,
     "health": 0,
+    # The batched symmetric eigensolver the radar-DA analysis factors with
+    # (gpuwm/core/jacobi_eigh.py).  It holds NO local frame at any tier: the
+    # whole k x k problem lives in dynamic SHARED memory, which is priced at
+    # launch and released with the block rather than reserved per resident
+    # thread for the life of the process.  That is the entire reason the
+    # kernel is written around shared memory instead of per-thread arrays.
+    "jacobi_eigh": 0,
     "kessler": 5120,
     "kf": 24064,
     "kf_validation": 0,
@@ -991,6 +1007,48 @@ for _spec in LEVEL_SPECIALIZED_KERNEL_FRAMES.values():
             "the driver-measured unspecialized frame")
 del _spec
 
+
+@dataclass(frozen=True)
+class TieredKernelFrame:
+    """A module whose local frame follows a compile-time TIER, not ``nz``.
+
+    ``kf`` and ``refl`` compile exactly to the configuration's level count;
+    ``acoustic`` instead picks the smallest of a short ladder of
+    ``WPHI_MAX_LEV`` values (``gpuwm.core.acoustic.WPHI_LEVEL_TIERS``), so
+    its frame is a step function of ``nz`` and is constant within a tier.
+
+    The frame at the shipped tier is the driver-MEASURED row of
+    :data:`KERNEL_MAX_LOCAL_SIZE_BYTES`.  Deeper tiers are priced from it by
+    the one object the bound sizes -- the ``real rhs[WPHI_MAX_LEV]`` column
+    that ``advance_w_phi``/``advance_w_phi_msf`` each declare -- at
+    ``bytes_per_level`` per added full level.  That extrapolation is
+    PROVISIONAL until ``tests/test_kernel_local_bounds.py`` reads the deeper
+    tiers back off the driver; a register-allocation change at a deeper tier
+    could add more, and under-pricing is the direction that hurts, so the
+    device test is a gate rather than a formality.
+    """
+
+    module: str
+    define: str
+    shipped_tier: int
+    bytes_per_level: int
+    alignment_bytes: int = 8
+
+    def frame_bytes(self, tier: int) -> int:
+        tier = int(tier)
+        if tier < self.shipped_tier:
+            raise ValueError(
+                f"{self.module}: {self.define}={tier} is below the shipped "
+                f"tier {self.shipped_tier}")
+        raw = (KERNEL_MAX_LOCAL_SIZE_BYTES[self.module]
+               + self.bytes_per_level * (tier - self.shipped_tier))
+        remainder = raw % self.alignment_bytes
+        return raw if remainder == 0 else raw + self.alignment_bytes - remainder
+
+
+#: ``acoustic.cu``'s ``WPHI_MAX_LEV`` sizes one FP32 column per thread.
+ACOUSTIC_TIER_FRAME = TieredKernelFrame("acoustic", "WPHI_MAX_LEV", 129, 4)
+
 #: Kernel modules whose local frame CANNOT be measured at this checkout
 #: because they do not compile alone: ``noahmp_driver.cu``,
 #: ``noahmp_energy.cu``, ``noahmp_thermal.cu`` and ``noahmp_libm_slab.cu``
@@ -1132,7 +1190,9 @@ _MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
 _REFLECTIVITY_MICROPHYSICS = frozenset({1, 6, 8, 10, 18, 28})
 
 _CUMULUS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
-    0: (), 1: ("kf", "kf_validation")}
+    0: (), 1: ("kf", "kf_validation"),
+    # One translation unit carries all of GFDRV (deep, shallow, driver).
+    3: ("gf",)}
 _PBL_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (), 1: ("ysu", "ysu_validation"), 5: ("mynn_pbl",),
     # Shin-Hong launches its column kernel plus its own batched output
@@ -1285,6 +1345,18 @@ def kernel_local_frame_bytes(exp: ExperimentConfig) -> dict[str, int]:
             frame = specialized.frame_bytes(levels)
             if frame > frames.get(module, -1):
                 frames[module] = frame
+    # ``acoustic`` is in CORE_KERNEL_MODULES, so it is priced above at its
+    # shipped-tier row; a domain deeper than the shipped tier raises that
+    # row to its own tier.  The launcher owns the ladder (it is the thing
+    # that compiles the tier) and imports no CuPy at module scope, so this
+    # still prices a configuration on a host with no device.
+    from gpuwm.core.acoustic import wphi_level_tier
+
+    for dc in exp.domains:
+        tier = wphi_level_tier(int(dc.run.nz))
+        frame = ACOUSTIC_TIER_FRAME.frame_bytes(tier)
+        if frame > frames.get(ACOUSTIC_TIER_FRAME.module, -1):
+            frames[ACOUSTIC_TIER_FRAME.module] = frame
     return frames
 
 
@@ -3526,8 +3598,11 @@ def noahmp_lsm_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
       :func:`gpuwm.core.noahmp_column_slab.evaluate_sflx_slab` over
       ``SLAB_COLUMN_CHUNK`` land columns.  The ceiling and the bound are the
       runtime's own constants, so price and bound cannot drift apart.
-      Measured on the RTX 5090: 2,751 B of CuPy pool growth per column for
-      one 65,536-column chunk call, priced at 4,096.
+      Measured on the RTX 5090: 2,723 B of peak allocator demand per column
+      for one 65,536-column chunk call, priced at 4,096.  Demand rather than
+      CuPy pool growth, because growth reads only what the pool had to
+      acquire from the driver and a warm pool serves the transient from
+      blocks it already holds; see ``SLAB_TRANSIENT_BYTES_PER_COLUMN``.
     * ``slab_grid_transients`` is the same call's whole-grid residue: the
       device prologue intermediates (Q_ML through FICEOLD), the land index
       arrays and the pool's cross-chunk fragmentation, which scale with
@@ -4634,7 +4709,8 @@ def _materialize_physics(state, cfg: RunConfig, start_time: datetime):
             if getattr(target, comp) is None:
                 setattr(target, comp, zero_m())
         adapter = driver.cumulus_callable
-        if adapter is not None and getattr(adapter, "w0avg", None) is None:
+        if (int(cfg.cu_physics) == 1 and adapter is not None
+                and getattr(adapter, "w0avg", None) is None):
             adapter.w0avg = zero_m()          # kf.py:174 shape contract
             adapter._history_state = state
     if cfg.bl_pbl_physics and cfg.mp_physics in (6, 8, 10, 18, 28):
@@ -5752,6 +5828,7 @@ __all__ = [
     "kernel_local_memory_bytes", "non_pool_device_bytes",
     "physics_kernel_modules", "refl_diagnostic_reachable",
     "LEVEL_SPECIALIZED_KERNEL_FRAMES", "LevelSpecializedFrame",
+    "ACOUSTIC_TIER_FRAME", "TieredKernelFrame",
     "domain_kernel_modules", "kernel_local_frame_bytes",
     "ALLOCATOR_HEADROOM", "AllocReport", "CAL_D01_DEVICE_FOOTPRINT_BYTES",
     "CAL_D01_POOL_HELD_BYTES", "CAL_D01_POOL_RETENTION_BYTES",

@@ -66,7 +66,9 @@ def _run_config(cell) -> RunConfig:
         "num_soil_layers": (
             9 if cell.sf_surface_physics == 3 else 4),
         "cu_physics": cell.cu_physics,
-        "cudt_minutes": 5.0 if cell.cu_physics else 0.0,
+        # KF keeps its 5-minute template cadence; GF pins cudt to 0 (it
+        # runs on the model step) and cumulus-off carries no cadence.
+        "cudt_minutes": 5.0 if cell.cu_physics == 1 else 0.0,
     }
     values.update(_RADIATION_SETTINGS[cell.radiation])
     return RunConfig(**values)
@@ -97,7 +99,7 @@ def test_matrix_has_every_cell_every_citation_and_pinned_counts():
     each increment was read off the enlarged matrix rather than derived.
     """
     cells = tuple(iter_compatibility_matrix())
-    assert len(cells) == MATRIX_CELL_COUNT == 3840
+    assert len(cells) == MATRIX_CELL_COUNT == 5760
     assert len({
         (
             cell.mp_physics,
@@ -116,11 +118,17 @@ def test_matrix_has_every_cell_every_citation_and_pinned_counts():
             for citation in cell.citations)
         for cell in cells
     )
+    # Re-pinned when cu_physics=3 (Grell-Freitas) joined the cumulus
+    # axis: 3840 -> 5760.  Cumulus IS an independent axis in WRF v4.6.1 --
+    # no other component's legality is conditioned on it -- so every
+    # verdict scaled by exactly 3/2 (LEGAL 1584 -> 2376, reconfigured
+    # 528 -> 792, FATAL 1200 -> 1800, not-expressible 528 -> 792), and
+    # each count below was read off the enlarged matrix, not derived.
     assert Counter(cell.verdict for cell in cells) == {
-        WRFVerdict.LEGAL: 1584,
-        WRFVerdict.LEGAL_RECONFIGURED: 528,
-        WRFVerdict.FATAL: 1200,
-        WRFVerdict.NOT_EXPRESSIBLE: 528,
+        WRFVerdict.LEGAL: 2376,
+        WRFVerdict.LEGAL_RECONFIGURED: 792,
+        WRFVerdict.FATAL: 1800,
+        WRFVerdict.NOT_EXPRESSIBLE: 792,
     }
     # Every represented mp value carries its own Registry citation, so the
     # matrix cannot grow an axis value that is admitted without one.
@@ -176,6 +184,15 @@ def test_every_front_door_tuple_agrees_with_the_wrf_matrix():
                     "requires a surface layer .* exchange coefficients")):
                 validate_run_config(cfg)
             observed["arwen-structural"] += 1
+        elif cell.cu_physics == 3 and not cell.bl_pbl_physics:
+            # The second named structural seam, registered on the
+            # grell-freitas option (arwen_pbl_structural_requirement):
+            # WRF admits GF with PBL off and reads KPBL=0; ArWen refuses
+            # rather than indexing below the column base.
+            with pytest.raises(ValueError, match=(
+                    "cu_physics=3 .* requires a PBL scheme")):
+                validate_run_config(cfg)
+            observed["arwen-structural-gf-pbl"] += 1
         else:
             assert validate_run_config(cfg) is cfg
             observed["admitted"] += 1
@@ -191,8 +208,15 @@ def test_every_front_door_tuple_agrees_with_the_wrf_matrix():
     # case) and 480 admitted.  arwen-structural does not move, because the
     # structural seam is sfclay=0 with an active LSM and every (11, 0) cell
     # is already WRF-fatal before the seam is consulted.
+    # Re-measured when cu_physics=3 joined the axis (3840 -> 5760 cells).
+    # The 1920 new cu=3 cells split 600 wrf-fatal and 90 lsm-structural on
+    # the same seams every cu value carries, plus the NEW named seam: 390
+    # (pbl=0, cu=3) cells WRF admits and ArWen refuses -- 480 pbl-off
+    # cells at cu=3 minus the 90 whose LSM refusal fires first in
+    # validate_run_config's ordering.
     assert observed == {
-        "admitted": 2460,
-        "arwen-structural": 180,
-        "wrf-fatal": 1200,
+        "admitted": 3300,
+        "arwen-structural": 270,
+        "arwen-structural-gf-pbl": 390,
+        "wrf-fatal": 1800,
     }

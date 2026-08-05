@@ -25,7 +25,9 @@ from gpuwm.physics_compat import (
     NSSL2_PROFILE_ID,
     RUC_PROFILE_ID,
     SINGLE_DOMAIN_PHYSICS_PROFILES,
+    THOMPSON_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_PROFILE_ID,
+    THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
     WRF_RRTMG_LEGACY,
     WRF_RRTMG_TO_RTE_RRTMGP,
     WSM6_PROFILE_ID,
@@ -68,7 +70,9 @@ def test_hrrr_runner_capability_query_is_side_effect_free_without_run_args(
     assert payload["supported_sources"] == ["hrrr"]
     assert payload["physics_profile_ids"] == [
         WSM6_PROFILE_ID, KESSLER_PROFILE_ID,
-        THOMPSON_PROFILE_ID, MORRISON_PROFILE_ID,
+        THOMPSON_PROFILE_ID, THOMPSON_LEGACY_RRTMG_PROFILE_ID,
+        THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
+        MORRISON_PROFILE_ID,
         NSSL2_PROFILE_ID, NSSL2_LEGACY_RRTMG_PROFILE_ID,
         MYNN_PROFILE_ID, RUC_PROFILE_ID,
         MYNN_RUC_PROFILE_ID, NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID]
@@ -1692,3 +1696,88 @@ def test_the_printed_summary_carries_both_rates(tmp_path, monkeypatch, capsys):
     # whole-run figure alone under-counts this machine by a factor of 2.
     assert (summary["warmed_simulated_seconds_per_wall_second"]
             > summary["simulated_seconds_per_wall_second"])
+
+
+@pytest.mark.parametrize("profile", sorted(SINGLE_DOMAIN_PHYSICS_PROFILES))
+def test_every_shipped_profile_resolves_every_per_profile_table(profile):
+    """B-04's refusal class, closed for the 13th profile too.
+
+    The battery's first case run passed every static gate and every prior
+    stage, then refused at root preparation: SINGLE_DOMAIN_PHYSICS_PROFILES
+    had grown to 12 entries while _NATIVE_HRRR_NAMELIST_CONTRACTS held 10,
+    and only the NSSL-2 legacy twin had an alias -- at three separate
+    inline sites the Thompson twin missed.  This walk resolves EVERY
+    shipped profile through every per-profile table this runner (and the
+    root-preparation wrapper) keys by profile id, so the next profile
+    cannot repeat the class.
+
+    The value leg guards the opposite regression: the namelist contract is
+    a hard per-field equality gate on the supplied namelist, so its values
+    must equal the profile's own runtime switches -- a Thompson twin
+    "simplified" to a bare alias of its base row would pin radt 1.0
+    against the profile's 12.0 and refuse the battery's namelist one gate
+    later.
+    """
+
+    from tools import prepare_hrrr_wrf
+
+    contract = hrrr_runner._native_hrrr_profile_contract(profile)
+    assert set(contract) == {"physics", "dynamics"}
+    switches = hrrr_runner._native_hrrr_runtime_switches(profile)
+
+    init_profile = hrrr_runner._initialization_contract_profile(profile)
+    defaults = hrrr_runner._HRRR_SOURCE_ABSENT_STATE_DEFAULTS[init_profile]
+    fields = hrrr_runner._HRRR_SOURCE_ABSENT_WRF_FIELDS[init_profile]
+    assert isinstance(list(fields), list)
+    assert isinstance(dict(defaults), dict)
+    assert profile in prepare_hrrr_wrf._HRRR_COLD_START_CONTRACT
+    assert profile in hrrr_runner.runner_capabilities()["physics_profiles"]
+
+    for section, entries in contract.items():
+        for key, expected in entries.items():
+            name = {"cudt": "cudt_minutes"}.get(key, key)
+            assert name in switches, (profile, section, key)
+            observed = switches[name]
+            if isinstance(expected, bool):
+                assert observed is expected, (profile, section, key)
+            else:
+                assert float(observed) == float(expected), (
+                    profile, section, key, observed, expected)
+
+
+def test_battery_composition_namelist_passes_the_profile_contract(tmp_path):
+    """The exact gate the 2026-08-04 case run refused at, CPU-side.
+
+    The battery composition's rendered native namelist, validated through
+    _validate_native_hrrr_physics_profile under the legacy-RRTMG Thompson
+    profile -- the call tools/prepare_hrrr_wrf.py makes at root
+    preparation.  Before the twin's own contract row this raised
+    'unsupported native HRRR physics profile'; a bare alias to the base
+    Thompson row would instead refuse on radt/diff_6th_factor drift.
+    """
+
+    from pathlib import Path
+
+    from tools import battery_wrf_node_plan as node_plan
+
+    repo = Path(__file__).resolve().parents[1]
+    config = (repo / "configs" / "battery"
+              / "shape_3km_thompson_rrtmg_legacy.toml")
+    outdir = tmp_path / "node"
+    node_plan.build(config, outdir, ranks=24, repository_root=repo)
+
+    receipt = hrrr_runner._validate_native_hrrr_physics_profile(
+        outdir / "namelist.native.input",
+        THOMPSON_LEGACY_RRTMG_PROFILE_ID)
+    assert receipt["profile"] == THOMPSON_LEGACY_RRTMG_PROFILE_ID
+    assert receipt["resolved"]["ra_rrtmg_variant"] == "rrtmg_legacy"
+    assert receipt["resolved"]["radiation_scheme_ids"] == [4, 4]
+    assert receipt["validated_namelist"]["physics"]["radt"] == 12.0
+    assert receipt["validated_namelist"]["dynamics"][
+        "diff_6th_factor"] == 0.12
+    # The initialization contract is the Thompson one, verbatim -- a
+    # microphysics property, radiation-variant-independent.
+    contract = receipt["hrrr_initialization_contract"]
+    assert contract["source_absent_fields"] == ["QNICE", "QNRAIN"]
+    assert contract["source_absent_state_defaults_fp32"] == {
+        "ni": 0.0, "nr": 0.0}

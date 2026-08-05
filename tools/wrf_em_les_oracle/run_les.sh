@@ -1,16 +1,36 @@
 #!/bin/bash
 # Stage and run one WRF em_les case.
-#   run_les.sh <run_id> <namelist_file> [nranks] [sounding]
+#   run_les.sh <run_id> <namelist_file> [nranks] [sounding] [iofields]
 # The pinned campaign build is never referenced by this script.
+#
+# The iofields file is an argument as of P1: a moist run needs the moist rows
+# in stream 0 and the dry file must stay byte-identical, so the two travel
+# separately instead of one being edited.  Defaulting it preserves every
+# existing call site exactly.
 B=${LES_ORACLE_ROOT:-$HOME/weather/les-oracle-wpl7}
-SRC=$B/src/WRFV4.6.1
+# LES_ORACLE_SRC overrides the build tree.  P1's secondary arm is
+# em_quarter_ss, which needs the wrf.exe built against the em_quarter_ss
+# Registry; its ideal.exe is byte-identical to the em_les one because v4.6.1
+# selects the ideal case from &ideal/ideal_case at runtime
+# (dyn_em/module_initialize_ideal.F:181 `SELECT CASE (ideal_case)`), not at
+# compile time.
+SRC=${LES_ORACLE_SRC:-$B/src/WRFV4.6.1}
 RID=$1
 NML=$(readlink -f "$2")
 NR=${3:-24}
 SND=$(readlink -f "${4:-$B/assets/input_sounding.arwen_cbl}")
+IOF=$(readlink -f "${5:-$B/assets/iofields_les.txt}")
 RD=$B/runs/$RID
 if [ ! -f "$NML" ]; then echo "MISSING NAMELIST: $2"; exit 2; fi
 if [ ! -f "$SND" ]; then echo "MISSING SOUNDING: ${4:-default}"; exit 2; fi
+if [ ! -f "$IOF" ]; then echo "MISSING IOFIELDS: ${5:-default}"; exit 2; fi
+# The namelist names the iofields file it expects; staging a different one
+# under a different name is how a run silently loses its SGS rows.
+IOF_WANT=$(sed -n 's/.*iofields_filename *= *"\([^"]*\)".*/\1/p' "$NML" | head -1)
+if [ -n "$IOF_WANT" ] && [ "$IOF_WANT" != "$(basename "$IOF")" ]; then
+  echo "IOFIELDS MISMATCH: namelist wants $IOF_WANT, staging $(basename "$IOF")"
+  exit 2
+fi
 
 source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1
 
@@ -25,19 +45,22 @@ cp -L "$SRC"/run/* "$RD"/ 2>/dev/null
 cp "$SRC"/main/ideal.exe "$SRC"/main/wrf.exe "$RD"/
 cp "$NML" "$RD"/namelist.input
 cp "$SND" "$RD"/input_sounding
-cp "$B"/assets/iofields_les.txt "$RD"/
+cp "$IOF" "$RD"/
 
 # provenance for this run
 {
   echo "run_id: $RID"
   echo "host: $(hostname)"
+  echo "src_tree: $SRC"
   echo "date_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "nranks: $NR"
   echo "ideal.exe sha256: $(sha256sum ideal.exe | cut -d" " -f1)"
   echo "wrf.exe   sha256: $(sha256sum wrf.exe   | cut -d" " -f1)"
   echo "namelist  sha256: $(sha256sum namelist.input | cut -d" " -f1)"
   echo "sounding  sha256: $(sha256sum input_sounding | cut -d" " -f1)"
-  echo "iofields  sha256: $(sha256sum iofields_les.txt | cut -d" " -f1)"
+  echo "sounding  source: $SND"
+  echo "iofields  file:   $(basename "$IOF")"
+  echo "iofields  sha256: $(sha256sum "$(basename "$IOF")" | cut -d" " -f1)"
 } > run_provenance.txt
 
 echo "=== ideal.exe (1 rank) ==="

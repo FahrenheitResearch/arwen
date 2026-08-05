@@ -95,3 +95,33 @@ cpu_suite.log
 gpu_tier.log
 gpu_retry.log
 gpu_failed_ids.txt
+
+# Ensemble-sweep node drivers.  These are the shell harness that runs the
+# ensemble-size ladder on the project's rented Linux nodes: they hard-code
+# that layout as defaults (a sweep root, a tree root and a geography root,
+# all under the node's root account), drive each other through status files
+# in the same home directory, and are unrunnable anywhere else.  Spelling
+# those defaults out here would put the very paths this file exists to keep
+# out of the release into the release.  The Python beside them is NOT
+# excluded --
+# score_free_forecast.py is the scorer of record for the published FSS
+# numbers, and decompose_skill.py, score_resolution.py and
+# summarize_sweep.py read committed composites -- so the analysis half of
+# the directory ships and only the machine-shaped driver half does not.
+tools/ens_sweep/build_obs.sh
+tools/ens_sweep/ceiling_probe.sh
+tools/ens_sweep/chain.sh
+tools/ens_sweep/chain2.sh
+tools/ens_sweep/pool_limit_probe.sh
+tools/ens_sweep/prepare_case.sh
+tools/ens_sweep/resolution_cost_probe.sh
+tools/ens_sweep/run_sweep.sh
+
+# Grell-Freitas dual-run byte-comparison harness.  A Windows Task Scheduler
+# job (task.xml) plus the PowerShell queue it launches, both written around
+# one box: the queue names an absolute worktree path and a local Downloads
+# directory.  Dual-run byte comparison is the project's corruption screen on
+# a card without ECC, and it is worth keeping tracked, but it is a bench
+# fixture for this machine rather than anything a reader can run. Nothing
+# in the tree references it.
+tools/gf_real74_dual/**

@@ -1,0 +1,54 @@
+# ArWen's observation front doors: one crate, one binary per instrument.
+#
+# The observation-verification battery scores forecasts against three
+# archives, and each gets a fail-closed CLI in the shape `rw_nexrad`
+# established -- `list`/`fetch`/`decode`/`verify` subcommands, a
+# schema-tagged JSON record on stdout, an `--abi` marker the Python bridge
+# pins, and SHA-256 receipts on every byte kept.
+#
+# They share a crate rather than one each because they share substance: the
+# same pack container, the same seam time spelling, the same HTTP agent, and
+# the same fetch-receipt shape.  Three crates would have meant three copies
+# of that or a fourth crate holding it.
+#
+# Nothing here decodes a GRIB message itself.  MRMS goes through
+# `rustwx-io`'s MRMS selector and Stage-IV through `grib-core` directly --
+# the decoders this workspace already vendors and already tests.
+
+[package]
+name = "rw-obs"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rw_mrms"
+path = "src/bin/mrms.rs"
+
+[[bin]]
+name = "rw_stage4"
+path = "src/bin/stage4.rs"
+
+[[bin]]
+name = "rw_asos"
+path = "src/bin/asos.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# `rust_backend` rather than the zlib C shim, matching rustwx-io and
+# rw-nexrad: these bins build --offline from the vendor closure and must not
+# need a system zlib.  MRMS archive objects are all gzip-wrapped.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+ureq.workspace = true
+grib-core = { path = "../../vendor/grib-core" }
+# The anonymous-S3 client (hardened ListObjectsV2 XML reader, content-
+# addressed cache, SHA-256 receipts).  MRMS needs it; writing a second one
+# would re-earn the bugs that client's audit already fixed.
+rw-nexrad = { path = "../rw-nexrad" }
+rustwx-core = { path = "../rustwx-core" }
+rustwx-io = { path = "../rustwx-io" }

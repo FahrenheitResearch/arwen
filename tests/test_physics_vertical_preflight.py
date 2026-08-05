@@ -36,6 +36,10 @@ def _selection(nz: int, **overrides):
         ("MYNN PBL", {"bl_pbl_physics": 5}, 5, 4),
         ("Kain-Fritsch cumulus", {"cu_physics": 1}, 8, 7),
         ("Kain-Fritsch cumulus", {"cu_physics": 1}, 128, 129),
+        # GF's floor is the inversion-layer search window (kend clamps to
+        # ktf-8, the stencil then reaches ktf-1); no upper bound -- the
+        # kernel recompiles its level bound through the int-define tier.
+        ("Grell-Freitas cumulus", {"cu_physics": 3}, 12, 11),
         ("Kessler microphysics", {"mp_physics": 1}, 256, 257),
         ("WSM6 microphysics", {"mp_physics": 6}, 2, 1),
         ("WSM6 microphysics", {"mp_physics": 6}, 80, 81),

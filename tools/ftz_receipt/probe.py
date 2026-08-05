@@ -698,18 +698,47 @@ def bitpatterns_csv(rows: list[dict]) -> str:
     return buffer.getvalue()
 
 
+#: A CUDA device UUID is 16 bytes.  ``cudaUUID_t`` is ``char bytes[16]``
+#: with no terminator, so its length is the array bound and nothing else.
+CUDA_UUID_BYTES = 16
+
+
+def device_uuid_hex(raw):
+    """Hex of the 16 bytes that are the UUID, and of no other bytes.
+
+    The buffer CuPy hands back for ``getDeviceProperties()['uuid']`` is
+    not bounded by that array.  The receipt this probe wrote carried 19
+    bytes for it -- 38 hex characters -- because the conversion stops at
+    the first zero byte rather than at the array end, and ``cudaDeviceProp``
+    places ``luid`` immediately after ``uuid``, so the read ran three bytes
+    into the neighbour before finding a zero there.
+
+    Those three bytes are not device identity.  ``luid`` is re-issued when
+    Windows re-enumerates the adapter, so a receipt regenerated on the same
+    physical card could differ in this field -- churn that reads exactly
+    like the probe having moved to a different GPU, which is the one thing
+    the field exists to tell you.  Bounding the read to the defined length
+    makes the field a property of the card again.
+
+    A UUID whose own bytes contain a zero is truncated by that same
+    conversion before this function ever sees it.  Such a value is short
+    but still stable, since the card's UUID does not change; only the
+    over-read was unstable, and only the over-read is cut here.
+    """
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        return bytes(raw)[:CUDA_UUID_BYTES].hex()
+    return raw
+
+
 def device_identity() -> dict:
     import cupy as cp
     from cupy.cuda import runtime
     device = cp.cuda.Device()
     properties = runtime.getDeviceProperties(device.id)
-    uuid = properties.get("uuid")
-    if isinstance(uuid, (bytes, bytearray)):
-        uuid = uuid.hex()
     return {
         "name": properties["name"].decode()
         if isinstance(properties["name"], bytes) else str(properties["name"]),
-        "uuid": uuid,
+        "uuid": device_uuid_hex(properties.get("uuid")),
         "pci_bus_id": runtime.deviceGetPCIBusId(device.id),
         "compute_capability": f"{properties['major']}.{properties['minor']}",
         "cuda_driver_version": runtime.driverGetVersion(),

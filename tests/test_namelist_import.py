@@ -1122,6 +1122,57 @@ def test_omitted_keys_take_wrf_registry_defaults(tmp_path):
     assert "damp_opt = 3" in toml_text
 
 
+def test_grell_freitas_imports_natively_per_domain(tmp_path):
+    """cu_physics = 3 is a scheme ArWen runs, not a substitution.
+
+    The shinhong round-trip contract, on the cumulus axis: the selector
+    reaches its domain as itself, the Grell-family keys ride along with
+    their Registry defaults, cudt is dropped WITH the GF-specific reason
+    (GF runs on the model step), and the emitted TOML pins
+    cudt_minutes = 0 so the RunConfig validator's STEPCU=1 law holds on
+    load.
+    """
+    # GF's vertical preflight wants nz >= 12 (the inversion-layer search
+    # window); the base fixture's 8 mass levels serve KF but not GF.
+    gf_inp = INPUT_TEXT.replace(
+        " cu_physics = 1, 0,", " cu_physics = 3, 0,").replace(
+        " cudt = 5, 0,",
+        " cudt = 5, 0,\n ishallow = 1,\n clos_choice = 0,").replace(
+        " e_vert = 9, 9,", " e_vert = 14, 14,").replace(
+        " eta_levels = 1.0, 0.9, 0.8, 0.7, 0.6,\n"
+        "              0.5, 0.4, 0.2, 0.0,",
+        " eta_levels = 1.0, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7,\n"
+        "              0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0,")
+    toml_text, report = import_namelists(*_pair(tmp_path, inp=gf_inp),
+                                         name="gf3")
+    out = tmp_path / "gf3.toml"
+    out.write_text(toml_text)
+    exp = load_experiment(out)
+    assert [dc.run.cu_physics for dc in exp.domains] == [3, 0]
+    assert not any(s.key == "cu_physics" for s in report.substitutions)
+    assert exp.root.run.ishallow == 1
+    assert exp.root.run.clos_choice == 0
+    assert exp.domain(2).run.ishallow == 0
+    assert exp.root.run.cudt_minutes == 0.0
+    dropped = {entry.key: entry for entry in report.dropped}
+    assert "cudt[1]" in dropped
+    assert "no cudt cadence" in dropped["cudt[1]"].reason
+    assert "cudt_minutes = 0.0" in toml_text
+    assert "ishallow = 1" in toml_text
+
+    # The Grell-family keys without a Grell scheme are dropped with the
+    # driver's own reason, never silently honoured.
+    stray = INPUT_TEXT.replace(
+        " cudt = 5, 0,", " cudt = 5, 0,\n ishallow = 1,")
+    stray_toml, stray_report = import_namelists(
+        *_pair(tmp_path, inp=stray), name="stray")
+    sdropped = {entry.key: entry for entry in stray_report.dropped}
+    assert "clos_choice/ishallow" in sdropped
+    assert "no Grell scheme selected" in \
+        sdropped["clos_choice/ishallow"].reason
+    assert "ishallow = 1" not in stray_toml
+
+
 @pytest.mark.parametrize(
     ("line", "key"),
     [(" sf_sfclay_physics = 91, 91,\n", "sf_sfclay_physics"),
@@ -1275,6 +1326,29 @@ def test_dynamics_runconfig_knobs_absent_emit_nothing(tmp_path):
     assert exp.root.run.diff_6th_thresh == 0.10
 
 
+def test_moist_mix6_off_imports_per_domain_and_absent_emits_nothing(
+        tmp_path):
+    """WRF's own &dynamics moist_mix6_off (Registry.EM_COMMON:2889,
+    max_domains, default .false.; divergence-ledger entry L4) maps 1:1
+    onto the RunConfig field of the same spelling.  A scalar assignment
+    changes d01 only -- epssm's Fortran-assignment rule, the unassigned
+    tail keeps the Registry default -- and an absent key emits nothing,
+    keeping established imports byte-identical."""
+    toml_text, report = _import_with(
+        tmp_path, extra_dynamics=" moist_mix6_off = .true.,\n")
+    exp = _load(tmp_path, toml_text)
+    assert [dc.run.moist_mix6_off for dc in exp.domains] == [True, False]
+    translated = {(t.section, t.key) for t in report.translated}
+    assert ("dynamics", "moist_mix6_off") in translated
+    plain, _ = import_namelists(*_pair(tmp_path))
+    assert "moist_mix6_off" not in plain
+    exp_plain = _load(tmp_path, plain, name="plain.toml")
+    assert [dc.run.moist_mix6_off for dc in exp_plain.domains] == [
+        False, False]
+    with pytest.raises(ValueError, match="Fortran logical"):
+        _import_with(tmp_path, extra_dynamics=" moist_mix6_off = 1, 1,\n")
+
+
 def test_physics_runconfig_knobs_reach_the_run_config(tmp_path):
     """Every newly mapped &physics knob lands on RunConfig with its
     distinctive (non-default) value -- no dead knobs."""
@@ -1351,6 +1425,50 @@ def test_h_sca_adv_order_nondefault_is_refused(tmp_path):
     with pytest.raises(ValueError, match="h_sca_adv_order"):
         _import_with(tmp_path,
                      extra_dynamics=" h_sca_adv_order = 2,\n")
+
+
+def test_hypsometric_opt_imports_from_domains_where_wrf_declares_it(
+        tmp_path):
+    """The mirror of the emitter defect, on the reading side.
+
+    WRF v4.6.1 declares hypsometric_opt in &domains as a scalar
+    (Registry.EM_COMMON:2283, ``namelist,domains``, nentries 1;
+    run/README.namelist documents it inside the &domains block).  The
+    importer read it from &dynamics, so a namelist shaped the way a real
+    WRF namelist must be shaped -- the only kind wrf.exe can read --
+    imported at the Registry default and quietly lost the setting.
+    """
+    inp = INPUT_TEXT.replace(" p_top_requested = 5000,",
+                             " p_top_requested = 5000,\n"
+                             " hypsometric_opt = 1,")
+    assert "hypsometric_opt" in inp
+    toml_text, _report = import_namelists(*_pair(tmp_path, inp=inp))
+    out = tmp_path / "hypsometric.toml"
+    out.write_text(toml_text)
+    assert load_experiment(out).root.run.hypsometric_opt == 1
+
+    # Omitted, it still binds to the ratified WRF Registry default.
+    default_text, _ = import_namelists(*_pair(tmp_path))
+    default = tmp_path / "default.toml"
+    default.write_text(default_text)
+    assert load_experiment(default).root.run.hypsometric_opt == 2
+
+
+def test_hypsometric_opt_in_dynamics_is_refused_by_name(tmp_path):
+    """The old gpuwm-only spelling is refused, not tolerated.
+
+    Every other unmapped key gets the generic "extend the ratified map"
+    refusal, which is true here but does not say where the key belongs.
+    A namelist carrying hypsometric_opt in &dynamics is one wrf.exe
+    cannot read at all, so this one names the section and the repair.
+    """
+    inp = INPUT_TEXT.replace(" hybrid_opt = 2,",
+                             " hybrid_opt = 2,\n hypsometric_opt = 1,")
+    with pytest.raises(ValueError, match="hypsometric_opt") as refusal:
+        import_namelists(*_pair(tmp_path, inp=inp))
+    message = str(refusal.value)
+    assert "&domains" in message
+    assert "Move the key to &domains" in message
 
 
 def test_tke_adv_opt_drops_as_inert(tmp_path):
@@ -1964,3 +2082,57 @@ def test_tke_adv_opt_stays_inert_without_a_prognostic_tke_domain(tmp_path):
     dropped = {(d.section, d.key): d for d in report.dropped}
     assert ("dynamics", "tke_adv_opt") in dropped
     assert "km_opt = 2" in dropped[("dynamics", "tke_adv_opt")].reason
+
+
+# --------------------------------------------------------------------
+# The gray-zone parent chain (P4).  The 11 -> YSU remap died when the
+# Shin-Hong port admitted the scheme (_BL_MAP row 11 is native, the
+# physics_compat matrix scores its four (11, sfclay) cells, and
+# PHYSICS_SLOT_DISPATCH row 11 runs it -- the three legs that widen
+# together per _BL_MAP's own policy).  This test is the acceptance
+# instrument for that claim on the release line: a THREE-domain chain
+# whose parents select 11 and whose child is PBL-off must round-trip
+# per domain with no substitution row, or the remap is not dead.
+# --------------------------------------------------------------------
+
+def test_shinhong_parent_chain_round_trips_per_domain_without_remap(
+        tmp_path):
+    """bl_pbl_physics = 11, 11, 0 -> per-domain [11, 11, 0], no
+    substitution row, through the emitted TOML and back out of
+    load_experiment (the P4 gray-zone parent-chain shape: SH parents
+    with km_opt=4, PBL-off child on the LES closure)."""
+    wps, inp = _generic_hierarchy_pair(tmp_path, 3)
+    wps_text = wps.read_text(encoding="utf-8")
+    input_text = inp.read_text(encoding="utf-8")
+    wps_columns = {
+        "parent_id": (1, 1, 2),
+        "parent_grid_ratio": (1, 3, 3),
+        "i_parent_start": (1, 40, 15),
+        "j_parent_start": (1, 30, 15),
+        "e_we": (101, 61, 31),
+        "e_sn": (81, 61, 31),
+    }
+    for key, values in wps_columns.items():
+        wps_text = _replace_namelist_column(wps_text, key, values)
+    input_columns = {
+        **wps_columns,
+        "parent_id": (0, 1, 2),
+        "parent_time_step_ratio": (1, 3, 3),
+        "dx": (12000.0, 4000.0, 1333.333333),
+        "dy": (12000.0, 4000.0, 1333.333333),
+        "bl_pbl_physics": (11, 11, 0),
+        "km_opt": (4, 4, 3),
+    }
+    for key, values in input_columns.items():
+        input_text = _replace_namelist_column(input_text, key, values)
+    wps.write_text(wps_text, encoding="utf-8")
+    inp.write_text(input_text, encoding="utf-8")
+
+    toml_text, report = import_namelists(wps, inp, name="sh-parent-chain")
+    # No substitution leg may survive on any domain: the row is native.
+    assert not any(s.key == "bl_pbl_physics" for s in report.substitutions)
+    assert "bl_pbl_physics 11" not in report.format()
+    # Round trip: the emitted TOML reloads to the same per-domain column.
+    exp = _load(tmp_path, toml_text, name="sh-parent-chain.toml")
+    assert [dc.run.bl_pbl_physics for dc in exp.domains] == [11, 11, 0]
+    assert [dc.run.km_opt for dc in exp.domains] == [4, 4, 3]

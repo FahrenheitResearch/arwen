@@ -12,7 +12,21 @@ or narrowed: they assert the property (*no cupy-importing test survives
 ``-m "not gpu"``*) rather than the mechanism, so they keep working if the
 mechanism is rewritten and fail if it is deleted.
 
-Nothing here imports cupy or opens a device; it is all source inspection.
+The *detector* checks are pure source inspection.  The *selection* checks are
+not, and the docstring used to claim otherwise.  They shell out to ``pytest
+--collect-only`` once per module, deliberately with ``GPUWM_NO_LOCAL_GPU``
+stripped, and several CUDA modules probe the device at import time -- one
+``pytest.importorskip("cupy")`` plus ``getDeviceCount()`` at module scope, and
+``pytest.skip(..., allow_module_level=True)`` when it throws.  So these tests
+do open a device, at one remove, and their answers depend on this host having
+one that answers.
+
+That is why a module which skips itself at import is now reported as
+*unanswerable* rather than as a marking failure: with the card saturated,
+``getDeviceCount()`` does not return cleanly, the RRTMG modules skip at
+collection, and the gate used to read zero-selected as "this coverage runs on
+no machine" and go red -- on a busy card, at a release cut, pointing at a merge
+it had nothing to do with.
 """
 
 from __future__ import annotations
@@ -20,6 +34,7 @@ from __future__ import annotations
 import pathlib
 import subprocess
 import sys
+import warnings
 
 import pytest
 
@@ -43,23 +58,46 @@ def test_some_modules_do_import_cupy():
     )
 
 
-def _node_ids(selection: str, path: pathlib.Path) -> set[str]:
-    """Test ids pytest would select from one file, without running anything."""
+def _collect(path: pathlib.Path, selection: str | None) -> set[str]:
+    """Test ids pytest would select from one file, without running anything.
+
+    ``selection`` is a ``-m`` expression, or None to collect unfiltered.
+    """
     # Exactly one -q: that is the mode that prints one node id per line.
     # Two (-qq) suppresses the listing entirely and this returns an empty set,
     # which would make every assertion below pass vacuously.
+    command = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider",
+               "--collect-only", "-q"]
+    if selection is not None:
+        command += ["-m", selection]
+    command.append(str(path))
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider",
-         "--collect-only", "-q", "-m", selection, str(path)],
-        capture_output=True, text=True, cwd=str(_ROOT),
+        command, capture_output=True, text=True, cwd=str(_ROOT),
         env={**_environ(), "PYTHONPATH": str(_ROOT)},
     )
+    # 0 = something was collected, 5 = nothing matched the selection.  Any
+    # other code is a crashed or erroring collection, and the empty set it
+    # yields is indistinguishable from an honest "no such tests" -- which
+    # makes the leak gate below pass VACUOUSLY, the one failure mode this
+    # file exists to prevent.  Say so instead of answering nothing.
+    if proc.returncode not in (0, 5):
+        raise AssertionError(
+            f"collection subprocess failed (rc={proc.returncode}) for "
+            f"{path.name} with -m {selection!r}; treating that as 'no tests' "
+            f"would make this gate pass vacuously.\n"
+            f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+        )
     ids = set()
     for line in proc.stdout.splitlines():
         line = line.strip()
         if "::" in line and not line.startswith(("<", "=")):
             ids.add(line.split("::", 1)[1].split("[")[0])
     return ids
+
+
+def _node_ids(selection: str, path: pathlib.Path) -> set[str]:
+    """Test ids pytest would select from one file under one ``-m`` filter."""
+    return _collect(path, selection)
 
 
 def test_no_device_touching_test_survives_the_not_gpu_selection():
@@ -90,11 +128,24 @@ def test_every_device_touching_test_is_selected_under_m_gpu():
 
     A test in neither selection is exercised on no machine, which is how 34
     Noah-MP CUDA gates passed locally while never running on the rented card.
+
+    Zero-selected has two causes that must not be conflated.  A *marking* gap
+    is a real defect and fails here.  A module that skipped itself at import
+    -- because its module-scope ``getDeviceCount()`` probe found no device, or
+    found one too busy to answer -- collected nothing under any selection, so
+    this host has no evidence about its marking either way.  Reporting that as
+    "runs on no machine" is a false alarm, and it fired as one: it turned this
+    gate red at a release cut on a saturated card, naming two RRTMG modules
+    that were byte-identical to the ones that had passed an hour earlier.
     """
     missing = {}
+    unanswerable = []
     for path in _cupy_modules():
         whole, functions = _cupy_scope(str(path))
         selected = _node_ids("gpu", path)
+        if not selected and not _collect(path, None):
+            unanswerable.append(path.name)
+            continue
         if whole:
             if not selected:
                 missing[path.name] = ["<entire module>"]
@@ -106,6 +157,19 @@ def test_every_device_touching_test_is_selected_under_m_gpu():
         "these tests open a CUDA device but are selected by neither -m gpu nor"
         f" -m \"not gpu\", so they run on no machine: {missing}"
     )
+    if unanswerable and len(unanswerable) == len(_cupy_modules()):
+        # Every module declined to collect: this host answered nothing at all,
+        # and a green here would be pure vacuum.
+        pytest.skip(
+            "no cupy module could be collected on this host (no device, or a"
+            f" card too busy to answer): {sorted(unanswerable)}"
+        )
+    if unanswerable:
+        warnings.warn(
+            "marking unverified for modules that skip themselves at import on"
+            f" this host: {sorted(unanswerable)}",
+            stacklevel=2,
+        )
 
 
 def test_a_module_that_only_stubs_cupy_keeps_its_cpu_coverage():

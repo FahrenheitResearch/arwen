@@ -324,12 +324,20 @@ TOML. The parameter row is importable from a WRF namelist, so an existing
 
 These are limits of the current build, not opinions about LES.
 
-- **`nz <= 128`.** The acoustic solver carries per-thread stack arrays sized
-  `WPHI_MAX_LEV 129` (`gpuwm/core/kernels/acoustic.cu`). It is enforced on
-  the host in `gpuwm/core/acoustic.py`, which raises before any launch, so
-  it is a loud refusal and not a silently skipped kernel. §2 prices what
-  the vertical grid costs: at the ceiling the resolved fraction is 0.921,
-  and the nested child's shared 49-level grid gives up 4.8 points of it.
+- **`nz <= 128` is what has been RUN; the solver now admits 256.** The
+  acoustic solver carries one per-thread stack column sized `WPHI_MAX_LEV`
+  (`gpuwm/core/kernels/acoustic.cu`), and that bound is compiled from a tier
+  ladder chosen by `nz` (`gpuwm/core/acoustic.py`, tiers 129/193/257). Every
+  `nz <= 128` configuration compiles the same kernel it always did — the
+  unspecialized module, no define injected. Above 256 the host raises before
+  any launch, so it is a loud refusal and not a silently skipped kernel.
+  Nothing above 128 has a run receipt yet: the level sweep, the perf
+  numbers and the `nz=160` acceptance battery are registered but unrun
+  (`docs/superpowers/specs/2026-08-04-p2-nz-tier-acceptance.md`), and
+  `cu_physics=1` is still refused above 128 by Kain-Fritsch's own bound.
+  §2 prices what the vertical grid costs: at 128 the resolved fraction is
+  0.921, and the nested child's shared 49-level grid gives up 4.8 points
+  of it.
 - **Vertical nesting is impossible by construction.** The vertical grid is
   single-sourced from `ExperimentConfig.vertical`, and per-domain vertical
   keys are rejected outright (`gpuwm/experiment.py`,

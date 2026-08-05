@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import sys
+from dataclasses import dataclass, field
 from typing import Mapping
 
 import numpy as np
@@ -52,6 +53,11 @@ class NoahSoilState:
     xice: np.ndarray              # ERA5 sea-ice fraction (zero when absent)
     snow_water: np.ndarray        # kg m-2
     snow_depth: np.ndarray        # m
+    #: Ingest-repair receipt from :func:`_floor_land_moisture_at_smcdry`:
+    #: per-SMOIS-level floored-cell counts and pre-floor minima.  An EMPTY
+    #: mapping whenever nothing was floored, so healthy preparations carry
+    #: zero receipt noise and the presence of any key is itself the signal.
+    moisture_floor: Mapping[str, object] = field(default_factory=dict)
 
 
 _TEMP_NAMES = ("ST000007", "ST007028", "ST028100", "ST100289")
@@ -207,6 +213,125 @@ def _admitted_snow_field(name: str, value: np.ndarray, shape) -> np.ndarray:
             f"{value.size}, most negative {smallest:.6g}, field maximum "
             f"{float(np.max(value)):.6g}")
     return np.maximum(value, 0.0)
+
+
+#: DIVERGENCE, deliberate (no-inherited-bugs): sub-physical LAND soil
+#: moisture is floored at the soil type's SMCDRY instead of WRF's
+#: constant 0.005.  The full ledger entry is on
+#: :func:`_floor_land_moisture_at_smcdry`.
+_MOISTURE_FLOOR_WRF_REFERENCE = {
+    "wrf_version": "v4.6.1",
+    "wrf_citation": (
+        "dyn_em/module_initialize_real.F:3363-3395 "
+        "(account_for_zero_soil_moisture SELECT CASE :3363; "
+        "CASE (LSMSCHEME, NOAHMPSCHEME) :3365; flag_soil_layers arm "
+        ":3367-3395: condition :3371-3372, per-cell print :3373, "
+        "whole-column reset to 0.005 :3376, total-count print :3393-3394)"),
+    "wrf_behavior": (
+        "real.exe: land cells (landmask>0.5, 170<TSLB(1)<400) whose TOP "
+        "layer has SMOIS(1)<0.005 print 'bad soil moisture at i,j', reset "
+        "the whole column to the constant 0.005, and print the total count"),
+    "gpuwm_behavior": (
+        "each layer of each land cell below the soil category's SMCDRY "
+        "(SOILPARM.TBL DRYSMC; module_sf_noahlsm.F:2453) is floored to "
+        "that SMCDRY; water, sea-ice, and healthy land values are "
+        "byte-untouched"),
+}
+
+
+def _floor_land_moisture_at_smcdry(soil_m, pre_clip, terrestrial,
+                                   soil_type, params):
+    """Floor sub-air-dry LAND soil moisture at the category's SMCDRY.
+
+    An ERA5 swvl value a hair below zero (GRIB packing, horizontal
+    interpolation undershoot) is admitted by the overshoot band above and
+    clipped to EXACTLY 0.0.  Noah's thermal conductivity then divides by
+    SMC three times (kernels/noah.cu TDFCND: ``xunfroz = sh2o/smc`` 0/0,
+    the ``ake`` divide, and ``powf(smcmax/smc, bexp)``), so ONE such land
+    cell is NaN conductivity -> NaN ground heat flux -> NaN HFX and the
+    run dies at step 0 blamed on the PBL scheme.  The threshold is a hard
+    zero: 1e-12 survives the arithmetic, 0.0 does not -- but both are
+    sub-physical, so both are floored.
+
+    DIVERGENCE from WRF, deliberate (no-inherited-bugs framework):
+
+    * **What WRF does** (v4.6.1 ``dyn_em/module_initialize_real.F``,
+      ``account_for_zero_soil_moisture`` :3363, ``CASE (LSMSCHEME,
+      NOAHMPSCHEME)`` :3365, layer-form arm :3367-3395): a land cell
+      (``landmask>0.5``, ``170<TSLB(1)<400``) whose TOP layer has
+      ``SMOIS(1) < 0.005`` gets its WHOLE column reset to the constant
+      0.005 m3/m3, with a per-cell print and a total count.  The
+      per-soil-type residual adjustment beside it (:3401, ``lqmi``) is
+      commented out, so stock real.exe's floor is soil-type-blind.
+    * **What gpuwm does**: floors each layer of each land cell below the
+      soil category's SMCDRY (air-dry; ``SOILPARM.TBL`` DRYSMC, consumed
+      as ``SMCDRY = DRYSMC(SOILTYP)`` in ``module_sf_noahlsm.F:2453``)
+      to that SMCDRY, and records the per-level counts and pre-floor
+      minima as a receipt on the returned state.
+    * **Why**: WRF's 0.005 sits BELOW every land category's SMCDRY (sand
+      is 0.010), inside the range where Noah's own direct evaporation
+      ``SRATIO = (SMC-SMCDRY)/(SMCMAX-SMCDRY)``
+      (``module_sf_noahlsm.F:1214``) goes negative, and WRF's trigger
+      reads only the top layer, so a dry deep layer under a wet top
+      layer passes stock real.exe unrepaired and still reaches TDFCND's
+      divides.  SMCDRY is the smallest soil moisture Noah's physics
+      treats as physical, and flooring there is what WRF's own
+      preprocessing effectively achieves for the fatal exact-zero case.
+
+    WRF's ``170<TSLB<400`` precondition is already guaranteed here: the
+    caller refused any soil temperature outside 170..400 K before this
+    function runs.  Cells whose category has no positive SMCDRY (the
+    SOILPARM WATER row) or is outside the table are left untouched, so
+    ``sh2o_init``'s own category refusal fires exactly as before.
+
+    ``pre_clip`` is the moisture BEFORE the 0..1 clip, so the receipt's
+    minima report what the source actually delivered (-1e-9, not the
+    0.0 the clip made of it).  Returns ``(soil_m, receipt)``; when no
+    cell needs flooring the input array is returned UNTOUCHED (same
+    object, byte-identical) with an empty receipt.
+    """
+    from gpuwm.core.noah import SOIL_COLS
+
+    categories = np.asarray(soil_type)
+    in_table = (np.isfinite(categories)
+                & (categories == np.floor(categories))
+                & (categories >= 1) & (categories <= params.slcats))
+    rows = np.where(in_table, categories, 1).astype(np.int64) - 1
+    smcdry = params.soil[rows, SOIL_COLS.index("smcdry")]
+    usable = terrestrial & in_table & (smcdry > 0.0)
+    needs = usable[None, ...] & (soil_m < np.where(usable, smcdry, 0.0))
+    if not needs.any():
+        return soil_m, {}
+    result = np.array(soil_m, copy=True)
+    per_level = {}
+    for level in range(soil_m.shape[0]):
+        mask = needs[level]
+        count = int(np.count_nonzero(mask))
+        if count == 0:
+            continue
+        per_level[f"SMOIS_L{level + 1}"] = {
+            "floored_cells": count,
+            "min_pre_floor": float(np.min(pre_clip[level][mask])),
+            "smcdry_applied_min": float(np.min(smcdry[mask])),
+            "smcdry_applied_max": float(np.max(smcdry[mask])),
+        }
+        result[level][mask] = smcdry[mask]
+    receipt = {
+        "policy": "land-below-smcdry-floored-to-smcdry",
+        "wrf_reference": dict(_MOISTURE_FLOOR_WRF_REFERENCE),
+        "fields": per_level,
+        "total_floored_cells": int(np.count_nonzero(needs)),
+        "min_pre_floor": float(np.min(np.asarray(pre_clip)[needs])),
+    }
+    print(
+        "soil moisture floor: "
+        f"{receipt['total_floored_cells']} sub-air-dry land value(s) "
+        f"floored to the soil type's SMCDRY across "
+        f"{sorted(per_level)} (min pre-floor "
+        f"{receipt['min_pre_floor']:.6g}); WRF real.exe resets such "
+        "columns to 0.005 (module_initialize_real.F:3376)",
+        file=sys.stderr)
+    return result, receipt
 
 
 def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
@@ -531,6 +656,7 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
             "soil moisture is outside 0..1 beyond the interpolation-"
             f"overshoot band: {bad.size} value(s), range "
             f"[{np.nanmin(soil_m):.6g}, {np.nanmax(soil_m):.6g}]")
+    pre_clip_moisture = soil_m
     soil_m = np.clip(soil_m, 0.0, 1.0)
     if not np.isfinite(tmn).all() or np.any((tmn < 170.0) | (tmn > 400.0)):
         raise ValueError("deep soil temperature is outside 170..400 K")
@@ -540,8 +666,14 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
     soil_type = _host(soil_type)
     if soil_type.shape != shape:
         raise ValueError("soil_type shape differs from soil fields")
-    liquid_m = sh2o_init(
-        soil_m, soil_t, soil_type, pack_params(load_tables()))
+    noah_params = pack_params(load_tables())
+    # The clip above makes EXACTLY 0.0 of any admitted sub-zero land value
+    # and Noah's thermal conductivity divides by SMC; floor sub-air-dry
+    # land layers at the category SMCDRY BEFORE sh2o_init so SMOIS and the
+    # derived SH2O carry the same protection.
+    soil_m, moisture_floor = _floor_land_moisture_at_smcdry(
+        soil_m, pre_clip_moisture, terrestrial, soil_type, noah_params)
+    liquid_m = sh2o_init(soil_m, soil_t, soil_type, noah_params)
     liquid_m[:, sea_ice] = 0.0
 
     # dyn_em/module_initialize_real.F:517-543 reconciles the independently
@@ -576,6 +708,7 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
         xice=xice,
         snow_water=snow,
         snow_depth=snowh,
+        moisture_floor=moisture_floor,
     )
 
 

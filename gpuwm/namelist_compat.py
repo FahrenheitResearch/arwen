@@ -56,9 +56,15 @@ _PREPROCESSING_KEYS = {
         "num_metgrid_soil_levels", "interp_method_type", "nest_interp_coord",
         "vert_refine_method", "input_from_hires", "smooth_cg_topo",
         "use_adaptive_time_step", "sfcp_to_sfcp",
+        # WRF declares hypsometric_opt in &domains, not &dynamics
+        # (Registry.EM_COMMON:2283, `namelist,domains`).  Classified
+        # under the wrong section, every real WRF namelist that sets it
+        # -- which is where wrf.exe requires it -- came back
+        # UNCLASSIFIED_NAMELIST_SETTING and failed the support report.
+        "hypsometric_opt",
     },
     "dynamics": {
-        "hybrid_opt", "etac", "base_temp", "hypsometric_opt",
+        "hybrid_opt", "etac", "base_temp",
     },
     "bdy_control": {
         "spec_bdy_width", "spec_zone", "relax_zone", "spec_exp", "specified",

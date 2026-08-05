@@ -23,8 +23,11 @@ about which way the measurement came out.
 
 The load-bearing tests in this file are the negative controls: the guard
 must REJECT a fixture containing the retired surface-to-full-state
-sentence, and REJECT a fixture that cites a failing receipt without
-saying so.  A guard that only ever passes is not evidence of anything.
+sentence, must REJECT that same sentence when it is quoted rather than
+written plainly -- and without letting a neighbouring quoted paragraph's
+receipt back it -- and must REJECT a fixture that cites a failing receipt
+without saying so.  A guard that only ever passes is not evidence of
+anything.
 """
 
 from __future__ import annotations
@@ -90,6 +93,19 @@ _LIST_START_RE = re.compile(r"^\s*(?:[-*+]\s|\d+[.)]\s)")
 #: starts a sentence.  Version numbers and abbreviations inside a sentence
 #: are followed by lower case, so they do not split.
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z(\[*_`#0-9-])")
+#: A blockquote marker is presentation, and leaving it in the text made the
+#: guard read quoted prose as something it is not.  Both splitters miss it:
+#: ``> * `` is not a list start, so a quoted run of bullets lumps into one
+#: block and one bullet's receipt link backs its neighbour's claim -- the
+#: exact leak the block rule exists to prevent -- and ``>`` is not a
+#: sentence opener, so quoted prose never splits into sentences at all and
+#: markers bleed across bullets.  Both were live: a runbook bullet stating
+#: the t=0 history frame carries no ``REFL_10CM`` (a fact about the frame,
+#: asserting no result) fused with the next bullet's "coverage floor" and
+#: was reported as one unbacked parity claim.  Stripping the marker first
+#: makes a quoted claim read exactly as the same claim unquoted, which is
+#: strictly more of the tree scanned, not less.
+_BLOCKQUOTE_RE = re.compile(r"^(\s*)(?:>\s?)+")
 
 
 @dataclass(frozen=True)
@@ -127,6 +143,11 @@ def split_blocks(text: str, path: str) -> list[Block]:
     A list item is its own block: the six audited sites include bullets in
     a run of bullets, and lumping the run together would let one bullet's
     receipt link back a neighbour that has none.
+
+    Blockquote markers come off first, so a quoted paragraph, bullet or
+    fence is the same structure as an unquoted one.  Line numbers are the
+    file's own either way -- the marker is removed from the text, not from
+    the count.
     """
     blocks: list[Block] = []
     current: list[str] = []
@@ -138,7 +159,8 @@ def split_blocks(text: str, path: str) -> list[Block]:
             blocks.append(Block(path, start, "\n".join(current)))
         current.clear()
 
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, raw in enumerate(text.splitlines(), start=1):
+        line = _BLOCKQUOTE_RE.sub(r"\1", raw)
         if line.lstrip().startswith("```"):
             fenced = not fenced
             flush()
@@ -368,6 +390,51 @@ def test_a_link_to_a_receipt_that_does_not_resolve_is_rejected():
     findings = _fixture_findings("dangling_receipt_link.md")
     assert [finding.rule for finding in findings] == ["unbacked-claim"]
     assert "do not resolve" in findings[0].detail
+
+
+def test_a_quoted_claim_is_rejected_and_borrows_no_neighbours_receipt():
+    """The blockquote control, and the leak it closes.
+
+    The reviewed sentence is the same one the fixture above holds; here it
+    sits inside a blockquote beside a quoted paragraph that cites a real
+    receipt.  Reading the quote as one block -- which is what leaving the
+    ``>`` in place did -- hands that receipt to the claim and the
+    ``unbacked-claim`` rule goes quiet on the exact sentence the external
+    review named.  Both rules must fire.
+    """
+    findings = _fixture_findings("negative_control_quoted_overreach.md")
+    rules = {finding.rule for finding in findings}
+    assert "surface-to-full-state" in rules, findings
+    assert "unbacked-claim" in rules, findings
+
+
+def test_the_quoted_control_still_holds_the_reviewed_sentence():
+    """Quoted, but not paraphrased: the marker is all that was added."""
+    fixture = (FIXTURES / "negative_control_quoted_overreach.md").read_text(
+        encoding="utf-8")
+    unquoted = "\n".join(_BLOCKQUOTE_RE.sub(r"\1", line)
+                         for line in fixture.splitlines())
+    assert RETIRED_OVERREACH in unquoted
+    assert RETIRED_OVERREACH not in fixture
+
+
+def test_quoted_bullets_are_read_one_at_a_time():
+    """Markers do not bleed between quoted bullets, and sight is kept.
+
+    Two of this fixture's bullets state nothing between them: one names
+    the zero-hour frame without asserting a result, the next says "floor"
+    about frame coverage.  Fused they carried both detector markers and no
+    receipt, which is how a shipped runbook was reported as making an
+    unbacked t=0 claim it never made.  The third bullet is a genuine
+    unbacked claim, quoted identically -- so this asserts the count, not
+    merely silence, and a splitter that blinded the guard fails here.
+    """
+    findings = _fixture_findings("quoted_bullets_do_not_bleed.md")
+    assert [finding.rule for finding in findings] == ["unbacked-claim"], (
+        findings)
+    assert "ArWen reproduces the WRF initial state" in findings[0].quote
+    assert "REFL_10CM" not in findings[0].quote
+    assert "coverage floor" not in findings[0].quote
 
 
 def test_prose_about_the_initial_state_that_claims_nothing_is_quiet():

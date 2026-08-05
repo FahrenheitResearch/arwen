@@ -38,11 +38,26 @@ FETCH_SCHEMA = "gpuwm-obs.nexrad-fetch.v1"
 DECODE_SCHEMA = "gpuwm-obs.nexrad-decode.v1"
 VERIFY_SCHEMA = "gpuwm-obs.nexrad-verify.v1"
 SITES_SCHEMA = "gpuwm-obs.nexrad-sites.v1"
+LIVE_LIST_SCHEMA = "gpuwm-obs.nexrad-live-list.v1"
+LIVE_FETCH_SCHEMA = "gpuwm-obs.nexrad-live-fetch.v1"
+
+#: The two acquisition routes, under the names their records publish.  A
+#: receipt says which feed served it with one of these, so "where did this
+#: observation come from" is a recorded value rather than a bucket name a
+#: reader has to recognise.
+ARCHIVE_FEED = "archive-volumes"
+LIVE_FEED = "live-chunks"
 
 #: The exact ``--abi`` line this wrapper was written against.
+#:
+#: The live half is appended rather than folded in: a wrapper that drives
+#: the real-time route needs a binary that has it, and a binary predating
+#: it fails the probe instead of failing at the first ``live-fetch``.
 NEXRAD_ABI_MARKER = (
     "gpuwm-obs.nexrad-fetch.v1\tsite\twindow\tbucket\tvolumes\tbytes\t"
-    "cache_hits\tsha256\tgpuwm-obs.radar-sweeps.v1")
+    "cache_hits\tsha256\tgpuwm-obs.radar-sweeps.v1\t"
+    "gpuwm-obs.nexrad-live-fetch.v1\tfeed\tvolume_id\tchunks\tcomplete\t"
+    "lag_seconds")
 
 #: The bucket a command with no ``--bucket`` actually reads from.
 #:
@@ -69,6 +84,14 @@ ARCHIVE_OF_RECORD_BUCKET = "noaa-nexrad-level2"
 #: The mirror, under the name the earlier surface used for it.  It is the
 #: default, so this is an alias and not a second choice.
 MIRROR_BUCKET = DEFAULT_BUCKET
+
+#: The real-time chunk feed's bucket, mirroring ``rw-nexrad``'s own
+#: ``LIVE_DEFAULT_BUCKET``.  A different KEY SPACE from
+#: :data:`DEFAULT_BUCKET` rather than another mirror of it -- one object per
+#: LDM chunk under ``{SITE}/{VOLUME_ID}/`` instead of one Archive-II file
+#: per finished volume -- which is why the live subcommands default to it
+#: and ``list``/``fetch`` never do.
+LIVE_DEFAULT_BUCKET = "unidata-nexrad-level2-chunks"
 
 _PROBE_TIMEOUT_S = 20
 
@@ -211,6 +234,68 @@ def run_fetch(binary: Path, *, site: str, start: str, end: str, out: Path,
     if not use_cache:
         command.append("--no-cache")
     return _run(command, what="fetch", schema=FETCH_SCHEMA)
+
+
+def _live(*, site: str, bucket: str | None, volumes: int | None,
+          volume_id: int | None, allow_partial: bool,
+          min_chunks: int | None) -> list[str]:
+    command = ["--site", site]
+    if bucket is not None:
+        command += ["--bucket", bucket]
+    if volumes is not None:
+        command += ["--volumes", str(volumes)]
+    if volume_id is not None:
+        command += ["--volume-id", str(volume_id)]
+    if allow_partial:
+        command.append("--allow-partial")
+    if min_chunks is not None:
+        command += ["--min-chunks", str(min_chunks)]
+    return command
+
+
+def run_live_list(binary: Path, *, site: str, bucket: str | None = None,
+                  volumes: int | None = None, volume_id: int | None = None,
+                  allow_partial: bool = False,
+                  min_chunks: int | None = None) -> dict:
+    """What the real-time chunk feed holds for a site right now.
+
+    Moves no payload.  The record carries the bucket's own clock
+    (``observed_at``) and a measured ``lag_seconds`` per volume, so a
+    caller can compare feeds before choosing one.
+    """
+
+    return _run([str(binary), "live-list",
+                 *_live(site=site, bucket=bucket, volumes=volumes,
+                        volume_id=volume_id, allow_partial=allow_partial,
+                        min_chunks=min_chunks)],
+                what="live-list", schema=LIVE_LIST_SCHEMA)
+
+
+def run_live_fetch(binary: Path, *, site: str, out: Path,
+                   bucket: str | None = None, volumes: int | None = None,
+                   volume_id: int | None = None, allow_partial: bool = False,
+                   min_chunks: int | None = None,
+                   cache_dir: Path | None = None,
+                   use_cache: bool = True) -> dict:
+    """Assemble the newest real-time chunks into an Archive-II volume.
+
+    ``allow_partial`` is off by default here for the same reason it is off
+    in the binary: a scan that is still being collected is a real product
+    and not a silent one.  With it on, the published file is named
+    ``..._P{NNN}`` -- a name the archive key parser refuses -- so a partial
+    can never be picked up as a finished volume by anything downstream.
+    """
+
+    command = [str(binary), "live-fetch",
+               *_live(site=site, bucket=bucket, volumes=volumes,
+                      volume_id=volume_id, allow_partial=allow_partial,
+                      min_chunks=min_chunks),
+               "--out", str(out)]
+    if cache_dir is not None:
+        command += ["--cache", str(cache_dir)]
+    if not use_cache:
+        command.append("--no-cache")
+    return _run(command, what="live-fetch", schema=LIVE_FETCH_SCHEMA)
 
 
 def run_decode(binary: Path, *, volume: Path, out: Path,

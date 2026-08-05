@@ -63,9 +63,17 @@ from gpuwm.obs.target_grid import GridMismatchError, TargetGrid
 RADAR_GRID_SCHEMA = "gpuwm-obs.radar-grid.v1"
 
 #: Status of a product this lane can honestly claim: the geometry and the
-#: schema are proven by tests, the observation-error model is a documented
-#: parameterization rather than a tuned one, and no case has yet assimilated
-#: from it.
+#: schema are proven by tests, and the observation-error model is a
+#: documented parameterization rather than a tuned one.  Real cycling
+#: assimilations HAVE consumed this schema (four 2026-07-30 analyses, the
+#: ``evidence/da-cycling/`` receipts), so "no case has yet assimilated
+#: from it" is no longer the reason.  The label stays because those runs
+#: were a first demonstration, not a certification: no shakedown case has
+#: yet passed the radar-DA demonstration program's full control battery
+#: (registered claim rule, ablation, chaos-pricing null, persistence,
+#: wrong-day, dual-run screens).  Promotion gate: that program's
+#: shakedown package with every registered control green, decided by the
+#: owner, not inferred from one experiment.
 RADAR_GRID_STATUS = "READY_NOT_YET_ASSIMILATION_CERTIFIED"
 
 #: Width of the fixed-length radar id strings.

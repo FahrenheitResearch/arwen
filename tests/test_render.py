@@ -45,6 +45,9 @@ def _frame(seed: int) -> dict:
         "V10": rng.uniform(-10.0, 10.0, (_NY, _NX)).astype(np.float32),
         "RAINC": rng.uniform(0.0, 5.0, (_NY, _NX)).astype(np.float32),
         "RAINNC": rng.uniform(0.0, 30.0, (_NY, _NX)).astype(np.float32),
+        # TOA outgoing longwave, the range a frame with cold cloud tops
+        # over a warm surface actually spans (W m-2).
+        "OLR": rng.uniform(90.0, 320.0, (_NY, _NX)).astype(np.float32),
         "XLAT": lat.astype(np.float32),
         "XLONG": lon.astype(np.float32),
         "HGT": np.zeros((_NY, _NX), np.float32),
@@ -76,7 +79,7 @@ def test_render_all_products_all_frames(wrfout, tmp_path):
     produced = sorted(p.name for p in out.glob("*.png"))
     expected = sorted(
         f"{product}_d02-1km_{stamp.replace(':', '-')}.png"
-        for product in ("refl", "t2", "wind10", "precip")
+        for product in ("refl", "t2", "wind10", "precip", "olr")
         for stamp in _STAMPS)
     assert produced == expected
     for png in out.glob("*.png"):
@@ -300,7 +303,7 @@ def test_titles_carry_the_spacing_and_the_source_label(wrfout, tmp_path,
 
 
 def test_parse_products():
-    assert parse_products("all") == ("refl", "t2", "wind10", "precip")
+    assert parse_products("all") == ("refl", "t2", "wind10", "precip", "olr")
     assert parse_products("precip,refl") == ("precip", "refl")
     assert parse_products("refl,refl") == ("refl",)
     with pytest.raises(ValueError, match="unknown product"):
@@ -322,6 +325,112 @@ def test_unknown_product_is_exit_code_2(wrfout, tmp_path):
     rc = cli.main(["render", "--engine", "matplotlib", str(wrfout), "--products", "vorticity",
                    "--out", str(tmp_path / "png")])
     assert rc == 2
+
+
+def test_olr_draws_from_the_field_the_frame_carries(tmp_path, monkeypatch):
+    """The OLR panel is a retrieval, not a computation.
+
+    wrfout frames have carried ``OLR`` since 1.5.1 and the fallback had no
+    renderer for it.  This holds the two things that make the new one a
+    product rather than a picture: the value comes out of the file through
+    ``wrf.getvar`` with no unit argument -- W m-2 is what the field is, and
+    a brightness temperature would be a derived quantity this site is not
+    allowed to derive -- and the panel is labeled in those units.
+    """
+    import gpuwm.render as render
+    import wrf as real_wrf
+
+    path = tmp_path / "wrfout_d01_1974-04-03_18-00-00.nc"
+    with WrfoutWriter(path, nx=_NX, ny=_NY, nz=_NZ,
+                      dx=1000.0, dy=1000.0) as writer:
+        writer.write_frame(_STAMPS[0], _frame(seed=13))
+
+    calls: list[tuple[str, object]] = []
+
+    class SpyWrf:
+        def __getattr__(self, name):
+            return getattr(real_wrf, name)
+
+        @staticmethod
+        def getvar(wf, name, timeidx=None, **kwargs):
+            calls.append((name, kwargs.get("units")))
+            return real_wrf.getvar(wf, name, timeidx=timeidx, **kwargs)
+
+    monkeypatch.setattr(render, "_import_wrf", lambda: SpyWrf())
+    out = tmp_path / "png"
+    rc = cli.main(["render", "--engine", "matplotlib", str(path),
+                   "--products", "olr", "--out", str(out)])
+    assert rc == 0
+    produced = [p.name for p in out.glob("*.png")]
+    assert produced == [f"olr_d01-1km_{_STAMPS[0].replace(':', '-')}.png"]
+    assert (produced and (out / produced[0]).stat().st_size > 5_000)
+    # Retrieved by name, in the field's own units, with no conversion.
+    assert ("OLR", None) in calls, calls
+
+
+def test_olr_is_drawn_as_inverted_grayscale_infrared(tmp_path, monkeypatch):
+    """Cold tops bright, warm surface dark -- the IR imagery convention.
+
+    Asserted at the colormap the panel is handed, because that is the one
+    decision that makes this a synthetic-satellite product rather than a
+    generic fill: ``gray_r`` maps LOW emitted flux (deep cold cloud) to
+    white and HIGH flux (clear warm surface) to black.  A plain ``gray``
+    would draw a photographic negative of every satellite loop a forecaster
+    has ever read.
+    """
+    import gpuwm.render as render
+
+    path = tmp_path / "wrfout_d01_1974-04-03_18-00-00.nc"
+    with WrfoutWriter(path, nx=_NX, ny=_NY, nz=_NZ,
+                      dx=1000.0, dy=1000.0) as writer:
+        writer.write_frame(_STAMPS[0], _frame(seed=17))
+
+    seen: list[dict] = []
+    plt = render._pyplot()
+    real_subplots = plt.subplots
+
+    def spy_subplots(*args, **kwargs):
+        fig, axis = real_subplots(*args, **kwargs)
+        real_pcolormesh = axis.pcolormesh
+
+        def capture(*a, **kw):
+            seen.append(kw)
+            return real_pcolormesh(*a, **kw)
+
+        axis.pcolormesh = capture
+        return fig, axis
+
+    monkeypatch.setattr(plt, "subplots", spy_subplots)
+    rc = cli.main(["render", "--engine", "matplotlib", str(path),
+                   "--products", "olr", "--out", str(tmp_path / "png")])
+    assert rc == 0
+    assert seen and seen[0].get("cmap") == "gray_r", seen
+
+
+def test_a_frame_without_olr_skips_the_product_rather_than_failing(
+        tmp_path, capsys):
+    """Radiation off means no OLR, and that is a report, not a fault.
+
+    ``OLR`` is present exactly when the attached longwave scheme produced
+    it, so the absence is a legitimate configuration and has to travel the
+    same skip path REFL_10CM's absence does.
+    """
+    from gpuwm import render as render_module
+
+    path = _wrfout_without(tmp_path, "OLR")
+    rows = {slug: status
+            for slug, _kind, status, _detail
+            in render_module._list_products_matplotlib(path)}
+    assert rows["olr"] == "missing-fields"
+
+    out = tmp_path / "png"
+    rc = cli.main(["render", "--engine", "matplotlib", str(path),
+                   "--products", "olr,t2", "--out", str(out)])
+    assert rc == 0
+    assert [p.name for p in out.glob("*.png")] == [
+        f"t2_d01-1km_{_STAMPS[0].replace(':', '-')}.png"]
+    err = capsys.readouterr().err
+    assert "olr" in err and "not a failure" in err
 
 
 def test_wind10_fallback_is_native_units_via_getvar(tmp_path, monkeypatch):

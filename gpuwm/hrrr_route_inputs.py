@@ -46,25 +46,71 @@ NUM_METGRID_SOIL_LEVELS = 9
 
 #: The physics slice the public HRRR hierarchy gate admits.  A config
 #: outside it is refused here, at emission, naming the switch -- not
-#: after a root preparation has been paid for.
+#: after a root preparation has been paid for.  Two entries are not
+#: single pinned values: radiation is admitted as a PAIR and the PBL as
+#: an enumerated SET, both below.
 REQUIRED_PHYSICS = {
-    "bl_pbl_physics": 1,
     "sf_sfclay_physics": 91,
     "sf_surface_physics": 2,
-    "ra_physics": 0,
-    "ra_lw_physics": 0,
-    "ra_sw_physics": 1,
     "cu_physics": 0,
 }
+
+#: The ``bl_pbl_physics`` values the route admits.  This was a single
+#: pinned 1 in :data:`REQUIRED_PHYSICS` until the gray-zone template was
+#: registered; it is an enumerated set now, on exactly the shape the
+#: radiation pair took, and it is NOT a statement that any PBL selector
+#: is fine.  Each member is a value a REGISTERED HRRR preparation profile
+#: pins:
+#:
+#: * ``1`` -- YSU, pinned by every route-compatible profile the route has
+#:   always carried (``wsm6-ysu-mm5-noah-no-radiation-v1``,
+#:   ``kessler-mp1-ysu-mm5-noah-dudhia-v1``,
+#:   ``thompson-mp8-ysu-mm5-noah-validation-v1`` and its legacy-RRTMG
+#:   sibling).
+#: * ``11`` -- Shin-Hong 2015, pinned by
+#:   ``thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1``, the registered
+#:   composition a physics-fidelity arm selecting divergence-ledger entry
+#:   L3 resolves to.
+#:
+#: A value no registered profile pins still refuses here by name, and it
+#: would refuse one gate later anyway: the root preparation is a shipped
+#: profile or it does not happen.  ``tests/test_battery_route.py``
+#: recomputes this set from the shipped profile table, so the enumeration
+#: cannot drift from the registrations that justify it.
+ADMITTED_PBL_PHYSICS = frozenset({1, 11})
+
+#: The (ra_lw_physics, ra_sw_physics) pairs the route admits (the B4
+#: route-qualification motion, items 1-3): the certified (0, 1)
+#: validation suite -- longwave off natively, Dudhia shortwave -- and
+#: the resolved RRTMG (4, 4) pair the shipped registry's own
+#: prepared-tree row already claims for HRRR.  Explicit pairs only:
+#: :func:`gpuwm.config.validate_run_config` separately requires
+#: ``ra_physics = 0`` alongside explicit values, and that gate still
+#: binds on every domain of the experiment, so this set widens nothing
+#: beyond the two named compositions.
+ADMITTED_RADIATION_PAIRS = frozenset({(0, 1), (4, 4)})
 
 #: Microphysics the route's nest-transition resolver knows.
 SUPPORTED_MICROPHYSICS = frozenset({1, 6, 8, 10, 18})
 
-#: The three -- and only three -- differences between the native
-#: namelist gpuwm integrates and the stock-WRF namelist beside it.  The
-#: route compares the two parsed files key for key and refuses any other
+#: The four -- and only four -- differences between the native namelist
+#: gpuwm integrates and the stock-WRF namelist beside it.  The route
+#: compares the two parsed files key for key and refuses any other
 #: difference, so they are generated from one renderer with one switch.
-_STOCK_DELTAS = "ra_lw_physics 0->1, use_theta_m 0->1, stock-only ghg_input=0"
+#: Under the (4, 4) RRTMG pair the longwave delta collapses -- both
+#: arms run 4 -- and the two stock-only keys stay stock-only for the
+#: same reason: each names a setting the native arm answers in CODE, so
+#: the native namelist would be claiming to control something gpuwm does
+#: not read from it.  ``ghg_input = 0`` mirrors what
+#: gpuwm/core/rrtmg_legacy.py pins; ``do_radar_ref = 1`` mirrors the
+#: REFL_10CM gpuwm evaluates unconditionally at output time.  The
+#: certified raw-runtime contract
+#: (:func:`gpuwm.hrrr_hierarchy_direct._require_raw_stock_delta`)
+#: requires both ABSENT from the native namelist and pins both in the
+#: stock one; it is the enforcing half of this sentence.
+_STOCK_DELTAS = ("ra_lw_physics 0->1 (native longwave off only), "
+                 "use_theta_m 0->1, stock-only ghg_input=0, stock-only "
+                 "do_radar_ref=1")
 
 
 class HrrrRouteInputError(ValueError):
@@ -106,6 +152,18 @@ def validate_route_physics(exp) -> None:
                 problems.append(
                     f"d{domain.grid_id:02d} {switch}={observed} "
                     f"(the route requires {required})")
+        pbl = int(run.bl_pbl_physics)
+        if pbl not in ADMITTED_PBL_PHYSICS:
+            problems.append(
+                f"d{domain.grid_id:02d} bl_pbl_physics={pbl} (the route "
+                f"admits {sorted(ADMITTED_PBL_PHYSICS)}, each pinned by a "
+                "registered HRRR preparation profile)")
+        pair = (int(run.ra_lw_physics), int(run.ra_sw_physics))
+        if pair not in ADMITTED_RADIATION_PAIRS:
+            problems.append(
+                f"d{domain.grid_id:02d} (ra_lw_physics, ra_sw_physics)="
+                f"{pair} (the route admits "
+                f"{sorted(ADMITTED_RADIATION_PAIRS)})")
         if int(run.mp_physics) not in SUPPORTED_MICROPHYSICS:
             problems.append(
                 f"d{domain.grid_id:02d} mp_physics={run.mp_physics} "
@@ -121,6 +179,81 @@ def validate_route_physics(exp) -> None:
             + "; ".join(problems)
             + ".  Pass --physics-profile with a route-compatible suite "
               "(the wizard's --source hrrr default is one).")
+
+
+def verify_axis_authored_keys(exp, text: str, *, stock: bool = False) -> None:
+    """Every key the physics-fidelity axis governs, in the emitted bytes.
+
+    The axis (:mod:`gpuwm.physics_mode`) is the AUTHOR of its resolved
+    keys: the loader writes the resolved vector onto every domain's
+    RunConfig and refuses any other author.  This renderer therefore has
+    exactly one correct source for such a key -- the resolved config --
+    and a literal spelled here instead is invisible until a root
+    preparation refuses the drift.  That is what happened to the first
+    Shin-Hong arm: the config resolved ``bl_pbl_physics`` to 11, the
+    renderer said 1, and the profile validator was right to stop.
+
+    So the renderer reads back its own bytes and holds every governed key
+    to the RESOLVED value.  This is deliberately generic -- it names no
+    ledger entry and no scheme number, and it grows with the ledger --
+    because the defect class is "a governed key is spelled as a literal
+    somewhere in this function", not "L3 was missed".
+
+    An APPLIED patch whose key never reaches the namelist is refused
+    outright: a WRF arm that cannot express the patch is not a mirror of
+    the gpuwm arm, and finding that out at emission costs nothing while
+    finding it out after a root preparation costs a node.  A patch
+    resolved to its faithful side is not held to that, because the
+    faithful arm is what the emitter has always written.
+    """
+    from gpuwm.namelist_import import parse_namelist_text
+
+    resolution = getattr(exp, "physics_mode", None)
+    if resolution is None or not getattr(resolution, "governed", False):
+        return
+
+    sections = parse_namelist_text(text)
+    flavor = "stock-WRF" if stock else "native gpuwm"
+    problems = []
+    for patch in resolution.resolved:
+        # parse_namelist_text lower-cases every key it reads, and Fortran
+        # namelist names are case-insensitive, so the ledger's spelling is
+        # folded rather than trusted to already match.
+        wanted = patch.key.lower()
+        found = [(name, values) for name, entries in sections.items()
+                 for key, values in entries.items()
+                 if key == wanted]
+        if not found:
+            if patch.patched:
+                problems.append(
+                    f"{patch.entry_id} resolves {patch.key} = "
+                    f"{patch.value!r} (patched) but the {flavor} namelist "
+                    "carries no such key, so the WRF arm would run this "
+                    "entry unpatched")
+            continue
+        if len(found) > 1:
+            problems.append(
+                f"{patch.key} appears in {sorted(n for n, _ in found)}; a "
+                "governed key must be authored in exactly one section")
+            continue
+        section, values = found[0]
+        # Every column element, not just d01: one experiment is one arm,
+        # so a nest carrying a different resolved value would be a tree
+        # that cannot be compared across its own boundary.
+        if any(value != patch.value for value in values):
+            problems.append(
+                f"{patch.entry_id} resolves {patch.key} = {patch.value!r} "
+                f"but &{section}/{patch.key} was emitted as {values!r}; the "
+                "renderer must author this key from the resolved config, "
+                "never as a literal")
+    if problems:
+        raise HrrrRouteInputError(
+            "the emitted namelist contradicts the physics-fidelity axis "
+            f"it was rendered from (physics_mode = {resolution.mode!r}, "
+            f"patchset = {resolution.patchset!r}): "
+            + "; ".join(problems)
+            + ".  gpuwm.physics_mode.governed_keys() is the list every "
+              "emitter owes the resolved value.")
 
 
 def render_target_domain(exp) -> str:
@@ -323,9 +456,46 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         clock["time_step_fract_num"] = root.time_step_fract_num
         clock["time_step_fract_den"] = root.time_step_fract_den
 
-    longwave = 1 if stock else 0
+    # Radiation is rendered from the config, per domain, not restated as
+    # a literal.  The stock twin substitutes RRTM longwave (1) exactly
+    # where the native arm runs with longwave off (0) -- WRF cannot run
+    # the native preparation's disabled longwave -- and carries every
+    # other radiation selection unchanged, so under the (4, 4) RRTMG
+    # pair the longwave delta collapses and the two arms are identical
+    # here.
+    native_lw = [int(r.ra_lw_physics) for r in runs]
+    shortwave = [int(r.ra_sw_physics) for r in runs]
+    longwave = ([1 if value == 0 else value for value in native_lw]
+                if stock else native_lw)
     theta_m = 1 if stock else 0
     ghg = " ghg_input                           = 0,\n" if stock else ""
+    # STOCK-ONLY, and mandatory there: the mirrored arm has to PRODUCE
+    # what the registration scores.  gpuwm evaluates REFL_10CM at output
+    # time unconditionally -- it is an output product, not a
+    # namelist-gated one, which is why the native namelist has no
+    # counterpart to render from and the certified raw-runtime contract
+    # requires the key ABSENT there.  WRF gates the same quantity three
+    # deep on this one switch, Registry default 0:
+    #
+    #   * module_check_a_mundo.F:3477 -- do_radar_ref == 1 sets the
+    #     derived compute_radar_ref;
+    #   * Registry.EM_COMMON:3059 -- `package radar_refl
+    #     compute_radar_ref==1 - state:refl_10cm,refd_max` allocates the
+    #     array only then;
+    #   * module_mp_thompson.F:1450 -- `if (diagflag .and.
+    #     do_radar_ref == 1)` computes it, and solve_em.F:365 raises
+    #     diagflag on every history step with ke_diag at full column
+    #     depth, which is the column maximum the registration scores.
+    #
+    # At the default, under a scheme that is not Milbrandt/NSSL, the
+    # array is never allocated: every history frame comes out missing
+    # REFL_10CM with all other variables intact -- what the first
+    # WRF-arm scoring attempt measured.  A SCALAR:
+    # Registry.EM_COMMON:2447 declares it `namelist,physics` nentries 1,
+    # run/README.namelist:1057 spells it without the `(max_dom)` its
+    # per-domain neighbours there carry, and the Fortran above tests it
+    # without a domain index.
+    radar_ref = " do_radar_ref                        = 1," if stock else ""
 
     lines = [
         "! Generated by `gpuwm domain --source hrrr`.  This is the "
@@ -372,6 +542,19 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         " eta_levels = " + ("\n".join(eta_rows)),
         f" p_top_requested                     = "
         f"{_f(exp.vertical.p_top)},",
+        # &domains, and a SCALAR.  WRF declares this key
+        # `namelist,domains` with nentries 1 (Registry.EM_COMMON:2283;
+        # run/README.namelist documents it inside the &domains block as
+        # a single value), so BOTH halves of the old spelling were
+        # fatal: emitted into &dynamics, the Fortran namelist read of
+        # that group fails and wrf.exe stops before the first timestep
+        # -- measured on the campaign nodes -- and a per-domain column
+        # would overrun a scalar namelist object here for the other
+        # reason.  The root's value is the tree's: gpuwm/experiment.py
+        # refuses hypsometric_opt as a [[domain]] override, so it
+        # reaches every domain from [shared] and this loses nothing.
+        f" hypsometric_opt                     = "
+        f"{root.run.hypsometric_opt},",
         f" dx                                  = "
         f"{_column(_f(exp.dx_exact(d.grid_id)) for d in domains)}",
         f" dy                                  = "
@@ -400,8 +583,8 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         f" mp_physics                          = "
         f"{_column(r.mp_physics for r in runs)}",
         f" ra_lw_physics                       = "
-        f"{_repeated(longwave, count)}",
-        f" ra_sw_physics                       = {_repeated(1, count)}",
+        f"{_column(longwave)}",
+        f" ra_sw_physics                       = {_column(shortwave)}",
         f" radt                                = "
         f"{_column(_f(r.radt) for r in runs)}",
         " icloud                              = 1,",
@@ -409,7 +592,15 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         f"{_f(root.run.swrad_scat)},",
         f" sf_sfclay_physics                   = {_repeated(91, count)}",
         f" sf_surface_physics                  = {_repeated(2, count)}",
-        f" bl_pbl_physics                      = {_repeated(1, count)}",
+        # Per domain, from the RESOLVED config -- never a literal.  The
+        # physics-fidelity axis writes its resolved vector onto every
+        # domain's RunConfig (gpuwm/experiment.py), so an arm selecting
+        # divergence-ledger entry L3 arrives here already carrying its
+        # PBL selector.  A literal 1 shadowed it: the arm resolved to
+        # Shin-Hong, the mirrored namelist said YSU, and the root
+        # preparation refused the drift it was right to refuse.
+        f" bl_pbl_physics                      = "
+        f"{_column(r.bl_pbl_physics for r in runs)}",
         f" bldt                                = "
         f"{_column(_f(r.bldt) for r in runs)}",
         f" cu_physics                          = {_repeated(0, count)}",
@@ -423,8 +614,12 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         f" sf_urban_physics                    = {_repeated(0, count)}",
         " sst_update                          = 0,",
     ])
+    # The two stock-only &physics keys, together: each is a setting the
+    # native arm answers in code and the mirrored arm can only be told.
     if ghg:
         lines.append(ghg.rstrip("\n"))
+    if radar_ref:
+        lines.append(radar_ref)
     lines.extend([
         "/",
         "",
@@ -457,6 +652,14 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         f"{_column(_f(r.diff_6th_factor) for r in runs)}",
         f" diff_6th_slopeopt                   = "
         f"{_column(r.diff_6th_slopeopt for r in runs)}",
+        # WRF's own moist-filter switch (Registry.EM_COMMON:2889,
+        # max_domains, default .false.; divergence-ledger entry L4).
+        # Rendered explicitly, per domain, so the mirrored WRF arm runs
+        # the same moist-filter policy the config declares -- an omitted
+        # key would silently hand the WRF arm the Registry default while
+        # the ArWen arm read the TOML.
+        f" moist_mix6_off                      = "
+        f"{_column(_logical(r.moist_mix6_off) for r in runs)}",
         f" c_s                                 = "
         f"{_column(_f(r.c_s) for r in runs)}",
         f" diff_6th_thresh                     = "
@@ -482,8 +685,6 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         f"{_column(_f(r.smdiv) for r in runs)}",
         f" emdiv                               = "
         f"{_column(_f(r.emdiv) for r in runs)}",
-        f" hypsometric_opt                     = "
-        f"{_column(r.hypsometric_opt for r in runs)}",
         f" h_sca_adv_order                     = "
         f"{_column(r.h_sca_adv_order for r in runs)}",
         "/",
@@ -510,7 +711,9 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         "/",
         "",
     ])
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    verify_axis_authored_keys(exp, text, stock=stock)
+    return text
 
 
 def route_input_paths(config_path: Path) -> dict[str, Path]:
@@ -615,6 +818,7 @@ __all__ = [
     "render_target_domain",
     "route_input_paths",
     "validate_route_physics",
+    "verify_axis_authored_keys",
     "verify_round_trip",
     "write_hrrr_route_inputs",
 ]

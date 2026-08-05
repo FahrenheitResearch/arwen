@@ -417,6 +417,14 @@ def prepare_era5_wrf(
         landmask=static["LANDMASK"],
         terrain=static["HGT_M"],
         source_orography=source_terrain)
+    # LOUD when it happened, silent when it did not: the SMCDRY floor
+    # receipt is only bound into the prepared metadata/proof when at
+    # least one land cell was floored (getattr: the RUC state carries
+    # its own moisture and has no Noah floor receipt).
+    soil_moisture_floor = dict(getattr(soil, "moisture_floor", {}) or {})
+    soil_floor_binding = (
+        {"soil_moisture_floor": soil_moisture_floor}
+        if soil_moisture_floor else {})
     initialize_seconds = time.perf_counter() - initialize_started
     input_manifest_digest = _sha256(Path(input_manifest))
     native_source_identity = {
@@ -494,6 +502,7 @@ def prepare_era5_wrf(
                 "input_manifest_sha256": input_manifest_digest,
                 "decoder_sha256": _sha256(paths["bridge"]),
                 "preprocessing": preprocess_receipt,
+                **soil_floor_binding,
                 "root_static_provider": root_static_provider,
                 "root_static_receipt": root_static_receipt,
                 "hierarchy_workers": selected_workers,
@@ -538,6 +547,7 @@ def prepare_era5_wrf(
                 "forcing_hours": forcing_hours,
                 "boundary_interval_seconds": boundary_interval_seconds,
                 "preprocessing": preprocess_receipt,
+                **soil_floor_binding,
             },
         )
         cache_seconds = time.perf_counter() - cache_started
@@ -590,6 +600,7 @@ def prepare_era5_wrf(
             "decoder_sha256": _sha256(paths["bridge"]),
             "preprocessing": preprocess_receipt,
             "preprocessing_receipt_sha256": preprocessing_receipt_sha256,
+            **soil_floor_binding,
             "source_inputs": {
                 "manifest_schema": manifest["schema"],
                 "manifest_sha256": input_manifest_digest,

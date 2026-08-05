@@ -1,0 +1,94 @@
+{
+  "schema": "gpuwm-battery-speed-anchors-v1",
+  "package": "B4",
+  "written": "2026-08-03",
+  "purpose": "The speed and memory anchors the observation battery's compute plan is arithmetic over, each carrying the status of its own evidence. Section 8.1 of the battery spec brackets every wall-clock number from these three anchors; committing them is what makes those brackets auditable instead of remembered.",
+  "honesty": "Two of the three entries below are CONTROLLER MEASUREMENTS that no run receipt in this repository reproduces. They are recorded here because a number in prose is worse than a number with a status, not because recording them makes them receipts. Each carries the exact artifact that would upgrade it.",
+  "anchors": {
+    "arwen_3km_conus": {
+      "status": "committed-run-receipt",
+      "evidence": "evidence/grounding-3km-conus-run-report.json",
+      "engine": "gpuwm 1.4.1",
+      "device": "RTX 5090",
+      "source": "gfs",
+      "grid": {"nx": 796, "ny": 636, "nz": 49, "cells": 24806544, "dx_m": 3000.0, "dt_s": 15.0},
+      "physics": {"mp_physics": 8, "bl_pbl_physics": 1, "sf_sfclay_physics": 91, "sf_surface_physics": 2, "cu_physics": 1, "radiation_scheme_ids": [4, 4]},
+      "run_seconds": 21600.0,
+      "wall_seconds": 1408.4776820999105,
+      "seconds_per_sim_minute": 3.9124,
+      "gpu_peak_used_bytes_observed": 20841037824,
+      "cpu_peak_rss_bytes": 6540079104,
+      "gridded_output_total_bytes": 12762037345,
+      "gridded_output_frames": 7,
+      "gridded_output_bytes_per_frame": 1823148192
+    },
+    "wrf_v461_nodes_24rank": {
+      "status": "unreceipted-controller-measurement",
+      "measured": "2026-08-03, controller-side",
+      "evidence": "stated in docs/superpowers/specs/2026-08-03-obs-verification-battery.md sections 0.1 and 8.1; NO run receipt for it exists at this commit",
+      "engine": "WRF v4.6.1, pinned campaign build",
+      "host": "nodes 1/2",
+      "ranks": 24,
+      "cells": 15000000,
+      "seconds_per_sim_minute": 14.0,
+      "upgrade_path": "one node run of the battery-shape namelist emitted by tools/battery_wrf_node_plan.py, with its rsl.error.0000 timing lines parsed into a gpuwm-battery-wrf-node-timing-v1 receipt committed beside this file"
+    },
+    "arwen_5090_same_domain": {
+      "status": "unreceipted-controller-measurement",
+      "measured": "2026-08-03, controller-side",
+      "evidence": "stated in docs/superpowers/specs/2026-08-03-obs-verification-battery.md sections 0.1 and 8.1; NO run receipt for it exists at this commit",
+      "engine": "gpuwm",
+      "device": "RTX 5090",
+      "cells": 15000000,
+      "seconds_per_sim_minute": 0.87,
+      "upgrade_path": "the battery-shape sizing smoke (configs/battery/shape_smoke_3km_thompson_dudhia.toml) writes a gpuwm-prepared-domain-tree-forecast report whose wall_seconds and run_seconds ARE this measurement at the battery's own shape"
+    }
+  },
+  "device_memory_fit": {
+    "status": "committed-measurement-fit",
+    "evidence": "evidence/grounding-3km-conus-sizing.md sections 2-3",
+    "slope_kib_per_cell": {"low": 0.75, "best": 0.8, "high": 0.84},
+    "intercept_gib": {"low": 2.9, "high": 3.4},
+    "note": "Nine points across two cards and a 22x span of grid size. The 5090 point is a single measurement, so the slope is reported as a range and the intercept as a range; the product's own gpuwm.core.preflight.estimate_experiment remains the authority for any specific configuration and this fit is the independent cross-check."
+  },
+  "battery_shape": {
+    "cells": 9408000,
+    "nx": 480,
+    "ny": 400,
+    "nz": 49,
+    "dx_m": 3000.0,
+    "dt_s": 15.0,
+    "scaling_assumption": "linear in cells from each anchor. Stated as an assumption and not a measurement: it is optimistic for MPI halo overhead at smaller grids on the WRF side, and pessimistic for the fixed per-step cost on the GPU side. Every projection below is superseded by this shape's own sizing smoke.",
+    "projections": {
+      "arwen_from_3km_anchor": {
+        "seconds_per_sim_minute": 1.4838,
+        "wall_seconds_24h": 2136.7,
+        "wall_hours_24h": 0.594,
+        "wrfout_bytes_per_frame": 691437638,
+        "wrfout_bytes_25_frames": 17285940950,
+        "wrfout_gib_25_frames": 16.1
+      },
+      "arwen_from_controller_pair": {
+        "seconds_per_sim_minute": 0.5457,
+        "wall_seconds_24h": 785.8,
+        "wall_hours_24h": 0.218
+      },
+      "wrf_from_controller_pair": {
+        "ranks": 24,
+        "seconds_per_sim_minute": 8.7808,
+        "wall_seconds_24h": 12644.4,
+        "wall_hours_24h": 3.512,
+        "wall_hours_per_case_control_plus_twin": 7.025
+      },
+      "device_memory_gib": {
+        "preflight_pool_request_dudhia": 7.243,
+        "preflight_pool_request_legacy_rrtmg": 9.088,
+        "preflight_peak_envelope_windows_dudhia": 15.103,
+        "preflight_peak_envelope_windows_legacy_rrtmg": 18.332,
+        "independent_fit_range": [9.629, 10.937],
+        "note": "The 'peak envelope' entries are the Windows WDDM-family envelope the allocation gate compares against measured free VRAM, which is deliberately conservative and is NOT a prediction of observed device peak; the pool request is what the run asks the allocator for. The battery spec's section 8.1 estimate of 10.1-10.6 GiB is the independent fit's answer and agrees with it. Legacy RRTMG costs 1.845 GiB of pool over Dudhia shortwave at this shape."
+      }
+    }
+  },
+  "generator": "tools/battery_route_preflight.py for the preflight and projection entries; the anchor entries are read from the committed receipts named above"
+}

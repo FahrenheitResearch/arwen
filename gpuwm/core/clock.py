@@ -571,7 +571,9 @@ def resolve_clock(exp: ExperimentConfig, *,
                 "radt", minutes, dt_ex, step_ticks, tick_den, dc.grid_id,
                 run.dt, _physics_interval_steps)
         cudt_ticks = stepcu = None
-        if run.cu_physics == 1:
+        if run.cu_physics in (1, 3):
+            # GF pins cudt_minutes = 0: the calendar records the every-step
+            # cadence the physics driver actually runs, same as radt = 0.
             cudt_ticks, stepcu = _physics_calendar(
                 "cudt", run.cudt_minutes, dt_ex, step_ticks, tick_den,
                 dc.grid_id, run.dt, _physics_interval_steps)

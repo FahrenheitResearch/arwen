@@ -479,7 +479,7 @@ def test_the_product_catalog_is_listable_without_a_wrfout(capsys, monkeypatch):
     assert render.render_main(args) == 0
     out = capsys.readouterr().out
     assert "product catalog" in out
-    # The matplotlib engine's own four, from its own declaration.
+    # The matplotlib engine's own products, from its own declaration.
     for product in render.PRODUCTS:
         assert product in out
 

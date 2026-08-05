@@ -1,0 +1,1890 @@
+"""One front door: any WSR-88D site + a time window -> a cycled nowcast.
+
+``python -m tools.da_nowcast run --site XXXX --window-end <ISO|latest>``
+runs the whole live-fire pipeline that round 3 proved, site-parameterized
+end to end:
+
+    survey   S3 listing, freshness/lag measurement, echo census, storm
+             motion from volume-to-volume centroid displacement
+    domain   a range-authority-sized box sited on the echo with
+             downstream room, emitted by the ``gpuwm domain`` wizard
+             (never hand-typed namelists)
+    prepare  authority -> fetch -> manifest -> prepared cache, on THIS
+             box (prepared cases are host-bound; a receipted finding)
+    obs      one ``gpuwm-obs.radar-grid.v1`` file per cycle via the
+             rw_nexrad seam (``tools/obs_radar_grid_build.py``)
+    cycle    N-member cycled GPU LETKF with free forecast legs
+             (``tools/da_cycle_prepared.py``)
+    render   the map-styled gallery (``tools/da_nowcast_render.py``)
+
+Verification is AUTOMATIC: when a run completes, the front door spawns
+a detached rolling verifier (``watch`` mode) that polls the archive,
+builds each free-forecast frame's observed composite as its valid time
+gets covered, re-renders the gallery in place (counts + FSS on every
+pair), and exits once the last frame verifies -- the nowcast grades
+itself as reality arrives, with no further command.  ``--no-verify``
+opts out.  ``python -m tools.da_nowcast verify --case-dir DIR`` remains
+as a one-shot re-grade of an existing case directory.
+
+The receipt carries the verification state machine for tooling to
+poll: ``verification.state`` is ``pending`` (not started yet),
+``rolling`` (a detached verifier is grading), ``complete`` (every
+free-forecast frame carries numbers), ``incomplete`` (the verifier
+stopped with frames the archive never covered), or ``disabled``
+(``--no-verify``).  Beside it sit a verdict line, the watcher's pid
+and log, and one entry per frame with its status and its numbers.
+
+Every stage is an existing shipped tool driven over its CLI; this file
+adds planning, siting, and receipts.  Each stage writes a versioned JSON
+receipt under ``<out>/receipts/`` and the run ends with a
+``nowcast-receipt.json`` (schema ``gpuwm-da.nowcast.v1``) -- the seam a
+GUI drives later.
+
+HONESTY: this is a demo-grade nowcast.  UNSCORED, outside any registered
+campaign, EXPERIMENTAL like every tool it drives.  No skill claim is
+made or implied; the gallery says so on every figure.
+
+No radar-site names belong in this file, its defaults, or its
+identifiers: sites, times and buckets are arguments (standing owner
+rule).
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+SCHEMA = "gpuwm-da.nowcast.v1"
+STAGE_SCHEMA = "gpuwm-da.nowcast-stage.v1"
+#: Everything a later process needs to drive the prepared case this run
+#: built: the three digests, the authority, and the window plan.
+BINDINGS_SCHEMA = "gpuwm-da.nowcast-bindings.v1"
+SURVEY_SCHEMA = "gpuwm-da.nowcast-survey.v1"
+VERIFY_SCHEMA = "gpuwm-da.nowcast-verification.v1"
+
+#: The verification state machine a GUI polls.  ``disabled`` only when
+#: the caller opted out; ``pending`` before the verifier owns the case;
+#: ``rolling`` while it grades frames as the archive covers them;
+#: ``complete`` when every free-forecast frame carries numbers;
+#: ``incomplete`` when the verifier stopped with frames still uncovered.
+VERIFY_STATES = ("disabled", "pending", "rolling", "complete",
+                 "incomplete")
+
+#: Watcher defaults: how often to re-ask the archive, how long to keep
+#: asking, and how far past a valid time to wait before the first ask
+#: (a volume is archived some minutes after the time it is stamped).
+WATCH_POLL_SECONDS = 240
+WATCH_MAX_MINUTES = 180
+WATCH_MIN_AGE_SECONDS = 120.0
+
+# ---------------------------------------------------------------------------
+# Defaults set from measurement, 2026-08-05
+#
+# Every number below cites the run that produced it.  Where the run that
+# would settle a number has not finished, the number is LEFT ALONE and
+# said so -- see "Pending measurement" in docs/da-nowcast-demo.md.
+# ---------------------------------------------------------------------------
+
+#: Ensemble size.  MEASURED, not assumed: three N-ladders on the same
+#: case scored with the same scorer, and 10 is the knee of all three.
+#:
+#:   32 GB card, evidence/da-demo/ensemble-size-sweep/n{10,20,36}/
+#:     N=10  mean-field FSS 0.7408   wall  465 s
+#:     N=20  mean-field FSS 0.7423   wall  847 s   (+82% wall)
+#:     N=36  mean-field FSS 0.7396   wall 1826 s   (BELOW N=10, 3.9x wall)
+#:   16 GB card, evidence/16gb-frontier/runs/f198n{04,10,20}/
+#:     N=4   mean-field FSS 0.7331   wall  431 s
+#:     N=10  mean-field FSS 0.7397   wall  727 s
+#:     N=20  mean-field FSS 0.7435   wall 1163 s
+#:
+#: The N=10 -> N=20 gain does not survive its own noise.  With the
+#: averaging depth held at 10 for both (so only analysis quality
+#: varies) it is +0.0018; per member, the statistic averaging cannot
+#: flatter, it is +0.0038 -- against an across-member FSS scatter of
+#: 0.0062 at N=10 and 0.0074 at N=20, i.e. larger than the effect
+#: (evidence/da-demo/ensemble-size-sweep/skill-decomposition-partial.json).
+#: And bigger is not monotonically better here: the metric is computed
+#: on the ensemble MEAN composite, and holding the analysis fixed while
+#: deepening the average LOWERS FSS monotonically, 0.7470 at depth 1 to
+#: 0.7423 at depth 20, because these forecasts already under-produce
+#: echo (~2000 columns >=35 dBZ against ~2800 observed) and smoothing
+#: moves them further from truth.
+#:
+#: Downward is measurably worse and buys nothing: N=4 costs 0.007 FSS at
+#: +15 min and 0.008 at +90 against N=10 on a 16 GB card, and leaves
+#: peak VRAM exactly where it was (below).
+#:
+#: And upward is where it starts to fall over: the N=36 arm of the
+#: 2026-08-05 local sweep ran 1527 s and died with
+#: CUDA_ERROR_OUT_OF_MEMORY on a 32 GB card at the default budget,
+#: with other work sharing the card.
+DEFAULT_MEMBERS = 10
+
+#: The LETKF chunk workspace, in MiB.  This is the ONE term in the
+#: memory model an operator controls, which is why it is reachable from
+#: the front door at all.
+#:
+#: Measured on a 16,376 MiB RTX 4080 at this default
+#: (evidence/16gb-frontier/runs/f198n10/vram.json): whole-card peak
+#: 15,888 MiB -- 97.0% of the card, 488 MiB of headroom -- against a
+#: MEDIAN of 2,168 MiB.  The spike is the solve, not the forecast legs.
+#:
+#: Peak does not scale with ensemble size, because the driver holds one
+#: trajectory on the GPU at a time: 15,946 MiB at N=4, 15,888 at N=10,
+#: 15,796 at N=20.  The mechanism is in the filter block of those same
+#: receipts -- letkf sizes its chunk as budget // per_point and
+#: per_point scales with members, so chunk_points halves (6,912 at N=10
+#: to 3,444 at N=20) while the chunk's BYTES stay pinned here.
+#:
+#: 6144 is therefore a MEASURED-TO-FIT value with a thin margin, not a
+#: measured-optimal one.  The ladder that would settle a lower default
+#: (and the CuPy pool-cap probe beside it, tools/ens_sweep/
+#: pool_limit_probe.sh) had not finished when these defaults were set,
+#: so the shipped number is unchanged and the knob is exposed instead.
+DEFAULT_MEMORY_BUDGET_MIB = 6144.0
+
+#: Named card profiles.  A profile is a configuration that was RUN on
+#: the card it names, end to end, and completed -- never an estimate.
+#:
+#: ``card-16gib`` is the 16 GB frontier's headline result: the shipped
+#: demo shape (N=10, 3 km, 49 levels, 198 km box half-width, six
+#: applied cycles, six free legs) runs to completion on a 16,376 MiB
+#: RTX 4080 and returns the 32 GB card's answer -- FSS 0.7397 mean over
+#: six leads against 0.7403 on the 5090, innovation RMS tracking the
+#: 32 GB run within 0.35 m/s cycle by cycle
+#: (evidence/16gb-frontier/README.md).  So the profile does not shrink
+#: anything: it points the memory preflight at the card actually in the
+#: box, which is the part the wizard would otherwise guess.
+#:
+#: Keys are argument names on ``run``, applied only where the caller
+#: left the argument at its default.
+CARD_PROFILES = {
+    "auto": {},
+    "card-16gib": {"vram_gib": 16.0},
+}
+
+#: What each profile-controlled argument holds when the caller said
+#: nothing.  A profile fills in ONLY arguments still sitting on these
+#: values, so an explicit flag always beats a profile.
+PROFILE_UNSET = {"vram_gib": None}
+
+
+def apply_card_profile(args) -> dict:
+    """Fill a named profile's values into the arguments nobody set.
+
+    Returns what was actually applied, for the receipt -- a run has to
+    be able to say which profile shaped it and which of its values
+    survived the caller's own flags.
+    """
+
+    profile = CARD_PROFILES[getattr(args, "profile", "auto") or "auto"]
+    applied: dict = {}
+    for key, value in profile.items():
+        if getattr(args, key) == PROFILE_UNSET[key]:
+            setattr(args, key, value)
+            applied[key] = value
+    return applied
+
+#: Synoptic GFS cycles and how old a cycle must be before its hourly
+#: forecast files are reliably on the archive.
+SYNOPTIC_STEP_HOURS = 6
+GFS_AVAILABILITY_LAG_S = 4 * 3600.0
+
+KM_PER_DEG_LAT = 111.2
+
+#: WSR-88D style station identifier: four characters, letter first.
+_SITE_PATTERN = re.compile(r"^[A-Z][A-Z0-9]{3}$")
+
+STAGES = ("survey", "domain", "fetch", "prepare", "forecast", "obs",
+          "cycle", "render")
+
+
+class FrontDoorError(SystemExit):
+    """A refusal with its reason; exit code 2 like argparse refusals."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"da_nowcast: {message}")
+
+
+# ---------------------------------------------------------------------------
+# small pure helpers (unit-tested)
+# ---------------------------------------------------------------------------
+def validate_site(text: str) -> str:
+    """Uppercase and validate a radar station id; sites are arguments."""
+
+    candidate = str(text).strip().upper()
+    if not _SITE_PATTERN.match(candidate):
+        raise FrontDoorError(
+            f"--site {text!r} is not a station id (four characters, "
+            "letter first, e.g. a WSR-88D id)")
+    return candidate
+
+
+def parse_iso(value: str) -> datetime:
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    stamp = datetime.fromisoformat(text)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.astimezone(timezone.utc)
+
+
+def iso(stamp: datetime) -> str:
+    return stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+#: The perturbation length scale a caller gets when they say nothing.
+#: Right for the ~400 km box the front door sites by default; a smaller
+#: box cannot carry it, which is what
+#: :func:`resolvable_length_scale_km` is for.
+DEFAULT_LENGTH_SCALE_KM = 50.0
+
+
+def perturbation_scale_bounds(*, nx: int, ny: int, dx_m: float,
+                              dy_m: float) -> tuple[float, float]:
+    """The (floor, ceiling) km a grid can carry, from the lane itself.
+
+    The two constants are imported rather than copied: the perturbation
+    lane owns what a grid can represent, and a second copy of its
+    numbers here would drift silently and be discovered as a crash three
+    minutes into somebody's run.  ``tests/test_da_nowcast.py`` pins the
+    import, so a rename there is a failing test rather than a surprise.
+    """
+
+    from gpuwm.da.perturb import (_MAX_HORIZONTAL_SPAN_FRACTION,
+                                  _MIN_SCALE_CELLS)
+
+    dx_km, dy_km = float(dx_m) / 1000.0, float(dy_m) / 1000.0
+    floor = _MIN_SCALE_CELLS * max(dx_km, dy_km)
+    span = min(int(nx) * dx_km, int(ny) * dy_km)
+    return floor, _MAX_HORIZONTAL_SPAN_FRACTION * span
+
+
+def resolvable_length_scale_km(*, nx: int, ny: int, dx_m: float,
+                               dy_m: float,
+                               requested: float | None = None,
+                               safety: float = 0.9
+                               ) -> tuple[float, str | None]:
+    """The perturbation length scale this domain can actually carry.
+
+    A caller who draws a smaller box has not asked for different
+    science; they have asked for a smaller box.  So the scale is capped
+    to what the box carries and the capping is SAID -- returned as a
+    note the receipt and the page both show -- rather than left to be
+    discovered when the ensemble refuses to perturb.
+
+    ``safety`` keeps the value off the exact bound, which is a refusal
+    rather than a value.
+    """
+
+    floor, ceiling = perturbation_scale_bounds(nx=nx, ny=ny, dx_m=dx_m,
+                                               dy_m=dy_m)
+    usable = safety * ceiling
+    if usable < floor:
+        raise FrontDoorError(
+            f"a {nx}x{ny} grid at {dx_m / 1000:g} km carries no "
+            f"perturbation length scale at all: its floor ({floor:g} "
+            f"km, two grid spacings) is above its ceiling ({ceiling:g} "
+            "km, span/(2*pi)). The domain is too small to perturb")
+    if requested is None:
+        chosen = min(DEFAULT_LENGTH_SCALE_KM, usable)
+        note = None if chosen >= DEFAULT_LENGTH_SCALE_KM else (
+            f"perturbation length scale set to {chosen:.1f} km: this "
+            f"domain's span carries at most {ceiling:.1f} km "
+            "(span/(2*pi)), below the "
+            f"{DEFAULT_LENGTH_SCALE_KM:g} km default")
+        return round(max(chosen, floor), 1), note
+    requested = float(requested)
+    if floor <= requested <= ceiling:
+        return requested, None
+    chosen = min(max(requested, floor), usable)
+    return round(chosen, 1), (
+        f"--length-scale-km {requested:g} is outside what a {nx}x{ny} "
+        f"grid at {dx_m / 1000:g} km carries ({floor:.1f}-{ceiling:.1f} "
+        f"km); using {chosen:.1f} km")
+
+
+def retime_history(toml_text: str, seconds: float) -> tuple[str, float]:
+    """Set the root domain's history cadence; return the text and the old.
+
+    The wizard owns the geometry, the ladder and the memory verdict, and
+    none of that is touched here.  What it cannot know is how often the
+    caller needs a georeference written: its root default is hourly,
+    which is right for a forecast and wrong for a nowcast, whose
+    observations are gridded onto the wrfout nearest their valid time.
+    An hourly lattice makes 'nearest' mean 'up to half an hour stale',
+    and layer heights move in half an hour.
+
+    Textual, and deliberately so: rewriting the emitted TOML through a
+    parser would round-trip every value the wizard wrote and make this
+    edit indistinguishable from a re-emission.  One key changes, in
+    place, and the receipt says which.
+    """
+
+    pattern = re.compile(r"^(\s*history_interval_s\s*=\s*)([0-9.]+)",
+                         re.MULTILINE)
+    match = pattern.search(toml_text)
+    if match is None:
+        raise FrontDoorError(
+            "the emitted case TOML carries no history_interval_s; the "
+            "wizard's output has changed shape and the georeference "
+            "cadence can no longer be set from here")
+    before = float(match.group(2))
+    return (pattern.sub(rf"\g<1>{float(seconds):g}", toml_text, count=1),
+            before)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class WindowPlan:
+    """The whole run's timing, derived once and receipted."""
+
+    window_end: datetime          # last assimilated cycle's valid time
+    cycles: int
+    cycle_seconds: int
+    free_legs: int
+    init: datetime                # model start (whole hour, hard rule)
+    cycle_times: tuple[datetime, ...]
+    horizon_seconds: int          # applied + free legs
+    run_hours: int                # georeference run length (>= horizon)
+    gfs_cycle: datetime
+    forecast_start_hour: int
+
+    @property
+    def run_seconds(self) -> int:
+        return self.run_hours * 3600
+
+    def free_leg_times(self) -> tuple[datetime, ...]:
+        return tuple(
+            self.window_end + timedelta(seconds=self.cycle_seconds * k)
+            for k in range(1, self.free_legs + 1))
+
+    def to_payload(self) -> dict:
+        return {
+            "window_end": iso(self.window_end),
+            "cycles": self.cycles,
+            "cycle_seconds": self.cycle_seconds,
+            "free_legs": self.free_legs,
+            "init": iso(self.init),
+            "cycle_times": [iso(t) for t in self.cycle_times],
+            "free_leg_times": [iso(t) for t in self.free_leg_times()],
+            "horizon_seconds": self.horizon_seconds,
+            "run_hours": self.run_hours,
+            "gfs_cycle": self.gfs_cycle.strftime("%Y-%m-%dT%H"),
+            "forecast_start_hour": self.forecast_start_hour,
+        }
+
+
+def latest_gfs_cycle(init: datetime, now: datetime) -> datetime:
+    """Newest synoptic cycle at/before ``init`` whose files exist by now."""
+
+    candidate = init.replace(minute=0, second=0, microsecond=0)
+    candidate -= timedelta(hours=candidate.hour % SYNOPTIC_STEP_HOURS)
+    for _ in range(20):
+        if ((now - candidate).total_seconds() >= GFS_AVAILABILITY_LAG_S
+                and candidate <= init):
+            return candidate
+        candidate -= timedelta(hours=SYNOPTIC_STEP_HOURS)
+    raise FrontDoorError(
+        f"no plausibly-available GFS cycle at or before {iso(init)}")
+
+
+def plan_window(window_end: datetime, *, cycles: int, cycle_seconds: int,
+                free_legs: int, now: datetime,
+                run_hours: int | None = None) -> WindowPlan:
+    """Derive the whole run's timing, or refuse and say why.
+
+    ``run_hours`` defaults to the shortest whole-hour run that covers
+    the applied cycles, the free legs, and an hour of slack.  A caller
+    that will keep cycling on this prepared case for longer than one
+    window -- a continuous nowcast -- states a longer one, and it is
+    checked against the derived floor rather than trusted.
+    """
+
+    if cycles < 1:
+        raise FrontDoorError("--cycles must be >= 1")
+    if free_legs < 0:
+        raise FrontDoorError("--free-legs must be >= 0")
+    if cycle_seconds <= 0 or cycle_seconds % 60:
+        raise FrontDoorError("--cycle-seconds must be a positive whole "
+                             "number of minutes")
+    if window_end.second or window_end.microsecond:
+        raise FrontDoorError("--window-end must land on a whole minute")
+    init = window_end - timedelta(seconds=cycles * cycle_seconds)
+    if init.minute or init.second:
+        raise FrontDoorError(
+            f"model init {iso(init)} (= window end - cycles x cycle "
+            "seconds) must land on a whole hour; move --window-end or "
+            "--cycles so it does")
+    cycle_times = tuple(
+        init + timedelta(seconds=cycle_seconds * (k + 1))
+        for k in range(cycles))
+    horizon = (cycles + free_legs) * cycle_seconds
+    floor_hours = math.ceil(horizon / 3600.0) + 1
+    if run_hours is None:
+        run_hours = floor_hours
+    elif run_hours < floor_hours:
+        raise FrontDoorError(
+            f"--run-hours {run_hours} is shorter than the {floor_hours} "
+            "hours this window needs (applied cycles + free legs + an "
+            "hour of slack)")
+    gfs_cycle = latest_gfs_cycle(init, now)
+    forecast_start_hour = int(
+        (init - gfs_cycle).total_seconds() // 3600)
+    if forecast_start_hour > 120:
+        raise FrontDoorError(
+            f"init {iso(init)} is f{forecast_start_hour:03d} of the "
+            f"{gfs_cycle:%Y-%m-%dT%H}Z cycle -- beyond hourly GFS output")
+    return WindowPlan(
+        window_end=window_end, cycles=cycles,
+        cycle_seconds=cycle_seconds, free_legs=free_legs, init=init,
+        cycle_times=cycle_times, horizon_seconds=horizon,
+        run_hours=run_hours, gfs_cycle=gfs_cycle,
+        forecast_start_hour=forecast_start_hour)
+
+
+def resolve_latest_window_end(newest_volume: datetime, *, cycles: int,
+                              cycle_seconds: int) -> datetime:
+    """Largest cycle-aligned time <= newest volume with a whole-hour init."""
+
+    stamp = newest_volume.replace(second=0, microsecond=0)
+    stamp -= timedelta(minutes=stamp.minute % max(1, cycle_seconds // 60))
+    for _ in range(240):
+        init = stamp - timedelta(seconds=cycles * cycle_seconds)
+        if init.minute == 0 and init.second == 0:
+            return stamp
+        stamp -= timedelta(seconds=cycle_seconds)
+    raise FrontDoorError(
+        f"--cycle-seconds {cycle_seconds} cannot align a whole-hour "
+        "init within a day; choose a divisor of 3600 or set "
+        "--window-end explicitly")
+
+
+def wrfout_name(init: datetime, seconds: float) -> str:
+    stamp = init + timedelta(seconds=seconds)
+    return stamp.strftime("wrfout_d01_%Y-%m-%d_%H_%M_%S")
+
+
+def geojson_box(lat: float, lon: float, half_km: float) -> dict:
+    """An axis-aligned lat/lon box for the domain wizard's --polygon."""
+
+    dlat = half_km / KM_PER_DEG_LAT
+    dlon = half_km / (KM_PER_DEG_LAT * math.cos(math.radians(lat)))
+    return {"type": "Polygon", "coordinates": [[
+        [lon - dlon, lat - dlat], [lon + dlon, lat - dlat],
+        [lon + dlon, lat + dlat], [lon - dlon, lat + dlat],
+        [lon - dlon, lat - dlat]]]}
+
+
+def offset_latlon(lat: float, lon: float, east_km: float,
+                  north_km: float) -> tuple[float, float]:
+    out_lat = lat + north_km / KM_PER_DEG_LAT
+    out_lon = lon + east_km / (KM_PER_DEG_LAT
+                               * math.cos(math.radians(lat)))
+    return out_lat, out_lon
+
+
+def motion_from_centroids(older: dict, newer: dict, *,
+                          min_gates: int) -> dict | None:
+    """Storm motion (m/s east/north) from two volumes' echo centroids.
+
+    ``older``/``newer``: {"valid_time", "gates", "centroid_east_km",
+    "centroid_north_km"}.  None when either volume's echo is too weak
+    for a displacement to mean anything, or the pair is too close in
+    time -- the caller records WHY in the receipt.
+    """
+
+    if older["gates"] < min_gates or newer["gates"] < min_gates:
+        return None
+    dt = (parse_iso(newer["valid_time"])
+          - parse_iso(older["valid_time"])).total_seconds()
+    if dt < 300.0:
+        return None
+    u = (newer["centroid_east_km"] - older["centroid_east_km"]) \
+        * 1000.0 / dt
+    v = (newer["centroid_north_km"] - older["centroid_north_km"]) \
+        * 1000.0 / dt
+    speed = math.hypot(u, v)
+    toward_deg = math.degrees(math.atan2(u, v)) % 360.0
+    return {"u_ms": round(u, 2), "v_ms": round(v, 2),
+            "speed_ms": round(speed, 2),
+            "toward_deg": round(toward_deg, 1),
+            "baseline_seconds": dt,
+            "caveat": ("centroid displacement mixes advection with "
+                       "growth/decay; good enough to bias the domain "
+                       "downstream, nothing more")}
+
+
+def site_domain_center(antenna_lat: float, antenna_lon: float,
+                       newest: dict, motion: dict | None, *,
+                       horizon_seconds: float,
+                       downstream_fraction: float,
+                       max_offset_km: float) -> dict:
+    """Center the domain on the echo, biased downstream, clamped so the
+    radar keeps observing most of the grid."""
+
+    east = newest["centroid_east_km"]
+    north = newest["centroid_north_km"]
+    basis = "echo centroid"
+    if newest["gates"] <= 0:
+        east = north = 0.0
+        basis = "antenna (no qualifying echo)"
+    if motion is not None and motion["speed_ms"] > 0.5:
+        lead_km = (motion["speed_ms"] * horizon_seconds / 1000.0
+                   * downstream_fraction)
+        east += motion["u_ms"] / motion["speed_ms"] * lead_km
+        north += motion["v_ms"] / motion["speed_ms"] * lead_km
+        basis += " + downstream lead"
+    total = math.hypot(east, north)
+    clamped = False
+    if total > max_offset_km:
+        east *= max_offset_km / total
+        north *= max_offset_km / total
+        clamped = True
+    lat, lon = offset_latlon(antenna_lat, antenna_lon, east, north)
+    return {"lat": round(lat, 4), "lon": round(lon, 4),
+            "offset_east_km": round(east, 1),
+            "offset_north_km": round(north, 1),
+            "basis": basis, "clamped_to_km": max_offset_km if clamped
+            else None}
+
+
+def echo_stats(volume, *, threshold_dbz: float,
+               max_sweep_elevation_deg: float = 2.0) -> dict:
+    """Gate census + centroid of the >= threshold echo on the low sweeps."""
+
+    import numpy as np
+
+    gates = 0
+    max_dbz = float("-inf")
+    sum_x = sum_y = 0.0
+    for sweep in volume.sweeps:
+        if sweep.elevation_angle_deg > max_sweep_elevation_deg:
+            continue
+        moment = sweep.moments.get("REF")
+        if moment is None:
+            continue
+        data = np.asarray(moment.data, float)
+        mask = np.isfinite(data) & (data >= threshold_dbz)
+        count = int(mask.sum())
+        if count == 0:
+            continue
+        slant = moment.slant_range_m()
+        horiz = slant * math.cos(math.radians(
+            sweep.elevation_angle_deg))
+        az = np.radians(np.asarray(sweep.azimuth_deg, float))
+        x = np.sin(az)[:, None] * horiz[None, :]
+        y = np.cos(az)[:, None] * horiz[None, :]
+        gates += count
+        sum_x += float(x[mask].sum())
+        sum_y += float(y[mask].sum())
+        max_dbz = max(max_dbz, float(data[mask].max()))
+    if gates == 0:
+        return {"gates": 0, "max_dbz": None,
+                "centroid_east_km": 0.0, "centroid_north_km": 0.0}
+    return {"gates": gates, "max_dbz": round(max_dbz, 1),
+            "centroid_east_km": round(sum_x / gates / 1000.0, 1),
+            "centroid_north_km": round(sum_y / gates / 1000.0, 1)}
+
+
+# ---------------------------------------------------------------------------
+# stage command builders (unit-tested; every stage is a shipped CLI)
+# ---------------------------------------------------------------------------
+def _py() -> str:
+    return sys.executable or "python"
+
+
+def wizard_cmd(*, polygon: Path, out_toml: Path, plan: WindowPlan,
+               profile: str, name: str, dx_km: float, source: str,
+               vram_gib: float | None = None) -> list[str]:
+    """The domain wizard's command line for this run's case.
+
+    ``vram_gib`` names the card the memory preflight sizes against.
+    Left unset, the wizard uses its own default tier -- which is the
+    right answer for a caller who did not say, and the wrong one for a
+    caller who was SHOWN a verdict for a particular card and is now
+    asking for the run that verdict was about.
+    """
+
+    argv = [
+        _py(), "-m", "gpuwm.cli", "domain",
+        "--polygon", str(polygon),
+        "--root-dx", f"{dx_km:g}",
+        "--physics-profile", profile,
+        "--source", source,
+        "--cycle", plan.gfs_cycle.strftime("%Y-%m-%dT%H"),
+        "--forecast-start-hour", str(plan.forecast_start_hour),
+        "--hours", str(plan.run_hours),
+        "--name", name,
+        "--out", str(out_toml),
+    ]
+    if vram_gib is not None:
+        argv.extend(("--vram-gib", f"{float(vram_gib):g}"))
+    return argv
+
+
+def authority_cmd(*, case_toml: Path, wps_namelist: Path, profile: str,
+                  authority_dir: Path, source: str) -> list[str]:
+    return [
+        _py(), "-m", "gpuwm.prepared_single_domain_forecast",
+        "--materialize-authorities", "--source", source,
+        "--base-experiment-config", str(case_toml),
+        "--base-wps-namelist", str(wps_namelist),
+        "--physics-profile", profile,
+        "--output-directory", str(authority_dir),
+    ]
+
+
+def fetch_cmd(*, hints: dict, data_dir: Path, source: str) -> list[str]:
+    return [
+        _py(), "-m", "gpuwm.cli", "fetch", "--source", source,
+        "--cycle", str(hints["cycle"]),
+        "--hours", str(hints["hours"]),
+        f"--area={hints['area']}",
+        "--out", str(data_dir),
+        "--cadence", str(hints.get("cadence", 1)),
+        "--forecast-start-hour", str(hints["forecast_start_hour"]),
+    ]
+
+
+def manifest_cmd(*, data_dir: Path, authority_dir: Path,
+                 source: str) -> list[str]:
+    return [
+        _py(), "-m", "gpuwm.cli", "fetch", "--source", source,
+        "--author-front-door-manifest", "--out", str(data_dir),
+        "--wps-namelist", str(authority_dir / "namelist.wps"),
+        "--experiment-config", str(authority_dir / "experiment.toml"),
+    ]
+
+
+def prepare_cmd(*, data_dir: Path, authority_dir: Path, bridge: Path,
+                profile: str, geog_root: Path, prepared_root: Path,
+                plan: WindowPlan, manifest_sha: str,
+                source: str) -> list[str]:
+    return [
+        _py(), "-m", "gpuwm.source_cli", "--source", source,
+        "--gfs-series", str(data_dir / "gfs-series.tsv"),
+        "--cycle", plan.gfs_cycle.strftime("%Y-%m-%d_%H:00:00"),
+        "--bridge", str(bridge),
+        "--wps-namelist", str(authority_dir / "namelist.wps"),
+        "--experiment-config", str(authority_dir / "experiment.toml"),
+        "--source-manifest", str(data_dir / "gfs-input-manifest.json"),
+        "--source-manifest-sha256", manifest_sha,
+        "--physics-profile", profile,
+        "--geog-root", str(geog_root),
+        "--output-root", str(prepared_root),
+    ]
+
+
+def forecast_cmd(*, prepared_root: Path, authority_dir: Path,
+                 profile: str, run_dir: Path, proof_sha: str,
+                 manifest_sha: str, content_sha: str,
+                 source: str) -> list[str]:
+    return [
+        _py(), "-m", "gpuwm.prepared_single_domain_forecast",
+        "--source", source,
+        "--prepared-root", str(prepared_root),
+        "--proof-sha256", proof_sha,
+        "--source-manifest-sha256", manifest_sha,
+        "--prepared-content-sha256", content_sha,
+        "--experiment-config", str(authority_dir / "experiment.toml"),
+        "--wps-namelist", str(authority_dir / "namelist.wps"),
+        "--physics-profile", profile,
+        "--io-mode", "history",
+        "--outdir", str(run_dir),
+    ]
+
+
+def obs_cmd(*, site: str, valid: datetime, grid_wrfout: Path,
+            out_nc: Path, work_dir: Path,
+            bucket: str | None) -> list[str]:
+    argv = [
+        _py(), "-m", "tools.obs_radar_grid_build",
+        "--site", site,
+        "--valid-time", iso(valid),
+        "--grid-wrfout", str(grid_wrfout),
+        "--out", str(out_nc),
+        "--work-dir", str(work_dir),
+        "--overwrite",
+    ]
+    if bucket:
+        argv.extend(("--bucket", bucket))
+    return argv
+
+
+def cycle_cmd(*, prepared_root: Path, authority_dir: Path, profile: str,
+              plan: WindowPlan, members: int, obs_files: list[Path],
+              grid_wrfouts: list[Path], cycle_out: Path, proof_sha: str,
+              manifest_sha: str, content_sha: str, seed: int,
+              solve_device: str, horizontal_loc_m: float,
+              vertical_loc_m: float, length_scale_km: float,
+              source: str, leg_seconds: float | None = None,
+              free_legs: int | None = None,
+              free_leg_seconds: float | None = None,
+              resume_ensemble: Path | None = None,
+              save_ensemble: Path | None = None,
+              leg_number_offset: int = 0,
+              memory_budget_mib: float = DEFAULT_MEMORY_BUDGET_MIB
+              ) -> list[str]:
+    """The cycle driver's command line for one run.
+
+    ``plan`` supplies the run length and the default cadence; the
+    optional overrides exist for a caller that cycles on the radar's own
+    volume times rather than on a fixed cadence, and for one that carries
+    the ensemble across processes.  Both callers build the SAME argv
+    here, so the flag surface has one author.
+
+    Two capabilities are deliberately absent from this argv and stay
+    absent until each has the receipt it is missing:
+
+    * the fine free-forecast nest (``--nest-*`` on the cycle driver).
+      Its cost model is COMPUTED, not measured
+      (``evidence/da-nested-forecast/cost-model.json`` says so in its
+      own ``basis`` field), and the measured A/B was still queued behind
+      a busy card when these defaults were set.  Opt in on the cycle
+      driver directly; see docs/da-nested-forecast.md.
+    * concurrent member advance (``--member-workers``).  It is not in
+      this tree at all -- the lane carrying it was held out of the
+      integration with its byte-identity proof still open.  There is
+      nothing to turn on and nothing to turn off.
+    """
+
+    cadence = (float(plan.cycle_seconds) if leg_seconds is None
+               else float(leg_seconds))
+    legs_free = plan.free_legs if free_legs is None else int(free_legs)
+    argv = [
+        _py(), "-m", "tools.da_cycle_prepared",
+        "--prepared-root", str(prepared_root),
+        "--authority-dir", str(authority_dir),
+        "--source", source,
+        "--proof-sha256", proof_sha,
+        "--source-manifest-sha256", manifest_sha,
+        "--prepared-content-sha256", content_sha,
+        "--physics-profile", profile,
+        "--run-seconds", str(plan.run_seconds),
+        "--history-interval-seconds", str(plan.cycle_seconds),
+        "--leg-seconds", str(cadence),
+        "--members", str(members),
+        "--free-legs", str(legs_free),
+        "--solve-device", solve_device,
+        "--save-composites",
+        "--horizontal-loc-m", str(horizontal_loc_m),
+        "--vertical-loc-m", str(vertical_loc_m),
+        "--length-scale-km", str(length_scale_km),
+        "--memory-budget-mib", f"{float(memory_budget_mib):g}",
+        "--seed", str(seed),
+    ]
+    for obs in obs_files:
+        argv.extend(("--obs", str(obs)))
+    for grid in grid_wrfouts:
+        argv.extend(("--grid-wrfout", str(grid)))
+    if free_leg_seconds is not None:
+        argv.extend(("--free-leg-seconds", str(float(free_leg_seconds))))
+    if resume_ensemble is not None:
+        argv.extend(("--resume-ensemble", str(resume_ensemble)))
+    if save_ensemble is not None:
+        argv.extend(("--save-ensemble", str(save_ensemble)))
+    if leg_number_offset:
+        argv.extend(("--leg-number-offset", str(leg_number_offset)))
+    argv.extend(("--out", str(cycle_out)))
+    return argv
+
+
+def render_cmd(*, case_dir: Path, gallery: Path | None = None,
+               authority_dir: Path | None = None) -> list[str]:
+    """The gallery renderer's command line.
+
+    ``gallery`` and ``authority_dir`` are for a caller whose case
+    directory is assembled rather than produced by one run -- a
+    continuous nowcast renders many cycles into ONE stable gallery path,
+    which is what makes refreshing the page the whole user experience.
+    """
+
+    argv = [_py(), "-m", "tools.da_nowcast_render",
+            "--case-dir", str(case_dir)]
+    if gallery is not None:
+        argv.extend(("--gallery", str(gallery)))
+    if authority_dir is not None:
+        argv.extend(("--authority-dir", str(authority_dir)))
+    return argv
+
+
+def watch_cmd(*, case_dir: Path, poll_seconds: int, max_minutes: int,
+              max_offset_seconds: float,
+              bucket: str | None) -> list[str]:
+    """The detached rolling verifier's own command line.
+
+    It is this same module: the auto-handoff spawns a documented CLI
+    mode, so anything the front door does to itself can be done by
+    hand, and the receipt records exactly what was started.
+    """
+
+    argv = [_py(), "-m", "tools.da_nowcast", "watch",
+            "--case-dir", str(case_dir),
+            "--poll-seconds", str(poll_seconds),
+            "--max-minutes", str(max_minutes),
+            "--max-offset-seconds", str(max_offset_seconds)]
+    if bucket:
+        argv.extend(("--bucket", bucket))
+    return argv
+
+
+# ---------------------------------------------------------------------------
+# the verification state machine (pure; the receipt is the GUI's seam)
+# ---------------------------------------------------------------------------
+def verify_obs_name(site: str, valid: datetime) -> str:
+    """The observed-composite file backing one free-forecast frame."""
+
+    return f"verify-{site.lower()}-{valid:%Y%m%d%H%M}.nc"
+
+
+def initial_frames(free_leg_times) -> list[dict]:
+    """One pending entry per free-forecast leg, in valid-time order."""
+
+    return [{"valid": str(stamp), "status": "pending"}
+            for stamp in free_leg_times]
+
+
+def merge_gallery_rows(frames, rows) -> list[dict]:
+    """Fold the renderer's published per-frame numbers into the frames.
+
+    The renderer is the ONE place counts and FSS are computed; the
+    verifier copies its rows rather than recomputing them, so the
+    receipt and the figures can never disagree.  A frame only reaches
+    ``verified`` when its numbers exist.
+    """
+
+    by_valid = {str(row.get("valid")): row for row in rows or []}
+    merged = []
+    for frame in frames:
+        row = by_valid.get(frame["valid"])
+        if row is None:
+            merged.append(dict(frame))
+            continue
+        entry = dict(frame)
+        entry.update(row)
+        entry["valid"] = frame["valid"]
+        entry["status"] = "verified"
+        entry.pop("note", None)
+        merged.append(entry)
+    return merged
+
+
+def advance_state(frames, *, exhausted: bool) -> str:
+    """Where the machine sits, given what carries numbers so far."""
+
+    if all(frame.get("status") == "verified" for frame in frames):
+        return "complete"      # vacuously true when there are no legs
+    return "incomplete" if exhausted else "rolling"
+
+
+def verdict_line(frames, state: str) -> str:
+    total = len(frames)
+    graded = sum(1 for f in frames if f.get("status") == "verified")
+    if state == "disabled":
+        return "verification not started (--no-verify)"
+    if state == "pending":
+        return (f"0/{total} free-forecast frames graded; the verifier "
+                "has not started")
+    if state == "rolling":
+        return (f"{graded}/{total} free-forecast frames graded; "
+                "waiting for the archive to cover the rest")
+    if state == "complete":
+        return (f"{graded}/{total} free-forecast frames graded against "
+                "observed composites at the same valid times "
+                "(demo-grade numbers, unscored)")
+    return (f"{graded}/{total} free-forecast frames graded; the rest "
+            "were still not covered by the archive when the verifier "
+            "stopped")
+
+
+def verification_block(*, frames, state: str, started: str | None = None,
+                       watcher: dict | None = None) -> dict:
+    """The receipt's ``verification`` key: one pollable object."""
+
+    if state not in VERIFY_STATES:
+        raise FrontDoorError(f"unknown verification state {state!r}")
+    return {
+        "schema": VERIFY_SCHEMA,
+        "state": state,
+        "verdict": verdict_line(frames, state),
+        "graded": sum(1 for f in frames
+                      if f.get("status") == "verified"),
+        "total": len(frames),
+        "started": started,
+        "updated": iso(datetime.now(timezone.utc)),
+        "watcher": watcher,
+        "honesty": ("demo-grade verification numbers, unscored and "
+                    "outside any registered campaign"),
+        "frames": frames,
+    }
+
+
+# ---------------------------------------------------------------------------
+# verification execution
+# ---------------------------------------------------------------------------
+def _log(text: str) -> None:
+    print(f"[{datetime.now(timezone.utc):%H:%M:%S}Z] {text}", flush=True)
+
+
+def read_receipt(case_dir: Path) -> dict:
+    path = case_dir / "nowcast-receipt.json"
+    if not path.is_file():
+        raise FrontDoorError(f"{case_dir} carries no "
+                             "nowcast-receipt.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_verification(case_dir: Path, block: dict) -> None:
+    """Rewrite ONLY the receipt's verification key, atomically.
+
+    Atomically because this file is the polling seam: a GUI reading it
+    mid-tick must never catch a half-written receipt.
+    """
+
+    path = case_dir / "nowcast-receipt.json"
+    receipt = read_receipt(case_dir)
+    receipt["verification"] = block
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(receipt, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def gallery_rows(case_dir: Path) -> list[dict]:
+    """Per-frame numbers the renderer published, if any."""
+
+    path = case_dir / "gallery" / "_verification.json"
+    if not path.is_file():
+        return []
+    return json.loads(path.read_text(encoding="utf-8")).get("frames", [])
+
+
+def spawn_detached(argv: list[str], *, cwd: Path, log_path: Path) -> int:
+    """Start a process that outlives this one; return its pid."""
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(log_path, "ab")
+    try:
+        kwargs = {}
+        if os.name == "nt":
+            kwargs["creationflags"] = (
+                getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP",
+                          0x00000200))
+        else:
+            kwargs["start_new_session"] = True
+        proc = subprocess.Popen(
+            argv, cwd=str(cwd), stdout=handle,
+            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            **kwargs)
+    finally:
+        handle.close()
+    return proc.pid
+
+
+def handoff_state(*, no_verify: bool, frames) -> str:
+    """What a finished run's verification starts as.
+
+    Verification is ON unless the caller opted out; a run with no free
+    forecast has nothing to grade and is complete on arrival.
+    """
+
+    if no_verify:
+        return "disabled"
+    return "pending" if frames else "complete"
+
+
+def start_verification(case_dir: Path, *, frames, poll_seconds: int,
+                       max_minutes: int, max_offset_seconds: float,
+                       bucket: str | None, repo_root: Path) -> dict:
+    """Hand the finished case to a detached rolling verifier.
+
+    Returns the ``rolling`` block it wrote into the receipt, which
+    names the pid and the exact command line, so the handoff is
+    auditable and reproducible by hand.
+    """
+
+    started = iso(datetime.now(timezone.utc))
+    log_path = case_dir / "verify-watch.log"
+    argv = watch_cmd(case_dir=case_dir, poll_seconds=poll_seconds,
+                     max_minutes=max_minutes,
+                     max_offset_seconds=max_offset_seconds,
+                     bucket=bucket)
+    pid = spawn_detached(argv, cwd=repo_root, log_path=log_path)
+    block = verification_block(
+        frames=frames, state="rolling", started=started,
+        watcher={"pid": pid, "argv": argv, "log": str(log_path),
+                 "poll_seconds": poll_seconds,
+                 "max_minutes": max_minutes})
+    write_verification(case_dir, block)
+    return block
+
+
+def build_verify_frame(*, case_dir: Path, site: str, init: datetime,
+                       valid: datetime, bucket: str | None,
+                       max_offset_seconds: float,
+                       repo_root: Path) -> tuple[bool, str]:
+    """Build one frame's observed composite from the live archive."""
+
+    obsverify = case_dir / "obsverify"
+    obsverify.mkdir(parents=True, exist_ok=True)
+    out_nc = obsverify / verify_obs_name(site, valid)
+    grid = (case_dir / "run" / "wrfout"
+            / wrfout_name(init, (valid - init).total_seconds()))
+    argv = obs_cmd(site=site, valid=valid, grid_wrfout=grid,
+                   out_nc=out_nc, work_dir=case_dir / "vols",
+                   bucket=bucket)
+    argv.extend(("--max-offset-seconds", str(max_offset_seconds)))
+    proc = subprocess.run(argv, cwd=str(repo_root), capture_output=True,
+                          text=True, errors="replace")
+    (obsverify / f"build-{valid:%Y%m%d%H%M}.json").write_text(
+        json.dumps({"argv": argv, "returncode": proc.returncode,
+                    "attempted": iso(datetime.now(timezone.utc)),
+                    "stdout_tail": proc.stdout.splitlines()[-20:],
+                    "stderr_tail": proc.stderr.splitlines()[-20:]},
+                   indent=1), encoding="utf-8")
+    if proc.returncode == 0:
+        return True, "built"
+    if out_nc.is_file():
+        out_nc.unlink()   # never leave a half-written observation behind
+    tail = (proc.stderr or proc.stdout).strip().splitlines()[-1:]
+    return False, " ".join(tail) or f"obs build exit {proc.returncode}"
+
+
+def verify_pass(*, case_dir: Path, site: str, init: datetime,
+                frames: list[dict], bucket: str | None,
+                max_offset_seconds: float,
+                repo_root: Path) -> tuple[list[dict], int]:
+    """One sweep: build what the archive now covers, re-render if new.
+
+    The observation file on disk is the record of what was fetched;
+    the renderer's published rows are the record of what is graded.
+    """
+
+    now = datetime.now(timezone.utc)
+    built = 0
+    for frame in frames:
+        valid = parse_iso(frame["valid"])
+        out_nc = case_dir / "obsverify" / verify_obs_name(site, valid)
+        if out_nc.is_file():
+            frame["obs_file"] = out_nc.name
+            continue
+        if (now - valid).total_seconds() < WATCH_MIN_AGE_SECONDS:
+            frame["note"] = "valid time not reached yet"
+            continue
+        ok, why = build_verify_frame(
+            case_dir=case_dir, site=site, init=init, valid=valid,
+            bucket=bucket, max_offset_seconds=max_offset_seconds,
+            repo_root=repo_root)
+        if ok:
+            built += 1
+            frame["obs_file"] = out_nc.name
+            frame.pop("note", None)
+            _log(f"built observed composite for {frame['valid']}")
+        else:
+            frame["note"] = why
+    if built:
+        proc = subprocess.run(render_cmd(case_dir=case_dir),
+                              cwd=str(repo_root), capture_output=True,
+                              text=True, errors="replace")
+        if proc.returncode == 0:
+            _log("gallery re-rendered in place")
+        else:
+            tail = (proc.stderr or proc.stdout).strip().splitlines()
+            _log("RENDER FAILED: " + (tail[-1] if tail else "no output"))
+    return merge_gallery_rows(frames, gallery_rows(case_dir)), built
+
+
+def resolve_bridge(explicit: Path | None) -> Path:
+    """The gfs GRIB2 bridge, via the standard artifact ladder."""
+
+    from gpuwm.bridges import artifact_candidates, executable_name
+    if explicit is not None:
+        if not explicit.is_file():
+            raise FrontDoorError(f"--bridge names a missing file: "
+                                 f"{explicit}")
+        return explicit
+    for candidate in artifact_candidates(
+            "GPUWM_GFS_GRIB2_BRIDGE",
+            executable_name("gfs_grib2_bridge")):
+        if candidate.is_file():
+            return candidate
+    raise FrontDoorError(
+        "no gfs_grib2_bridge found; build tools/grib1_bridge "
+        "(cargo build --release --locked --offline) or pass --bridge")
+
+
+def resolve_geog_root(explicit: Path | None) -> Path:
+    env = os.environ.get("GPUWM_GEOG_ROOT")
+    for candidate in (explicit, Path(env) if env else None,
+                      Path.home() / "WPS_GEOG"):
+        if candidate is not None and candidate.is_dir():
+            return candidate
+    raise FrontDoorError(
+        "no static-geography root: pass --geog-root, set "
+        "GPUWM_GEOG_ROOT, or place WPS_GEOG in the home directory")
+
+
+# ---------------------------------------------------------------------------
+# execution
+# ---------------------------------------------------------------------------
+def run_stage(name: str, argv: list[str], *, cwd: Path,
+              receipts_dir: Path, index: int) -> dict:
+    started = datetime.now(timezone.utc)
+    t0 = time.monotonic()
+    print(f"=== {name} {started:%H:%M:%S}Z ===", flush=True)
+    proc = subprocess.run(argv, cwd=str(cwd), capture_output=True,
+                          text=True, errors="replace")
+    wall = time.monotonic() - t0
+    receipt = {
+        "schema": STAGE_SCHEMA,
+        "stage": name,
+        "argv": argv,
+        "returncode": proc.returncode,
+        "wall_seconds": round(wall, 1),
+        "started": iso(started),
+        "stdout_tail": proc.stdout.splitlines()[-30:],
+        "stderr_tail": proc.stderr.splitlines()[-30:],
+    }
+    receipts_dir.mkdir(parents=True, exist_ok=True)
+    (receipts_dir / f"{index:02d}-{name}.json").write_text(
+        json.dumps(receipt, indent=1), encoding="utf-8")
+    if proc.returncode != 0:
+        tail = "\n".join(receipt["stderr_tail"][-8:]
+                         or receipt["stdout_tail"][-8:])
+        raise FrontDoorError(
+            f"stage {name} failed (exit {proc.returncode}):\n{tail}")
+    print(f"=== {name} done in {wall:.0f}s ===", flush=True)
+    return receipt
+
+
+def gpu_snapshot() -> str:
+    try:
+        probe = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used,utilization.gpu",
+             "--format=csv,noheader"], capture_output=True, text=True,
+            timeout=20)
+        return probe.stdout.strip() or probe.stderr.strip()
+    except OSError:
+        return "nvidia-smi unavailable"
+
+
+def survey_site(site: str, *, work_dir: Path, now: datetime,
+                span_seconds: float, motion_baseline_s: float,
+                echo_threshold_dbz: float, min_echo_gates: int,
+                max_lag_seconds: float, allow_stale: bool,
+                bucket: str | None, range_km: float | None) -> dict:
+    """S3 survey: freshness, echo census, motion, and the two decodes."""
+
+    from gpuwm.obs.nexrad import (find_nexrad_bin, nexrad_remedy,
+                                  run_decode, run_fetch, run_list,
+                                  run_verify)
+    from gpuwm.obs.superob import SuperobParams
+    from gpuwm.obs.sweeps import read_sweep_pack
+
+    binary = find_nexrad_bin()
+    if binary is None:
+        raise FrontDoorError(f"no rw_nexrad front door: {nexrad_remedy()}")
+    authority_km = (range_km if range_km is not None
+                    else SuperobParams().max_range_km)
+
+    listing = run_list(
+        binary, site=site,
+        start=iso(now - timedelta(seconds=span_seconds)), end=iso(now),
+        bucket=bucket)
+    volumes = sorted(
+        (v for v in listing.get("volumes", [])
+         if not v["filename"].endswith("MDM")),
+        key=lambda v: v["valid_time"])
+    if not volumes:
+        raise FrontDoorError(
+            f"{site}: no volumes in the last {span_seconds / 60:.0f} "
+            "minutes -- site down, id wrong, or archive far behind")
+    newest = volumes[-1]
+    lag = (now - parse_iso(newest["valid_time"])).total_seconds()
+    if lag > max_lag_seconds and not allow_stale:
+        raise FrontDoorError(
+            f"{site}: newest archived volume {newest['filename']} is "
+            f"{lag / 60:.1f} min old (ceiling {max_lag_seconds / 60:.0f}"
+            " min); pass --allow-stale to nowcast from a stale feed "
+            "anyway")
+
+    target = parse_iso(newest["valid_time"]) - timedelta(
+        seconds=motion_baseline_s)
+    older = min(volumes, key=lambda v: abs(
+        (parse_iso(v["valid_time"]) - target).total_seconds()))
+    picks = [older, newest] if older["key"] != newest["key"] else [newest]
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    surveyed = []
+    antenna = None
+    for chosen in picks:
+        stamp = parse_iso(chosen["valid_time"])
+        run_fetch(binary, site=site,
+                  start=iso(stamp - timedelta(seconds=30)),
+                  end=iso(stamp + timedelta(seconds=30)),
+                  out=work_dir, bucket=bucket)
+        volume_path = work_dir / chosen["filename"]
+        if not volume_path.is_file():
+            raise FrontDoorError(
+                f"survey fetch did not materialise {volume_path}")
+        pack_path = work_dir / (chosen["filename"] + ".survey.pack")
+        run_decode(binary, volume=volume_path, out=pack_path,
+                   moments=("REF",), max_range_km=authority_km,
+                   max_elevation_deg=20.0)
+        verify = run_verify(binary, pack=pack_path)
+        if verify.get("status") != "PASS":
+            raise FrontDoorError(f"survey pack verify did not PASS: "
+                                 f"{verify}")
+        volume = read_sweep_pack(pack_path)
+        antenna = {"lat_deg": float(volume.site.lat_deg),
+                   "lon_deg": float(volume.site.lon_deg),
+                   "alt_m": float(volume.site.alt_m)}
+        stats = echo_stats(volume, threshold_dbz=echo_threshold_dbz)
+        surveyed.append({
+            "volume": chosen["filename"],
+            "key": chosen["key"],
+            "valid_time": chosen["valid_time"],
+            "volume_sha256": sha256_file(volume_path),
+            **stats,
+        })
+
+    motion = None
+    if len(surveyed) == 2:
+        motion = motion_from_centroids(
+            surveyed[0], surveyed[1], min_gates=min_echo_gates)
+
+    return {
+        "schema": SURVEY_SCHEMA,
+        "site": site,
+        "surveyed_at": iso(now),
+        "volumes_listed": len(volumes),
+        "newest_volume": newest["filename"],
+        "archive_lag_seconds": round(lag, 1),
+        "range_authority_km": authority_km,
+        "echo_threshold_dbz": echo_threshold_dbz,
+        "antenna": antenna,
+        "survey_volumes": surveyed,
+        "motion": motion,
+        "motion_note": (None if motion is not None else
+                        "no displacement motion: echo below "
+                        f"{min_echo_gates} gates or baseline too short; "
+                        "domain centers on the echo (or antenna) with "
+                        "no downstream bias"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# the two entry points
+# ---------------------------------------------------------------------------
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m tools.da_nowcast",
+        description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="mode", required=True)
+
+    run = sub.add_parser(
+        "run", help="survey a site and run the whole nowcast pipeline")
+    run.add_argument("--site", required=True, type=validate_site,
+                     help="four-letter radar station id (argument, "
+                          "never a default)")
+    run.add_argument("--window-end", required=True,
+                     help="last assimilated cycle valid time "
+                          "(ISO-8601 UTC) or 'latest' to derive it "
+                          "from the newest archived volume")
+    run.add_argument("--cycles", type=int, default=6,
+                     help="applied assimilation cycles (default 6)")
+    run.add_argument("--cycle-seconds", type=int, default=900,
+                     help="cycle cadence in seconds (default 900)")
+    run.add_argument("--free-legs", type=int, default=6,
+                     help="free forecast legs past the last obs "
+                          "(default 6)")
+    run.add_argument("--members", type=int, default=DEFAULT_MEMBERS,
+                     help=f"ensemble size (default {DEFAULT_MEMBERS}; "
+                          "demo-grade). Measured 2026-08-05 on two "
+                          "cards: N=20 scores +0.0018 (analysis-only) "
+                          "for +82%% wall clock, inside a 0.0062-0.0074 "
+                          "across-member scatter, and N=36 scores BELOW "
+                          "N=10 because the metric is computed on the "
+                          "ensemble mean and averaging penalises an "
+                          "under-producing forecast. N=4 costs 0.007 "
+                          "FSS and saves no VRAM")
+    run.add_argument("--out", type=Path, required=True,
+                     help="case directory (created; holds every stage)")
+    run.add_argument("--source", default="gfs",
+                     choices=("gfs",),
+                     help="background source (the cycle driver's "
+                          "SUPPORTED_SOURCES; gfs today)")
+    run.add_argument("--physics-profile",
+                     default="wsm6-ysu-mm5-noah-no-radiation-v1",
+                     help="shipped physics profile for every stage")
+    run.add_argument("--dx-km", type=float, default=3.0,
+                     help="grid spacing in km (default 3)")
+    run.add_argument("--vram-gib", type=float, default=None,
+                     help="size the memory preflight against this card "
+                          "instead of the wizard's default tier. A "
+                          "caller who was shown a verdict for one card "
+                          "has to be able to ask for the run that "
+                          "verdict was about")
+    run.add_argument("--profile", choices=tuple(CARD_PROFILES),
+                     default="auto",
+                     help="a named card profile: a configuration that "
+                          "was RUN on the card it names and completed. "
+                          "'card-16gib' is the shipped demo shape, "
+                          "measured end to end on a 16,376 MiB RTX "
+                          "4080 -- it returns the 32 GB card's answer "
+                          "(FSS 0.7397 vs 0.7403 over six leads) and "
+                          "peaks at 15,888 MiB, 97.0%% of the card. A "
+                          "profile only fills in arguments the caller "
+                          "left at their defaults")
+    run.add_argument("--memory-budget-mib", type=float,
+                     default=DEFAULT_MEMORY_BUDGET_MIB,
+                     help=f"LETKF chunk workspace in MiB (default "
+                          f"{DEFAULT_MEMORY_BUDGET_MIB:g}). The one "
+                          "term in the memory model an operator "
+                          "controls: peak VRAM does NOT scale with "
+                          "--members (15,946/15,888/15,796 MiB at "
+                          "N=4/10/20), it tracks this. At the default "
+                          "a 16 GB card peaks at 97.0%% with 488 MiB "
+                          "spare, so lower it if you want margin -- "
+                          "the ladder that would pick a better default "
+                          "had not finished when this was set")
+    run.add_argument("--history-interval-seconds", type=float,
+                     default=None,
+                     help="how often the georeference forecast writes a "
+                          "wrfout (default: --cycle-seconds). This is "
+                          "the lattice observations are gridded onto, "
+                          "so a coarse one makes every observation's "
+                          "georeference stale by up to half of it")
+    run.add_argument("--run-hours", type=int, default=None,
+                     help="georeference run length in whole hours "
+                          "(default: the shortest that covers the "
+                          "window). A longer one buys a longer boundary "
+                          "window for a caller that keeps cycling on "
+                          "this prepared case")
+    run.add_argument("--domain-polygon", type=Path, default=None,
+                     help="a GeoJSON polygon to use as the domain "
+                          "instead of siting one on the echo -- the box "
+                          "a caller drew. The survey still runs and is "
+                          "still receipted; only the siting is taken "
+                          "out of its hands")
+    run.add_argument("--box-half-km", type=float, default=198.0,
+                     help="half-extent of the domain box in km "
+                          "(default 198, sized to the obs range "
+                          "authority)")
+    run.add_argument("--downstream-fraction", type=float, default=0.35,
+                     help="fraction of (storm motion x horizon) added "
+                          "downstream of the echo centroid")
+    run.add_argument("--max-center-offset-km", type=float, default=60.0,
+                     help="clamp on domain-center offset from the "
+                          "antenna, keeping the radar in the grid")
+    run.add_argument("--echo-threshold-dbz", type=float, default=35.0)
+    run.add_argument("--min-echo-gates", type=int, default=500,
+                     help="below this the survey refuses to call a "
+                          "motion vector")
+    run.add_argument("--motion-baseline-seconds", type=float,
+                     default=2700.0,
+                     help="how far back the second survey volume sits")
+    run.add_argument("--survey-span-seconds", type=float, default=5400.0)
+    run.add_argument("--max-lag-seconds", type=float, default=900.0,
+                     help="freshness ceiling on the archive feed")
+    run.add_argument("--allow-stale", action="store_true")
+    run.add_argument("--bucket", default=None,
+                     help="S3 bucket override (default: the rw_nexrad "
+                          "front door's own)")
+    run.add_argument("--range-km", type=float, default=None,
+                     help="range authority for survey and obs alike")
+    run.add_argument("--bridge", type=Path, default=None,
+                     help="gfs_grib2_bridge executable (default: the "
+                          "artifact ladder)")
+    run.add_argument("--geog-root", type=Path, default=None,
+                     help="WPS_GEOG static geography root")
+    run.add_argument("--solve-device", default="cuda",
+                     choices=("cuda", "host"))
+    run.add_argument("--horizontal-loc-m", type=float, default=12000.0)
+    run.add_argument("--vertical-loc-m", type=float, default=3000.0)
+    run.add_argument("--length-scale-km", type=float, default=None,
+                     help="perturbation length scale in km (default: "
+                          f"{DEFAULT_LENGTH_SCALE_KM:g}, capped to what "
+                          "the fitted domain carries -- a smaller box "
+                          "cannot represent a larger scale, and the cap "
+                          "is receipted)")
+    run.add_argument("--seed", type=int, default=None,
+                     help="perturbation seed (default: derived from "
+                          "the window end date)")
+    run.add_argument("--stop-after", choices=STAGES, default=None,
+                     help="end the run after this stage (receipts "
+                          "still written)")
+    run.add_argument("--no-verify", action="store_true",
+                     help="do NOT hand off to the rolling verifier "
+                          "when the run completes (verification is on "
+                          "by default)")
+    run.add_argument("--verify-poll-seconds", type=int,
+                     default=WATCH_POLL_SECONDS,
+                     help=f"verifier archive poll interval (default "
+                          f"{WATCH_POLL_SECONDS})")
+    run.add_argument("--verify-max-minutes", type=int,
+                     default=WATCH_MAX_MINUTES,
+                     help="verifier safety ceiling in minutes "
+                          f"(default {WATCH_MAX_MINUTES})")
+    run.add_argument("--verify-max-offset-seconds", type=float,
+                     default=480.0,
+                     help="how far a volume may sit from a frame's "
+                          "valid time and still verify it")
+
+    verify = sub.add_parser(
+        "verify", help="one pass: build observed composites for the "
+                       "free-forecast valid times the archive covers "
+                       "now, re-render, and record the verdict")
+    verify.add_argument("--case-dir", type=Path, required=True)
+    verify.add_argument("--bucket", default=None)
+    verify.add_argument("--max-offset-seconds", type=float, default=480.0)
+
+    watch = sub.add_parser(
+        "watch", help="roll the verification: keep grading frames as "
+                      "the archive covers their valid times, updating "
+                      "the gallery and receipt in place, then stop")
+    watch.add_argument("--case-dir", type=Path, required=True)
+    watch.add_argument("--bucket", default=None)
+    watch.add_argument("--max-offset-seconds", type=float, default=480.0)
+    watch.add_argument("--poll-seconds", type=int,
+                       default=WATCH_POLL_SECONDS)
+    watch.add_argument("--max-minutes", type=int,
+                       default=WATCH_MAX_MINUTES,
+                       help="safety ceiling: stop waiting after this "
+                            "long and record what stayed unverified")
+    return parser
+
+
+def _stop(requested: str | None, stage: str) -> bool:
+    return (requested is not None
+            and STAGES.index(stage) >= STAGES.index(requested))
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.mode == "run":
+        args.profile_applied = apply_card_profile(args)
+        return run_pipeline(args)
+    if args.mode == "watch":
+        return watch_pipeline(args)
+    return verify_pipeline(args)
+
+
+def run_pipeline(args) -> int:
+    now = datetime.now(timezone.utc)
+    out: Path = args.out
+    receipts = out / "receipts"
+    out.mkdir(parents=True, exist_ok=True)
+    repo_root = Path(__file__).resolve().parent.parent
+
+    # ---- survey ---------------------------------------------------------
+    survey = survey_site(
+        args.site, work_dir=out / "vols", now=now,
+        span_seconds=args.survey_span_seconds,
+        motion_baseline_s=args.motion_baseline_seconds,
+        echo_threshold_dbz=args.echo_threshold_dbz,
+        min_echo_gates=args.min_echo_gates,
+        max_lag_seconds=args.max_lag_seconds,
+        allow_stale=args.allow_stale, bucket=args.bucket,
+        range_km=args.range_km)
+    receipts.mkdir(parents=True, exist_ok=True)
+    (receipts / "00-survey.json").write_text(
+        json.dumps(survey, indent=1), encoding="utf-8")
+    print(f"survey: lag {survey['archive_lag_seconds'] / 60:.1f} min, "
+          f"echo gates {survey['survey_volumes'][-1]['gates']}, "
+          f"motion {survey['motion']}")
+
+    # ---- window plan ----------------------------------------------------
+    if args.window_end.strip().lower() == "latest":
+        newest = parse_iso(survey["survey_volumes"][-1]["valid_time"])
+        window_end = resolve_latest_window_end(
+            newest, cycles=args.cycles,
+            cycle_seconds=args.cycle_seconds)
+    else:
+        window_end = parse_iso(args.window_end)
+    plan = plan_window(window_end, cycles=args.cycles,
+                       cycle_seconds=args.cycle_seconds,
+                       free_legs=args.free_legs, now=now,
+                       run_hours=args.run_hours)
+    seed = (args.seed if args.seed is not None
+            else int(plan.window_end.strftime("%Y%m%d")))
+
+    # ---- domain ---------------------------------------------------------
+    center = site_domain_center(
+        survey["antenna"]["lat_deg"], survey["antenna"]["lon_deg"],
+        survey["survey_volumes"][-1], survey["motion"],
+        horizon_seconds=plan.horizon_seconds,
+        downstream_fraction=args.downstream_fraction,
+        max_offset_km=args.max_center_offset_km)
+    case_name = (f"nowcast_{args.site.lower()}_"
+                 f"{plan.window_end:%Y%m%d%H%M}")
+    case_dir = out / "case"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    polygon = case_dir / "domain-box.geojson"
+    if args.domain_polygon is not None:
+        # The caller drew the domain.  Their box is copied in verbatim
+        # -- not re-derived, not re-centred -- so what the wizard fits
+        # is exactly the geometry they were shown when they committed.
+        if not args.domain_polygon.is_file():
+            raise FrontDoorError(
+                f"--domain-polygon names a missing file: "
+                f"{args.domain_polygon}")
+        box = json.loads(
+            args.domain_polygon.read_text(encoding="utf-8"))
+        center = dict(center)
+        center["basis"] = ("caller-supplied polygon "
+                           f"({args.domain_polygon.name}); the survey's "
+                           "own siting was computed and not used")
+    else:
+        box = geojson_box(center["lat"], center["lon"], args.box_half_km)
+    polygon.write_text(json.dumps(box), encoding="utf-8")
+    case_toml = case_dir / f"{case_name}.toml"
+    plan_receipt = {
+        "schema": SCHEMA, "partial": True, "site": args.site,
+        "plan": plan.to_payload(), "domain_center": center,
+        "seed": seed, "case_name": case_name}
+    (receipts / "01-plan.json").write_text(
+        json.dumps(plan_receipt, indent=1), encoding="utf-8")
+    if _stop(args.stop_after, "survey"):
+        print("stopped after survey (receipts written)")
+        return 0
+
+    run_stage("domain", wizard_cmd(
+        polygon=polygon, out_toml=case_toml, plan=plan,
+        profile=args.physics_profile, name=case_name,
+        dx_km=args.dx_km, source=args.source,
+        vram_gib=args.vram_gib),
+        cwd=repo_root, receipts_dir=receipts, index=2)
+    wps_namelist = case_toml.with_suffix("").with_name(
+        case_toml.stem + ".namelist.wps")
+    if not wps_namelist.is_file():
+        raise FrontDoorError(
+            f"wizard did not emit {wps_namelist.name} beside the TOML")
+
+    # The georeference lattice.  Every observation is gridded onto the
+    # wrfout nearest its valid time, so how often one is written IS the
+    # accuracy of that georeference -- and it has to be set before the
+    # authority is materialised, or the authority binds the wrong one.
+    history_seconds = (args.history_interval_seconds
+                       if args.history_interval_seconds is not None
+                       else float(args.cycle_seconds))
+    retimed, was = retime_history(
+        case_toml.read_text(encoding="utf-8"), history_seconds)
+    case_toml.write_text(retimed, encoding="utf-8")
+    (receipts / "02-history-cadence.json").write_text(json.dumps({
+        "schema": STAGE_SCHEMA, "stage": "history-cadence",
+        "started": iso(datetime.now(timezone.utc)),
+        "file": str(case_toml),
+        "history_interval_s": {"wizard": was, "run": history_seconds},
+        "why": ("observations are gridded onto the wrfout nearest their "
+                "valid time; the wizard's root default is hourly, which "
+                "would make 'nearest' up to half an hour stale"),
+    }, indent=1), encoding="utf-8")
+    print(f"georeference cadence: {was:g} s -> {history_seconds:g} s")
+    if _stop(args.stop_after, "domain"):
+        print("stopped after domain (receipts written)")
+        return 0
+
+    # ---- authority + fetch + manifest + prepare -------------------------
+    authority_dir = out / "authority"
+    run_stage("authority", authority_cmd(
+        case_toml=case_toml, wps_namelist=wps_namelist,
+        profile=args.physics_profile, authority_dir=authority_dir,
+        source=args.source),
+        cwd=repo_root, receipts_dir=receipts, index=3)
+
+    import tomllib
+    emitted = tomllib.loads(case_toml.read_text(encoding="utf-8"))
+    root = emitted["domain"][0]
+    length_scale_km, scale_note = resolvable_length_scale_km(
+        nx=int(root["nx"]), ny=int(root["ny"]),
+        dx_m=float(root["dx"]), dy_m=float(root.get("dy", root["dx"])),
+        requested=args.length_scale_km)
+    if scale_note:
+        print(f"note: {scale_note}")
+    hints = emitted.get("fetch")
+    if not hints:
+        raise FrontDoorError("emitted case TOML carries no [fetch] "
+                             "hints; cannot drive the fetch stage")
+    data_dir = out / "data"
+    run_stage("fetch", fetch_cmd(hints=hints, data_dir=data_dir,
+                                 source=args.source),
+              cwd=repo_root, receipts_dir=receipts, index=4)
+    run_stage("manifest", manifest_cmd(
+        data_dir=data_dir, authority_dir=authority_dir,
+        source=args.source),
+        cwd=repo_root, receipts_dir=receipts, index=5)
+    manifest_sha = sha256_file(data_dir / "gfs-input-manifest.json")
+    if _stop(args.stop_after, "fetch"):
+        print("stopped after fetch (receipts written)")
+        return 0
+
+    prepared_root = out / "prepared"
+    run_stage("prepare", prepare_cmd(
+        data_dir=data_dir, authority_dir=authority_dir,
+        bridge=resolve_bridge(args.bridge),
+        profile=args.physics_profile,
+        geog_root=resolve_geog_root(args.geog_root),
+        prepared_root=prepared_root, plan=plan,
+        manifest_sha=manifest_sha, source=args.source),
+        cwd=repo_root, receipts_dir=receipts, index=6)
+    proof_sha = sha256_file(prepared_root / "proof.json")
+    content_sha = json.loads(
+        (prepared_root / "proof.json").read_text(encoding="utf-8")
+    )["prepared_cache"]["content_sha256"]
+    # The three digests every downstream runner has to quote back.  They
+    # are written as their own receipt rather than only into the final
+    # one, so a run stopped early (--stop-after prepare/forecast) still
+    # hands a later process everything it needs to drive the case.
+    (receipts / "06-bindings.json").write_text(json.dumps({
+        "schema": BINDINGS_SCHEMA,
+        "generated": iso(datetime.now(timezone.utc)),
+        "source": args.source,
+        "physics_profile": args.physics_profile,
+        "prepared_root": str(prepared_root),
+        "authority_dir": str(authority_dir),
+        "run_dir": str(out / "run"),
+        "proof_sha256": proof_sha,
+        "source_manifest_sha256": manifest_sha,
+        "prepared_content_sha256": content_sha,
+        "plan": plan.to_payload(),
+        "case_name": case_name,
+        "site": args.site,
+        "seed": seed,
+    }, indent=1), encoding="utf-8")
+    if _stop(args.stop_after, "prepare"):
+        print("stopped after prepare (receipts written)")
+        return 0
+
+    # ---- georeference forecast ------------------------------------------
+    print(f"GPU before forecast: {gpu_snapshot()}")
+    run_dir = out / "run"
+    run_stage("forecast", forecast_cmd(
+        prepared_root=prepared_root, authority_dir=authority_dir,
+        profile=args.physics_profile, run_dir=run_dir,
+        proof_sha=proof_sha, manifest_sha=manifest_sha,
+        content_sha=content_sha, source=args.source),
+        cwd=repo_root, receipts_dir=receipts, index=7)
+    if _stop(args.stop_after, "forecast"):
+        print("stopped after forecast (receipts written)")
+        return 0
+
+    # ---- obs ladder ------------------------------------------------------
+    obs_dir = out / "obs"
+    obs_dir.mkdir(parents=True, exist_ok=True)
+    obs_files: list[Path] = []
+    grid_wrfouts: list[Path] = []
+    for k, valid in enumerate(plan.cycle_times):
+        grid = run_dir / "wrfout" / wrfout_name(
+            plan.init, (k + 1) * plan.cycle_seconds)
+        out_nc = obs_dir / (f"obs-{args.site.lower()}-"
+                            f"{valid:%Y%m%d%H%M}.nc")
+        run_stage(f"obs-{valid:%H%M}", obs_cmd(
+            site=args.site, valid=valid, grid_wrfout=grid,
+            out_nc=out_nc, work_dir=out / "vols",
+            bucket=args.bucket),
+            cwd=repo_root, receipts_dir=receipts, index=8)
+        obs_files.append(out_nc)
+        grid_wrfouts.append(grid)
+    if _stop(args.stop_after, "obs"):
+        print("stopped after obs (receipts written)")
+        return 0
+
+    # ---- cycled nowcast --------------------------------------------------
+    print(f"GPU before cycle: {gpu_snapshot()}")
+    cycle_out = out / "cycle"
+    run_stage("cycle", cycle_cmd(
+        prepared_root=prepared_root, authority_dir=authority_dir,
+        profile=args.physics_profile, plan=plan, members=args.members,
+        obs_files=obs_files, grid_wrfouts=grid_wrfouts,
+        cycle_out=cycle_out, proof_sha=proof_sha,
+        manifest_sha=manifest_sha, content_sha=content_sha,
+        seed=seed, solve_device=args.solve_device,
+        horizontal_loc_m=args.horizontal_loc_m,
+        vertical_loc_m=args.vertical_loc_m,
+        length_scale_km=length_scale_km, source=args.source,
+        memory_budget_mib=args.memory_budget_mib),
+        cwd=repo_root, receipts_dir=receipts, index=9)
+    if _stop(args.stop_after, "cycle"):
+        print("stopped after cycle (receipts written)")
+        return 0
+
+    # ---- gallery ---------------------------------------------------------
+    run_stage("render", render_cmd(case_dir=out),
+              cwd=repo_root, receipts_dir=receipts, index=10)
+
+    receipt = {
+        "schema": SCHEMA,
+        "generated": iso(datetime.now(timezone.utc)),
+        "honesty": ("demo-grade nowcast; UNSCORED, outside any "
+                    "registered campaign; no skill claim is made or "
+                    "implied"),
+        "site": args.site,
+        "members": args.members,
+        # What shaped this run's size, so a receipt can be read back
+        # against the measurements the defaults were set from.
+        "sizing": {
+            "profile": args.profile,
+            "profile_applied": getattr(args, "profile_applied", {}),
+            "members": args.members,
+            "memory_budget_mib": args.memory_budget_mib,
+            "vram_gib": args.vram_gib,
+            "nested_free_forecast": False,
+            "concurrent_members": False,
+        },
+        "plan": plan.to_payload(),
+        "seed": seed,
+        "survey": {"archive_lag_seconds": survey["archive_lag_seconds"],
+                   "motion": survey["motion"],
+                   "receipt": "receipts/00-survey.json"},
+        "domain_center": center,
+        "case_name": case_name,
+        "length_scale_km": length_scale_km,
+        "length_scale_note": scale_note,
+        "outputs": {
+            "case_toml": str(case_toml),
+            "authority": str(authority_dir),
+            "prepared_root": str(prepared_root),
+            "run_dir": str(run_dir),
+            "obs": [str(p) for p in obs_files],
+            "cycle_out": str(cycle_out),
+            "gallery": str(out / "gallery"),
+        },
+    }
+
+    # ---- auto-verification handoff --------------------------------------
+    # The free forecast runs past the last observation, so its grade
+    # does not exist yet.  Rather than leave that to a human, hand the
+    # case to a detached verifier that grades each frame as the archive
+    # covers its valid time.  DEFAULT ON; --no-verify opts out.
+    frames = initial_frames(plan.to_payload()["free_leg_times"])
+    state = handoff_state(no_verify=args.no_verify, frames=frames)
+    receipt["verification"] = verification_block(frames=frames,
+                                                 state=state)
+    (out / "nowcast-receipt.json").write_text(
+        json.dumps(receipt, indent=1), encoding="utf-8")
+    print("nowcast-receipt.json written; gallery at",
+          out / "gallery" / "index.html")
+
+    if state == "disabled":
+        print("verification: OFF (--no-verify); start it later with "
+              f"`python -m tools.da_nowcast watch --case-dir {out}`")
+        return 0
+    if state == "complete":
+        print("verification: nothing to grade (no free-forecast legs)")
+        return 0
+
+    block = start_verification(
+        out, frames=frames, poll_seconds=args.verify_poll_seconds,
+        max_minutes=args.verify_max_minutes,
+        max_offset_seconds=args.verify_max_offset_seconds,
+        bucket=args.bucket, repo_root=repo_root)
+    print(f"verification: rolling, detached pid "
+          f"{block['watcher']['pid']}; it grades each free-forecast "
+          "frame as the archive covers it and updates the gallery in "
+          "place")
+    print(f"  poll {out / 'nowcast-receipt.json'} -> .verification."
+          "state (rolling -> complete)")
+    print(f"  log  {block['watcher']['log']}")
+    return 0
+
+
+def _case_context(case_dir: Path) -> tuple[str, datetime, list[dict]]:
+    """Site, model init and the free-forecast frames of a case dir.
+
+    Frames resume from whatever the gallery has already graded, so a
+    verifier that is re-run (or restarted) never re-grades work nor
+    forgets it.
+    """
+
+    receipt = read_receipt(case_dir)
+    site = validate_site(receipt["site"])
+    plan_p = receipt["plan"]
+    frames = merge_gallery_rows(
+        initial_frames(plan_p["free_leg_times"]),
+        gallery_rows(case_dir))
+    return site, parse_iso(plan_p["init"]), frames
+
+
+def verify_pipeline(args) -> int:
+    """One pass, then a verdict: grade what the archive covers now."""
+
+    case_dir: Path = args.case_dir
+    site, init, frames = _case_context(case_dir)
+    repo_root = Path(__file__).resolve().parent.parent
+    started = iso(datetime.now(timezone.utc))
+    frames, _ = verify_pass(
+        case_dir=case_dir, site=site, init=init, frames=frames,
+        bucket=args.bucket,
+        max_offset_seconds=args.max_offset_seconds,
+        repo_root=repo_root)
+    state = advance_state(frames, exhausted=True)
+    block = verification_block(frames=frames, state=state,
+                               started=started)
+    write_verification(case_dir, block)
+    print(block["verdict"])
+    for frame in frames:
+        if frame["status"] != "verified":
+            print(f"  unverified {frame['valid']}: "
+                  f"{frame.get('note', 'no numbers published')}")
+    return 0 if state == "complete" else 1
+
+
+def watch_pipeline(args) -> int:
+    """Roll the verification until every frame is graded, then stop.
+
+    This is what ``run`` hands off to by default.  It owns the case's
+    verification block from its first pass onwards: each tick rewrites
+    ``verification`` in the receipt, so a GUI can poll one file and
+    watch ``rolling`` become ``complete``.
+    """
+
+    case_dir: Path = args.case_dir
+    site, init, frames = _case_context(case_dir)
+    repo_root = Path(__file__).resolve().parent.parent
+    started = iso(datetime.now(timezone.utc))
+    watcher = {"pid": os.getpid(), "log": str(case_dir /
+                                              "verify-watch.log"),
+               "poll_seconds": args.poll_seconds,
+               "max_minutes": args.max_minutes}
+    deadline = time.monotonic() + args.max_minutes * 60.0
+    _log(f"rolling verification for {case_dir}: {len(frames)} "
+         "free-forecast frames to grade")
+    while True:
+        frames, _ = verify_pass(
+            case_dir=case_dir, site=site, init=init, frames=frames,
+            bucket=args.bucket,
+            max_offset_seconds=args.max_offset_seconds,
+            repo_root=repo_root)
+        state = advance_state(frames,
+                              exhausted=time.monotonic() > deadline)
+        block = verification_block(frames=frames, state=state,
+                                   started=started, watcher=watcher)
+        write_verification(case_dir, block)
+        _log(f"pass complete: {block['verdict']}")
+        if state != "rolling":
+            _log(f"VERIFICATION {state.upper()}")
+            return 0 if state == "complete" else 1
+        time.sleep(args.poll_seconds)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

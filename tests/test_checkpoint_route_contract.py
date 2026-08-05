@@ -517,6 +517,41 @@ def test_extending_a_run_does_not_move_the_prepared_cache_identity(tmp_path):
         assert differing == [f"run.{key}"], (key, differing)
 
 
+def test_radiation_aggregate_and_explicit_spellings_share_one_identity():
+    """The historical ra_physics aggregate is a SPELLING, not a selection.
+
+    gpuwm/config.py documents ``ra_lw_physics = ra_sw_physics = -1`` as
+    preserving the aggregate exactly, and explicit pairs require
+    ``ra_physics = 0``.  A shipped 4/4 profile writes the explicit
+    (0, 4, 4) triple; the WRF namelist importer emits the coupled
+    aggregate (4, -1, -1); the two describe one radiation selection and
+    must bind one prepared root.  A genuinely different pair still
+    refuses.
+    """
+
+    from gpuwm.ingest.prepared_cache import (
+        compare_prepared_domain_config, effective_prepared_domain_config)
+
+    base = {"nx": 100, "dt": 60.0}
+    aggregate = {"run": {**base, "ra_physics": 4,
+                         "ra_lw_physics": -1, "ra_sw_physics": -1}}
+    explicit = {"run": {**base, "ra_physics": 0,
+                        "ra_lw_physics": 4, "ra_sw_physics": 4}}
+    _tolerated, differing = compare_prepared_domain_config(
+        effective_prepared_domain_config(aggregate),
+        effective_prepared_domain_config(explicit))
+    assert differing == []
+
+    # CONTROL: the aggregate is not equivalent to a DIFFERENT explicit
+    # pair -- Dudhia-shortwave (0, 1) still moves the identity.
+    dudhia = {"run": {**base, "ra_physics": 0,
+                      "ra_lw_physics": 0, "ra_sw_physics": 1}}
+    _tolerated, differing = compare_prepared_domain_config(
+        effective_prepared_domain_config(aggregate),
+        effective_prepared_domain_config(dudhia))
+    assert sorted(differing) == ["run.ra_lw_physics", "run.ra_sw_physics"]
+
+
 def test_the_route_advisory_carries_no_case_or_source_token():
     """Generic code names no case and no source (project standing rule)."""
 

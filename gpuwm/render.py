@@ -371,15 +371,63 @@ def _render_precip(wf, timeidx, lat, lon, *, plt, wrf, context,
     plt.close(fig)
 
 
+def _render_olr(wf, timeidx, lat, lon, *, plt, wrf, context,
+                out_png: Path, dpi: int) -> None:
+    """Top-of-atmosphere outgoing longwave, drawn as synthetic satellite IR.
+
+    ``OLR`` is what the longwave scheme was already computing and wrfout
+    frames have carried since 1.5.1, so this is the one product here whose
+    subject is the model as a satellite would see it.
+
+    Inverted grayscale is what makes it read that way: an IR image is dark
+    where the emitting surface is warm and bright where it is cold, and OLR
+    runs the same direction -- deep cold cloud tops emit least, the clear
+    warm surface emits most -- so ``gray_r`` puts storm tops white against a
+    dark background exactly as the imagery convention does.
+
+    The panel stays in W m-2 rather than converting to a brightness
+    temperature.  That conversion is a derived quantity and derived
+    quantities are the ``wrf`` package's job, never a formula written at a
+    plotting site (the same rule that keeps ``_render_wind10`` degrading to
+    m s-1 instead of converting knots by hand).
+
+    Limits come from the frame, as they do for ``t2`` and ``wind10``: there
+    is no standard OLR ladder to hard-code, and inventing one here would put
+    unsourced numbers between the reader and the field.  So shade is
+    comparable within a panel, not between panels -- read the colorbar.
+    """
+
+    olr = np.asarray(wrf.getvar(wf, "OLR", timeidx=timeidx))
+    fig, axis = _figure(plt, lat, lon)
+    mesh = axis.pcolormesh(lon, lat, olr, cmap="gray_r", shading="auto")
+    _finish(fig, axis, mesh,
+            title=f"outgoing longwave radiation at TOA "
+                  f"(synthetic IR)\n{context}",
+            cbar_label="OLR (W m-2)", out_png=out_png, dpi=dpi)
+    plt.close(fig)
+
+
 #: Product registry: CLI name -> renderer.  ``all`` expands to this order.
 PRODUCTS = {
     "refl": _render_refl,
     "t2": _render_t2,
     "wind10": _render_wind10,
     "precip": _render_precip,
+    "olr": _render_olr,
 }
 
-#: The four shared product names, as the rust engine's catalog slugs.
+#: The shared product names, as the rust engine's catalog slugs.
+#:
+#: This maps four of the five in :data:`PRODUCTS`.  ``olr`` is absent
+#: because the rust catalog has no OLR chart yet -- that half is upstream
+#: work in the renderer's own catalog, and the entry lands here when the
+#: slug it would name exists.  Pointing an alias at a plausible-looking
+#: slug before then is precisely the ``wind10`` bug described below: a
+#: mapping that reads correct and returns the wrong chart.  Until the
+#: catalog carries one, ``--products olr --engine rust`` passes ``olr``
+#: through as a raw slug and the renderer refuses it by name, which is a
+#: legible answer; ``--products all --engine rust`` is unaffected, since
+#: ``all`` is the renderer's own catalog and never this table.
 #:
 #: Each value is the slug of a chart whose SUBJECT is what the key
 #: names.  ``wind10`` used to map to ``mslp_10m_winds`` under a comment
@@ -629,6 +677,10 @@ _MPL_PRODUCT_NEEDS = {
     "t2": ("T2",),
     "wind10": ("U10", "V10"),
     "precip": ("RAINC|RAINNC",),
+    # OLR is present exactly when the attached longwave scheme produced
+    # it, so a radiation-off run lists this product as missing-fields
+    # rather than failing -- which is the honest report of that run.
+    "olr": ("OLR",),
 }
 
 
@@ -737,7 +789,7 @@ def catalog_main(args) -> int:
     Answered by asking the engine, never from a copy kept here: the rust
     catalog is the renderer's, and a second list in this module is the
     enumeration-drift failure this project keeps paying for.  With no
-    rust engine installed, the matplotlib engine's four products are the
+    rust engine installed, the matplotlib engine's own products are the
     honest answer, and the notice above already said which engine spoke.
     """
 
@@ -915,7 +967,9 @@ def _resolve_engine(requested: str) -> tuple[str, str]:
 
 #: How many products each engine can draw, for the fallback notice.
 #: The rust catalog's 151 is its implicit-render candidate count on a
-#: typical wrfout; the matplotlib engine has the four shared products.
+#: typical wrfout; the matplotlib count is read from :data:`PRODUCTS`,
+#: so adding a fallback product cannot leave this notice overstating
+#: what the fallback costs.
 _RUST_CATALOG_PRODUCTS = 151
 
 
@@ -1141,7 +1195,8 @@ def register_cli(subparsers) -> None:
         "render",
         help="render forecast product PNGs from wrfout files via the "
              "wrf package (composite reflectivity, 2 m temperature, "
-             "10 m wind, accumulated precipitation)")
+             "10 m wind, accumulated precipitation, TOA outgoing "
+             "longwave as synthetic IR)")
     parser.add_argument(
         "wrfout", type=Path, nargs="*", metavar="WRFOUT",
         help="wrfout NetCDF file(s) written by gpuwm run")

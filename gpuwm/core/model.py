@@ -802,6 +802,24 @@ def execute_experiment(
     if root_ticks % model.schedule.period_ticks != 0:
         raise ValueError("model does not start at a PERIOD_BEGIN tick")
     start_period = root_ticks // model.schedule.period_ticks
+    if progress_callback is not None:
+        # Stepping begins here.  Without this transition the last published
+        # phase is whatever preparation label the runner left behind
+        # (initialize-domain-writers on the tree path), so a first-step
+        # physics failure was stamped as a preparation failure and sent a
+        # real diagnosis down the wrong path.  ``outer_step`` stays the
+        # completed-step count run-progress.json already tracks; the phase
+        # names the 1-based outer step being attempted, matching the
+        # single-domain loop's ``outer-N.substep-M`` convention.
+        root_clock = model.root.clock
+        progress_callback(
+            model_elapsed_seconds=root_clock.elapsed_seconds,
+            outer_step=root_clock.step_count,
+            last_durable_wrfout=(None if io_manager is None else
+                                 io_manager.last_durable_wrfout),
+            last_checkpoint=model._last_checkpoint,
+            phase=f"stepping:outer-{root_clock.step_count + 1}",
+            step_wall_seconds=0.0)
     return execute_schedule(
         model.schedule, on_step=on_step, on_force=on_force,
         on_feedback_prepare=on_feedback_prepare,

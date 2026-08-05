@@ -107,9 +107,15 @@ def test_acoustic_noop_and_level_guards_precede_device_work(monkeypatch):
         def scratch(self, *_args):
             raise AssertionError("scratch allocation occurred before guard")
 
+    # One past the top WPHI_MAX_LEV tier.  This was 129 until the tier
+    # ladder admitted deeper columns; the assertion is unchanged -- the
+    # level guard still fires before a single scratch slot is requested --
+    # only the depth that trips it moved.  That 129 is now ADMITTED is
+    # asserted in tests/test_acoustic_nz_tiers.py.
     oversized = SimpleNamespace(
-        nz=129, ny=1, nx=1, epssm=0.5, top_lid=False)
-    with pytest.raises(ValueError, match=r"nz=129 exceeds"):
+        nz=acoustic.MAX_ACOUSTIC_LEVELS + 1, ny=1, nx=1, epssm=0.5,
+        top_lid=False)
+    with pytest.raises(ValueError, match=r"nz=257 exceeds"):
         acoustic.prepare_acoustic_coefficients(NoWorkState(), oversized, 1.0)
 
     monkeypatch.setattr(

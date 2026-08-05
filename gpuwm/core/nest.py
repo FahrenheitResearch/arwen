@@ -21,6 +21,7 @@ from gpuwm.core.microphysics_transition import (
     transition_handles_field,
     transition_parent_field_shape,
 )
+from gpuwm.core.inflow_perturbation import build_inflow_perturbation
 from gpuwm.core.nest_interp import bdy_interp1, copy_fcn, register_nest
 from gpuwm.core.preflight import (nest_field_kinds, nest_slot_dtypes,
                                   nest_slot_shapes)
@@ -104,6 +105,11 @@ class NestCoupler:
                 "parent/child prognostic field inventories; the configured "
                 f"one-way transition {self.microphysics_transition.policy_id!r} "
                 "has no reverse restriction contract")
+        # LES-nest inflow seeding (P3): None unless the child config
+        # turns it on, and the force path executes nothing of it when
+        # None -- the OFF trajectory is gated byte-identical to a build
+        # without the mechanism (INFLOW-GENERATOR-ACCEPTANCE-V2 G1).
+        self.inflow_perturbation = build_inflow_perturbation(child_node)
         self.force_count = 0
         self.first_parent_ticks = None
         self.last_parent_ticks = None
@@ -300,6 +306,13 @@ class NestCoupler:
                 spec_zone=run.spec_zone, relax_zone=run.relax_zone,
                 spec_bdy_width=run.spec_bdy_width, out=out)
             fields[_APPLICATION_NAME.get(kind, kind)] = out
+
+        if self.inflow_perturbation is not None:
+            # After bdy_interp1 has written every rolling table and
+            # before the metadata attach: the theta VALUE tables gain
+            # the registered relax-zone increment, in their own coupled
+            # units, and nothing else is touched.
+            self.inflow_perturbation.apply_at_force(node, fields)
 
         attach_nest_boundaries(
             node.state, fields, clock=node.clock,

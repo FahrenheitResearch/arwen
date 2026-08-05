@@ -653,3 +653,57 @@ def test_step_moist_scalar_checkerboard():
     assert abs(amp[0] - 0.001) < 1e-5             # opt=0: no diffusion
     ratio = amp[2] / amp[0]
     assert abs(ratio - (1.0 - FACTOR)) < 0.02 * (1.0 - FACTOR)
+
+
+@requires_gpu
+def test_step_moist_mix6_off_spares_moisture_and_keeps_damping_theta():
+    """Divergence-ledger L4, measured on the trajectory rather than argued.
+
+    WRF's ``moist_mix6_off`` gates one call: ``sixth_order_diffusion`` on
+    the moist array (dyn_em/module_em.F:1421).  So the pin is a PAIR, in one
+    run: the qv checkerboard must survive the step essentially untouched
+    while the theta' checkerboard in the same state loses exactly the
+    configured fraction.  Either half alone would pass for a gate that had
+    turned off too much or too little.
+    """
+    import cupy as cp
+
+    from gpuwm.config import RunConfig
+    from gpuwm.core.dycore import step
+    cb = _checkerboard(_STEP_BASE["ny"], _STEP_BASE["nx"])
+    qv_amp, th_amp = {}, {}
+    for mix6_off in (False, True):
+        for opt in (0, 2):
+            cfg = RunConfig(**_STEP_BASE, moist=True, diff_6th_opt=opt,
+                            diff_6th_factor=FACTOR,
+                            moist_mix6_off=mix6_off)
+            s = _atrest(cfg)
+            s.qv[...] = cp.asarray(
+                np.broadcast_to(0.005 + 0.001 * cb,
+                                (cfg.nz, cfg.ny, cfg.nx)),
+                dtype=cp.float32)
+            s.thp[...] = cp.asarray(
+                np.broadcast_to(0.1 * cb, (cfg.nz, cfg.ny, cfg.nx)),
+                dtype=cp.float32)
+            step(s, cfg)
+            qv_amp[(mix6_off, opt)] = _cb_amp(
+                cp.asnumpy(s.qv).astype(np.float64), cb)
+            th_amp[(mix6_off, opt)] = _cb_amp(
+                cp.asnumpy(s.thp).astype(np.float64), cb)
+
+    # moist_mix6_off = false is WRF's default and must be exactly the
+    # behaviour the sibling test already pins.
+    on = qv_amp[(False, 2)] / qv_amp[(False, 0)]
+    assert abs(on - (1.0 - FACTOR)) < 0.02 * (1.0 - FACTOR)
+
+    # ... and with it true the moisture keeps its amplitude ...
+    off = qv_amp[(True, 2)] / qv_amp[(True, 0)]
+    assert abs(off - 1.0) < 1.0e-3, (
+        "moist_mix6_off = true still damped the moisture checkerboard")
+
+    # ... while theta is damped identically either way: the switch is per
+    # WRF ARRAY, and theta is not in the moist array.
+    for mix6_off in (False, True):
+        ratio = th_amp[(mix6_off, 2)] / th_amp[(mix6_off, 0)]
+        assert abs(ratio - (1.0 - FACTOR)) < 0.02 * (1.0 - FACTOR), (
+            f"theta damping moved with moist_mix6_off = {mix6_off}")

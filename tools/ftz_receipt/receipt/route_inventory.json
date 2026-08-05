@@ -9,14 +9,18 @@
     "cupy.ReductionKernel",
     "cupy.cuda.compiler.compile_using_nvrtc"
   ],
-  "site_count": 57,
+  "site_count": 60,
   "site_count_by_kind": {
     "cupy.RawKernel": 1,
-    "cupy.RawModule": 44,
+    "cupy.RawModule": 46,
     "cupy.ReductionKernel": 5,
-    "cupy.cuda.compiler.compile_using_nvrtc": 7
+    "cupy.cuda.compiler.compile_using_nvrtc": 8
   },
   "site_count_by_surface": {
+    "other": {
+      "cupy.RawModule": 1,
+      "cupy.cuda.compiler.compile_using_nvrtc": 1
+    },
     "package": {
       "cupy.RawModule": 9,
       "cupy.ReductionKernel": 3,
@@ -24,7 +28,7 @@
     },
     "tests": {
       "cupy.RawKernel": 1,
-      "cupy.RawModule": 30,
+      "cupy.RawModule": 31,
       "cupy.cuda.compiler.compile_using_nvrtc": 3
     },
     "tools": {
@@ -55,6 +59,38 @@
     ]
   ],
   "sites": [
+    {
+      "file": "evidence/16gb-frontier/method/ftz_probe2.py",
+      "line": 27,
+      "column": 16,
+      "surface": "other",
+      "constructor": "_cc.compile_using_nvrtc",
+      "constructor_kind": "cupy.cuda.compiler.compile_using_nvrtc",
+      "enclosing": "via_nvrtc",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "opts",
+      "options": null,
+      "options_element_expressions": null,
+      "options_are_literal": false,
+      "text": "binout, _ = _cc.compile_using_nvrtc(src, opts, None, 'probe.cu')"
+    },
+    {
+      "file": "evidence/16gb-frontier/method/ftz_probe2.py",
+      "line": 30,
+      "column": 10,
+      "surface": "other",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "via_nvrtc",
+      "takes_caller_options": true,
+      "options_argument_present": false,
+      "options_expression": null,
+      "options": null,
+      "options_element_expressions": null,
+      "options_are_literal": false,
+      "text": "mod = cp.RawModule(path=str(p)); k = mod.get_function('probe')"
+    },
     {
       "file": "gpuwm/core/kernels/__init__.py",
       "line": 78,
@@ -984,6 +1020,26 @@
       ],
       "options_are_literal": true,
       "text": "module = cp.RawModule(code=source, options=(\"-std=c++17\",))"
+    },
+    {
+      "file": "tests/test_ysu.py",
+      "line": 724,
+      "column": 10,
+      "surface": "tests",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "test_ysu_min_max_propagate_nan_and_keep_finite_semantics",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "(\"-std=c++17\",)",
+      "options": [
+        "-std=c++17"
+      ],
+      "options_element_expressions": [
+        "\"-std=c++17\""
+      ],
+      "options_are_literal": true,
+      "text": "mod = cp.RawModule(code=module_source(\"ysu\") + probe,"
     },
     {
       "file": "tools/ftz_receipt/probe.py",

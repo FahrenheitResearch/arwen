@@ -153,6 +153,23 @@ NSSL_SCALAR_SPECIES = (
     "qvolg", "qvolh")
 NSSL_SPECIES = NSSL_MASS_SPECIES + NSSL_SCALAR_SPECIES
 
+#: The species WRF v4.6.1 carries in its ``moist`` 4-D array, as opposed to
+#: its ``scalar`` array.  Registry/Registry.EM_COMMON declares qv (:453),
+#: qc (:455), qr (:457), qi (:459), qs (:465), qg (:467) and qh (:469) with
+#: package ``moist``; every number/volume/CCN tracer gpuwm transports --
+#: qndrop (:521), qni (:523), qns (:531), qnr (:533), qng (:535), qnc (:541)
+#: and the aerosol pair -- is declared with package ``scalar``.
+#:
+#: The distinction is load-bearing for exactly one thing today and it is
+#: worth naming rather than rediscovering: WRF's ``&dynamics`` mixing
+#: switches are PER ARRAY.  ``moist_mix2_off``/``moist_mix6_off`` gate the
+#: moist array (dyn_em/solve_em.F:2229-2230), ``scalar_mix2_off``/
+#: ``scalar_mix6_off`` gate the scalar array (:2795-2796), and a gate that
+#: took gpuwm's whole transported set for "moisture" would silently turn off
+#: a filter WRF leaves on.
+WRF_MOIST_ARRAY_SPECIES = frozenset(
+    SPECIES + ICE_MASS_SPECIES + ("qh",))
+
 
 def extra_moist_species(state: DomainState) -> tuple[str, ...]:
     """Active transported species beyond qv/qc/qr.

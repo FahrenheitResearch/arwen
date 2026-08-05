@@ -17,6 +17,7 @@ import tomllib
 from types import SimpleNamespace
 
 from gpuwm import runtime_manifest
+from gpuwm.config import radiation_scheme_ids
 from gpuwm.experiment import build_experiment
 from gpuwm.hrrr_forecast import hrrr_forcing_end_hour
 from gpuwm.hrrr_native_static import (
@@ -48,13 +49,47 @@ from gpuwm.core.microphysics_transition import resolve_microphysics_transition
 
 SCHEMA = "gpuwm-native-hrrr-hierarchy-direct-v1"
 _SUPPORTED_PHYSICS = {
-    "bl_pbl_physics": 1,
     "sf_sfclay_physics": 91,
     "sf_surface_physics": 2,
-    "ra_physics": 0,
-    "ra_sw_physics": 1,
     "cu_physics": 0,
 }
+#: The PBL closures the certified native HRRR slice admits on the ROOT,
+#: the same enumerated set
+#: :data:`gpuwm.hrrr_route_inputs.ADMITTED_PBL_PHYSICS` admits at
+#: emission, and admitted here for the same reason: each member is the
+#: value a REGISTERED HRRR preparation profile pins -- 1 (YSU) for the
+#: profiles this route has always carried, 11 (Shin-Hong 2015) for
+#: ``thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1``, the composition a
+#: physics-fidelity arm selecting divergence-ledger entry L3 resolves to.
+#: It was a single pinned 1 in :data:`_SUPPORTED_PHYSICS` until that
+#: template was registered.
+#:
+#: Widening the slice this way costs nothing in PREPARATION and is the
+#: same evidence the child exemption below already rests on: preparation
+#: writes static fields and an interpolated initial state, and the
+#: closure selects tendencies only the forecast computes (the grep
+#: recorded at :data:`_DOMAIN_PREPARATION_OVERRIDES` returns a single hit
+#: for ``bl_pbl_physics``, and it is a comment).  What the registration
+#: adds is the other half: a root PREPARED for this suite, by a shipped
+#: profile, rather than a suite nothing can prepare.
+_ADMITTED_PBL_PHYSICS = frozenset({1, 11})
+#: Radiation is admitted as a (ra_lw_physics, ra_sw_physics) PAIR, the
+#: same two pairs :data:`gpuwm.hrrr_route_inputs.ADMITTED_RADIATION_PAIRS`
+#: admits at emission (B4 route-qualification motion, items 1-3): the
+#: certified (0, 1) validation suite and the resolved RRTMG (4, 4) pair
+#: the shipped registry's prepared-tree row already claims for HRRR.
+#: The evidence that widening preparation this way is safe is the same
+#: evidence this file already published for ``bl_pbl_physics`` at
+#: :data:`_CHILD_PHYSICS_SLICE_OVERRIDES`: preparation writes static
+#: fields and an interpolated initial state, and a sweep of
+#: ``gpuwm/ingest/``, ``gpuwm/native_hierarchy.py``,
+#: ``gpuwm/native_domain_artifacts.py`` and ``tools/prepare_hrrr_wrf.py``
+#: for ``ra_physics|ra_lw_physics|ra_sw_physics|ra_rrtmg_variant``
+#: returns zero hits -- radiation selects tendencies only the forecast
+#: computes.  ``ra_physics = 0`` stays pinned beside the pair because
+#: both admitted compositions spell radiation explicitly, and
+#: ``validate_run_config`` requires exactly that spelling.
+_ADMITTED_RADIATION_PAIRS = frozenset({(0, 1), (4, 4)})
 # WRF v4.6.1 Registry/Registry.EM_COMMON:3015 declares Kessler's
 # qv/qc/qr package.  Native-HRRR initialization retains QC/QR and produces
 # an explicit discard receipt for the source-only frozen species before this
@@ -99,8 +134,9 @@ _DOMAIN_PREPARATION_OVERRIDES = frozenset({
     "mix_isotropic", "mix_upper_bound", "isfflx",
     "tke_heat_flux", "tke_drag_coefficient", "tke_upper_bound",
 })
-#: Keys of :data:`_SUPPORTED_PHYSICS` a CHILD may hold away from the
-#: certified HRRR root slice.  The slice is a statement about what the
+#: Switches of the certified HRRR root slice -- :data:`_SUPPORTED_PHYSICS`
+#: and the enumerated :data:`_ADMITTED_PBL_PHYSICS` beside it -- that a
+#: CHILD may hold away from.  The slice is a statement about what the
 #: native-HRRR INITIALIZATION supports, and it is pinned in full on the
 #: root, which is the domain that is actually initialized from HRRR and
 #: the domain the optional stock-WRF export's own v2-slice branch reads.
@@ -108,7 +144,9 @@ _DOMAIN_PREPARATION_OVERRIDES = frozenset({
 #: note in _DOMAIN_PREPARATION_OVERRIDES); pinning it here refused the
 #: PBL-off LES child that the experiment schema, the forecast runner and
 #: the namelist importer all admit, and refused it after the expensive
-#: root preparation had already run.
+#: root preparation had already run.  A child therefore stays free of the
+#: root's enumerated admission too: an LES child runs PBL off, which no
+#: preparation profile pins and none needs to.
 _CHILD_PHYSICS_SLICE_OVERRIDES = frozenset({"bl_pbl_physics"})
 _MAX_PUBLIC_DOMAINS = 21
 
@@ -127,9 +165,36 @@ def _same_typed_values(observed, expected) -> bool:
                     for left, right in zip(observed, expected)))
 
 
-def _native_experiment(wps_namelist: Path, namelist_input: Path):
+def _sealed_root_rrtmg_variant(identity: dict[str, object]) -> str | None:
+    """The RRTMG variant the sealed root preparation pinned, if any.
+
+    A WRF namelist spells radiation as selector integers; which 4/4
+    IMPLEMENTATION serves them (RTE+RRTMGP or the exact legacy port) is
+    the sealed root's physics profile's decision, recorded in its cache
+    identity.  This reads that decision so the hierarchy imports its
+    namelists under the same variant.  Absent or malformed shapes return
+    None (the importer's default) rather than refusing here: the
+    d01-binding comparison downstream still refuses any real mismatch,
+    so failing open cannot admit a wrong trajectory -- it only preserves
+    the behaviour of headers written before the field existed.
+    """
+    domain_config = identity.get("domain_config")
+    if not isinstance(domain_config, dict):
+        return None
+    run = domain_config.get("run")
+    if not isinstance(run, dict):
+        return None
+    variant = run.get("ra_rrtmg_variant")
+    return variant if isinstance(variant, str) else None
+
+
+def _native_experiment(wps_namelist: Path, namelist_input: Path,
+                       *, rrtmg_variant: str | None = None):
+    keywords = ({} if rrtmg_variant is None
+                else {"rrtmg_variant": rrtmg_variant})
     resolved, report = import_namelists(
-        wps_namelist, namelist_input, name="native_hrrr_hierarchy")
+        wps_namelist, namelist_input, name="native_hrrr_hierarchy",
+        **keywords)
     exp = build_experiment(
         tomllib.loads(resolved),
         source=f"native HRRR hierarchy {wps_namelist} + {namelist_input}",
@@ -145,11 +210,26 @@ def _require_raw_stock_delta(
 ) -> dict[str, object]:
     """Require only the explicit native-to-stock runtime deltas.
 
-    ``ghg_input=0`` is stock-only because this gate substitutes WRF's legacy
-    RRTM longwave for native preparation's disabled longwave.  Pinning it is
-    nevertheless mandatory: WRF's default ``1`` reads the time-varying CAM
-    gas table and is not a valid implicit substitute for the fixed-gas RRTM
-    configuration used by the acceptance gate.
+    The longwave delta is a PER-DOMAIN substitution, not a constant: the
+    stock arm selects RRTM (1) exactly where the native arm runs with
+    longwave off (0), and carries any other admitted longwave selection
+    unchanged -- so under the resolved RRTMG (4, 4) pair the delta
+    collapses and both arms run 4.  ``ghg_input=0`` stays stock-only in
+    both cases: on the (0, 1) suite it fixes the substituted RRTM's gas
+    table, and on the (4, 4) suite it mirrors what
+    ``gpuwm/core/rrtmg_legacy.py`` pins on the native side.  Pinning it
+    is mandatory either way: WRF's default ``1`` reads the time-varying
+    CAM gas table and is not a valid implicit substitute for the
+    fixed-gas configurations used by the acceptance gate.
+
+    ``do_radar_ref=1`` is the second stock-only key and is mandatory for
+    the same class of reason: it is a setting the native arm answers in
+    CODE rather than from a namelist, so the native file must stay
+    silent about it while the stock file has to be told.  gpuwm
+    evaluates REFL_10CM at output time unconditionally; WRF allocates
+    the array only under ``package radar_refl compute_radar_ref==1``.
+    At WRF's default the stock arm's history frames carry no REFL_10CM
+    at all, and every reflectivity score on that arm is unanswerable.
     """
 
     native = parse_namelist(native_namelist)
@@ -162,12 +242,14 @@ def _require_raw_stock_delta(
         native_theta = native["dynamics"]["use_theta_m"]
         stock_theta = stock["dynamics"]["use_theta_m"]
         stock_ghg = stock["physics"]["ghg_input"]
+        stock_radar_ref = stock["physics"]["do_radar_ref"]
     except KeyError as exc:
         raise ValueError(
             "both native and stock namelists must explicitly declare "
             "&domains/max_dom, "
             "&physics/ra_lw_physics and &dynamics/use_theta_m; the stock "
-            "namelist must also declare &physics/ghg_input") from exc
+            "namelist must also declare &physics/ghg_input and "
+            "&physics/do_radar_ref") from exc
     if (len(native_max_dom) != 1 or isinstance(native_max_dom[0], bool)
             or not isinstance(native_max_dom[0], int)
             or not 1 <= native_max_dom[0] <= _MAX_PUBLIC_DOMAINS
@@ -212,21 +294,40 @@ def _require_raw_stock_delta(
                 "native hierarchy namelist is outside the certified raw "
                 f"runtime contract: &{section}/{key} must be omitted")
 
-    native_lw_expected = [0] * max_dom
-    stock_lw_expected = [1] * max_dom
-    if (not _same_typed_values(native_lw, native_lw_expected)
-            or not _same_typed_values(stock_lw, stock_lw_expected)
+    if (not isinstance(native_lw, list) or len(native_lw) != max_dom
+            or any(isinstance(value, bool) or not isinstance(value, int)
+                   or value not in (0, 4) for value in native_lw)):
+        raise ValueError(
+            "native hierarchy namelist must declare one explicit "
+            "ra_lw_physics entry per domain, each 0 (longwave off) or 4 "
+            f"(RRTMG); got {native_lw}")
+    stock_lw_expected = [1 if value == 0 else value for value in native_lw]
+    if (not _same_typed_values(stock_lw, stock_lw_expected)
             or not _same_typed_values(native_theta, [0])
             or not _same_typed_values(stock_theta, [1])
             or "ghg_input" in native["physics"]
-            or not _same_typed_values(stock_ghg, [0])):
+            or not _same_typed_values(stock_ghg, [0])
+            # do_radar_ref stays FORBIDDEN in the native namelist (the
+            # loop above) and is now MANDATORY at 1 in the stock one:
+            # gpuwm evaluates REFL_10CM at output time whatever a
+            # namelist says, while WRF allocates the array only under
+            # `package radar_refl compute_radar_ref==1`
+            # (Registry.EM_COMMON:3059, fed by do_radar_ref via
+            # module_check_a_mundo.F:3477).  Left at the Registry
+            # default the stock arm writes history frames with no
+            # REFL_10CM at all and every reflectivity score on that arm
+            # is unanswerable -- measured, first WRF-arm scoring
+            # attempt.  A scalar: Registry.EM_COMMON:2447, nentries 1.
+            or not _same_typed_values(stock_radar_ref, [1])):
         raise ValueError(
-            "the evidenced raw namelist deltas require one explicit "
-            "ra_lw_physics=0 -> 1 entry per domain, use_theta_m=0 -> 1, "
-            "and stock-only ghg_input=0")
+            "the evidenced raw namelist deltas require ra_lw_physics "
+            "0 -> 1 exactly where the native entry is 0 (a native 4 "
+            "carries to the stock arm unchanged), use_theta_m=0 -> 1, "
+            "stock-only ghg_input=0, and stock-only do_radar_ref=1")
     normalized_stock = deepcopy(stock)
     normalized_stock["physics"]["ra_lw_physics"] = list(native_lw)
     normalized_stock["physics"].pop("ghg_input")
+    normalized_stock["physics"].pop("do_radar_ref")
     normalized_stock["dynamics"]["use_theta_m"] = list(native_theta)
     if native != normalized_stock:
         differences = []
@@ -238,19 +339,20 @@ def _require_raw_stock_delta(
                     differences.append(f"&{section}/{key}")
         raise ValueError(
             "stock-WRF namelist raw settings differ beyond "
-            "ra_lw_physics 0 -> 1, use_theta_m 0 -> 1, and stock-only "
-            "ghg_input=0: "
+            "ra_lw_physics 0 -> 1, use_theta_m 0 -> 1, stock-only "
+            "ghg_input=0, and stock-only do_radar_ref=1: "
             + ", ".join(differences))
     return {
-        "schema": "gpuwm-native-to-stock-namelist-delta-v3",
+        "schema": "gpuwm-native-to-stock-namelist-delta-v4",
         "status": "PASS",
         "max_dom": max_dom,
         "certified_native_runtime": observed_pins,
         "allowed_deltas": {
             "physics.ra_lw_physics": {
-                "native": native_lw_expected, "stock": stock_lw_expected},
+                "native": list(native_lw), "stock": stock_lw_expected},
             "dynamics.use_theta_m": {"native": [0], "stock": [1]},
             "physics.ghg_input": {"native": None, "stock": [0]},
+            "physics.do_radar_ref": {"native": None, "stock": [1]},
         },
     }
 
@@ -542,6 +644,15 @@ def _supported_hierarchy_slice(exp, root_target, *, forcing_hours) -> None:
                 f"supports {sorted(_SUPPORTED_MICROPHYSICS)}")
         exempt = (frozenset() if domain is root_domain
                   else _CHILD_PHYSICS_SLICE_OVERRIDES)
+        if ("bl_pbl_physics" not in exempt
+                and int(domain.run.bl_pbl_physics)
+                not in _ADMITTED_PBL_PHYSICS):
+            raise ValueError(
+                f"d{domain.grid_id:02d} is outside the certified native "
+                f"HRRR PBL slice: bl_pbl_physics="
+                f"{domain.run.bl_pbl_physics}; the route admits "
+                f"{sorted(_ADMITTED_PBL_PHYSICS)}, each pinned by a "
+                "registered HRRR preparation profile.")
         mismatch = {
             name: (getattr(domain.run, name), expected)
             for name, expected in _SUPPORTED_PHYSICS.items()
@@ -551,10 +662,28 @@ def _supported_hierarchy_slice(exp, root_target, *, forcing_hours) -> None:
             raise ValueError(
                 f"d{domain.grid_id:02d} is outside the certified native "
                 f"HRRR physics slice: {mismatch}")
-        if domain.run.ra_lw_physics != 0:
+        # Compared in the RESOLVED explicit form, through the config's own
+        # resolver: the WRF namelist importer emits a coupled 4/4 request
+        # as the historical aggregate spelling (ra_physics=4 with the
+        # split fields at their -1 defaults), and gpuwm/config.py
+        # documents that spelling as preserving the aggregate exactly.
+        # Comparing raw fields here made the (4, 4) admission unreachable
+        # for every namelist-imported experiment -- the error text
+        # advertised a case no import could satisfy -- while the same
+        # selection spelled explicitly passed.  radiation_scheme_ids is
+        # the production resolver and itself refuses an incoherent
+        # spelling (mixed split/aggregate), so nothing is widened: the
+        # admitted physics is the same two resolved pairs.
+        pair = radiation_scheme_ids(domain.run)
+        if pair not in _ADMITTED_RADIATION_PAIRS:
             raise ValueError(
-                "native hierarchy preparation requires ra_lw_physics=0; "
-                "the separately supplied stock-WRF namelist must select 1")
+                f"d{domain.grid_id:02d} is outside the certified native "
+                f"HRRR radiation slice: resolved (ra_lw_physics, "
+                f"ra_sw_physics)={pair}; the route admits "
+                f"{sorted(_ADMITTED_RADIATION_PAIRS)}."
+                "  Under (0, 1) the separately supplied stock-WRF "
+                "namelist selects longwave 1; under (4, 4) both arms "
+                "run 4.")
         expected_run = dict(root_run)
         expected_run.update({
             "grid_id": domain.grid_id,
@@ -587,6 +716,16 @@ def _supported_hierarchy_slice(exp, root_target, *, forcing_hours) -> None:
 
 
 def _compare_stock_experiment(native_exp, stock_exp) -> None:
+    for native_domain, stock_domain in zip(native_exp.domains,
+                                           stock_exp.domains):
+        expected = (1 if native_domain.run.ra_lw_physics == 0
+                    else native_domain.run.ra_lw_physics)
+        if stock_domain.run.ra_lw_physics != expected:
+            raise ValueError(
+                f"stock-WRF namelist d{stock_domain.grid_id:02d} must "
+                f"select ra_lw_physics={expected} (RRTM substitutes the "
+                "native arm's disabled longwave; any other native "
+                "longwave carries unchanged)")
     native = asdict(native_exp)
     stock = asdict(stock_exp)
     for document in (native, stock):
@@ -597,8 +736,6 @@ def _compare_stock_experiment(native_exp, stock_exp) -> None:
         raise ValueError(
             "stock-WRF namelist differs from the native hierarchy setup "
             "beyond the allowed ra_lw_physics 0 -> 1 runtime change")
-    if any(domain.run.ra_lw_physics != 1 for domain in stock_exp.domains):
-        raise ValueError("stock-WRF namelist must select ra_lw_physics=1")
 
 
 def _effective_domain_config(domain) -> dict[str, object]:
@@ -787,13 +924,14 @@ def prepare_hrrr_hierarchy(
     started = time.perf_counter()
     stock_runtime_delta = _require_raw_stock_delta(
         Path(namelist_input), Path(stock_wrf_namelist_input))
-    native_exp, native_resolved, native_report = _native_experiment(
-        Path(wps_namelist), Path(namelist_input))
-    target = load_hrrr_target_domain(root_domain_spec)
-    # The sealed root preparation is the forcing authority, so read its
-    # inventory BEFORE gating the requested duration -- that is what makes
-    # the duration ceiling a property of this bundle rather than a
-    # constant.
+    # The sealed root preparation is the physics and forcing authority,
+    # so read its identity BEFORE importing the namelists: the namelist
+    # spells radiation as selector integers, and which 4/4 implementation
+    # serves them is the sealed profile's recorded decision
+    # (_sealed_root_rrtmg_variant), which the import must inherit for the
+    # d01 binding below to compare like with like.  The forcing inventory
+    # is read here for the same reason -- the duration ceiling is a
+    # property of this bundle rather than a constant.
     cache_header = _json(paths["prepared_cache"] / "header.json")
     if (cache_header.get("schema") != "gpuwm-prepared-real-cache-v1"
             or cache_header.get("status") != "READY"):
@@ -802,6 +940,10 @@ def prepare_hrrr_hierarchy(
     if not isinstance(identity, dict):
         raise ValueError("root preparation cache lacks an identity")
     forcing_hours = tuple(identity.get("forcing_hours", ()))
+    native_exp, native_resolved, native_report = _native_experiment(
+        Path(wps_namelist), Path(namelist_input),
+        rrtmg_variant=_sealed_root_rrtmg_variant(identity))
+    target = load_hrrr_target_domain(root_domain_spec)
     _supported_hierarchy_slice(
         native_exp, target, forcing_hours=forcing_hours)
     wps_runtime_contract = _require_raw_wps_contract(

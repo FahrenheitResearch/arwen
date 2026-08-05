@@ -16,6 +16,12 @@ import numpy as np
 
 MYNN_VERTICAL_LEVEL_BOUNDS = (5, None)
 KF_VERTICAL_LEVEL_BOUNDS = (8, 128)
+# Grell-Freitas: the inversion-layer search clamps kend to ktf-8 and its
+# second-derivative stencil then reaches ktf-1, so a column shorter than 12
+# levels leaves no search window at all; the certified fixture ran nz=40 and
+# the kernel recompiles its level bound above GF_KMAX=40 through the
+# integer-define tier, so there is no fixed upper bound to declare.
+GF_VERTICAL_LEVEL_BOUNDS = (12, None)
 KESSLER_VERTICAL_LEVEL_BOUNDS = (None, 256)
 WSM6_VERTICAL_LEVEL_BOUNDS = (2, 80)
 THOMPSON_VERTICAL_LEVEL_BOUNDS = (2, 256)
@@ -32,6 +38,11 @@ THOMPSON_VERTICAL_LEVEL_BOUNDS = (2, 256)
 THOMPSON_AEROSOL_VERTICAL_LEVEL_BOUNDS = (2, 256)
 MORRISON_VERTICAL_LEVEL_BOUNDS = (2, 256)
 NSSL2_VERTICAL_LEVEL_BOUNDS = (3, 256)
+#: The dynamical core's own vertical bound, from the top ``WPHI_MAX_LEV``
+#: tier ``gpuwm.core.acoustic`` compiles the implicit w''-phi'' solve at.
+#: Bound to the launcher's ladder by
+#: ``tests/test_acoustic_nz_tiers.py::test_the_contract_bound_is_the_launcher_bound``.
+ACOUSTIC_VERTICAL_LEVEL_BOUNDS = (1, 256)
 
 RRTMGP_TOA_PRESSURE_PA = 1.005183574463
 WRF_LW_UPPER_DELTA_P_PA = 400.0

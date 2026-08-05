@@ -131,7 +131,9 @@ class RunConfig:
     ysu_topdown_pblmix: int = 1
     # --- Phase 4 (Task 1): non-timesplit radiation and cumulus slots.
     # ra_physics=90 is the Phase-3 analytic clear-sky proxy; 4 selects
-    # RTE+RRTMGP.  cu_physics=1 is reserved for Kain-Fritsch.
+    # RTE+RRTMGP.  cu_physics=1 is Kain-Fritsch; cu_physics=3 is
+    # Grell-Freitas (scale-aware; the sig=(1-frh)^2 taper is the scheme's
+    # own, so per-domain admission carries no dx gate).
     ra_physics: int = 0
     cu_physics: int = 0
     radt_minutes: float = 12.0
@@ -497,6 +499,64 @@ class RunConfig:
     # KM_OPT_ZERO_ACK; anything else (including True) is refused.  See
     # KM_OPT_ZERO_ACK for what it means and why the default refuses.
     km_opt_zero_acknowledgement: str = ""
+    # --- LES-nest inflow turbulence seeding (P3, per-domain, TOML-only).
+    #
+    # CPM-style cell-blocked theta perturbation of the child's rolling
+    # nest-boundary VALUE tables on the inflow-side relax-zone rows,
+    # refreshed on the FORCE cadence (gpuwm/core/inflow_perturbation.py;
+    # every constant pinned in docs/superpowers/receipts/les/
+    # INFLOW-GENERATOR-ACCEPTANCE-V2.md, registered before data).  An
+    # ArWen-over-WRF extension (PROVENANCE.md D10): stock v4.6.1 ships
+    # perturb_bdy (stoch-package boundary-tendency patterns), not a
+    # cell-perturbation path, and has no namelist column for these, so a
+    # config using them cannot round-trip to a namelist -- exactly the
+    # per-domain isfflx situation.  Default OFF; the OFF trajectory is
+    # gated byte-identical to a build without the mechanism.
+    inflow_perturbation: bool = False
+    # RNG seed; part of every draw's Philox key (deterministic,
+    # counter-based -- same seed, same bytes, every card).
+    inflow_perturbation_seed: int = 0
+    # Multiplies the pinned Eckert-number amplitude.  0.0 skips every
+    # table write and is the registered zero-amplitude negative control
+    # (acceptance gate G2): bitwise-identical to OFF.
+    inflow_perturbation_amplitude_scale: float = 1.0
+    # "inflow" perturbs the flow_dep_bdy inflow faces (the mechanism);
+    # "outflow" perturbs the complementary faces instead -- the
+    # registered AC-P3.4 mutation control, selected by configuration.
+    inflow_perturbation_faces: str = "inflow"
+    # WRF v4.6.1 Registry/Registry.EM_COMMON:2889, verbatim:
+    #
+    #   rconfig   logical  moist_mix6_off   namelist,dynamics  max_domains
+    #       .false. rh  "moist_mix6_off"
+    #       "de-activate 6th-order horizontal filter for moisture"  ""
+    #
+    # WRF's own switch, in WRF's own spelling, with WRF's own default: the
+    # importer must round-trip a stock namelist that sets it, and inventing
+    # a second name for a knob WRF already has is the defect commit a0ef9d29
+    # reverted for isfflx.  It is per domain because the Registry column is
+    # max_domains.
+    #
+    # WHAT IT GATES, EXACTLY: rk_scalar_tend calls sixth_order_diffusion on
+    # the moist array under ``(diff_6th_opt .NE. 0) .and. (.not. mix6_off)``
+    # (dyn_em/module_em.F:1421, reached from dyn_em/solve_em.F:2230 with
+    # config_flags%moist_mix6_off).  It touches the MOIST array only --
+    # theta keeps its filter, and TKE has its own tke_mix6_off -- so gpuwm
+    # gates exactly the moist rows of the diff6 row set and nothing else.
+    #
+    # Default .false. is WRF's, so every frozen trajectory is bitwise
+    # unchanged and diff_6th_opt = 0 runs make it inert either way.  It is
+    # divergence-ledger entry L4 (gpuwm/physics_mode.py, PROVENANCE.md):
+    # a configuration-policy patch WRF can also express, which is why it is
+    # measured against observations rather than asserted.
+    moist_mix6_off: bool = False
+    # WRF v4.6.1 Registry defaults for the Grell-family namelist keys
+    # (Registry.EM_COMMON:2544,2546).  clos_choice=0 is the 16-member
+    # ensemble closure -- the only arm the GF oracle covers, and the only
+    # admitted value; ishallow toggles CUP_gf_sh, both arms oracle-covered.
+    # Read only where cu_physics = 3, which no frozen configuration
+    # selects, so appending them cannot move a frozen trajectory.
+    clos_choice: int = 0
+    ishallow: int = 0
 
 
 #: The Noah-MP option identity gpuwm admits, field -> the only accepted
@@ -668,6 +728,8 @@ SASE_MAX_NZ = _sase_limits.MAX_COLUMN_LEVELS
 #: gpuwm/core/physics.py) -- and 900 is :data:`SASE_PBL_SCHEME`,
 #: ArWen-only (see there).
 PBL_SCHEMES = (0, 1, 5, 11, SASE_PBL_SCHEME)
+# 0 = none, 1 = Kain-Fritsch, 3 = Grell-Freitas.
+CU_SCHEMES = (0, 1, 3)
 
 #: The exact id :attr:`RunConfig.km_opt_zero_acknowledgement` must carry.
 #:
@@ -1531,11 +1593,43 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
         )
     if cfg.cu_physics and not cfg.moist:
         raise ValueError(
-            f"cu_physics={cfg.cu_physics} requires moist=true: Kain-Fritsch "
-            "is a moist convective scheme and gpuwm/core/physics.py "
+            f"cu_physics={cfg.cu_physics} requires moist=true: the cumulus "
+            "schemes are moist convective schemes and gpuwm/core/physics.py "
             "initialize_physics refuses a cumulus scheme on a dry DomainState "
             "(state.qv is None). The registry says the same thing through the "
             "option's required_settings."
+        )
+    if cfg.cu_physics == 3:
+        if not cfg.bl_pbl_physics:
+            raise ValueError(
+                "cu_physics=3 (Grell-Freitas) requires a PBL scheme: the "
+                "trigger's temperature/moisture excesses and the shallow "
+                "arm read KPBL and the surface fluxes the PBL stack "
+                "maintains; with bl_pbl_physics=0 the engine has no KPBL "
+                "to hand the scheme."
+            )
+        if cfg.cudt_minutes != 0.0:
+            raise ValueError(
+                "cu_physics=3 (Grell-Freitas) requires cudt_minutes=0: GF "
+                "runs on the model step (WRF's usual GF configuration, "
+                "STEPCU=1) and carries no NCA hold; cudt is a Kain-Fritsch "
+                "cadence knob."
+            )
+        if cfg.clos_choice != 0:
+            raise ValueError(
+                f"clos_choice={cfg.clos_choice} is not admitted: only the "
+                "16-member ensemble closure (0, the WRF Registry default) "
+                "carries GF oracle coverage; the single-closure arms have "
+                "no parity receipt."
+            )
+        if cfg.ishallow not in (0, 1):
+            raise ValueError(
+                f"ishallow must be 0 or 1, got {cfg.ishallow}.")
+    elif cfg.clos_choice != 0 or cfg.ishallow != 0:
+        raise ValueError(
+            "clos_choice/ishallow are Grell-family keys read only where "
+            "cu_physics=3; set them with the scheme or leave the Registry "
+            "defaults (0/0)."
         )
     if cfg.sf_sfclay_physics not in (1, 91) and (
             cfg.isftcflx or cfg.iz0tlnd):
@@ -1671,10 +1765,10 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "the 4/4 radiation adapters (RTE+RRTMGP today, legacy RRTMG "
             "when it lands) implement cloud-radiation coupling as always "
             "on; icloud=0 would be a silent WRF semantic change")
-    if cfg.cu_physics not in (0, 1):
+    if cfg.cu_physics not in CU_SCHEMES:
         raise ValueError(
-            f"cu_physics must be 0 (off) or 1 (Kain-Fritsch), got "
-            f"{cfg.cu_physics}."
+            f"cu_physics must be 0 (off), 1 (Kain-Fritsch) or 3 "
+            f"(Grell-Freitas), got {cfg.cu_physics}."
         )
     if cfg.hypsometric_opt not in (1, 2):
         raise ValueError(
@@ -1863,5 +1957,44 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "positive-definite transport limiter; use the monotonic "
             "diff_6th_opt=2."
         )
+    if not isinstance(cfg.moist_mix6_off, bool):
+        raise ValueError(
+            "moist_mix6_off must be a boolean (WRF v4.6.1 declares it "
+            "logical, Registry.EM_COMMON:2889), got "
+            f"{cfg.moist_mix6_off!r}."
+        )
     validate_resolved_physics_vertical_levels(cfg)
+    # LES-nest inflow seeding (P3).  The three companion keys are
+    # schema-validated even while the mechanism is off (fail-loud, the
+    # D3 convention): a typo'd faces mode or a negative scale is a dead
+    # configuration either way, and it should say so before a run.
+    if type(cfg.inflow_perturbation) is not bool:
+        raise ValueError(
+            f"inflow_perturbation must be boolean, got "
+            f"{cfg.inflow_perturbation!r}.")
+    if cfg.inflow_perturbation and not cfg.nested:
+        raise ValueError(
+            "inflow_perturbation is a nest-boundary mechanism: it "
+            "perturbs the rolling parent-forced boundary tables a "
+            "NestCoupler refreshes, so it requires nested=true; this "
+            "domain is not a nest child."
+        )
+    if not isinstance(cfg.inflow_perturbation_seed, int) \
+            or type(cfg.inflow_perturbation_seed) is bool \
+            or cfg.inflow_perturbation_seed < 0:
+        raise ValueError(
+            "inflow_perturbation_seed must be a non-negative integer "
+            "(it keys every Philox draw), got "
+            f"{cfg.inflow_perturbation_seed!r}.")
+    if not math.isfinite(cfg.inflow_perturbation_amplitude_scale) \
+            or cfg.inflow_perturbation_amplitude_scale < 0.0:
+        raise ValueError(
+            "inflow_perturbation_amplitude_scale must be finite and "
+            ">= 0 (0.0 is the registered zero-amplitude control), got "
+            f"{cfg.inflow_perturbation_amplitude_scale}.")
+    if cfg.inflow_perturbation_faces not in ("inflow", "outflow"):
+        raise ValueError(
+            "inflow_perturbation_faces must be 'inflow' (the mechanism) "
+            "or 'outflow' (the registered AC-P3.4 mutation control), "
+            f"got {cfg.inflow_perturbation_faces!r}.")
     return cfg

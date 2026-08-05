@@ -380,6 +380,89 @@ def test_executor_owns_shared_dycore_workspace_for_step_and_force(
     assert workspace.acquisitions.count(("FORCE", 2, 1)) == 10
 
 
+def test_first_step_failure_is_stamped_stepping_not_the_writer_phase(
+        monkeypatch, tmp_path):
+    """The tree runner publishes ``preparing:initialize-domain-writers`` and
+    hands the model to this executor; before the fix nothing updated the
+    phase again until the first period commit, so a step-0 physics failure
+    was stamped as a writer-preparation failure and sent a real diagnosis
+    down the wrong path.  Stepping now announces itself, on the same
+    heartbeat run-progress.json already tracks.
+    """
+    import json
+    import os
+
+    import gpuwm.supervisor as supervisor
+
+    progress = supervisor.RuntimeHeartbeat(
+        tmp_path / "run-progress.json", run_id="step0-run",
+        config_sha256="a" * 64, started_at_utc="2026-08-05T00:00:00Z")
+    progress.preparing("initialize-domain-writers")
+    assert progress.last_phase == "preparing:initialize-domain-writers"
+
+    _exp, model = _model()
+
+    def failing_step(*_args, **_kwargs):
+        raise RuntimeError("injected first-step physics failure")
+
+    monkeypatch.setattr("gpuwm.core.dycore.step", failing_step)
+    with pytest.raises(RuntimeError, match="injected first-step"):
+        execute_experiment(
+            model, validate_state=False, progress_callback=progress,
+            pool_trim_per_period=False)
+
+    assert progress.last_phase == "stepping:outer-1"
+    assert progress.last_step == 0
+    # run-progress.json agrees: stepping began, zero outer steps completed.
+    heartbeat = supervisor.read_heartbeat(tmp_path / "run-progress.json")
+    assert heartbeat.status == "integrating"
+    assert heartbeat.outer_step == 0
+
+    # The capsule a worker would write from this failure tells the truth.
+    monkeypatch.setattr(supervisor, "git_commit", lambda: "test-commit")
+    capsule_path = supervisor.write_failure_capsule(
+        tmp_path / "failure-capsule.json", run_id="step0-run",
+        config_path=tmp_path / "case.toml", config_sha256="a" * 64,
+        input_hashes={}, gpu=supervisor.GPUIdentity(
+            "GPU-test", "610.74", "RTX 5090"),
+        last_phase=progress.last_phase, last_step=progress.last_step,
+        exception_type="RuntimeError",
+        exception_message="injected first-step physics failure",
+        exception_traceback="trace", last_durable_wrfout=None,
+        last_checkpoint=None, worker_pid=os.getpid())
+    capsule = json.loads(capsule_path.read_text(encoding="utf-8"))
+    assert capsule["last_phase"] == "stepping:outer-1"
+    assert capsule["last_phase"] != "preparing:initialize-domain-writers"
+    assert capsule["last_step"] == 0
+
+
+def test_resumed_stepping_phase_carries_the_restored_step_number(monkeypatch):
+    """On resume the transition names the next outer step, not outer-1."""
+    _exp, model = _model()
+    for node in model.walk_parent_first():
+        node.clock.ticks = 30
+        node.clock.step_count = 30 // node.clock.spec.step_ticks
+        node.state.elapsed_seconds = 30.0
+    model._resumed = True
+    model._resume_committed_history_grid_ids = frozenset({1, 2})
+    events = []
+
+    def recording_callback(**event):
+        events.append(event)
+
+    monkeypatch.setattr("gpuwm.core.dycore.step",
+                        lambda *_args, **_kwargs: None)
+    execute_experiment(
+        model, validate_state=False, progress_callback=recording_callback,
+        pool_trim_per_period=False)
+
+    resumed_step = 30 // model.root.clock.spec.step_ticks
+    assert events[0]["phase"] == f"stepping:outer-{resumed_step + 1}"
+    assert events[0]["outer_step"] == resumed_step
+    assert events[1]["phase"] == "post-d01-sync"
+    assert events[1]["outer_step"] == resumed_step + 1
+
+
 def test_history_alarm_t0_and_fifteen_minute_coincidence():
     exp = load_scaffold()
     domains = tuple(replace(

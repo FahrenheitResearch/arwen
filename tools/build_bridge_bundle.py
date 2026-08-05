@@ -5,7 +5,7 @@ by hand from a checkout):
 
 ``pack``
     On each target platform, after ``cargo build --release --locked`` in
-    both vendored workspaces, collect the eight artifacts of
+    both vendored workspaces, collect the nine artifacts of
     ``gpuwm.bridge_assets.BUNDLED_ARTIFACTS``, plus the renderer's map
     assets, into one zip named for the release and the platform.  The
     archive is deterministic: binaries first in the declared artifact
@@ -415,7 +415,7 @@ def _contract_problems(name: str, archive: Path, platform: str,
     """Every way ``archive`` diverges from this commit's content contract.
 
     The contract is exactly what ``pack`` produces from this checkout:
-    the eight binaries by filename (their bytes are the previous run's
+    the nine binaries by filename (their bytes are the previous run's
     non-reproducible build, proven on its native runner before upload,
     and pinned by the uploaded manifest when there is one), and the
     walked map-asset tree by path AND bytes, because for a data file the

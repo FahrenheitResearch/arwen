@@ -190,6 +190,12 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         'launch_pd_fluxes': 1,
         'launch_pd_renorm_apply': 1,
     },
+    # Zero, and structurally so: this module selects which compiled variant
+    # of wrf_calc_n2 the launcher fetches (spec 3.3 mutation control) and
+    # touches no array.  It imports cupy nowhere -- the row is entered in
+    # the commit that adds the module, per the rule this file states,
+    # rather than in a later sweep.
+    'gpuwm/core/moist_n2_mutation.py': {},
     'gpuwm/core/morrison.py': {
         'launch_morrison': 3,
     },

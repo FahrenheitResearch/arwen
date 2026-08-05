@@ -167,10 +167,18 @@ def _target(**changes) -> HrrrTargetDomain:
 
 
 def _raw_runtime_namelist(
-        max_dom, *, longwave, theta_m, ghg_input=None, run_hours=12):
+        max_dom, *, longwave, theta_m, ghg_input=None, run_hours=12,
+        do_radar_ref=None):
+    """The certified raw runtime shape.  ``ghg_input`` and
+    ``do_radar_ref`` are the two STOCK-ONLY keys: passing either marks
+    this text as the stock half of the pair, and the native half must
+    omit both."""
+
     def repeated(value):
         return ", ".join(str(value) for _ in range(max_dom))
     ghg = "" if ghg_input is None else f" ghg_input = {ghg_input},\n"
+    radar = ("" if do_radar_ref is None
+             else f" do_radar_ref = {do_radar_ref},\n")
     return (
         "&time_control\n"
         f" run_hours = {run_hours},\n"
@@ -191,7 +199,7 @@ def _raw_runtime_namelist(
         " surface_input_source = 1,\n num_soil_layers = 4,\n"
         f" sf_urban_physics = {repeated(0)},\n"
         " sst_update = 0,\n"
-        f"{ghg}/\n"
+        f"{ghg}{radar}/\n"
         f"&dynamics\n use_theta_m = {theta_m},\n/\n"
     )
 
@@ -565,6 +573,128 @@ def test_hierarchy_expected_identity_preserves_validated_namelist_invariant():
             forcing_hours=(0, 1))
 
 
+def test_sealed_legacy_variant_reaches_the_hierarchy_import(tmp_path):
+    """The 4/4 IMPLEMENTATION resolves from the sealed root, end to end.
+
+    A WRF namelist spells radiation as selector integers, so the battery's
+    legacy-RRTMG profile cannot survive a namelist round trip on its own:
+    the importer's default maps 4/4 to the RTE+RRTMGP substitution.  The
+    route therefore reads the sealed root preparation's recorded
+    ``ra_rrtmg_variant`` and imports under it.  Three legs, one run:
+    the profile pins the variant, the unplumbed default is REFUSED by the
+    d01 binding (the seam, kept as the negative control), and the plumbed
+    import resolves the legacy engine and binds.
+    """
+
+    from gpuwm.experiment import load_experiment
+    from gpuwm.hrrr_hierarchy_direct import (_native_experiment,
+                                             _sealed_root_rrtmg_variant)
+    from gpuwm.ingest.prepared_cache import prepared_domain_config_identity
+    from gpuwm.physics_compat import (RRTMG_VARIANT_LEGACY,
+                                      THOMPSON_LEGACY_RRTMG_PROFILE_ID,
+                                      WRF_RRTMG_LEGACY,
+                                      single_domain_runtime_switches)
+    from tools import battery_wrf_node_plan as node_plan
+
+    # Leg 1: the profile the root preparer materializes pins the variant.
+    switches = single_domain_runtime_switches(
+        THOMPSON_LEGACY_RRTMG_PROFILE_ID)
+    assert switches["ra_rrtmg_variant"] == RRTMG_VARIANT_LEGACY
+    assert switches["wrf_rrtmg_compatibility"] == WRF_RRTMG_LEGACY
+
+    repo = Path(__file__).resolve().parents[1]
+    config = (repo / "configs" / "battery"
+              / "shape_3km_thompson_rrtmg_legacy.toml")
+    outdir = tmp_path / "node"
+    node_plan.build(config, outdir, ranks=24, repository_root=repo)
+    exp = load_experiment(config)
+    sealed = {
+        "domain_config": prepared_domain_config_identity(exp.domains[0]),
+        "namelist_sha256": "a" * 64,
+    }
+    assert _sealed_root_rrtmg_variant(sealed) == RRTMG_VARIANT_LEGACY
+
+    # Leg 2 (the seam): the importer default resolves the substitution
+    # engine, and the d01 binding refuses the mismatch by name.
+    default_exp, _resolved, _report = _native_experiment(
+        outdir / "namelist.wps", outdir / "namelist.native.input")
+    assert default_exp.domains[0].run.ra_rrtmg_variant == "rte-rrtmgp"
+    with pytest.raises(ValueError, match="ra_rrtmg_variant"):
+        _validated_root_preparation_binding(sealed, default_exp.domains[0])
+
+    # Leg 3 (the plumb): importing under the sealed variant resolves the
+    # legacy engine and its compatibility token, and the binding accepts.
+    plumbed_exp, _resolved, _report = _native_experiment(
+        outdir / "namelist.wps", outdir / "namelist.native.input",
+        rrtmg_variant=RRTMG_VARIANT_LEGACY)
+    run = plumbed_exp.domains[0].run
+    assert run.ra_rrtmg_variant == RRTMG_VARIANT_LEGACY
+    assert run.wrf_rrtmg_compatibility == WRF_RRTMG_LEGACY
+    _validated_root_preparation_binding(sealed, plumbed_exp.domains[0])
+
+    # Headers written before the field existed fail open to the importer
+    # default; the binding above is what still refuses real mismatches.
+    assert _sealed_root_rrtmg_variant({"namelist_sha256": "a" * 64}) is None
+    assert _sealed_root_rrtmg_variant(
+        {"domain_config": {"run": []}}) is None
+
+
+def test_coupled_legacy_import_is_admitted_by_the_radiation_slice(tmp_path):
+    """The B-04 structural refusal, closed at the canonicalization point.
+
+    The WRF namelist importer emits a coupled 4/4 request as the
+    historical aggregate spelling -- ra_physics=4 with the split fields
+    at their -1 defaults -- so comparing RAW fields made the slice's
+    (4, 4) admission unreachable for every namelist-imported experiment:
+    the check demanded ra_physics=0 AND an explicit pair at once, and its
+    error text advertised a case no import could satisfy.  The slice now
+    compares the RESOLVED pair through gpuwm.config.radiation_scheme_ids,
+    the production resolver; emission is untouched (sealed bytes stay
+    sealed).
+    """
+
+    from gpuwm.experiment import load_experiment
+    from gpuwm.hrrr_hierarchy_direct import _native_experiment
+    from gpuwm.hrrr_route_inputs import target_domain
+    from tools import battery_wrf_node_plan as node_plan
+
+    repo = Path(__file__).resolve().parents[1]
+    config = (repo / "configs" / "battery"
+              / "shape_3km_thompson_rrtmg_legacy.toml")
+    outdir = tmp_path / "node"
+    node_plan.build(config, outdir, ranks=24, repository_root=repo)
+    exp, _resolved, _report = _native_experiment(
+        outdir / "namelist.wps", outdir / "namelist.native.input",
+        rrtmg_variant="rrtmg_legacy")
+    run = exp.domains[0].run
+    # The aggregate spelling, exactly as imported.
+    assert (run.ra_physics, run.ra_lw_physics, run.ra_sw_physics) \
+        == (4, -1, -1)
+    target = target_domain(load_experiment(config))
+
+    _supported_hierarchy_slice(exp, target, forcing_hours=tuple(range(25)))
+
+    # CONTROL 1: the aggregate spelling of radiation OFF resolves to
+    # (0, 0), which the route does not admit -- the canonicalization is
+    # not a wave-through.
+    radiation_off = replace(exp, domains=tuple(
+        replace(domain, run=replace(domain.run, ra_physics=0))
+        for domain in exp.domains))
+    with pytest.raises(ValueError, match=r"resolved \(ra_lw_physics"):
+        _supported_hierarchy_slice(radiation_off, target,
+                                   forcing_hours=tuple(range(25)))
+
+    # CONTROL 2: an incoherent spelling (explicit pair beside a nonzero
+    # aggregate) is refused by the resolver itself, by name.
+    incoherent = replace(exp, domains=tuple(
+        replace(domain, run=replace(domain.run, ra_lw_physics=4,
+                                    ra_sw_physics=4))
+        for domain in exp.domains))
+    with pytest.raises(ValueError, match="require ra_physics=0"):
+        _supported_hierarchy_slice(incoherent, target,
+                                   forcing_hours=tuple(range(25)))
+
+
 def test_stock_comparison_allows_only_explicit_longwave_runtime_change():
     native = _native()
     stock = replace(native, name="stock", domains=tuple(
@@ -604,26 +734,59 @@ def test_raw_namelist_gate_allows_only_explicit_runtime_deltas(
         encoding="ascii")
     stock.write_text(
         _raw_runtime_namelist(
-            max_dom, longwave=1, theta_m=1, ghg_input=0),
+            max_dom, longwave=1, theta_m=1, ghg_input=0, do_radar_ref=1),
         encoding="ascii")
     receipt = _require_raw_stock_delta(native, stock)
     assert set(receipt["allowed_deltas"]) == {
         "physics.ra_lw_physics", "dynamics.use_theta_m",
-        "physics.ghg_input"}
+        "physics.ghg_input", "physics.do_radar_ref"}
     assert receipt["max_dom"] == max_dom
 
     stock.write_text(
         _raw_runtime_namelist(
-            max_dom, longwave=1, theta_m=1, ghg_input=0, run_hours=6),
+            max_dom, longwave=1, theta_m=1, ghg_input=0, do_radar_ref=1,
+            run_hours=6),
         encoding="ascii")
     with pytest.raises(ValueError, match="time_control/run_hours"):
         _require_raw_stock_delta(native, stock)
 
     stock.write_text(
         _raw_runtime_namelist(
-            max_dom, longwave=1, theta_m=1, ghg_input=1),
+            max_dom, longwave=1, theta_m=1, ghg_input=1, do_radar_ref=1),
         encoding="ascii")
     with pytest.raises(ValueError, match="stock-only ghg_input=0"):
+        _require_raw_stock_delta(native, stock)
+
+    # do_radar_ref is MANDATORY in the stock half, at 1.  Omitted, the
+    # stock arm writes history frames with no REFL_10CM and every
+    # reflectivity score on it is unanswerable; at 0 the switch is
+    # present and says the wrong thing.  Both refuse.
+    stock.write_text(
+        _raw_runtime_namelist(
+            max_dom, longwave=1, theta_m=1, ghg_input=0),
+        encoding="ascii")
+    with pytest.raises(ValueError, match="do_radar_ref"):
+        _require_raw_stock_delta(native, stock)
+
+    stock.write_text(
+        _raw_runtime_namelist(
+            max_dom, longwave=1, theta_m=1, ghg_input=0, do_radar_ref=0),
+        encoding="ascii")
+    with pytest.raises(ValueError, match="stock-only do_radar_ref=1"):
+        _require_raw_stock_delta(native, stock)
+
+    # And it stays FORBIDDEN in the native half: gpuwm does not read it,
+    # so a native namelist claiming to control REFL_10CM is claiming
+    # something the arm that reads the file ignores.
+    native.write_text(
+        _raw_runtime_namelist(
+            max_dom, longwave=0, theta_m=0, do_radar_ref=1),
+        encoding="ascii")
+    stock.write_text(
+        _raw_runtime_namelist(
+            max_dom, longwave=1, theta_m=1, ghg_input=0, do_radar_ref=1),
+        encoding="ascii")
+    with pytest.raises(ValueError, match="do_radar_ref must be omitted"):
         _require_raw_stock_delta(native, stock)
 
 
@@ -653,7 +816,7 @@ def test_raw_namelist_gate_rejects_dropped_runtime_drift(
     stock = tmp_path / "stock.input"
     native_text = _raw_runtime_namelist(4, longwave=0, theta_m=0)
     stock_text = _raw_runtime_namelist(
-        4, longwave=1, theta_m=1, ghg_input=0)
+        4, longwave=1, theta_m=1, ghg_input=0, do_radar_ref=1)
     assert old in native_text and old in stock_text
     native.write_text(native_text.replace(old, new), encoding="ascii")
     stock.write_text(stock_text.replace(old, new), encoding="ascii")

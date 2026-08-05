@@ -172,12 +172,19 @@ STAGED_COLUMNS_ENV = "GPUWM_NOAHMP_STAGED_COLUMNS"
 SLAB_COLUMN_CHUNK = 65536
 
 #: Peak device transient per column of one slab chunk, in bytes.  Measured
-#: on the RTX 5090: 2,751 B of CuPy pool growth for one evaluate_sflx_slab
-#: call at exactly SLAB_COLUMN_CHUNK columns (the gate in
+#: on the RTX 5090: 2,723 B of peak allocator demand for one
+#: evaluate_sflx_slab call at exactly SLAB_COLUMN_CHUNK columns (the gate in
 #: tests/test_noahmp_column_slab.py re-measures it and holds this ceiling to
 #: within 2x).  A ceiling, not the measurement: the pool allocates in
 #: rounded blocks and the composition's lifetime overlaps must be allowed to
 #: breathe without moving preflight every commit.
+#:
+#: Demand, read at the allocator boundary, not CuPy pool *growth*: growth is
+#: what the pool had to acquire from the driver, so it collapses whenever a
+#: warm pool can serve the transient from blocks it is already holding.  The
+#: same call reads 2,751 B/column of growth in a fresh process and 504
+#: B/column deep in the GPU suite; only the demand is a property of this
+#: composition rather than of what ran before it.
 SLAB_TRANSIENT_BYTES_PER_COLUMN = 4096
 
 #: The same call's whole-grid residue, in bytes per nx*ny column: the device

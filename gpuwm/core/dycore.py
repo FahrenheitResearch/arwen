@@ -45,8 +45,9 @@ from gpuwm.core.diagnostics import update_diagnostics
 from gpuwm.core.diffusion import add_diffusion_tendencies
 from gpuwm.core.kernels import get_kernel
 from gpuwm.core.microphysics import apply as apply_microphysics
-from gpuwm.core.moist import (SPECIES, extra_moist_species,
-                              advance_scalars_stage)
+from gpuwm.core.moist import (SPECIES, WRF_MOIST_ARRAY_SPECIES,
+                              extra_moist_species, advance_scalars_stage)
+from gpuwm.core.moist_n2_mutation import calc_n2_kernel
 from gpuwm.core.physics import physics_enabled
 from gpuwm.core import tke_budget
 from gpuwm.core.state import (DTYPE, DomainState, mu_at_u_faces,
@@ -771,6 +772,13 @@ def launch_wrf_calc_n2(state: DomainState, cfg: RunConfig, bn2, *,
     with the saturated moist-adiabatic branch (qv >= qvs or qc >= 1e-5),
     the unsaturated qv/qtot form, the MARTA/WCS one-sided surface level,
     and the ktf copy.  Mirror: ``gpuwm.verify.npref.np_wrf_calc_n2``.
+
+    The kernel is fetched through ``gpuwm.core.moist_n2_mutation`` rather
+    than straight from ``get_kernel``, so the LES spec 3.3 mutation control
+    -- the saturated branch forced off, for instrument qualification -- can
+    select a separately compiled variant under its own cache key.  It is
+    off by default and the default path resolves to the same cached
+    production kernel as before.
     """
     nz, ny, nx = bn2.shape
     common = _wrf_smag_grid_args(state, cfg, time_t=time_t)
@@ -785,7 +793,7 @@ def launch_wrf_calc_n2(state: DomainState, cfg: RunConfig, bn2, *,
     qi = (getattr(state, "qi" + suffix)
           if moist and getattr(state, "qi", None) is not None else None)
     dummy = state.alt
-    get_kernel("smag2d", "wrf_calc_n2")(
+    calc_n2_kernel()(
         grid, (_TPB, 1, 1),
         tuple(common + [
             thp, state.thb, np.int32(state.thb.ndim == 3), state.p,
@@ -1161,6 +1169,28 @@ def _smag2d_specs(state: DomainState, km, kh, *, time_t: bool = False,
     return specs
 
 
+def diff6_exempt_slots(cfg: RunConfig) -> frozenset[str]:
+    """Carrying-buffer slots the 6th-order filter must skip this run.
+
+    WRF's ``&dynamics`` filter switches are per Registry ARRAY, and
+    ``rk_scalar_tend`` calls ``sixth_order_diffusion`` under
+    ``(diff_6th_opt .NE. 0) .and. (.not. mix6_off)`` with the array's own
+    switch (dyn_em/module_em.F:1421).  ``moist_mix6_off`` therefore removes
+    the moist array's rows and NOTHING else: theta keeps its filter, the
+    number/volume tracers keep theirs (they are WRF ``scalar``-package
+    fields with their own ``scalar_mix6_off``), and TKE keeps
+    ``tke_mix6_off``.
+
+    Returned as slot names because the diff6 row set is addressed by
+    carrying buffer, and a name filter cannot accidentally exempt a row
+    whose field happens to share a shape with a moist one.
+    """
+
+    if not cfg.moist_mix6_off:
+        return frozenset()
+    return frozenset("smag_r" + name for name in WRF_MOIST_ARRAY_SPECIES)
+
+
 def _compute_wrf_smag_tendencies(state: DomainState, cfg: RunConfig,
                                   km, kh, specs, *, time_t: bool) -> None:
     """Build the once-per-step WRF metric/stress forward tendencies.
@@ -1329,7 +1359,9 @@ def prepare_fixed_tendencies(state: DomainState, cfg: RunConfig) -> None:
         factor = _clock_scaled_diff6_factor(cfg)
         temp_slot = {"x": "diff6_x", "y": "diff6_y",
                      "z": "diff6_z", "": "diff6_m"}
-        diff6_rows = list(specs)
+        exempt = diff6_exempt_slots(cfg)
+        # row[5] is the row's carrying slot (see _smag2d_specs).
+        diff6_rows = [row for row in specs if row[5] not in exempt]
         if cfg.km_opt == 2:
             # WRF applies the 6th-order filter to tke through
             # rk_scalar_tend unless tke_mix6_off (Registry default
@@ -1747,7 +1779,10 @@ def apply_diff6(state: DomainState, cfg: RunConfig) -> None:
 
     Applied to u, v, w, theta' and all allocated transported moisture
     scalars.  WRF diffuses theta up to a constant offset, which is
-    identical to theta' on flat coordinate surfaces.
+    identical to theta' on flat coordinate surfaces.  Under
+    ``moist_mix6_off`` the WRF ``moist``-array rows drop out here exactly as
+    they drop out of the production row set (:func:`diff6_exempt_slots`), so
+    the helper keeps measuring what production applies.
     """
     factor, opt = _clock_scaled_diff6_factor(cfg), cfg.diff_6th_opt
     mu_t = state.mub2d + state.mup0                # time-t mass (WRF mut)
@@ -1767,12 +1802,12 @@ def apply_diff6(state: DomainState, cfg: RunConfig) -> None:
         (state.thp0, state.thp, "", state.c1h, state.c2h, chm, "diff6_m"),
     ]
     if state.qv is not None:
+        exempt = diff6_exempt_slots(cfg)
+        names = [name for name in SPECIES + tuple(extra_moist_species(state))
+                 if "smag_r" + name not in exempt]
         targets += [(getattr(state, name + "0"), getattr(state, name), "",
                      state.c1h, state.c2h, chm, "diff6_m")
-                    for name in SPECIES]
-        targets += [(getattr(state, name + "0"), getattr(state, name), "",
-                     state.c1h, state.c2h, chm, "diff6_m")
-                    for name in extra_moist_species(state)]
+                    for name in names]
     for f0, f, stag, c1, c2, chmf, slot in targets:
         tendf = state.scratch(f0.shape, slot)
         tendf[...] = 0

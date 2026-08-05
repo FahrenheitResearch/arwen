@@ -413,6 +413,10 @@ Stated plainly, up front:
   Run `python -m tools.ensemble_forecast run --help`, which prints the
   full limitation list before it does anything. See
   [PROVENANCE.md](PROVENANCE.md) for the register entry.
+  The radar-DA nowcast built on that machinery
+  ([quickstart](docs/da-nowcast-quickstart.md)) is EXPERIMENTAL and
+  demo-grade on the same terms: UNSCORED, outside any registered
+  campaign, and it says so on every figure it draws.
 - **Data routes.** All three sources drive ArWen GPU forecasts; they
   differ in which door they use AND in which command runs the
   forecast. ERA5 uses the config door: `[case_data]` in the experiment
@@ -492,6 +496,7 @@ What it does detect, what it does not, and the pin set that defines
 - [Chunked forecast streaming](docs/public/STREAMING.md)
 - [Driving stock WRF](docs/public/WRF-INTEROP.md)
 - [Install and verify](docs/install.md)
+- [Radar-DA nowcast quickstart (demo-grade, unscored)](docs/da-nowcast-quickstart.md)
 - [CLI reference](docs/cli-reference.md)
 - [Arbitrary but verified GRIB adapters](docs/arbitrary-verified-adapters.md)
 - [What `gpuwm adapt` validates, and what it trusts](docs/adapt-validation-contract.md)
