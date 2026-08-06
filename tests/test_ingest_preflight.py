@@ -644,6 +644,8 @@ def test_composed_check_accepts_a_runconfig_shaped_config(capsys):
     same file as a one-domain experiment.  The input preflight now skips
     the shape it has nothing to say about, so both paths agree.
     """
+    import cupy  # noqa: F401  (marks this test for -m "not gpu")
+
     import gpuwm.cli as cli
 
     rc = cli.main(["check", str(REPO / "configs/real74_d01.toml"),
@@ -657,6 +659,8 @@ def test_composed_check_accepts_a_runconfig_shaped_config(capsys):
 def test_composed_check_json_keeps_stdout_machine_readable(capsys):
     """RunConfig-shape skip note goes to stderr under --json."""
     import json
+
+    import cupy  # noqa: F401  (marks this test for -m "not gpu")
 
     import gpuwm.cli as cli
 

@@ -442,6 +442,7 @@ def main(argv: list[str] | None = None) -> int:
                 "  remedy: pip install 'gpuwm[gpu]'\n"
                 "  # or, if you pin the CUDA wheel yourself:\n"
                 "  #   pip install cupy-cuda12x\n"
+                "  # on a CUDA-13-only box: pip install 'gpuwm[gpu-cu13]'\n"
                 "  # `gpuwm doctor` checks the whole runtime estate.",
                 file=sys.stderr)
             return 2

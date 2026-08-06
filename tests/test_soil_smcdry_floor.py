@@ -323,3 +323,58 @@ def test_real_land_category_still_floors_at_its_own_smcdry(params):
     np.testing.assert_allclose(
         np.asarray(state.soil_moisture)[:, 0, 0], expected)
     assert state.moisture_floor["wrf_constant_cells"] == 0
+
+
+def test_ingest_builds_the_column_with_the_category_noah_will_run(params):
+    """One rulebook: SH2O and SMOIS must use the RECONCILED category.
+
+    geogrid's LANDMASK and its dominant soil category are independent
+    fields and disagree at shorelines, so a LAND cell carrying SOILPARM's
+    WATER category (row 14) is ordinary.  real.exe rewrites exactly that
+    column to IVGTYP 5 / ISLTYP 8 (module_initialize_real.F:3608-3650) and
+    WRF's SH2O is derived afterwards, in LSMINIT -- so WRF's liquid water
+    already reads the reconciled category.
+
+    Ours read the RAW geogrid category, because the reconciliation lived
+    inside initialize_landuse and that call consumes the ingest's own
+    outputs.  The column was therefore BUILT as SOILPARM water (bexp 0,
+    SMCMAX 1.0, SMCDRY 0) and INTEGRATED as silty clay loam (bexp 8.72,
+    SMCMAX 0.464, SMCWLT 0.12) -- the initial soil state answering to a
+    different soil than the land model it feeds, on precisely the
+    shoreline cells where the reported dewpoint anomalies sat.
+
+    Pinned here on the value that makes the divergence unmissable: the
+    SMCDRY floor.  Under the raw category there is no positive SMCDRY, so
+    a dry cell floors at WRF's constant 0.005 -- an order of magnitude
+    BELOW the wilting point (0.12) of the category Noah actually uses.
+    Under the reconciled category it floors at that category's own air-dry
+    value instead.
+    """
+    from gpuwm.core.landuse import reconciled_soil_category
+
+    shape = (1, 1)
+    water_category = np.full(shape, 14)
+
+    reconciled = reconciled_soil_category(
+        np.full(shape, 5),                      # a LAND vegetation category
+        soil_type=water_category, xice=np.zeros(shape),
+        iswater=17, islake=21, isice=15,
+        soil_temperature=np.full(shape, 285.0), sst=None)
+    assert int(reconciled[0, 0]) == 8, (
+        "real.exe rewrites land-carrying-water-soil to ISLTYP 8")
+
+    state = preprocess_noah_soil(
+        _era5_fields(shape, smois=0.0), soil_type=reconciled)
+    smois = np.asarray(state.soil_moisture)[:, 0, 0]
+
+    expected = _smcdry(params, 8)
+    np.testing.assert_allclose(smois, expected)
+    # The whole point: above the wilting point of the category Noah runs,
+    # not stranded beneath it at WRF's category-blind constant.
+    smcwlt = float(params.soil[7, SOIL_COLS.index("smcwlt")])
+    assert smois.min() >= smcwlt, (
+        f"SMOIS {smois.min()} is below ISLTYP 8 wilting point {smcwlt}: "
+        "the land model sees bone-dry soil it can never transpire from")
+    assert state.moisture_floor["wrf_constant_cells"] == 0, (
+        "a reconciled column has a real SMCDRY and must not need WRF's "
+        "category-blind fallback")

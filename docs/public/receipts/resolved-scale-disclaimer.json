@@ -145,6 +145,18 @@
       "unmutated_verdict": "PASS"
     },
     "post_edit": {
+      "tool": "check_negation_invariant",
+      "pattern": "tornado-resolv|resolv[a-z]* tornado|resolved-tornado",
+      "negation_tokens": [
+        "not",
+        "NOT",
+        "No",
+        "no "
+      ],
+      "scopes": [
+        "line",
+        "sentence"
+      ],
       "documents_scanned": [
         "README.md",
         "docs/public/ANNOUNCEMENT-DRAFT.md",
@@ -163,67 +175,55 @@
         "docs/public/VERIFICATION.md",
         "docs/public/WRF-INTEROP.md"
       ],
-      "failure_count": 0,
-      "negation_tokens": [
-        "not",
-        "NOT",
-        "No",
-        "no "
-      ],
-      "occurrence_count": 5,
       "occurrences": [
         {
-          "line": 446,
-          "line_text": "It does not resolve tornado dynamics: the near-surface corner flow,",
+          "path": "README.md",
+          "line": 452,
           "match": "resolve tornado",
+          "line_text": "It does not resolve tornado dynamics: the near-surface corner flow,",
+          "sentence": "It does not resolve tornado dynamics: the near-surface corner flow, suction vortices, or tornado-scale wind intensity, which the literature on tornado-like vortices places below roughly 25 m horizontal and 10 m vertical spacing.",
           "negated_in_line": true,
-          "negated_in_sentence": true,
-          "path": "README.md",
-          "sentence": "It does not resolve tornado dynamics: the near-surface corner flow, suction vortices, or tornado-scale wind intensity, which the literature on tornado-like vortices places below roughly 25 m horizontal and 10 m vertical spacing."
+          "negated_in_sentence": true
         },
         {
-          "line": 451,
-          "line_text": "and mesocyclone-proxy diagnostic, not as a resolved-tornado claim:",
+          "path": "README.md",
+          "line": 457,
           "match": "resolved-tornado",
+          "line_text": "and mesocyclone-proxy diagnostic, not as a resolved-tornado claim:",
+          "sentence": "Read the STP/UH severe suite as a tornadic-supercell environment and mesocyclone-proxy diagnostic, not as a resolved-tornado claim: these are convection-permitting to sub-kilometer case studies, not tornado-resolving simulations.",
           "negated_in_line": true,
-          "negated_in_sentence": true,
-          "path": "README.md",
-          "sentence": "Read the STP/UH severe suite as a tornadic-supercell environment and mesocyclone-proxy diagnostic, not as a resolved-tornado claim: these are convection-permitting to sub-kilometer case studies, not tornado-resolving simulations."
+          "negated_in_sentence": true
         },
         {
-          "line": 453,
+          "path": "README.md",
+          "line": 459,
+          "match": "tornado-resolv",
           "line_text": "not tornado-resolving simulations.",
-          "match": "tornado-resolv",
+          "sentence": "Read the STP/UH severe suite as a tornadic-supercell environment and mesocyclone-proxy diagnostic, not as a resolved-tornado claim: these are convection-permitting to sub-kilometer case studies, not tornado-resolving simulations.",
           "negated_in_line": true,
-          "negated_in_sentence": true,
-          "path": "README.md",
-          "sentence": "Read the STP/UH severe suite as a tornadic-supercell environment and mesocyclone-proxy diagnostic, not as a resolved-tornado claim: these are convection-permitting to sub-kilometer case studies, not tornado-resolving simulations."
+          "negated_in_sentence": true
         },
         {
+          "path": "docs/public/VERIFICATION.md",
           "line": 370,
-          "line_text": "- **No resolved tornado dynamics.** The 500 m nest and the STP/UH",
           "match": "resolved tornado",
+          "line_text": "- **No resolved tornado dynamics.** The 500 m nest and the STP/UH",
+          "sentence": "- **No resolved tornado dynamics.** The 500 m nest and the STP/UH severe suite characterize the tornadic-supercell environment and mesocyclone-scale morphology; they do not resolve the near-surface corner flow, suction vortices, or tornado-scale wind intensity (tornado-like-vortex resolution in the literature sits below roughly 25 m horizontal and 10 m vertical).",
           "negated_in_line": true,
-          "negated_in_sentence": true,
-          "path": "docs/public/VERIFICATION.md",
-          "sentence": "- **No resolved tornado dynamics.** The 500 m nest and the STP/UH severe suite characterize the tornadic-supercell environment and mesocyclone-scale morphology; they do not resolve the near-surface corner flow, suction vortices, or tornado-scale wind intensity (tornado-like-vortex resolution in the literature sits below roughly 25 m horizontal and 10 m vertical)."
+          "negated_in_sentence": true
         },
         {
-          "line": 377,
-          "line_text": "case-study evidence, not a tornado-resolving claim.",
-          "match": "tornado-resolv",
-          "negated_in_line": true,
-          "negated_in_sentence": true,
           "path": "docs/public/VERIFICATION.md",
-          "sentence": "Everything on this page is convection-permitting to sub-kilometer case-study evidence, not a tornado-resolving claim."
+          "line": 377,
+          "match": "tornado-resolv",
+          "line_text": "case-study evidence, not a tornado-resolving claim.",
+          "sentence": "Everything on this page is convection-permitting to sub-kilometer case-study evidence, not a tornado-resolving claim.",
+          "negated_in_line": true,
+          "negated_in_sentence": true
         }
       ],
-      "pattern": "tornado-resolv|resolv[a-z]* tornado|resolved-tornado",
-      "scopes": [
-        "line",
-        "sentence"
-      ],
-      "tool": "check_negation_invariant",
+      "occurrence_count": 5,
+      "failure_count": 0,
       "verdict": "PASS"
     }
   },

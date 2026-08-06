@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.6.2 (2026-08-06)
+
+New:
+
+- A `[gpu-cu13]` install extra for CUDA-13-only machines. The existing
+  `[gpu]` extra stays on CuPy's CUDA-12 wheel, which a CUDA-13-only box
+  imports cleanly and then fails at its first cuBLAS load, deep inside
+  a run. `gpuwm doctor` now performs that first load on purpose, in an
+  isolated subprocess probe, and when it fails it reports the installed
+  wheel's CUDA major, the box's, and the exact pip commands that put
+  the matching wheel on. The load is the judgment, not the version
+  numbers: a newer driver serving an older wheel is a working install
+  and is never refused. Under `GPUWM_NO_LOCAL_GPU` the probe does not
+  run and the report says the pairing went unjudged.
+
+Fixed:
+
+- Shoreline land cells next to water no longer initialize far below
+  wilting-point soil moisture on the ERA5 route. Ingest built the soil
+  column with a different soil category than the land model then
+  integrated: the ingest/land-surface category reconciliation ran after
+  the soil moisture floor had been applied, so a coastal cell whose
+  category changed kept a floor that belonged to neither category. One
+  rulebook now resolves the reconciled category before the soil column
+  is built, on the root domain and on nest initialization, and the
+  floor reads the reconciled category's own air-dry value. On the
+  domain this was verified on, every affected cell initializes at its
+  category's air-dry value and no other cell moved.
+- The demo/gallery renderer's shapefile reader (pyshp) is declared in
+  the `[render]` extra. It was imported but undeclared, so a fresh
+  install that followed the quickstart exactly could still crash at the
+  first basemap it drew.
+
 ## 1.6.1 (2026-08-05)
 
 Fixed:

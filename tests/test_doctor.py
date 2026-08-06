@@ -2019,3 +2019,142 @@ def test_the_gap_count_agrees_with_the_exit_code():
     assert len(doctor.blocking_gaps(both)) == 1
     brief = doctor.format_brief(both)
     assert "2 gap(s), 1 of them blocking (exit 1)" in brief
+
+
+# --- The CuPy-wheel/box CUDA-major pairing (the rental-box trap) --------
+#
+# cupy-cuda12x on a CUDA-13-only box imports cleanly, compiles kernels,
+# and dies at its first cuBLAS load -- proven on a rented CUDA 13.2 node
+# where import probes, certification, and a 57-test GPU slice all passed
+# before the first matmul of the campaign killed it.  Doctor performs
+# that first load deliberately, and when it fails, the remedy must name
+# the extra whose wheel matches the box.  These monkeypatch the probe:
+# the trap cannot be staged honestly on a healthy box, and the check's
+# judgment is a pure function of the probe's report.
+
+
+def _pairing(monkeypatch, wheels, probe):
+    # These scenarios model boxes where the device IS judged; the
+    # suite's own no-device flag must not short-circuit them.
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
+    monkeypatch.setattr(doctor, "_import_probe",
+                        lambda module, distribution=None: (True, "14.1.1"))
+    monkeypatch.setattr(doctor, "_installed_cupy_wheels", lambda: wheels)
+    monkeypatch.setattr(doctor, "_cublas_pairing_probe", lambda: probe)
+    return doctor._cupy_check()
+
+
+def test_cu12_wheel_on_a_cuda13_only_box_refuses_and_names_gpu_cu13(
+        monkeypatch):
+    check = _pairing(
+        monkeypatch, [("cupy-cuda12x", 12)],
+        {"wheel_runtime": 12090, "driver": 13020, "devices": 1,
+         "cublas": "ImportError: libcublas.so.12: cannot open shared "
+                   "object file: No such file or directory"})
+    assert check.status == "missing"
+    assert check.blocking, "a run on this box dies at its first matmul"
+    assert "pip uninstall -y cupy-cuda12x" in check.remedy
+    assert "gpuwm[gpu-cu13]" in check.remedy
+    assert check.action == "pip install 'gpuwm[gpu-cu13]'"
+    # The diagnosis states both majors and why import probes missed it.
+    assert "CUDA 12" in check.detail and "CUDA 13" in check.detail
+    for windows in (False, True):
+        _assert_remedy_lines_are_commands_or_comments(
+            check.remedy, windows=windows)
+
+
+def test_cu13_wheel_on_a_cuda12_box_names_the_gpu_extra(monkeypatch):
+    check = _pairing(
+        monkeypatch, [("cupy-cuda13x", 13)],
+        {"wheel_runtime": 13000, "driver": 12080, "devices": 1,
+         "cublas": "ImportError: libcublas.so.13: cannot open shared "
+                   "object file: No such file or directory"})
+    assert check.status == "missing" and check.blocking
+    assert "pip uninstall -y cupy-cuda13x" in check.remedy
+    assert check.action == "pip install 'gpuwm[gpu]'"
+    for windows in (False, True):
+        _assert_remedy_lines_are_commands_or_comments(
+            check.remedy, windows=windows)
+
+
+def test_a_working_cublas_load_is_verified_even_across_majors(monkeypatch):
+    """A newer driver serving an older wheel is a WORKING install.
+
+    The reference box runs a 13.3 driver over cupy-cuda12x, so a bare
+    major comparison would refuse the machine this release was cut on.
+    The load is the judgment; the majors are the diagnosis.
+    """
+    check = _pairing(
+        monkeypatch, [("cupy-cuda12x", 12)],
+        {"wheel_runtime": 12090, "driver": 13030, "devices": 1,
+         "cublas": "ok"})
+    assert check.status == "verified"
+    assert "cuBLAS loaded" in check.detail
+    assert "12.9" in check.detail and "13.3" in check.detail
+
+
+def test_cupy_without_a_device_stays_present_and_nonblocking(monkeypatch):
+    check = _pairing(
+        monkeypatch, [("cupy-cuda12x", 12)],
+        {"wheel_runtime": 12090, "driver": 0, "devices": 0,
+         "device_error": "CUDARuntimeError: cudaErrorNoDevice"})
+    assert check.status == "present"
+    assert not check.blocking
+    assert "not judged" in check.detail
+
+
+def test_a_cuda_major_without_a_packaged_extra_gets_the_bare_wheel(
+        monkeypatch):
+    check = _pairing(
+        monkeypatch, [("cupy-cuda12x", 12)],
+        {"wheel_runtime": 12090, "driver": 14000, "devices": 1,
+         "cublas": "ImportError: libcublas.so.12: cannot open shared "
+                   "object file: No such file or directory"})
+    assert check.status == "missing"
+    assert "pip install cupy-cuda14x" in check.remedy
+    for windows in (False, True):
+        _assert_remedy_lines_are_commands_or_comments(
+            check.remedy, windows=windows)
+
+
+def test_the_gpu_extras_pin_one_cupy_wheel_per_cuda_major():
+    """[gpu] stays cu12 (compatibility); [gpu-cu13] is the cu13 wheel.
+
+    The doctor remedy names these extras, so their existence and their
+    wheels are part of the check's contract, not just packaging.
+    """
+    import tomllib
+
+    with (Path(__file__).parents[1] / "pyproject.toml").open("rb") as stream:
+        extras = tomllib.load(stream)["project"]["optional-dependencies"]
+    assert any(dep.startswith("cupy-cuda12x") for dep in extras["gpu"])
+    assert any(dep.startswith("cupy-cuda13x") for dep in extras["gpu-cu13"])
+    assert not any("cupy-cuda13x" in dep for dep in extras["gpu"])
+    # The demo/gallery renderer's shapefile reader rides the extra the
+    # quickstart installs (proven missing on a fresh env without it).
+    assert any(dep.startswith("pyshp") for dep in extras["render"])
+
+
+def test_no_local_gpu_keeps_doctor_off_the_device(monkeypatch):
+    """GPUWM_NO_LOCAL_GPU means NO device contact, doctor included.
+
+    The suite's `-m "not gpu"` guarantee and the rented-GPU workflow
+    both rest on this flag; the pairing probe opens a CUDA context, so
+    under the flag it must not run at all -- asserted by making any
+    call to it the failure.
+    """
+    monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "1")
+    monkeypatch.setattr(doctor, "_import_probe",
+                        lambda module, distribution=None: (True, "14.1.1"))
+    monkeypatch.setattr(doctor, "_installed_cupy_wheels",
+                        lambda: [("cupy-cuda12x", 12)])
+
+    def _forbidden():
+        raise AssertionError("the pairing probe touched the device "
+                             "under GPUWM_NO_LOCAL_GPU")
+
+    monkeypatch.setattr(doctor, "_cublas_pairing_probe", _forbidden)
+    check = doctor._cupy_check()
+    assert check.status == "present"
+    assert not check.blocking
+    assert "not judged" in check.detail

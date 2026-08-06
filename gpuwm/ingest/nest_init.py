@@ -118,6 +118,11 @@ class PreparedChildInput:
     preprocess_backend: object
     preprocess_receipt: Mapping[str, object]
     preparation_seconds: float
+    #: Land-use attributes (ISWATER/ISLAKE/ISICE) resolved during
+    #: preparation, where the static catalog is in scope.  Finalization
+    #: needs them to reconcile ISLTYP before building the soil column, so
+    #: the state is never built with a category the model does not use.
+    landuse_attrs: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if (not np.isfinite(self.preparation_seconds)
@@ -736,6 +741,7 @@ def _prepare_child_input_on_grid(
     return PreparedChildInput(
         domain=child_dc, grid=grid, static_fields=static_fields,
         horizontal=horizontal, declared_orography=declared_orography,
+        landuse_attrs=dict(landuse_attrs),
         lake_mask=lake_mask, lake_skin_temperature=lake_skin_temperature,
         preprocess_backend=preprocess,
         preprocess_receipt=mapping_receipt,
@@ -858,9 +864,29 @@ def finalize_prepared_child(
     # adjust_tempqv needs the pre-blend perturbation pressure.
     update_diagnostics(state, cfg.hypsometric_opt)
     child_orography = prepared.declared_orography
+    # ONE RULEBOOK (Drew's ruling, 2026-08-06): build the child's soil
+    # column and its SH2O with the SAME reconciled ISLTYP the child's Noah
+    # integrates, exactly as the root path does.  Nests are the finest
+    # grids and so carry the most land/water-disagreeing shoreline cells.
+    from gpuwm.core.landuse import reconciled_soil_category
+    from gpuwm.ingest.soil_contract import MAPPED_SOIL_TEMPERATURE
+
+    child_attrs = prepared.landuse_attrs
+    child_soil_type = static_fields["SCT_DOM"]
+    if child_attrs is not None:
+        child_soil_type = reconciled_soil_category(
+            static_fields["LU_INDEX"], soil_type=child_soil_type,
+            xice=horizontal.fields.get("XICE", 0.0),
+            iswater=int(child_attrs["ISWATER"]),
+            islake=int(child_attrs["ISLAKE"]),
+            isice=int(child_attrs["ISICE"]),
+            soil_temperature=horizontal.fields.get(
+                MAPPED_SOIL_TEMPERATURE,
+                horizontal.fields.get("ST000007")),
+            sst=horizontal.fields.get("SST"))
     soil = preprocess_land_surface_soil(
         horizontal.fields, sf_surface_physics=int(cfg.sf_surface_physics),
-        soil_type=static_fields["SCT_DOM"],
+        soil_type=child_soil_type,
         deep_soil_temperature=static_fields["TMN"],
         lake_mask=(prepared.lake_mask
                    if prepared.lake_skin_temperature is not None else None),

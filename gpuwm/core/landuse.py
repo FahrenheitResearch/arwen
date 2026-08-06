@@ -122,6 +122,33 @@ def load_landuse_table(
         str((directory / "LANDUSE.TBL").resolve()), str(mminlu))
 
 
+def _host_input(value):
+    """A pre-ingest caller's argument, on the host.
+
+    This module is host-only by contract (see the module docstring) and
+    marshals every surface argument through ``np.asarray``.  CuPy refuses
+    that implicit conversion outright, raising ``TypeError: Implicit
+    conversion to a NumPy array is not allowed``.
+
+    Every caller of :func:`initialize_landuse` passes ingest OUTPUTS, which
+    are already host arrays, so the contract held silently for years.
+    :func:`reconciled_soil_category` is different by construction: it exists
+    to run BEFORE the ingest, so all it can be handed are the raw decoded
+    met fields -- and those are device-resident.  Marshalling here, in the
+    one entry point whose whole purpose is to be called early, covers every
+    such caller at once and keeps the rest of the module host-pure.
+
+    Uses CuPy's own ``.get()`` rather than importing cupy, so a host-only
+    install never grows a device dependency.  ``None`` and Python scalars
+    pass through untouched; both are legitimate for these arguments.
+    """
+    if value is None or isinstance(value, (int, float)):
+        return value
+    if type(value).__module__.split(".")[0] == "cupy":
+        return value.get()
+    return value
+
+
 def _surface_field(value, shape: tuple[int, int], name: str,
                    dtype) -> np.ndarray:
     try:
@@ -214,6 +241,87 @@ def _reconcile_landmask_soil_category(
     return ivgtyp != int(iswater)
 
 
+def _derive_categories(raw_lu, soil, xice, *, shape, iswater, islake, isice,
+                       isoilwater, isoilice, fractional_seaice,
+                       soil_temperature, sst):
+    """IVGTYP/ISLTYP/land as real.exe leaves them, reconciliation included.
+
+    THE one rulebook.  Both :func:`initialize_landuse` (what the physics
+    driver integrates) and :func:`reconciled_soil_category` (what the soil
+    ingest builds its column from) come through here, so the category the
+    soil state is BUILT with and the category Noah RUNS cannot drift apart.
+    They used to: ingest read the raw geogrid ``SCT_DOM`` while the driver
+    read the reconciled one, so a shoreline cell was initialized with
+    SOILPARM's WATER row (bexp 0, SMCMAX 1.0, SMCDRY 0) and then integrated
+    as ISLTYP 8 silty clay loam (bexp 8.72, SMCMAX 0.464, SMCWLT 0.12).
+    """
+
+    lake = raw_lu == int(islake)
+    ivgtyp = np.where(raw_lu == 0, int(iswater), raw_lu)
+    # module_initialize_real.F:2859-2872 merges lake LANDUSEF into water
+    # before process_percent_cat_new determines IVGTYP.  LAKEMASK was saved
+    # earlier from the unmodified LU_INDEX (:295-306).
+    ivgtyp = np.where(lake, int(iswater), ivgtyp).astype(np.int32)
+    threshold = np.float32(0.02 if fractional_seaice else 0.5)
+    seaice = xice >= threshold
+    ivgtyp = np.where(seaice, int(isice), ivgtyp).astype(np.int32)
+    land = ivgtyp != int(iswater)
+    soil = np.where(~land, int(isoilwater), soil).astype(np.int32)
+    # share/module_soil_pre.F:adjust_for_seaice_post assigns category 16
+    # before physics_init.  The associated SMOIS/SH2O/TSLB rewrite remains
+    # intentionally out of scope here.
+    soil = np.where(seaice, int(isoilice), soil).astype(np.int32)
+    land = _reconcile_landmask_soil_category(
+        ivgtyp, soil, land, iswater=iswater, isoilwater=isoilwater,
+        soil_temperature=soil_temperature, sst=sst, shape=shape)
+    return ivgtyp, soil, land, lake, seaice
+
+
+def reconciled_soil_category(
+        lu_index, *, soil_type, xice, iswater: int, islake: int, isice: int,
+        isoilwater: int = 14, isoilice: int = 16,
+        fractional_seaice: bool = False,
+        soil_temperature=None, sst=None):
+    """ISLTYP as the physics driver will see it, for the soil ingest.
+
+    WRF builds the soil column in real.exe and only derives SH2O later, in
+    ``LSMINIT`` (``phys/module_sf_noahdrv.F``) -- which runs AFTER
+    ``module_initialize_real.F:3608-3650`` has reconciled the categories.
+    So WRF's liquid-water initialization already reads the reconciled
+    category; ours read the raw one, because the reconciliation lived
+    inside :func:`initialize_landuse` and that call needs the ingest's own
+    outputs (snow, xice, TSLB) and therefore runs after it.  This entry
+    point breaks that ordering knot: the DECISION is available from inputs
+    the ingest already has, so the ingest can ask for it up front while
+    :func:`initialize_landuse` keeps its signature and its place.
+
+    Idempotent by construction -- feeding the result back in leaves it
+    unchanged, because a reconciled field has no mismatching column left.
+    """
+
+    # Called before the ingest, so these arrive straight off the decoder and
+    # are device-resident; everything below is host-only.
+    lu_index = _host_input(lu_index)
+    soil_type = _host_input(soil_type)
+    xice = _host_input(xice)
+    soil_temperature = _host_input(soil_temperature)
+    sst = _host_input(sst)
+
+    raw_lu = np.asarray(lu_index)
+    if raw_lu.ndim != 2:
+        raise ValueError(f"lu_index must be 2-D, got shape {raw_lu.shape}")
+    shape = raw_lu.shape
+    raw_lu = _integer_categories(raw_lu, shape, "lu_index")
+    soil = _integer_categories(soil_type, shape, "soil_type")
+    xice = _surface_field(xice, shape, "xice", np.float32)
+    _, soil, _, _, _ = _derive_categories(
+        raw_lu, soil, xice, shape=shape, iswater=iswater, islake=islake,
+        isice=isice, isoilwater=isoilwater, isoilice=isoilice,
+        fractional_seaice=fractional_seaice,
+        soil_temperature=soil_temperature, sst=sst)
+    return soil
+
+
 def initialize_landuse(
         lu_index, *, soil_type, landmask, snow, xice,
         valid_time, cen_lat: float, mminlu: str, iswater: int,
@@ -255,24 +363,11 @@ def initialize_landuse(
 
     table = load_landuse_table(mminlu, tbl_dir)
     veg = load_tables(mminlu=mminlu, tbl_dir=tbl_dir)
-    lake = raw_lu == int(islake)
-    ivgtyp = np.where(raw_lu == 0, int(iswater), raw_lu)
-    # module_initialize_real.F:2859-2872 merges lake LANDUSEF into water
-    # before process_percent_cat_new determines IVGTYP.  LAKEMASK was saved
-    # earlier from the unmodified LU_INDEX (:295-306).
-    ivgtyp = np.where(lake, int(iswater), ivgtyp).astype(np.int32)
-    threshold = np.float32(0.02 if fractional_seaice else 0.5)
-    seaice = xice >= threshold
-    ivgtyp = np.where(seaice, int(isice), ivgtyp).astype(np.int32)
-    land = ivgtyp != int(iswater)
-    soil = np.where(~land, int(isoilwater), soil).astype(np.int32)
-    # share/module_soil_pre.F:adjust_for_seaice_post assigns category 16
-    # before physics_init.  The associated SMOIS/SH2O/TSLB rewrite remains
-    # intentionally out of scope here.
-    soil = np.where(seaice, int(isoilice), soil).astype(np.int32)
-    land = _reconcile_landmask_soil_category(
-        ivgtyp, soil, land, iswater=iswater, isoilwater=isoilwater,
-        soil_temperature=soil_temperature, sst=sst, shape=shape)
+    ivgtyp, soil, land, lake, seaice = _derive_categories(
+        raw_lu, soil, xice, shape=shape, iswater=iswater, islake=islake,
+        isice=isice, isoilwater=isoilwater, isoilice=isoilice,
+        fractional_seaice=fractional_seaice,
+        soil_temperature=soil_temperature, sst=sst)
 
     if np.any(ivgtyp < 1) or np.any(ivgtyp > table.lucats):
         bad = int(ivgtyp[(ivgtyp < 1) | (ivgtyp > table.lucats)][0])
@@ -345,4 +440,5 @@ def initialize_landuse(
 
 
 __all__ = ["LANDUSE_COLUMNS", "LanduseInitialization", "LanduseTable",
-           "initialize_landuse", "load_landuse_table"]
+           "initialize_landuse", "load_landuse_table",
+           "reconciled_soil_category"]

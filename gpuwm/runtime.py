@@ -586,8 +586,10 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     ``None`` keeps the scheme's frozen default composition.
     """
     from gpuwm.core.diagnostics import update_diagnostics
-    from gpuwm.core.landuse import initialize_landuse
+    from gpuwm.core.landuse import (initialize_landuse,
+                                    reconciled_soil_category)
     from gpuwm.core.physics import initialize_physics
+    from gpuwm.ingest.soil_contract import MAPPED_SOIL_TEMPERATURE
 
     times = tuple(forcing_times)
     if not times or times[0] != start_time:
@@ -686,9 +688,26 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     # (module_initialize_real.F:2844-2866, :2898-2906).  The router forwards
     # this exact argument list to preprocess_noah_soil for Noah-geometry
     # schemes, so their soil state is unchanged by the LSM dispatch seam.
+    # ONE RULEBOOK (Drew's ruling, 2026-08-06).  The soil column and the
+    # liquid water derived from it must be built with the SAME category the
+    # physics driver integrates, so ask for the reconciled ISLTYP here
+    # rather than reading the raw geogrid SCT_DOM.  WRF gets this ordering
+    # for free: real.exe reconciles at module_initialize_real.F:3608-3650
+    # and LSMINIT (phys/module_sf_noahdrv.F) derives SH2O afterwards.  Ours
+    # ran the other way round, because initialize_landuse below needs this
+    # call's own outputs (snow, xice, TSLB) and therefore cannot precede it.
+    reconciled_soil_type = reconciled_soil_category(
+        static["LU_INDEX"], soil_type=static["SCT_DOM"],
+        xice=soil_fields.get("XICE", 0.0),
+        iswater=int(landuse_attrs["ISWATER"]),
+        islake=int(landuse_attrs["ISLAKE"]),
+        isice=int(landuse_attrs["ISICE"]),
+        soil_temperature=soil_fields.get(MAPPED_SOIL_TEMPERATURE,
+                                         soil_fields.get("ST000007")),
+        sst=soil_fields.get("SST"))
     soil = preprocess_land_surface_soil(
         soil_fields, sf_surface_physics=int(cfg.sf_surface_physics),
-        soil_type=static["SCT_DOM"],
+        soil_type=reconciled_soil_type,
         deep_soil_temperature=static["TMN"],
         landmask=static["LANDMASK"],
         terrain=static["HGT_M"] if source_orography is not None else None,
@@ -739,7 +758,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
                 trace_gas_overrides=trace_gas_overrides,
                 column_chunk=radiation_column_chunk)
     landuse = initialize_landuse(
-        static["LU_INDEX"], soil_type=static["SCT_DOM"],
+        static["LU_INDEX"], soil_type=reconciled_soil_type,
         landmask=static["LANDMASK"], snow=soil.snow_water, xice=soil.xice,
         valid_time=start_time,
         cen_lat=float(getattr(grid, "cen_lat", np.mean(lat))),

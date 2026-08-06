@@ -12,8 +12,10 @@ preprocessing library through ctypes and reads its ABI version,
 sha256-validates the packaged Thompson tables with the same routine the
 model uses at launch, parses the Noah/landuse tables with the model's
 own parsers, and requires each WPS_GEOG dataset's ``index`` file.  No
-cargo builds, no CUDA context (importing CuPy allocates no device), no
-network.  Every gap prints a remedy whose every line is either a
+cargo builds, no network; the only device work is two deliberate
+short-lived subprocess probes (the CuPy-wheel/box cuBLAS pairing and
+the radar-DA eigensolver), isolated so a wedged runtime cannot poison
+this process.  Every gap prints a remedy whose every line is either a
 command that runs as printed in this platform's own shell or a ``#``
 comment -- never prose fused onto a command -- instead of letting the
 user meet a raw traceback three commands later.
@@ -38,10 +40,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import importlib.metadata
 from importlib.util import find_spec
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -58,7 +62,8 @@ from gpuwm.explain import explain_enabled
 # `pip install 'gpuwm[gpu]'   (or: pip install cupy-cuda12x)` -- is a
 # shell error the moment anyone does the obvious thing with it.
 GPU_EXTRA_HINT = ("pip install 'gpuwm[gpu]'\n"
-                  "  # or, without the extra: pip install cupy-cuda12x")
+                  "  # or, without the extra: pip install cupy-cuda12x\n"
+                  "  # on a CUDA-13-only box: pip install 'gpuwm[gpu-cu13]'")
 RENDER_EXTRA_HINT = ("pip install 'gpuwm[render]'\n"
                      "  # installs wrf-rust + matplotlib")
 GEOG_HINT = (
@@ -235,12 +240,185 @@ def _import_probe(module: str,
     return False, f"installed but failed to import: {reason}"
 
 
+#: CuPy ships one wheel per CUDA major (``cupy-cuda12x``, ``cupy-cuda13x``)
+#: and the wrong one is invisible to an import probe: the wheel hard-codes
+#: its CUDA major's library names (``libcublas.so.12``) and loads cuBLAS
+#: lazily, so on a CUDA-13-only box ``import cupy`` succeeds, kernels
+#: compile, and the first matmul of a real run is what dies.  Proven on a
+#: rented CUDA 13.2 node (2026-08-05): import probes, certification, and a
+#: 57-test GPU slice all passed honestly before the first cuBLAS load
+#: killed the campaign.  So this probe performs that first load on
+#: purpose, in a fresh subprocess, and reports the CUDA majors of both
+#: sides so the check can name the extra that matches the box.
+#:
+#: The judgment is the LOAD, not the majors: a newer driver serves older
+#: wheels wherever the older runtime libraries exist (the reference box
+#: runs a 13.3 driver over a working cupy-cuda12x install), so refusing on
+#: a bare major mismatch would refuse machines that work.  The majors are
+#: read for the diagnosis and the remedy, after the load has failed.
+_CUBLAS_PAIRING_PROBE = """
+import json, sys
+out = {}
+try:
+    import cupy
+except Exception as error:
+    sys.stdout.write(json.dumps({"cupy": repr(error)}))
+    raise SystemExit(0)
+for key, call in (("wheel_runtime", "runtimeGetVersion"),
+                  ("driver", "driverGetVersion")):
+    try:
+        out[key] = int(getattr(cupy.cuda.runtime, call)())
+    except Exception:
+        out[key] = 0
+try:
+    out["devices"] = int(cupy.cuda.runtime.getDeviceCount())
+except Exception as error:
+    out["devices"] = 0
+    out["device_error"] = f"{type(error).__name__}: {error}"
+if out["devices"] > 0:
+    try:
+        a = cupy.arange(4.0, dtype=cupy.float32).reshape(2, 2)
+        b = a @ a
+        float(b[0, 0])
+        out["cublas"] = "ok"
+    except Exception as error:
+        out["cublas"] = f"{type(error).__name__}: {error}"
+sys.stdout.write(json.dumps(out))
+"""
+
+_CUPY_WHEEL_NAME = re.compile(r"^cupy-cuda(\d+)x$")
+
+#: CUDA major -> the pip extra that installs its wheel.  A major outside
+#: this table gets the bare wheel name instead of an extra.
+_GPU_EXTRA_BY_MAJOR = {12: "gpu", 13: "gpu-cu13"}
+
+
+def _installed_cupy_wheels() -> list[tuple[str, int | None]]:
+    """Every installed CuPy distribution as ``(name, CUDA major)``.
+
+    The major comes from the distribution NAME, because that is the
+    thing pip resolved and the thing an uninstall must name; a
+    source-built ``cupy`` has no major in its name and reports ``None``.
+    """
+
+    found = []
+    for dist in importlib.metadata.distributions():
+        name = (dist.metadata["Name"] or "").strip().lower()
+        match = _CUPY_WHEEL_NAME.match(name)
+        if match:
+            found.append((name, int(match.group(1))))
+        elif name == "cupy":
+            found.append((name, None))
+    return sorted(set(found))
+
+
+def _cublas_pairing_probe() -> dict:
+    """Run :data:`_CUBLAS_PAIRING_PROBE` out of process; ``{}`` if not."""
+
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-c", _CUBLAS_PAIRING_PROBE],
+            capture_output=True, text=True, errors="replace",
+            timeout=_PROBE_TIMEOUT_S * 4)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {"probe": f"did not run: {error}"}
+    try:
+        return json.loads(probe.stdout or "{}")
+    except ValueError:
+        tail = [line for line in (probe.stderr or "").strip().splitlines()
+                if line.strip()]
+        return {"probe": tail[-1] if tail else f"exit {probe.returncode}"}
+
+
+def _wrong_wheel_remedy(wheels: list[tuple[str, int | None]],
+                        box_major: int) -> tuple[str, str]:
+    """(remedy, action) that moves the install onto ``box_major``.
+
+    Every line is a command as printed or a ``#`` comment, identical in
+    both shells: ``pip`` spells the same everywhere.
+    """
+
+    lines = [f"# this box serves CUDA {box_major}; the installed CuPy "
+             "cannot load cuBLAS on it"]
+    for name, _ in wheels:
+        lines.append(f"pip uninstall -y {name}")
+    extra = _GPU_EXTRA_BY_MAJOR.get(box_major)
+    if extra is not None:
+        install = f"pip install 'gpuwm[{extra}]'"
+    else:
+        install = f"pip install cupy-cuda{box_major}x"
+    lines.append(install)
+    return "\n".join(lines), install
+
+
 def _cupy_check() -> Check:
     ok, evidence = _import_probe("cupy")
     if ok:
-        return Check("cupy (GPU runtime)", "verified",
-                     f"imported in a subprocess (cupy {evidence})",
-                     brief=f"cupy {evidence}")
+        wheels = _installed_cupy_wheels()
+        named = ", ".join(name for name, _ in wheels) or "cupy"
+        if os.environ.get("GPUWM_NO_LOCAL_GPU", "") not in ("", "0"):
+            # The documented never-open-the-local-device switch (the
+            # rented-GPU workflow leaves it set on the user's own
+            # machine).  The pairing probe is real device contact, so
+            # under this flag it does not run, and the report says which
+            # question went unanswered rather than pretending it passed.
+            return Check(
+                "cupy (GPU runtime)", "present",
+                f"imported in a subprocess (cupy {evidence}, {named}); "
+                "GPUWM_NO_LOCAL_GPU is set, so the CuPy-wheel/box CUDA "
+                "pairing was not judged (no device contact)",
+                brief=f"cupy {evidence}, device not touched",
+                blocking=False)
+        result = _cublas_pairing_probe()
+        cublas = result.get("cublas")
+        driver = int(result.get("driver") or 0)
+        wheel_runtime = int(result.get("wheel_runtime") or 0)
+        wheel_majors = sorted({major for _, major in wheels
+                               if major is not None})
+        if not wheel_majors and wheel_runtime:
+            wheel_majors = [wheel_runtime // 1000]
+        if cublas == "ok":
+            return Check(
+                "cupy (GPU runtime)", "verified",
+                f"imported in a subprocess (cupy {evidence}, {named}); "
+                f"cuBLAS loaded on this box (wheel CUDA "
+                f"{wheel_runtime // 1000}.{wheel_runtime % 1000 // 10}, "
+                f"driver CUDA {driver // 1000}.{driver % 1000 // 10})",
+                brief=f"cupy {evidence}, cuBLAS ok")
+        if result.get("devices", 0) == 0:
+            # No device to load cuBLAS against, so the pairing cannot be
+            # judged -- and a box without a CUDA device must not fail
+            # doctor for it.  ``present``, honestly: import proven,
+            # pairing not.
+            reason = result.get("device_error") or result.get(
+                "cupy") or result.get("probe") or "no CUDA device visible"
+            return Check(
+                "cupy (GPU runtime)", "present",
+                f"imported in a subprocess (cupy {evidence}, {named}), "
+                f"but the CuPy-wheel/box CUDA pairing was not judged: "
+                f"{_short(str(reason), 96)}",
+                brief=f"cupy {evidence}, no device", blocking=False)
+        # A device exists and the first cuBLAS load failed.  This is the
+        # CUDA-major trap when the majors disagree, and a broken install
+        # either way; both refuse, because the next real run dies at its
+        # first matmul.
+        box_major = driver // 1000
+        detail = (f"cupy {evidence} ({named}) imports, but cuBLAS failed "
+                  f"its first load on this box: {_short(str(cublas), 120)}.")
+        if box_major and wheel_majors and box_major not in wheel_majors:
+            targets = ", ".join(f"CUDA {major}" for major in wheel_majors)
+            detail += (f"  The wheel targets {targets}; the box serves "
+                       f"CUDA {driver // 1000}.{driver % 1000 // 10}.  "
+                       "An import probe cannot see this: the wheel "
+                       "hard-codes its own major's library names and "
+                       "loads cuBLAS lazily, so everything short of a "
+                       "real matmul passes")
+        if box_major:
+            remedy, action = _wrong_wheel_remedy(wheels, box_major)
+        else:
+            remedy, action = GPU_EXTRA_HINT, "pip install 'gpuwm[gpu]'"
+        return Check("cupy (GPU runtime)", "missing", detail, remedy,
+                     action=action, brief=_short(str(cublas)))
     if evidence == "not installed":
         return Check(
             "cupy (GPU runtime)", "missing",

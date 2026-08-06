@@ -234,3 +234,55 @@ def test_real74_lake_counts_and_routing_match_wrf_reference_outputs():
                 np.testing.assert_array_equal(
                     np.asarray(wrf[name][0])[lake], expected)
     assert total == 29497
+
+
+def test_reconciled_soil_category_accepts_device_arrays():
+    """The pre-ingest entry point must take the raw met fields as they are.
+
+    ``reconciled_soil_category`` exists to run BEFORE the ingest, so the only
+    fields it can be handed are the raw decoded ones -- and those live on the
+    GPU.  ``landuse`` is otherwise host-only and marshals through
+    ``np.asarray``, which CuPy refuses outright:
+
+        TypeError: Implicit conversion to a NumPy array is not allowed.
+
+    That killed both callers f426b67f added (the root case in
+    ``prepare_real_case`` and the nest in ``finalize_prepared_child``); no
+    ERA5 run could reach f001.  Device input must give a host result equal to
+    the host path, cell for cell.
+    """
+    from gpuwm.core.landuse import reconciled_soil_category
+
+    cupy = pytest.importorskip("cupy")
+
+    shape = (6, 5)
+    lu_index = np.full(shape, 5, dtype=np.float32)
+    lu_index[0, :] = 17                       # a water row
+    soil_type = np.full(shape, 8, dtype=np.float32)
+    soil_type[0, :] = 14
+    soil_type[3, 2] = 14                      # land carrying water soil
+    xice = np.zeros(shape, dtype=np.float32)
+    soil_temperature = np.full((4,) + shape, 285.0, dtype=np.float32)
+    sst = np.full(shape, 290.0, dtype=np.float32)
+    kwargs = dict(iswater=17, islake=21, isice=15)
+
+    on_host = reconciled_soil_category(
+        lu_index, soil_type=soil_type, xice=xice,
+        soil_temperature=soil_temperature, sst=sst, **kwargs)
+    on_device = reconciled_soil_category(
+        cupy.asarray(lu_index), soil_type=cupy.asarray(soil_type),
+        xice=cupy.asarray(xice),
+        soil_temperature=cupy.asarray(soil_temperature),
+        sst=cupy.asarray(sst), **kwargs)
+
+    assert isinstance(on_device, np.ndarray), (
+        "a host-only module must hand back a host array")
+    np.testing.assert_array_equal(on_host, on_device)
+    assert int(on_host[3, 2]) == 8, (
+        "the land-carrying-water-soil arm must still fire (ISLTYP 14 -> 8)")
+
+    # These arrive as ``.get()`` lookups that legitimately go missing.
+    passthrough = reconciled_soil_category(
+        lu_index, soil_type=soil_type, xice=0.0,
+        soil_temperature=soil_temperature, sst=None, **kwargs)
+    assert passthrough.shape == shape

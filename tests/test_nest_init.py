@@ -114,7 +114,8 @@ def test_nested_input_catalog_preserves_era5_soilgeo_units_through_mapping(
     monkeypatch.setattr(
         ni, "geog_selection_from_catalog",
         lambda *_args: SimpleNamespace(
-            landuse_global_attrs=lambda: {"ISLAKE": 21}))
+            landuse_global_attrs=lambda: {"MMINLU": "MODIFIED_IGBP_MODIS_NOAH", "ISWATER": 17,
+             "ISLAKE": 21, "ISICE": 15, "ISURBAN": 13}))
     monkeypatch.setattr(
         ni, "interpolate_lake_skin_temperature",
         lambda *_args: np.full((2, 2), np.nan))
@@ -440,7 +441,8 @@ def test_prepare_child_input_dispatches_hrrr_on_own_static_landmask(
     monkeypatch.setattr(
         ni, "geog_selection_from_catalog",
         lambda actual_catalog, grid_id: (
-            SimpleNamespace(landuse_global_attrs=lambda: {"ISLAKE": 21})
+            SimpleNamespace(landuse_global_attrs=lambda: {"MMINLU": "MODIFIED_IGBP_MODIS_NOAH", "ISWATER": 17,
+             "ISLAKE": 21, "ISICE": 15, "ISURBAN": 13})
             if actual_catalog is static_catalog and grid_id == 2
             else pytest.fail("wrong static catalog binding")))
     observed = {}
@@ -551,7 +553,8 @@ def test_initialize_child_binding_order_and_soil_never_readjusted(
     monkeypatch.setattr(
         ni, "geog_selection_from_catalog",
         lambda *_: SimpleNamespace(
-            landuse_global_attrs=lambda: {"ISLAKE": 21}))
+            landuse_global_attrs=lambda: {"MMINLU": "MODIFIED_IGBP_MODIS_NOAH", "ISWATER": 17,
+             "ISLAKE": 21, "ISICE": 15, "ISURBAN": 13}))
     def lake_skin(_source, _grid, lake_mask):  # pragma: no cover
         raise AssertionError(
             "regular-grid lane must not run the lake skin override: "

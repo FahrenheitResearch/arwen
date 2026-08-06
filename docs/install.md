@@ -75,9 +75,13 @@ cd tools\grib1_bridge; cargo build --release --locked --offline; cd ..\..
 gpuwm doctor
 ```
 
-`[gpu]` = CuPy for the CUDA runtime (`gpuwm check`/`run`, wizard
-sizing); `[render]` = the pinned `wrf-rust` + matplotlib for `gpuwm
-render`; add `[dev]` for the test suite:
+`[gpu]` = CuPy's CUDA-12 wheel for the CUDA runtime (`gpuwm
+check`/`run`, wizard sizing); `[gpu-cu13]` = the same, for a
+CUDA-13-only box (the cu12 wheel imports there and then fails at its
+first cuBLAS load -- `gpuwm doctor` detects the pairing and names the
+right one); `[render]` = the pinned `wrf-rust` + matplotlib + the
+demo gallery's shapefile reader for `gpuwm render`; add `[dev]` for
+the test suite:
 
 ```bash
 python -m pip install -e '.[dev]'

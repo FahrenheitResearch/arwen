@@ -219,7 +219,11 @@ CUDA 12.x/13.x, field-verified through 13.2 driver stacks on sm_89 by
 two independent nodes: the toolkit works out of the box with the
 `cupy-cuda12x` pin, because minor-version compatibility plus CuPy's
 system-NVRTC discovery covers it -- measured on a Linux RTX 4070 and a
-4090, 2026-07-30. The
+4090, 2026-07-30. One exception: a box whose CUDA installation is
+13-only (no 12.x runtime libraries at all) needs the `[gpu-cu13]`
+extra instead -- the cu12 wheel imports cleanly there and fails at its
+first cuBLAS load; `gpuwm doctor` detects the pairing and names the
+right extra. The
 manual steps, if you prefer them:
 
 POSIX:
@@ -281,9 +285,11 @@ the clone-and-`cargo build` route above is the answer. `--from DIR`
 stages the same bundle offline. `gpuwm doctor` prints whichever of the
 two remedies is true for your machine.
 
-`[gpu]` installs CuPy (required by `gpuwm check`/`run` and the sizing
-wizard); `[render]` installs the pinned `wrf-rust` package for
-`gpuwm render`'s matplotlib fallback engine. The `tools/rustwx` build
+`[gpu]` installs CuPy's CUDA-12 wheel (required by `gpuwm check`/`run`
+and the sizing wizard; on a CUDA-13-only box use `[gpu-cu13]`);
+`[render]` installs the pinned `wrf-rust` package, and the shapefile
+reader the demo gallery draws basemaps with, for `gpuwm render`'s
+matplotlib fallback engine. The `tools/rustwx` build
 is the production render engine (the vendored Rusty Weather renderer:
 coast/state/county basemaps over a 324-entry vendored product catalog,
 151 of whose products are implicit-render candidates on any file) --
