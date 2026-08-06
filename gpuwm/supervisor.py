@@ -40,14 +40,21 @@ from gpuwm.certify.capsule import emit_run_capsule
 
 
 HEARTBEAT_SCHEMA = "gpuwm.run-progress/v1"
-FAILURE_CAPSULE_SCHEMA = "gpuwm.failure-capsule/v2"
+FAILURE_CAPSULE_SCHEMA = "gpuwm.failure-capsule/v3"
 
 # Capsule schema ids this module recognizes.  v2 only adds the optional
-# ``config_text``/``input_text`` verbatim small-text captures; it changes
-# nothing a v1 capsule already said, so v1 capsules keep reading unchanged
-# (the same additive convention as ``gpuwm.preserved-input-set/v2``).
+# ``config_text``/``input_text`` verbatim small-text captures; v3 only adds
+# ``installed`` (the running distribution's version and import path).
+# Neither changes anything an earlier capsule already said, so v1 and v2
+# capsules keep reading unchanged (the same additive convention as
+# ``gpuwm.preserved-input-set/v2``).
+#
+# The id doubles as a version tell for support: a capsule states the schema
+# the CODE THAT RAN emits, so it identifies the running release even when
+# ``git_commit`` reports an enclosing checkout the run never executed.
 SUPPORTED_FAILURE_CAPSULE_SCHEMAS = (
-    "gpuwm.failure-capsule/v1", FAILURE_CAPSULE_SCHEMA)
+    "gpuwm.failure-capsule/v1", "gpuwm.failure-capsule/v2",
+    FAILURE_CAPSULE_SCHEMA)
 
 # Cap on each verbatim text capture embedded in the failure capsule.  The
 # embedded inputs are the run's own small text files (the experiment TOML,
@@ -759,6 +766,17 @@ def _validated_worker_input_authorities(
 
 
 def git_commit() -> str:
+    """HEAD of whatever checkout encloses the imported package.
+
+    NOT a statement about the code that is running.  ``git rev-parse``
+    walks UP from the package directory, so an install into
+    ``<checkout>/.venv/lib/pythonX/site-packages`` reports the ENCLOSING
+    CHECKOUT's HEAD while the running bytes are the installed wheel's.
+    A reporter who pulls a new tag without reinstalling therefore files a
+    capsule that names the new commit and ran the old code.  Pair this
+    with :func:`installed_identity`, which reads the running distribution.
+    """
+
     root = Path(__file__).resolve().parents[1]
     try:
         result = subprocess.run(
@@ -771,6 +789,27 @@ def git_commit() -> str:
         return f"unavailable: {type(error).__name__}: {error}"
     return (result.stdout.strip() if result.returncode == 0
             else f"unavailable: {result.stderr.strip()}")
+
+
+def installed_identity() -> dict[str, str]:
+    """Identify the code that is ACTUALLY executing.
+
+    ``git_commit`` above answers a different question, and the difference
+    is not academic: it is how a support report comes in claiming a
+    version the reporter never ran.  ``version`` is the installed
+    distribution's metadata (what pip resolved), ``package_path`` is the
+    directory the running module was imported from -- a ``site-packages``
+    path beside a checkout-derived ``git_commit`` is the stale-install
+    signature, visible in the capsule without a round trip.
+    """
+
+    from gpuwm import DISTRIBUTION_NAME, __version__
+
+    return {
+        "distribution": DISTRIBUTION_NAME,
+        "version": str(__version__),
+        "package_path": str(Path(__file__).resolve().parent),
+    }
 
 
 @dataclass(frozen=True)
@@ -1175,6 +1214,10 @@ def write_failure_capsule(
         "input_text": _capsule_input_text(input_hashes),
         "input_hashes": input_hashes,
         "git_commit": git_commit(),
+        # The running distribution, which ``git_commit`` does not report:
+        # an install inside the checkout makes that field the checkout's
+        # HEAD even when the executing bytes are an older wheel.
+        "installed": installed_identity(),
         "gpu": dataclasses.asdict(gpu),
         "worker_pid": worker_pid,
         "last_phase": last_phase,

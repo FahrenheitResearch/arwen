@@ -96,6 +96,7 @@ jobs:
             tests/test_table_fetch.py \
             tests/test_package_data_coverage.py \
             tests/test_doctor.py \
+            tests/test_doctor_nexrad.py \
             tests/test_cli.py \
             tests/test_source_adapters.py \
             tests/test_namelist_compat.py \

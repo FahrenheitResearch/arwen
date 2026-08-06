@@ -1503,7 +1503,7 @@ def test_worker_failure_capsule_embeds_the_exact_config_and_small_text_inputs(
 
     capsule = json.loads((
         outdir / supervisor.FAILURE_CAPSULE_NAME).read_text(encoding="utf-8"))
-    assert capsule["schema"] == "gpuwm.failure-capsule/v2"
+    assert capsule["schema"] == "gpuwm.failure-capsule/v3"
     config_text = capsule["config_text"]
     assert config_text["text"].encode("utf-8") == payload
     assert config_text["truncated"] is False
@@ -1605,3 +1605,84 @@ def test_failure_capsule_records_absent_text_instead_of_raising(
     embedded = capsule["input_text"][f"vtable:{missing_vtable}"]
     assert embedded["text"] is None
     assert "FileNotFoundError" in embedded["error"]
+
+
+def test_failure_capsule_identifies_the_code_that_ran_not_the_checkout(
+        tmp_path):
+    """A capsule must name the RUNNING distribution, not just a checkout.
+
+    The support regression this pins: ``git_commit`` shells out from the
+    package directory, so an install into
+    ``<checkout>/.venv/lib/pythonX/site-packages`` makes git walk up and
+    report the ENCLOSING CHECKOUT's HEAD.  A reporter who pulls a new tag
+    without reinstalling then files a capsule naming the new commit while
+    the old wheel produced every byte of the failure -- and triage spends
+    its time on the wrong release.  ``installed`` answers the question
+    ``git_commit`` cannot.
+    """
+
+    import gpuwm
+
+    config = tmp_path / "case.toml"
+    config.write_text("[experiment]\nname = 'x'\n", encoding="utf-8")
+
+    path = supervisor.write_failure_capsule(
+        tmp_path / "failure-capsule.json", run_id="ident-run",
+        config_path=config, config_sha256="b" * 64,
+        input_hashes={},
+        gpu=GPUIdentity("GPU-test", "610.74", "RTX 5090"),
+        last_phase="stepping:outer-1", last_step=0,
+        exception_type="FloatingPointError",
+        exception_message="YSU returned non-finite dtheta tendency",
+        exception_traceback="trace", last_durable_wrfout=None,
+        last_checkpoint=None, worker_pid=4242)
+
+    capsule = json.loads(path.read_text(encoding="utf-8"))
+
+    assert "installed" in capsule, (
+        "capsule cannot identify the running code: it carries only "
+        f"git_commit={capsule.get('git_commit')!r}, which is the enclosing "
+        "checkout's HEAD")
+    installed = capsule["installed"]
+    assert installed["distribution"] == gpuwm.DISTRIBUTION_NAME
+    assert installed["version"] == str(gpuwm.__version__)
+    # The import path is the stale-install signature: site-packages here
+    # beside a checkout-derived git_commit means the two disagree.
+    assert (Path(installed["package_path"])
+            == Path(supervisor.__file__).resolve().parent)
+
+    # The schema id is itself a version tell: it is emitted by the code
+    # that ran, so it survives a misleading git_commit.
+    assert capsule["schema"] == "gpuwm.failure-capsule/v3"
+
+
+def test_git_commit_reads_the_enclosing_checkout_of_the_package(monkeypatch):
+    """Pin WHY ``git_commit`` alone cannot identify the running code.
+
+    It runs ``git rev-parse`` with the package's parent as the working
+    directory and git searches upward from there, so the answer describes
+    whatever repository encloses the install -- not the install.  Asserting
+    the cwd keeps that documented and keeps a future reader from treating
+    the field as the running version.
+    """
+
+    seen = {}
+
+    class _Result:
+        returncode = 0
+        stdout = "deadbeef\n"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        seen["cwd"] = Path(kwargs["cwd"])
+        return _Result()
+
+    monkeypatch.setattr(supervisor.subprocess, "run", fake_run)
+
+    assert supervisor.git_commit() == "deadbeef"
+    assert seen["command"] == ["git", "rev-parse", "HEAD"]
+    # Parent of the package directory -- NOT the package, and not a path
+    # the running distribution is guaranteed to have anything to do with.
+    assert seen["cwd"] == Path(supervisor.__file__).resolve().parents[1]
+    assert seen["cwd"] != Path(supervisor.__file__).resolve().parent

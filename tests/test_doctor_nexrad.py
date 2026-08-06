@@ -170,3 +170,80 @@ def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
 
     assert len(bridge_assets.BUNDLED_ARTIFACTS) == 9
     assert "eight artifacts" not in bridge_assets.__doc__
+
+
+def test_doctor_imports_without_the_scientific_stack():
+    """``import gpuwm.doctor`` must not require numpy.
+
+    doctor is the tool for diagnosing a broken or partial install, so
+    needing the full scientific stack merely to IMPORT it defeats the
+    purpose: the environments it exists for are exactly the ones that
+    cannot satisfy that.
+
+    This is a regression pin, not a hypothetical.  1.6 added
+    ``from gpuwm.obs import nexrad`` at doctor's module scope.
+    ``gpuwm.obs.nexrad`` itself needs only the standard library, but
+    reaching it runs ``gpuwm/obs/__init__.py``, which imports the
+    gridding stack and therefore numpy.  The release pipeline's bridges
+    job imports this module for ``_exec_probe`` alone and installs no
+    dependencies, so it died on ``import numpy`` three jobs into a cut,
+    after the tag existed.
+
+    Run in a subprocess with numpy made unimportable, because the point
+    is what happens at import time in a process that never had it.
+    """
+
+    import subprocess
+    import sys
+
+    program = (
+        "import sys\n"
+        "class _Block:\n"
+        "    def find_module(self, name, path=None):\n"
+        "        return self.find_spec(name, path)\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name == 'numpy' or name.startswith('numpy.'):\n"
+        "            raise ImportError('numpy blocked for this test')\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, _Block())\n"
+        "import gpuwm.doctor\n"
+        "print('OK')\n"
+    )
+    done = subprocess.run([sys.executable, "-c", program],
+                          capture_output=True, text=True)
+    assert done.returncode == 0, (
+        "gpuwm.doctor no longer imports without numpy; a module-scope "
+        f"import pulled the scientific stack in:\n{done.stderr}")
+    assert "OK" in done.stdout
+
+
+def test_the_radar_check_reports_an_unimportable_obs_stack():
+    """The lazy import must not become a quiet skip.
+
+    Making doctor importable without numpy is only half the fix.  This
+    check exists because the report used to pass without it, so a
+    version that silently drops the radar line when the import fails
+    would reintroduce the same silent-green hole through a new door.
+    An obs stack that will not import is a broken install and says so.
+    """
+
+    import builtins
+
+    from gpuwm import doctor
+
+    real_import = builtins.__import__
+
+    def _refuse(name, *args, **kwargs):
+        if name == "gpuwm.obs" or name.startswith("gpuwm.obs."):
+            raise ImportError("No module named 'numpy'")
+        return real_import(name, *args, **kwargs)
+
+    builtins.__import__ = _refuse
+    try:
+        check = doctor._nexrad_front_door_check()
+    finally:
+        builtins.__import__ = real_import
+
+    assert check.status == "missing"
+    assert "not importable" in check.detail
+    assert "radar" in check.name

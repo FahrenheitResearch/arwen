@@ -49,7 +49,6 @@ from gpuwm import bridges
 from gpuwm import rustwx
 from gpuwm import rustwx_fetch
 from gpuwm.explain import explain_enabled
-from gpuwm.obs import nexrad
 
 # The pip extras exactly as the README installs them.
 #
@@ -644,6 +643,34 @@ def _nexrad_front_door_check() -> Check:
     first live fetch -- and the remedy for that one is *rebuild*, never
     re-point, which is why the stale branch says so in those words.
     """
+
+    # Imported here rather than at module scope, and the reason is what
+    # this module IS.  `gpuwm.obs.nexrad` needs only the standard library,
+    # but reaching it executes `gpuwm/obs/__init__.py`, which imports the
+    # gridding stack and therefore numpy.  doctor is the tool for
+    # diagnosing a broken or partial install, so a doctor that cannot be
+    # imported without the full scientific stack cannot diagnose the
+    # installs it exists for -- and the release pipeline proved it: the
+    # bridges job imports this module for `_exec_probe` alone, installs no
+    # dependencies, and died on `import numpy` three jobs deep.
+    #
+    # The failure branch is NOT a quiet skip.  This check was added
+    # because the report used to pass without it, so a version that can
+    # vanish when an import fails would reintroduce exactly the
+    # silent-green hole it closes.  An unimportable obs stack is itself a
+    # broken install, and it is reported as one.
+    try:
+        from gpuwm.obs import nexrad
+    except ImportError as error:
+        return Check(
+            "radar front door (radar observation ingest)", "missing",
+            f"gpuwm.obs is not importable ({error}) -- blocks ALL radar "
+            "observation ingest, and means this install is incomplete "
+            "rather than merely missing the binary",
+            "# reinstall so the observation stack imports:\n"
+            f"{REINSTALL_HINT}",
+            action="reinstall gpuwm", brief="obs stack not importable",
+            group=_GROUP_BRIDGES)
 
     name = f"radar front door {nexrad.NEXRAD_NAME} (radar observation ingest)"
     blocks = ("blocks ALL radar observation ingest -- every DA nowcast "
