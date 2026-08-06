@@ -655,32 +655,40 @@ _PLACEHOLDER_WORD = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
 #: On a Linux runner that branch is the one under test.
 _POWERSHELL_ONLY = ("New-Item", "Copy-Item", "-ItemType", "$env:")
 
-#: Modules that freeze a shell-dependent string at import.
-#: :func:`_force_shell` re-derives them; a test below re-finds them by
-#: searching rather than by a list, so a fourth one cannot appear
-#: unnoticed.
-_SHELL_CONSTANT_MODULES = ("gpuwm.bridges", "gpuwm.rustwx",
-                           "gpuwm.rustwx_fetch")
-
-
 def _frozen_shell_constants():
     """(module, name, value) for every module-level build hint.
 
-    Found by searching the modules for constants that contain a cargo
-    build line, not by naming them: the trap this guards against is a
-    NEW constant frozen at import, and a hand-written list is exactly
-    what would not mention it.
+    Found by importing every module in the package and searching it, not
+    by naming modules: the trap is a build hint frozen at import, and a
+    hand-written list is exactly what does not mention a new one.
+
+    This used to search a three-name tuple, which closed half the trap.
+    A new CONSTANT inside `gpuwm.bridges` would have been caught; a new
+    MODULE was invisible, and that is the half that fired.  The 1.6 radar
+    wave added `gpuwm.obs.nexrad` and `gpuwm.obs.frontdoor`, both of
+    which freeze a `tools/rustwx` hint at import.  Neither was re-derived
+    when a test forced the other platform's shell, so on Windows the
+    frozen `;` spelling passed both directions and on the ubuntu publish
+    runner the frozen `&&` spelling was measured against "PowerShell
+    cannot parse '&&'" -- eight reds in the first CI job, after the tag.
+    Walking the package is what makes a sixth module impossible to miss.
     """
 
     import importlib
+    import pkgutil
+
+    import gpuwm
 
     found = []
-    for module_name in _SHELL_CONSTANT_MODULES:
-        module = importlib.import_module(module_name)
+    for info in pkgutil.walk_packages(gpuwm.__path__, prefix="gpuwm."):
+        try:
+            module = importlib.import_module(info.name)
+        except Exception:      # optional deps (cupy, wrf-rust) may be absent
+            continue
         for name, value in vars(module).items():
             if (name.isupper() and isinstance(value, str)
                     and "cargo build " in value):
-                found.append((module_name, name, value))
+                found.append((info.name, name, value))
     return found
 
 
@@ -699,14 +707,21 @@ def _force_shell(monkeypatch, windows):
     One helper, so a forcing site cannot do half the job.
     """
 
-    from gpuwm import bridges, rustwx, rustwx_fetch
+    import importlib
+
+    from gpuwm import bridges
 
     monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
-    monkeypatch.setattr(bridges, "CARGO_BUILD_HINT",
-                        bridges.cargo_build_one_liner(bridges.CRATE_RELATIVE))
-    rustwx_hint = bridges.cargo_build_one_liner(bridges.RUSTWX_CRATE_RELATIVE)
-    monkeypatch.setattr(rustwx, "CARGO_BUILD_HINT", rustwx_hint)
-    monkeypatch.setattr(rustwx_fetch, "CARGO_BUILD_HINT", rustwx_hint)
+
+    # Re-derive EVERY frozen hint the package actually carries, found by
+    # walking it, so a module added later is forced too rather than being
+    # judged in the host's spelling against the other platform's rules.
+    # Naming the modules here is what let 1.6's two new ones through.
+    for module_name, name, value in _frozen_shell_constants():
+        crate = (bridges.RUSTWX_CRATE_RELATIVE if "rustwx" in value
+                 else bridges.CRATE_RELATIVE)
+        monkeypatch.setattr(importlib.import_module(module_name), name,
+                            bridges.cargo_build_one_liner(crate))
 
 
 def _force_bare_estate(monkeypatch):
