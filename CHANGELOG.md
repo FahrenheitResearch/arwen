@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.6.1 (2026-08-05)
+
+Fixed:
+
+- ERA5-forced runs on coastal domains could still die at step 0 with a
+  non-finite tendency, which 1.6.0 did not fix. Where the land mask and
+  the soil category disagree, an ordinary occurrence at a coastline, a
+  land cell carries the water soil category. That category has no
+  air-dry value, so 1.6.0's air-dry floor skipped exactly those cells
+  and left soil moisture at 0.0, which Noah's thermal conductivity then
+  divides by. On the reported domain 192 cells were in that state, and
+  are now none: a land cell whose category has no air-dry value takes
+  WRF v4.6.1's own 0.005 constant, and real land keeps its category's
+  air-dry value as before. A run also refuses at the start, by name,
+  when a required forcing variable is absent.
+
 ## 1.6.0 (2026-08-05)
 
 New:

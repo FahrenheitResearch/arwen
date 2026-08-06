@@ -761,3 +761,50 @@ def test_real_may1999_native_grib1_catalog_smoke():
         sst = catalog.masks[(valid_time, "SST_MISSING")].mask
         seaice = catalog.masks[(valid_time, "SEAICE_MISSING")].mask
         np.testing.assert_array_equal(sst, seaice)
+
+
+def test_run_start_refuses_a_forcing_product_missing_required_variables():
+    """``gpuwm run`` must name the absent variables, not trip over them.
+
+    The run path calls ``build_input_catalog`` and NEVER
+    ``preflight_report`` -- that lives behind ``gpuwm check``.  So a
+    pressure-level-only ERA5 download (the two CDS products are separate
+    downloads, and taking only one is an easy mistake) used to run the
+    full hashed decode, then die far downstream on whichever consumer
+    indexed a surface field first: a KeyError naming soil fields on the
+    single-domain path, and a different KeyError about D2/RH2 on the
+    multi-domain one.  Neither said "your forcing has no surface data".
+
+    Only ABSENCE is gated here; value judgements stay advisory in
+    ``gpuwm check``.
+    """
+
+    from gpuwm.ingest.preflight import (
+        CatalogBuildError, PreflightIssue, _REQUIRED_SURFACE,
+        _missing_required_inventory)
+
+    class _Catalog:
+        inventory = ("Z", "T", "U", "V", "RH")
+
+    missing = _missing_required_inventory(_Catalog())
+    assert set(missing) == _REQUIRED_SURFACE
+    assert "SKINTEMP" in missing and "SM000007" in missing
+    # Pressure-level variables the product DOES carry are not reported.
+    assert not {"Z", "T", "U", "V", "RH"} & set(missing)
+
+    issue = PreflightIssue("inventory", f"forcing inventory is missing {missing}")
+    error = CatalogBuildError([issue])
+    assert "SKINTEMP" in str(error)
+
+
+def test_a_complete_forcing_inventory_is_not_gated():
+    """The gate must be silent on every product that can actually run."""
+
+    from gpuwm.ingest.preflight import (
+        _REQUIRED_PRESSURE, _REQUIRED_SURFACE, _missing_required_inventory)
+
+    class _Catalog:
+        inventory = tuple(sorted(
+            _REQUIRED_PRESSURE | _REQUIRED_SURFACE | {"PMSL", "SOILGEO"}))
+
+    assert _missing_required_inventory(_Catalog()) == []

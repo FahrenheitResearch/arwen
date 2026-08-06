@@ -620,15 +620,51 @@ def _build_input_catalog(case_data) -> tuple[InputCatalog,
     return catalog, tuple(issues)
 
 
+def _missing_required_inventory(catalog: InputCatalog) -> list[str]:
+    """Required forcing variables absent from the decoded inventory.
+
+    One definition, two callers: the run-start gate in
+    :func:`build_input_catalog` and the aggregated report's forcing scan.
+    """
+
+    return sorted((_REQUIRED_PRESSURE | _REQUIRED_SURFACE)
+                  - set(catalog.inventory))
+
+
 def build_input_catalog(case_data) -> InputCatalog:
     """Build a hashed, decoded catalog from resolved :class:`CaseDataConfig`.
 
     Structural/hash/decode defects are aggregated in :class:`CatalogBuildError`.
     Full experiment-dependent checks (coverage, p_top, GEOG, orography, tables)
     are performed by :func:`preflight_report`.
+
+    This IS the run path's ingest gate -- ``gpuwm run`` calls it and never
+    calls :func:`preflight_report`, which is reachable only through
+    ``gpuwm check``.  So the one class of defect that can never produce a
+    forecast, a forcing product MISSING REQUIRED VARIABLES, is refused
+    here by name rather than surfacing hundreds of lines downstream as a
+    ``KeyError`` from whichever consumer happened to index the absent
+    field first (soil preprocessing on the single-domain path, the
+    D2/RH2 surface-humidity choice on the multi-domain one).
+
+    Deliberately NARROW.  Only absence is refused.  Every judgement call
+    about the VALUES -- finiteness, meteorological bounds, spatial and
+    temporal coverage -- stays advisory in ``gpuwm check``, because a run
+    that would almost certainly have worked must not be blocked by a
+    threshold nobody agreed to.  Absence is not a threshold: the variables
+    are the ones the initializer unconditionally indexes.
     """
 
     catalog, issues = _build_input_catalog(case_data)
+    missing = _missing_required_inventory(catalog) if not issues else []
+    if missing:
+        issues = (*issues, PreflightIssue(
+            "inventory",
+            f"forcing inventory is missing {missing}; the declared forcing "
+            "product supplies no such variable at any valid time. ERA5 "
+            "single-level (surface) and pressure-level products are "
+            "separate CDS downloads -- declare both, or one file "
+            "containing both. `gpuwm check` reports the full input estate."))
     if issues:
         raise CatalogBuildError(issues)
     return catalog
@@ -685,8 +721,7 @@ def _scan_forcing(catalog: InputCatalog) -> tuple[list[PreflightIssue], list[str
     issues: list[PreflightIssue] = []
     checks = ["forcing inventory", "forcing finiteness",
               "meteorological bounds", "source masks"]
-    required = _REQUIRED_PRESSURE | _REQUIRED_SURFACE
-    missing = sorted(required - set(catalog.inventory))
+    missing = _missing_required_inventory(catalog)
     if missing:
         issues.append(PreflightIssue(
             "inventory", f"forcing inventory is missing {missing}"

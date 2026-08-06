@@ -219,6 +219,11 @@ def _admitted_snow_field(name: str, value: np.ndarray, shape) -> np.ndarray:
 #: moisture is floored at the soil type's SMCDRY instead of WRF's
 #: constant 0.005.  The full ledger entry is on
 #: :func:`_floor_land_moisture_at_smcdry`.
+#: WRF's own soil-type-blind floor for land soil moisture
+#: (``dyn_em/module_initialize_real.F:3376``).  Used verbatim for land
+#: cells whose soil category is water and therefore has no SMCDRY.
+_WRF_ZERO_SOIL_MOISTURE = 0.005
+
 _MOISTURE_FLOOR_WRF_REFERENCE = {
     "wrf_version": "v4.6.1",
     "wrf_citation": (
@@ -298,10 +303,34 @@ def _floor_land_moisture_at_smcdry(soil_m, pre_clip, terrestrial,
                 & (categories >= 1) & (categories <= params.slcats))
     rows = np.where(in_table, categories, 1).astype(np.int64) - 1
     smcdry = params.soil[rows, SOIL_COLS.index("smcdry")]
-    usable = terrestrial & in_table & (smcdry > 0.0)
-    needs = usable[None, ...] & (soil_m < np.where(usable, smcdry, 0.0))
+    # A land cell whose SOIL CATEGORY is water (SOILPARM's WATER row,
+    # DRYSMC 0.0) is not exotic: geogrid's landmask and its dominant soil
+    # category are independent fields, and they disagree along coastlines
+    # and around inland water in every domain.  Such a cell has no air-dry
+    # value to floor at, and skipping it -- which this function used to do
+    # -- leaves SMOIS at exactly 0.0 for Noah's TDFCND to divide by, which
+    # is the very NaN this floor exists to prevent.  The comment that
+    # justified skipping said ``sh2o_init``'s category refusal would catch
+    # it; it does not.  That refusal fires only OUTSIDE the table
+    # (core/noah.py: ``category < 1 or category > slcats``), and WATER is
+    # inside it, so these cells sailed through to a step-0 non-finite HFX
+    # blamed on the PBL scheme.
+    #
+    # WRF has no such hole, because its floor is soil-type-BLIND:
+    # account_for_zero_soil_moisture repairs any land cell whose top layer
+    # is below 0.005 without consulting the category at all
+    # (module_initialize_real.F:3371-3376).  So the defined answer here is
+    # WRF's own constant, applied exactly where gpuwm's category-aware
+    # floor has nothing to say.  No new threshold is invented: real land
+    # keeps SMCDRY, and category-less land gets the number stock real.exe
+    # would have given the whole column.
+    floor = np.where(in_table & (smcdry > 0.0),
+                     smcdry, _WRF_ZERO_SOIL_MOISTURE)
+    usable = np.asarray(terrestrial, dtype=bool)
+    needs = usable[None, ...] & (soil_m < np.where(usable, floor, 0.0))
     if not needs.any():
         return soil_m, {}
+    categorical = in_table & (smcdry > 0.0)
     result = np.array(soil_m, copy=True)
     per_level = {}
     for level in range(soil_m.shape[0]):
@@ -309,26 +338,42 @@ def _floor_land_moisture_at_smcdry(soil_m, pre_clip, terrestrial,
         count = int(np.count_nonzero(mask))
         if count == 0:
             continue
+        no_category = mask & ~categorical
         per_level[f"SMOIS_L{level + 1}"] = {
             "floored_cells": count,
             "min_pre_floor": float(np.min(pre_clip[level][mask])),
-            "smcdry_applied_min": float(np.min(smcdry[mask])),
-            "smcdry_applied_max": float(np.max(smcdry[mask])),
+            "smcdry_applied_min": float(np.min(floor[mask])),
+            "smcdry_applied_max": float(np.max(floor[mask])),
+            # Cells with no air-dry value of their own, floored at WRF's
+            # constant instead.  A land/soil-category disagreement count.
+            "wrf_constant_cells": int(np.count_nonzero(no_category)),
         }
-        result[level][mask] = smcdry[mask]
+        result[level][mask] = floor[mask]
+    constant_cells = int(np.count_nonzero(needs & ~categorical[None, ...]))
+    # The policy string stays exactly what it was whenever only the
+    # category floor fired, so existing receipts keep reading unchanged;
+    # the fallback clause appears only when it actually applied.
+    policy = "land-below-smcdry-floored-to-smcdry"
+    if constant_cells:
+        policy += ("; land without a soil category floored to WRF's "
+                   f"{_WRF_ZERO_SOIL_MOISTURE}")
     receipt = {
-        "policy": "land-below-smcdry-floored-to-smcdry",
+        "policy": policy,
         "wrf_reference": dict(_MOISTURE_FLOOR_WRF_REFERENCE),
         "fields": per_level,
         "total_floored_cells": int(np.count_nonzero(needs)),
+        "wrf_constant_cells": constant_cells,
         "min_pre_floor": float(np.min(np.asarray(pre_clip)[needs])),
     }
+    detail = (f"; {constant_cells} of them on land whose soil category is "
+              f"water (no air-dry value) floored to WRF's "
+              f"{_WRF_ZERO_SOIL_MOISTURE}" if constant_cells else "")
     print(
         "soil moisture floor: "
         f"{receipt['total_floored_cells']} sub-air-dry land value(s) "
         f"floored to the soil type's SMCDRY across "
         f"{sorted(per_level)} (min pre-floor "
-        f"{receipt['min_pre_floor']:.6g}); WRF real.exe resets such "
+        f"{receipt['min_pre_floor']:.6g}){detail}; WRF real.exe resets such "
         "columns to 0.005 (module_initialize_real.F:3376)",
         file=sys.stderr)
     return result, receipt

@@ -258,11 +258,68 @@ def test_water_and_sea_ice_columns_are_never_floored():
         state.liquid_moisture[:, 0, 1], np.zeros(4))
 
 
-def test_land_cell_with_soilparm_water_category_is_left_alone():
-    """SOILPARM row 14 (WATER) has SMCDRY=0: no positive floor exists, so
-    the cell passes through exactly as before the fix."""
+def test_healthy_land_cell_with_soilparm_water_category_is_left_alone():
+    """SOILPARM row 14 (WATER) has SMCDRY=0, but a HEALTHY value on such a
+    cell is still nobody's business to change: 0.20 is above every floor,
+    so it passes through byte-untouched and earns no receipt."""
     state = preprocess_noah_soil(
         _era5_fields((1, 1), smois=0.20),
         soil_type=np.full((1, 1), 14))
     assert state.moisture_floor == {}
     np.testing.assert_allclose(state.soil_moisture[:, 0, 0], 0.20)
+
+
+def test_zero_moisture_land_cell_with_water_soil_category_is_floored():
+    """The hole that killed a user's run at step 0, twice.
+
+    geogrid's landmask and its dominant soil category are independent
+    fields and disagree along coastlines and around inland water, so a
+    LAND cell carrying SOILPARM's WATER category (row 14, DRYSMC 0.0) is
+    ordinary, not exotic.  The category-aware floor had nothing to floor
+    such a cell at and skipped it, on the stated grounds that
+    ``sh2o_init`` would refuse the category anyway.  It does not: that
+    refusal fires only OUTSIDE the table (``category < 1 or category >
+    slcats``) and WATER is inside it.  So SMOIS stayed EXACTLY 0.0,
+    reached Noah's TDFCND divides, and produced a NaN heat flux that
+    surfaced one step later as a PBL refusal -- the wrong scheme blamed,
+    at step 0, on every date the domain was run.
+
+    WRF has no such hole because its floor ignores the category entirely
+    (module_initialize_real.F:3371-3376), so the defined answer is WRF's
+    own 0.005 exactly where gpuwm's SMCDRY has nothing to say.
+    """
+    state = preprocess_noah_soil(
+        _era5_fields((1, 1), smois=0.0),
+        soil_type=np.full((1, 1), 14))
+
+    smois = np.asarray(state.soil_moisture)[:, 0, 0]
+    assert np.all(smois > 0.0), (
+        f"land cell kept SMOIS={smois} -- Noah's TDFCND divides by this")
+    np.testing.assert_allclose(smois, 0.005)
+
+    # The repair is on the receipt, and says which floor it had to use.
+    receipt = state.moisture_floor
+    assert receipt, "a silent repair is the other half of the same bug"
+    assert receipt["wrf_constant_cells"] == 4        # one cell, four layers
+    assert receipt["fields"]["SMOIS_L1"]["wrf_constant_cells"] == 1
+
+    # And the derived liquid water is finite, so TDFCND's sh2o/smc is too.
+    sh2o = np.asarray(state.liquid_moisture)[:, 0, 0]
+    assert np.all(np.isfinite(sh2o))
+    assert np.all(np.isfinite(sh2o / smois))
+
+
+def test_real_land_category_still_floors_at_its_own_smcdry(params):
+    """The WRF-constant fallback must not displace the category floor.
+
+    A cell with a real soil category keeps the physically meaningful
+    air-dry value; only category-less land falls back to 0.005.
+    """
+    state = preprocess_noah_soil(
+        _era5_fields((1, 1), smois=0.0), soil_type=np.full((1, 1), 6))
+
+    expected = _smcdry(params, 6)
+    assert expected > 0.005, "fixture must distinguish the two floors"
+    np.testing.assert_allclose(
+        np.asarray(state.soil_moisture)[:, 0, 0], expected)
+    assert state.moisture_floor["wrf_constant_cells"] == 0
