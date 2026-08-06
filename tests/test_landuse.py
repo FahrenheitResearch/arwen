@@ -169,6 +169,8 @@ def test_seaice_category_routing_precedes_table_lookup_but_soil_state_waits():
 
 def test_physics_driver_consumes_one_coherent_landuse_initialization(
         monkeypatch):
+    import cupy  # noqa: F401  (marks this test for -m "not gpu")
+
     from gpuwm.config import RunConfig
     from gpuwm.core import physics
     from gpuwm.core.landuse import initialize_landuse

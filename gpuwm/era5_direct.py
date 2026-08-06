@@ -49,6 +49,10 @@ from gpuwm.ingest.preprocess_backend import (
 )
 from gpuwm.ingest.real import initialize_real
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
+from gpuwm.ingest.water_overlay import (
+    load_water_temperature_overlay,
+    overlay_snapshots,
+)
 from gpuwm.native_domain_artifacts import _atomic_staging_sibling
 from gpuwm.native_wrf_contract import (
     NATIVE_STATIC_REQUIRED,
@@ -206,6 +210,7 @@ def prepare_era5_wrf(
     geog_root: Path | None = None,
     hierarchy_workers: int | None = None,
     hierarchy_source_orography: SourceOrographyDeclaration | None = None,
+    water_temperature_overlay: Path | None = None,
 ) -> dict[str, object]:
     """Build native ERA5 initial/boundary files and return the proof receipt.
 
@@ -223,6 +228,8 @@ def prepare_era5_wrf(
     }
     if source_orography is not None:
         paths["source_orography"] = Path(source_orography)
+    if water_temperature_overlay is not None:
+        paths["water_temperature_overlay"] = Path(water_temperature_overlay)
     static_pair = static_input is not None or static_receipt is not None
     if static_pair and (static_input is None or static_receipt is None):
         raise ValueError(
@@ -301,6 +308,16 @@ def prepare_era5_wrf(
         paths["grib"], paths["vtable"], bridge=paths["bridge"])
     decode_seconds = time.perf_counter() - decode_started
     snapshots = tuple(sorted(snapshots, key=lambda value: value.valid_time))
+    # Optional hi-res water-temperature overlay (task #71): applied to
+    # the snapshots that feed BOTH the single-domain loop and the nested
+    # hierarchy, before any horizontal interpolation.  Absent, this is
+    # the identity: the same tuple object flows onward.
+    water_overlay = (
+        None if water_temperature_overlay is None
+        else load_water_temperature_overlay(
+            paths["water_temperature_overlay"]))
+    snapshots, water_overlay_receipt = overlay_snapshots(
+        snapshots, water_overlay)
     source_inventory = tuple(snapshots[0].fields) if snapshots else ()
     source_units = dict(canonical_units(parse_vtable(paths["vtable"])))
     has_invariant_orography = (
@@ -427,6 +444,15 @@ def prepare_era5_wrf(
         if soil_moisture_floor else {})
     initialize_seconds = time.perf_counter() - initialize_started
     input_manifest_digest = _sha256(Path(input_manifest))
+    # LOUD when configured, absent when not: the overlay binding joins
+    # the source identity only when an overlay was applied, so the
+    # prepared cache identity moves exactly when the data does.
+    water_overlay_binding = (
+        {} if water_overlay_receipt is None
+        else {"water_temperature_overlay": {
+            **water_overlay_receipt,
+            "sha256": _sha256(paths["water_temperature_overlay"]),
+        }})
     native_source_identity = {
         "adapter": "era5-grib1-direct-v1",
         "input_manifest_schema": manifest["schema"],
@@ -437,6 +463,7 @@ def prepare_era5_wrf(
             "implementation": "gpuwm-all-rust-grib1-bridge",
         },
         "preprocessing": preprocess_receipt,
+        **water_overlay_binding,
     }
 
     staging = _atomic_staging_sibling(output_root)
@@ -503,6 +530,7 @@ def prepare_era5_wrf(
                 "decoder_sha256": _sha256(paths["bridge"]),
                 "preprocessing": preprocess_receipt,
                 **soil_floor_binding,
+                **water_overlay_binding,
                 "root_static_provider": root_static_provider,
                 "root_static_receipt": root_static_receipt,
                 "hierarchy_workers": selected_workers,
@@ -601,6 +629,7 @@ def prepare_era5_wrf(
             "preprocessing": preprocess_receipt,
             "preprocessing_receipt_sha256": preprocessing_receipt_sha256,
             **soil_floor_binding,
+            **water_overlay_binding,
             "source_inputs": {
                 "manifest_schema": manifest["schema"],
                 "manifest_sha256": input_manifest_digest,
@@ -645,6 +674,13 @@ def main(argv: list[str] | None = None) -> int:
             "repeat once per ERA5 hierarchy domain; paths are target-grid "
             "orography artifacts using --source-orography-variable"),
     )
+    parser.add_argument(
+        "--water-temperature-overlay", type=Path, metavar="ANALYSIS",
+        help=(
+            "optional high-resolution water-temperature analysis (netCDF "
+            "or GRIB2) replacing ERA5 SST/SKINTEMP over water source "
+            "cells; off by default"),
+    )
     parser.add_argument("--experiment-config", type=Path, required=True)
     parser.add_argument("--input-manifest", type=Path, required=True)
     parser.add_argument("--input-manifest-sha256", required=True)
@@ -681,6 +717,7 @@ def main(argv: list[str] | None = None) -> int:
         geog_root=args.geog_root,
         hierarchy_workers=args.hierarchy_workers,
         hierarchy_source_orography=hierarchy_source_orography,
+        water_temperature_overlay=args.water_temperature_overlay,
     )
     print(json.dumps(proof, indent=2, sort_keys=True))
     # Parity with the GFS and 20CRv3 front doors, and the last silent

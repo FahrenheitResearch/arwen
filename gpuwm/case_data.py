@@ -145,7 +145,7 @@ _REQUIRED_KEYS = (
 )
 _OPTIONAL_KEYS = (
     "forcing_interval_s", "output_domain", "source_orography",
-    "source_orography_variable", "co2_vmr",
+    "source_orography_variable", "co2_vmr", "water_temperature_overlay",
 )
 _KNOWN_KEYS = frozenset(_REQUIRED_KEYS) | frozenset(_OPTIONAL_KEYS)
 _DOMAIN_SOURCE_KEY = re.compile(r"d([0-9]{2})")
@@ -276,6 +276,14 @@ class CaseDataConfig:
     output_title: str
     output_domain: int = 1
     forcing_interval_s: float | None = None
+    #: Optional high-resolution water-temperature analysis (task #71):
+    #: replaces SST/SKINTEMP over water SOURCE cells before horizontal
+    #: interpolation.  Absent (None) is the identity path.  This key
+    #: lives in [case_data], never on ExperimentConfig, so the
+    #: experiment fingerprint / restart identity payload is untouched
+    #: when it is not declared; declared, it joins the InputCatalog and
+    #: the run identity moves exactly when the data does.
+    water_temperature_overlay: Path | None = None
     authority_backed: bool = field(default=False, repr=False, compare=False)
     authority_identity_forcing: tuple[Path, ...] = field(
         default=(), repr=False, compare=False)
@@ -286,6 +294,8 @@ class CaseDataConfig:
     authority_identity_source_orography: (
         SourceOrographyDeclaration | None) = field(
             default=None, repr=False, compare=False)
+    authority_identity_water_temperature_overlay: Path | None = field(
+        default=None, repr=False, compare=False)
 
     def forcing_identity(self) -> tuple[Path, ...]:
         """Original declared forcing paths, never transient CAS paths."""
@@ -304,6 +314,10 @@ class CaseDataConfig:
     def source_orography_identity(self) -> SourceOrographyDeclaration | None:
         return (self.authority_identity_source_orography
                 if self.authority_backed else self.source_orography)
+
+    def water_temperature_overlay_identity(self) -> Path | None:
+        return (self.authority_identity_water_temperature_overlay
+                if self.authority_backed else self.water_temperature_overlay)
 
     def source_orography_for_domain(
             self, domain_id: int) -> SourceOrography | None:
@@ -330,6 +344,10 @@ class CaseDataConfig:
             records.append(ResolvedInput(
                 role="source_orography", path=source_orography.path,
                 detail=f"variable={source_orography.variable}"))
+        overlay = self.water_temperature_overlay_identity()
+        if overlay is not None:
+            records.append(ResolvedInput(
+                role="water_temperature_overlay", path=overlay))
         return tuple(records)
 
 
@@ -361,6 +379,7 @@ def remap_case_data_files(
     identity_vtable = data.vtable_identity()
     identity_wps = data.wps_namelist_identity()
     identity_orography = data.source_orography_identity()
+    identity_overlay = data.water_temperature_overlay_identity()
     declaration = data.source_orography
     if isinstance(declaration, PerDomainSourceOrography):
         declaration = replace(declaration, by_domain=tuple(
@@ -374,11 +393,15 @@ def remap_case_data_files(
         vtable=mapped(data.vtable),
         wps_namelist=mapped(data.wps_namelist),
         source_orography=declaration,
+        water_temperature_overlay=(
+            None if data.water_temperature_overlay is None
+            else mapped(data.water_temperature_overlay)),
         authority_backed=True,
         authority_identity_forcing=identity_forcing,
         authority_identity_vtable=identity_vtable,
         authority_identity_wps_namelist=identity_wps,
-        authority_identity_source_orography=identity_orography)
+        authority_identity_source_orography=identity_orography,
+        authority_identity_water_temperature_overlay=identity_overlay)
 
 
 def _resolve_path(base_dir: Path, value, key: str, source: str) -> Path:
@@ -511,8 +534,16 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path
             orog_path = _resolve_path(base_dir, raw_orography,
                                       "source_orography", source)
 
+    overlay_path = None
+    if "water_temperature_overlay" in raw:
+        overlay_path = _resolve_path(
+            base_dir, raw["water_temperature_overlay"],
+            "water_temperature_overlay", source)
+
     file_inputs = [*(("forcing", path) for path in forcing),
                    ("vtable", vtable), ("wps_namelist", wps_namelist)]
+    if overlay_path is not None:
+        file_inputs.append(("water_temperature_overlay", overlay_path))
     if orog_path is not None:
         file_inputs.append(("source_orography", orog_path))
     elif orog_by_domain is not None:
@@ -601,7 +632,8 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path
             PerDomainSourceOrography(orog_by_domain)
             if orog_by_domain is not None else None),
         sfcp_to_sfcp=sfcp, co2_vmr=co2, output_title=title,
-        output_domain=domain, forcing_interval_s=interval)
+        output_domain=domain, forcing_interval_s=interval,
+        water_temperature_overlay=overlay_path)
 
 
 def load_case_data(path: str | Path) -> CaseDataConfig:

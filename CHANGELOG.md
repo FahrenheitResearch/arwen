@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.6.3 (2026-08-06)
+
+New:
+
+- An optional high-resolution water-temperature overlay for the ERA5
+  route. ERA5's water-surface temperature is a coarse analysis, and
+  over lakes and along coasts it paints through to the near-surface
+  fields as blocky dewpoint and temperature artifacts. This is a
+  well-known WRF + ERA5 limitation, not something specific to this
+  model's ingest; docs/water-temperature-overlay.md cites the community
+  threads and their remedies. The overlay is the high-resolution
+  substitution remedy implemented natively: a user-supplied gridded
+  water-temperature analysis replaces ERA5 SST and SKINTEMP over water
+  source cells before horizontal interpolation, on the direct adapter
+  route and on `gpuwm run`, with per-snapshot replacement counts
+  reported. Off by default; configured on nothing, this code never
+  runs.
+
+Fixed:
+
+- Certification capsules on CUDA-13 boxes no longer report the CuPy
+  version as unavailable. The capsule pinned the literal distribution
+  name cupy-cuda12x; it now records whichever CuPy distribution pip
+  actually installed (cupy, cupy-cuda12x, cupy-cuda13x).
+
 ## 1.6.2 (2026-08-06)
 
 New:

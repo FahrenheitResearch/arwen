@@ -27,6 +27,7 @@
 # the port survived only as an unversioned directory -- committing them is
 # what stops the design record from having exactly one copy again.
 MP28_PORT_SPEC.md
+HANDOFF.md
 MP28_HANDOFF.md
 
 # Campaign handoffs and internal project history (developer paths inside).

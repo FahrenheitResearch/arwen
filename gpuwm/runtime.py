@@ -516,6 +516,25 @@ def forcing_snapshots(data: CaseDataConfig, input_catalog=None) -> dict:
             f"ordered valid-time selection: expected {expected}, got {actual}; "
             "catalog exclusions: "
             f"{tuple(input_catalog.excluded_valid_times)}")
+    # Optional hi-res water-temperature overlay (task #71).  The decode
+    # above serves RAW snapshots from the process cache, so the declared
+    # overlay is applied here, mirroring build_input_catalog's
+    # application to the catalog's own served snapshots (the nested-child
+    # source).  Absent key: this branch never runs.
+    water_overlay_path = getattr(data, "water_temperature_overlay", None)
+    if water_overlay_path is not None:
+        from gpuwm.ingest.water_overlay import (
+            cached_water_temperature_overlay,
+            overlay_snapshots_by_time,
+        )
+
+        overlay = cached_water_temperature_overlay(water_overlay_path)
+        by_time, receipt = overlay_snapshots_by_time(by_time, overlay)
+        print(
+            "water-temperature overlay: replaced "
+            f"{receipt['replaced_cells']} of {receipt['water_cells']} "
+            f"water source cells per snapshot from {receipt['path']} "
+            f"({receipt['fallback_cells']} kept ERA5 fallback)")
     return by_time
 
 

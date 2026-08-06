@@ -74,6 +74,11 @@ def test_the_optional_keys_are_exactly_the_silent_exposure():
     assert set(_OPTIONAL_KEYS) == {
         "forcing_interval_s", "output_domain", "source_orography",
         "source_orography_variable", "co2_vmr",
+        # task #71: a misspelling is refused by the parametrized test
+        # below like every other optional key; the value is a declared
+        # input path, so a dropped key would silently run WITHOUT the
+        # hi-res water overlay the user configured.
+        "water_temperature_overlay",
     }
 
 

@@ -500,3 +500,44 @@ def test_the_gpu_identity_uuid_is_bounded_to_the_sixteen_uuid_bytes():
     # Absent property stays absent; an already-str value passes through.
     assert device_uuid_hex(None) is None
     assert device_uuid_hex("GPU-abc") == "GPU-abc"
+
+
+def test_cupy_pin_resolves_whichever_wheel_the_box_installed(monkeypatch):
+    """``cupy_version`` names the box's CuPy, not the CUDA-12 wheel.
+
+    The pin used to look up the literal distribution ``cupy-cuda12x``,
+    so a CUDA-13 box -- the box the ``gpu-cu13`` extra exists for --
+    certified with ``cupy_version`` unavailable while running CuPy
+    kernels.  Each spelling pip can resolve must satisfy the pin, and
+    the value stays a bare version string because the FTZ receipt and
+    its claim-site anchor record it as one.
+    """
+    import importlib.metadata as im
+
+    from gpuwm.certify import pins as pins_module
+
+    class _Dist:
+        def __init__(self, name, version):
+            self.metadata = {"Name": name}
+            self.version = version
+
+    for name in ("cupy-cuda13x", "cupy-cuda12x", "cupy"):
+        monkeypatch.setattr(
+            im, "distributions", lambda name=name: iter([
+                _Dist("numpy", "2.1.0"), _Dist(name, "14.0.1")]))
+        assert pins_module._installed_cupy_version() == "14.0.1", name
+
+    # Several at once (a broken but observable pip state): deterministic,
+    # highest-sorting wheel name, never an exception.
+    monkeypatch.setattr(im, "distributions", lambda: iter([
+        _Dist("cupy-cuda12x", "13.6.0"), _Dist("cupy-cuda13x", "14.0.1")]))
+    assert pins_module._installed_cupy_version() == "14.0.1"
+
+    # No CuPy at all: _package_pins records unavailable with the reason,
+    # exactly as the old lookup did on a CuPy-less box.
+    monkeypatch.setattr(im, "distributions", lambda: iter([
+        _Dist("numpy", "2.1.0")]))
+    entries = {}
+    pins_module._package_pins(entries)
+    assert entries["cupy_version"]["status"] == "unavailable"
+    assert "no CuPy distribution" in entries["cupy_version"]["reason"]

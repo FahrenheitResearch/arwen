@@ -17,6 +17,7 @@ if the receipt admits which pins went unmeasured.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -106,6 +107,41 @@ def _distribution_version(name: str) -> str:
     return str(version(name))
 
 
+_CUPY_DISTRIBUTION = re.compile(r"^cupy(-cuda\d+x)?$")
+
+
+def _installed_cupy_version() -> str:
+    """Version of whichever CuPy distribution is actually installed.
+
+    CuPy ships one wheel per CUDA major (``cupy-cuda12x``,
+    ``cupy-cuda13x``) plus the source-built plain ``cupy``; which name
+    pip resolved is a property of the box.  This pin used to look up the
+    literal ``cupy-cuda12x``, so a CUDA-13 box -- the very box the
+    ``gpu-cu13`` extra installs -- certified with ``cupy_version``
+    unavailable while running CuPy kernels.  The value stays a bare
+    version string: the FTZ receipt and its claim-site anchor render it
+    as one.
+
+    Same enumeration as ``gpuwm.doctor._installed_cupy_wheels``,
+    transcribed rather than imported because the capsule path does not
+    load the CLI diagnostics stack.  If several CuPy distributions are
+    installed at once (a broken but observable pip state) the
+    highest-sorting wheel name wins, deterministically, rather than
+    raising a capsule out of existence.
+    """
+    from importlib.metadata import distributions
+
+    found: dict[str, str] = {}
+    for dist in distributions():
+        name = (dist.metadata["Name"] or "").strip().lower()
+        if _CUPY_DISTRIBUTION.match(name):
+            found[name] = str(dist.version)
+    if not found:
+        raise ModuleNotFoundError(
+            "no CuPy distribution (cupy, cupy-cudaNNx) is installed")
+    return found[sorted(found)[-1]]
+
+
 #: A CUDA device UUID is 16 bytes.  ``cudaUUID_t`` is ``char bytes[16]``
 #: with no terminator, so its length is the array bound and nothing else.
 CUDA_UUID_BYTES = 16
@@ -178,12 +214,13 @@ def _gpu_pins(entries: dict[str, dict[str, Any]], *, require_gpu: bool) -> None:
 
 
 def _package_pins(entries: dict[str, dict[str, Any]]) -> None:
-    for key, distribution in (("cupy_version", "cupy-cuda12x"),
-                              ("numpy_version", "numpy"),
-                              ("netcdf4_version", "netCDF4")):
+    for key, resolve in (
+            ("cupy_version", _installed_cupy_version),
+            ("numpy_version", lambda: _distribution_version("numpy")),
+            ("netcdf4_version", lambda: _distribution_version("netCDF4"))):
         pin = _PIN_BY_KEY[key]
         try:
-            entries[key] = _resolved(pin, _distribution_version(distribution))
+            entries[key] = _resolved(pin, resolve())
         except Exception as error:
             entries[key] = _unavailable(
                 pin, f"{type(error).__name__}: {error}")

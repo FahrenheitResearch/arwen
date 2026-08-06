@@ -466,6 +466,15 @@ def _build_input_catalog(case_data) -> tuple[InputCatalog,
         add_file("source_orography", source_orography.path,
                  provenance=f"variable={getattr(source_orography, 'variable', '')}",
                  identity_path=source_orography_identity.path)
+    water_overlay = getattr(case_data, "water_temperature_overlay", None)
+    if water_overlay is not None:
+        water_overlay_identity = (
+            case_data.water_temperature_overlay_identity()
+            if hasattr(case_data, "water_temperature_overlay_identity")
+            else water_overlay)
+        add_file("water_temperature_overlay", water_overlay,
+                 provenance="declared hi-res water-temperature analysis",
+                 identity_path=water_overlay_identity)
 
     # Retrieval request/log/checksum sidecars are first-class provenance when
     # all forcing products share a staging directory (the May-1999 layout).
@@ -667,6 +676,23 @@ def build_input_catalog(case_data) -> InputCatalog:
             "containing both. `gpuwm check` reports the full input estate."))
     if issues:
         raise CatalogBuildError(issues)
+    # Optional hi-res water-temperature overlay (task #71): the catalog's
+    # SERVED snapshots carry it, because nested-child initialization reads
+    # its source snapshot from here.  The raw-decode integrity scans above
+    # ran on the raw snapshots; the overlay file itself is already a
+    # hashed catalog record, so the run identity moves with the data.
+    # Absent key: this branch never runs and the catalog is untouched.
+    water_overlay_path = getattr(
+        case_data, "water_temperature_overlay", None)
+    if water_overlay_path is not None:
+        from gpuwm.ingest.water_overlay import (
+            cached_water_temperature_overlay,
+            overlay_snapshots,
+        )
+
+        overlay = cached_water_temperature_overlay(water_overlay_path)
+        replaced, _receipt = overlay_snapshots(catalog.snapshots, overlay)
+        catalog = replace(catalog, snapshots=replaced)
     return catalog
 
 
