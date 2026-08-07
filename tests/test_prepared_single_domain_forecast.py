@@ -1494,12 +1494,17 @@ def test_matched_expert_suite_demands_the_registry_ack_at_the_runner(
     # Acknowledging it is what silences the line.
     assert "registry-expert-template" not in capsys.readouterr().err
 
-    # Flag delivery (the runner's own --ack).
+    # Flag delivery (the runner's own --ack).  The shipped proof config
+    # this experiment materializes from also declares its nocturnal
+    # asymmetric-radiation run (1.7.1), and the receipt records every
+    # delivered declaration with its own provenance.
     receipt = runner._validate_physics(
         exp, None, exp.run_seconds, 3600, source="era5",
         expert_acknowledgements=("noahmp-host-column-throughput-v1",))
     assert receipt["registry_governance"]["acknowledged"] is True
     assert receipt["registry_governance"]["acknowledgement_provenance"] == {
+        "asymmetric-radiation-nocturnal-window-v1": [
+            "[experiment].acknowledgements"],
         "noahmp-host-column-throughput-v1": ["--ack"]}
     assert "registry-expert-template" not in capsys.readouterr().err
 

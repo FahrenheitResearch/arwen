@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.7.1 (2026-08-06)
+
+Fixed:
+- The wizard's real-case default physics is
+  `morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1` on the gfs/era5 doors:
+  the registry's user-ready `wrf-matched-run` template with both
+  radiation streams on, the profile FIRST-LIGHT's worked example and
+  the interactive session already used. It replaces the unshipped
+  "product default suite". The HRRR door keeps its route-constrained
+  WSM6 default. Neither the gfs nor the era5 door emits an asymmetric
+  radiation pairing (shortwave on, longwave off) as a default.
+- A real experiment whose window includes local night refuses to load
+  with `ra_sw_physics > 0` and `ra_lw_physics == 0`, naming the
+  physics, the matched profile, and both remedies. A field report
+  proved the failure: a wizard-emitted 48 h case bound
+  `thompson-mp8-ysu-mm5-noah-validation-v1` (longwave OFF, shortwave
+  Dudhia), shortwave heated the surface by day, nothing balanced the
+  surface's upward longwave at night, skin temperature cratered, and
+  2 m dewpoints read in the 50s F inside a 70s airmass. The guard
+  lives in the one config load every front door shares
+  (`gpuwm.experiment.build_experiment`), so `gpuwm run`, `gpuwm go`,
+  `gpuwm check`, both prepared runners, the DA drivers and the
+  wizard's own sizing loop all refuse identically. Existing configs
+  carrying the pairing refuse at load with the remedy named.
+- Asymmetric pairings stay selectable, loudly: a daylight-only window
+  loads unguarded, and a night window runs as a declared experiment
+  with `acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"]`
+  in `[experiment]`. The wizard writes that declaration itself when an
+  asymmetric profile is selected explicitly for a night window, so the
+  file it emits still loads everywhere.
+- The native HRRR route writes the same declaration. Its default suite
+  is asymmetric by route constraint -- the HRRR root preparer stages
+  no microphysics tables for the full-radiation profiles, and eight of
+  the thirteen profiles it accepts run Dudhia shortwave with longwave
+  off -- and it builds its experiment in code rather than from a config
+  file, so it declares a night window itself and the experiment
+  authority it publishes carries the line. Five full-radiation profiles
+  remain selectable on that route for a nocturnally valid HRRR run.
+- Every wizard-emitted config header now states whether its suite is
+  nocturnally valid, and `docs/public/PHYSICS.md` carries a
+  per-profile nocturnal-validity table.
+
 ## 1.7.0 (2026-08-06)
 
 New:

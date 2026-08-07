@@ -7,6 +7,12 @@ smooth_option = 0
 blend_width = 5
 spec_bdy_width = 5
 restart_interval_s = 0.0
+# Nocturnal declaration (1.7.1): this proof's own suite runs radiation fully
+# OFF (both streams; never guarded), but materialized named-profile runs of
+# it (the wsm6 no-radiation family, shortwave on / longwave off) cross this
+# 00Z window's local night and are declared validation runs -- see
+# docs/public/PHYSICS.md, "Nocturnal validity".  Restart-tolerated field.
+acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"]
 
 [projection]
 map_proj = "lambert"

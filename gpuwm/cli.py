@@ -361,6 +361,15 @@ def build_parser() -> argparse.ArgumentParser:
                           "(default, unchanged output) or the exact "
                           "legacy-RRTMG port (fails closed at physics "
                           "setup until its compute kernels land)")
+    imp.add_argument("--ack", action="append", default=[], metavar="ID",
+                     help="declared-experiment acknowledgement id to "
+                          "write into [experiment].acknowledgements of "
+                          "the resolved TOML (repeatable).  WRF "
+                          "namelists cannot spell gpuwm governance "
+                          "declarations, so an import that needs one -- "
+                          "e.g. shortwave-on/longwave-off physics "
+                          "across a window that includes local night -- "
+                          "names the id it wants in its refusal")
     # ONE layering convention, registered in ONE place, after every
     # registrar has run.  Every subcommand takes --explain, so the
     # pointer the refusal boundary appends -- "run gpuwm <command>
@@ -528,7 +537,8 @@ def _dispatch(args) -> int:
         try:
             toml_text, report = import_namelists(
                 args.wps, args.input, name=args.name,
-                rrtmg_variant=args.rrtmg_variant)
+                rrtmg_variant=args.rrtmg_variant,
+                acknowledgements=tuple(args.ack))
         except NotImplementedError as error:
             # validate_run_config raises its "not executable yet" refusals
             # (e.g. ra_lw_physics=1, WRF RRTM longwave) as

@@ -211,6 +211,11 @@ restart_interval_s = 3600.0
 # UNCHANGED from attempt #1, and now a projection ORIGIN rather than a box
 # centre: d01 and d02 stay exactly where they were so their prepared caches
 # remain reusable, while d03 and d04 move off-centre onto the corridor.
+# Nocturnal declaration (1.7.1): this case runs shortwave with longwave OFF
+# through local night, a declared validation/experiment configuration -- see
+# docs/public/PHYSICS.md, "Nocturnal validity".  Restart-tolerated field.
+acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"]
+
 [projection]
 map_proj = "lambert"
 ref_lat = 36.72

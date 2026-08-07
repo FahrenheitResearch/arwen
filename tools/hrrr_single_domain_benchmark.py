@@ -42,6 +42,7 @@ from gpuwm.ingest.hrrr_target import (  # noqa: E402
     required_hrrr_source_window,
 )
 from gpuwm.physics_compat import (  # noqa: E402
+    ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
     EXPERIMENTAL_THOMPSON_ENV,
     KESSLER_PROFILE_ID,
     SINGLE_DOMAIN_PHYSICS_PROFILES,
@@ -60,6 +61,7 @@ from gpuwm.physics_compat import (  # noqa: E402
     WRF_RRTMG_LEGACY,
     WRF_RRTMG_TO_RTE_RRTMGP,
     WSM6_PROFILE_ID,
+    first_local_night_time,
     single_domain_runtime_switches,
     thompson_guard_exports,
     thompson_runtime_requirements,
@@ -1551,7 +1553,63 @@ def _experiment_tables(
         }],
     }
     _forward_profile_switches(raw, switches)
+    _declare_nocturnal_asymmetric_radiation(
+        raw, switches, target=target, start_time=start_time,
+        run_seconds=run_seconds)
     return raw, target
+
+
+def _declare_nocturnal_asymmetric_radiation(
+        raw: dict[str, object], switches: Mapping[str, object], *,
+        target: HrrrTargetDomain, start_time: datetime,
+        run_seconds: float) -> None:
+    """Declare this route's asymmetric radiation when the window has night.
+
+    THE NATIVE HRRR ROUTE IS THE ONE DOOR WHOSE DEFAULT SUITE IS
+    ASYMMETRIC.  Eight of the thirteen profiles this route stages run
+    ``ra_sw_physics 1`` (Dudhia) with ``ra_lw_physics 0`` -- the whole
+    wsm6 no-radiation family, ``kessler-mp1-ysu-mm5-noah-dudhia-v1``
+    and ``thompson-mp8-ysu-mm5-noah-validation-v1`` -- and the route's
+    own default is :data:`WSM6_PROFILE_ID`, one of them; the HRRR root
+    preparer stages no microphysics tables for the full-radiation
+    profiles, so the constraint is the route's, not a preference.
+    1.7.1's
+    nocturnal-radiation guard refuses that pairing at config load for
+    any window that includes local night
+    (:func:`gpuwm.physics_compat.nocturnal_radiation_refusal`), which is
+    correct and is why the declaration is written HERE, where this
+    route's physics is chosen, rather than left to a caller who has no
+    config file to write it in: this preparation builds its experiment
+    in code, so the code is the only place the config-side declaration
+    can be spelled.  It is the same declaration the shipped configs
+    carry (``configs/gfs_wrf_hierarchy_proof.toml`` and the LES cases,
+    1.7.1) and it reaches the published authority in ink -- the
+    experiment document this route publishes carries the line, so a
+    downstream reader sees the declaration rather than inheriting it
+    silently.
+
+    Written ONLY when the resolved pairing is actually asymmetric AND
+    the window actually includes local night, matching the wizard's
+    emission rule exactly (:func:`gpuwm.domain_wizard.render_config`):
+    the RRTMG-class HRRR profiles (4/4) and every all-daylight window
+    carry nothing, so a declaration in a published document always means
+    a real nocturnal asymmetric run.
+    """
+
+    lw = int(switches.get("ra_lw_physics", switches.get("ra_physics", 0)))
+    sw = int(switches.get("ra_sw_physics", switches.get("ra_physics", 0)))
+    if not (sw > 0 and lw == 0):
+        return
+    if first_local_night_time(
+            start_time, float(run_seconds),
+            ref_lat=target.ref_lat, ref_lon=target.ref_lon) is None:
+        return
+    experiment = raw["experiment"]
+    assert isinstance(experiment, dict)          # built above, in this file
+    declared = list(experiment.get("acknowledgements", ()))
+    if ASYMMETRIC_RADIATION_NOCTURNAL_ACK not in declared:
+        declared.append(ASYMMETRIC_RADIATION_NOCTURNAL_ACK)
+    experiment["acknowledgements"] = declared
 
 
 def _experiment(

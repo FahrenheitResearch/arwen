@@ -2006,11 +2006,31 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         physics_mode=physics_mode,
         perturbation=perturbation)
     from gpuwm.physics_compat import (
+        nocturnal_radiation_refusal,
         validate_resolved_physics_vertical_levels,
     )
     for domain in experiment.domains:
         validate_resolved_physics_vertical_levels(
             domain.run, p_top=experiment.vertical.p_top)
+    # The nocturnal-radiation guard (2026-08-06): a real case (it has a
+    # [projection], so it has a place and a clock) whose window includes
+    # local night may not run shortwave with longwave OFF undeclared --
+    # the surface would radiate all night with no downward longwave and
+    # the skin temperature and 2 m moisture collapse.  Guarded HERE, at
+    # the one load every front door shares (run/go/check, both prepared
+    # runners, the DA drivers, the wizard's candidate loop), so no door
+    # can miss it.  [experiment].acknowledgements carries the
+    # declared-experiment override; the refusal names it.
+    if experiment.projection is not None:
+        refusal = nocturnal_radiation_refusal(
+            [dc.run for dc in experiment.domains],
+            start_time=experiment.start_time,
+            run_seconds=experiment.run_seconds,
+            ref_lat=experiment.projection.ref_lat,
+            ref_lon=experiment.projection.ref_lon,
+            acknowledgements=experiment.acknowledgements)
+        if refusal is not None:
+            raise ValueError(f"experiment config {source}: {refusal}")
     _advise_anisotropic_w_mixing(experiment, source)
     _assert_derived_copies(experiment, source)
     return experiment

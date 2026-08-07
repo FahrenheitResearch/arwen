@@ -90,12 +90,14 @@ from gpuwm.core.preflight import (CUDA_CONTEXT_BYTES,
 from gpuwm.experiment import ExperimentConfig, build_experiment
 from gpuwm.explain import explain_enabled, warn
 from gpuwm.fetch import parse_cycle
-from gpuwm.physics_compat import (MORRISON_PROFILE_ID, MYNN_PROFILE_ID,
+from gpuwm.physics_compat import (ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
+                                  MORRISON_PROFILE_ID, MYNN_PROFILE_ID,
                                   MYNN_RUC_PROFILE_ID,
                                   NSSL2_LEGACY_RRTMG_PROFILE_ID,
                                   NSSL2_PROFILE_ID,
                                   RUC_PROFILE_ID, THOMPSON_PROFILE_ID,
                                   WSM6_PROFILE_ID,
+                                  first_local_night_time,
                                   single_domain_runtime_switches)
 from gpuwm.hrrr_route_inputs import (HrrrRouteInputError, coverage_advisory,
                                      coverage_refusal, route_input_paths,
@@ -413,11 +415,26 @@ _SHARED_GRID_AND_DYNAMICS = {
 _PER_DOMAIN_PHYSICS = ("radt", "cu_physics", "cudt_minutes",
                        "diff_6th_factor")
 
-#: The wizard's default physics: the registry's DEFAULT_TEMPLATE_ID
-#: suite (Thompson MP8 + YSU + MM5 + Noah + Kain-Fritsch + RTE+RRTMGP),
-#: kept as a product decision.  ``None`` means "not one of the shipped
-#: single-domain runner profiles" -- see DEFAULT_SUITE_PHYSICS.
-DEFAULT_PHYSICS_PROFILE = None
+#: The wizard's default physics for real cases (gfs/era5; hrrr has its
+#: own route-constrained default, HRRR_DEFAULT_PROFILE below).
+#:
+#: Owner directive 2026-08-06, after a shipped 48 h case: the default a
+#: real case gets must be a CERTIFIED, NOCTURNALLY VALID suite -- both
+#: radiation streams on, registry maturity read off the registry rather
+#: than asserted here.  This profile is the registry's only user-ready
+#: ``wrf-matched-run`` template with full lw+sw radiation
+#: (RTE+RRTMGP 4/4 + Kain-Fritsch), it is declared by every route for
+#: every source, it is FIRST-LIGHT section 3a's worked example, and it
+#: is already the interactive door's default
+#: (:data:`gpuwm.domain_interactive.DEFAULT_PHYSICS_PROFILE_BY_SOURCE`)
+#: -- the two doors now agree.  It replaced ``None`` (the unshipped
+#: "product default suite", DEFAULT_SUITE_PHYSICS below, supported but
+#: not WRF-verified), which remains reachable programmatically and is
+#: NOT emitted by any door.  Validation profiles with asymmetric
+#: radiation (shortwave on, longwave off) are never a default on any
+#: door; they stay selectable explicitly and are emitted with the
+#: nocturnal declaration (see render_config).
+DEFAULT_PHYSICS_PROFILE = MORRISON_PROFILE_ID
 
 #: The default suite's physics switches, in the registry's OWN radiation
 #: representation.
@@ -2058,6 +2075,50 @@ def render_config(*, name: str, start_time: datetime, hours: int,
     }
     shared = shared_physics(profile)
     shared["map_proj"] = WRF_MAP_PROJ_CODES[projection["map_proj"]]
+    # Nocturnal validity of the emitted radiation pairing, stated in the
+    # header of EVERY emitted file and, where the pairing is asymmetric
+    # (shortwave on, longwave off) across a window that includes local
+    # night, DECLARED in [experiment].acknowledgements -- the same
+    # declaration the load-time guard in gpuwm.experiment demands, so an
+    # explicitly selected validation profile emits a file that still
+    # loads.  Asymmetric suites are never a default on the gfs/era5
+    # doors; explicit selection is the declaration, and it is made in
+    # ink here rather than by silence.
+    emitted_lw = int(shared.get("ra_lw_physics", shared.get("ra_physics", 0)))
+    emitted_sw = int(shared.get("ra_sw_physics", shared.get("ra_physics", 0)))
+    asymmetric_radiation = emitted_sw > 0 and emitted_lw == 0
+    first_night = (first_local_night_time(
+        start_time, float(hours * 3600),
+        ref_lat=projection["ref_lat"], ref_lon=projection["ref_lon"])
+        if asymmetric_radiation else None)
+    if first_night is not None:
+        experiment["acknowledgements"] = [ASYMMETRIC_RADIATION_NOCTURNAL_ACK]
+    if not asymmetric_radiation:
+        nocturnal_note = (
+            "# NOCTURNALLY VALID: longwave and shortwave both run, so the "
+            "surface longwave\n"
+            "# budget stays closed through the night.\n")
+    elif first_night is None:
+        nocturnal_note = (
+            "# NOT NOCTURNALLY VALID (shortwave on, longwave OFF) -- "
+            "acceptable for this\n"
+            "# all-daylight window; re-emit with a full lw+sw profile "
+            "before running any\n"
+            "# window that includes local night.\n")
+    else:
+        nocturnal_note = (
+            "# NOT NOCTURNALLY VALID: shortwave heats by day, longwave is "
+            "OFF, and this\n"
+            f"# window includes local night (first at "
+            f"{first_night:%Y-%m-%dT%H:%M}Z), so the surface\n"
+            "# radiates with no downward longwave after sunset and skin "
+            "temperature and\n"
+            "# 2 m moisture collapse.  Emitted ONLY because this profile "
+            "was selected\n"
+            "# explicitly; [experiment] carries acknowledgements = "
+            f'["{ASYMMETRIC_RADIATION_NOCTURNAL_ACK}"]\n'
+            "# to declare the validation experiment to every front door's "
+            "load guard.\n")
     time_step = root_time_step_s(projection["ref_lat"], root_dx_m)
     chain_km = _ladder_dx_km(ratios, root_dx_m)
     if level_buffers_km is None:
@@ -2091,6 +2152,7 @@ def render_config(*, name: str, start_time: datetime, hours: int,
             "derive exactly from\n"
             "# the parent chain and are never hand-typed "
             "(gpuwm/experiment.py).\n")
+    header += nocturnal_note
     per_km = seconds_per_km(projection["ref_lat"])
     if per_km != 5:
         header += (
@@ -3557,9 +3619,16 @@ def register_cli(subparsers) -> None:
                              "runner validates against, so the emitted "
                              "config passes its guard as written.  Read "
                              "the names: the *-no-radiation-* and "
-                             "*-validation-* profiles run reduced physics.  "
+                             "*-validation-* profiles run reduced physics "
+                             "with longwave OFF and are NOT nocturnally "
+                             "valid -- selecting one for a window that "
+                             "includes local night emits the declared-"
+                             "experiment acknowledgement into the config.  "
                              + _profile_help_route_note()
-                             + "(default: full RTE+RRTMGP + Kain-Fritsch)")
+                             + "(gfs/era5 default: " + MORRISON_PROFILE_ID
+                             + ", full RTE+RRTMGP + Kain-Fritsch, "
+                             "nocturnally valid; hrrr default: "
+                             + WSM6_PROFILE_ID + ")")
     parser.add_argument("--root-dx", type=float, default=None,
                         metavar="KM",
                         help="custom root grid spacing in km "

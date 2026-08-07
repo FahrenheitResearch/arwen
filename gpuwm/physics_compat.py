@@ -827,6 +827,153 @@ def _ack_instruction(acknowledgement: str) -> str:
     )
 
 
+#: Declared-experiment acknowledgement for running an asymmetric radiation
+#: pairing (shortwave ON, longwave OFF) through a window that includes
+#: local night.  Same governance idiom as the registry's expert-template
+#: acknowledgements, delivered in the config itself
+#: (``acknowledgements = [...]`` under ``[experiment]``) because the
+#: refusal happens at config LOAD, before any front door's ``--ack``
+#: flags are merged.
+#:
+#: Provenance (2026-08-06): a wizard-emitted 48 h real case bound
+#: ``thompson-mp8-ysu-mm5-noah-validation-v1`` (ra_lw_physics 0,
+#: ra_sw_physics 1).  Shortwave heated the surface by day; at night the
+#: surface radiated with no downward longwave, skin temperature
+#: cratered, the surface saturation humidity collapsed with it, and 2 m
+#: dewpoints read in the 50s F inside a 70s airmass.  The pairing is a
+#: legitimate DAYTIME validation configuration and stays selectable --
+#: loudly, never silently.
+ASYMMETRIC_RADIATION_NOCTURNAL_ACK = (
+    "asymmetric-radiation-nocturnal-window-v1"
+)
+
+
+def solar_elevation_deg(when, lat_deg: float, lon_deg: float) -> float:
+    """Approximate solar elevation (degrees) at a naive-UTC instant.
+
+    Deliberately stdlib-only and coarse: subsolar declination by
+    Cooper's formula (error under ~0.5 degrees) and local MEAN solar
+    time with the equation of time omitted (under ~4 minutes of clock,
+    ~1 degree of elevation).  Near the terminator that bounds the total
+    error to roughly ten minutes of clock time -- this is a "does the
+    window include night" instrument, not an ephemeris, and callers must
+    not read sunrise/sunset times out of it.
+    """
+
+    import math
+
+    day_of_year = when.timetuple().tm_yday
+    declination = math.radians(
+        -23.44 * math.cos(math.radians(360.0 / 365.0 * (day_of_year + 10))))
+    utc_hours = when.hour + when.minute / 60.0 + when.second / 3600.0
+    local_solar_hours = (utc_hours + lon_deg / 15.0) % 24.0
+    hour_angle = math.radians(15.0 * (local_solar_hours - 12.0))
+    latitude = math.radians(lat_deg)
+    sin_elevation = (
+        math.sin(latitude) * math.sin(declination)
+        + math.cos(latitude) * math.cos(declination) * math.cos(hour_angle))
+    return math.degrees(math.asin(max(-1.0, min(1.0, sin_elevation))))
+
+
+#: Sampling cadence for the night-window scan.  Fifteen minutes cannot
+#: step over a night at any latitude that has one, and 48 h of samples
+#: is 192 sine evaluations -- cheap enough for the wizard's sizing loop,
+#: which loads every candidate through the same guard.
+_NIGHT_SCAN_SECONDS = 900.0
+
+
+def first_local_night_time(start_time, run_seconds: float, *,
+                           ref_lat: float, ref_lon: float):
+    """First sampled instant of the window with the sun below the horizon.
+
+    ``None`` when every sample has the sun up (a daytime window, or
+    polar day).  Sampled every :data:`_NIGHT_SCAN_SECONDS` from start to
+    end inclusive, at the experiment's reference point -- the wizard
+    centers every domain of a tree on it, so it stands for the tree.
+    Geometric horizon (elevation < 0), consistent with the instrument's
+    stated ~ten-minute resolution at the terminator.
+    """
+
+    from datetime import timedelta
+
+    elapsed = 0.0
+    total = float(run_seconds)
+    while True:
+        when = start_time + timedelta(seconds=min(elapsed, total))
+        if solar_elevation_deg(when, ref_lat, ref_lon) < 0.0:
+            return when
+        if elapsed >= total:
+            return None
+        elapsed += _NIGHT_SCAN_SECONDS
+
+
+def nocturnal_radiation_refusal(
+        domains, *, start_time, run_seconds: float,
+        ref_lat: float, ref_lon: float,
+        acknowledgements: tuple[str, ...] = ()) -> str | None:
+    """Why this real-case window may not run its radiation pairing, or None.
+
+    THE nocturnal-radiation guard, one spelling for every front door:
+    :func:`gpuwm.experiment.build_experiment` calls it while loading any
+    real experiment (a config with a ``[projection]`` table), so ``gpuwm
+    run``, ``gpuwm go``, ``gpuwm check``, both prepared runners, the DA
+    drivers and the wizard's own candidate loop all refuse the same way.
+
+    Refuses when any domain resolves shortwave ON with longwave OFF
+    (``ra_sw_physics > 0`` and ``ra_lw_physics == 0``) and the window
+    includes local night at the reference point: the shortwave scheme
+    heats the surface by day, and at night the surface radiates with no
+    downward longwave, so skin temperature and 2 m moisture collapse.
+    Delivering :data:`ASYMMETRIC_RADIATION_NOCTURNAL_ACK` in the
+    config's ``[experiment].acknowledgements`` declares the validation
+    experiment and lifts the refusal; silence does not.
+
+    ``domains`` is an iterable of per-domain RunConfig-like objects.
+    """
+
+    from gpuwm.config import radiation_scheme_ids
+
+    if ASYMMETRIC_RADIATION_NOCTURNAL_ACK in acknowledgements:
+        return None
+    asymmetric = []
+    for run in domains:
+        lw, sw = radiation_scheme_ids(run)
+        if sw > 0 and lw == 0:
+            asymmetric.append((int(getattr(run, "grid_id", 0)), lw, sw))
+    if not asymmetric:
+        return None
+    night = first_local_night_time(
+        start_time, run_seconds, ref_lat=ref_lat, ref_lon=ref_lon)
+    if night is None:
+        return None
+    sw_names = {1: "Dudhia", 4: "RRTMG-class"}
+    grid_ids = ", ".join(str(grid_id) for grid_id, _, _ in asymmetric)
+    _, _, sw = asymmetric[0]
+    profile = identify_single_domain_profile(domains[0])
+    caused_by = (
+        f"profile {profile}" if profile is not None
+        else "a suite matching no shipped profile")
+    return layered(
+        f"this run's window includes local night (first at "
+        f"{night:%Y-%m-%dT%H:%M}Z at {ref_lat:.4g}, {ref_lon:.4g}) while "
+        f"domain(s) {grid_ids} run shortwave radiation with longwave OFF "
+        f"(ra_sw_physics {sw} = {sw_names.get(sw, 'scheme %d' % sw)}, "
+        f"ra_lw_physics 0; {caused_by}).  Choose a nocturnally valid "
+        f"profile (both radiation streams on -- e.g. "
+        f"{MORRISON_PROFILE_ID}, the wizard's default), or declare the "
+        f"validation experiment by adding acknowledgements = "
+        f'["{ASYMMETRIC_RADIATION_NOCTURNAL_ACK}"] to [experiment]',
+        "Shortwave heats the surface by day while no longwave scheme "
+        "runs, so after sunset the surface radiates to space with no "
+        "downward longwave to balance it: skin temperature craters, the "
+        "surface saturation humidity collapses with it, and 2 m "
+        "dewpoints read far below the airmass.  This pairing is a "
+        "daytime validation configuration; a shipped 48 h case emitted "
+        "with it verified exactly this failure.  The acknowledgement is "
+        "config-side (not --ack) because the refusal happens at config "
+        "load, before any runner flag is read.")
+
+
 #: Sentinel for "this caller did not mention the selector at all", which is
 #: a different statement from "it named None".
 _ABSENT = object()
@@ -2168,6 +2315,7 @@ def require_ready_wrf_physics(**selection: int) -> None:
 
 
 __all__ = [
+    "ASYMMETRIC_RADIATION_NOCTURNAL_ACK",
     "EXPERIMENTAL_THOMPSON_ENV",
     "KESSLER_PROFILE_ID",
     "MYNN_NOAHMP_PROFILE_ID",
@@ -2203,8 +2351,11 @@ __all__ = [
     "WRF_RRTMG_TO_RTE_RRTMGP",
     "WRF_RRTMG_TO_RTE_RRTMGP_V1",
     "IMPLICIT_RUNTIME_SWITCHES",
+    "first_local_night_time",
     "identify_single_domain_profile",
     "implicit_runtime_switches",
+    "nocturnal_radiation_refusal",
+    "solar_elevation_deg",
     "packaged_thompson_table_root",
     "pending_wrf_physics_components",
     "thompson_guard_exports",

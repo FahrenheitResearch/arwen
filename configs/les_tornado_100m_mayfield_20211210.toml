@@ -213,6 +213,10 @@ spec_bdy_width = 5
 # root steps at dt = 15 s.  A 2+-domain tree is on the checkpointing route
 # (gpuwm/checkpoint_routes.py:67), so this is exercised, not decorative.
 restart_interval_s = 3600.0
+# Nocturnal declaration (1.7.1): this case runs shortwave with longwave OFF
+# through local night, a declared validation/experiment configuration -- see
+# docs/public/PHYSICS.md, "Nocturnal validity".  Restart-tolerated field.
+acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"]
 
 [projection]
 map_proj = "lambert"

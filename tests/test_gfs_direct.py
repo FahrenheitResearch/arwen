@@ -716,8 +716,11 @@ def test_the_wizard_default_multi_domain_config_passes_its_own_front_door(
     assert sorted(receipt["domains"]) == ["1", "2"]
     assert receipt["domains"]["1"]["selectors"]["cu_physics"] == 1
     assert receipt["domains"]["2"]["selectors"]["cu_physics"] == 0
+    # 2026-08-06: the wizard's default is the certified Morrison profile
+    # (nocturnal-radiation directive); the unnamed governance path is
+    # unchanged and still records every domain.
     assert (receipt["domains"]["1"]["components"]["microphysics"]
-            == "thompson-mp8")
+            == "morrison-mp10")
     assert receipt["domains"]["1"]["components"]["cumulus"] == "kain-fritsch"
     assert receipt["domains"]["2"]["components"]["cumulus"] == "off"
 
@@ -775,8 +778,9 @@ def test_the_single_domain_default_suite_passes_and_a_named_gate_binds(
         "gpuwm-front-door-physics-selection-multi-domain-v1")
     assert receipt["profile"] is None
     assert sorted(receipt["domains"]) == ["1"]
+    # 2026-08-06: the default emission is the certified Morrison profile.
     assert receipt["domains"]["1"]["components"]["microphysics"] \
-        == "thompson-mp8"
+        == "morrison-mp10"
     assert receipt["domains"]["1"]["governance"]["state"] \
         == "registry-reachable"
 

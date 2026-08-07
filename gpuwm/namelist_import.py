@@ -702,7 +702,8 @@ def _fmt(value) -> str:
 
 def import_namelists(wps_path: str | Path, input_path: str | Path,
                      name: str | None = None,
-                     rrtmg_variant: str = RRTMG_VARIANT_RTE_RRTMGP
+                     rrtmg_variant: str = RRTMG_VARIANT_RTE_RRTMGP,
+                     acknowledgements: tuple[str, ...] = ()
                      ) -> tuple[str, SubstitutionReport]:
     """Translate namelist.wps + namelist.input into (TOML text, report).
 
@@ -718,6 +719,15 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     before being returned, so every section-A rule (root/child flags,
     ratios, clearance, vertical identity, cadence divisibility, derived
     dt/dx chain) binds at import time.
+
+    ``acknowledgements`` carries declared-experiment acknowledgement ids
+    into the emitted ``[experiment]`` table (the CLI ``--ack`` flag).  A
+    WRF namelist has no spelling for a gpuwm governance declaration, so
+    without this an imported configuration that needs one -- e.g. a
+    shortwave-on/longwave-off pairing across a window that includes
+    local night -- would refuse validation HERE, before the TOML the
+    reader could have added the declaration to even exists.  Empty adds
+    nothing and keeps every existing import byte-identical.
     """
     if rrtmg_variant not in (RRTMG_VARIANT_RTE_RRTMGP,
                              RRTMG_VARIANT_LEGACY):
@@ -2357,6 +2367,13 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         f"blend_width = {blend_width}",
         f"spec_bdy_width = {spec_bdy_width}",
         f"restart_interval_s = {_fmt(restart_interval_s)}",
+        *([
+            "# Declared-experiment acknowledgements, carried through the "
+            "import (--ack);",
+            "# a WRF namelist has no spelling for them.",
+            "acknowledgements = ["
+            + ", ".join(f'"{ack}"' for ack in acknowledgements) + "]",
+        ] if acknowledgements else []),
         "",
         "[projection]",
         f'map_proj = "{projection["map_proj"]}"',

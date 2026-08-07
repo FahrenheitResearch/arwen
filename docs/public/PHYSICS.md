@@ -947,8 +947,70 @@ what each one actually runs -- several run full RTE+RRTMGP with
 Kain-Fritsch, several run longwave OFF with Dudhia shortwave and no
 cumulus. Read the names. What still refuses, on every route, is a
 switch value the engine genuinely does not implement (the refusal names
-the switch) and the registry's land-surface route blockers (for
-example GFS+RUC, which dies at its first surface-temperature call).
+the switch), the registry's land-surface route blockers (for
+example GFS+RUC, which dies at its first surface-temperature call),
+and -- since 1.7.1 -- an undeclared asymmetric radiation pairing across
+a window that includes local night (next section).
+
+## Nocturnal validity
+
+A suite whose shortwave runs while its longwave is OFF
+(`ra_sw_physics > 0`, `ra_lw_physics == 0`) is a **daytime validation
+configuration**. Shortwave heats the surface by day; after sunset the
+surface radiates to space with no downward longwave to balance it, so
+skin temperature craters, the surface saturation humidity collapses
+with it, and 2 m dewpoints read far below the airmass. A shipped 48 h
+case emitted with `thompson-mp8-ysu-mm5-noah-validation-v1` verified
+exactly this failure.
+
+| profile | radiation (lw / sw) | nocturnally valid |
+|---|---|---|
+| `morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** (the wizard's gfs/era5 default) |
+| `nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
+| `nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1` | legacy RRTMG / legacy RRTMG | **yes** |
+| `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** |
+| `thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** |
+| `thompson-mp8-ysu-mm5-noah-validation-v1` | OFF / Dudhia | **no** |
+| `wsm6-ysu-mm5-noah-no-radiation-v1` | OFF / Dudhia | **no** |
+| `kessler-mp1-ysu-mm5-noah-dudhia-v1` | OFF / Dudhia | **no** |
+| `wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1` | OFF / Dudhia | **no** |
+| `wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1` | OFF / Dudhia | **no** |
+| `wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1` | OFF / Dudhia | **no** |
+| `wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1` | OFF / Dudhia | **no** |
+| `wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1` | OFF / Dudhia | **no** |
+
+Every front door enforces this at config load (the guard lives in the
+one loader they all share, `gpuwm.experiment.build_experiment`): a real
+experiment whose window includes local night at its `[projection]`
+reference point refuses to load an asymmetric pairing, naming the
+physics, the matched profile, and both remedies. The pairing stays
+selectable for daytime validation windows, and for night windows as a
+**declared experiment**:
+
+```
+acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"]
+```
+
+in `[experiment]`. The wizard writes that declaration (and a
+`NOT NOCTURNALLY VALID` header) into any config it emits for an
+asymmetric profile whose window includes night. Idealized
+experiments (no `[projection]`) have no place or clock and are not
+guarded.
+
+**The HRRR route is the exception, and it is a route constraint, not a
+preference.** The `gfs`/`era5` doors never emit an asymmetric pairing
+as a default. The native HRRR route does: its default is
+`wsm6-ysu-mm5-noah-no-radiation-v1`, and eight of the thirteen
+profiles it stages are asymmetric, because the HRRR root preparer
+stages no microphysics tables for the full-radiation profiles. That
+route builds its experiment in code rather than from a config file, so
+it writes the declaration itself -- on the same rule as the wizard,
+asymmetric pairing plus a window that includes local night -- and the
+experiment authority it publishes carries the line in ink. Selecting
+one of its five full-radiation profiles
+(`morrison-...-rte-rrtmgp-v1`, either `nssl2-...-validation-candidate-v1`,
+either `thompson-...-rrtmg-legacy-v1`) is what makes an HRRR night run
+nocturnally valid rather than declared.
 
 ## Namelist import substitutions
 

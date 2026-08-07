@@ -49,6 +49,51 @@ def _emit(tmp_path, name, *extra, source="gfs", ladder="12", profile=PROFILE,
     return out
 
 
+def _emit_unnamed_suite(tmp_path, name, *extra, **kwargs):
+    """A config whose physics matches NO shipped profile.
+
+    The chain still has an unnamed-suite branch -- ``plan["profile"]``
+    is ``None``, ``--physics-profile`` is omitted from every composed
+    command, and the verification status is stated instead -- and the
+    two tests below are what hold it.  Until 2026-08-06 the wizard's own
+    ``--physics-profile``-less emission produced such a config, so they
+    built their fixture that way; 1.7.1 bound the gfs/era5 default to
+    the certified Morrison profile (the nocturnal-radiation directive),
+    which is a shipped profile, so that emission no longer reaches the
+    branch and no door emits the unnamed suite any more.
+
+    The branch itself is untouched and still reachable -- a hand-written
+    config, an imported namelist, or the unshipped
+    ``DEFAULT_SUITE_PHYSICS`` suite, which
+    :data:`gpuwm.domain_wizard.DEFAULT_PHYSICS_PROFILE`'s own docstring
+    records as "reachable programmatically" -- so the fixture asks the
+    wizard for that suite directly rather than hand-writing a stand-in
+    that could agree with neither the emitter nor the loader.  Its
+    ``[shared]`` block is the suite the pre-1.7.1 default emitted, key
+    for key; only the emitted HEADER differs, because 1.7.1 states
+    nocturnal validity on every file it writes.
+
+    The assertion below is the fixture's own proof: a helper that
+    quietly stopped producing an unmatched suite would leave these two
+    tests passing against the branch they were written to leave.
+    """
+
+    from gpuwm import domain_wizard
+
+    bound = domain_wizard.DEFAULT_PHYSICS_PROFILE
+    domain_wizard.DEFAULT_PHYSICS_PROFILE = None
+    try:
+        config = _emit(tmp_path, name, *extra, profile=None, **kwargs)
+    finally:
+        domain_wizard.DEFAULT_PHYSICS_PROFILE = bound
+    # The fixture is only a fixture if it really matches nothing.
+    from gpuwm.experiment import load_experiment
+    from gpuwm.physics_compat import identify_single_domain_profile
+    assert identify_single_domain_profile(
+        load_experiment(config).root.run) is None
+    return config
+
+
 @pytest.fixture(scope="module")
 def gfs_config(tmp_path_factory):
     return _emit(tmp_path_factory.mktemp("gfs"), "myarea")
@@ -177,7 +222,7 @@ def test_a_config_with_no_shipped_profile_runs_with_status_stated(
     instead of refusing it -- with the verification status stated in one
     sentence and no --physics-profile invented anywhere."""
 
-    config = _emit(tmp_path, "default_suite", profile=None)
+    config = _emit_unnamed_suite(tmp_path, "default_suite")
     assert cli_main(["go", str(config), "--dry-run"]) == 0
     captured = capsys.readouterr()
     assert captured.err == ""
@@ -380,7 +425,7 @@ def test_a_config_matching_no_profile_prints_no_profile_flag(tmp_path):
 
     from gpuwm.fetch import author_gfs_front_door_manifest
 
-    config = _emit(tmp_path, "default_suite", profile=None)
+    config = _emit_unnamed_suite(tmp_path, "default_suite")
     data = tmp_path / "data"
     authority = tmp_path / "authority"
     _stage_a_fetched_directory(data, config, authority)

@@ -397,8 +397,14 @@ def verify(exp, wps_path: Path, input_path: Path) -> list[str]:
 
     # import_namelists returns (TOML text, substitution report); the text is
     # already validated through build_experiment, so loading it back is what
-    # turns it into the comparable object.
-    toml_text, report = import_namelists(str(wps_path), str(input_path))
+    # turns it into the comparable object.  The source config's governance
+    # declarations ([experiment].acknowledgements) have no namelist
+    # spelling, so the round trip inherits them from the experiment it is
+    # verifying against rather than tripping the load guard the source
+    # config already satisfies.
+    toml_text, report = import_namelists(
+        str(wps_path), str(input_path),
+        acknowledgements=tuple(getattr(exp, "acknowledgements", ())))
     with tempfile.TemporaryDirectory() as tmp:
         echo = Path(tmp) / "roundtrip.toml"
         echo.write_text(toml_text, encoding="utf-8", newline="\n")

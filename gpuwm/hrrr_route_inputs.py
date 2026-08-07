@@ -758,8 +758,13 @@ def verify_round_trip(exp, wps_namelist: Path, namelist_input: Path) -> None:
     from gpuwm.namelist_import import import_namelists
     import tomllib
 
+    # The TOML's governance declarations ([experiment].acknowledgements)
+    # have no namelist spelling, so the round trip inherits them from
+    # the authoritative experiment rather than failing the very guard
+    # the TOML beside these files already satisfies.
     text, _report = import_namelists(
-        wps_namelist, namelist_input, name=exp.name)
+        wps_namelist, namelist_input, name=exp.name,
+        acknowledgements=tuple(exp.acknowledgements))
     imported = build_experiment(
         tomllib.loads(text),
         source=f"round trip of {namelist_input.name}")

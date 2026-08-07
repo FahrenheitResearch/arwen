@@ -13,6 +13,10 @@ smooth_option = 0
 blend_width = 5
 spec_bdy_width = 5
 restart_interval_s = 0.0
+# Nocturnal declaration (1.7.1): this case runs shortwave with longwave OFF
+# through local night, a declared validation/experiment configuration -- see
+# docs/public/PHYSICS.md, "Nocturnal validity".  Restart-tolerated field.
+acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"]
 
 [projection]
 map_proj = "lambert"

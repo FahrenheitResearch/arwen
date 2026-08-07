@@ -719,14 +719,21 @@ def test_no_ladder_flag_emits_the_single_domain_go_shape(tmp_path):
 # The default physics suite, pinned
 # ---------------------------------------------------------------------------
 
-def test_wizard_default_suite_is_the_registered_default_template(tmp_path):
-    """The wizard emits Thompson mp8 by default (product decision,
-    2026-07-29) and its selectors match the registry's declared default
-    template (``DEFAULT_TEMPLATE_ID``), so the wizard and the registry
-    cannot drift apart.  Morrison (mp10) stays registered and selectable
-    at its own maturity label; its Morrison-only ``morr_rimed_ice`` knob
-    must not ride along on a Thompson default."""
-    from gpuwm.physics_registry import DEFAULT_TEMPLATE_ID, physics_registry
+def test_wizard_default_suite_is_the_certified_full_radiation_profile(
+        tmp_path):
+    """The wizard's real-case default is the certified Morrison profile
+    (owner directive 2026-08-06, after a shipped 48 h case ran a
+    longwave-OFF validation suite through two nights): a shipped
+    ``wrf-matched-run`` template with BOTH radiation streams on, emitted
+    switch for switch from gpuwm.physics_compat so the emitted file
+    passes the runners' profile guard as written, and re-derived from
+    the registry here so the choice cannot outlive its evidence."""
+    from gpuwm.domain_wizard import DEFAULT_PHYSICS_PROFILE
+    from gpuwm.physics_compat import (MORRISON_PROFILE_ID,
+                                      single_domain_runtime_switches)
+    from gpuwm.physics_registry import physics_registry
+
+    assert DEFAULT_PHYSICS_PROFILE == MORRISON_PROFILE_ID
 
     rc, out = _run_wizard(tmp_path, "--explain")
     assert rc == 0
@@ -734,31 +741,30 @@ def test_wizard_default_suite_is_the_registered_default_template(tmp_path):
     exp = experiment_from_text(text, source=str(out))
     root = exp.domains[0].run
 
-    registry = physics_registry()
-    template = registry["templates"][DEFAULT_TEMPLATE_ID]
-    assert template["components"]["microphysics"] == "thompson-mp8"
+    # Registry evidence, not vibes: the default template is certified
+    # (top conformance rung) and runs full lw+sw radiation.
+    template = physics_registry()["templates"][DEFAULT_PHYSICS_PROFILE]
+    assert template["maturity"] == "wrf-matched-run"
 
-    selectors: dict[str, int] = {}
-    for comp_id, opt_id in template["components"].items():
-        selectors.update(
-            registry["components"][comp_id]["options"][opt_id]["selectors"])
-    # The wizard now emits the registry's OWN lw/sw pair rather than the
-    # legacy combined selector.  Both resolve to (4, 4) = RTE+RRTMGP, but
-    # only the pair form can compare equal to the shipped runner
-    # profiles, which are written the same way -- v1.0.0's combined form
-    # made every wizard config fail the prepared-forecast profile guard.
     from gpuwm.config import radiation_scheme_ids
-    assert selectors.pop("ra_lw_physics") == root.ra_lw_physics == 4
-    assert selectors.pop("ra_sw_physics") == root.ra_sw_physics == 4
+    switches = single_domain_runtime_switches(DEFAULT_PHYSICS_PROFILE)
+    assert switches["ra_lw_physics"] == root.ra_lw_physics == 4
+    assert switches["ra_sw_physics"] == root.ra_sw_physics == 4
     assert root.ra_physics == 0
     assert radiation_scheme_ids(root) == (4, 4)
     # Kain-Fritsch on the 12 km root only; every nest runs cumulus off.
-    assert root.cu_physics == selectors.pop("cu_physics") == 1
+    assert root.cu_physics == switches["cu_physics"] == 1
     assert all(dc.run.cu_physics == 0 for dc in exp.domains[1:])
-    for key, value in selectors.items():
+    # Every remaining profile switch lands on the root verbatim (the
+    # per-domain cadence keys are carried by the [[domain]] tables).
+    for key, value in switches.items():
         assert getattr(root, key) == value, key
-    assert all(dc.run.mp_physics == 8 for dc in exp.domains)
-    assert "morr_rimed_ice" not in text
+    assert all(dc.run.mp_physics == 10 for dc in exp.domains)
+    # The default emission is nocturnally valid and says so in ink; the
+    # declared-experiment acknowledgement belongs only to explicitly
+    # selected asymmetric suites.
+    assert "# NOCTURNALLY VALID" in text
+    assert "acknowledgements" not in text
     # Product decision (STEP17): wizard configs ship the UP_HELI_MAX
     # diagnostic ON -- this audience reads UH products.
     assert all(dc.run.nwp_diagnostics == 1 for dc in exp.domains)
@@ -1490,19 +1496,19 @@ def test_physics_profile_configs_pass_the_runner_guard_as_emitted(
     assert profile in text
 
 
-def test_the_default_suite_states_its_verification_status_and_runs(
+def test_the_default_suite_states_its_physics_and_runs(
         tmp_path, capsys):
-    """Converted (owner ruling 2026-07-31): status is stated, never a gate.
+    """Status is stated, never a gate (owner ruling 2026-07-31); and the
+    default is BOUND (owner directive 2026-08-06).
 
-    The old contract here was "say out loud that the single door refuses
-    this file".  The door no longer refuses any suite the engine
-    implements, so what must be said out loud is the verification
-    status -- one sentence on the default screen -- with the shipped
-    profiles and what each ACTUALLY runs behind --explain.  A pilot once
-    read the profiles' `ra_physics: 0` as "radiation off", so the words,
-    never the raw switch, still carry the resolved behaviour.
+    The gfs/era5 default is now the certified Morrison profile, so the
+    default screen's physics line names that profile with the resolved
+    radiation in words, plus the bound-profile enforcement note.  A
+    pilot once read the profiles' `ra_physics: 0` as "radiation off",
+    so the words, never the raw switch, still carry the resolved
+    behaviour.
     """
-    from gpuwm.domain_wizard import (WIZARD_PHYSICS_PROFILES,
+    from gpuwm.domain_wizard import (DEFAULT_PHYSICS_PROFILE,
                                      physics_summary,
                                      prepared_route_physics_notice)
 
@@ -1510,16 +1516,14 @@ def test_the_default_suite_states_its_verification_status_and_runs(
                         cycle="2026-07-29T18")
     printed = capsys.readouterr().out
     assert rc == 0
-    # One clear sentence of status on the physics line...
-    assert "supported, not yet WRF-verified" in printed
-    # ...no refusal talk anywhere...
+    # The physics line names the bound certified profile, in words...
+    assert DEFAULT_PHYSICS_PROFILE in printed
+    assert "longwave RTE+RRTMGP, shortwave RTE+RRTMGP" in printed
+    # ...with the enforcement note for a bound profile...
+    assert "bound to a shipped profile" in printed
+    # ...and no refusal talk anywhere.
     assert "will refuse" not in printed
     assert "refuses it as emitted" not in printed
-    # ...and the runs-as-written statement plus the profile catalog
-    # under --explain.
-    assert "runs as written on the prepared single-domain route" in printed
-    for profile in WIZARD_PHYSICS_PROFILES:
-        assert profile in printed
 
     # Words, never the raw switch: full-physics profiles must not read
     # as "off", and reduced ones must not read as full.
@@ -1529,6 +1533,11 @@ def test_the_default_suite_states_its_verification_status_and_runs(
     reduced = physics_summary("thompson-mp8-ysu-mm5-noah-validation-v1")
     assert "longwave OFF, shortwave Dudhia" in reduced
     assert "NO cumulus parameterization" in reduced
+
+    # The unnamed-suite catalog branch survives for direct callers and
+    # still names what each candidate ACTUALLY runs.
+    unnamed = "\n".join(prepared_route_physics_notice(None, "gfs"))
+    assert "longwave OFF, shortwave Dudhia" in unnamed
 
     # ERA5 does not go through that door, so it gets no such notice.
     assert prepared_route_physics_notice(None, "era5") == []
