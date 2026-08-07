@@ -1017,9 +1017,12 @@ def _render_materialized_experiment(
     base_raw = tomllib.loads(base_text)
     base_exp = build_experiment(_experiment_tables(base_raw),
                                 source="base named-source experiment")
-    from gpuwm.experiment import refuse_unrouted_perturbation
+    from gpuwm.experiment import (
+        refuse_unrouted_perturbation, refuse_unrouted_spawn,
+    )
     refuse_unrouted_perturbation(
         base_exp, "prepared single-domain forecast")
+    refuse_unrouted_spawn(base_exp, "prepared single-domain forecast")
     if profile is None:
         for domain in base_exp.domains:
             component = land_surface_component_for_selector(
@@ -3327,9 +3330,12 @@ def preflight_prepared_forecast(
     proof = _load_json_object(proof_path, "preparation proof")
     manifest = _load_json_object(source_manifest_path, "portable source manifest")
     source_exp = load_experiment(experiment_config)
-    from gpuwm.experiment import refuse_unrouted_perturbation
+    from gpuwm.experiment import (
+        refuse_unrouted_perturbation, refuse_unrouted_spawn,
+    )
     refuse_unrouted_perturbation(
         source_exp, "prepared single-domain forecast")
+    refuse_unrouted_spawn(source_exp, "prepared single-domain forecast")
     layout = _resolve_prepared_layout(
         source=source, prepared_root=prepared_root, proof=proof,
         source_exp=source_exp, domain_bundle=domain_bundle)
@@ -3830,8 +3836,18 @@ def _peak_rss_bytes() -> int:
 
 def run_prepared_forecast(
         inputs: PreparedForecastInputs, *, output_directory: Path,
+        observer=None,
 ) -> dict[str, object]:
-    """Restore, integrate, and publish hash-bound source-neutral history."""
+    """Restore, integrate, and publish hash-bound source-neutral history.
+
+    ``observer`` is an optional second consumer of this run's progress,
+    for a caller driving the runner in-process rather than reading its
+    ``progress.json`` from outside (:class:`gpuwm.runplan.RunObserver`
+    is one).  It receives every per-step progress event this runner
+    already builds, and -- if it carries the ``output_committed`` hook
+    -- each wrfout as it becomes durable.  ``None`` leaves every byte of
+    this runner's behaviour unchanged.
+    """
 
     _verify_thompson_runtime_environment(inputs.physics_receipt)
 
@@ -4003,6 +4019,12 @@ def run_prepared_forecast(
         memory_watch.sample()
 
     def progress_callback(**event):
+        # The external observer first and unconditionally: this
+        # runner's own publication is throttled to every 60th step, and
+        # a caller driving the run in-process wants the cadence, not the
+        # sample of it.
+        if observer is not None:
+            observer(**event)
         outer_step = int(event["outer_step"])
         elapsed = float(event["model_elapsed_seconds"])
         if outer_step == 1 or outer_step % 60 == 0 \
@@ -4023,6 +4045,14 @@ def run_prepared_forecast(
                     None if not durable_paths
                     else str(durable_paths[-1].resolve())),
             })
+
+    # Here and not at the writers' construction above: the closure this
+    # binds reads `writers.paths`, so it cannot exist before the writers
+    # do.  Still ahead of every submit -- the first one happens inside
+    # execute_experiment below -- and attach_progress_callback refuses
+    # outright if that ever stops being true.
+    if observer is not None:
+        writers.attach_progress_callback(observer)
 
     try:
         memory_watch.start()
@@ -4381,7 +4411,17 @@ def _parse_materialize_args(argv=None):
     return parser.parse_args(argv)
 
 
-def main(argv=None) -> int:
+def main(argv=None, *, observer=None) -> int:
+    """The runner's command line.
+
+    ``observer`` is forwarded to :func:`run_prepared_forecast` and is
+    otherwise inert: it lets a caller that hosts this runner in its own
+    process (``gpuwm run-plan``, through ``gpuwm go``) receive the same
+    progress this function publishes to ``progress.json``, plus each
+    wrfout as it lands.  ``None`` -- every command-line invocation --
+    changes nothing.
+    """
+
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv == ["--show-capabilities"]:
         print(json.dumps(runner_capabilities(), sort_keys=True))
@@ -4463,7 +4503,8 @@ def main(argv=None) -> int:
             # warn-not-block; detail lives in the receipt).
             print(f"prepared forecast: {verification['sentence']}",
                   file=sys.stderr)
-        report = run_prepared_forecast(inputs, output_directory=outdir)
+        report = run_prepared_forecast(inputs, output_directory=outdir,
+                                       observer=observer)
     except BaseException as error:
         model_elapsed_seconds = 0.0
         try:

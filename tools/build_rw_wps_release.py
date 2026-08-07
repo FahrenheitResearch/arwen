@@ -59,6 +59,13 @@ _TOP_LEVEL_EXCLUDES = {
     # not stage.
     "prepared_single_domain_forecast.py",
     "prepared_domain_tree_forecast.py",
+    # The machine front door.  It is an envelope over the run routes, so it
+    # reaches every one of them -- gpuwm.cli, gpuwm.go_cli, gpuwm.supervisor,
+    # gpuwm.domain_wizard, gpuwm.certify.capsule and gpuwm.core.preflight --
+    # and all six are deliberately absent here.  A preprocessing wheel has no
+    # run to plan, and staging it would offer a command that cannot execute
+    # one, which is exactly the reason go_cli.py is excluded above.
+    "runplan.py",
     # These product orchestrators both execute forecasts: multi-run dispatches
     # isolated supervisor workers, while stream extends forecasts through
     # restart checkpoints.  Neither exposes an RW-WPS preprocessing surface,
@@ -90,6 +97,25 @@ _CORE_MODULES = {
     "landuse.py",
     "microphysics_transition.py",
     "nest_interp.py",
+    # Config VALIDATION for the two storm-following blocks, which is
+    # preprocessing work: `gpuwm/experiment.py` is staged, and it calls
+    # `build_follow_config` for `[relocation.follow]` and
+    # `build_spawn_config` for a `[[domain]]` `spawn` table while LOADING a
+    # config, long before any state exists.  Excluding them would make this
+    # wheel refuse to read a perfectly valid storm-following TOML.  Both are
+    # stdlib + numpy (nest_spawn imports only storm_tracking beyond that),
+    # so they carry no CuPy and no forecast executor.
+    "storm_tracking.py",
+    "nest_spawn.py",
+    # Reached by BOTH of the two above, for the tracking-window slot
+    # NAMES: the windows are one source of truth rather than string
+    # literals copied into each consumer, so validating a spawn or follow
+    # block imports the module that owns them.  It costs nothing this
+    # wheel refuses -- module scope is numpy plus core/constants.py
+    # (already staged), and the only CUDA reference is a function-local
+    # get_kernel inside the device fold, which no config-validation path
+    # ever calls.
+    "uh_diag.py",
     "nssl2_contract.py",
     "noah.py",
     # state.py allocates the SASE prognostic and reads its realizability
@@ -101,7 +127,16 @@ _CORE_MODULES = {
     "state.py",
     "thompson_contract.py",
 }
-_INGEST_EXCLUDES = {"preflight.py"}
+#: `nest_spawn_init.py` and `relocation_init.py` are forecast-time child
+#: initializers, not preprocessing: one builds a nest that is born mid-run,
+#: the other rebuilds one that just moved, and both need a LIVE parent state
+#: to do it.  They reach `gpuwm.core.nest_relocation`, `gpuwm.core.health`
+#: and `gpuwm.ensemble.state_sha`, none of which this wheel stages.  Their
+#: only importers are `gpuwm/core/spawn_runner.py` (not in _CORE_MODULES)
+#: and `gpuwm/runtime.py` (already excluded above), so leaving them behind
+#: strands nothing.
+_INGEST_EXCLUDES = {"preflight.py", "nest_spawn_init.py",
+                    "relocation_init.py"}
 #: `gpuwm/obs/sources.py` is the seam between the ingest lane and the scoring
 #: lane: it builds the scorer's dataclasses and reaches
 #: `gpuwm.verify.obs.contracts` to do it.  RW-WPS ships no verification

@@ -82,11 +82,16 @@ def test_single_domain_500x500_benchmark_geometry_and_physics_are_frozen():
     assert (cfg.dx, cfg.dy, cfg.dt) == (
         999.8071015811862, 999.8071015811862, 5.0)
     assert dc.parent_id == 0 and cfg.specified and not cfg.nested
+    # 1.8 froze this route's default at the full-radiation suite:
+    # Thompson mp8 with RRTMG longwave AND shortwave, which is the
+    # operational HRRR composition and is nocturnally valid.  It replaced
+    # (6, 0, 1) -- WSM6 with longwave OFF -- whose frozen downward
+    # longwave cratered nocturnal skin temperature (the 1.7.1 headline).
     assert (cfg.mp_physics, cfg.ra_lw_physics,
-            cfg.ra_sw_physics) == (6, 0, 1)
+            cfg.ra_sw_physics) == (8, 4, 4)
     assert (cfg.sf_sfclay_physics, cfg.sf_surface_physics,
             cfg.bl_pbl_physics, cfg.cu_physics) == (91, 2, 1, 0)
-    assert cfg.radt_minutes == 1.0
+    assert cfg.radt_minutes == 12.0
     assert dc.history_interval_s == 300.0
     grid = benchmark_grid()
     assert grid.latlon_mass()[0].shape == (500, 500)

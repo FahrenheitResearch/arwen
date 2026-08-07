@@ -12,6 +12,7 @@ import json
 import math
 import numpy as np
 from pathlib import Path
+import time
 from types import MappingProxyType
 from typing import Literal, Protocol, runtime_checkable
 
@@ -146,6 +147,17 @@ class ExperimentState:
     schedule: Schedule
     memory_ledger: object | None
     experiment_fingerprint: str
+
+    #: The route's build-time context (experiment, case data, forcing
+    #: times, radiation workspace), set by ``build_experiment``.  Left
+    #: DELIBERATELY unannotated so it stays a plain class attribute and
+    #: not a dataclass field: hand-assembled trees (the idealized and
+    #: verify paths) construct this positionally and never set it, and a
+    #: real default is what lets the executor read it as an ordinary
+    #: attribute -- the clock-module audit
+    #: (tests/test_clock.py::test_no_float_elapsed_accumulation_audit)
+    #: bans getattr reflection here.
+    _activation_context = None
 
     def node(self, grid_id: int) -> DomainNode:
         """Return one domain node by its configured grid identifier."""
@@ -296,7 +308,17 @@ def _jsonable(value):
 #: length / output and restart cadence may differ"), held in one place so
 #: every route that builds a restart identity excludes the same set.
 RESTART_TOLERATED_EXPERIMENT_FIELDS = (
-    "run_seconds", "restart_interval_s", "acknowledgements")
+    "run_seconds", "restart_interval_s", "acknowledgements",
+    # Relocation ADMISSIBILITY BOUNDS, not a trajectory input.  Nothing in
+    # RelocationConfig reaches a computed value: it says which child may
+    # move and how far, and a move is an explicit event recorded in its
+    # own segment chain, never something these bounds derive.  Excluding
+    # it is also the conservative reading of the restart contract rather
+    # than a relaxation of it -- the field is new, so binding it would
+    # move the fingerprint of every experiment that never mentions
+    # relocation and refuse every checkpoint written before it existed.
+    # Held byte-inert by tests/test_nest_relocation.py.
+    "relocation")
 RESTART_TOLERATED_DOMAIN_FIELDS = ("history_interval_s",)
 RESTART_TOLERATED_RUN_FIELDS = (
     "run_seconds", "output_interval_s", "restart_interval_s")
@@ -326,6 +348,13 @@ def restart_identity_payload(exp) -> dict:
     for domain in experiment.get("domains", ()):
         for name in RESTART_TOLERATED_DOMAIN_FIELDS:
             domain.pop(name, None)
+        # Same convention for the per-domain spawn declaration: absent
+        # stays absent (pre-feature fingerprints byte-identical), and a
+        # declared spawn BINDS -- a restart across a spawn promises
+        # nothing (the moving-nest 2026-08-06 posture), and binding the
+        # declaration is what keeps that a refusal rather than a shrug.
+        if domain.get("spawn") is None:
+            domain.pop("spawn", None)
         run = domain.get("run", {})
         for name in RESTART_TOLERATED_RUN_FIELDS:
             run.pop(name, None)
@@ -429,8 +458,17 @@ def build_experiment(exp, case_data) -> ExperimentState:
     snapshots = runtime.forcing_snapshots(case_data, catalog)
     forcing_times = runtime.forcing_schedule(exp, case_data, snapshots)
     lbc_interval_s = _forcing_cadence_seconds(catalog)
-    tick_clock = resolve_clock(exp, lbc_interval_s=lbc_interval_s)
-    schedule = build_schedule(exp, tick_clock)
+    # Dormant (spawn-declared) nests are RESERVED but not INTEGRATED:
+    # the memory plan, the shared arenas and the fingerprint below price
+    # and bind the FULL experiment (a declared-but-never-triggered nest
+    # costs its reserved VRAM and zero compute -- that is the contract),
+    # while the clock, the schedule and the child-init loop see only the
+    # active tree.  Mid-run activation is the spawn runner's leg
+    # boundary (gpuwm.experiment.active_experiment), not this builder's.
+    from gpuwm.experiment import pre_spawn_experiment
+    active = pre_spawn_experiment(exp)
+    tick_clock = resolve_clock(active, lbc_interval_s=lbc_interval_s)
+    schedule = build_schedule(active, tick_clock)
     clocks = tick_clock.clocks()
     estimate = estimate_experiment(
         exp, forcing_interval_seconds=lbc_interval_s)
@@ -511,7 +549,7 @@ def build_experiment(exp, case_data) -> ExperimentState:
         initial_perturbation_receipts.append(
             dict(prepared_root.initial_result.initial_perturbation))
 
-    for dc in exp.domains[1:]:
+    for dc in active.domains[1:]:
         parent = nodes[dc.parent_id]
         # A child that starts WITH the experiment applies the configured
         # initial-state bubbles on its own grid (real-data nest init
@@ -608,13 +646,25 @@ def execute_experiment(
         validate_state: bool = True, health_debug: bool = False,
         arena_nan_poison: bool = False,
         skip_feedback_path: bool = False,
-        pool_trim_per_period: bool = True):
+        pool_trim_per_period: bool = True,
+        relocation_runner=None):
     """Wire one :class:`ExperimentState` into ``execute_schedule``.
 
     STEP calls the domain's existing dycore, FORCE calls its node-facing
     coupler, and FEEDBACK walks the dormant three-phase transaction.  The
     clock module remains the only op-table walker and therefore the only
     source of runtime scheduling comparisons.
+
+    ``relocation_runner`` is a
+    :class:`gpuwm.core.relocation_runner.RelocationRunner` constructed by
+    the route (the route owns the child-physics preparer and, for
+    ``follow = "provider"``, the live tracker).  It is consulted at every
+    PERIOD_BEGIN -- the complete cycle boundary where all clocks are
+    synchronized, so every relocation lands on a parent-step boundary --
+    and a moved child gets a fresh health validator armed immediately.  A
+    configuration that schedules relocation on a route that did not wire a
+    runner refuses here, at start, rather than integrating a nest that
+    silently never follows anything.
 
     ``pool_trim_per_period`` releases the CuPy default pool's UNUSED
     cached blocks at every period commit.  Measured on the 4-domain
@@ -632,6 +682,47 @@ def execute_experiment(
     from gpuwm.core.state import refresh_model_time
 
     status = model._runtime_status
+    context = model._activation_context
+    if relocation_runner is None and context is not None:
+        exp = context.get("experiment")
+        relocation = None if exp is None else exp.relocation
+        # A follow target that is still DORMANT is not a void arm: the
+        # nest does not exist yet, so there is nothing to move and no
+        # grid to anchor a runner on.  The leg walk
+        # (gpuwm.runtime.walk_spawn_legs) wires the runner at the birth
+        # boundary, which is the first instant that nest could legally
+        # move -- so the refusal is DEFERRED here, not waived.  A target
+        # that is present in the tree still refuses exactly as before.
+        target = None if relocation is None else relocation.grid_id
+        # Attribute access in a try, never reflection: this module is
+        # AST-audited against getattr/setattr
+        # (tests/test_clock.py::test_no_float_elapsed_accumulation_audit),
+        # and the only callers that lack these attributes are the stub
+        # models in the refusal tests, for which no carve-out applies.
+        try:
+            dormant_target = (
+                target is not None
+                and int(target) not in model.nodes_by_grid_id
+                and exp is not None
+                and any(dc.grid_id == int(target) and dc.spawn is not None
+                        for dc in exp.domains))
+        except AttributeError:
+            dormant_target = False
+        if (relocation is not None and relocation.enabled
+                and not dormant_target
+                and (relocation.follow is not None or relocation.moves)):
+            source = ("[relocation.follow]" if relocation.follow is not None
+                      else "[[relocation.move]]")
+            raise RuntimeError(
+                f"[relocation] configures a follow source ({source}) but "
+                "this route wired no RelocationRunner; a nest that "
+                "silently never moves is a void experiment arm, so this "
+                "refuses instead.  The case-data route wires the real-data "
+                "runner (gpuwm.runtime.build_real_relocation_runner: "
+                "footprint-rebuilt statics + the land-surface preparer); "
+                "any other route constructs "
+                "gpuwm.core.relocation_runner.RelocationRunner and passes "
+                "it here, or drives relocate_child directly")
     feedback_scratch = {
         node.cfg.grid_id: FeedbackScratch()
         for node in model.walk_parent_first() if node.parent is not None}
@@ -660,6 +751,21 @@ def execute_experiment(
     def on_period_begin(period, clocks) -> None:
         status.schedule_cursor = PERIOD_BEGIN
         status.prior_feedback_committed = True
+        if relocation_runner is None:
+            return
+        outcome = relocation_runner.on_period_begin(
+            model, clocks, period=period,
+            # The executor's validator holds live references into the
+            # outgoing child; dropping it here is what lets the
+            # host-staged release actually free the device bytes.
+            before_rebuild=lambda gid: validators.pop(gid, None))
+        if outcome is not None and outcome.get("event") == "relocated":
+            gid = int(outcome["grid_id"])
+            if validate_state:
+                from gpuwm.core.health import StateHealthValidator
+                validators[gid] = StateHealthValidator(model.node(gid).state)
+                validators[gid].require_healthy(
+                    phase=f"post-relocation.d{gid:02d}")
 
     def on_domain_start(grid_id, clock) -> None:
         """Run the ordinary WRF-order child init at its delayed boundary."""
@@ -820,10 +926,32 @@ def execute_experiment(
                 validator.require_healthy(
                     phase=f"post-d01-sync.d{gid:02d}")
 
+    #: Wall clock of the outer step that is committing, measured the
+    #: same way the single-domain loop measures its own
+    #: (runtime.integrate_prepared_case).  It used to be published as a
+    #: literal 0.0 from here, which meant the tree route -- the one that
+    #: runs the deep nests, where the number matters most -- reported no
+    #: cadence at all: every consumer of step_wall_seconds (the
+    #: supervisor's stale-step threshold, any progress display) was
+    #: reading a constant.  One perf_counter pair per outer step.
+    period_wall = [time.perf_counter()]
+
     def on_period_commit(period, clocks) -> None:
         root_clock = clocks[model.root.cfg.grid_id]
         if pool_trim_per_period:
             _trim_default_pool()
+        now = time.perf_counter()
+        # WALL time, not model time.  The local is deliberately NOT named
+        # step_wall_seconds even though the keyword it feeds is: the
+        # clock audit (tests/test_clock.py) bans any assignment in this
+        # module whose target name carries "elapsed"/"second", because
+        # MODEL elapsed seconds must be tick-derived and never
+        # float-accumulated.  A perf_counter difference is a different
+        # quantity that happens to share the word, and the audit keeps
+        # its full force here: an actual elapsed-seconds assignment
+        # still trips it.
+        step_wall = now - period_wall[0]
+        period_wall[0] = now
         if progress_callback is not None:
             progress_callback(
                 model_elapsed_seconds=root_clock.elapsed_seconds,
@@ -831,7 +959,8 @@ def execute_experiment(
                 last_durable_wrfout=(None if io_manager is None else
                                      io_manager.last_durable_wrfout),
                 last_checkpoint=model._last_checkpoint,
-                phase="post-d01-sync", step_wall_seconds=0.0)
+                phase="post-d01-sync",
+                step_wall_seconds=step_wall)
 
     clocks = {node.cfg.grid_id: node.clock
               for node in model.walk_parent_first()}
@@ -857,7 +986,11 @@ def execute_experiment(
             last_checkpoint=model._last_checkpoint,
             phase=f"stepping:outer-{root_clock.step_count + 1}",
             step_wall_seconds=0.0)
-    return execute_schedule(
+    # Start the cadence clock at the last instant before stepping, so
+    # the first outer step's wall time is the step's and not the
+    # transition heartbeat's.
+    period_wall[0] = time.perf_counter()
+    execution = execute_schedule(
         model.schedule, on_step=on_step, on_force=on_force,
         on_feedback_prepare=on_feedback_prepare,
         on_feedback_commit=on_feedback_commit,
@@ -874,6 +1007,9 @@ def execute_experiment(
         committed_initial_history_grid_ids=(
             model._resume_committed_history_grid_ids
             if bool(model._resumed) else ()))
+    if relocation_runner is not None:
+        relocation_runner.close_receipt(model)
+    return execution
 
 
 __all__ = [

@@ -24,9 +24,9 @@ from gpuwm.source_frame import canonical_field_requirements
 from gpuwm.mapped_authoring import author_input_manifest, author_mapping
 from gpuwm.mapped_source import _load_json_document
 from gpuwm.hrrr_forecast import hrrr_source_window
+from gpuwm.hrrr_route_inputs import ROUTE_DEFAULT_PHYSICS_PROFILE
 from gpuwm.physics_compat import (
     SINGLE_DOMAIN_PHYSICS_PROFILES,
-    WSM6_PROFILE_ID,
 )
 
 
@@ -776,7 +776,7 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
         )
         try:
             validate_single_domain_physics_profile(
-                WSM6_PROFILE_ID
+                ROUTE_DEFAULT_PHYSICS_PROFILE
                 if args.physics_profile is None else args.physics_profile,
                 expert_acknowledgements=tuple(
                     args.ack))
@@ -1247,7 +1247,7 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
         "--source-manifest-sha256", str(args.source_sha256s_sha256),
         "--namelist-input", str(args.namelist_input),
         "--physics-profile", (
-            WSM6_PROFILE_ID
+            ROUTE_DEFAULT_PHYSICS_PROFILE
             if args.physics_profile is None else args.physics_profile),
         "--cycle", str(args.valid_time),
         "--output-root", str(args.output_root),

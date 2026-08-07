@@ -469,13 +469,26 @@ def test_the_session_states_the_defaults_it_supplied(monkeypatch):
 def test_every_default_profile_is_offered_and_model_validated(source):
     """The table is quoting the registry; this re-derives what it quotes.
 
-    Two facts, from the generated registry rather than from a second
-    copy of the answer: the profile is one the source's own runner route
-    declares, and it is the strongest maturity the registry publishes.
-    If a template is retired, downgraded or dropped from a route, this
-    fails instead of the wizard emitting a config its runner refuses.
+    Three facts, from the generated registry and the shipped switch
+    tables rather than from a second copy of the answer: the profile is
+    one the source's own runner route declares, its route ADMITS the
+    physics it selects, and no stronger-maturity profile satisfies both.
+
+    The middle fact is new in 1.8 and it is the one whose absence let a
+    bug ship.  This test asserted registry reachability and
+    ``wrf-matched-run`` maturity, both of which were true of
+    ``morrison-mp10-...`` on hrrr -- while ``validate_route_physics``
+    refused that emission on ``cu_physics=1``, because HRRR's 3 km grid
+    is convection permitting.  A bare hrrr session emitted a config its
+    own route would not take, and this test watched it happen.  Maturity
+    is now derived as the strongest that survives admissibility rather
+    than pinned to the ladder's top rung, so a route whose physics
+    contract excludes every ``wrf-matched-run`` template gets the
+    strongest suite it can actually run instead of a green test and a
+    broken emission.
     """
 
+    from gpuwm.physics_compat import single_domain_runtime_switches
     from gpuwm.physics_registry import physics_registry
 
     profile = interactive.default_physics_profile(source)
@@ -486,7 +499,45 @@ def test_every_default_profile_is_offered_and_model_validated(source):
     assert offering, (
         f"no runner route declares {profile} for {source}; the "
         "interactive default would emit a config its own runner refuses")
-    assert payload["templates"][profile]["maturity"] == "wrf-matched-run"
+
+    def admissible(candidate):
+        """Does this source's route accept the suite, switch for switch?"""
+        if source != "hrrr":
+            return True
+        from gpuwm.hrrr_route_inputs import (ADMITTED_PBL_PHYSICS,
+                                             ADMITTED_RADIATION_PAIRS,
+                                             REQUIRED_PHYSICS,
+                                             SUPPORTED_MICROPHYSICS)
+        try:
+            switches = single_domain_runtime_switches(candidate)
+        except ValueError:
+            return False
+        return (
+            all(int(switches[key]) == value
+                for key, value in REQUIRED_PHYSICS.items())
+            and int(switches["bl_pbl_physics"]) in ADMITTED_PBL_PHYSICS
+            and (int(switches["ra_lw_physics"]),
+                 int(switches["ra_sw_physics"])) in ADMITTED_RADIATION_PAIRS
+            and int(switches["mp_physics"]) in SUPPORTED_MICROPHYSICS)
+
+    assert admissible(profile), (
+        f"{source} default {profile} is declared by its route but its "
+        "physics gate refuses the suite; this is exactly the emission "
+        "the registry check alone cannot see")
+
+    ranks = {name: index for index, name in enumerate(
+        payload["maturity_ladder"]["order"])}
+    reachable = {
+        candidate
+        for route in payload["runner_routes"].values()
+        for candidate in route.get("source_template_ids", {}).get(source, ())
+        if admissible(candidate)
+    }
+    best = max(ranks[payload["templates"][candidate]["maturity"]]
+               for candidate in reachable)
+    assert ranks[payload["templates"][profile]["maturity"]] == best, (
+        f"{source} default {profile} is not the strongest ADMISSIBLE "
+        f"maturity available; stronger admissible suites exist")
 
 
 def test_a_bare_session_emits_a_config_gpuwm_go_accepts(tmp_path,

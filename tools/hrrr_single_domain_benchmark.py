@@ -36,6 +36,9 @@ from tools.hrrr_build_native_static import (  # noqa: E402
     sha256_file,
     validate_static,
 )
+from gpuwm.hrrr_route_inputs import (  # noqa: E402
+    ROUTE_DEFAULT_PHYSICS_PROFILE,
+)
 from gpuwm.ingest.hrrr_target import (  # noqa: E402
     HrrrTargetDomain,
     load_hrrr_target_domain,
@@ -66,6 +69,9 @@ from gpuwm.physics_compat import (  # noqa: E402
     thompson_guard_exports,
     thompson_runtime_requirements,
     validate_single_domain_physics_profile,
+)
+from gpuwm.core.thompson_contract import (  # noqa: E402
+    MP_PHYSICS as THOMPSON_MP_PHYSICS,
 )
 from gpuwm.core.nssl2_contract import (  # noqa: E402
     CONTRACT_ID as NSSL2_CONTRACT_ID,
@@ -129,6 +135,28 @@ def runner_capabilities() -> dict[str, object]:
     missing_executor_modules = _missing_forecast_executor_modules()
     forecast_available = not missing_executor_modules
     thompson = thompson_runtime_requirements()
+    # The guarded evidence runtime's two-variable launch contract is
+    # ``thompson`` above, and it describes ONE profile.  The mp8 suites
+    # this route stages itself resolve their tables through the project's
+    # packaged ladder instead (_microphysics_table_authority), so their
+    # capability rows say that rather than advertising an environment
+    # gate they do not have.  Both rows quote the same pinned table
+    # authority, because it is the same bytes either way.
+    staged_thompson = {
+        "readiness": "WRF_MATCHED_RUN_CANDIDATE",
+        "table_staging": "route-staged-at-profile-binding",
+        "table_root_resolution": (
+            f"{THOMPSON_TABLE_ROOT_ENV} override, then user staging, "
+            "then packaged package-data root"),
+        "table_authority": thompson["table_authority"],
+        "runtime_guards": [
+            "exact-size-and-sha256 before GPU setup",
+        ],
+        "external_table_assets": [
+            asset["filename"]
+            for asset in thompson["table_authority"]["assets"]
+        ],
+    }
     return {
         "schema": RUNNER_CAPABILITIES_SCHEMA,
         "runner": "tools.hrrr_single_domain_benchmark",
@@ -205,13 +233,14 @@ def runner_capabilities() -> dict[str, object]:
             },
             THOMPSON_LEGACY_RRTMG_PROFILE_ID: {
                 "selector": 8,
-                **thompson,
+                **staged_thompson,
                 "explicit_expert_consent_required": False,
                 "radiation_solver": "legacy RRTMG",
+                "route_default": True,
             },
             THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID: {
                 "selector": 8,
-                **thompson,
+                **staged_thompson,
                 "explicit_expert_consent_required": False,
                 "radiation_solver": "legacy RRTMG",
                 # The one component that differs from the row above.  The
@@ -1192,8 +1221,77 @@ def _thompson_runtime_authority() -> dict[str, object]:
     }
 
 
+def _microphysics_table_authority(profile: str) -> dict[str, object] | None:
+    """Stage and byte-validate the lookup tables THIS profile's mp reads.
+
+    THE FIX FOR THE CONSTRAINT THAT KEPT THIS ROUTE'S DEFAULT ASYMMETRIC.
+    Until 1.8 the only microphysics tables this route ever resolved were
+    the ones :func:`_thompson_runtime_authority` resolves, and that
+    function fires for exactly one profile id --
+    ``thompson-mp8-ysu-mm5-noah-validation-v1``, the guarded evidence
+    runtime -- behind two environment variables.  Every other mp8 suite,
+    including BOTH legacy-RRTMG twins (the only full-radiation
+    compositions this route's physics gate admits), reached GPU setup
+    with no table resolution and no byte check on this route at all.  The
+    wsm6 and Kessler families need no tables, so "the default is wsm6
+    because it needs no staged tables" was true and self-perpetuating:
+    the route could not default to full radiation because full radiation
+    here means mp8, and mp8 was not staged.
+
+    Staging is what removes it, not a relaxed guard.  The tables ship as
+    package data (``gpuwm/data/thompson/tables``, SHA-256 pinned) and the
+    ladder that finds them -- env override, user staging, packaged root
+    -- is the project's one resolver
+    (:func:`gpuwm.physics_compat.thompson_table_root`).  This calls it
+    for ANY profile whose resolved ``mp_physics`` reads those tables, at
+    profile-binding time, which on this route is before the fetch and
+    before preprocessing; an install that never staged them is refused in
+    one sentence naming ``gpuwm fetch-tables`` rather than by a
+    ``FileNotFoundError`` at the top of a paid GPU run.  The returned
+    block goes into the physics receipt, so a reader can see WHICH bytes
+    a prepared tree was built against.
+
+    ``None`` for a profile whose microphysics reads no tables; the caller
+    omits the key rather than writing an empty one.
+    """
+
+    switches = _native_hrrr_runtime_switches(profile)
+    if int(switches["mp_physics"]) != THOMPSON_MP_PHYSICS:
+        return None
+    from gpuwm.core.thompson_contract import (
+        CLASSIC_TABLE_ASSETS,
+        TABLE_SET_ID,
+        WRF_REFERENCE_COMMIT,
+        WRF_REFERENCE_VERSION,
+        validate_table_assets,
+    )
+    from gpuwm.table_assets import require_thompson_tables
+
+    # Presence first, in a sentence naming ``gpuwm fetch-tables``; then
+    # exact bytes.  ``validate_table_assets`` defaults to the pinned
+    # classic set and fails closed on an absent, resized or substituted
+    # asset, so it IS the contract -- re-comparing its return value to
+    # the same constant would only ever catch a test double.
+    root = Path(require_thompson_tables(
+        assets=CLASSIC_TABLE_ASSETS)).resolve()
+    assets = validate_table_assets(root)
+    return {
+        "schema": "gpuwm-prepared-microphysics-table-authority-v1",
+        "mp_physics": THOMPSON_MP_PHYSICS,
+        "table_root": str(root),
+        "table_set": TABLE_SET_ID,
+        "wrf_reference_version": WRF_REFERENCE_VERSION,
+        "wrf_reference_commit": WRF_REFERENCE_COMMIT,
+        "assets": [
+            {"filename": item.filename, "bytes": item.bytes,
+             "sha256": item.sha256}
+            for item in assets
+        ],
+    }
+
+
 def _validate_native_hrrr_physics_profile(
-        path: Path, profile: str = WSM6_PROFILE_ID, *,
+        path: Path, profile: str = ROUTE_DEFAULT_PHYSICS_PROFILE, *,
         expert_acknowledgements: tuple[str, ...] = (),
         ) -> dict[str, object]:
     """Bind the namelist to one explicit HRRR runner profile.
@@ -1345,6 +1443,16 @@ def _validate_native_hrrr_physics_profile(
                 if source_absent_defaults else "not applicable"),
         },
     }
+    # Every profile that READS microphysics tables stages and validates
+    # them here, whatever its radiation pairing -- see
+    # _microphysics_table_authority.  The guarded evidence runtime below
+    # keeps its own two-variable launch contract on top of this; it is a
+    # launch contract for that one profile, not the route's table
+    # resolution, and it no longer stands between this route and a
+    # full-radiation default.
+    table_authority = _microphysics_table_authority(profile)
+    if table_authority is not None:
+        receipt["microphysics_table_authority"] = table_authority
     if profile == THOMPSON_PROFILE_ID:
         receipt["readiness"] = "WRF_MATCHED_RUN_EXPERIMENTAL"
         receipt["thompson_contract"] = _thompson_runtime_authority()
@@ -1355,6 +1463,15 @@ def _validate_native_hrrr_physics_profile(
             "morr_rimed_ice": 1,
             "rimed_ice_category": "hail",
         }
+    elif profile in (THOMPSON_LEGACY_RRTMG_PROFILE_ID,
+                     THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID):
+        # Registry maturity ``wrf-matched-run-candidate``, and no env
+        # launch contract: these resolve their tables through the staged
+        # authority above, which is what lets one of them be this
+        # route's default.  Stating the readiness is part of that -- a
+        # default whose receipt carries no readiness key is a default
+        # nobody can audit.
+        receipt["readiness"] = "WRF_MATCHED_RUN_CANDIDATE"
     elif profile in (NSSL2_PROFILE_ID, NSSL2_LEGACY_RRTMG_PROFILE_ID):
         receipt["readiness"] = "WRF_MATCHED_RUN_CANDIDATE"
         receipt["nssl2_contract"] = {
@@ -1460,7 +1577,7 @@ def _experiment_tables(
         vertical, *, run_seconds: float,
         start_time: datetime = datetime(2026, 7, 18),
         target: HrrrTargetDomain | None = None,
-        physics_profile: str = WSM6_PROFILE_ID,
+        physics_profile: str = ROUTE_DEFAULT_PHYSICS_PROFILE,
         history_interval_seconds: float = 300.0):
     """The raw tables this route hands ``build_experiment``, plus the target.
 
@@ -1565,15 +1682,10 @@ def _declare_nocturnal_asymmetric_radiation(
         run_seconds: float) -> None:
     """Declare this route's asymmetric radiation when the window has night.
 
-    THE NATIVE HRRR ROUTE IS THE ONE DOOR WHOSE DEFAULT SUITE IS
-    ASYMMETRIC.  Eight of the thirteen profiles this route stages run
+    Eight of the thirteen profiles this route stages run
     ``ra_sw_physics 1`` (Dudhia) with ``ra_lw_physics 0`` -- the whole
     wsm6 no-radiation family, ``kessler-mp1-ysu-mm5-noah-dudhia-v1``
-    and ``thompson-mp8-ysu-mm5-noah-validation-v1`` -- and the route's
-    own default is :data:`WSM6_PROFILE_ID`, one of them; the HRRR root
-    preparer stages no microphysics tables for the full-radiation
-    profiles, so the constraint is the route's, not a preference.
-    1.7.1's
+    and ``thompson-mp8-ysu-mm5-noah-validation-v1``.  1.7.1's
     nocturnal-radiation guard refuses that pairing at config load for
     any window that includes local night
     (:func:`gpuwm.physics_compat.nocturnal_radiation_refusal`), which is
@@ -1587,6 +1699,19 @@ def _declare_nocturnal_asymmetric_radiation(
     experiment document this route publishes carries the line, so a
     downstream reader sees the declaration rather than inheriting it
     silently.
+
+    WHAT CHANGED IN 1.8: this used to fire for the route's own DEFAULT.
+    The default was :data:`WSM6_PROFILE_ID` -- asymmetric -- so a
+    preparation that named no profile got the declaration written on the
+    operator's behalf, and a declaration written by silence declares
+    nothing.  The default is now
+    :data:`gpuwm.hrrr_route_inputs.ROUTE_DEFAULT_PHYSICS_PROFILE`, a 4/4
+    suite, so this function returns without writing anything unless an
+    operator EXPLICITLY selected an asymmetric profile.  Auto-declaration
+    by silence died with the default that needed it; the eight asymmetric
+    profiles stay fully selectable and still get the declaration, which
+    is now what it was always supposed to mean -- a deliberate choice,
+    recorded.
 
     Written ONLY when the resolved pairing is actually asymmetric AND
     the window actually includes local night, matching the wizard's
@@ -1616,7 +1741,7 @@ def _experiment(
         vertical, *, run_seconds: float,
         start_time: datetime = datetime(2026, 7, 18),
         target: HrrrTargetDomain | None = None,
-        physics_profile: str = WSM6_PROFILE_ID,
+        physics_profile: str = ROUTE_DEFAULT_PHYSICS_PROFILE,
         history_interval_seconds: float = 300.0):
     from gpuwm.experiment import build_experiment
 
@@ -3761,7 +3886,7 @@ def _parse_args(argv=None):
     parser.add_argument(
         "--physics-profile",
         choices=SINGLE_DOMAIN_PHYSICS_PROFILES,
-        default=WSM6_PROFILE_ID,
+        default=ROUTE_DEFAULT_PHYSICS_PROFILE,
         help="explicit GPUWM HRRR physics/runtime contract",
     )
     parser.add_argument(

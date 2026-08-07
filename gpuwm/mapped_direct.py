@@ -287,8 +287,11 @@ def prepare_mapped_wrf(
         run_control_before["cpu_preprocess_bridge"] = _file_receipt(cpu_bridge)
 
     exp = load_experiment(experiment_config)
-    from gpuwm.experiment import refuse_unrouted_perturbation
+    from gpuwm.experiment import (
+        refuse_unrouted_perturbation, refuse_unrouted_spawn,
+    )
     refuse_unrouted_perturbation(exp, "mapped-adapter prepared-cache")
+    refuse_unrouted_spawn(exp, "mapped-adapter prepared-cache")
     from gpuwm.static.highres_production import refuse_inert_highres
     refuse_inert_highres(experiment_config, lane="mapped adapter")
     hierarchy = len(exp.domains) > 1

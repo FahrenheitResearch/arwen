@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import math
 import os
 import time
 from datetime import datetime, timedelta
@@ -991,6 +992,68 @@ def prepare_experiment_case(exp: ExperimentConfig,
         forcing_by_time=forcing_by_time)
 
 
+def _child_radiation_adapter(exp: ExperimentConfig, data: CaseDataConfig,
+                             dc, state, lat, lon, *,
+                             radiation_workspace=None,
+                             radiation_parent=None):
+    """Construct one child domain's radiation adapter (shared by the
+    t=0 preparer and the relocation preparer, so a relocated child's
+    radiation is wired by exactly the code that wired it at start)."""
+    cfg = dc.run
+    radiation = None
+    if radiation_scheme_ids(cfg) == (4, 4):
+        from gpuwm.physics_compat import (
+            RRTMG_VARIANT_LEGACY, rrtmg_variant)
+        if rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY:
+            # Legacy RRTMG child: the exact WRF v4.6.1 port with WRF's
+            # root-compute + parent->child ozone routing.  The parent
+            # adapter is mandatory -- a per-nest climatology evaluation
+            # would diverge from WRF on d02+ (never fall back silently).
+            if radiation_parent is None and cfg.o3input == 2:
+                raise ValueError(
+                    "ra_rrtmg_variant='rrtmg_legacy' on child domain "
+                    f"grid_id={dc.grid_id} requires radiation_parent= "
+                    "(the parent domain's RRTMGLegacyRadiation): WRF "
+                    "computes o3rad on the root domain only and hands "
+                    "nests the parent-interpolated field")
+            if data.co2_vmr is not None:
+                raise ValueError(
+                    "ra_rrtmg_variant='rrtmg_legacy' runs WRF's "
+                    "ghg_input=0 analytic year-formula trace gases; the "
+                    f"explicit case co2_vmr={data.co2_vmr!r} cannot be "
+                    "honored by the legacy port -- remove it or select "
+                    "ra_rrtmg_variant='rte-rrtmgp'")
+            from gpuwm.core.nest_interp import register_nest
+            from gpuwm.core.rrtmg_legacy import (ParentOzoneProvider,
+                                                 RRTMGLegacyRadiation)
+            parent_dc = exp.domain(dc.parent_id)
+            registration = register_nest(
+                nri=dc.parent_grid_ratio, nrj=dc.parent_grid_ratio,
+                i_parent_start=dc.i_parent_start,
+                j_parent_start=dc.j_parent_start,
+                child_nx=cfg.nx, child_ny=cfg.ny,
+                parent_nx=parent_dc.run.nx, parent_ny=parent_dc.run.ny,
+                stagger="", wrapper="interp")
+            radiation = RRTMGLegacyRadiation(
+                exp.start_time, lat, lon,
+                p_top=float(state.p_top),
+                ozone_parent=(
+                    ParentOzoneProvider(radiation_parent, registration)
+                    if cfg.o3input == 2 else None),
+                o3input=cfg.o3input)
+        else:
+            from gpuwm.core.rrtmgp import RRTMGPRadiation
+            overrides = ({"co2": data.co2_vmr}
+                         if data.co2_vmr is not None else None)
+            radiation = RRTMGPRadiation(
+                exp.start_time, lat, lon, trace_gas_overrides=overrides,
+                column_chunk=exp.column_chunk)
+            if radiation_workspace is not None:
+                radiation.column_chunk = radiation_workspace.column_chunk
+                radiation.chunk_workspace = radiation_workspace
+    return radiation
+
+
 def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
                        data: CaseDataConfig, forcing_times,
                        radiation_workspace=None,
@@ -1038,56 +1101,10 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
                                              domain_start_time)
     lai = monthly_interp_to_date(static["LAI12M"], domain_start_time)
     lat, lon = initialized.grid.latlon_mass()
-    radiation = None
-    if radiation_scheme_ids(cfg) == (4, 4):
-        from gpuwm.physics_compat import (
-            RRTMG_VARIANT_LEGACY, rrtmg_variant)
-        if rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY:
-            # Legacy RRTMG child: the exact WRF v4.6.1 port with WRF's
-            # root-compute + parent->child ozone routing.  The parent
-            # adapter is mandatory -- a per-nest climatology evaluation
-            # would diverge from WRF on d02+ (never fall back silently).
-            if radiation_parent is None and cfg.o3input == 2:
-                raise ValueError(
-                    "ra_rrtmg_variant='rrtmg_legacy' on child domain "
-                    f"grid_id={dc.grid_id} requires radiation_parent= "
-                    "(the parent domain's RRTMGLegacyRadiation): WRF "
-                    "computes o3rad on the root domain only and hands "
-                    "nests the parent-interpolated field")
-            if data.co2_vmr is not None:
-                raise ValueError(
-                    "ra_rrtmg_variant='rrtmg_legacy' runs WRF's "
-                    "ghg_input=0 analytic year-formula trace gases; the "
-                    f"explicit case co2_vmr={data.co2_vmr!r} cannot be "
-                    "honored by the legacy port -- remove it or select "
-                    "ra_rrtmg_variant='rte-rrtmgp'")
-            from gpuwm.core.nest_interp import register_nest
-            from gpuwm.core.rrtmg_legacy import (ParentOzoneProvider,
-                                                 RRTMGLegacyRadiation)
-            parent_dc = exp.domain(dc.parent_id)
-            registration = register_nest(
-                nri=dc.parent_grid_ratio, nrj=dc.parent_grid_ratio,
-                i_parent_start=dc.i_parent_start,
-                j_parent_start=dc.j_parent_start,
-                child_nx=cfg.nx, child_ny=cfg.ny,
-                parent_nx=parent_dc.run.nx, parent_ny=parent_dc.run.ny,
-                stagger="", wrapper="interp")
-            radiation = RRTMGLegacyRadiation(
-                exp.start_time, lat, lon,
-                p_top=float(state.p_top),
-                ozone_parent=(
-                    ParentOzoneProvider(radiation_parent, registration)
-                    if cfg.o3input == 2 else None),
-                o3input=cfg.o3input)
-        else:
-            overrides = ({"co2": data.co2_vmr}
-                         if data.co2_vmr is not None else None)
-            radiation = RRTMGPRadiation(
-                exp.start_time, lat, lon, trace_gas_overrides=overrides,
-                column_chunk=exp.column_chunk)
-            if radiation_workspace is not None:
-                radiation.column_chunk = radiation_workspace.column_chunk
-                radiation.chunk_workspace = radiation_workspace
+    radiation = _child_radiation_adapter(
+        exp, data, dc, state, lat, lon,
+        radiation_workspace=radiation_workspace,
+        radiation_parent=radiation_parent)
     geog_selection = GeogSelection.from_case_data(
         data, domain_id=dc.grid_id)
     landuse_attrs = geog_selection.landuse_global_attrs()
@@ -1142,6 +1159,666 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
             soil.snow_water, dtype=np.float64, copy=True),
         forcing_times=tuple(forcing_times),
         geog_selection=geog_selection)
+
+
+# ---------------------------------------------------------------------------
+# Real-data relocation: the route-owned child preparer and runner wiring
+# ---------------------------------------------------------------------------
+
+def _relocation_host(value) -> np.ndarray:
+    if hasattr(value, "__cuda_array_interface__"):
+        return np.asarray(value.get())
+    return np.array(value, copy=True)
+
+
+def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
+                                         data: CaseDataConfig, model,
+                                         initialized, child_dc, parent_node,
+                                         land) -> float:
+    """Rebuild one child's physics driver over a supplied land state.
+
+    The operation both mid-run child events need, and the reason they can
+    share it: a relocation and a spawn differ ONLY in where the land state
+    comes from (an index-space transplant plus donor fill for the first,
+    WRF's masked parent interpolator for the second).  Once the fields are
+    in hand the rebuild is identical -- ``initialize_landuse`` /
+    ``initialize_physics`` against the footprint's OWN statics, then the
+    continuation fields the constructor does not take by direct overwrite
+    -- and it is the same wiring the t = 0 child preparer
+    (:func:`prepare_child_case`) performs.
+
+    ``land`` maps :data:`~gpuwm.ingest.relocation_init
+    .LAND_SURFACE_CONTINUATION_FIELDS` names to host arrays; a name the
+    caller does not supply falls back to the cold-start default, exactly
+    as it did when this lived inside the relocation preparer.
+    Accumulators are NOT here: they are re-initialised at the new
+    footprint, and both callers' receipts say so.
+
+    Returns the wall seconds the rebuild took.
+    """
+    import time as _time
+
+    import cupy as cp
+
+    from gpuwm.core.landuse import initialize_landuse
+    from gpuwm.core.physics import initialize_physics
+
+    started = _time.perf_counter()
+    cfg = child_dc.run
+    static = initialized.static_fields
+    grid = initialized.grid
+    state = initialized.state
+    now = exp.start_time + timedelta(
+        seconds=float(parent_node.clock.elapsed_seconds))
+    # Climatology fields interpolate to the EVENT time: a child rebuilt
+    # (or born) in May must not wear its January vegetation.
+    vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], now)
+    lai = monthly_interp_to_date(static["LAI12M"], now)
+    lat, lon = grid.latlon_mass()
+    parent_physics = getattr(parent_node.state, "physics", None)
+    radiation = _child_radiation_adapter(
+        exp, data, child_dc, state, lat, lon,
+        radiation_workspace=(
+            model._activation_context or {}).get("radiation_workspace"),
+        radiation_parent=(None if parent_physics is None
+                          else parent_physics.radiation_callable))
+    geog_selection = GeogSelection.from_case_data(
+        data, domain_id=int(child_dc.grid_id))
+    attrs = geog_selection.landuse_global_attrs()
+    landuse = initialize_landuse(
+        static["LU_INDEX"], soil_type=static["SCT_DOM"],
+        landmask=static["LANDMASK"],
+        snow=land.get("snow", 0.0), xice=land.get("xice", 0.0),
+        valid_time=now,
+        cen_lat=float(getattr(grid, "cen_lat", np.mean(lat))),
+        mminlu=str(attrs["MMINLU"]),
+        iswater=int(attrs["ISWATER"]),
+        islake=int(attrs["ISLAKE"]),
+        isice=int(attrs["ISICE"]),
+        soil_temperature=land.get("tslb"))
+    driver = initialize_physics(
+        state, cfg, landuse=landuse,
+        tsk=land.get("tsk", 300.0),
+        soil_temperature=land.get("tslb", 285.0),
+        soil_moisture=land.get("smois", 0.30),
+        liquid_moisture=land.get("sh2o"),
+        ivgtyp=static["LU_INDEX"], isltyp=static["SCT_DOM"],
+        vegfra=vegfra, tmn=static["TMN"],
+        xice=land.get("xice", 0.0), snow=land.get("snow", 0.0),
+        snow_depth=land.get("snowh", 0.0),
+        sst=land.get("tsk"),
+        radiation=radiation, radiation_start_time=exp.start_time,
+        radiation_latitude=lat, radiation_longitude=lon)
+    driver.fields["snoalb"][...] = cp.asarray(
+        noah_initial_snow_albedo(
+            static["SNOALB"], static["LU_INDEX"], driver.noah_params,
+            rdmaxalb=cfg.rdmaxalb),
+        dtype=cp.float32)
+    driver.fields["lai"][...] = cp.asarray(lai, dtype=cp.float32)
+    driver.fields["shdmin"][...] = cp.asarray(
+        100.0 * static["GREENFRAC"].min(axis=0), dtype=cp.float32)
+    driver.fields["shdmax"][...] = cp.asarray(
+        100.0 * static["GREENFRAC"].max(axis=0), dtype=cp.float32)
+    # Continuation fields the constructor does not take arrive by
+    # direct overwrite -- the supplied arrays, on the whole child.
+    for name in ("canwat", "snowc", "snotime", "qsfc", "ust",
+                 "smcrel", "psfc", "t2", "q2", "th2", "u10", "v10"):
+        target = driver.fields.get(name)
+        value = land.get(name)
+        if target is not None and value is not None:
+            target[...] = cp.asarray(value, dtype=target.dtype)
+    return _time.perf_counter() - started
+
+
+class RealRelocationChildPreparer:
+    """Physics rebuild + land-surface continuation for a relocated child.
+
+    This is the ``on_child_built`` the real-data route hands the
+    :class:`gpuwm.core.relocation_runner.RelocationRunner`, plus the two
+    duck-typed seams the runner drives around it:
+
+    * ``capture_outgoing(node)`` -- before the move, while the outgoing
+      child is whole: snapshot the driver-held land-surface continuation
+      state (:data:`~gpuwm.ingest.relocation_init.
+      LAND_SURFACE_CONTINUATION_FIELDS`) and keep a reference to the
+      outgoing footprint's statics.
+    * ``__call__(initialized, new_dc, parent_node)`` -- the rebuild:
+      FIRST assert the footprint-rebuilt statics equal the outgoing
+      child's bitwise on shared ground (identical source + identical
+      cells = identical bytes; any mismatch is a statics-build defect
+      and refuses), then build the donor-fill plan, move the land state
+      (overlap by index-space transplant, strip from nearest
+      same-landmask-class donors), and rebuild the physics driver
+      against the NEW statics through the same ``initialize_landuse`` /
+      ``initialize_physics`` / radiation wiring the t=0 child preparer
+      uses.  Accumulators are re-initialised, per leg 1's contract, and
+      the receipt says so.
+    * ``after_move(node)`` -- once the node carries the new placement:
+      refresh the run's prepared-case bookkeeping and the domain's
+      wrfout metadata/global attributes so later frames describe the
+      footprint that produced them.
+    """
+
+    def __init__(self, *, exp: ExperimentConfig, data: CaseDataConfig,
+                 model):
+        self.exp = exp
+        self.data = data
+        self.model = model
+        self.writers = None
+        self.last_receipt = None
+        self._captured = None
+        self._pending_refresh = None
+
+    def attach_writers(self, writers) -> None:
+        self.writers = writers
+
+    def capture_outgoing(self, node) -> None:
+        from gpuwm.ingest.relocation_init import (
+            LAND_SURFACE_CONTINUATION_FIELDS)
+
+        driver = getattr(node.state, "physics", None)
+        fields: dict[str, np.ndarray] = {}
+        if driver is not None:
+            for name in LAND_SURFACE_CONTINUATION_FIELDS:
+                value = driver.fields.get(name)
+                if value is not None:
+                    fields[name] = _relocation_host(value)
+        case = self.model._prepared_by_grid_id.get(int(node.cfg.grid_id))
+        self._captured = {
+            "grid_id": int(node.cfg.grid_id),
+            "i_parent_start": int(node.cfg.i_parent_start),
+            "j_parent_start": int(node.cfg.j_parent_start),
+            "fields": fields,
+            "static_fields": (None if case is None
+                              else case.static_fields),
+        }
+
+    def __call__(self, initialized, new_dc, parent_node) -> None:
+        import time as _time
+
+        from gpuwm.core.nest_relocation import (Placement,
+                                                RelocationRefusal,
+                                                plan_relocation)
+        from gpuwm.ingest.relocation_init import (
+            LAND_SURFACE_CONTINUATION_FIELDS, donor_fill_plan,
+            overlap_mask_for_plan, overlap_statics_mismatches)
+
+        started = _time.perf_counter()
+        captured = self._captured
+        self._captured = None
+        if captured is None or captured["grid_id"] != int(new_dc.grid_id):
+            raise RelocationRefusal(
+                "RealRelocationChildPreparer.__call__ without a matching "
+                "capture_outgoing: the runner drives both seams, and a "
+                "rebuild that never saw the outgoing child has no land "
+                "state to move")
+        cfg = new_dc.run
+        static = initialized.static_fields
+        if static is None:
+            raise RelocationRefusal(
+                "the relocation initializer produced no static fields; "
+                "the real-data route requires footprint-rebuilt statics")
+        plan = plan_relocation(
+            placement_from=Placement(
+                grid_id=captured["grid_id"],
+                i_parent_start=captured["i_parent_start"],
+                j_parent_start=captured["j_parent_start"]),
+            placement_to=Placement(
+                grid_id=int(new_dc.grid_id),
+                i_parent_start=int(new_dc.i_parent_start),
+                j_parent_start=int(new_dc.j_parent_start),
+                generation=1),
+            parent_grid_ratio=int(new_dc.parent_grid_ratio),
+            child_nx=int(cfg.nx), child_ny=int(cfg.ny))
+
+        # THE LOAD-BEARING ASSERTION (Drew's design ruling): statics
+        # rebuilt from the same source over the same cells must equal the
+        # outgoing child's bitwise on shared ground, or the bitwise
+        # overlap transplant sits on ground that changed under it.
+        if captured["static_fields"] is None:
+            raise RelocationRefusal(
+                "the outgoing child's statics are not on record, so the "
+                "overlap-statics equality cannot be asserted; a move "
+                "whose load-bearing claim cannot be checked is refused")
+        statics_verdict = overlap_statics_mismatches(
+            captured["static_fields"], static, plan)
+        if not statics_verdict["pass"]:
+            raise RelocationRefusal(
+                "footprint-rebuilt statics differ from the outgoing "
+                "child's on shared ground (identical source + identical "
+                "cells must give identical bytes); this is a statics-"
+                "build defect, not an input error: "
+                f"{statics_verdict['mismatched_fields'] or statics_verdict}")
+
+        overlap = overlap_mask_for_plan(plan, (cfg.ny, cfg.nx))
+        fill = donor_fill_plan(overlap_mask=overlap,
+                               landmask=np.asarray(static["LANDMASK"]))
+        moved: dict[str, np.ndarray] = {}
+        for name, old in captured["fields"].items():
+            window = plan.window(old.shape)
+            if window is None:
+                continue
+            (dst_j, src_j), (dst_i, src_i) = window
+            staged = np.zeros_like(old)
+            staged[..., dst_j, dst_i] = old[..., src_j, src_i]
+            moved[name] = fill.apply(staged)
+
+        driver_seconds = self._rebuild_driver(
+            initialized, new_dc, parent_node, moved)
+        self._pending_refresh = (int(new_dc.grid_id), initialized.grid,
+                                 static)
+        self.last_receipt = {
+            "overlap_statics": {
+                "compared_cells": statics_verdict["compared_cells"],
+                "mismatched_fields": statics_verdict["mismatched_fields"],
+                "pass": statics_verdict["pass"],
+            },
+            "donor_fill": dict(fill.counts),
+            "fields_moved": sorted(moved),
+            "fields_absent": sorted(
+                set(LAND_SURFACE_CONTINUATION_FIELDS)
+                - set(captured["fields"])),
+            "accumulators_reinitialized": True,
+            "driver_rebuild_seconds": driver_seconds,
+            "preparer_seconds": _time.perf_counter() - started,
+        }
+
+    def _rebuild_driver(self, initialized, new_dc, parent_node,
+                        moved) -> float:
+        return rebuild_child_driver_from_land_state(
+            exp=self.exp, data=self.data, model=self.model,
+            initialized=initialized, child_dc=new_dc,
+            parent_node=parent_node, land=moved)
+
+    def after_move(self, node) -> None:
+        import dataclasses
+
+        pending = self._pending_refresh
+        self._pending_refresh = None
+        if pending is None:
+            return
+        grid_id, grid, static = pending
+        case = self.model._prepared_by_grid_id.get(grid_id)
+        if case is not None and dataclasses.is_dataclass(case):
+            self.model._prepared_by_grid_id[grid_id] = dataclasses.replace(
+                case, grid=grid, static_fields=dict(static))
+        if self.writers is not None:
+            self.writers.refresh_domain(grid_id, grid=grid,
+                                        static_fields=static)
+
+
+def build_real_relocation_runner(exp: ExperimentConfig,
+                                 data: CaseDataConfig, model, outdir):
+    """Wire the real-data route's RelocationRunner, or ``None``.
+
+    ``None`` when the config names no follow source -- bounds-only
+    ``[relocation]`` stays the manual/API mechanism it always was.  With
+    a follow source, this is what makes the front-door refusal
+    unnecessary on THIS route: the footprint-rebuilt statics initializer
+    (:func:`gpuwm.ingest.relocation_init.real_relocation_initializer`)
+    and the physics preparer (:class:`RealRelocationChildPreparer`) both
+    exist here, because the route holds the input catalog with the
+    static source.  Routes without a static source (the prepared domain
+    tree) keep their refusal.
+    """
+    relocation = exp.relocation
+    if not (relocation.enabled and (relocation.follow is not None
+                                    or relocation.moves)):
+        return None
+    from gpuwm.core.relocation_runner import RelocationRunner
+    from gpuwm.ingest.relocation_init import (
+        REAL_DATA_FOOTPRINT_REBUILT_STATICS, real_relocation_initializer)
+
+    grid_id = int(relocation.grid_id)
+    nodes = getattr(model, "nodes_by_grid_id", None)
+    if nodes is not None and grid_id not in nodes:
+        # The follow target is a DORMANT nest: it has no node, no grid
+        # and no birth footprint yet, so there is nothing to anchor the
+        # placement-translated statics initializer on.  The leg walk
+        # rebuilds this the moment the nest is born, which is also the
+        # first instant it could legally move.
+        return None
+    node = model.node(grid_id)
+    child_config = node.cfg
+    initializer = real_relocation_initializer(
+        catalog=model._input_catalog, vertical=exp.vertical,
+        child_config=child_config, reference_grid=node.grid,
+        reference_i_parent_start=child_config.i_parent_start,
+        reference_j_parent_start=child_config.j_parent_start)
+    preparer = RealRelocationChildPreparer(exp=exp, data=data, model=model)
+    return RelocationRunner.from_experiment(
+        exp, schedule=model.schedule, on_child_built=preparer,
+        initializer=initializer,
+        static_provenance=REAL_DATA_FOOTPRINT_REBUILT_STATICS,
+        receipts_path=Path(outdir) / "relocation_receipts.json")
+
+
+class RealSpawnChildPreparer:
+    """Physics/land attachment for a NEWBORN nest on the real-data route.
+
+    The ``on_child_built`` the route hands
+    :class:`gpuwm.core.spawn_runner.SpawnRunner`.  It is the same seam,
+    and the same rule, as every leg boundary and every relocation: the
+    initializer never invents driver state, the route re-initialises it
+    here.
+
+    WHERE THE LAND STATE COMES FROM.  A newborn has no prior self to
+    continue from, so unlike the relocation preparer there is nothing to
+    capture; and it has no ``real.exe`` product at a footprint nobody knew
+    about until the trigger fired, so unlike the t = 0 child preparer
+    there is no analysis-derived soil either.  What it does have is the
+    live parent, and that is precisely the case WRF's own nest
+    initialization is built for: ``med_nest_initial`` fills the whole
+    fine grid from ``med_interp_domain(parent, nest)`` BEFORE any input
+    file is consulted, and for a nest without one that interpolation is
+    the initialization (Users' Guide chapter 5; share/mediation_integrate
+    .F:670).  So the land state is
+    :func:`~gpuwm.ingest.nest_spawn_init.spawn_land_state_from_parent` --
+    the Registry's own masked surface interpolator, run against the
+    newborn's OWN-GRID land-use categories -- and the driver rebuild is
+    then the shared :func:`rebuild_child_driver_from_land_state`, byte
+    for byte the sequence a relocation runs.
+
+    ``last_receipt`` is the duck-typed seam the runner reads (the
+    relocation runner's idiom), so the land accounting reaches the spawn
+    receipt instead of dying here.
+    """
+
+    def __init__(self, *, exp: ExperimentConfig, data: CaseDataConfig,
+                 model):
+        self.exp = exp
+        self.data = data
+        self.model = model
+        self.prepared_by_grid_id: dict[int, object] = {}
+        self.last_receipt = None
+
+    def __call__(self, initialized, child_dc, parent_node) -> None:
+        import time as _time
+
+        from gpuwm.ingest.nest_spawn_init import (SpawnInitRefusal,
+                                                  spawn_land_state_from_parent)
+
+        started = _time.perf_counter()
+        grid_id = int(child_dc.grid_id)
+        static = initialized.static_fields
+        if static is None:
+            raise SpawnInitRefusal(
+                "the spawn initializer produced no static fields; the "
+                "real-data route requires own-grid statics at the fired "
+                "footprint, and the masked land interpolator has no "
+                "destination land-use categories without them")
+        parent_grid_id = int(parent_node.cfg.grid_id)
+        parent_case = self.model._prepared_by_grid_id.get(parent_grid_id)
+        parent_static = getattr(parent_case, "static_fields", None)
+        if parent_static is None:
+            raise SpawnInitRefusal(
+                f"the parent d{parent_grid_id:02d} has no statics on "
+                "record, so its land-use categories -- the SOURCE mask of "
+                "WRF's masked surface interpolator -- are unavailable; a "
+                "newborn's land state cannot be interpolated without them")
+        geog_selection = GeogSelection.from_case_data(
+            self.data, domain_id=grid_id)
+        land = spawn_land_state_from_parent(
+            child_dc, parent_node, static_fields=static,
+            parent_static_fields=parent_static,
+            landuse_attrs=geog_selection.landuse_global_attrs())
+        driver_seconds = rebuild_child_driver_from_land_state(
+            exp=self.exp, data=self.data, model=self.model,
+            initialized=initialized, child_dc=child_dc,
+            parent_node=parent_node, land=land["fields"])
+        context = self.model._activation_context or {}
+        snow = land["fields"].get("snow")
+        # The newborn's own "initial result" IS the materialized child:
+        # the wrfout writers read `initial_result.coord` off the prepared
+        # case, and the parent-frame coordinate the SINT fill produced is
+        # the one this domain will integrate on.  There is no analysis
+        # product to point at, and inventing one would be a lie.
+        prepared = PreparedRealCase(
+            cfg=child_dc.run, grid=initialized.grid,
+            static_fields=dict(static), initial_result=initialized,
+            final_analysis=None,
+            initial_snow_water_kgm2=(
+                np.zeros(tuple(initialized.grid.latlon_mass()[0].shape),
+                         dtype=np.float64) if snow is None
+                else np.array(snow, dtype=np.float64, copy=True)),
+            forcing_times=tuple(context.get("forcing_times", ())),
+            geog_selection=geog_selection)
+        self.prepared_by_grid_id[grid_id] = prepared
+        self.last_receipt = {
+            "land_surface": land["receipt"],
+            "accumulators_reinitialized": True,
+            "driver_rebuild_seconds": driver_seconds,
+            "preparer_seconds": _time.perf_counter() - started,
+        }
+
+
+def build_real_spawn_runner(exp: ExperimentConfig, data: CaseDataConfig,
+                            model, outdir):
+    """Wire the real-data route's SpawnRunner, or ``None``.
+
+    ``None`` when no ``[[domain]]`` declares ``spawn``.  This is what
+    lifts the front-door refusal on THIS route and only here: the route
+    holds the input catalog, so the newborn's own-grid statics can be
+    built at the fired footprint, and it holds the case data and forcing
+    calendar, so its physics driver can be attached.  Routes without
+    them keep the refusal (gpuwm.experiment.refuse_unrouted_spawn).
+    """
+    from gpuwm.core.spawn_runner import SpawnRunner
+
+    preparer = RealSpawnChildPreparer(exp=exp, data=data, model=model)
+
+    def statics_provider(child_dc, parent_node):
+        from gpuwm.ingest.nest_spawn_init import prepare_spawn_statics
+
+        return prepare_spawn_statics(
+            child_dc, parent_node, model._input_catalog,
+            valid_date=exp.start_time)
+
+    return SpawnRunner.from_experiment(
+        exp, on_child_built=preparer, statics_provider=statics_provider,
+        receipts_path=Path(outdir) / "spawn_receipts.json")
+
+
+def _tree_forcing_cadence_seconds(catalog) -> float:
+    """The tree builder's own LBC cadence, so a rebuilt leg clock matches.
+
+    Imported rather than re-derived: ``resolve_clock`` must see exactly
+    the interval ``build_experiment`` gave it, or a leg boundary would
+    quietly re-phase the root's external-boundary calendar.
+    """
+    from gpuwm.core.model import _forcing_cadence_seconds
+
+    return _forcing_cadence_seconds(catalog)
+
+
+def _spawn_leg_seconds(exp: ExperimentConfig) -> float:
+    """How often the walk stops to ask whether a nest should be born.
+
+    Coarse on purpose.  Every boundary costs one schedule rebuild, and a
+    boundary is only USEFUL where the trigger could newly fire, so this
+    takes the relocation cadence when the config sets one (the same
+    instant the tracker is already consulted, and already validated as a
+    whole number of root steps), else the root's history interval, which
+    is also where the reflectivity signal is stashed.
+    """
+    cadence = getattr(getattr(exp, "relocation", None),
+                      "cadence_seconds", None)
+    if cadence:
+        return float(cadence)
+    history = float(getattr(exp.root, "history_interval_s", 0.0) or 0.0)
+    return history if history > 0.0 else float(exp.run_seconds)
+
+
+def _retarget_tree_schedule(model, active_exp: ExperimentConfig,
+                            end_seconds: float, lbc_interval_s) -> None:
+    """Re-aim the live tree at ``end_seconds`` over ``active_exp``.
+
+    The leg-boundary schedule surgery.  Clocks are minted fresh from the
+    new domain set and then carried to the tick the tree is actually at,
+    exactly as ``restore_tree_restart`` does across a checkpoint -- the
+    executor derives its resume period from the root clock, so a tree
+    whose clocks read the boundary resumes there rather than replaying.
+    A node with no clock is a newborn: it joins at the boundary.
+    """
+    from dataclasses import replace as _replace
+
+    from gpuwm.core.clock import build_schedule, resolve_clock
+    from gpuwm.core.state import refresh_model_time
+
+    leg_exp = _replace(
+        active_exp, run_seconds=float(end_seconds),
+        domains=tuple(
+            _replace(dc, run=_replace(dc.run, run_seconds=float(end_seconds)))
+            for dc in active_exp.domains))
+    tick_clock = resolve_clock(leg_exp, lbc_interval_s=lbc_interval_s)
+    schedule = build_schedule(leg_exp, tick_clock)
+    fresh = tick_clock.clocks()
+    boundary_ticks = (0 if model.root.clock is None
+                      else int(model.root.clock.ticks))
+    for node in model.walk_parent_first():
+        gid = int(node.cfg.grid_id)
+        old = node.clock
+        new = fresh[gid]
+        ticks = boundary_ticks if old is None else int(old.ticks)  # noqa: E501
+        new.ticks = ticks
+        new.step_count = max(
+            0, (ticks - new.spec.start_ticks) // new.spec.step_ticks)
+        if old is not None and getattr(old, "dtbc_fp32", None) is not None:
+            new.dtbc_fp32 = old.dtbc_fp32
+        node.clock = new
+        if old is None:
+            refresh_model_time(node.state, new)
+    model.schedule = schedule
+
+
+def _attach_spawned_children(model, active_exp, record, writers,
+                             preparer, lbc_interval_s,
+                             coupler_factory=None) -> list[int]:
+    """Give each newborn its node, clock, coupler, prepared case, writer.
+
+    The clock is minted over the ACTIVATED domain set and carried to the
+    birth tick.  ``_retarget_tree_schedule`` re-mints every clock on the
+    next leg anyway, but a DomainNode is not constructible without one,
+    and the newborn must read its own birth instant from the moment it
+    exists rather than from the next boundary.
+    """
+    from types import MappingProxyType
+
+    from gpuwm.core.clock import resolve_clock
+    from gpuwm.core.model import DomainNode
+    from gpuwm.core.state import refresh_model_time
+
+    if coupler_factory is None:
+        from gpuwm.core.nest import NestCoupler as coupler_factory
+
+    boundary_ticks = int(model.root.clock.ticks)
+    fresh = resolve_clock(active_exp, lbc_interval_s=lbc_interval_s).clocks()
+    nodes = dict(model.nodes_by_grid_id)
+    attached: list[int] = []
+    for gid, child_result in sorted(record["child_results"].items()):
+        gid = int(gid)
+        child_dc = active_exp.domain(gid)
+        parent = nodes[int(child_dc.parent_id)]
+        clock = fresh[gid]
+        clock.ticks = boundary_ticks
+        clock.step_count = max(
+            0, (boundary_ticks - clock.spec.start_ticks)
+            // clock.spec.step_ticks)
+        node = DomainNode(
+            cfg=child_dc, grid=child_result.grid, state=child_result.state,
+            clock=clock, parent=parent, children=[], coupler=None)
+        node.coupler = coupler_factory(node, feedback=active_exp.feedback)
+        node._started = True
+        node.state._nest_restart_classification = "REBUILT"
+        refresh_model_time(node.state, clock)
+        parent.children.append(node)
+        nodes[gid] = node
+        # The writers and any prepared-case consumer read the tree, so it
+        # has to carry the newborn before they are touched.
+        model.nodes_by_grid_id = MappingProxyType(nodes)
+        prepared = preparer.prepared_by_grid_id[gid]
+        model._prepared_by_grid_id[gid] = prepared
+        if writers is not None:
+            writers.add_domain(gid, grid=node.grid,
+                               static_fields=prepared.static_fields)
+        attached.append(gid)
+    model.nodes_by_grid_id = MappingProxyType(nodes)
+    return attached
+
+
+def walk_spawn_legs(model, exp: ExperimentConfig, data: CaseDataConfig, *,
+                    spawn_runner, writers, lbc_interval_s,
+                    relocation_runner=None, relocation_runner_factory=None,
+                    coupler_factory=None, **execute_kwargs):
+    """Integrate the run as LEGS so dormant nests can be born mid-run.
+
+    The production consumer of
+    :meth:`gpuwm.core.spawn_runner.SpawnRunner.on_leg_boundary`.  While
+    a watch is still pending the walk stops every
+    :func:`_spawn_leg_seconds`, asks, and either continues or activates;
+    once nothing is pending it runs straight to the end in one leg, so
+    the common shape is "a few cheap root-only legs, then the whole rest
+    of the forecast".
+
+    Restart across a spawn boundary inherits the moving-nest posture
+    whole: it promises nothing (Drew, 2026-08-06).
+    """
+    from gpuwm.core.model import execute_experiment
+
+    leg = _spawn_leg_seconds(exp)
+    total = float(exp.run_seconds)
+    tol = 1.0e-9
+    while True:
+        elapsed = float(model.root.clock.elapsed_seconds)
+        if spawn_runner.pending and elapsed + tol < total:
+            boundary = min(total, (math.floor(elapsed / leg) + 1) * leg)
+        else:
+            boundary = total
+        _retarget_tree_schedule(
+            model, spawn_runner.active, boundary, lbc_interval_s)
+        # The relocation runner watches ONE grid; while that grid is
+        # still dormant it is not in the tree, and consulting it would
+        # ask the model for a node that does not exist.
+        runner = relocation_runner
+        if runner is not None:
+            target = getattr(runner.config, "grid_id", None)
+            if target is not None and int(target) not in model.nodes_by_grid_id:
+                runner = None
+        execute_experiment(
+            model, relocation_runner=runner, **execute_kwargs)
+        elapsed = float(model.root.clock.elapsed_seconds)
+        if elapsed + tol >= total:
+            break
+        # The boundary instant belongs to BOTH legs: the leg that just
+        # ended emitted its history there, and the next leg's pre-loop
+        # emit would publish the same instant again -- which for a
+        # microphysics domain also means consuming a one-frame REFL
+        # handoff that no longer exists.  This is the resume-boundary
+        # ownership problem the checkpoint path already solves, so it is
+        # solved the same way: mark exactly the domains whose frame is
+        # already durable, and the next leg suppresses them one domain at
+        # a time.
+        model._resumed = True
+        model._resume_committed_history_grid_ids = frozenset(
+            gid for gid, node in model.nodes_by_grid_id.items()
+            if node.clock.history_due())
+        record = spawn_runner.on_leg_boundary(model, t=elapsed)
+        if record is not None:
+            _attach_spawned_children(
+                model, record["experiment"], record,
+                writers, spawn_runner.on_child_built, lbc_interval_s,
+                coupler_factory)
+            # A follow target that was dormant could not be wired at
+            # build time; now that it exists, it can follow its storm.
+            if relocation_runner is None and (
+                    relocation_runner_factory is not None):
+                relocation_runner = relocation_runner_factory()
+                if relocation_runner is not None and writers is not None:
+                    attach = getattr(relocation_runner.on_child_built,
+                                     "attach_writers", None)
+                    if callable(attach):
+                        attach(writers)
+    spawn_runner.close_receipt(model)
 
 
 # ---------------------------------------------------------------------------
@@ -1340,6 +2017,28 @@ def _preparation_progress(progress_callback, phase: str) -> None:
         reporter(phase)
 
 
+def _output_committed(progress_callback, *, domain_id: int,
+                      valid_time: datetime, path: Path) -> None:
+    """Tell an interested callback that one wrfout is durable.
+
+    Same optional-hook convention as :func:`_preparation_progress`
+    above: discovered by name, absent means nothing happens, so every
+    existing ``progress_callback`` is unaffected.
+
+    The existing ``last_durable_wrfout`` field on the per-step callback
+    answers "which file was most recently published", which is what a
+    heartbeat needs.  It cannot answer "a file just landed, here is its
+    domain and valid time" -- a consumer would have to watch that field
+    for changes and re-derive the rest from the filename.  This hook is
+    raised at the exact call that published the file, with the three
+    facts already in scope there.
+    """
+
+    reporter = getattr(progress_callback, "output_committed", None)
+    if reporter is not None:
+        reporter(domain=domain_id, valid_time=valid_time, path=path)
+
+
 def apply_single_domain_pbl_cadence(physics, cfg) -> None:
     """Single-domain-loop PBL cadence: override ONLY at configured bldt=0.
 
@@ -1441,6 +2140,8 @@ def integrate_prepared_case(
             prepared, output_dir, start_time, start_time=start_time,
             title=output_title, domain_id=domain_id,
             expect_refl_10cm=False, feedback=feedback))
+        _output_committed(progress_callback, domain_id=domain_id,
+                          valid_time=start_time, path=outputs[-1])
         # WRF resets the nwp_diagnostics running maxima each history
         # interval (module_diag_nwp.F:246-269); gpuwm's ratified placement
         # is immediately after the frame is durable.
@@ -1546,6 +2247,8 @@ def integrate_prepared_case(
                 prepared, output_dir, valid, start_time=start_time,
                 title=output_title, domain_id=domain_id,
                 feedback=feedback))
+            _output_committed(progress_callback, domain_id=domain_id,
+                              valid_time=valid, path=outputs[-1])
             # History-interval reset of the UP_HELI_MAX window (the frame
             # above snapshotted the accumulator synchronously).
             from gpuwm.core.uh_diag import reset_up_heli_max
@@ -1775,6 +2478,50 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
 
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    follow_configured = exp.relocation.enabled and (
+        exp.relocation.follow is not None or exp.relocation.moves)
+    if follow_configured and len(exp.domains) == 1:
+        # A follow source needs a child to move.  Named at the front
+        # door, before minutes of ingest.
+        raise ValueError(
+            "[relocation] configures a follow source, but this "
+            "experiment has a single domain and therefore no nest to "
+            "move; remove [relocation.follow]/[[relocation.move]] or "
+            "add the child the follow source is for.")
+    # Spawn activation is leg-boundary schedule surgery -- build_schedule
+    # bakes each domain's activation tick into the per-period op lists, so
+    # a trigger-driven domain cannot join a schedule already expanded, and
+    # a route that reserves the nest but walks ONE execute_experiment
+    # would integrate the parent alone with the nest never born.  The
+    # refusal that used to stand here is lifted for the TREE path below,
+    # where walk_spawn_legs drives SpawnRunner and this route's catalog
+    # supplies the newborn's statics and physics.  A dormant nest is by
+    # definition a second domain, so the single-domain path can never
+    # carry one; it refuses here rather than reaching a walk that is not
+    # wired for it.
+    from gpuwm.experiment import dormant_domain_ids
+    if dormant_domain_ids(exp) and len(exp.domains) == 1:
+        raise ValueError(
+            "[[domain]] spawn = {...} on a single-domain experiment: a "
+            "dormant nest needs a parent to be born from, and the "
+            "single-domain path runs no tree walk.")
+    # The land-state refusal that used to stand here is LIFTED (2026-08-07).
+    # It named one gap -- "a newborn real-data nest has no defined
+    # soil/land state, and how it should get one is an open physics
+    # decision" -- and that decision is no longer open: it is WRF's, and
+    # has been since nesting existed.  A nest with no input file of its
+    # own is initialized by interpolating every field it needs from the
+    # parent (Users' Guide chapter 5; med_nest_initial's unconditional
+    # med_interp_domain, share/mediation_integrate.F:670), with the
+    # surface/soil family going through the Registry's landmask-aware
+    # interpolator (interp_mask_field:lu_index,iswater) rather than a
+    # plain one -- the same operator, via the same call after each
+    # shift_domain_em, that fills a moving nest's leading edge.
+    # gpuwm.ingest.nest_spawn_init.spawn_land_state_from_parent is that
+    # operator, RealSpawnChildPreparer is the attachment, and both live
+    # on THIS route because it holds the input catalog and the case data.
+    # Routes without them keep the refusal
+    # (gpuwm.experiment.refuse_unrouted_spawn).
     experimental_feedback = feedback_provenance(exp)
     if experimental_feedback is not None:
         print(FEEDBACK_EXPERIMENTAL_WARNING)
@@ -1824,6 +2571,17 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
 
     model = build_experiment(exp, data)
     print(resolved_tree_config_report(exp, data, model._input_catalog))
+    # The refusal this used to be is lifted HERE and only here: this
+    # route holds the input catalog (and with it the static source), so
+    # the real-data relocation initializer and physics preparer exist.
+    # Routes without them still refuse inside execute_experiment.
+    relocation_runner = build_real_relocation_runner(
+        exp, data, model, outdir)
+    # Same lift, same reason, one seam over: this route holds the input
+    # catalog (own-grid statics at the fired footprint) and the case data
+    # and forcing calendar (the newborn's physics driver), so it can
+    # activate a dormant nest instead of refusing it.
+    spawn_runner = build_real_spawn_runner(exp, data, model, outdir)
     _write_initial_perturbation_receipt(
         outdir, exp, getattr(model, "_initial_perturbation_receipts", ()))
     if restart is not None:
@@ -1835,8 +2593,11 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     _preparation_progress(progress_callback, "initialize-domain-writers")
     with PerDomainWrfoutWriters(
             model, outdir, start_time=exp.start_time,
-            title=data.output_title) as writers:
+            title=data.output_title,
+            progress_callback=progress_callback) as writers:
         model._io_manager = writers
+        if relocation_runner is not None:
+            relocation_runner.on_child_built.attach_writers(writers)
 
         def history_handler(tree, node, ticks):
             _submit_tree_history_frame(writers, node, ticks)
@@ -1846,11 +2607,29 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
                 seconds=ticks / tree.schedule.clock.tick_den)
             tree._last_checkpoint = write_tree_restart(outdir, tree, valid)
 
-        execute_experiment(
-            model, history_handler=history_handler,
-            restart_handler=restart_handler,
-            progress_callback=progress_callback,
-            health_debug=health_debug)
+        if spawn_runner is None:
+            execute_experiment(
+                model, history_handler=history_handler,
+                restart_handler=restart_handler,
+                progress_callback=progress_callback,
+                health_debug=health_debug,
+                relocation_runner=relocation_runner)
+        else:
+            # The leg walk: dormant nests are born mid-run and integrate
+            # from their birth boundary onward.
+            walk_spawn_legs(
+                model, exp, data,
+                spawn_runner=spawn_runner, writers=writers,
+                lbc_interval_s=_tree_forcing_cadence_seconds(
+                    model._input_catalog),
+                relocation_runner=relocation_runner,
+                relocation_runner_factory=(
+                    lambda: build_real_relocation_runner(
+                        exp, data, model, outdir)),
+                history_handler=history_handler,
+                restart_handler=restart_handler,
+                progress_callback=progress_callback,
+                health_debug=health_debug)
         writers.drain()
         paths = writers.paths
     import cupy as cp

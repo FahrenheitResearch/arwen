@@ -21,10 +21,30 @@ import threading
 
 import numpy as np
 
+#: Why CuPy is unavailable, when it is.  Kept so the deferred failure
+#: below can name the REAL cause instead of "not installed".
+_CUPY_UNAVAILABLE: BaseException | None = None
+
 try:  # Native stock-WRF setup/export has a genuine NumPy-only route.
     import cupy as cp
-except ImportError:  # pragma: no cover - exercised in an isolated subprocess
+except Exception as _error:  # pragma: no cover - isolated subprocess
+    # Deliberately not `except ImportError`.  An ABSENT CuPy raises
+    # ImportError and was handled; an INSTALLED BUT UNLOADABLE one does
+    # not.  A cupy-cuda12x wheel on a CUDA-13 box, or a missing
+    # nvrtc DLL, raises RuntimeError or OSError from deep inside the
+    # import -- and because gpuwm.cli reaches this module at import time
+    # (cli -> downscale -> offline_child -> here), that killed the whole
+    # command line.  `gpuwm run-plan --probe`, whose entire job is to
+    # preflight an install and which reads the card through NVML without
+    # ever touching CuPy, could not run on exactly the broken installs
+    # it exists to diagnose.
+    #
+    # For every CPU-only path an unloadable CuPy is worth precisely what
+    # an absent one is worth, so it is treated the same and the
+    # difference is surfaced at USE time by _require_cupy below, which
+    # names the original error.
     cp = None
+    _CUPY_UNAVAILABLE = _error
 
 from gpuwm.config import SASE_PBL_SCHEME, RunConfig
 from gpuwm.core import constants as c
@@ -45,10 +65,22 @@ def _require_cupy():
     """Return CuPy or fail with the exact missing optional dependency."""
 
     if cp is None:
-        raise RuntimeError(
+        message = (
             "CuPy is required for CUDA forecast state; install gpuwm[gpu] "
-            "or select the RW-WPS CPU preprocessing backend"
-        )
+            "or select the RW-WPS CPU preprocessing backend")
+        if _CUPY_UNAVAILABLE is not None and not isinstance(
+                _CUPY_UNAVAILABLE, ImportError):
+            # Installed and unloadable is a different problem from
+            # absent, with a different fix, so it does not get the
+            # "install it" sentence on its own.  `gpuwm doctor` checks
+            # the wheel against the box's CUDA major.
+            message += (
+                f".  CuPy IS installed here but failed to load: "
+                f"{type(_CUPY_UNAVAILABLE).__name__}: "
+                f"{_CUPY_UNAVAILABLE}.  That is usually a wheel built "
+                "for a different CUDA major than this box serves; "
+                "`gpuwm doctor` names the right extra")
+        raise RuntimeError(message)
     return cp
 
 
@@ -675,6 +707,14 @@ class DomainState:
             # manifests and wrfout frame schemas are deterministic from the
             # first step (gpuwm/core/uh_diag.py owns the update/reset).
             self.scratch((ny, nx), "up_heli_max")
+            # The two consumer-owned tracking windows, allocated on the
+            # same gate and for the same reason: deterministic manifests
+            # from the first step.  They are NOT serialized (a restart
+            # starts them empty, gpuwm/io/restart.py:REBUILT_SCRATCH_SLOTS)
+            # and never reach a wrfout frame; gpuwm/core/uh_diag.py folds
+            # them beside UP_HELI_MAX and their consumers reset them.
+            self.scratch((ny, nx), "uh_follow_window")
+            self.scratch((ny, nx), "uh_spawn_window")
 
     def load_base(self, coord: VerticalCoord, base: BaseState) -> None:
         """Copy the float64 setup-time coordinate/base arrays to device FP32."""

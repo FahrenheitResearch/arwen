@@ -11,6 +11,7 @@ import pytest
 
 from conftest import complete_runtime_manifest
 from gpuwm import __version__ as gpuwm_version
+from gpuwm.hrrr_route_inputs import ROUTE_DEFAULT_PHYSICS_PROFILE
 from gpuwm.physics_compat import (
     MYNN_PROFILE_ID,
     NOAHMP_PROFILE_ID,
@@ -1031,7 +1032,11 @@ def test_cli_hrrr_dry_run_routes_to_certified_internal_adapter(capsys):
     assert "/source/SHA256SUMS" in command.replace("\\", "/")
     assert "--run-seconds 43200" in command
     assert "--forecast-start-hour 0" in command
-    assert "--physics-profile wsm6-ysu-mm5-noah-no-radiation-v1" in command
+    # The relay substitutes the ROUTE's own default when the caller names
+    # no profile, and reads it from the route rather than keeping a copy:
+    # this relay and the wizard door disagreed for exactly as long as they
+    # each held their own literal.
+    assert f"--physics-profile {ROUTE_DEFAULT_PHYSICS_PROFILE}" in command
     assert "--pipeline-workers 8" in command
     assert "--history-interval-seconds 3600.0" in command
     assert command.rstrip().endswith("--prepare-workers 4")

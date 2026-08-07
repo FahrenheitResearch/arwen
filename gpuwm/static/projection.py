@@ -93,6 +93,12 @@ class ProjectedGrid:
     #: WPS map_proj string; set by each subclass.
     map_proj: str = ""
 
+    #: Placement-translation bookkeeping (see :meth:`translated`):
+    #: ``None``/zero on ordinary grids; a translated grid carries its
+    #: reference grid and the exact integer index offset onto it.
+    _translation_reference = None
+    _translation_offset = (0, 0)
+
     def __init__(self, ref_lat: float, ref_lon: float, truelat1: float,
                  truelat2: float, stand_lon: float, dx: float, dy: float,
                  e_we: int, e_sn: int,
@@ -259,6 +265,95 @@ class ProjectedGrid:
                           known_x=1.0, known_y=1.0,
                           moad_cen_lat=self.moad_cen_lat,
                           moad_cen_lon=self.moad_cen_lon)
+
+    def translated(self, di_cells: int, dj_cells: int) -> "ProjectedGrid":
+        """The same grid moved by a whole number of its own cells.
+
+        The returned grid's transforms DELEGATE to the reference grid
+        with an exact integer index offset (``ij_to_latlon(x, y) ->
+        reference.ij_to_latlon(x + di, y + dj)``), so a cell two
+        footprints share evaluates through the reference's own floats at
+        the reference's own index -- the same computation, hence the
+        same latitude/longitude bytes, unconditionally.  That per-cell
+        bitwise stability is what lets statics rebuilt for a moved
+        footprint equal the outgoing footprint's on shared ground
+        (identical source + identical cells = identical bytes), which
+        the relocation machinery asserts at every move rather than
+        assumes.  Deliberately NOT re-anchored through a parent
+        transform, and deliberately not a parameter reconstruction
+        either: re-solving the pole from a shifted known point rounds in
+        a different binade and can move a source-stencil selection on
+        shared ground.  Translating a translated grid composes the
+        offsets onto the ORIGINAL reference, so a long move chain never
+        accumulates float error.
+        """
+        di = int(di_cells)
+        dj = int(dj_cells)
+        if (di, dj) != (di_cells, dj_cells):
+            raise ValueError(
+                f"a placement translation is a whole number of cells, got "
+                f"({di_cells!r}, {dj_cells!r})")
+        base = self._translation_reference
+        if base is None:
+            base = self
+            di_total, dj_total = di, dj
+        else:
+            di0, dj0 = self._translation_offset
+            di_total, dj_total = di0 + di, dj0 + dj
+        cls = type(base)
+        translated_cls = _TRANSLATED_GRID_CLASSES.get(cls)
+        if translated_cls is None:
+            translated_cls = type(
+                "Translated" + cls.__name__,
+                (_TranslatedGridMixin, cls), {})
+            _TRANSLATED_GRID_CLASSES[cls] = translated_cls
+        new = translated_cls(
+            base.ref_lat, base.ref_lon, base.truelat1, base.truelat2,
+            base.stand_lon, base.dx, base.dy, base.e_we, base.e_sn,
+            known_x=base.known_x - di_total,
+            known_y=base.known_y - dj_total,
+            moad_cen_lat=base.moad_cen_lat,
+            moad_cen_lon=base.moad_cen_lon)
+        new._translation_reference = base
+        new._translation_offset = (di_total, dj_total)
+        # Metadata recomputed through the delegated transform, so the
+        # moved footprint's centre is exact reference arithmetic too.
+        cen_lat, cen_lon = new.ij_to_latlon(new.e_we / 2.0,
+                                            new.e_sn / 2.0)
+        new.cen_lat = float(cen_lat)
+        new.cen_lon = float(cen_lon)
+        return new
+
+
+#: One dynamically created Translated<X> subclass per projection class,
+#: so ``isinstance(translated_grid, LambertGrid)`` (and every other
+#: projection dispatch) keeps working.
+_TRANSLATED_GRID_CLASSES: dict[type, type] = {}
+
+
+class _TranslatedGridMixin:
+    """Delegates the projection transforms to the reference grid with an
+    exact integer index offset.  Until ``_translation_reference`` is set
+    (i.e. during ``__init__``'s own centre computation) the ordinary
+    class transforms apply; :meth:`ProjectedGrid.translated` re-derives
+    the centre once the delegation is live."""
+
+    def ij_to_latlon(self, x, y):
+        reference = self._translation_reference
+        if reference is None:
+            return super().ij_to_latlon(x, y)
+        di, dj = self._translation_offset
+        return reference.ij_to_latlon(
+            np.asarray(x, dtype=np.float64) + float(di),
+            np.asarray(y, dtype=np.float64) + float(dj))
+
+    def latlon_to_ij(self, lat, lon):
+        reference = self._translation_reference
+        if reference is None:
+            return super().latlon_to_ij(lat, lon)
+        di, dj = self._translation_offset
+        x, y = reference.latlon_to_ij(lat, lon)
+        return x - float(di), y - float(dj)
 
 
 class MercatorGrid(ProjectedGrid):

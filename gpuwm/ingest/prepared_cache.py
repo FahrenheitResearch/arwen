@@ -148,7 +148,14 @@ def prepared_domain_config_identity(domain_config) -> dict[str, object]:
 #: contradicts.  Entries are added here deliberately, one per field, by
 #: whoever adds the field -- never by a rule that tolerates absence in
 #: general.
-DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({"start_time"})
+#: v1.8 adds the per-domain ``spawn`` declaration (dormant
+#: spawn-triggered nests, gpuwm/core/nest_spawn.py).  Its not-in-use
+#: value is ``None`` -- an ordinary live domain -- which is exactly the
+#: state every header written before the field existed describes.  A
+#: domain that really is dormant holds a SpawnConfig document instead,
+#: and is refused against an older header, as it must be: the cache was
+#: prepared for a nest that is not the dormant one.
+DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({"start_time", "spawn"})
 
 
 def undelayed_identity_defaults(experiment) -> dict[str, object]:
@@ -166,7 +173,10 @@ def undelayed_identity_defaults(experiment) -> dict[str, object]:
 
     start = getattr(experiment, "start_time", None)
     return {"start_time": start.isoformat()
-            if isinstance(start, datetime) else start}
+            if isinstance(start, datetime) else start,
+            # A domain with no spawn declaration carries None, which is
+            # the state every pre-spawn header describes.
+            "spawn": None}
 
 
 #: Identity fields that describe when the run WRITES, not what it

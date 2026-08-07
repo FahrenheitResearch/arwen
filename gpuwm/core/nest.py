@@ -70,18 +70,7 @@ class NestCoupler:
         self.feedback = int(feedback)
         child = child_node.cfg
         parent = child_node.parent.cfg
-        ratio = int(child.parent_grid_ratio)
-        self.registrations = MappingProxyType({
-            stagger: register_nest(
-                nri=ratio, nrj=ratio,
-                i_parent_start=child.i_parent_start,
-                j_parent_start=child.j_parent_start,
-                child_nx=child.run.nx, child_ny=child.run.ny,
-                parent_nx=parent.run.nx, parent_ny=parent.run.ny,
-                stagger=("" if stagger == "m" else stagger),
-                wrapper="bdy")
-            for stagger in ("m", "x", "y")
-        })
+        self.registrations = self._build_registrations()
         width = child.run.spec_bdy_width
         self.slot_shapes = nest_slot_shapes(child, width, parent)
         self.slot_dtypes = nest_slot_dtypes(child, width, parent)
@@ -119,6 +108,73 @@ class NestCoupler:
         self._prepared_feedback = None
         self.feedback_count = 0
         self.last_feedback_ticks = None
+        self.placement_generation = 0
+        self.relocation_count = 0
+
+    def _build_registrations(self):
+        """The three stagger registrations for the child's CURRENT placement.
+
+        Mass, x-staggered and y-staggered horizontal geometry; w/ph use the
+        mass registration because z-staggering does not change the
+        horizontal stencil.
+        """
+        child = self.child_node.cfg
+        parent = self.child_node.parent.cfg
+        ratio = int(child.parent_grid_ratio)
+        return MappingProxyType({
+            stagger: register_nest(
+                nri=ratio, nrj=ratio,
+                i_parent_start=child.i_parent_start,
+                j_parent_start=child.j_parent_start,
+                child_nx=child.run.nx, child_ny=child.run.ny,
+                parent_nx=parent.run.nx, parent_ny=parent.run.ny,
+                stagger=("" if stagger == "m" else stagger),
+                wrapper="bdy")
+            for stagger in ("m", "x", "y")
+        })
+
+    def relocate(self) -> dict:
+        """Rebuild the SINT donor tables for a new placement generation.
+
+        This is the numerics half of a discrete relocation and it is the
+        reason the design does not need WRF's per-step moving-nest
+        mechanism: the donor index/sub-cell/offset tables are still
+        precomputed ONCE, just once *per placement generation* instead of
+        once per run.  Between relocations the per-step path is unchanged.
+
+        The caller updates ``child_node.cfg`` first; this reads the new
+        placement off it.  Nothing is reallocated -- the F4/F16 manifest
+        slot shapes are functions of the child/parent EXTENTS and the
+        refinement ratio, none of which a relocation changes -- so the
+        rebuilt tables are re-uploaded into the same audited slots.
+
+        The rolling boundary value/tendency tables are classified INVALID
+        rather than rebuilt, for the same reason :meth:`invalidate` gives:
+        only the next ordinary parent STEP followed by FORCE has the
+        correct ``parent(t+dt_p)`` endpoint, and the tables that exist
+        describe a footprint the child no longer occupies.
+        """
+        child = self.child_node.cfg
+        previous = tuple(
+            (reg.i_parent_start, reg.j_parent_start)
+            for reg in self.registrations.values())
+        self.registrations = self._build_registrations()
+        # Force a fresh bind-before-first-use pass: the new registrations
+        # carry no device tables, and _bind_geometry writes them into the
+        # same manifest slots the retired ones used.
+        self._geometry_bound = False
+        self.invalidate()
+        self.placement_generation += 1
+        self.relocation_count += 1
+        return {
+            "placement_generation": int(self.placement_generation),
+            "relocation_count": int(self.relocation_count),
+            "i_parent_start": int(child.i_parent_start),
+            "j_parent_start": int(child.j_parent_start),
+            "previous_registration_placements": [
+                [int(i), int(j)] for i, j in previous],
+            "rolling_tables": "INVALID",
+        }
 
     @property
     def valid(self) -> bool:

@@ -504,6 +504,7 @@ What it does detect, what it does not, and the pin set that defines
 - [Install and verify](docs/install.md)
 - [Radar-DA nowcast quickstart (demo-grade, unscored)](docs/da-nowcast-quickstart.md)
 - [CLI reference](docs/cli-reference.md)
+- [Driving gpuwm from a program (`gpuwm run-plan`)](docs/run-plan.md)
 - [Arbitrary but verified GRIB adapters](docs/arbitrary-verified-adapters.md)
 - [What `gpuwm adapt` validates, and what it trusts](docs/adapt-validation-contract.md)
 - [Migrating from WPS](docs/migrating-from-wps.md)

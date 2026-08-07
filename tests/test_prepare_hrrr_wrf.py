@@ -41,7 +41,9 @@ from gpuwm.physics_compat import (
     MORRISON_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
+    THOMPSON_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_PROFILE_ID,
+    THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
     WSM6_PROFILE_ID,
 )
 from gpuwm.ingest.prepared_cache import (
@@ -89,6 +91,13 @@ _PROFILE_MICROPHYSICS = {
     KESSLER_PROFILE_ID: 1,
     WSM6_PROFILE_ID: 6,
     THOMPSON_PROFILE_ID: 8,
+    # The legacy-RRTMG twins select the SAME microphysics as the row
+    # above; they differ only in radiation, and one of them is the
+    # route's default since 1.8.  Which species HRRR supplies and what an
+    # absent one cold-starts to is a microphysics property, which is why
+    # the shipped cold-start contract aliases them the same way.
+    THOMPSON_LEGACY_RRTMG_PROFILE_ID: 8,
+    THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID: 8,
     MORRISON_PROFILE_ID: 10,
     NSSL2_PROFILE_ID: 18,
     NSSL2_LEGACY_RRTMG_PROFILE_ID: 18,

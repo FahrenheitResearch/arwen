@@ -454,9 +454,23 @@ def _resolve_forcing(base_dir: Path, value, source: str) -> tuple[Path, ...]:
     return tuple(unique)
 
 
-def build_case_data(raw: dict, *, source: str, base_dir: Path
-                    ) -> CaseDataConfig:
-    """Validate a parsed ``[case_data]`` table dict (fail-loud)."""
+def build_case_data(raw: dict, *, source: str, base_dir: Path,
+                    require_inputs: bool = True) -> CaseDataConfig:
+    """Validate a parsed ``[case_data]`` table dict (fail-loud).
+
+    ``require_inputs`` is on by default and every run keeps it on: a
+    forecast that starts without its forcing is a forecast that fails
+    an hour in instead of at the front door.
+
+    It exists for the one caller that is honestly asking a different
+    question -- what WOULD this run be, before its data is fetched.
+    A plan can be resolved and its VRAM estimated from the geometry and
+    physics alone, and a front end showing that estimate must not have
+    to download a cycle first.  Turning it off skips ONLY the existence
+    check; every schema, type and policy rule still runs, and the paths
+    are still resolved, so the caller can report exactly which declared
+    inputs are not there yet.
+    """
     unknown = sorted(set(raw) - _KNOWN_KEYS)
     if unknown:
         # This used to warn and drop.  The missing-key check below cannot
@@ -555,15 +569,16 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path
         file_inputs.extend(
             (f"source_orography.d{domain_id:02d}", artifact.path)
             for domain_id, artifact in orog_by_domain)
-    for role, path in file_inputs:
-        if not path.is_file():
+    if require_inputs:
+        for role, path in file_inputs:
+            if not path.is_file():
+                raise ValueError(
+                    f"{role} file {path} declared in [case_data] of {source} "
+                    "does not exist.")
+        if not geog_root.is_dir():
             raise ValueError(
-                f"{role} file {path} declared in [case_data] of {source} "
-                "does not exist.")
-    if not geog_root.is_dir():
-        raise ValueError(
-            f"geog_root directory {geog_root} declared in [case_data] of "
-            f"{source} does not exist.")
+                f"geog_root directory {geog_root} declared in [case_data] of "
+                f"{source} does not exist.")
 
     sfcp = raw["sfcp_to_sfcp"]
     if not isinstance(sfcp, bool):
@@ -664,8 +679,9 @@ def load_case_data(path: str | Path) -> CaseDataConfig:
 
 
 def load_experiment_case_bytes(
-        payload: bytes, *, source: str,
-        base_dir: str | Path) -> tuple[ExperimentConfig, CaseDataConfig]:
+        payload: bytes, *, source: str, base_dir: str | Path,
+        require_inputs: bool = True
+        ) -> tuple[ExperimentConfig, CaseDataConfig]:
     """Load captured TOML bytes while retaining their original path base.
 
     The ``[case_data]`` table is split off before the experiment loader
@@ -696,7 +712,8 @@ def load_experiment_case_bytes(
             f"experiment config {source} carries no [case_data] table; the "
             "experiment runtime requires declared inputs (forcing, vtable, "
             "wps_namelist, geog_root, and policies).")
-    data = build_case_data(table, source=source, base_dir=base)
+    data = build_case_data(table, source=source, base_dir=base,
+                           require_inputs=require_inputs)
     if static_table is not None:
         from gpuwm.static.highres_production import parse_static_table
         highres = parse_static_table(

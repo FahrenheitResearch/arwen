@@ -686,8 +686,9 @@ def test_captured_config_loader_keeps_original_source_and_relative_base(
         observed["experiment"] = (raw, source)
         return "experiment"
 
-    def build_case_data(raw, *, source, base_dir):
+    def build_case_data(raw, *, source, base_dir, require_inputs=True):
         observed["case_data"] = (raw, source, base_dir)
+        observed["require_inputs"] = require_inputs
         return "case-data"
 
     monkeypatch.setattr(case_data, "build_experiment", build_experiment)
@@ -700,6 +701,9 @@ def test_captured_config_loader_keeps_original_source_and_relative_base(
     assert observed["experiment"][1] == str(source)
     assert observed["case_data"][1:] == (str(source), source.parent)
     assert observed["case_data"][0]["forcing"] == "relative.grib2"
+    # A supervised run requires its declared inputs to exist.  Only the
+    # planning callers turn that off, and never through this path.
+    assert observed["require_inputs"] is True
 
 
 def test_supervise_monitor_accepts_windows_redirector_child_pid(

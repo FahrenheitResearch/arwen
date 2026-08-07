@@ -1019,7 +1019,12 @@ def test_an_hrrr_emission_near_the_grids_north_edge_passes_its_own_fetch(
 
     from gpuwm import fetch
 
-    rc, out = _run_wizard(tmp_path, point="48.5,-98.0", card="12gb",
+    # 24 GiB, not 12: the 1.8 full-radiation HRRR default (Thompson mp8
+    # + legacy RRTMG) costs about 1.8 GiB more peak envelope than the
+    # wsm6/no-longwave suite it replaced, and 12 GiB no longer fits the
+    # minimum 12 km layout.  The seam under test is the emitted --area,
+    # so it runs on a card the shipped default fits.
+    rc, out = _run_wizard(tmp_path, point="48.5,-98.0", card="24gb",
                           ladder="12", source="hrrr",
                           cycle="2026-07-28T05")
     captured = capsys.readouterr()
@@ -1730,7 +1735,10 @@ def test_an_hrrr_emission_names_the_front_door_not_a_refusing_command(
     written.  It writes them now, so it names them.
     """
 
-    out, printed = _emit(tmp_path, capsys, "--ladder", "12", source="hrrr",
+    # 24 GiB: see the north-edge test -- the 1.8 HRRR default does not
+    # fit 12 GiB, and the seam under test is the printed next block.
+    out, printed = _emit(tmp_path, capsys, "--ladder", "12",
+                         "--card", "24gb", source="hrrr",
                          name="hrrr-area")
     block = printed.split("next:")[-1]
     assert "gpuwm run " not in block
@@ -1779,7 +1787,7 @@ def test_a_nested_hrrr_emission_drives_the_route_with_no_hand_edits(
         _require_raw_wps_contract, _supported_hierarchy_slice)
     from gpuwm.ingest.hrrr_target import (load_hrrr_target_domain,
                                           required_hrrr_source_window)
-    from gpuwm.physics_compat import WSM6_PROFILE_ID
+    from gpuwm.hrrr_route_inputs import ROUTE_DEFAULT_PHYSICS_PROFILE
     from gpuwm.vertical_contract import explicit_vertical_from_wrf_namelist
     from tools.hrrr_single_domain_benchmark import (
         _validate_native_hrrr_physics_profile)
@@ -1824,9 +1832,18 @@ def test_a_nested_hrrr_emission_drives_the_route_with_no_hand_edits(
     assert {float(d.run.epssm) for d in native_exp.domains} == {0.5}
 
     # And the ROOT preparation's own two gates over the same file.
+    # Bound to the route's OWN default rather than a literal: the point
+    # is that the wizard emitted namelists the root preparer accepts for
+    # the suite it emitted, whichever suite that is.
     binding = _validate_native_hrrr_physics_profile(
-        paths["namelist_input"], WSM6_PROFILE_ID)
-    assert binding["profile"] == WSM6_PROFILE_ID
+        paths["namelist_input"], ROUTE_DEFAULT_PHYSICS_PROFILE)
+    assert binding["profile"] == ROUTE_DEFAULT_PHYSICS_PROFILE
+    # ... and that suite runs BOTH radiation streams, which is the
+    # property 1.8 exists to give this route.
+    assert binding["resolved"]["ra_lw_physics"] == 4
+    assert binding["resolved"]["ra_sw_physics"] == 4
+    # Its microphysics tables were staged and byte-checked at binding.
+    assert binding["microphysics_table_authority"]["table_set"]
     vertical = explicit_vertical_from_wrf_namelist(
         paths["namelist_input"], expected_nz=target.nz,
         context="native HRRR initializer")
@@ -1939,7 +1956,12 @@ def test_hrrr_sizing_respects_hrrrs_own_grid_not_only_the_card(
                                           required_hrrr_source_window)
 
     out = tmp_path / "edge.toml"
-    rc = cli_main(["domain", "--point=46.35,-118.10", "--card", "32gb",
+    # The assertion below is that HRRR's GRID, not the card, is what
+    # stopped the fit -- so the card has to be big enough that it is not
+    # the bound.  1.8's full-radiation default raised the per-cell cost,
+    # and at 32 GiB the card became the binding constraint again, which
+    # would have made this test pass for the wrong reason.
+    rc = cli_main(["domain", "--point=46.35,-118.10", "--vram-gib", "48",
                    "--root-dx", "3", "--chain", "4", "--source", "hrrr",
                    "--cycle", "2026-07-29T18", "--hours", "1",
                    "--out", str(out)])

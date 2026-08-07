@@ -128,21 +128,27 @@ def _levels_below(eta, p_top: float, bl_top: float) -> int:
 
 
 def domain_grids(exp):
-    """The four projected grids, for placement checks."""
+    """The four projected grids, for placement checks.
 
-    from gpuwm.static.projection import projection_class
+    Placement comes from the runner's own resolver
+    (``grids_from_projection_config``: root on the projection reference,
+    children through ``ProjectedGrid.nest`` with the experiment's
+    ``i/j_parent_start``/ratio layout), NOT from re-deriving each domain
+    centred on the reference.  The previous re-derivation ignored
+    ``i_parent_start`` entirely; it agreed with the real geometry only
+    because attempt #1's family happens to be exactly concentric, and it
+    was wrong for any off-centre placement (recorded in
+    docs/les/ATTEMPT2-EXPECTATIONS.md section 6; fixed under the
+    off-centre-nest task after attempt #1's audit closed).
+    """
 
-    proj = exp.projection
-    cls = projection_class(proj.map_proj)
-    grids = {}
-    for domain in exp.domains:
-        run = domain.run
-        grids[domain.grid_id] = (cls(
-            ref_lat=proj.ref_lat, ref_lon=proj.ref_lon,
-            truelat1=proj.truelat1, truelat2=proj.truelat2,
-            stand_lon=proj.stand_lon, dx=run.dx, dy=run.dx,
-            e_we=run.nx + 1, e_sn=run.ny + 1), run.nx, run.ny)
-    return grids
+    from gpuwm.static.projection import grids_from_projection_config
+
+    return {
+        domain.grid_id: (grid, domain.run.nx, domain.run.ny)
+        for domain, grid in zip(exp.domains,
+                                grids_from_projection_config(exp))
+    }
 
 
 def contains(grids, grid_id: int, lat: float, lon: float) -> bool:

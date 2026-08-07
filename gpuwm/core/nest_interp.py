@@ -713,3 +713,175 @@ def copy_fcni(cfld, nfld, reg: NestRegistration, *, spec_zone=1):
     if count > 0:
         _launch(_kernel("nest_copy_fcni"), count, (c3, n3, *args))
     return cfld
+
+
+# ---------------------------------------------------------------------------
+# The MASKED parent->child interpolator (surface/soil fields)
+# ---------------------------------------------------------------------------
+
+#: Branch labels of :func:`interp_mask_field`, in WRF's own decision order.
+#: Every child column lands in exactly one, and the caller receipts the
+#: tally -- ``opposite_class_bilinear`` is the land/water CONFLICT count
+#: (WRF's one-cell island/lake compromise), never a silent path.
+MASK_INTERP_BRANCHES = ("same_class_bilinear", "class_matched_average",
+                        "opposite_class_bilinear")
+
+
+def mask_donor_index(n_child: int, ratio: int, pos: int):
+    """Lower-left bilinear donor + fractional offset, 0-based.
+
+    ``interp_fcn.F:4140-4155`` (and the identical arithmetic at :3230-3245
+    in ``interp_mask_land_field``).  For WRF 1-based child index ``n`` and
+    1-based ``ipos``/``jpos``::
+
+        odd  ratio: ci = ( n + (nri-1)/2 ) / nri + ipos - 1
+        even ratio: ci = ( n + (nri/2)-1 ) / nri + ipos - 1
+        odd  ratio: dx =   MOD( n + (nri-1)/2 , nri )         / nri
+        even ratio: dx = ( MOD( n + (nri-1)/2 , nri ) + 0.5 ) / nri
+
+    This is NOT the SINT donor map (:func:`_donor_maps`): SINT picks the
+    coarse cell CONTAINING the child point for its +-2 flux stencil, while
+    the masked interpolator picks the coarse cell at or below/left of it,
+    the SW corner of a 4-point bilinear cell.  The two differ by design and
+    both are transliterated rather than shared.
+
+    Returns ``(donor0, frac)``, both ``(n_child,)``.
+    """
+    ratio = int(ratio)
+    if ratio < 1:
+        raise ValueError("parent_grid_ratio must be >= 1")
+    n = np.arange(1, int(n_child) + 1, dtype=np.int64)
+    half = (ratio - 1) // 2               # Fortran integer divide
+    if ratio % 2 == 0:
+        donor = (n + ratio // 2 - 1) // ratio + int(pos) - 1
+        frac = (np.mod(n + half, ratio) + 0.5) / ratio
+    else:
+        donor = (n + half) // ratio + int(pos) - 1
+        frac = np.mod(n + half, ratio) / ratio
+    return (donor - 1).astype(np.int64), frac.astype(np.float64)
+
+
+def interp_mask_field(cfld, *, nri, nrj, i_parent_start, j_parent_start,
+                      child_landuse, parent_landuse, flag_category,
+                      child_shape=None):
+    """WRF's masked surface/soil nest interpolator, host side.
+
+    ``interp_mask_field`` (interp_fcn.F:4075-4275) -- the interpolator the
+    Registry names for every land-surface state field that crosses a nest
+    boundary::
+
+        state real TSLB  ilj ... i02rhd=(interp_mask_field:lu_index,iswater)
+        state real SMOIS ilj ... i02rhd=(interp_mask_field:lu_index,iswater)
+        state real XICE  ij  ... i0124rhd=(interp_mask_field:lu_index,isice)
+
+    (Registry/Registry.EM_COMMON:790, :839-842, :868-872, :1417.)  The mask
+    is the LAND-USE CATEGORY compared against one flag category, not the
+    binary landmask: ``flag_category`` is ``ISWATER`` for the soil/snow/skin
+    family and ``ISICE`` for the sea-ice family, exactly as the Registry
+    spells it per field.
+
+    WRF's decision, per child column (:4224-4266):
+
+    1. all four coarse corners in the child's own class, or all four in the
+       other class -> plain 4-point bilinear.  The second half of that is
+       the one-cell island/lake case, where WRF's own comment says it has
+       "no better way to come up with the value";
+    2. corners mixed -> average of ONLY the corners matching the child's
+       class.
+
+    Returns ``(nfld, counts)``.  ``counts`` splits WRF's first branch back
+    into its two meanings (:data:`MASK_INTERP_BRANCHES`) so the land/water
+    conflicts are counted rather than folded into the clean path -- the
+    ``donor_fill_plan`` receipt discipline, applied to the interpolator.
+
+    ``cfld`` is ``(..., ny_parent, nx_parent)``; leading dimensions (soil
+    layers) ride through untouched, and the mask decision is per column,
+    identical on every layer, as WRF's ``nk`` loop makes it.
+    """
+    cfld = np.asarray(cfld)
+    parent_lu = np.asarray(parent_landuse)
+    child_lu = np.asarray(child_landuse)
+    if parent_lu.ndim != 2 or child_lu.ndim != 2:
+        raise ValueError("interp_mask_field masks are 2-D (ny, nx) "
+                         f"land-use fields; got {parent_lu.shape} and "
+                         f"{child_lu.shape}")
+    if cfld.shape[-2:] != parent_lu.shape:
+        raise ValueError(
+            f"coarse field trailing shape {cfld.shape[-2:]} does not match "
+            f"the parent land-use mask {parent_lu.shape}")
+    ny_child, nx_child = (child_lu.shape if child_shape is None
+                          else tuple(int(n) for n in child_shape))
+    if (ny_child, nx_child) != child_lu.shape:
+        raise ValueError(
+            f"child shape {(ny_child, nx_child)} disagrees with the child "
+            f"land-use mask {child_lu.shape}")
+
+    ci, dx = mask_donor_index(nx_child, nri, i_parent_start)
+    cj, dy = mask_donor_index(ny_child, nrj, j_parent_start)
+    ny_par, nx_par = parent_lu.shape
+    if ci.min() < 0 or cj.min() < 0 or ci.max() + 1 > nx_par - 1 \
+            or cj.max() + 1 > ny_par - 1:
+        raise ValueError(
+            "the masked interpolator's 4-point cell reaches parent indices "
+            f"i {ci.min()}..{ci.max() + 1}, j {cj.min()}..{cj.max() + 1}, "
+            f"outside the parent extent ({ny_par}, {nx_par}); the placement "
+            "is off-grid")
+
+    # WRF evaluates dx/dy and the whole 4-point form in REAL (FP32).  The
+    # offsets are exact either way (small integers over a small integer,
+    # one correctly-rounded divide), but the products are NOT, so a
+    # float32 field is interpolated in float32, in WRF's operand order.
+    work = (cfld.dtype if cfld.dtype.kind == "f" and cfld.dtype.itemsize >= 4
+            else np.dtype(np.float64))
+    one = work.type(1.0)
+    jj = cj[:, None]
+    ii = ci[None, :]
+    wx = dx.astype(work)[None, :]
+    wy = dy.astype(work)[:, None]
+
+    def corners(field):
+        return (field[..., jj, ii], field[..., jj, ii + 1],
+                field[..., jj + 1, ii], field[..., jj + 1, ii + 1])
+
+    f00, f10, f01, f11 = (part.astype(work, copy=False)
+                          for part in corners(cfld))
+    bilinear = ((one - wx) * ((one - wy) * f00 + wy * f01)
+                + wx * ((one - wy) * f10 + wy * f11))
+
+    flag = int(flag_category)
+    m00, m10, m01, m11 = (np.rint(part).astype(np.int64) == flag
+                          for part in corners(parent_lu))
+    child_is_flag = np.rint(child_lu).astype(np.int64) == flag
+
+    in_flag = m00.astype(np.int64) + m10 + m01 + m11
+    all_flag = in_flag == 4
+    all_other = in_flag == 0
+    uniform = all_flag | all_other
+    # "All four corners are the child's own class" collapses to comparing
+    # the child's class against the (single) coarse class of a uniform cell.
+    same_class = uniform & (child_is_flag == all_flag)
+    opposite_class = uniform & ~same_class
+    mixed = ~uniform
+
+    # Branch 2: mean over the corners whose class matches the child's.  A
+    # mixed cell always has at least one of each class, so the divisor is
+    # never zero -- the WRF loop relies on the same fact.
+    keep = [np.where(child_is_flag, part, ~part)
+            for part in (m00, m10, m01, m11)]
+    tally = (keep[0].astype(np.int64) + keep[1] + keep[2] + keep[3]
+             ).astype(work)
+    zero = work.type(0.0)
+    total = np.zeros(bilinear.shape, dtype=work)
+    for part, corner in zip(keep, (f00, f10, f01, f11)):
+        total = total + np.where(part, corner, zero)
+    averaged = total / np.where(tally > zero, tally, work.type(1.0))
+
+    nfld = np.where(mixed, averaged, bilinear).astype(cfld.dtype, copy=False)
+    counts = {
+        "cells": int(child_lu.size),
+        "child_flag_class_cells": int(np.count_nonzero(child_is_flag)),
+        "same_class_bilinear": int(np.count_nonzero(same_class)),
+        "class_matched_average": int(np.count_nonzero(mixed)),
+        "opposite_class_bilinear": int(np.count_nonzero(opposite_class)),
+    }
+    return nfld, counts

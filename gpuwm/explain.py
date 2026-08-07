@@ -148,6 +148,43 @@ def set_explain(enabled: bool) -> None:
     _EXPLAIN_ACTIVE = bool(enabled)
 
 
+#: Callables that also receive every warning, as a typed mapping.
+#:
+#: The stderr sentence is the reader's interface and does not change.
+#: This is the interface for a PROGRAM driving gpuwm as a subprocess:
+#: it needs the same facts as fields rather than as prose it would have
+#: to recognize by shape.  A generic list of callables rather than one
+#: named consumer, so the next machine-facing surface reuses it instead
+#: of adding a second hook beside it.
+#:
+#: Observers are called inside the same call that prints, so a warning
+#: is never observed later than it is printed.  One that raises would
+#: turn an advisory into a failure, so each is called defensively.
+_WARNING_OBSERVERS: list = []
+
+
+def add_warning_observer(observer) -> None:
+    """Also deliver every :func:`warn` to ``observer(record)``.
+
+    ``record`` is ``{"action": ..., "why": ...}`` -- the two halves the
+    layering convention already splits every message into, unjoined, so
+    a consumer chooses its own layer the way :func:`render` does.
+    """
+
+    if not callable(observer):
+        raise TypeError("warning observer must be callable")
+    _WARNING_OBSERVERS.append(observer)
+
+
+def remove_warning_observer(observer) -> None:
+    """Detach an observer; absent is not an error."""
+
+    try:
+        _WARNING_OBSERVERS.remove(observer)
+    except ValueError:
+        pass
+
+
 def warn(action: str, why: str = "") -> None:
     """Print one warning sentence and keep going.
 
@@ -160,6 +197,10 @@ def warn(action: str, why: str = "") -> None:
 
     Warnings go to stderr so a piped stdout (JSON reports, command
     relays) stays clean.
+
+    Every warning is additionally delivered to each observer registered
+    with :func:`add_warning_observer`, which is how a machine consumer
+    receives it as a field rather than as a line to recognize.
     """
 
     action = " ".join(str(action).split())
@@ -167,9 +208,18 @@ def warn(action: str, why: str = "") -> None:
     if why and _EXPLAIN_ACTIVE:
         for line in str(why).strip("\n").splitlines():
             print(f"  {line}", file=sys.stderr)
+    if not _WARNING_OBSERVERS:
+        return
+    record = {"action": action, "why": str(why)}
+    for observer in tuple(_WARNING_OBSERVERS):
+        try:
+            observer(record)
+        except Exception:  # noqa: BLE001 - an advisory never fails a run
+            continue
 
 
 __all__ = [
-    "EXPLAIN_MARK", "add_explain_flag", "explain_enabled", "layered",
-    "render", "set_explain", "split", "warn",
+    "EXPLAIN_MARK", "add_explain_flag", "add_warning_observer",
+    "explain_enabled", "layered", "remove_warning_observer", "render",
+    "set_explain", "split", "warn",
 ]

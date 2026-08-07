@@ -450,6 +450,12 @@ def nested_experiment(exp: ExperimentConfig,
     nested = dataclasses.replace(
         exp, feedback=0, smooth_option=0,
         domains=(exp.root, child_dc))
+    # A DA free-forecast leg attaches its child itself and integrates the
+    # tree directly; nothing here reserves a dormant nest's VRAM or
+    # evaluates its trigger, so a spawn declaration arriving on the child
+    # is refused by name rather than dropped.
+    from gpuwm.experiment import refuse_unrouted_spawn
+    refuse_unrouted_spawn(nested, "DA nested free-forecast")
     if nested.feedback != 0:
         raise NestedForecastRefusal("one-way nesting is mandatory here")
     # Prove the derivation rule held rather than asserting it in prose.

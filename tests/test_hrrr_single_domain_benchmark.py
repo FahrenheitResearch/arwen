@@ -12,6 +12,7 @@ import pytest
 import tools.hrrr_single_domain_benchmark as hrrr_runner
 from gpuwm.static.lambert import LambertGrid
 from gpuwm.experiment import VerticalConfig
+from gpuwm.hrrr_route_inputs import ROUTE_DEFAULT_PHYSICS_PROFILE
 from gpuwm.ingest.hrrr_target import HrrrTargetDomain
 from gpuwm.ingest.prepared_cache import prepared_cache_identity
 from gpuwm.physics_compat import (
@@ -557,6 +558,14 @@ def test_f00_and_boundary_mapping_forward_explicit_target_radius(monkeypatch):
 
 @pytest.mark.parametrize("nz", [4, 17, 49, 80])
 def test_native_hrrr_experiment_threads_admitted_explicit_vertical_grid(nz):
+    # The 1.8 route default runs the legacy-RRTMG shortwave port, whose
+    # transcribed wrapper caps TOTAL layers at 64 -- comfortably above
+    # HRRR's own 51-level native vertical, below this case's 80.  The
+    # question here is whether an explicit vertical grid THREADS, so the
+    # deep case picks a suite that admits its depth; the ceiling itself
+    # is asserted in both directions by the test below.
+    profile = (WSM6_PROFILE_ID if nz > 60
+               else ROUTE_DEFAULT_PHYSICS_PROFILE)
     target = dataclasses.replace(HrrrTargetDomain.legacy_500x500(), nz=nz)
     vertical = VerticalConfig(
         eta_levels=tuple(float(value)
@@ -565,9 +574,42 @@ def test_native_hrrr_experiment_threads_admitted_explicit_vertical_grid(nz):
         hybrid_opt=2,
         etac=0.37,
     )
-    exp = _experiment(vertical, run_seconds=300.0, target=target)
+    exp = _experiment(vertical, run_seconds=300.0, target=target,
+                      physics_profile=profile)
     assert exp.root.run.nz == nz
     assert exp.vertical == vertical
+
+
+def test_the_route_defaults_legacy_shortwave_layer_ceiling_is_named():
+    """The one real limit the 1.8 default carries, both directions.
+
+    The legacy-RRTMG shortwave port is a transcription of WRF's, and its
+    wrapper caps total layers at 64.  HRRR's native vertical is 51
+    levels, so the ceiling does not bite on this source's own grid --
+    but a hand-authored deep vertical passes it, and the refusal has to
+    name the number rather than fail somewhere inside radiation setup
+    after a preparation has been paid for.
+    """
+    from gpuwm.physics_compat import PhysicsVerticalPreflightError
+
+    def experiment_at(nz):
+        return _experiment(
+            VerticalConfig(
+                eta_levels=tuple(
+                    float(value)
+                    for value in np.linspace(1.0, 0.0, nz + 1)),
+                p_top=12_345.0, hybrid_opt=2, etac=0.37),
+            run_seconds=300.0,
+            target=dataclasses.replace(
+                HrrrTargetDomain.legacy_500x500(), nz=nz),
+            physics_profile=ROUTE_DEFAULT_PHYSICS_PROFILE)
+
+    # HRRR's own native depth builds.
+    assert experiment_at(49).root.run.nz == 49
+    # A deeper one is refused by number, before anything is paid for.
+    with pytest.raises(PhysicsVerticalPreflightError,
+                       match="legacy RRTMG shortwave"):
+        experiment_at(80)
 
 
 @pytest.mark.parametrize(
@@ -709,7 +751,10 @@ def test_native_hrrr_fixed_physics_profile_validates_the_root_domain(
         tmp_path):
     path = tmp_path / "namelist.input"
     _write_native_physics_namelist(path)
-    receipt = _validate_native_hrrr_physics_profile(path)
+    # Named explicitly since 1.8: the route default is the full-radiation
+    # suite, and this namelist describes WSM6.  The wsm6 family stays
+    # fully selectable -- as a stated choice, which is the point.
+    receipt = _validate_native_hrrr_physics_profile(path, WSM6_PROFILE_ID)
     assert receipt["profile"] == WSM6_PROFILE_ID
     assert receipt["selection"] == "d01 (first-or-only) WRF domain value"
     assert receipt["validated_namelist"]["physics"]["radt"] == 1.0
@@ -733,7 +778,7 @@ def test_native_hrrr_root_preparer_reads_d01_and_names_the_nest_it_ignored(
     good = tmp_path / "d01-conforming.input"
     _write_native_physics_namelist(good)
     assert " diff_6th_factor = 0.08, 0.10,\n" in good.read_text()
-    receipt = _validate_native_hrrr_physics_profile(good)
+    receipt = _validate_native_hrrr_physics_profile(good, WSM6_PROFILE_ID)
     assert receipt["validated_namelist"]["dynamics"][
         "diff_6th_factor"] == 0.08
 
@@ -744,7 +789,7 @@ def test_native_hrrr_root_preparer_reads_d01_and_names_the_nest_it_ignored(
             " diff_6th_factor = 0.10, 0.08,"),
         encoding="ascii")
     with pytest.raises(ValueError) as refusal:
-        _validate_native_hrrr_physics_profile(drifted)
+        _validate_native_hrrr_physics_profile(drifted, WSM6_PROFILE_ID)
     message = str(refusal.value)
     assert "d01's value must be 0.08" in message
     assert ("multi-domain namelist passed to a single-domain root preparer"
@@ -756,14 +801,14 @@ def test_native_hrrr_fixed_physics_profile_rejects_scheme_drift(tmp_path):
     path = tmp_path / "namelist.input"
     _write_native_physics_namelist(path, mp_physics=8)
     with pytest.raises(ValueError, match="mp_physics.*must be 6"):
-        _validate_native_hrrr_physics_profile(path)
+        _validate_native_hrrr_physics_profile(path, WSM6_PROFILE_ID)
 
 
 def test_native_hrrr_fixed_physics_profile_rejects_missing_control(tmp_path):
     path = tmp_path / "namelist.input"
     _write_native_physics_namelist(path, include_diff_factor=False)
     with pytest.raises(ValueError, match="requires.*diff_6th_factor"):
-        _validate_native_hrrr_physics_profile(path)
+        _validate_native_hrrr_physics_profile(path, WSM6_PROFILE_ID)
 
 
 @pytest.mark.parametrize(
@@ -823,6 +868,15 @@ def test_native_hrrr_thompson_profile_is_guarded_and_table_bound(
 
     table_root = tmp_path / "tables"
     monkeypatch.setenv("GPUWM_THOMPSON_TABLE_ROOT", str(table_root))
+    # 1.8: the route stages microphysics tables for EVERY mp8 profile,
+    # before this profile's own environment launch contract, and staging
+    # answers presence first (cheap) and bytes second.  A stand-in root
+    # therefore has to exist on disk; its BYTES stay monkeypatched below,
+    # which is what this test is actually about.
+    table_root.mkdir()
+    from gpuwm.core.thompson_contract import CLASSIC_TABLE_ASSETS
+    for pinned in CLASSIC_TABLE_ASSETS:
+        (table_root / pinned.filename).write_bytes(b"")
     asset = SimpleNamespace(
         filename="freezeH2O.dat", bytes=123, sha256="a" * 64)
     monkeypatch.setattr(

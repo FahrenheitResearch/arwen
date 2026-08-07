@@ -33,6 +33,7 @@ from gpuwm.physics_compat import (
     THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
     WSM6_PROFILE_ID,
 )
+from gpuwm.hrrr_route_inputs import ROUTE_DEFAULT_PHYSICS_PROFILE
 from gpuwm.hrrr_forecast import (
     HRRR_TIME_FORMAT, hrrr_source_window, resolve_cycle_flags)
 from gpuwm.hrrr_native_static import sha256_file
@@ -1256,7 +1257,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--physics-profile",
         choices=SINGLE_DOMAIN_PHYSICS_PROFILES,
-        default=WSM6_PROFILE_ID,
+        default=ROUTE_DEFAULT_PHYSICS_PROFILE,
         help="explicit GPUWM HRRR physics/runtime contract",
     )
     parser.add_argument(
@@ -1321,6 +1322,27 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _require_microphysics_tables(profile: str) -> None:
+    """Refuse an unstaged lookup-table set before any paid stage runs.
+
+    Presence only, in one sentence naming ``gpuwm fetch-tables``.  The
+    exact sizes and SHA-256 digests are re-checked by the root
+    preparation's own profile binding
+    (``tools/hrrr_single_domain_benchmark._microphysics_table_
+    authority``) and again at load, so this is the early half of a gate
+    that still fails closed later, not a second opinion.
+    """
+
+    from gpuwm.core.thompson_contract import (
+        CLASSIC_TABLE_ASSETS, MP_PHYSICS as THOMPSON_MP_PHYSICS)
+    from gpuwm.physics_compat import single_domain_runtime_switches
+    from gpuwm.table_assets import require_thompson_tables
+
+    switches = single_domain_runtime_switches(profile)
+    if int(switches["mp_physics"]) == THOMPSON_MP_PHYSICS:
+        require_thompson_tables(assets=CLASSIC_TABLE_ASSETS)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     explain.set_explain(explain.explain_enabled(args))
@@ -1338,6 +1360,16 @@ def main(argv: list[str] | None = None) -> int:
     final_hour = model_forcing_hours[-1]
     model_start_time = valid_time + timedelta(
         hours=source_forecast_hours[0])
+    # The selected suite's microphysics lookup tables, resolved and
+    # byte-checked BEFORE the decoder runs and before a single source
+    # file is read.  This preparation used to resolve no tables at all --
+    # its only table gate lived in the benchmark runner and fired for one
+    # profile behind two environment variables -- so an mp8 suite reached
+    # GPU setup unstaged, minutes of paid work later.  Naming it here also
+    # removed the reason this route's default had to be a suite that
+    # needs no tables, which is why the default could be flipped to a
+    # full-radiation one at all.
+    _require_microphysics_tables(args.physics_profile)
     if args.prepare_workers is not None and args.prepare_workers not in range(1, 33):
         raise ValueError("prepare-workers must be between 1 and 32")
     if args.preprocess_workers is not None and args.preprocess_workers < 1:

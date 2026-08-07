@@ -968,7 +968,7 @@ exactly this failure.
 | `morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** (the wizard's gfs/era5 default) |
 | `nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1` | legacy RRTMG / legacy RRTMG | **yes** |
-| `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** |
+| `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** (the wizard's hrrr default) |
 | `thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** |
 | `thompson-mp8-ysu-mm5-noah-validation-v1` | OFF / Dudhia | **no** |
 | `wsm6-ysu-mm5-noah-no-radiation-v1` | OFF / Dudhia | **no** |
@@ -997,20 +997,62 @@ asymmetric profile whose window includes night. Idealized
 experiments (no `[projection]`) have no place or clock and are not
 guarded.
 
-**The HRRR route is the exception, and it is a route constraint, not a
-preference.** The `gfs`/`era5` doors never emit an asymmetric pairing
-as a default. The native HRRR route does: its default is
-`wsm6-ysu-mm5-noah-no-radiation-v1`, and eight of the thirteen
-profiles it stages are asymmetric, because the HRRR root preparer
-stages no microphysics tables for the full-radiation profiles. That
-route builds its experiment in code rather than from a config file, so
-it writes the declaration itself -- on the same rule as the wizard,
-asymmetric pairing plus a window that includes local night -- and the
-experiment authority it publishes carries the line in ink. Selecting
-one of its five full-radiation profiles
-(`morrison-...-rte-rrtmgp-v1`, either `nssl2-...-validation-candidate-v1`,
-either `thompson-...-rrtmg-legacy-v1`) is what makes an HRRR night run
-nocturnally valid rather than declared.
+**No door emits an asymmetric pairing as a default.** That includes the
+HRRR route, which was the exception through 1.7.1 and is not one now.
+
+Its default was `wsm6-ysu-mm5-noah-no-radiation-v1` because every
+full-radiation suite the route's physics gate admits is an mp8 suite,
+and the HRRR root preparer resolved microphysics lookup tables for
+exactly one profile, behind two environment variables. Nothing else
+staged tables at all, so the route could not default to full radiation:
+full radiation here means mp8, and mp8 was not staged. 1.8 stages them
+--- for **every** profile whose microphysics reads them, at
+profile-binding time, through the project's packaged table ladder
+(`gpuwm/data/thompson/tables`, SHA-256 pinned), before the fetch and
+before preprocessing --- and the constraint is gone rather than
+relaxed. The resolved table set is recorded in the physics receipt as
+`microphysics_table_authority`.
+
+The HRRR default is now `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1`:
+Thompson microphysics with RRTMG longwave **and** shortwave and no
+cumulus parameterization. That is deliberately the composition the
+operational High-Resolution Rapid Refresh runs (NOAA/GSL; the CCPP
+`HRRR_suite` pairs Thompson aerosol-aware microphysics with RRTMG
+radiation on a convection-permitting 3 km grid), so the default should
+not surprise anyone who has driven WRF from HRRR before. gpuwm diverges
+from operations on two components: **YSU** rather than MYNN-EDMF, and
+**Noah** rather than the RUC LSM. Both of those shipped profiles run
+longwave OFF and are refused by the route's own surface-layer and
+land-surface pins anyway; closing that gap is a separate item.
+
+It is **not** the `gfs`/`era5` default. `morrison-mp10-...-kf-rte-rrtmgp-v1`
+selects Kain-Fritsch, and the HRRR route pins `cu_physics = 0` because
+this source's native 3 km grid already resolves convection --- so that
+suite is refused at emission, naming the switch. The refusal is physics,
+not a limitation, and it is why HRRR's default differs from the others'.
+
+Two consequences worth stating plainly:
+
+* **Layer ceiling.** The legacy-RRTMG shortwave port is a transcription
+  of WRF's and its wrapper caps total layers at 64. HRRR's native
+  vertical is 51 levels, so this does not bite on the source's own grid;
+  a hand-authored deeper vertical is refused by number, before anything
+  is paid for.
+* **Card cost.** The full-radiation default costs roughly 1.8 GiB more
+  peak envelope than the suite it replaced, and no longer fits the
+  minimum 12 km layout on a 12 GiB card. The sizing refusal now names a
+  lighter `--physics-profile` alongside a shallower ladder and a bigger
+  card, so the cheapest lever is stated rather than left to be guessed.
+
+The eight asymmetric profiles stay fully selectable, and selecting one
+for a night window is what writes the declaration --- as a stated
+choice. Through 1.7.1 the HRRR route wrote that declaration for its own
+DEFAULT, which is a declaration by silence and declares nothing; that
+died with the default that needed it. The route still builds its
+experiment in code rather than from a config file, so it still writes
+the declaration itself when an operator explicitly picks an asymmetric
+suite for a night window, and the experiment authority it publishes
+carries the line in ink.
 
 ## Namelist import substitutions
 

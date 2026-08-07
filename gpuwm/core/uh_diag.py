@@ -71,6 +71,31 @@ UP_HELI_MAX_SLOT = "up_heli_max"
 UH_WORK_COLUMN_SLOT = "uh_diag_col"
 UH_WORK_USE_SLOT = "uh_diag_use"
 
+#: CONSUMER-OWNED tracking windows (Drew's ruling, 2026-08-07).
+#:
+#: Same operator as UP_HELI_MAX and the same fold below -- what differs is
+#: WHO RESETS.  UP_HELI_MAX is zeroed by the history writer, so its window
+#: is the output cadence; a model consumer reading it therefore has its
+#: decisions moved by an output knob, which is how ``--history-interval``
+#: came to steer a storm-following nest.  Each of these is zeroed by the
+#: consumer that reads it, immediately after it reads, so its window is
+#: "max since I last looked" and nothing else.
+#:
+#: TWO of them, not one, because the two consumers evaluate on genuinely
+#: different granularities: relocation at cadence boundaries inside one
+#: ``execute_experiment`` call, spawn at LEG boundaries through schedule
+#: surgery (gpuwm/core/spawn_runner.py's opening note).  A shared window
+#: would let whichever consumer read first blind the other at any
+#: boundary they happen to share.
+#:
+#: The names deliberately do NOT contain "up_heli_max": these are not the
+#: WRF diagnostic, they are never emitted, and the governance roster in
+#: tests/test_uh_lifecycle.py pins that slot's readers by substring.
+UH_FOLLOW_WINDOW_SLOT = "uh_follow_window"
+UH_SPAWN_WINDOW_SLOT = "uh_spawn_window"
+#: Folded every step beside UP_HELI_MAX; reset only by their consumers.
+TRACKER_WINDOW_SLOTS = (UH_FOLLOW_WINDOW_SLOT, UH_SPAWN_WINDOW_SLOT)
+
 _THREADS = 256
 
 _F0 = np.float32(0.0)
@@ -333,6 +358,12 @@ def update_up_heli_max(state, cfg) -> None:
     rdx = DTYPE(1.0) / DTYPE(cfg.dx)
     rdy = DTYPE(1.0) / DTYPE(cfg.dy)
 
+    # One column computation, folded into every window that exists.  The
+    # smoother is a pure function of (uh, use) and writes only its target,
+    # so folding N targets from one pass is exactly N independent running
+    # maxima over the same steps -- no second UH evaluation, no forked
+    # arithmetic, and a window whose consumer never resets it is simply
+    # the same number UP_HELI_MAX would carry.
     if isinstance(state.u, np.ndarray):
         uh_np, use_np = cal_helicity_uh_columns_np(
             state.u, state.v, state.w, state.php, state.phb,
@@ -343,6 +374,8 @@ def update_up_heli_max(state, cfg) -> None:
         uh[...] = uh_np
         use[...] = use_np.astype(np.float32)
         apply_uh_smoother_max_np(uh_np, use_np, up_heli_max)
+        for window in _tracker_windows(state):
+            apply_uh_smoother_max_np(uh_np, use_np, window)
         return
 
     device_uh_step(
@@ -351,6 +384,63 @@ def update_up_heli_max(state, cfg) -> None:
         state.dn, state.dnw, state.fnm, state.fnp,
         state.cf1, state.cf2, state.cf3, rdx, rdy,
         uh, use, up_heli_max)
+    for window in _tracker_windows(state):
+        device_fold_window(uh, use, window)
+
+
+def _tracker_windows(state):
+    """The consumer windows this state carries, in declared order.
+
+    Duck-typed tolerant exactly like :func:`reset_up_heli_max`: reduced
+    states and test doubles without a scratch pool simply have none, and
+    a state built with ``nwp_diagnostics = 0`` never allocates them.
+    """
+    existing_scratch = getattr(state, "existing_scratch", None)
+    if existing_scratch is None:
+        return ()
+    return tuple(window for window in
+                 (existing_scratch(slot) for slot in TRACKER_WINDOW_SLOTS)
+                 if window is not None)
+
+
+def device_fold_window(uh, use, window) -> None:
+    """Fold already-computed columns into one more running max on device.
+
+    The second half of :func:`device_uh_step`, against a different
+    target: the same ``uh_smooth_max`` kernel and the same boundary
+    copies (:7541-7557), never a re-derivation of the columns.
+    """
+    from gpuwm.core.kernels import get_kernel
+
+    ny, nx = window.shape
+    blocks = ((nx * ny) + _THREADS - 1) // _THREADS
+    get_kernel("uh_diag", "uh_smooth_max")(
+        (blocks,), (_THREADS,),
+        (uh, use, window, np.int32(ny), np.int32(nx)))
+    window[:, 0] = window[:, 1]
+    window[0, :] = window[1, :]
+
+
+def reset_tracker_window(state, slot: str) -> None:
+    """Zero one consumer's window, immediately after that consumer read it.
+
+    EVERY evaluation resets, accepted or held (Drew's ruling,
+    2026-08-07).  Letting the window grow across holds would make a move
+    more likely simply because more time passed since the last one, which
+    is cadence dependence coming back in through the reset rule instead of
+    through the history writer.
+    """
+    if slot not in TRACKER_WINDOW_SLOTS:
+        raise ValueError(
+            f"{slot!r} is not a tracker window; the consumer windows are "
+            f"{TRACKER_WINDOW_SLOTS} and UP_HELI_MAX is reset by the "
+            "history writer alone (reset_up_heli_max)")
+    existing_scratch = getattr(state, "existing_scratch", None)
+    if existing_scratch is None:
+        return
+    buf = existing_scratch(slot)
+    if buf is not None:
+        buf[...] = 0.0
 
 
 def device_uh_step(u, v, w, ph, phb, msfu, msfv, ht, dn, dnw, fnm, fnp,

@@ -453,6 +453,58 @@ def forecast_command(plan: dict, digests: dict) -> list[str]:
             "--io-mode", "history", "--outdir", str(plan["run"])]
 
 
+def _run_forecast(plan: dict, digests: dict, *, explain: bool,
+                  observer=None) -> None:
+    """The forecast stage: subprocess by default, in-process for an observer.
+
+    Same command either way.  ``forecast_command`` composes it once and
+    both arms consume that one list, so the flags a run-plan run
+    executes are byte-identical to the ones ``gpuwm go`` prints and
+    spawns -- there is no second argument set to keep in step.
+
+    Why the second arm exists at all: a subprocess can only be observed
+    through what it publishes, and ``progress.json`` is republished on
+    the runner's own throttle (every sixtieth step).  That is a fine
+    heartbeat and a poor event stream, and it can never say "this
+    wrfout just landed" at the moment it did.  In-process, the runner's
+    per-domain writer raises ``output_committed`` on the thread that
+    published the file, and every step reaches the observer.
+
+    The subprocess arm stays the default and stays untouched, because
+    process isolation is what keeps a CUDA failure inside one stage.
+    A caller that asks for the observer is asking to host the forecast,
+    and run-plan does exactly that -- it IS the supervising process.
+    """
+
+    command = forecast_command(plan, digests)
+    progress = plan["run"] / "progress.json"
+    if observer is None:
+        _run_stage("forecast", command, explain=explain, progress=progress)
+        return
+
+    # `python -m MODULE ...` -> the module, and the argv it would have
+    # been handed.  Sliced off the composed command rather than rebuilt.
+    module_name, argv = command[2], command[3:]
+    _notify(observer, "stage_begin", label="forecast", command=list(command))
+    started = time.monotonic()
+    print("  .. forecast (in process)", flush=True)
+    import importlib
+
+    runner = importlib.import_module(module_name)
+    code = runner.main(argv, observer=observer)
+    ok = not code
+    _notify(observer, "stage_end", label="forecast", exit_code=code, ok=ok,
+            elapsed_seconds=time.monotonic() - started,
+            progress=_progress_payload(progress))
+    if not ok:
+        print(f"  FAILED  forecast (exit {code})")
+        print("go: stopped at forecast; every later stage consumes this "
+              "one's output, so nothing after it ran.")
+        raise GoStageFailed(code)
+    print(f"  ok      forecast "
+          f"({_elapsed_words(time.monotonic() - started)})")
+
+
 # ---------------------------------------------------------------------------
 # Reading relayed values back out of the artifacts
 # ---------------------------------------------------------------------------
@@ -540,7 +592,8 @@ def render_extra_missing() -> str | None:
     return None
 
 
-def _render_stage(plan: dict, *, explain: bool) -> bool:
+def _render_stage(plan: dict, *, explain: bool,
+                  observer=None) -> bool:
     """Run the render stage; return whether anything was rendered."""
 
     missing = render_extra_missing()
@@ -556,7 +609,8 @@ def _render_stage(plan: dict, *, explain: bool) -> bool:
         print("  -- render skipped: the forecast stage published no "
               f"wrfout frame under {plan['run'] / 'wrfout'}.")
         return False
-    _run_stage("render", render_command(plan, frames), explain=explain)
+    _run_stage("render", render_command(plan, frames), explain=explain,
+               observer=observer)
     return True
 
 
@@ -592,6 +646,24 @@ def _elapsed_words(seconds: float) -> str:
     return f"{whole // 60}m {whole % 60:02d}s"
 
 
+def _progress_payload(progress: Path | None) -> dict | None:
+    """The running stage's published progress file, as a dict.
+
+    What :func:`_progress_note` renders for a person, handed to a
+    machine unrendered.  Same source, same silence on a missing or
+    half-written file -- a stage that has not got there yet is not an
+    error.
+    """
+
+    if progress is None:
+        return None
+    try:
+        payload = json.loads(Path(progress).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _progress_note(progress: Path | None) -> str:
     """What the running stage says about itself, if it says anything.
 
@@ -620,9 +692,28 @@ def _progress_note(progress: Path | None) -> str:
     return (", " + ", ".join(parts)) if parts else ""
 
 
+def _notify(observer, event: str, **fields) -> None:
+    """Tell an optional stage observer something, never failing the run.
+
+    ``go`` is a chain of integrity checks; telemetry is not one of them,
+    so an observer that raises must not take a forecast down.
+    """
+
+    if observer is None:
+        return
+    hook = getattr(observer, event, None)
+    if hook is None:
+        return
+    try:
+        hook(**fields)
+    except Exception:  # noqa: BLE001 - telemetry never fails a stage
+        pass
+
+
 def _run_stage(label: str, command: list[str], *, explain: bool,
                progress: Path | None = None,
-               heartbeat_seconds: float = HEARTBEAT_SECONDS) -> None:
+               heartbeat_seconds: float = HEARTBEAT_SECONDS,
+               observer=None) -> None:
     """Run one stage; replay everything it said and stop if it failed.
 
     Output is captured so the default is one line per stage, and
@@ -642,6 +733,7 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
     """
 
     print(f"  .. {label}", flush=True)
+    _notify(observer, "stage_begin", label=label, command=list(command))
     started = time.monotonic()
     # The subprocess still runs through ``subprocess.run`` -- one call,
     # one place, the same capture semantics -- and the waiting moves to
@@ -677,6 +769,13 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
             if worker.is_alive() and now >= next_beat:
                 print(f"     .. {label}, {_elapsed_words(now - started)}"
                       f"{_progress_note(progress)}", flush=True)
+                # The same beat the terminal gets, as fields.  The
+                # payload is the stage's own published progress file --
+                # the artifact, never the prose, which is this module's
+                # standing rule for relayed values.
+                _notify(observer, "stage_heartbeat", label=label,
+                        elapsed_seconds=now - started,
+                        progress=_progress_payload(progress))
                 next_beat = now + heartbeat_seconds
         worker.join()
     except KeyboardInterrupt:
@@ -706,7 +805,14 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
             print(f"    {line}")
         print(f"go: stopped at {label}; every later stage consumes this "
               "one's output, so nothing after it ran.")
+        _notify(observer, "stage_end", label=label,
+                exit_code=completed.returncode, ok=False,
+                elapsed_seconds=time.monotonic() - started,
+                progress=_progress_payload(progress))
         raise GoStageFailed(completed.returncode)
+    _notify(observer, "stage_end", label=label, exit_code=0, ok=True,
+            elapsed_seconds=time.monotonic() - started,
+            progress=_progress_payload(progress))
     print(f"  ok      {label} ({_elapsed_words(time.monotonic() - started)})")
     if explain:
         for line in output.splitlines():
@@ -983,7 +1089,23 @@ def geography_refusal(geog_root: Path) -> str | None:
         + "\n".join(f"  {gap.name}: {gap.detail}" for gap in gaps))
 
 
-def go_main(args) -> int:
+def go_main(args, *, observer=None) -> int:
+    """The documented GFS chain, run in order.
+
+    ``observer`` is an optional structured consumer of the same stage
+    boundaries the terminal gets: ``stage_begin``, ``stage_heartbeat``
+    (carrying the running stage's own published progress file, never
+    its prose) and ``stage_end``.  It also switches the forecast stage
+    from a subprocess to an in-process call, which is the only way a
+    consumer can be told about each wrfout AS it lands rather than at
+    the next heartbeat -- the runner's per-domain writer raises that
+    hook on the thread that publishes the file.
+
+    ``None`` -- every existing caller, including `gpuwm go` itself --
+    changes nothing: no notifications, and the forecast stays the
+    subprocess it has always been.
+    """
+
     from gpuwm.fetch import sha256_file
     from gpuwm.geog_assets import default_geog_root
 
@@ -1078,9 +1200,12 @@ def go_main(args) -> int:
         if geography is not None:
             raise GoRefusal(geography)
 
-        _run_stage("authority", authority_command(plan), explain=explain)
-        _run_stage("fetch", fetch_command(plan), explain=explain)
+        _run_stage("authority", authority_command(plan), explain=explain,
+                   observer=observer)
+        _run_stage("fetch", fetch_command(plan), explain=explain,
+                   observer=observer)
         _run_stage("manifest", manifest_command(plan, bridge),
+                   observer=observer,
                    explain=explain)
         if not manifest.is_file():
             raise GoRefusal(
@@ -1090,12 +1215,12 @@ def go_main(args) -> int:
             plan, bridge, manifest=manifest,
             manifest_sha256=sha256_file(manifest),
             cycle_stamp=cycle_stamp, geog_root=geog_root), explain=explain,
-            progress=plan["prepared"] / "progress.json")
+            progress=plan["prepared"] / "progress.json",
+            observer=observer)
         digests = proof_digests(plan["prepared"])
-        _run_stage("forecast", forecast_command(plan, digests),
-                   explain=explain,
-                   progress=plan["run"] / "progress.json")
-        rendered = _render_stage(plan, explain=explain)
+        _run_forecast(plan, digests, explain=explain, observer=observer)
+        rendered = _render_stage(plan, explain=explain,
+                                 observer=observer)
     except GoStageFailed as failure:
         # D-05.  The interrupted arm below has always told the reader what
         # is on disk; this one raised and said nothing, so a failed

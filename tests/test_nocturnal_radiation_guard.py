@@ -27,9 +27,11 @@ import tomllib
 import pytest
 
 from gpuwm.domain_wizard import (DEFAULT_PHYSICS_PROFILE,
+                                 HRRR_DEFAULT_PROFILE,
                                  experiment_from_text, render_config,
                                  resolved_physics_profile)
 from gpuwm.experiment import build_experiment
+from gpuwm.hrrr_route_inputs import ROUTE_DEFAULT_PHYSICS_PROFILE
 from gpuwm.physics_compat import (ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
                                   MORRISON_PROFILE_ID, THOMPSON_PROFILE_ID,
                                   WSM6_PROFILE_ID, first_local_night_time,
@@ -66,9 +68,12 @@ def test_real_case_default_is_the_certified_full_radiation_profile():
     assert DEFAULT_PHYSICS_PROFILE == MORRISON_PROFILE_ID
     assert resolved_physics_profile("era5", None) == MORRISON_PROFILE_ID
     assert resolved_physics_profile("gfs", None) == MORRISON_PROFILE_ID
-    # HRRR keeps its route-constrained default; an explicit request
-    # always wins on every source.
-    assert resolved_physics_profile("hrrr", None) == WSM6_PROFILE_ID
+    # 1.8: HRRR is no longer the exception.  Its default is a different
+    # profile from gfs/era5 -- its route refuses Kain-Fritsch at 3 km --
+    # but it is full-radiation like theirs, and it comes from the route's
+    # own authority rather than a door-local copy.
+    assert resolved_physics_profile("hrrr", None) == HRRR_DEFAULT_PROFILE
+    assert HRRR_DEFAULT_PROFILE == ROUTE_DEFAULT_PHYSICS_PROFILE
     assert (resolved_physics_profile("era5", THOMPSON_PROFILE_ID)
             == THOMPSON_PROFILE_ID)
 
@@ -84,6 +89,76 @@ def test_default_profile_is_registry_certified_and_nocturnally_valid():
     assert switches["ra_sw_physics"] == 4
 
 
+def test_every_door_default_is_full_radiation_and_route_admissible():
+    """Both facts, for every source, from the shipped tables.
+
+    The second one is the fact the interactive door's own test could not
+    see: it re-derived "offered by that source's route" from the registry
+    and "strongest maturity" from the template, and both were TRUE of the
+    Morrison suite on hrrr while ``validate_route_physics`` refused it on
+    ``cu_physics``.  Registry reachability is not route admissibility, so
+    this asserts the emission actually survives the gate that rejects it.
+    """
+    from gpuwm.domain_interactive import DEFAULT_PHYSICS_PROFILE_BY_SOURCE
+    from gpuwm.hrrr_route_inputs import validate_route_physics
+
+    for source in ("gfs", "era5", "hrrr"):
+        for profile in (resolved_physics_profile(source, None),
+                        DEFAULT_PHYSICS_PROFILE_BY_SOURCE[source]):
+            switches = single_domain_runtime_switches(profile)
+            assert switches["ra_lw_physics"] == 4, (
+                f"{source} default {profile} runs longwave "
+                f"{switches['ra_lw_physics']}")
+            assert switches["ra_sw_physics"] == 4, (
+                f"{source} default {profile} runs shortwave "
+                f"{switches['ra_sw_physics']}")
+    # And the hrrr default loads through the route's own physics gate.
+    validate_route_physics(
+        experiment_from_text(
+            _emitted(resolved_physics_profile("hrrr", None)),
+            source="<hrrr-default-emission>"))
+
+
+def test_the_route_default_is_the_strongest_admissible_full_radiation_suite():
+    """Re-derived from the switch tables and the route's gates.
+
+    Not a restatement of the constant: this recomputes the admissible
+    set the way :func:`validate_route_physics` does and checks the
+    default is in it, so a profile that gains or loses admissibility
+    moves this assertion rather than aging quietly beside it.
+    """
+    from gpuwm.hrrr_route_inputs import (ADMITTED_PBL_PHYSICS,
+                                         ADMITTED_RADIATION_PAIRS,
+                                         REQUIRED_PHYSICS,
+                                         SUPPORTED_MICROPHYSICS)
+    from gpuwm.physics_compat import SINGLE_DOMAIN_PHYSICS_PROFILES
+
+    admissible = []
+    for profile in SINGLE_DOMAIN_PHYSICS_PROFILES:
+        switches = single_domain_runtime_switches(profile)
+        pair = (int(switches["ra_lw_physics"]),
+                int(switches["ra_sw_physics"]))
+        if any(int(switches[key]) != value
+               for key, value in REQUIRED_PHYSICS.items()):
+            continue
+        if int(switches["bl_pbl_physics"]) not in ADMITTED_PBL_PHYSICS:
+            continue
+        if pair not in ADMITTED_RADIATION_PAIRS:
+            continue
+        if int(switches["mp_physics"]) not in SUPPORTED_MICROPHYSICS:
+            continue
+        if pair == (4, 4):
+            admissible.append(profile)
+    assert ROUTE_DEFAULT_PHYSICS_PROFILE in admissible, (
+        f"the route default is not admissible; admissible 4/4 suites are "
+        f"{admissible}")
+    # The operational HRRR composition, as far as this engine carries it:
+    # Thompson microphysics, RRTMG on both streams, no cumulus at 3 km.
+    switches = single_domain_runtime_switches(ROUTE_DEFAULT_PHYSICS_PROFILE)
+    assert int(switches["mp_physics"]) == 8
+    assert int(switches["cu_physics"]) == 0
+
+
 def test_default_emission_is_nocturnally_valid_and_loads():
     text = _emitted(DEFAULT_PHYSICS_PROFILE)
     assert MORRISON_PROFILE_ID in text
@@ -94,10 +169,18 @@ def test_default_emission_is_nocturnally_valid_and_loads():
     assert exp.root.run.ra_sw_physics == 4
 
 
-def test_no_wizard_door_defaults_to_an_asymmetric_pairing():
+def test_no_door_defaults_to_an_asymmetric_pairing():
+    """The CHANGELOG claim line, over EVERY source.
+
+    It looped ``("gfs", "era5")`` while 1.7.1's own CHANGELOG had to be
+    corrected to say "neither the gfs nor the era5 door", because hrrr
+    defaulted to a shortwave-on/longwave-off suite and this test was
+    written not to look.  A claim test that skips the failing case is
+    the claim, restated.
+    """
     from gpuwm.domain_interactive import DEFAULT_PHYSICS_PROFILE_BY_SOURCE
 
-    for source in ("gfs", "era5"):
+    for source in ("gfs", "era5", "hrrr"):
         for profile in (resolved_physics_profile(source, None),
                         DEFAULT_PHYSICS_PROFILE_BY_SOURCE[source]):
             switches = single_domain_runtime_switches(profile)

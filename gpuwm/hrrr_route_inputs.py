@@ -93,6 +93,38 @@ ADMITTED_RADIATION_PAIRS = frozenset({(0, 1), (4, 4)})
 #: Microphysics the route's nest-transition resolver knows.
 SUPPORTED_MICROPHYSICS = frozenset({1, 6, 8, 10, 18})
 
+#: THE profile every door binds for this source when none is named.
+#:
+#: One constant, imported by all of them, because 1.7.1 proved the
+#: alternative: the wizard door, the interactive door and the native
+#: preparer each carried their own default, they disagreed, and a fix
+#: applied to one left the others emitting the old suite.  A door that
+#: wants this source's default reads it here or it is not a door.
+#:
+#: The value is the strongest suite that satisfies this module's OWN
+#: gates above with both radiation streams on.  It is Thompson mp8
+#: microphysics with RRTMG longwave and shortwave at
+#: ``cu_physics = 0`` -- which is also, and not by coincidence, what the
+#: operational High-Resolution Rapid Refresh runs (NOAA/GSL; the CCPP
+#: ``HRRR_suite`` pairs Thompson aerosol-aware microphysics with RRTMG
+#: radiation on a convection-permitting 3 km grid).  gpuwm diverges from
+#: operations on two components it has no route-admissible
+#: implementation for: YSU rather than MYNN-EDMF, and Noah rather than
+#: the RUC LSM.  Both of those shipped profiles run longwave OFF and are
+#: refused above on ``sf_sfclay_physics``/``sf_surface_physics`` anyway.
+#:
+#: It is deliberately NOT the gfs/era5 default
+#: (``morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1``): that suite selects
+#: Kain-Fritsch, and ``REQUIRED_PHYSICS`` pins ``cu_physics = 0`` because
+#: this source's native grid already resolves convection.  The refusal is
+#: physics, not a limitation.
+#:
+#: ``tests/test_nocturnal_radiation_guard.py`` re-derives this from the
+#: shipped switch table and the gates above rather than restating it, so
+#: a profile that becomes admissible -- or one that stops being -- moves
+#: the assertion, not just this comment.
+ROUTE_DEFAULT_PHYSICS_PROFILE = "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1"
+
 #: The four -- and only four -- differences between the native namelist
 #: gpuwm integrates and the stock-WRF namelist beside it.  The route
 #: compares the two parsed files key for key and refuses any other
@@ -762,9 +794,24 @@ def verify_round_trip(exp, wps_namelist: Path, namelist_input: Path) -> None:
     # have no namelist spelling, so the round trip inherits them from
     # the authoritative experiment rather than failing the very guard
     # the TOML beside these files already satisfies.
+    #
+    # WHICH RRTMG is the same class of fact, and it was missed.  A WRF
+    # namelist spells ``ra_lw_physics = ra_sw_physics = 4`` for both the
+    # legacy-RRTMG transcription and the RTE+RRTMGP substitution -- the
+    # selection between them is gpuwm's, carried in ``ra_rrtmg_variant``,
+    # and WRF has no key for it.  Re-importing without saying so resolved
+    # every 4/4 emission to RTE+RRTMGP and then reported the difference
+    # as though the emitted files were wrong, which made the route's own
+    # legacy-RRTMG profiles unemittable.  The route already inherits this
+    # out of band everywhere else it matters
+    # (:func:`gpuwm.hrrr_hierarchy_direct._native_experiment` takes it
+    # from the prepared-cache identity header); this is the same
+    # inheritance at emission.
+    variant = getattr(exp.root.run, "ra_rrtmg_variant", None)
     text, _report = import_namelists(
         wps_namelist, namelist_input, name=exp.name,
-        acknowledgements=tuple(exp.acknowledgements))
+        acknowledgements=tuple(exp.acknowledgements),
+        **({} if variant is None else {"rrtmg_variant": variant}))
     imported = build_experiment(
         tomllib.loads(text),
         source=f"round trip of {namelist_input.name}")
@@ -829,6 +876,7 @@ __all__ = [
     "FORCING_INTERVAL_SECONDS",
     "HrrrRouteInputError",
     "REQUIRED_PHYSICS",
+    "ROUTE_DEFAULT_PHYSICS_PROFILE",
     "SUPPORTED_MICROPHYSICS",
     "render_namelist_input",
     "render_target_domain",

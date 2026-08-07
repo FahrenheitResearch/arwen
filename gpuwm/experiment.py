@@ -37,7 +37,7 @@ import difflib
 import math
 import io
 import tomllib
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace as _dc_replace
 from datetime import datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
@@ -58,14 +58,46 @@ from gpuwm.explain import layered, warn
 _REL_TOL = 1.0e-6
 
 #: WRF moving-nest namelist controls (Registry.EM_COMMON &domains).  Any
-#: appearance is rejected loudly: moving nests are a design-spec non-goal
-#: (architecture "WRF deviations (registered)"), and the SINT donor tables
-#: are precomputed once at setup on the premise that nests are static.
+#: appearance is still rejected loudly, and the reason is unchanged: every
+#: key here drives CONTINUOUS, per-step nest motion, which invalidates the
+#: SINT donor index/weight tables inside the integration.  This tree offers
+#: DISCRETE relocation instead -- whole parent cells at cycle boundaries,
+#: donor tables rebuilt once per placement generation -- which preserves
+#: the premise ("tables precomputed once at setup") that this rejection
+#: exists to protect.  The discrete surface is :class:`RelocationConfig`
+#: under ``[relocation]``.  Unlike WRF's per-step ``move_interval``, its
+#: ``cadence_seconds``/``[[relocation.move]]`` schedule names cycle-boundary
+#: OPPORTUNITIES for the discrete mechanism (Drew's storm-following order,
+#: leg 2, 2026-08-06 -- superseding leg 1's no-schedule stance for the
+#: runner while the per-step keys stay rejected).
 _MOVING_NEST_KEYS = frozenset({
     "num_moves", "move_id", "move_interval", "move_cd_x", "move_cd_y",
     "vortex_interval", "max_vortex_speed", "corral_dist", "track_level",
     "time_to_move",
 })
+
+#: Keys accepted in ``[relocation]``.  ``enabled`` is mandatory and every
+#: other key is refused while it is false, so a config cannot acquire a
+#: movable nest by inheriting a block someone left behind.  ``follow`` is
+#: the nested ``[relocation.follow]`` storm-tracking table
+#: (:mod:`gpuwm.core.storm_tracking`); ``move`` is the manual itinerary
+#: (``[[relocation.move]]`` rows); ``cadence_seconds`` is how often the
+#: runner consults whichever source is configured.  All three admissible
+#: only while enabled.
+_RELOCATION_KEYS = frozenset({
+    "enabled", "grid_id", "mode", "max_move_parent_cells",
+    "min_overlap_fraction", "cadence_seconds", "follow", "move",
+})
+
+#: Keys accepted in each ``[[relocation.move]]`` row (the manual follow
+#: itinerary; the config-driven stand-in for the tracker seam).
+_RELOCATION_MOVE_KEYS = frozenset({
+    "at_seconds", "di_parent_cells", "dj_parent_cells",
+})
+
+#: The only relocation mode implemented.  Named (rather than implied) so a
+#: future second mode has to be selected deliberately.
+DISCRETE_RELOCATION_MODE = "discrete-cycle-boundary"
 
 #: Nesting guard keys accepted in [shared] with their WRF Registry
 #: defaults; any OTHER value is rejected loudly (only the default
@@ -217,6 +249,10 @@ _DOMAIN_KEYS = frozenset({
     "e_we", "e_sn", "nx", "ny", "dx", "dy", "dt",
     "time_step", "time_step_fract_num", "time_step_fract_den",
     "specified", "nested",
+    # The dormant-nest declaration (gpuwm/core/nest_spawn.py): a child
+    # carrying `spawn = {...}` is declared, reserved in the memory plan,
+    # and integrates nothing until its trigger fires mid-run.
+    "spawn",
     *_DOMAIN_RUN_OVERRIDES,
 })
 _DOMAIN_REQUIRED = ("grid_id", "parent_id", "i_parent_start",
@@ -592,6 +628,188 @@ class DomainConfig:
     time_step_fract_num: int = 0
     time_step_fract_den: int = 1
     start_time: datetime | None = None
+    #: The validated ``spawn`` table (:class:`gpuwm.core.nest_spawn
+    #: .SpawnConfig`), or ``None`` for an ordinary live domain.  ``None``
+    #: is the OFF contract and is omitted from the restart-identity
+    #: payload and tolerated by the prepared-cache identity, so every
+    #: pre-feature fingerprint stays byte-identical.  Non-``None`` marks
+    #: this domain DORMANT: declared and memory-reserved from startup,
+    #: integrating nothing until the trigger fires; ``i_parent_start`` /
+    #: ``j_parent_start`` are then the PLACEHOLDER placement (the memory
+    #: plan's and the manual time-trigger's), and the fired placement is
+    #: chosen at trigger time (:func:`active_experiment`).
+    spawn: "object | None" = None
+
+
+@dataclass(frozen=True)
+class ScheduledRelocationMove:
+    """One row of the manual follow itinerary: when, and how far.
+
+    The shift is in whole PARENT cells, the same unit and sign convention
+    the tracker's plan provider returns, so the manual mode exercises the
+    exact interface the tracker must satisfy.
+    """
+
+    at_seconds: float
+    di_parent_cells: int = 0
+    dj_parent_cells: int = 0
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(float(self.at_seconds)) or float(
+                self.at_seconds) <= 0.0:
+            raise ValueError(
+                f"at_seconds = {self.at_seconds!r} must be a finite, "
+                "positive model time; t = 0 is initial placement, not a "
+                "move")
+        for name in ("di_parent_cells", "dj_parent_cells"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or int(value) != value:
+                raise ValueError(
+                    f"{name} = {value!r} must be a whole number of parent "
+                    "cells; discrete relocation has no fractional moves")
+
+    def to_json(self) -> dict[str, object]:
+        return {"at_seconds": float(self.at_seconds),
+                "di_parent_cells": int(self.di_parent_cells),
+                "dj_parent_cells": int(self.dj_parent_cells)}
+
+
+@dataclass(frozen=True)
+class RelocationConfig:
+    """Bounds and (optionally) a follow source for discrete relocation.
+
+    Three layers, deliberately separable:
+
+    * The MECHANISM bounds -- which child may move (``grid_id``), how far
+      in one event (``max_move_parent_cells``), and how much ground it
+      must keep (``min_overlap_fraction``).  A caller driving
+      :func:`gpuwm.core.nest_relocation.relocate_child` directly uses
+      only these.
+    * The FOLLOW SOURCE -- at most one of: ``follow``, the validated
+      ``[relocation.follow]`` storm-tracking block
+      (:class:`gpuwm.core.storm_tracking.FollowConfig`, the plan-provider
+      seam), or ``moves``, the manual ``[[relocation.move]]`` itinerary
+      (testable without a tracker, through the SAME provider contract).
+      Neither present means the runner schedules nothing and relocation
+      stays a manual/API mechanism, exactly as leg 1 shipped it.
+    * The CADENCE -- ``cadence_seconds`` names the cycle-boundary
+      opportunities at which the follow source is consulted.  ``None``
+      with a source configured means EVERY complete cycle boundary (the
+      tracker's own cooldown/dead-band are then the rate limit).
+
+    ``None`` on either bound means unbounded, which is admissible but is
+    a deliberate choice a config has to make.
+    """
+
+    enabled: bool = False
+    grid_id: int | None = None
+    mode: str = DISCRETE_RELOCATION_MODE
+    max_move_parent_cells: int | None = None
+    min_overlap_fraction: float | None = None
+    cadence_seconds: float | None = None
+    #: The validated ``[relocation.follow]`` storm-tracking block
+    #: (:class:`gpuwm.core.storm_tracking.FollowConfig`), or ``None`` when
+    #: the config carries none.
+    follow: "object | None" = None
+    #: The manual itinerary (``[[relocation.move]]`` rows), or empty.
+    moves: tuple[ScheduledRelocationMove, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.enabled:
+            if self.follow is not None:
+                raise ValueError(
+                    "[relocation.follow] on a disabled [relocation] block "
+                    "is refused: a tracker with no mechanism to drive is a "
+                    "config that half-opted-in; set enabled = true "
+                    "deliberately, or delete the follow table")
+            if self.moves:
+                raise ValueError(
+                    "[[relocation.move]] rows on a disabled [relocation] "
+                    "block are refused: an itinerary with no mechanism to "
+                    "drive is a config that half-opted-in; set enabled = "
+                    "true deliberately, or delete the rows")
+            return
+        if self.mode != DISCRETE_RELOCATION_MODE:
+            raise ValueError(
+                f"relocation mode {self.mode!r} is not implemented; the "
+                f"only mode is {DISCRETE_RELOCATION_MODE!r} (whole parent "
+                "cells at cycle boundaries)")
+        if self.grid_id is None:
+            raise ValueError(
+                "[relocation] with enabled = true must name the grid_id of "
+                "the child that may move; a tree-wide 'something moves' is "
+                "not a placement")
+        if int(self.grid_id) < 2:
+            raise ValueError(
+                f"relocation grid_id = {self.grid_id!r} names the root "
+                "domain or an invalid id; only a child can be relocated, "
+                "because a placement is a position inside a parent")
+        if (self.max_move_parent_cells is not None
+                and int(self.max_move_parent_cells) < 1):
+            raise ValueError(
+                "max_move_parent_cells must be at least 1 parent cell; a "
+                "relocation moves whole parent cells, and 0 is the null "
+                "move, which needs no bound")
+        if self.min_overlap_fraction is not None and not (
+                0.0 <= float(self.min_overlap_fraction) <= 1.0):
+            raise ValueError(
+                "min_overlap_fraction is a fraction of the child's cells "
+                f"and must lie in [0, 1], got {self.min_overlap_fraction!r}")
+        if self.follow is not None and self.moves:
+            raise ValueError(
+                "[relocation.follow] and [[relocation.move]] are two "
+                "follow sources; with both present one would be silently "
+                "ignored, so both are refused -- keep the tracker or the "
+                "manual itinerary, not both")
+        cadence = self.cadence_seconds
+        if cadence is not None:
+            if self.follow is None and not self.moves:
+                raise ValueError(
+                    "cadence_seconds names how often the follow source is "
+                    "consulted, and this [relocation] has no follow source "
+                    "([relocation.follow] or [[relocation.move]]); add "
+                    "one, or delete the key")
+            if not math.isfinite(float(cadence)) or float(cadence) <= 0.0:
+                raise ValueError(
+                    f"cadence_seconds = {cadence!r} must be a finite, "
+                    "positive number of model seconds")
+        if self.moves:
+            previous = 0.0
+            for move in self.moves:
+                at = float(move.at_seconds)
+                if at <= previous:
+                    raise ValueError(
+                        "[[relocation.move]] rows must be strictly "
+                        f"increasing in at_seconds; {at} follows {previous}")
+                if cadence is not None:
+                    multiples = at / float(cadence)
+                    if abs(multiples - round(multiples)) > _REL_TOL * max(
+                            1.0, abs(multiples)):
+                        raise ValueError(
+                            f"at_seconds = {at} is not a whole number of "
+                            f"cadence_seconds = {float(cadence)}; a move "
+                            "can only fire at a cadence opportunity")
+                previous = at
+
+    def receipt(self) -> dict[str, object]:
+        """The accepted configuration, echoed value for value."""
+        return {
+            "enabled": bool(self.enabled),
+            "grid_id": (None if self.grid_id is None else int(self.grid_id)),
+            "mode": self.mode,
+            "max_move_parent_cells": (
+                None if self.max_move_parent_cells is None
+                else int(self.max_move_parent_cells)),
+            "min_overlap_fraction": (
+                None if self.min_overlap_fraction is None
+                else float(self.min_overlap_fraction)),
+            "cadence_seconds": (
+                None if self.cadence_seconds is None
+                else float(self.cadence_seconds)),
+            "follow": (None if self.follow is None
+                       else self.follow.to_json()),
+            "moves": [move.to_json() for move in self.moves],
+        }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -632,6 +850,10 @@ class ExperimentConfig:
     domains: tuple[DomainConfig, ...]
     column_chunk: int = DEFAULT_COLUMN_CHUNK
     acknowledgements: tuple[str, ...] = ()
+    #: Discrete-relocation admissibility bounds.  Default-disabled, so an
+    #: experiment that never mentions [relocation] carries a static nest
+    #: and is byte-for-byte the experiment it was before this existed.
+    relocation: RelocationConfig = RelocationConfig()
     #: The resolved physics-fidelity axis (:mod:`gpuwm.physics_mode`).  The
     #: resolved values are ALSO baked into each domain's RunConfig, so the
     #: fingerprint would bind the physics without this field; it is carried
@@ -864,10 +1086,131 @@ def _reject_moving_nest_keys(table_name: str, entries: dict,
     present = sorted(_MOVING_NEST_KEYS & set(entries))
     if present:
         raise ValueError(
-            f"moving-nest key(s) {present} in [{table_name}] of {source} "
-            "are rejected: moving nests are a Phase-5 non-goal (static "
-            "nests only -- SINT donor index/weight tables are precomputed "
-            "once at setup); remove the key(s).")
+            f"continuous moving-nest key(s) {present} in [{table_name}] of "
+            f"{source} are rejected: they drive per-step nest motion, which "
+            "invalidates the SINT donor index/weight tables inside the "
+            "integration. A nest that follows weather is expressed here as "
+            "DISCRETE relocation instead -- whole parent cells at cycle "
+            "boundaries, donor tables rebuilt once per placement generation "
+            "-- through the [relocation] table (enabled = true) and the "
+            "gpuwm.core.nest_relocation primitive. Remove the key(s).")
+
+
+def _build_relocation(raw: dict, source: str, domains,
+                      run_seconds: float) -> RelocationConfig:
+    """Validate ``[relocation]``, refusing every key while it is off."""
+    if "relocation" not in raw:
+        return RelocationConfig()
+    table = dict(raw["relocation"])
+    _reject_moving_nest_keys("relocation", table, source)
+    _reject_unknown_keys("relocation", table, _RELOCATION_KEYS, source)
+    enabled = table.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(
+            f"enabled in [relocation] of {source} must be a boolean, got "
+            f"{enabled!r}.")
+    if not enabled:
+        stray = sorted(set(table) - {"enabled"})
+        if stray:
+            raise ValueError(
+                f"[relocation] of {source} carries {stray} while enabled "
+                "is false or absent. A relocation surface that is off must "
+                "be empty, so a nest cannot start moving because a block "
+                "was inherited or a flag was flipped somewhere else; set "
+                "enabled = true deliberately, or delete the key(s).")
+        return RelocationConfig()
+    domain_ids = [dc.grid_id for dc in domains]
+    grid_id = table.get("grid_id")
+    if grid_id is not None and int(grid_id) not in set(domain_ids):
+        raise ValueError(
+            f"grid_id = {grid_id!r} in [relocation] of {source} is not a "
+            f"domain of this experiment (have {sorted(domain_ids)}).")
+    rows = table.get("move", [])
+    if not isinstance(rows, list):
+        raise ValueError(
+            f"move in [relocation] of {source} must be written as "
+            "[[relocation.move]] array-of-tables rows, got "
+            f"{type(rows).__name__}.")
+    moves = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError(
+                f"[[relocation.move]] row {index} of {source} is not a "
+                "table.")
+        row = dict(row)
+        _reject_unknown_keys(
+            f"relocation.move[{index}]", row, _RELOCATION_MOVE_KEYS, source)
+        _require_keys(f"relocation.move[{index}]", row, ("at_seconds",),
+                      source)
+        try:
+            moves.append(ScheduledRelocationMove(
+                at_seconds=float(row["at_seconds"]),
+                di_parent_cells=row.get("di_parent_cells", 0),
+                dj_parent_cells=row.get("dj_parent_cells", 0)))
+        except ValueError as err:
+            raise ValueError(
+                f"[[relocation.move]] row {index} of {source}: {err}"
+            ) from None
+    follow = None
+    if "follow" in table:
+        if not isinstance(table["follow"], dict):
+            raise ValueError(
+                f"follow in [relocation] of {source} must be the "
+                "[relocation.follow] TABLE (the storm-tracking block), got "
+                f"{table['follow']!r}.")
+        from gpuwm.core.storm_tracking import build_follow_config
+        follow = build_follow_config(dict(table["follow"]), source)
+    try:
+        relocation = RelocationConfig(
+            enabled=True,
+            grid_id=(None if grid_id is None else int(grid_id)),
+            mode=str(table.get("mode", DISCRETE_RELOCATION_MODE)),
+            max_move_parent_cells=(
+                None if table.get("max_move_parent_cells") is None
+                else int(table["max_move_parent_cells"])),
+            min_overlap_fraction=(
+                None if table.get("min_overlap_fraction") is None
+                else float(table["min_overlap_fraction"])),
+            cadence_seconds=(
+                None if table.get("cadence_seconds") is None
+                else float(table["cadence_seconds"])),
+            follow=follow,
+            moves=tuple(moves))
+    except ValueError as err:
+        raise ValueError(f"[relocation] of {source}: {err}") from None
+    # The runner fires at complete cycle boundaries (root steps, where
+    # every parent-child pair is synchronized), so a cadence or a
+    # scheduled move that does not land on one can never fire.  Refused
+    # here BY NAME rather than discovered as an eternally stationary nest.
+    root_dc = domains[0]
+    root_dt = (Fraction(root_dc.time_step)
+               + Fraction(root_dc.time_step_fract_num,
+                          root_dc.time_step_fract_den))
+
+    def _whole_root_steps(seconds: float) -> bool:
+        steps = float(seconds) / float(root_dt)
+        return abs(steps - round(steps)) <= _REL_TOL * max(1.0, abs(steps))
+
+    if (relocation.cadence_seconds is not None
+            and not _whole_root_steps(relocation.cadence_seconds)):
+        raise ValueError(
+            f"cadence_seconds = {relocation.cadence_seconds} in "
+            f"[relocation] of {source} is not a whole number of root "
+            f"steps (root dt = {float(root_dt)} s); relocations execute "
+            "at parent-step boundaries, and this cadence never lands on "
+            "one.")
+    for move in relocation.moves:
+        if not _whole_root_steps(move.at_seconds):
+            raise ValueError(
+                f"[[relocation.move]] at_seconds = {move.at_seconds} in "
+                f"{source} is not a whole number of root steps (root dt "
+                f"= {float(root_dt)} s); it can never fire.")
+        if float(move.at_seconds) >= float(run_seconds):
+            raise ValueError(
+                f"[[relocation.move]] at_seconds = {move.at_seconds} "
+                f"in {source} is at or past the end of the run "
+                f"(run_seconds = {run_seconds}); it can never fire.")
+    return relocation
 
 
 def _require_keys(table_name: str, entries: dict, required, source: str):
@@ -1245,7 +1588,7 @@ def _parent_before_child(domain_tables: list, source: str) -> list:
 def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     """Validate a parsed experiment TOML dict and build the config."""
     known_tables = ("experiment", "shared", "projection", "domain",
-                    "perturbation")
+                    "relocation", "perturbation")
     unknown_tables = [name for name in raw if name not in known_tables]
     if unknown_tables:
         # A whole stray table is the same defect as a stray key, one
@@ -1622,6 +1965,31 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                     f"(child-parent start offset)/dt = "
                     f"{parent_steps}.")
 
+        # --- spawn: the dormant-nest declaration ------------------------
+        spawn_cfg = None
+        if "spawn" in dom:
+            if is_root:
+                raise ValueError(
+                    f"spawn on the root [[domain]] grid_id = {grid_id} of "
+                    f"{source} is refused: a spawn materializes a CHILD "
+                    "inside its parent at trigger time, and the root has "
+                    "no parent to be placed in.")
+            if not isinstance(dom["spawn"], dict):
+                raise ValueError(
+                    f"spawn on [[domain]] grid_id = {grid_id} of {source} "
+                    "must be an inline TABLE, e.g. spawn = { trigger = "
+                    f"\"uh\", ... }}, got {dom['spawn']!r}.")
+            if "start_time" in dom:
+                raise ValueError(
+                    f"[[domain]] grid_id = {grid_id} of {source} declares "
+                    "both spawn and start_time; a dormant nest's "
+                    "activation time belongs to its trigger, and a "
+                    "delayed start beside it would be a second author of "
+                    "the same instant. Remove one.")
+            from gpuwm.core.nest_spawn import build_spawn_config
+            spawn_cfg = build_spawn_config(
+                dict(dom["spawn"]), source, grid_id=grid_id)
+
         # Flags: root takes external specified LBCs, children are nested
         # -- WRF &bdy_control, bundle namelist.input specified=T,F,F,F /
         # nested=F,T,T,T; mutually exclusive by construction.
@@ -1922,13 +2290,46 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             _check_run_length_on_step_grid(
                 Fraction(str(run_seconds)), dt_ex, grid_id, source)
 
+        if spawn_cfg is not None:
+            # Timing sanity against THIS tree's clocks.  The manual
+            # trigger's instant must land on the parent's step lattice
+            # (spawning is a cycle-boundary operation); a field window
+            # opening at or after the end of the run can never fire and
+            # is a disabled feature wearing an enabled name.
+            parent_dt = dt_by_id[parent_id]
+            if spawn_cfg.at_s is not None:
+                steps = Fraction(str(float(spawn_cfg.at_s))) / parent_dt
+                if steps.denominator != 1:
+                    raise ValueError(
+                        f"spawn at_s = {spawn_cfg.at_s:g} s on [[domain]] "
+                        f"grid_id = {grid_id} of {source} is not a whole "
+                        f"number of parent d{parent_id:02d} steps: dt = "
+                        f"{parent_dt} s exactly. A spawn is a "
+                        "cycle-boundary operation and its manual instant "
+                        "must land on the parent step grid.")
+                if float(spawn_cfg.at_s) >= run_seconds:
+                    raise ValueError(
+                        f"spawn at_s = {spawn_cfg.at_s:g} s on [[domain]] "
+                        f"grid_id = {grid_id} of {source} is at or past "
+                        f"run_seconds = {run_seconds:g}; the nest could "
+                        "never spawn, so its declaration (and its VRAM "
+                        "reservation) would buy nothing.")
+            if (spawn_cfg.earliest_s is not None
+                    and float(spawn_cfg.earliest_s) >= run_seconds):
+                raise ValueError(
+                    f"spawn earliest_s = {spawn_cfg.earliest_s:g} s on "
+                    f"[[domain]] grid_id = {grid_id} of {source} is at or "
+                    f"past run_seconds = {run_seconds:g}; the window can "
+                    "never open, so the nest could never spawn.")
+
         dc = DomainConfig(
             grid_id=grid_id, parent_id=parent_id, i_parent_start=i_start,
             j_parent_start=j_start, parent_grid_ratio=ratio,
             parent_time_step_ratio=tratio,
             history_interval_s=history_interval_s, run=run,
             time_step=time_step, time_step_fract_num=fract_num,
-            time_step_fract_den=fract_den, start_time=domain_start)
+            time_step_fract_den=fract_den, start_time=domain_start,
+            spawn=spawn_cfg)
         domains.append(dc)
         by_id[grid_id] = dc
         dt_by_id[grid_id] = dt_ex
@@ -1995,6 +2396,22 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                     "nest width, and no nested SASE tree has been run. "
                     "Lift with evidence, not with a code change alone.")
 
+    # A dormant nest must be a LEAF: a child declared under it would need
+    # cascading activation (its parent does not exist until a trigger
+    # fires), which no runner implements.  Refused rather than deferred,
+    # because the child's own reservation would otherwise price a domain
+    # that could never legally start.
+    dormant_ids = {dc.grid_id for dc in domains if dc.spawn is not None}
+    for dc in domains:
+        if dc.parent_id in dormant_ids:
+            raise ValueError(
+                f"[[domain]] grid_id = {dc.grid_id} of {source} declares "
+                f"dormant d{dc.parent_id:02d} as its parent; a nest under "
+                "a spawn-triggered nest would need cascading activation, "
+                "which is not implemented. Declare the spawn on the leaf, "
+                "or make the parent an ordinary domain.")
+
+    relocation = _build_relocation(raw, source, domains, run_seconds)
     experiment = ExperimentConfig(
         name=name, start_time=start_time, run_seconds=run_seconds,
         vertical=vertical, projection=projection,
@@ -2003,6 +2420,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         restart_interval_s=restart_interval_s, domains=tuple(domains),
         column_chunk=column_chunk,
         acknowledgements=tuple(acknowledgements),
+        relocation=relocation,
         physics_mode=physics_mode,
         perturbation=perturbation)
     from gpuwm.physics_compat import (
@@ -2099,3 +2517,123 @@ def _assert_derived_copies(experiment: ExperimentConfig,
                     f"but the authoritative experiment value is "
                     f"{authority!r} (F14 timing authority / F1 vertical "
                     "single-sourcing).")
+
+
+# ---------------------------------------------------------------------------
+# Dormant nests: the active-tree views the spawn runner consumes
+# ---------------------------------------------------------------------------
+
+def dormant_domain_ids(exp: ExperimentConfig) -> tuple[int, ...]:
+    """grid_ids of every declared spawn-triggered (dormant) nest."""
+    return tuple(dc.grid_id for dc in exp.domains
+                 if getattr(dc, "spawn", None) is not None)
+
+
+def validate_spawn_placement(exp: ExperimentConfig, grid_id: int,
+                             i_parent_start: int,
+                             j_parent_start: int) -> None:
+    """Re-run the loader's placement admission for a trigger-chosen spot.
+
+    A spawned placement bypasses :func:`build_experiment` (the tree was
+    admitted with the placeholder placement), so the SAME parent-row
+    clearance rule is applied here, with the same numbers and the same
+    sentence shape.  ``register_nest``'s +-2 SINT stencil refusal still
+    has the final word at materialization.
+    """
+    dc = exp.domain(grid_id)
+    parent = exp.domain(dc.parent_id)
+    need = int(exp.spec_bdy_width) + int(exp.blend_width)
+    for axis, size, start, parent_size in (
+            ("west-east", dc.run.nx, int(i_parent_start), parent.run.nx),
+            ("south-north", dc.run.ny, int(j_parent_start), parent.run.ny)):
+        if start < 1:
+            raise ValueError(
+                f"spawn placement {start} on the {axis} axis of "
+                f"d{grid_id:02d} is not 1-based WRF namelist semantics")
+        span = size // dc.parent_grid_ratio
+        near = start - 1
+        far = parent_size - (start + span - 1)
+        for side, clearance in ((f"{axis} low", near),
+                                (f"{axis} high", far)):
+            if clearance < need:
+                raise ValueError(
+                    f"spawned placement ({i_parent_start}, "
+                    f"{j_parent_start}) for d{grid_id:02d} violates the "
+                    f"parent-row clearance rule: {side} clearance is "
+                    f"{clearance} parent rows but spec_bdy_width + "
+                    f"blend_width = {exp.spec_bdy_width} + "
+                    f"{exp.blend_width} = {need} rows are required.")
+
+
+def active_experiment(exp: ExperimentConfig,
+                      spawned: dict | None = None) -> ExperimentConfig:
+    """The tree the executor integrates: dormant nests out, spawned in.
+
+    ``spawned`` maps grid_id -> ``(i_parent_start, j_parent_start)`` for
+    every dormant nest whose trigger has fired; those domains join the
+    active tree AT the fired placement (their ``spawn`` declaration is
+    KEPT, so the activated experiment's identity binds the fact and the
+    terms of the spawn).  Dormant nests not in ``spawned`` are removed
+    -- they cost their memory-plan reservation and zero compute, which
+    is the declared contract.  With no dormant nests this is the
+    identity, byte-for-byte the same object.
+
+    This is the schedule-surgery seam the leg runner consumes: legs
+    before a trigger integrate ``active_experiment(exp)``, and the leg
+    after a fire integrates ``active_experiment(exp, {gid: (i, j)})``.
+    """
+    spawned = {} if spawned is None else dict(spawned)
+    dormant = set(dormant_domain_ids(exp))
+    unknown = sorted(set(spawned) - dormant)
+    if unknown:
+        raise ValueError(
+            f"spawned grid_id(s) {unknown} are not declared dormant "
+            f"nests of experiment {exp.name!r} (dormant: "
+            f"{sorted(dormant)}); only a declared spawn can activate.")
+    if not dormant:
+        return exp
+    for grid_id, position in spawned.items():
+        i_start, j_start = (int(position[0]), int(position[1]))
+        validate_spawn_placement(exp, grid_id, i_start, j_start)
+    domains = []
+    for dc in exp.domains:
+        if dc.grid_id in spawned:
+            i_start, j_start = spawned[dc.grid_id]
+            domains.append(_dc_replace(
+                dc, i_parent_start=int(i_start),
+                j_parent_start=int(j_start)))
+        elif dc.grid_id in dormant:
+            continue
+        else:
+            domains.append(dc)
+    return _dc_replace(exp, domains=tuple(domains))
+
+
+def pre_spawn_experiment(exp: ExperimentConfig) -> ExperimentConfig:
+    """The startup tree: every dormant nest removed, nothing spawned."""
+    return active_experiment(exp, None)
+
+
+def refuse_unrouted_spawn(exp: ExperimentConfig, route: str) -> None:
+    """Fail loud where a spawn declaration would otherwise be dropped.
+
+    Same governance as [perturbation]: honored or refused, never
+    ignored.  A route that neither reserves the dormant nest nor
+    evaluates its trigger calls this immediately after loading the
+    experiment, so the user learns at admission -- not after a run that
+    silently integrated without the nest they declared.
+    """
+    dormant = dormant_domain_ids(exp)
+    if not dormant:
+        return
+    named = ", ".join(f"d{gid:02d}" for gid in dormant)
+    raise ValueError(layered(
+        f"the {route} route does not implement spawn-triggered nests; "
+        f"{named} declare(s) spawn tables that this route would neither "
+        "reserve nor watch, so the run would quietly integrate without "
+        "the nest(s) you declared.",
+        "Dormant nests are reserved and spawned on the experiment tree "
+        "path (gpuwm.core.model.build_experiment reserves; the "
+        "leg-boundary spawn runner activates through "
+        "gpuwm.experiment.active_experiment and "
+        "gpuwm.ingest.nest_spawn_init)."))

@@ -1274,6 +1274,10 @@ class _AsyncFrame:
     device_refs: tuple[object, ...]
     pinned_refs: tuple[object, ...]
     admitted: bool = False
+    #: The submitting datetime, carried so a landing observer receives
+    #: the valid time as a value rather than re-parsing ``time_str``
+    #: (or the filename) on the writer thread.
+    valid_time: object = None
 
 
 class _AsyncTicketQueue(queue.Queue):
@@ -1300,6 +1304,18 @@ class _AsyncTicketQueue(queue.Queue):
 class AsyncDomainWrfoutWriter:
     """One domain's side-stream D2H staging and dedicated writer thread."""
 
+    #: Which domain this writer is, and who to tell when one of its
+    #: frames becomes durable.  CLASS attributes, not only instance
+    #: ones: this writer is also stood up field-by-field through
+    #: ``object.__new__`` by CPU-only harnesses that cannot allocate a
+    #: CuPy stream (tests/test_wrfout.py builds exactly that shell), and
+    #: an optional feature that only exists on the ``__init__`` path
+    #: would turn every such construction into an AttributeError on the
+    #: worker thread.  Declaring the default here is also where a reader
+    #: looks to learn the feature is optional.
+    grid_id = None
+    landing_observer = None
+
     @staticmethod
     def _new_ticket_queue() -> queue.Queue:
         # Capacity is per domain: one queued ticket in each of four queues is
@@ -1309,9 +1325,19 @@ class AsyncDomainWrfoutWriter:
         return _AsyncTicketQueue(maxsize=1)
 
     def __init__(self, *, nx, ny, nz, dx, dy, title, global_attrs,
-                 abort_event=None, soil_layers=None):
+                 abort_event=None, soil_layers=None, grid_id=None,
+                 landing_observer=None):
         import cupy as cp
 
+        #: Which domain this writer is, and who to tell when one of its
+        #: frames becomes durable.  Both optional: every existing caller
+        #: constructs this writer without them and is unaffected.  The
+        #: observer is invoked ON THE WRITER THREAD, after the file has
+        #: been fsynced, self-validated and renamed onto its final name
+        #: -- so it is told about a file that exists, never one that is
+        #: merely queued.
+        self.grid_id = None if grid_id is None else int(grid_id)
+        self.landing_observer = landing_observer
         self.nx, self.ny, self.nz = int(nx), int(ny), int(nz)
         # Same contract as WrfoutWriter: the only production caller
         # (open_domain_writer below) resolves this from the domain's cfg.
@@ -1434,7 +1460,8 @@ class AsyncDomainWrfoutWriter:
             time_str=valid_time.strftime("%Y-%m-%d_%H:%M:%S"),
             fields=host_fields, event=done,
             device_refs=tuple(device_refs),
-            pinned_refs=tuple(pinned_refs))
+            pinned_refs=tuple(pinned_refs),
+            valid_time=valid_time)
         self._admit(ticket)
 
     def _worker(self) -> None:
@@ -1469,6 +1496,20 @@ class AsyncDomainWrfoutWriter:
                         self._abort_event.set()
                         raise
                 self.paths.append(ticket.path)
+                # The file is durable HERE and nowhere earlier: the
+                # WrfoutWriter context above has exited, so its close()
+                # completed the fsync, the self-validation and the
+                # rename onto the final name.  A failure at any of those
+                # went to the handler below instead.  An observer that
+                # raises must not take the writer thread down with it --
+                # the run's outputs matter more than its telemetry.
+                if self.landing_observer is not None:
+                    try:
+                        self.landing_observer(
+                            domain=self.grid_id, valid_time=ticket.valid_time,
+                            path=ticket.path)
+                    except Exception:  # noqa: BLE001 - telemetry never fails a run
+                        pass
             except BaseException as exc:
                 failure_traceback = _stringify_and_clear_exception_tracebacks(
                     exc)
@@ -1487,6 +1528,19 @@ class AsyncDomainWrfoutWriter:
                 with self._condition:
                     self._pending -= 1
                     self._condition.notify_all()
+
+    def update_global_attrs(self, global_attrs) -> None:
+        """Swap the per-file global attributes for frames submitted later.
+
+        A relocated domain's placement, centre and corner attributes
+        change at the move; frames produced before it must keep the
+        attributes of the placement that produced them, so this drains
+        the queue first and then swaps.  The worker reads
+        ``self.global_attrs`` per file, so the swap is complete for every
+        subsequent submit.
+        """
+        self.drain()
+        self.global_attrs = dict(global_attrs)
 
     def drain(self) -> None:
         worker_stopped = False
@@ -1533,10 +1587,22 @@ class PerDomainWrfoutWriters:
     """One asynchronous writer/side stream per domain in an experiment."""
 
     def __init__(self, model, output_dir, *, start_time, title,
-                 initial_condition=None, source=None):
+                 initial_condition=None, source=None,
+                 progress_callback=None):
         """``initial_condition`` is the preparation receipt's provenance
         block, stamped onto every domain's frames so the durable artifact
         states what its initial state was and not only when it began.
+
+        ``progress_callback`` is the run's existing progress object.  If
+        it carries an ``output_committed`` attribute (the optional hook
+        :func:`gpuwm.runtime._output_committed` discovers by name), each
+        per-domain writer is given it and calls it as its frames become
+        durable; anything else is ignored, so every existing caller is
+        unaffected by passing one or by not passing one.
+
+        A caller whose progress object does not exist yet at
+        construction time uses :meth:`attach_progress_callback` instead;
+        both spellings run the same one implementation.
         """
         from gpuwm.runtime import _global_wrf_attrs, _metadata_frame
 
@@ -1545,6 +1611,10 @@ class PerDomainWrfoutWriters:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.start_time = start_time
         self.title = title
+        # Retained for refresh_domain: a relocated domain's later frames are
+        # re-stamped with the same provenance the original writer carried.
+        self._initial_condition = initial_condition
+        self._source = source
         prepared = model._prepared_by_grid_id
         self._writers = {}
         self._metadata_by_grid_id = {}
@@ -1567,8 +1637,39 @@ class PerDomainWrfoutWriters:
                     domain=node.cfg, coord=case.initial_result.coord,
                     feedback=getattr(model, "_feedback_provenance", None),
                     initial_condition=initial_condition, source=source),
-                abort_event=self._abort_event)
+                abort_event=self._abort_event,
+                grid_id=node.cfg.grid_id)
         self.last_durable_wrfout = None
+        if progress_callback is not None:
+            self.attach_progress_callback(progress_callback)
+
+    def attach_progress_callback(self, progress_callback) -> None:
+        """Bind the output-landing hook onto every per-domain writer.
+
+        The constructor keyword cannot serve every caller.  Both
+        prepared runners build their progress closure OVER this object
+        -- it reports ``writers.paths`` -- so the closure genuinely
+        cannot exist before the thing it reads.  Reordering does not
+        break a real cycle; late binding does, and this is it.
+
+        Refused once any domain has submitted a frame.  Attaching after
+        the first output has landed would skip it, and an event stream
+        silently missing its first frame is worse than one that refused
+        to start: the consumer has no way to notice.
+        """
+
+        busy = sorted(grid_id for grid_id, writer in self._writers.items()
+                      if writer.paths or writer.pending)
+        if busy:
+            raise RuntimeError(
+                "cannot attach an output observer after domain(s) "
+                f"{busy} have already submitted frames; the observer "
+                "would silently miss them.  Attach before the first "
+                "history period, or pass progress_callback to the "
+                "constructor.")
+        observer = getattr(progress_callback, "output_committed", None)
+        for writer in self._writers.values():
+            writer.landing_observer = observer
 
     @property
     def pending(self) -> int:
@@ -1580,6 +1681,73 @@ class PerDomainWrfoutWriters:
         for gid in sorted(self._writers):
             ret.extend(self._writers[gid].paths)
         return tuple(ret)
+
+    def add_domain(self, grid_id: int, *, grid, static_fields) -> None:
+        """Mint a writer for a domain that appeared AFTER construction.
+
+        A spawn-triggered nest does not exist when the writer set is
+        built -- it is dormant, and its birth is a leg boundary in the
+        middle of the run.  This is the same per-domain construction the
+        constructor performs, for exactly one late arrival; refusing a
+        second call for the same grid keeps it from silently discarding
+        a writer that already holds queued frames.
+        """
+        from gpuwm.runtime import _global_wrf_attrs, _metadata_frame
+
+        grid_id = int(grid_id)
+        if grid_id in self._writers:
+            raise ValueError(
+                f"d{grid_id:02d} already has a wrfout writer; a spawned "
+                "domain is added once, and re-adding would drop frames "
+                "the existing writer has queued (use refresh_domain to "
+                "re-stamp metadata after a relocation)")
+        node = self.model.node(grid_id)
+        case = self.model._prepared_by_grid_id[grid_id]
+        configured_start = getattr(node.cfg, "start_time", None)
+        domain_start_time = (self.start_time if configured_start is None
+                             else configured_start)
+        self._metadata_by_grid_id[grid_id] = _metadata_frame(
+            grid, static_fields)
+        self._writers[grid_id] = AsyncDomainWrfoutWriter(
+            nx=node.cfg.run.nx, ny=node.cfg.run.ny, nz=node.cfg.run.nz,
+            dx=node.cfg.run.dx, dy=node.cfg.run.dy, title=self.title,
+            soil_layers=soil_layer_count(node.cfg.run),
+            global_attrs=_global_wrf_attrs(
+                grid, domain_start_time,
+                getattr(case, "geog_selection", None),
+                domain=node.cfg, coord=case.initial_result.coord,
+                feedback=getattr(self.model, "_feedback_provenance", None),
+                initial_condition=self._initial_condition,
+                source=self._source),
+            abort_event=self._abort_event)
+
+    def refresh_domain(self, grid_id: int, *, grid, static_fields) -> None:
+        """Re-derive one domain's frame metadata after a relocation.
+
+        The XLAT/XLONG/MAPFAC/HGT metadata frame and the placement-carrying
+        global attributes were computed at construction and would otherwise
+        describe the footprint the domain no longer covers.  The route's
+        relocation preparer calls this with the rebuilt child's grid and
+        footprint-rebuilt statics; the writer drains first, so frames from
+        the outgoing placement keep the coordinates that produced them.
+        """
+        grid_id = int(grid_id)
+        node = self.model.node(grid_id)
+        case = self.model._prepared_by_grid_id[grid_id]
+        from gpuwm.runtime import _global_wrf_attrs, _metadata_frame
+
+        configured_start = getattr(node.cfg, "start_time", None)
+        domain_start_time = (self.start_time if configured_start is None
+                             else configured_start)
+        self._metadata_by_grid_id[grid_id] = _metadata_frame(
+            grid, static_fields)
+        self._writers[grid_id].update_global_attrs(_global_wrf_attrs(
+            grid, domain_start_time,
+            getattr(case, "geog_selection", None),
+            domain=node.cfg, coord=case.initial_result.coord,
+            feedback=getattr(self.model, "_feedback_provenance", None),
+            initial_condition=self._initial_condition,
+            source=self._source))
 
     def submit(self, node, ticks: int, *, refl_field=None) -> None:
         seconds = ticks / node.clock.tick_den

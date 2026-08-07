@@ -131,6 +131,42 @@ def test_the_placement_contract_makes_this_a_transit_box() -> None:
         "parents resolve genesis and the children resolve the transit")
 
 
+def test_domain_grids_honours_offcentre_placement() -> None:
+    """``domain_grids`` must place children by the real nest registration.
+
+    Its previous form re-derived every domain centred on the projection
+    reference and never read ``i_parent_start`` -- harmless for attempt
+    #1's genuinely concentric family, wrong for any off-centre placement
+    (recorded in docs/les/ATTEMPT2-EXPECTATIONS.md section 6, deferred
+    that night to avoid perturbing attempt #1's passing audit).  The
+    attempt-2 config in this same tree moves d03/d04 off-centre, and its
+    committed placement receipt is the known answer: the fixed
+    instrument must reproduce it, and under the old code it cannot
+    (the old d04 stayed on the reference and contained Mayfield).
+    """
+
+    from gpuwm.experiment import load_experiment
+
+    exp = load_experiment(str(
+        case.CONFIG.parent
+        / "les_tornado_100m_mayfield_20211210_attempt2.toml"))
+    grids = case.domain_grids(exp)
+    # docs/les/ATTEMPT2-EXPECTATIONS.md section 2, cross-checked against
+    # ProjectedGrid.nest by the placement receipt.
+    receipt = {3: (36.4999, -89.1545), 4: (36.4497, -89.1485)}
+    for gid, (want_lat, want_lon) in receipt.items():
+        grid, nx, ny = grids[gid]
+        lat, lon = grid.ij_to_latlon((nx + 1) / 2.0, (ny + 1) / 2.0)
+        assert float(lat) == pytest.approx(want_lat, abs=5e-4)
+        assert float(lon) == pytest.approx(want_lon, abs=5e-4)
+    # The behavioural consequences the receipt records: Cayce enters
+    # d04, Mayfield leaves it but stays in d03.
+    assert case.contains(grids, 4, case.CAYCE_LAT, case.CAYCE_LON)
+    assert not case.contains(grids, 4, case.MAYFIELD_LAT,
+                             case.MAYFIELD_LON)
+    assert case.contains(grids, 3, case.MAYFIELD_LAT, case.MAYFIELD_LON)
+
+
 def test_the_d04_box_is_twenty_km_and_offset_upstream_of_mayfield() -> None:
     """Centred southwest of the town so the storm enters mature."""
 

@@ -29,6 +29,14 @@ it (:mod:`gpuwm.report_bundle`).
 the distribution that provides THIS install and the interpreter running
 it, plus the staged asset directories a wheel replacement leaves alone
 (:mod:`gpuwm.update_cli`).
+``gpuwm run-plan PLAN.json`` is the same run for a PROGRAM rather than
+a person: one versioned plan document in (an envelope over the config
+system, not a second config format), one append-only JSONL event stream
+out -- to ``<run_dir>/events.jsonl`` and to stdout -- in which every
+fact the human output prints is a typed field on a typed event, so a
+GUI or a scheduler driving gpuwm as a subprocess never parses prose.
+``--resolve``/``--estimate``/``--probe`` answer the three questions a
+front end asks before it starts anything (:mod:`gpuwm.runplan`).
 ``gpuwm import-namelist WPS INPUT`` translates WRF namelists into a
 resolved experiment TOML and prints the substitution report.  ``gpuwm
 verify CASE`` runs either an idealized benchmark or a real case, prints
@@ -73,6 +81,7 @@ from gpuwm.ingest.preflight import register_cli as ingest_register_cli
 from gpuwm.multi_run import register_cli as multi_run_register_cli
 from gpuwm.render import register_cli as render_register_cli
 from gpuwm.report_bundle import register_cli as report_register_cli
+from gpuwm.runplan import register_cli as run_plan_register_cli
 from gpuwm.setup_cli import register_cli as setup_register_cli
 from gpuwm.stream import register_cli as stream_register_cli
 from gpuwm.table_assets import register_cli as table_assets_register_cli
@@ -180,9 +189,9 @@ _INTERRUPT_EXIT_CODE = 130
 #: Commands that can run for minutes, where "Ctrl-C does nothing" is a
 #: surprise worth one line rather than a discovery.
 _LONG_RUNNING_COMMANDS = frozenset({
-    "go", "run", "resume", "fetch", "fetch-geog", "fetch-tables",
-    "fetch-bridges", "setup", "verify", "downscale", "enprod", "render",
-    "dual-run", "certify",
+    "go", "run", "run-plan", "resume", "fetch", "fetch-geog",
+    "fetch-tables", "fetch-bridges", "setup", "verify", "downscale",
+    "enprod", "render", "dual-run", "certify",
 })
 
 
@@ -274,6 +283,7 @@ def build_parser() -> argparse.ArgumentParser:
     certify_register_cli(sub)
     multi_run_register_cli(sub)
     report_register_cli(sub)
+    run_plan_register_cli(sub)
     update_register_cli(sub)
     lst = sub.add_parser(
         "cases", help="list the discovered verification cases and the "
@@ -502,7 +512,8 @@ def _dispatch(args) -> int:
     if args.command in ("check", "fetch", "stream", "fetch-geog", "domain", "render",
                         "enprod", "downscale", "doctor", "fetch-tables",
                         "fetch-bridges", "setup", "go", "adapt", "certify",
-                        "dual-run", "multi-run", "report", "update"):
+                        "dual-run", "multi-run", "report", "run-plan",
+                        "update"):
         return args.func(args)
 
     if args.command == "cases":

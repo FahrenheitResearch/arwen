@@ -32,6 +32,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from gpuwm.hrrr_route_inputs import (
+    ROUTE_DEFAULT_PHYSICS_PROFILE as _HRRR_ROUTE_DEFAULT_PHYSICS_PROFILE,
+)
+
 #: The sources the wizard accepts, in the order the prompt offers them.
 #: GFS leads because it is the only one of the three that a new install
 #: can fetch with no account and no manual step: HRRR is CONUS-only and
@@ -73,18 +77,30 @@ DEFAULT_LADDER = "12"
 #: one of the shipped runner profiles, so the prepared single-domain
 #: runner refuses it and ``gpuwm go`` refuses it earlier and says so.
 #: The short front door therefore names a profile, and names the
-#: strongest one its source offers: ``morrison-mp10-...`` is the only
-#: ``wrf-matched-run`` template in the registry that all three of these
-#: sources' routes declare, and it is FIRST-LIGHT section 3a's own
+#: strongest one its source's route can actually RUN.  For gfs and era5
+#: that is ``morrison-mp10-...``, the registry's only ``wrf-matched-run``
+#: template with full lw+sw radiation and FIRST-LIGHT section 3a's own
 #: worked example.
 #:
+#: For hrrr it is not.  This table gave hrrr the Morrison suite too, and
+#: that suite is refused at emission by the nested HRRR route's own
+#: physics gate -- ``d01 cu_physics=1 (the route requires 0)``, because
+#: HRRR's 3 km grid is convection permitting and Kain-Fritsch would
+#: parameterize convection it already resolves.  A bare hrrr session
+#: therefore emitted a config its own route would not take.  The entry is
+#: now the strongest ROUTE-ADMISSIBLE full-radiation suite: Thompson mp8
+#: with RRTMG longwave and shortwave and no cumulus, which is also the
+#: operational HRRR composition (NOAA/GSL) and matches
+#: :data:`gpuwm.domain_wizard.HRRR_DEFAULT_PROFILE` -- the two doors
+#: agree, as they must.
+#:
 #: ``tests/test_domain_interactive.py`` re-derives every entry from the
-#: generated registry -- offered by that source's route, and
-#: at wrf-matched-run -- so this table cannot quietly outlive the facts
-#: is quoting.
+#: generated registry -- offered by that source's route, admitted by that
+#: route's physics gate, and the strongest maturity that survives both --
+#: so this table cannot quietly outlive the facts it is quoting.
 DEFAULT_PHYSICS_PROFILE_BY_SOURCE = {
     "gfs": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
-    "hrrr": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+    "hrrr": _HRRR_ROUTE_DEFAULT_PHYSICS_PROFILE,
     "era5": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
 }
 

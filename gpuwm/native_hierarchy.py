@@ -102,6 +102,11 @@ def initialize_and_export_native_hierarchy(
         raise ValueError(
             f"stock_wrf_export must be one of {list(STOCK_WRF_EXPORT_MODES)}, "
             f"got {stock_wrf_export!r}")
+    # This export prepares every declared child up front and writes it to
+    # wrfinput_dNN; a dormant nest has no fired placement to prepare AT,
+    # and nothing here watches its trigger.  Refused by name.
+    from gpuwm.experiment import refuse_unrouted_spawn
+    refuse_unrouted_spawn(exp, "native hierarchy export")
     if root_node.state is not root_initial_result.state:
         raise ValueError(
             "root node and root initial result do not share the same state")

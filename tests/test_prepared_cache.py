@@ -923,14 +923,19 @@ def test_a_v101_shape_header_still_binds_after_the_upgrade():
     from gpuwm.ingest.prepared_cache import compare_prepared_domain_config
 
     live = _live_domain_identity()
-    assert len(live) == 12 and "start_time" in live
-    cached = {key: value for key, value in live.items() if key != "start_time"}
+    # 11 v1.0.1 keys + start_time (v1.1.0) + spawn (v1.8, dormant
+    # spawn-triggered nests).  Every post-v1.0.1 field must appear in
+    # BOTH the live document and the tolerance table, or this pin moves.
+    assert len(live) == 13
+    assert "start_time" in live and "spawn" in live
+    cached = {key: value for key, value in live.items()
+              if key not in ("start_time", "spawn")}
     assert len(cached) == 11
 
     tolerated, differing = compare_prepared_domain_config(
         cached, live, not_in_use=_undelayed())
     assert differing == []
-    assert tolerated == ["start_time"]
+    assert sorted(tolerated) == ["spawn", "start_time"]
 
 
 def test_a_field_absent_from_the_header_but_IN_USE_still_refuses():

@@ -91,15 +91,20 @@ from gpuwm.experiment import ExperimentConfig, build_experiment
 from gpuwm.explain import explain_enabled, warn
 from gpuwm.fetch import parse_cycle
 from gpuwm.physics_compat import (ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
+                                  RRTMG_VARIANT_LEGACY,
                                   MORRISON_PROFILE_ID, MYNN_PROFILE_ID,
                                   MYNN_RUC_PROFILE_ID,
                                   NSSL2_LEGACY_RRTMG_PROFILE_ID,
                                   NSSL2_PROFILE_ID,
-                                  RUC_PROFILE_ID, THOMPSON_PROFILE_ID,
+                                  RUC_PROFILE_ID,
+                                  THOMPSON_LEGACY_RRTMG_PROFILE_ID,
+                                  THOMPSON_PROFILE_ID,
+                                  THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
                                   WSM6_PROFILE_ID,
                                   first_local_night_time,
                                   single_domain_runtime_switches)
-from gpuwm.hrrr_route_inputs import (HrrrRouteInputError, coverage_advisory,
+from gpuwm.hrrr_route_inputs import (ROUTE_DEFAULT_PHYSICS_PROFILE,
+                                     HrrrRouteInputError, coverage_advisory,
                                      coverage_refusal, route_input_paths,
                                      write_hrrr_route_inputs)
 from gpuwm.static.projection import (EARTH_RADIUS_M, WRF_MAP_PROJ_CODES,
@@ -341,6 +346,19 @@ def _fetch_cadence_h(source: str, start_hour: int) -> int | None:
     # these sources publish.
     return 1
 
+#: Default output cadences, root and nest, in seconds.
+#:
+#: They were bare literals inside :func:`_domain_tables` with no knob,
+#: which made "how often does this write" a thing a reader could see in
+#: the emitted TOML and not change.  Named here because they are now a
+#: DEFAULT rather than a fixture: ``--history-interval`` overrides them.
+#:
+#: The nest writes four times as often as the root on purpose -- a nest
+#: exists to resolve what the root cannot, over a window shorter than
+#: the root's whole forecast, so its output is the point of running it.
+DEFAULT_ROOT_HISTORY_INTERVAL_S = 3600.0
+DEFAULT_NEST_HISTORY_INTERVAL_S = 900.0
+
 #: Grid-scale search bounds.  _MIN_SCALE puts the root at 60 x 48 mass
 #: points, the smallest layout that still hosts the deepest ladder with
 #: full Davies/blend clearance.
@@ -462,12 +480,23 @@ DEFAULT_SUITE_PHYSICS = {
     "diff_6th_factor": _DIFF6_FACTORS[0],
 }
 
-#: The profiles the prepared single-domain forecast runner accepts for
-#: gfs/era5, in the order the help lists them.
+#: The profiles the prepared single-domain forecast runner accepts, in
+#: the order the help lists them.
+#:
+#: The two legacy-RRTMG Thompson entries were absent until 1.8, and their
+#: absence was the reason ``--source hrrr`` could not be given a
+#: nocturnally valid default: they are the ONLY full-radiation suites the
+#: nested HRRR route's physics gate admits (every other 4/4 profile
+#: carries ``cu_physics = 1``, which
+#: :data:`gpuwm.hrrr_route_inputs.REQUIRED_PHYSICS` refuses because HRRR's
+#: 3 km grid is convection permitting), so a door that did not offer them
+#: could only default HRRR to a shortwave-on/longwave-off suite.
 WIZARD_PHYSICS_PROFILES = (
     MORRISON_PROFILE_ID,
     NSSL2_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
+    THOMPSON_LEGACY_RRTMG_PROFILE_ID,
+    THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     WSM6_PROFILE_ID,
     MYNN_PROFILE_ID,
@@ -486,7 +515,14 @@ def _radiation_words(switches: dict) -> str:
     wizard therefore never prints the raw switches without the words.
     """
 
-    names = {0: "OFF", 1: "Dudhia", 4: "RTE+RRTMGP"}
+    # Selector 4 is "RRTMG" in WRF's spelling and gpuwm implements it two
+    # ways -- the exact legacy-RRTMG transcription and the RTE+RRTMGP
+    # substitution -- so the words follow ``ra_rrtmg_variant`` rather than
+    # calling every 4 RTE+RRTMGP.  A header that names the wrong solver is
+    # the same misreading hazard this function exists to remove.
+    legacy = switches.get("ra_rrtmg_variant") == RRTMG_VARIANT_LEGACY
+    names = {0: "OFF", 1: "Dudhia",
+             4: "legacy RRTMG" if legacy else "RTE+RRTMGP"}
     lw = int(switches.get("ra_lw_physics", -1))
     sw = int(switches.get("ra_sw_physics", -1))
     if (lw, sw) == (-1, -1):
@@ -524,8 +560,11 @@ def prepared_route_physics_notice(profile: str | None,
         "WRF-verification status is reported in the run receipts."
         if source == "gfs" else
         "note: the HRRR route's cold-start evidence contract is keyed "
-        "by shipped profile, so it prepares WSM6 when none is named; "
-        "pass --physics-profile <id> to choose.",
+        "by shipped profile, so it prepares "
+        f"{HRRR_DEFAULT_PROFILE} when none is named -- Thompson "
+        "microphysics with RRTMG longwave AND shortwave and no cumulus "
+        "at 3 km, the operational HRRR composition; pass "
+        "--physics-profile <id> to choose another.",
         "  --physics-profile <id> binds the config to a shipped suite "
         "and every runner then enforces it switch for switch.  What "
         "each one ACTUALLY runs:",
@@ -863,15 +902,42 @@ def final_step_command(out: "Path", *, source: str, profile: str | None,
 
 #: What ``--source hrrr`` binds when no ``--physics-profile`` is named.
 #:
-#: Not a preference: the native HRRR routes admit ONE physics slice
-#: (bl_pbl_physics 1, sf_sfclay_physics 91, sf_surface_physics 2,
-#: ra_physics 0, ra_lw_physics 0, ra_sw_physics 1, cu_physics 0), and
-#: the wizard's default suite -- Kain-Fritsch cumulus and RTE+RRTMGP on
-#: both streams -- is outside it on three switches.  Emitting that suite
-#: for HRRR produced a config every HRRR route refuses, after the
-#: fetch.  This profile is what the HRRR root preparer itself defaults
-#: to, and it needs no staged microphysics tables.
-HRRR_DEFAULT_PROFILE = WSM6_PROFILE_ID
+#: Owner directive 2026-08-07 ("i dont want hrrr to be limited"): HRRR
+#: gets a nocturnally valid full-radiation default like every other
+#: source, and it is chosen to match what an HRRR user already expects.
+#: The operational High-Resolution Rapid Refresh runs Thompson
+#: aerosol-aware microphysics with RRTMG longwave AND shortwave on a
+#: 3 km convection-permitting grid with no cumulus parameterization
+#: (NOAA/GSL; the CCPP ``HRRR_suite``).  This profile is that
+#: composition as far as the shipped engine carries it -- Thompson mp8,
+#: RRTMG 4/4, ``cu_physics = 0`` -- diverging from operations on the two
+#: components gpuwm has no route-admissible HRRR implementation for yet
+#: (YSU rather than MYNN-EDMF, Noah rather than RUC; both of those
+#: shipped profiles are WSM6/no-longwave and are refused by the route's
+#: own surface-layer and LSM pins).
+#:
+#: It replaced :data:`WSM6_PROFILE_ID`, whose rationale here claimed the
+#: route "admits ONE physics slice ... ra_lw_physics 0, ra_sw_physics 1".
+#: That stopped being true when the route widened to
+#: ``ADMITTED_RADIATION_PAIRS = {(0, 1), (4, 4)}`` and
+#: ``ADMITTED_PBL_PHYSICS = {1, 11}``; what actually kept a full-radiation
+#: default out was that the wizard did not OFFER either legacy-RRTMG
+#: Thompson suite and the HRRR root preparer staged no microphysics
+#: lookup tables for them.  Both are fixed (WIZARD_PHYSICS_PROFILES
+#: above; ``tools/hrrr_single_domain_benchmark._microphysics_table_
+#: authority``), so the constraint is gone rather than worked around.
+#:
+#: The RTE+RRTMGP suites (Morrison, NSSL-2) remain outside the HRRR
+#: route on ``cu_physics = 1``: Kain-Fritsch at HRRR's native 3 km would
+#: parameterize convection the grid already resolves.  That refusal is
+#: physics, not a limitation, and it is why the HRRR default is not the
+#: gfs/era5 default.
+#:
+#: Read from :mod:`gpuwm.hrrr_route_inputs`, never restated: that module
+#: owns what the route admits, and the 1.7.1 battery proved a
+#: door-local copy of a default is a door-local bug waiting for the next
+#: flip.
+HRRR_DEFAULT_PROFILE = ROUTE_DEFAULT_PHYSICS_PROFILE
 
 
 def resolved_physics_profile(source: str, requested: str | None
@@ -1428,7 +1494,9 @@ def _domain_tables(dims: list[tuple[int, int]],
                    ratios: tuple[int, ...],
                    *, time_step: Fraction | int = ROOT_TIME_STEP_S,
                    root_dx_m: float = ROOT_DX_M,
-                   profile: str | None = DEFAULT_PHYSICS_PROFILE
+                   profile: str | None = DEFAULT_PHYSICS_PROFILE,
+                   history_interval_s: float | None = None,
+                   nest_history_interval_s: float | None = None
                    ) -> list[dict]:
     """[[domain]] table dicts (centered children, certified cadences).
 
@@ -1476,7 +1544,10 @@ def _domain_tables(dims: list[tuple[int, int]],
                 **_clock_keys(Fraction(time_step)),
                 "dx": float(root_dx_m),
                 "specified": True, "nested": False,
-                "history_interval_s": 3600.0,
+                "history_interval_s": (
+                    DEFAULT_ROOT_HISTORY_INTERVAL_S
+                    if history_interval_s is None
+                    else float(history_interval_s)),
                 **root_physics,
             }
         else:
@@ -1490,7 +1561,11 @@ def _domain_tables(dims: list[tuple[int, int]],
                 "parent_grid_ratio": ratio,
                 "parent_time_step_ratio": ratio, "nx": nx, "ny": ny,
                 "specified": False, "nested": True,
-                "history_interval_s": 900.0, "epssm": epssm,
+                "history_interval_s": (
+                    DEFAULT_NEST_HISTORY_INTERVAL_S
+                    if nest_history_interval_s is None
+                    else float(nest_history_interval_s)),
+                "epssm": epssm,
                 "radt": _radt_minutes(dx), "cu_physics": 0,
                 "diff_6th_factor": _DIFF6_FACTORS[index],
             }
@@ -2055,7 +2130,9 @@ def render_config(*, name: str, start_time: datetime, hours: int,
                   root_dx_m: float = ROOT_DX_M,
                   profile: str | None = DEFAULT_PHYSICS_PROFILE,
                   interactive: bool = False,
-                  level_buffers_km: tuple[float, ...] | None = None) -> str:
+                  level_buffers_km: tuple[float, ...] | None = None,
+                  history_interval_s: float | None = None,
+                  nest_history_interval_s: float | None = None) -> str:
     """The emitted TOML text (the exact bytes the wizard validates).
 
     ``interactive`` records WHICH front door authored the file -- the
@@ -2181,8 +2258,10 @@ def render_config(*, name: str, start_time: datetime, hours: int,
         _render_table("projection", projection),
         _render_table("shared", shared),
     ]
-    for table in _domain_tables(dims, ratios, time_step=time_step,
-                                root_dx_m=root_dx_m, profile=profile):
+    for table in _domain_tables(
+            dims, ratios, time_step=time_step, root_dx_m=root_dx_m,
+            profile=profile, history_interval_s=history_interval_s,
+            nest_history_interval_s=nest_history_interval_s):
         parts.append(_render_table("domain", table, array_of_tables=True))
     parts.append(_render_table(
         "fetch", fetch_hints,
@@ -2230,6 +2309,79 @@ def sizing_budget_bytes(exp: ExperimentConfig, *, free_bytes: int,
         exp, profile=card_local_memory_profile(vram_gib),
         estimate_bytes=estimate.alloc_estimate_bytes)
     return int(free_bytes) - reserve.reserve_bytes
+
+
+def _lighter_profiles_than(profile: str | None, source: str) -> list[str]:
+    """Shipped suites this source can run that cost less than ``profile``.
+
+    Ranked by the two things that actually move a card's envelope: how
+    many prognostic species the microphysics transports, and whether a
+    radiation solver's kernel set is resident at all.  Returned in the
+    order a reader should try them -- cheapest last, so the first name is
+    the smallest step down rather than the biggest sacrifice.
+
+    Named in a refusal, never applied: a suite is the operator's choice
+    and a wizard that silently downgraded physics to make a number fit
+    would be lying about what it emitted.
+    """
+
+    if profile is None:
+        return []
+    try:
+        cost = _profile_envelope_rank(profile)
+    except ValueError:
+        return []
+    lighter = []
+    for candidate in WIZARD_PHYSICS_PROFILES:
+        if candidate == profile:
+            continue
+        try:
+            if _profile_envelope_rank(candidate) >= cost:
+                continue
+            switches = single_domain_runtime_switches(candidate)
+        except ValueError:
+            continue
+        if source == "hrrr" and not _route_admits(switches):
+            continue
+        lighter.append((_profile_envelope_rank(candidate), candidate))
+    return [name for _rank, name in sorted(lighter, reverse=True)][:3]
+
+
+def _profile_envelope_rank(profile: str) -> tuple[int, int]:
+    """(species load, radiation load) -- bigger is more device memory."""
+
+    # Ordered by how many prognostic species the scheme transports, which
+    # is what actually moves the pool: Kessler (qc/qr) < WSM6 (six
+    # single-moment) < Thompson mp8 (+ni/nr) < aerosol-aware mp28 (+two
+    # aerosol arrays) < Morrison mp10 (five number species) < NSSL-2 mp18
+    # (ten).  28 is listed rather than left to the fallback because
+    # tests/test_mp28_runtime_reachability.py audits every
+    # mp_physics-keyed dict for it, and an omission there is how a scheme
+    # silently stops being reachable.
+    switches = single_domain_runtime_switches(profile)
+    species = {1: 0, 6: 1, 8: 2, 28: 3, 10: 4, 18: 5}.get(
+        int(switches["mp_physics"]), 2)
+    lw = int(switches.get("ra_lw_physics", 0))
+    sw = int(switches.get("ra_sw_physics", 0))
+    radiation = 2 if lw == 4 else (1 if sw > 0 else 0)
+    return species, radiation
+
+
+def _route_admits(switches: dict) -> bool:
+    """The HRRR route's own physics gate, on a resolved switch set."""
+
+    from gpuwm.hrrr_route_inputs import (ADMITTED_PBL_PHYSICS,
+                                         ADMITTED_RADIATION_PAIRS,
+                                         REQUIRED_PHYSICS,
+                                         SUPPORTED_MICROPHYSICS)
+
+    return (
+        all(int(switches[key]) == value
+            for key, value in REQUIRED_PHYSICS.items())
+        and int(switches["bl_pbl_physics"]) in ADMITTED_PBL_PHYSICS
+        and (int(switches["ra_lw_physics"]),
+             int(switches["ra_sw_physics"])) in ADMITTED_RADIATION_PAIRS
+        and int(switches["mp_physics"]) in SUPPORTED_MICROPHYSICS)
 
 
 def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
@@ -2359,11 +2511,21 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         phases = estimate_phases(
             exp, source=source, forcing_interval_seconds=interval,
             vram_gib=vram_gib)
+        # Name the THIRD lever too.  A large share of the envelope is the
+        # selected kernel set's own local-memory backing store, so the
+        # suite is often the cheapest thing to change -- and after 1.8
+        # gave every source a full-radiation default, it is the lever a
+        # small card most often needs.  Omitting it read as "your card is
+        # too small" when a lighter shipped profile fits the same grid.
+        lighter = _lighter_profiles_than(profile, source)
+        remedy = ("choose a shallower ladder, a lighter --physics-profile "
+                  f"({', '.join(lighter)}), or a larger card"
+                  if lighter else
+                  "choose a shallower ladder or a larger card")
         raise DomainFitError(
             f"ladder {label} does not fit a {budget / GIB:.1f} GiB "
             f"budget even at the minimum layout ({dims[0][0]}x{dims[0][1]} "
-            f"root): {phases.verdict(budget)}.  {detail}; choose a "
-            "shallower ladder or a larger card")
+            f"root): {phases.verdict(budget)}.  {detail}; {remedy}")
     lo, hi = _MIN_SCALE, _MAX_SCALE
     best = (dims, exp)
     for _ in range(36):
@@ -3273,7 +3435,9 @@ def domain_main(args) -> int:
         fetch_hints=fetch_hints, case_data=case_data,
         root_dx_m=root_dx_m, profile=profile,
         interactive=getattr(args, "interactive", False),
-        level_buffers_km=level_buffers)
+        level_buffers_km=level_buffers,
+        history_interval_s=args.history_interval,
+        nest_history_interval_s=args.nest_history_interval)
     # Round-trip the exact bytes through the real loader before writing.
     exp = experiment_from_text(text, source=str(out))
     interval = SOURCE_FORCING_INTERVAL_S[args.source]
@@ -3628,7 +3792,9 @@ def register_cli(subparsers) -> None:
                              + "(gfs/era5 default: " + MORRISON_PROFILE_ID
                              + ", full RTE+RRTMGP + Kain-Fritsch, "
                              "nocturnally valid; hrrr default: "
-                             + WSM6_PROFILE_ID + ")")
+                             + HRRR_DEFAULT_PROFILE
+                             + ", Thompson + full RRTMG lw+sw, no cumulus "
+                             "at 3 km, nocturnally valid)")
     parser.add_argument("--root-dx", type=float, default=None,
                         metavar="KM",
                         help="custom root grid spacing in km "
@@ -3641,6 +3807,22 @@ def register_cli(subparsers) -> None:
                              "750 m); omit for a single domain at "
                              "--root-dx.  Sized by the same estimator fit "
                              "loop as the presets")
+    parser.add_argument(
+        "--history-interval", type=float, default=None, metavar="SECONDS",
+        help="how often the ROOT domain writes a wrfout, in seconds "
+             f"(default {DEFAULT_ROOT_HISTORY_INTERVAL_S:g}).  Must be a "
+             "whole number of seconds and a whole number of that "
+             "domain's time steps -- the loader checks both against the "
+             "exact rational dt and refuses the emitted file otherwise, "
+             "before it is written")
+    parser.add_argument(
+        "--nest-history-interval", type=float, default=None,
+        metavar="SECONDS",
+        help="the same, for every NESTED domain (default "
+             f"{DEFAULT_NEST_HISTORY_INTERVAL_S:g}).  Nests write more "
+             "often than the root by default because resolving what the "
+             "root cannot, over a shorter window, is the point of "
+             "running one.  Ignored for a single-domain ladder")
     parser.add_argument("--hours", type=int, default=6, metavar="N",
                         help="forecast length (run_seconds = N*3600)")
     parser.add_argument("--source", default="era5",

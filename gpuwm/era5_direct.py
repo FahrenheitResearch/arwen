@@ -258,8 +258,11 @@ def prepare_era5_wrf(
 
     total_started = time.perf_counter()
     exp = load_experiment(paths["experiment_config"])
-    from gpuwm.experiment import refuse_unrouted_perturbation
+    from gpuwm.experiment import (
+        refuse_unrouted_perturbation, refuse_unrouted_spawn,
+    )
     refuse_unrouted_perturbation(exp, "ERA5-direct prepared-cache")
+    refuse_unrouted_spawn(exp, "ERA5-direct prepared-cache")
     from gpuwm.static.highres_production import refuse_inert_highres
     refuse_inert_highres(paths["experiment_config"],
                          lane="ERA5-direct adapter")

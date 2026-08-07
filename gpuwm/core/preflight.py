@@ -337,6 +337,38 @@ def feedback_advisory(exp) -> str | None:
             if int(getattr(exp, "feedback", 0) or 0) == 1 else None)
 
 
+def spawn_reservation_advisories(exp) -> list[str]:
+    """One plain sentence per DORMANT (spawn-declared) nest.
+
+    The reservation contract, said where the numbers are: a declared
+    spawn-triggered nest is priced by this preflight exactly as if it
+    were live -- that is what makes VRAM deterministic and lets this
+    report refuse honestly -- so its residency is spent for the whole
+    run even if the trigger never fires, and it costs zero compute
+    until it spawns.
+    """
+    import dataclasses as _dc
+
+    lines: list[str] = []
+    dormant = [dc for dc in exp.domains
+               if getattr(dc, "spawn", None) is not None]
+    if not dormant:
+        return lines
+    full = estimate_experiment(exp).alloc_estimate_bytes
+    for dc in dormant:
+        without = _dc.replace(exp, domains=tuple(
+            d for d in exp.domains if d.grid_id != dc.grid_id))
+        delta = full - estimate_experiment(without).alloc_estimate_bytes
+        lines.append(
+            f"d{dc.grid_id:02d} is a DORMANT spawn-triggered nest "
+            f"(trigger {dc.spawn.trigger!r}): declaring it costs "
+            f"{delta / GIB:.2f} GiB of this plan's alloc estimate, "
+            "reserved from startup and spent even if the trigger never "
+            "fires; it costs zero compute until it spawns. Every figure "
+            "in this report already includes it.")
+    return lines
+
+
 def check_advisories(exp, config_path=None) -> list[str]:
     """Every route advisory this config earns, in report order.
 
@@ -350,6 +382,7 @@ def check_advisories(exp, config_path=None) -> list[str]:
         checkpoint_route_advisory, config_has_case_data)
 
     advisories = [feedback_advisory(exp)]
+    advisories.extend(spawn_reservation_advisories(exp))
     if config_path is not None:
         advisories.append(checkpoint_route_advisory(
             domain_count=len(exp.domains),
@@ -2239,6 +2272,15 @@ def scratch_slot_registry(cfg: RunConfig, *,
         # (eagerly allocated by DomainState.__init__) plus two per-launch
         # work planes (column UH and the use_column flags).
         slots.update(up_heli_max=s2, uh_diag_col=s2, uh_diag_use=s2)
+        # The two consumer-owned tracking windows (gpuwm/core/uh_diag.py:
+        # TRACKER_WINDOW_SLOTS).  Priced on the same gate that allocates
+        # them, because they are allocated whenever the diagnostic runs
+        # rather than only when a follow/spawn block is declared: the
+        # relocation and spawn tables live on the ExperimentConfig, which
+        # DomainState.__init__ does not see, and inventing a RunConfig
+        # field to carry them would move the frozen-config surface for
+        # two (ny, nx) FP32 planes.
+        slots.update(uh_follow_window=s2, uh_spawn_window=s2)
 
     if cfg.mp_physics == 1:
         # microphysics.py:143-163 (Kessler prep + accumulators).
@@ -3007,6 +3049,18 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
     # UP_HELI_MAX work planes: uh_columns writes every cell of both planes
     # (edge threads included) before uh_smooth_max reads them, all inside
     # one update_up_heli_max call.
+    # The consumer-owned tracking windows: the same running-max operator
+    # as up_heli_max, folded in the same pass, but reset by the consumer
+    # that read them rather than by the history writer, and NOT restart
+    # visible -- a restart starts them empty and the first post-restart
+    # evaluation may under-read, which is the tolerated-experiment
+    # posture the moving-nest and spawn restart rulings already take.
+    ScratchSlotLifetime(
+        ("uh_follow_window", "uh_spawn_window"), "carrying",
+        "gpuwm/core/uh_diag.py:update_up_heli_max,reset_tracker_window; "
+        "gpuwm/io/restart.py:REBUILT_SCRATCH_SLOTS",
+        "per-consumer running-max windows, reset at every evaluation of "
+        "the consumer that owns them and never emitted"),
     ScratchSlotLifetime(
         ("uh_diag_col", "uh_diag_use"), "write_before_read",
         "gpuwm/core/kernels/uh_diag.cu:uh_columns,uh_smooth_max; "

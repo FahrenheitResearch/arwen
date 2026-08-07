@@ -1,5 +1,219 @@
 # Changelog
 
+## 1.8.0 (2026-08-07)
+
+New:
+- Storm-following moving nests. A `[relocation]` table, default off,
+  moves a child domain by a whole number of parent cells at cycle
+  boundaries. A moving nest here is a sequence of static nests joined by
+  a re-grid, not WRF's continuous per-step motion; those namelist keys
+  stay refused and now point at the discrete mechanism instead of
+  saying "non-goal". The overlap between the outgoing and incoming
+  footprints is transplanted bitwise, because a whole-parent-cell shift
+  leaves every overlapped cell's donor index and sub-cell offset
+  unchanged: measured 0 mismatches over 18,714,960 cells across 25
+  restart-contract fields on an RTX 5090, with the treatment proven by
+  56 % of those same cells differing from a cold start. A restart across
+  a move promises nothing, by ruling, and the relocation bounds stay out
+  of the restart fingerprint.
+- `[relocation.follow]` decides the WHEN and the WHERE from the running
+  model's own fields. Updraft helicity (`up_heli_max`, WRF's
+  UP_HELI_MAX, reset each history interval) is the primary vote, because
+  rotation is what a tornado nest exists to follow; column-max
+  reflectivity is the fallback for the window before a mesocyclone
+  exists. Three configured guards keep a jittering centroid from
+  spending the run on relocation spin-up: a dead band below
+  `min_shift_cells`, a per-event clamp at `max_shift_cells`, and a
+  cooldown that burns on executed moves rather than proposals. Every
+  cadence appends a receipt carrying the centroid evidence and the
+  decision, so a run's move/hold history is auditable afterwards. Every
+  follow key is required and unknown keys refuse.
+- A relocated nest rebuilds its statics for the new footprint, at nest
+  resolution, from the nest's own static source rather than inheriting
+  parent-interpolated terrain: over-land storm-following at 2 km lives
+  on resolved terrain. The footprint grid comes from an exact
+  whole-cell translation of the reference grid, so a cell two placements
+  share evaluates to bitwise-identical coordinates and therefore
+  bitwise-identical statics; the preparer asserts that equality on every
+  move rather than assuming it, which is what lets the bitwise overlap
+  transplant survive a statics rebuild. The atmosphere on the fresh
+  strip is adjusted to the rebuilt terrain by the same sequence a t = 0
+  real child runs, and land state moves by landmask-aware donor fill.
+- Off-centre nest placement is proven placement-independent, in both
+  directions. The parent-to-child exchange geometry carries no centred
+  placement assumption: force tables are exact on linear fields at every
+  quadrant and at the minimum legal edge margins for ratios 3 and 5, the
+  residual tables are identical between centred and off-centre
+  placements, and the whole force transaction is translation-equivariant
+  at the bit level. The one genuine concentric-nest assumption in the
+  tree was an LES case module's own placement instrument, and it now
+  uses the runner's resolver. A relocated nest is off-centre by
+  definition, so this is the moving nest's standing regression bed.
+- Spawn-at-trigger nests. A `[[domain]]` can declare a `spawn` block --
+  `trigger = "uh" | "reflectivity" | "time"` with a threshold and a
+  model-time window -- and stay dormant until the trigger fires, at
+  which point it materializes at the tracker-chosen position and follows
+  the storm from then on. The nest is pre-declared, not mid-run
+  allocated: the memory plan prices it exactly as if it existed, so
+  `gpuwm check` refuses honestly at planning time and prints one
+  advisory line per dormant nest naming what its declaration costs.
+  Spawning is activation, not allocation. A declared-but-never-triggered
+  nest costs its reserved VRAM for the whole run and zero compute; that
+  is the contract, not a leak.
+- The fired nest gets own-grid statics for its footprint, an atmosphere
+  interpolated from the CURRENT parent -- so it is born inside the storm
+  its trigger saw, not inside a stale analysis -- and terrain adoption
+  byte-for-byte the real-data child adjustment sequence. Placement is
+  the storm-core weighted centroid around the loudest qualifying cell in
+  the search box, so with two storms in one box it lands on the stronger
+  storm rather than between them, and a watch ignores signal inside
+  another active nest's footprint.
+- A nest born mid-run takes its land surface state the way WRF gives one
+  to a nest with no `wrfinput` of its own: parent interpolation through
+  the mask-aware operator WRF names per field in its Registry, so a
+  mixed land/water cell averages only the corners matching the child's
+  own land-use class. That is the operator WRF runs at every nest birth
+  and at every moving-nest leading edge. ArWen keeps the half of
+  `fine_input_stream = 2` it can have, the own-grid statics, which is
+  what makes the mask load-bearing: the child's categories are resolved
+  at the child's dx and disagree with the parent's wherever finer
+  terrain resolves a coast, lake or island the parent smoothed away. The
+  receipt counts every branch per mask family and publishes the
+  island/lake fallbacks. This lifted the real-data spawn refusal on the
+  run route; routes that neither reserve nor watch still refuse a spawn
+  declaration by name rather than dropping it.
+- `gpuwm run-plan`, a machine interface. One versioned JSON plan in, one
+  append-only JSONL event stream out, so a GUI, a scheduler or a fleet
+  controller drives gpuwm as a subprocess and never parses a line of
+  human output. The plan is an envelope over the existing config system,
+  not a second config format: it resolves through the same loader
+  `gpuwm run` uses and executes through the same runtime. Unknown
+  top-level keys, unknown run options, an unknown route and an unknown
+  schema are all refused rather than ignored, and `fetch.args` is
+  validated by building gpuwm's real fetch parser.
+- `config.intent` submits a shape instead of a config -- a point or
+  polygon, a ladder, a source, a cycle, a card budget -- and the `gpuwm
+  domain` wizard writes the complete TOML, the same wizard with the same
+  refusals and the same emitted bytes a person gets from the CLI. Every
+  intent key is a wizard flag, one to one. The generated TOML is carried
+  verbatim on the `resolved_plan` event, because the caller never typed
+  it and it is the one thing they cannot look up.
+- Every value the pipeline chose on its own appears in
+  `automatic_resolutions` with its basis, one entry each, before the run
+  starts. The per-domain time step is the flagship case: it changes the
+  model's answer, nobody writes it, and until now it appeared only
+  inside a printed report. `cycle: "latest"` is resolved to a concrete
+  cycle before the fetch runs and the resolved value is what gets
+  recorded, so a plan does not archive a question whose answer changes
+  every six hours.
+- `--resolve`, `--estimate` and `--probe` each print exactly one JSON
+  document and run nothing. They work before anything is downloaded, and
+  they carry the full declared-input inventory instead of skipping the
+  existence check silently. `--probe` reads the device inventory through
+  NVML only, creating no CUDA context, so it is safe to poll on a busy
+  card. Where this package has no measured number the field is `null`
+  with its basis stated, rather than an invented one under gpuwm's name.
+- A run-plan run is reattachable. `run-manifest.json` is written before
+  any work starts and names every stream a consumer may want, including
+  the two run-plan does not own. run-plan publishes no progress state of
+  its own: the supervisor stays the only writer of `run-progress.json`,
+  the run-plan observer composes with the existing heartbeat rather than
+  replacing it, and a run-plan run leaves exactly the heartbeat a `gpuwm
+  run` leaves. `sequence` on the event stream is monotonic and dense, so
+  a gap means a lost line and the reader refuses it; a torn final line is
+  refused rather than trimmed.
+- `gpuwm domain --history-interval` and `--nest-history-interval` make
+  output cadence a first-class control. They were bare literals with no
+  knob. A cadence must be a whole number of seconds and a whole number
+  of that domain's own time steps, judged against the exact rational
+  `dt`, and the wizard round-trips its emitted bytes through the real
+  loader before writing, so a bad value is refused with the loader's own
+  sentence and no file lands.
+- The HRRR route stages microphysics lookup tables for every profile
+  whose microphysics reads them, at profile-binding time -- before the
+  fetch and before preprocessing -- through the packaged table ladder,
+  SHA-256 checked. It resolved tables for one profile behind two
+  environment variables before, which is why its default had to be a
+  suite that needs none. The resolved set is recorded in the physics
+  receipt as `microphysics_table_authority`.
+- `gpuwm domain --source hrrr` defaults to
+  `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1`: Thompson microphysics,
+  RRTMG longwave and shortwave, no cumulus at 3 km. That is the
+  operational HRRR composition (NOAA/GSL CCPP `HRRR_suite`); gpuwm
+  diverges on YSU rather than MYNN-EDMF and Noah rather than RUC.
+- The wizard offers both legacy-RRTMG Thompson suites. It offered
+  neither, which is why no full-radiation suite could be an HRRR
+  default.
+- A sizing refusal names a lighter `--physics-profile` beside the
+  shallower ladder and the bigger card.
+
+Fixed:
+- No door emits an asymmetric radiation pairing (shortwave on, longwave
+  off) as a default. This was corrected to exclude HRRR in 1.7.1; it is
+  now true everywhere, and the claim's test covers all three sources
+  instead of two.
+- The HRRR route no longer writes a nocturnal experiment declaration on
+  the operator's behalf for its own default. A declaration by silence
+  declares nothing. Explicitly selecting an asymmetric suite for a night
+  window still writes it, which is what it always should have meant.
+- A bare interactive `hrrr` session emitted a config its own route
+  refused (`d01 cu_physics=1`, Kain-Fritsch on a convection-permitting
+  grid). Its covering test checked registry reachability and maturity,
+  both true of that suite, and never ran the route's physics gate; it
+  does now.
+- An HRRR config carrying a legacy-RRTMG suite could not be emitted at
+  all: the emission round-trip re-imported its namelists without the
+  RRTMG variant, resolved 4/4 to RTE+RRTMGP, and reported the
+  difference as though the emitted files were wrong. It inherits the
+  variant from the authoritative experiment, as it already did for
+  acknowledgements.
+- A wizard header called every `ra_*_physics = 4` suite RTE+RRTMGP,
+  including the legacy-RRTMG ones.
+- An installed-but-unloadable CuPy no longer kills the command line. An
+  absent CuPy raises `ImportError` and was always survived; the
+  documented rental trap -- a `cupy-cuda12x` wheel on a CUDA-13 box, a
+  missing NVRTC DLL -- raises `RuntimeError` or `OSError` from deep
+  inside the import, so `gpuwm` died on exactly the installs
+  `run-plan --probe` exists to diagnose. It is deferred, not swallowed:
+  the original error is kept and named at the use site, with the
+  wheel/CUDA-major mismatch called out, because installed-and-broken has
+  a different fix from absent and must not get the "install it"
+  sentence.
+- A `prepared` run-plan run that succeeded reported `failed`. The
+  chain's own exit convention was read as the run's.
+- Nothing but JSONL reaches stdout on a run-plan run. The resolved-config
+  report, the wizard's sizing table, warnings and the feedback advisory
+  all go to stderr, enforced by binding the real stdout for the event
+  stream and redirecting `sys.stdout` for the whole run, rather than by
+  asking every printer to behave.
+- `gpuwm go` runs its forecast in process, so the documented chain is
+  observable end to end instead of going dark inside a subprocess.
+- Output cadence no longer steers a storm-following nest. The tracker and
+  the spawn watch read updraft helicity, and they had been reading WRF's
+  `UP_HELI_MAX` diagnostic, which is zeroed by the history writer. Its
+  accumulation window was therefore the output interval, so changing
+  `history_interval_s` changed the peak and the centroid the tracker saw,
+  and the nest went somewhere else. Each consumer now owns a window
+  folded from the same cal_helicity columns in the same pass and reset by
+  that consumer at every evaluation, accepted or held, so the window is
+  exactly "the strongest rotation since I last looked". Two windows, not
+  one, because relocation evaluates on cadence boundaries and spawn on
+  leg boundaries: a shared window would let whichever consumer read first
+  blind the other. Thresholds keep their meaning, and the shipped demo
+  configs are unaffected because their cadences were already aligned.
+  The windows are not restart-carried: a restart starts them empty and
+  the first evaluation after it may under-read, the same posture already
+  ruled for a restart across a move or a spawn.
+- The offline child route refuses `ra_rrtmg_variant='rrtmg_legacy'` with
+  `o3input = 2` instead of silently using the wrong ozone. That pairing
+  means "take ozone interpolated from the parent", and this route has no
+  resident parent; it was building the radiation adapter without one,
+  which made it evaluate a fresh climatology on the child's own latitudes
+  and then report `"ozone_routing": "root-climatology"` for a nested
+  domain. `o3input = 2` is the default and `gpuwm downscale` copies it
+  from the parent, so this was the ordinary path. The refusal names both
+  remedies.
+
 ## 1.7.1 (2026-08-06)
 
 Fixed:
@@ -10,7 +224,8 @@ Fixed:
   the interactive session already used. It replaces the unshipped
   "product default suite". The HRRR door keeps its route-constrained
   WSM6 default. Neither the gfs nor the era5 door emits an asymmetric
-  radiation pairing (shortwave on, longwave off) as a default.
+  radiation pairing (shortwave on, longwave off) as a default. (The
+  HRRR door was fixed in the following release; see Unreleased.)
 - A real experiment whose window includes local night refuses to load
   with `ra_sw_physics > 0` and `ra_lw_physics == 0`, naming the
   physics, the matched profile, and both remedies. A field report

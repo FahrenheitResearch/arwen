@@ -949,15 +949,38 @@ def test_child_routing_fails_closed():
 
 
 def test_child_construction_site_requires_the_parent():
-    """CPU: runtime.prepare_child_case fails closed on a legacy child
-    without radiation_parent (the guard precedes construction)."""
+    """The guard precedes construction, at the site that now owns it.
+
+    This pin used to read prepare_child_case's source, and went red in
+    1.8.0 when the guard MOVED -- intact, and into a shared adapter that
+    also covers the new mid-run spawn/relocation construction site, so a
+    hole was closed rather than opened.  A source pin cannot tell
+    "deleted" from "relocated", so the SEMANTICS are now proven by
+    calling the guard in tests/test_rrtmg_legacy_ozone_guard.py, which is
+    cupy-free and therefore actually runs in the CPU leg -- this module
+    imports cupy at module scope, so conftest marks it `gpu` whole and
+    GPUWM_NO_LOCAL_GPU skipped every assertion in it, including this one.
+
+    What remains here is the ORDERING property at the real site, plus the
+    thing the extraction could genuinely have broken and no other test
+    covers: that prepare_child_case still consults the adapter, and does
+    so before it builds the physics driver.
+    """
     import inspect
 
     import gpuwm.runtime as runtime
 
-    source = inspect.getsource(runtime.prepare_child_case)
+    source = inspect.getsource(runtime._child_radiation_adapter)
     assert "radiation_parent is None" in source
     assert "ParentOzoneProvider" in source
     guard = source.index("radiation_parent is None")
     construct = source.index("RRTMGLegacyRadiation(")
     assert guard < construct
+
+    # The call, and its position relative to driver construction.
+    caller = inspect.getsource(runtime.prepare_child_case)
+    adapter_call = caller.index("_child_radiation_adapter(")
+    driver_call = caller.index("initialize_physics(")
+    assert adapter_call < driver_call, (
+        "the radiation adapter (which carries the fail-closed ozone "
+        "guard) must be consulted before the physics driver is built")

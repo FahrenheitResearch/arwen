@@ -30,6 +30,9 @@ if str(ROOT / "tools") not in sys.path:
 
 import gpuwm.prepared_single_domain_forecast as runner  # noqa: E402
 from gpuwm.experiment import VerticalConfig, load_experiment  # noqa: E402
+from gpuwm.hrrr_route_inputs import (  # noqa: E402
+    ROUTE_DEFAULT_PHYSICS_PROFILE,
+)
 from gpuwm.experiment_document import (  # noqa: E402
     ExperimentDocumentError, publish_experiment_document,
     render_experiment_document)
@@ -43,6 +46,14 @@ from gpuwm.ingest.prepared_cache import (  # noqa: E402
 from hrrr_single_domain_benchmark import (  # noqa: E402
     _experiment, _experiment_tables)
 
+
+#: The suite these bundles are built with.  It is the ROUTE's own
+#: default rather than a literal, because the fixtures below build
+#: their experiment through ``_experiment_tables`` -- which binds
+#: that default -- and every downstream stage is handed the same
+#: name.  Pinning a literal here is how the two halves drifted when
+#: 1.8 flipped the default.
+PROFILE = ROUTE_DEFAULT_PHYSICS_PROFILE
 
 CYCLE = datetime(2026, 8, 5, 4)
 SOURCE_HOURS = (0, 1, 2)
@@ -139,7 +150,7 @@ class _Bundle:
 
 def _hrrr_bundle(tmp_path: Path, *, run_seconds: float = 7200.0,
                  history_interval_seconds: float = 900.0,
-                 physics_profile: str | None = runner.PHYSICS_PROFILE,
+                 physics_profile: str | None = PROFILE,
                  forcing_hours=(0, 1, 2),
                  publish_cycle: datetime | None = None) -> _Bundle:
     tables, exp = _hrrr_experiment(
@@ -565,9 +576,9 @@ def _run_wrapper(tmp_path, monkeypatch, *, publish: bool):
             "history_interval_seconds": history_seconds,
             "physics": {
                 "schema": "gpuwm-prepared-physics-profile-v1",
-                "profile": runner.PHYSICS_PROFILE,
+                "profile": PROFILE,
                 "hrrr_initialization": _cold_start_receipt(
-                    runner.PHYSICS_PROFILE),
+                    PROFILE),
             },
             "preparation": {
                 "preprocess_backend": {"backend": "cuda"},
@@ -589,7 +600,7 @@ def _run_wrapper(tmp_path, monkeypatch, *, publish: bool):
         "--static-cache", str(static_cache),
         "--static-receipt", str(static_receipt),
         "--namelist-input", str(namelist),
-        "--physics-profile", runner.PHYSICS_PROFILE,
+        "--physics-profile", PROFILE,
         "--valid-time", "2026-08-05_04:00:00",
         "--forecast-start-hour", str(SOURCE_HOURS[0]),
         "--forecast-end-hour", str(SOURCE_HOURS[-1]),
@@ -629,7 +640,7 @@ def test_the_wrapper_publishes_a_bundle_the_front_door_admits(
         prepared_content_sha256=handoff["prepared_content_sha256"],
         experiment_config=Path(handoff["experiment_config"]),
         wps_namelist=Path(handoff["wps_namelist"]),
-        physics_profile=runner.PHYSICS_PROFILE,
+        physics_profile=PROFILE,
         run_seconds=run_seconds,
         history_interval_seconds=history_seconds)
     assert inputs.layout == runner.HRRR_DIRECT_LAYOUT

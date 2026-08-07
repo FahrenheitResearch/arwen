@@ -243,6 +243,151 @@ def test_numpy_state_path_accumulates_and_matches_the_mirror(monkeypatch):
     assert third.max() > 0.0
 
 
+def _updraft(state, cfg):
+    """The same Gaussian updraft column the mirror-parity test uses.
+
+    UH is w * vertical vorticity, so rotating winds alone produce a plane
+    of exact zeros -- which is what the "must actually rotate" control in
+    the tests below is there to catch.
+    """
+    nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
+    z_w = (np.asarray(state.phb, dtype=np.float32)
+           / np.float32(9.81))[:, None, None]
+    blob = np.exp(-(((np.arange(nx) - 4.5)[None, :])**2
+                    + ((np.arange(ny) - 3.5)[:, None])**2) / 4.0)
+    wz = np.exp(-(((z_w - 3500.0) / 2000.0)**2))
+    state.u[...], state.v[...] = _mesocyclone_winds(ny, nx, nz)
+    return (18.0 * blob[None, :, :] * wz).astype(np.float32)
+
+
+def _step_uh(state, cfg, scale):
+    """One diagnostic step at a given updraft strength; folds every window."""
+    state.w[...] = (np.float32(scale) * _updraft(state, cfg)).astype(np.float32)
+    update_up_heli_max(state, cfg)
+
+
+def test_the_history_writer_reset_does_not_touch_the_tracker_windows(
+        monkeypatch):
+    """The decoupling, at the exact line where the coupling lived.
+
+    UP_HELI_MAX is zeroed by the history writer.  Both consumer windows
+    are folded from the SAME columns in the same pass and must survive
+    that reset untouched, or an output knob is steering the model again.
+    """
+    state, cfg = _loaded_numpy_state(monkeypatch)
+    _step_uh(state, cfg, 1.0)
+
+    diagnostic = state.existing_scratch("up_heli_max")
+    follow = state.existing_scratch("uh_follow_window")
+    spawn = state.existing_scratch("uh_spawn_window")
+    assert diagnostic.max() > 0.0, "the fixture must actually rotate"
+    # One pass, three identical maxima.
+    assert np.array_equal(follow, diagnostic)
+    assert np.array_equal(spawn, diagnostic)
+
+    carried = follow.copy()
+    reset_up_heli_max(state)
+    assert diagnostic.max() == 0.0, "the history writer zeroes its own"
+    assert np.array_equal(follow, carried), \
+        "the history writer must not zero the relocation window"
+    assert np.array_equal(spawn, carried), \
+        "the history writer must not zero the spawn window"
+
+
+def test_each_consumer_reset_leaves_the_other_windows_alone(monkeypatch):
+    """Two windows, no cross-blinding: the whole reason there are two.
+
+    Relocation evaluates on cadence boundaries and spawn on leg
+    boundaries, so at any boundary they share, a single window would let
+    whichever read first blind the other.
+    """
+    from gpuwm.core.uh_diag import reset_tracker_window
+
+    state, cfg = _loaded_numpy_state(monkeypatch)
+    _step_uh(state, cfg, 1.0)
+    carried = state.existing_scratch("up_heli_max").copy()
+
+    reset_tracker_window(state, "uh_follow_window")
+    assert state.existing_scratch("uh_follow_window").max() == 0.0
+    assert np.array_equal(state.existing_scratch("uh_spawn_window"), carried)
+    assert np.array_equal(state.existing_scratch("up_heli_max"), carried)
+
+    reset_tracker_window(state, "uh_spawn_window")
+    assert state.existing_scratch("uh_spawn_window").max() == 0.0
+    assert np.array_equal(state.existing_scratch("up_heli_max"), carried)
+
+    # The diagnostic is NOT a tracker window and cannot be reset through
+    # this door; the history writer owns it.
+    with pytest.raises(ValueError, match="not a tracker window"):
+        reset_tracker_window(state, "up_heli_max")
+
+
+@pytest.mark.parametrize("history_every", [2, 3, 5])
+def test_the_tracker_window_is_invariant_to_the_history_interval(
+        monkeypatch, history_every):
+    """THE RULING'S TEST: same evaluation cadence, different output cadence,
+    identical signal.
+
+    Twelve steps with a pulsing mesocyclone, evaluated every 6 steps.  The
+    history writer fires every ``history_every`` steps, which is what used
+    to decide the tracker's answer.  The window the tracker reads at each
+    evaluation must be bit-identical across all three output cadences.
+
+    The control that makes this mean something is in the assertion below:
+    UP_HELI_MAX itself is NOT invariant here, and the test says so.  If
+    both were invariant the fixture would simply not be exercising the
+    reset.
+    """
+    evaluate_every = 6
+    # A pulse: the peak lands mid-window and is GONE by the boundary, so a
+    # max-over-interval sees it and an instantaneous sample does not.
+    pulses = [0.4, 0.7, 1.0, 0.6, 0.3, 0.2] * 2
+
+    def run(history_every):
+        from gpuwm.core.uh_diag import reset_tracker_window
+
+        state, cfg = _loaded_numpy_state(monkeypatch)
+        seen = []
+        for step, scale in enumerate(pulses, start=1):
+            _step_uh(state, cfg, scale)
+            # Evaluation before the history write, deliberately: the
+            # writer snapshots THEN zeroes (runtime._submit_tree_history_
+            # frame), so a consumer reading at a boundary sees the
+            # pre-reset value.  Resetting first would zero UP_HELI_MAX in
+            # BOTH arms whenever history_every divides evaluate_every,
+            # and the control below would pass by accident on a fixture
+            # that never exercised the reset at all.
+            if step % evaluate_every == 0:
+                seen.append((
+                    state.existing_scratch("uh_follow_window").copy(),
+                    state.existing_scratch("up_heli_max").copy()))
+                reset_tracker_window(state, "uh_follow_window")
+            if step % history_every == 0:
+                reset_up_heli_max(state)
+        return seen
+
+    reference = run(evaluate_every)      # history aligned to evaluation
+    measured = run(history_every)
+
+    assert len(measured) == len(reference) == 2
+    for index, ((win, _), (ref_win, _)) in enumerate(
+            zip(measured, reference)):
+        assert np.array_equal(win, ref_win), (
+            f"evaluation {index}: the tracker window moved when only the "
+            f"history interval changed ({history_every} vs "
+            f"{evaluate_every} steps)")
+
+    if history_every != evaluate_every:
+        # THE INSTRUMENT'S OWN CONTROL: prove the fixture exercises the
+        # reset at all, by showing the quantity that IS cadence-bound did
+        # move.  Without this, an invariance claim is unfalsifiable.
+        assert any(not np.array_equal(diag, ref_diag)
+                   for (_, diag), (_, ref_diag) in zip(measured, reference)), (
+            "UP_HELI_MAX should differ between these two output cadences; "
+            "if it does not, this fixture never exercised the reset and "
+            "the invariance above proves nothing")
+
+
 def test_up_heli_max_has_no_trajectory_or_restart_reader():
     """The accumulator can feed output only, never the model.
 
@@ -293,6 +438,44 @@ def test_up_heli_max_has_no_trajectory_or_restart_reader():
                             for arg in node.args)):
                 assert rel in sanctioned_scratch, \
                     f"unsanctioned slot access in {rel}"
+
+    # THE ALIAS HOLE, closed 2026-08-07.  The pin above matches only a
+    # DIRECT attribute call carrying a CONSTANT slot name, and a reader
+    # that binds the API by name first defeats both halves at once::
+    #
+    #     getter = getattr(state, "existing_scratch", None)
+    #     buf = getter(slot)          # slot is a Name, getter is a Name
+    #
+    # `node.func` is then ast.Name, not ast.Attribute, and the argument is
+    # ast.Name, not ast.Constant -- so the access is invisible.  That is
+    # not hypothetical: it is exactly how gpuwm/core/storm_tracking.py's
+    # signal_plane read the accumulator into the moving nest's placement
+    # decision, and only the coarse grep roster above caught it.  A
+    # governance pin that a legitimate duck-typing idiom walks straight
+    # through is not a pin.
+    #
+    # The rule that actually holds: a module allowed to MENTION the slot
+    # at all (it is in `hits`, checked above) and which acquires the
+    # scratch API indirectly must ALSO be a sanctioned scratch site.
+    # Modules that never mention the slot are unaffected, so the ordinary
+    # `getattr(x, "scratch", ...)` duck-typing elsewhere in the tree stays
+    # legal -- measured at the time of writing: 4 indirect acquisitions
+    # repository-wide, of which uh_diag/wrfout are sanctioned owners and
+    # ingest/lateral_bc.py never names this slot.
+    for rel in sorted(hits):
+        tree = ast.parse((REPO / rel).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "getattr"
+                    and any(isinstance(arg, ast.Constant)
+                            and arg.value in ("scratch", "existing_scratch")
+                            for arg in node.args)):
+                assert rel in sanctioned_scratch, (
+                    f"{rel} names the slot AND binds the scratch API "
+                    f"indirectly at line {node.lineno}; that combination "
+                    "reads the accumulator without tripping the direct "
+                    "pin above, so it must be a sanctioned site")
 
 
 #: The one delegate a runner may reset THROUGH rather than directly.

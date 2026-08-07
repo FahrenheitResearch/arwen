@@ -449,9 +449,46 @@ class _WpsPs32:
         self.rebydx = np.float32(grid.rebydx)
 
 
+class _TranslatedWps32:
+    """Index-offset delegation for a translated grid's float32 twin.
+
+    A placement-translated grid (``ProjectedGrid.translated``) samples
+    sources through its REFERENCE grid's float32 twin at exactly
+    integer-shifted indices, so a cell two placements share selects its
+    source stencil through the same float32 arithmetic and lands on the
+    same source cells -- the sampling half of the statics-on-move
+    bitwise-equality claim.  Rebuilding the twin from the shifted known
+    point instead would re-round the pole in a different binade and
+    could flip knife-edge stencil selections on shared ground.
+    """
+
+    def __init__(self, reference_twin, offset):
+        self._twin = reference_twin
+        self._di, self._dj = (float(offset[0]), float(offset[1]))
+
+    def ij_to_latlon(self, x, y):
+        return self._twin.ij_to_latlon(
+            np.asarray(x, dtype=np.float32) + np.float32(self._di),
+            np.asarray(y, dtype=np.float32) + np.float32(self._dj))
+
+    def latlon_to_ij(self, lat, lon):
+        x, y = self._twin.latlon_to_ij(lat, lon)
+        return ((x - np.float32(self._di)).astype(np.float32),
+                (y - np.float32(self._dj)).astype(np.float32))
+
+    def adopt_public_pole(self, grid):
+        reference = getattr(grid, "_translation_reference", None)
+        self._twin.adopt_public_pole(
+            grid if reference is None else reference)
+
+
 def _wps32_for(grid):
     """The float32 WPS sampling twin for one projected grid."""
     from gpuwm.static.projection import MercatorGrid, PolarStereoGrid
+    reference = getattr(grid, "_translation_reference", None)
+    if reference is not None:
+        return _TranslatedWps32(_wps32_for(reference),
+                                grid._translation_offset)
     if isinstance(grid, LambertGrid):
         return _WpsLambert32(grid)
     if isinstance(grid, MercatorGrid):
@@ -1358,9 +1395,13 @@ def build_static_for_domain(grid, catalog, domain_id: int) -> dict:
         raise TypeError("grid must be a ProjectedGrid")
     selection = geog_selection_from_catalog(catalog, domain_id)
     geog_root = selection.root
+    # known_x/known_y are part of the projected geometry: two placements of
+    # a relocating nest share every other parameter (translated grids keep
+    # the reference point and move it in index space), so a key without the
+    # known point would alias every placement to the first one built.
     key = (selection, grid.map_proj, grid.ref_lat, grid.ref_lon,
            grid.truelat1, grid.truelat2, grid.stand_lon, grid.dx, grid.dy,
-           grid.e_we, grid.e_sn)
+           grid.e_we, grid.e_sn, grid.known_x, grid.known_y)
     fields = _CATALOG_STATIC_CACHE.get(key)
     if fields is None:
         fields = build_static(grid, geog_root, selection=selection)

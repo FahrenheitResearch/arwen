@@ -1118,6 +1118,47 @@ def _coord_from_parent(state: DomainState, parent_cfg) -> VerticalCoord:
         c4h=np.array(_host(state.c4h), copy=True))
 
 
+#: WRF ``start_domain``'s seeding pairs: the RK time-t copy each current
+#: field is taken from.  Named rather than inlined because a child's state
+#: is seeded on TWO occasions -- when it is cold-started from its parent,
+#: and when a discrete relocation stamps an integrated state onto a child
+#: rebuilt at a new placement -- and a pair that reached one path but not
+#: the other would leave the first substep reading a stale copy.
+RK_TIME_T_SEED_PAIRS = (
+    ("u", "u0"), ("v", "v0"), ("w", "w0"),
+    ("thp", "thp0"), ("php", "php0"), ("mup", "mup0"),
+    ("qv", "qv0"), ("qc", "qc0"), ("qr", "qr0"),
+    ("qi", "qi0"), ("qs", "qs0"), ("qg", "qg0"),
+    ("nr", "nr0"), ("ni", "ni0"), ("ns", "ns0"),
+    ("ng", "ng0"), ("qh", "qh0"),
+    # mp=28.  ``nc0`` exists only for mp=28; a Morrison child has ``nc``
+    # but no ``nc0`` and the None guard below skips it, so this row cannot
+    # start seeding Morrison's untransported droplet number.
+    ("nc", "nc0"), ("nwfa", "nwfa0"), ("nifa", "nifa0"),
+    ("qndrop", "qndrop0"), ("qnr", "qnr0"),
+    ("qni", "qni0"), ("qns", "qns0"), ("qng", "qng0"),
+    ("qnh", "qnh0"), ("qnn", "qnn0"),
+    ("qvolg", "qvolg0"), ("qvolh", "qvolh0"),
+)
+
+
+def seed_rk_time_t_copies(state) -> tuple[str, ...]:
+    """Seed the RK time-t copies from the current fields (WRF start_domain).
+
+    Returns the seeds actually written, so a caller can record which of the
+    optional scheme-dependent copies its state carried rather than assuming
+    the whole inventory was present.
+    """
+    written: list[str] = []
+    for current, initial in RK_TIME_T_SEED_PAIRS:
+        value = getattr(state, current, None)
+        seed = getattr(state, initial, None)
+        if value is not None and seed is not None:
+            seed[...] = value
+            written.append(initial)
+    return tuple(written)
+
+
 def _parent_only_base(parent, reg, terrain: bool) -> BaseState:
     if not terrain:
         return BaseState(
@@ -1138,13 +1179,25 @@ def _parent_only_base(parent, reg, terrain: bool) -> BaseState:
 def parent_only_init(child_dc: DomainConfig,
                      parent_node: DomainNode, *,
                      scratch_arena=None,
-                     dycore_state_workspace=None) -> ChildInitResult:
+                     dycore_state_workspace=None,
+                     array_module=None,
+                     grid: LambertGrid | None = None) -> ChildInitResult:
     """Initialize an idealized ``input_from_file=F`` nest from its parent.
 
     Unlike the real-input scope trim, this branch retains the full-parent
     SINT fill: prognostics, active moisture/scalars, and horizontally varying
     base fields.  The vertical coordinate is copied from the parent; it is
     never derived per child.
+
+    ``array_module`` is the :class:`DomainState` setup seam (NumPy for a
+    CPU-testable child, default CuPy); it exists so the spawn path's CPU
+    contracts exercise this exact initializer rather than a mock of it.
+
+    ``grid`` optionally supplies an already-constructed child grid whose
+    geometry must match the parent-resolved one (a relocation initializer
+    passes its placement-translated grid so the map-factor/Coriolis fields
+    are bitwise stable across placements on shared ground); omitted, the
+    grid is resolved from the parent exactly as before.
     """
     cfg = child_dc.run
     parent = parent_node.state
@@ -1157,7 +1210,15 @@ def parent_only_init(child_dc: DomainConfig,
             raise ValueError(
                 f"parent-only initialization requires shared {name}: "
                 f"child={child_value!r}, parent={parent_value!r}")
-    grid = _child_grid(child_dc, parent_node)
+    if grid is None:
+        grid = _child_grid(child_dc, parent_node)
+    else:
+        expected = (cfg.nx + 1, cfg.ny + 1, cfg.dx, cfg.dy)
+        actual = (grid.e_we, grid.e_sn, grid.dx, grid.dy)
+        if actual != expected:
+            raise ValueError(
+                f"supplied child grid geometry {actual} differs from the "
+                f"config's (e_we, e_sn, dx, dy) = {expected}")
     mass_reg = _mass_registration(child_dc, parent_node)
     coord = _coord_from_parent(parent, parent_node.cfg.run)
     state_kwargs = {}
@@ -1165,6 +1226,8 @@ def parent_only_init(child_dc: DomainConfig,
         state_kwargs["scratch_arena"] = scratch_arena
     if dycore_state_workspace is not None:
         state_kwargs["dycore_state_workspace"] = dycore_state_workspace
+    if array_module is not None:
+        state_kwargs["array_module"] = array_module
     child = DomainState(cfg, **state_kwargs)
     child.load_base(
         coord, _parent_only_base(parent, mass_reg, bool(cfg.terrain_opt)))
@@ -1249,27 +1312,7 @@ def parent_only_init(child_dc: DomainConfig,
     if transition.mixed:
         child._microphysics_transition_init_count = 1
 
-    # WRF start_domain seeds the RK time-t copies from the interpolated state.
-    for current, initial in (
-            ("u", "u0"), ("v", "v0"), ("w", "w0"),
-            ("thp", "thp0"), ("php", "php0"), ("mup", "mup0"),
-            ("qv", "qv0"), ("qc", "qc0"), ("qr", "qr0"),
-            ("qi", "qi0"), ("qs", "qs0"), ("qg", "qg0"),
-            ("nr", "nr0"), ("ni", "ni0"), ("ns", "ns0"),
-            ("ng", "ng0"), ("qh", "qh0"),
-            # mp=28.  ``nc0`` exists only for mp=28; a Morrison child has
-            # ``nc`` but no ``nc0`` and the None guard below skips it, so
-            # this row cannot start seeding Morrison's untransported
-            # droplet number.
-            ("nc", "nc0"), ("nwfa", "nwfa0"), ("nifa", "nifa0"),
-            ("qndrop", "qndrop0"), ("qnr", "qnr0"),
-            ("qni", "qni0"), ("qns", "qns0"), ("qng", "qng0"),
-            ("qnh", "qnh0"), ("qnn", "qnn0"),
-            ("qvolg", "qvolg0"), ("qvolh", "qvolh0")):
-        value = getattr(child, current, None)
-        seed = getattr(child, initial, None)
-        if value is not None and seed is not None:
-            seed[...] = value
+    seed_rk_time_t_copies(child)
     _set_map_fields(child, grid)
     update_diagnostics(child, cfg.hypsometric_opt)
     return ChildInitResult(
@@ -1472,11 +1515,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "ChildInitResult", "N1StaticOracleResult", "NestedInputCatalog",
     "ParentInitView",
-    "PendingChildInputs", "PreparedChildInput", "blend_zone_mask",
+    "PendingChildInputs", "PreparedChildInput", "RK_TIME_T_SEED_PAIRS",
+    "blend_zone_mask",
     "compare_n1_static", "finalize_prepared_child",
     "finalize_prepared_child_chain", "initialize_child",
     "initialize_child_chain_parallel", "parent_only_init",
     "prepare_child_input", "prepare_child_inputs_parallel",
+    "seed_rk_time_t_copies",
     "start_child_input_preparations", "write_n1_static_npz",
 ]
 

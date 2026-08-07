@@ -838,6 +838,31 @@ def preflight_prepared_tree(
     exp = load_experiment(experiment_config)
     if len(exp.domains) < 2:
         raise ValueError("prepared domain-tree runner requires at least two domains")
+    # Same governance one line down from the relocation refusal, and for
+    # the same reason: this route restores children from prepared caches,
+    # so it neither reserves a dormant nest's VRAM nor evaluates its
+    # trigger.  A declared spawn must not integrate as a silently absent
+    # nest.
+    from gpuwm.experiment import refuse_unrouted_spawn
+    refuse_unrouted_spawn(exp, "prepared domain-tree")
+    if exp.relocation.enabled and (
+            exp.relocation.follow is not None or exp.relocation.moves):
+        # The [static.highres] idiom: an enabled surface refuses on the
+        # lanes that cannot honor it.  The statics-on-move rebuild and
+        # the land-surface preparer EXIST (gpuwm.ingest.relocation_init
+        # + gpuwm.runtime.build_real_relocation_runner, wired on the
+        # case-data route), but they rebuild statics from the case's
+        # GEOG source -- and a prepared tree deliberately runs WITHOUT
+        # its ingest inputs, so no static source is on hand to rebuild
+        # a footprint from.  A config that says "follow the storm" must
+        # not integrate as a silently static nest, so this refuses.
+        raise ValueError(
+            "[relocation] configures a follow source, but the prepared "
+            "domain-tree route runs without the case's static (GEOG) "
+            "source and cannot rebuild a relocated child's statics for "
+            "a new footprint.  Run the case-data route (gpuwm run), "
+            "which wires the real-data relocation runner, or remove "
+            "[relocation.follow]/[[relocation.move]] from this config.")
     # The physics this config selects has to be RUNNABLE before the
     # hierarchy is verified, not after: this is the preflight, and a
     # missing lookup table is exactly the class of thing a preflight
@@ -1226,8 +1251,18 @@ def run_prepared_tree(
     restart: Path | None = None,
     health_debug: bool = False,
     sealed_forcing_extension: bool = False,
+    observer=None,
 ) -> dict[str, object]:
-    """Restore the prepared domains and execute the existing tree engine."""
+    """Restore the prepared domains and execute the existing tree engine.
+
+    ``observer`` is an optional second consumer of this run's progress,
+    for a caller driving the runner in-process rather than reading its
+    ``progress.json`` from outside (:class:`gpuwm.runplan.RunObserver`
+    is one).  It receives every per-step progress event this runner
+    already builds, and -- if it carries the ``output_committed`` hook
+    -- each per-domain wrfout as it becomes durable.  ``None`` leaves
+    every byte of this runner's behaviour unchanged.
+    """
 
     if io_mode not in {"history", "none"}:
         raise ValueError("io_mode must be 'history' or 'none'")
@@ -1558,6 +1593,8 @@ def run_prepared_tree(
             sealed_forcing_extension=sealed_forcing_extension)
 
     def progress_callback(**event):
+        if observer is not None:
+            observer(**event)
         memory_watch.sample()
         _atomic_json(
             progress_path,
@@ -1574,6 +1611,12 @@ def run_prepared_tree(
                 "last_checkpoint": event.get("last_checkpoint"),
             },
         )
+
+    # After the closures, before any submit (the first happens inside
+    # execute_experiment below).  `io_mode="none"` has no writers to
+    # attach to and commits no outputs, so there is nothing to announce.
+    if observer is not None and writers is not None:
+        writers.attach_progress_callback(observer)
 
     try:
         memory_watch.start()
@@ -1683,7 +1726,18 @@ def run_prepared_tree(
                      if sealed_forcing_extension else "exact-setup"),
             "restart_input": (
                 None if restart is None else str(Path(restart).resolve())),
+            # Non-None only when the restored checkpoint was written after
+            # a nest relocation: the promises-nothing posture, stated in
+            # the receipt of the run that crossed it.
+            "relocation_crossed": getattr(
+                model, "_restart_crossed_relocation", None),
         },
+        # The [relocation] echo (None when the config never opted in).
+        # This route refuses follow-source configs at preflight, so any
+        # non-None block here is bounds-only, and the receipts list stays
+        # empty until the statics-on-move follow-up lands.
+        "relocation": (
+            exp.relocation.receipt() if exp.relocation.enabled else None),
         "wall_seconds": timing["total"],
         "timing_seconds": timing,
         "executor": {
@@ -1814,7 +1868,16 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv=None) -> int:
+def main(argv=None, *, observer=None) -> int:
+    """The tree runner's command line.
+
+    ``observer`` is forwarded to :func:`run_prepared_tree` and is
+    otherwise inert: it lets a caller hosting this runner in its own
+    process receive the progress it publishes plus each per-domain
+    wrfout as it lands.  ``None`` -- every command-line invocation --
+    changes nothing.
+    """
+
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv == ["--show-capabilities"]:
         print(json.dumps(runner_capabilities(), sort_keys=True))
@@ -1871,6 +1934,7 @@ def main(argv=None) -> int:
             io_mode=args.io_mode,
             restart=args.restart,
             health_debug=args.health_debug,
+            observer=observer,
             sealed_forcing_extension=args.sealed_forcing_extension,
         )
     except MissingTableAssets as error:

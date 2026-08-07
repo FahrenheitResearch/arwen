@@ -457,6 +457,17 @@ SERIALIZED_SCRATCH_SLOTS = frozenset({
 #: rebuilds are EXACT names only — a future accumulator slot under those
 #: prefixes must be classified explicitly instead of silently dropping.
 REBUILT_SCRATCH_SLOTS = frozenset({
+    # The storm-following consumer windows (gpuwm/core/uh_diag.py:
+    # TRACKER_WINDOW_SLOTS).  Deliberately NOT serialized: a window means
+    # "max since that consumer last looked", and a checkpoint has no way
+    # to know when the consumer will next look, so carrying the number
+    # across a restart would restore a window measured against a boundary
+    # that no longer exists.  They restart EMPTY; the first post-restart
+    # evaluation therefore sees a short window and may under-read, which
+    # is the same tolerated-experiment posture already ruled for a
+    # restart across a move and across a spawn -- the tracker promises
+    # nothing across a restart.
+    "uh_follow_window", "uh_spawn_window",
     "mp_th", "mp_rho", "mp_pii", "mp_z", "mp_dz8w", "mp_z8w",
     "mp_thompson_temperature",
     "mp_thompson_frozen_reference_density",
@@ -2484,6 +2495,16 @@ def tree_fingerprint_mismatch_reason(gid: int, header, model) -> str:
     stored = header.get("experiment_fingerprint_components")
     live = _fingerprint_components(model)
     prefix = f"tree restart d{gid:02d} was written for a different run"
+    if isinstance(header.get("relocation"), Mapping):
+        # The checkpoint was written AFTER a nest relocation: its
+        # fingerprint is chained to the move history, no fresh build
+        # computes it, and that refusal is the ruled posture rather than
+        # an unexplained hash.
+        moved = header["relocation"]
+        return (f"{prefix}: it was written after "
+                f"{moved.get('moves')} nest relocation(s) "
+                f"(segment {moved.get('segment_id')!r}).  "
+                f"{moved.get('posture', '')}")
     if not isinstance(stored, Mapping) or not isinstance(live, Mapping):
         return (f"{prefix} (experiment fingerprint mismatch); a checkpoint "
                 "resumes only into the run that wrote it")
@@ -2524,6 +2545,27 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
     ids = sorted(int(node.cfg.grid_id) for node in nodes)
     trackers = dict(run_trackers_by_grid_id or {})
     paths: dict[int, Path] = {}
+    # A checkpoint written after a nest relocation says so ON ITSELF, with
+    # the ruled posture: a restart across a move promises nothing (Drew,
+    # 2026-08-06).  The live fingerprint is already chained to the move
+    # history, so a fresh build refuses this set by construction; the
+    # block below is what lets that refusal (and any reader of the
+    # member) state the posture by name.
+    executed_moves = [
+        entry for entry in getattr(model, "_relocation_receipts", ())
+        if isinstance(entry, dict) and entry.get("event") == "relocated"]
+    relocation_header = None
+    if executed_moves:
+        from gpuwm.core.nest_relocation import RESTART_ACROSS_MOVE_POSTURE
+
+        relocation_header = {
+            "moves": len(executed_moves),
+            "record_sha256": [entry["record_sha256"]
+                              for entry in executed_moves],
+            "segment_id": executed_moves[-1]["segment_id"],
+            "grid_id": int(executed_moves[-1]["grid_id"]),
+            "posture": RESTART_ACROSS_MOVE_POSTURE,
+        }
     if sealed_forcing_extension:
         # Validate the whole generation before assigning its UUID or writing
         # even a child member.  A malformed root prefix must never leave an
@@ -2656,6 +2698,24 @@ def restore_tree_restart(path, model, *,
             for gid, node in nodes.items()
         }
     headers = {gid: member.header for gid, member in validated.items()}
+
+    # A checkpoint set written after a nest relocation carries the ruled
+    # posture on itself.  A restore that reads one is BY DEFINITION a
+    # restart across a move: say so loudly BEFORE any refusal (so even
+    # the failure path states the posture), and stash it on the model so
+    # a run that does proceed states it in its own receipts.
+    crossed = {gid: header["relocation"]
+               for gid, header in headers.items()
+               if isinstance(header.get("relocation"), Mapping)}
+    if crossed:
+        gid = sorted(crossed)[0]
+        moved = crossed[gid]
+        from gpuwm.explain import warn
+
+        warn(f"this restore crosses {moved.get('moves')} nest "
+             f"relocation(s) (segment {moved.get('segment_id')!r}).  "
+             f"{moved.get('posture', '')}")
+        model._restart_crossed_relocation = dict(moved)
 
     elapsed_pairs = set()
     checkpoint_set_ids = set()

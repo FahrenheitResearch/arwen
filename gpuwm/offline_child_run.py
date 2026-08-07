@@ -212,6 +212,39 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
         from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
         if rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY:
             from gpuwm.core.rrtmg_legacy import RRTMGLegacyRadiation
+            if cfg.o3input == 2:
+                # FAIL CLOSED, the same refusal runtime._child_radiation_
+                # adapter raises for the in-memory child routes.
+                #
+                # o3input = 2 means the child takes its ozone INTERPOLATED
+                # FROM THE PARENT: WRF evaluates the CAM climatology on
+                # id == 1 only and passes o3rad down.  This route has no
+                # parent to interpolate from -- it is the ndown-equivalent
+                # offline path, and it stamps parent_id = 0 on its own
+                # DomainTicks precisely because no parent domain is
+                # resident.  So the constructor below cannot be given an
+                # ozone_parent even in principle.
+                #
+                # It used to be called WITHOUT one, which is not a
+                # degradation but a silent wrong answer: with
+                # ozone_parent=None the constructor takes its ROOT branch
+                # and evaluates a fresh CAM climatology on the CHILD's own
+                # latitudes, then identity() reports
+                # "ozone_routing": "root-climatology" for a nested domain
+                # without complaint.  o3input = 2 is also the RunConfig
+                # DEFAULT, and `gpuwm downscale --point` copies every
+                # RunConfig field from the parent (o3input and
+                # ra_rrtmg_variant are not in its geometry-override set),
+                # so the default path walked straight into it.
+                raise ValueError(
+                    "ra_rrtmg_variant='rrtmg_legacy' with o3input=2 needs "
+                    "ozone interpolated from the parent domain, and the "
+                    "offline child route has no resident parent to take it "
+                    "from (this route stamps parent_id=0). Set o3input=0 "
+                    "to use the legacy-RRTMG wrapper's own O3DATA profile, "
+                    "or run the child on the nested route "
+                    "(gpuwm.runtime.prepare_child_case), which wires the "
+                    "parent's o3rad through ParentOzoneProvider.")
             radiation = RRTMGLegacyRadiation(
                 start_time, lat, lon, p_top=float(initial.receipt["p_top"]),
                 o3input=cfg.o3input)
