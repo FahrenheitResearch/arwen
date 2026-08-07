@@ -76,6 +76,34 @@ Z_SOURCES = ("z_obs", "z_max")
 #: unlike velocity there is exactly one of it.
 REFLECTIVITY_NAME = "z"
 
+#: Name given to the clear-air ("zero") batch.  Like reflectivity it is
+#: merged across radars by the writer, so there is exactly one.
+CLEAR_AIR_NAME = "z0"
+
+#: The ``clear_air_source`` values this adapter will assimilate.  A file
+#: declaring anything else established its zeroes some other way, and how a
+#: zero was established decides both what it means and what its error is.
+#:
+#: Both entries here are *observations of nothing*: a gate that decoded to a
+#: real number below the significant-echo floor, and a gate the RDA itself
+#: reported as below threshold.  They differ in coverage -- the second is
+#: two to three orders of magnitude more numerous, because it is what the
+#: radar says about the clear sky rather than what survived a decoder that
+#: could not tell clear sky from ambiguity -- but not in kind, and both take
+#: the same ``z0_err`` and the same forward-operator floor.
+#:
+#: What is deliberately NOT here, and must never be added: any source built
+#: from range-folded gates (Message-31 raw code 1).  A range-folded gate is
+#: a return the radar cannot place in range; it may be a storm, and reading
+#: it as clear air would assimilate "no echo" into cells that have one.
+#: Sources are refused by allow-list precisely so that adding such a regime
+#: has to be a deliberate edit here rather than a value that slips through.
+CLEAR_AIR_SOURCES = ("finite_below_floor",
+                     "below_threshold_and_finite_below_floor")
+
+#: Backwards-compatible alias for the measurement-only regime.
+CLEAR_AIR_SOURCE = CLEAR_AIR_SOURCES[0]
+
 #: Prefix for the per-radar velocity batches.
 VELOCITY_PREFIX = "vr"
 
@@ -255,6 +283,10 @@ def radar_grid_to_gridded_obs(
     reflectivity_localization: Localization | None = None,
     velocity_localization: Localization | None = None,
     radars: Sequence[str] | None = None,
+    clear_air_simulated=None,
+    clear_air_value_dbz: float | None = None,
+    clear_air_localization: Localization | None = None,
+    clear_air_error_inflation: float = 1.0,
 ) -> tuple[list[GriddedObs], dict]:
     """Adapt one radar-grid file to the filter's observation batches.
 
@@ -307,6 +339,114 @@ def radar_grid_to_gridded_obs(
             "observed_points": int(np.count_nonzero(z_mask)),
         })
 
+    if clear_air_simulated is not None:
+        # --- every way this refuses, and why ---------------------------
+        #
+        # A clear-air zero is the observation with the worst failure mode
+        # in this lane: get it wrong and the filter is told, confidently
+        # and over a huge area, that storms it can see are not there.
+        # Each check below closes one route to that.
+
+        # 1. The file must actually carry a clear-air assessment.  Files
+        #    written before this capability have no z0 variables at all,
+        #    and inferring zeroes from their z_mask would turn "no echo
+        #    recorded" -- which includes everything the beam never
+        #    reached -- into observed clear air across the whole domain.
+        absent = [name for name in ("z0_mask", "z0_count", "z0_err")
+                  if name not in variables]
+        if absent:
+            raise RadarObsAdapterError(
+                f"the file carries no {absent}, so it was written without a "
+                "clear-air assessment. Clear-air zeroes cannot be derived "
+                "from z_mask: a false z_mask means 'no echo was recorded "
+                "here', which covers every cell the beam never reached, and "
+                "assimilating those as observed clear air fabricates "
+                "observations over most of the domain. Rebuild the "
+                "observation file with a build that establishes clear air")
+
+        # 2. How the zeroes were established has to be the regime this
+        #    adapter's error and coverage assumptions were written for.
+        source = document.get("clear_air_source")
+        if source not in CLEAR_AIR_SOURCES:
+            raise RadarObsAdapterError(
+                f"the file declares clear_air_source {source!r}; this "
+                f"adapter assimilates {sorted(CLEAR_AIR_SOURCES)}. How a "
+                "zero was established decides what it means: a regime this "
+                "adapter has not been taught differs in coverage, in error, "
+                "or -- the case this refusal exists for -- in whether its "
+                "gates are observations of nothing at all rather than "
+                "returns the radar could not place")
+
+        # 3. The value is the forward operator's clear-air floor and there
+        #    is no default.  -35 dBZ (mp 1/6/8/10) against an NSSL H(x)
+        #    that floors at 0 manufactures a 35 dB innovation out of two
+        #    skies that agree perfectly, everywhere the zeroes apply.
+        if clear_air_value_dbz is None:
+            raise RadarObsAdapterError(
+                "clear_air_value_dbz is required when assimilating "
+                "clear-air zeroes: the value a zero differences against is "
+                "the active scheme's H(x) clear-air floor (-35 dBZ for "
+                "mp_physics 1/6/8/10, 0 dBZ for NSSL mp18). There is no "
+                "default because the wrong one is silent -- two agreeing "
+                "clear skies produce a 35 dB innovation and the filter "
+                "removes condensate to chase it")
+        value = float(clear_air_value_dbz)
+        if not np.isfinite(value):
+            raise RadarObsAdapterError(
+                f"clear_air_value_dbz is {clear_air_value_dbz!r}; it must be "
+                "a finite dBZ value")
+
+        inflation = float(clear_air_error_inflation)
+        if not np.isfinite(inflation) or inflation < 1.0:
+            raise RadarObsAdapterError(
+                f"clear_air_error_inflation must be finite and >= 1, got "
+                f"{clear_air_error_inflation!r}; deflating a stated "
+                "observation error is a claim of skill nobody measured")
+
+        z0_mask = np.asarray(variables["z0_mask"]).astype(bool)
+
+        # 4. A cell cannot be both echo and clear.  The writer's merge
+        #    already vetoes clear where any radar saw echo, so an overlap
+        #    means the two halves of the file disagree about the same
+        #    cell, and there is no principled way to pick a winner here.
+        z_mask_all = np.asarray(variables["z_mask"]).astype(bool)
+        overlap = int(np.count_nonzero(z0_mask & z_mask_all))
+        if overlap:
+            raise RadarObsAdapterError(
+                f"{overlap} cell(s) are marked both as reflectivity "
+                "observations and as clear air. These are mutually "
+                "exclusive by construction -- the writer vetoes clear air "
+                "wherever any radar found echo -- so a file with both is "
+                "internally inconsistent and no reading of it is safe")
+
+        # 5. A supporting gate count under a true mask, checked here
+        #    rather than trusted, because the count is the entire evidence
+        #    that anything was measured at all.
+        z0_count = np.asarray(variables["z0_count"])
+        unsupported = int(np.count_nonzero(z0_mask & (z0_count <= 0)))
+        if unsupported:
+            raise RadarObsAdapterError(
+                f"{unsupported} clear-air cell(s) claim a true mask with no "
+                "supporting gates. The gate count is the whole evidence "
+                "that the radar measured the cell rather than never "
+                "reaching it")
+
+        values = np.full(shape, value, dtype=np.float64)
+        errors = np.asarray(variables["z0_err"], dtype=np.float64) * inflation
+        batches.append(_batch(
+            CLEAR_AIR_NAME, values, errors, z0_mask, clear_air_simulated,
+            clear_air_localization, shape))
+        used.append({
+            "name": CLEAR_AIR_NAME, "kind": "clear_air_reflectivity",
+            "source_variable": "z0_mask", "units": "dBZ",
+            "merged_across_radars": True,
+            "clear_air_source": source,
+            "value_dbz": value,
+            "error_inflation": inflation,
+            "observed_points": int(np.count_nonzero(z0_mask)),
+            "supporting_gates": int(z0_count[z0_mask].sum()),
+        })
+
     if velocity_simulated is not None:
         wanted = None if radars is None else {str(r) for r in radars}
         for index, radar in enumerate(document["radars"]):
@@ -340,7 +480,8 @@ def radar_grid_to_gridded_obs(
 
     if not batches:
         raise RadarObsAdapterError(
-            "neither reflectivity_simulated nor velocity_simulated was "
+            "none of reflectivity_simulated, clear_air_simulated or "
+            "velocity_simulated was "
             "given, so this call would assimilate nothing. An intentional "
             "no-observation cycle is an empty obs sequence at the analyze() "
             "call, not an empty adaptation here")
@@ -359,7 +500,15 @@ def radar_grid_to_gridded_obs(
         "grid_binding": "full TargetGrid, including z_w",
         "grid_shape": list(shape),
         "z_source": z_source if reflectivity_simulated is not None else None,
+        "clear_air_source": (document.get("clear_air_source")
+                             if clear_air_simulated is not None else None),
         "dealiasing": document.get("provenance", {}).get("dealiasing"),
+        # The unfolder's own three-state account, lifted so the DA side can
+        # count what dealiasing RECOVERED rather than infer it from a flag.
+        # Absent (None) when the observation file was built without it --
+        # which is a different statement from "it ran and recovered none",
+        # and the treatment proof depends on being able to tell them apart.
+        "dealias": document.get("provenance", {}).get("dealias") or None,
         "superob_params": document.get("superob_params"),
         "batches": used,
         "radars": [{"id": str(r["id"]), "lat_deg": r["lat_deg"],
@@ -373,6 +522,10 @@ def radar_grid_to_gridded_obs(
             "the file was bound to the caller's TargetGrid arrays, not to "
             "its grid_identity_sha256 string; z_w is checked and is not "
             "stored in the file",
+            "clear-air zeroes carry the active scheme's H(x) clear-air "
+            "floor as their value, supplied by the caller; a floor "
+            "mismatch would manufacture an innovation from two agreeing "
+            "clear skies",
         ],
     }
     return batches, provenance

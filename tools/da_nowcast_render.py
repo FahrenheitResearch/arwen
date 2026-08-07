@@ -111,6 +111,33 @@ GLYPH_ADVANCE = 0.60
 CREDIT_GAP_IN = 0.4
 
 
+def radar_ids(variable) -> list[str]:
+    """Every contributing radar's id, in the file's own order.
+
+    ``gpuwm-obs.radar-grid.v1`` carries ``radar_id`` as (radar, strlen)
+    characters, one row per radar that fed the analysis.  The first row
+    is the anchor.
+    """
+
+    import numpy as np
+
+    return [b"".join(np.ma.getdata(row)).decode().strip()
+            for row in variable]
+
+
+def site_label(ids) -> str:
+    """How the figures name the radars behind an observed composite.
+
+    With one radar this is that radar's id, so single-radar galleries
+    are unchanged.  With several it names them all: a composite built
+    from three radars and captioned with one radar's id would understate
+    the analysis it came from, and saying what an observation actually
+    is happens to be this gallery's entire job.
+    """
+
+    return "+".join(ids)
+
+
 def text_width_in(text: str, points: float) -> float:
     return len(text) * GLYPH_ADVANCE * points / 72.0
 
@@ -309,8 +336,19 @@ class Gallery:
         self.lat = np.asarray(ref["XLAT"][:], float)
         self.lon = np.asarray(ref["XLONG"][:], float)
         self.dx_km = float(ref.getncattr("DX")) / 1000.0
+        # An observation file carries one row per contributing radar.
+        # The FIRST is the anchor -- it sites the domain and its lat/lon
+        # is what the map draws a marker at -- but every row fed the
+        # composite these figures are graded against, so the label names
+        # them all.  A three-radar composite captioned with one radar's
+        # id would understate the analysis it came from, and this
+        # gallery's whole job is to not do that.  With one radar the
+        # label IS the id, so single-radar output is unchanged.
+        ids = radar_ids(ref["radar_id"])
         self.site = {
-            "id": b"".join(ref["radar_id"][0].data).decode().strip(),
+            "id": ids[0],
+            "ids": ids,
+            "label": site_label(ids),
             "lat": float(ref["radar_lat"][0]),
             "lon": float(ref["radar_lon"][0])}
 
@@ -352,10 +390,10 @@ class Gallery:
         self.window_end = self.leg_valid(self.cycles - 1)
         self.foot = (
             f"gpuwm radar-DA nowcast demo (N={self.members}) — real "
-            f"{self.site['id']} NEXRAD Level-II — UNSCORED demo, not "
+            f"{self.site['label']} NEXRAD Level-II — UNSCORED demo, not "
             "campaign evidence — basemap: Natural Earth 10m + US Census "
             "counties (vendored ArWen assets)")
-        self.src = (f"source: ArWen (model) · {self.site['id']} "
+        self.src = (f"source: ArWen (model) · {self.site['label']} "
                     "Level-II (obs)")
 
     # -- pairing observations with the legs that used them ----------------
@@ -471,7 +509,7 @@ class Gallery:
 
     def obs_subtitle(self, ds) -> str:
         stamp = ds.getncattr("valid_time")
-        return (f"{self.site['id']} Level-II composite | "
+        return (f"{self.site['label']} Level-II composite | "
                 f"Valid {stamp[5:10]} {stamp[11:19]}Z | "
                 f"Δx {self.dx_km:g} km grid")
 
@@ -651,7 +689,7 @@ class Gallery:
                                  layout="constrained")
         m = self.refl_panel(
             axes[0], self.composite_obs(self.obs[-1]),
-            f"OBSERVED — {self.site['id']} composite (the last "
+            f"OBSERVED — {self.site['label']} composite (the last "
             "observation any leg saw)",
             self.obs_subtitle(self.obs[-1]))
         self.refl_panel(
@@ -678,7 +716,7 @@ class Gallery:
             # an empty row would be the figure claiming one.
             tail = "no free forecast in this view — analysis only"
         title, points = fit_title(
-            f"{self.site['id']} nowcast — {self.cycles} applied "
+            f"{self.site['label']} nowcast — {self.cycles} applied "
             f"{self.cadence_label()} cycles to "
             f"{self.window_end:%H:%M}Z (N={self.members}, "
             f"{self.report['args'].get('solve_device', '?')} LETKF), "
@@ -735,7 +773,7 @@ class Gallery:
                          fraction=0.012, pad=0.008,
                          label="composite dBZ")
         title, points = fit_title(
-            f"{self.cycles} cycles against live {self.site['id']} "
+            f"{self.cycles} cycles against live {self.site['label']} "
             + ("data, then the free forecast — " if self.free_legs
                else "data — analyses only in this view — ")
             + f"Init {self.init:%m/%d %H}Z | ArWen | "
@@ -859,7 +897,7 @@ class Gallery:
             m = self.refl_panel(
                 axes[0][c], self.composite_obs(ds),
                 f"OBSERVED — {self.leg_label(leg)}",
-                f"{self.site['id']} composite | Valid {vt[11:19]}Z",
+                f"{self.site['label']} composite | Valid {vt[11:19]}Z",
                 labels=False, fs=7.8)
             self.refl_panel(
                 axes[1][c], self.mean_comp(leg),
@@ -892,7 +930,7 @@ class Gallery:
         total = self.free_legs
         fig.text(0.5, 0.978,
                  "VERIFICATION — observed after the fact: the free "
-                 f"forecast vs the {self.site['id']} composites that "
+                 f"forecast vs the {self.site['label']} composites that "
                  "did not exist when it ran", ha="center", va="top",
                  fontsize=11.5)
         fig.text(0.5, 0.947,
@@ -968,7 +1006,7 @@ class Gallery:
         parts = [
             "<!doctype html><html><head><meta charset='utf-8'>",
             f"<title>{html.escape(self.case_name)} - "
-            f"{self.site['id']} nowcast</title>",
+            f"{self.site['label']} nowcast</title>",
             "<style>body{font-family:Segoe UI,system-ui,sans-serif;"
             "margin:2rem;background:#14161a;color:#e8e8e4}h1{font-size:"
             "1.4rem}h2{font-size:1.05rem;margin-top:2.2rem;"
@@ -980,7 +1018,7 @@ class Gallery:
             ".9rem;margin-bottom:.6rem}.vbanner{background:#0b3b20;"
             "color:#c9ecd6;padding:.6rem 1rem;border-radius:6px;"
             "font-size:.9rem;margin-bottom:.6rem}</style></head><body>",
-            f"<h1>{self.site['id']} nowcast — "
+            f"<h1>{self.site['label']} nowcast — "
             f"{html.escape(self.case_name)}</h1>",
             "<div class='banner'>DEMO-GRADE NOWCAST — UNSCORED, "
             "outside any registered campaign, not campaign evidence. "

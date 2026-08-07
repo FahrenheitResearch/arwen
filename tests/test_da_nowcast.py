@@ -14,11 +14,13 @@ from pathlib import Path
 import pytest
 
 from tools.da_nowcast import (
-    STAGES, VERIFY_SCHEMA, WindowPlan, _stop, advance_state,
+    STAGES, VERIFY_SCHEMA, FrontDoorError, RadarSelection, WindowPlan,
+    _stop, advance_state,
     build_parser, cycle_cmd, fetch_cmd, gallery_rows, geojson_box,
     handoff_state, initial_frames, latest_gfs_cycle,
     merge_gallery_rows, motion_from_centroids, obs_cmd, plan_window,
-    resolve_latest_window_end, site_domain_center, start_verification,
+    prepare_cmd, radar_selection, resolve_latest_window_end,
+    site_domain_center, start_verification,
     validate_site, verdict_line, verification_block, verify_obs_name,
     verify_pass, watch_cmd, wizard_cmd, wrfout_name, write_verification)
 from tools.da_nowcast_render import footer_band_fraction
@@ -132,6 +134,61 @@ class TestGfsCycleSelection:
         # replaying an old window: newest cycle at/before init wins
         assert latest_gfs_cycle(utc(2026, 8, 1, 7), NOW) \
             == utc(2026, 8, 1, 6)
+
+
+class TestBackgroundSelection:
+    """The window plan rides the gpuwm.da.background registry.
+
+    HRRR is the front door's default background (Drew ruling,
+    2026-08-06); GFS remains for archival reproduction, and its answer
+    through the registry is proved identical to ``latest_gfs_cycle`` by
+    tests/test_da_background.py.
+    """
+
+    def test_hrrr_rides_the_newest_published_hourly_cycle(self):
+        plan = plan_window(utc(2026, 8, 5, 5, 30), cycles=2,
+                           cycle_seconds=900, free_legs=6,
+                           now=utc(2026, 8, 5, 5, 45), source="hrrr")
+        # 05Z is only 45 min old -- not yet published for the whole
+        # window, so the fail-closed walk lands on 04Z at f001.
+        assert plan.background_source == "hrrr"
+        assert plan.background_cycle == utc(2026, 8, 5, 4)
+        assert plan.forecast_start_hour == 1
+        # the compatibility shim answers with the same cycle
+        assert plan.gfs_cycle == plan.background_cycle
+
+    def test_a_shortened_window_lands_init_on_the_cycle_itself(self):
+        # window-end HH:30 with 2 cycles of 15 min: init HH:00, and on
+        # hourly HRRR cycles that init IS a cycle -- forecast lead 0,
+        # the case the GFS-shaped arithmetic never produced.
+        plan = plan_window(utc(2026, 8, 5, 5, 30), cycles=2,
+                           cycle_seconds=900, free_legs=6,
+                           now=utc(2026, 8, 5, 6, 30), source="hrrr")
+        assert plan.background_cycle == plan.init
+        assert plan.forecast_start_hour == 0
+
+    def test_a_window_past_the_hrrr_horizon_is_refused(self):
+        with pytest.raises(SystemExit):
+            plan_window(utc(2026, 8, 5, 5, 30), cycles=2,
+                        cycle_seconds=900, free_legs=6,
+                        now=utc(2026, 8, 5, 5, 45), source="hrrr",
+                        run_hours=30)
+
+    def test_an_unregistered_source_is_refused_with_the_roster(self):
+        with pytest.raises(SystemExit):
+            plan_window(utc(2026, 8, 5, 5, 30), cycles=2,
+                        cycle_seconds=900, free_legs=6,
+                        now=NOW, source="rrfs")
+
+    def test_payload_carries_both_spellings_of_the_cycle(self):
+        payload = plan_window(
+            utc(2026, 8, 5, 5, 30), cycles=2, cycle_seconds=900,
+            free_legs=6, now=utc(2026, 8, 5, 5, 45),
+            source="hrrr").to_payload()
+        assert payload["background_source"] == "hrrr"
+        assert payload["background_cycle"] == "2026-08-05T04"
+        # compatibility duplicate under the pre-HRRR key
+        assert payload["gfs_cycle"] == payload["background_cycle"]
 
 
 class TestLatestWindowEnd:
@@ -260,8 +317,116 @@ class TestCommands:
         assert "--area=1,2,3,4" in argv
         assert "--cadence" in argv
 
+    def test_fetch_cmd_survives_the_shortened_window_hints(self):
+        """Issue #74: a lead-0 window's hints carry no start hour.
+
+        The wizard writes ``forecast_start_hour`` into its [fetch]
+        hints only when it is nonzero.  A window ending at HH:30 with
+        2 cycles puts init at HH:00 -- on hourly HRRR cycles that is
+        f000, so the key is absent, and indexing it was a KeyError for
+        BOTH sources.  The absent key must mean lead 0, said out loud.
+        """
+
+        plan = plan_window(utc(2026, 8, 5, 5, 30), cycles=2,
+                           cycle_seconds=900, free_legs=6,
+                           now=utc(2026, 8, 5, 6, 30), source="hrrr")
+        assert plan.forecast_start_hour == 0     # the hint the wizard omits
+        hints = {"cycle": "2026-08-05T05", "hours": 4, "area": "1,2,3,4"}
+        argv = fetch_cmd(hints=hints, data_dir=Path("d"), source="hrrr")
+        assert argv[argv.index("--forecast-start-hour") + 1] == "0"
+        # HRRR is hourly: `gpuwm fetch --source hrrr` refuses --cadence,
+        # and the wizard's hrrr hints never carry one.
+        assert "--cadence" not in argv
+        # same fix, same meaning, on the archival GFS route
+        argv = fetch_cmd(hints={**hints, "cadence": 3}, data_dir=Path("d"),
+                         source="gfs")
+        assert argv[argv.index("--forecast-start-hour") + 1] == "0"
+
+    def test_cycle_cmd_forwards_the_reflectivity_analysis_trio(self):
+        """The one-seam wire-through for the Z-DA arm (2026-08-06).
+
+        The ktbw HRRR case showed every trajectory carrying the same
+        misplaced complex: velocity-only DA cannot relocate echo.  The
+        driver has carried --hydrometeors / --positivity-policy /
+        --reflectivity-analysis all along; the front door now forwards
+        them, and forwards NOTHING when they are not asked for, so
+        every existing invocation builds its existing argv.
+        """
+        base = dict(
+            prepared_root=Path("p"), authority_dir=Path("a"),
+            profile="prof", plan=self.plan(), members=8,
+            obs_files=[Path("o")], grid_wrfouts=[Path("g")],
+            cycle_out=Path("c"), proof_sha="x", manifest_sha="y",
+            content_sha="z", seed=1, solve_device="cuda",
+            horizontal_loc_m=12000.0, vertical_loc_m=3000.0,
+            length_scale_km=50.0, source="hrrr")
+        plain = cycle_cmd(**base)
+        assert "--hydrometeors" not in plain
+        assert "--reflectivity-analysis" not in plain
+        assert "--positivity-policy" not in plain
+        armed = cycle_cmd(**base, hydrometeors=True,
+                          positivity_policy="clip",
+                          reflectivity_analysis=True)
+        assert armed[armed.index("--positivity-policy") + 1] == "clip"
+        assert "--hydrometeors" in armed
+        assert "--reflectivity-analysis" in armed
+
+    def test_analysis_flags_refuse_incoherent_combinations_early(self):
+        """The driver's refusal chain, met before any stage is paid for."""
+        from tools.da_nowcast import validate_analysis_flags
+
+        class Args:
+            hydrometeors = False
+            positivity_policy = None
+            reflectivity_analysis = False
+
+        validate_analysis_flags(Args())     # the wind-only default is fine
+        bad = Args()
+        bad.reflectivity_analysis = True
+        with pytest.raises(SystemExit):
+            validate_analysis_flags(bad)
+        bad = Args()
+        bad.hydrometeors = True
+        with pytest.raises(SystemExit):
+            validate_analysis_flags(bad)
+
+    def test_prepare_cmd_speaks_each_sources_own_grammar(self):
+        gfs = prepare_cmd(
+            data_dir=Path("d"), authority_dir=Path("a"),
+            bridge=Path("br"), profile="p", geog_root=Path("g"),
+            prepared_root=Path("pr"), plan=self.plan(),
+            manifest_sha="m", source="gfs")
+        text = " ".join(gfs)
+        assert "--gfs-series" in text and "--experiment-config" in text
+        assert "gpuwm.source_cli" in text
+
+        hrrr_plan = plan_window(utc(2026, 8, 5, 5, 30), cycles=2,
+                                cycle_seconds=900, free_legs=6,
+                                now=utc(2026, 8, 5, 5, 45),
+                                source="hrrr")
+        hrrr = prepare_cmd(
+            data_dir=Path("d"), authority_dir=Path("a"),
+            bridge=None, profile="p", geog_root=Path("g"),
+            prepared_root=Path("pr"), plan=hrrr_plan,
+            manifest_sha="m", source="hrrr",
+            namelist_input=Path("case.namelist.input"),
+            domain_spec=Path("case.d01-target.json"),
+            history_interval_seconds=900.0)
+        text = " ".join(hrrr)
+        assert "--source-root" in text
+        assert "SHA256SUMS" in text
+        assert hrrr[hrrr.index("--valid-time") + 1] \
+            == "2026-08-05_04:00:00"
+        assert hrrr[hrrr.index("--forecast-start-hour") + 1] == "1"
+        assert "--run-seconds" in text
+        # the GFS grammar's flags are refusals on the HRRR door
+        for flag in ("--gfs-series", "--bridge", "--experiment-config",
+                     "--cycle"):
+            assert flag not in hrrr
+
     def test_obs_cmd_takes_the_site_as_argument(self):
-        argv = obs_cmd(site="QQQQ", valid=utc(2026, 8, 5, 4, 15),
+        argv = obs_cmd(selection=RadarSelection(anchor="QQQQ"),
+                       valid=utc(2026, 8, 5, 4, 15),
                        grid_wrfout=Path("g"), out_nc=Path("o"),
                        work_dir=Path("w"), bucket=None)
         assert "QQQQ" in argv
@@ -309,6 +474,27 @@ class TestParser:
         assert args.members == 10
         assert args.solve_device == "cuda"
         assert args.stop_after is None
+
+    def test_hrrr_is_the_default_background(self):
+        """Drew ruling, 2026-08-06: HRRR default, permanent.
+
+        GFS stays a choice for archival reproduction of pre-HRRR runs,
+        and anything else must arrive as a gpuwm.da.background registry
+        entry before it can appear here.
+        """
+
+        args = build_parser().parse_args(
+            ["run", "--site", "qqqq", "--window-end", "latest",
+             "--out", "case"])
+        assert args.source == "hrrr"
+        args = build_parser().parse_args(
+            ["run", "--site", "qqqq", "--window-end", "latest",
+             "--out", "case", "--source", "gfs"])
+        assert args.source == "gfs"
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(
+                ["run", "--site", "qqqq", "--window-end", "latest",
+                 "--out", "case", "--source", "rrfs"])
 
     def test_verify_requires_case_dir(self):
         with pytest.raises(SystemExit):
@@ -558,7 +744,7 @@ class TestVerifyPass:
         monkeypatch.setattr("tools.da_nowcast.build_verify_frame",
                             record)
         frames, built = verify_pass(
-            case_dir=case, site="QQQQ",
+            case_dir=case, selection=RadarSelection(anchor="QQQQ"),
             init=utc(2026, 8, 5, 4), frames=initial_frames(FREE_TIMES),
             bucket=None, max_offset_seconds=480.0, repo_root=case)
         assert built == 0
@@ -580,7 +766,8 @@ class TestVerifyPass:
         monkeypatch.setattr("tools.da_nowcast.build_verify_frame",
                             refuse)
         frames, built = verify_pass(
-            case_dir=case, site="QQQQ", init=utc(2026, 8, 5, 4),
+            case_dir=case, selection=RadarSelection(anchor="QQQQ"),
+            init=utc(2026, 8, 5, 4),
             frames=initial_frames([soon.strftime("%Y-%m-%dT%H:%M:00Z")]),
             bucket=None, max_offset_seconds=480.0, repo_root=case)
         assert built == 0
@@ -867,3 +1054,345 @@ class TestPerturbationScale:
             ["run", "--site", "qqqq", "--window-end", "latest",
              "--out", "o"])
         assert args.length_scale_km is None
+
+
+# ---------------------------------------------------------------------------
+# the front door asks for more than one radar, and says so in the receipt
+# ---------------------------------------------------------------------------
+def parsed_run(*extra):
+    """``run`` args with the required flags and whatever else is asked."""
+
+    return build_parser().parse_args(
+        ["run", "--site", "qqqq", "--window-end", "latest", "--out", "o",
+         *extra])
+
+
+def obs_argv(selection):
+    return obs_cmd(selection=selection, valid=utc(2026, 8, 5, 4, 15),
+                   grid_wrfout=Path("g"), out_nc=Path("o"),
+                   work_dir=Path("w"), bucket=None)
+
+
+def builder_args(argv):
+    """Parse a generated argv with the obs builder's REAL parser.
+
+    The argv starts ``<python> -m tools.obs_radar_grid_build``; the
+    builder's parser sees only what follows.
+    """
+
+    from tools.obs_radar_grid_build import build_parser as obs_parser
+
+    marker = argv.index("tools.obs_radar_grid_build")
+    return obs_parser().parse_args(argv[marker + 1:])
+
+
+class TestRadarSelectionArgv:
+    """What the front door emits is what the obs builder accepts."""
+
+    def test_the_default_is_the_single_radar_argv_unchanged(self):
+        # The adoption must be a no-op for every run that does not ask
+        # for it: this is the argv the front door emitted before
+        # multi-radar existed, and a changed byte here changes what
+        # every existing case would rebuild as.
+        argv = obs_argv(RadarSelection(anchor="QQQQ"))
+        marker = argv.index("tools.obs_radar_grid_build")
+        assert argv[marker + 1:marker + 3] == ["--site", "QQQQ"]
+        assert "--discover-sites" not in argv
+        assert "--min-radars" not in argv
+        assert "--max-radar-time-spread-seconds" not in argv
+        assert "--min-coverage-fraction" not in argv
+        assert "--max-radars" not in argv
+
+    def test_named_sites_put_the_anchor_first_and_deduplicate(self):
+        argv = obs_argv(RadarSelection(anchor="QQQQ",
+                                       sites=("RRRR", "QQQQ", "SSSS")))
+        named = [argv[i + 1] for i, a in enumerate(argv) if a == "--site"]
+        assert named == ["QQQQ", "RRRR", "SSSS"]
+
+    def test_discovery_names_no_radar_at_all(self):
+        argv = obs_argv(RadarSelection(anchor="QQQQ", discover=True,
+                                       min_coverage_fraction=0.30,
+                                       max_radars=4))
+        assert "--site" not in argv
+        assert "--discover-sites" in argv
+        assert argv[argv.index("--min-coverage-fraction") + 1] == "0.3"
+        assert argv[argv.index("--max-radars") + 1] == "4"
+
+    def test_the_delivery_constraints_apply_to_either_route(self):
+        # --min-radars and --max-radar-time-spread-seconds are about
+        # what the radars DELIVERED, not how they were chosen, so they
+        # ride both routes.
+        for selection in (
+                RadarSelection(anchor="QQQQ", sites=("RRRR",),
+                               min_radars=2,
+                               max_time_spread_seconds=300.0),
+                RadarSelection(anchor="QQQQ", discover=True, min_radars=2,
+                               max_time_spread_seconds=300.0)):
+            argv = obs_argv(selection)
+            assert argv[argv.index("--min-radars") + 1] == "2"
+            assert argv[argv.index(
+                "--max-radar-time-spread-seconds") + 1] == "300.0"
+
+    def test_discovery_only_flags_do_not_leak_into_the_named_route(self):
+        argv = obs_argv(RadarSelection(anchor="QQQQ", sites=("RRRR",),
+                                       min_coverage_fraction=0.30,
+                                       max_radars=4))
+        assert "--min-coverage-fraction" not in argv
+        assert "--max-radars" not in argv
+
+    def test_every_emitted_argv_parses_under_the_builders_own_parser(self):
+        # Verified against the artifact: the obs builder's real parser,
+        # not a copy of its flag list kept here.
+        from tools.obs_radar_grid_build import requested_sites
+
+        single = builder_args(obs_argv(RadarSelection(anchor="QQQQ")))
+        assert requested_sites(single) == ["QQQQ"]
+
+        named = builder_args(obs_argv(
+            RadarSelection(anchor="QQQQ", sites=("RRRR", "SSSS"),
+                           min_radars=2, max_time_spread_seconds=300.0)))
+        assert requested_sites(named) == ["QQQQ", "RRRR", "SSSS"]
+        assert named.min_radars == 2
+        assert named.max_radar_time_spread_seconds == 300.0
+
+        found = builder_args(obs_argv(
+            RadarSelection(anchor="QQQQ", discover=True,
+                           min_coverage_fraction=0.30, max_radars=4,
+                           min_radars=2)))
+        assert requested_sites(found) == []      # discovery: computed later
+        assert found.discover_sites is True
+        assert found.min_coverage_fraction == 0.30
+        assert found.max_radars == 4
+
+
+class TestRadarSelectionFromTheFrontDoor:
+    def test_the_flags_default_to_one_radar(self):
+        selection = radar_selection(parsed_run())
+        assert selection == RadarSelection(anchor="QQQQ")
+        assert selection.multi is False
+
+    def test_sites_are_uppercased_arguments(self):
+        selection = radar_selection(
+            parsed_run("--sites", "rrrr", "--sites", "ssss"))
+        assert selection.sites == ("RRRR", "SSSS")
+        assert selection.multi is True
+
+    def test_discovery_and_naming_together_are_refused(self):
+        with pytest.raises(FrontDoorError, match="mutually exclusive"):
+            radar_selection(parsed_run("--sites", "rrrr",
+                                       "--discover-sites"))
+
+    def test_the_tuning_flags_reach_the_selection(self):
+        selection = radar_selection(parsed_run(
+            "--discover-sites", "--min-coverage-fraction", "0.30",
+            "--max-radars", "4", "--min-radars", "2",
+            "--max-radar-time-spread-seconds", "300"))
+        assert selection.discover is True
+        assert selection.min_coverage_fraction == 0.30
+        assert selection.max_radars == 4
+        assert selection.min_radars == 2
+        assert selection.max_time_spread_seconds == 300.0
+
+
+class TestTheVerifierGradesAgainstWhatItAssimilated:
+    """A multi-radar nowcast graded against a single-radar truth field
+    would be scored on a different observation than it was given, and
+    the difference would look like skill."""
+
+    def test_the_selection_round_trips_through_a_receipt(self):
+        selection = RadarSelection(
+            anchor="QQQQ", discover=True, min_coverage_fraction=0.30,
+            max_radars=4, min_radars=2, max_time_spread_seconds=300.0)
+        back = RadarSelection.from_payload(selection.to_payload(),
+                                           anchor="QQQQ")
+        assert back == selection
+
+    def test_named_sites_round_trip_too(self):
+        selection = RadarSelection(anchor="QQQQ", sites=("RRRR", "SSSS"),
+                                   min_radars=2)
+        back = RadarSelection.from_payload(selection.to_payload(),
+                                           anchor="QQQQ")
+        assert back == selection
+        assert obs_argv(back) == obs_argv(selection)
+
+    def test_a_receipt_without_radars_reads_back_as_one_radar(self):
+        # Every case written before this existed was single-radar, and
+        # its verifier must keep building exactly what its cycle did.
+        assert RadarSelection.from_payload(None, anchor="QQQQ") \
+            == RadarSelection(anchor="QQQQ")
+
+    def test_the_case_context_recovers_the_selection(self, tmp_path):
+        from tools.da_nowcast import _case_context
+
+        selection = RadarSelection(anchor="QQQQ", sites=("RRRR",),
+                                   min_radars=2)
+        (tmp_path / "nowcast-receipt.json").write_text(json.dumps({
+            "schema": "gpuwm-da.nowcast.v1", "site": "QQQQ",
+            "radars": selection.to_payload(),
+            "plan": {"init": "2026-08-05T04:00:00Z", "cycle_seconds": 900,
+                     "free_leg_times": list(FREE_TIMES)}}),
+            encoding="utf-8")
+        recovered, init, _, dealias = _case_context(tmp_path)
+        assert recovered == selection
+        assert init == utc(2026, 8, 5, 4)
+        # No "obs" block: this receipt predates --dealias, and every run
+        # written before the flag existed masked rather than unfolded.
+        assert dealias is False
+
+    def test_the_case_context_recovers_the_dealias_treatment(self, tmp_path):
+        """The truth field has to be built the way the analysis was fed.
+
+        Dealiasing changes which velocity gates exist and what they are
+        worth.  A run that assimilated unfolded velocities and was graded
+        against a masked-only composite would be scored on an observation
+        nobody gave it -- and the mismatch would read as skill, which is
+        the specific way this class of bug hides.
+        """
+
+        from tools.da_nowcast import _case_context
+
+        selection = RadarSelection(anchor="QQQQ", sites=("RRRR",),
+                                   min_radars=2)
+        (tmp_path / "nowcast-receipt.json").write_text(json.dumps({
+            "schema": "gpuwm-da.nowcast.v1", "site": "QQQQ",
+            "radars": selection.to_payload(),
+            "obs": {"dealias": True},
+            "plan": {"init": "2026-08-05T04:00:00Z", "cycle_seconds": 900,
+                     "free_leg_times": list(FREE_TIMES)}}),
+            encoding="utf-8")
+        _, _, _, dealias = _case_context(tmp_path)
+        assert dealias is True
+
+    def test_the_non_radar_streams_reach_the_cycle_driver(self):
+        """The flag that never reached the driver is this project's bug.
+
+        --goes-cwp and --surface-obs existed only on the cycle driver's own
+        command line, so no run launched from this front door -- which is
+        every WaH run -- could assimilate either.  This pins that the front
+        door now emits them, and that leaving them off emits nothing.
+        """
+
+        from tools.da_nowcast import cycle_cmd
+
+        base = dict(
+            prepared_root=Path("prep"), authority_dir=Path("auth"),
+            profile="none",
+            plan=plan_window(utc(2026, 8, 5, 5, 30), cycles=2,
+                             cycle_seconds=900, free_legs=2,
+                             now=utc(2026, 8, 5, 5, 45), source="hrrr"),
+            members=4, obs_files=[],
+            grid_wrfouts=[], cycle_out=Path("out"), proof_sha="0" * 64,
+            manifest_sha="0" * 64, content_sha="0" * 64, seed=1,
+            solve_device="host", horizontal_loc_m=12000.0,
+            vertical_loc_m=3000.0, length_scale_km=6.0, source="hrrr")
+
+        off = cycle_cmd(**base)
+        assert "--goes-cwp" not in off
+        assert "--surface-obs" not in off
+        assert "--clear-air-analysis" not in off
+
+        on = cycle_cmd(**base, clear_air_analysis=True,
+                       surface_obs=Path("sfc.json"),
+                       goes_cwp=[Path("g0.nc"), Path("g1.nc")],
+                       cwp_vertical_loc_m=20000.0)
+        assert "--clear-air-analysis" in on
+        assert on[on.index("--surface-obs") + 1] == str(Path("sfc.json"))
+        # One --goes-cwp per file, in the order given: the driver matches
+        # satellite files to legs by POSITION.
+        assert [on[i + 1] for i, tok in enumerate(on)
+                if tok == "--goes-cwp"] == [str(Path("g0.nc")),
+                                            str(Path("g1.nc"))]
+        assert on[on.index("--cwp-vertical-loc-m") + 1] == "20000.0"
+
+    def test_the_dealias_flag_reaches_both_obs_call_sites(self):
+        """One flag, two builders, or the run grades itself crooked.
+
+        ``obs_cmd`` serves the assimilated observations and the verifier's
+        truth composites both.  This pins that the flag is emitted, and
+        that leaving it off emits nothing -- the off path has to stay
+        byte-identical to every run recorded before the flag existed.
+        """
+
+        from tools.da_nowcast import obs_cmd
+
+        kwargs = dict(selection=RadarSelection(anchor="QQQQ"),
+                      valid=utc(2026, 8, 5, 4),
+                      grid_wrfout=Path("wrfout"), out_nc=Path("out.nc"),
+                      work_dir=Path("vols"), bucket=None)
+        assert "--dealias" in obs_cmd(**kwargs, dealias=True)
+        assert "--dealias" not in obs_cmd(**kwargs, dealias=False)
+        assert obs_cmd(**kwargs) == obs_cmd(**kwargs, dealias=False)
+
+    def test_a_verification_frame_is_built_from_every_radar(
+            self, tmp_path, monkeypatch):
+        # The frame the gallery grades against is built by the same
+        # obs_cmd, from the same selection, as the cycle it grades.
+        import tools.da_nowcast as front
+
+        seen = {}
+
+        class Done:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def capture(argv, **kwargs):
+            seen["argv"] = argv
+            (tmp_path / "obsverify").mkdir(parents=True, exist_ok=True)
+            return Done()
+
+        monkeypatch.setattr(front.subprocess, "run", capture)
+        selection = RadarSelection(anchor="QQQQ", sites=("RRRR", "SSSS"),
+                                   min_radars=2)
+        ok, why = front.build_verify_frame(
+            case_dir=tmp_path, selection=selection,
+            init=utc(2026, 8, 5, 4), valid=utc(2026, 8, 5, 5, 45),
+            bucket=None, max_offset_seconds=480.0, repo_root=tmp_path)
+        assert ok, why
+        named = [seen["argv"][i + 1]
+                 for i, a in enumerate(seen["argv"]) if a == "--site"]
+        assert named == ["QQQQ", "RRRR", "SSSS"]
+        assert seen["argv"][seen["argv"].index("--min-radars") + 1] == "2"
+        # named for the anchor, so a case's files stay predictable
+        assert seen["argv"][seen["argv"].index("--out") + 1].endswith(
+            "verify-qqqq-202608050545.nc")
+
+
+# ---------------------------------------------------------------------------
+# an observed composite is named after every radar that built it
+# ---------------------------------------------------------------------------
+class TestRadarLabelling:
+    """A three-radar composite captioned with one radar's id would
+    understate the analysis it came from."""
+
+    def char_rows(self, *ids, width=8):
+        import numpy as np
+
+        return np.ma.array([[c.encode() for c in name.ljust(width)]
+                            for name in ids])
+
+    def test_one_radar_reads_back_as_itself(self):
+        from tools.da_nowcast_render import radar_ids, site_label
+
+        ids = radar_ids(self.char_rows("QQQQ"))
+        assert ids == ["QQQQ"]
+        # single-radar galleries must be unchanged by multi-radar support
+        assert site_label(ids) == "QQQQ"
+
+    def test_every_contributing_radar_is_named(self):
+        from tools.da_nowcast_render import radar_ids, site_label
+
+        ids = radar_ids(self.char_rows("QQQQ", "RRRR", "SSSS"))
+        assert ids == ["QQQQ", "RRRR", "SSSS"]
+        assert site_label(ids) == "QQQQ+RRRR+SSSS"
+
+    def test_the_anchor_stays_first(self):
+        # the first row sites the domain and is what the map marks
+        from tools.da_nowcast_render import radar_ids
+
+        assert radar_ids(self.char_rows("QQQQ", "RRRR"))[0] == "QQQQ"
+
+    def test_padding_is_stripped(self):
+        from tools.da_nowcast_render import radar_ids
+
+        assert radar_ids(self.char_rows("QQQQ", width=12)) == ["QQQQ"]

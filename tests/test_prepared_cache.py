@@ -229,6 +229,70 @@ def test_prepared_cache_paths_fit_failed_windows_parent_budget():
     assert len(str(target / "header.json")) == 255
 
 
+def test_a_native_hrrr_soil_rides_the_cache_as_the_canonical_surface(
+        tmp_path):
+    """The REAL writer, fed the REAL native soil derivation, satisfies
+    the runner's exact surface demand.
+
+    Field 2026-08-06, first portable HRRR case: the runner's preflight
+    refused with 'prepared cache lacks the exact source-neutral Noah
+    surface inventory' because the native preparation wrote its cache
+    with no ``surface=`` at all -- while the suite that guards the
+    reader had INVENTED the canonical inventory in its own fixture
+    header instead of exercising this writer.  This test derives the
+    surface the way the preparation now does
+    (``preprocess_land_surface_soil`` -> ``canonical_noah_surface``),
+    writes a real cache, and compares the header against the runner's
+    own frozenset -- the very comparison at the preflight gate -- plus
+    the writer's promised drop of the legacy native soil pair.
+    """
+    import json
+
+    from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
+    from gpuwm.native_wrf_contract import canonical_noah_surface
+    from gpuwm.prepared_single_domain_forecast import (
+        _CANONICAL_SURFACE_FIELDS)
+
+    initial, met, boundaries = _fixture()
+    shape = met.fields["LANDSEA"].shape
+    fields = dict(met.fields)
+    # Physically plausible native soil profiles: the derivation is the
+    # certified one and it validates its inputs' physical ranges.
+    nodes = fields["SOILT"].shape[0]
+    fields["SOILT"] = np.stack(
+        [np.full(shape, 290.0 - 2.0 * k, dtype=np.float32)
+         for k in range(nodes)])
+    fields["SOILW"] = np.stack(
+        [np.full(shape, 0.10 + 0.02 * k, dtype=np.float32)
+         for k in range(nodes)])
+    fields.setdefault("XICE", np.zeros(shape, dtype=np.float32))
+    fields.setdefault("SNOW", np.zeros(shape, dtype=np.float32))
+    soil = preprocess_land_surface_soil(
+        fields, sf_surface_physics=2,
+        soil_type=np.full(shape, 6.0),
+        deep_soil_temperature=np.full(shape, 281.0))
+    surface = canonical_noah_surface(soil)
+    assert set(surface) == _CANONICAL_SURFACE_FIELDS
+
+    receipt = write_prepared_cache(
+        tmp_path / "cache", identity={"source": "hrrr-native"},
+        initial_result=initial,
+        met=SimpleNamespace(fields=MappingProxyType(fields)),
+        boundaries=boundaries, surface=surface)
+    assert receipt["status"] == "BUILT"
+    header = json.loads(
+        (tmp_path / "cache" / "header.json").read_text(encoding="utf-8"))
+    metadata = header["metadata"]
+    # The preflight gate's own comparison, verbatim.
+    assert set(metadata["surface_fields"]) == _CANONICAL_SURFACE_FIELDS
+    # The legacy native soil pair no longer rides in met: the canonical
+    # surface IS the soil statement of a portable cache.
+    assert set(metadata["met_fields"]).isdisjoint({"SOILT", "SOILW"})
+    # Every canonical array is really in the payload, restorable by name.
+    for name in sorted(_CANONICAL_SURFACE_FIELDS):
+        assert f"surface/{name}" in header["arrays"]
+
+
 def test_default_prepared_cache_bytes_ignore_disabled_seal_option(tmp_path):
     initial, met, boundaries = _fixture()
     first = tmp_path / "implicit-default"

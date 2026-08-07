@@ -172,7 +172,24 @@ TIGHTEN: dict[str, dict] = {
             "wrf-rrtmg-4-4-legacy-v1",
         ],
         "default": "none"},
-    "km_opt": {"type": "integer", "enum": [1, 4], "default": 1},
+    # km_opt is NOT here any more.  It used to be a parameter with
+    # ``enum: [1, 4]``, which was wrong twice over: 2 (1.5-order
+    # prognostic TKE) and 3 (3-D Smagorinsky) are executable -- the
+    # dycore's fail-closed admission takes 1/2/3/4 (gpuwm/config.py:1345,
+    # decided at gpuwm/core/dycore.py:2226), the kernels are transcribed
+    # from WRF v4.6.1 with dry-CBL oracle receipts, and
+    # configs/les_nest_250m_km3.toml has shipped km_opt=3 on a nest child
+    # since 1.5.1 -- and the enum said neither could be named.  Widening
+    # it in place would have put km_opt on both channels at once, which
+    # this document's own authority note forbids ("Component
+    # selector_keys are declared on their component and are deliberately
+    # absent from parameters") and tests/test_physics_registry_
+    # declarations.py::test_selector_keys_are_not_duplicated_as_parameters
+    # enforces.  So the selector moved to where every other scheme
+    # selector already lives: components.turbulence.selector_keys, whose
+    # four option rows carry km_opt 1/2/3/4 with their own maturity,
+    # reachability and evidence.  Per the les-completion spec's
+    # registry-honesty item (8.1.5) and AC-P6.4.
     "diff_6th_opt": {"type": "integer", "enum": [0, 1, 2], "default": 0},
     "diff_6th_slopeopt": {"type": "integer", "enum": [0, 1], "default": 0},
     # enum [4, 9], not minimum 1.  ``minimum: 1`` advertised 1, 2, 3, 5, 6,
@@ -2595,9 +2612,31 @@ def build(registry: dict) -> dict:
     # 12-cell matrix but a statement of what the closure reads: any
     # surface-layer scheme that produces a friction velocity and the
     # heat/moisture fluxes serves, and only "off" does not.
+    #
+    # "mynn" is NOT among them, and the reason is the other option's
+    # constraint rather than anything SASE needs.  The MYNN surface layer
+    # declares requires_components pbl = [off, mynn], transcribed from
+    # WRF's 16-cell matrix (phys/module_physics_init.F:3699-3704,
+    # 3837-3839) and pinned by tests/test_physics_registry.py::
+    # test_mynn_component_dependencies_are_the_wrf_v461_cells.  SASE is
+    # neither of those, so the pairing was refused by the registry while
+    # gpuwm.config.validate_sase_config admitted it -- a disagreement of
+    # 512 combinations that only became visible once the turbulence
+    # component gained its km_opt=0 option and SASE plans could resolve
+    # at all.  Listing what the closure would ACCEPT while the other half
+    # refuses to run is not an admission, so the intersection is what is
+    # declared here, and validate_sase_config now refuses the same pair.
     pbl_options["sase"]["constraints"]["requires_components"][
         "surface_layer"
-    ] = ["revised-mm5", "classic-mm5", "mynn"]
+    ] = ["revised-mm5", "classic-mm5"]
+    # Stated in this option's own fourth warning as prose since it was
+    # written ("it requires moist=true"), and enforced by
+    # validate_sase_config, but never declared machine-readably -- so the
+    # registry called 72 dry SASE combinations launchable that the loader
+    # then refused.  The closure mixes vapour, cloud water and cloud ice
+    # beside theta and forms its stability from the SATURATED
+    # Brunt-Vaisala frequency; a dry state has nothing for it to integrate.
+    pbl_options["sase"]["constraints"]["required_settings"]["moist"] = True
     pbl_options["sase"]["reachability"] = {"state": "component-override"}
     # Grell-Freitas (cu_physics=3), the first cumulus option admitted
     # since KF and the first scale-aware one: sig = (1-frh)^2 is the

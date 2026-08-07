@@ -1,0 +1,562 @@
+{
+  "clearance_rule": {
+    "derivation": "spec_bdy_width + blend_width = 5 + 5",
+    "enforced_by": "gpuwm/experiment.py:1604-1632",
+    "required_parent_rows": 10
+  },
+  "config": "les_tornado_100m_mayfield_20211210_attempt2.toml",
+  "containment": {
+    "d03_in_d02": {
+      "east": 190,
+      "north": 174,
+      "pass": true,
+      "required": 10,
+      "south": 126,
+      "west": 110
+    },
+    "d04_in_d03": {
+      "east": 129,
+      "north": 141,
+      "pass": true,
+      "required": 10,
+      "south": 119,
+      "west": 131
+    },
+    "pass": true
+  },
+  "corridor_cells": [
+    {
+      "frame": "01Z",
+      "inside": [
+        1,
+        2,
+        3
+      ],
+      "lat": 36.323,
+      "lon": -88.853,
+      "uh_m2s2": 268
+    },
+    {
+      "frame": "03Z",
+      "inside": [
+        1,
+        2,
+        3
+      ],
+      "lat": 36.897,
+      "lon": -89.185,
+      "uh_m2s2": 691
+    },
+    {
+      "frame": "04Z",
+      "inside": [
+        1,
+        2,
+        3
+      ],
+      "lat": 36.439,
+      "lon": -89.398,
+      "uh_m2s2": 494
+    },
+    {
+      "frame": "05Z",
+      "inside": [
+        1,
+        2,
+        3
+      ],
+      "lat": 36.303,
+      "lon": -89.204,
+      "uh_m2s2": 610
+    },
+    {
+      "frame": "05Z",
+      "inside": [
+        1,
+        2,
+        3
+      ],
+      "lat": 36.597,
+      "lon": -88.876,
+      "uh_m2s2": 594
+    }
+  ],
+  "derivation": {
+    "adjudicated_run": "dual-run PASS bit-identical, les-attempt1/receipts/dual_run_screen-adjudicated.txt",
+    "corridor": {
+      "lat": [
+        36.25,
+        36.95
+      ],
+      "lon": [
+        -89.45,
+        -88.85
+      ]
+    },
+    "method": "model-corridor",
+    "source": "attempt #1 arm a d02 hourly wrfout, 2-5 km updraft helicity maxima; scratchpad les-attempt1/uh_track_arm_a.py",
+    "target_d03_center": [
+      36.5,
+      -89.15
+    ],
+    "target_d04_center": [
+      36.45,
+      -89.15
+    ],
+    "uh_frames": {
+      "01Z": [
+        {
+          "in_corridor": true,
+          "lat": 36.323,
+          "lon": -88.853,
+          "uh_m2s2": 268
+        },
+        {
+          "in_corridor": false,
+          "lat": 35.044,
+          "lon": -88.338,
+          "uh_m2s2": 240
+        },
+        {
+          "in_corridor": false,
+          "lat": 36.085,
+          "lon": -90.808,
+          "uh_m2s2": 165
+        },
+        {
+          "in_corridor": false,
+          "lat": 36.914,
+          "lon": -87.986,
+          "uh_m2s2": 156
+        },
+        {
+          "in_corridor": false,
+          "lat": 35.342,
+          "lon": -89.59,
+          "uh_m2s2": 129
+        }
+      ],
+      "02Z": [
+        {
+          "in_corridor": false,
+          "lat": 36.461,
+          "lon": -90.046,
+          "uh_m2s2": 877
+        },
+        {
+          "in_corridor": false,
+          "lat": 35.515,
+          "lon": -87.752,
+          "uh_m2s2": 819
+        },
+        {
+          "in_corridor": false,
+          "lat": 38.573,
+          "lon": -91.112,
+          "uh_m2s2": 463
+        },
+        {
+          "in_corridor": false,
+          "lat": 37.907,
+          "lon": -86.877,
+          "uh_m2s2": 306
+        },
+        {
+          "in_corridor": false,
+          "lat": 36.814,
+          "lon": -87.987,
+          "uh_m2s2": 199
+        }
+      ],
+      "03Z": [
+        {
+          "in_corridor": false,
+          "lat": 35.757,
+          "lon": -90.72,
+          "uh_m2s2": 710
+        },
+        {
+          "in_corridor": true,
+          "lat": 36.897,
+          "lon": -89.185,
+          "uh_m2s2": 691
+        },
+        {
+          "in_corridor": false,
+          "lat": 36.202,
+          "lon": -90.29,
+          "uh_m2s2": 518
+        },
+        {
+          "in_corridor": false,
+          "lat": 38.2,
+          "lon": -91.018,
+          "uh_m2s2": 326
+        },
+        {
+          "in_corridor": false,
+          "lat": 37.227,
+          "lon": -88.568,
+          "uh_m2s2": 251
+        }
+      ],
+      "04Z": [
+        {
+          "in_corridor": false,
+          "lat": 36.117,
+          "lon": -89.791,
+          "uh_m2s2": 614
+        },
+        {
+          "in_corridor": false,
+          "lat": 37.371,
+          "lon": -87.947,
+          "uh_m2s2": 529
+        },
+        {
+          "in_corridor": false,
+          "lat": 37.117,
+          "lon": -88.545,
+          "uh_m2s2": 506
+        },
+        {
+          "in_corridor": true,
+          "lat": 36.439,
+          "lon": -89.398,
+          "uh_m2s2": 494
+        },
+        {
+          "in_corridor": false,
+          "lat": 38.563,
+          "lon": -89.909,
+          "uh_m2s2": 418
+        }
+      ],
+      "05Z": [
+        {
+          "in_corridor": false,
+          "lat": 35.118,
+          "lon": -90.715,
+          "uh_m2s2": 747
+        },
+        {
+          "in_corridor": true,
+          "lat": 36.303,
+          "lon": -89.204,
+          "uh_m2s2": 610
+        },
+        {
+          "in_corridor": true,
+          "lat": 36.597,
+          "lon": -88.876,
+          "uh_m2s2": 594
+        },
+        {
+          "in_corridor": false,
+          "lat": 37.861,
+          "lon": -86.832,
+          "uh_m2s2": 554
+        },
+        {
+          "in_corridor": false,
+          "lat": 35.757,
+          "lon": -90.157,
+          "uh_m2s2": 315
+        }
+      ],
+      "06Z": [
+        {
+          "in_corridor": false,
+          "lat": 37.83,
+          "lon": -86.636,
+          "uh_m2s2": 565
+        },
+        {
+          "in_corridor": false,
+          "lat": 36.706,
+          "lon": -88.375,
+          "uh_m2s2": 357
+        },
+        {
+          "in_corridor": false,
+          "lat": 35.92,
+          "lon": -89.236,
+          "uh_m2s2": 321
+        },
+        {
+          "in_corridor": false,
+          "lat": 36.887,
+          "lon": -87.998,
+          "uh_m2s2": 318
+        },
+        {
+          "in_corridor": false,
+          "lat": 37.185,
+          "lon": -87.571,
+          "uh_m2s2": 306
+        }
+      ]
+    }
+  },
+  "domains": {
+    "d01": {
+      "center_lat": 36.72,
+      "center_lon": -88.7,
+      "dx_m": 3000.0,
+      "i_parent_start": 1,
+      "j_parent_start": 1,
+      "lat_max": 39.9414,
+      "lat_min": 33.2695,
+      "lon_max": -83.2366,
+      "lon_min": -94.1634,
+      "nx": 306,
+      "ny": 244,
+      "span_km": [
+        918.0,
+        732.0
+      ]
+    },
+    "d02": {
+      "center_lat": 36.72,
+      "center_lon": -88.7,
+      "dx_m": 1000.0,
+      "i_parent_start": 79,
+      "j_parent_start": 48,
+      "lat_max": 38.7464,
+      "lat_min": 34.6386,
+      "lon_max": -86.066,
+      "lon_min": -91.334,
+      "nx": 450,
+      "ny": 450,
+      "parent_row_clearance": {
+        "east": 78,
+        "north": 47,
+        "pass": true,
+        "required": 10,
+        "south": 47,
+        "west": 78
+      },
+      "parent_row_clearance_km": {
+        "east": 234.0,
+        "north": 141.0,
+        "south": 141.0,
+        "west": 234.0
+      },
+      "span_km": [
+        450.0,
+        450.0
+      ]
+    },
+    "d03": {
+      "center_lat": 36.4999,
+      "center_lon": -89.1545,
+      "dx_m": 500.0,
+      "i_parent_start": 111,
+      "j_parent_start": 127,
+      "lat_max": 37.1851,
+      "lat_min": 35.8087,
+      "lon_max": -88.2987,
+      "lon_min": -90.0183,
+      "nx": 300,
+      "ny": 300,
+      "parent_row_clearance": {
+        "east": 190,
+        "north": 174,
+        "pass": true,
+        "required": 10,
+        "south": 126,
+        "west": 110
+      },
+      "parent_row_clearance_km": {
+        "east": 190.0,
+        "north": 174.0,
+        "south": 126.0,
+        "west": 110.0
+      },
+      "span_km": [
+        150.0,
+        150.0
+      ]
+    },
+    "d04": {
+      "center_lat": 36.4497,
+      "center_lon": -89.1485,
+      "dx_m": 100.0,
+      "i_parent_start": 132,
+      "j_parent_start": 120,
+      "lat_max": 36.5414,
+      "lat_min": 36.3579,
+      "lon_max": -89.0346,
+      "lon_min": -89.2627,
+      "nx": 200,
+      "ny": 200,
+      "parent_row_clearance": {
+        "east": 129,
+        "north": 141,
+        "pass": true,
+        "required": 10,
+        "south": 119,
+        "west": 131
+      },
+      "parent_row_clearance_km": {
+        "east": 64.5,
+        "north": 70.5,
+        "south": 59.5,
+        "west": 65.5
+      },
+      "span_km": [
+        20.0,
+        20.0
+      ]
+    }
+  },
+  "interpolated_track_yield": {
+    "caveat": "straight-line interpolation between HOURLY d02 UH maxima; the sampling interval (50-90 km of storm motion) exceeds the 20 km box, so this is an estimate the 900 s d02 frames of attempt #2 are meant to replace, not a claim",
+    "segments": [
+      {
+        "d04_transit": {
+          "chord_km": 19.3,
+          "enter": [
+            36.4801,
+            -89.2623
+          ],
+          "exit": [
+            36.5413,
+            -89.0599
+          ],
+          "minutes_in_box": 23.3,
+          "t_enter": 0.2601,
+          "t_exit": 0.6478
+        },
+        "from": {
+          "frame": "04Z",
+          "lat": 36.439,
+          "lon": -89.398,
+          "uh_m2s2": 494
+        },
+        "implied_speed_ms": 13.9,
+        "segment": "cell A 04Z->05Z",
+        "to": {
+          "frame": "05Z",
+          "lat": 36.597,
+          "lon": -88.876,
+          "uh_m2s2": 594
+        }
+      },
+      {
+        "d04_transit": null,
+        "from": {
+          "frame": "04Z",
+          "lat": 36.117,
+          "lon": -89.791,
+          "uh_m2s2": 614
+        },
+        "implied_speed_ms": 15.7,
+        "segment": "cell B 04Z->05Z",
+        "to": {
+          "frame": "05Z",
+          "lat": 36.303,
+          "lon": -89.204,
+          "uh_m2s2": 610
+        }
+      },
+      {
+        "d04_transit": null,
+        "from": {
+          "frame": "05Z",
+          "lat": 36.597,
+          "lon": -88.876,
+          "uh_m2s2": 594
+        },
+        "implied_speed_ms": 12.9,
+        "segment": "cell A 05Z->06Z",
+        "to": {
+          "frame": "06Z",
+          "lat": 36.706,
+          "lon": -88.375,
+          "uh_m2s2": 357
+        }
+      },
+      {
+        "d04_transit": null,
+        "from": {
+          "frame": "03Z",
+          "lat": 36.202,
+          "lon": -90.29,
+          "uh_m2s2": 518
+        },
+        "implied_speed_ms": 23.4,
+        "segment": "cell A 03Z->04Z",
+        "to": {
+          "frame": "04Z",
+          "lat": 36.439,
+          "lon": -89.398,
+          "uh_m2s2": 494
+        }
+      }
+    ]
+  },
+  "landmarks": {
+    "Bremen KY": {
+      "inside": [
+        1,
+        2
+      ],
+      "lat": 37.362,
+      "lon": -87.2308
+    },
+    "Cayce KY": {
+      "inside": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "lat": 36.5081,
+      "lon": -89.0392
+    },
+    "Mayfield KY": {
+      "inside": [
+        1,
+        2,
+        3
+      ],
+      "lat": 36.7417,
+      "lon": -88.6367
+    },
+    "Princeton KY": {
+      "inside": [
+        1,
+        2
+      ],
+      "lat": 37.1092,
+      "lon": -87.8814
+    },
+    "attempt #1 d04 centre": {
+      "inside": [
+        1,
+        2,
+        3
+      ],
+      "lat": 36.72,
+      "lon": -88.7
+    },
+    "initiation, NE Arkansas": {
+      "inside": [
+        1,
+        2
+      ],
+      "lat": 35.8909,
+      "lon": -90.3437
+    }
+  },
+  "projection": {
+    "map_proj": "lambert",
+    "ref_lat": 36.72,
+    "ref_lon": -88.7,
+    "stand_lon": -88.7,
+    "truelat1": 26.72,
+    "truelat2": 46.72
+  },
+  "schema": "gpuwm-les-placement-receipt-v1"
+}

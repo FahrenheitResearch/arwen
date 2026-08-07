@@ -614,22 +614,32 @@ def test_chunk_is_auto_sized_from_the_memory_budget():
     loc = Localization(horizontal_m=3000.0, vertical_m=1500.0)
 
     seen = {}
-    for budget in (0.05, 1.0, 4096.0):
+    for budget in (2.0, 8.0, 4096.0):
         d = LetkfDiagnostics()
         inc = analyze(prior, [obs], grid, LetkfConfig(
             localization=loc, analysis_fields=fields, rtps_alpha=0.0,
             memory_budget_mib=budget), diagnostics=d)
         assert d.chunk_points >= 1
+        # The budget is a ceiling now, not a hope: the chunk it chose,
+        # times the model's per-point price, fits under it.
+        assert d.chunk_points * d.solve_bytes_per_point \
+            <= int(budget * (1 << 20))
         seen[budget] = (d.chunk_points, inc)
 
-    assert seen[0.05][0] < seen[1.0][0] < seen[4096.0][0]
-    # A tiny budget must still make progress rather than dividing to zero.
-    assert seen[0.05][0] >= 1
+    assert seen[2.0][0] < seen[8.0][0] < seen[4096.0][0]
     # A budget far larger than the domain caps at the domain, not above it.
     assert seen[4096.0][0] <= shape[0] * shape[1] * shape[2]
+    # A budget below one gridpoint's price is a refusal with the remedy in
+    # it, not a chunk of 1 that ignores the figure it was given.  (That
+    # "keep going anyway" behaviour is exactly what the field OOM of
+    # 2026-08-05 grew from; tests/test_letkf_chunk_sizing.py pins the rest.)
+    with pytest.raises(LetkfError, match="memory_budget_mib"):
+        analyze(prior, [obs], grid, LetkfConfig(
+            localization=loc, analysis_fields=fields, rtps_alpha=0.0,
+            memory_budget_mib=0.01))
     for f in fields:
-        base = seen[1.0][1][f]
-        for budget in (0.05, 4096.0):
+        base = seen[2.0][1][f]
+        for budget in (8.0, 4096.0):
             assert np.array_equal(seen[budget][1][f], base), (f, budget)
 
 

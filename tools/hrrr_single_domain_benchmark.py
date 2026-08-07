@@ -1454,13 +1454,21 @@ def _forward_profile_switches(
         target[name] = value
 
 
-def _experiment(
+def _experiment_tables(
         vertical, *, run_seconds: float,
         start_time: datetime = datetime(2026, 7, 18),
         target: HrrrTargetDomain | None = None,
         physics_profile: str = WSM6_PROFILE_ID,
         history_interval_seconds: float = 300.0):
-    from gpuwm.experiment import build_experiment
+    """The raw tables this route hands ``build_experiment``, plus the target.
+
+    Split out of :func:`_experiment` so the preparation can PUBLISH the
+    document it built rather than describing it.  A stage after this one
+    -- the cycling DA driver -- has to supply an experiment config whose
+    ``prepared_domain_config_identity`` equals the one baked into the
+    prepared cache, and the only reliable way to supply it is to render
+    these exact tables (:mod:`gpuwm.experiment_document`).
+    """
 
     target = target or HrrrTargetDomain.legacy_500x500()
 
@@ -1527,7 +1535,12 @@ def _experiment(
             "i_parent_start": 1, "j_parent_start": 1,
             "parent_grid_ratio": 1, "parent_time_step_ratio": 1,
             "nx": target.nx, "ny": target.ny,
+            # The three rational-clock keys, exactly as the experiment
+            # TOML spells them; a 7.5 s root clock is 7 + 1/2, never a
+            # float in a "time_step" the loader types as integer.
             "time_step": target.time_step_seconds,
+            "time_step_fract_num": target.time_step_fract_num,
+            "time_step_fract_den": target.time_step_fract_den,
             "dx": target.dx_m, "dy": target.dy_m,
             "history_interval_s": float(history_interval_seconds),
             "specified": True, "nested": False,
@@ -1538,8 +1551,23 @@ def _experiment(
         }],
     }
     _forward_profile_switches(raw, switches)
+    return raw, target
+
+
+def _experiment(
+        vertical, *, run_seconds: float,
+        start_time: datetime = datetime(2026, 7, 18),
+        target: HrrrTargetDomain | None = None,
+        physics_profile: str = WSM6_PROFILE_ID,
+        history_interval_seconds: float = 300.0):
+    from gpuwm.experiment import build_experiment
+
+    raw, resolved = _experiment_tables(
+        vertical, run_seconds=run_seconds, start_time=start_time,
+        target=target, physics_profile=physics_profile,
+        history_interval_seconds=history_interval_seconds)
     return build_experiment(
-        raw, f"programmatic:native-HRRR:{target.identity_sha256()}")
+        raw, f"programmatic:native-HRRR:{resolved.identity_sha256()}")
 
 
 def _validate_resolved_hrrr_profile(exp, receipt: dict[str, object]) -> None:
@@ -2445,6 +2473,25 @@ def run(args):
         start_time=model_start_time, target=target,
         physics_profile=args.physics_profile,
         history_interval_seconds=history_interval_seconds)
+    if args.publish_experiment_config is not None:
+        # Published BEFORE any decoding, so a preparation that is going
+        # to fail its own config round-trip fails in a second rather
+        # than after the fetch.  The tables are rebuilt from the same
+        # inputs rather than captured above: `build_experiment` owns the
+        # dict it was handed, and rendering a document from a mapping
+        # another call may have consumed is how a published authority
+        # stops describing the experiment beside it.
+        from gpuwm.experiment_document import publish_experiment_document
+
+        experiment_tables, _published_target = _experiment_tables(
+            vertical_grid, run_seconds=args.run_seconds,
+            start_time=model_start_time, target=target,
+            physics_profile=args.physics_profile,
+            history_interval_seconds=history_interval_seconds)
+        published_config = publish_experiment_document(
+            args.publish_experiment_config, experiment_tables, exp)
+        print(f"published experiment authority: {published_config}",
+              flush=True)
     output_cadence_receipt = (
         _validate_history_output_cadence(exp, history_interval_seconds)
         if args.io_mode == "history" or args.prepare_only else None)
@@ -3036,12 +3083,34 @@ def run(args):
                 seal_process = None
 
             from gpuwm.ingest.prepared_cache import write_prepared_cache
+            from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
+            from gpuwm.native_wrf_contract import canonical_noah_surface
+
+            # The source-neutral Noah surface, persisted WITH the cache.
+            # This is the same derivation initialize_hrrr_physics runs at
+            # every native launch (preprocess_land_surface_soil ->
+            # canonical_noah_surface); writing it here is what makes the
+            # cache portable: prepared_single_domain_forecast's preflight
+            # demands the exact canonical inventory, restores it, and
+            # never re-derives soil from the native SOILT/SOILW -- which
+            # this cache therefore no longer persists (the writer drops
+            # the legacy met soil pair when a canonical surface rides
+            # along).  Field 2026-08-06: the first portable HRRR case
+            # refused at that preflight because this call wrote no
+            # surface at all.
+            surface_soil = preprocess_land_surface_soil(
+                root_met.fields,
+                sf_surface_physics=int(dc.run.sf_surface_physics),
+                soil_type=static["SCT_DOM"],
+                deep_soil_temperature=static["SOILTEMP"])
+            canonical_surface = canonical_noah_surface(surface_soil)
 
             started = time.perf_counter()
             prepared_cache_receipt = write_prepared_cache(
                 args.prepared_cache, identity=prepared_cache_identity,
                 initial_result=root_result, met=root_met,
-                boundaries=boundaries, metadata={
+                boundaries=boundaries, surface=canonical_surface,
+                metadata={
                     "initial_valid_time": initial_snapshot.valid_time.isoformat(),
                     "last_valid_time": last_valid_time.isoformat(),
                     "source_cycle": requested_cycle.isoformat(),
@@ -3675,6 +3744,14 @@ def _parse_args(argv=None):
               "the sealed 500x500 benchmark target"),
     )
     parser.add_argument("--namelist-input", type=Path, required=True)
+    parser.add_argument(
+        "--publish-experiment-config", type=Path,
+        help=("render the experiment tables this route built into a TOML "
+              "authority at PATH, verified to reload to the same prepared "
+              "domain identity and vertical grid.  This is the only "
+              "process that holds those tables, and a config-driven "
+              "downstream stage (the cycling DA driver) cannot bind the "
+              "prepared cache without one.  Create-only"))
     parser.add_argument(
         "--prepared-cache", type=Path,
         help="build once when absent, otherwise hash-validate and restore")

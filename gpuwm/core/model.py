@@ -316,6 +316,13 @@ def restart_identity_payload(exp) -> dict:
     experiment = _jsonable(exp)
     for name in RESTART_TOLERATED_EXPERIMENT_FIELDS:
         experiment.pop(name, None)
+    # ABSENT [perturbation] stays absent from the identity payload, not
+    # present-as-null: every experiment written before the field existed
+    # keeps its exact fingerprint and restart identity (the mixed_edges
+    # convention in experiment_fingerprint, applied at the source).  A
+    # configured block binds, value for value.
+    if experiment.get("perturbation") is None:
+        experiment.pop("perturbation", None)
     for domain in experiment.get("domains", ()):
         for name in RESTART_TOLERATED_DOMAIN_FIELDS:
             domain.pop(name, None)
@@ -499,14 +506,38 @@ def build_experiment(exp, case_data) -> ExperimentState:
         root_radiation.column_chunk = radiation_workspace.column_chunk
         root_radiation.chunk_workspace = radiation_workspace
 
+    initial_perturbation_receipts = []
+    if exp.perturbation is not None:
+        initial_perturbation_receipts.append(
+            dict(prepared_root.initial_result.initial_perturbation))
+
     for dc in exp.domains[1:]:
         parent = nodes[dc.parent_id]
+        # A child that starts WITH the experiment applies the configured
+        # initial-state bubbles on its own grid (real-data nest init
+        # re-ingests the source per domain, so nothing arrives from the
+        # parent's theta).  A delayed-start child initializes from the
+        # analysis at its activation time -- the parent has evolved the
+        # bubble by then -- so it takes no fresh analytic bubble.
+        child_starts_at_t0 = clocks[dc.grid_id].spec.start_ticks == 0
         initialized = initialize_child(
             dc, parent, catalog, exp.vertical,
             source_orography=case_data.source_orography,
             scratch_arena=arena,
             dycore_state_workspace=dycore_state_workspace,
-            sfcp_to_sfcp=case_data.sfcp_to_sfcp)
+            sfcp_to_sfcp=case_data.sfcp_to_sfcp,
+            initial_perturbation=(
+                exp.perturbation if child_starts_at_t0 else None))
+        if exp.perturbation is not None:
+            initial_perturbation_receipts.append(
+                dict(initialized.real.initial_perturbation)
+                if child_starts_at_t0 else {
+                    "grid_id": int(dc.grid_id),
+                    "applied": False,
+                    "reason": "delayed start: this domain initializes "
+                              "from the analysis at its activation time, "
+                              "after the perturbation instant",
+                })
         prepared = runtime.prepare_child_case(
             initialized, dc, exp=exp, data=case_data,
             forcing_times=forcing_times,
@@ -543,6 +574,8 @@ def build_experiment(exp, case_data) -> ExperimentState:
     built._scratch_arena = arena
     built._dycore_state_workspace = dycore_state_workspace
     built._prepared_by_grid_id = prepared_by_id
+    built._initial_perturbation_receipts = tuple(
+        initial_perturbation_receipts)
     built._input_catalog = catalog
     built._activation_context = {
         "experiment": exp,
@@ -642,6 +675,10 @@ def execute_experiment(
         context = model._activation_context
         exp = context["experiment"]
         data = context["case_data"]
+        # Deliberately no initial_perturbation here: a delayed-start
+        # child initializes from the analysis at its ACTIVATION time,
+        # after the perturbation instant, and the receipts already say
+        # so (build_experiment's delayed-start row).
         initialized = initialize_child(
             node.cfg, node.parent, model._input_catalog, exp.vertical,
             source_orography=data.source_orography,

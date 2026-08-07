@@ -1,0 +1,33 @@
+# gpuwm's GOES ABI L2 cloud-product front door: the satellite twin of
+# rw-nexrad, built exactly as docs/obs-goes-cwp-bridge-design.md specifies.
+# It acquires ABI L2 cloud granules (anonymous S3, content-addressed
+# cache), decodes them through the patched vendored rw-sat (DQF-gated, the
+# 2026-08-05 condemn-mask ruling), derives WoFS-style cloud water path,
+# and emits one flat `GPWMGOES` pack per scan that the Python obs layer
+# reads with `json` + `numpy.frombuffer` and nothing else.
+#
+# Every dependency exists in this workspace's vendor closure, so the bin
+# builds with --locked --offline like every other vendored artifact.
+
+[package]
+name = "rw-goes"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rw_goes"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+rustls.workspace = true
+rustls-rustcrypto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+ureq.workspace = true
+rw-sat = { path = "../rw-sat" }
+rw-store = { path = "../rw-store" }

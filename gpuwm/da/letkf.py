@@ -628,21 +628,42 @@ class LetkfConfig:
         Gridpoints per batched solve, or None (the default) to size it from
         ``memory_budget_mib`` once the stencil is known.
 
-        This bounds peak memory, which is dominated by the gathered
-        ``(R, G, P)`` simulated-observation block: R members x G gridpoints
-        x P stencil slots x 8 bytes.  A fixed default is a footgun, because
-        P is not known until the localisation radii meet the grid spacing:
-        a perfectly ordinary 8 km radius on a 2 km grid with 30 members
-        gives P = 315 and turns a 8192-point chunk into 620 MiB *per array*,
-        several GiB at peak, on a card that is very likely shared.  Setting
-        it from a budget instead means the radius and the ensemble size stay
-        free parameters and only the number of batches changes.
+        A fixed default is a footgun, because the per-point cost is not
+        known until the localisation radii meet the grid spacing: a
+        perfectly ordinary 8 km radius on a 2 km grid with 30 members
+        gives P = 315 slots and turns a 8192-point chunk into 620 MiB *per
+        array*, several GiB at peak, on a card that is very likely shared.
+        Setting it from a budget instead means the radius and the ensemble
+        size stay free parameters and only the number of batches changes.
+
+        An explicit value is taken as given -- it bypasses the budget and
+        the free-memory reading -- but it is still a starting point, not a
+        promise to die for: a device allocation failure mid-analysis
+        shrinks the chunk and re-solves, exactly as it does for the
+        auto-sized path, and the shrink is recorded in the diagnostics.
     memory_budget_mib
-        Target peak working set for the batched solve, when
-        ``chunk_points`` is None.  Not a hard limit -- it does not count the
-        prior, the increments, or the observation arrays, all of which are
-        whole-domain and outside this module's control -- but the chunk
-        loop's own scratch stays near it.
+        Ceiling on the batched solve's own scratch, when ``chunk_points``
+        is None.  Enforced, not aspirational: the chunk is sized so that
+        :func:`solve_bytes_per_point` times the chunk stays under this
+        figure AND under ``_DEVICE_FREE_FRACTION`` of the memory the card
+        actually has free at solve time.  A device allocation failure that
+        arrives anyway halves the chunk and re-solves instead of failing
+        the analysis; the only refusal is the honest one, raised by name,
+        when even a single gridpoint cannot fit the ceiling.  (An earlier
+        revision documented this figure as "not a hard limit" and priced
+        only the member-slot arrays; sized that way, a single-radar
+        1845-slot stencil chose 7248-point chunks and ran a 32 GiB card
+        out of memory.)
+
+        WHAT IT COSTS A CARD.  It bounds the chunk loop's own accounted
+        scratch and not the whole-domain work around it -- the prior, the
+        increments, the simulated observations, the stencil masks -- so it
+        is a knob rather than a device-bytes promise.  Measured at the
+        Level-II single-radar geometry on an RTX 3090, above that case's
+        between-legs level, the analysis grows the card by about 1.25
+        times this figure: 2.4 GiB at 2048, 7.3 GiB at 6144.  Size a card
+        from that, with room to spare, and re-measure for a geometry that
+        is not this one; the constants block above says how.
 
         512 MiB is a deliberately conservative default for a shared card,
         and it costs throughput.  Measured on an RTX 5090 (sm_120), R = 30,
@@ -656,10 +677,9 @@ class LetkfConfig:
             chunk   8,192 ->  94,293
             numpy, same case ->  5,677
 
-        Throughput saturates near 2,048 gridpoints per batch, which at that
-        stencil and ensemble size wants roughly 1.2 GiB.  512 MiB gives 877
-        and about 55% of peak.  Raise this when the card is yours; the
-        answer does not change with it, only the number of batches.
+        Throughput saturates near 2,048 gridpoints per batch.  Raise this
+        when the card is yours; the answer does not change with it, only
+        the number of batches.
     solve_dtype
         Precision of the R x R eigenproblem.  float64 by default and
         deliberately: the R x R solve is a vanishing fraction of total work
@@ -786,13 +806,243 @@ class LetkfDiagnostics:
     #: Largest number of valid observations any single gridpoint saw.
     max_local_obs: int = 0
     batches: int = 0
-    #: Gridpoints per batched solve actually used, after auto-sizing.
+    #: Gridpoints per batched solve actually in effect when the analysis
+    #: finished.  Smaller than ``chunk_points_initial`` exactly when the
+    #: solve hit a device allocation failure mid-analysis and shrank.
     chunk_points: int = 0
+    #: What the sizing chose up front, from the budget, the card's free
+    #: memory, and :func:`solve_bytes_per_point`.
+    chunk_points_initial: int = 0
+    #: How many times a device allocation failure halved the chunk.  The
+    #: analysis is exact either way -- a shrunk chunk re-solves the same
+    #: gridpoints -- but on the device it is exact to ROUNDING and not to
+    #: the byte, because the batched kernels partition their work by batch
+    #: extent (see :func:`analyze`'s ``_solve_chunk``, where the measured
+    #: figure is).  A nonzero count therefore means two things worth
+    #: seeing in a receipt: the memory model under-read this card's state,
+    #: and this run's numbers are not byte-comparable with one that did
+    #: not shrink.
+    chunk_oom_shrinks: int = 0
+    #: The sizing model's cost of one gridpoint of a chunk, in bytes, for
+    #: this stencil, ensemble and solve precision.
+    solve_bytes_per_point: int = 0
+    #: Device bytes in use, pool bytes held, and the difference, read once
+    #: at the end of the chunk loop.  The GAP is everything on the card
+    #: this module's cap does not govern: the whole-domain arrays the
+    #: budget explicitly excludes, plus anything allocated outside the
+    #: pool -- which is the only thing that explains a RAW
+    #: ``cudaErrorMemoryAllocation`` rather than cupy's
+    #: ``OutOfMemoryError``, since cupy raises the latter only after it
+    #: has already released and retried.  Zero on a host solve, or when
+    #: the instrument could not read the device.
+    device_used_mib: float = 0.0
+    pool_total_mib: float = 0.0
+    device_pool_gap_mib: float = 0.0
     #: Per field, the RMS of the ensemble-mean increment.
     mean_increment_rms: dict = field(default_factory=dict)
     #: Per field, the domain-mean prior and posterior ensemble spread.
     prior_spread: dict = field(default_factory=dict)
     posterior_spread: dict = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Chunk sizing: the solve's scratch, priced before it is allocated
+# ---------------------------------------------------------------------------
+# The coefficients below are an audit of the chunk loop in :func:`analyze`,
+# not a wish.  Each one counts arrays of a given shape class that are alive
+# AT THE SAME TIME at the loop's peak, which is the ``cmat @ yb`` matmul of
+# phase 2: by then the promoted sim gather ``s``, the pre-mask perturbations
+# (pinned by ``yb_parts``), the masked ``yb``, and ``cmat`` all coexist, and
+# the gather's astype transient and the matmul's own workspace ride on top.
+#
+# ``_CHUNK_ALLOCATOR_SLACK`` is the one number that is a policy rather than
+# a count.  A pool allocator does not return freed blocks to the card
+# between batches, batch sizes drift as the active-point count drifts, and
+# split blocks do not always recombine, so the pool's footprint ratchets
+# above any single instant's liveness.  The chunk loop therefore caps the
+# pool at what one chunk is entitled to -- the liveness sum above, times
+# this factor -- and hands the rest back before the next batch allocates.
+#
+# WHAT THAT CAP IS WORTH, measured.  On an RTX 3090 (sm_86, cupy 14.1.1)
+# at the single-radar Level-II geometry this section exists for -- 1845
+# slots, R = 10, float64, 853776 gridpoints -- the same analysis was
+# replayed with the cap in and with it out, same budget, same chunk, same
+# batch count, card sampled at 10 Hz.  Device high-water:
+#
+#     budget 2048 MiB, chunk 1013:  11040 MiB without ->  4506 MiB with
+#     budget 6144 MiB, chunk 3039:  23000 MiB without ->  9618 MiB with
+#
+# Thirteen gigabytes at the operating point, for about 3% of solve time
+# (10.2 s against 9.8).  Nothing else moved: identical chunk, identical
+# 256 batches, no shrinks either way.  That difference is the ratchet and
+# nothing but the ratchet, and it is why an analysis whose accounted
+# liveness is around 3 GiB could run a 32 GiB card out of memory.
+#
+# WHAT THE BUDGET THEN BUYS.  Above the between-legs level of this case
+# (2134 MiB of model state and CUDA context), the analysis grows the card
+# by about 1.25 x memory_budget_mib with the cap in -- 2.4 GiB at 2048,
+# 7.3 GiB at 6144, no meaningful intercept.  Without the cap the same
+# figures are 8.7 and 20.4 GiB, which is where the "3.3 GiB plus 2.7x"
+# rule an earlier revision of this comment stated came from; that rule
+# described the uncapped loop and is superseded.  Size a card from the
+# 1.25, and leave room: the budget still does not count the prior, the
+# increments or the observation arrays, which are whole-domain and
+# outside this module's control.
+
+#: Concurrent (chunk, slots, members)-shaped arrays at the peak.
+_CHUNK_MEMBER_SLOT_COPIES = 6
+#: Concurrent (chunk, slots) float scratch: weights, distances, errors,
+#: innovations, and the Gaspari-Cohn temporaries of phase 1.  float64
+#: regardless of the solve precision, because distances are.
+_CHUNK_FLOAT_SLOT_COPIES = 8
+#: Concurrent (chunk, slots) int64 gather-index arrays.
+_CHUNK_INDEX_SLOT_COPIES = 3
+#: Concurrent (chunk, slots) boolean masks.
+_CHUNK_BOOL_SLOT_COPIES = 3
+#: Concurrent (chunk, members, members) stacks: the localised matrix, its
+#: symmetrised copy, eigenvectors, ``Pa``, ``Wa``, and solver workspace.
+_CHUNK_MEMBER_SQUARE_COPIES = 8
+#: Pool-cap policy: how many times the counted liveness the chunk loop
+#: lets the allocator hold before it hands idle blocks back.  NOT the
+#: ratio of device high-water to liveness, which is measured larger; see
+#: the note above.
+_CHUNK_ALLOCATOR_SLACK = 2.0
+#: The fraction of the card's free memory the auto-sizer may promise to
+#: the solve.  The remainder covers what this model cannot see: the CUDA
+#: libraries' handle workspaces and the caller's own next allocation.
+_DEVICE_FREE_FRACTION = 0.8
+
+
+def solve_bytes_per_point(total_slots: int, members: int,
+                          solve_itemsize: int) -> int:
+    """Device bytes one gridpoint of a chunk costs the batched solve at peak.
+
+    This is the price the auto-sizer divides a budget by, and it is
+    deliberately the PESSIMISTIC price: every gridpoint is assumed active
+    (phase 1 cannot drop any before phase 2 has been paid for), and the
+    allocator ratchet is included.  The old estimate here priced only the
+    member-slot arrays with a slack of six and called its budget "not a
+    hard limit"; at 1845 slots and R = 10 it chose 7248-point chunks that
+    ran a 32 GiB card out of memory while three-radar solves at 2421
+    points sailed through.  See ``tests/test_letkf_chunk_sizing.py``,
+    which pins this arithmetic at exactly that geometry.
+    """
+
+    slots = int(total_slots)
+    r = int(members)
+    ds = int(solve_itemsize)
+    per_point = (
+        _CHUNK_MEMBER_SLOT_COPIES * slots * r * ds
+        + _CHUNK_FLOAT_SLOT_COPIES * slots * 8
+        + _CHUNK_INDEX_SLOT_COPIES * slots * 8
+        + _CHUNK_BOOL_SLOT_COPIES * slots
+        + _CHUNK_MEMBER_SQUARE_COPIES * r * r * ds
+    )
+    return int(math.ceil(per_point * _CHUNK_ALLOCATOR_SLACK))
+
+
+def chunk_points_for_budget(total_slots: int, members: int,
+                            solve_itemsize: int, budget_bytes: int,
+                            npts: int) -> int:
+    """Gridpoints per chunk under ``budget_bytes``, or 0 when none fit.
+
+    Pure arithmetic so a test can pin it without a device.  The caller
+    turns 0 into a refusal that names the remedy; this function does not
+    raise because it does not know whether the ceiling it was handed came
+    from the configuration or from the card.
+    """
+
+    per_point = solve_bytes_per_point(total_slots, members, solve_itemsize)
+    return max(0, min(int(npts), int(budget_bytes) // per_point))
+
+
+def _device_free_bytes(xp):
+    """Free device memory in bytes, or None off-device or unanswerable.
+
+    Frees the pool's idle blocks first, so memory the allocator is merely
+    hoarding between analyses is counted as free rather than as pressure.
+    An unanswerable card returns None -- sizing then rests on the budget
+    alone, which is the pre-device behaviour, not a failure.
+    """
+
+    if xp is np:
+        return None
+    try:
+        xp.get_default_memory_pool().free_all_blocks()
+        free_b, _total = xp.cuda.runtime.memGetInfo()
+        return int(free_b)
+    except Exception:
+        return None
+
+
+#: Substrings that identify an allocation failure in a device library's
+#: message, lowercased.  Matched only on exceptions raised from the cupy
+#: stack, so a LetkfError that merely *mentions* memory cannot trip this.
+_MEMORY_ERROR_MARKERS = (
+    "out of memory",
+    "cudaerrormemoryallocation",
+    "cuda_error_out_of_memory",
+    "alloc_failed",
+    "allocation failure",
+)
+
+
+def _is_device_memory_error(exc) -> bool:
+    """Is this an allocation failure rather than a wrong answer?
+
+    Allocation failures are the one exception class the chunk loop may
+    retry at a smaller chunk: the analysis they interrupted was never
+    produced, and a smaller chunk asks the same mathematical question with
+    a smaller footprint.  Everything else -- a non-positive eigenvalue, a
+    non-finite weight, a LetkfError -- would only be asked again at a
+    different batch shape, and a wrong answer does not become right by
+    being recomputed in smaller pieces.
+
+    Recognition is by name and module along the cause chain, so this works
+    with numpy alone on the path where cupy was never imported: a host
+    ``MemoryError`` (numpy's ``_ArrayMemoryError`` is a subclass) is an
+    allocation failure too, and the same degradation is the right answer
+    for it.
+    """
+
+    seen = set()
+    node = exc
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        if isinstance(node, MemoryError):
+            return True
+        cls = type(node)
+        root = (cls.__module__ or "").split(".")[0]
+        if root in ("cupy", "cupy_backends"):
+            if cls.__name__ == "OutOfMemoryError":
+                return True
+            text = str(node).lower()
+            if any(marker in text for marker in _MEMORY_ERROR_MARKERS):
+                return True
+        node = node.__cause__ if node.__cause__ is not None \
+            else node.__context__
+    return False
+
+
+def _release_device_scratch(xp) -> None:
+    """Hand every idle pool block back to the driver, quietly.
+
+    Called between a failed chunk attempt and its smaller retry.  Failure
+    here is deliberately swallowed: if the context is too broken to
+    synchronise, the retry itself will surface that as its own error,
+    which is a better message than one from a cleanup helper.
+    """
+
+    if xp is np:
+        return
+    try:
+        xp.cuda.runtime.deviceSynchronize()
+    except Exception:
+        pass
+    try:
+        xp.get_default_memory_pool().free_all_blocks()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -928,6 +1178,12 @@ def _eigendecompose(xp, amat, which):
         evals, evecs = xp.linalg.eigh(amat)
         return evals, evecs, 0
     except Exception as exc:                     # LinAlgError and backend kin
+        if _is_device_memory_error(exc):
+            # NOT wrapped: an allocation failure is the chunk loop's to
+            # handle -- it retries at a smaller chunk -- and wrapping it in
+            # LetkfError here would turn a recoverable footprint problem
+            # into a terminal verdict about the mathematics.
+            raise
         # The one failure mode no input check can pre-empt.  A raw
         # convergence message from LAPACK or cuSOLVER does not name the
         # analysis that did not happen, and this module promises that every
@@ -1322,21 +1578,45 @@ def analyze(
     diagnostics.stencil_slots = total_slots
 
     npts = nz * ny * nx
+    per_point = solve_bytes_per_point(
+        total_slots, members, int(solve_dtype.itemsize))
+    diagnostics.solve_bytes_per_point = per_point
     if config.chunk_points is not None:
         chunk = int(config.chunk_points)
     else:
-        # Peak scratch per gridpoint, counting the arrays that carry both a
-        # stencil and a member axis: the gathered simulated observations,
-        # the perturbations taken from them, the transposed-and-weighted C,
-        # and the temporaries the matmuls need.  Six is measured slack, not
-        # a derivation -- the point is to be right to a factor of two, so
-        # that the radius and the ensemble size are free parameters and only
-        # the batch count moves.
-        per_point = 6 * total_slots * members * solve_dtype.itemsize \
-            + 4 * members * members * solve_dtype.itemsize
+        # The budget is the caller's promise about this solve's footprint;
+        # the card's free memory is a fact that outranks it.  The chained
+        # cycling layout is exactly where the two disagree: the forecast
+        # legs that ran in this process have left the allocator's pool and
+        # the resident state where a fresh process would have a clean card,
+        # and a chunk sized to the budget alone walks into that difference.
         budget = int(config.memory_budget_mib * (1 << 20))
-        chunk = max(1, min(npts, budget // max(1, per_point)))
+        ceiling = budget
+        limiter = "memory_budget_mib"
+        free_bytes = _device_free_bytes(xp)
+        if free_bytes is not None:
+            device_ceiling = int(free_bytes * _DEVICE_FREE_FRACTION)
+            if device_ceiling < ceiling:
+                ceiling = device_ceiling
+                limiter = (f"the card ({free_bytes // (1 << 20)} MiB free,"
+                           f" of which {int(_DEVICE_FREE_FRACTION * 100)}%"
+                           " may be promised to the solve)")
+        chunk = chunk_points_for_budget(
+            total_slots, members, int(solve_dtype.itemsize), ceiling, npts)
+        if chunk < 1:
+            need_mib = -(-per_point // (1 << 20))
+            raise LetkfError(
+                "the batched solve cannot fit even ONE gridpoint under its"
+                f" memory ceiling: {total_slots} stencil slots x {members}"
+                f" members in {config.solve_dtype} costs {need_mib} MiB per"
+                f" gridpoint at peak, and the ceiling is"
+                f" {ceiling // (1 << 20)} MiB, set by {limiter}."
+                f"  Raise memory_budget_mib to at least {need_mib} and free"
+                " that much on the card, shrink the localisation radius"
+                " (fewer stencil slots), or reduce the ensemble."
+            )
     diagnostics.chunk_points = chunk
+    diagnostics.chunk_points_initial = chunk
     ident = xp.eye(members, dtype=solve_dtype)
     scale = solve_dtype.type(members - 1) / solve_dtype.type(
         config.prior_inflation)
@@ -1353,8 +1633,32 @@ def analyze(
     nbatch = 0
     max_sweeps = 0
 
-    for start in range(0, npts, chunk):
-        stop = min(start + chunk, npts)
+    def _solve_chunk(start, stop):
+        """One chunk's analysis: ``(active_points, max_local_obs, sweeps)``.
+
+        Idempotent by construction: everything it writes is a plain
+        assignment into ``incr_flat`` at the chunk's own gridpoints, and
+        every statistic is returned rather than accumulated.  That is what
+        makes the caller's out-of-memory retry safe -- an attempt that
+        died anywhere in here can be re-run over the same span, in any
+        number of smaller pieces, without double-counting a batch or
+        re-adding an increment.
+
+        Idempotent is not bit-invariant, and the difference was MEASURED
+        rather than assumed.  Each gridpoint's transform is mathematically
+        independent of how gridpoints are batched, and on numpy -- where
+        the batched eigensolve and the matmuls are per-matrix loops -- a
+        re-solve at a different chunk really is bitwise identical.  On the
+        device it is not: cuBLAS and the batched eigensolver pick work
+        partitionings from the batch extent, so the same gridpoint's
+        summations happen in a different order.  Measured on an RTX 3090
+        (sm_86, cupy 14.1.1, float64), re-solving the same analysis at
+        chunks of 16, 8 and 1 against a 32-point reference moved
+        increments by at most 3.1e-15 in absolute terms, a few ulp of the
+        values themselves.  So a run that took the degradation path is the
+        same analysis to rounding, not the same bytes, and
+        ``chunk_oom_shrinks`` in the receipt is what says which happened.
+        """
         pts = xp.arange(start, stop)
         kk = pts // (ny * nx)
         rem = pts - kk * (ny * nx)
@@ -1412,10 +1716,8 @@ def analyze(
         active = xp.nonzero(nvalid > 0)[0]
         ng = int(active.size)
         if ng == 0:
-            continue
-        max_local = max(max_local, int(nvalid.max()))
-        nactive += ng
-        nbatch += 1
+            return 0, 0, 0
+        local_max = int(nvalid.max())
 
         wloc = wloc[active]
         gidx = gidx[active]
@@ -1481,7 +1783,6 @@ def analyze(
         amat = (amat + xp.swapaxes(amat, 1, 2)) * solve_dtype.type(0.5)
 
         evals, evecs, sweeps = _eigendecompose(xp, amat, eigensolver)
-        max_sweeps = max(max_sweeps, sweeps)
         # (R-1)I/rho is positive definite and C Yb is positive semi-definite,
         # so every eigenvalue is >= (R-1)/rho > 0.  A non-positive one means
         # the arithmetic, not the mathematics, failed.
@@ -1530,11 +1831,116 @@ def analyze(
                     xa = xa * relax[None, :]
             incr_flat[f][:, gpts] = (
                 dbar[None, :] + xa - xbg).astype(work_dtype)
+        return ng, local_max, int(sweeps)
+
+    # ---- the chunk loop, with the budget enforced rather than hoped ----
+    # Two enforcement mechanisms, because the measured failure had two
+    # parts.  First, the pool cap: a pool allocator returns nothing to the
+    # card on its own, and with batch sizes drifting as the active-point
+    # count drifts, freed blocks stop matching future requests -- measured
+    # on an RTX 3090 (cupy 14.1.1), the loop at a 2416-point chunk and an
+    # 1845-slot stencil ratcheted the device from ~8.5 GiB to 24.1 GiB of
+    # a 24.6 GiB card over ~350 batches, an order of magnitude over any
+    # single batch's liveness.  So: whenever the pool's total crosses what
+    # the loop is entitled to (everything in use before the loop, plus the
+    # priced scratch of one chunk), the idle blocks go back to the driver
+    # before the next chunk allocates.  Second, the retry: an allocation
+    # failure inside a chunk is not a verdict on the analysis, it is a
+    # verdict on the chunk.  Halve it, hand the dead attempt's blocks
+    # back, and re-solve the same span.  The refusal below fires only when
+    # the chunk is already one gridpoint, at which point no smaller solve
+    # exists and the honest answer is the named remedy, not another retry.
+    pool = None
+    pool_cap = None
+    if xp is not np:
+        try:
+            pool = xp.get_default_memory_pool()
+            pool_cap = pool.used_bytes() + per_point * chunk
+        except Exception:
+            pool = None
+    start = 0
+    while start < npts:
+        if pool_cap is not None and pool.total_bytes() > pool_cap:
+            pool.free_all_blocks()
+        stop = min(start + chunk, npts)
+        try:
+            ng, local_max, sweeps = _solve_chunk(start, stop)
+        except Exception as exc:
+            if not _is_device_memory_error(exc):
+                raise
+            if chunk <= 1:
+                raise LetkfError(
+                    "the device refused an allocation with the chunk"
+                    " already at one gridpoint: the card does not have"
+                    " room for even the smallest batched solve"
+                    f" ({total_slots} stencil slots x {members} members,"
+                    f" {config.solve_dtype}, {per_point} bytes per point"
+                    " at peak by the sizing model).  Free memory on the"
+                    " card or shrink the localisation radius; raising"
+                    " memory_budget_mib cannot help here."
+                ) from exc
+            chunk = max(1, chunk // 2)
+            diagnostics.chunk_oom_shrinks += 1
+            diagnostics.chunk_points = chunk
+            retrying = True
+        else:
+            retrying = False
+        if retrying:
+            # Outside the except block on purpose: while a handler runs,
+            # the interpreter still holds the failed attempt's traceback,
+            # and through it every array of the dead chunk.  Releasing the
+            # pool in there would return nothing.  Here the exception is
+            # cleared, the attempt's arrays are dead, and the pool can
+            # actually hand their blocks back before the smaller retry.
+            _release_device_scratch(xp)
+            if pool_cap is not None:
+                # And the new entitlement is read HERE, after the release,
+                # for the same reason.  Inside the handler ``used_bytes()``
+                # still counts the chunk that just failed, so a cap derived
+                # from it would RISE by about one dead chunk on every
+                # shrink -- loosening the one control that is supposed to
+                # tighten, exactly when the card has said it is out of
+                # room.
+                pool_cap = pool.used_bytes() + per_point * chunk
+            continue
+        if ng:
+            nactive += ng
+            nbatch += 1
+            max_local = max(max_local, local_max)
+            max_sweeps = max(max_sweeps, sweeps)
+        start = stop
 
     diagnostics.active_points = nactive
     diagnostics.max_local_obs = max_local
     diagnostics.batches = nbatch
     diagnostics.max_jacobi_sweeps = max_sweeps
+
+    # -- what the pool cap cannot see -------------------------------------
+    #
+    # The cap bounds the POOL.  The failure that started this line of work
+    # was a raw ``cudaErrorMemoryAllocation``, not cupy's
+    # ``OutOfMemoryError`` -- and cupy only raises the latter after it has
+    # already called ``free_all_blocks`` and retried.  A RAW runtime error
+    # therefore means something allocated OUTSIDE the pool's retry path
+    # (cuSOLVER workspace is the standing hypothesis, unconfirmed).
+    #
+    # So measure the residual rather than assume it away: device bytes in
+    # use, minus what the pool admits to holding.  Read once per analysis,
+    # after the loop, where it costs nothing.  ``memGetInfo`` reports the
+    # whole device, which is what ``nvidia-smi memory.used`` reports, so
+    # the two are comparable by construction.
+    if pool is not None:
+        try:
+            free_b, total_b = xp.cuda.runtime.memGetInfo()
+            used_b = int(total_b) - int(free_b)
+            pool_b = int(pool.total_bytes())
+            diagnostics.device_used_mib = used_b / (1 << 20)
+            diagnostics.pool_total_mib = pool_b / (1 << 20)
+            diagnostics.device_pool_gap_mib = (used_b - pool_b) / (1 << 20)
+        except Exception:
+            # An instrument that cannot read is silent, never fatal: this
+            # measures the analysis, it does not gate it.
+            pass
 
     _finish(xp, fields, pri, increments, members, diagnostics)
     return increments

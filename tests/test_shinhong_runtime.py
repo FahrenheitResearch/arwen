@@ -18,6 +18,10 @@ import numpy as np
 import pytest
 
 from conftest import requires_gpu
+from gpuwm.certify.compile_platform import (
+    compile_platform_fingerprint,
+    nvrtc_build,
+)
 
 #: WRF's shinhonginit cold-start SGS TKE, epsq2l/2 (the oracle driver's
 #: documented value, tools/shinhong_wrf461_oracle/run_bl_shinhong.F90:414).
@@ -161,11 +165,40 @@ def test_off_path_bl1_micro_run_state_hash_is_pinned():
     for name in ("u", "v", "w", "thp", "php", "mup", "qv", "qc"):
         digest.update(name.encode())
         digest.update(cp.asnumpy(getattr(state, name)).tobytes())
-    # Recorded 2026-08-03 on the RTX 5090 at the Phase-D wiring tip;
-    # two independent processes produced identical bytes (the dual-run
-    # comparison that doubles as the no-ECC corruption screen).
-    assert digest.hexdigest() == (
-        "76450502591b84d602b8711d7414d62a3feed17a951212748319878742ed6394")
+    # A byte pin is a pin on the COMPILED image, so it is keyed by the NVRTC
+    # build the same way the Shin-Hong ULP table is -- see
+    # tests/test_shinhong_wrf461_parity.py's GPU_BASELINE_MAX_ULP_BY_NVRTC_-
+    # BUILD for the full account of the 2026-08-04 compiler swap.  The 13.0.48
+    # row is the original: recorded 2026-08-03 on the RTX 5090 at the Phase-D
+    # wiring tip, two independent processes producing identical bytes (the
+    # dual-run comparison that doubles as the no-ECC corruption screen).  The
+    # 12.9.86 row was measured 2026-08-06 on the same card, deterministic over
+    # two runs and identical across four checkouts of this tree.
+    #
+    # NOTE this run selects bl_pbl_physics=1 (YSU), NOT Shin-Hong: the swap
+    # moved YSU's compiled bytes too.  It did not move YSU's ULP table, which
+    # is a max over a coarser quantity; bytes are the finer instrument and
+    # they saw it.
+    pinned = {
+        "13.0.48":
+            "76450502591b84d602b8711d7414d62a3feed17a951212748319878742ed6394",
+        "12.9.86":
+            "ee18e6fbf4d7d0a4a9d6dd5508d2ee78180446192188d0b958fc54ebdcec20e8",
+    }
+    build = nvrtc_build()
+    assert build in pinned, (
+        "no recorded run-state hash for the NVRTC build compiling these"
+        f" kernels.\n  kernel compiler: NVRTC {build}\n"
+        f"  builds recorded: {sorted(pinned)}\n"
+        f"  fingerprint:     {compile_platform_fingerprint()}\n"
+        "Byte pins are pins on the compiled image; an unmeasured compiler has"
+        " no pin to be compared against.  Record this build's bytes with the"
+        " attribution, or compile with a recorded one.")
+    assert digest.hexdigest() == pinned[build], (
+        "the off-path bl=1 run's bytes moved under a compiler this pin has"
+        f" already been measured under (NVRTC {build}).  That is a leak of"
+        " scheme-11 code into the off path, or a change to the shared"
+        " dycore -- not the 2026-08-04 NVRTC swap.")
 
 
 # ---------------------------------------------------------------------------

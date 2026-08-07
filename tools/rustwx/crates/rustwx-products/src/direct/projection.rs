@@ -384,7 +384,12 @@ pub fn model_data_domain_frame_for_projection(
     })
 }
 
-pub(super) fn direct_map_frame_aspect_ratio(
+/// The direct lane's map-frame target ratio: visual-mode, domain-frame,
+/// and chrome-scale aware.  Public so the generic store-variable lane can
+/// build its projected frame with the SAME geometry named products get --
+/// a plain `map_frame_aspect_ratio` produced a narrower frame whose
+/// subtitle row truncated text that named products fit at the same size.
+pub fn direct_map_frame_aspect_ratio(
     visual_mode: ProductVisualMode,
     width: u32,
     height: u32,

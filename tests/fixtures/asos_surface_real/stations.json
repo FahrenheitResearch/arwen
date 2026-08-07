@@ -1,0 +1,5805 @@
+{
+  "schema": "gpuwm-obs.asos-stations.v1",
+  "status": "READY",
+  "archive": "https://mesonet.agron.iastate.edu",
+  "networks": [
+    "CO_ASOS",
+    "TX_ASOS",
+    "OK_ASOS",
+    "KS_ASOS",
+    "NE_ASOS",
+    "SD_ASOS",
+    "ND_ASOS",
+    "MN_ASOS",
+    "IA_ASOS",
+    "MO_ASOS",
+    "AR_ASOS",
+    "WI_ASOS",
+    "IL_ASOS",
+    "IN_ASOS",
+    "MI_ASOS",
+    "KY_ASOS"
+  ],
+  "frozen_at": "2026-08-04T09:49:52",
+  "content_sha256": "e10ec778da19bf368f146a92e43f4ab2cc94836ed3b344d15039c0ca3efb1ed1",
+  "stations": [
+    {
+      "station_id": "04W",
+      "name": "Hinckley",
+      "latitude": 46.0229,
+      "longitude": -92.8952,
+      "elevation_m": 311.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "06C",
+      "name": "Chicago - Schaumburg",
+      "latitude": 41.9913,
+      "longitude": -88.105,
+      "elevation_m": 243.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "0D8",
+      "name": "Gettysburg",
+      "latitude": 44.9866,
+      "longitude": -99.9528,
+      "elevation_m": 628.0,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "13K",
+      "name": "Eureka",
+      "latitude": 37.8519,
+      "longitude": -96.2929,
+      "elevation_m": 365.09073,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "14Y",
+      "name": "Long Prairie",
+      "latitude": 45.8983,
+      "longitude": -94.8739,
+      "elevation_m": 406.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "19S",
+      "name": "Sublette",
+      "latitude": 37.4969,
+      "longitude": -100.8329,
+      "elevation_m": 892.56555,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "1CW",
+      "name": "Harrisburg",
+      "latitude": 41.59,
+      "longitude": -103.6706,
+      "elevation_m": 1340.3248,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "1D1",
+      "name": "Milbank",
+      "latitude": 45.2305,
+      "longitude": -96.566,
+      "elevation_m": 342.0,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "1D8",
+      "name": "Redfield",
+      "latitude": 44.8625,
+      "longitude": -98.5295,
+      "elevation_m": 397.0,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "1H2",
+      "name": "EFFINGHAM",
+      "latitude": 39.0704,
+      "longitude": -88.5335,
+      "elevation_m": 179.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "1HW",
+      "name": "Gurley",
+      "latitude": 41.3251,
+      "longitude": -102.8289,
+      "elevation_m": 1261.6797,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "1II",
+      "name": "Nineveh",
+      "latitude": 39.3417,
+      "longitude": -86.0305,
+      "elevation_m": 214.45966,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "1K1",
+      "name": "Benton",
+      "latitude": 37.7744,
+      "longitude": -97.1132,
+      "elevation_m": 413.555,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "1K8",
+      "name": "Ketchum",
+      "latitude": 36.5464,
+      "longitude": -95.0135,
+      "elevation_m": 234.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "1NW",
+      "name": "Raymer",
+      "latitude": 40.6319,
+      "longitude": -103.8371,
+      "elevation_m": 1462.5062,
+      "network": "CO_ASOS",
+      "state": "CO"
+    },
+    {
+      "station_id": "21D",
+      "name": "St Paul / Lake Elmo",
+      "latitude": 44.9975,
+      "longitude": -92.8557,
+      "elevation_m": 284.4,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "2D5",
+      "name": "Oakes",
+      "latitude": 46.1731,
+      "longitude": -98.0799,
+      "elevation_m": 407.0,
+      "network": "ND_ASOS",
+      "state": "ND"
+    },
+    {
+      "station_id": "2I0",
+      "name": "Madisonville",
+      "latitude": 37.3559,
+      "longitude": -87.3982,
+      "elevation_m": 134.0,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "2P2",
+      "name": "Washington Island",
+      "latitude": 45.3883,
+      "longitude": -86.924,
+      "elevation_m": 190.16022,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "2R2",
+      "name": "Henricks County",
+      "latitude": 39.7468,
+      "longitude": -86.48,
+      "elevation_m": 272.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "2V5",
+      "name": "Wray",
+      "latitude": 40.1003,
+      "longitude": -102.241,
+      "elevation_m": 1117.7,
+      "network": "CO_ASOS",
+      "state": "CO"
+    },
+    {
+      "station_id": "2V6",
+      "name": "Yuma",
+      "latitude": 40.1046,
+      "longitude": -102.7128,
+      "elevation_m": 1255.8844,
+      "network": "CO_ASOS",
+      "state": "CO"
+    },
+    {
+      "station_id": "2WX",
+      "name": "BUFFALO",
+      "latitude": 45.6044,
+      "longitude": -103.5464,
+      "elevation_m": 919.06866,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "36K",
+      "name": "Lakin",
+      "latitude": 37.9695,
+      "longitude": -101.2554,
+      "elevation_m": 934.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "3AU",
+      "name": "Augusta",
+      "latitude": 37.6716,
+      "longitude": -97.0779,
+      "elevation_m": 405.83893,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "3D2",
+      "name": "Ephraim",
+      "latitude": 45.1357,
+      "longitude": -87.1881,
+      "elevation_m": 229.91167,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "3K3",
+      "name": "Syracuse",
+      "latitude": 37.9917,
+      "longitude": -101.7463,
+      "elevation_m": 1005.6978,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "3K7",
+      "name": "Leoti",
+      "latitude": 38.4575,
+      "longitude": -101.3509,
+      "elevation_m": 1005.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "3K8",
+      "name": "Coldwater",
+      "latitude": 37.2281,
+      "longitude": -99.3309,
+      "elevation_m": 638.7335,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "3LF",
+      "name": "Litchfield",
+      "latitude": 39.1625,
+      "longitude": -89.6746,
+      "elevation_m": 210.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "42A",
+      "name": "Melbourne",
+      "latitude": 36.0713,
+      "longitude": -91.8287,
+      "elevation_m": 226.0,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "49B",
+      "name": "Sturgis",
+      "latitude": 44.4187,
+      "longitude": -103.3777,
+      "elevation_m": 985.0,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "4I7",
+      "name": "Greencastle",
+      "latitude": 39.6336,
+      "longitude": -86.8138,
+      "elevation_m": 253.58478,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "4M9",
+      "name": "Corning",
+      "latitude": 36.4042,
+      "longitude": -90.6479,
+      "elevation_m": 89.3,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "4V9",
+      "name": "Neligh",
+      "latitude": 42.1122,
+      "longitude": -98.0398,
+      "elevation_m": 530.0,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "57C",
+      "name": "East Troy",
+      "latitude": 42.7972,
+      "longitude": -88.3726,
+      "elevation_m": 254.34013,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "5M9",
+      "name": "Marion",
+      "latitude": 37.3363,
+      "longitude": -88.1097,
+      "elevation_m": 191.3158,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "6E5",
+      "name": "Desmet",
+      "latitude": 44.433,
+      "longitude": -97.5582,
+      "elevation_m": 526.0,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "6I2",
+      "name": "Lebanon - Springfield",
+      "latitude": 37.6352,
+      "longitude": -85.2418,
+      "elevation_m": 256.4838,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "7L2",
+      "name": "Linton",
+      "latitude": 46.2206,
+      "longitude": -100.2456,
+      "elevation_m": 541.0,
+      "network": "ND_ASOS",
+      "state": "ND"
+    },
+    {
+      "station_id": "82C",
+      "name": "Lisbon Union",
+      "latitude": 43.8387,
+      "longitude": -90.1377,
+      "elevation_m": 271.1702,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "8D3",
+      "name": "SISSETON",
+      "latitude": 45.6689,
+      "longitude": -96.9914,
+      "elevation_m": 351.80692,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "8D4",
+      "name": "Sparta",
+      "latitude": 43.1274,
+      "longitude": -85.6791,
+      "elevation_m": 228.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "8V7",
+      "name": "Springfield",
+      "latitude": 37.4587,
+      "longitude": -102.618,
+      "elevation_m": 1338.0,
+      "network": "CO_ASOS",
+      "state": "CO"
+    },
+    {
+      "station_id": "98D",
+      "name": "Onida",
+      "latitude": 44.7014,
+      "longitude": -100.1039,
+      "elevation_m": 570.0,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "9K7",
+      "name": "Ellsworth",
+      "latitude": 38.751,
+      "longitude": -98.2291,
+      "elevation_m": 489.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "9MN",
+      "name": "Rochester / St Mary",
+      "latitude": 44.0198,
+      "longitude": -92.4831,
+      "elevation_m": 355.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "9V9",
+      "name": "CHAMBERLAIN",
+      "latitude": 43.7667,
+      "longitude": -99.3183,
+      "elevation_m": 509.75662,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "AAA",
+      "name": "Lincoln",
+      "latitude": 40.1587,
+      "longitude": -89.335,
+      "elevation_m": 182.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "AAO",
+      "name": "WICHITA (AAO)",
+      "latitude": 37.75,
+      "longitude": -97.22,
+      "elevation_m": 433.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "AAS",
+      "name": "Taylor County",
+      "latitude": 37.3569,
+      "longitude": -85.3151,
+      "elevation_m": 269.40887,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "ABR",
+      "name": "ABERDEEN",
+      "latitude": 45.45,
+      "longitude": -98.42,
+      "elevation_m": 394.99753,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "ACB",
+      "name": "BELLAIRE",
+      "latitude": 44.9886,
+      "longitude": -85.1984,
+      "elevation_m": 190.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "ACQ",
+      "name": "WASECA (AWOS)",
+      "latitude": 44.0735,
+      "longitude": -93.5529,
+      "elevation_m": 343.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "ADC",
+      "name": "WADENA MUNI",
+      "latitude": 46.4503,
+      "longitude": -95.211,
+      "elevation_m": 418.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "ADT",
+      "name": "Atwood",
+      "latitude": 39.8401,
+      "longitude": -101.042,
+      "elevation_m": 904.0397,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "ADU",
+      "name": "AUDUBON",
+      "latitude": 41.6994,
+      "longitude": -94.9204,
+      "elevation_m": 399.3,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "AEL",
+      "name": "ALBERT LEA",
+      "latitude": 43.6815,
+      "longitude": -93.3672,
+      "elevation_m": 383.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "AFK",
+      "name": "NEBRASKA CITY",
+      "latitude": 40.6069,
+      "longitude": -95.8657,
+      "elevation_m": 351.55832,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "AGZ",
+      "name": "Wagner",
+      "latitude": 43.0641,
+      "longitude": -98.2963,
+      "elevation_m": 447.0,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "AHQ",
+      "name": "Wahoo",
+      "latitude": 41.2406,
+      "longitude": -96.5946,
+      "elevation_m": 370.21875,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "AIA",
+      "name": "ALLIANCE",
+      "latitude": 42.0572,
+      "longitude": -102.8,
+      "elevation_m": 1195.584,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "AID",
+      "name": "ANDERSON MUNICIP",
+      "latitude": 40.1086,
+      "longitude": -85.613,
+      "elevation_m": 280.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "AIG",
+      "name": "ANTIGO",
+      "latitude": 45.1542,
+      "longitude": -89.1107,
+      "elevation_m": 463.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "AIO",
+      "name": "ATLANTIC",
+      "latitude": 41.4059,
+      "longitude": -95.0465,
+      "elevation_m": 351.7,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "AIT",
+      "name": "AITKIN NDB",
+      "latitude": 46.5484,
+      "longitude": -93.6768,
+      "elevation_m": 367.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "AIZ",
+      "name": "KAISER MEM",
+      "latitude": 38.096,
+      "longitude": -92.5495,
+      "elevation_m": 265.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "AJG",
+      "name": "Mount Carmel",
+      "latitude": 38.6065,
+      "longitude": -87.7267,
+      "elevation_m": 131.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "AKO",
+      "name": "AKRON/WASHINGTON CO",
+      "latitude": 40.1756,
+      "longitude": -103.222,
+      "elevation_m": 1431.0,
+      "network": "CO_ASOS",
+      "state": "CO"
+    },
+    {
+      "station_id": "ALN",
+      "name": "ALTON/ST LOUIS R",
+      "latitude": 38.8899,
+      "longitude": -90.046,
+      "elevation_m": 166.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "ALO",
+      "name": "Waterloo",
+      "latitude": 42.5544,
+      "longitude": -92.4013,
+      "elevation_m": 268.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "AMW",
+      "name": "Ames",
+      "latitude": 41.9904,
+      "longitude": -93.6185,
+      "elevation_m": 280.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "ANE",
+      "name": "MINNEAPLS/BLAINE",
+      "latitude": 45.1449,
+      "longitude": -93.2102,
+      "elevation_m": 278.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "ANQ",
+      "name": "Angola",
+      "latitude": 41.6397,
+      "longitude": -85.0835,
+      "elevation_m": 293.44824,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "ANW",
+      "name": "AINSWORTH MUNICI",
+      "latitude": 42.5792,
+      "longitude": -99.993,
+      "elevation_m": 787.1129,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "ANY",
+      "name": "Anthony",
+      "latitude": 37.1598,
+      "longitude": -98.0795,
+      "elevation_m": 406.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "AQP",
+      "name": "APPLETON MUNICIP",
+      "latitude": 45.2275,
+      "longitude": -96.0043,
+      "elevation_m": 311.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "ARG",
+      "name": "WALNUT RIDGE (AWOS)",
+      "latitude": 36.1247,
+      "longitude": -90.9251,
+      "elevation_m": 83.0,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "ARR",
+      "name": "CHICAGO/AURORA",
+      "latitude": 41.77,
+      "longitude": -88.48,
+      "elevation_m": 215.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "ARV",
+      "name": "MINOCQUA/WOODRUF",
+      "latitude": 45.9279,
+      "longitude": -89.7309,
+      "elevation_m": 495.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "ASG",
+      "name": "SPRINGDALE MUNI",
+      "latitude": 36.1764,
+      "longitude": -94.1193,
+      "elevation_m": 412.0,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "ASW",
+      "name": "WARSAW MUNI",
+      "latitude": 41.2747,
+      "longitude": -85.8401,
+      "elevation_m": 259.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "ASX",
+      "name": "Ashland",
+      "latitude": 46.5487,
+      "longitude": -90.9189,
+      "elevation_m": 249.22482,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "ATW",
+      "name": "APPLETON/OUTAGAM",
+      "latitude": 44.2581,
+      "longitude": -88.5191,
+      "elevation_m": 268.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "ATY",
+      "name": "WATERTOWN",
+      "latitude": 44.914,
+      "longitude": -97.1547,
+      "elevation_m": 525.8819,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "AUH",
+      "name": "AURORA",
+      "latitude": 40.8941,
+      "longitude": -97.9946,
+      "elevation_m": 546.414,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "AUM",
+      "name": "AUSTIN MUNI",
+      "latitude": 43.6647,
+      "longitude": -92.9333,
+      "elevation_m": 375.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "AUW",
+      "name": "WAUSAU",
+      "latitude": 44.9262,
+      "longitude": -89.6266,
+      "elevation_m": 365.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "AVK",
+      "name": "ALVA RGNL AIRPORT",
+      "latitude": 36.7732,
+      "longitude": -98.67,
+      "elevation_m": 449.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "AWG",
+      "name": "WASHINGTON",
+      "latitude": 41.2751,
+      "longitude": -91.6748,
+      "elevation_m": 228.9,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "AXA",
+      "name": "Algona",
+      "latitude": 43.0796,
+      "longitude": -94.2724,
+      "elevation_m": 368.8,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "AXN",
+      "name": "ALEXANDRIA",
+      "latitude": 45.8663,
+      "longitude": -95.3947,
+      "elevation_m": 433.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "AZO",
+      "name": "KALAMAZOO",
+      "latitude": 42.2347,
+      "longitude": -85.5519,
+      "elevation_m": 272.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "BAK",
+      "name": "COLUMBUS/BALKALA",
+      "latitude": 39.2619,
+      "longitude": -85.8963,
+      "elevation_m": 200.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "BBB",
+      "name": "BENSON MUNI",
+      "latitude": 45.3319,
+      "longitude": -95.6506,
+      "elevation_m": 317.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "BBG",
+      "name": "Branson",
+      "latitude": 36.5321,
+      "longitude": -93.2005,
+      "elevation_m": 397.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "BBW",
+      "name": "BROKEN BOW MUNI",
+      "latitude": 41.4366,
+      "longitude": -99.6385,
+      "elevation_m": 769.2679,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "BCK",
+      "name": "Black River Falls",
+      "latitude": 44.2507,
+      "longitude": -90.8553,
+      "elevation_m": 253.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "BDH",
+      "name": "Willmar",
+      "latitude": 45.1177,
+      "longitude": -95.1304,
+      "elevation_m": 247.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "BEC",
+      "name": "Wichita Beech Factory",
+      "latitude": 37.6945,
+      "longitude": -97.215,
+      "elevation_m": 424.67108,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "BEH",
+      "name": "BENTON HARBOR",
+      "latitude": 42.1286,
+      "longitude": -86.4285,
+      "elevation_m": 191.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "BFF",
+      "name": "SCOTTSBLUFF",
+      "latitude": 41.874,
+      "longitude": -103.5956,
+      "elevation_m": 1203.4902,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "BFR",
+      "name": "Bedford",
+      "latitude": 38.84,
+      "longitude": -86.4454,
+      "elevation_m": 219.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "BGD",
+      "name": "BORGER/HUTCHINSON",
+      "latitude": 35.7009,
+      "longitude": -101.3937,
+      "elevation_m": 931.0,
+      "network": "TX_ASOS",
+      "state": "TX"
+    },
+    {
+      "station_id": "BIE",
+      "name": "BEATRICE MUNICIP",
+      "latitude": 40.3013,
+      "longitude": -96.7541,
+      "elevation_m": 398.8704,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "BIV",
+      "name": "HOLLAND",
+      "latitude": 42.7461,
+      "longitude": -86.0967,
+      "elevation_m": 208.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "BKN",
+      "name": "Blackwell",
+      "latitude": 36.7451,
+      "longitude": -97.3496,
+      "elevation_m": 313.9,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "BKX",
+      "name": "BROOKINGS",
+      "latitude": 44.3048,
+      "longitude": -96.8169,
+      "elevation_m": 490.28162,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "BLV",
+      "name": "Belleville - Scott AFB",
+      "latitude": 38.5454,
+      "longitude": -89.8515,
+      "elevation_m": 134.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "BMG",
+      "name": "Bloomington",
+      "latitude": 39.146,
+      "longitude": -86.6167,
+      "elevation_m": 257.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "BMI",
+      "name": "BLOOMINGTON/NORM",
+      "latitude": 40.4771,
+      "longitude": -88.9159,
+      "elevation_m": 267.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "BNW",
+      "name": "BOONE MUNI",
+      "latitude": 42.0486,
+      "longitude": -93.8486,
+      "elevation_m": 349.3,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "BPC",
+      "name": "Pampa",
+      "latitude": 35.8893,
+      "longitude": -101.0301,
+      "elevation_m": 845.0,
+      "network": "TX_ASOS",
+      "state": "TX"
+    },
+    {
+      "station_id": "BPK",
+      "name": "MOUNTAIN HOME/BAXTER COUNTY",
+      "latitude": 36.37,
+      "longitude": -92.47,
+      "elevation_m": 283.0,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "BPP",
+      "name": "Bowman",
+      "latitude": 46.187,
+      "longitude": -103.4281,
+      "elevation_m": 901.6,
+      "network": "ND_ASOS",
+      "state": "ND"
+    },
+    {
+      "station_id": "BRD",
+      "name": "BRAINERD",
+      "latitude": 46.4047,
+      "longitude": -94.1308,
+      "elevation_m": 372.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "BRL",
+      "name": "BURLINGTON",
+      "latitude": 40.7729,
+      "longitude": -91.1255,
+      "elevation_m": 213.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "BRY",
+      "name": "Bardstown - Samuels Field",
+      "latitude": 37.8143,
+      "longitude": -85.4996,
+      "elevation_m": 194.3097,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "BTA",
+      "name": "Blair",
+      "latitude": 41.4148,
+      "longitude": -96.109,
+      "elevation_m": 396.51245,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "BTL",
+      "name": "BATTLE CREEK",
+      "latitude": 42.3073,
+      "longitude": -85.2515,
+      "elevation_m": 290.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "BTN",
+      "name": "Britton",
+      "latitude": 45.815,
+      "longitude": -97.7428,
+      "elevation_m": 397.85605,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "BUU",
+      "name": "BURLINGTON",
+      "latitude": 42.6907,
+      "longitude": -88.3046,
+      "elevation_m": 237.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "BVN",
+      "name": "Albion",
+      "latitude": 41.7286,
+      "longitude": -98.0558,
+      "elevation_m": 545.3605,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "BVO",
+      "name": "BARTLESVILLE/PHILLI",
+      "latitude": 36.7625,
+      "longitude": -96.0112,
+      "elevation_m": 218.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "BVX",
+      "name": "BATESVILLE (AWOS)",
+      "latitude": 35.7261,
+      "longitude": -91.6472,
+      "elevation_m": 141.0,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "BWG",
+      "name": "BOWLING GREEN",
+      "latitude": 36.9645,
+      "longitude": -86.4197,
+      "elevation_m": 167.0,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "BWP",
+      "name": "Wahpeton",
+      "latitude": 46.2441,
+      "longitude": -96.6074,
+      "elevation_m": 294.7,
+      "network": "ND_ASOS",
+      "state": "ND"
+    },
+    {
+      "station_id": "BWW",
+      "name": "Bowman",
+      "latitude": 46.1655,
+      "longitude": -103.3007,
+      "elevation_m": 894.69574,
+      "network": "ND_ASOS",
+      "state": "ND"
+    },
+    {
+      "station_id": "BYH",
+      "name": "EAKER AFB",
+      "latitude": 35.9643,
+      "longitude": -89.9439,
+      "elevation_m": 78.0,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "C09",
+      "name": "MORRIS-WASHBURN",
+      "latitude": 41.4253,
+      "longitude": -88.4186,
+      "elevation_m": 178.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "C29",
+      "name": "Middleton",
+      "latitude": 43.1143,
+      "longitude": -89.5315,
+      "elevation_m": 282.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "C35",
+      "name": "Reedsburg",
+      "latitude": 43.5259,
+      "longitude": -89.9832,
+      "elevation_m": 272.42603,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "C62",
+      "name": "Kendallville",
+      "latitude": 41.4739,
+      "longitude": -85.2541,
+      "elevation_m": 304.4069,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "C65",
+      "name": "Plymouth",
+      "latitude": 41.3651,
+      "longitude": -86.3005,
+      "elevation_m": 244.1985,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "C75",
+      "name": "LACON",
+      "latitude": 41.0193,
+      "longitude": -89.3864,
+      "elevation_m": 173.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "CAD",
+      "name": "CADILLAC/WEXFORD",
+      "latitude": 44.2753,
+      "longitude": -85.4189,
+      "elevation_m": 398.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "CAV",
+      "name": "CLARION",
+      "latitude": 42.743,
+      "longitude": -93.7593,
+      "elevation_m": 350.2,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "CBF",
+      "name": "COUNCIL BLUFFS",
+      "latitude": 41.2611,
+      "longitude": -95.7604,
+      "elevation_m": 378.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "CBG",
+      "name": "CAMBRIDGE MUNI",
+      "latitude": 45.5575,
+      "longitude": -93.2642,
+      "elevation_m": 287.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "CBK",
+      "name": "COLBY",
+      "latitude": 39.4274,
+      "longitude": -101.0466,
+      "elevation_m": 971.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "CCA",
+      "name": "Clinton",
+      "latitude": 35.5978,
+      "longitude": -92.4516,
+      "elevation_m": 156.7,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "CCY",
+      "name": "Charles City",
+      "latitude": 43.073,
+      "longitude": -92.6132,
+      "elevation_m": 340.2,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "CDJ",
+      "name": "CHILLICOTHE",
+      "latitude": 39.8233,
+      "longitude": -93.5792,
+      "elevation_m": 234.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "CDR",
+      "name": "CHADRON",
+      "latitude": 42.8376,
+      "longitude": -103.0954,
+      "elevation_m": 999.0307,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "CEY",
+      "name": "Murray",
+      "latitude": 36.6646,
+      "longitude": -88.3728,
+      "elevation_m": 173.0,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "CFE",
+      "name": "Buffalo",
+      "latitude": 45.159,
+      "longitude": -93.8433,
+      "elevation_m": 295.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "CFJ",
+      "name": "Crawfordsville",
+      "latitude": 39.9756,
+      "longitude": -86.9199,
+      "elevation_m": 243.5067,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "CFV",
+      "name": "COFFEYVILLE",
+      "latitude": 37.094,
+      "longitude": -95.5719,
+      "elevation_m": 226.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "CGI",
+      "name": "CAPE GIRARDEAU",
+      "latitude": 37.2253,
+      "longitude": -89.5708,
+      "elevation_m": 102.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "CGX",
+      "name": "CHICAGO/MEIGS",
+      "latitude": 41.8588,
+      "longitude": -87.6079,
+      "elevation_m": 181.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "CID",
+      "name": "CEDAR RAPIDS",
+      "latitude": 41.8829,
+      "longitude": -91.7246,
+      "elevation_m": 265.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "CIN",
+      "name": "CARROLL",
+      "latitude": 42.0444,
+      "longitude": -94.7889,
+      "elevation_m": 365.2,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "CIR",
+      "name": "Cairo",
+      "latitude": 37.0647,
+      "longitude": -89.2196,
+      "elevation_m": 97.8,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "CKP",
+      "name": "Cherokee",
+      "latitude": 42.7304,
+      "longitude": -95.5538,
+      "elevation_m": 373.7,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "CLI",
+      "name": "CLINTONVILLE",
+      "latitude": 44.6139,
+      "longitude": -88.7314,
+      "elevation_m": 250.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "CMI",
+      "name": "Champaign - Willard",
+      "latitude": 40.0324,
+      "longitude": -88.2755,
+      "elevation_m": 227.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "CMY",
+      "name": "SPARTA/MCCOY AAF",
+      "latitude": 43.9584,
+      "longitude": -90.7379,
+      "elevation_m": 254.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "CNB",
+      "name": "Canby",
+      "latitude": 44.7295,
+      "longitude": -96.266,
+      "elevation_m": 363.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "CNC",
+      "name": "CHARITON",
+      "latitude": 41.0184,
+      "longitude": -93.3608,
+      "elevation_m": 319.1,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "CNK",
+      "name": "CONCORDIA",
+      "latitude": 39.55,
+      "longitude": -97.65,
+      "elevation_m": 452.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "CNU",
+      "name": "CHANUTE",
+      "latitude": 37.6703,
+      "longitude": -95.4842,
+      "elevation_m": 305.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "COQ",
+      "name": "CLOQUET",
+      "latitude": 46.7011,
+      "longitude": -92.5036,
+      "elevation_m": 390.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "COU",
+      "name": "COLUMBIA",
+      "latitude": 38.8169,
+      "longitude": -92.2183,
+      "elevation_m": 271.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "CPS",
+      "name": "CAHOKIA/ST LOUIS",
+      "latitude": 38.5707,
+      "longitude": -90.1562,
+      "elevation_m": 126.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "CQB",
+      "name": "CHANDLER MUNI AIRPORT",
+      "latitude": 35.7238,
+      "longitude": -96.8203,
+      "elevation_m": 300.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "CSB",
+      "name": "Cambridge",
+      "latitude": 40.307,
+      "longitude": -100.162,
+      "elevation_m": 735.0,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "CSQ",
+      "name": "CRESTON",
+      "latitude": 41.0188,
+      "longitude": -94.3608,
+      "elevation_m": 393.2,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "CUH",
+      "name": "Cushing",
+      "latitude": 35.9499,
+      "longitude": -96.7731,
+      "elevation_m": 279.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "CUL",
+      "name": "Carmi",
+      "latitude": 38.0895,
+      "longitude": -88.1231,
+      "elevation_m": 118.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "CUT",
+      "name": "CUSTER",
+      "latitude": 43.7331,
+      "longitude": -103.6114,
+      "elevation_m": 1686.81,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "CVX",
+      "name": "CHARLEVOIX",
+      "latitude": 45.3047,
+      "longitude": -85.2747,
+      "elevation_m": 204.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "CWA",
+      "name": "MOSINEE/CENTRAL",
+      "latitude": 44.7776,
+      "longitude": -89.6668,
+      "elevation_m": 389.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "CWI",
+      "name": "CLINTON",
+      "latitude": 41.8295,
+      "longitude": -90.3328,
+      "elevation_m": 216.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "CZD",
+      "name": "COZAD",
+      "latitude": 40.8696,
+      "longitude": -100.0042,
+      "elevation_m": 760.59845,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "D07",
+      "name": "FAITH",
+      "latitude": 45.03,
+      "longitude": -102.02,
+      "elevation_m": 778.5037,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "D25",
+      "name": "Manitowish Waters",
+      "latitude": 46.1202,
+      "longitude": -89.8822,
+      "elevation_m": 488.60013,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "D39",
+      "name": "Sauk Centre",
+      "latitude": 45.7066,
+      "longitude": -94.9334,
+      "elevation_m": 379.2,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "DBQ",
+      "name": "DUBUQUE",
+      "latitude": 42.3984,
+      "longitude": -90.7091,
+      "elevation_m": 329.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "DCY",
+      "name": "Daviess City",
+      "latitude": 38.7004,
+      "longitude": -87.1297,
+      "elevation_m": 141.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "DDC",
+      "name": "Dodge City",
+      "latitude": 37.7631,
+      "longitude": -99.9654,
+      "elevation_m": 790.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "DEC",
+      "name": "DECATUR",
+      "latitude": 39.8346,
+      "longitude": -88.8657,
+      "elevation_m": 207.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "DEH",
+      "name": "DECORAH",
+      "latitude": 43.2755,
+      "longitude": -91.7433,
+      "elevation_m": 352.7,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "DHT",
+      "name": "DALHART MUNICIPAL",
+      "latitude": 36.0226,
+      "longitude": -102.5473,
+      "elevation_m": 1216.0,
+      "network": "TX_ASOS",
+      "state": "TX"
+    },
+    {
+      "station_id": "DKB",
+      "name": "DE KALB",
+      "latitude": 41.9338,
+      "longitude": -88.7057,
+      "elevation_m": 279.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "DLL",
+      "name": "DELLS/BARABOO",
+      "latitude": 43.522,
+      "longitude": -89.771,
+      "elevation_m": 298.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "DMO",
+      "name": "SEDALIA",
+      "latitude": 38.7074,
+      "longitude": -93.1759,
+      "elevation_m": 274.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "DNS",
+      "name": "DENISON",
+      "latitude": 41.9842,
+      "longitude": -95.38,
+      "elevation_m": 381.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "DNV",
+      "name": "DANVILLE",
+      "latitude": 40.1997,
+      "longitude": -87.5955,
+      "elevation_m": 212.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "DPA",
+      "name": "CHICAGO/DUPAGE",
+      "latitude": 41.9078,
+      "longitude": -88.2486,
+      "elevation_m": 231.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "DSM",
+      "name": "Des Moines",
+      "latitude": 41.534,
+      "longitude": -93.6531,
+      "elevation_m": 294.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "DUX",
+      "name": "DUMAS",
+      "latitude": 35.858,
+      "longitude": -102.013,
+      "elevation_m": 1129.0,
+      "network": "TX_ASOS",
+      "state": "TX"
+    },
+    {
+      "station_id": "DVN",
+      "name": "QUAD CITIES",
+      "latitude": 41.6133,
+      "longitude": -90.5948,
+      "elevation_m": 229.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "DVP",
+      "name": "Slayton",
+      "latitude": 43.9868,
+      "longitude": -95.7826,
+      "elevation_m": 495.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "DXX",
+      "name": "MADISON",
+      "latitude": 44.9864,
+      "longitude": -96.1779,
+      "elevation_m": 330.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "DYT",
+      "name": "DULUTH (SKY HARB",
+      "latitude": 46.7219,
+      "longitude": -92.0434,
+      "elevation_m": 186.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "E42",
+      "name": "Spearman",
+      "latitude": 36.221,
+      "longitude": -101.1945,
+      "elevation_m": 945.8859,
+      "network": "TX_ASOS",
+      "state": "TX"
+    },
+    {
+      "station_id": "EAR",
+      "name": "KEARNEY MUNI",
+      "latitude": 40.727,
+      "longitude": -99.0068,
+      "elevation_m": 649.639,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "EAU",
+      "name": "EAU CLAIRE",
+      "latitude": 44.8658,
+      "longitude": -91.4843,
+      "elevation_m": 270.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "EBS",
+      "name": "Webster City",
+      "latitude": 42.4392,
+      "longitude": -93.8691,
+      "elevation_m": 337.4,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "EFC",
+      "name": "BELLE FOURCHE",
+      "latitude": 44.7342,
+      "longitude": -103.862,
+      "elevation_m": 966.0,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "EFT",
+      "name": "MONROE",
+      "latitude": 42.6149,
+      "longitude": -89.5904,
+      "elevation_m": 331.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "EGT",
+      "name": "Wellington",
+      "latitude": 37.325,
+      "longitude": -97.3883,
+      "elevation_m": 387.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "EGV",
+      "name": "EAGLE RIVER",
+      "latitude": 45.9323,
+      "longitude": -89.2683,
+      "elevation_m": 500.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "EHA",
+      "name": "ELKHART",
+      "latitude": 37.0008,
+      "longitude": -101.88,
+      "elevation_m": 1099.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "EHR",
+      "name": "HENDERSON CITY",
+      "latitude": 37.8078,
+      "longitude": -87.6857,
+      "elevation_m": 117.0,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "EKM",
+      "name": "ELKHART MUNICIPA",
+      "latitude": 41.72,
+      "longitude": -86.0,
+      "elevation_m": 237.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "EKX",
+      "name": "Elizabethtown",
+      "latitude": 37.686,
+      "longitude": -85.925,
+      "elevation_m": 232.35463,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "EMP",
+      "name": "EMPORIA",
+      "latitude": 38.3306,
+      "longitude": -96.1897,
+      "elevation_m": 368.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "END",
+      "name": "VANCE AFB/ENID",
+      "latitude": 36.3392,
+      "longitude": -97.9165,
+      "elevation_m": 398.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "ENL",
+      "name": "CENTRALIA",
+      "latitude": 38.5151,
+      "longitude": -89.0911,
+      "elevation_m": 163.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "ENW",
+      "name": "KENOSHA",
+      "latitude": 42.595,
+      "longitude": -87.9381,
+      "elevation_m": 219.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "EOK",
+      "name": "KEOKUK MUNI",
+      "latitude": 40.4615,
+      "longitude": -91.4274,
+      "elevation_m": 204.5,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "EQA",
+      "name": "El Dorado",
+      "latitude": 37.7741,
+      "longitude": -96.8176,
+      "elevation_m": 422.5155,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "ERY",
+      "name": "NEWBERRY",
+      "latitude": 46.3111,
+      "longitude": -85.4572,
+      "elevation_m": 265.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "ESC",
+      "name": "ESCANABA",
+      "latitude": 45.7227,
+      "longitude": -87.0937,
+      "elevation_m": 187.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "EST",
+      "name": "ESTHERVILLE",
+      "latitude": 43.4008,
+      "longitude": -94.7476,
+      "elevation_m": 401.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "ETB",
+      "name": "WEST BEND",
+      "latitude": 43.4222,
+      "longitude": -88.1279,
+      "elevation_m": 270.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "ETH",
+      "name": "WHEATON NDB",
+      "latitude": 45.7805,
+      "longitude": -96.5435,
+      "elevation_m": 313.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "EVU",
+      "name": "Maryville",
+      "latitude": 40.3525,
+      "longitude": -94.915,
+      "elevation_m": 346.99048,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "EVV",
+      "name": "EVANSVILLE",
+      "latitude": 38.0441,
+      "longitude": -87.5205,
+      "elevation_m": 117.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "EWK",
+      "name": "NEWTON",
+      "latitude": 38.0582,
+      "longitude": -97.2745,
+      "elevation_m": 467.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "EYE",
+      "name": "INDIANAPOLIS",
+      "latitude": 39.825,
+      "longitude": -86.2958,
+      "elevation_m": 248.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "EZS",
+      "name": "Shawano",
+      "latitude": 44.7854,
+      "longitude": -88.5655,
+      "elevation_m": 248.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "EZZ",
+      "name": "Cameron",
+      "latitude": 39.7276,
+      "longitude": -94.2764,
+      "elevation_m": 310.52643,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "FAM",
+      "name": "FARMINGTON",
+      "latitude": 37.761,
+      "longitude": -90.4286,
+      "elevation_m": 288.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "FBL",
+      "name": "FARIBAULT MUNI",
+      "latitude": 44.3247,
+      "longitude": -93.3108,
+      "elevation_m": 322.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "FCM",
+      "name": "Minneapolis - Flying Cloud",
+      "latitude": 44.8261,
+      "longitude": -93.4607,
+      "elevation_m": 270.76904,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "FEP",
+      "name": "FREEPORT",
+      "latitude": 42.2462,
+      "longitude": -89.582,
+      "elevation_m": 262.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "FET",
+      "name": "FREMONT MUNI ARP",
+      "latitude": 41.45,
+      "longitude": -96.52,
+      "elevation_m": 362.0027,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "FFL",
+      "name": "FAIRFIELD",
+      "latitude": 41.0521,
+      "longitude": -91.9834,
+      "elevation_m": 242.3,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "FFM",
+      "name": "FERGUS FALLS",
+      "latitude": 46.2844,
+      "longitude": -96.1567,
+      "elevation_m": 361.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "FFX",
+      "name": "Freemont",
+      "latitude": 43.4393,
+      "longitude": -85.9949,
+      "elevation_m": 235.3,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "FKA",
+      "name": "PRESTON (AWOS)",
+      "latitude": 43.6767,
+      "longitude": -92.1797,
+      "elevation_m": 389.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "FKR",
+      "name": "Frankfort",
+      "latitude": 40.2734,
+      "longitude": -86.5622,
+      "elevation_m": 261.59732,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "FKS",
+      "name": "Frankfort",
+      "latitude": 44.6252,
+      "longitude": -86.2008,
+      "elevation_m": 193.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "FLD",
+      "name": "FOND DU LAC",
+      "latitude": 43.7712,
+      "longitude": -88.4884,
+      "elevation_m": 240.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "FLP",
+      "name": "FLIPPIN (AWOS)",
+      "latitude": 36.2909,
+      "longitude": -92.5902,
+      "elevation_m": 350.0,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "FLV",
+      "name": "FORT LEAVENWORTH",
+      "latitude": 39.3683,
+      "longitude": -94.9147,
+      "elevation_m": 235.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "FMM",
+      "name": "Fort Morgan",
+      "latitude": 40.334,
+      "longitude": -103.8041,
+      "elevation_m": 1376.0051,
+      "network": "CO_ASOS",
+      "state": "CO"
+    },
+    {
+      "station_id": "FNB",
+      "name": "FALLS CITY/BRENN",
+      "latitude": 40.0788,
+      "longitude": -95.592,
+      "elevation_m": 303.68607,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "FOA",
+      "name": "FLORA",
+      "latitude": 38.665,
+      "longitude": -88.4531,
+      "elevation_m": 144.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "FOD",
+      "name": "FORT DODGE",
+      "latitude": 42.5497,
+      "longitude": -94.2032,
+      "elevation_m": 355.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "FOE",
+      "name": "TOPEKA (FOE)",
+      "latitude": 38.9509,
+      "longitude": -95.6636,
+      "elevation_m": 329.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "FRH",
+      "name": "French Lick",
+      "latitude": 38.5062,
+      "longitude": -86.6369,
+      "elevation_m": 237.24536,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "FRI",
+      "name": "Fort Riley",
+      "latitude": 39.0526,
+      "longitude": -96.7645,
+      "elevation_m": 324.6,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "FRM",
+      "name": "FAIRMONT MUNI",
+      "latitude": 43.6439,
+      "longitude": -94.4156,
+      "elevation_m": 354.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "FSD",
+      "name": "SIOUX FALLS",
+      "latitude": 43.5769,
+      "longitude": -96.7536,
+      "elevation_m": 428.94208,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "FSK",
+      "name": "Fort Scott",
+      "latitude": 37.7984,
+      "longitude": -94.7694,
+      "elevation_m": 278.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "FSW",
+      "name": "FORT MADISON",
+      "latitude": 40.6615,
+      "longitude": -91.3267,
+      "elevation_m": 220.1,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "FTK",
+      "name": "FORT KNOX/GODMAN",
+      "latitude": 37.9071,
+      "longitude": -85.9721,
+      "elevation_m": 230.0,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "FWA",
+      "name": "FORT WAYNE",
+      "latitude": 40.978,
+      "longitude": -85.1871,
+      "elevation_m": 248.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "FWB",
+      "name": "Branson West Muni",
+      "latitude": 36.6985,
+      "longitude": -93.4022,
+      "elevation_m": 393.81003,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "FWC",
+      "name": "FAIRFIELD",
+      "latitude": 38.3786,
+      "longitude": -88.4126,
+      "elevation_m": 133.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "FXY",
+      "name": "Forest City",
+      "latitude": 43.2323,
+      "longitude": -93.6237,
+      "elevation_m": 374.6,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "FYG",
+      "name": "Washington",
+      "latitude": 38.5876,
+      "longitude": -90.9938,
+      "elevation_m": 146.34282,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "FYV",
+      "name": "FAYETTEVILLE/DRAKE",
+      "latitude": 36.0051,
+      "longitude": -94.1701,
+      "elevation_m": 381.0,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "GAG",
+      "name": "GAGE/SHATTUCK",
+      "latitude": 36.2955,
+      "longitude": -99.7764,
+      "elevation_m": 678.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "GBD",
+      "name": "GREAT_BEND",
+      "latitude": 38.3442,
+      "longitude": -98.8592,
+      "elevation_m": 575.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "GBG",
+      "name": "GALESBURG",
+      "latitude": 40.938,
+      "longitude": -90.4311,
+      "elevation_m": 245.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "GCK",
+      "name": "GARDEN_CITY",
+      "latitude": 37.9275,
+      "longitude": -100.7244,
+      "elevation_m": 881.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "GCM",
+      "name": "CLAREMORE RGNL AIRPORT",
+      "latitude": 36.29,
+      "longitude": -95.48,
+      "elevation_m": 221.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "GDA",
+      "name": "Marion",
+      "latitude": 37.3344,
+      "longitude": -88.1095,
+      "elevation_m": 188.0,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "GDB",
+      "name": "Granite Falls",
+      "latitude": 44.7533,
+      "longitude": -95.556,
+      "elevation_m": 319.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "GEZ",
+      "name": "SHELBYVILLE",
+      "latitude": 39.5831,
+      "longitude": -85.8048,
+      "elevation_m": 245.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "GGF",
+      "name": "Grant",
+      "latitude": 40.8695,
+      "longitude": -101.7329,
+      "elevation_m": 1043.0,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "GGI",
+      "name": "Grinnell",
+      "latitude": 41.7097,
+      "longitude": -92.7332,
+      "elevation_m": 307.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "GGP",
+      "name": "Logansport",
+      "latitude": 40.7113,
+      "longitude": -86.3727,
+      "elevation_m": 223.24077,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "GHW",
+      "name": "GLENWOOD",
+      "latitude": 45.6439,
+      "longitude": -95.3204,
+      "elevation_m": 425.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "GLD",
+      "name": "GOODLAND",
+      "latitude": 39.3672,
+      "longitude": -101.6933,
+      "elevation_m": 1111.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "GLW",
+      "name": "GLASGOW MUNI",
+      "latitude": 37.0318,
+      "longitude": -85.9538,
+      "elevation_m": 218.0,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "GLY",
+      "name": "Clinton",
+      "latitude": 38.3566,
+      "longitude": -93.6842,
+      "elevation_m": 250.5,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "GMJ",
+      "name": "GROVE MUNI AIRPORT",
+      "latitude": 36.6068,
+      "longitude": -94.7386,
+      "elevation_m": 254.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "GOK",
+      "name": "GUTHRIE",
+      "latitude": 35.8498,
+      "longitude": -97.4156,
+      "elevation_m": 326.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "GPC",
+      "name": "Greencastle",
+      "latitude": 39.6354,
+      "longitude": -86.8155,
+      "elevation_m": 255.93918,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "GPH",
+      "name": "Mosby",
+      "latitude": 39.3325,
+      "longitude": -94.3096,
+      "elevation_m": 232.74814,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "GRB",
+      "name": "Ashwaubenon",
+      "latitude": 44.4794,
+      "longitude": -88.1367,
+      "elevation_m": 208.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "GRI",
+      "name": "GRAND ISLAND",
+      "latitude": 40.9675,
+      "longitude": -98.3096,
+      "elevation_m": 563.4602,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "GRN",
+      "name": "Gordon",
+      "latitude": 42.806,
+      "longitude": -102.1753,
+      "elevation_m": 1079.0,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "GRR",
+      "name": "Grand Rapids",
+      "latitude": 42.8821,
+      "longitude": -85.523,
+      "elevation_m": 240.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "GSH",
+      "name": "GOSHEN",
+      "latitude": 41.5272,
+      "longitude": -85.7922,
+      "elevation_m": 252.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "GUS",
+      "name": "GRISSOM AFB/PERU",
+      "latitude": 40.6481,
+      "longitude": -86.1521,
+      "elevation_m": 247.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "GUY",
+      "name": "GUYMON",
+      "latitude": 36.6817,
+      "longitude": -101.5053,
+      "elevation_m": 952.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "GWB",
+      "name": "Auburn",
+      "latitude": 41.3072,
+      "longitude": -85.0644,
+      "elevation_m": 268.2,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "GWR",
+      "name": "Gwinner",
+      "latitude": 46.2187,
+      "longitude": -97.6435,
+      "elevation_m": 385.0,
+      "network": "ND_ASOS",
+      "state": "ND"
+    },
+    {
+      "station_id": "GYL",
+      "name": "GLENCOE",
+      "latitude": 44.756,
+      "longitude": -94.0812,
+      "elevation_m": 302.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "GYY",
+      "name": "GARY REGIONAL",
+      "latitude": 41.6163,
+      "longitude": -87.4128,
+      "elevation_m": 180.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "H21",
+      "name": "Camdenton",
+      "latitude": 37.974,
+      "longitude": -92.6912,
+      "elevation_m": 323.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "H71",
+      "name": "Pryor",
+      "latitude": 36.2254,
+      "longitude": -95.3301,
+      "elevation_m": 187.54639,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "HAE",
+      "name": "Hannibal",
+      "latitude": 39.7252,
+      "longitude": -91.4439,
+      "elevation_m": 235.19081,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "HAI",
+      "name": "Three Rivers",
+      "latitude": 41.9598,
+      "longitude": -85.5934,
+      "elevation_m": 251.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "HBE",
+      "name": "Himsel Aaf",
+      "latitude": 39.3417,
+      "longitude": -86.0305,
+      "elevation_m": 214.4696,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "HCD",
+      "name": "HUTCHINSON",
+      "latitude": 44.8599,
+      "longitude": -94.3825,
+      "elevation_m": 323.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "HDE",
+      "name": "HOLDREGE/BREWSTR",
+      "latitude": 40.4521,
+      "longitude": -99.3365,
+      "elevation_m": 706.7284,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "HEI",
+      "name": "HETTINGER",
+      "latitude": 46.0149,
+      "longitude": -102.656,
+      "elevation_m": 828.0,
+      "network": "ND_ASOS",
+      "state": "ND"
+    },
+    {
+      "station_id": "HEQ",
+      "name": "Holyoke",
+      "latitude": 40.5694,
+      "longitude": -102.2727,
+      "elevation_m": 1137.0,
+      "network": "CO_ASOS",
+      "state": "CO"
+    },
+    {
+      "station_id": "HFJ",
+      "name": "Monett",
+      "latitude": 36.9062,
+      "longitude": -94.0128,
+      "elevation_m": 400.5,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "HFY",
+      "name": "Indianapolis - Greenwood Muni",
+      "latitude": 39.6276,
+      "longitude": -86.088,
+      "elevation_m": 249.97754,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "HHF",
+      "name": "CANADIAN",
+      "latitude": 35.895,
+      "longitude": -100.404,
+      "elevation_m": 730.0,
+      "network": "TX_ASOS",
+      "state": "TX"
+    },
+    {
+      "station_id": "HHG",
+      "name": "Huntington",
+      "latitude": 40.8529,
+      "longitude": -85.4571,
+      "elevation_m": 244.00758,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "HJH",
+      "name": "Hebron",
+      "latitude": 40.1522,
+      "longitude": -97.587,
+      "elevation_m": 444.53418,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "HKA",
+      "name": "Blytheville",
+      "latitude": 35.9378,
+      "longitude": -89.8332,
+      "elevation_m": 77.0,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "HLB",
+      "name": "Batesville",
+      "latitude": 39.3445,
+      "longitude": -85.2583,
+      "elevation_m": 296.38635,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "HLC",
+      "name": "HILL_CITY",
+      "latitude": 39.3756,
+      "longitude": -99.8297,
+      "elevation_m": 678.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "HNB",
+      "name": "HUNTINGBURG",
+      "latitude": 38.25,
+      "longitude": -86.95,
+      "elevation_m": 161.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "HNR",
+      "name": "HARLAN",
+      "latitude": 41.5834,
+      "longitude": -95.3355,
+      "elevation_m": 364.5,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "HON",
+      "name": "HURON",
+      "latitude": 44.3852,
+      "longitude": -98.2286,
+      "elevation_m": 384.37134,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "HOP",
+      "name": "FORT CAMPBELL (AAF)",
+      "latitude": 36.6686,
+      "longitude": -87.4962,
+      "elevation_m": 174.0,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "HPT",
+      "name": "Hampton",
+      "latitude": 42.7175,
+      "longitude": -93.2244,
+      "elevation_m": 350.1681,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "HQG",
+      "name": "Hugoton",
+      "latitude": 37.1631,
+      "longitude": -101.3705,
+      "elevation_m": 956.5196,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "HRO",
+      "name": "HARRISON/BOONE CO.",
+      "latitude": 36.2615,
+      "longitude": -93.1547,
+      "elevation_m": 416.0,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "HSB",
+      "name": "HARRISBURG",
+      "latitude": 37.8113,
+      "longitude": -88.5503,
+      "elevation_m": 121.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "HSD",
+      "name": "Oklahoma City Sundance",
+      "latitude": 35.6019,
+      "longitude": -97.7092,
+      "elevation_m": 359.9652,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "HSI",
+      "name": "HASTINGS",
+      "latitude": 40.6052,
+      "longitude": -98.4279,
+      "elevation_m": 591.8408,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "HUF",
+      "name": "TERRE HAUTE",
+      "latitude": 39.4515,
+      "longitude": -87.3076,
+      "elevation_m": 179.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "HUT",
+      "name": "HUTCHINSON",
+      "latitude": 38.0655,
+      "longitude": -97.8606,
+      "elevation_m": 470.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "HVC",
+      "name": "Hopkinsville",
+      "latitude": 36.857,
+      "longitude": -87.4551,
+      "elevation_m": 163.0,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "HYR",
+      "name": "HAYWARD",
+      "latitude": 46.0253,
+      "longitude": -91.4442,
+      "elevation_m": 370.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "HYS",
+      "name": "HAYS_MUNI",
+      "latitude": 38.8422,
+      "longitude": -99.2732,
+      "elevation_m": 609.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "HZX",
+      "name": "McGregor",
+      "latitude": 46.6188,
+      "longitude": -93.3098,
+      "elevation_m": 374.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "I63",
+      "name": "Mount Sterling",
+      "latitude": 39.9875,
+      "longitude": -90.8042,
+      "elevation_m": 219.73824,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "I75",
+      "name": "Osceola",
+      "latitude": 41.0472,
+      "longitude": -93.6876,
+      "elevation_m": 338.3,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "I93",
+      "name": "Hardinsburg",
+      "latitude": 37.7848,
+      "longitude": -86.4412,
+      "elevation_m": 219.0,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "IAB",
+      "name": "MCCONNELL_AFB",
+      "latitude": 37.623,
+      "longitude": -97.2673,
+      "elevation_m": 418.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "IBM",
+      "name": "Kimball",
+      "latitude": 41.1881,
+      "longitude": -103.6774,
+      "elevation_m": 1497.1047,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "ICL",
+      "name": "CLARINDA",
+      "latitude": 40.7242,
+      "longitude": -95.0223,
+      "elevation_m": 298.1,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "ICR",
+      "name": "WINNER",
+      "latitude": 43.3903,
+      "longitude": -99.8422,
+      "elevation_m": 611.9321,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "ICT",
+      "name": "WICHITA",
+      "latitude": 37.65,
+      "longitude": -97.43,
+      "elevation_m": 408.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "IDP",
+      "name": "Independence",
+      "latitude": 37.1584,
+      "longitude": -95.7784,
+      "elevation_m": 251.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "IEN",
+      "name": "PINE RIDGE",
+      "latitude": 43.0225,
+      "longitude": -102.511,
+      "elevation_m": 1008.83746,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "IFA",
+      "name": "Iowa Falls",
+      "latitude": 42.4691,
+      "longitude": -93.2651,
+      "elevation_m": 346.6,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "IGQ",
+      "name": "CHICAGO/LANSING",
+      "latitude": 41.5349,
+      "longitude": -87.5295,
+      "elevation_m": 188.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "IIB",
+      "name": "INDEPENDENCE",
+      "latitude": 42.4544,
+      "longitude": -91.9504,
+      "elevation_m": 294.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "IJX",
+      "name": "JACKSONVILLE",
+      "latitude": 39.7746,
+      "longitude": -90.2383,
+      "elevation_m": 190.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "IKK",
+      "name": "KANKAKEE",
+      "latitude": 41.0714,
+      "longitude": -87.8463,
+      "elevation_m": 192.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "IKV",
+      "name": "ANKENY",
+      "latitude": 41.6878,
+      "longitude": -93.5695,
+      "elevation_m": 270.7,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "ILL",
+      "name": "WILLMAR/RICE",
+      "latitude": 45.1157,
+      "longitude": -95.0888,
+      "elevation_m": 344.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "IML",
+      "name": "IMPERIAL MUNICIP",
+      "latitude": 40.5103,
+      "longitude": -101.6202,
+      "elevation_m": 995.0,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "IMS",
+      "name": "Madison",
+      "latitude": 38.7589,
+      "longitude": -85.4655,
+      "elevation_m": 242.6147,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "IMT",
+      "name": "IRON MOUNTAIN",
+      "latitude": 45.8184,
+      "longitude": -88.1146,
+      "elevation_m": 349.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "IND",
+      "name": "INDIANAPOLIS",
+      "latitude": 39.7084,
+      "longitude": -86.3048,
+      "elevation_m": 241.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "IOW",
+      "name": "IOWA CITY",
+      "latitude": 41.6394,
+      "longitude": -91.5445,
+      "elevation_m": 204.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "IRK",
+      "name": "KIRKSVILLE",
+      "latitude": 40.0972,
+      "longitude": -92.5433,
+      "elevation_m": 293.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "IRS",
+      "name": "STURGIS/KIRSCH",
+      "latitude": 41.8133,
+      "longitude": -85.4389,
+      "elevation_m": 282.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "ISQ",
+      "name": "MANISTIQUE",
+      "latitude": 45.9746,
+      "longitude": -86.1718,
+      "elevation_m": 209.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "ISW",
+      "name": "WISCONSIN RAPIDS",
+      "latitude": 44.3592,
+      "longitude": -89.8369,
+      "elevation_m": 307.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "ITR",
+      "name": "BURLINGTON",
+      "latitude": 39.2425,
+      "longitude": -102.2854,
+      "elevation_m": 1285.0,
+      "network": "CO_ASOS",
+      "state": "CO"
+    },
+    {
+      "station_id": "IWD",
+      "name": "IRONWOOD",
+      "latitude": 46.5275,
+      "longitude": -90.1314,
+      "elevation_m": 375.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "IXD",
+      "name": "Olathe",
+      "latitude": 38.8309,
+      "longitude": -94.8903,
+      "elevation_m": 343.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "JBR",
+      "name": "Jonesboro",
+      "latitude": 35.8357,
+      "longitude": -90.6442,
+      "elevation_m": 79.0,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "JEF",
+      "name": "JEFFERSON CITY",
+      "latitude": 38.5912,
+      "longitude": -92.1561,
+      "elevation_m": 168.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "JHN",
+      "name": "Johnson",
+      "latitude": 37.5782,
+      "longitude": -101.7304,
+      "elevation_m": 1012.7145,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "JLN",
+      "name": "Joplin",
+      "latitude": 37.1522,
+      "longitude": -94.4952,
+      "elevation_m": 293.32205,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "JMR",
+      "name": "MORA",
+      "latitude": 45.8861,
+      "longitude": -93.2718,
+      "elevation_m": 309.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "JOT",
+      "name": "JOLIET",
+      "latitude": 41.5177,
+      "longitude": -88.1756,
+      "elevation_m": 177.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "JVL",
+      "name": "JANESVILLE/ROCK",
+      "latitude": 42.6202,
+      "longitude": -89.0416,
+      "elevation_m": 246.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "JVY",
+      "name": "Jefferson",
+      "latitude": 38.3654,
+      "longitude": -85.7382,
+      "elevation_m": 142.65685,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "JWG",
+      "name": "WATONGA",
+      "latitude": 35.8647,
+      "longitude": -98.4208,
+      "elevation_m": 472.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "JYG",
+      "name": "ST. JAMES",
+      "latitude": 43.9863,
+      "longitude": -94.5579,
+      "elevation_m": 325.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "JYR",
+      "name": "York",
+      "latitude": 40.8968,
+      "longitude": -97.6228,
+      "elevation_m": 504.6396,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "K02",
+      "name": "Perryville",
+      "latitude": 37.8687,
+      "longitude": -89.8621,
+      "elevation_m": 113.6775,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "K24",
+      "name": "Jamestown",
+      "latitude": 37.0097,
+      "longitude": -85.1027,
+      "elevation_m": 303.0,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "K82",
+      "name": "Smith Center",
+      "latitude": 39.7611,
+      "longitude": -98.7934,
+      "elevation_m": 548.45166,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "K83",
+      "name": "Sabetha",
+      "latitude": 39.9042,
+      "longitude": -95.7794,
+      "elevation_m": 403.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "K88",
+      "name": "Iola",
+      "latitude": 37.8682,
+      "longitude": -95.3869,
+      "elevation_m": 306.19186,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "KY8",
+      "name": "Hancock",
+      "latitude": 37.953,
+      "longitude": -86.8592,
+      "elevation_m": 120.59273,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "LAA",
+      "name": "LAMAR",
+      "latitude": 38.07,
+      "longitude": -102.6881,
+      "elevation_m": 1103.0,
+      "network": "CO_ASOS",
+      "state": "CO"
+    },
+    {
+      "station_id": "LAF",
+      "name": "LAFAYETTE",
+      "latitude": 40.4148,
+      "longitude": -86.9333,
+      "elevation_m": 182.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "LBF",
+      "name": "North Platte",
+      "latitude": 41.1219,
+      "longitude": -100.669,
+      "elevation_m": 843.90845,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "LBL",
+      "name": "LIBERAL_MUNI",
+      "latitude": 37.0442,
+      "longitude": -100.9599,
+      "elevation_m": 879.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "LBO",
+      "name": "Lebanon",
+      "latitude": 37.6483,
+      "longitude": -92.6524,
+      "elevation_m": 401.23248,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "LCG",
+      "name": "Wayne",
+      "latitude": 42.2419,
+      "longitude": -96.9814,
+      "elevation_m": 432.5637,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "LDM",
+      "name": "LUDINGTON/MASON",
+      "latitude": 43.9625,
+      "longitude": -86.4079,
+      "elevation_m": 197.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "LEM",
+      "name": "LEMMON US12",
+      "latitude": 45.9187,
+      "longitude": -102.1062,
+      "elevation_m": 782.37494,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "LHX",
+      "name": "LA JUNTA MUNICIPAL",
+      "latitude": 38.0494,
+      "longitude": -103.5122,
+      "elevation_m": 1292.0,
+      "network": "CO_ASOS",
+      "state": "CO"
+    },
+    {
+      "station_id": "LIC",
+      "name": "LIMON MUNICIPAL",
+      "latitude": 39.2748,
+      "longitude": -103.6659,
+      "elevation_m": 1635.0,
+      "network": "CO_ASOS",
+      "state": "CO"
+    },
+    {
+      "station_id": "LJF",
+      "name": "LITCHFIELD",
+      "latitude": 45.0971,
+      "longitude": -94.5072,
+      "elevation_m": 348.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "LNK",
+      "name": "Lincoln",
+      "latitude": 40.8312,
+      "longitude": -96.7633,
+      "elevation_m": 352.0,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "LNL",
+      "name": "Land O Lakes",
+      "latitude": 46.154,
+      "longitude": -89.2121,
+      "elevation_m": 519.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "LNR",
+      "name": "LONE ROCK",
+      "latitude": 43.2119,
+      "longitude": -90.1798,
+      "elevation_m": 217.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "LOT",
+      "name": "ROMEOVILLE/CHI",
+      "latitude": 41.6081,
+      "longitude": -88.0962,
+      "elevation_m": 205.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "LOU",
+      "name": "LOUISVILLE/BOWMAN",
+      "latitude": 38.228,
+      "longitude": -85.6637,
+      "elevation_m": 167.0,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "LQR",
+      "name": "Larned",
+      "latitude": 38.209,
+      "longitude": -99.086,
+      "elevation_m": 613.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "LRJ",
+      "name": "LE MARS",
+      "latitude": 42.7754,
+      "longitude": -96.1922,
+      "elevation_m": 362.4,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "LRY",
+      "name": "Harrisonville",
+      "latitude": 38.611,
+      "longitude": -94.3421,
+      "elevation_m": 271.57797,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "LSE",
+      "name": "La Crosse",
+      "latitude": 43.8792,
+      "longitude": -91.253,
+      "elevation_m": 198.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "LUM",
+      "name": "Menomonie  WI",
+      "latitude": 44.8923,
+      "longitude": -91.8678,
+      "elevation_m": 273.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "LVN",
+      "name": "MNPLS/AIRLAKE",
+      "latitude": 44.6252,
+      "longitude": -93.2273,
+      "elevation_m": 293.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "LWA",
+      "name": "South Haven",
+      "latitude": 42.3508,
+      "longitude": -86.2561,
+      "elevation_m": 203.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "LWC",
+      "name": "Lawrence",
+      "latitude": 39.0077,
+      "longitude": -95.2115,
+      "elevation_m": 253.47006,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "LWD",
+      "name": "LAMONI",
+      "latitude": 40.6306,
+      "longitude": -93.9005,
+      "elevation_m": 333.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "LWV",
+      "name": "LAWRENCEVILLE",
+      "latitude": 38.7643,
+      "longitude": -87.6055,
+      "elevation_m": 131.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "LXL",
+      "name": "LITTLE FALLS",
+      "latitude": 45.9492,
+      "longitude": -94.3469,
+      "elevation_m": 351.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "LXN",
+      "name": "LEXINGTON",
+      "latitude": 40.7904,
+      "longitude": -99.7759,
+      "elevation_m": 730.4185,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "LXT",
+      "name": "Lee s Summit",
+      "latitude": 38.9597,
+      "longitude": -94.3714,
+      "elevation_m": 306.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "LYO",
+      "name": "Lyons",
+      "latitude": 38.3403,
+      "longitude": -98.2286,
+      "elevation_m": 518.2949,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "LYV",
+      "name": "Luverne",
+      "latitude": 43.6212,
+      "longitude": -96.2158,
+      "elevation_m": 436.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "M19",
+      "name": "Newport",
+      "latitude": 35.6377,
+      "longitude": -91.1764,
+      "elevation_m": 72.8,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "M21",
+      "name": "Greenville",
+      "latitude": 37.2262,
+      "longitude": -87.1564,
+      "elevation_m": 125.56613,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "M25",
+      "name": "Mayfield",
+      "latitude": 36.7691,
+      "longitude": -88.5847,
+      "elevation_m": 153.77827,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "M30",
+      "name": "Metropolis  IL",
+      "latitude": 37.1859,
+      "longitude": -88.7506,
+      "elevation_m": 384.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "MAW",
+      "name": "Malden",
+      "latitude": 36.6005,
+      "longitude": -89.9922,
+      "elevation_m": 88.33055,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "MBG",
+      "name": "MOBRIDGE",
+      "latitude": 45.5464,
+      "longitude": -100.4078,
+      "elevation_m": 515.16785,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "MBL",
+      "name": "MANISTEE",
+      "latitude": 44.2725,
+      "longitude": -86.2469,
+      "elevation_m": 189.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "MBY",
+      "name": "Moberly",
+      "latitude": 39.464,
+      "longitude": -92.4244,
+      "elevation_m": 263.82602,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "MCI",
+      "name": "KANSAS CITY/INTL",
+      "latitude": 39.2976,
+      "longitude": -94.7139,
+      "elevation_m": 320.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "MCK",
+      "name": "MCCOOK",
+      "latitude": 40.2063,
+      "longitude": -100.5921,
+      "elevation_m": 781.9591,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "MCW",
+      "name": "MASON CITY",
+      "latitude": 43.1544,
+      "longitude": -93.3261,
+      "elevation_m": 370.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "MCX",
+      "name": "Monticello",
+      "latitude": 40.7088,
+      "longitude": -86.7668,
+      "elevation_m": 204.23053,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "MDH",
+      "name": "CARBONDALE/MURPH",
+      "latitude": 37.78,
+      "longitude": -89.25,
+      "elevation_m": 130.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "MDS",
+      "name": "Madison",
+      "latitude": 44.016,
+      "longitude": -97.0859,
+      "elevation_m": 520.79846,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "MDW",
+      "name": "CHICAGO",
+      "latitude": 41.786,
+      "longitude": -87.7524,
+      "elevation_m": 188.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "MDZ",
+      "name": "MEDFORD",
+      "latitude": 45.1008,
+      "longitude": -90.3033,
+      "elevation_m": 448.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "MFI",
+      "name": "MARSHFIELD",
+      "latitude": 44.6369,
+      "longitude": -90.1893,
+      "elevation_m": 382.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "MGC",
+      "name": "Michigan City",
+      "latitude": 41.7033,
+      "longitude": -86.8212,
+      "elevation_m": 197.0816,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "MGG",
+      "name": "MAPLE LAKE",
+      "latitude": 45.236,
+      "longitude": -93.9856,
+      "elevation_m": 313.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "MHE",
+      "name": "MITCHELL",
+      "latitude": 43.7748,
+      "longitude": -98.0386,
+      "elevation_m": 395.72662,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "MHK",
+      "name": "MANHATTAN",
+      "latitude": 39.1353,
+      "longitude": -96.6778,
+      "elevation_m": 322.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "MHL",
+      "name": "Marshall",
+      "latitude": 39.0955,
+      "longitude": -93.2028,
+      "elevation_m": 238.50627,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "MIC",
+      "name": "Minneapolis - Crystal",
+      "latitude": 45.0622,
+      "longitude": -93.3511,
+      "elevation_m": 261.65143,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "MIE",
+      "name": "MUNCIE",
+      "latitude": 40.2425,
+      "longitude": -85.3958,
+      "elevation_m": 285.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "MIO",
+      "name": "Miami Municipal",
+      "latitude": 36.9092,
+      "longitude": -94.8875,
+      "elevation_m": 244.03398,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "MIW",
+      "name": "MARSHALLTOWN",
+      "latitude": 42.1106,
+      "longitude": -92.9163,
+      "elevation_m": 297.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "MJQ",
+      "name": "JACKSON MUNI",
+      "latitude": 43.65,
+      "longitude": -94.9866,
+      "elevation_m": 441.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "MKC",
+      "name": "KANSAS CITY/DNTN",
+      "latitude": 39.123,
+      "longitude": -94.593,
+      "elevation_m": 227.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "MKE",
+      "name": "MILWAUKEE",
+      "latitude": 42.9472,
+      "longitude": -87.8967,
+      "elevation_m": 204.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "MKG",
+      "name": "MUSKEGON",
+      "latitude": 43.1711,
+      "longitude": -86.2367,
+      "elevation_m": 191.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "MKO",
+      "name": "MUSKOGEE/DAVIS FLD",
+      "latitude": 35.6567,
+      "longitude": -95.3614,
+      "elevation_m": 186.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "MKT",
+      "name": "MANKATO",
+      "latitude": 44.22,
+      "longitude": -93.92,
+      "elevation_m": 311.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "MLE",
+      "name": "MILLARD",
+      "latitude": 41.196,
+      "longitude": -96.112,
+      "elevation_m": 322.07217,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "MLI",
+      "name": "Moline",
+      "latitude": 41.4485,
+      "longitude": -90.5075,
+      "elevation_m": 181.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "MML",
+      "name": "MARSHALL/RYAN",
+      "latitude": 44.45,
+      "longitude": -95.82,
+      "elevation_m": 359.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "MNM",
+      "name": "MENOMINEE",
+      "latitude": 45.1266,
+      "longitude": -87.6384,
+      "elevation_m": 191.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "MOX",
+      "name": "MORRIS MUNI",
+      "latitude": 45.566,
+      "longitude": -95.9672,
+      "elevation_m": 344.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "MPR",
+      "name": "Mc Pherson",
+      "latitude": 38.3524,
+      "longitude": -97.6913,
+      "elevation_m": 455.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "MPZ",
+      "name": "MOUNT PLEASANT",
+      "latitude": 40.9453,
+      "longitude": -91.5122,
+      "elevation_m": 222.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "MQB",
+      "name": "MACOMB MUNI",
+      "latitude": 40.52,
+      "longitude": -90.65,
+      "elevation_m": 215.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "MQJ",
+      "name": "Indianapolis Mount Comfort",
+      "latitude": 39.8435,
+      "longitude": -85.8971,
+      "elevation_m": 260.9939,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "MRJ",
+      "name": "MINERAL POINT",
+      "latitude": 42.8868,
+      "longitude": -90.2362,
+      "elevation_m": 359.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "MSN",
+      "name": "MADISON",
+      "latitude": 43.1406,
+      "longitude": -89.3453,
+      "elevation_m": 261.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "MSP",
+      "name": "MINNEAPOLIS",
+      "latitude": 44.8854,
+      "longitude": -93.2313,
+      "elevation_m": 265.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "MTO",
+      "name": "MATTOON/CHARLEST",
+      "latitude": 39.4779,
+      "longitude": -88.2792,
+      "elevation_m": 214.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "MTW",
+      "name": "MANITOWAC MUNI",
+      "latitude": 44.1288,
+      "longitude": -87.6806,
+      "elevation_m": 198.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "MUT",
+      "name": "MUSCATINE",
+      "latitude": 41.367,
+      "longitude": -91.1406,
+      "elevation_m": 165.5,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "MVE",
+      "name": "MONTEVIDEO",
+      "latitude": 44.969,
+      "longitude": -95.7102,
+      "elevation_m": 315.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "MVN",
+      "name": "MOUNT VERNON",
+      "latitude": 38.3233,
+      "longitude": -88.8583,
+      "elevation_m": 146.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "MWA",
+      "name": "MARION REGIONAL",
+      "latitude": 37.755,
+      "longitude": -89.0111,
+      "elevation_m": 144.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "MWC",
+      "name": "MILWAUKEE/LAWREN",
+      "latitude": 43.1104,
+      "longitude": -88.0344,
+      "elevation_m": 224.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "MWM",
+      "name": "WINDOM MUNI AIRP",
+      "latitude": 43.9134,
+      "longitude": -95.1094,
+      "elevation_m": 430.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "MXO",
+      "name": "MONTICELLO MUNI",
+      "latitude": 42.2204,
+      "longitude": -91.1605,
+      "elevation_m": 254.5,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "MYJ",
+      "name": "Mexico",
+      "latitude": 39.1575,
+      "longitude": -91.8183,
+      "elevation_m": 248.04445,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "MYZ",
+      "name": "Marysville",
+      "latitude": 39.8553,
+      "longitude": -96.6306,
+      "elevation_m": 393.16907,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "MZH",
+      "name": "MOOSE LAKE",
+      "latitude": 46.4186,
+      "longitude": -92.8048,
+      "elevation_m": 328.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "MZZ",
+      "name": "Marion",
+      "latitude": 40.4899,
+      "longitude": -85.6797,
+      "elevation_m": 261.8,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "NRN",
+      "name": "NORTON",
+      "latitude": 39.8504,
+      "longitude": -99.8947,
+      "elevation_m": 720.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "OCQ",
+      "name": "Oconto",
+      "latitude": 44.8742,
+      "longitude": -87.9096,
+      "elevation_m": 179.8522,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "ODX",
+      "name": "ORD/SHARP FIELD",
+      "latitude": 41.6236,
+      "longitude": -98.9517,
+      "elevation_m": 628.4149,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "OEB",
+      "name": "COLDWATER",
+      "latitude": 41.9333,
+      "longitude": -85.0525,
+      "elevation_m": 292.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "OEL",
+      "name": "Oakley",
+      "latitude": 39.1017,
+      "longitude": -100.8166,
+      "elevation_m": 919.16284,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "OEO",
+      "name": "OSCEOLA",
+      "latitude": 45.3086,
+      "longitude": -92.69,
+      "elevation_m": 275.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "OFF",
+      "name": "OFFUTT AFB/BELLE",
+      "latitude": 41.1183,
+      "longitude": -95.9125,
+      "elevation_m": 298.65878,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "OFK",
+      "name": "NORFOLK",
+      "latitude": 41.9855,
+      "longitude": -97.4351,
+      "elevation_m": 467.5179,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "OGA",
+      "name": "OGALLALA",
+      "latitude": 41.1195,
+      "longitude": -101.7697,
+      "elevation_m": 992.2767,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "OIN",
+      "name": "OBERLIN",
+      "latitude": 39.8339,
+      "longitude": -100.5393,
+      "elevation_m": 824.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "OJA",
+      "name": "Weatherford",
+      "latitude": 35.5448,
+      "longitude": -98.6685,
+      "elevation_m": 489.2,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "OJC",
+      "name": "OLATHE (OJC)",
+      "latitude": 38.85,
+      "longitude": -94.7392,
+      "elevation_m": 334.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "OKK",
+      "name": "KOKOMO",
+      "latitude": 40.5282,
+      "longitude": -86.059,
+      "elevation_m": 253.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "OKM",
+      "name": "OKMULGEE MUNI AIRPORT",
+      "latitude": 35.67,
+      "longitude": -95.95,
+      "elevation_m": 220.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "OLG",
+      "name": "Solon Springs",
+      "latitude": 46.3174,
+      "longitude": -91.8159,
+      "elevation_m": 335.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "OLU",
+      "name": "COLUMBUS MUNI",
+      "latitude": 41.448,
+      "longitude": -97.3426,
+      "elevation_m": 438.3929,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "OLY",
+      "name": "OLNEY-NOBLE",
+      "latitude": 38.7218,
+      "longitude": -88.1764,
+      "elevation_m": 147.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "OLZ",
+      "name": "OELWEIN",
+      "latitude": 42.6831,
+      "longitude": -91.976,
+      "elevation_m": 328.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "OMA",
+      "name": "OMAHA/EPPLEY",
+      "latitude": 41.3103,
+      "longitude": -95.8992,
+      "elevation_m": 295.66733,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "ONA",
+      "name": "WINONA MUNI",
+      "latitude": 44.0772,
+      "longitude": -91.7083,
+      "elevation_m": 200.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "ONL",
+      "name": "O NEILL",
+      "latitude": 42.4697,
+      "longitude": -98.6881,
+      "elevation_m": 616.82635,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "OOA",
+      "name": "Oskaloosa",
+      "latitude": 41.2273,
+      "longitude": -92.4919,
+      "elevation_m": 256.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "ORC",
+      "name": "Orange City",
+      "latitude": 42.9895,
+      "longitude": -96.0606,
+      "elevation_m": 429.97208,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "ORD",
+      "name": "Chicago OHare",
+      "latitude": 41.9602,
+      "longitude": -87.9316,
+      "elevation_m": 205.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "OSH",
+      "name": "OSHKOSH",
+      "latitude": 43.9844,
+      "longitude": -88.557,
+      "elevation_m": 248.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "OTG",
+      "name": "WORTHINGTON",
+      "latitude": 43.6551,
+      "longitude": -95.5792,
+      "elevation_m": 480.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "OTM",
+      "name": "OTTUMWA",
+      "latitude": 41.1008,
+      "longitude": -92.4446,
+      "elevation_m": 258.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "OVL",
+      "name": "OLIVIA",
+      "latitude": 44.7786,
+      "longitude": -95.0328,
+      "elevation_m": 328.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "OVS",
+      "name": "BOSCOBEL",
+      "latitude": 43.1561,
+      "longitude": -90.6775,
+      "elevation_m": 202.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "OWA",
+      "name": "OWATONNA",
+      "latitude": 44.1233,
+      "longitude": -93.2606,
+      "elevation_m": 350.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "OWB",
+      "name": "OWENSBORO/DAVIESS",
+      "latitude": 37.7388,
+      "longitude": -87.1668,
+      "elevation_m": 124.0,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "OWI",
+      "name": "Ottawa",
+      "latitude": 38.5409,
+      "longitude": -95.2542,
+      "elevation_m": 292.66013,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "OWP",
+      "name": "Sand Springs",
+      "latitude": 36.1753,
+      "longitude": -96.1518,
+      "elevation_m": 270.6337,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "OXI",
+      "name": "Knox",
+      "latitude": 41.3302,
+      "longitude": -86.6648,
+      "elevation_m": 208.8,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "OXV",
+      "name": "Knoxville",
+      "latitude": 41.2984,
+      "longitude": -93.1114,
+      "elevation_m": 281.9,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "OZS",
+      "name": "Camdenton",
+      "latitude": 37.974,
+      "longitude": -92.6912,
+      "elevation_m": 324.93677,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "P28",
+      "name": "MEDICINE_LODGE",
+      "latitude": 37.2839,
+      "longitude": -98.5528,
+      "elevation_m": 468.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "P53",
+      "name": "Munising",
+      "latitude": 46.4119,
+      "longitude": -86.6508,
+      "elevation_m": 182.38113,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "P67",
+      "name": "LIDGERWOOD (RAMO",
+      "latitude": 46.1,
+      "longitude": -97.15,
+      "elevation_m": 351.0,
+      "network": "ND_ASOS",
+      "state": "ND"
+    },
+    {
+      "station_id": "P75",
+      "name": "MANISTIQUE",
+      "latitude": 45.95,
+      "longitude": -86.23,
+      "elevation_m": 178.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "PAH",
+      "name": "PADUCAH/BARKLEY",
+      "latitude": 37.0563,
+      "longitude": -88.7744,
+      "elevation_m": 120.0,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "PBH",
+      "name": "PHILLIPS/PRICE",
+      "latitude": 45.7089,
+      "longitude": -90.4025,
+      "elevation_m": 451.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "PCD",
+      "name": "Perryville",
+      "latitude": 37.8667,
+      "longitude": -89.8651,
+      "elevation_m": 110.893,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "PCZ",
+      "name": "Waupaca",
+      "latitude": 44.3333,
+      "longitude": -89.0198,
+      "elevation_m": 251.8,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "PDC",
+      "name": "PRAIRIE DU CHIEN",
+      "latitude": 43.0193,
+      "longitude": -91.1237,
+      "elevation_m": 201.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "PEA",
+      "name": "PELLA",
+      "latitude": 41.3989,
+      "longitude": -92.9431,
+      "elevation_m": 265.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "PEX",
+      "name": "Paynesville",
+      "latitude": 45.3723,
+      "longitude": -94.7466,
+      "elevation_m": 360.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "PHG",
+      "name": "PHILLIPSBURG",
+      "latitude": 39.7358,
+      "longitude": -99.3171,
+      "elevation_m": 581.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "PHP",
+      "name": "PHILIP",
+      "latitude": 44.05,
+      "longitude": -101.6,
+      "elevation_m": 671.74414,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "PIA",
+      "name": "PEORIA",
+      "latitude": 40.6675,
+      "longitude": -89.6839,
+      "elevation_m": 205.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "PIR",
+      "name": "PIERRE",
+      "latitude": 44.3827,
+      "longitude": -100.286,
+      "elevation_m": 522.0275,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "PMV",
+      "name": "Plattsmouth",
+      "latitude": 40.9502,
+      "longitude": -95.9179,
+      "elevation_m": 365.22882,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "PNC",
+      "name": "PONCA CITY MUNI",
+      "latitude": 36.73,
+      "longitude": -97.1,
+      "elevation_m": 307.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "PNM",
+      "name": "PRINCETON MUNI",
+      "latitude": 45.5599,
+      "longitude": -93.6082,
+      "elevation_m": 298.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "PNT",
+      "name": "PONTIAC",
+      "latitude": 40.9244,
+      "longitude": -88.6239,
+      "elevation_m": 201.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "POF",
+      "name": "POPULAR BLUFF",
+      "latitude": 36.7739,
+      "longitude": -90.3249,
+      "elevation_m": 99.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "PPA",
+      "name": "PAMPA",
+      "latitude": 35.613,
+      "longitude": -100.9962,
+      "elevation_m": 1050.0,
+      "network": "TX_ASOS",
+      "state": "TX"
+    },
+    {
+      "station_id": "PPF",
+      "name": "PARSONS",
+      "latitude": 37.3278,
+      "longitude": -95.5042,
+      "elevation_m": 274.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "PPO",
+      "name": "La Porte",
+      "latitude": 41.5725,
+      "longitude": -86.7345,
+      "elevation_m": 241.0487,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "PPQ",
+      "name": "PITTSFIELD",
+      "latitude": 39.6389,
+      "longitude": -90.7784,
+      "elevation_m": 216.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "PQN",
+      "name": "PIPESTONE",
+      "latitude": 43.9821,
+      "longitude": -96.3004,
+      "elevation_m": 529.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "PRG",
+      "name": "PARIS",
+      "latitude": 39.7,
+      "longitude": -87.67,
+      "elevation_m": 199.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "PRO",
+      "name": "Perry",
+      "latitude": 41.8278,
+      "longitude": -94.1637,
+      "elevation_m": 309.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "PTS",
+      "name": "Pittsburg",
+      "latitude": 37.4495,
+      "longitude": -94.7311,
+      "elevation_m": 289.6,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "PTT",
+      "name": "Pratt",
+      "latitude": 37.7016,
+      "longitude": -98.7469,
+      "elevation_m": 595.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "PVB",
+      "name": "Platteville",
+      "latitude": 42.6894,
+      "longitude": -90.4444,
+      "elevation_m": 312.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "PWC",
+      "name": "PINE RIVER REGIO",
+      "latitude": 46.7248,
+      "longitude": -94.3817,
+      "elevation_m": 395.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "PWK",
+      "name": "PALWAUKEE",
+      "latitude": 42.1208,
+      "longitude": -87.9047,
+      "elevation_m": 203.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "PYX",
+      "name": "PERRYTON/OCHILTREE COUNTY APT",
+      "latitude": 36.414,
+      "longitude": -100.75,
+      "elevation_m": 889.0,
+      "network": "TX_ASOS",
+      "state": "TX"
+    },
+    {
+      "station_id": "RAC",
+      "name": "RACINE",
+      "latitude": 42.7611,
+      "longitude": -87.8136,
+      "elevation_m": 203.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "RAP",
+      "name": "RAPID CITY",
+      "latitude": 44.0453,
+      "longitude": -103.0574,
+      "elevation_m": 964.70654,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "RAW",
+      "name": "Warsaw",
+      "latitude": 38.3469,
+      "longitude": -93.3454,
+      "elevation_m": 285.56042,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "RCA",
+      "name": "ELLSWORTH AFB",
+      "latitude": 44.1451,
+      "longitude": -103.1036,
+      "elevation_m": 977.4339,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "RCM",
+      "name": "Warrensburg",
+      "latitude": 38.7842,
+      "longitude": -93.8029,
+      "elevation_m": 243.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "RCR",
+      "name": "Rochester",
+      "latitude": 41.0655,
+      "longitude": -86.1817,
+      "elevation_m": 240.8,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "RCX",
+      "name": "Ladysmith",
+      "latitude": 45.4968,
+      "longitude": -91.0005,
+      "elevation_m": 377.3,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "RDK",
+      "name": "RED OAK",
+      "latitude": 41.0106,
+      "longitude": -95.2624,
+      "elevation_m": 317.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "RFD",
+      "name": "Rockford",
+      "latitude": 42.1915,
+      "longitude": -89.0876,
+      "elevation_m": 220.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "RGK",
+      "name": "RED WING",
+      "latitude": 44.5915,
+      "longitude": -92.4868,
+      "elevation_m": 239.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "RHI",
+      "name": "RHINELANDER",
+      "latitude": 45.6312,
+      "longitude": -89.4675,
+      "elevation_m": 485.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "RNH",
+      "name": "NEW RICHMOND MUN",
+      "latitude": 45.1483,
+      "longitude": -92.5381,
+      "elevation_m": 304.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "ROG",
+      "name": "ROGERS (AWOS)",
+      "latitude": 36.3724,
+      "longitude": -94.107,
+      "elevation_m": 415.0,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "ROS",
+      "name": "RUSH CITY",
+      "latitude": 45.698,
+      "longitude": -92.953,
+      "elevation_m": 281.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "RPD",
+      "name": "RICE LAKE",
+      "latitude": 45.4201,
+      "longitude": -91.7733,
+      "elevation_m": 336.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "RPJ",
+      "name": "Rochelle",
+      "latitude": 41.893,
+      "longitude": -89.0783,
+      "elevation_m": 238.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "RQB",
+      "name": "BIG RAPIDS",
+      "latitude": 43.7226,
+      "longitude": -85.5041,
+      "elevation_m": 302.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "RRL",
+      "name": "MERRILL",
+      "latitude": 45.1989,
+      "longitude": -89.7129,
+      "elevation_m": 401.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "RSL",
+      "name": "RUSSELL",
+      "latitude": 38.8721,
+      "longitude": -98.8118,
+      "elevation_m": 568.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "RST",
+      "name": "ROCHESTER",
+      "latitude": 43.9041,
+      "longitude": -92.4916,
+      "elevation_m": 403.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "RSV",
+      "name": "Robinson",
+      "latitude": 39.016,
+      "longitude": -87.6498,
+      "elevation_m": 141.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "RVS",
+      "name": "TULSA/LLOYD JONES",
+      "latitude": 36.0396,
+      "longitude": -95.9846,
+      "elevation_m": 193.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "RWF",
+      "name": "REDWOOD FALL",
+      "latitude": 44.5469,
+      "longitude": -95.082,
+      "elevation_m": 311.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "RYM",
+      "name": "Ray Miller Army Field",
+      "latitude": 46.0895,
+      "longitude": -94.3575,
+      "elevation_m": 345.2554,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "RYV",
+      "name": "WATERTOWN",
+      "latitude": 43.1696,
+      "longitude": -88.7232,
+      "elevation_m": 248.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "RZL",
+      "name": "Rensselaer",
+      "latitude": 40.9479,
+      "longitude": -87.1826,
+      "elevation_m": 213.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "RZN",
+      "name": "SIREN",
+      "latitude": 45.8227,
+      "longitude": -92.3725,
+      "elevation_m": 301.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "SAR",
+      "name": "SPARTA",
+      "latitude": 38.15,
+      "longitude": -89.7,
+      "elevation_m": 164.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "SAW",
+      "name": "GWINN/SAWYER AFB",
+      "latitude": 46.3536,
+      "longitude": -87.3954,
+      "elevation_m": 372.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "SAZ",
+      "name": "STAPLES",
+      "latitude": 46.3809,
+      "longitude": -94.8066,
+      "elevation_m": 392.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "SBM",
+      "name": "SHEBOYGAN",
+      "latitude": 43.7698,
+      "longitude": -87.8517,
+      "elevation_m": 232.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "SBN",
+      "name": "SOUTH BEND",
+      "latitude": 41.7072,
+      "longitude": -86.3164,
+      "elevation_m": 237.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "SDA",
+      "name": "Shenandoah",
+      "latitude": 40.7533,
+      "longitude": -95.4112,
+      "elevation_m": 296.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "SDF",
+      "name": "Louisville Intl",
+      "latitude": 38.1774,
+      "longitude": -85.7308,
+      "elevation_m": 146.0,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "SET",
+      "name": "ST. CHARLES",
+      "latitude": 38.93,
+      "longitude": -90.43,
+      "elevation_m": 134.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "SFD",
+      "name": "Winner",
+      "latitude": 43.3902,
+      "longitude": -99.8421,
+      "elevation_m": 612.30695,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "SFY",
+      "name": "Savanna",
+      "latitude": 42.0458,
+      "longitude": -90.1079,
+      "elevation_m": 188.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "SGF",
+      "name": "SPRINGFIELD",
+      "latitude": 37.2397,
+      "longitude": -93.3897,
+      "elevation_m": 390.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "SGS",
+      "name": "SOUTH ST PAUL",
+      "latitude": 44.8571,
+      "longitude": -93.0329,
+      "elevation_m": 250.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "SHL",
+      "name": "SHELDON",
+      "latitude": 43.2082,
+      "longitude": -95.8353,
+      "elevation_m": 432.2,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "SIK",
+      "name": "Sikeston",
+      "latitude": 36.9027,
+      "longitude": -89.5577,
+      "elevation_m": 92.40192,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "SJX",
+      "name": "BEAVER ISLAND",
+      "latitude": 45.6923,
+      "longitude": -85.5666,
+      "elevation_m": 204.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "SLB",
+      "name": "Storm Lake",
+      "latitude": 42.5972,
+      "longitude": -95.2399,
+      "elevation_m": 449.9,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "SLG",
+      "name": "SILOAM SPRING(AWOS)",
+      "latitude": 36.1919,
+      "longitude": -94.49,
+      "elevation_m": 300.0,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "SLN",
+      "name": "SALINA",
+      "latitude": 38.791,
+      "longitude": -97.6522,
+      "elevation_m": 388.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "SLO",
+      "name": "SALEM/LECKRONE",
+      "latitude": 38.6429,
+      "longitude": -88.9642,
+      "elevation_m": 175.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "SMD",
+      "name": "Fort Wayne - Smith",
+      "latitude": 41.144,
+      "longitude": -85.1492,
+      "elevation_m": 251.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "SNY",
+      "name": "SIDNEY",
+      "latitude": 41.1014,
+      "longitude": -102.9847,
+      "elevation_m": 1303.8397,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "SPD",
+      "name": "SPRINGFIELD/COMANCHE NATL GRASS",
+      "latitude": 37.2833,
+      "longitude": -102.6139,
+      "elevation_m": 1335.0,
+      "network": "CO_ASOS",
+      "state": "CO"
+    },
+    {
+      "station_id": "SPF",
+      "name": "Spearfish",
+      "latitude": 44.4803,
+      "longitude": -103.783,
+      "elevation_m": 1186.1672,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "SPI",
+      "name": "SPRINGFIELD",
+      "latitude": 39.8447,
+      "longitude": -89.6839,
+      "elevation_m": 181.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "SPW",
+      "name": "SPENCER",
+      "latitude": 43.1682,
+      "longitude": -95.2101,
+      "elevation_m": 403.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "SQI",
+      "name": "STERLING ROCKFAL",
+      "latitude": 41.7428,
+      "longitude": -89.6763,
+      "elevation_m": 197.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "STC",
+      "name": "ST. CLOUD",
+      "latitude": 45.5433,
+      "longitude": -94.0513,
+      "elevation_m": 314.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "STE",
+      "name": "STEVENS POINT",
+      "latitude": 44.5451,
+      "longitude": -89.5303,
+      "elevation_m": 338.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "STJ",
+      "name": "ST. JOSEPH",
+      "latitude": 39.7719,
+      "longitude": -94.9097,
+      "elevation_m": 247.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "STK",
+      "name": "Sterling",
+      "latitude": 40.6153,
+      "longitude": -103.2648,
+      "elevation_m": 1230.0,
+      "network": "CO_ASOS",
+      "state": "CO"
+    },
+    {
+      "station_id": "STL",
+      "name": "ST. LOUIS",
+      "latitude": 38.7524,
+      "longitude": -90.3734,
+      "elevation_m": 171.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "STP",
+      "name": "ST. PAUL",
+      "latitude": 44.9345,
+      "longitude": -93.06,
+      "elevation_m": 219.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "SUE",
+      "name": "STURGEON BAY",
+      "latitude": 44.8437,
+      "longitude": -87.4216,
+      "elevation_m": 221.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "SUO",
+      "name": "Rosebud",
+      "latitude": 43.2585,
+      "longitude": -100.8595,
+      "elevation_m": 823.0,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "SUS",
+      "name": "ST. LOUIS/SPIRIT",
+      "latitude": 38.6572,
+      "longitude": -90.6558,
+      "elevation_m": 141.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "SUW",
+      "name": "SUPERIOR",
+      "latitude": 46.6897,
+      "longitude": -92.0947,
+      "elevation_m": 206.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "SUX",
+      "name": "SIOUX CITY",
+      "latitude": 42.3917,
+      "longitude": -96.3795,
+      "elevation_m": 336.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "SWO",
+      "name": "STILLWATER MUNI",
+      "latitude": 36.1612,
+      "longitude": -97.0857,
+      "elevation_m": 300.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "SXK",
+      "name": "Sioux County",
+      "latitude": 42.9858,
+      "longitude": -96.1614,
+      "elevation_m": 427.62628,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "SYF",
+      "name": "St Francis",
+      "latitude": 39.7611,
+      "longitude": -101.7959,
+      "elevation_m": 1037.3542,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "SYN",
+      "name": "Stanton Airfield",
+      "latitude": 44.4736,
+      "longitude": -93.0145,
+      "elevation_m": 280.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "SZL",
+      "name": "WHITEMAN AFB",
+      "latitude": 38.7303,
+      "longitude": -93.548,
+      "elevation_m": 265.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "TAZ",
+      "name": "TAYLORVILLE",
+      "latitude": 39.5342,
+      "longitude": -89.3278,
+      "elevation_m": 190.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "TBN",
+      "name": "FORT LEONARD WOO",
+      "latitude": 37.7416,
+      "longitude": -92.1407,
+      "elevation_m": 353.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "TIF",
+      "name": "Thedford",
+      "latitude": 41.9622,
+      "longitude": -100.569,
+      "elevation_m": 887.2954,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "TIP",
+      "name": "RANTOUL",
+      "latitude": 40.2936,
+      "longitude": -88.1424,
+      "elevation_m": 225.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "TKC",
+      "name": "Tracy",
+      "latitude": 44.2491,
+      "longitude": -95.6072,
+      "elevation_m": 408.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "TKV",
+      "name": "Tomahawk",
+      "latitude": 45.469,
+      "longitude": -89.8057,
+      "elevation_m": 453.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "TKX",
+      "name": "Kennett",
+      "latitude": 36.2259,
+      "longitude": -90.0366,
+      "elevation_m": 78.21002,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "TNU",
+      "name": "NEWTON MUNI",
+      "latitude": 41.6701,
+      "longitude": -93.019,
+      "elevation_m": 287.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "TOB",
+      "name": "DODGE CENTER",
+      "latitude": 44.018,
+      "longitude": -92.8315,
+      "elevation_m": 398.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "TOP",
+      "name": "TOPEKA (TOP)",
+      "latitude": 39.07,
+      "longitude": -95.62,
+      "elevation_m": 270.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "TQE",
+      "name": "TEKAMAH",
+      "latitude": 41.7635,
+      "longitude": -96.1779,
+      "elevation_m": 308.65692,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "TQH",
+      "name": "TAHLEQUAH MUNI",
+      "latitude": 35.93,
+      "longitude": -95.0,
+      "elevation_m": 266.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "TQK",
+      "name": "Scott City",
+      "latitude": 38.4782,
+      "longitude": -100.8822,
+      "elevation_m": 906.70844,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "TUL",
+      "name": "TULSA INTL ARPT(AW)",
+      "latitude": 36.1984,
+      "longitude": -95.8881,
+      "elevation_m": 206.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "TVC",
+      "name": "TRAVERSE CIT",
+      "latitude": 44.7416,
+      "longitude": -85.5824,
+      "elevation_m": 190.0,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "TVK",
+      "name": "Centerville",
+      "latitude": 40.6832,
+      "longitude": -92.8983,
+      "elevation_m": 313.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "TWT",
+      "name": "Sturgis",
+      "latitude": 37.5408,
+      "longitude": -87.9518,
+      "elevation_m": 110.81315,
+      "network": "KY_ASOS",
+      "state": "KY"
+    },
+    {
+      "station_id": "TYQ",
+      "name": "Indianapolis Exec",
+      "latitude": 40.0306,
+      "longitude": -86.2514,
+      "elevation_m": 281.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "UBE",
+      "name": "Cumberland",
+      "latitude": 45.506,
+      "longitude": -91.9811,
+      "elevation_m": 378.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "UES",
+      "name": "WAUKESHA CNTY",
+      "latitude": 43.041,
+      "longitude": -88.2371,
+      "elevation_m": 275.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "UGN",
+      "name": "Waukegan",
+      "latitude": 42.4255,
+      "longitude": -87.8633,
+      "elevation_m": 216.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "UIN",
+      "name": "QUINCY",
+      "latitude": 39.9428,
+      "longitude": -91.1946,
+      "elevation_m": 234.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "UKL",
+      "name": "Burlington",
+      "latitude": 38.3025,
+      "longitude": -95.725,
+      "elevation_m": 357.5,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "ULM",
+      "name": "NEW ULM MUNI",
+      "latitude": 44.32,
+      "longitude": -94.5,
+      "elevation_m": 308.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "ULS",
+      "name": "Ulysses",
+      "latitude": 37.604,
+      "longitude": -101.3736,
+      "elevation_m": 930.42865,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "UMP",
+      "name": "Indy Metro",
+      "latitude": 39.935,
+      "longitude": -86.045,
+      "elevation_m": 242.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "UNO",
+      "name": "WEST PLAINS",
+      "latitude": 36.8784,
+      "longitude": -91.9027,
+      "elevation_m": 372.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "UNU",
+      "name": "JUNEAU",
+      "latitude": 43.4265,
+      "longitude": -88.7038,
+      "elevation_m": 285.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "UUV",
+      "name": "Sullivan Regional",
+      "latitude": 38.2335,
+      "longitude": -91.1643,
+      "elevation_m": 281.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "UWL",
+      "name": "New Castle",
+      "latitude": 39.8767,
+      "longitude": -85.325,
+      "elevation_m": 330.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "VBT",
+      "name": "BENTONVILLE (AWOS)",
+      "latitude": 36.3457,
+      "longitude": -94.2194,
+      "elevation_m": 395.0,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "VER",
+      "name": "Booneville",
+      "latitude": 38.9467,
+      "longitude": -92.6827,
+      "elevation_m": 218.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "VIH",
+      "name": "VICHY/ROLLA",
+      "latitude": 38.13,
+      "longitude": -91.77,
+      "elevation_m": 333.0,
+      "network": "MO_ASOS",
+      "state": "MO"
+    },
+    {
+      "station_id": "VMR",
+      "name": "Vermillion",
+      "latitude": 42.7653,
+      "longitude": -96.9342,
+      "elevation_m": 349.0,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "VOK",
+      "name": "Camp Douglas - Volk Field",
+      "latitude": 43.9408,
+      "longitude": -90.2404,
+      "elevation_m": 274.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "VPZ",
+      "name": "VALPARAISO",
+      "latitude": 41.454,
+      "longitude": -87.0071,
+      "elevation_m": 231.0,
+      "network": "IN_ASOS",
+      "state": "IN"
+    },
+    {
+      "station_id": "VTI",
+      "name": "VINTON",
+      "latitude": 42.2176,
+      "longitude": -92.0248,
+      "elevation_m": 255.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "VTN",
+      "name": "VALENTINE",
+      "latitude": 42.8567,
+      "longitude": -100.5489,
+      "elevation_m": 789.2385,
+      "network": "NE_ASOS",
+      "state": "NE"
+    },
+    {
+      "station_id": "VVV",
+      "name": "ORTONVILLE",
+      "latitude": 45.3057,
+      "longitude": -96.4244,
+      "elevation_m": 335.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "VYS",
+      "name": "PERU",
+      "latitude": 41.3519,
+      "longitude": -89.1531,
+      "elevation_m": 199.0,
+      "network": "IL_ASOS",
+      "state": "IL"
+    },
+    {
+      "station_id": "WDG",
+      "name": "ENID/WOODRING MUNI",
+      "latitude": 36.3792,
+      "longitude": -97.7911,
+      "elevation_m": 356.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "WLD",
+      "name": "WINFIELD",
+      "latitude": 37.1681,
+      "longitude": -97.0369,
+      "elevation_m": 351.0,
+      "network": "KS_ASOS",
+      "state": "KS"
+    },
+    {
+      "station_id": "WWR",
+      "name": "WEST WOODWARD",
+      "latitude": 36.438,
+      "longitude": -99.5227,
+      "elevation_m": 667.0,
+      "network": "OK_ASOS",
+      "state": "OK"
+    },
+    {
+      "station_id": "XNA",
+      "name": "NORTHWEST ARKANSAS REGIONAL APT",
+      "latitude": 36.282,
+      "longitude": -94.307,
+      "elevation_m": 392.0,
+      "network": "AR_ASOS",
+      "state": "AR"
+    },
+    {
+      "station_id": "Y22",
+      "name": "LEMMON",
+      "latitude": 45.9167,
+      "longitude": -102.1667,
+      "elevation_m": 771.00116,
+      "network": "SD_ASOS",
+      "state": "SD"
+    },
+    {
+      "station_id": "Y23",
+      "name": "Chetek",
+      "latitude": 45.3106,
+      "longitude": -91.6381,
+      "elevation_m": 316.78214,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "Y50",
+      "name": "Wautoma",
+      "latitude": 44.0416,
+      "longitude": -89.3045,
+      "elevation_m": 261.8,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "Y51",
+      "name": "Viroqua",
+      "latitude": 43.5794,
+      "longitude": -90.8965,
+      "elevation_m": 391.0,
+      "network": "WI_ASOS",
+      "state": "WI"
+    },
+    {
+      "station_id": "Y63",
+      "name": "Elbow Lake",
+      "latitude": 45.9861,
+      "longitude": -95.992,
+      "elevation_m": 367.0,
+      "network": "MN_ASOS",
+      "state": "MN"
+    },
+    {
+      "station_id": "Y70",
+      "name": "Ionia",
+      "latitude": 42.938,
+      "longitude": -85.0606,
+      "elevation_m": 249.3,
+      "network": "MI_ASOS",
+      "state": "MI"
+    },
+    {
+      "station_id": "YKN",
+      "name": "YANKTON",
+      "latitude": 42.9167,
+      "longitude": -97.3859,
+      "elevation_m": 389.5385,
+      "network": "SD_ASOS",
+      "state": "SD"
+    }
+  ]
+}

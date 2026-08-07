@@ -1327,6 +1327,44 @@ oversight, and each says what would close it.
   representation bridge (e.g. WRF-side dumps of gpuwm-native
   `thb/thp`), or N1.5 is superseded by a stronger oracle.
 
+### D12 — configured initial-state theta bubbles (`[perturbation]`, ArWen-over-WRF extension)
+
+- **Status: implemented.**  `[[perturbation.bubbles]]`
+  (`gpuwm/experiment.py`) declares warm bubbles in geographic
+  coordinates; `gpuwm/ingest/init_perturbation.py` evaluates them per
+  domain and `gpuwm/ingest/real.py::initialize_real` applies them ONCE
+  to the final theta/qv columns before alpha/geopotential are formed —
+  constant analyzed pressure and column mass, geopotential rebalanced,
+  the `em_quarter_ss` convention (`module_initialize_ideal.F`; the
+  port's own transcription is `gpuwm/verify/cases/moist_bubble.py`),
+  so the initialized state passes `hydrostatic_residual` unchanged.
+  Real-data nest init re-ingests the source analysis per domain, so
+  each domain that starts with the experiment evaluates the same
+  geographic bubble on its own grid; delayed-start domains take no
+  fresh bubble.
+- **What stock v4.6.1 ships instead**: warm bubbles exist only in the
+  idealized initializers (`module_initialize_ideal.F`); real.exe has no
+  config-driven initial-condition perturbation, and no namelist can
+  express this block, so `import-namelist` never emits it and a config
+  using it cannot round-trip to a namelist.
+- **WRF-parity safety**: default ABSENT; the absent path builds no
+  applier and executes not one instruction of the module — the
+  prepared state is byte-identical to a build without the feature, and
+  the restart-identity payload omits the key so pre-feature experiment
+  fingerprints are preserved.  Present, the block binds the fingerprint
+  and restart identity and is honored on two routes: the experiment
+  runtime path (`gpuwm run` / `gpuwm ingest`, inside `initialize_real`
+  with the geopotential rebalanced) and the prepared domain-tree
+  forecast runner (applied to the restored sealed states before
+  physics/diagnostics, WITHOUT rebalancing — WRF's own moist-bubble
+  convention, `init_moist_balanced`; the sealed caches stay the pure
+  analysis and both arms of an A/B can share one preparation).  Every
+  other route (the prepared-cache front doors and the single-domain
+  prepared runner) refuses it by name.  Application stats
+  (per-domain cells touched, max theta delta, qv adjustment under
+  `rh_preserve`) are published to `initial-perturbation.json` before
+  integration starts.
+
 ## Divergence ledger v1 (the observation-battery promotion register)
 
 Registered 2026-08-03 with the observation-verification battery

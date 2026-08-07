@@ -22,7 +22,7 @@ import dataclasses
 import json
 from pathlib import Path
 
-from gpuwm.config import RunConfig, load_config
+from gpuwm.config import RunConfig, load_config, _KNOWN_TABLES
 from gpuwm.experiment import is_experiment_toml
 
 REPO = Path(__file__).resolve().parents[1]
@@ -233,12 +233,44 @@ def test_new_fields_are_reviewed_defaults_appended_last():
         assert set(entry) == set(names), key
 
 
+
+def _legacy_run_config_tomls() -> list[Path]:
+    """Every TOML in configs/ that IS a legacy RunConfig, and only those.
+
+    "Not an experiment TOML" is not the same statement as "a legacy
+    RunConfig TOML", and configs/ now holds a third kind: the
+    high-resolution static demo carries only [demo] and [static.highres]
+    and is read by tools/run_highres_static_demo.py.  ``load_config``
+    refuses it outright -- unknown tables -- so it can never have a
+    golden freeze entry, and demanding one was asking for a pin that
+    cannot exist.
+
+    The positive test is the loader's own table list rather than a
+    hand-kept exclusion list, so a fourth kind of config in this
+    directory does not silently join the frozen surface either.
+    """
+
+    return [path for path in sorted((REPO / "configs").glob("*.toml"))
+            if not is_experiment_toml(path)
+            and _declares_a_run_config_table(path)]
+
+
+def _declares_a_run_config_table(path: Path) -> bool:
+    import io
+    import tomllib
+
+    from gpuwm.config_authority import read_config_authority
+
+    raw = tomllib.load(io.BytesIO(read_config_authority(path).payload))
+    return any(table in raw for table in _KNOWN_TABLES)
+
+
 def test_every_existing_legacy_toml_resolves_identically():
     """Re-resolve every legacy TOML in configs/ and compare dataclasses
     (as field dicts) against the pre-change golden snapshot."""
     tomls = sorted((REPO / "configs").glob("*.toml"))
     assert tomls, "configs/ directory is empty?"
-    legacy = [p for p in tomls if not is_experiment_toml(p)]
+    legacy = _legacy_run_config_tomls()
     assert legacy, "no legacy TOMLs found in configs/"
     for path in legacy:
         key = f"configs/{path.name}"
@@ -266,6 +298,5 @@ def test_golden_inventory_matches_known_frozen_surface():
     constructor plus every legacy TOML (no stale or orphaned pins)."""
     expected = set(_frozen_constructors())
     expected |= {f"configs/{p.name}"
-                 for p in (REPO / "configs").glob("*.toml")
-                 if not is_experiment_toml(p)}
+                 for p in _legacy_run_config_tomls()}
     assert set(GOLDEN) == expected

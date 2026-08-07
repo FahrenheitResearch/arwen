@@ -51,6 +51,10 @@ import hashlib
 
 import numpy as np
 
+from gpuwm.certify.compile_platform import (
+    compile_platform_fingerprint,
+    nvrtc_build,
+)
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
 from gpuwm.verify import shinhong_ref
 from gpuwm.verify.shinhong_oracle import (
@@ -680,20 +684,100 @@ GPU_SURFACE_FIELD_MAP = {"hpbl": "hpbl", "wstar": "wstar", "delta": "delta"}
 #:   dqi 3055548         (kernel 0.0 vs WRF's subnormal tendency, e.g.
 #:                       4.28e-39 for dqi), pinned as lane counts in the
 #:                       subnormal test below.
-GPU_BASELINE_MAX_ULP = {
-    "du": 93207,
-    "dv": 46603,
-    "dtheta": 0,
-    "dqv": 349526,
-    "dqc": 155602,
-    "dqi": 3055548,
-    "exch_h": 8,
-    "tke": 2022,
-    "el": 14,
-    "hpbl": 1,
-    "wstar": 1,
-    "delta": 1,
+#:
+#: **The table is keyed by the kernel compiler, and that is not bookkeeping.**
+#: Every number above is a property of the compiled image, so it is only
+#: meaningful next to the NVRTC build that produced it.  Two rows are recorded
+#: because this project has measured two, one ULP table each, from a
+#: byte-identical ``shinhong.cu``:
+#:
+#:   13.0.48   The system CUDA v13.0 toolkit, which CuPy resolved on this box
+#:             until 2026-08-04.  The certification row: it is what
+#:             ``feat(shinhong): CUDA mirror on the RTX 5090`` (58dfd599c)
+#:             measured, and what shipped through ArWen 1.6.3.
+#:   12.9.86   The pip ``nvidia-cuda-nvrtc-cu12`` wheel, which landed in
+#:             site-packages on 2026-08-04 21:47 and which CuPy resolves in
+#:             preference to the toolkit from then on.  Measured 2026-08-06.
+#:
+#: What separates them is ONE site: the ``wscalek`` cube root at
+#: shinhong.cu:981.  Under 13.0.48 spelling it ``cbrtf`` instead of
+#: ``powf(x, h1)`` moved dv 1491308 -> 46603, tke 2005 -> 2022 and exch_h
+#: 9 -> 8.  Under 12.9.86 the same spelling still buys exch_h 9 -> 8 and
+#: nothing else: the dv and tke halves of that measurement were properties of
+#: the 13.0 code generator, not of the source.  The control is in the
+#: evidence: the ``powf`` spelling reads 1491308 / 9 / 2005 under BOTH
+#: compilers, so the toolchain did not move generally -- only the one
+#: intrinsic did.  Every other field in the table is compiler-independent,
+#: including the two ``-ftz`` flush maxima, which are lane counts rather than
+#: arithmetic and could not move.
+#:
+#: 12.8.61, 12.8.93 and 12.9.41 were measured too and all read as 12.9.86
+#: does; only the CUDA 13 line produces the certification row.  A build this
+#: table has never been measured under is a hard failure with its own message,
+#: NOT a silent pass and not an approximate match to the nearest row.
+GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD = {
+    "13.0.48": {
+        "du": 93207,
+        "dv": 46603,
+        "dtheta": 0,
+        "dqv": 349526,
+        "dqc": 155602,
+        "dqi": 3055548,
+        "exch_h": 8,
+        "tke": 2022,
+        "el": 14,
+        "hpbl": 1,
+        "wstar": 1,
+        "delta": 1,
+    },
+    "12.9.86": {
+        "du": 93207,
+        "dv": 1491308,
+        "dtheta": 0,
+        "dqv": 349526,
+        "dqc": 155602,
+        "dqi": 3055548,
+        "exch_h": 8,
+        "tke": 2005,
+        "el": 14,
+        "hpbl": 1,
+        "wstar": 1,
+        "delta": 1,
+    },
 }
+
+#: The certification row, kept under its original name so the fields that are
+#: compiler-independent stay quotable from one place.  Rows must agree on
+#: every field the ``wscalek`` site does not reach -- asserted below, so a
+#: future row cannot quietly re-baseline a field this one has no business
+#: touching.
+GPU_BASELINE_MAX_ULP = GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD["13.0.48"]
+
+#: Fields the ``wscalek`` cube root is allowed to move between compiler rows.
+#: Everything else is required to be identical across rows.
+GPU_COMPILER_SENSITIVE_FIELDS = ("dv", "tke")
+
+
+def _recorded_gpu_baseline() -> dict:
+    """The row for the NVRTC build compiling this process's kernels.
+
+    An unmeasured compiler fails HERE, naming itself, instead of falling
+    through to a bare number mismatch against some other build's row.  That
+    is the whole point of the split: the 2026-08-04 drift cost a day of
+    forensics because the failure said only that two dicts differed.
+    """
+    build = nvrtc_build()
+    recorded = GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD.get(build)
+    assert recorded is not None, (
+        "no recorded ULP row for the NVRTC build compiling these kernels.\n"
+        f"  kernel compiler: NVRTC {build}\n"
+        f"  rows recorded:   {sorted(GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD)}\n"
+        f"  fingerprint:     {compile_platform_fingerprint()}\n"
+        "This table is a measurement of the compiled image, so a compiler it"
+        " has never been measured under has no baseline to be compared"
+        " against.  Measure this build and add its row with the attribution,"
+        " or compile with a recorded one.  Do NOT relax the comparison.")
+    return recorded
 
 #: Branch divergences between the kernel and WRF, held out of the table
 #: above.  EMPTY, and kept present so the day one appears it has a named
@@ -790,6 +874,51 @@ def _shinhong_gpu_outputs(cp, fixture, cache: bool = True):
     return merged
 
 
+def test_the_compiler_rows_only_differ_where_the_one_site_reaches():
+    """CPU-only: the two NVRTC rows are one site apart, and must stay so.
+
+    A row is allowed to re-baseline ``dv`` and ``tke`` -- the two fields the
+    ``wscalek`` cube root reaches -- and nothing else.  Without this, a future
+    "the compiler moved" commit could quietly relax a field the compiler
+    never touched, which is exactly the failure mode the per-compiler split
+    would otherwise create.
+    """
+    rows = GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD
+    assert len(rows) >= 2, "the split is pointless with one row"
+    fields = {name for row in rows.values() for name in row}
+    assert all(set(row) == fields for row in rows.values()), (
+        "every compiler row must carry every field")
+    assert fields == set(GPU_LEVEL_FIELD_MAP) | set(GPU_SURFACE_FIELD_MAP)
+    moved = {name for name in fields
+             if len({row[name] for row in rows.values()}) > 1}
+    assert moved == set(GPU_COMPILER_SENSITIVE_FIELDS), (
+        "the compiler rows differ on fields the wscalek site does not reach:"
+        f" {sorted(moved - set(GPU_COMPILER_SENSITIVE_FIELDS))}.  If a new"
+        " compiler really moves another field, say which site carries it in"
+        " the same commit that widens GPU_COMPILER_SENSITIVE_FIELDS.")
+    # And the sensitive fields must actually differ, or the split is vacuous.
+    assert moved, "no field differs between rows: the split proves nothing"
+
+
+def test_the_kernel_compiler_identifies_itself_to_four_parts():
+    """CPU-only: the fingerprint resolves, and resolves finely enough.
+
+    ``nvrtc.getVersion()`` reports ``(12, 9)`` for both 12.9.41 and 12.9.86,
+    which do not generate the same code -- the published pin row was measured
+    at that resolution and could not name the 2026-08-04 drift.  Four parts
+    is the resolution the row key needs, so a fingerprint that silently fell
+    back to a coarser one has to fail here rather than at some ULP table.
+    """
+    fingerprint = compile_platform_fingerprint()
+    build = fingerprint["nvrtc_build"]
+    assert build != "unavailable", (
+        "NVRTC would not identify itself; the ULP rows below cannot be keyed"
+        f" without it.  fingerprint: {fingerprint}")
+    assert len(build.split(".")) == 3, f"not a four-part build: {build!r}"
+    assert build == nvrtc_build()
+    assert fingerprint["nvrtc_build_id"].startswith("CL-"), fingerprint
+
+
 @pytest.mark.gpu
 @requires_gpu
 def test_shinhong_cuda_column_holds_its_measured_distance_from_wrf():
@@ -806,12 +935,16 @@ def test_shinhong_cuda_column_holds_its_measured_distance_from_wrf():
         measured[name], _ = _measure_field(
             np.ascontiguousarray(port[name], np.float32),
             fixture.surface_reference[column])
-    assert measured == GPU_BASELINE_MAX_ULP, (
+    recorded = _recorded_gpu_baseline()
+    assert measured == recorded, (
         "the CUDA kernel's distance from the unmodified WRF module changed.\n"
-        f"  measured {measured}\n  recorded {GPU_BASELINE_MAX_ULP}\n"
-        "If a field got worse, something regressed.  If it got better, say"
-        " so: update the table in the same commit as the improvement, with"
-        " the attribution, so the residual stays documented.")
+        f"  measured {measured}\n  recorded {recorded}\n"
+        f"  kernel compiler: NVRTC {nvrtc_build()}\n"
+        "The compiler row above matched, so this is NOT the 2026-08-04 NVRTC"
+        " swap: the source, the fixture or the card moved.  If a field got"
+        " worse, something regressed.  If it got better, say so: update the"
+        " row in the same commit as the improvement, with the attribution,"
+        " so the residual stays documented.")
     # The table above must not be vacuously zero: device libm and FMA
     # contraction are real, and the fields that carry them must show it.
     # (dtheta IS zero -- bitwise -- and that is the exception, not the rule.)

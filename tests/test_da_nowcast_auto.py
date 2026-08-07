@@ -378,6 +378,22 @@ class TestArguments:
                              args=self.parsed("--polygon", "box.json"))
         assert argv[argv.index("--domain-polygon") + 1] == "box.json"
 
+    def test_the_daemon_defaults_to_the_hrrr_background(self):
+        """HRRR is the background, permanently (Drew ruling, 2026-08-06).
+
+        GFS stays selectable for archival reproduction of pre-HRRR runs
+        and for nothing else; the daemon forwards whichever was chosen
+        to the front door so every epoch's prepared case says so.
+        """
+
+        assert self.parsed().source == "hrrr"
+        argv = bootstrap_cmd(site="QQQQ", out=Path("b"),
+                             args=self.parsed())
+        assert argv[argv.index("--source") + 1] == "hrrr"
+        argv = bootstrap_cmd(site="QQQQ", out=Path("b"),
+                             args=self.parsed("--source", "gfs"))
+        assert argv[argv.index("--source") + 1] == "gfs"
+
     def test_bootstrap_asks_for_the_whole_epoch_of_boundary_data(self):
         argv = bootstrap_cmd(site="QQQQ", out=Path("b"),
                              args=self.parsed("--epoch-hours", "6"))

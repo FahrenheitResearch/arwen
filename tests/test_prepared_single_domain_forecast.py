@@ -34,7 +34,7 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
     payload = json.loads(capsys.readouterr().out)
     assert payload == runner.runner_capabilities()
     assert payload["schema"] == "gpuwm-runner-capabilities-v1"
-    assert payload["supported_sources"] == ["20crv3", "era5", "gfs"]
+    assert payload["supported_sources"] == ["20crv3", "era5", "gfs", "hrrr"]
     assert payload["physics_profile_ids"] == list(runner.PHYSICS_PROFILES)
     assert payload["report_schema"] == runner.REPORT_SCHEMA
     assert payload["window"]["limit_policy"] \

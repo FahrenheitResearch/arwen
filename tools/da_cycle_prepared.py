@@ -152,6 +152,12 @@ def to_host(value) -> np.ndarray:
 
 
 def main() -> int:
+    # Deferred like every other gpuwm import in this driver: the module
+    # has to be importable by a bare `python tools/da_cycle_prepared.py
+    # --help` from a checkout, and the package lands on sys.path only
+    # once the process is actually running the tool.
+    from gpuwm.da import background
+
     parser = argparse.ArgumentParser(
         description="cycling radar DA over a prepared single-domain case")
     # -- the prepared authority (all required: this driver reproduces the
@@ -159,7 +165,16 @@ def main() -> int:
     parser.add_argument("--prepared-root", type=Path, required=True)
     parser.add_argument("--authority-dir", type=Path, default=None,
                         help="defaults to <prepared-root>/../authority")
-    parser.add_argument("--source", default="gfs")
+    parser.add_argument(
+        "--source", default=background.DEFAULT_BACKGROUND_SOURCE,
+        choices=sorted(background.BACKGROUND_SOURCES),
+        help=("which background the prepared case was built on.  This is "
+              "the SELECTION recorded in the report, not a switch that "
+              "changes how the case is read: the prepared root already "
+              "IS one source's case, and naming a different one here is "
+              "refused at the front door.  "
+              f"{background.DEFAULT_BACKGROUND_SOURCE} is the default "
+              "and its behaviour is unchanged"))
     parser.add_argument("--proof-sha256", required=True)
     parser.add_argument("--source-manifest-sha256", required=True)
     parser.add_argument("--prepared-content-sha256", required=True)
@@ -332,18 +347,147 @@ def main() -> int:
                              "a wind-only state vector analyses nothing")
     parser.add_argument("--z-thin-cells", type=int, default=2)
     parser.add_argument("--z-err-inflation", type=float, default=1.0)
+    parser.add_argument("--clear-air-analysis", action="store_true",
+                        help="assimilate clear-air 'zero' observations: "
+                             "cells the radar measured and found free of "
+                             "significant echo. Suppresses spurious "
+                             "convection. Requires --hydrometeors and an "
+                             "observation file built with a clear-air "
+                             "assessment; a file without one is refused "
+                             "rather than having zeroes inferred from its "
+                             "echo mask")
+    parser.add_argument("--z0-thin-cells", type=int, default=4,
+                        help="clear air is the majority of any volume and "
+                             "is smooth, so it starves the filter's rank "
+                             "faster than echo does")
+    parser.add_argument("--z0-err-inflation", type=float, default=1.0)
+    # -- the satellite half ----------------------------------------------
+    parser.add_argument(
+        "--goes-cwp", type=Path, action="append", default=[],
+        help="one gpuwm-obs.goes-grid.v1 file per leg, in leg order, "
+             "assimilated as a cloud-water-path batch beside the radar "
+             "ones. Build them with tools/obs_goes_grid_build.py. Legs "
+             "past the end of this list assimilate radar only. Requires "
+             "--hydrometeors and --cwp-vertical-loc-m")
+    parser.add_argument("--cwp-thin-cells", type=int, default=2)
+    parser.add_argument("--cwp-err-inflation", type=float, default=1.0)
+    parser.add_argument("--cwp-horizontal-loc-m", type=float, default=None,
+                        help="horizontal localisation for the CWP batch; "
+                             "defaults to --horizontal-loc-m")
+    parser.add_argument(
+        "--cwp-vertical-loc-m", type=float, default=None,
+        help="vertical localisation for the CWP batch, in metres. "
+             "REQUIRED with --goes-cwp and deliberately has no default: "
+             "CWP is a COLUMN INTEGRAL carried at one level, so this "
+             "radius is what decides whether the observation acts on the "
+             "column it integrated or on a slab. The radar default "
+             "(4 km) would assimilate a whole-column measurement as a "
+             "4 km-tall one, and in particular would stop a clear-sky "
+             "zero from removing model cloud at other heights")
+    parser.add_argument(
+        "--cwp-ice-species", default="qc,qi,qs",
+        help="comma-separated condensate integrated for an ice/mixed "
+             "observation. The default is the model's own optical "
+             "condensate (gpuwm/core/rrtmgp.py:1097-1098). "
+             "'qc,qi' is docs/obs-goes-cwp-operator-spec.md's v1 rule; "
+             "which is right is a scoreboard question")
     parser.add_argument("--positivity-policy", default=None,
                         choices=("clip", "reject", "none"),
                         help="required once a non-negative field is "
                              "analysed; gpuwm.da.positivity documents "
                              "what each choice costs")
+    # -- surface observations (default OFF) -------------------------------
+    # METAR/ASOS through the rw_asos seam (gpuwm-obs.asos-surface.v1).
+    # A quantity is enabled by stating its error standard deviation; the
+    # record is hourly-matched by decoder design, so most sub-hourly
+    # cycles legitimately see zero fresh surface reports and each report
+    # enters exactly one analysis (the nearest).  gpuwm/da/obs_surface.py
+    # documents what the v1 seam can and cannot express.
+    parser.add_argument(
+        "--surface-obs", type=Path, default=None,
+        help="one gpuwm-obs.asos-surface.v1 record covering the whole "
+             "run; reports are routed to the analysis nearest their "
+             "valid time.  OFF unless given")
+    parser.add_argument(
+        "--sfc-t2-sigma-k", type=float, default=None,
+        help="assimilate 2 m temperature with this error stddev (K); "
+             "representativeness, not instrument precision -- WoFS-like "
+             "practice is 1.5-2.5 K at storm-scale grids")
+    parser.add_argument(
+        "--sfc-wspd-sigma-ms", type=float, default=None,
+        help="assimilate 10 m wind SPEED (the v1 seam carries no "
+             "direction) with this error stddev (m/s); H is "
+             "hypot(u10, v10) of the member diagnostics")
+    parser.add_argument("--sfc-err-inflation", type=float, default=1.0)
+    parser.add_argument(
+        "--sfc-elev-max-diff-m", type=float, default=200.0,
+        help="refuse stations whose table elevation differs from the "
+             "model terrain at their gridpoint by more than this")
+    parser.add_argument(
+        "--sfc-max-age-s", type=float, default=900.0,
+        help="refuse reports older (or newer) than this at the analysis")
+    parser.add_argument(
+        "--sfc-horizontal-loc-m", type=float, default=None,
+        help="surface localization override; both --sfc-*-loc-m or "
+             "neither (default: the run's --horizontal/vertical-loc-m)")
+    parser.add_argument("--sfc-vertical-loc-m", type=float, default=None)
     args = parser.parse_args()
+    if args.surface_obs is not None:
+        if args.sfc_t2_sigma_k is None and args.sfc_wspd_sigma_ms is None:
+            parser.error(
+                "--surface-obs was given but neither --sfc-t2-sigma-k "
+                "nor --sfc-wspd-sigma-ms states an error; a quantity is "
+                "enabled by stating its sigma, and there is no default "
+                "sigma on purpose")
+        if not args.obs:
+            parser.error(
+                "--surface-obs joins the radar analysis legs; a "
+                "surface-only cycle has no analysis times to join and "
+                "is not wired")
+    elif (args.sfc_t2_sigma_k is not None
+          or args.sfc_wspd_sigma_ms is not None
+          or args.sfc_horizontal_loc_m is not None
+          or args.sfc_vertical_loc_m is not None):
+        parser.error(
+            "surface flags were given without --surface-obs; they would "
+            "silently assimilate nothing")
+    if (args.sfc_horizontal_loc_m is None) != (
+            args.sfc_vertical_loc_m is None):
+        parser.error(
+            "--sfc-horizontal-loc-m and --sfc-vertical-loc-m come "
+            "together; a localisation is a lens, not a line")
     if args.reflectivity_analysis and not args.hydrometeors:
         parser.error(
             "--reflectivity-analysis needs --hydrometeors: reflectivity "
             "constrains condensate, and against a u/v state vector every "
             "dBZ increment would come from wind-hydrometeor sampling "
             "covariance in a rank-(R-1) ensemble, which is noise")
+    if args.clear_air_analysis and not args.hydrometeors:
+        parser.error(
+            "--clear-air-analysis needs --hydrometeors: a clear-air zero "
+            "says condensate is absent, and against a u/v state vector "
+            "there is no condensate for it to act on")
+    if args.goes_cwp and not args.hydrometeors:
+        parser.error(
+            "--goes-cwp needs --hydrometeors: cloud water path IS the "
+            "column condensate, and against a u/v state vector every CWP "
+            "increment would come from wind-condensate sampling covariance "
+            "in a rank-(R-1) ensemble, which is noise")
+    if args.goes_cwp and args.cwp_vertical_loc_m is None:
+        parser.error(
+            "--goes-cwp needs an explicit --cwp-vertical-loc-m. CWP is a "
+            "column integral carried at one model level, so its vertical "
+            "localisation radius is not a tuning detail: it is what decides "
+            "whether the observation acts on the column it actually "
+            "integrated. Inheriting the radar radius would silently "
+            "assimilate a whole-column measurement as a 4 km-tall one, and "
+            "would stop an obs-clear zero from removing model cloud that "
+            "sits outside that slab")
+    if args.goes_cwp and len(args.goes_cwp) > len(args.obs):
+        parser.error(
+            f"--goes-cwp was given {len(args.goes_cwp)} file(s) but --obs "
+            f"has {len(args.obs)}; satellite files are matched to legs by "
+            "position and a leg with no radar file runs no analysis at all")
     if args.hydrometeors and args.positivity_policy is None:
         parser.error(
             "--hydrometeors analyses physically non-negative fields and "
@@ -418,10 +562,29 @@ def main() -> int:
     from gpuwm.da.hotstart import HotStartConfig, hotstart_increments
     from gpuwm.da.letkf import Localization
     from gpuwm.da.obs_radar import read_document
+    from gpuwm.da.obs_surface import (SurfaceObsConfig,
+                                      surface_to_gridded_obs)
+    from gpuwm.da.obsop_cwp import CwpComposition, checkpoint_cwp_provider
     from gpuwm.da.radar_assimilation import (RadarAssimilationConfig,
                                              assimilate_radar_grid,
                                              grid_rotation,
                                              member_earth_winds)
+    from gpuwm.da import treatment
+
+    # Which streams this invocation CLAIMS. Derived from the flags once,
+    # here, so the proof below is checking the same set the driver acted
+    # on. Radial velocity is unconditional: every leg reads a radar grid
+    # and the velocity batches are what a cycle is built around.
+    enabled_obs_kinds = ["radial_velocity"]
+    if args.reflectivity_analysis:
+        enabled_obs_kinds.append("reflectivity")
+    if args.clear_air_analysis:
+        enabled_obs_kinds.append("clear_air_reflectivity")
+    if args.surface_obs is not None:
+        enabled_obs_kinds.append("surface")
+    if args.goes_cwp:
+        enabled_obs_kinds.append("cloud_water_path")
+    enabled_obs_kinds = tuple(enabled_obs_kinds)
     from gpuwm.ensemble.increments import apply_increments
     from gpuwm.ensemble.member import refresh_diagnostics
     from gpuwm.ingest.hrrr_physics import initialize_prepared_physics
@@ -557,7 +720,53 @@ def main() -> int:
     })
     hot_cfg = HotStartConfig()
 
+    # ---- how each trajectory's background was built --------------------
+    # Planned BEFORE any GPU work, from the perturbation configuration
+    # this run actually assembled, so an ensemble that would be N
+    # identical copies of the control refuses here instead of consuming
+    # a card for an hour and reporting zero spread.  The result is one
+    # record per trajectory, and it goes into the report verbatim: a
+    # skill comparison can then attribute a difference to the background
+    # rather than guess at it.
+    try:
+        member_plan = background.plan_member_backgrounds(
+            control_name=CONTROL, members=int(args.members),
+            seed=int(args.seed), perturbed_fields=perturb_fields,
+            perturbed_species=perturb_species)
+    except background.BackgroundError as error:
+        # A refusal a caller can act on, in this driver's own idiom --
+        # the boundary-horizon refusal below reads the same way.
+        raise SystemExit(str(error)) from None
+    report["background"] = background.background_receipt(
+        source=args.source, cycle=None, members=member_plan,
+        prepared_content_sha256=str(args.prepared_content_sha256),
+        notes={
+            "prepared_root": str(args.prepared_root),
+            "forcing_hours": list(inputs.forcing_hours),
+            "initial_valid_time": exp.start_time.isoformat(),
+            "run_seconds": float(args.run_seconds),
+            # Taken from the hash-bound proof, not from a flag: these
+            # are what the preparation actually fetched, so a reader can
+            # tell how old the first guess was without trusting the
+            # command line that started this process.
+            "source_cycle": inputs.proof.get("source_cycle"),
+            "source_forecast_hours": inputs.proof.get(
+                "source_forecast_hours"),
+            # Stated rather than implied: the members share this case's
+            # lateral boundary conditions, so the rim taper is what keeps
+            # the perturbation legal and spread decays toward the rim by
+            # construction (gpuwm/da/perturb.py documents the whole list).
+            "shared_lateral_boundaries": True,
+        })
+    print("background: " + json.dumps({
+        "source": report["background"]["source"],
+        "initial_hydrometeors": report["background"]["initial_hydrometeors"],
+        "members": report["background"]["ensemble"]["member_count"],
+        "construction": report["background"]["ensemble"]["construction"],
+    }, sort_keys=True), flush=True)
+
     trajectories = [CONTROL] + list(range(args.members))
+    setup_arrays: dict | None = None
     snapshots: dict = {name: None for name in trajectories}
     pending: dict = {name: None for name in trajectories}
     hot_pending: dict = {}
@@ -618,6 +827,11 @@ def main() -> int:
     #: Per-member leg-end dBZ, diagnosed on the device from the state
     #: that was snapshotted.  This is H_Z(x) for the filter.
     member_dbz: dict = {}
+    #: Per-member leg-end 2m/10m diagnostics off the live physics driver
+    #: -- the surface H(x), snapshotted at the SAME point as member_dbz
+    #: and never at leg start, where the prepared-cache cycle's
+    #: re-initialised driver state is spin-up.
+    member_sfc: dict = {}
     thb_host = None
 
     # ---- the fine nest over the free forecast ------------------------
@@ -763,6 +977,45 @@ def main() -> int:
         leg_starts.append(_cursor)
         _cursor += leg_length(_index)
 
+    # ---- surface observations (rw_asos seam), default OFF -------------------
+    surface_cfg = None
+    surface_schedule = None
+    if args.surface_obs is not None:
+        from datetime import datetime as _datetime  # noqa: PLC0415
+        from datetime import timedelta as _timedelta  # noqa: PLC0415
+
+        if not isinstance(exp.start_time, _datetime):
+            raise SystemExit(
+                "--surface-obs needs the experiment's absolute start time "
+                f"to route reports to analyses, and exp.start_time is "
+                f"{type(exp.start_time).__name__}")
+        surface_localization = None
+        if args.sfc_horizontal_loc_m is not None:
+            surface_localization = Localization(
+                horizontal_m=float(args.sfc_horizontal_loc_m),
+                vertical_m=float(args.sfc_vertical_loc_m))
+        surface_cfg = SurfaceObsConfig(
+            temperature_error_k=args.sfc_t2_sigma_k,
+            wind_speed_error_ms=args.sfc_wspd_sigma_ms,
+            error_inflation=float(args.sfc_err_inflation),
+            elevation_max_diff_m=float(args.sfc_elev_max_diff_m),
+            max_age_seconds=float(args.sfc_max_age_s),
+            temperature_localization=surface_localization,
+            wind_localization=surface_localization)
+        #: One analysis time per OBSERVED leg -- the same t_end the radar
+        #: analysis runs at.  The adapter routes each hourly report to
+        #: exactly one of these.
+        surface_schedule = [
+            exp.start_time + _timedelta(seconds=leg_starts[i]
+                                        + leg_length(i))
+            for i in range(len(args.obs))]
+        report["surface_observations"] = {
+            "record": str(args.surface_obs),
+            "t2_sigma_k": args.sfc_t2_sigma_k,
+            "wspd_sigma_ms": args.sfc_wspd_sigma_ms,
+            "analysis_times": [t.isoformat() for t in surface_schedule],
+        }
+
     for leg in range(legs):
         t_start = leg_starts[leg]
         t_end = t_start + leg_length(leg)
@@ -770,7 +1023,14 @@ def main() -> int:
                             "start_s": t_start, "end_s": t_end,
                             "trajectories": {}}
         member_dbz.clear()
+        member_sfc.clear()
         has_obs = leg < len(args.obs)
+        goes_path = None
+        if leg < len(args.goes_cwp):
+            goes_path = Path(args.goes_cwp[leg])
+            if not goes_path.is_file():
+                raise FileNotFoundError(
+                    f"leg {leg}: no GOES CWP file at {goes_path}")
         if has_obs:
             obs_path = Path(args.obs[leg])
             if not obs_path.is_file():
@@ -821,6 +1081,20 @@ def main() -> int:
                          child_dc=nest_child_dc if nested_leg else None)
             node, restored, driver = wired.node, wired.restored, wired.driver
             state = node.state
+            if setup_arrays is None:
+                # The eta coordinate arrays and the base column mass a
+                # checkpoint does not serialize (STATE_SETUP_ARRAYS in
+                # gpuwm/state_serialization_contract.py). The CWP operator
+                # integrates in the model's own mass measure and cannot
+                # rebuild them from the npz, so they are captured here off
+                # a live state, once, exactly as the reflectivity provider
+                # would need thb.
+                setup_arrays = {
+                    "c1h": to_host(state.c1h).astype(np.float64),
+                    "c2h": to_host(state.c2h).astype(np.float64),
+                    "dnw": to_host(state.dnw).astype(np.float64),
+                    "mub2d": to_host(state.mub2d).astype(np.float64),
+                }
             # `resumed` drives model._resumed below, which stops the
             # resumed leg from rewriting history the previous process
             # already committed.  `resumed_from is None` is the separate
@@ -934,6 +1208,23 @@ def main() -> int:
             refl_host = to_host(refl).astype(np.float32)
             if name != CONTROL:
                 member_dbz[int(name)] = refl_host.astype(np.float64)
+            if surface_cfg is not None and name != CONTROL:
+                # Leg-END surface diagnostics off the live driver: the
+                # 2m/10m fields the surface layer diagnosed for the very
+                # state that was snapshotted.  Leg START would hand the
+                # filter re-initialised spin-up (documented simplification
+                # of this driver), which is why the snapshot lives here
+                # beside member_dbz and nowhere else.
+                absent = [key for key in ("t2", "u10", "v10")
+                          if key not in driver.fields]
+                if absent:
+                    raise RuntimeError(
+                        f"leg {leg} {name}: --surface-obs needs the "
+                        f"driver's {absent} diagnostics and this physics "
+                        "profile does not allocate them")
+                member_sfc[int(name)] = {
+                    key: to_host(driver.fields[key]).astype(np.float64)
+                    for key in ("t2", "u10", "v10")}
             if args.save_composites:
                 comp_dir = out / "composites"
                 comp_dir.mkdir(parents=True, exist_ok=True)
@@ -1094,7 +1385,10 @@ def main() -> int:
                     raise RuntimeError(
                         f"leg {leg}: no analysed field has ensemble "
                         f"spread ({spreads})")
-                if args.reflectivity_analysis:
+                # Clear air is differenced against the same H_Z(x) echo is,
+                # so it needs the same provider -- a clear-air-only cycle
+                # would otherwise reach the filter with none.
+                if args.reflectivity_analysis or args.clear_air_analysis:
                     def provider(index, state, _t=dict(member_dbz)):
                         """H_Z(x) from the device diagnostic this driver
                         already computed for the very state that was
@@ -1104,6 +1398,28 @@ def main() -> int:
                         one Python call per column and a second Z
                         authority in the same cycle."""
                         return _t[int(index)]
+            cwp_provider = None
+            cwp_localization = None
+            if goes_path is not None:
+                if setup_arrays is None:
+                    raise RuntimeError(
+                        f"leg {leg}: the CWP operator needs c1h/c2h/dnw/"
+                        "mub2d off a live state and none was captured; "
+                        "this leg ran no trajectory")
+                composition = CwpComposition(
+                    ice=tuple(name.strip() for name
+                              in args.cwp_ice_species.split(",")
+                              if name.strip()),
+                    clear=tuple(name.strip() for name
+                                in args.cwp_ice_species.split(",")
+                                if name.strip()))
+                cwp_provider = checkpoint_cwp_provider(
+                    cfg, composition=composition, **setup_arrays)
+                cwp_localization = Localization(
+                    horizontal_m=(args.cwp_horizontal_loc_m
+                                  if args.cwp_horizontal_loc_m is not None
+                                  else args.horizontal_loc_m),
+                    vertical_m=args.cwp_vertical_loc_m)
             cfg_da = RadarAssimilationConfig(
                 localization=Localization(
                     horizontal_m=args.horizontal_loc_m,
@@ -1117,14 +1433,46 @@ def main() -> int:
                 velocity_error_inflation=args.err_inflation,
                 reflectivity_thinning_cells=args.z_thin_cells,
                 reflectivity_error_inflation=args.z_err_inflation,
+                clear_air=bool(args.clear_air_analysis),
+                clear_air_thinning_cells=args.z0_thin_cells,
+                clear_air_error_inflation=args.z0_err_inflation,
+                cwp=goes_path is not None,
+                cwp_localization=cwp_localization,
+                cwp_thinning_cells=args.cwp_thin_cells,
+                cwp_error_inflation=args.cwp_err_inflation,
                 positivity_policy=args.positivity_policy,
                 mp_physics=int(cfg.mp_physics),
                 solve_device=args.solve_device,
                 memory_budget_mib=args.memory_budget_mib)
+            surface_batches = None
+            surface_prov = None
+            if surface_cfg is not None:
+                simulated = {"t2": None, "u10": None, "v10": None}
+                stacks = [member_sfc[i] for i in range(args.members)]
+                if surface_cfg.temperature:
+                    simulated["t2"] = np.stack(
+                        [entry["t2"] for entry in stacks])
+                if surface_cfg.wind_speed:
+                    simulated["u10"] = np.stack(
+                        [entry["u10"] for entry in stacks])
+                    simulated["v10"] = np.stack(
+                        [entry["v10"] for entry in stacks])
+                surface_batches, surface_prov = surface_to_gridded_obs(
+                    args.surface_obs, target_grid=grid_h,
+                    analysis_time=surface_schedule[leg],
+                    analysis_times=surface_schedule,
+                    config=surface_cfg,
+                    simulated_t2=simulated["t2"],
+                    simulated_u10=simulated["u10"],
+                    simulated_v10=simulated["v10"])
             t_solve = time.time()
             increments, prov = assimilate_radar_grid(
                 checkpoints, obs_path, grid_h, cfg_da,
-                reflectivity_provider=provider)
+                reflectivity_provider=provider,
+                extra_obs=surface_batches,
+                extra_obs_provenance=surface_prov,
+                cwp_observations=goes_path,
+                cwp_provider=cwp_provider)
             leg_record["analysis"] = {
                 "applied": bool(analysis_due),
                 "solve_seconds": round(time.time() - t_solve, 1),
@@ -1135,6 +1483,31 @@ def main() -> int:
                 "reflectivity_thinning": prov["reflectivity_thinning"],
                 "moment_policy": prov["moment_policy"],
                 "positivity": prov["positivity"],
+                "surface": surface_prov,
+                # What was actually assimilated this leg, COUNTED off the
+                # batches the filter solved rather than inferred from
+                # which flags were on. A leg whose satellite file held no
+                # usable observation must not read the same as one that
+                # had none to read, and a stream that was enabled but
+                # contributed nothing must not read the same as one that
+                # contributed. See gpuwm.da.treatment.
+                "assimilated": treatment.cycle_record(
+                    prov["innovations"],
+                    adapter_provenance=prov["observations"],
+                    extra_obs_provenance=prov["extra_observations"],
+                    cwp_provenance=prov["cwp_observations"]),
+                "goes_cwp_file": (None if goes_path is None
+                                  else goes_path.name),
+                "cwp_thinning": prov["cwp_thinning"],
+                "cwp_error_inflation": prov["cwp_error_inflation"],
+                "cwp_localization_horizontal_m": prov[
+                    "cwp_localization_horizontal_m"],
+                "cwp_localization_vertical_m": prov[
+                    "cwp_localization_vertical_m"],
+                "cwp_observations": prov["cwp_observations"],
+                "cwp_composition": (
+                    None if cwp_provider is None
+                    else composition.to_payload()),
             }
             inc_stats = {}
             for field in analysis_fields:
@@ -1268,6 +1641,32 @@ def main() -> int:
                   flush=True)
 
         report["legs"].append(leg_record)
+
+        # ---- the treatment proof --------------------------------------
+        # Counted, not claimed. An enabled stream that assimilated nothing
+        # over the opening cycles stops the run here, before six hours of
+        # card time produce a headline naming a stream that never touched
+        # the state. The verdict is written into the record either way, so
+        # a completed run carries its own proof and a stopped one carries
+        # its own reason.
+        analyses = [leg["analysis"]["assimilated"]
+                    for leg in report["legs"]
+                    if isinstance(leg.get("analysis"), dict)
+                    and leg["analysis"].get("assimilated") is not None]
+        try:
+            report["treatment"] = treatment.verify_treatment(
+                enabled_obs_kinds, analyses)
+        except treatment.TreatmentNotApplied as error:
+            report["treatment"] = {
+                "label": "full-stack",
+                "verdict": "silent_stream",
+                "enabled": list(enabled_obs_kinds),
+                "error": str(error),
+            }
+            (out / "cycle-report.json").write_text(
+                json.dumps(report, indent=2, default=str), encoding="utf-8")
+            raise SystemExit(f"TREATMENT_NOT_APPLIED: {error}") from error
+
         (out / "cycle-report.json").write_text(
             json.dumps(report, indent=2, default=str), encoding="utf-8")
 

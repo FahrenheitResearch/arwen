@@ -1,0 +1,181 @@
+{
+  "config": "les_tornado_100m_mayfield_20211210.toml",
+  "domains": {
+    "d01": {
+      "dx_m": 3000.0,
+      "i_parent_start": 1,
+      "j_parent_start": 1,
+      "lat_max": 39.9414,
+      "lat_min": 33.2695,
+      "lon_max": -83.2366,
+      "lon_min": -94.1634,
+      "nx": 306,
+      "ny": 244,
+      "span_km": [
+        918.0,
+        732.0
+      ]
+    },
+    "d02": {
+      "dx_m": 1000.0,
+      "i_parent_start": 79,
+      "j_parent_start": 48,
+      "lat_max": 38.7464,
+      "lat_min": 34.6386,
+      "lon_max": -86.066,
+      "lon_min": -91.334,
+      "nx": 450,
+      "ny": 450,
+      "span_km": [
+        450.0,
+        450.0
+      ]
+    },
+    "d03": {
+      "dx_m": 500.0,
+      "i_parent_start": 151,
+      "j_parent_start": 151,
+      "lat_max": 37.4019,
+      "lat_min": 36.032,
+      "lon_max": -87.8377,
+      "lon_min": -89.5623,
+      "nx": 300,
+      "ny": 300,
+      "span_km": [
+        150.0,
+        150.0
+      ]
+    },
+    "d04": {
+      "dx_m": 100.0,
+      "i_parent_start": 131,
+      "j_parent_start": 131,
+      "lat_max": 36.8113,
+      "lat_min": 36.6286,
+      "lon_max": -88.5859,
+      "lon_min": -88.8141,
+      "nx": 200,
+      "ny": 200,
+      "span_km": [
+        20.0,
+        20.0
+      ]
+    }
+  },
+  "landmarks": {
+    "Bremen KY (beyond)": {
+      "inside": [
+        "d01",
+        "d02"
+      ],
+      "lat": 37.362,
+      "lon": -87.2308,
+      "required_inside": [
+        "d01",
+        "d02"
+      ],
+      "required_outside": [
+        "d03",
+        "d04"
+      ]
+    },
+    "Cayce KY (upstream fetch)": {
+      "inside": [
+        "d01",
+        "d02",
+        "d03"
+      ],
+      "lat": 36.5081,
+      "lon": -89.0392,
+      "required_inside": [
+        "d01",
+        "d02",
+        "d03"
+      ],
+      "required_outside": [
+        "d04"
+      ]
+    },
+    "Mayfield KY": {
+      "inside": [
+        "d01",
+        "d02",
+        "d03",
+        "d04"
+      ],
+      "lat": 36.7417,
+      "lon": -88.6367,
+      "required_inside": [
+        "d01",
+        "d02",
+        "d03",
+        "d04"
+      ],
+      "required_outside": []
+    },
+    "Princeton KY (downstream)": {
+      "inside": [
+        "d01",
+        "d02",
+        "d03"
+      ],
+      "lat": 37.1092,
+      "lon": -87.8814,
+      "required_inside": [
+        "d01",
+        "d02",
+        "d03"
+      ],
+      "required_outside": [
+        "d04"
+      ]
+    },
+    "box centre": {
+      "inside": [
+        "d01",
+        "d02",
+        "d03",
+        "d04"
+      ],
+      "lat": 36.72,
+      "lon": -88.7,
+      "required_inside": [
+        "d01",
+        "d02",
+        "d03",
+        "d04"
+      ],
+      "required_outside": []
+    },
+    "initiation, NE Arkansas": {
+      "inside": [
+        "d01",
+        "d02"
+      ],
+      "lat": 35.8909,
+      "lon": -90.3437,
+      "required_inside": [
+        "d01",
+        "d02"
+      ],
+      "required_outside": [
+        "d03",
+        "d04"
+      ]
+    }
+  },
+  "notes": [
+    "All four domains are concentric on the projection reference; nest offsets are pure centring arithmetic.",
+    "d04 is a TRANSIT box: initiation is resolved by d01/d02 and is outside d03/d04 by design.",
+    "The real track is ~250 km; Princeton is inside d03 but outside d04, and Bremen is outside d03. A fixed 20 km box cannot follow the storm and does not claim to."
+  ],
+  "projection": {
+    "map_proj": "lambert",
+    "ref_lat": 36.72,
+    "ref_lon": -88.7,
+    "stand_lon": -88.7,
+    "truelat1": 26.72,
+    "truelat2": 46.72
+  },
+  "schema": "gpuwm-les-placement-receipt-v1"
+}

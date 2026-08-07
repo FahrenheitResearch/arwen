@@ -299,4 +299,5 @@ def test_the_20crv3_front_door_prints_the_run_command_too(tmp_path):
     assert f"--outdir {expected_outdir}" in text
     # And 20crv3 really is a source that runner takes.
     from gpuwm import prepared_single_domain_forecast as runner
-    assert runner.SUPPORTED_SOURCES == frozenset({"gfs", "era5", "20crv3"})
+    assert runner.SUPPORTED_SOURCES == frozenset(
+        {"gfs", "era5", "20crv3", "hrrr"})

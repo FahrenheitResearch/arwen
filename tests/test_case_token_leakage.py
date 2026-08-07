@@ -163,16 +163,27 @@ def test_a_source_id_appended_to_an_already_baselined_list_is_reported(
     The old gate printed a clean bill of health for exactly this edit.
     """
 
+    appended_at: list[int] = []
+
     def mutate(document: dict) -> None:
         route = document["runner_routes"]["tools.prepared_single_domain_forecast"]
+        # The ordinal is READ, not written down.  It used to be the literal
+        # 3, which made this gate's own proof a hostage to the length of a
+        # list the product is expected to grow: when the route legitimately
+        # gained its fourth source, the append landed at 4, index 3 was a
+        # baselined entry, and this test failed while the property it
+        # states was still perfectly true.
+        appended_at.append(len(route["source_ids"]))
         route["source_ids"].append("hrrr")
 
     new = _new_against_real_baseline(_scratch_registry(tmp_path, mutate))
     keys = [v.key for v in new]
+    index = appended_at[0]
     assert any(
-        "tools.prepared_single_domain_forecast/source_ids/3::registry value::hrrr" in k
+        "tools.prepared_single_domain_forecast/source_ids/"
+        f"{index}::registry value::hrrr" in k
         for k in keys
-    ), keys
+    ), (index, keys)
 
 
 def test_an_unmutated_copy_of_the_registry_reports_nothing(tmp_path: Path):

@@ -1331,6 +1331,7 @@ def run_prepared_tree(
     nodes = {}
     prepared = {}
     drivers = {}
+    initial_perturbation_receipts: list[dict[str, object]] = []
     started = time.perf_counter()
     compile_notice = kernel_compile_notice()
     for domain, grid, bundle in zip(exp.domains, inputs.grids, inputs.domains):
@@ -1349,6 +1350,31 @@ def run_prepared_tree(
             raise ValueError(
                 f"d{domain.grid_id:02d} prepared cache lacks canonical surface"
             )
+        if exp.perturbation is not None and restart is None:
+            # Configured initial-state theta bubbles (PROVENANCE D12).
+            # The sealed caches stay the pure analysis; the bubbles are
+            # added to the RESTORED state here, per domain, before
+            # initialize_prepared_physics rederives p/al/alt from the
+            # perturbed prognostics.  A resumed run applies nothing --
+            # the checkpoint trajectory already carries the evolved
+            # bubble.  Refusals (coarse-domain containment, zero cells)
+            # fire here, before any GPU integration.
+            from gpuwm.core.diagnostics import update_diagnostics
+            from gpuwm.ingest.init_perturbation import (
+                build_initial_state_perturbation)
+            # The cache serializes p as the preparation left it, and a
+            # prepare-only cache leaves the EOS to its consumer -- so
+            # diagnose the RESTORED prognostics first; the bubble's
+            # rh_preserve reads state.p.  initialize_prepared_physics
+            # runs the same diagnostics again below, from the perturbed
+            # prognostics, which is the order the seam wants anyway.
+            update_diagnostics(
+                restored.initial_result.state, domain.run.hypsometric_opt)
+            applier = build_initial_state_perturbation(
+                exp.perturbation, grid, grid_id=int(domain.grid_id),
+                require_containment=domain.parent_id == 0)
+            initial_perturbation_receipts.append(
+                applier.apply_to_state(restored.initial_result.state))
         # The first domain's physics initialization is where a first
         # run pays its one-time NVRTC compile (~100 s on a modern
         # card), and it used to pay it under the stale RESTORING
@@ -1407,6 +1433,20 @@ def run_prepared_tree(
     bind_lateral_boundary_clock(
         nodes[exp.root.grid_id].state, nodes[exp.root.grid_id].clock)
     timing["restore_tree_and_initialize_physics"] = time.perf_counter() - started
+    if exp.perturbation is not None:
+        # Treatment proof, before any integration: the accepted config
+        # echoed value for value plus what each restored domain actually
+        # received.  A resumed run records the resume instead -- the
+        # bubbles live in the checkpoint trajectory, not in a fresh
+        # application.
+        runtime._write_initial_perturbation_receipt(
+            evidence, exp,
+            initial_perturbation_receipts if restart is None else [{
+                "resumed": True,
+                "note": "resumed from checkpoint; the initial "
+                        "perturbation was applied when the trajectory "
+                        "began and is not re-applied",
+            }])
 
     if sealed_forcing_extension:
         # The sealed route keeps its OWN identity and its own digest: it is
@@ -1626,6 +1666,18 @@ def run_prepared_tree(
         # ungoverned run says so in the same shape rather than by omission
         # (the morr_rimed_ice-into-receipt pattern, one axis wider).
         "physics_mode": exp.physics_mode.receipt(),
+        # The initial-perturbation axis, same posture as physics_mode:
+        # the arm says what it is in the receipt, not by omission.  None
+        # when the config carries no block; configured, the full echo
+        # plus per-domain application stats (also standalone in
+        # evidence/initial-perturbation.json, written before
+        # integration so a run that dies mid-flight still proves its
+        # arm).
+        "initial_perturbation": (
+            None if exp.perturbation is None else {
+                "config": exp.perturbation.receipt(),
+                "domains": initial_perturbation_receipts,
+            }),
         "restart_contract": {
             "mode": ("sealed-forcing-extension"
                      if sealed_forcing_extension else "exact-setup"),

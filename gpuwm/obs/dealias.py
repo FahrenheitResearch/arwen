@@ -1,0 +1,1303 @@
+"""Region-based velocity dealiasing that abstains instead of guessing.
+
+Radial velocity from a pulsed Doppler radar is a phase measurement, so it is
+only known modulo the Nyquist interval ``2 * Vn``.  A true ``+40 m/s`` on a
+cut whose Nyquist is ``25.51 m/s`` is reported as ``-11.02 m/s``: finite,
+plausible, smooth, and wrong by ``51.02 m/s``.  :mod:`gpuwm.obs.superob`
+answers that today by masking -- it drops every gate above
+``nyquist_reject_fraction`` of Nyquist and counts the loss -- which is safe
+and which, on a cut whose Nyquist is 25.51, caps the assimilable wind at
+20.4 m/s.  A mesocyclone's rotational couplet is a pair of strong,
+opposite-signed low-level velocities; the mask removes it, and removes more
+of it the stronger the storm gets.
+
+This module recovers those gates by unfolding them, and it is built around
+one rule: **where the unfolding is ambiguous the gate is rejected, not
+guessed.**  A confidently wrong dealiased velocity is worse than a missing
+one, because a missing one is a mask the filter never sees and a wrong one
+enters the filter with a 1-2 m/s observation error attached to a 51 m/s
+mistake.
+
+Method
+------
+Region-based unfolding, the standard approach, with one volume-scale step
+in front of it:
+
+0. **Profile.**  Before any sweep is unfolded, a single ``u(z), v(z)`` is
+   built from the whole volume: every range band of every velocity cut is
+   fitted, converted to a wind, and pooled onto a height grid where the
+   median is taken.  A volume reaches most heights several times over -- 4 km
+   sits at 60 km range on a 4-degree cut and at 200 km on a 1-degree one --
+   and a layer is believed only when cuts at two or more *different*
+   elevations reached it and it is continuous with the layers around it.
+   This is the only cross-check available without an external model field,
+   and it is what stops a sparse far-range band from anchoring thousands of
+   gates to a wind no other sweep saw.
+1. **Segment.**  Two range- or azimuth-adjacent gates join the same region
+   when both are finite and differ by at most
+   ``region_join_fraction * Vn``.  A fold between neighbours produces a jump
+   of very nearly ``2 * Vn``, so at the 0.5 default a fold can never occur
+   *inside* a region unless the true gate-to-gate shear exceeds ``1.5 * Vn``
+   (38 m/s across one 250 m gate here), which no atmosphere produces.  That
+   bound is the assumption this stage rests on and it is stated so it can be
+   argued with.
+2. **Vote.**  Every adjacent gate pair that did *not* join contributes an
+   integer vote ``f = round((v_lo - v_hi) / (2 * Vn))`` to the edge between
+   the two regions it spans, meaning "region *hi* sits ``f`` Nyquist
+   intervals above region *lo*".
+3. **Anchor.**  An environmental reference -- a fold-aware VAD fitted to the
+   sweep itself (Browning & Wexler 1968), or an externally supplied
+   background wind profile -- pins whole regions to an absolute fold count.
+   Only regions that look *environmental* after unfolding may anchor: the
+   median residual against the reference must be small, which a rotational
+   couplet's region will fail, so a couplet is never forced onto the
+   background wind.
+4. **Grow.**  From each anchor, unresolved regions are resolved across their
+   strongest confident edge first.  An edge is confident only when it has
+   enough boundary pairs, a large enough winning-vote majority, and a mean
+   jump close enough to an integer.
+5. **Verify, then abstain.**  Every confident edge between two resolved
+   regions must agree with the assignment; regions on a violated edge are
+   rejected.  Regions never anchored and never reached are rejected.  Gates
+   whose unfolded speed leaves the physical bound are rejected, and so are
+   gates that depart from the reference by more than a couplet could -- a
+   fold error displaces a gate by a whole Nyquist interval, 51 m/s on the
+   tilts that matter here, while the physical departures this must not touch
+   are smaller.
+
+Every velocity gate therefore ends in exactly one of three states --
+:data:`STATE_UNFOLDED`, :data:`STATE_UNCHANGED`, :data:`STATE_REJECTED` --
+and all three are counted, per sweep and per volume, with a reason recorded
+for every rejection.
+
+Relationship to BowEcho
+-----------------------
+Drew's Rust radar stack (BowEcho, ``crates/render2d``) already carries four
+dealiasing engines, and steps 1-2 here are deliberately the same algorithm
+and the same constants as its shared ``region_core`` -- ``REGION_JOIN_FRAC``
+0.5, ``REGION_MAX_FOLD`` 5, the same vote convention, the same
+strongest-boundary-first resolution order, the same range-band harmonic
+reference geometry (``REFERENCE_BAND_GATES`` 16, 48 samples, 5 of 12
+azimuth sectors, 12 m/s trim).
+
+Steps 3-5 are where this diverges, and the divergence is the point.
+BowEcho's v1 engine anchors *the largest region in each connected group to
+fold 0* and always assigns a fold to every region: correct for a display,
+where an unresolved region is a visual artifact a human discounts, and
+wrong for assimilation, where it is a confident number the filter believes.
+This module refuses to assign a fold it cannot justify.
+
+The ingest boundary is why this is Python at all.  ``rw-nexrad`` -- the
+mandated ingest crate -- is a binary-only crate with no ``lib.rs`` and no
+Python binding, and BowEcho's engines consume ``radar_core::RadarVolume``
+while ``rw-nexrad`` emits flat ``<f4`` planes; the two Rust trees share no
+crate today.  :func:`dealias_sweep` is therefore written against exactly
+what crosses that seam -- a ``(radial, gate)`` plane, an azimuth vector, one
+Nyquist scalar -- so that when the plumbing exists it is replaced by a call,
+not by a rewrite.
+
+References
+----------
+Browning, K. A. and R. Wexler, 1968: The determination of kinematic
+properties of a wind field using Doppler radar. *J. Appl. Meteor.*, **7**,
+105-113.
+
+Bergen, W. R. and S. C. Albers, 1988: Two- and three-dimensional
+de-aliasing of Doppler radar velocities. *J. Atmos. Oceanic Technol.*, **5**,
+305-319.
+
+Jing, Z. and G. Wiener, 1993: Two-dimensional dealiasing of Doppler
+velocities. *J. Atmos. Oceanic Technol.*, **10**, 798-808.
+
+James, C. N. and R. A. Houze, 2001: A real-time four-dimensional Doppler
+dealiasing scheme. *J. Atmos. Oceanic Technol.*, **18**, 1674-1683.
+
+Helmus, J. J. and S. M. Collis, 2016: The Python ARM Radar Toolkit
+(Py-ART). *J. Open Research Software*, **4**(1), e25.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field, fields
+from numbers import Real
+
+import numpy as np
+
+#: A velocity gate ended in exactly one of these.  There is no fourth.
+STATE_REJECTED = 0
+STATE_UNCHANGED = 1
+STATE_UNFOLDED = 2
+
+#: Why a rejected gate was rejected.  ``REASON_NONE`` is carried by every
+#: gate that was not rejected, so the reason plane is always readable.
+REASON_NONE = 0
+REASON_NONFINITE = 1
+REASON_NO_NYQUIST = 2
+REASON_UNRESOLVED = 3
+REASON_CONFLICT = 4
+REASON_FOLD_RANGE = 5
+REASON_SPEED = 6
+REASON_DISABLED = 7
+REASON_REFERENCE_DEPARTURE = 8
+
+REASON_NAMES = {
+    REASON_NONE: "none",
+    REASON_NONFINITE: "nonfinite",
+    REASON_NO_NYQUIST: "no_nyquist",
+    REASON_UNRESOLVED: "unresolved",
+    REASON_CONFLICT: "conflict",
+    REASON_FOLD_RANGE: "fold_out_of_range",
+    REASON_SPEED: "speed_out_of_range",
+    REASON_DISABLED: "disabled",
+    REASON_REFERENCE_DEPARTURE: "reference_departure",
+}
+
+
+#: What to tell a caller who asked for dealiasing on an install that cannot
+#: do it.  Spelled out here, once, so both entry points say the same thing.
+SCIPY_REMEDY = (
+    "velocity dealiasing needs scipy (scipy.sparse.csgraph.connected_components "
+    "labels the gate regions); install it with `pip install scipy>=1.11` or "
+    "`pip install gpuwm[dealias]`")
+
+
+def scipy_available() -> bool:
+    """Whether the region labeller this module needs can be imported.
+
+    Checked at the front door rather than left to the function-local import
+    inside :func:`dealias_sweep`, because the two failures are not the same
+    failure.  Reaching that import means a run has already fetched a volume,
+    decoded it and started gridding; refusing here means the operator hears
+    "install scipy" in the second before the run starts, instead of a
+    traceback from inside a loop an hour later.
+    """
+
+    from importlib.util import find_spec
+
+    try:
+        return (find_spec("scipy.sparse") is not None
+                and find_spec("scipy.sparse.csgraph") is not None)
+    except (ImportError, ValueError):     # pragma: no cover - broken install
+        return False
+
+
+class DealiasParamsError(ValueError):
+    """A dealiasing parameter that cannot mean what the pass needs it to mean.
+
+    Never a warning, for the same reason
+    :class:`gpuwm.obs.superob.SuperobParamsError` is never a warning: each of
+    these values decides whether a gate is unfolded, and a wrong one produces
+    velocities that are finite, plausible and off by a Nyquist interval.
+    """
+
+
+_FRACTION_FIELDS = (
+    "region_join_fraction",
+    "edge_agreement",
+    "edge_max_offset",
+    "anchor_max_offset",
+    "reference_min_inlier_fraction",
+)
+
+_POSITIVE_FIELDS = (
+    "profile_max_layer_step_ms",
+    "reference_max_profile_departure_ms",
+    "profile_layer_m",
+    "reference_trim_ms",
+    "reference_max_residual_ms",
+    "reference_max_speed_ms",
+    "reference_max_band_step_ms",
+    "anchor_max_residual_ms",
+    "max_speed_ms",
+    "max_reference_departure_ms",
+)
+
+_POSITIVE_INT_FIELDS = (
+    "max_fold",
+    "edge_min_pairs",
+    "reference_band_gates",
+    "reference_min_samples",
+    "reference_min_sectors",
+    "anchor_min_gates",
+    "reference_max_iterations",
+    "reference_band_window",
+    "profile_min_samples",
+    "profile_min_elevations",
+    "profile_layer_window",
+)
+
+
+@dataclass(frozen=True)
+class DealiasParams:
+    """Every dealiasing tunable, in one hashable place -- it goes into
+    provenance beside the velocities it produced."""
+
+    #: Two adjacent gates join one region when they differ by at most this
+    #: fraction of Nyquist.  BowEcho ``REGION_JOIN_FRAC``.  Raising it toward
+    #: 1.0 welds genuinely different branches together; lowering it shatters
+    #: smooth gradients into regions too small to anchor.
+    region_join_fraction: float = 0.5
+    #: Hard cap on the integer fold applied to a region.  BowEcho
+    #: ``REGION_MAX_FOLD``.  A region resolving past this is not a fold, it
+    #: is a failure of the graph, and it is rejected.
+    max_fold: int = 5
+    #: Boundary pairs an inter-region edge needs before it may resolve a
+    #: fold.  BowEcho trusts a single pair because a wrong edge there costs a
+    #: pixel; here it costs an observation, so the default is stricter.
+    edge_min_pairs: int = 4
+    #: Fraction of an edge's votes that must agree on the winning fold.
+    edge_agreement: float = 0.75
+    #: How far the edge's mean jump may sit from its winning integer, in
+    #: units of the Nyquist interval.  A true fold lands within a few
+    #: hundredths of an integer; 0.25 is the point past which "fold" and "no
+    #: fold" stop being distinguishable and abstention is the honest answer.
+    edge_max_offset: float = 0.25
+    #: Gates per range band in the harmonic reference fit.  BowEcho
+    #: ``REFERENCE_BAND_GATES``.
+    reference_band_gates: int = 16
+    #: Samples a band needs before its fit is believed.  BowEcho
+    #: ``FIT_MIN_SAMPLES``.
+    reference_min_samples: int = 48
+    #: Distinct 30-degree azimuth sectors (of 12) a band's samples must span.
+    #: BowEcho ``FIT_MIN_SECTORS``.  A harmonic fitted inside one sector is
+    #: an extrapolation wearing a fit's clothes.
+    reference_min_sectors: int = 5
+    #: Outlier trim for the refit pass, m/s.  BowEcho ``FIT_TRIM_MPS``.
+    reference_trim_ms: float = 12.0
+    #: A band whose inlier residual RMS exceeds this has no usable reference.
+    reference_max_residual_ms: float = 8.0
+    #: Largest first-harmonic amplitude a band may fit and still be believed,
+    #: m/s.  This is an environmental wind speed, and no environmental wind at
+    #: the heights a weather radar samples reaches 60 m/s.
+    #:
+    #: It is here because a wrong harmonic fits its own fold assignment
+    #: tightly and therefore passes a residual test: measured on the real
+    #: case, bands converged on 57, 67, 71 and 74 m/s winds with residuals
+    #: inside the 8 m/s gate, and regions anchored to them came out at 60-86
+    #: m/s.  A residual measures self-consistency; only a physical bound
+    #: measures whether the answer is a wind.
+    reference_max_speed_ms: float = 60.0
+    #: Largest step between the fitted winds of nearby range bands, m/s.  The
+    #: environmental wind is continuous in height, so a band disagreeing this
+    #: much with its neighbours is the odd one out rather than a discovery --
+    #: and an isolated wrong fit is exactly what this catches, because a
+    #: wrong fit has no reason to agree with the bands either side of it.
+    reference_max_band_step_ms: float = 15.0
+    #: Bands either side that the continuity check compares a band against.
+    reference_band_window: int = 3
+    #: How far a band's fitted wind may depart from the volume-wide profile
+    #: at the same height before the profile is used instead, m/s.
+    #:
+    #: A volume samples most heights several times over -- 23 sweeps here,
+    #: a given altitude reached at short range on a steep cut and at long
+    #: range on a shallow one -- so the volume knows its own wind profile far
+    #: better than any single range band does.  Far-range bands are where
+    #: single-band fits go wrong: the echo is sparse, azimuthal coverage is
+    #: patchy, and a fit can lock onto a branch that no other sweep sees at
+    #: that height.  Measured on the real case, this is what produced 5,264
+    #: gates unfolded past 45 m/s at 190-200 km on one 1.86-degree cut.
+    reference_max_profile_departure_ms: float = 15.0
+    #: Height resolution of the volume-wide profile, m.
+    profile_layer_m: float = 500.0
+    #: Band fits a profile layer needs before that layer is believed.
+    profile_min_samples: int = 3
+    #: Distinct elevation cuts a profile layer needs.  Three band fits from
+    #: one sweep are one measurement read three times, not three
+    #: measurements: they share the geometry, the echo and any error in it.
+    #: Redundancy only counts when it comes from cuts that reached the layer
+    #: by different paths.
+    profile_min_elevations: int = 2
+    #: Largest step between neighbouring profile layers, m/s.  The
+    #: environmental wind is continuous in height; measured on the real case
+    #: an unfiltered profile went from 14 m/s at 7.75 km to 48.5 m/s at
+    #: 9.25 km with the direction reversed, which is a sampling failure in
+    #: the thin upper layers wearing the shape of a jet.
+    profile_max_layer_step_ms: float = 20.0
+    #: Layers either side that the profile continuity check compares
+    #: a layer against.
+    profile_layer_window: int = 2
+    #: Fraction of a band's samples that must survive the trim.
+    reference_min_inlier_fraction: float = 0.5
+    #: Iterations of the fold-aware fit.
+    reference_max_iterations: int = 12
+    #: Gates with a valid reference a region needs before it may anchor.
+    #: The estimator is a median, so this is "how many samples before a
+    #: median means anything"; below about eight it stops being a statistic.
+    #: Measured on a real 23-sweep volume, raising it to 64 costs 58k
+    #: additional abstentions and recovers nothing, because the regions it
+    #: excludes are 2-7 gate speckle whose fold state genuinely cannot be
+    #: established -- the count of *unfolded* gates does not move at all.
+    anchor_min_gates: int = 8
+    #: How far an anchor's median fold estimate may sit from its integer.
+    anchor_max_offset: float = 0.25
+    #: An anchor's median residual against the reference, m/s.  This is the
+    #: gate that keeps a rotational couplet from being anchored: a couplet's
+    #: region departs from the environmental wind by design, fails this, and
+    #: must be resolved by continuity from a region that passed it.
+    anchor_max_residual_ms: float = 10.0
+    #: Physical bound on an unfolded radial velocity, m/s.  No atmosphere
+    #: produces a radial wind past this at the scales a superob cell
+    #: averages over, so a gate that lands beyond it is a failure of the
+    #: unfolding rather than a measurement.  It applies everywhere, including
+    #: where no reference exists to check against.
+    max_speed_ms: float = 75.0
+    #: How far a resolved gate may depart from the environmental reference,
+    #: m/s, where a reference exists.  This is the bound that actually holds
+    #: the line, because a fold error displaces a gate by a whole Nyquist
+    #: interval -- 51 m/s on the tilts that matter here -- while the physical
+    #: departures this must not touch are smaller: 40 m/s allows a couplet
+    #: with 20 m/s of rotational velocity either side of the environmental
+    #: wind, which is a strong mesocyclone.
+    #:
+    #: It is deliberately a *departure* rather than a speed, because the
+    #: quantity a fold error corrupts is the difference from the surrounding
+    #: flow, and a violent storm embedded in a strong jet has a large speed
+    #: and a modest departure.  Raising it admits stronger couplets and
+    #: weaker fold errors together; there is no setting that separates them,
+    #: which is why the default sits where a fold error cannot hide.
+    max_reference_departure_ms: float = 40.0
+    #: Keep a confidently resolved gate whose speed exceeds
+    #: ``nyquist_reject_fraction * Vn``.  This is the recovery: that
+    #: threshold exists to drop gates that *might* be folded, and a gate this
+    #: stage resolved is one whose fold state is known.  Turning it off keeps
+    #: the unfolding and throws away its benefit, which is useful exactly
+    #: once -- to show that the recovery and not some other change is what
+    #: moved a score.
+    keep_beyond_reject_fraction: bool = True
+
+    def __post_init__(self) -> None:
+        self.validate()
+        for field_ in fields(self):
+            value = getattr(self, field_.name)
+            if field_.type == "bool" or isinstance(value, bool):
+                object.__setattr__(self, field_.name, bool(value))
+            elif field_.name in _POSITIVE_INT_FIELDS:
+                object.__setattr__(self, field_.name, int(value))
+            else:
+                object.__setattr__(self, field_.name, float(value))
+
+    def validate(self) -> "DealiasParams":
+        """Refuse any value that cannot do the job the field is named for."""
+
+        for field_ in fields(self):
+            value = getattr(self, field_.name)
+            if field_.name == "keep_beyond_reject_fraction":
+                if not isinstance(value, bool):
+                    raise DealiasParamsError(
+                        f"keep_beyond_reject_fraction is {value!r} "
+                        f"({type(value).__name__}); it is a switch and only a "
+                        "bool states which way it is thrown")
+                continue
+            if isinstance(value, bool) or not isinstance(value, Real):
+                raise DealiasParamsError(
+                    f"{field_.name} is {value!r} ({type(value).__name__}); "
+                    "every dealiasing parameter is a real number. A numeric "
+                    "string passes float() and then raises at the first "
+                    "arithmetic use, and a bool passes every range check as "
+                    "0.0 or 1.0")
+        for name in _FRACTION_FIELDS:
+            value = float(getattr(self, name))
+            if not np.isfinite(value) or not (0.0 <= value <= 1.0):
+                raise DealiasParamsError(
+                    f"{name} is {value!r}; it is a fraction and must lie in "
+                    "[0, 1]")
+        for name in _POSITIVE_FIELDS:
+            value = float(getattr(self, name))
+            if not np.isfinite(value) or value <= 0.0:
+                raise DealiasParamsError(
+                    f"{name} is {value!r}; it must be finite and strictly "
+                    "positive")
+        for name in _POSITIVE_INT_FIELDS:
+            value = getattr(self, name)
+            if float(value) != int(value) or int(value) < 1:
+                raise DealiasParamsError(
+                    f"{name} is {value!r}; it counts gates, pairs, sectors or "
+                    "iterations and must be a whole number of at least 1")
+        if int(self.reference_min_sectors) > 12:
+            raise DealiasParamsError(
+                f"reference_min_sectors is {self.reference_min_sectors!r}; "
+                "the fit divides the compass into 12 sectors, so demanding "
+                "more than 12 rejects every band unconditionally and leaves "
+                "the reference permanently unavailable")
+        return self
+
+    def to_payload(self) -> dict:
+        payload = {}
+        for key, value in asdict(self).items():
+            if isinstance(value, bool):
+                payload[key] = bool(value)
+            elif key in _POSITIVE_INT_FIELDS:
+                payload[key] = int(value)
+            else:
+                payload[key] = float(value)
+        return payload
+
+
+@dataclass(frozen=True)
+class WindProfile:
+    """An environmental wind profile to anchor against, ``u``/``v`` on height.
+
+    This is the "model background" route.  Heights are metres above the radar
+    antenna, ascending; ``u`` is eastward and ``v`` northward, m/s.  It exists
+    beside the self-derived VAD because in a volume the storm dominates, a
+    VAD fitted to that volume is pulled by the storm, and a background
+    profile is not.
+    """
+
+    height_m: np.ndarray
+    u_ms: np.ndarray
+    v_ms: np.ndarray
+
+    def __post_init__(self) -> None:
+        height = np.asarray(self.height_m, dtype=np.float64).ravel()
+        u = np.asarray(self.u_ms, dtype=np.float64).ravel()
+        v = np.asarray(self.v_ms, dtype=np.float64).ravel()
+        if not (height.size == u.size == v.size):
+            raise DealiasParamsError(
+                f"wind profile has {height.size} heights, {u.size} u and "
+                f"{v.size} v; a profile is a triple of equal length")
+        if height.size < 2:
+            raise DealiasParamsError(
+                "a wind profile needs at least two levels to interpolate "
+                "between; one level is a constant wearing a profile's name")
+        if not np.all(np.isfinite(height)):
+            raise DealiasParamsError("wind profile heights are not all finite")
+        if not np.all(np.diff(height) > 0.0):
+            raise DealiasParamsError(
+                "wind profile heights are not strictly ascending; np.interp "
+                "would return silently wrong winds rather than raise")
+        object.__setattr__(self, "height_m", height)
+        object.__setattr__(self, "u_ms", u)
+        object.__setattr__(self, "v_ms", v)
+
+    def radial_reference(self, azimuth_deg: np.ndarray,
+                         elevation_deg: np.ndarray,
+                         height_m: np.ndarray) -> np.ndarray:
+        """``Vr`` this profile predicts, on the beam it is asked about.
+
+        ``Vr = (u sin(az) + v cos(az)) cos(elev)``; the vertical term is left
+        out because a background profile does not carry hydrometeor fall
+        speed and inventing one would be the guess this module exists to
+        avoid.  It is bounded by ``w sin(elev)``, under 3 m/s at every
+        elevation this stage sees, and the fold decision it feeds has a
+        tolerance of a whole Nyquist.
+        """
+
+        azimuth = np.radians(np.asarray(azimuth_deg, dtype=np.float64))
+        elevation = np.radians(np.asarray(elevation_deg, dtype=np.float64))
+        height = np.asarray(height_m, dtype=np.float64)
+        # No extrapolation.  ``np.interp`` holds the end value flat beyond
+        # the profile, which would quietly assert the 13 km wind at 20 km and
+        # anchor gates to it.  Outside the sampled range this profile knows
+        # nothing and says so.
+        inside = (height >= self.height_m[0]) & (height <= self.height_m[-1])
+        u = np.where(inside, np.interp(height, self.height_m, self.u_ms),
+                     np.nan)
+        v = np.where(inside, np.interp(height, self.height_m, self.v_ms),
+                     np.nan)
+        return (u * np.sin(azimuth) + v * np.cos(azimuth)) * np.cos(elevation)
+
+
+@dataclass
+class SweepDealiasResult:
+    """One sweep, unfolded -- and the full account of what that cost."""
+
+    #: ``(radial, gate)`` dealiased velocity.  NaN wherever the state is
+    #: :data:`STATE_REJECTED`, so a consumer that ignores ``state`` still
+    #: cannot assimilate a gate this stage refused.
+    velocity: np.ndarray
+    #: ``(radial, gate)`` of :data:`STATE_REJECTED` / ``UNCHANGED`` /
+    #: ``UNFOLDED`` -- ``int8``.
+    state: np.ndarray
+    #: ``(radial, gate)`` of ``REASON_*`` -- ``int8``.
+    reason: np.ndarray
+    #: ``(radial, gate)`` integer fold applied, 0 where none.
+    fold: np.ndarray
+    #: ``(radial, gate)`` reference velocity, NaN where no band qualified.
+    reference: np.ndarray
+    stats: dict = field(default_factory=dict)
+
+    @property
+    def usable(self) -> np.ndarray:
+        return self.state != STATE_REJECTED
+
+
+def _sweep_wraps(azimuth_deg: np.ndarray) -> bool:
+    """Does this cut close the circle?
+
+    A 360-degree surveillance cut's last radial neighbours its first, and
+    leaving that seam open splits every region that crosses north.  A sector
+    scan's does not, and welding it shut would invent a boundary.  The test
+    is the same one BowEcho's ``sweep_wraps`` makes: the gap from the last
+    radial back to the first is no larger than a typical radial step.
+    """
+
+    azimuth = np.asarray(azimuth_deg, dtype=np.float64).ravel()
+    if azimuth.size < 3:
+        return False
+    steps = np.abs(np.diff(azimuth))
+    steps = np.where(steps > 180.0, 360.0 - steps, steps)
+    steps = steps[np.isfinite(steps) & (steps > 0.0)]
+    if steps.size == 0:
+        return False
+    typical = float(np.median(steps))
+    closing = abs(float(azimuth[0]) - float(azimuth[-1]))
+    if closing > 180.0:
+        closing = 360.0 - closing
+    return closing <= 2.0 * typical
+
+
+#: Coarse search grid for the harmonic fit, in wind speed (m/s) and
+#: direction (degrees).  The grid is over the *wind vector* rather than over
+#: the two harmonic coefficients because the physical range of one is known
+#: and of the other is not: no environmental wind exceeds 80 m/s, and 2 m/s
+#: by 5 degrees is finer than the fit needs to converge from.
+_COARSE_SPEEDS = np.arange(0.0, 82.0, 2.0)
+_COARSE_DIRECTIONS = np.radians(np.arange(0.0, 360.0, 5.0))
+#: Samples the coarse search looks at.  It only has to find the right basin,
+#: and a few hundred samples spread over the compass locate a first harmonic
+#: as well as ten thousand do.
+_COARSE_SAMPLES = 384
+
+
+def _coarse_seeds(values: np.ndarray, sin_az: np.ndarray, cos_az: np.ndarray,
+                  nyquist: float, count: int = 3) -> list:
+    """Best ``(a, b)`` starting points by exhaustive search on wrapped cost.
+
+    The alternating fit in :func:`_fit_band` finds the nearest minimum, and
+    when most of a sweep is folded there are several: a sinusoid displaced by
+    a Nyquist interval over part of the compass explains its own fold
+    assignment perfectly and sits in a basin the local step cannot leave.
+    Measured on a synthetic 39.7 m/s wind against a 25.51 m/s Nyquist -- more
+    than half the sweep folded -- the local fit converged on a wind of the
+    wrong sign with a 5.6 m/s residual, comfortably inside the quality gate.
+    A wrong reference that passes its own quality gate is the worst failure
+    available to this module, because everything downstream anchors to it.
+
+    The wrapped cost is periodic in ``2 * Vn``, so it cannot prefer a
+    candidate merely for folding; searching it exhaustively over the physical
+    range of winds finds the true basin regardless of how much of the sweep
+    is folded.
+    """
+
+    if values.size > _COARSE_SAMPLES:
+        pick = np.linspace(0, values.size - 1, _COARSE_SAMPLES).astype(np.intp)
+        values, sin_az, cos_az = values[pick], sin_az[pick], cos_az[pick]
+    speed = _COARSE_SPEEDS[:, None]
+    direction = _COARSE_DIRECTIONS[None, :]
+    # v(az) = a cos(az) + b sin(az); (a, b) traced over speed and direction.
+    a = (speed * np.cos(direction)).ravel()
+    b = (speed * np.sin(direction)).ravel()
+    model = a[:, None] * cos_az[None, :] + b[:, None] * sin_az[None, :]
+    cost = np.sum(1.0 - np.cos(np.pi * (values[None, :] - model) / nyquist),
+                  axis=1)
+    order = np.argsort(cost, kind="stable")[:count]
+    return [(float(a[index]), float(b[index])) for index in order]
+
+
+def _fit_band(values: np.ndarray, sin_az: np.ndarray, cos_az: np.ndarray,
+              nyquist: float, params: DealiasParams,
+              seeds) -> tuple[float, float, float, int] | None:
+    """Fold-aware first-harmonic fit for one range band.
+
+    ``v(az) = a cos(az) + b sin(az)`` (Browning & Wexler 1968) fitted to
+    velocities that may themselves be folded, by alternating a fold
+    assignment against the current model with a linear least squares on the
+    unfolded values.  Straight least squares cannot be used here and that is
+    the whole difficulty: the samples this reference must be built from are
+    the very samples whose folds are unknown, so a plain fit is dragged by
+    every folded gate toward a wind that is wrong by a Nyquist interval.
+
+    The alternation has local minima -- a fit sitting one interval off
+    explains its own folds perfectly -- so it is run from several seeds and
+    the one with the lowest *wrapped* cost wins.  The wrapped cost is
+    periodic in ``2 * Vn`` by construction, so it cannot prefer a solution
+    merely for being folded.
+
+    Returns ``(a, b, residual_rms, inliers)`` or None when the band does not
+    qualify.
+    """
+
+    interval = 2.0 * nyquist
+    if values.size < params.reference_min_samples:
+        return None
+    sector = np.floor(np.degrees(np.arctan2(sin_az, cos_az)) % 360.0 / 30.0)
+    if np.unique(sector).size < params.reference_min_sectors:
+        return None
+
+    design = np.stack([cos_az, sin_az], axis=1)
+    best = None
+    best_cost = np.inf
+    for seed in seeds:
+        a, b = float(seed[0]), float(seed[1])
+        previous = None
+        for _ in range(params.reference_max_iterations):
+            model = a * cos_az + b * sin_az
+            fold = np.rint((model - values) / interval)
+            if previous is not None and np.array_equal(fold, previous):
+                break
+            previous = fold
+            unfolded = values + interval * fold
+            try:
+                solution, *_ = np.linalg.lstsq(design, unfolded, rcond=None)
+            except np.linalg.LinAlgError:      # pragma: no cover - degenerate
+                break
+            a, b = float(solution[0]), float(solution[1])
+        model = a * cos_az + b * sin_az
+        cost = float(np.sum(1.0 - np.cos(np.pi * (values - model) / nyquist)))
+        if cost < best_cost:
+            best_cost = cost
+            best = (a, b)
+    if best is None:                            # pragma: no cover - no seeds
+        return None
+
+    # Trim pass: refit without the samples the first fit could not explain.
+    # A storm core inside an otherwise environmental band is exactly such a
+    # sample, and letting it set the reference would bend the anchor toward
+    # the thing being measured.
+    a, b = best
+    for _ in range(2):
+        model = a * cos_az + b * sin_az
+        fold = np.rint((model - values) / interval)
+        residual = values + interval * fold - model
+        inlier = np.abs(residual) <= params.reference_trim_ms
+        if int(inlier.sum()) < params.reference_min_samples:
+            return None
+        try:
+            solution, *_ = np.linalg.lstsq(design[inlier], (values + interval * fold)[inlier],
+                                           rcond=None)
+        except np.linalg.LinAlgError:           # pragma: no cover - degenerate
+            return None
+        a, b = float(solution[0]), float(solution[1])
+
+    model = a * cos_az + b * sin_az
+    fold = np.rint((model - values) / interval)
+    residual = values + interval * fold - model
+    inlier = np.abs(residual) <= params.reference_trim_ms
+    inliers = int(inlier.sum())
+    if inliers < params.reference_min_samples:
+        return None
+    if inliers < params.reference_min_inlier_fraction * values.size:
+        return None
+    sector = sector[inlier]
+    if np.unique(sector).size < params.reference_min_sectors:
+        return None
+    rms = float(np.sqrt(np.mean(residual[inlier] ** 2)))
+    if not np.isfinite(rms) or rms > params.reference_max_residual_ms:
+        return None
+    # A residual says the harmonic explains its own fold assignment; only
+    # this says the harmonic is a wind.  A fit that has locked onto the wrong
+    # branch is internally tidy and physically absurd, and it is the absurdity
+    # that gives it away.
+    if np.hypot(a, b) > params.reference_max_speed_ms:
+        return None
+    return a, b, rms, inliers
+
+
+def vad_reference(velocity: np.ndarray, azimuth_deg: np.ndarray,
+                  nyquist: float, params: DealiasParams,
+                  *, prior: np.ndarray | None = None) -> tuple[np.ndarray, dict]:
+    """A fold-aware VAD reference field for one sweep.
+
+    Returns ``(reference, stats)`` where ``reference`` is ``(radial, gate)``
+    with NaN in every band that did not qualify.  ``prior``, when given, is a
+    ``(radial, gate)`` reference from somewhere the volume did not come from
+    -- a model background -- and is used only to seed the fit, never to
+    override it: a seed changes which minimum the alternation finds, and the
+    wrapped cost still decides.
+    """
+
+    velocity = np.asarray(velocity, dtype=np.float64)
+    rows, gates = velocity.shape
+    azimuth = np.radians(np.asarray(azimuth_deg, dtype=np.float64).ravel())
+    sin_az = np.sin(azimuth)[:, None]
+    cos_az = np.cos(azimuth)[:, None]
+    reference = np.full(velocity.shape, np.nan, dtype=np.float64)
+
+    band_gates = int(params.reference_band_gates)
+    bands = max(1, -(-gates // band_gates))
+    residuals = []
+    carried = (0.0, 0.0)
+    fitted: list = [None] * bands
+    for band in range(bands):
+        start = band * band_gates
+        stop = min(start + band_gates, gates)
+        block = velocity[:, start:stop]
+        finite = np.isfinite(block)
+        if not finite.any():
+            continue
+        values = block[finite]
+        sin_block = np.broadcast_to(sin_az, block.shape)[finite]
+        cos_block = np.broadcast_to(cos_az, block.shape)[finite]
+
+        seeds = [carried, (0.0, 0.0)]
+        seeds.extend(_coarse_seeds(values, sin_block, cos_block, nyquist))
+        # A plain fit on the small-|v| samples: contaminated by folds, but a
+        # cheap and usually majority-correct starting point.
+        near = np.abs(values) <= 0.5 * nyquist
+        if int(near.sum()) >= 8:
+            design = np.stack([cos_block[near], sin_block[near]], axis=1)
+            try:
+                solution, *_ = np.linalg.lstsq(design, values[near], rcond=None)
+                seeds.append((float(solution[0]), float(solution[1])))
+            except np.linalg.LinAlgError:       # pragma: no cover - degenerate
+                pass
+        if prior is not None:
+            block_prior = np.asarray(prior, dtype=np.float64)[:, start:stop]
+            good = finite & np.isfinite(block_prior)
+            if int(good.sum()) >= 8:
+                design = np.stack([np.broadcast_to(cos_az, block.shape)[good],
+                                   np.broadcast_to(sin_az, block.shape)[good]],
+                                  axis=1)
+                try:
+                    solution, *_ = np.linalg.lstsq(design, block_prior[good],
+                                                   rcond=None)
+                    seeds.append((float(solution[0]), float(solution[1])))
+                except np.linalg.LinAlgError:   # pragma: no cover - degenerate
+                    pass
+
+        fit = _fit_band(values, sin_block, cos_block, nyquist, params, seeds)
+        if fit is None:
+            continue
+        a, b, rms, _inliers = fit
+        carried = (a, b)
+        fitted[band] = (a, b, rms)
+
+    # Band-to-band continuity.  The environmental wind is continuous in
+    # height, so a band that disagrees with the bands either side of it by
+    # more than a real shear could is the odd one out.  This is what catches
+    # an isolated wrong fit: a wrong branch has no reason to agree with its
+    # neighbours, and a right one always does.  Comparisons are against the
+    # ORIGINAL fits rather than against a running result, so the outcome does
+    # not depend on the order bands are visited in.
+    window = int(params.reference_band_window)
+    step = float(params.reference_max_band_step_ms)
+    kept = list(fitted)
+    for band in range(bands):
+        if fitted[band] is None:
+            continue
+        low = max(0, band - window)
+        high = min(bands, band + window + 1)
+        neighbours = [fitted[other] for other in range(low, high)
+                      if other != band and fitted[other] is not None]
+        if not neighbours:
+            # Nothing to corroborate it.  A lone band is believed only if it
+            # is unremarkable on its own terms; the speed bound already
+            # applied, so this is not a free pass.
+            continue
+        median_a = float(np.median([entry[0] for entry in neighbours]))
+        median_b = float(np.median([entry[1] for entry in neighbours]))
+        if np.hypot(fitted[band][0] - median_a,
+                    fitted[band][1] - median_b) > step:
+            kept[band] = None
+
+    # Reconcile against the volume-wide profile, when one was supplied.  A
+    # single range band sees one height once; the volume sees most heights
+    # several times over, from different elevations at different ranges.
+    # Where the two disagree past a real shear the volume wins, and the band
+    # is replaced rather than dropped -- replacing keeps the anchor, and
+    # dropping it would cost the gates this capability exists to recover.
+    replaced = 0
+    if prior is not None:
+        prior_plane = np.asarray(prior, dtype=np.float64)
+        design_full = np.stack([cos_az.ravel(), sin_az.ravel()], axis=1)
+        for band in range(bands):
+            start = band * band_gates
+            stop = min(start + band_gates, gates)
+            column = prior_plane[:, start:stop]
+            usable = np.isfinite(column).all(axis=1)
+            if int(usable.sum()) < 8:
+                continue
+            try:
+                solution, *_ = np.linalg.lstsq(
+                    design_full[usable], column[usable].mean(axis=1),
+                    rcond=None)
+            except np.linalg.LinAlgError:        # pragma: no cover
+                continue
+            profile_fit = (float(solution[0]), float(solution[1]))
+            entry = kept[band]
+            if entry is None:
+                kept[band] = (profile_fit[0], profile_fit[1], float("nan"))
+                continue
+            if np.hypot(entry[0] - profile_fit[0],
+                        entry[1] - profile_fit[1]) >                     params.reference_max_profile_departure_ms:
+                kept[band] = (profile_fit[0], profile_fit[1], float("nan"))
+                replaced += 1
+
+    valid_bands = 0
+    for band, entry in enumerate(kept):
+        if entry is None:
+            continue
+        a, b, rms = entry
+        valid_bands += 1
+        if np.isfinite(rms):
+            residuals.append(rms)
+        start = band * band_gates
+        stop = min(start + band_gates, gates)
+        reference[:, start:stop] = a * cos_az + b * sin_az
+
+    stats = {
+        "bands": int(bands),
+        "bands_fitted": int(sum(entry is not None for entry in fitted)),
+        "bands_valid": int(valid_bands),
+        "bands_from_profile": int(replaced),
+        "band_fits": [(band, entry[0], entry[1], entry[2])
+                      for band, entry in enumerate(kept) if entry is not None],
+        "band_residual_rms_ms": (round(float(np.mean(residuals)), 4)
+                                 if residuals else None),
+    }
+    return reference, stats
+
+
+def volume_wind_profile(cuts, params: DealiasParams) -> "WindProfile | None":
+    """One ``u(z), v(z)`` for a whole volume, from its own folded velocities.
+
+    A volume reaches most heights more than once -- 4 km sits at 60 km range
+    on a 4-degree cut and at 200 km on a 1-degree one -- and those samples
+    are independent measurements of the same wind.  A single range band has
+    no such redundancy, which is why an isolated band fit can lock onto a
+    branch no other sweep sees and then anchor thousands of gates to it.
+    This pools every band fit in the volume onto a height grid and takes the
+    median, so one wrong band is outvoted by the sweeps that crossed the same
+    layer.
+
+    ``cuts`` is an iterable of ``(elevation_deg, velocity, azimuth_deg,
+    nyquist, slant_range_m)``.  Returns None when the volume cannot support a
+    profile at all, in which case the caller falls back to per-sweep fits and
+    the extra check simply does not happen -- an absent profile must never
+    become an invented one.
+    """
+
+    layers: dict[int, list] = {}
+    layer_m = float(params.profile_layer_m)
+    for elevation_deg, velocity, azimuth_deg, nyquist, ranges in cuts:
+        if nyquist is None or not np.isfinite(nyquist) or nyquist <= 0.0:
+            continue
+        velocity = np.asarray(velocity, dtype=np.float64)
+        if velocity.ndim != 2 or not np.isfinite(velocity).any():
+            continue
+        _plane, stats = vad_reference(velocity, azimuth_deg, float(nyquist),
+                                      params)
+        fits = stats.get("band_fits") or ()
+        elevation = np.radians(float(elevation_deg))
+        cos_elevation = np.cos(elevation)
+        if cos_elevation <= 0.0:                 # pragma: no cover - vertical
+            continue
+        ranges = np.asarray(ranges, dtype=np.float64)
+        for band, a, b, _rms in fits:
+            centre = band * int(params.reference_band_gates)                 + int(params.reference_band_gates) // 2
+            if centre >= ranges.size:
+                continue
+            height = _beam_height_m(float(ranges[centre]), elevation)
+            # v(az) = a cos(az) + b sin(az) and Vr = (u sin + v cos) cos(el),
+            # so a is the northward and b the eastward component, both
+            # projected onto the beam.
+            layers.setdefault(int(height // layer_m), []).append(
+                (a / cos_elevation, b / cos_elevation, float(elevation_deg)))
+
+    heights, us, vs = [], [], []
+    for layer in sorted(layers):
+        samples = layers[layer]
+        if len(samples) < int(params.profile_min_samples):
+            continue
+        if len({sample[2] for sample in samples})                 < int(params.profile_min_elevations):
+            continue
+        heights.append((layer + 0.5) * layer_m)
+        us.append(float(np.median([sample[1] for sample in samples])))
+        vs.append(float(np.median([sample[0] for sample in samples])))
+
+    # Continuity in height, for the same reason the bands get it: a layer
+    # that disagrees with the layers above and below it by more than a real
+    # shear is the odd one out.  The upper layers are where this bites,
+    # because they are reached by the fewest cuts.
+    window = int(params.profile_layer_window)
+    step = float(params.profile_max_layer_step_ms)
+    keep = [True] * len(heights)
+    for index in range(len(heights)):
+        low = max(0, index - window)
+        high = min(len(heights), index + window + 1)
+        others = [other for other in range(low, high) if other != index]
+        if not others:
+            continue
+        if np.hypot(us[index] - float(np.median([us[o] for o in others])),
+                    vs[index] - float(np.median([vs[o] for o in others])))                 > step:
+            keep[index] = False
+    heights = [h for h, ok in zip(heights, keep) if ok]
+    us = [u for u, ok in zip(us, keep) if ok]
+    vs = [v for v, ok in zip(vs, keep) if ok]
+    if len(heights) < 2:
+        return None
+    return WindProfile(height_m=np.asarray(heights, dtype=np.float64),
+                       u_ms=np.asarray(us, dtype=np.float64),
+                       v_ms=np.asarray(vs, dtype=np.float64))
+
+
+def _beam_height_m(slant_range_m: float, elevation_rad: float,
+                   effective_radius_m: float = 1.21 * 6371000.0) -> float:
+    """Beam centre height above the antenna, four-thirds earth."""
+
+    return float(np.sqrt(slant_range_m ** 2 + effective_radius_m ** 2
+                         + 2.0 * slant_range_m * effective_radius_m
+                         * np.sin(elevation_rad)) - effective_radius_m)
+
+
+def _adjacent_pairs(shape: tuple[int, int], wraps: bool):
+    """Flat index pairs of every range- and azimuth-adjacent gate pair."""
+
+    rows, gates = shape
+    index = np.arange(rows * gates, dtype=np.int64).reshape(rows, gates)
+    pairs = []
+    if gates > 1:
+        pairs.append((index[:, :-1].ravel(), index[:, 1:].ravel()))
+    if rows > 1:
+        pairs.append((index[:-1, :].ravel(), index[1:, :].ravel()))
+    if wraps and rows > 2:
+        pairs.append((index[-1, :].ravel(), index[0, :].ravel()))
+    if not pairs:
+        return (np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64))
+    return (np.concatenate([left for left, _ in pairs]),
+            np.concatenate([right for _, right in pairs]))
+
+
+def _edge_table(label_a, label_b, jump_folds, params):
+    """Per region pair: winning fold, its support, total pairs, mean jump.
+
+    Votes are aggregated the way BowEcho's ``region_core`` aggregates them --
+    ``f = round((v_lo - v_hi) / (2 * Vn))`` with the pair ordered so ``lo``
+    is the lower region id -- and ties break the same way, on the smaller
+    ``|f|`` then the smaller ``f``, so the resolution order does not depend
+    on hash iteration order.
+    """
+
+    lo = np.minimum(label_a, label_b)
+    hi = np.maximum(label_a, label_b)
+    # Orient the jump so it always measures "hi relative to lo".
+    signed = np.where(label_a <= label_b, jump_folds, -jump_folds)
+    fold = np.rint(signed).astype(np.int64)
+    keep = np.abs(fold) <= 2 * int(params.max_fold)
+    lo, hi, signed, fold = lo[keep], hi[keep], signed[keep], fold[keep]
+    if lo.size == 0:
+        return {}
+
+    pair_key = np.stack([lo, hi], axis=1)
+    unique_pairs, pair_index = np.unique(pair_key, axis=0, return_inverse=True)
+    pair_index = pair_index.ravel()
+    n_pairs = unique_pairs.shape[0]
+    total = np.bincount(pair_index, minlength=n_pairs)
+
+    span = 4 * int(params.max_fold) + 1
+    slot = pair_index * span + (fold + 2 * int(params.max_fold))
+    counts = np.bincount(slot, minlength=n_pairs * span).reshape(n_pairs, span)
+    jump_sum = np.bincount(slot, weights=signed,
+                           minlength=n_pairs * span).reshape(n_pairs, span)
+
+    folds = np.arange(span, dtype=np.int64) - 2 * int(params.max_fold)
+    # argmax over (count, -|fold|, -fold): lexsort with the last key dominant.
+    order = np.lexsort((-folds[None, :].repeat(n_pairs, axis=0),
+                        -np.abs(folds)[None, :].repeat(n_pairs, axis=0),
+                        counts), axis=1)[:, -1]
+    rows = np.arange(n_pairs)
+    winning_fold = folds[order]
+    winning_votes = counts[rows, order]
+    winning_jump = jump_sum[rows, order]
+
+    table = {}
+    for row in range(n_pairs):
+        votes = int(winning_votes[row])
+        if votes == 0:                          # pragma: no cover - guarded
+            continue
+        mean_jump = float(winning_jump[row]) / votes
+        table[(int(unique_pairs[row, 0]), int(unique_pairs[row, 1]))] = {
+            "fold": int(winning_fold[row]),
+            "votes": votes,
+            "total": int(total[row]),
+            "mean_jump": mean_jump,
+        }
+    return table
+
+
+def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
+                  nyquist: float | None, params: DealiasParams,
+                  *, reference: np.ndarray | None = None,
+                  wraps: bool | None = None) -> SweepDealiasResult:
+    """Unfold one sweep, rejecting every gate the evidence cannot resolve.
+
+    ``velocity`` is ``(radial, gate)`` raw radial velocity with NaN for no
+    data; ``nyquist`` is the sweep's Nyquist velocity, or None when the sweep
+    reports none -- in which case nothing here is knowable and every finite
+    gate is rejected with :data:`REASON_NO_NYQUIST`, which is the same
+    refusal :mod:`gpuwm.obs.superob` already makes.
+
+    ``reference`` is an optional externally supplied ``(radial, gate)``
+    environmental field -- e.g. :meth:`WindProfile.radial_reference` on the
+    model background.  When given it seeds the fit and then *supplements* the
+    VAD: bands the VAD could not fit fall back to it, so a sweep too
+    storm-filled to fit a wind profile still has something to anchor
+    against.
+    """
+
+    velocity = np.asarray(velocity, dtype=np.float64)
+    if velocity.ndim != 2:
+        raise ValueError(
+            f"dealias_sweep needs a (radial, gate) plane, got shape "
+            f"{velocity.shape}")
+    params = params.validate()
+    state = np.zeros(velocity.shape, dtype=np.int8)
+    reason = np.full(velocity.shape, REASON_NONFINITE, dtype=np.int8)
+    fold_plane = np.zeros(velocity.shape, dtype=np.int16)
+    output = np.full(velocity.shape, np.nan, dtype=np.float64)
+    finite = np.isfinite(velocity)
+    reference_plane = np.full(velocity.shape, np.nan, dtype=np.float64)
+
+    stats = {
+        "gates_finite": int(finite.sum()),
+        "gates_unchanged": 0,
+        "gates_unfolded": 0,
+        "gates_rejected": 0,
+        "rejected": {name: 0 for name in REASON_NAMES.values()
+                     if name not in ("none", "nonfinite", "disabled")},
+        "regions": 0,
+        "regions_anchored": 0,
+        "regions_linked": 0,
+        "regions_unresolved": 0,
+        "regions_conflict": 0,
+        "edges": 0,
+        "edges_confident": 0,
+        "edges_violated": 0,
+        "fold_histogram": {},
+        "reference": {},
+        "nyquist_ms": None if nyquist is None else float(nyquist),
+    }
+
+    if nyquist is None or not np.isfinite(nyquist) or nyquist <= 0.0:
+        reason[finite] = REASON_NO_NYQUIST
+        stats["gates_rejected"] = int(finite.sum())
+        stats["rejected"]["no_nyquist"] = int(finite.sum())
+        return SweepDealiasResult(output, state, reason, fold_plane,
+                                  reference_plane, stats)
+    if not finite.any():
+        return SweepDealiasResult(output, state, reason, fold_plane,
+                                  reference_plane, stats)
+
+    nyquist = float(nyquist)
+    interval = 2.0 * nyquist
+    rows, gates = velocity.shape
+    if wraps is None:
+        wraps = _sweep_wraps(azimuth_deg)
+
+    # ---- reference -------------------------------------------------------
+    vad, vad_stats = vad_reference(velocity, azimuth_deg, nyquist, params,
+                                   prior=reference)
+    if reference is not None:
+        external = np.asarray(reference, dtype=np.float64)
+        if external.shape != velocity.shape:
+            raise ValueError(
+                f"reference has shape {external.shape}, the sweep is "
+                f"{velocity.shape}")
+        vad = np.where(np.isfinite(vad), vad, external)
+        vad_stats["external_supplied"] = True
+    else:
+        vad_stats["external_supplied"] = False
+    reference_plane = vad
+    has_reference = np.isfinite(vad)
+    stats["reference"] = vad_stats
+
+    # ---- 1. segment ------------------------------------------------------
+    from scipy.sparse import coo_matrix                    # noqa: PLC0415
+    from scipy.sparse.csgraph import connected_components  # noqa: PLC0415
+
+    left, right = _adjacent_pairs(velocity.shape, wraps)
+    flat = velocity.ravel()
+    flat_finite = finite.ravel()
+    comparable = flat_finite[left] & flat_finite[right]
+    delta = np.abs(flat[left] - flat[right])
+    joined = comparable & (delta <= params.region_join_fraction * nyquist)
+
+    nodes = rows * gates
+    adjacency = coo_matrix(
+        (np.ones(int(joined.sum()), dtype=np.int8),
+         (left[joined], right[joined])), shape=(nodes, nodes))
+    _n_components, raw_labels = connected_components(
+        adjacency, directed=False, return_labels=True)
+    raw_labels = np.where(flat_finite, raw_labels, -1)
+    present, labels = np.unique(raw_labels[flat_finite], return_inverse=True)
+    label_flat = np.full(nodes, -1, dtype=np.int64)
+    label_flat[flat_finite] = labels
+    n_regions = int(present.size)
+    region_size = np.bincount(labels, minlength=n_regions)
+    stats["regions"] = n_regions
+
+    # ---- 2. vote ---------------------------------------------------------
+    boundary = comparable & ~joined
+    label_a = label_flat[left[boundary]]
+    label_b = label_flat[right[boundary]]
+    different = label_a != label_b
+    jump = (flat[left[boundary]] - flat[right[boundary]]) / interval
+    edges = _edge_table(label_a[different], label_b[different],
+                        jump[different], params)
+    stats["edges"] = len(edges)
+
+    confident = {}
+    for key, entry in edges.items():
+        if entry["total"] < params.edge_min_pairs:
+            continue
+        if entry["votes"] < params.edge_agreement * entry["total"]:
+            continue
+        if abs(entry["mean_jump"] - entry["fold"]) > params.edge_max_offset:
+            continue
+        confident[key] = entry
+    stats["edges_confident"] = len(confident)
+
+    neighbours: dict[int, list] = {}
+    for (lo, hi), entry in confident.items():
+        neighbours.setdefault(lo, []).append((hi, entry))
+        neighbours.setdefault(hi, []).append((lo, entry))
+
+    # ---- 3. anchor -------------------------------------------------------
+    # A region may anchor only when it has enough gates with a reference,
+    # its fold estimate is unambiguous, and -- the load-bearing one -- it
+    # still looks environmental after unfolding.  The last is what stops a
+    # rotational couplet, whose whole nature is to depart from the
+    # background wind, from being flattened onto it.
+    anchor_fold: dict[int, int] = {}
+    order_flat = np.argsort(labels, kind="stable")
+    sorted_labels = labels[order_flat]
+    starts = np.searchsorted(sorted_labels, np.arange(n_regions), "left")
+    stops = np.searchsorted(sorted_labels, np.arange(n_regions), "right")
+    finite_index = np.flatnonzero(flat_finite)
+    vad_flat = vad.ravel()
+    ref_ok_flat = has_reference.ravel()
+
+    region_gates = []
+    for region in range(n_regions):
+        region_gates.append(finite_index[order_flat[starts[region]:stops[region]]])
+
+    for region in range(n_regions):
+        members = region_gates[region]
+        with_reference = members[ref_ok_flat[members]]
+        if with_reference.size < params.anchor_min_gates:
+            continue
+        ratio = (vad_flat[with_reference] - flat[with_reference]) / interval
+        estimate = float(np.median(ratio))
+        candidate = int(np.rint(estimate))
+        if abs(estimate - candidate) > params.anchor_max_offset:
+            continue
+        if abs(candidate) > params.max_fold:
+            continue
+        residual = np.abs(flat[with_reference] + interval * candidate
+                          - vad_flat[with_reference])
+        if float(np.median(residual)) > params.anchor_max_residual_ms:
+            continue
+        anchor_fold[region] = candidate
+    stats["regions_anchored"] = len(anchor_fold)
+
+    # ---- 4. grow ---------------------------------------------------------
+    import heapq                                           # noqa: PLC0415
+
+    resolved: dict[int, int] = {}
+    linked = 0
+    anchor_order = sorted(anchor_fold, key=lambda r: (-int(region_size[r]), r))
+    heap: list = []
+    counter = 0
+
+    def push(region: int) -> None:
+        nonlocal counter
+        for other, entry in neighbours.get(region, ()):
+            if other in resolved:
+                continue
+            counter += 1
+            heapq.heappush(heap, (-entry["total"], other, counter, region,
+                                  entry))
+
+    for seed in anchor_order:
+        if seed in resolved:
+            continue
+        resolved[seed] = anchor_fold[seed]
+        push(seed)
+        while heap:
+            _priority, target, _tie, source, entry = heapq.heappop(heap)
+            if target in resolved:
+                continue
+            lo, hi = min(source, target), max(source, target)
+            # entry["fold"] is k[hi] - k[lo].
+            if target == hi:
+                resolved[target] = resolved[source] + entry["fold"]
+            else:
+                resolved[target] = resolved[source] - entry["fold"]
+            linked += 1
+            push(target)
+    stats["regions_linked"] = linked
+    stats["regions_unresolved"] = n_regions - len(resolved)
+
+    # ---- 5. verify -------------------------------------------------------
+    conflicted: set[int] = set()
+    violated = 0
+    for (lo, hi), entry in confident.items():
+        if lo not in resolved or hi not in resolved:
+            continue
+        if resolved[hi] - resolved[lo] != entry["fold"]:
+            violated += 1
+            conflicted.add(lo)
+            conflicted.add(hi)
+    stats["edges_violated"] = violated
+    stats["regions_conflict"] = len(conflicted)
+
+    # ---- assign ----------------------------------------------------------
+    region_fold = np.zeros(n_regions, dtype=np.int64)
+    region_state = np.zeros(n_regions, dtype=np.int8)
+    region_reason = np.full(n_regions, REASON_UNRESOLVED, dtype=np.int8)
+    for region, value in resolved.items():
+        if region in conflicted:
+            region_reason[region] = REASON_CONFLICT
+            continue
+        if abs(value) > params.max_fold:
+            region_reason[region] = REASON_FOLD_RANGE
+            continue
+        region_fold[region] = value
+        region_state[region] = STATE_UNFOLDED if value else STATE_UNCHANGED
+        region_reason[region] = REASON_NONE
+
+    gate_fold = region_fold[labels]
+    gate_state = region_state[labels]
+    gate_reason = region_reason[labels]
+    unfolded = flat[flat_finite] + interval * gate_fold
+    beyond = np.abs(unfolded) > params.max_speed_ms
+    gate_state[beyond] = STATE_REJECTED
+    gate_reason[beyond] = REASON_SPEED
+    # The bound that actually holds the line.  A fold error displaces a gate
+    # by a whole Nyquist interval; the physical departures this must not
+    # touch are smaller.  Only applied where a reference exists to depart
+    # from -- absence of evidence is not evidence of a fold.
+    reference_here = vad_flat[flat_finite]
+    departed = (np.isfinite(reference_here)
+                & (np.abs(unfolded - reference_here)
+                   > params.max_reference_departure_ms)
+                & (gate_state != STATE_REJECTED))
+    gate_state[departed] = STATE_REJECTED
+    gate_reason[departed] = REASON_REFERENCE_DEPARTURE
+    unfolded = np.where(gate_state == STATE_REJECTED, np.nan, unfolded)
+
+    output_flat = output.ravel()
+    state_flat = state.ravel()
+    reason_flat = reason.ravel()
+    fold_flat = fold_plane.ravel()
+    output_flat[flat_finite] = unfolded
+    state_flat[flat_finite] = gate_state
+    reason_flat[flat_finite] = gate_reason
+    fold_flat[flat_finite] = np.where(gate_state == STATE_REJECTED, 0,
+                                      gate_fold)
+
+    stats["gates_unchanged"] = int((gate_state == STATE_UNCHANGED).sum())
+    stats["gates_unfolded"] = int((gate_state == STATE_UNFOLDED).sum())
+    stats["gates_rejected"] = int((gate_state == STATE_REJECTED).sum())
+    for code, name in REASON_NAMES.items():
+        if name in stats["rejected"]:
+            stats["rejected"][name] = int(
+                ((gate_state == STATE_REJECTED) & (gate_reason == code)).sum())
+    applied = gate_fold[gate_state != STATE_REJECTED]
+    if applied.size:
+        values, counts = np.unique(applied, return_counts=True)
+        stats["fold_histogram"] = {int(v): int(c)
+                                   for v, c in zip(values, counts)}
+    return SweepDealiasResult(output, state, reason, fold_plane,
+                              reference_plane, stats)

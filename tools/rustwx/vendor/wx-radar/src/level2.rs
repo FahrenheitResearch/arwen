@@ -179,6 +179,41 @@ pub struct RadialData {
     pub moments: Vec<MomentData>,
 }
 
+/// Why a gate in [`MomentData::data`] is not a number.
+///
+/// Message-31 reserves the two smallest data words of every moment for
+/// meanings that are not measurements, and they are **opposites**:
+///
+/// * raw `0` -- *below threshold*.  The radar illuminated this gate and the
+///   return did not clear the significant-return threshold.  That is a
+///   detection of nothing, which is a real observation of clear air.
+/// * raw `1` -- *range folded*.  The gate's return is ambiguous between
+///   trips, so the RDA cannot say where it came from.  It may well be a
+///   storm, and it is never evidence of anything.
+///
+/// `data` maps both to `f32::NAN`, because that is the value every existing
+/// consumer of this crate was written against and changing it would move
+/// numbers under products that are already published.  The distinction is
+/// carried beside it in [`MomentData::censor`] instead, so a consumer that
+/// needs it can have it and one that does not is untouched.
+///
+/// The codes are `u8` and deliberately not an `enum`: they are transcribed
+/// verbatim into a `|u1` plane in the observation pack, and a numeric
+/// contract that crosses a file boundary should be stated as numbers.
+pub mod censor {
+    /// `data` holds a decoded measurement.
+    pub const MEASURED: u8 = 0;
+    /// Raw `0`: the radar looked and detected nothing.  Clear air.
+    pub const BELOW_THRESHOLD: u8 = 1;
+    /// Raw `1`: second-trip ambiguity.  Never usable as clear air.
+    pub const RANGE_FOLDED: u8 = 2;
+    /// Not produced by this decoder.  Reserved for a consumer that widens a
+    /// moment into a rectangle the radar never filled -- a radial that
+    /// carried no such moment at all -- so that "not collected" stays
+    /// distinct from "collected, and empty".
+    pub const NOT_COLLECTED: u8 = 3;
+}
+
 #[derive(Debug, Clone)]
 pub struct MomentData {
     pub product: RadarProduct,
@@ -186,6 +221,10 @@ pub struct MomentData {
     pub first_gate_range: u16,
     pub gate_size: u16,
     pub data: Vec<f32>,
+    /// One [`censor`] code per gate, parallel to `data` and always the same
+    /// length.  Every `NAN` in `data` has a reason here; every number in
+    /// `data` is [`censor::MEASURED`].
+    pub censor: Vec<u8>,
 }
 
 struct VolumeHeader {
@@ -1126,18 +1165,24 @@ impl Level2File {
         let product = RadarProduct::from_name(&name);
 
         let mut decoded = Vec::with_capacity(gate_count as usize);
+        let mut censored = Vec::with_capacity(gate_count as usize);
         for _ in 0..gate_count {
             let raw = if data_word_size >= 16 {
                 cursor.read_u16::<BigEndian>().map_err(|e| e.to_string())? as u32
             } else {
                 cursor.read_u8().map_err(|e| e.to_string())? as u32
             };
-            let value = if raw <= 1 {
-                f32::NAN
-            } else {
-                (raw as f32 - offset_val) / scale
+            // `value` is bit-for-bit what this decoder has always produced:
+            // raw 0 and raw 1 are both NAN, everything else is the same
+            // affine decode.  The arm that used to be `if raw <= 1` is split
+            // only so the *reason* can be recorded beside it; see `censor`.
+            let (value, code) = match raw {
+                0 => (f32::NAN, censor::BELOW_THRESHOLD),
+                1 => (f32::NAN, censor::RANGE_FOLDED),
+                _ => ((raw as f32 - offset_val) / scale, censor::MEASURED),
             };
             decoded.push(value);
+            censored.push(code);
         }
 
         Ok(MomentData {
@@ -1146,6 +1191,7 @@ impl Level2File {
             first_gate_range,
             gate_size,
             data: decoded,
+            censor: censored,
         })
     }
 
@@ -1362,6 +1408,15 @@ mod tests {
         assert_eq!(block.len(), MOMENT_HEADER_SIZE);
         // raw 2..  ->  (raw - 66) / 2 dBZ
         block.extend((0..gates).map(|g| (100 + g) as u8));
+        block
+    }
+
+    /// `ref_moment` with the gate words written out by hand, so a test can
+    /// place raw 0 and raw 1 exactly where it wants them.
+    fn ref_moment_raw(words: &[u8]) -> Vec<u8> {
+        let mut block = ref_moment(words.len() as u16);
+        block.truncate(MOMENT_HEADER_SIZE);
+        block.extend_from_slice(words);
         block
     }
 
@@ -1981,6 +2036,85 @@ mod tests {
             raw.extend_from_slice(message);
         }
         raw
+    }
+
+    #[test]
+    fn the_two_censored_gate_codes_stay_nan_and_stay_told_apart() {
+        // Raw 0 is "below threshold" -- the radar looked and detected
+        // nothing.  Raw 1 is "range folded" -- second-trip ambiguity that
+        // may be a storm.  Both were, and remain, NAN in `data`; the whole
+        // point of `censor` is that they are no longer the same NAN.
+        let mut builder = RadialBuilder::conforming();
+        builder.blocks = vec![
+            REAL_VOL_V2.to_vec(),
+            elv_block(),
+            rad_block(830),
+            ref_moment_raw(&[0, 1, 100, 101, 1, 0]),
+        ];
+        let raw = archive2_volume(&[builder.build()]);
+        let file = Level2File::parse_strict(&raw).unwrap();
+        let moment = &file.sweeps[0].radials[0].moments[0];
+
+        // The values this decoder has always produced, unchanged.
+        assert!(moment.data[0].is_nan());
+        assert!(moment.data[1].is_nan());
+        assert_eq!(moment.data[2], 17.0);
+        assert_eq!(moment.data[3], 17.5);
+        assert!(moment.data[4].is_nan());
+        assert!(moment.data[5].is_nan());
+
+        // The reason each of them is not a number.
+        assert_eq!(
+            moment.censor,
+            vec![
+                censor::BELOW_THRESHOLD,
+                censor::RANGE_FOLDED,
+                censor::MEASURED,
+                censor::MEASURED,
+                censor::RANGE_FOLDED,
+                censor::BELOW_THRESHOLD,
+            ]
+        );
+
+        // The two planes describe the same gates, and they agree about
+        // which of them are numbers.
+        assert_eq!(moment.censor.len(), moment.data.len());
+        assert_eq!(moment.censor.len(), moment.gate_count as usize);
+        for (value, code) in moment.data.iter().zip(&moment.censor) {
+            assert_eq!(value.is_nan(), *code != censor::MEASURED);
+        }
+
+        // NOT_COLLECTED is never minted here: this decoder only ever sees
+        // gates a radial actually carried.  A consumer that widens a moment
+        // into a rectangle owns that code, and the pack builder is the one
+        // that does.
+        assert!(!moment.censor.contains(&censor::NOT_COLLECTED));
+    }
+
+    #[test]
+    fn a_16_bit_moment_censors_the_same_two_words_and_no_others() {
+        // The 16-bit word path is a separate read in the decode loop, and
+        // the sentinels are the same two *values*, not the same two bytes.
+        // Raw 2 is a measurement in both widths and must not be censored.
+        let mut header = ref_moment(3);
+        header.truncate(MOMENT_HEADER_SIZE);
+        header[18..20].copy_from_slice(&16u16.to_be_bytes()); // data word size
+        header[8..10].copy_from_slice(&3u16.to_be_bytes()); // gate count
+        for word in [0u16, 1, 2] {
+            header.extend_from_slice(&word.to_be_bytes());
+        }
+        let mut builder = RadialBuilder::conforming();
+        builder.blocks =
+            vec![REAL_VOL_V2.to_vec(), elv_block(), rad_block(830), header];
+        let raw = archive2_volume(&[builder.build()]);
+        let file = Level2File::parse_strict(&raw).unwrap();
+        let moment = &file.sweeps[0].radials[0].moments[0];
+        assert_eq!(
+            moment.censor,
+            vec![censor::BELOW_THRESHOLD, censor::RANGE_FOLDED, censor::MEASURED]
+        );
+        // (2 - 66) / 2
+        assert_eq!(moment.data[2], -32.0);
     }
 
     #[test]

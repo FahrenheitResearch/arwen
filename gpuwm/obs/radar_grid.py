@@ -42,8 +42,14 @@ everywhere else.  There is no "maybe".  ``vr_rejected`` counts the gates
 that were dropped for aliasing risk, so a zero mask over a storm reads as
 "masked, and here is how many" rather than "no data".
 
-**No dealiasing in v1.**  See :mod:`gpuwm.obs.superob` for the three
-fail-closed rules that implement that decision.
+**Dealiasing is off unless asked for.**  With ``SuperobParams.dealias``
+unset -- the default -- see :mod:`gpuwm.obs.superob` for the fail-closed
+rules that mask aliasing rather than correct it, and this file is written
+exactly as it always has been.  With it set, :mod:`gpuwm.obs.dealias` has
+unfolded the velocities and ``provenance.dealias`` carries the three-state
+account of every gate it resolved, left alone, or refused.  The
+``dealiasing`` attribute states which of the two this file is, and is the
+first thing a consumer should read.
 """
 
 from __future__ import annotations
@@ -56,7 +62,9 @@ import uuid
 
 import numpy as np
 
-from gpuwm.obs.superob import GriddedObservations, SuperobParams
+from gpuwm.obs.superob import (CLEAR_AIR_SOURCE, CLEAR_AIR_SOURCE_CENSOR,
+                              CLEAR_AIR_SOURCES, GriddedObservations,
+                              SuperobParams)
 from gpuwm.obs.target_grid import GridMismatchError, TargetGrid
 
 #: The contract string. Consumers pin this exact value.
@@ -124,6 +132,39 @@ CANONICAL_VARIABLES: dict[str, tuple[tuple[str, ...], str, str | None]] = {
     "radar_valid_time": (("radar", "ntime"), "S1", None),
 }
 
+#: Clear-air ("zero") observations: an **optional extension**, present in
+#: files written after the capability landed and absent from every file
+#: written before it.
+#:
+#: Optional rather than canonical on purpose.  ``read_radar_grid`` refuses
+#: a file missing any :data:`CANONICAL_VARIABLES` entry, so promoting these
+#: would retroactively invalidate every observation file already on disk --
+#: including the ones the cycling receipts in ``evidence/da-cycling`` were
+#: produced from, which must stay readable for those runs to be
+#: reproducible.  When present they are checked with exactly the same
+#: dimension-tuple rigor as the canonical set.
+#:
+#: There is no ``z0_obs``.  The value a clear-air observation differences
+#: against is the forward operator's clear-air floor, which is a property
+#: of the microphysics scheme being run, not of the radar; see
+#: :class:`gpuwm.obs.superob.GriddedObservations`.
+CLEAR_AIR_VARIABLES: dict[str, tuple[tuple[str, ...], str, str | None]] = {
+    "z0_mask": (_PLANE, "int8", None),
+    "z0_count": (_PLANE, "int32", "count"),
+    "z0_err": (_PLANE, "float32", "dBZ"),
+}
+
+#: How the clear-air observations in a file were established, re-exported
+#: from :mod:`gpuwm.obs.superob` where the two regimes are defined and
+#: documented.  Written as a file attribute so a consumer can tell what it
+#: is trusting: :data:`CLEAR_AIR_SOURCE` is the measurement-only regime, and
+#: :data:`CLEAR_AIR_SOURCE_CENSOR` is the one that additionally reads the
+#: Message-31 "below threshold" code the decoder now preserves.  A consumer
+#: that does not recognise the value it finds must refuse the file rather
+#: than assume either.
+__all_clear_air__ = (CLEAR_AIR_SOURCE, CLEAR_AIR_SOURCE_CENSOR,
+                     CLEAR_AIR_SOURCES)
+
 #: Fixed-width dimensions, and the width each must have.
 FIXED_DIMENSIONS = {"nchar": ID_WIDTH, "ntime": TIME_WIDTH}
 
@@ -157,6 +198,57 @@ _DEALIASING_STATEMENT = (
     "region-global unwrapping and is not implemented here. See "
     "provenance.fold_suspicion for the per-sweep shear-scan record."
 )
+
+#: What this file's velocities have been through when dealiasing DID run.
+#:
+#: The statement above is not merely reworded here, it is *retired* for this
+#: file: its central claim -- "excluding that case requires true dealiasing,
+#: which is region-global unwrapping and is not implemented here" -- stops
+#: being true the moment the unfolder runs, and a provenance string that
+#: understates what happened is as much a lie as one that overstates it.  A
+#: consumer distinguishes the two files by this attribute and by the
+#: presence of ``provenance.dealias``; neither can be forged by a rebuild,
+#: because both are written from the same parameter object that produced the
+#: velocities.
+_DEALIASED_STATEMENT = (
+    "region-based unfolding (gpuwm.obs.dealias). Each sweep is segmented "
+    "into regions whose adjacent gates differ by less than "
+    "region_join_fraction of Nyquist, so no fold lies inside a region; "
+    "regions are anchored to an absolute fold by a fold-aware VAD (Browning "
+    "& Wexler 1968) fitted per range band and cross-checked against a wind "
+    "profile pooled from every cut in the volume, which is believed at a "
+    "height only where two or more different elevations reached it. A region "
+    "may anchor only where it still looks environmental after unfolding, so "
+    "a rotational couplet is never flattened onto the background wind. "
+    "Remaining regions resolve across their strongest confident "
+    "inter-region boundary. EVERY velocity gate ends in exactly "
+    "one of three states -- confidently unfolded, confidently unchanged, or "
+    "REJECTED with a recorded reason -- and all three are counted in "
+    "provenance.dealias, whose totals are asserted to balance against the "
+    "gates offered. Where the evidence is ambiguous the gate is rejected, "
+    "not guessed: a region that is never anchored and never linked, a region "
+    "on a contradicted boundary, a fold beyond max_fold, a speed beyond "
+    "max_speed_ms, or a departure from the reference beyond "
+    "max_reference_departure_ms. Because a resolved gate's fold state is "
+    "KNOWN, it is "
+    "bounded by max_speed_ms rather than by nyquist_reject_fraction of "
+    "Nyquist; that fraction still governs every gate on a sweep the unfolder "
+    "declined. See provenance.dealias.sweeps for the per-sweep account and "
+    "provenance.fold_suspicion for the shear scan, which now runs on the "
+    "UNFOLDED field and so measures what the unfolder missed."
+)
+
+
+def dealiasing_statement(params: SuperobParams) -> str:
+    """The ``dealiasing`` attribute these parameters entail.
+
+    A function rather than a constant because the file's honest description
+    of itself depends on what ran, and the only thing that knows what ran is
+    the parameter set the velocities were made with.
+    """
+
+    return (_DEALIASING_STATEMENT if params.dealias is None
+            else _DEALIASED_STATEMENT)
 
 
 class RadarGridSchemaError(ValueError):
@@ -228,7 +320,7 @@ def write_radar_grid(path: str | Path, observations: GriddedObservations,
                 "DX": np.float64(grid.dx_m),
                 "DY": np.float64(grid.dy_m),
                 "GRIDTYPE": "C",
-                "dealiasing": _DEALIASING_STATEMENT,
+                "dealiasing": dealiasing_statement(params),
                 "superob_params": _canonical_json(params.to_payload()),
                 "provenance": _canonical_json(
                     _provenance_payload(observations, params, provenance)),
@@ -256,6 +348,35 @@ def write_radar_grid(path: str | Path, observations: GriddedObservations,
                      "in-cell mean reflectivity, averaged in linear Z")
             _count_var(dataset, "z_count", plane, observations.z_count,
                        "contributing reflectivity gates")
+
+            # Written only when the product actually carries a clear-air
+            # assessment.  A caller that assembled observations without one
+            # gets a file with no z0 variables and no clear_air_source, and
+            # the DA side reads that as "zeroes were never established"
+            # rather than as "no clear air was found".
+            clear_air = (observations.z0_mask, observations.z0_count,
+                         observations.z0_err)
+            if all(part is not None for part in clear_air):
+                _mask_var(dataset, "z0_mask", plane, observations.z0_mask,
+                          "1 where the radar(s) measured this cell and every "
+                          "one of them found no significant echo; 0 also "
+                          "means 'never measured', which is not a clear-air "
+                          "observation")
+                _count_var(dataset, "z0_count", plane, observations.z0_count,
+                           "measured gates below the reflectivity floor "
+                           "supporting the clear-air observation")
+                _obs_var(dataset, "z0_err", plane, observations.z0_err, "dBZ",
+                         "observation error standard deviation for a "
+                         "clear-air zero")
+                source = observations.clear_air_source
+                if source not in CLEAR_AIR_SOURCES:
+                    raise RadarGridSchemaError(
+                        f"refusing to write clear_air_source {source!r}: a "
+                        "reader that does not recognise the value must "
+                        "refuse the file, so writing an unknown one "
+                        f"publishes unreadable zeroes. Known: "
+                        f"{sorted(CLEAR_AIR_SOURCES)}")
+                dataset.setncattr("clear_air_source", source)
 
             _obs_var(dataset, "vr_obs", volume, observations.vr_obs, "m s-1",
                      "superobbed radial velocity, positive away from the "
@@ -396,6 +517,11 @@ def read_radar_grid(path: str | Path, *,
             "dims": {name: len(dataset.dimensions[name])
                      for name in ("level", "south_north", "west_east",
                                   "radar")},
+            # None for a file written before the clear-air extension; the
+            # DA side reads this to decide whether a zero batch may be
+            # built at all, so its absence must be visible rather than
+            # defaulted to the value this build happens to write.
+            "clear_air_source": getattr(dataset, "clear_air_source", None),
             "superob_params": json.loads(
                 getattr(dataset, "superob_params", "{}")),
             "provenance": json.loads(getattr(dataset, "provenance", "{}")),
@@ -447,7 +573,34 @@ def _require_structure(path: Path, dataset) -> None:
         raise RadarGridSchemaError(
             f"{path.name}: missing variables {missing}")
 
-    for name, (dims, dtype, units) in CANONICAL_VARIABLES.items():
+    # Clear-air variables are optional but not individually optional: a file
+    # carrying z0_mask without z0_err is a file whose zeroes cannot be
+    # assimilated, and reading it half-way is how one of the three gets
+    # defaulted.  All three or none.
+    present = [name for name in CLEAR_AIR_VARIABLES
+               if name in dataset.variables]
+    if present and len(present) != len(CLEAR_AIR_VARIABLES):
+        raise RadarGridSchemaError(
+            f"{path.name}: carries clear-air variables {sorted(present)} but "
+            f"not {sorted(set(CLEAR_AIR_VARIABLES) - set(present))}. The "
+            "clear-air extension is all three variables or none of them; a "
+            "partial set has no error to assimilate with or no count to "
+            "justify the mask")
+    if present:
+        source = getattr(dataset, "clear_air_source", None)
+        if source not in CLEAR_AIR_SOURCES:
+            raise RadarGridSchemaError(
+                f"{path.name}: declares clear_air_source {source!r}, this "
+                f"reader understands {sorted(CLEAR_AIR_SOURCES)}. How a zero "
+                "was established decides what it means -- gates measured "
+                "below the floor and a decoder's below-threshold flag are "
+                "different observations with different coverage, and "
+                "assimilating one as the other misstates both the coverage "
+                "and the error")
+
+    checked = dict(CANONICAL_VARIABLES)
+    checked.update({name: CLEAR_AIR_VARIABLES[name] for name in present})
+    for name, (dims, dtype, units) in checked.items():
         variable = dataset.variables[name]
         if tuple(variable.dimensions) != dims:
             raise RadarGridSchemaError(
@@ -706,9 +859,16 @@ def _provenance_payload(observations: GriddedObservations,
         "volumes": list(observations.provenance),
         "counts": list(observations.counts),
         "radars": list(observations.radars),
-        "dealiasing": _DEALIASING_STATEMENT,
+        "dealiasing": dealiasing_statement(params),
         "fold_suspicion": list(observations.fold_suspicion),
     }
+    # Present only when the unfolder ran.  A file written without it carries
+    # the same provenance key set it always has -- which is what makes the
+    # masking-only path byte-identical rather than merely equivalent -- and
+    # a file written with it cannot omit the account of what was refused.
+    dealias = list(getattr(observations, "dealias", ()) or ())
+    if dealias:
+        payload["dealias"] = dealias
     if extra:
         payload["context"] = extra
     return payload

@@ -36,6 +36,9 @@ from gpuwm.physics_compat import (
 from gpuwm.hrrr_forecast import (
     HRRR_TIME_FORMAT, hrrr_source_window, resolve_cycle_flags)
 from gpuwm.hrrr_native_static import sha256_file
+from gpuwm.hrrr_prepared_bundle import (
+    EXPERIMENT_CONFIG_NAME as PORTABLE_EXPERIMENT_CONFIG_NAME,
+    publish_hrrr_prepared_bundle)
 from gpuwm.namelist_seal import namelist_extension_invariant
 
 
@@ -1242,6 +1245,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--domain-spec", type=Path)
     parser.add_argument("--namelist-input", type=Path, required=True)
     parser.add_argument(
+        "--wps-namelist", type=Path,
+        help=("the &geogrid namelist.wps this domain was sized from.  "
+              "Supplying it publishes the PORTABLE bundle beside the "
+              "native one -- proof.json, a role-keyed source manifest "
+              "and the experiment authority -- which is what a "
+              "config-driven forecast stage (the cycling radar-DA "
+              "driver) binds.  Without it the output root is exactly "
+              "what it has always been"))
+    parser.add_argument(
         "--physics-profile",
         choices=SINGLE_DOMAIN_PHYSICS_PROFILES,
         default=WSM6_PROFILE_ID,
@@ -1375,6 +1387,15 @@ def main(argv: list[str] | None = None) -> int:
         if observed_manifest != args.source_manifest_sha256.lower():
             raise ValueError("source manifest digest differs from the request")
     if args.extend_root_preparation is not None:
+        if args.wps_namelist is not None:
+            # A sealed extension joins one more hour onto a root that
+            # already published its own authorities; publishing a second,
+            # different set beside it would leave two proofs describing
+            # one bundle.  Refuse rather than silently drop the flag.
+            raise ValueError(
+                "--wps-namelist publishes the portable bundle for a NEW "
+                "preparation; a sealed extension inherits the root's own "
+                "authorities and must not republish them")
         return _sealed_extension(
             args, valid_time=valid_time,
             source_forecast_hours=source_forecast_hours,
@@ -1405,7 +1426,14 @@ def main(argv: list[str] | None = None) -> int:
         # Publish the exact verified files under the same canonical names the
         # geog-built route uses.  The same-filesystem refusal is intentional:
         # every future generation links these bytes again.
-        if args.sealed_prepared_cache:
+        #
+        # A PORTABLE bundle needs the same thing for a different reason:
+        # the forecast front door resolves the static cache relative to
+        # --prepared-root, and a root whose static geography lives on
+        # some other path the operator happened to pass is not a bundle
+        # anyone else can bind.  Same link, same canonical names, same
+        # bytes -- and a reused external static stays reused.
+        if args.sealed_prepared_cache or args.wps_namelist is not None:
             sealed_static = output / "native-static.npz"
             sealed_receipt = output / "native-static-receipt.json"
             _link_file_create(static_cache, sealed_static)
@@ -1464,6 +1492,13 @@ def main(argv: list[str] | None = None) -> int:
         "--history-interval-seconds", str(args.history_interval_seconds),
         "--outdir", str(native / "preparation-report"),
     ]
+    if args.wps_namelist is not None:
+        # Only the benchmark holds the experiment tables this route
+        # builds in code, so only it can render the authority a
+        # config-driven stage will bind.
+        benchmark.extend((
+            "--publish-experiment-config",
+            str(output / PORTABLE_EXPERIMENT_CONFIG_NAME)))
     if args.sealed_prepared_cache:
         benchmark.append("--sealed-prepared-cache")
     for acknowledgement in args.ack:
@@ -1533,9 +1568,50 @@ def main(argv: list[str] | None = None) -> int:
         required=args.require_stock_wrf_export,
         output=output / "wrf-native-input")
     export_seconds = time.perf_counter() - export_started
+
+    # ---- the portable half, published only when asked for --------------
+    # Everything above this line is the certified native preparation and
+    # is untouched.  This adds the three documents a config-driven
+    # forecast stage binds, from values already on disk: the cache's own
+    # source identity, the preparation report's preprocessing receipt,
+    # and digests of files this wrapper just wrote.
+    portable_bundle = None
+    if args.wps_namelist is not None:
+        cache_header = json.loads(
+            (native / "prepared-cache" / "header.json").read_text(
+                encoding="utf-8"))
+        portable_bundle = publish_hrrr_prepared_bundle(
+            output_root=output,
+            prepared_cache=native / "prepared-cache",
+            static_cache=static_cache, static_receipt=static_receipt,
+            geometry_receipt=geometry_receipt,
+            bridge_manifest=bridge_manifest,
+            namelist_input=namelist_input,
+            wps_namelist=args.wps_namelist.resolve(),
+            source_manifest=source_manifest,
+            experiment_config=output / PORTABLE_EXPERIMENT_CONFIG_NAME,
+            source_cycle=valid_time,
+            source_forecast_hours=source_forecast_hours,
+            model_forcing_hours=model_forcing_hours,
+            # The VALIDATED receipt, not the raw report field: this is
+            # the one the wrapper already proved describes the backend
+            # that was asked for.
+            preprocessing=preprocess_receipt,
+            source_identity=cache_header["identity"]["source_identity"],
+            physics_profile=args.physics_profile,
+            expert_acknowledgements=tuple(args.ack),
+            domain_spec=(args.domain_spec.resolve()
+                         if args.domain_spec is not None else None),
+            namelist_extension_invariant=namelist_invariant)
+
     result = {
         "status": "PASS",
         "stock_wrf_export": stock_wrf_export,
+        # The three pins a forecast stage passes beside --prepared-root,
+        # or None when the portable bundle was not requested.  Same rule
+        # as bridge_manifest_sha256 below: each stage publishes the
+        # digests the stage after it must bind.
+        "portable_bundle": portable_bundle,
         # Named only when it exists.  A path in a receipt is a claim
         # that the artifact is there; a skipped or refused export must
         # not leave one behind for a reader to trip over.

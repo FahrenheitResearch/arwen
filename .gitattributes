@@ -51,3 +51,9 @@ tools/ftz_receipt/receipt/sass/** text eol=lf
 tools/ftz_receipt/fixtures/*.ptx text eol=lf
 tools/ftz_receipt/fixtures/*.sass text eol=lf
 gpuwm/verify/*.json text eol=lf
+
+# Vendored upstream patches are applied with `git apply -p1` against
+# someone else's worktree: a line-ending rewrite makes them fail to
+# apply, and the README beside them publishes their digests.
+evidence/upstream/** -text
+tools/noahmp_wrf461_oracle/*.sh text eol=lf

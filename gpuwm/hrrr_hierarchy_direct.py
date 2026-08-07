@@ -133,6 +133,25 @@ _DOMAIN_PREPARATION_OVERRIDES = frozenset({
     "bl_pbl_physics", "km_opt", "c_s", "c_k", "diff_6th_opt",
     "mix_isotropic", "mix_upper_bound", "isfflx",
     "tke_heat_flux", "tke_drag_coefficient", "tke_upper_bound",
+    # The P3 inflow-seeding keys, for the third time the same finding:
+    # preparation never reads them, and this drift check refused them
+    # AFTER the expensive preparation.  The ruling that they are
+    # preparation-inert is not new here and is not being made here -- it
+    # is already committed one module over, as
+    # gpuwm.ingest.prepared_cache.PREPARATION_INERT_RUN_FIELDS
+    # (prepared_cache.py:241-246), whose published reason applies
+    # verbatim: the generator acts at runtime FORCE on the child-owned
+    # rolling NEST boundary tables, which preparation never computes, so
+    # a tree prepared with any value of these fields holds exactly the
+    # prepared state every value of them runs from.  Provenance for the
+    # ruling itself: controller decision 2026-08-03 under Drew's standing
+    # delegation, docs/superpowers/receipts/les/
+    # INFLOW-GENERATOR-ACCEPTANCE-V2.md item 10.  These stay
+    # trajectory-RELEVANT inside experiment_fingerprint and the restart
+    # identity; only the two preparation-side comparisons drop them, and
+    # until now only one of the two did.
+    "inflow_perturbation", "inflow_perturbation_seed",
+    "inflow_perturbation_amplitude_scale", "inflow_perturbation_faces",
 })
 #: Switches of the certified HRRR root slice -- :data:`_SUPPORTED_PHYSICS`
 #: and the enumerated :data:`_ADMITTED_PBL_PHYSICS` beside it -- that a
@@ -601,7 +620,7 @@ def _supported_hierarchy_slice(exp, root_target, *, forcing_hours) -> None:
         "nz": root_target.nz,
         "dx": root_target.dx_m,
         "dy": root_target.dy_m,
-        "dt": float(root_target.time_step_seconds),
+        "dt": float(root_target.time_step_exact),
         "specified": True,
         "nested": False,
         "history_interval_s": observed_root["history_interval_s"],
@@ -943,6 +962,8 @@ def prepare_hrrr_hierarchy(
     native_exp, native_resolved, native_report = _native_experiment(
         Path(wps_namelist), Path(namelist_input),
         rrtmg_variant=_sealed_root_rrtmg_variant(identity))
+    from gpuwm.static.highres_production import refuse_inert_highres
+    refuse_inert_highres(root_domain_spec, lane="native-HRRR static path")
     target = load_hrrr_target_domain(root_domain_spec)
     _supported_hierarchy_slice(
         native_exp, target, forcing_hours=forcing_hours)

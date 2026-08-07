@@ -722,6 +722,13 @@ SASE_PBL_SCHEME = 900
 #: importing it here costs the config layer no CuPy dependency.
 SASE_MAX_NZ = _sase_limits.MAX_COLUMN_LEVELS
 
+#: WRF's MYNN surface layer (``sf_sfclay_physics``).  Named because its
+#: compatibility is unusually narrow: WRF v4.6.1 admits it with the MYNN
+#: PBL or with no PBL and with nothing else, which is the 16-cell matrix
+#: at ``phys/module_physics_init.F:3699-3704,3837-3839`` that the registry
+#: publishes under ``authority.wrf_v461_compatibility_matrix``.
+MYNN_SFCLAY_SCHEME = 5
+
 #: ``bl_pbl_physics`` values in gpuwm's schema.  0/1/5/11 are WRF's --
 #: 11 is Shin-Hong (module_bl_shinhong.F, ported at max ULP 0 against the
 #: byte-frozen WRF v4.6.1 module; runtime wired by _run_shinhong in
@@ -1134,6 +1141,27 @@ def validate_sase_config(cfg: RunConfig) -> None:
                 "closure's lower boundary condition is the surface "
                 "layer's friction velocity, heat and moisture fluxes and "
                 "gust-corrected wind speed.")
+        if cfg.sf_sfclay_physics == MYNN_SFCLAY_SCHEME:
+            # The refusal belongs to the MYNN surface layer, not to SASE.
+            # WRF v4.6.1 admits sf_sfclay_physics=5 with the MYNN PBL or
+            # with no PBL at all and nothing else (the 16-cell matrix at
+            # phys/module_physics_init.F:3699-3704,3837-3839, which the
+            # registry publishes under
+            # authority.wrf_v461_compatibility_matrix and pins in
+            # tests/test_physics_registry.py).  SASE is neither, so the
+            # pair is outside the only compatibility statement either
+            # scheme has.  The registry refused it all along; this is the
+            # loader agreeing, which is what
+            # tests/test_authority_agreement.py exists to require.
+            raise ValueError(
+                f"bl_pbl_physics={SASE_PBL_SCHEME} (SASE) is not admitted "
+                f"with sf_sfclay_physics={MYNN_SFCLAY_SCHEME} (MYNN "
+                "surface layer). WRF v4.6.1 admits that surface layer "
+                "only with the MYNN PBL or with no PBL, and SASE is "
+                "neither; no evidence covers the pairing. Select "
+                "sf_sfclay_physics=1 (revised MM5) or 91 (classic MM5), "
+                "which are the surface layers SASE's registry option "
+                "declares.")
         if not cfg.moist:
             raise ValueError(
                 f"bl_pbl_physics={SASE_PBL_SCHEME} (SASE) requires "
@@ -1369,6 +1397,32 @@ def validate_km_opt(cfg: RunConfig) -> None:
             "horizontal mixing; km_opt = 0 is admitted here without any "
             "acknowledgement, and the id would record an absence this "
             "run does not have.")
+    if cfg.km_opt == 3 and cfg.bl_pbl_physics != 0:
+        # The registry says the same thing from the other side
+        # (physics_registry_v2.json#/components/turbulence/options/
+        # smagorinsky-3d declares required_settings bl_pbl_physics=0 and
+        # requires_components pbl=[off]), and until this refusal existed
+        # the two authorities disagreed about 3,360 of the 46,080
+        # component combinations tests/test_authority_agreement.py
+        # enumerates: the registry refused and validate_run_config said
+        # OK.  The registry was right.  What makes km_opt=3 different
+        # from km_opt=4 is that it computes a genuinely SEPARATE
+        # vertical exchange pair (kmv/khv) rather than reusing the
+        # horizontal one, and that pair is applied by
+        # vertical_diffusion_2, which is PBL-off-gated exactly as the
+        # km_opt=2 branch below describes.  So with a PBL scheme on, the
+        # vertical half of the closure the user selected does not run at
+        # all and the selection quietly means something narrower than
+        # its name.  Refusing is the no-silent-override rule.
+        raise ValueError(
+            "km_opt=3 (3-D Smagorinsky) is admitted with "
+            "bl_pbl_physics=0 only. Its vertical exchange pair "
+            "(kmv/khv) is applied by vertical_diffusion_2, which is "
+            "PBL-off-gated, so with a PBL scheme on only the horizontal "
+            "half of the closure would run and the run would not be the "
+            "3-D closure it names. Select bl_pbl_physics=0 for an LES "
+            "domain, or km_opt=4 (2-D Smagorinsky), which is the "
+            "horizontal-only closure every PBL-on template pins.")
     if cfg.km_opt == 2:
         if cfg.bl_pbl_physics != 0:
             raise ValueError(
@@ -1412,6 +1466,109 @@ def validate_km_opt(cfg: RunConfig) -> None:
             f"Smagorinsky) or 1 (constant K via khdif/kvdif), or select "
             f"bl_pbl_physics={SASE_PBL_SCHEME} (SASE), which supplies "
             "horizontal mixing from its own closure.")
+
+
+#: Stability limit of an EXPLICIT horizontal Laplacian on the shortest
+#: representable mode.  Forward-in-time diffusion of a 2-grid-interval
+#: wave multiplies it by ``1 - 4*K*dt/dx^2`` each step, so ``K*dt/dx^2``
+#: above 1/4 flips the sign and above 1/2 grows the wave: a diffusion
+#: operator that amplifies what it exists to remove.
+EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT = 0.25
+
+#: The mixing selectors that build SEPARATE horizontal and vertical
+#: exchange coefficients when ``mix_isotropic = 0``: 2 (prognostic TKE)
+#: and 3 (3-D Smagorinsky).  1 (constant K) and 4 (2-D Smagorinsky) build
+#: one coefficient on the horizontal grid spacing and are not exposed.
+_ANISOTROPIC_LENGTH_KM_OPTS = (2, 3)
+
+
+def anisotropic_w_mixing_ratio(*, km_opt: int, mix_isotropic: int,
+                               mix_upper_bound: float, dx: float, dy: float,
+                               dz_max: float) -> float | None:
+    """Worst-case ``K*dt/dx^2`` the horizontal w operator can be handed.
+
+    With ``mix_isotropic = 0`` the mixing lengths are per-axis, so the
+    VERTICAL exchange coefficient is both built and capped on the layer
+    depth -- ``xkm_v <= mix_upper_bound * dz^2 / dt`` -- while the
+    horizontal diffusion of ``w`` differences over the horizontal grid
+    spacing.  Nothing in that chain compares the coefficient against the
+    horizontal spacing, so the largest ratio the operator can be asked to
+    integrate is
+
+        mix_upper_bound * (dz_max / min(dx, dy))^2
+
+    which is ``dt``-invariant: the cap carries ``1/dt`` and the ratio
+    carries ``dt``, so a shorter step buys nothing.  Where the ratio
+    exceeds :data:`EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT` the operator can
+    amplify a 2-grid-interval mode in ``w`` instead of damping it.
+
+    Returns ``None`` when the configuration is not on that path at all --
+    an isotropic mixing length, or a selector that builds a single
+    coefficient on the horizontal spacing -- so a caller can distinguish
+    "not applicable" from "applicable and small".
+    """
+
+    if int(km_opt) not in _ANISOTROPIC_LENGTH_KM_OPTS:
+        return None
+    if int(mix_isotropic) != 0:
+        return None
+    horizontal = min(float(dx), float(dy))
+    if not (horizontal > 0.0) or not math.isfinite(float(dz_max)):
+        return None
+    return float(mix_upper_bound) * (float(dz_max) / horizontal) ** 2
+
+
+def warn_anisotropic_w_mixing(*, where: str, km_opt: int, mix_isotropic: int,
+                              mix_upper_bound: float, dx: float, dy: float,
+                              dz_max: float) -> float | None:
+    """Advise when the anisotropic mixing length exceeds the explicit limit.
+
+    A warning and not a refusal: the ratio is the WORST case the cap
+    admits, the deformation that would reach it may never occur in a
+    given flow, and configurations that have run for hours at a ratio
+    above the limit exist.  What it is not is a taste bound -- above the
+    limit the operator's own stability is no longer guaranteed by
+    anything, and the failure mode is grid-scale vertical velocity that
+    grows out of a field which should be being smoothed.
+
+    Returns the computed ratio (``None`` when not applicable) so a caller
+    can record the number whether or not it warned.
+    """
+
+    ratio = anisotropic_w_mixing_ratio(
+        km_opt=km_opt, mix_isotropic=mix_isotropic,
+        mix_upper_bound=mix_upper_bound, dx=dx, dy=dy, dz_max=dz_max)
+    if ratio is None or ratio <= EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT:
+        return ratio
+    from gpuwm.explain import warn
+    horizontal = min(float(dx), float(dy))
+    admitted = (EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT
+                * (horizontal / float(dz_max)) ** 2)
+    warn(
+        f"{where} runs km_opt = {int(km_opt)} with mix_isotropic = 0 at "
+        f"dx = {horizontal:g} m over base-state layers up to "
+        f"{float(dz_max):.1f} m deep: mix_upper_bound*(dz_max/dx)^2 = "
+        f"{ratio:.3g} exceeds the explicit horizontal diffusion limit "
+        f"{EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT}, so the horizontal "
+        f"mixing of w can amplify a 2dx mode instead of damping it; set "
+        f"mix_isotropic = 1 on this domain, or lower mix_upper_bound "
+        f"below {admitted:.3g}",
+        why="With mix_isotropic = 0 the vertical exchange coefficient is "
+            "built and capped on the LAYER DEPTH (xkm_v <= "
+            "mix_upper_bound*dz^2/dt) and is then the coefficient the "
+            "horizontal diffusion of w differences over the HORIZONTAL "
+            "spacing. Nothing compares the two, so the reachable "
+            "K*dt/dx^2 is mix_upper_bound*(dz_max/dx)^2 -- independent "
+            "of dt, because the cap carries 1/dt and the ratio carries "
+            "dt. An explicit Laplacian multiplies a 2-grid-interval mode "
+            "by 1 - 4*K*dt/dx^2 per step, so beyond 1/4 the sign flips "
+            "and beyond 1/2 the mode grows. mix_isotropic = 1 builds one "
+            "length from (dx*dy*dz)^(1/3) and caps the vertical "
+            "coefficient against the horizontal one, which is why it is "
+            "the usual choice where layers are much deeper than the grid "
+            "is wide. This is an advisory: the ratio is the worst case "
+            "the cap admits, not a value this flow is required to reach.")
+    return ratio
 
 
 def validate_run_config(cfg: RunConfig) -> RunConfig:

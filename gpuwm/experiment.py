@@ -46,7 +46,8 @@ import numpy as np
 
 from gpuwm import physics_mode as physics_mode_module
 from gpuwm.config import (DEFAULT_COLUMN_CHUNK, RunConfig,
-                          radiation_enabled, validate_run_config)
+                          radiation_enabled, validate_run_config,
+                          warn_anisotropic_w_mixing)
 from gpuwm.explain import layered, warn
 
 #: Relative tolerance for cross-checking hand-typed child dx/dt against the
@@ -100,6 +101,22 @@ _EXPERIMENT_REQUIRED = ("name", "start_time", "run_seconds",
 
 _PROJECTION_KEYS = ("map_proj", "ref_lat", "ref_lon", "truelat1",
                     "truelat2", "stand_lon")
+
+#: [perturbation] carries exactly one key: the [[perturbation.bubbles]]
+#: array of tables.  Scalars may join later; today a stray scalar here is
+#: most likely a bubble key that escaped its double-bracket table.
+_PERTURBATION_KEYS = ("bubbles",)
+_BUBBLE_KEYS = frozenset({
+    "center_lat", "center_lon", "center_height_m", "radius_km",
+    "depth_m", "amplitude_k", "rh_preserve",
+})
+_BUBBLE_REQUIRED = ("center_lat", "center_lon", "center_height_m",
+                    "radius_km", "depth_m", "amplitude_k")
+#: The largest admissible peak theta perturbation.  WRF's own idealized
+#: warm bubbles run 3 K (em_quarter_ss); an order of magnitude above that
+#: is no longer an initiation nudge but a rewrite of the analysis, so it
+#: is refused with the value named rather than integrated in silence.
+MAX_BUBBLE_AMPLITUDE_K = 10.0
 
 #: RunConfig keys that may NOT appear in [shared]: they are per-domain
 #: (derived or [[domain]]-owned), experiment-owned, or retired in the
@@ -385,6 +402,165 @@ class ProjectionConfig:
 
 
 @dataclass(frozen=True)
+class BubbleConfig:
+    """One validated [[perturbation.bubbles]] entry.
+
+    A cosine-squared warm bubble added ONCE to the initial potential
+    temperature after the base real-data state is final: peak
+    ``amplitude_k`` Kelvin at (``center_lat``, ``center_lon``,
+    ``center_height_m`` AGL), falling to exactly zero at the ellipse
+    ``sqrt((r_h/radius_km)^2 + ((z-zc)/depth_m)^2) = 1`` -- the WRF
+    em_quarter_ss shape (module_initialize_ideal.F; the port's own
+    transcription is gpuwm/verify/cases/moist_bubble.py).  ``depth_m``
+    is the vertical HALF-depth.  ``rh_preserve`` keeps relative humidity
+    constant through the theta change by adjusting qv inside the bubble;
+    the default leaves qv byte-untouched.
+
+    Geometry validation (center inside the coarse domain, at least one
+    cell touched) needs the projected grid and therefore happens at
+    prepare time (:mod:`gpuwm.ingest.init_perturbation`), before any
+    integration step.
+    """
+
+    center_lat: float
+    center_lon: float
+    center_height_m: float
+    radius_km: float
+    depth_m: float
+    amplitude_k: float
+    rh_preserve: bool = False
+
+    def __post_init__(self):
+        for name in ("center_lat", "center_lon", "center_height_m",
+                     "radius_km", "depth_m", "amplitude_k"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(
+                    value, (int, float)) or not math.isfinite(value):
+                raise ValueError(
+                    f"{name} must be a finite number, got {value!r}")
+            object.__setattr__(self, name, float(value))
+        if not -90.0 <= self.center_lat <= 90.0:
+            raise ValueError(
+                f"center_lat = {self.center_lat!r} is outside [-90, 90] "
+                "degrees")
+        if not -180.0 <= self.center_lon <= 180.0:
+            raise ValueError(
+                f"center_lon = {self.center_lon!r} is outside [-180, 180] "
+                "degrees")
+        if self.center_height_m < 0.0:
+            raise ValueError(
+                f"center_height_m = {self.center_height_m!r} is below the "
+                "surface; the bubble center is metres AGL and must be "
+                ">= 0")
+        for name in ("radius_km", "depth_m", "amplitude_k"):
+            if getattr(self, name) <= 0.0:
+                raise ValueError(
+                    f"{name} = {getattr(self, name)!r} must be positive; "
+                    "a nonpositive bubble is a no-op wearing the name of "
+                    "a perturbation")
+        if self.amplitude_k > MAX_BUBBLE_AMPLITUDE_K:
+            raise ValueError(
+                f"amplitude_k = {self.amplitude_k!r} exceeds the "
+                f"{MAX_BUBBLE_AMPLITUDE_K:g} K sanity bound: that is no "
+                "longer an initiation nudge but a rewrite of the "
+                "analysis. Lower the amplitude, or lift the bound with "
+                "evidence.")
+        if not isinstance(self.rh_preserve, bool):
+            raise ValueError(
+                f"rh_preserve must be a boolean, got {self.rh_preserve!r}")
+
+    def receipt(self) -> dict:
+        """Every accepted value, echoed in the shape it resolved to."""
+        return {
+            "center_lat": float(self.center_lat),
+            "center_lon": float(self.center_lon),
+            "center_height_m": float(self.center_height_m),
+            "radius_km": float(self.radius_km),
+            "depth_m": float(self.depth_m),
+            "amplitude_k": float(self.amplitude_k),
+            "rh_preserve": bool(self.rh_preserve),
+        }
+
+
+@dataclass(frozen=True)
+class PerturbationConfig:
+    """The validated [perturbation] block: one or more theta bubbles.
+
+    Absent block = ``ExperimentConfig.perturbation is None`` = zero
+    behavior change, byte-identical prepared state (the
+    inflow_perturbation OFF discipline).  Present, the block is either
+    honored on the experiment runtime path or refused by name on routes
+    that do not thread it (:func:`refuse_unrouted_perturbation`); it is
+    never dropped.
+    """
+
+    bubbles: tuple[BubbleConfig, ...]
+
+    def __post_init__(self):
+        if not self.bubbles:
+            raise ValueError(
+                "[perturbation] must carry at least one "
+                "[[perturbation.bubbles]] entry; an empty block is "
+                "either a stray table or a disabled feature wearing an "
+                "enabled name -- delete the block to disable.")
+
+    def receipt(self) -> dict:
+        return {
+            "schema": "gpuwm-initial-perturbation-v1",
+            "bubbles": [bubble.receipt() for bubble in self.bubbles],
+        }
+
+
+def _build_perturbation(table, source: str) -> PerturbationConfig:
+    """Validate [perturbation] / [[perturbation.bubbles]] of ``source``."""
+    if not isinstance(table, dict):
+        raise ValueError(
+            f"[perturbation] of {source} must be a table carrying "
+            f"[[perturbation.bubbles]] entries, got {table!r}.")
+    _reject_unknown_keys("perturbation", table, _PERTURBATION_KEYS, source)
+    _require_keys("perturbation", table, _PERTURBATION_KEYS, source)
+    entries = table["bubbles"]
+    if not isinstance(entries, list) or not entries or any(
+            not isinstance(entry, dict) for entry in entries):
+        raise ValueError(
+            f"bubbles in [perturbation] of {source} must be an array of "
+            "tables (one [[perturbation.bubbles]] block per bubble), got "
+            f"{entries!r}.")
+    bubbles = []
+    for index, entry in enumerate(entries):
+        label = f"perturbation.bubbles #{index + 1}"
+        _reject_unknown_keys(label, entry, _BUBBLE_KEYS, source)
+        _require_keys(label, entry, _BUBBLE_REQUIRED, source)
+        try:
+            bubbles.append(BubbleConfig(**entry))
+        except ValueError as err:
+            raise ValueError(
+                f"[[{label}]] of {source}: {err}") from None
+    return PerturbationConfig(bubbles=tuple(bubbles))
+
+
+def refuse_unrouted_perturbation(exp, route: str) -> None:
+    """Fail loud where a [perturbation] block would otherwise be dropped.
+
+    The governance rule for this block is the same as for every key:
+    honored or refused, never ignored.  Routes that do not thread the
+    perturbation into their initialization call this immediately after
+    loading the experiment.
+    """
+    if getattr(exp, "perturbation", None) is None:
+        return
+    raise ValueError(layered(
+        f"the {route} route does not apply [perturbation] blocks; "
+        "refused rather than ignored, because a dropped perturbation "
+        "would run an unperturbed state under the name of your bubbles.",
+        "Initial-state theta bubbles are applied by the experiment "
+        "runtime path (gpuwm run / gpuwm ingest, through "
+        "gpuwm.ingest.real.initialize_real) and by the prepared "
+        "domain-tree forecast runner (applied to the restored states, "
+        "gpuwm.prepared_domain_tree_forecast)."))
+
+
+@dataclass(frozen=True)
 class DomainConfig:
     """One domain of a nested experiment (architecture section A).
 
@@ -465,6 +641,12 @@ class ExperimentConfig:
     #: does not name the axis, and it authors nothing.
     physics_mode: physics_mode_module.PhysicsModeResolution = (
         physics_mode_module.UNGOVERNED)
+    #: The validated [perturbation] block, or ``None`` when the config
+    #: does not carry one.  ``None`` is the OFF contract: no applier is
+    #: built, no initialization branch runs, and the restart-identity
+    #: payload omits the key entirely so absent-block fingerprints stay
+    #: byte-identical to pre-feature ones.
+    perturbation: "PerturbationConfig | None" = None
 
     def __post_init__(self):
         if self.feedback not in (0, 1):
@@ -1062,7 +1244,8 @@ def _parent_before_child(domain_tables: list, source: str) -> list:
 
 def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     """Validate a parsed experiment TOML dict and build the config."""
-    known_tables = ("experiment", "shared", "projection", "domain")
+    known_tables = ("experiment", "shared", "projection", "domain",
+                    "perturbation")
     unknown_tables = [name for name in raw if name not in known_tables]
     if unknown_tables:
         # A whole stray table is the same defect as a stray key, one
@@ -1079,7 +1262,8 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             f"Known tables: {list(known_tables)}. The [grid]/[dynamics]/"
             "[run] table names belong to the single-domain legacy config "
             "schema; an experiment config carries [experiment], [shared], "
-            "[projection] and one [[domain]] per nest."))
+            "[projection], one [[domain]] per nest, and optionally "
+            "[perturbation] (initial-state theta bubbles)."))
     if "experiment" not in raw:
         raise ValueError(
             f"experiment config {source} must carry an [experiment] "
@@ -1189,6 +1373,14 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                 stand_lon=float(proj["stand_lon"]))
         except ValueError as err:
             raise ValueError(f"[projection] of {source}: {err}") from None
+
+    # ---- [perturbation] ----------------------------------------------
+    # ABSENT authors nothing: perturbation = None, byte-identical prepared
+    # state, and the restart-identity payload omits the key so every
+    # pre-feature fingerprint is preserved (gpuwm/core/model.py).
+    perturbation = None
+    if "perturbation" in raw:
+        perturbation = _build_perturbation(raw["perturbation"], source)
 
     # ---- [shared] ------------------------------------------------------
     shared = dict(raw.get("shared", {}))
@@ -1811,15 +2003,51 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         restart_interval_s=restart_interval_s, domains=tuple(domains),
         column_chunk=column_chunk,
         acknowledgements=tuple(acknowledgements),
-        physics_mode=physics_mode)
+        physics_mode=physics_mode,
+        perturbation=perturbation)
     from gpuwm.physics_compat import (
         validate_resolved_physics_vertical_levels,
     )
     for domain in experiment.domains:
         validate_resolved_physics_vertical_levels(
             domain.run, p_top=experiment.vertical.p_top)
+    _advise_anisotropic_w_mixing(experiment, source)
     _assert_derived_copies(experiment, source)
     return experiment
+
+
+def _advise_anisotropic_w_mixing(experiment: ExperimentConfig,
+                                 source: str) -> None:
+    """Advisory pass: per-axis mixing lengths against the explicit limit.
+
+    This is the only place both halves of the question are known -- the
+    shared vertical coordinate owns the layer depths, each domain owns
+    its horizontal spacing and its mixing selectors -- so it is where the
+    ratio is computed.  Warn, never block: see
+    :func:`gpuwm.config.warn_anisotropic_w_mixing`.
+
+    A coordinate with no explicit eta interfaces (idealized/legacy) has
+    no layer depths to read here and is skipped rather than guessed at.
+    """
+
+    vertical = experiment.vertical
+    if not vertical.eta_levels:
+        return
+    exposed = [d for d in experiment.domains
+               if d.run.km_opt in (2, 3) and d.run.mix_isotropic == 0]
+    if not exposed:
+        return
+    from gpuwm.core.grid import base_layer_depths
+    dz_max = float(base_layer_depths(
+        vertical.eta_levels, vertical.hybrid_opt, vertical.etac,
+        vertical.p_top).max())
+    for domain in exposed:
+        warn_anisotropic_w_mixing(
+            where=f"domain grid_id = {domain.grid_id} of {source}",
+            km_opt=domain.run.km_opt,
+            mix_isotropic=domain.run.mix_isotropic,
+            mix_upper_bound=domain.run.mix_upper_bound,
+            dx=domain.run.dx, dy=domain.run.dy, dz_max=dz_max)
 
 
 def _assert_derived_copies(experiment: ExperimentConfig,

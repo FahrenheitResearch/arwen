@@ -552,9 +552,18 @@ def test_list_products_reports_the_full_catalog(wrfout, tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     # The complete catalog is enumerated, not just what renders.
-    # 153 = 152 + the standalone 10 m wind chart.
-    assert "total=153" in out
+    # 168 = 152 + the standalone 10 m wind chart + this fixture's 15
+    # generic ``var:`` rows (stored 2-D planes no named product claims;
+    # the generic family is store-dependent, so the count is the
+    # FIXTURE's, not the build's).
+    assert "total=168" in out
     assert "renderable" in out and "excluded" in out
+    # The generic rows are part of the catalog, not a side channel: every
+    # stored plane without a named product renders as ``var:<name>``.
+    generic_rows = [line for line in out.splitlines()
+                    if " generic " in line and " var:" in line]
+    assert len(generic_rows) == 15, out
+    assert all("renderable" in line for line in generic_rows), generic_rows
     # The fixture's fields prove out the reflectivity composite ...
     assert any("composite_reflectivity" in line and "renderable" in line
                for line in out.splitlines())

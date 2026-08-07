@@ -302,11 +302,20 @@ def run_decode(binary: Path, *, volume: Path, out: Path,
                moments: tuple[str, ...] = ("REF", "VEL"),
                max_range_km: float | None = None,
                max_elevation_deg: float | None = None,
-               site_latlon: tuple[float, float, float] | None = None) -> dict:
-    """Validate one volume and write a ``gpuwm-obs.radar-sweeps.v1`` pack."""
+               site_latlon: tuple[float, float, float] | None = None,
+               censor_flags: bool = False) -> dict:
+    """Validate one volume and write a ``gpuwm-obs.radar-sweeps.v1`` pack.
+
+    ``censor_flags`` asks for the ``v2`` pack instead: the same moment
+    planes, plus a ``|u1`` plane per moment saying why each NaN gate is not
+    a number.  Off by default, and with it off the pack is byte-identical to
+    what this front door has always produced.
+    """
 
     command = [str(binary), "decode", "--volume", str(volume),
                "--out", str(out), "--moments", ",".join(moments)]
+    if censor_flags:
+        command += ["--censor-flags"]
     if max_range_km is not None:
         command += ["--max-range-km", f"{max_range_km:g}"]
     if max_elevation_deg is not None:

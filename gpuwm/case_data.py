@@ -284,6 +284,11 @@ class CaseDataConfig:
     #: when it is not declared; declared, it joins the InputCatalog and
     #: the run identity moves exactly when the data does.
     water_temperature_overlay: Path | None = None
+    #: Optional validated ``[static.highres]`` block
+    #: (:class:`gpuwm.static.highres_production.HighresStaticConfig`).
+    #: Absence (None) is the identity path: the 30-arc-second baseline
+    #: static build runs byte-unchanged and nothing is fetched.
+    static_highres: object | None = None
     authority_backed: bool = field(default=False, repr=False, compare=False)
     authority_identity_forcing: tuple[Path, ...] = field(
         default=(), repr=False, compare=False)
@@ -649,7 +654,13 @@ def load_case_data(path: str | Path) -> CaseDataConfig:
             f"experiment config {path} carries no [case_data] table; the "
             "experiment runtime requires declared inputs (forcing, vtable, "
             "wps_namelist, geog_root, and policies).")
-    return build_case_data(table, source=str(path), base_dir=path.parent)
+    data = build_case_data(table, source=str(path), base_dir=path.parent)
+    from gpuwm.static.highres_production import parse_static_table
+    highres = parse_static_table(
+        raw.get("static"), source=str(path), base_dir=path.parent)
+    if highres is not None:
+        data = replace(data, static_highres=highres)
+    return data
 
 
 def load_experiment_case_bytes(
@@ -673,6 +684,10 @@ def load_experiment_case_bytes(
     if fetch_table is not None:
         from gpuwm.fetch import validate_fetch_hints
         validate_fetch_hints(fetch_table, source=source)
+    # The optional [static] table (high-resolution static geography)
+    # splits off identically; its schema is owned by
+    # gpuwm.static.highres_production and validated, never dropped.
+    static_table = raw.pop("static", None)
     # Validate the experiment FIRST so an invalid experiment surfaces its
     # own error even when [case_data] is also missing.
     experiment = build_experiment(raw, source=source)
@@ -682,6 +697,12 @@ def load_experiment_case_bytes(
             "experiment runtime requires declared inputs (forcing, vtable, "
             "wps_namelist, geog_root, and policies).")
     data = build_case_data(table, source=source, base_dir=base)
+    if static_table is not None:
+        from gpuwm.static.highres_production import parse_static_table
+        highres = parse_static_table(
+            static_table, source=source, base_dir=base)
+        if highres is not None:
+            data = replace(data, static_highres=highres)
     return experiment, data
 
 

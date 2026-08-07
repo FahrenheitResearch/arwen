@@ -1955,6 +1955,110 @@ def test_hrrr_sizing_respects_hrrrs_own_grid_not_only_the_card(
     assert "bounded by HRRR's own grid, not by your card" in printed
 
 
+def _conus_polygon(tmp_path):
+    """A KTBW-shaped box deep inside HRRR coverage, as the nowcast draws it."""
+    import json
+
+    box = {"type": "Polygon", "coordinates": [[
+        [-84.287, 25.628], [-80.275, 25.628], [-80.275, 29.189],
+        [-84.287, 29.189], [-84.287, 25.628]]]}
+    polygon = tmp_path / "box.geojson"
+    polygon.write_text(json.dumps(box), encoding="utf-8")
+    return polygon
+
+
+def test_a_1p5km_hrrr_root_carries_its_7p5s_clock_exactly(tmp_path):
+    """dx 1.5 km -> 7.5 s root clock, spec -> wizard -> namelists, exact.
+
+    Field 2026-08-06: the rung-0 1.5 km screen's first HRRR case refused
+    at the domain stage -- "the root domain spec carries an integer time
+    step; this ladder's root clock is 7.5 s" -- while the SAME grid had
+    run the GFS route all night, whose experiment TOML spells the clock
+    ``time_step = 7`` + ``time_step_fract_num/den = 1/2`` (WRF's own
+    registry spelling).  The target-domain spec now carries exactly that
+    decomposition, and both emitted WRF namelists spell it the same way.
+    """
+    import json
+    import re
+
+    from gpuwm.ingest.hrrr_target import load_hrrr_target_domain
+
+    out = tmp_path / "clock.toml"
+    rc = cli_main(["domain", "--polygon", str(_conus_polygon(tmp_path)),
+                   "--root-dx", "1.5", "--source", "hrrr",
+                   "--cycle", "2026-07-29T18", "--hours", "4",
+                   "--name", "clockcase", "--out", str(out)])
+    assert rc == 0
+
+    spec_path = tmp_path / "clock.d01-target.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    assert spec["time_step_seconds"] == 7
+    assert spec["time_step_fract_num"] == 1
+    assert spec["time_step_fract_den"] == 2
+
+    target = load_hrrr_target_domain(spec_path)
+    assert target.time_step_exact == Fraction(15, 2)
+
+    # Both halves of the namelist pair spell the rational clock the way
+    # stock WRF reads it -- never a bare 7, never a float 7.5.
+    for name in ("clock.namelist.input", "clock.stock.namelist.input"):
+        namelist = (tmp_path / name).read_text(encoding="utf-8")
+        assert re.search(r"time_step\s*=\s*7\s*,", namelist), name
+        assert re.search(r"time_step_fract_num\s*=\s*1\s*,", namelist), name
+        assert re.search(r"time_step_fract_den\s*=\s*2\s*,", namelist), name
+
+    # And a whole-second clock's spec payload is unchanged by the
+    # widening: no fract keys, so every stored identity survives.
+    whole = json.loads(hrrr_route_inputs_render_target_domain_at_3km(
+        tmp_path))
+    assert "time_step_fract_num" not in whole
+
+
+def hrrr_route_inputs_render_target_domain_at_3km(tmp_path) -> str:
+    """A 3 km emission (15 s clock), for the payload-stability check."""
+    from gpuwm.experiment import load_experiment
+    from gpuwm.hrrr_route_inputs import render_target_domain
+
+    out = tmp_path / "whole.toml"
+    rc = cli_main(["domain", "--polygon", str(_conus_polygon(tmp_path)),
+                   "--root-dx", "3", "--source", "hrrr",
+                   "--cycle", "2026-07-29T18", "--hours", "4",
+                   "--name", "wholecase", "--out", str(out)])
+    assert rc == 0
+    return render_target_domain(load_experiment(out))
+
+
+def test_a_spec_refusal_is_not_dressed_as_a_coverage_refusal(
+        tmp_path, monkeypatch, capsys):
+    """Each refusal path states its own cause and its own remedy.
+
+    Field 2026-08-06: the integer-clock refusal surfaced as "polygon
+    ...  falls outside HRRR coverage: <the clock sentence>.  Move
+    --polygon inside the HRRR grid" -- two unrelated errors in one
+    sentence, and the named remedy (moving the polygon) could never
+    have fixed the actual problem.  A spec that cannot be constructed
+    now refuses with its own words; the coverage sentence is reserved
+    for coverage answers.
+    """
+    import gpuwm.domain_wizard as wizard
+    from gpuwm.hrrr_route_inputs import HrrrRouteInputError
+
+    def broken_spec(exp):
+        raise HrrrRouteInputError(
+            "the spec itself cannot be built; its own remedy")
+
+    monkeypatch.setattr(wizard, "coverage_refusal", broken_spec)
+    rc = cli_main(["domain", "--polygon", str(_conus_polygon(tmp_path)),
+                   "--root-dx", "3", "--source", "hrrr",
+                   "--cycle", "2026-07-29T18", "--hours", "4",
+                   "--name", "sepcase", "--out", str(tmp_path / "sep.toml")])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "the spec itself cannot be built; its own remedy" in err
+    assert "falls outside HRRR coverage" not in err
+    assert "Move --polygon" not in err
+
+
 def test_hrrr_coverage_test_reserves_the_donor_search_margin():
     """Field 2026-08 (RTX PRO 6000, 1 km nest at 39,-98): the exact bug.
 

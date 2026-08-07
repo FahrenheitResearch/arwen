@@ -117,6 +117,24 @@ CASE_TOKENS: tuple[str, ...] = (
     # spec section 1.1 ("every new battery case token is appended to
     # CASE_TOKENS in the same commit that introduces the case").
     "20240521",
+    # The tornado-scale LES attempt's named case (G1, ratified 2026-08-05).
+    # Registered on the same footing as a battery case day and for the same
+    # reason: the case IS its place and its UTC day, so those two tokens are
+    # the whole of its identity. It is allowed exactly two homes --
+    # configs/les_tornado_100m_dodgecity_20160524.toml and
+    # gpuwm/verify/cases/les_tornado_dodgecity_20160524.py, plus the docs
+    # that rule on it and the receipts that measure it -- and registering
+    # the tokens here is what turns that sentence into a gate.
+    "dodgecity",
+    "dodge city",
+    "20160524",
+    # The case attempt #1 actually runs, after Drew moved it on 2026-08-06.
+    # The Dodge City tokens above stay registered: that config and its case
+    # module remain in the tree, parked behind an unadjudicated ingest
+    # question, and a parked case needs its confinement enforced exactly as
+    # much as a live one does.
+    "mayfield",
+    "20211210",
 )
 
 # Zones where a case token must never appear, relative to a repository root.

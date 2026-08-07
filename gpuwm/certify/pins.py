@@ -207,9 +207,24 @@ def _gpu_pins(entries: dict[str, dict[str, Any]], *, require_gpu: bool) -> None:
         nvrtc_version = ".".join(str(part) for part in nvrtc.getVersion())
     except Exception as error:
         nvrtc_version = f"unavailable: {type(error).__name__}: {error}"
+    # ``getVersion()`` is major.minor, and that is not enough resolution for
+    # the row's own claim.  12.9.41 and 12.9.86 both report "12.9" and do not
+    # generate the same code; on 2026-08-04 this box moved from NVRTC 13.0.48
+    # to 12.9.86 and a certified ULP table moved with it while this pin read
+    # unchanged.  The four-part build and the library digest are recorded
+    # alongside, never instead: the coarse value is what the published table
+    # quotes and it keeps its key.
+    from gpuwm.certify.compile_platform import (
+        nvrtc_banner, nvrtc_build, nvrtc_build_id, nvrtc_library)
+
+    banner = nvrtc_banner()
+    library = nvrtc_library()
     entries["cuda_toolkit_nvrtc"] = _resolved(toolkit, {
         "cuda_runtime_version": int(block["runtime_version"]),
         "nvrtc_version": nvrtc_version,
+        "nvrtc_build": nvrtc_build(banner),
+        "nvrtc_build_id": nvrtc_build_id(banner),
+        "nvrtc_library_sha256": library["sha256"],
     })
 
 

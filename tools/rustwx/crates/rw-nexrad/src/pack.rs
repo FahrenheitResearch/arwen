@@ -41,6 +41,37 @@ pub const PACK_HEADER_BYTES: usize = 64;
 /// sweep reader checks before it touches a byte of payload.
 pub const SWEEPS_SCHEMA: &str = "gpuwm-obs.radar-sweeps.v1";
 
+/// The schema a pack declares once it also carries censor planes.
+///
+/// A separate string rather than a flag inside `v1`, because a `v1` reader
+/// that silently ignored the extra arrays would be reading a pack whose
+/// moment planes it can no longer fully account for: in `v1` a `NaN` gate is
+/// "nothing to say about this gate", and in `v2` the pack is asserting it
+/// knows exactly which of three things happened there.  The readers refuse
+/// what they do not know (`decode_pack` here, `gpuwm.obs.sweeps` on the
+/// Python side), so the version bump is what makes the extension safe rather
+/// than merely additive.
+///
+/// A `v2` pack is otherwise byte-for-byte a `v1` pack with more arrays: same
+/// magic, same 64-byte header, same `PACK_VERSION`, same moment planes.  The
+/// container did not change, so the container's version did not either.
+pub const SWEEPS_SCHEMA_CENSOR: &str = "gpuwm-obs.radar-sweeps.v2";
+
+/// `<u1` census planes, one code per gate.  Mirrors
+/// [`wx_radar::level2::censor`], plus the one code only this layer can mint.
+pub mod censor_plane {
+    pub const DTYPE: &str = "|u1";
+    /// A radial that carried no such moment at all.  The pack stores a sweep
+    /// as a rectangle, and `build_pack` fills the rows a split cut left empty
+    /// with `NaN`; this is the code that says so, as against a gate the radar
+    /// actually looked at and found empty.
+    pub const NOT_COLLECTED: u8 = wx_radar::level2::censor::NOT_COLLECTED;
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 const VOLUME_HEADER_SIZE: usize = 24;
 /// Offset past which a message header is fully readable: 12 bytes of CTM
 /// then the 16-byte message header, of which the size word and type byte
@@ -403,6 +434,15 @@ pub struct MomentEntry {
     pub gate_size_m: f64,
     /// Key into `arrays`; shape `[radial_count, gate_count]`.
     pub array: String,
+    /// Key into `arrays` for the `|u1` censor plane, same shape as `array`.
+    /// Present only in a [`SWEEPS_SCHEMA_CENSOR`] pack.
+    ///
+    /// `skip_serializing_if` is load-bearing rather than tidy: it is what
+    /// keeps a default-mode pack's metadata JSON byte-identical to the one
+    /// this build's predecessor wrote, and therefore keeps every committed
+    /// pack digest reproducible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub censor_array: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -447,6 +487,11 @@ pub struct DecodeParams {
     pub moments: Vec<String>,
     pub max_range_km: f64,
     pub max_elevation_deg: f64,
+    /// Whether `--censor-flags` was asked for.  Omitted when false so a
+    /// default-mode pack's metadata is unchanged from before the flag
+    /// existed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub censor_flags: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -526,6 +571,30 @@ impl PayloadBuilder {
         key
     }
 
+    /// Append one `|u1` array, returning its key.
+    ///
+    /// Shares the `a{:05}` key counter with [`Self::push_f32`], so a censor
+    /// plane can never collide with a moment plane and the payload stays one
+    /// contiguous, self-describing block.
+    pub fn push_u8(&mut self, values: &[u8], shape: Vec<usize>) -> String {
+        let expected: usize = shape.iter().product();
+        debug_assert_eq!(expected, values.len(), "declared shape must match the data");
+        let key = format!("a{:05}", self.next);
+        self.next += 1;
+        let offset = self.payload.len();
+        self.payload.extend_from_slice(values);
+        self.arrays.insert(
+            key.clone(),
+            ArrayEntry {
+                dtype: censor_plane::DTYPE.to_string(),
+                shape,
+                offset,
+                bytes: values.len(),
+            },
+        );
+        key
+    }
+
     pub fn finish(self) -> (Vec<u8>, std::collections::BTreeMap<String, ArrayEntry>) {
         (self.payload, self.arrays)
     }
@@ -579,10 +648,37 @@ pub fn decode_pack(bytes: &[u8]) -> Result<(PackMeta, Vec<u8>), Box<dyn Error>> 
         )));
     }
     let meta: PackMeta = serde_json::from_slice(&bytes[PACK_HEADER_BYTES..meta_end])?;
-    if meta.schema != SWEEPS_SCHEMA {
+    if meta.schema != SWEEPS_SCHEMA && meta.schema != SWEEPS_SCHEMA_CENSOR {
         return Err(boxed_error(format!(
-            "radar sweep pack declares schema {:?}, expected {SWEEPS_SCHEMA:?}",
+            "radar sweep pack declares schema {:?}, expected {SWEEPS_SCHEMA:?} or \
+             {SWEEPS_SCHEMA_CENSOR:?}",
             meta.schema
+        )));
+    }
+    // The schema string and the arrays have to tell the same story.  A `v1`
+    // pack carrying censor planes would be read by a `v1` consumer as a
+    // plain pack that happens to be larger, and a `v2` pack without them
+    // promises a distinction it cannot make; both are refused here rather
+    // than left for a consumer to trip over.
+    let censored = meta.schema == SWEEPS_SCHEMA_CENSOR;
+    for sweep in &meta.sweeps {
+        for moment in &sweep.moments {
+            if moment.censor_array.is_some() != censored {
+                return Err(boxed_error(format!(
+                    "radar sweep pack declares schema {:?} but sweep {} moment {} {} a \
+                     censor plane; the schema string and the arrays must agree",
+                    meta.schema,
+                    sweep.sweep_index,
+                    moment.product,
+                    if censored { "is missing" } else { "carries" }
+                )));
+            }
+        }
+    }
+    if meta.params.censor_flags != censored {
+        return Err(boxed_error(format!(
+            "radar sweep pack declares schema {:?} but params.censor_flags is {}",
+            meta.schema, meta.params.censor_flags
         )));
     }
     let payload = bytes[meta_end..payload_end].to_vec();
@@ -921,6 +1017,7 @@ mod tests {
                 moments: vec!["REF".to_string(), "VEL".to_string()],
                 max_range_km: 300.0,
                 max_elevation_deg: 20.0,
+                censor_flags: false,
             },
             sweeps: Vec::new(),
             arrays,

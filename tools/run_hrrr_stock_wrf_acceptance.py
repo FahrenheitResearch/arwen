@@ -310,7 +310,7 @@ def _validate_dataset(path: Path, contract: Mapping[str, object], *,
         float_attrs = {
             "DX": target.dx_m,
             "DY": target.dy_m,
-            "DT": target.time_step_seconds,
+            "DT": float(target.time_step_exact),
             "CEN_LAT": float(grid.cen_lat),
             "CEN_LON": float(grid.cen_lon),
             "MOAD_CEN_LAT": target.ref_lat,

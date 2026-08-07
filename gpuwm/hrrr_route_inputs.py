@@ -272,12 +272,14 @@ def render_target_domain(exp) -> str:
             f"{projection.map_proj}.  Re-run the wizard with "
             "--projection lambert, or pick a point where 'auto' selects "
             "it (|lat| between 25 and 60 degrees).")
-    dt = exp.dt_exact(root.grid_id)
-    if Fraction(dt).denominator != 1:
-        raise HrrrRouteInputError(
-            f"the root domain spec carries an integer time step; this "
-            f"ladder's root clock is {float(dt):g} s.  Choose a "
-            "--root-dx whose clock lands on a whole second.")
+    # The root clock, decomposed exactly the way WRF's registry and the
+    # experiment TOML spell it: whole seconds plus a proper rational
+    # remainder.  A 1.5 km root runs 7.5 s = 7 + 1/2; the integer-only
+    # spelling this replaced refused that ladder outright while the
+    # same clock ran all night on the GFS route.
+    dt = Fraction(exp.dt_exact(root.grid_id))
+    dt_whole = dt.numerator // dt.denominator
+    dt_rem = dt - dt_whole
     document = {
         "schema": TARGET_DOMAIN_SCHEMA,
         "name": exp.name,
@@ -292,11 +294,14 @@ def render_target_domain(exp) -> str:
         "truelat1": float(projection.truelat1),
         "truelat2": float(projection.truelat2),
         "stand_lon": float(projection.stand_lon),
-        "time_step_seconds": int(dt),
+        "time_step_seconds": int(dt_whole),
         "spec_bdy_width": int(run.spec_bdy_width),
         "spec_zone": int(run.spec_zone),
         "relax_zone": int(run.relax_zone),
     }
+    if dt_rem:
+        document["time_step_fract_num"] = dt_rem.numerator
+        document["time_step_fract_den"] = dt_rem.denominator
     return json.dumps(document, indent=2, sort_keys=True) + "\n"
 
 
@@ -376,12 +381,18 @@ def coverage_refusal(exp) -> str | None:
     later.  The donor-search margin rides along
     (:func:`target_coverage_refusal`), so what the fit loop accepts is
     a domain whose soil mapping keeps a usable remediation.
+
+    This answers the COVERAGE question and nothing else.  A spec that
+    cannot even be constructed (a non-Lambert projection, a malformed
+    clock) raises :class:`HrrrRouteInputError` with its own cause and
+    remedy; it is NOT returned as if the polygon were off the grid.
+    Absorbing those errors here once wrapped "the root domain spec
+    carries an integer time step" inside "falls outside HRRR coverage
+    ...  Move --polygon inside the HRRR grid", and the user it refused
+    was sent chasing a phantom coverage problem (field, 2026-08-06,
+    dx 1.5 km).
     """
-    try:
-        candidate = target_domain(exp)
-    except (HrrrRouteInputError, ValueError) as error:
-        return str(error)
-    return target_coverage_refusal(candidate)
+    return target_coverage_refusal(target_domain(exp))
 
 
 def coverage_advisory(exp) -> list[str]:

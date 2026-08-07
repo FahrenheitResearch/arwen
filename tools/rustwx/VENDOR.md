@@ -398,6 +398,61 @@ command-line bins and their 9.8 MB test fixtures.
     16.9 km east of the radar, is corrected in `sites.rs` regardless
     (-80.0178 -> -80.2183, the ROC/NCEI survey value).
 
+14. `crates/rw-obs` is new (not in the source workspace): ArWen's
+    observation front doors, one binary per instrument -- `rw_asos`
+    (IEM ASOS/AWOS METAR), `rw_mrms`, `rw_stage4`.  They share a crate
+    because they share substance: one pack container, one seam time
+    spelling, one HTTP agent, one fetch-receipt shape.
+
+    **`rw_asos` is not a crate of Drew's that was copied in, and this
+    entry exists so a later reader does not go looking for one.**  Drew's
+    `rusty-weather` workspace has no ASOS crate, module or binary -- the
+    only METAR code in it is `vendor/metrust/src/io/metar.rs`, a report
+    parser this lane does not call.  What `rw_asos` retells headlessly is
+    the *query pattern* of the GUI's IEM fetch: the `asos.py` endpoint,
+    `tz=Etc/UTC`, `format=onlycomma`, `missing=empty`,
+    `report_type=3&report_type=4`, unpadded date components, and
+    resolving CSV columns by name are all kept verbatim.  Its own module
+    header states the three deliberate departures (the query is bounded
+    by a frozen station list rather than pulling every station on Earth
+    and filtering locally; the station table is frozen and hashed at
+    registration rather than re-read from each fetch; `mslp` and `p01i`
+    are additionally requested).  So the lineage is Drew's stack by
+    pattern and gpuwm's by authorship, exactly as `rw-nexrad` is.
+
+    Provenance of the code in *this* tree: authored in gpuwm on
+    `integration/obs-battery` (`00461023`, 2026-08-03, "three
+    observation front doors, decided against real bytes"), ported here
+    from that branch's tip `326aa23f` on 2026-08-06 under Drew's "yes
+    vendor" authorisation of the same date -- the surface-obs DA lane
+    consumes `{case}/surface-obs/surface.v1.json` and could not produce
+    one on this line.  MIT, the workspace license, as gpuwm-authored
+    code in a gpuwm-authored crate; no third-party attribution rides
+    with it because no third-party source does.  Every dependency was
+    already in the vendor closure, so it builds `--locked --offline`
+    like the rest.
+
+    One adaptation was needed and it is the whole diff against
+    `integration/obs-battery`: `src/bin/mrms.rs` called
+    `rw_nexrad::s3::list_s3_objects(agent, bucket, prefix, None)`, which
+    that branch's older `rw-nexrad` had and this line's newer one has
+    refactored into a request builder -- `list_s3(agent,
+    ListRequest::new(bucket, prefix))?.objects`.  Same roster, still
+    assembled only from pages that proved themselves complete.  `rw_asos`
+    itself is byte-identical to the origin branch.
+
+15. `crates/rw-nexrad` gains a library target (`src/lib.rs`) exposing
+    the four modules the binary already had.  `rw-obs` needs the
+    anonymous-S3 client -- `s3::{build_agent, parse_time, list_s3,
+    object_url, boxed_error, hex_sha256}` -- and the alternative to
+    exposing it is a second S3 client, re-earning the bugs that
+    module's nine-round fix-then-attack audit already fixed.  `main.rs`
+    swapped four `mod` lines for one `use rw_nexrad::{decode, live,
+    pack, s3}`; no item moved, changed signature, or changed behaviour,
+    and the crate's 104 tests pass unchanged.  This is the same move
+    `integration/obs-battery` made for the same reason, redone here
+    because that branch's `rw-nexrad` predates this line's `live.rs`.
+
 ## vendor/crates-io
 
 `cargo vendor --locked vendor/crates-io` output: every crates.io and

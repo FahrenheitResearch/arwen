@@ -1675,6 +1675,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rw-goes"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rustls",
+ "rustls-rustcrypto",
+ "rw-sat",
+ "rw-store",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ureq",
+]
+
+[[package]]
 name = "rw-ingest"
 version = "0.1.0"
 dependencies = [
@@ -1720,6 +1735,26 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "ureq",
+]
+
+[[package]]
+name = "rw-sat"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hdf5-reader",
+ "image",
+ "netcrust",
+ "rayon",
+ "rustls",
+ "rustls-rustcrypto",
+ "rustwx-core",
+ "rw-ingest",
+ "rw-store",
+ "serde",
+ "serde_json",
+ "thiserror",
  "ureq",
 ]
 

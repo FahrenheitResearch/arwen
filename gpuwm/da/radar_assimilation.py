@@ -72,11 +72,12 @@ from gpuwm.da.letkf import (RELAXATION_MODES, GriddedObs, LetkfConfig,
                             LetkfDiagnostics, Localization, analyze)
 from gpuwm.da.moments import (MOMENT_POLICIES, DEFAULT_MOMENT_POLICY,
                               validate_analysis_fields)
+from gpuwm.da.obs_goes import goes_grid_to_gridded_obs
 from gpuwm.da.obs_radar import (Z_SOURCES, beam_unit_vectors,
                                 letkf_grid_geometry, radar_grid_to_gridded_obs,
                                 read_document, simulated_radial_velocity)
-from gpuwm.da.obsop import (destagger_u, destagger_v, destagger_w,
-                            earth_relative_winds,
+from gpuwm.da.obsop import (clear_air_floor_dbz, destagger_u, destagger_v,
+                            destagger_w, earth_relative_winds,
                             precipitating_activity_mask,
                             reflectivity_fall_speed)
 from gpuwm.da.positivity import (NON_NEGATIVE_FIELDS, POLICIES,
@@ -167,6 +168,65 @@ class RadarAssimilationConfig:
     #: the same reason the velocity knob exists: representativeness error
     #: the ensemble cannot carry belongs in sigma_o, not in an increment.
     reflectivity_error_inflation: float = 1.0
+    #: Assimilate clear-air ("zero") observations: cells the radar
+    #: measured and found free of significant echo.  Needs the same
+    #: reflectivity provider ``reflectivity`` needs, because a zero is
+    #: differenced against the same H(x).
+    #:
+    #: Off by default and separate from ``reflectivity`` on purpose.  The
+    #: two do opposite things -- echo places and maintains storms, zeroes
+    #: erase them -- and they fail in opposite directions, so being able
+    #: to run one without the other is what makes an ablation possible.
+    #:
+    #: **On the zero-variance background.**  The known limitation of this
+    #: lane is that the ensemble cannot invent echo it never made:
+    #: :mod:`gpuwm.da.perturb` applies its species factor only where the
+    #: background pair is jointly active (:1346-1355), so where every
+    #: member is clear the prior spread is zero and no observation can
+    #: move the state.  That limit binds the ECHO half of reflectivity DA
+    #: -- radar sees a storm, model has none, filter cannot create one.
+    #:
+    #: It does **not** bind clear-air zeroes, and no additive mechanism is
+    #: introduced for them here.  A zero only carries information where
+    #: H(x) exceeds the clear-air floor, which is exactly where the model
+    #: HAS condensate -- and where the model has condensate the species
+    #: perturbation has been applied and the prior spread is non-zero.
+    #: Where model and radar are both clear the innovation is identically
+    #: zero and a zero-variance background is the correct and harmless
+    #: answer.  So suppression works with the machinery that already
+    #: exists; it is initiation that needs something this filter is not.
+    #:
+    #: The mitigation for the echo half stays where the lane already put
+    #: it -- ``gpuwm.da.perturb``'s ``SpeciesPerturbation``, configured by
+    #: the caller's cycle policy, off unless asked for -- rather than
+    #: being baked in here.  :mod:`gpuwm.da.letkf` (:119-131) assigns
+    #: ensemble construction to the caller on purpose, and additive
+    #: inflation, the one family that restores rank rather than
+    #: amplitude, is documented there as absent.
+    clear_air: bool = False
+    #: Localization for the clear-air batch; None falls back to
+    #: ``localization``.  A tighter radius than echo is the usual choice:
+    #: a zero is evidence about the cell that was measured, and spreading
+    #: it far means one clear gate erasing condensate it never sampled.
+    clear_air_localization: Localization | None = None
+    #: Keep at most one clear-air observation per ``s x s`` horizontal
+    #: block per level.  Defaults to 4 rather than 1 because clear air is
+    #: the overwhelming majority of any volume and is far smoother than
+    #: echo -- every cell in a lens carries nearly the same number, so
+    #: they add rank-1 information and rank-starvation cost in proportion
+    #: to their count.  See the rank note on
+    #: ``reflectivity_thinning_cells``.
+    clear_air_thinning_cells: int = 4
+    #: Multiplies the file's clear-air error standard deviations.  The
+    #: file's own ``clear_air_error_dbz`` is already larger than the echo
+    #: error; this is the cycle-side knob on top of it.
+    clear_air_error_inflation: float = 1.0
+    #: The dBZ value a clear-air observation carries.  None derives it
+    #: from ``mp_physics`` via
+    #: :func:`gpuwm.da.obsop.clear_air_floor_dbz`, which is the sanctioned
+    #: route; an explicit number is honoured and recorded, and is refused
+    #: unless it is finite.
+    clear_air_value_dbz: float | None = None
     #: Multiplies the file's velocity error standard deviations.  The
     #: defensible setting is diagnosed from the innovation statistics this
     #: module itself reports: when mean(d^2) far exceeds
@@ -174,6 +234,28 @@ class RadarAssimilationConfig:
     #: does not represent (storm displacement, unrepresented scales), and
     #: absorbing it into sigma_o is the standard single-knob correction.
     velocity_error_inflation: float = 1.0
+    #: Assimilate the ``gpuwm-obs.goes-grid.v1`` cloud-water-path batch
+    #: beside the radar ones.  Needs a provider; see
+    #: :func:`gpuwm.da.obsop_cwp.checkpoint_cwp_provider`.
+    cwp: bool = False
+    #: Per-type localization for CWP.  This one is not decoration: CWP is a
+    #: column integral carried at one level (see :mod:`gpuwm.da.obs_goes`),
+    #: so its vertical radius is what decides whether the observation acts
+    #: on the column it integrated or on a slab.  Falls back to
+    #: ``localization``, which is tuned for radar and is very probably too
+    #: shallow for this.
+    cwp_localization: Localization | None = None
+    #: The same rank argument as the reflectivity knob, applied to CWP.
+    #: A satellite cloud field is smoother than a dBZ field and the pixels
+    #: are 2 km, so a localisation lens holds far more CWP observations
+    #: than the ensemble has degrees of freedom.
+    cwp_thinning_cells: int = 1
+    #: Multiplies the file's CWP error standard deviations.  Those errors
+    #: are UNCALIBRATED by construction (there is no measured CWP error
+    #: covariance for this system), so this knob is inflating a number that
+    #: was already a stated assumption -- which is a reason to record it,
+    #: not a reason to avoid it.
+    cwp_error_inflation: float = 1.0
     #: Which posterior relaxation ``rtps_alpha`` drives, threaded to
     #: :class:`gpuwm.da.letkf.LetkfConfig` unchanged.
     relaxation: str = "rtps"
@@ -216,9 +298,11 @@ class RadarAssimilationConfig:
         if len(set(self.analysis_fields)) != len(self.analysis_fields):
             raise RadarAssimilationError(
                 f"analysis_fields has duplicates: {self.analysis_fields!r}")
-        if not (self.velocity or self.reflectivity):
+        if not (self.velocity or self.reflectivity or self.clear_air
+                or self.cwp):
             raise RadarAssimilationError(
-                "neither velocity nor reflectivity is enabled, so this "
+                "none of velocity, reflectivity, clear_air or cwp is "
+                "enabled, so this "
                 "config would assimilate nothing. An intentional "
                 "no-observation cycle is a run_cycles call with "
                 "assimilate=None, not an empty analysis here")
@@ -234,7 +318,9 @@ class RadarAssimilationConfig:
         for label, cells in (
                 ("velocity_thinning_cells", self.velocity_thinning_cells),
                 ("reflectivity_thinning_cells",
-                 self.reflectivity_thinning_cells)):
+                 self.reflectivity_thinning_cells),
+                ("clear_air_thinning_cells", self.clear_air_thinning_cells),
+                ("cwp_thinning_cells", self.cwp_thinning_cells)):
             if int(cells) < 1:
                 raise RadarAssimilationError(
                     f"{label} must be >= 1, got {cells!r} (1 keeps every "
@@ -242,7 +328,10 @@ class RadarAssimilationConfig:
         for label, value in (
                 ("velocity_error_inflation", self.velocity_error_inflation),
                 ("reflectivity_error_inflation",
-                 self.reflectivity_error_inflation)):
+                 self.reflectivity_error_inflation),
+                ("clear_air_error_inflation",
+                 self.clear_air_error_inflation),
+                ("cwp_error_inflation", self.cwp_error_inflation)):
             inflation = float(value)
             if not np.isfinite(inflation) or inflation < 1.0:
                 raise RadarAssimilationError(
@@ -275,7 +364,30 @@ class RadarAssimilationConfig:
             raise RadarAssimilationError(
                 f"positivity_policy must be one of {POLICIES} or None, got "
                 f"{self.positivity_policy!r}")
-        if self.reflectivity and not any(
+        if self.clear_air:
+            if self.clear_air_value_dbz is not None:
+                floor = float(self.clear_air_value_dbz)
+                if not np.isfinite(floor):
+                    raise RadarAssimilationError(
+                        f"clear_air_value_dbz is "
+                        f"{self.clear_air_value_dbz!r}; it must be a finite "
+                        "dBZ value or None to derive it from mp_physics")
+            elif self.mp_physics is None:
+                raise RadarAssimilationError(
+                    "clear_air is enabled with neither clear_air_value_dbz "
+                    "nor mp_physics. A clear-air observation is differenced "
+                    "against H(x), so it must carry the ACTIVE scheme's "
+                    "clear-air floor -- -35 dBZ for the refl10cm family, "
+                    "0 dBZ for NSSL mp18. With neither the scheme nor the "
+                    "value stated there is nothing to derive it from, and "
+                    "the wrong floor is silent: two agreeing clear skies "
+                    "produce a 35 dB innovation and the analysis removes "
+                    "condensate to chase it")
+            else:
+                # Raises for a scheme whose floor nobody has read, here at
+                # config time rather than mid-cycle.
+                clear_air_floor_dbz(int(self.mp_physics))
+        if (self.clear_air or self.reflectivity) and not any(
                 name in NON_NEGATIVE_FIELDS or name == "thp"
                 for name in self.analysis_fields):
             raise RadarAssimilationError(
@@ -288,6 +400,18 @@ class RadarAssimilationConfig:
                 "scheme's moisture and hydrometeor set -- "
                 "gpuwm.da.moments.analysis_fields derives it -- or turn "
                 "reflectivity off")
+        if self.cwp and not any(
+                name in NON_NEGATIVE_FIELDS or name == "thp"
+                for name in self.analysis_fields):
+            raise RadarAssimilationError(
+                "cwp is enabled but no analysed field is a thermodynamic or "
+                f"hydrometeor variable ({list(self.analysis_fields)}). Cloud "
+                "water path IS the column condensate; assimilating it "
+                "against a wind-only state vector relies entirely on "
+                "wind-condensate sampling covariance, which at storm scale "
+                "is noise. Analyse the scheme's moisture and hydrometeor "
+                "set -- gpuwm.da.moments.analysis_fields derives it -- or "
+                "turn cwp off")
         if self.solve_device not in ("host", "cuda"):
             raise RadarAssimilationError(
                 f"solve_device must be 'host' or 'cuda', got "
@@ -624,6 +748,102 @@ def _thinned_reflectivity_document(document, cfg: RadarAssimilationConfig):
     return copied, receipt
 
 
+def _thinned_clear_air_document(document, cfg: RadarAssimilationConfig):
+    """A working copy with the clear-air batch thinned/inflated.
+
+    Same rule and same determinism as the reflectivity path, keyed on
+    ``z0_count`` -- the cell in each block with the most supporting
+    measured gates wins, which is the cell whose clear-air claim rests on
+    the most evidence.
+
+    Thinning matters more here than anywhere else in the lane.  Clear air
+    is most of any volume and it is smooth, so an unthinned zero batch
+    puts thousands of near-identical numbers inside one localisation lens
+    against an ensemble with a few tens of degrees of freedom.  That is
+    the rank starvation the velocity precedent already measured, with a
+    field that is far more correlated with itself than velocity is.
+    """
+    cells = int(cfg.clear_air_thinning_cells)
+    inflation = float(cfg.clear_air_error_inflation)
+    if cells == 1 and inflation == 1.0:
+        return document, None
+    variables = dict(document["variables"])
+    if "z0_mask" not in variables:
+        # The adapter raises the explanatory error; thinning a batch that
+        # is not there must not pre-empt it with a KeyError.
+        return document, None
+    z0_mask = np.asarray(variables["z0_mask"]).astype(bool)
+    z0_err = np.asarray(variables["z0_err"], dtype=np.float64)
+    counts = variables.get("z0_count")
+    counts = (np.ones_like(z0_err) if counts is None
+              else np.asarray(counts, dtype=np.float64))
+    kept = thin_mask(z0_mask, counts, z0_err, cells) if cells > 1 else z0_mask
+    variables["z0_mask"] = kept.astype(np.int8)
+    if inflation != 1.0:
+        variables["z0_err"] = z0_err * inflation
+    copied = dict(document)
+    copied["variables"] = variables
+    receipt = {
+        "cells": cells,
+        "error_inflation": inflation,
+        "points_before": int(z0_mask.sum()),
+        "points_after": int(kept.sum()),
+        "rule": "one obs per block: most supporting gates, then smallest "
+                "error, then first cell; blocks with no obs keep none",
+        "merged_across_radars": True,
+    }
+    return copied, receipt
+
+
+def _thinned_cwp_document(document, cfg: RadarAssimilationConfig):
+    """A working copy with the CWP column batch thinned.
+
+    The CWP product is 2-D -- one column integral per column -- so the
+    shared :func:`thin_mask` is fed a single-level volume rather than
+    given a second, nearly identical implementation.  The "most gates"
+    key is ``cwp_count``, the valid satellite pixels averaged into the
+    cell, which is the same kind of quantity ``z_count`` is.
+
+    Unlike the two radar helpers this one does **not** apply the error
+    inflation.  :func:`gpuwm.da.obs_goes.goes_grid_to_gridded_obs` does,
+    and doing it in both places would square it silently -- an inflation
+    of 2 would arrive at the filter as 4, which is a factor-of-four change
+    in observation weight that no receipt would name.
+    """
+    cells = int(cfg.cwp_thinning_cells)
+    if cells == 1:
+        return document, None
+    variables = dict(document["variables"])
+    mask = np.asarray(variables["cwp_mask"]).astype(bool)
+    errors = np.asarray(variables["cwp_err"], dtype=np.float64)
+    counts = np.asarray(variables["cwp_count"], dtype=np.float64)
+    kept = thin_mask(mask[None], counts[None], errors[None], cells)[0]
+    variables["cwp_mask"] = kept.astype(np.int8)
+    # cwp_class must follow the mask: the file's own consistency rule is
+    # that a class is set exactly where an observation is, and a thinned
+    # copy that kept the classes of dropped columns would fail the very
+    # check that proves it is still a valid product.
+    classes = np.asarray(variables["cwp_class"], dtype=np.int8)
+    variables["cwp_class"] = np.where(kept, classes, np.int8(-1)).astype(
+        np.int8)
+    variables["obs_level"] = np.where(
+        kept, np.asarray(variables["obs_level"], dtype=np.int32),
+        np.int32(-1)).astype(np.int32)
+    copied = dict(document)
+    copied["variables"] = variables
+    receipt = {
+        "cells": cells,
+        "points_before": int(mask.sum()),
+        "points_after": int(kept.sum()),
+        "rule": "one obs per block: most satellite pixels, then smallest "
+                "error, then first cell; blocks with no obs keep none",
+        "note": "applied to the column product, not per level: there is "
+                "one CWP observation per column by construction. Error "
+                "inflation is applied by the adapter, not here",
+    }
+    return copied, receipt
+
+
 def _thinned_velocity_document(document, cfg: RadarAssimilationConfig):
     """A working copy of the document with thinned/inflated velocities.
 
@@ -719,9 +939,20 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
                           observations, grid,
                           cfg: RadarAssimilationConfig, *,
                           reflectivity_provider=None,
+                          extra_obs=None,
+                          extra_obs_provenance=None,
+                          cwp_observations=None,
+                          cwp_provider=None,
                           diagnostics: LetkfDiagnostics | None = None
                           ) -> tuple[dict, dict]:
-    """One real-radar LETKF analysis over member checkpoints.
+    """One LETKF analysis over member checkpoints, radar and/or satellite.
+
+    The name is kept because every call site uses it; the function is now
+    the multi-source analysis.  Radar observations and GOES cloud water
+    path go into the same solve as separate batches with their own errors,
+    thinning and localisation, which is the only arrangement in which a
+    satellite column integral and a radar gate can constrain the same
+    state without one being re-expressed as the other.
 
     Parameters
     ----------
@@ -730,16 +961,43 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         the file the driver will add the increments to.
     observations
         A ``gpuwm-obs.radar-grid.v1`` path or an already-read document.
+        May be ``None`` when none of ``cfg.velocity``, ``cfg.reflectivity``
+        or ``cfg.clear_air`` is set -- a satellite-only analysis.
     grid
-        The caller's own :class:`~gpuwm.obs.target_grid.TargetGrid`; the
-        file is bound to its arrays (``z_w`` included), never to an
-        identity string.
+        The caller's own :class:`~gpuwm.obs.target_grid.TargetGrid`; every
+        observation file is bound to its arrays (``z_w`` included), never
+        to an identity string.
     cfg
         :class:`RadarAssimilationConfig`.
     reflectivity_provider
         ``(member_index, state_arrays) -> (nz, ny, nx) dBZ``; required
         when ``cfg.reflectivity`` or ``cfg.fall_speed == "reflectivity"``.
         :func:`scheme_reflectivity_provider` builds the scheme-true one.
+    extra_obs
+        Additional, already-validated :class:`~gpuwm.da.letkf.GriddedObs`
+        batches to solve in the SAME analysis (surface observations from
+        :mod:`gpuwm.da.obs_surface`, for instance).  The filter batches
+        observation types independently, so appending them here is the
+        whole integration -- but they must be on this very grid, with
+        member axis in ascending checkpoint-index order, and their
+        simulated H(x) already evaluated; this function cannot check the
+        physics that produced them, only their shapes (the filter does
+        that).  Their innovation statistics join the radar ones in the
+        provenance.
+    extra_obs_provenance
+        JSON-serialisable provenance for ``extra_obs``, recorded verbatim
+        under ``extra_observations``.  Required whenever ``extra_obs`` is
+        non-empty: unattributed observations do not enter an analysis.
+    cwp_observations
+        A ``gpuwm-obs.goes-grid.v1`` path or document; required when
+        ``cfg.cwp``.
+    cwp_provider
+        ``(member_index, state_arrays, obs_class) -> (ny, nx) g m-2``;
+        required when ``cfg.cwp``.
+        :func:`gpuwm.da.obsop_cwp.checkpoint_cwp_provider` builds it.  It
+        takes the observation's phase class because the operator composes
+        model condensate under the phase the retrieval saw, never the
+        model's own -- see :mod:`gpuwm.da.obsop_cwp`.
 
     Returns
     -------
@@ -752,29 +1010,57 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
     """
     if not checkpoints:
         raise RadarAssimilationError("no member checkpoints were given")
-    needs_dbz = cfg.reflectivity or cfg.fall_speed == "reflectivity"
+    needs_dbz = (cfg.reflectivity or cfg.clear_air
+                 or cfg.fall_speed == "reflectivity")
     if needs_dbz and reflectivity_provider is None:
         raise RadarAssimilationError(
             "this config needs member reflectivity (reflectivity="
-            f"{cfg.reflectivity}, fall_speed={cfg.fall_speed!r}) but no "
+            f"{cfg.reflectivity}, clear_air={cfg.clear_air}, "
+            f"fall_speed={cfg.fall_speed!r}) but no "
             "reflectivity_provider was given. Build one with "
             "scheme_reflectivity_provider(run_cfg, base_theta=...) -- the "
             "checkpoint alone cannot supply it, because thb is setup "
             "state and temperature is not derivable without it")
+    if cfg.cwp and cwp_provider is None:
+        raise RadarAssimilationError(
+            "cwp is enabled but no cwp_provider was given. Build one with "
+            "gpuwm.da.obsop_cwp.checkpoint_cwp_provider(run_cfg, c1h=..., "
+            "c2h=..., dnw=..., mub2d=...) -- the checkpoint alone cannot "
+            "supply it, because the eta coordinate arrays and the base "
+            "column mass are setup state")
+    if cfg.cwp and cwp_observations is None:
+        raise RadarAssimilationError(
+            "cwp is enabled but no cwp_observations were given; a "
+            "gpuwm-obs.goes-grid.v1 path or document is required")
 
-    document = read_document(observations, expected_grid=grid,
-                             expected_grid_identity=grid.identity_sha256())
+    needs_radar = cfg.velocity or cfg.reflectivity or cfg.clear_air
+    document = None
     thinning_receipt = None
-    if cfg.velocity:
-        document, thinning_receipt = _thinned_velocity_document(document,
-                                                                cfg)
     z_thinning_receipt = None
-    if cfg.reflectivity:
-        document, z_thinning_receipt = _thinned_reflectivity_document(
-            document, cfg)
-    dims = document["dims"]
-    shape = (int(dims["level"]), int(dims["south_north"]),
-             int(dims["west_east"]))
+    z0_thinning_receipt = None
+    if needs_radar:
+        if observations is None:
+            raise RadarAssimilationError(
+                f"velocity={cfg.velocity} / reflectivity={cfg.reflectivity} "
+                f"/ clear_air={cfg.clear_air} are enabled but no radar "
+                "observations were given")
+        document = read_document(
+            observations, expected_grid=grid,
+            expected_grid_identity=grid.identity_sha256())
+        if cfg.velocity:
+            document, thinning_receipt = _thinned_velocity_document(document,
+                                                                    cfg)
+        if cfg.reflectivity:
+            document, z_thinning_receipt = _thinned_reflectivity_document(
+                document, cfg)
+        if cfg.clear_air:
+            document, z0_thinning_receipt = _thinned_clear_air_document(
+                document, cfg)
+        dims = document["dims"]
+        shape = (int(dims["level"]), int(dims["south_north"]),
+                 int(dims["west_east"]))
+    else:
+        shape = (int(grid.nz), int(grid.ny), int(grid.nx))
 
     indices = sorted(int(index) for index in checkpoints)
     states = {index: read_checkpoint_state(checkpoints[index])
@@ -825,6 +1111,20 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         reflectivity_simulated = np.stack(
             [dbz_by_member[index] for index in indices])
 
+    # A clear-air observation is differenced against exactly the same
+    # H(x) an echo observation is -- the same scheme, the same members,
+    # the same array.  What differs is where it applies and what value it
+    # carries, not how the model side is computed.
+    clear_air_simulated = None
+    clear_air_value = None
+    if cfg.clear_air:
+        clear_air_simulated = np.stack(
+            [dbz_by_member[index] for index in indices])
+        clear_air_value = (
+            float(cfg.clear_air_value_dbz)
+            if cfg.clear_air_value_dbz is not None
+            else clear_air_floor_dbz(int(cfg.mp_physics)))
+
     velocity_simulated = None
     if cfg.velocity:
         winds = {}
@@ -843,15 +1143,100 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
                 simulated_radial_velocity(*winds[index], beam)
                 for index in indices])
 
-    batches, adapter_provenance = radar_grid_to_gridded_obs(
-        document, expected_grid=grid,
-        expected_grid_identity=grid.identity_sha256(),
-        reflectivity_simulated=reflectivity_simulated,
-        velocity_simulated=velocity_simulated,
-        z_source=cfg.z_source,
-        reflectivity_localization=cfg.reflectivity_localization,
-        velocity_localization=cfg.velocity_localization,
-        radars=None if cfg.radars is None else list(cfg.radars))
+    batches = []
+    adapter_provenance = None
+    if needs_radar:
+        batches, adapter_provenance = radar_grid_to_gridded_obs(
+            document, expected_grid=grid,
+            expected_grid_identity=grid.identity_sha256(),
+            reflectivity_simulated=reflectivity_simulated,
+            velocity_simulated=velocity_simulated,
+            z_source=cfg.z_source,
+            reflectivity_localization=cfg.reflectivity_localization,
+            velocity_localization=cfg.velocity_localization,
+            clear_air_simulated=clear_air_simulated,
+            clear_air_value_dbz=clear_air_value,
+            clear_air_localization=cfg.clear_air_localization,
+            # Already applied to z0_err in the thinned document above, the
+            # same way velocity and reflectivity inflate theirs. Passing it
+            # again here would square it.
+            clear_air_error_inflation=1.0,
+            radars=None if cfg.radars is None else list(cfg.radars))
+
+    extra_batches = list(extra_obs) if extra_obs else []
+    if extra_batches:
+        if extra_obs_provenance is None:
+            raise RadarAssimilationError(
+                f"{len(extra_batches)} extra observation batch(es) were "
+                "given with no extra_obs_provenance; unattributed "
+                "observations do not enter an analysis")
+        radar_names = {batch.name for batch in batches}
+        for batch in extra_batches:
+            if not isinstance(batch, GriddedObs):
+                raise RadarAssimilationError(
+                    "extra_obs entries must be GriddedObs, got "
+                    f"{type(batch).__name__}")
+            if batch.name in radar_names:
+                raise RadarAssimilationError(
+                    f"extra observation batch {batch.name!r} collides "
+                    "with a radar batch name; two batches with one name "
+                    "would be indistinguishable in every receipt")
+            expected = np.shape(batch.mask)
+            if tuple(expected) != shape:
+                raise RadarAssimilationError(
+                    f"extra observation batch {batch.name!r} is on a "
+                    f"{tuple(expected)} grid, this analysis is on {shape}")
+            simulated_members = int(np.shape(batch.simulated)[0])
+            if simulated_members != len(indices):
+                raise RadarAssimilationError(
+                    f"extra observation batch {batch.name!r} carries H(x) "
+                    f"for {simulated_members} member(s), the checkpoint "
+                    f"set has {len(indices)}; the member axis must be the "
+                    "ascending checkpoint-index order")
+        batches = batches + extra_batches
+
+    # -- the satellite batch -------------------------------------------------
+    # Read, thin, THEN evaluate H(x): the operator composes model
+    # condensate under the observation's phase class, so the class it is
+    # handed has to be the one that survived thinning, not the one the
+    # file started with.
+    cwp_thinning_receipt = None
+    cwp_provenance = None
+    if cfg.cwp:
+        from gpuwm.da.obs_goes import (  # noqa: PLC0415
+            read_document as read_goes_document)
+
+        cwp_document = read_goes_document(
+            cwp_observations, expected_grid=grid,
+            expected_grid_identity=grid.identity_sha256())
+        cwp_document, cwp_thinning_receipt = _thinned_cwp_document(
+            cwp_document, cfg)
+        obs_class = np.asarray(cwp_document["variables"]["cwp_class"],
+                               dtype=np.int8)
+        cwp_stack = []
+        for index in indices:
+            simulated = np.asarray(
+                cwp_provider(index, states[index], obs_class),
+                dtype=np.float64)
+            if simulated.shape != shape[1:]:
+                raise RadarAssimilationError(
+                    f"cwp_provider returned {simulated.shape} for member "
+                    f"{index}; a column integral on this grid is "
+                    f"{shape[1:]}")
+            cwp_stack.append(simulated)
+        cwp_batches, cwp_provenance = goes_grid_to_gridded_obs(
+            cwp_document, expected_grid=grid,
+            expected_grid_identity=grid.identity_sha256(),
+            cwp_simulated=np.stack(cwp_stack),
+            localization=cfg.cwp_localization,
+            error_inflation=cfg.cwp_error_inflation)
+        batches = list(batches) + list(cwp_batches)
+
+    if not batches:
+        raise RadarAssimilationError(
+            "no observation batch was built, so this analysis would move "
+            "nothing. The config enabled a type whose adapter returned "
+            "nothing, which is a bug rather than an empty cycle")
 
     innovations = innovation_summary(batches)
 
@@ -949,6 +1334,26 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         "reflectivity_thinning": z_thinning_receipt,
         "reflectivity_error_inflation": float(
             cfg.reflectivity_error_inflation),
+        "clear_air": {
+            "enabled": bool(cfg.clear_air),
+            "thinning": z0_thinning_receipt,
+            "error_inflation": float(cfg.clear_air_error_inflation),
+            "value_dbz": clear_air_value,
+            "value_source": (
+                None if not cfg.clear_air
+                else ("explicit" if cfg.clear_air_value_dbz is not None
+                      else f"mp_physics={cfg.mp_physics} H(x) floor")),
+        },
+        "cwp_assimilated": bool(cfg.cwp),
+        "cwp_thinning": cwp_thinning_receipt,
+        "cwp_error_inflation": float(cfg.cwp_error_inflation),
+        "cwp_localization_horizontal_m": (
+            None if cfg.cwp_localization is None
+            else float(cfg.cwp_localization.horizontal_m)),
+        "cwp_localization_vertical_m": (
+            None if cfg.cwp_localization is None
+            else float(cfg.cwp_localization.vertical_m)),
+        "cwp_observations": cwp_provenance,
         "moment_policy": moment_receipt,
         "positivity": positivity_receipt,
         "solve_device": cfg.solve_device,
@@ -956,6 +1361,8 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         "checkpoints": {int(index): Path(checkpoints[index]).name
                         for index in indices},
         "observations": adapter_provenance,
+        "extra_observations": (extra_obs_provenance if extra_batches
+                               else None),
         "innovations": innovations,
         "filter": {
             "active_points": int(diagnostics.active_points),
@@ -963,6 +1370,32 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
             "max_local_obs": int(diagnostics.max_local_obs),
             "batches": int(diagnostics.batches),
             "chunk_points": int(diagnostics.chunk_points),
+            # The chunk the sizing chose up front, and how many times a
+            # device allocation failure halved it mid-analysis.  Equal
+            # initial/final with 0 shrinks is the healthy case; a nonzero
+            # shrink count means the analysis survived on the degradation
+            # path and the memory model under-read the card that ran it.
+            "chunk_points_initial": int(
+                getattr(diagnostics, "chunk_points_initial", 0)),
+            "chunk_oom_shrinks": int(
+                getattr(diagnostics, "chunk_oom_shrinks", 0)),
+            "solve_bytes_per_point": int(
+                getattr(diagnostics, "solve_bytes_per_point", 0)),
+            # Device bytes in use against pool bytes held, at the end of
+            # the chunk loop.  The GAP is the part of the card the LETKF
+            # budget does not govern and the pool cap cannot reclaim: the
+            # whole-domain arrays the budget excludes by design, plus
+            # anything allocated outside the pool.  It is the term that
+            # explains a RAW cudaErrorMemoryAllocation, which cupy cannot
+            # raise -- cupy releases and retries before it gives up -- so
+            # a card that dies with one died on memory this number counts
+            # and the budget does not.
+            "device_used_mib": round(float(
+                getattr(diagnostics, "device_used_mib", 0.0)), 1),
+            "pool_total_mib": round(float(
+                getattr(diagnostics, "pool_total_mib", 0.0)), 1),
+            "device_pool_gap_mib": round(float(
+                getattr(diagnostics, "device_pool_gap_mib", 0.0)), 1),
             "relaxation": str(getattr(diagnostics, "relaxation", "rtps")),
             "rtps_alpha": float(getattr(diagnostics, "rtps_alpha", 0.0)),
             # WHICH eigensolver factored the R x R matrix, and how hard it

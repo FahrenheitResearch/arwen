@@ -147,6 +147,7 @@ pub enum BatchProductKind {
     Direct,
     Derived,
     Heavy,
+    Generic,
     Windowed,
 }
 
@@ -156,6 +157,7 @@ impl BatchProductKind {
             Self::Direct => "direct",
             Self::Derived => "derived",
             Self::Heavy => "heavy",
+            Self::Generic => "generic",
             Self::Windowed => "windowed",
         }
     }
@@ -171,6 +173,9 @@ pub struct BatchProductOption {
     pub slug: String,
     pub kind: BatchProductKind,
     pub source_fields: Vec<String>,
+    /// Stored units of the backing variable, when the product IS one
+    /// stored variable (derived/heavy grids and generic `var:` rows).
+    pub units: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +224,7 @@ pub fn inspect_renderable_products(
                 slug,
                 kind: BatchProductKind::Direct,
                 source_fields,
+                units: None,
             });
         }
     }
@@ -239,6 +245,43 @@ pub fn inspect_renderable_products(
                 BatchProductKind::Derived
             },
             source_fields: vec![slug.clone()],
+            units: store.surface_variable(slug).map(|var| var.units.clone()),
+        });
+    }
+
+    // Every remaining stored 2-D variable is renderable through the generic
+    // lane as `var:<name>`.  A variable that is already the SOLE source
+    // field of a named product above is excluded -- listing it would render
+    // the same grid twice under two slugs -- and every exclusion says so on
+    // stderr rather than silently thinning the catalog.
+    let sole_source_of_named: HashSet<String> = products
+        .iter()
+        .filter_map(|product| match product.source_fields.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        })
+        .collect();
+    for variable in store.surface_variables() {
+        if let Err(reason) = crate::render_all::validate_generic_variable_name(&variable.name) {
+            eprintln!(
+                "GENERIC_EXCLUDED\t{}\tname is not request-safe: {reason}",
+                variable.name.escape_debug()
+            );
+            continue;
+        }
+        if sole_source_of_named.contains(&variable.name) {
+            eprintln!(
+                "GENERIC_EXCLUDED\t{}\talready rendered by a named product using exactly \
+                 this stored grid",
+                variable.name
+            );
+            continue;
+        }
+        products.push(BatchProductOption {
+            slug: format!("var:{}", variable.name),
+            kind: BatchProductKind::Generic,
+            source_fields: vec![variable.name.clone()],
+            units: Some(variable.units.clone()),
         });
     }
 
@@ -261,6 +304,7 @@ pub fn inspect_renderable_products(
                     slug: product.slug().to_string(),
                     kind: BatchProductKind::Windowed,
                     source_fields: Vec::new(),
+                    units: None,
                 }),
         );
     }
@@ -373,6 +417,7 @@ pub fn run_batch_render(
         partition_products(&request.product_spec).map_err(|err| err.to_string())?;
     dedup(&mut product_request.direct);
     dedup(&mut product_request.derived);
+    dedup(&mut product_request.generic);
     dedup(&mut product_request.windowed);
 
     let stored_hours = crate::render_all::windowed_store::stored_run_hours(
@@ -421,6 +466,12 @@ pub fn run_batch_render(
         };
         (kind, slug)
     }));
+    per_hour.extend(
+        product_request
+            .generic
+            .iter()
+            .map(|name| (BatchProductKind::Generic, format!("var:{name}"))),
+    );
     validate_work(
         &request,
         &hours,
@@ -720,6 +771,19 @@ fn render_hour_item(
     kind: BatchProductKind,
     slug: &str,
 ) -> Result<ProductOutcome, String> {
+    if kind == BatchProductKind::Generic {
+        let variable = slug.strip_prefix("var:").ok_or_else(|| {
+            format!("internal generic product identity {slug:?} is missing the 'var:' prefix")
+        })?;
+        let rendered = crate::render_all::store_render::render_generic_store_variable(
+            store, config, hour, variable,
+        )
+        .map_err(|err| err.to_string())?;
+        return Ok(ProductOutcome::Rendered {
+            output_path: rendered.output_path,
+            render_ms: rendered.total_ms,
+        });
+    }
     let single = vec![slug.to_string()];
     let empty: &[String] = &[];
     let (direct, derived) = if kind == BatchProductKind::Direct {
@@ -727,7 +791,7 @@ fn render_hour_item(
     } else {
         (empty, single.as_slice())
     };
-    let mut outcome = render_hour_products(config, store, hour, direct, derived, None)
+    let mut outcome = render_hour_products(config, store, hour, direct, derived, empty, None)
         .map_err(|err| err.to_string())?;
     if let Some(rendered) = outcome.rendered.pop() {
         return Ok(ProductOutcome::Rendered {
@@ -1123,7 +1187,15 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::infer_run_cycle;
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
+
+    use rustwx_core::{CanonicalField, FieldSelector, GridShape, LatLonGrid, SelectedField2D};
+    use rw_store::ingest::{DerivedFieldInput, write_hour_from_fields_with_derived};
+    use rw_store::run::RwsRunManifest;
+    use rw_store::writer::HourWriter;
+
+    use super::*;
 
     #[test]
     fn infers_operational_and_local_wrf_run_names() {
@@ -1136,5 +1208,223 @@ mod tests {
             Some(("20110524".to_string(), 18))
         );
         assert_eq!(infer_run_cycle("local_wrf_no_time"), None);
+    }
+
+    fn test_dir(label: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "rusty-weather-batch-{label}-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A store whose one hour carries: a canonical plane that is the sole
+    /// source of a named direct product, a known derived grid, an unknown
+    /// derived-marker diagnostic, and a plane whose selector is neither a
+    /// FieldSelector nor a derived marker.  The last one used to abort
+    /// `StoreFieldSource::open` for the WHOLE hour.
+    fn write_mixed_store(root: &std::path::Path, run: &str) -> (String, Vec<String>) {
+        let shape = GridShape::new(4, 3).unwrap();
+        let lat = vec![
+            35.0, 35.0, 35.0, 35.0, 36.0, 36.0, 36.0, 36.0, 37.0, 37.0, 37.0, 37.0,
+        ];
+        let lon = vec![
+            -100.0, -99.0, -98.0, -97.0, -100.0, -99.0, -98.0, -97.0, -100.0, -99.0, -98.0, -97.0,
+        ];
+        let grid = LatLonGrid::new(shape, lat, lon).unwrap();
+        let temperature_selector = FieldSelector::height_agl(CanonicalField::Temperature, 2);
+        let temperature_values: Vec<f32> = (0..12).map(|value| 270.0 + value as f32).collect();
+        let temperature = SelectedField2D::new(
+            temperature_selector,
+            "K",
+            grid,
+            temperature_values.clone(),
+        )
+        .unwrap();
+        let sbcape_values: Vec<f32> = (0..12).map(|value| 500.0 + value as f32 * 100.0).collect();
+        let custom_values: Vec<f32> = (0..12).map(|value| value as f32).collect();
+        write_hour_from_fields_with_derived(
+            root,
+            "wrf",
+            run,
+            0,
+            &[("temperature_2m", &temperature)],
+            &[
+                DerivedFieldInput {
+                    name: "sbcape",
+                    units: "J/kg",
+                    values: &sbcape_values,
+                },
+                DerivedFieldInput {
+                    name: "custom_diagnostic_plane",
+                    units: "widgets",
+                    values: &custom_values,
+                },
+            ],
+            &[],
+            "batch-render-test",
+            1_800_000_000,
+        )
+        .unwrap();
+
+        // Rewrite the hour file with one extra variable whose selector is
+        // deliberately opaque.  The writer API cannot spell it, which is
+        // the point: only files, not this build's vocabulary, decide what
+        // a store contains.
+        let manifest =
+            RwsRunManifest::load(&root.join("wrf").join(run).join("run.json")).unwrap();
+        let mystery_values: Vec<f32> = (0..12).map(|value| -2.0 + value as f32 * 0.5).collect();
+        let mut writer = HourWriter::new(
+            "wrf",
+            run,
+            0,
+            manifest.nx,
+            manifest.ny,
+            &manifest.grid_hash,
+            "batch-render-test",
+        );
+        writer
+            .add_surface2d(
+                "temperature_2m",
+                "K",
+                serde_json::to_value(temperature_selector).unwrap(),
+                &temperature_values,
+            )
+            .unwrap();
+        writer
+            .add_surface2d(
+                "sbcape",
+                "J/kg",
+                rw_store::ingest::derived_selector("sbcape"),
+                &sbcape_values,
+            )
+            .unwrap();
+        writer
+            .add_surface2d(
+                "custom_diagnostic_plane",
+                "widgets",
+                rw_store::ingest::derived_selector("custom_diagnostic_plane"),
+                &custom_values,
+            )
+            .unwrap();
+        writer
+            .add_surface2d(
+                "mystery_plane",
+                "widgets",
+                serde_json::json!({ "bespoke": "wrfout attribute soup" }),
+                &mystery_values,
+            )
+            .unwrap();
+        let entry_file = manifest.hours.get(&0).unwrap().file.clone();
+        writer
+            .finish(&root.join("wrf").join(run).join(&entry_file))
+            .unwrap();
+        (
+            "mystery_plane".to_string(),
+            vec![
+                "temperature_2m".to_string(),
+                "sbcape".to_string(),
+                "custom_diagnostic_plane".to_string(),
+                "mystery_plane".to_string(),
+            ],
+        )
+    }
+
+    #[test]
+    fn unknown_selectors_are_nonfatal_and_render_through_the_generic_lane() {
+        let root = test_dir("generic-lane");
+        let out = root.join("out");
+        let run = "local_wrf_20200102_030000";
+        let (mystery, all_variables) = write_mixed_store(&root, run);
+
+        // (a) The opaque selector no longer aborts the hour.
+        let store = StoreFieldSource::open(&root, "wrf", run, 0)
+            .expect("one unknown diagnostic must not abort the whole render hour");
+        assert_eq!(
+            store
+                .surface_variables()
+                .iter()
+                .map(|var| var.name.clone())
+                .collect::<Vec<_>>(),
+            all_variables,
+            "the surface inventory must retain every stored 2-D variable in file order"
+        );
+        assert_eq!(store.surface_variable(&mystery).unwrap().units, "widgets");
+
+        // (b) The catalog lists the opaque plane as a generic product.
+        let catalog = inspect_renderable_products(&root, "wrf", run, 0).unwrap();
+        let generic_row = catalog
+            .products
+            .iter()
+            .find(|product| product.slug == format!("var:{mystery}"))
+            .expect("var:mystery_plane must be in the catalog");
+        assert_eq!(generic_row.kind, BatchProductKind::Generic);
+        assert_eq!(generic_row.units.as_deref(), Some("widgets"));
+
+        // (c) Rendering it through the production batch path yields a PNG.
+        let request = BatchRenderRequest::conservative(
+            &root,
+            "wrf",
+            run,
+            0,
+            format!("var:{mystery}"),
+            &out,
+        );
+        let summary =
+            run_batch_render(request, &AtomicBool::new(false), |_event| {}).unwrap();
+        assert_eq!(summary.rendered, 1, "{summary:?}");
+        assert_eq!(summary.failed, 0);
+        let output = &summary.outputs[0];
+        assert!(output.exists(), "{}", output.display());
+        assert!(
+            std::fs::metadata(output).unwrap().len() > 1_000,
+            "suspiciously small PNG at {}",
+            output.display()
+        );
+        let name = output.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.contains("var_mystery_plane_"), "{name}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn generic_rows_excluded_are_exactly_the_sole_sources_of_named_products() {
+        let root = test_dir("generic-dedup");
+        let run = "local_wrf_20200102_030000";
+        let (_, all_variables) = write_mixed_store(&root, run);
+        let catalog = inspect_renderable_products(&root, "wrf", run, 0).unwrap();
+
+        let sole_sources: std::collections::HashSet<&str> = catalog
+            .products
+            .iter()
+            .filter(|product| product.kind != BatchProductKind::Generic)
+            .filter_map(|product| match product.source_fields.as_slice() {
+                [only] => Some(only.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            sole_sources.contains("temperature_2m"),
+            "2m_temperature must claim its stored plane: {catalog:?}"
+        );
+        assert!(sole_sources.contains("sbcape"), "{catalog:?}");
+
+        for variable in &all_variables {
+            let listed = catalog
+                .products
+                .iter()
+                .any(|product| product.slug == format!("var:{variable}"));
+            let excluded = sole_sources.contains(variable.as_str());
+            assert!(
+                listed != excluded,
+                "variable '{variable}': listed={listed} excluded-by-dedup={excluded}; \
+                 a stored grid must render under exactly one slug"
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 }

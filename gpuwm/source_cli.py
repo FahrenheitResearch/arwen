@@ -687,11 +687,16 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
             errors.append("--static-cache (or use --geog-root)")
         if args.static_receipt is None:
             errors.append("--static-receipt (or use --geog-root)")
+    # --wps-namelist is DELIBERATELY not in this list.  On the
+    # single-domain HRRR route it is optional and it means one thing:
+    # publish the portable authorities beside the native bundle, so a
+    # config-driven forecast stage (the cycling radar-DA driver) can
+    # bind this case.  Omitting it leaves the output root exactly as it
+    # has always been.
     era5_only = {
         "--grib": args.grib,
         "--vtable": args.vtable,
         "--bridge": args.bridge,
-        "--wps-namelist": args.wps_namelist,
         "--static-input": args.static_input,
         "--experiment-config": args.experiment_config,
         "--gfs-series": args.gfs_series,
@@ -1269,6 +1274,8 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
         command.extend(("--static-receipt", str(args.static_receipt)))
     if args.domain_spec is not None:
         command.extend(("--domain-spec", str(args.domain_spec)))
+    if args.wps_namelist is not None:
+        command.extend(("--wps-namelist", str(args.wps_namelist)))
     if args.prepare_workers is not None:
         command.extend(("--prepare-workers", str(args.prepare_workers)))
     if args.preprocess_backend is not None:

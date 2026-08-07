@@ -141,7 +141,7 @@ RESOLVED: dict[str, tuple[str, str]] = {
     "gpuwm/verify/shinhong_ref.py:1275": (
         "gpuwm/verify/shinhong_ref.py",
         "kpbl < kte"),
-    "kernels/shinhong.cu:1354": (
+    "kernels/shinhong.cu:1371": (
         "gpuwm/core/kernels/shinhong.cu",
         "kpbl < kte"),
     # Shin-Hong: the transcription of WRF's br .gt. 0.0 stability-regime
@@ -152,6 +152,17 @@ RESOLVED: dict[str, tuple[str, str]] = {
     "tests/test_mynn_pbl_runtime.py:49": (
         "tests/test_mynn_pbl_runtime.py",
         "sf_sfclay_physics=5, sf_surface_physics=2"),
+    # The two LES closures' transcription headers.  The anchor is the
+    # km_opt the turbulence option row claims that launcher implements,
+    # so a citation that slides onto the other closure's launcher -- the
+    # one drift these two are actually at risk of, since the bodies are
+    # near-identical -- fails here instead of reading plausibly.
+    "gpuwm/core/dycore.py:824": (
+        "gpuwm/core/dycore.py",
+        "WRF v4.6.1 km_opt=2:"),
+    "gpuwm/core/dycore.py:914": (
+        "gpuwm/core/dycore.py",
+        "WRF v4.6.1 km_opt=3:"),
 }
 
 #: OPEN, ENUMERATED CITATION DEFECTS.  Each row is a citation the registry

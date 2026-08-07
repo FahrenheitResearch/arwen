@@ -210,11 +210,20 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         status.say(f"{name}: {arm['what']}")
-        if not wait_for_card(status, args.gate, gate_log, label=name,
-                             poll_seconds=args.poll_seconds,
-                             deadline=deadline):
-            outcomes[name] = "not run (card held to the deadline)"
-            break
+        # An arm that never touches the card must not wait for it.  Radar
+        # fetching, decoding and superobbing are network and CPU; holding
+        # the gate's verdict while they run would idle the card for tens
+        # of minutes and starve whoever is actually queued behind it.
+        # Absent flag means True, so every existing plan behaves as before.
+        if arm.get("needs_gpu", True):
+            if not wait_for_card(status, args.gate, gate_log, label=name,
+                                 poll_seconds=args.poll_seconds,
+                                 deadline=deadline):
+                outcomes[name] = "not run (card held to the deadline)"
+                break
+        else:
+            status.say(f"{name}: declares no GPU need - not gating on the "
+                       "card, and not touching it")
 
         started = time.monotonic()
         failed = None

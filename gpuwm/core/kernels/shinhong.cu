@@ -50,6 +50,20 @@
 //       ckp   :1980  cbrtf same el max (14), more lanes 1840 -> 1903 -> powf
 //     Each site keeps whichever spelling measured closer; the one cbrtf site
 //     is marked at its line below.
+//     THE wscalek ROW IS COMPILER-SPECIFIC AND THE OTHERS ARE NOT.  Those
+//     numbers were measured under NVRTC 13.0.48 (the system CUDA v13.0
+//     toolkit, which CuPy resolved on the certification box until
+//     2026-08-04).  Under 12.8.61/12.8.93/12.9.41/12.9.86 the same cbrtf
+//     spelling still buys exch_h 9 -> 8 and buys NOTHING on dv or tke: the
+//     device cube root changed between the CUDA 12 and CUDA 13 lines, and
+//     the dv/tke halves of that measurement were properties of the 13.0 code
+//     generator rather than of this source.  powf reads 1491308 / 9 / 2005
+//     under every build measured, so the toolchain did not move generally --
+//     only the one intrinsic did.  The spelling STAYS cbrtf: it still wins
+//     exch_h on both lines, and it is 1 ULP from a correctly rounded cube
+//     root on this device where powf(x, h1) is 3 (device probe 2026-08-06,
+//     300k samples).  tests/test_shinhong_wrf461_parity.py carries one ULP
+//     row per compiler and refuses a build it has never measured.
 //   * powf(x, 0.0f) == 1.0f for every x on this device, including +/-0 and
 //     subnormal x (device probe, 2026-08-03); no special case needed, and
 //     the zfac**(pfac_q-pfac) multiply at :968 is kept (zfac is clamped to
@@ -976,8 +990,11 @@ void shinhong_column(const real *u, const real *v, const real *theta,
                 1.0f - (zq[k + 1] - zl1) / (hpbl - zl1), zfmin), 1.0f);
             zfacent[k] = powf(1.0f - zfac, 3.0f);   // (1.-zfac)**3. -- powf
             // The ONE cbrtf site (see the header's per-site table): powf
-            // left dv's worst column at 1491308 ULP; cbrtf lands closer to
-            // the oracle here (dv 46603, exch_h 8) for tke 2005 -> 2022.
+            // left dv's worst column at 1491308 ULP; under NVRTC 13.0.48
+            // cbrtf lands closer to the oracle here (dv 46603, exch_h 8) for
+            // tke 2005 -> 2022.  Under the CUDA 12 line only the exch_h
+            // 9 -> 8 half survives -- the row is compiler-specific and the
+            // header says why.  Do not "simplify" this back to powf.
             real wscalek = cbrtf(
                 ust3 + phifac * karman * wstar3 * (1.0f - zfac));
             real prfac, prfac2, prnumfac;

@@ -160,6 +160,47 @@ EFFECTIVE_EARTH_RATIO = 4.0 / 3.0
 #: :func:`precipitating_activity_mask`.
 Q_ACTIVE_THRESHOLD = 1.0e-9
 
+#: The dBZ value :func:`simulated_reflectivity` returns in fully clear air,
+#: per scheme.  This is the operator's own floor, read off the routes
+#: documented at the top of this module and pinned by
+#: ``tests/test_da_obsop_thompson_gpu.py`` (mp8 = -35) and
+#: ``tests/test_da_obsop_nssl_gpu.py`` (mp18 = 0).
+#:
+#: It exists as a lookup because clear-air ("zero") assimilation needs the
+#: number as *data*: a clear-air observation is differenced against H(x),
+#: so the observation must carry the same floor the operator produces or
+#: two agreeing clear skies yield a 35 dB innovation.  Typing ``-35.0`` at
+#: a call site is the defect this table prevents -- it is right for four
+#: schemes and silently catastrophic for the fifth.
+CLEAR_AIR_FLOOR_DBZ: dict[int, float] = {
+    1: -35.0,
+    6: -35.0,
+    8: -35.0,
+    10: -35.0,
+    18: 0.0,
+    28: -35.0,
+}
+
+
+def clear_air_floor_dbz(mp_physics: int) -> float:
+    """The active scheme's clear-air H(x) value, or a refusal.
+
+    Never falls back to the -35 dBZ majority: an unknown scheme is one
+    whose floor nobody has read, and guessing it wrong is invisible in
+    every diagnostic except the analysis increment.
+    """
+
+    key = int(mp_physics)
+    if key not in CLEAR_AIR_FLOOR_DBZ:
+        raise ValueError(
+            f"no clear-air reflectivity floor is recorded for mp_physics="
+            f"{key}; known schemes are "
+            f"{sorted(CLEAR_AIR_FLOOR_DBZ)}. The floor is not guessable -- "
+            "it is -35 dBZ for the refl10cm family and 0 dBZ for NSSL, and "
+            "assimilating clear air against the wrong one manufactures a "
+            "35 dB innovation wherever the sky is genuinely clear")
+    return CLEAR_AIR_FLOOR_DBZ[key]
+
 #: Sun and Crook fall speed ``vt = 5.40*a*(rho*qr)**0.125`` with
 #: ``a = (ps/p)**0.4`` on the SURFACE pressure and ``rho*qr`` in g m-3,
 #: and the companion reflectivity relation

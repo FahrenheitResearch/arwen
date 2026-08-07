@@ -91,6 +91,7 @@ REFL_10CM_MICROPHYSICS = (1, 6, 8, 10, 18, 28)
 
 MICROPHYSICS_TRANSITION_RECEIPT_NAME = "microphysics-transitions.json"
 FEEDBACK_PROVENANCE_RECEIPT_NAME = "feedback-provenance.json"
+INITIAL_PERTURBATION_RECEIPT_NAME = "initial-perturbation.json"
 FEEDBACK_EXPERIMENTAL_WARNING = (
     "WARNING: feedback = 1 is EXPERIMENTAL and is not certified against "
     "stock WRF yet; the certification reference is in progress."
@@ -317,6 +318,56 @@ def _write_feedback_provenance_receipt(
         os.fsync(stream.fileno())
     os.replace(temporary, path)
     return path, hashlib.sha256(encoded).hexdigest(), payload
+
+
+def _write_initial_perturbation_receipt(
+        outdir: Path, exp: ExperimentConfig, domain_receipts
+        ) -> Path | None:
+    """Atomically publish what the [perturbation] bubbles actually wrote.
+
+    The treatment-proof receipt: the accepted config echoed value for
+    value, plus each initialized domain's per-bubble application stats
+    (cells touched, max theta delta, qv adjustment).  ``None`` -- and no
+    file -- when the experiment carries no block, so an absent block
+    leaves the run directory byte-identical.  Written as soon as the
+    initial states exist, before integration, so even a run that dies
+    mid-flight proves its arm.
+    """
+    if exp.perturbation is None:
+        return None
+    payload = {
+        "schema": "gpuwm-initial-perturbation-receipt-v1",
+        "experiment": exp.name,
+        "config": exp.perturbation.receipt(),
+        "domains": [dict(receipt) for receipt in domain_receipts],
+    }
+    encoded = (
+        json.dumps(payload, indent=2, sort_keys=True, allow_nan=False)
+        + "\n").encode("utf-8")
+    path = Path(outdir) / INITIAL_PERTURBATION_RECEIPT_NAME
+    temporary = path.with_name(f".{path.name}.partial-{os.getpid()}")
+    with temporary.open("wb") as stream:
+        stream.write(encoded)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    for receipt in payload["domains"]:
+        for row in receipt.get("bubbles", ()):
+            if row.get("applied"):
+                print(
+                    f"initial perturbation: bubble {row['bubble']} on "
+                    f"d{receipt['grid_id']:02d} touched "
+                    f"{row['cells_touched']} cells, max theta delta "
+                    f"{row['max_theta_added_k']:.3f} K"
+                    + (", max qv delta "
+                       f"{row['max_qv_delta_kg_kg']:.3e} kg/kg"
+                       if "max_qv_delta_kg_kg" in row else ""))
+            else:
+                print(
+                    f"initial perturbation: bubble {row['bubble']} on "
+                    f"d{receipt['grid_id']:02d} not applied "
+                    f"({row.get('reason', 'unstated')})")
+    return path
 
 
 def _write_microphysics_transition_receipt(
@@ -593,6 +644,9 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
                       scratch_arena=None,
                       dycore_state_workspace=None,
                       radiation_column_chunk=DEFAULT_COLUMN_CHUNK,
+                      static_highres=None,
+                      static_domain_id: int = 1,
+                      initial_perturbation=None,
                       ) -> PreparedRealCase:
     """Run the real-case setup pipeline for one domain.
 
@@ -603,6 +657,14 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     ``start_time`` -- it becomes the live initial state).
     ``trace_gas_overrides`` feeds the RRTMGP trace-gas policy hook;
     ``None`` keeps the scheme's frozen default composition.
+    ``initial_perturbation`` is the validated experiment
+    :class:`gpuwm.experiment.PerturbationConfig` (or ``None``, the OFF
+    contract): its bubbles are applied inside ``initialize_real`` for
+    the START TIME ONLY -- later forcing times contribute unperturbed
+    boundary frames, except the t=0 frame, which reads the perturbed
+    state (a bubble inside the relax zone would enter it; interior
+    bubbles leave every boundary strip byte-identical).  This is the
+    coarse/single domain, so a bubble center outside the grid refuses.
     """
     from gpuwm.core.diagnostics import update_diagnostics
     from gpuwm.core.landuse import (initialize_landuse,
@@ -641,9 +703,26 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
             "present; declare exactly one source")
     geog_selection = (GeogSelection.fallback(geog_root)
                       if geog_selection is None else geog_selection)
+    perturbation_applier = None
+    if initial_perturbation is not None:
+        # Built once, against this (coarse/single) domain's grid, so an
+        # out-of-domain bubble center refuses HERE -- before any decode,
+        # static build, or device work.
+        from gpuwm.ingest.init_perturbation import (
+            build_initial_state_perturbation)
+        perturbation_applier = build_initial_state_perturbation(
+            initial_perturbation, grid, grid_id=int(cfg.grid_id),
+            require_containment=True)
     static = _cached_static_build(
         grid, geog_root, selection=geog_selection)
     landuse_attrs = geog_selection.landuse_global_attrs()
+    if static_highres is not None and getattr(static_highres, "enabled",
+                                              False):
+        from gpuwm.static.highres_production import apply_highres_statics
+        static, _ = apply_highres_statics(
+            static, grid, config=static_highres,
+            domain_id=static_domain_id, case_date=start_time.date(),
+            landuse_attrs=landuse_attrs)
     source_orography = None
     if source_orography_path is not None:
         source_orography = load_source_orography(
@@ -680,6 +759,11 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
             init_kwargs["scratch_arena"] = scratch_arena
         if dycore_state_workspace is not None:
             init_kwargs["dycore_state_workspace"] = dycore_state_workspace
+        if index == 0 and perturbation_applier is not None:
+            # The bubbles perturb the LIVE INITIAL STATE only; the later
+            # forcing times of this loop are boundary material and stay
+            # the unperturbed analysis.
+            init_kwargs["initial_perturbation"] = perturbation_applier
         result = initialize_real(
             met, cfg, coord, static["HGT_M"], **init_kwargs)
         f, e = grid.coriolis_m()
@@ -891,7 +975,10 @@ def prepare_root_experiment_case(exp: ExperimentConfig,
         geog_selection=geog_selection, forcing_catalog=catalog,
         scratch_arena=scratch_arena,
         dycore_state_workspace=dycore_state_workspace,
-        radiation_column_chunk=exp.column_chunk)
+        radiation_column_chunk=exp.column_chunk,
+        static_highres=getattr(data, "static_highres", None),
+        static_domain_id=dc.grid_id,
+        initial_perturbation=exp.perturbation)
 
 
 def prepare_experiment_case(exp: ExperimentConfig,
@@ -1598,6 +1685,10 @@ def resolved_config_report(exp: ExperimentConfig, data: CaseDataConfig,
     add("policy.climatology_date",
         exp.start_time.date().isoformat()
         + " (monthly GEOG fields interpolated to the run date)")
+    highres = getattr(data, "static_highres", None)
+    if highres is not None:
+        for key, value in highres.echo().items():
+            add(f"static.highres.{key}", value)
     add("output.domain_id", f"{data.output_domain}")
     add("output.title", data.output_title)
     add("output.filename_pattern",
@@ -1632,6 +1723,13 @@ def write_static(exp: ExperimentConfig, data: CaseDataConfig,
     selection = GeogSelection.from_case_data(data, domain_id=dc.grid_id)
     fields = build_static(
         grid, data.geog_root, selection=selection)
+    highres = getattr(data, "static_highres", None)
+    if highres is not None and getattr(highres, "enabled", False):
+        from gpuwm.static.highres_production import apply_highres_statics
+        fields, _ = apply_highres_statics(
+            fields, grid, config=highres, domain_id=dc.grid_id,
+            case_date=exp.start_time.date(),
+            landuse_attrs=selection.landuse_global_attrs())
     return _write_npz(output, fields)
 
 
@@ -1697,6 +1795,10 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         _preparation_progress(progress_callback, "prepare-case")
         prepared = prepare_experiment_case(
             exp, data, input_catalog=catalog, forcing_by_time=snapshots)
+        _write_initial_perturbation_receipt(
+            outdir, exp,
+            ([prepared.initial_result.initial_perturbation]
+             if exp.perturbation is not None else ()))
         summary = integrate_prepared_case(
             outdir, prepared, start_time=exp.start_time,
             output_title=data.output_title, domain_id=data.output_domain,
@@ -1722,6 +1824,8 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
 
     model = build_experiment(exp, data)
     print(resolved_tree_config_report(exp, data, model._input_catalog))
+    _write_initial_perturbation_receipt(
+        outdir, exp, getattr(model, "_initial_perturbation_receipts", ()))
     if restart is not None:
         _preparation_progress(progress_callback, "validate-checkpoint")
         restart = validate_manifest_checkpoint(restart)

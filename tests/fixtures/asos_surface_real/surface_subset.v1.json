@@ -1,0 +1,354 @@
+{
+  "schema": "gpuwm-obs.asos-surface.v1",
+  "status": "READY",
+  "provenance": {
+    "source": "asos",
+    "product": "iem-asos-metar",
+    "uri": "C:\\Users\\drew\\AppData\\Local\\Temp\\claude\\C--Users-drew-gpuwm\\fea7a141-0924-4ca3-8cc3-0d448f2facae\\scratchpad\\sfc-obs\\tests\\fixtures\\asos_surface_real\\observations_subset.csv",
+    "sha256": "c67c94c6f54ca6d1bf38c7c1d8f8934cdecf4a04d01a5ca691c148587de42462",
+    "fetched_at": "2026-08-05T17:07:32",
+    "is_stub": false,
+    "stub_reason": ""
+  },
+  "station_table_sha256": "e10ec778da19bf368f146a92e43f4ab2cc94836ed3b344d15039c0ca3efb1ed1",
+  "valid_times": [
+    "2024-05-21T12:00:00",
+    "2024-05-21T13:00:00",
+    "2024-05-21T14:00:00"
+  ],
+  "match_seconds": 600,
+  "min_report_rate": 0.8,
+  "max_screen_rate": 0.05,
+  "screen": {
+    "temperature_min_k": 233.15,
+    "temperature_max_k": 328.15,
+    "wind_min_ms": 0.0,
+    "wind_max_ms": 75.0,
+    "dewpoint_above_temperature_drops": 0,
+    "range_drops": 0,
+    "stations_dropped_by_screen": [],
+    "stations_dropped_by_completeness": [
+      "PEA",
+      "PRO"
+    ]
+  },
+  "stations": [
+    {
+      "station_id": "AMW",
+      "name": "Ames",
+      "latitude": 41.9904,
+      "longitude": -93.6185,
+      "elevation_m": 280.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "BNW",
+      "name": "BOONE MUNI",
+      "latitude": 42.0486,
+      "longitude": -93.8486,
+      "elevation_m": 349.3,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "DSM",
+      "name": "Des Moines",
+      "latitude": 41.534,
+      "longitude": -93.6531,
+      "elevation_m": 294.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "I75",
+      "name": "Osceola",
+      "latitude": 41.0472,
+      "longitude": -93.6876,
+      "elevation_m": 338.3,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "IKV",
+      "name": "ANKENY",
+      "latitude": 41.6878,
+      "longitude": -93.5695,
+      "elevation_m": 270.7,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "MIW",
+      "name": "MARSHALLTOWN",
+      "latitude": 42.1106,
+      "longitude": -92.9163,
+      "elevation_m": 297.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "OXV",
+      "name": "Knoxville",
+      "latitude": 41.2984,
+      "longitude": -93.1114,
+      "elevation_m": 281.9,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "TNU",
+      "name": "NEWTON MUNI",
+      "latitude": 41.6701,
+      "longitude": -93.019,
+      "elevation_m": 287.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    }
+  ],
+  "reports": [
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:00:00",
+      "values": {
+        "dewpoint_2m": 289.81666666666666,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 0.0
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T13:00:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 4.630000000000001
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T14:00:00",
+      "values": {
+        "dewpoint_2m": 288.7055555555555,
+        "temperature_2m": 290.3722222222222,
+        "wind_speed_10m": 8.231111111111112
+      },
+      "flags": []
+    },
+    {
+      "station_id": "BNW",
+      "valid_time": "2024-05-21T12:00:00",
+      "values": {
+        "dewpoint_2m": 290.15,
+        "temperature_2m": 290.15,
+        "wind_speed_10m": 8.231111111111112
+      },
+      "flags": []
+    },
+    {
+      "station_id": "BNW",
+      "valid_time": "2024-05-21T13:00:00",
+      "values": {
+        "dewpoint_2m": 290.15,
+        "temperature_2m": 290.15,
+        "wind_speed_10m": 5.144444444444445
+      },
+      "flags": []
+    },
+    {
+      "station_id": "BNW",
+      "valid_time": "2024-05-21T14:00:00",
+      "values": {
+        "dewpoint_2m": 289.15,
+        "temperature_2m": 289.15,
+        "wind_speed_10m": 5.658888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:00:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "mslp": 100290.0,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 7.202222222222223
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T13:00:00",
+      "values": {
+        "dewpoint_2m": 289.81666666666666,
+        "mslp": 100320.0,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 4.115555555555556
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T14:00:00",
+      "values": {
+        "dewpoint_2m": 289.81666666666666,
+        "mslp": 100270.0,
+        "temperature_2m": 291.4833333333333,
+        "wind_speed_10m": 5.144444444444445
+      },
+      "flags": []
+    },
+    {
+      "station_id": "I75",
+      "valid_time": "2024-05-21T12:00:00",
+      "values": {
+        "dewpoint_2m": 291.3722222222222,
+        "temperature_2m": 294.15,
+        "wind_speed_10m": 4.630000000000001
+      },
+      "flags": []
+    },
+    {
+      "station_id": "I75",
+      "valid_time": "2024-05-21T13:00:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.92777777777775,
+        "wind_speed_10m": 3.6011111111111114
+      },
+      "flags": []
+    },
+    {
+      "station_id": "I75",
+      "valid_time": "2024-05-21T14:00:00",
+      "values": {
+        "dewpoint_2m": 290.76111111111106,
+        "temperature_2m": 293.15,
+        "wind_speed_10m": 3.6011111111111114
+      },
+      "flags": []
+    },
+    {
+      "station_id": "IKV",
+      "valid_time": "2024-05-21T12:00:00",
+      "values": {
+        "dewpoint_2m": 291.15,
+        "temperature_2m": 291.15
+      },
+      "flags": []
+    },
+    {
+      "station_id": "IKV",
+      "valid_time": "2024-05-21T13:00:00",
+      "values": {
+        "dewpoint_2m": 290.15,
+        "temperature_2m": 291.15,
+        "wind_speed_10m": 2.057777777777778
+      },
+      "flags": []
+    },
+    {
+      "station_id": "IKV",
+      "valid_time": "2024-05-21T14:00:00",
+      "values": {
+        "dewpoint_2m": 291.15,
+        "temperature_2m": 291.15
+      },
+      "flags": []
+    },
+    {
+      "station_id": "MIW",
+      "valid_time": "2024-05-21T12:00:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "mslp": 100280.0,
+        "temperature_2m": 290.3722222222222,
+        "wind_speed_10m": 7.202222222222223
+      },
+      "flags": []
+    },
+    {
+      "station_id": "MIW",
+      "valid_time": "2024-05-21T13:00:00",
+      "values": {
+        "dewpoint_2m": 289.81666666666666,
+        "temperature_2m": 291.4833333333333,
+        "wind_speed_10m": 5.658888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "MIW",
+      "valid_time": "2024-05-21T14:00:00",
+      "values": {
+        "dewpoint_2m": 289.81666666666666,
+        "mslp": 100410.0,
+        "temperature_2m": 291.4833333333333,
+        "wind_speed_10m": 0.0
+      },
+      "flags": []
+    },
+    {
+      "station_id": "OXV",
+      "valid_time": "2024-05-21T12:00:00",
+      "values": {
+        "dewpoint_2m": 289.15,
+        "temperature_2m": 292.15,
+        "wind_speed_10m": 3.6011111111111114
+      },
+      "flags": []
+    },
+    {
+      "station_id": "OXV",
+      "valid_time": "2024-05-21T13:00:00",
+      "values": {
+        "dewpoint_2m": 290.15,
+        "temperature_2m": 292.15,
+        "wind_speed_10m": 2.5722222222222224
+      },
+      "flags": []
+    },
+    {
+      "station_id": "OXV",
+      "valid_time": "2024-05-21T14:00:00",
+      "values": {
+        "dewpoint_2m": 290.15,
+        "temperature_2m": 293.15,
+        "wind_speed_10m": 2.057777777777778
+      },
+      "flags": []
+    },
+    {
+      "station_id": "TNU",
+      "valid_time": "2024-05-21T12:00:00",
+      "values": {
+        "dewpoint_2m": 291.15,
+        "temperature_2m": 291.15,
+        "wind_speed_10m": 3.6011111111111114
+      },
+      "flags": []
+    },
+    {
+      "station_id": "TNU",
+      "valid_time": "2024-05-21T13:00:00",
+      "values": {
+        "dewpoint_2m": 291.15,
+        "temperature_2m": 291.15,
+        "wind_speed_10m": 1.5433333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "TNU",
+      "valid_time": "2024-05-21T14:00:00",
+      "values": {
+        "dewpoint_2m": 291.15,
+        "temperature_2m": 291.15,
+        "wind_speed_10m": 2.5722222222222224
+      },
+      "flags": []
+    }
+  ]
+}

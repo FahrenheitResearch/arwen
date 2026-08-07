@@ -1009,6 +1009,8 @@ def prepare_gfs_wrf(
 
     total_started = time.perf_counter()
     exp = load_experiment(Path(experiment_config))
+    from gpuwm.experiment import refuse_unrouted_perturbation
+    refuse_unrouted_perturbation(exp, "GFS-direct prepared-cache")
     physics_selection = front_door_physics_selection(
         exp, physics_profile=physics_profile,
         expert_acknowledgements=expert_acknowledgements)

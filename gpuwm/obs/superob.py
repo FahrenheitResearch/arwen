@@ -17,9 +17,69 @@ beam unit vector is averaged with the velocities and renormalized, so every
 retained velocity ships the look direction that turns it into an
 observation.
 
-**Aliasing is masked, not corrected.**  There is no dealiasing in v1.  Four
-structural defenses run, and it matters exactly what each of them can and
-cannot see:
+**Clear air is an observation, and it is built from measurements only.**
+A cell is reported clear when enough gates were *measured* inside it and
+all of them came back below the significant-echo floor, and no radar saw
+echo there.  The gates that support that claim are finite decoded values;
+a missing gate never contributes.
+
+Which gates can support that claim depends on what the pack it came from
+was able to tell us, and there are two regimes.
+
+**The measurement-only regime** (:data:`CLEAR_AIR_SOURCE`, the default).
+A ``gpuwm-obs.radar-sweeps.v1`` pack carries one plane per moment, in which
+every unusable gate is the same NaN.  Three quite different things produce
+that NaN: raw gate code 0 (*below threshold* -- the radar looked and
+detected nothing, which is precisely the clear-air observation), raw code 1
+(*range folded* -- an ambiguous second-trip return that may be a storm),
+and a radial that never carried the moment at all.  Downstream they are
+indistinguishable, so NaN cannot be evidence of clear air without
+fabricating observations wholesale: on a real KDMX volume that is about
+9.7 million ambiguous gates against 1.1e4 unambiguous ones.  This regime
+therefore uses only the unambiguous remainder -- gates that decoded to a
+real number below ``min_reflectivity_dbz`` -- and accepts a thin product.
+
+**The censored regime** (:data:`CLEAR_AIR_SOURCE_CENSOR`), available when
+the pack is a ``gpuwm-obs.radar-sweeps.v2`` written by
+``rw_nexrad decode --censor-flags``.  There the decoder's own reason for
+each NaN rides beside it as a :class:`~gpuwm.obs.sweeps.Censor` code, so
+"below threshold" is separable from "range folded" and from "never
+collected", and the first of those becomes what it always was in the
+signal: a measurement of nothing.  Pass ``clear_air_from_censor=True`` to
+:func:`superob_volume` to use it.
+
+**Range-folded gates are never clear air, in either regime.**  Raw code 1
+means the radar cannot say which trip the return came from, and the answer
+may be a storm.  It is admitted by no configuration of this module: the
+censored regime tests for equality with one code
+(:data:`~gpuwm.obs.sweeps.Censor.BELOW_THRESHOLD`) rather than for
+"non-echo", and the measurement-only regime never sees a non-finite gate at
+all.  ``clear_air_source`` in the written file records which regime
+produced the zeroes, so a consumer always knows which coverage and which
+error model it is holding.
+
+**Aliasing is masked by default, and corrected on request.**  With
+``SuperobParams.dealias`` left at its default ``None`` nothing in this
+module has changed: the four fail-closed masks below are the whole of the
+alias defense, no velocity is ever modified, and the observation files this
+stage produces are byte-for-byte the ones it has always produced.  Setting
+that field to a :class:`gpuwm.obs.dealias.DealiasParams` turns on
+region-based unfolding -- see :mod:`gpuwm.obs.dealias` for the algorithm and
+its abstention rule -- which runs per sweep *before* everything below, so
+the masks then see velocities whose fold state is known rather than
+suspected.  Two things change when it is on and nothing else does:
+
+* a gate the unfolder could not resolve is dropped and counted, whatever its
+  magnitude, because "I cannot tell" is not an observation;
+* a gate the unfolder *did* resolve is no longer bounded by
+  ``nyquist_reject_fraction`` of Nyquist but by an absolute physical speed,
+  because that fraction exists to drop gates that might be folded and this
+  one's fold state is known.  This is the entire recovery: at a Nyquist of
+  25.51 m/s the 0.8 rule caps the assimilable wind at 20.4 m/s, and a
+  mesocyclone's couplet lives above that.
+
+**Aliasing is masked, not corrected** (the default path).  Four structural
+defenses run, and it matters exactly what each of them can and cannot see:
 
 1. a gate whose speed exceeds a configurable fraction of the sweep's Nyquist
    velocity is dropped and counted;
@@ -58,14 +118,35 @@ from numbers import Real
 
 import numpy as np
 
+from gpuwm.obs.dealias import (STATE_REJECTED, DealiasParams, DealiasParamsError,
+                               dealias_sweep, volume_wind_profile)
 from gpuwm.obs.geometry import (REFRACTION_FACTOR, gate_locations)
-from gpuwm.obs.sweeps import RadarVolume
+from gpuwm.obs.sweeps import Censor, RadarVolume
 from gpuwm.obs.target_grid import TargetGrid
 from gpuwm.static.projection import EARTH_RADIUS_M
 
 #: Moment tokens this stage understands.
 REFLECTIVITY = "REF"
 VELOCITY = "VEL"
+
+#: How the clear-air observations in a product were established.  Written
+#: into the observation file so a consumer can tell what it is trusting; a
+#: consumer that does not recognise the value must refuse the file rather
+#: than assume either one.
+#:
+#: The two regimes differ in *coverage*, not merely in count.  The
+#: measurement-only zeroes sit where a gate decoded to a real number below
+#: the floor, which on a quiet volume is a sparse scatter near the radar.
+#: The censored zeroes additionally cover everywhere the radar reported
+#: below-threshold, which is most of the clear sky it looked at.  Reading
+#: one as the other misstates how much of the domain was observed, which is
+#: exactly the error that turns a thin honest product into a confident
+#: wrong one.
+CLEAR_AIR_SOURCE = "finite_below_floor"
+CLEAR_AIR_SOURCE_CENSOR = "below_threshold_and_finite_below_floor"
+
+#: Every value :data:`CLEAR_AIR_SOURCE` may take.
+CLEAR_AIR_SOURCES = (CLEAR_AIR_SOURCE, CLEAR_AIR_SOURCE_CENSOR)
 
 #: Radials processed per geometry pass.  Peak memory, not correctness.
 _RADIAL_BLOCK = 120
@@ -106,6 +187,8 @@ _POSITIVE_FIELDS = (
     "vr_error_floor_ms",
     "refraction_factor",
     "earth_radius_m",
+    "clear_air_min_gates",
+    "clear_air_error_dbz",
 )
 
 #: Values that may take any sign but must be a number.  A NaN reflectivity
@@ -143,6 +226,120 @@ def _fold_boundaries(values: np.ndarray, nyquist: float,
     flags[:, :-1] |= boundary
     flags[:, 1:] |= boundary
     return flags, int(boundary.sum()), int(finite.sum())
+
+
+@dataclass
+class _DealiasTotals:
+    """Volume-wide three-state account, summed over sweeps.
+
+    ``unchanged + unfolded + rejected`` equals the number of finite velocity
+    gates the unfolder was offered, exactly, for every volume.  That identity
+    is the whole contract: a gate cannot quietly fall out of the accounting,
+    and a test asserts it rather than trusting it.
+    """
+
+    sweeps_dealiased: int = 0
+    gates_offered: int = 0
+    gates_unchanged: int = 0
+    gates_unfolded: int = 0
+    gates_rejected: int = 0
+    #: The subset of rejections that reached the gridding stage -- a refused
+    #: gate outside the grid or beyond range costs nothing, and reporting it
+    #: as a loss would overstate the price of abstention.
+    gates_refused_at_grid: int = 0
+    regions: int = 0
+    regions_anchored: int = 0
+    regions_linked: int = 0
+    regions_unresolved: int = 0
+    regions_conflict: int = 0
+    edges: int = 0
+    edges_confident: int = 0
+    edges_violated: int = 0
+    reference_bands: int = 0
+    reference_bands_valid: int = 0
+    rejected: dict = field(default_factory=dict)
+    fold_histogram: dict = field(default_factory=dict)
+
+    def add(self, stats: dict) -> None:
+        self.sweeps_dealiased += 1
+        self.gates_offered += int(stats["gates_finite"])
+        self.gates_unchanged += int(stats["gates_unchanged"])
+        self.gates_unfolded += int(stats["gates_unfolded"])
+        self.gates_rejected += int(stats["gates_rejected"])
+        for name in ("regions", "regions_anchored", "regions_linked",
+                     "regions_unresolved", "regions_conflict", "edges",
+                     "edges_confident", "edges_violated"):
+            setattr(self, name, getattr(self, name) + int(stats[name]))
+        reference = stats.get("reference") or {}
+        self.reference_bands += int(reference.get("bands", 0))
+        self.reference_bands_valid += int(reference.get("bands_valid", 0))
+        for reason, count in stats["rejected"].items():
+            self.rejected[reason] = self.rejected.get(reason, 0) + int(count)
+        for fold, count in stats["fold_histogram"].items():
+            key = str(int(fold))
+            self.fold_histogram[key] = self.fold_histogram.get(key, 0) + int(count)
+
+    def to_payload(self) -> dict:
+        payload = {key: value for key, value in asdict(self).items()
+                   if not isinstance(value, dict)}
+        payload["rejected"] = dict(sorted(self.rejected.items()))
+        payload["fold_histogram"] = {
+            key: self.fold_histogram[key]
+            for key in sorted(self.fold_histogram, key=int)}
+        payload["accounting_balances"] = bool(
+            self.gates_unchanged + self.gates_unfolded + self.gates_rejected
+            == self.gates_offered)
+        return payload
+
+
+def _dealias_velocity_sweep(sweep, nyquist, dealias_params, site,
+                            velocity_reference, params) -> dict:
+    """Unfold one sweep's velocity and package what the caller needs.
+
+    The returned ``velocity`` plane carries the unfolded value where the
+    unfolder resolved the gate and the **raw** value where it did not, so
+    downstream finiteness bookkeeping is untouched; ``resolved`` is the mask
+    that actually decides what may be assimilated.
+    """
+
+    moment = sweep.moments[VELOCITY]
+    raw = np.asarray(moment.data, dtype=np.float64)
+    reference = None
+    if velocity_reference is not None:
+        ranges = moment.slant_range_m()
+        azimuth = np.broadcast_to(sweep.azimuth_deg[:, None], raw.shape)
+        elevation = np.broadcast_to(sweep.elevation_deg[:, None], raw.shape)
+        _lat, _lon, height, *_ = gate_locations(
+            site.lat_deg, site.lon_deg, site.alt_m, azimuth,
+            np.broadcast_to(ranges[None, :], raw.shape), elevation,
+            earth_radius_m=params.earth_radius_m,
+            refraction_factor=params.refraction_factor)
+        reference = velocity_reference.radial_reference(
+            azimuth, elevation, height - site.alt_m)
+
+    result = dealias_sweep(raw, sweep.azimuth_deg, nyquist, dealias_params,
+                           reference=reference)
+    resolved = result.state != STATE_REJECTED
+    velocity = np.where(resolved, result.velocity, raw)
+    # ``band_fits`` is the raw harmonic coefficients the volume-profile pass
+    # consumes -- hundreds of entries per sweep, some carrying a NaN residual
+    # where a band was taken from the profile rather than fitted.  It is
+    # working state, not provenance: it would bloat the attribute and the
+    # JSON writer refuses NaN outright, which is how it announced itself.
+    reference = {key: value
+                 for key, value in (result.stats.get("reference") or {}).items()
+                 if key != "band_fits"}
+    record = {
+        "sweep_index": int(sweep.sweep_index),
+        "elevation_angle_deg": float(sweep.elevation_angle_deg),
+        **{key: value for key, value in result.stats.items()
+           if key not in ("fold_histogram", "reference")},
+        "reference": reference,
+        "fold_histogram": {str(int(k)): int(v)
+                           for k, v in sorted(result.stats["fold_histogram"].items())},
+    }
+    return {"result": result, "velocity": velocity, "resolved": resolved,
+            "record": record}
 
 
 def _believable_nyquist(reported, params) -> float | None:
@@ -203,6 +400,40 @@ class SuperobParams:
     #: Effective-earth multiplier for beam propagation.
     refraction_factor: float = REFRACTION_FACTOR
     earth_radius_m: float = EARTH_RADIUS_M
+    #: How many *finite* below-floor gates must land in a cell before it is
+    #: reported as observed clear air.  Stored as a float because every
+    #: field of this dataclass is (``__post_init__`` normalizes the lot);
+    #: it is used as a ``>=`` threshold against an integer gate count.
+    #:
+    #: This is not a smoothing knob.  One below-floor gate in a cell that
+    #: the beam otherwise clipped is a geometry accident; requiring several
+    #: independent gates to agree is what makes "the radar looked here and
+    #: measured no significant return" a statement about the cell rather
+    #: than about one range bin at its corner.
+    clear_air_min_gates: float = 4.0
+    #: Observation-error standard deviation for a clear-air zero, dBZ.
+    #:
+    #: Deliberately NOT ``z_error_base_dbz``.  A zero is a different
+    #: measurement with a different error budget: it carries no in-cell
+    #: variance to estimate from, its representativeness error is dominated
+    #: by partial beam filling (a cell the beam only clipped can be clear
+    #: where the beam looked and stormy where it did not), and the
+    #: consequence of believing it too hard is erasing real convection.
+    #: WoFS-family systems assign clear-air reflectivity a markedly larger
+    #: sigma_o than echo for exactly this reason, and this default follows
+    #: that practice rather than inheriting the echo error by omission.
+    clear_air_error_dbz: float = 7.5
+    #: Region-based velocity dealiasing, or ``None`` for the masking-only
+    #: behaviour this stage has always had.
+    #:
+    #: ``None`` is not merely the default, it is the *identity*: every other
+    #: field here is a float, ``to_payload`` emits only floats while this is
+    #: None, and the observation file's ``superob_params`` attribute and
+    #: ``dealiasing`` statement are therefore unchanged to the byte.  A
+    #: consumer reading a file written without dealiasing cannot tell that
+    #: this field was ever added, which is the point: turning the capability
+    #: on is a decision someone makes, and off is not a decision at all.
+    dealias: DealiasParams | None = None
 
     def __post_init__(self) -> None:
         self.validate()
@@ -214,6 +445,8 @@ class SuperobParams:
         # already refused anything that is not a real number, so this
         # normalizes what is sound and repairs nothing that is not.
         for field_ in fields(self):
+            if field_.name == "dealias":
+                continue
             object.__setattr__(self, field_.name,
                                float(getattr(self, field_.name)))
 
@@ -239,6 +472,8 @@ class SuperobParams:
         """
 
         for field_ in fields(self):
+            if field_.name == "dealias":
+                continue
             value = getattr(self, field_.name)
             if isinstance(value, bool) or not isinstance(value, Real):
                 raise SuperobParamsError(
@@ -310,6 +545,15 @@ class SuperobParams:
                 "inside, and a band that is empty or a single point believes "
                 "nothing, so every velocity in every sweep would be masked "
                 "for an implausible Nyquist")
+        min_gates = float(self.clear_air_min_gates)
+        if min_gates < 1.0:
+            raise SuperobParamsError(
+                f"clear_air_min_gates is {min_gates!r}; it counts gates and "
+                "must be at least 1. Below 1 every cell the beam never "
+                "reached would satisfy the threshold with its zero count, "
+                "turning 'no data' into 'observed clear' across the whole "
+                "grid -- which is the one failure this product must never "
+                "have")
         elevation = float(self.max_elevation_deg)
         if not np.isfinite(elevation) or not (0.0 < elevation <= 90.0):
             raise SuperobParamsError(
@@ -317,10 +561,57 @@ class SuperobParams:
                 "ceiling must lie in (0, 90]. At or below 0 no sweep is ever "
                 "used; above 90 the ceiling is not an elevation and cannot "
                 "exclude anything")
+        if self.dealias is not None:
+            if not isinstance(self.dealias, DealiasParams):
+                raise SuperobParamsError(
+                    f"dealias is {self.dealias!r} "
+                    f"({type(self.dealias).__name__}); it is either None -- "
+                    "masking only, this stage's original behaviour -- or a "
+                    "DealiasParams. A dict or a bool here would be a caller "
+                    "asking for dealiasing without saying how it should "
+                    "abstain, and the abstention rules are the safety")
+            try:
+                self.dealias.validate()
+            except DealiasParamsError as error:
+                raise SuperobParamsError(
+                    f"dealias parameters are unusable: {error}") from error
         return self
 
     def to_payload(self) -> dict:
-        return {key: float(value) for key, value in asdict(self).items()}
+        payload = {key: float(value) for key, value in asdict(self).items()
+                   if key != "dealias"}
+        # Present only when dealiasing ran.  A file written without it
+        # carries the same key set it always has, which is what makes the
+        # disabled path byte-identical rather than merely equivalent.
+        if self.dealias is not None:
+            payload["dealias"] = self.dealias.to_payload()
+        return payload
+
+
+@dataclass
+class CensorCounts:
+    """The gate census a ``v2`` pack's censor planes make possible.
+
+    Only reflectivity is broken out, because reflectivity is the only
+    moment this stage draws clear air from.  Velocity's censor plane is read
+    and checked but never consulted for an observation, so counting it here
+    would suggest an influence it does not have.
+    """
+
+    #: Reflectivity gates the decoder called measured, below threshold,
+    #: range folded, and never collected, before any geometry filter.
+    reflectivity_measured: int = 0
+    reflectivity_below_threshold: int = 0
+    reflectivity_range_folded: int = 0
+    reflectivity_not_collected: int = 0
+    #: Below-threshold gates that survived every geometry filter and were
+    #: counted toward a cell's clear-air support.
+    clear_air_gates_admitted: int = 0
+    #: Range-folded gates seen anywhere in the pass.  Always equal to
+    #: ``reflectivity_range_folded`` plus the velocity plane's, and always
+    #: entirely refused: this number exists so the refusal is visible in
+    #: provenance rather than merely asserted in a docstring.
+    range_folded_gates_refused: int = 0
 
 
 @dataclass
@@ -349,9 +640,21 @@ class SuperobCounts:
     velocity_radials_fold_suspect: int = 0
     velocity_sweeps_fold_suspect: int = 0
     velocity_gates_rejected_shear: int = 0
+    #: The censor census, or ``None`` when the pack carried no censor
+    #: planes.  ``None`` rather than an all-zero record because the two are
+    #: different statements, and because it is what keeps
+    #: :meth:`to_payload` -- and therefore every observation file's
+    #: ``provenance`` attribute, and therefore every committed obs digest --
+    #: byte-identical to what it was before this field existed.
+    censor: CensorCounts | None = None
 
     def to_payload(self) -> dict:
-        return {key: int(value) for key, value in asdict(self).items()}
+        payload = {key: int(value) for key, value in asdict(self).items()
+                   if key != "censor"}
+        if self.censor is not None:
+            payload["censor"] = {key: int(value) for key, value
+                                 in asdict(self.censor).items()}
+        return payload
 
 
 @dataclass
@@ -365,6 +668,10 @@ class RadarContribution:
     valid_time: str
     z_linear_sum: np.ndarray
     z_count: np.ndarray
+    #: Per cell, the number of gates that were *measured* and came back
+    #: below ``min_reflectivity_dbz``.  See :func:`superob_volume` for the
+    #: four conditions a gate must already have satisfied to be counted.
+    z0_count: np.ndarray
     z_max_dbz: np.ndarray
     z_sumsq_dbz: np.ndarray
     z_sum_dbz: np.ndarray
@@ -380,22 +687,97 @@ class RadarContribution:
     vr_rejected: np.ndarray
     counts: SuperobCounts = field(default_factory=SuperobCounts)
     provenance: dict = field(default_factory=dict)
+    #: Which of :data:`CLEAR_AIR_SOURCES` produced ``z0_count``.  Carried
+    #: per radar because the merge has to refuse a mixture: two radars whose
+    #: zeroes mean different things cannot be summed into one count.
+    clear_air_source: str = CLEAR_AIR_SOURCE
     #: One record per velocity-carrying sweep, whether or not anything was
     #: flagged: an absence of fold boundaries is evidence too, and only
     #: means something beside the number of pairs that were tested.
     fold_suspicion: list = field(default_factory=list)
+    #: The dealiasing account -- three states, every rejection with a reason
+    #: -- or empty when dealiasing did not run.  Empty is how a consumer
+    #: tells "no folds were found" from "nobody looked", which the counters
+    #: alone cannot say.
+    dealias: dict = field(default_factory=dict)
 
 
 def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
-                   params: SuperobParams | None = None) -> RadarContribution:
+                   params: SuperobParams | None = None,
+                   clear_air_from_censor: bool = False,
+                   velocity_reference=None) -> RadarContribution:
     """Grid one radar volume onto ``grid``.
 
     Accumulators only — the dBZ/velocity/error reduction happens once, in
     :func:`merge_contributions`, so a multi-radar product and a single-radar
     product go through exactly the same arithmetic.
+
+    ``clear_air_from_censor`` selects the censored regime described in the
+    module docstring.  It is off by default and the default path is
+    unchanged, arithmetic included.  Asking for it against a pack that has
+    no censor planes is a hard error rather than a silent downgrade: the
+    caller asked for a coverage this volume cannot supply, and quietly
+    returning the thin product under the wrong ``clear_air_source`` is the
+    one outcome that would mislead the DA side.
+
+    It is a keyword rather than a :class:`SuperobParams` field on purpose.
+    ``SuperobParams.to_payload`` is serialized verbatim into every
+    observation file's ``superob_params`` attribute, so a new field there
+    would change the bytes of files that are otherwise identical -- and the
+    regime is already recorded, exactly once and where a consumer looks for
+    it, as ``clear_air_source``.
+
+    ``velocity_reference`` is an optional
+    :class:`gpuwm.obs.dealias.WindProfile` -- the model background wind --
+    used only when ``params.dealias`` is set, and used only to *supplement*
+    the volume's own VAD: it seeds the harmonic fit and fills the range
+    bands the fit could not qualify.  It is never allowed to override a
+    band the volume itself resolved, because the volume measured the wind
+    and the background guessed it.
     """
 
     params = (params or SuperobParams()).validate()
+    censor_counts: CensorCounts | None = None
+    if clear_air_from_censor:
+        missing = [
+            f"sweep {sweep.sweep_index} {name}"
+            for sweep in volume.sweeps
+            for name, moment in sweep.moments.items()
+            if name == REFLECTIVITY and moment.censor is None
+        ]
+        if missing:
+            raise ValueError(
+                "clear_air_from_censor needs a pack whose reflectivity "
+                "carries censor planes, and "
+                f"{volume.pack_path.name} (schema {volume.pack_schema}) does "
+                f"not: {missing[0]}"
+                + (f" and {len(missing) - 1} more" if len(missing) > 1 else "")
+                + ". Re-decode the volume with `rw_nexrad decode "
+                "--censor-flags`. Falling back to the measurement-only "
+                "regime here would publish a thin product under the "
+                "censored regime's clear_air_source, which claims a "
+                "coverage it does not have")
+        censor_counts = CensorCounts()
+
+    dealias_params = params.dealias
+    if dealias_params is not None and velocity_reference is None:
+        # Derive the anchor from the volume itself before unfolding any of
+        # it.  A per-sweep fit is one range band's view of one height; the
+        # volume crossed most heights several times, from different
+        # elevations at different ranges, and pooling those is the only
+        # cross-check available without an external model field.  Measured
+        # on the real case this is what stops a sparse far-range band from
+        # anchoring thousands of gates to a wind no other sweep saw.
+        velocity_reference = volume_wind_profile(
+            ((sweep.elevation_angle_deg,
+              sweep.moments[VELOCITY].data,
+              sweep.azimuth_deg,
+              _believable_nyquist(sweep.nyquist_velocity_ms, params),
+              sweep.moments[VELOCITY].slant_range_m())
+             for sweep in volume.sweeps
+             if VELOCITY in sweep.moments
+             and sweep.elevation_angle_deg <= params.max_elevation_deg),
+            dealias_params)
     shape = (grid.nz, grid.ny, grid.nx)
     zeros = lambda: np.zeros(shape, dtype=np.float64)     # noqa: E731
     counts = SuperobCounts()
@@ -404,6 +786,7 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
     z_sum_dbz = zeros()
     z_sumsq_dbz = zeros()
     z_count = np.zeros(shape, dtype=np.int64)
+    z0_count = np.zeros(shape, dtype=np.int64)
     z_max_dbz = np.full(shape, -np.inf, dtype=np.float64)
     vr_sum = zeros()
     vr_sumsq = zeros()
@@ -417,15 +800,33 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
     vr_rejected = np.zeros(shape, dtype=np.int64)
 
     fold_suspicion: list[dict] = []
+    counts.censor = censor_counts
+    dealias_records: list[dict] = []
+    dealias_totals = _DealiasTotals()
 
     site = volume.site
     max_range_m = params.max_range_km * 1000.0
+    clear_air_source = (CLEAR_AIR_SOURCE_CENSOR if clear_air_from_censor
+                        else CLEAR_AIR_SOURCE)
 
     for sweep in volume.sweeps:
         if sweep.elevation_angle_deg > params.max_elevation_deg:
             counts.sweeps_skipped_elevation += 1
             continue
         nyquist = _believable_nyquist(sweep.nyquist_velocity_ms, params)
+
+        # Dealiasing runs once per sweep, on the whole cut, before any
+        # blocking or range masking.  Regions span radial blocks and range
+        # limits; unfolding a slice at a time would cut every region at the
+        # block seam and turn continuity -- the evidence the method rests on
+        # -- into an artifact of a memory-management constant.
+        dealiased = None
+        if dealias_params is not None and VELOCITY in sweep.moments:
+            dealiased = _dealias_velocity_sweep(
+                sweep, nyquist, dealias_params, site,
+                velocity_reference, params)
+            dealias_records.append(dealiased["record"])
+            dealias_totals.add(dealiased["result"].stats)
         if sweep.nyquist_velocity_ms is None:
             counts.sweeps_without_nyquist += 1
         elif nyquist is None:
@@ -456,6 +857,43 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
                 stop = min(start + _RADIAL_BLOCK, sweep.radial_count)
                 values = np.asarray(moment.data[start:stop][:, in_range],
                                     dtype=np.float64)
+                # The decoder's reason for each NaN, when the pack carried
+                # one.  Read for both moments so the range-folded refusal
+                # can be counted honestly, consulted for clear air only on
+                # reflectivity.
+                codes = (None if moment.censor is None or censor_counts is None
+                         else moment.censor[start:stop][:, in_range])
+                clear_flag = np.zeros(values.shape, dtype=bool)
+                if codes is not None:
+                    folded = codes == Censor.RANGE_FOLDED
+                    censor_counts.range_folded_gates_refused += int(
+                        folded.sum())
+                    if product == REFLECTIVITY:
+                        # Equality with ONE code, never "not an echo".  This
+                        # is the line that keeps range-folded gates out of
+                        # the clear-air path: code 2 is not code 1, and no
+                        # setting of any parameter makes it so.
+                        clear_flag = codes == Censor.BELOW_THRESHOLD
+                        censor_counts.reflectivity_measured += int(
+                            (codes == Censor.MEASURED).sum())
+                        censor_counts.reflectivity_below_threshold += int(
+                            clear_flag.sum())
+                        censor_counts.reflectivity_range_folded += int(
+                            folded.sum())
+                        censor_counts.reflectivity_not_collected += int(
+                            (codes == Censor.NOT_COLLECTED).sum())
+                # Where dealiasing ran, the velocities from here down are the
+                # unfolded ones -- including the shear scan, which now sees a
+                # field whose folds have been removed and so measures what
+                # the unfolder missed rather than what it was asked to fix.
+                # A gate the unfolder rejected keeps its RAW value and is
+                # excluded by `resolved` instead, so `finite` and
+                # gates_nonfinite still count exactly what they always
+                # counted: missing data, not refused data.
+                resolved = None
+                if dealiased is not None and product == VELOCITY:
+                    values = dealiased["velocity"][start:stop][:, in_range]
+                    resolved = dealiased["resolved"][start:stop][:, in_range]
                 # The shear scan runs here, on raw range-ordered gates,
                 # because this is the last point at which a fold and its
                 # unfolded neighbour still differ by the Nyquist interval.
@@ -482,14 +920,22 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
                 counts.gates_considered += int(values.size)
                 counts.gates_nonfinite += int((~finite).sum())
 
+                # A gate is worth placing if it is a measurement OR if the
+                # decoder said the radar looked here and found nothing.  In
+                # the measurement-only regime ``clear_flag`` is all false
+                # and this is exactly ``finite``, which is why every count
+                # below is unchanged there.
+                usable = finite | clear_flag.ravel()
+
                 i_frac, j_frac = grid.mass_index(lat.ravel(), lon.ravel())
                 i_index = np.rint(i_frac).astype(np.intp)
                 j_index = np.rint(j_frac).astype(np.intp)
-                on_grid = grid.inside(i_index, j_index) & finite
-                counts.gates_out_of_grid += int(finite.sum() - on_grid.sum())
+                on_grid = grid.inside(i_index, j_index) & usable
+                counts.gates_out_of_grid += int(usable.sum() - on_grid.sum())
                 if not np.any(on_grid):
                     continue
 
+                clear_on_grid = clear_flag.ravel()[on_grid]
                 i_index = i_index[on_grid]
                 j_index = j_index[on_grid]
                 level = grid.level_index(i_index, j_index,
@@ -503,10 +949,56 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
                     (level[in_column], j_index[in_column],
                      i_index[in_column]), shape)
                 value_sel = values.ravel()[on_grid][in_column]
+                clear_sel = clear_on_grid[in_column]
 
                 if product == REFLECTIVITY:
+                    # A below-threshold gate is NaN, and NaN >= x is False,
+                    # so it lands in ``~echo`` without a special case --
+                    # which is the point: it is below the floor by the
+                    # radar's own report rather than by our arithmetic.
                     echo = value_sel >= params.min_reflectivity_dbz
-                    counts.gates_below_floor += int((~echo).sum())
+                    counts.gates_below_floor += int((~echo & ~clear_sel).sum())
+                    if censor_counts is not None:
+                        censor_counts.clear_air_gates_admitted += int(
+                            clear_sel.sum())
+                    # --- clear air: the radar looked here and measured
+                    # nothing significant ---
+                    #
+                    # A gate reaches this line only after four independent
+                    # conditions, and every one of them is load-bearing for
+                    # the claim "observed clear" rather than "no data":
+                    #
+                    # 1. ACCOUNTED FOR.  ``on_grid`` above ANDs in
+                    #    ``usable``, which is ``finite`` plus -- only in the
+                    #    censored regime -- gates the decoder explicitly
+                    #    marked below threshold.  A gate that is NaN for any
+                    #    OTHER reason never arrives: not a range-folded
+                    #    gate (raw 1, which may be a storm), not a gate on a
+                    #    radial that never carried the moment.  In the
+                    #    measurement-only regime the set is just ``finite``,
+                    #    because there NaN is irreducibly ambiguous and is
+                    #    never evidence of anything.
+                    # 2. WITHIN RANGE.  ``in_range`` trimmed the far end, so
+                    #    a cell past ``max_range_km`` accumulates nothing.
+                    # 3. ON GRID and IN COLUMN.  The gate was placed in a
+                    #    real model cell by the same geometry the echo
+                    #    observations use; a cell no beam traverses -- below
+                    #    the lowest tilt, behind terrain, outside the scan --
+                    #    is never named here at all, and so ends the pass
+                    #    with a zero count rather than a clear-air claim.
+                    # 4. BELOW THE FLOOR.  The measured value is a real
+                    #    number that is smaller than the significant-echo
+                    #    threshold.
+                    #
+                    # Note what is *not* asserted: this counts gates, not
+                    # cells.  Whether the cell as a whole is clear is decided
+                    # in ``merge_contributions``, where the count meets the
+                    # echo count and the minimum-gate threshold, because a
+                    # cell containing one clear gate and one echo gate is a
+                    # cell with echo in it.
+                    flat_clear = flat[~echo]
+                    if flat_clear.size:
+                        np.add.at(z0_count.reshape(-1), flat_clear, 1)
                     flat_z = flat[echo]
                     dbz = value_sel[echo]
                     if flat_z.size:
@@ -523,9 +1015,37 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
                     counts.velocity_gates_rejected_no_nyquist += int(flat.size)
                     np.add.at(vr_rejected.reshape(-1), flat, 1)
                     continue
-                within = (np.abs(value_sel)
-                          <= params.nyquist_reject_fraction * nyquist)
-                counts.velocity_gates_rejected_nyquist += int((~within).sum())
+                # A gate whose fold state the unfolder could not establish is
+                # dropped here whatever its magnitude.  It is dropped BEFORE
+                # the magnitude test rather than after so the two losses can
+                # never be confused in the counters: one is "too fast to
+                # trust", the other is "I could not tell", and conflating
+                # them would hide exactly the number this capability has to
+                # be judged on.
+                # `vr_rejected` is incremented once, below, off `~keep` --
+                # which already excludes these, since `within` is masked by
+                # `keep_resolved`.  Adding them here too would count a
+                # refused gate twice in the array a consumer reads as "how
+                # many gates were dropped over this cell".
+                if resolved is not None:
+                    keep_resolved = resolved.ravel()[on_grid][in_column]
+                    dealias_totals.gates_refused_at_grid += int(
+                        (~keep_resolved).sum())
+                else:
+                    keep_resolved = np.ones(flat.size, dtype=bool)
+                if (resolved is not None
+                        and dealias_params.keep_beyond_reject_fraction):
+                    # The 0.8 rule drops gates that MIGHT be folded.  These
+                    # were resolved, so what remains to bound them is
+                    # physics, not the Nyquist interval -- and this is where
+                    # the couplet that the 0.8 rule removes comes back.
+                    within = np.abs(value_sel) <= dealias_params.max_speed_ms
+                else:
+                    within = (np.abs(value_sel)
+                              <= params.nyquist_reject_fraction * nyquist)
+                within = within & keep_resolved
+                counts.velocity_gates_rejected_nyquist += int(
+                    (keep_resolved & ~within).sum())
                 # A gate flanking a fold boundary is dropped even when its
                 # own magnitude is unremarkable: that is the whole point of
                 # the scan, since a folded gate's magnitude is by definition
@@ -590,14 +1110,21 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
     return RadarContribution(
         site_id=site.id, lat_deg=site.lat_deg, lon_deg=site.lon_deg,
         alt_m=site.alt_m, valid_time=volume.valid_time,
-        z_linear_sum=z_linear_sum, z_count=z_count, z_max_dbz=z_max_dbz,
+        z_linear_sum=z_linear_sum, z_count=z_count, z0_count=z0_count,
+        z_max_dbz=z_max_dbz,
         z_sumsq_dbz=z_sumsq_dbz, z_sum_dbz=z_sum_dbz,
         vr_sum=vr_sum, vr_sumsq=vr_sumsq, vr_count=vr_count,
         vr_min=vr_min, vr_max=vr_max,
         beam_east=beam_east, beam_north=beam_north, beam_up=beam_up,
         nyquist_min=nyquist_min, vr_rejected=vr_rejected,
         counts=counts, provenance=volume.provenance(),
-        fold_suspicion=fold_suspicion)
+        clear_air_source=clear_air_source,
+        fold_suspicion=fold_suspicion,
+        dealias=({} if dealias_params is None else {
+            "params": dealias_params.to_payload(),
+            "totals": dealias_totals.to_payload(),
+            "sweeps": dealias_records,
+        }))
 
 
 @dataclass
@@ -625,6 +1152,41 @@ class GriddedObservations:
     #: a caller assembling this structure by hand -- a test, a downstream
     #: lane -- is not forced to invent fold statistics it never measured.
     fold_suspicion: list = field(default_factory=list)
+    #: Clear-air ("zero") observations, or None for a product that carries
+    #: none.  ``z0_mask`` is 1 where at least one radar measured this cell
+    #: and every radar that measured it found no significant echo;
+    #: ``z0_count`` is the supporting measured-gate count and ``z0_err``
+    #: the standard deviation to assimilate it with.
+    #:
+    #: ``None`` rather than an all-false mask is the default because the
+    #: two are different statements.  An all-false mask asserts "this
+    #: volume was examined for clear air and none was established"; None
+    #: says "clear air was never assessed here".  A caller assembling this
+    #: structure by hand has done the latter, and the writer omits the
+    #: variables entirely rather than shipping a mask that claims an
+    #: assessment nobody made.
+    #:
+    #: There is deliberately **no** ``z0_obs``: the dBZ value a zero
+    #: differences against is the *forward operator's* clear-air floor
+    #: (-35 dBZ for mp_physics 1/6/8/10, 0 dBZ for NSSL mp18), which is a
+    #: property of the model the DA lane is running, not of the radar.
+    #: Writing a value here would bake one scheme's floor into an
+    #: observation file that outlives the run that consumed it, and a
+    #: floor mismatch manufactures a 35 dB innovation out of two agreeing
+    #: clear skies.  The DA adapter supplies the value.
+    z0_mask: np.ndarray | None = None
+    z0_count: np.ndarray | None = None
+    z0_err: np.ndarray | None = None
+    #: Which of :data:`CLEAR_AIR_SOURCES` established the zeroes above.
+    #: Meaningless when ``z0_mask`` is None, and defaulted to the
+    #: measurement-only regime so a hand-assembled product reads as the
+    #: conservative one.
+    clear_air_source: str = CLEAR_AIR_SOURCE
+    #: Per-radar dealiasing account -- params, three-state totals, per-sweep
+    #: records -- empty when dealiasing did not run.  Empty is meaningful:
+    #: it is how a consumer tells "no folds were found" from "nobody
+    #: looked", which no counter can say on its own.
+    dealias: list = field(default_factory=list)
 
 
 def merge_contributions(contributions, grid: TargetGrid, *,
@@ -651,8 +1213,23 @@ def merge_contributions(contributions, grid: TargetGrid, *,
                 f"contribution from {contribution.site_id} has shape "
                 f"{contribution.z_count.shape}, grid is {shape}")
 
+    # Zeroes from the two regimes cover different fractions of the domain,
+    # so summing them would produce a count whose coverage nobody can state
+    # and a single ``clear_air_source`` that would be a lie about half its
+    # inputs.  Refuse rather than pick one.
+    sources = {c.clear_air_source for c in contributions}
+    if len(sources) > 1:
+        raise ValueError(
+            "the contributions establish clear air by different means "
+            f"({sorted(sources)}), and their z0_counts cannot be summed: the "
+            "two regimes cover different fractions of the domain, so the "
+            "merged count would describe no coverage in particular. Rebuild "
+            "every volume in the set the same way")
+    clear_air_source = sources.pop()
+
     z_linear = sum(c.z_linear_sum for c in contributions)
     z_count = sum(c.z_count for c in contributions)
+    z0_count = sum(c.z0_count for c in contributions)
     z_sum_dbz = sum(c.z_sum_dbz for c in contributions)
     z_sumsq_dbz = sum(c.z_sumsq_dbz for c in contributions)
     z_max = np.maximum.reduce([c.z_max_dbz for c in contributions])
@@ -679,6 +1256,44 @@ def merge_contributions(contributions, grid: TargetGrid, *,
                     + variance)),
         0.0)
     z_mask = has_z.astype(np.int8)
+
+    # --- clear-air zeroes -------------------------------------------------
+    #
+    # Two conditions, and the second is the one that keeps this honest.
+    #
+    # ``z0_count >= clear_air_min_gates`` says enough gates independently
+    # measured this cell and found nothing.  ``~has_z`` says *no* radar saw
+    # echo here.  The second is a veto, not a tiebreak: reflectivity is
+    # summed across radars above, so ``has_z`` is true if ANY contributing
+    # radar found echo in the cell, and a cell one radar calls clear while
+    # another sees a storm in it is not clear.  The nearer radar is usually
+    # the one seeing the storm -- the other is looking through it, over it,
+    # or at a range where its beam has broadened past the cell -- so
+    # deferring to the echo is also the physically right call, not merely
+    # the conservative one.
+    #
+    # What this cannot see, and what therefore belongs in ``z0_err`` rather
+    # than in this mask:
+    #
+    # * ATTENUATION.  A cell behind a heavy core can measure genuinely
+    #   below-floor because the signal never got back, not because the sky
+    #   is empty.  No attenuation correction exists in this lane
+    #   (``gpuwm.da.obsop`` states the same for the forward operator), so
+    #   this is real, unmodelled, and one-sided towards false clear air.
+    # * PARTIAL BEAM FILLING.  At range the sampling volume is much larger
+    #   than a model cell; "clear where the beam looked" and "clear
+    #   throughout the cell" diverge with distance.
+    # * BEAM BLOCKAGE.  A blocked ray returns clutter (counted as echo, so
+    #   harmless here) or nothing (NaN, so never counted at all) -- but a
+    #   *partially* blocked ray returns a weakened real echo that can fall
+    #   below the floor.
+    #
+    # None of the three can be detected from the gridded product alone.
+    # They are the reason ``clear_air_error_dbz`` is a separate, larger
+    # sigma_o rather than an inherited one.
+    has_z0 = (z0_count >= params.clear_air_min_gates) & ~has_z
+    z0_mask = has_z0.astype(np.int8)
+    z0_err = np.where(has_z0, params.clear_air_error_dbz, 0.0)
 
     n_radar = len(contributions)
     vr_obs = np.zeros((n_radar,) + shape, dtype=np.float64)
@@ -736,10 +1351,14 @@ def merge_contributions(contributions, grid: TargetGrid, *,
     return GriddedObservations(
         z_obs=z_obs, z_mask=z_mask, z_err=z_err, z_max=z_max, z_mean=z_mean,
         z_count=z_count.astype(np.int32),
+        z0_mask=z0_mask, z0_count=z0_count.astype(np.int32), z0_err=z0_err,
+        clear_air_source=clear_air_source,
         vr_obs=vr_obs, vr_mask=vr_mask, vr_err=vr_err, vr_count=vr_count,
         vr_rejected=vr_rejected,
         vr_beam_east=beam[0], vr_beam_north=beam[1], vr_beam_up=beam[2],
         radars=radars,
         counts=[c.counts.to_payload() for c in contributions],
         provenance=[c.provenance for c in contributions],
-        fold_suspicion=[list(c.fold_suspicion) for c in contributions])
+        fold_suspicion=[list(c.fold_suspicion) for c in contributions],
+        dealias=[dict(c.dealias) for c in contributions
+                 if getattr(c, "dealias", None)])

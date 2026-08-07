@@ -107,15 +107,17 @@ WORST_MEASURED_COUNT = 632
 #: does not change the inventory -- every member here peaks at the SAME 632.
 #:
 #: km3 joined this set when the LES lane made km_opt=3 selectable in
-#: validate_run_config.  The measured peak did NOT move (632, headroom 392
-#: of 1024); the census simply now enumerates one more admissible mixing
-#: option that ties the existing peak, which is what "km_opt does not
-#: change the inventory" predicts.  km_opt=2 is absent because it is
-#: admitted only with bl_pbl_physics=0 and every member of this set is
-#: pbl5 (MYNN), so it is not selectable in this combination at all.
+#: validate_run_config, and LEFT it again on the 1.7 line when the
+#: validator was taught the constraint the registry had always declared:
+#: components/turbulence/options/smagorinsky-3d requires
+#: bl_pbl_physics=0, because km_opt=3's vertical exchange pair is applied
+#: by the PBL-off-gated vertical_diffusion_2.  Every member of this set
+#: is pbl5 (MYNN), so km_opt=3 is not selectable here -- for exactly the
+#: reason km_opt=2 never was.  The measured peak did NOT move: still 632,
+#: headroom still 392 of 1024.  Two members now instead of three, and
+#: "km_opt does not change the inventory" still holds across both.
 WORST_SELECTIONS = frozenset({
     "mp18-lsm3-pbl5-sfclay5-cu1-km1",
-    "mp18-lsm3-pbl5-sfclay5-cu1-km3",
     "mp18-lsm3-pbl5-sfclay5-cu1-km4",
 })
 #: The worst combination, per domain.  The root is about 41% of a child:
@@ -268,10 +270,10 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     (microphysics axis grew from 6 to 7 selectable schemes -- the mp28
     lane never re-measured this census, so its movement surfaces here)
     give rows 792 -> 1386 and WRF-side rejections 360 -> 630; the SASE
-    closure adds 672 rejections of its own (32 per (km_opt, mp) cell x 3
-    x 7), all km_opt refusals, and zero measured rows.  lsm4: 336 rows
-    (112 per km_opt value), 168 WRF-scheme refusals (Lane C's 96 carried
-    across the axis growth), 168 SASE refusals.
+    closure adds 448 rejections of its own (32 per (km_opt, mp) cell x 2
+    x 7), all km_opt refusals, and zero measured rows.  lsm4: 224 rows
+    (112 per km_opt value), 112 WRF-scheme refusals (Lane C's 96 carried
+    across the axis growth), 112 SASE refusals.
 
     Re-pinned 2026-08-03 for the gray-zone lane: Shin-Hong
     (``bl_pbl_physics=11``) became routable and this census was never
@@ -287,31 +289,40 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
         lsm4 WRF-scheme refusals
                      168 ->  252   ( +84)
 
-    336 is exactly sfclay {1, 91} x lsm {0, 2, 3, 4} x km_opt {1, 3, 4} x
-    7 microphysics x cu {0, 1}, and the 336 refusals are the same product
+    224 is exactly sfclay {1, 91} x lsm {0, 2, 3, 4} x km_opt {1, 4} x
+    7 microphysics x cu {0, 1}, and the 224 refusals are the same product
     over the sfclay values WRF v4.6.1's table refuses with this scheme,
     {0, 5}.  Shin-Hong takes YSU's surface-layer pairing exactly, so its
     slice is the SAME SIZE as YSU's at every cut: the measured census
-    reads 336 rows and 336 refusals for pbl=1 as well, and 84 of each in
-    the lsm4 slice.  The whole sweep is now the 7 x 4 x 5 x 4 x 2 x 3 =
-    3360 product, and 1722 + 1638 = 3360 accounts for all of it.
+    reads 224 rows and 224 refusals for pbl=1 as well, and 56 of each in
+    the lsm4 slice.  The whole sweep is now the 7 x 4 x 5 x 4 x 2 x 2 =
+    2240 product, and 1148 + 1092 = 2240 accounts for all of it.
 
-    SASE is untouched by this and its numbers are asserted below
-    unchanged: 672 rejections, 168 of them in the lsm4 slice, zero
-    measured rows.  The one thing worth checking beyond arithmetic is the
+    THE KM_OPT AXIS IS TWO VALUES, NOT THREE, ON THIS LINE.  The census
+    probes validate_run_config for the selectable set rather than
+    transcribing one, and the 1.7 validator refuses km_opt=3 unless
+    bl_pbl_physics=0.  The reference config this sweep is built from runs
+    a PBL, so km_opt=3 is genuinely not selectable here and the probe
+    reports it honestly.  Every count below is therefore the 1.5.2 line's
+    two-thirds where km_opt multiplies -- and the two numbers that do NOT
+    multiply by it, the 632 peak and the 608 widest pbl11 row, are
+    unchanged, which is the claim this file exists to hold.
+
+    SASE is untouched in kind and scales in count with the axis: 448
+    rejections, 112 of them in the lsm4 slice, zero measured rows.  The one thing worth checking beyond arithmetic is the
     ceiling, and scheme 11 does not approach it -- the widest pbl=11 row
     measures 608 descriptors against the unchanged 632 peak, so the peak,
     the peak set and the 392 of 1024 headroom all stay exactly where they
     were.
 
     What did NOT move is the point: the worst selectable descriptor count
-    is unchanged at 632 of 1024.  A new mixing option ties the existing
-    peak instead of raising it, which is what "km_opt does not change the
-    inventory" has always claimed and is now measured across three values
-    rather than two.
+    is unchanged at 632 of 1024.  A mixing option joining or leaving the
+    selectable set ties the existing peak instead of moving it, which is
+    what "km_opt does not change the inventory" has always claimed and is
+    now measured across two values again.
     """
     report = four_domain_census
-    assert len(report["rows"]) == 1722
+    assert len(report["rows"]) == 1148
     # Re-pinned when the SASE closure joined the dispatch table.  The
     # census derives its sweep from PHYSICS_SLOT_DISPATCH on purpose --
     # "an admitted scheme joins the census the moment it is routed" --
@@ -323,9 +334,9 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     # Gray-zone lane, 2026-08-03: the routed Shin-Hong selector adds its
     # own 336 measured rows and 336 refusals, the second scheme to prove
     # this sentence by moving these numbers.)
-    assert len(report["rejected"]) == 1638
+    assert len(report["rejected"]) == 1092
     sase = [row for row in report["rejected"] if "pbl900" in row["selection"]]
-    assert len(sase) == 672, len(sase)  # 32 per (km_opt, mp) cell x 3 x 7
+    assert len(sase) == 448, len(sase)  # 32 per (km_opt, mp) cell x 2 x 7
     # Every one of them is the same refusal, and it is a real one: the
     # closure supplies the mixing km_opt would apply, so it is admitted
     # only at km_opt=0 and this census never sweeps km_opt=0.
@@ -339,10 +350,10 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     assert not [row for row in report["rows"] if "pbl900" in row["selection"]]
     lsm4_rows = [row for row in report["rows"]
                  if row["sf_surface_physics"] == 4]
-    assert len(lsm4_rows) == 420, (
-        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 420 the "
-        "1.5.2-line census recorded (140 per km_opt value across {1, 3, 4}: "
-        "the 1.5-line's 336 plus Shin-Hong's own 84, the same 84 YSU "
+    assert len(lsm4_rows) == 280, (
+        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 280 the "
+        "1.7-line census recorded (140 per km_opt value across {1, 4}: "
+        "the 1.5-line's 224 plus Shin-Hong's own 56, the same 56 YSU "
         "contributes); re-run and re-pin")
     budget_refusals = [entry["selection"] for entry in report["rejected"]
                        if "Noah-MP column budget" in entry["reason"]]
@@ -360,18 +371,18 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     # mode this whole census exists to prevent.
     wrf_refused = [entry for entry in refused
                    if "pbl900" not in entry["selection"]]
-    assert len(wrf_refused) == 252, (
-        f"{len(wrf_refused)} WRF-scheme lsm4 refusals against the 252 "
-        "recorded on the 1.5.2 line -- Lane C's 96 (72 WRF-fatal "
+    assert len(wrf_refused) == 168, (
+        f"{len(wrf_refused)} WRF-scheme lsm4 refusals against the 168 "
+        "recorded on the 1.7 line -- Lane C's 96 (72 WRF-fatal "
         "PBL/surface-layer rows and 24 active-LSM rows without an ArWen "
-        "surface-exchange writer) carried across the three km_opt values "
+        "surface-exchange writer) carried across the two km_opt values "
         "and the seven-scheme microphysics axis the validator now admits, "
-        "giving the 1.5 line's 168, plus Shin-Hong's own 84: WRF v4.6.1 "
+        "giving the 1.5 line's 112, plus Shin-Hong's own 56: WRF v4.6.1 "
         "refuses scheme 11 with the surface layer off and with MYNN's, "
         "which is the same pairing refusal YSU carries")
     sase_refused = [entry for entry in refused
                     if "pbl900" in entry["selection"]]
-    assert len(sase_refused) == 168, len(sase_refused)
+    assert len(sase_refused) == 112, len(sase_refused)
     assert all("km_opt" in entry["reason"] for entry in sase_refused)
 
 

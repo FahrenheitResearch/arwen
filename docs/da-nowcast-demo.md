@@ -65,14 +65,53 @@ Known limits, stated up front:
 - **No velocity dealiasing** -- the obs ladder masks fold-risk
   signatures and counts every rejection (`tools/obs_radar_grid_build.py`
   provenance), which is not the same thing as unwrapping.
-- **GFS background only** (the cycle driver's supported source today),
-  with the no-radiation WSM6/YSU demo profile.
+- **HRRR background by default** (Drew ruling, 2026-08-06: permanent;
+  `--source gfs` is retained for archival reproduction of pre-HRRR
+  runs), with the no-radiation WSM6/YSU demo profile.
 - **Prepared cases are host-bound** -- preparation runs on the local
   box, by receipted finding; do not point the front door at remote
   prep.
 - Storm motion for domain siting is **centroid displacement** between
   two volumes: it mixes advection with growth/decay and is used only
   to bias the domain downstream, never as a forecast.
+
+## What to expect from the pictures
+
+Read this before comparing a forecast panel to a radar panel, because
+the honest target is narrower than the imagery suggests:
+
+> **Band placement, orientation and convective mode by T+30..T+60 is
+> the winnable target. A cell-for-cell match at T+90 storm scale is
+> not winnable at any setting.**
+
+Three separate reasons, none of them a defect:
+
+1. **Predictability.** Individual convective cells have a useful
+   lifetime of tens of minutes. No initial condition, ensemble size or
+   resolution recovers a particular cell's position an hour and a half
+   out; what survives is the system -- the band, its axis, its mode.
+2. **Effective resolution.** A finite-difference core resolves roughly
+   seven grid lengths, so a 1.5 km run resolves ~10 km features while
+   the observed composite carries gate-scale texture. Placed side by
+   side at native texture the forecast will always look too smooth,
+   even when it is right. The per-member verification strips
+   (`09-verification-*.png`) therefore show the observed field twice:
+   at gate texture, and box-averaged in linear Z to the model's own
+   resolving power. FSS is computed against the RAW observation in
+   both cases, so the numbers never flatter the display.
+3. **What the analysis can constrain.** Radial velocity alone nudges
+   winds; it does not tell the filter where echo is and is not. A
+   velocity-only single-radar analysis therefore leaves every member
+   carrying the background's own misplaced storms -- the ensemble
+   agrees with itself and disagrees with the radar. Assimilating
+   reflectivity beside velocity (`--reflectivity-analysis` with
+   `--hydrometeors` and an explicit `--positivity-policy`) is what
+   moves placement; measured on one 1.5 km HRRR case (ktbw, 2026-08-06)
+   it raised mean member FSS30 from 0.559 to 0.700 while member-to-
+   member agreement barely moved. The members did not become more
+   diverse; they became more correct. That is the intended behaviour,
+   and it is also why an ensemble that looks tight is not automatically
+   an ensemble that is confident.
 
 ## What one run does
 

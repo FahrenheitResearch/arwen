@@ -30,8 +30,8 @@ comparing them.
 | domain area | 157,000 km<sup>2</sup> | 810,000 km<sup>2</sup> (**5.2x ours**) |
 | cycling | 6 cycles, 15 min, 90 min total | 15 min continuously, typically 12-15 h per event |
 | DA algorithm | LETKF, our own, GPU | EnKF inside GSI ("GSI-EnKF") |
-| observations | **radial velocity, one radar (KDMX)** | MRMS reflectivity **and radar "zeroes"**, WSR-88D radial velocity, GOES cloud water path, GOES clear-sky radiances, prepbufr conventional, Oklahoma Mesonet |
-| analysis variables | **u, v only** | full state; reflectivity assimilated |
+| observations | **radial velocity, one radar (KDMX)**; reflectivity and clear-air zeroes implemented, opt-in, unproven on real data | MRMS reflectivity **and radar "zeroes"**, WSR-88D radial velocity, GOES cloud water path, GOES clear-sky radiances, prepbufr conventional, Oklahoma Mesonet |
+| analysis variables | **u, v only** by default; the scheme's full moisture and hydrometeor set under `--hydrometeors` | full state; reflectivity assimilated |
 | free forecast | 90 min | 6 h hourly, 3 h half-hourly, out to 12-15 h after init |
 | background / LBCs | GFS 0.25 deg | HRRRDAS 36-member 1-h forecast; HRRR + GEFS-perturbed boundaries |
 | physics spread | none -- single profile, perturbed initial winds | 3 PBL x 2 radiation schemes across members |
@@ -479,3 +479,73 @@ found, so the table is *current as of May 2025*, not confirmed for the
 primary sources (50 in the SFE 2025 table and the NSSL configuration
 page, 51 in Skinner et al. 2025); it is reported unresolved rather than
 guessed.
+
+## Clear-air "zeroes": what ours are, and what caps them
+
+WoFS assimilates radar *zeroes* -- observations that there is no echo at
+a location -- and they are a large part of why it suppresses convection
+the model invents.  We now build and assimilate them too, opt-in and off
+by default (`--clear-air-analysis`).  Two things about ours are worth
+stating plainly, because both are ceilings rather than settings.
+
+**A zero here is a measurement, never an absence.**  A model cell is
+reported clear only when enough gates were decoded to real numbers inside
+it, all of them below the significant-echo floor, and no contributing
+radar saw echo there.  A cell the beam never reached -- below the lowest
+tilt, beyond range, behind terrain, or simply not scanned -- accumulates
+nothing and makes no claim.  This is the distinction that matters: "no
+echo was recorded here" covers most of a domain and is not an
+observation, while "the radar measured this cell and found nothing" is.
+The adapter refuses an observation file that has no clear-air assessment
+rather than deriving zeroes from the echo mask, because that derivation
+is exactly the mistake that fabricates data at continental scale.
+
+**The decoder used to cap the yield, badly.  It no longer does.**  In the
+WSR-88D Message-31 encoding a reflectivity gate word of 0 means "below
+threshold" -- the radar looked and detected nothing, which is precisely a
+zero -- and a word of 1 means "range folded", an ambiguous second-trip
+return that may well be a storm.  The Level-II decoder in the vendored
+Rust stack mapped **both** to NaN, and the pack builder NaN-fills any
+radial that did not carry the moment at all, so downstream the three were
+indistinguishable and NaN could not license a zero without inventing
+observations wholesale.
+
+The measured cost on a real KDMX volume (2026-08-05 04:28:56Z): 9,732,174
+non-finite gates against 10,815 finite below-floor ones, and 46,216 echo
+cells.  At the shipped clear-air settings that yielded **zero**
+assimilable clear-air observations -- the result the adversarial review
+ship-blocked the feature for.
+
+`wx-radar` now records *why* each gate is not a number, as a `censor`
+plane carried beside the moment plane.  `rw_nexrad decode --censor-flags`
+transcribes it into a `gpuwm-obs.radar-sweeps.v2` pack and
+`superob_volume(..., clear_air_from_censor=True)` builds zeroes from the
+below-threshold gates as well as the finite below-floor ones.  The moment
+values did not change and neither did the default: a decode without the
+flag is byte-identical to what the tool always wrote, proved by
+re-decoding the eight committed live-fire-3 volumes and matching their
+pack digests exactly.
+
+On those same eight volumes the yield goes from 0 assimilable clear-air
+observations per volume (1 across all eight) to **17,943-20,831** -- about
+126,000 clear cells before the driver's default thinning and ~19,900
+after, against 41,897-64,775 echo cells.  See
+`evidence/da-demo/clear-air-yield.json`.
+
+**Range-folded gates never became clear air, and never will.**  Raw 1 is
+a return the radar cannot place in range; assimilating it as "no echo"
+would erase storms that are really there.  The censored regime tests for
+equality with one code rather than for "not an echo", the DA adapter's
+`clear_air_source` allow-list contains no regime built from folded gates,
+and `test_range_folded_gates_are_never_clear_air_under_any_configuration`
+sweeps every permissive parameter setting in both regimes and requires
+the yield to stay zero.
+
+**What zeroes can and cannot do for us.**  They suppress; they do not
+initiate.  A zero only carries information where the model has
+condensate, and there the ensemble has spread, so the filter can remove
+spurious echo.  Where the radar sees a storm and every member is clear
+the prior variance is zero and no observation can create one --
+`gpuwm.da.perturb` perturbs only jointly-active species pairs, by design.
+That is the honest split: reflectivity DA in this system removes storms
+the model should not have and cannot conjure storms it never made.

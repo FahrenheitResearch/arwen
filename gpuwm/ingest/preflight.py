@@ -180,6 +180,12 @@ class InputCatalog:
     masks: Mapping[tuple[datetime, str], CatalogMask]
     snapshots: tuple[Era5Snapshot, ...]
     field_sources: Mapping[tuple[datetime, str], tuple[Path, ...]]
+    #: Optional validated ``[static.highres]`` config carried from
+    #: :class:`gpuwm.case_data.CaseDataConfig` so per-domain static builds
+    #: reached only through the catalog (child initialization) can honour
+    #: it.  ``None`` -- the default for every adapter that does not set
+    #: it -- is the identity 30-arc-second path.
+    static_highres: object | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provenance",
@@ -693,6 +699,12 @@ def build_input_catalog(case_data) -> InputCatalog:
         overlay = cached_water_temperature_overlay(water_overlay_path)
         replaced, _receipt = overlay_snapshots(catalog.snapshots, overlay)
         catalog = replace(catalog, snapshots=replaced)
+    # Optional [static.highres] config rides the catalog so child-domain
+    # static builds (which see only the catalog) can honour it.  Absent
+    # key: the catalog is untouched and the 30s path is byte-identical.
+    highres = getattr(case_data, "static_highres", None)
+    if highres is not None:
+        catalog = replace(catalog, static_highres=highres)
     return catalog
 
 

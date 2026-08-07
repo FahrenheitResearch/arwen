@@ -22,6 +22,8 @@ members = [
     "crates/rw-ingest",
     "crates/rw-nexrad",
     "crates/rw-obs",
+    "crates/rw-sat",
+    "crates/rw-goes",
     "crates/rw-store",
     "crates/rw-wrfbatch",
 ]

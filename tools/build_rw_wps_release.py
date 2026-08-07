@@ -135,6 +135,14 @@ _OPTIONAL_STAGED_IMPORTS = {
         "and compiles no CUDA module",
     ("gpuwm/core/state.py", "gpuwm.core.preflight"):
         "CUDA forecast scratch-preflight path; RW-WPS constructs host state",
+    ("gpuwm/hrrr_prepared_bundle.py",
+     "gpuwm.prepared_single_domain_forecast"):
+        "physics-selection helpers on the opt-in portable-bundle branch. "
+        "publish_hrrr_prepared_bundle runs only when prepare_hrrr_wrf is "
+        "given --wps-namelist, and the three documents it writes exist "
+        "for a config-driven FORECAST stage to bind -- which is exactly "
+        "what this preprocessing wheel does not ship. The certified "
+        "native preparation above that branch never reaches it",
     ("tools/hrrr_single_domain_benchmark.py", "gpuwm.core.clock"):
         "forecast-only branch after the public --prepare-only return",
     ("tools/hrrr_single_domain_benchmark.py", "gpuwm.core.dycore"):

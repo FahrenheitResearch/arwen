@@ -29,8 +29,9 @@
 use rustwx_core::{CanonicalField, FieldSelector, ModelId, VerticalSelector};
 use rustwx_models::{PlotRecipe, built_in_plot_recipes};
 use rustwx_render::{
-    ColorScale, ColormapBuildOptions, DiscreteColorScale, ExtendMode, LegendControls, LegendMode,
-    MapRenderRequest, ProductVisualMode, RenderDensity, StaticPlotStyle, WeatherProduct,
+    Color, ColorScale, ColormapBuildOptions, DiscreteColorScale, ExtendMode, LegendControls,
+    LegendMode, LevelDensity, MapRenderRequest, ProductVisualMode, RenderDensity, StaticPlotStyle,
+    WeatherProduct,
 };
 use std::collections::HashSet;
 
@@ -64,6 +65,9 @@ pub enum UnitConvert {
     KgM3ToUgM3,
     /// Column smoke: `kg/m^2 * 1e6`.
     KgM2ToMgM2,
+    /// Curated-mapping input already in Celsius against a Fahrenheit
+    /// palette: `degC * 9/5 + 32`.
+    CelsiusToFahrenheit,
 }
 
 impl UnitConvert {
@@ -81,6 +85,7 @@ impl UnitConvert {
             Self::MsToKnots => value * 1.943_844_5,
             Self::KgM3ToUgM3 => value * 1_000_000_000.0,
             Self::KgM2ToMgM2 => value * 1_000_000.0,
+            Self::CelsiusToFahrenheit => value * 9.0 / 5.0 + 32.0,
         }
     }
 
@@ -128,6 +133,211 @@ pub struct StoreVariableStyleTemplate {
     pub label: String,
     pub category: String,
     pub style: StoreVariableStyle,
+}
+
+/// Build a neutral full-range style for a stored 2-D variable without a
+/// production meteorological counterpart.
+///
+/// `finite_range` must be the minimum and maximum over finite samples only.
+/// A non-degenerate range is represented exactly, without percentile
+/// clipping. Constant fields receive display-only padding; absent or invalid
+/// ranges use an explicit 0..1 placeholder so renderers still have ordered
+/// levels. Raw values and units are never converted.
+pub fn generic_style_for_store_variable(
+    var_name: &str,
+    stored_units: &str,
+    finite_range: Option<(f32, f32)>,
+) -> StoreVariableStyle {
+    const COLORS: [[u8; 4]; 9] = [
+        [68, 1, 84, 255],
+        [72, 40, 120, 255],
+        [62, 74, 137, 255],
+        [49, 104, 142, 255],
+        [38, 130, 142, 255],
+        [31, 158, 137, 255],
+        [53, 183, 121, 255],
+        [109, 205, 89, 255],
+        [253, 231, 37, 255],
+    ];
+
+    let range = match finite_range {
+        Some((lo, hi)) if lo.is_finite() && hi.is_finite() && lo < hi => {
+            (f64::from(lo), f64::from(hi))
+        }
+        Some((value, other)) if value.is_finite() && other.is_finite() && value == other => {
+            let center = f64::from(value);
+            let padding = if center == 0.0 {
+                1.0
+            } else {
+                (center.abs() * 0.05).max(1.0e-6)
+            };
+            (center - padding, center + padding)
+        }
+        _ => (0.0, 1.0),
+    };
+    let levels = (0..=COLORS.len())
+        .map(|index| range.0 + (range.1 - range.0) * index as f64 / COLORS.len() as f64)
+        .collect();
+    let legend = LegendControls {
+        density: LevelDensity::default(),
+        mode: LegendMode::SmoothRamp,
+    };
+
+    StoreVariableStyle {
+        // The clean headline other rows get: the variable's name (its
+        // stored units ride along when it has any).  The auto-ranged
+        // nature of the ramp is visible in the legend itself and logged
+        // per variable at render time; spelling it in the headline made
+        // uncurated rows read like errors next to curated ones.
+        title: if stored_units.trim().is_empty() {
+            var_name.to_string()
+        } else {
+            format!("{var_name} [{stored_units}]")
+        },
+        display_units: stored_units.to_string(),
+        convert: UnitConvert::None,
+        scale: ColorScale::Discrete(DiscreteColorScale {
+            levels,
+            colors: COLORS
+                .into_iter()
+                .map(|[r, g, b, a]| Color::rgba(r, g, b, a))
+                .collect(),
+            extend: ExtendMode::Neither,
+            mask_below: None,
+        }),
+        colormap_options: ColormapBuildOptions {
+            render_density: StaticPlotStyle::from_env().render_density(RenderDensity::default()),
+            legend,
+        },
+        cbar_tick_step: None,
+        legend_mode: legend.mode,
+    }
+}
+
+/// Chart levels the curated resolver may borrow a same-field style from
+/// when the exact stored level has no filled recipe of its own.
+const CURATED_CHART_LEVELS_HPA: [u16; 6] = [850, 700, 500, 300, 250, 200];
+
+/// Stamp a borrowed operational style with the variable's own identity.
+/// The palette, scale, conversion, and legend stay the production ones;
+/// only the title says whose data is wearing them, so a borrowed table can
+/// never impersonate the product it came from.
+fn borrowed_style_identity(mut style: StoreVariableStyle, var_name: &str) -> StoreVariableStyle {
+    style.title = format!("{var_name} ({} palette)", style.title);
+    style
+}
+
+/// Curated colortable mapping for stored variables the production style
+/// resolver leaves unstyled: same-quantity diagnostics wear the EXISTING
+/// operational palette for their physical quantity instead of the
+/// auto-ranged generic ramp.
+///
+/// Two rule families, both resolving through the production style paths
+/// (never a parallel color table):
+///
+/// 1. Canonical isobaric planes whose exact level has no filled recipe
+///    borrow the same canonical FIELD's style from another chart level
+///    (dewpoint at 200-500 hPa, absolute vorticity at 250 hPa, ...).
+/// 2. Derived-marker diagnostics map by normalized name + stored units to
+///    the operational style of the same physical quantity (CAPE-likes to
+///    the CAPE table, `wrf_t2` to the 2 m temperature table, ...), with a
+///    unit conversion override where the stored units differ from the
+///    palette's input calibration.
+///
+/// Deliberate non-mappings (they return `None` and keep the generic fill):
+/// signed u/v wind components (no production diverging table exists),
+/// mslp/surface pressure and isobaric geopotential heights (production
+/// contours these, never fills), and quantities with no operational palette
+/// at all (radiation/heat fluxes, fire indices, wind direction, level
+/// heights).  A curated claim for those would show legend colors no
+/// production chart has ever used for that quantity.
+pub fn curated_style_for_store_variable(
+    var_name: &str,
+    stored_selector: &serde_json::Value,
+    stored_units: &str,
+    model: ModelId,
+) -> Option<StoreVariableStyle> {
+    // Family 1: chart-level gap fill for canonical planes.
+    if let Ok(selector) = serde_json::from_value::<FieldSelector>(stored_selector.clone()) {
+        let VerticalSelector::IsobaricHpa(stored_level) = selector.vertical else {
+            return None;
+        };
+        for level in CURATED_CHART_LEVELS_HPA {
+            if level == stored_level {
+                continue;
+            }
+            let candidate = FieldSelector::isobaric(selector.field, level);
+            let Ok(candidate_json) = serde_json::to_value(candidate) else {
+                continue;
+            };
+            if let Some(style) =
+                operational_style_for_store_variable(var_name, &candidate_json, stored_units, model)
+            {
+                return Some(borrowed_style_identity(style, var_name));
+            }
+        }
+        return None;
+    }
+
+    // Family 2: name/units-driven quantity mapping for derived diagnostics.
+    let name = var_name.strip_prefix("wrf_").unwrap_or(var_name);
+    let units = stored_units.trim();
+    let canonical = |selector: FieldSelector| -> Option<StoreVariableStyle> {
+        let json = serde_json::to_value(selector).ok()?;
+        operational_style_for_store_variable(var_name, &json, stored_units, model)
+    };
+    let style = match (name, units) {
+        ("cape" | "effective_cape", "J/kg") => weather_product_style("sbcape", units),
+        ("cin", "J/kg") => weather_product_style("sbcin", units),
+        ("srh" | "effective_srh", "m2/s2") => weather_product_style("srh_0_3km", units),
+        ("up_heli_max", _) => weather_product_style("uhel", units),
+        ("bulk_shear" | "ebwd", "m/s") => derived_style("bulk_shear_0_6km", "kt")
+            .map(|mut style| {
+                style.convert = UnitConvert::MsToKnots;
+                style.display_units = "kt".to_string();
+                style
+            }),
+        ("lapse_rate", "degC/km") => derived_style("lapse_rate_0_3km", units),
+        ("t2" | "tsk" | "tv2m", "K") => {
+            canonical(FieldSelector::height_agl(CanonicalField::Temperature, 2))
+        }
+        ("ctt", "degC") => {
+            // Cloud-top temperature wears the isobaric temperature palette
+            // (degC-calibrated); the stored values are already Celsius.
+            canonical(FieldSelector::isobaric(CanonicalField::Temperature, 500)).map(|mut style| {
+                style.convert = UnitConvert::None;
+                style.display_units = stored_units.to_string();
+                style
+            })
+        }
+        ("dp2m", "degC") => canonical(FieldSelector::height_agl(CanonicalField::Dewpoint, 2))
+            .map(|mut style| {
+                style.convert = UnitConvert::CelsiusToFahrenheit;
+                style
+            }),
+        ("rh2m", "%") => canonical(FieldSelector::height_agl(CanonicalField::RelativeHumidity, 2)),
+        ("cloudfrac_low", "%") => {
+            canonical(FieldSelector::entire_atmosphere(CanonicalField::LowCloudCover))
+        }
+        ("cloudfrac_mid", "%") => {
+            canonical(FieldSelector::entire_atmosphere(CanonicalField::MiddleCloudCover))
+        }
+        ("cloudfrac_high", "%") => {
+            canonical(FieldSelector::entire_atmosphere(CanonicalField::HighCloudCover))
+        }
+        ("pw", "mm") => {
+            canonical(FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater))
+        }
+        ("graupelnc" | "snownc", "mm") => {
+            canonical(FieldSelector::surface(CanonicalField::TotalPrecipitation))
+        }
+        ("terrain", "m") => canonical(FieldSelector::surface(CanonicalField::GeopotentialHeight)),
+        ("wspd10", "m/s") => {
+            canonical(FieldSelector::height_agl(CanonicalField::WindSpeed, 10))
+        }
+        _ => None,
+    };
+    style.map(|style| borrowed_style_identity(style, var_name))
 }
 
 /// Resolve the production styling for the stored variable `var_name`
@@ -651,6 +861,143 @@ mod tests {
 
     fn derived_marker(slug: &str) -> serde_json::Value {
         serde_json::json!({ "derived": slug })
+    }
+
+    /// One representative per curated quantity class: the resolved style
+    /// must be the borrowed OPERATIONAL one (variable-named title wearing a
+    /// production palette), never the auto-ranged generic ramp.
+    #[test]
+    fn curated_mapping_assigns_operational_palettes_by_quantity() {
+        let derived = derived_marker("anything");
+        let model = ModelId::WrfGdex;
+        let cases: [(&str, &str, UnitConvert, Option<&str>); 6] = [
+            // cape-like -> CAPE table, raw J/kg values color as stored
+            ("wrf_cape", "J/kg", UnitConvert::None, None),
+            // temperature (K) -> 2 m temperature table (K -> degF)
+            ("wrf_t2", "K", UnitConvert::KelvinToFahrenheit, None),
+            // SRH (m2/s2) -> SRH table
+            ("wrf_srh", "m2/s2", UnitConvert::None, None),
+            // wind speed (m/s) -> 10 m wind speed table (m/s -> kt, the
+            // production fill's own conversion riding along)
+            ("wrf_wspd10", "m/s", UnitConvert::MsToKnots, Some("kt")),
+            // precip depth (mm) -> QPF table (mm -> inches)
+            ("wrf_snownc", "mm", UnitConvert::MmToInches, Some("in")),
+            // shear magnitude (m/s) -> bulk shear table (m/s -> kt)
+            ("wrf_ebwd", "m/s", UnitConvert::MsToKnots, Some("kt")),
+        ];
+        for (name, units, convert, display) in cases {
+            let style = curated_style_for_store_variable(name, &derived, units, model)
+                .unwrap_or_else(|| panic!("{name} [{units}] must resolve a curated style"));
+            assert!(
+                style.title.starts_with(name) && style.title.contains("palette"),
+                "{name}: borrowed identity must name the variable and the palette: {}",
+                style.title
+            );
+            assert!(
+                !style.title.contains("(generic"),
+                "{name}: curated style must not be the generic ramp: {}",
+                style.title
+            );
+            assert_eq!(style.convert, convert, "{name} conversion");
+            if let Some(display) = display {
+                assert_eq!(style.display_units, display, "{name} display units");
+            }
+        }
+
+        // degC inputs against degF/degC palettes keep the values honest.
+        let ctt = curated_style_for_store_variable("wrf_ctt", &derived, "degC", model).unwrap();
+        assert_eq!(ctt.convert, UnitConvert::None, "ctt values are already degC");
+        assert_eq!(ctt.display_units, "degC");
+        let dp2m = curated_style_for_store_variable("wrf_dp2m", &derived, "degC", model).unwrap();
+        assert_eq!(dp2m.convert, UnitConvert::CelsiusToFahrenheit);
+        assert!((UnitConvert::CelsiusToFahrenheit.apply(20.0) - 68.0).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn curated_level_gap_borrows_the_same_field_from_a_chart_level() {
+        // Dewpoint has filled recipes at 700/850 but not 500: the 500 hPa
+        // plane borrows the field's own palette from a level that has one.
+        let selector =
+            serde_json::to_value(FieldSelector::isobaric(CanonicalField::Dewpoint, 500)).unwrap();
+        let style =
+            curated_style_for_store_variable("dewpoint_500hpa", &selector, "K", ModelId::WrfGdex)
+                .expect("chart-level gap must borrow the same field's style");
+        assert!(style.title.starts_with("dewpoint_500hpa ("), "{}", style.title);
+        assert_eq!(style.convert, UnitConvert::KelvinToCelsius);
+    }
+
+    #[test]
+    fn curated_mapping_refuses_components_and_unknown_quantities() {
+        let model = ModelId::WrfGdex;
+        // Signed wind components have no production fill table; a curated
+        // claim would color them with a magnitude palette. Refused.
+        let u500 =
+            serde_json::to_value(FieldSelector::isobaric(CanonicalField::UWind, 500)).unwrap();
+        assert_eq!(
+            curated_style_for_store_variable("u_wind_500hpa", &u500, "m/s", model),
+            None
+        );
+        // Unknown quantity in unknown units: the generic ramp is correct.
+        assert_eq!(
+            curated_style_for_store_variable(
+                "mystery_plane",
+                &derived_marker("mystery_plane"),
+                "widgets",
+                model
+            ),
+            None
+        );
+        // Units gate the name match: a "cape" in the wrong units is not
+        // CAPE and must not wear its table.
+        assert_eq!(
+            curated_style_for_store_variable("wrf_cape", &derived_marker("wrf_cape"), "m", model),
+            None
+        );
+    }
+
+    #[test]
+    fn generic_style_spans_the_exact_finite_range_with_neutral_units() {
+        let style = generic_style_for_store_variable("mystery_plane", "widgets", Some((-2.5, 7.5)));
+        assert_eq!(style.title, "mystery_plane [widgets]");
+        assert_eq!(style.display_units, "widgets");
+        assert_eq!(style.convert, UnitConvert::None);
+        assert_eq!(style.legend_mode, LegendMode::SmoothRamp);
+        assert_eq!(style.colormap_options.legend.mode, LegendMode::SmoothRamp);
+        assert_eq!(style.cbar_tick_step, None);
+
+        let scale = style.scale.resolved_discrete();
+        assert_eq!(scale.levels.first().copied(), Some(-2.5));
+        assert_eq!(scale.levels.last().copied(), Some(7.5));
+        assert_eq!(scale.levels.len(), 10);
+        assert_eq!(scale.colors.len(), 9);
+        assert!(scale.levels.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(scale.extend, ExtendMode::Neither);
+        assert_eq!(scale.mask_below, None);
+    }
+
+    #[test]
+    fn generic_style_handles_constant_and_absent_ranges_deterministically() {
+        let constant = generic_style_for_store_variable("constant", "K", Some((300.0, 300.0)));
+        let constant_scale = constant.scale.resolved_discrete();
+        assert_eq!(constant.title, "constant [K]");
+        assert_eq!(constant_scale.levels.first().copied(), Some(285.0));
+        assert_eq!(constant_scale.levels.last().copied(), Some(315.0));
+
+        let zero = generic_style_for_store_variable("zero", "1", Some((0.0, 0.0)));
+        let zero_scale = zero.scale.resolved_discrete();
+        assert_eq!(zero_scale.levels.first().copied(), Some(-1.0));
+        assert_eq!(zero_scale.levels.last().copied(), Some(1.0));
+
+        for range in [None, Some((f32::NAN, 2.0)), Some((2.0, -2.0))] {
+            let missing = generic_style_for_store_variable("missing", "", range);
+            let missing_scale = missing.scale.resolved_discrete();
+            assert_eq!(
+                missing.title, "missing",
+                "empty units carry no bracket segment"
+            );
+            assert_eq!(missing_scale.levels.first().copied(), Some(0.0));
+            assert_eq!(missing_scale.levels.last().copied(), Some(1.0));
+        }
     }
 
     #[test]

@@ -65,7 +65,6 @@ use planning::{
 };
 #[cfg(test)]
 use planning::{canonical_fetch_product, should_attach_direct_idx_patterns};
-use projection::direct_map_frame_aspect_ratio;
 pub(crate) use projection::inverse_raster_projection_for_grid;
 #[cfg(test)]
 use projection::{
@@ -80,7 +79,7 @@ pub use projection::{
     build_natural_projected_map_with_projection,
     build_natural_projected_map_with_projection_and_basemap_padding, build_projected_map,
     build_projected_map_with_projection, build_requested_projected_map_with_projection,
-    model_data_domain_frame_for_projection,
+    direct_map_frame_aspect_ratio, model_data_domain_frame_for_projection,
 };
 pub(crate) use query::{load_direct_sampled_fields_from_latest, required_direct_fetch_products};
 #[cfg(test)]

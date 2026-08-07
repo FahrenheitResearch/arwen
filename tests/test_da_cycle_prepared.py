@@ -171,3 +171,46 @@ def test_nest_members_without_a_nest_is_refused(monkeypatch, capsys):
     message = _driver_error(monkeypatch, capsys, [
         "--free-legs", "6", "--nest-members", "2"])
     assert "without a nest extent" in message
+
+
+# ---------------------------------------------------------------------
+# the background-source surface, at the driver's own front door
+# ---------------------------------------------------------------------
+
+def test_the_driver_offers_the_background_roster_and_defaults_to_gfs(
+        monkeypatch, capsys):
+    """Selecting nothing is selecting GFS, and the roster is the registry.
+
+    The prepared root already IS one source's case; this flag is the
+    caller's statement of which, and the front door refuses a
+    disagreement.  What matters here is that the default is unchanged,
+    so an existing invocation keeps its existing meaning.
+    """
+
+    import sys
+
+    from gpuwm.da import background
+    from tools import da_cycle_prepared
+
+    monkeypatch.setattr(sys, "argv", ["da_cycle_prepared", "--help"])
+    with pytest.raises(SystemExit) as exit_info:
+        da_cycle_prepared.main()
+    assert exit_info.value.code == 0
+    text = " ".join(capsys.readouterr().out.split())
+    for name in background.BACKGROUND_SOURCES:
+        assert name in text
+    assert background.DEFAULT_BACKGROUND_SOURCE == "gfs"
+
+
+def test_the_driver_refuses_a_source_it_has_no_background_registry_for(
+        monkeypatch, capsys):
+    import sys
+
+    from tools import da_cycle_prepared
+
+    monkeypatch.setattr(
+        sys, "argv", ["da_cycle_prepared", "--source", "20crv3"])
+    with pytest.raises(SystemExit) as exit_info:
+        da_cycle_prepared.main()
+    assert exit_info.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err

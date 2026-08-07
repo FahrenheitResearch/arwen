@@ -1,5 +1,109 @@
 # Changelog
 
+## 1.7.0 (2026-08-06)
+
+New:
+
+- Radar data assimilation for nowcasting, as a product surface. A
+  WoFS-style ensemble Kalman filter cycles an ensemble against live
+  observations and then runs free forecasts from the analysis.
+  `gpuwm-da-nowcast run --da full` selects the certified full-stack
+  configuration in one flag: radial velocity, reflectivity, clear-air
+  echo, velocity dealiasing, surface observations and GOES cloud water
+  path. `--without <stream>` subtracts one stream from that preset, so
+  a denial experiment is one word rather than a hand-assembled flag
+  list, and `--da vr` is radial velocity alone. The default stays
+  `custom`, meaning the individual flags remain the whole story for
+  anyone already driving them.
+- Every assimilated stream is counted. The cycle records how many
+  observations each stream actually contributed, and a full-stack claim
+  is refused when a stream contributed nothing, so a run cannot report
+  a configuration it did not perform.
+- Velocity dealiasing on the radial-velocity path. Folded gates above
+  0.8 * Nyquist carry a mesocyclone's couplet, and masking them removes
+  the signal the analysis is for. Gates the unfolder cannot resolve are
+  still dropped and counted. The same unfolding is applied to the
+  verification composites, so a run is graded against a truth field
+  built the way it was fed. Needs the new `[dealias]` extra.
+- GOES cloud water path is assimilated beside radar, from the model's
+  own column integral, and an observed-clear column can remove cloud
+  the model invented.
+- Verification against MRMS. `--truth mrms` grades a run against the
+  national mosaic rather than against a composite assembled from the
+  same radars that fed it, which is the honest grader for a domain
+  wider than one radar's reach.
+- HRRR is the default background for the nowcast route.
+- Adjusted initial conditions: `[[perturbation.bubbles]]` in the
+  experiment TOML adds warm theta bubbles to a real-data initial state
+  at prepare time -- WRF's idealized cosine-squared bubble, placed in
+  geographic coordinates, with optional `rh_preserve` qv adjustment.
+  Applied per domain through each domain's own init, so a bubble
+  inside a nest arrives on the nest's own grid. An absent block is
+  byte-inert; refusals are loud (out-of-domain center, nonpositive or
+  oversized amplitude, a bubble that touches zero cells); what was
+  actually written lands in `initial-perturbation.json` per domain.
+
+- Warm bubbles. A `[perturbation]` block applies theta bubbles to the
+  initial state, on the single-domain route and on the prepared
+  domain-tree route. An absent block changes nothing at all, including
+  the restart fingerprint.
+- High-resolution static geography for US interior domains: 10 m
+  terrain, 30 m land cover and 250 m soils, fetched as on-demand tiles
+  with recorded provenance. Off by default. Coastal domains refuse, or
+  fall back to the 30 arc second baseline when asked to.
+- The render vocabulary grows from 55 products to 164, with proper
+  colortable resolution: an operational table where the product has
+  one, then a curated table, then a generic full-finite-range style.
+  Any stored 2-D plane with no named product renders as `var:<name>`.
+
+Fixed:
+- The turbulence selector `km_opt` is a registry component carrying an
+  option for every value it accepts, including 0. A plan selecting the
+  SASE closure, which requires `km_opt = 0`, previously failed to
+  resolve the component at all.
+- `km_opt = 3` is admitted with the PBL off only. Its vertical exchange
+  pair is applied by a PBL-off-gated operator, so with a PBL scheme on
+  only the horizontal half of the closure ran, under the name of the
+  3-D one.
+- The registry and `validate_run_config` now agree about every one of
+  the 46,080 registered component combinations. They disagreed about
+  3,944 of them: 3,360 where the registry refused `km_opt = 3` under a
+  PBL and the loader did not, 512 where the SASE closure was paired
+  with the MYNN surface layer that WRF admits only under the MYNN PBL
+  or none, and 72 dry SASE plans the registry called launchable and the
+  loader refused.
+- An enabled `[static.highres]` block on a route that cannot apply it
+  refuses by name instead of silently producing the baseline.
+- The native-HRRR static verifier accepts a whole-second rational-clock
+  payload, which it had been refusing outright.
+- The nested-domain child soil reconciler reads the native lane's soil
+  temperature field.
+
+- Large-eddy runs with WRF's anisotropic mixing lengths no longer go
+  unstable and abort. With `mix_isotropic = 0` the mixing lengths are
+  per-axis, so on a grid whose vertical spacing is far finer than its
+  horizontal spacing the vertical exchange coefficient is applied
+  through a horizontal operator and amplifies the 2dx vertical-velocity
+  mode until the run fails. The condition is now stated as a criterion
+  on `mix_upper_bound * (dz_max / dx)^2`, a configuration that violates
+  it warns by name at setup and says which of the two knobs to move,
+  and `mix_isotropic = 1` mixes on one length instead of three.
+- CUDA kernel compiler version is part of the certified numeric
+  fingerprint. A silent NVRTC downgrade moved the CUDA column's
+  measured distance from WRF on two fields with no source change, and
+  nothing in the capsule recorded it. The capsule now carries the full
+  four-part NVRTC build, its internal changelist, and the SHA-256 of
+  the loaded NVRTC library; the shinhong parity baselines and the
+  off-path byte pin are recorded per NVRTC build rather than as one
+  row.
+- `--surface-obs` without a sigma carried the file and assimilated
+  nothing.
+- The dealiasing account is a per-radar list, so a multi-radar run
+  reports each radar's unfolded and dropped gate counts instead of one
+  collapsed number.
+- scipy is declared in the new `[dealias]` extra, which the velocity
+  dealiaser needs. It was imported but undeclared.
+
 ## 1.6.3 (2026-08-06)
 
 New:

@@ -1,0 +1,20 @@
+# High-resolution static geography demo: one US-interior 1 km nest inside
+# a 3 km parent, statics built baseline-vs-highres for both domains.
+#
+# The footprint is chosen HERE, by coordinates in the WPS namelist this
+# config names -- the library code is footprint-parametric and carries no
+# geography of its own.  Run with tools/run_highres_static_demo.py.
+#
+# Required environment:
+#   GPUWM_HIGHRES_CACHE_ROOT  -> directory for the source-tile cache
+
+[demo]
+case_label = "interior-plains-1km-2021"
+case_date = 2021-05-15
+wps_namelist = "highres_static_demo.wps"
+geog_root = "${GPUWM_CASE_DATA_ROOT}/WRF_1974_MP55_reference_bundle/static/WPS_GEOG"
+
+[static.highres]
+enabled = true
+cache_root = "${GPUWM_HIGHRES_CACHE_ROOT}"
+on_refuse = "error"

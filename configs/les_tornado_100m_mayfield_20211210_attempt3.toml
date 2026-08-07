@@ -1,0 +1,561 @@
+# ATTEMPT #3 of the tornado-scale LES ladder.  Attempt #2 revision b's file,
+# byte for byte, with ONE change: the LES children mix on a single isotropic
+# length instead of per-axis ones.  Everything else -- the case, the chain,
+# the placement, the raised lid, the vertical ladder, the physics profile,
+# the ingest route -- is revision b's and is documented below unchanged.
+#
+# The revision-3 block near the end of this header is the only part of it
+# that is new.  Read that first.
+#
+# READ docs/les/ATTEMPT2-EXPECTATIONS.md AND docs/les/attempt2/
+# corridor-placement.json BEFORE TRUSTING ANY OUTPUT FROM THIS FILE.
+# Attempt #1's own document, docs/les/ATTEMPT1-EXPECTATIONS.md, still
+# describes the screens; this file changes where they are measured, not
+# what they are.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS: attempt #1 succeeded and pointed somewhere else
+# ---------------------------------------------------------------------------
+# Attempt #1 ran both arms of its dual-run pair clean over 00Z-06Z and the
+# byte comparison adjudicated PASS, bit-identical, on 112 wrfout files and
+# 5053 final-state digests.  Nothing about it failed.
+#
+# What it produced was a MEASUREMENT, and the measurement was that the box
+# was in the wrong place.  Its d04 was centred on 36.72 N 88.70 W -- six
+# kilometres southwest of Mayfield, which is where the REAL storm went.  Its
+# own certified d02 output puts the model's violent cells 40-90 km southwest
+# of that box and one to two hours later:
+#
+#     02Z   UH 877 @ 36.461 N 90.046 W
+#     03Z   UH 691 @ 36.897 N 89.185 W
+#     04Z   UH 494 @ 36.439 N 89.398 W      (UH 506 @ 37.117 N 88.545 W)
+#     05Z   UH 610 @ 36.303 N 89.204 W      (UH 594 @ 36.597 N 88.876 W)
+#     06Z   UH 357 @ 36.706 N 88.375 W
+#
+# (2-5 km updraft helicity maxima, m2 s-2, from arm a's hourly d02 frames;
+# the full table is in docs/les/attempt2/corridor-placement.json.)
+#
+# A 20 km box cannot be placed on a track the model does not produce.  The
+# ruled flow -- run the 3 km, find the actual cell, then downscale -- is what
+# this file implements.  The placement below is derived from that table and
+# from nothing else; the historical track is used only as a landmark, never
+# as a target.
+#
+# ---------------------------------------------------------------------------
+# WHAT MOVED, AND WHAT DID NOT
+# ---------------------------------------------------------------------------
+# MOVED:
+#   d03  i/j_parent_start  151,151 -> 111,127   centre 36.720 -> 36.500 N,
+#                                               88.700 -> 89.154 W
+#   d04  i/j_parent_start  131,131 -> 132,120   centre 36.720 -> 36.450 N,
+#                                               88.700 -> 89.149 W
+#   d02  history_interval_s  3600 -> 900 s
+#   run_seconds              21600 -> 25200 s   (00Z -> 07Z)
+#
+# NOT MOVED, deliberately:
+#   d01 and d02 geometry, the projection, and the reference point.  Both
+#   parents already hold the whole corridor -- d02 spans 34.64-38.75 N,
+#   91.33-86.07 W -- so moving them would buy nothing and would throw away
+#   the prepared caches that attempt #1 built and verified.  The projection
+#   reference therefore STAYS at 36.72 N 88.70 W and is now simply a
+#   projection origin rather than a box centre; d03 and d04 are no longer
+#   concentric on it, which is the whole point.
+#
+#   Every physics switch, the 73-level eta ladder, the profile, the
+#   timestep law, feedback = 0, and the inflow ruling.
+#
+# ---------------------------------------------------------------------------
+# THE INFLOW RULING, CARRIED UNCHANGED
+# ---------------------------------------------------------------------------
+# inflow_perturbation is ON at d03 and OFF at d04, ruled 2026-08-06 and
+# recorded at e754bc77.  d02 runs YSU and diagnoses a PBLH, so the generator
+# has the parent it needs for d03.  d03 is itself LES: its RESOLVED eddies
+# advect through d04's inflow faces and ARE the inflow turbulence, so
+# injecting synthetic perturbations on top of them would double-count, and
+# the model refuses it by contract.  Nothing about re-placing the nests
+# touches that argument, so nothing about it changes here.
+#
+# ---------------------------------------------------------------------------
+# THE 100 m BOX -- still a TRANSIT box, and still 20 km wide
+# ---------------------------------------------------------------------------
+# d04 is 200 x 200 cells at 100 m, spanning 36.358-36.541 N, 89.263-89.035 W.
+# Verified against gpuwm.static.projection on this exact geometry, using the
+# same ProjectedGrid.nest registration the runner uses:
+#
+#   d03 clearance inside d02   110 / 190 / 126 / 174 parent rows (W/E/S/N)
+#   d04 clearance inside d03   131 / 129 / 119 / 141 parent rows (W/E/S/N)
+#   required                    10 parent rows (spec_bdy_width + blend_width)
+#
+# The storm enters d03's western half and gets ~66 km of in-domain transit
+# before reaching d04's west edge -- comparable to attempt #1's 50-75 km, so
+# the spin-up fetch risk registered there carries over unchanged and is
+# still graded by screen E1.
+#
+# REGISTERED BEFORE THE RUN, and the honest limitation of this placement:
+# the corridor was read off HOURLY d02 frames.  At the 13-23 m s-1 storm
+# motion those frames imply, consecutive samples of one cell are 50-90 km
+# apart while the box is 20 km wide, so the storm crosses the box BETWEEN
+# samples and no hourly maximum need ever land inside it -- and none does.
+# A straight-line interpolation between the 04Z and 05Z maxima of the
+# strongest corridor cell puts it inside d04 from about 04:16Z to 04:39Z, a
+# 19.3 km chord leaving through the NORTH edge.  That is an estimate from
+# the crudest possible track model and it is NOT what the box was moved to
+# fit; it is committed so that the 15-minute d02 frames this attempt writes
+# can falsify it.  If they show the cell clipping a corner rather than
+# transiting, the finding is that a fixed 20 km box needs 15-minute
+# guidance to place -- which is exactly why d02's cadence changed.
+#
+# ---------------------------------------------------------------------------
+# THE WINDOW
+# ---------------------------------------------------------------------------
+# 00Z -> 07Z, 25200 s, one hour longer than attempt #1.  The corridor's
+# strongest crossings are 04-06Z, so the extra hour is tail past the event
+# rather than more spin-up.
+#
+# NOT A RESTART.  The 02Z checkpoint set attempt #1 wrote cannot be used:
+# gpuwm/experiment.py refuses a re-placed nest against a prepared cache
+# built at the old placement, and gpuwm/io/restart.py gates the whole tree
+# on one experiment fingerprint that carries i_parent_start -- so re-placing
+# d03 also blocks resuming d01.  There is no per-domain restart selection
+# and no supported path to cold-start a nest from its parent mid-run on the
+# prepared-tree route.  Attempt #2 therefore integrates from 00Z, which
+# costs about one extra hour of card per arm.  See
+# docs/les/ATTEMPT2-EXPECTATIONS.md for the evidence.
+#
+# ---------------------------------------------------------------------------
+# EVERYTHING BELOW THIS LINE IS ATTEMPT #1's, UNCHANGED EXCEPT WHERE NAMED
+# ---------------------------------------------------------------------------
+# The chain, the vertical grid, the physics profile, the parent/child
+# turbulence split and the ingest route are all attempt #1's and are
+# documented in configs/les_tornado_100m_mayfield_20211210.toml.  The
+# summary: 3 km -> 1 km -> 500 m -> 100 m at ratios 3 / 2 / 5, dt =
+# 15 / 5 / 2.5 / 0.5 s, nz = 72 on a stretched ladder with 33 half levels
+# below 1.7 km, YSU + km_opt 4 on the parents, PBL off + km_opt 3 (3-D
+# Smagorinsky) on the LES children, profile
+# wsm6-ysu-mm5-noah-no-radiation-v1, HRRR 2021-12-11 00Z via the native
+# front door.
+#
+# ---------------------------------------------------------------------------
+# REVISION b: THE LID, RAISED.  p_top 10000 -> 5000 Pa, nz UNCHANGED at 72.
+# ---------------------------------------------------------------------------
+# Attempt #2 revision a ran this exact placement and physics and tripped the
+# health gate at ~04:51 sim with
+#
+#     w(64, 159, 80) = -215.017 m/s   violates lower bound >= -200
+#
+# at d04, z = 10843 m, in the INTERIOR -- reproduced deterministically from
+# the clean 04:00 checkpoint with the per-step gates on.  The cell was
+# quiescent one frame earlier (w = +0.01 m/s at 04:50), so this is a
+# numerical explosion out of still air, not a physical evolution.
+#
+# WHY.  The old lid sat at 16296 m, so the top-5 km Rayleigh sponge began at
+# 11296 m -- BELOW the anvil of a violent supercell.  The storm's updraft was
+# still 21 m/s at the failing level and 17.4 m/s inside the sponge, and
+# in-sponge energy nearly DOUBLED in the five minutes before the trip
+# (5.7 -> 8.5 -> 10.4 -> 9.4 -> 17.4 m/s from 04:20 to 04:50).  A Rayleigh
+# sponge absorbs gravity waves in quiescent air; it is not built to have live
+# convection driven through it.  The failing level sits 452 m below the
+# sponge base, in a band protected by NEITHER the sponge NOR w_damp -- the
+# latter being a COURANT limiter that at dz = 609 m and dt = 0.5 s would need
+# w ~ 1218 m/s to fire.  Ruled out by measurement first: horizontal and
+# vertical CFL (0.42 / 0.21 at d04, 2.2x margin), vertical stretching (1.035
+# -1.058, well under 1.2), FP32 subnormals (nothing within 33 orders of the
+# subnormal range at the cell), the lateral boundary, and the relaxation
+# coefficients (dt-invariant, 10x margin).
+#
+# THE FIX, AND WHAT IT COSTS.  p_top 5000 Pa lifts the top half level from
+# 15326 m to 18519 m and the sponge base to ~13.5 km, where w measured
+# 1.5-3 m/s -- clear of the updraft.  nz stays 72; the eta ladder is
+# regenerated for the new top by
+#     tools/build_stretched_eta_ladder.py --nz 72 --dz0 20 --dz-max 650
+#         --p-top 5000 --bl-top 1700 --require-below 30
+#
+# Every ratified vertical bound was RE-VERIFIED at the new lid rather than
+# assumed, and every one still passes:
+#
+#     levels below 1.7 km      33 -> 31    (ratified FLOOR: >= 30)   PASS
+#     levels below 2.0 km      35 -> 33    (spec V4 target 33-38)    PASS
+#     effective dz in the BL   51.52 -> 54.84 m  (target 50-60 m)    PASS
+#     first half level         10.00 m -> 10.00 m                    PASS
+#
+# So the trade is DELIBERATE and PRICED: two boundary-layer levels and 3.3 m
+# of effective BL dz, bought against a model top a violent supercell cannot
+# punch through.  It is not a criterion change -- the configuration moves
+# WITHIN the bounds Drew ratified -- which is why it did not need a new
+# ruling.  Receipt: docs/les/attempt2/eta72-raisedlid.json.
+#
+# Revision a's config is FROZEN at
+# configs/les_tornado_100m_mayfield_20211210_attempt2.toml (sha256
+# 09734ca6...), because a committed result must keep pointing at the file it
+# was produced under.  Its arm a output is the record of the crash AND of the
+# science that motivated all of this: the re-placed box captured a violent
+# tornadic vortex (UH 4287 m2 s-2, vertical vorticity 0.122 s-1, 33.5 m s-1
+# surface winds, 62.5 dBZ) which is exactly what attempt #1's box never saw.
+#
+# ---------------------------------------------------------------------------
+# ATTEMPT #3: ONE MIXING LENGTH.  mix_isotropic 0 -> 1 on d03 AND d04.
+# ---------------------------------------------------------------------------
+# Revision b raised the lid, and the run got further and then tripped the
+# health bound again -- this time on the POSITIVE side, at d04 step 5467:
+#
+#     w(56, 185, 85) = 239.48348999023438 m/s   violates upper bound <= 200
+#
+# Bit-identical across three instrumented reproductions.  A w-tendency
+# instrument with a bitwise-ZERO residual proved the value comes out of the
+# momentum equation rather than any bookkeeping seam, and an arena-NaN-poison
+# run cleared the memory-aliasing lead outright.  So this is the physics
+# doing it, and the physics it is doing is the horizontal mixing.
+#
+# WHY.  WRF hands horizontal_diffusion_w_2 the VERTICAL exchange coefficient
+# (dyn_em/module_diffusion_em.F:3003, dummy spelled xkmv at :3524), and with
+# mix_isotropic = 0 smag_km both BUILDS and CAPS that coefficient on the
+# vertical length scale (:1890-1900):
+#
+#     xkmv = min( c_s^2 * dz^2 * |S| ,  mix_upper_bound * dz^2 / dt )
+#
+# The operator that consumes it then differences over dx.  Nothing in that
+# chain compares the coefficient against the spacing it will be differenced
+# over, so the reachable ratio is
+#
+#     mix_upper_bound * (dz_max / dx)^2
+#
+# which is independent of dt -- the cap carries 1/dt and the ratio carries dt.
+# An explicit Laplacian multiplies a 2dx mode by 1 - 4*K*dt/dx^2 per step, so
+# past 1/4 the sign flips and past 1/2 the mode GROWS.  On this tree, with
+# dz_max = 650.3 m from the raised-lid ladder:
+#
+#     d01   3000 m   km_opt 4                        not exposed
+#     d02   1000 m   km_opt 4                        not exposed
+#     d03    500 m   km_opt 3    ratio 0.169         under the limit
+#     d04    100 m   km_opt 3    ratio 4.23          17x the limit
+#
+# The trip measured 1.55 at the failing cell, and the pin in
+# tests/test_anisotropic_mixing_w_stability.py measures the mode coming back
+# INVERTED AND TWICE AS LARGE on this grid shape at 160 m/s.  The parents are
+# immune by selector, not by luck: km_opt = 4 builds one coefficient on the
+# horizontal spacing.
+#
+# THE FIX.  mix_isotropic = 1 on both LES children.  WRF then builds one
+# length from (dx*dy*dz)^(1/3) and caps the vertical coefficient against the
+# horizontal one, so what the horizontal operator receives is bounded by the
+# spacing it differences over.  It is the standard LES choice for exactly
+# this geometry, it is config-only, and it costs nothing this run cares
+# about: the same pin measures kmv == kmh at every amplitude and no
+# amplification anywhere.  d03 is switched with d04 even though d03 is under
+# the limit today, because 0.169 and 4.23 come off the SAME ladder and a
+# child that mixes differently from its parent is a seam nobody needs.
+#
+# NOT A RESTART.  mix_isotropic is inside the restart fingerprint, so
+# attempt #3 runs from 00Z.  Revision b's file is FROZEN at
+# configs/les_tornado_100m_mayfield_20211210_attempt2b.toml (sha256
+# ffa4e5e3...), because a committed result must keep pointing at the file it
+# was produced under.
+#
+# The other candidate fix -- clamping xkmv against a cap built on dx*dy in
+# the kernel, one line -- is PARKED for a ruling.  It changes the operator
+# for every configuration rather than this tree's request, which is a bigger
+# decision than a run needs to make.
+[experiment]
+name = "les_tornado_100m_mayfield_20211210_attempt3"
+# 00Z on 2021-12-11, the HRRR analysis at the window start.  Convective
+# initiation upstream follows around 02Z and Mayfield is struck near 03:27Z,
+# so the LES children get roughly 3.5 h of spin-up before the storm arrives.
+start_time = 2021-12-11T00:00:00
+# 7 h, 00Z -> 07Z.  One hour longer than attempt #1 because the model's
+# corridor crossings are 04-06Z rather than the historical 03:27Z, so the
+# window needs a tail past the event rather than more spin-up.  Not a
+# restart: see the header.
+run_seconds = 25200.0
+feedback = 0
+smooth_option = 0
+blend_width = 5
+spec_bdy_width = 5
+# SET, unlike the demonstration.  Its restart_interval_s = 0.0 meant a run
+# that could not be resumed had it died, and the scored receipt records that
+# as a defect (nested-les-scored-2026-08-02.md:147-148).  3600 s is 240 whole
+# root steps at dt = 15 s.  A 2+-domain tree is on the checkpointing route
+# (gpuwm/checkpoint_routes.py:67), so this is exercised, not decorative.
+restart_interval_s = 3600.0
+
+# UNCHANGED from attempt #1, and now a projection ORIGIN rather than a box
+# centre: d01 and d02 stay exactly where they were so their prepared caches
+# remain reusable, while d03 and d04 move off-centre onto the corridor.
+[projection]
+map_proj = "lambert"
+ref_lat = 36.72
+ref_lon = -88.7
+# The secant cone bracketing the reference latitude by +/- 10 deg, which is
+# the rule gpuwm/domain_wizard.py:1580-1581 applies.
+truelat1 = 26.72
+truelat2 = 46.72
+stand_lon = -88.7
+
+[shared]
+# 73 full levels -> nz = 72 mass levels.  Generated and scored by
+# tools/build_stretched_eta_ladder.py --nz 72 --dz0 20 --dz-max 650
+# --bl-top 1700 --require-below 30.  See the vertical-grid note above.
+nz = 72
+ztop = 20000.0
+p_top = 5000.0
+eta_levels = [
+    1.0, 0.99752, 0.9949, 0.99212, 0.98918,
+    0.98606, 0.98277, 0.97929, 0.9756, 0.9717,
+    0.96758, 0.96322, 0.95862, 0.95375, 0.9486,
+    0.94317, 0.93744, 0.93138, 0.92499, 0.91825,
+    0.91114, 0.90364, 0.89574, 0.88742, 0.87865,
+    0.86943, 0.85973, 0.84953, 0.83881, 0.82755,
+    0.81574, 0.80335, 0.79037, 0.77677, 0.76254,
+    0.74767, 0.73213, 0.71592, 0.69902, 0.68143,
+    0.66313, 0.64413, 0.62443, 0.60402, 0.58292,
+    0.56114, 0.5387, 0.51562, 0.49194, 0.46769,
+    0.44293, 0.4177, 0.39206, 0.3661, 0.33989,
+    0.31352, 0.2871, 0.26073, 0.23453, 0.20863,
+    0.18329, 0.15988, 0.13829, 0.11839, 0.10009,
+    0.08328, 0.06787, 0.05377, 0.04089, 0.02915,
+    0.01847, 0.00878, 0.0,
+]
+hybrid_opt = 2
+etac = 0.2
+base_temp = 290.0
+time_step_sound = 4
+emdiv = 0.01
+hypsometric_opt = 2
+h_sca_adv_order = 5
+smdiv = 0.1
+moist_adv_opt = 1
+w_damping = 1
+damp_opt = 3
+zdamp = 5000.0
+dampcoef = 0.2
+khdif = 0.0
+kvdif = 0.0
+spec_zone = 1
+relax_zone = 4
+bldt = 0.0
+nwp_diagnostics = 1
+moist = true
+moist_cq = false
+mp_physics = 6
+top_lid = true
+epssm = 0.5
+morr_rimed_ice = 1
+wsm6_hail_opt = 0
+ra_physics = 0
+ra_lw_physics = 0
+ra_sw_physics = 1
+wrf_rrtmg_compatibility = "none"
+sf_sfclay_physics = 91
+sf_surface_physics = 2
+bl_pbl_physics = 1
+num_soil_layers = 4
+terrain_opt = 1
+km_opt = 4
+diff_6th_opt = 2
+diff_6th_slopeopt = 1
+map_proj = 1
+
+# --- d01: 3 km, 918 x 732 km, the synoptic parent.  Holds the whole track
+# from the northeast-Arkansas initiation to the Kentucky decay.
+[[domain]]
+grid_id = 1
+parent_id = 0
+i_parent_start = 1
+j_parent_start = 1
+parent_grid_ratio = 1
+parent_time_step_ratio = 1
+nx = 306
+ny = 244
+time_step = 15
+dx = 3000.0
+specified = true
+nested = false
+# Hourly: the parent is context, not a subject.  Disk goes to the children.
+history_interval_s = 3600.0
+radt = 1.0
+cu_physics = 0
+cudt_minutes = 0.0
+diff_6th_factor = 0.08
+
+# --- d02: 1 km, 450 x 450 km, centred in d01.  Ratio 3, dt 5 s.
+# 150 parent cells wide, placed so its centre is d01's centre exactly:
+# i_parent_start = (306 - 450/3)/2 + 1 = 79, j = (244 - 450/3)/2 + 1 = 48.
+# UNCHANGED from attempt #1.  It spans 34.639-38.746 N, 91.334-86.066 W,
+# which already holds the initiation region, the whole historical track AND
+# the whole model corridor, so there is nothing to gain by moving it and a
+# reusable prepared cache to lose.  This is also the domain the next
+# attempt's placement will be read off, now at 15-minute cadence.
+[[domain]]
+grid_id = 2
+parent_id = 1
+i_parent_start = 79
+j_parent_start = 48
+parent_grid_ratio = 3
+parent_time_step_ratio = 3
+nx = 450
+ny = 450
+specified = false
+nested = true
+# 15 min, and the second reason this attempt exists.  Attempt #1 wrote d02
+# hourly, and an hourly frame of a 13-23 m s-1 storm is a 50-90 km sample
+# interval -- wider than the 20 km box it is supposed to be placed against.
+# Every ambiguity in this file's placement derivation traces to that
+# cadence.  900 s is 6-14 km of storm motion per frame, which can resolve a
+# cell's track well enough to aim a 20 km box at it.
+history_interval_s = 900.0
+epssm = 0.5
+radt = 1.0
+cu_physics = 0
+diff_6th_factor = 0.1
+
+# --- d03: 500 m, 150 x 150 km, the first LES domain.  Ratio 2, dt 2.5 s.
+# 150 parent cells wide, and NO LONGER CENTRED: moved southwest onto the
+# model's corridor, from (151, 151) to (111, 127) in d02's grid.  Centre
+# 36.500 N 89.154 W; spans 35.809-37.185 N, 90.018-88.299 W, which holds
+# every corridor cell in the 01Z-06Z table and still excludes the northeast
+# Arkansas initiation region so genesis stays a parent's job.
+#
+# Clearance inside d02: 110 / 190 / 126 / 174 parent rows W/E/S/N against
+# the 10 rows spec_bdy_width + blend_width requires
+# (gpuwm/experiment.py:1604-1632).  Receipt:
+# docs/les/attempt2/corridor-placement.json.
+#
+# Attempt #1's d03 held Princeton and Mayfield; this one holds neither
+# inside d04's parentage in the same way -- Princeton and Bremen now fall
+# outside d03 entirely.  That is the cost of following the model instead of
+# the history, and it is deliberate.
+#
+# The storm ENTERS this domain from the west-southwest and gets ~66 km of
+# transit inside it before reaching d04's west edge -- comparable to
+# attempt #1's 50-75 km, so the spin-up fetch risk registered there carries
+# over unchanged.
+[[domain]]
+grid_id = 3
+parent_id = 2
+i_parent_start = 111
+j_parent_start = 127
+parent_grid_ratio = 2
+parent_time_step_ratio = 2
+nx = 300
+ny = 300
+specified = false
+nested = true
+# 15 min: fine enough to carry the variance-profile and spectral screens
+# without paying the child's cadence.
+history_interval_s = 900.0
+epssm = 0.5
+radt = 1.0
+cu_physics = 0
+diff_6th_factor = 0.1
+# PBL off, resolved-turbulence closure on.
+km_opt = 3
+bl_pbl_physics = 0
+c_s = 0.25
+# ONE ISOTROPIC MIXING LENGTH (dx*dy*dz)^(1/3).  Changed from 0 for
+# attempt #3; see the revision block in the header.  With per-axis
+# lengths the horizontal diffusion of w is handed the VERTICAL exchange
+# coefficient, which is capped on the LAYER DEPTH and not on the spacing
+# it is then differenced over: mix_upper_bound*(dz_max/dx)^2 reaches
+# 0.169 at 500 m and 4.23 at 100 m, against an explicit limit of 0.25.
+mix_isotropic = 1
+mix_upper_bound = 0.1
+isfflx = 1
+# P3 inflow seeding, pilot amplitude, fixed committed seed.  Settings are the
+# pilot ON arm verbatim from
+# docs/superpowers/receipts/les/inflow-generator/les.km3.p3.on-7h.toml:166-169.
+# The generator is opt-in and OFF by default; the D90 fetch meter runs on the
+# output and the scored footprint is the fetch-clean interior only.
+inflow_perturbation = true
+inflow_perturbation_seed = 20211210
+inflow_perturbation_amplitude_scale = 1.0
+inflow_perturbation_faces = "inflow"
+
+# --- d04: 100 m, 20 x 20 km, the tornado-scale child.  Ratio 5, dt 0.5 s.
+# 40 parent cells wide, at (132, 120) in d03's grid.  Centre 36.450 N
+# 89.149 W -- the ruled placement, on the corridor's 04-06Z crossings, 40 km
+# southwest of attempt #1's box.  Spans 36.358-36.541 N, 89.263-89.035 W.
+#
+# Clearance inside d03: 131 / 129 / 119 / 141 parent rows W/E/S/N against
+# the 10 required.
+#
+# The centre is HELD at the ruled 36.45 N 89.15 W rather than nudged onto
+# the interpolated chord's midpoint (36.51 N 89.16 W, ~7 km north).  The
+# hourly track model that would justify the nudge samples the storm every
+# 50-90 km, which is wider than the box, so optimising against it would be
+# fitting to interpolation noise.  The measured yield of the ruled centre is
+# recorded in the placement receipt and is what the 15-minute frames will
+# grade.
+#
+# Cayce KY (36.508 N 89.039 W) is inside this box.  Mayfield is not -- the
+# model's storm does not go there.
+[[domain]]
+grid_id = 4
+parent_id = 3
+i_parent_start = 132
+j_parent_start = 120
+parent_grid_ratio = 5
+parent_time_step_ratio = 5
+nx = 200
+ny = 200
+specified = false
+nested = true
+# 5 min: 73 frames over the window, which is the sampling the d04
+# vertical-vorticity maximum and swirling-updraft time series are graded on.
+# Finer cadence is affordable in wall time but not in staged disk.
+history_interval_s = 300.0
+epssm = 0.5
+radt = 1.0
+cu_physics = 0
+diff_6th_factor = 0.1
+# PBL off, resolved-turbulence closure on.
+km_opt = 3
+bl_pbl_physics = 0
+c_s = 0.25
+# ONE ISOTROPIC MIXING LENGTH (dx*dy*dz)^(1/3).  Changed from 0 for
+# attempt #3; see the revision block in the header.  With per-axis
+# lengths the horizontal diffusion of w is handed the VERTICAL exchange
+# coefficient, which is capped on the LAYER DEPTH and not on the spacing
+# it is then differenced over: mix_upper_bound*(dz_max/dx)^2 reaches
+# 0.169 at 500 m and 4.23 at 100 m, against an explicit limit of 0.25.
+mix_isotropic = 1
+mix_upper_bound = 0.1
+isfflx = 1
+# OFF on d04.  RULED 2026-08-06, after the model refused the run:
+#
+#   ValueError: inflow_perturbation defines its vertical extent from the
+#   parent-diagnosed PBLH and therefore requires a parent running a PBL
+#   scheme; parent bl_pbl_physics=0
+#
+# The generator exists for the mesoscale->LES handoff.  A parent running a
+# PBL scheme diagnoses PBLH because it PARAMETERIZES the turbulence its
+# child must spin up from nothing -- that is d02 (YSU) -> d03 exactly, and
+# it is why the perturbation stays ON there.
+#
+# d03 -> d04 is not that case.  The parent is itself LES at 500 m: its
+# RESOLVED eddies advect through d04's inflow faces and ARE the inflow
+# turbulence.  Injecting synthetic perturbations on top of them would
+# double-count.  The generator was never designed for a resolved-turbulence
+# parent, which is precisely why its own contract demands a parent PBLH --
+# the refusal is the model correctly encoding its applicability boundary,
+# not an obstacle to route around.
+#
+# FALSIFIER, registered: the d04 D90 spin-up fetch receipt (screen E1) is
+# still graded and still committed whatever it reads.  If d03 -> d04 fetch
+# turns out to be insufficient -- i.e. the resolved eddies do NOT arrive
+# developed -- this ruling is what attempt #2 revisits.
+inflow_perturbation = false
+
+# Advisory data-acquisition hints (validated, not executed); keys mirror
+# `gpuwm fetch` flags.  `area` is the d01 footprint (33.269-39.941 N,
+# 94.163-83.237 W, computed from gpuwm.static.projection) padded ~0.6 deg
+# for the HRRR surface-donor margin.  forecast_start_hour 0 + hours 8 is
+# f00..f08 off the 00Z cycle = 00Z through 08Z, which leaves one hour of
+# boundary margin past the 07Z end of the integration.  The files are the
+# ones attempt #1 already fetched (manifest 318d2ba0...); d01 did not move,
+# so the same 9.6 GB serves both attempts and nothing is refetched.
+[fetch]
+source = "hrrr"
+cycle = "2021-12-11T00"
+forecast_start_hour = 0
+hours = 8
+area = "32.7,-94.8,40.5,-82.6"
+out = "data"

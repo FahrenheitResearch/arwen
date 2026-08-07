@@ -26,10 +26,47 @@ import numpy as np
 #: Contract the pack metadata must declare.
 SWEEPS_SCHEMA = "gpuwm-obs.radar-sweeps.v1"
 
+#: The same pack, plus a ``|u1`` censor plane beside every moment plane.
+#: Written only when ``rw_nexrad decode --censor-flags`` was asked for.
+#:
+#: A distinct schema string rather than an optional key inside v1, because
+#: the two files make different claims about the same bytes.  In a v1 pack a
+#: NaN gate means "nothing further is known about this gate"; in a v2 pack
+#: the writer is asserting it knows exactly which of three things happened
+#: there.  A reader that quietly ignored the extra arrays would be assuming
+#: the weaker claim while holding the stronger file, so the version is what
+#: makes the extension safe rather than merely additive.
+SWEEPS_SCHEMA_CENSOR = "gpuwm-obs.radar-sweeps.v2"
+
+#: Both schemas this reader accepts.
+SWEEPS_SCHEMAS = (SWEEPS_SCHEMA, SWEEPS_SCHEMA_CENSOR)
+
 _MAGIC = b"GPWMRDR1"
 _VERSION = 1
 _HEADER_BYTES = 64
 _DTYPE = "<f4"
+_CENSOR_DTYPE = "|u1"
+
+
+class Censor:
+    """Why a gate in :attr:`Moment.data` is not a number.
+
+    Mirrors ``wx_radar::level2::censor`` and the pack's ``|u1`` plane.  The
+    two that matter are opposites and must never be confused:
+    :data:`BELOW_THRESHOLD` is the radar reporting that it looked and found
+    nothing, which is a clear-air *observation*; :data:`RANGE_FOLDED` is the
+    radar reporting that it cannot say what it saw, which is evidence of
+    nothing and may well be a storm.
+    """
+
+    #: ``data`` holds a decoded measurement.
+    MEASURED = 0
+    #: Raw 0 in the Message-31 word: below the significant-return threshold.
+    BELOW_THRESHOLD = 1
+    #: Raw 1: second-trip ambiguity.  Never usable as clear air.
+    RANGE_FOLDED = 2
+    #: A radial that carried no such moment; the pack's rectangle fill.
+    NOT_COLLECTED = 3
 
 
 class RadarSweepPackError(ValueError):
@@ -58,6 +95,12 @@ class Moment:
     first_gate_range_m: float
     gate_size_m: float
     data: np.ndarray
+    #: ``uint8`` :class:`Censor` codes, same shape as ``data``, or ``None``
+    #: for a v1 pack that never carried them.  ``None`` and "all measured"
+    #: are different statements and are kept different: the first says the
+    #: reasons were never recorded, the second says they were recorded and
+    #: every gate is a number.
+    censor: np.ndarray | None = None
 
     def slant_range_m(self) -> np.ndarray:
         """Range to each gate centre, shape ``(gate_count,)``."""
@@ -110,6 +153,9 @@ class RadarVolume:
     params: dict
     framing: dict
     sweeps: tuple[Sweep, ...]
+    #: Which of :data:`SWEEPS_SCHEMAS` the pack declared.  Defaulted so a
+    #: volume assembled by hand still reads as the baseline contract.
+    pack_schema: str = SWEEPS_SCHEMA
 
     def provenance(self) -> dict:
         """The record that travels into the gridded product's provenance."""
@@ -120,7 +166,7 @@ class RadarVolume:
             "volume_bytes": self.volume_bytes,
             "pack_file": self.pack_path.name,
             "pack_sha256": self.pack_sha256,
-            "pack_schema": SWEEPS_SCHEMA,
+            "pack_schema": self.pack_schema,
             "station_id": self.station_id,
             "valid_time": self.valid_time,
             "decode_params": dict(self.params),
@@ -165,10 +211,12 @@ def _decode(raw: bytes, path: Path) -> RadarVolume:
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise RadarSweepPackError(
             f"{path.name}: metadata block is not JSON: {error}") from error
-    if meta.get("schema") != SWEEPS_SCHEMA:
+    schema = meta.get("schema")
+    if schema not in SWEEPS_SCHEMAS:
         raise RadarSweepPackError(
-            f"{path.name}: declares schema {meta.get('schema')!r}, expected "
-            f"{SWEEPS_SCHEMA!r}")
+            f"{path.name}: declares schema {schema!r}, expected one of "
+            f"{SWEEPS_SCHEMAS!r}")
+    censored = schema == SWEEPS_SCHEMA_CENSOR
     if meta.get("status") != "READY":
         raise RadarSweepPackError(
             f"{path.name}: status {meta.get('status')!r}, expected 'READY'")
@@ -181,13 +229,19 @@ def _decode(raw: bytes, path: Path) -> RadarVolume:
             f"{meta.get('content_sha256')}")
 
     arrays = meta.get("arrays") or {}
+    # A ``|u1`` array is only ever a censor plane, and only a v2 pack may
+    # carry one.  A v1 pack holding one is refused rather than read past:
+    # it would mean the writer recorded reasons the schema string denies.
+    allowed = (_DTYPE, _CENSOR_DTYPE) if censored else (_DTYPE,)
     for key, entry in arrays.items():
-        if entry.get("dtype") != _DTYPE:
+        dtype = entry.get("dtype")
+        if dtype not in allowed:
             raise RadarSweepPackError(
-                f"{path.name}: array {key} has dtype {entry.get('dtype')!r}, "
-                f"this reader handles {_DTYPE!r}")
+                f"{path.name}: array {key} has dtype {dtype!r}, a "
+                f"{schema!r} pack carries {allowed!r}")
+        width = 1 if dtype == _CENSOR_DTYPE else 4
         elements = int(np.prod(entry["shape"], dtype=np.int64)) if entry["shape"] else 0
-        if elements * 4 != int(entry["bytes"]):
+        if elements * width != int(entry["bytes"]):
             raise RadarSweepPackError(
                 f"{path.name}: array {key} declares shape {entry['shape']} "
                 f"but {entry['bytes']} bytes")
@@ -196,14 +250,18 @@ def _decode(raw: bytes, path: Path) -> RadarVolume:
                 f"{path.name}: array {key} spans past the end of a "
                 f"{len(payload)}-byte payload")
 
-    def view(key: str) -> np.ndarray:
+    def view(key: str, dtype: str = _DTYPE) -> np.ndarray:
         entry = arrays.get(key)
         if entry is None:
             raise RadarSweepPackError(
                 f"{path.name}: metadata references missing array {key!r}")
+        if entry.get("dtype") != dtype:
+            raise RadarSweepPackError(
+                f"{path.name}: array {key!r} has dtype "
+                f"{entry.get('dtype')!r}, this use needs {dtype!r}")
         start = int(entry["offset"])
         stop = start + int(entry["bytes"])
-        flat = np.frombuffer(payload[start:stop], dtype=_DTYPE)
+        flat = np.frombuffer(payload[start:stop], dtype=dtype)
         return flat.reshape(tuple(int(dim) for dim in entry["shape"]))
 
     sweeps = []
@@ -218,13 +276,52 @@ def _decode(raw: bytes, path: Path) -> RadarVolume:
                     f"{path.name}: sweep {entry['sweep_index']} moment "
                     f"{moment['product']} has {data.shape[0]} rows for "
                     f"{azimuth.size} radials")
+            censor_key = moment.get("censor_array")
+            if censored != (censor_key is not None):
+                lack = "is missing its" if censored else "carries a"
+                raise RadarSweepPackError(
+                    f"{path.name}: sweep {entry['sweep_index']} moment "
+                    f"{moment['product']} {lack} censor plane, which "
+                    f"contradicts schema {schema!r}")
+            censor = None
+            if censor_key is not None:
+                censor = view(str(censor_key), _CENSOR_DTYPE)
+                if censor.shape != data.shape:
+                    raise RadarSweepPackError(
+                        f"{path.name}: sweep {entry['sweep_index']} moment "
+                        f"{moment['product']} censor plane has shape "
+                        f"{censor.shape} for a {data.shape} moment plane")
+                # The two planes have to agree about which gates are
+                # numbers.  The failure mode that matters is a censor plane
+                # calling a NaN gate MEASURED, or a below-threshold code on
+                # a gate that decoded to a real number: either way a
+                # clear-air builder downstream would be counting something
+                # the radar did not say.
+                measured = censor == Censor.MEASURED
+                finite = np.isfinite(data)
+                if bool(np.any(measured != finite)):
+                    raise RadarSweepPackError(
+                        f"{path.name}: sweep {entry['sweep_index']} moment "
+                        f"{moment['product']} censor plane disagrees with "
+                        "its moment plane about which gates are numbers")
+                known = np.array(
+                    [Censor.MEASURED, Censor.BELOW_THRESHOLD,
+                     Censor.RANGE_FOLDED, Censor.NOT_COLLECTED],
+                    dtype=censor.dtype)
+                unknown = np.setdiff1d(np.unique(censor), known)
+                if unknown.size:
+                    raise RadarSweepPackError(
+                        f"{path.name}: sweep {entry['sweep_index']} moment "
+                        f"{moment['product']} censor plane carries unknown "
+                        f"codes {sorted(int(c) for c in unknown)}")
             moments[moment["product"]] = Moment(
                 product=str(moment["product"]),
                 unit=str(moment["unit"]),
                 gate_count=int(moment["gate_count"]),
                 first_gate_range_m=float(moment["first_gate_range_m"]),
                 gate_size_m=float(moment["gate_size_m"]),
-                data=data)
+                data=data,
+                censor=censor)
         sweeps.append(Sweep(
             sweep_index=int(entry["sweep_index"]),
             elevation_number=int(entry["elevation_number"]),
@@ -262,4 +359,5 @@ def _decode(raw: bytes, path: Path) -> RadarVolume:
         pack_sha256=hashlib.sha256(raw).hexdigest(),
         params=dict(meta.get("params") or {}),
         framing=dict(volume.get("framing") or {}),
-        sweeps=tuple(sweeps))
+        sweeps=tuple(sweeps),
+        pack_schema=str(schema))

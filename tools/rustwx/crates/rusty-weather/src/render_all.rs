@@ -42,6 +42,12 @@ pub use store_render::{StoreFieldSource, StoreRenderSkip};
 pub struct ProductRequest {
     pub direct: Vec<String>,
     pub derived: Vec<String>,
+    /// Explicit arbitrary 2-D store variable names (`var:<name>`).  The
+    /// catalog KEYWORDS leave this empty -- the keyword vocabulary is
+    /// store-independent -- but the store-aware catalog expansion
+    /// (`inspect_renderable_products`) enumerates every stored variable
+    /// as a `var:` slug, so a catalog-expanded "all" does include them.
+    pub generic: Vec<String>,
     pub windowed: Vec<String>,
     /// The windowed list came from the "all" keyword: render it only when
     /// the run has more than one stored hour (a single hour realizes only
@@ -121,6 +127,7 @@ pub fn partition_products(spec: &str) -> Result<ProductRequest, Box<dyn std::err
                 .into_iter()
                 .chain(heavy_catalog())
                 .collect(),
+            generic: Vec::new(),
             windowed: windowed_catalog(),
             windowed_auto: true,
             strict: false,
@@ -128,6 +135,7 @@ pub fn partition_products(spec: &str) -> Result<ProductRequest, Box<dyn std::err
         "direct" => Ok(ProductRequest {
             direct: store_direct_recipe_slugs(),
             derived: Vec::new(),
+            generic: Vec::new(),
             windowed: Vec::new(),
             windowed_auto: false,
             strict: false,
@@ -135,6 +143,7 @@ pub fn partition_products(spec: &str) -> Result<ProductRequest, Box<dyn std::err
         "derived" => Ok(ProductRequest {
             direct: Vec::new(),
             derived: derived_catalog(),
+            generic: Vec::new(),
             windowed: Vec::new(),
             windowed_auto: false,
             strict: false,
@@ -142,6 +151,7 @@ pub fn partition_products(spec: &str) -> Result<ProductRequest, Box<dyn std::err
         "heavy" => Ok(ProductRequest {
             direct: Vec::new(),
             derived: heavy_catalog(),
+            generic: Vec::new(),
             windowed: Vec::new(),
             windowed_auto: false,
             strict: false,
@@ -149,6 +159,7 @@ pub fn partition_products(spec: &str) -> Result<ProductRequest, Box<dyn std::err
         "windowed" => Ok(ProductRequest {
             direct: Vec::new(),
             derived: Vec::new(),
+            generic: Vec::new(),
             windowed: windowed_catalog(),
             windowed_auto: false,
             strict: false,
@@ -156,8 +167,14 @@ pub fn partition_products(spec: &str) -> Result<ProductRequest, Box<dyn std::err
         list => {
             let mut direct = Vec::new();
             let mut derived = Vec::new();
+            let mut generic = Vec::new();
             let mut windowed = Vec::new();
             for slug in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                if let Some(name) = slug.strip_prefix("var:") {
+                    validate_generic_variable_name(name)?;
+                    generic.push(name.to_string());
+                    continue;
+                }
                 let is_derived = store_derived_recipe_slugs().contains(&slug)
                     || store_heavy_recipe_slugs().contains(&slug)
                     || is_heavy_derived_recipe_slug(slug);
@@ -175,26 +192,45 @@ pub fn partition_products(spec: &str) -> Result<ProductRequest, Box<dyn std::err
                     // at this level and --list-products prints the rest.
                     return Err(format!(
                         "unknown product '{slug}'; choose from 'all', 'direct', \
-                         'derived', 'heavy', 'windowed', or a comma-separated \
-                         list of the {} product slugs that --list-products \
-                         prints",
+                         'derived', 'heavy', 'windowed', 'var:<stored 2-D \
+                         variable>', or a comma-separated list of the {} \
+                         product slugs that --list-products prints",
                         known_product_slug_count()
                     )
                     .into());
                 }
             }
-            if direct.is_empty() && derived.is_empty() && windowed.is_empty() {
+            if direct.is_empty() && derived.is_empty() && generic.is_empty() && windowed.is_empty()
+            {
                 return Err("pass at least one product slug via --products".into());
             }
             Ok(ProductRequest {
                 direct,
                 derived,
+                generic,
                 windowed,
                 windowed_auto: false,
                 strict: true,
             })
         }
     }
+}
+
+/// Request-safety validation for a `var:<name>` generic product token.
+/// The vocabulary is the store's, not this build's, so only the properties
+/// that keep the name safe inside comma-joined product specs and log lines
+/// are enforced here; existence is checked against the opened store.
+pub(crate) fn validate_generic_variable_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if name.is_empty() {
+        return Err("generic store product must name a variable after 'var:'".into());
+    }
+    if name.len() > 512 {
+        return Err("generic store variable name exceeds 512 bytes".into());
+    }
+    if name.trim() != name || name.contains(',') || name.chars().any(char::is_control) {
+        return Err(format!("generic store variable name is not request-safe: {name:?}").into());
+    }
+    Ok(())
 }
 
 /// Everything the render passes need to know, independent of any bin's CLI.
@@ -238,10 +274,10 @@ impl StoreRenderConfig {
 }
 
 #[derive(Debug)]
-struct HourPresentation {
-    forecast_hour: u16,
-    output_suffix: Option<String>,
-    subtitle_left: Option<String>,
+pub(crate) struct HourPresentation {
+    pub(crate) forecast_hour: u16,
+    pub(crate) output_suffix: Option<String>,
+    pub(crate) subtitle_left: Option<String>,
 }
 
 /// `source: ArWen` -- the provenance line for a run nothing fetched.
@@ -381,6 +417,7 @@ pub fn render_hour_products(
     hour: u16,
     direct_slugs: &[String],
     derived_slugs: &[String],
+    generic_variables: &[String],
     // Optional pacing hook for the direct lane's chunked render: called
     // before each chunk loads its fields. `rw_batch` passes its memory
     // gate (defer chunks inside high-memory ingest windows); `rw_render`
@@ -475,6 +512,25 @@ pub fn render_hour_products(
             output_path: recipe.output_path,
         }));
         skipped.extend(outcome.skipped);
+    }
+
+    for variable in generic_variables {
+        // Same memory pacing as the other lanes: a generic render decodes
+        // one full plane and builds one projected map.
+        if let Some(gate) = direct_chunk_gate {
+            gate();
+        }
+        match store_render::render_generic_store_variable(store, config, hour, variable) {
+            Ok(product) => rendered.push(RenderedProduct {
+                slug: format!("var:{}", product.variable),
+                total_ms: product.total_ms,
+                output_path: product.output_path,
+            }),
+            Err(error) => skipped.push(StoreRenderSkip {
+                slug: format!("var:{variable}"),
+                reason: error.to_string(),
+            }),
+        }
     }
 
     Ok(HourRenderOutcome { rendered, skipped })
@@ -643,6 +699,43 @@ mod tests {
     }
 
     #[test]
+    fn generic_subtitle_row_never_sacrifices_the_stamp_or_valid_time() {
+        // Exact-time frame with a spacing segment: the LONGEST left line
+        // this lane composes.  The right half must be EXACTLY the
+        // provenance stamp named products carry -- the renderer measures
+        // the right subtitle and end-ellipsizes anything longer inside a
+        // half-row cap, which is how "rw-store variable el [m] |
+        // source: ArWen" lost its stamp and squeezed the valid time to
+        // "Valid 1..." in the field.
+        let config = presentation_config(Some("\u{0394}x 100 m"), Some("ArWen"));
+        // 18Z init + 4 h 50 min lead -> valid 1974-04-03 22:50:00Z.
+        let exact = RwsExactTime::new(17_400, 134_261_400);
+        let presentation = hour_presentation(&config, 0, Some(exact)).unwrap();
+        let (left, right) = store_render::generic_subtitle_row(&config, &presentation);
+        assert_eq!(
+            right, "source: ArWen",
+            "the stamp stands alone; no variable/units segment may share \
+             (and therefore squeeze) the right half"
+        );
+        assert!(
+            left.contains("Valid 04/03 22:50Z"),
+            "the full valid time must survive: {left}"
+        );
+        assert!(left.starts_with("Init 04/03 18Z | +004:50 |"), "{left}");
+        assert!(left.ends_with("| \u{0394}x 100 m"), "{left}");
+
+        // Whole-hour frame without overrides: the shared model time
+        // subtitle carries the full valid segment; the stamp is the
+        // registered source.
+        let plain = presentation_config(None, None);
+        let presentation = hour_presentation(&plain, 3, None).unwrap();
+        let (left, right) = store_render::generic_subtitle_row(&plain, &presentation);
+        assert!(left.contains("F003"), "{left}");
+        assert!(left.contains("Valid"), "{left}");
+        assert!(right.starts_with("source: "), "{right}");
+    }
+
+    #[test]
     fn the_source_label_displaces_the_inherited_fetch_source() {
         // A locally imported run was never fetched from GDEX; saying so
         // is the whole point of the label.
@@ -662,6 +755,11 @@ mod tests {
         let all = partition_products("all").unwrap();
         assert!(!all.strict);
         assert_eq!(all.direct, store_direct_recipe_slugs());
+        assert!(
+            all.generic.is_empty(),
+            "the store-independent keyword vocabulary cannot name store variables; \
+             the catalog expansion adds them"
+        );
         assert_eq!(
             all.derived.len(),
             store_derived_recipe_slugs().len() + store_heavy_recipe_slugs().len()
@@ -695,21 +793,26 @@ mod tests {
 
     #[test]
     fn product_lists_classify_into_lanes_and_are_strict() {
-        let picked =
-            partition_products("2m_temperature,sbcape,ecape_stp,qpf_6h,uh_2to5km_run_max")
-                .unwrap();
+        let picked = partition_products(
+            "2m_temperature,sbcape,ecape_stp,var:custom_plane,qpf_6h,uh_2to5km_run_max",
+        )
+        .unwrap();
         assert!(picked.strict);
         assert_eq!(picked.direct, vec!["2m_temperature".to_string()]);
         assert_eq!(
             picked.derived,
             vec!["sbcape".to_string(), "ecape_stp".to_string()]
         );
+        assert_eq!(picked.generic, vec!["custom_plane".to_string()]);
         assert_eq!(
             picked.windowed,
             vec!["qpf_6h".to_string(), "uh_2to5km_run_max".to_string()]
         );
         assert!(!picked.windowed_auto);
         assert!(partition_products("definitely_not_a_product").is_err());
+        assert!(partition_products("var:").is_err());
+        assert!(partition_products("var:unsafe\nname").is_err());
+        assert!(partition_products("var: padded ").is_err());
     }
 
     #[test]

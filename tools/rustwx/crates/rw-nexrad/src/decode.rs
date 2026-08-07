@@ -15,8 +15,8 @@ use wx_radar::level2::{Level2File, Level2Sweep, VolSite};
 use wx_radar::products::RadarProduct;
 
 use crate::pack::{
-    ArrayEntry, DecodeParams, Framing, MomentEntry, PackMeta, PayloadBuilder, SiteEntry,
-    SweepEntry, VolumeEntry, SWEEPS_SCHEMA,
+    self, ArrayEntry, DecodeParams, Framing, MomentEntry, PackMeta, PayloadBuilder, SiteEntry,
+    SweepEntry, VolumeEntry, SWEEPS_SCHEMA, SWEEPS_SCHEMA_CENSOR,
 };
 use crate::s3::{boxed_error, hex_sha256, iso8601};
 
@@ -289,6 +289,13 @@ pub struct DecodeRequest<'a> {
     pub max_range_km: f64,
     pub max_elevation_deg: f64,
     pub site_override: Option<(f64, f64, f64)>,
+    /// Emit a `|u1` censor plane beside every moment plane, and declare the
+    /// pack [`crate::pack::SWEEPS_SCHEMA_CENSOR`].
+    ///
+    /// Off by default, and the default path is byte-identical to the one
+    /// that existed before the flag: no extra arrays, no extra metadata
+    /// keys, the same schema string.
+    pub censor_flags: bool,
 }
 
 /// Build the pack metadata and payload for one validated volume.
@@ -353,6 +360,16 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
         for layout in layouts {
             let gates = layout.gates;
             let mut flat = vec![f32::NAN; radial_count * gates];
+            // The rectangle starts as NOT_COLLECTED everywhere, which is the
+            // truth for a row a split cut never filled.  A radial that does
+            // carry the moment overwrites its whole row with the decoder's
+            // own codes, so the only cells left saying NOT_COLLECTED are the
+            // ones the NaN fill above created.
+            let mut censor = if request.censor_flags {
+                vec![pack::censor_plane::NOT_COLLECTED; radial_count * gates]
+            } else {
+                Vec::new()
+            };
             for (row, radial) in sweep.radials.iter().enumerate() {
                 let Some(moment) = radial.moments.iter().find(|m| m.product == layout.product)
                 else {
@@ -362,8 +379,17 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
                 // `declared_gates >= gates` samples, so this is a copy at the
                 // agreed ranges, never a trim from an unknown origin.
                 flat[row * gates..row * gates + gates].copy_from_slice(&moment.data[..gates]);
+                if request.censor_flags {
+                    // The decoder keeps `censor` exactly as long as `data`,
+                    // so the same span is in bounds for both.
+                    censor[row * gates..row * gates + gates]
+                        .copy_from_slice(&moment.censor[..gates]);
+                }
             }
             let key = builder.push_f32(&flat, vec![radial_count, gates]);
+            let censor_key = request
+                .censor_flags
+                .then(|| builder.push_u8(&censor, vec![radial_count, gates]));
             moment_entries.push(MomentEntry {
                 product: layout.product.short_name().to_string(),
                 unit: layout.product.unit().to_string(),
@@ -371,6 +397,7 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
                 first_gate_range_m: layout.first_gate_range_m,
                 gate_size_m: layout.gate_size_m,
                 array: key,
+                censor_array: censor_key,
             });
         }
 
@@ -409,7 +436,11 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
 
     let (payload, arrays) = builder.finish();
     let meta = PackMeta {
-        schema: SWEEPS_SCHEMA.to_string(),
+        schema: if request.censor_flags {
+            SWEEPS_SCHEMA_CENSOR.to_string()
+        } else {
+            SWEEPS_SCHEMA.to_string()
+        },
         status: "READY".to_string(),
         site: SiteEntry {
             id: site.id,
@@ -441,6 +472,7 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
                 .collect(),
             max_range_km: request.max_range_km,
             max_elevation_deg: request.max_elevation_deg,
+            censor_flags: request.censor_flags,
         },
         sweeps,
         arrays: arrays as std::collections::BTreeMap<String, ArrayEntry>,
@@ -465,6 +497,7 @@ mod tests {
             first_gate_range: first,
             gate_size: size,
             data: (0..gate_count).map(|g| g as f32).collect(),
+            censor: vec![wx_radar::level2::censor::MEASURED; gate_count as usize],
         }
     }
 
@@ -583,6 +616,13 @@ mod tests {
     /// per-radial envelope can tell that following it would read the next
     /// radial's bytes as this one's.
     fn one_radial_volume(bad_pointer: bool) -> Vec<u8> {
+        one_radial_volume_words(bad_pointer, [100u8, 101, 102, 103])
+    }
+
+    /// The same fixture with the four gate words chosen by the caller, so a
+    /// test can place raw 0 (below threshold) and raw 1 (range folded)
+    /// exactly where it wants them.
+    fn one_radial_volume_words(bad_pointer: bool, words: [u8; 4]) -> Vec<u8> {
         fn constant(name: &[u8; 4], lrtup: u16, body: &[u8]) -> Vec<u8> {
             let mut block = Vec::from(&name[..]);
             block.extend_from_slice(&lrtup.to_be_bytes());
@@ -621,7 +661,7 @@ mod tests {
         moment.extend_from_slice(&8u16.to_be_bytes());
         moment.extend_from_slice(&2.0f32.to_be_bytes());
         moment.extend_from_slice(&66.0f32.to_be_bytes());
-        moment.extend([100u8, 101, 102, 103]);
+        moment.extend(words);
 
         let _ = &constant;
         let blocks = vec![
@@ -707,6 +747,7 @@ mod tests {
             max_range_km: 250.0,
             max_elevation_deg: 20.0,
             site_override: Some((35.3331, -97.2778, 370.0)),
+            censor_flags: false,
         }
     }
 
@@ -726,6 +767,130 @@ mod tests {
         let err = build_pack(&pack_request(&raw)).unwrap_err().to_string();
         assert!(err.contains("outside its own"), "{err}");
         assert!(err.contains("neighbouring radial"), "{err}");
+    }
+
+    /// Raw 0 (below threshold), raw 1 (range folded), and two measurements.
+    fn censored_request(raw: &[u8]) -> DecodeRequest<'_> {
+        let mut request = pack_request(raw);
+        request.censor_flags = true;
+        request
+    }
+
+    #[test]
+    fn the_default_pack_says_nothing_at_all_about_censoring() {
+        // The do-no-harm contract, pinned in the metadata rather than
+        // asserted in a commit message: with the flag off, a pack has the
+        // v1 schema string, no censor array on any moment, and no censoring
+        // keys anywhere in its serialized JSON.  The last one is what keeps
+        // every already-committed pack digest reproducible.
+        let raw = one_radial_volume_words(false, [0, 1, 102, 103]);
+        let (meta, payload) = build_pack(&pack_request(&raw)).unwrap();
+        assert_eq!(meta.schema, crate::pack::SWEEPS_SCHEMA);
+        assert!(!meta.params.censor_flags);
+        assert!(meta.sweeps[0].moments[0].censor_array.is_none());
+        assert_eq!(meta.arrays.len(), 3); // azimuth, elevation, one moment
+        for entry in meta.arrays.values() {
+            assert_eq!(entry.dtype, "<f4");
+        }
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(!json.contains("censor"), "{json}");
+
+        // And the gates themselves are what they always were: raw 0 and
+        // raw 1 both NaN, in the same plane, indistinguishable.
+        let values: Vec<f32> = payload
+            .chunks_exact(4)
+            .map(|word| f32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+            .collect();
+        let gates = &values[values.len() - 4..];
+        assert!(gates[0].is_nan() && gates[1].is_nan());
+        assert_eq!(gates[2], 18.0);
+        assert_eq!(gates[3], 18.5);
+    }
+
+    #[test]
+    fn the_censor_plane_names_each_gates_reason_and_rides_a_v2_schema() {
+        let raw = one_radial_volume_words(false, [0, 1, 102, 103]);
+        let (meta, payload) = build_pack(&censored_request(&raw)).unwrap();
+        assert_eq!(meta.schema, crate::pack::SWEEPS_SCHEMA_CENSOR);
+        assert!(meta.params.censor_flags);
+
+        let moment = &meta.sweeps[0].moments[0];
+        let key = moment.censor_array.clone().expect("censor plane");
+        let entry = &meta.arrays[&key];
+        assert_eq!(entry.dtype, "|u1");
+        assert_eq!(entry.shape, vec![1, 4]);
+        assert_eq!(entry.bytes, 4);
+
+        // The moment plane is untouched by the flag: same values, same
+        // dtype, same shape.  Only the explanation is new.
+        let values = &meta.arrays[&moment.array];
+        assert_eq!(values.dtype, "<f4");
+        assert_eq!(values.shape, vec![1, 4]);
+
+        let codes = &payload[entry.offset..entry.offset + entry.bytes];
+        use wx_radar::level2::censor;
+        assert_eq!(
+            codes,
+            [
+                censor::BELOW_THRESHOLD,
+                censor::RANGE_FOLDED,
+                censor::MEASURED,
+                censor::MEASURED,
+            ]
+        );
+
+        // A pack that says v2 and a pack that says v1 both round-trip, and
+        // each is refused if its arrays contradict its schema string.
+        let bytes = crate::pack::encode_pack(&meta, &payload).unwrap();
+        let (read_back, _) = crate::pack::decode_pack(&bytes).unwrap();
+        assert_eq!(read_back.schema, crate::pack::SWEEPS_SCHEMA_CENSOR);
+        assert_eq!(
+            read_back.sweeps[0].moments[0].censor_array.as_deref(),
+            Some(key.as_str())
+        );
+
+        let mut lying = meta.clone();
+        lying.schema = crate::pack::SWEEPS_SCHEMA.to_string();
+        lying.params.censor_flags = false;
+        let bytes = crate::pack::encode_pack(&lying, &payload).unwrap();
+        let err = crate::pack::decode_pack(&bytes).unwrap_err().to_string();
+        assert!(err.contains("carries a censor plane"), "{err}");
+
+        let mut stripped = meta.clone();
+        stripped.sweeps[0].moments[0].censor_array = None;
+        let bytes = crate::pack::encode_pack(&stripped, &payload).unwrap();
+        let err = crate::pack::decode_pack(&bytes).unwrap_err().to_string();
+        assert!(err.contains("is missing a censor plane"), "{err}");
+    }
+
+    #[test]
+    fn a_radial_that_never_carried_the_moment_is_not_collected_not_clear() {
+        // The third NaN source, and the one that is purely this layer's
+        // doing: the pack stores a sweep as a rectangle, so a split cut's
+        // empty rows are NaN-filled here.  They must read as "not
+        // collected", never as "measured and empty" -- a clear-air builder
+        // that mistook them would invent observations over every azimuth
+        // the moment was never scanned on.
+        let sweep = sweep_of(vec![
+            vec![moment(REF, 4, 2125, 250), moment(VEL, 4, 2125, 250)],
+            vec![moment(REF, 4, 2125, 250)],
+        ]);
+        let mut builder = PayloadBuilder::new();
+        let (layouts, _) = agree_sweep_layouts(&sweep, &[REF, VEL], f64::INFINITY).unwrap();
+        let vel = layouts.iter().find(|l| l.product == VEL).unwrap();
+        let mut censor = vec![pack::censor_plane::NOT_COLLECTED; 2 * vel.gates];
+        censor[..vel.gates]
+            .copy_from_slice(&sweep.radials[0].moments[1].censor[..vel.gates]);
+        let key = builder.push_u8(&censor, vec![2, vel.gates]);
+        let (payload, arrays) = builder.finish();
+        let entry = &arrays[&key];
+        let codes = &payload[entry.offset..entry.offset + entry.bytes];
+        use wx_radar::level2::censor as code;
+        assert!(codes[..vel.gates].iter().all(|c| *c == code::MEASURED));
+        assert!(codes[vel.gates..]
+            .iter()
+            .all(|c| *c == pack::censor_plane::NOT_COLLECTED));
+        assert_ne!(pack::censor_plane::NOT_COLLECTED, code::BELOW_THRESHOLD);
     }
 
     #[test]

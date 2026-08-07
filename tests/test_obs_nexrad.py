@@ -30,6 +30,7 @@ from gpuwm.obs.radar_grid import read_radar_grid, write_radar_grid
 from gpuwm.obs.superob import SuperobParams, merge_contributions, superob_volume
 from gpuwm.obs.sweeps import (SWEEPS_SCHEMA, RadarSweepPackError,
                               read_sweep_pack)
+from gpuwm.obs.sweeps import Censor, SWEEPS_SCHEMA_CENSOR
 from gpuwm.obs.target_grid import TargetGrid
 from gpuwm.static.lambert import LambertGrid
 
@@ -91,6 +92,133 @@ def _good_pack() -> bytes:
                    "bytes": 24},
     }
     return _pack_bytes(_minimal_meta(payload, arrays), payload)
+
+
+def _censored_pack(*, data=None, codes=None, schema=SWEEPS_SCHEMA_CENSOR,
+                   attach=True) -> bytes:
+    """A v2 pack: the same two radials, plus a ``|u1`` censor plane.
+
+    Gate 0 of each radial is below threshold and gate 1 is range folded --
+    both NaN in the moment plane, and told apart only by the censor plane.
+    """
+
+    azimuth = np.array([0.0, 1.0], dtype="<f4")
+    elevation = np.array([0.5, 0.5], dtype="<f4")
+    if data is None:
+        data = np.array([[np.nan, np.nan, 30.0],
+                         [np.nan, np.nan, 31.0]], dtype="<f4")
+    if codes is None:
+        codes = np.array([[Censor.BELOW_THRESHOLD, Censor.RANGE_FOLDED,
+                           Censor.MEASURED],
+                          [Censor.BELOW_THRESHOLD, Censor.RANGE_FOLDED,
+                           Censor.MEASURED]], dtype="|u1")
+    data = np.asarray(data, dtype="<f4")
+    codes = np.asarray(codes, dtype="|u1")
+    payload = (azimuth.tobytes() + elevation.tobytes() + data.tobytes()
+               + codes.tobytes())
+    arrays = {
+        "a00000": {"dtype": "<f4", "shape": [2], "offset": 0, "bytes": 8},
+        "a00001": {"dtype": "<f4", "shape": [2], "offset": 8, "bytes": 8},
+        "a00002": {"dtype": "<f4", "shape": list(data.shape), "offset": 16,
+                   "bytes": data.nbytes},
+        "a00003": {"dtype": "|u1", "shape": list(codes.shape),
+                   "offset": 16 + data.nbytes, "bytes": codes.nbytes},
+    }
+    meta = _minimal_meta(payload, arrays)
+    meta["schema"] = schema
+    meta["params"]["censor_flags"] = schema == SWEEPS_SCHEMA_CENSOR
+    if attach:
+        meta["sweeps"][0]["moments"][0]["censor_array"] = "a00003"
+    return _pack_bytes(meta, payload)
+
+
+# -- the censor plane: the v2 pack contract -------------------------------
+
+def test_a_v1_pack_reads_with_no_censor_plane_at_all(tmp_path):
+    """The do-no-harm side of the reader.
+
+    ``None`` is not "all measured": it is "the reasons were never
+    recorded", which is the only honest reading of a v1 pack.
+    """
+
+    path = tmp_path / "v1.pack"
+    path.write_bytes(_good_pack())
+    volume = read_sweep_pack(path)
+    assert volume.pack_schema == SWEEPS_SCHEMA
+    assert volume.sweeps[0].moments["REF"].censor is None
+    assert volume.provenance()["pack_schema"] == SWEEPS_SCHEMA
+
+
+def test_a_v2_pack_carries_the_reason_each_gate_is_not_a_number(tmp_path):
+    path = tmp_path / "v2.pack"
+    path.write_bytes(_censored_pack())
+    volume = read_sweep_pack(path)
+    assert volume.pack_schema == SWEEPS_SCHEMA_CENSOR
+    assert volume.provenance()["pack_schema"] == SWEEPS_SCHEMA_CENSOR
+    moment = volume.sweeps[0].moments["REF"]
+    assert moment.censor is not None
+    assert moment.censor.shape == moment.data.shape
+    assert moment.censor[0, 0] == Censor.BELOW_THRESHOLD
+    assert moment.censor[0, 1] == Censor.RANGE_FOLDED
+    assert moment.censor[0, 2] == Censor.MEASURED
+    # The two gates the old decoder could not tell apart are still the same
+    # NaN in the moment plane.  The plane beside it is the whole difference.
+    assert np.isnan(moment.data[0, 0]) and np.isnan(moment.data[0, 1])
+
+
+def test_a_pack_whose_schema_and_arrays_disagree_is_refused(tmp_path):
+    # v1 string, censor plane attached: a v1 consumer would read a file
+    # making a claim its schema denies.
+    path = tmp_path / "lying.pack"
+    path.write_bytes(_censored_pack(schema=SWEEPS_SCHEMA))
+    with pytest.raises(RadarSweepPackError, match="dtype"):
+        read_sweep_pack(path)
+
+    # v2 string, no censor plane: promises a distinction it cannot make.
+    path = tmp_path / "empty.pack"
+    path.write_bytes(_censored_pack(attach=False))
+    with pytest.raises(RadarSweepPackError, match="missing its censor plane"):
+        read_sweep_pack(path)
+
+
+def test_a_censor_plane_that_contradicts_its_moment_plane_is_refused(tmp_path):
+    """The failure that would fabricate observations, caught at the reader.
+
+    A censor plane calling a NaN gate MEASURED, or calling a real number
+    BELOW_THRESHOLD, is a plane describing a different volume.  Either
+    direction would put a number into the clear-air count that the radar
+    never reported, so neither is repaired -- the file is refused.
+    """
+
+    codes = np.array([[Censor.MEASURED, Censor.RANGE_FOLDED, Censor.MEASURED],
+                      [Censor.BELOW_THRESHOLD, Censor.RANGE_FOLDED,
+                       Censor.MEASURED]], dtype="|u1")
+    path = tmp_path / "nan-called-measured.pack"
+    path.write_bytes(_censored_pack(codes=codes))
+    with pytest.raises(RadarSweepPackError, match="disagrees with"):
+        read_sweep_pack(path)
+
+    codes = np.array([[Censor.BELOW_THRESHOLD, Censor.RANGE_FOLDED,
+                       Censor.BELOW_THRESHOLD],
+                      [Censor.BELOW_THRESHOLD, Censor.RANGE_FOLDED,
+                       Censor.MEASURED]], dtype="|u1")
+    path = tmp_path / "number-called-clear.pack"
+    path.write_bytes(_censored_pack(codes=codes))
+    with pytest.raises(RadarSweepPackError, match="disagrees with"):
+        read_sweep_pack(path)
+
+
+def test_an_unknown_censor_code_is_refused_rather_than_ignored(tmp_path):
+    """A code this build does not know might mean anything, including
+    "range folded" under a future numbering.  Refuse it."""
+
+    codes = np.array([[7, Censor.RANGE_FOLDED, Censor.MEASURED],
+                      [Censor.BELOW_THRESHOLD, Censor.RANGE_FOLDED,
+                       Censor.MEASURED]], dtype="|u1")
+    path = tmp_path / "unknown-code.pack"
+    path.write_bytes(_censored_pack(codes=codes))
+    with pytest.raises(RadarSweepPackError, match="unknown codes"):
+        read_sweep_pack(path)
 
 
 # -- the bridge, without a binary -----------------------------------------

@@ -97,8 +97,8 @@ from gpuwm.physics_compat import (MORRISON_PROFILE_ID, MYNN_PROFILE_ID,
                                   RUC_PROFILE_ID, THOMPSON_PROFILE_ID,
                                   WSM6_PROFILE_ID,
                                   single_domain_runtime_switches)
-from gpuwm.hrrr_route_inputs import (coverage_advisory, coverage_refusal,
-                                     route_input_paths,
+from gpuwm.hrrr_route_inputs import (HrrrRouteInputError, coverage_advisory,
+                                     coverage_refusal, route_input_paths,
                                      write_hrrr_route_inputs)
 from gpuwm.static.projection import (EARTH_RADIUS_M, WRF_MAP_PROJ_CODES,
                                      _wrap180, projection_class)
@@ -2236,7 +2236,14 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         """
         if source != "hrrr":
             return None
-        return coverage_refusal(exp)
+        try:
+            return coverage_refusal(exp)
+        except (HrrrRouteInputError, ValueError) as error:
+            # Not a coverage answer: the spec itself cannot be built.
+            # Shrinking the ladder cannot fix that, so it refuses with
+            # its OWN cause and remedy instead of masquerading as an
+            # off-grid polygon.
+            raise DomainFitError(str(error)) from None
 
     dims, exp, envelope, budget = candidate(_MIN_SCALE)
     if budget <= 0:
@@ -2532,7 +2539,14 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
         root_dx_m=root_dx_m, profile=profile)
     exp = experiment_from_text(text, source="<polygon candidate>")
     if source == "hrrr":
-        refusal = coverage_refusal(exp)
+        try:
+            refusal = coverage_refusal(exp)
+        except (HrrrRouteInputError, ValueError) as error:
+            # A spec-construction failure is its own refusal with its
+            # own remedy.  It used to be concatenated into the coverage
+            # sentence below, sending the user to move a polygon that
+            # was never the problem.
+            raise DomainFitError(str(error)) from None
         if refusal is not None:
             raise DomainFitError(
                 "polygon plus the requested per-level buffers falls outside "

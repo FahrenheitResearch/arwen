@@ -12,10 +12,21 @@ end to end:
     prepare  authority -> fetch -> manifest -> prepared cache, on THIS
              box (prepared cases are host-bound; a receipted finding)
     obs      one ``gpuwm-obs.radar-grid.v1`` file per cycle via the
-             rw_nexrad seam (``tools/obs_radar_grid_build.py``)
+             rw_nexrad seam (``tools/obs_radar_grid_build.py``), built
+             from one radar or several (``--sites``/``--discover-sites``)
     cycle    N-member cycled GPU LETKF with free forecast legs
              (``tools/da_cycle_prepared.py``)
     render   the map-styled gallery (``tools/da_nowcast_render.py``)
+
+``--site`` is the ANCHOR radar: it sites the domain and names the case.
+``--sites XXXX`` (repeatable) adds radars to every observation the run
+builds, and ``--discover-sites`` computes them from the domain's own
+georeference instead.  One radar measures the wind along its own beam
+and nothing else; two whose coverage overlaps constrain what neither
+can alone.  The selection is recorded in the receipt under ``radars``,
+and the rolling verifier reads it back -- so the observed composites a
+case is GRADED against are built from the same radars it ASSIMILATED,
+which is the difference between verification and flattery.
 
 Verification is AUTOMATIC: when a run completes, the front door spawns
 a detached rolling verifier (``watch`` mode) that polls the archive,
@@ -207,6 +218,17 @@ _SITE_PATTERN = re.compile(r"^[A-Z][A-Z0-9]{3}$")
 STAGES = ("survey", "domain", "fetch", "prepare", "forecast", "obs",
           "cycle", "render")
 
+# The streams --without can subtract from --da full.  Radial velocity is
+# not on this list: it is the base configuration every preset stands on,
+# and a run without it is a research question for --da custom, not a
+# product option.
+DA_SUBTRACTABLE = ("reflectivity", "clear-air", "dealias", "surface", "cwp")
+
+# The certified full-stack run's CWP vertical localisation
+# (evidence/da-demo/full-stack/run.sh).  --da full fills it only when the
+# caller did not state one; --da custom still requires it explicitly.
+DA_FULL_CWP_VLOC_M = 20000.0
+
 
 class FrontDoorError(SystemExit):
     """A refusal with its reason; exit code 2 like argparse refusals."""
@@ -364,8 +386,21 @@ class WindowPlan:
     cycle_times: tuple[datetime, ...]
     horizon_seconds: int          # applied + free legs
     run_hours: int                # georeference run length (>= horizon)
-    gfs_cycle: datetime
+    background_cycle: datetime    # the background source's own cycle
     forecast_start_hour: int
+    background_source: str = "gfs"
+
+    @property
+    def gfs_cycle(self) -> datetime:
+        """Compatibility shim for the field's pre-HRRR name.
+
+        The cycle stopped being GFS-shaped when the background became a
+        registry choice (gpuwm/da/background.py).  Receipts written
+        before the rename and callers that still say ``gfs_cycle`` keep
+        working; new code says ``background_cycle``.
+        """
+
+        return self.background_cycle
 
     @property
     def run_seconds(self) -> int:
@@ -387,13 +422,26 @@ class WindowPlan:
             "free_leg_times": [iso(t) for t in self.free_leg_times()],
             "horizon_seconds": self.horizon_seconds,
             "run_hours": self.run_hours,
-            "gfs_cycle": self.gfs_cycle.strftime("%Y-%m-%dT%H"),
+            "background_source": self.background_source,
+            "background_cycle": self.background_cycle.strftime(
+                "%Y-%m-%dT%H"),
+            # Compatibility duplicate of background_cycle under the
+            # pre-HRRR key, so a reader of an older receipt and a reader
+            # of this one see the same shape.  Remove with the shim.
+            "gfs_cycle": self.background_cycle.strftime("%Y-%m-%dT%H"),
             "forecast_start_hour": self.forecast_start_hour,
         }
 
 
 def latest_gfs_cycle(init: datetime, now: datetime) -> datetime:
-    """Newest synoptic cycle at/before ``init`` whose files exist by now."""
+    """Newest synoptic cycle at/before ``init`` whose files exist by now.
+
+    Kept as the archival GFS reference: tests/test_da_background.py
+    proves ``gpuwm.da.background.plan_background_cycle`` returns the
+    SAME cycle for GFS, so replayed receipts stay explainable by the
+    arithmetic that produced them.  New planning goes through the
+    registry.
+    """
 
     candidate = init.replace(minute=0, second=0, microsecond=0)
     candidate -= timedelta(hours=candidate.hour % SYNOPTIC_STEP_HOURS)
@@ -408,7 +456,8 @@ def latest_gfs_cycle(init: datetime, now: datetime) -> datetime:
 
 def plan_window(window_end: datetime, *, cycles: int, cycle_seconds: int,
                 free_legs: int, now: datetime,
-                run_hours: int | None = None) -> WindowPlan:
+                run_hours: int | None = None,
+                source: str = "gfs") -> WindowPlan:
     """Derive the whole run's timing, or refuse and say why.
 
     ``run_hours`` defaults to the shortest whole-hour run that covers
@@ -416,6 +465,12 @@ def plan_window(window_end: datetime, *, cycles: int, cycle_seconds: int,
     that will keep cycling on this prepared case for longer than one
     window -- a continuous nowcast -- states a longer one, and it is
     checked against the derived floor rather than trusted.
+
+    ``source`` names a ``gpuwm.da.background`` registry entry; its own
+    cadence, publication lag and horizon pick the cycle.  The parameter
+    default stays ``gfs`` so a receipt replay and this function's own
+    tests keep meaning what they said; the FRONT DOOR's default is
+    ``hrrr`` and is named once, at the CLI (Drew ruling, 2026-08-06).
     """
 
     if cycles < 1:
@@ -445,19 +500,21 @@ def plan_window(window_end: datetime, *, cycles: int, cycle_seconds: int,
             f"--run-hours {run_hours} is shorter than the {floor_hours} "
             "hours this window needs (applied cycles + free legs + an "
             "hour of slack)")
-    gfs_cycle = latest_gfs_cycle(init, now)
-    forecast_start_hour = int(
-        (init - gfs_cycle).total_seconds() // 3600)
-    if forecast_start_hour > 120:
-        raise FrontDoorError(
-            f"init {iso(init)} is f{forecast_start_hour:03d} of the "
-            f"{gfs_cycle:%Y-%m-%dT%H}Z cycle -- beyond hourly GFS output")
+    from gpuwm.da.background import BackgroundError, plan_background_cycle
+
+    try:
+        background = plan_background_cycle(
+            source, init=init, now=now,
+            run_seconds=float(run_hours) * 3600.0)
+    except BackgroundError as error:
+        raise FrontDoorError(str(error)) from None
     return WindowPlan(
         window_end=window_end, cycles=cycles,
         cycle_seconds=cycle_seconds, free_legs=free_legs, init=init,
         cycle_times=cycle_times, horizon_seconds=horizon,
-        run_hours=run_hours, gfs_cycle=gfs_cycle,
-        forecast_start_hour=forecast_start_hour)
+        run_hours=run_hours, background_cycle=background.cycle,
+        forecast_start_hour=background.forecast_start_hour,
+        background_source=background.source)
 
 
 def resolve_latest_window_end(newest_volume: datetime, *, cycles: int,
@@ -629,7 +686,7 @@ def wizard_cmd(*, polygon: Path, out_toml: Path, plan: WindowPlan,
         "--root-dx", f"{dx_km:g}",
         "--physics-profile", profile,
         "--source", source,
-        "--cycle", plan.gfs_cycle.strftime("%Y-%m-%dT%H"),
+        "--cycle", plan.background_cycle.strftime("%Y-%m-%dT%H"),
         "--forecast-start-hour", str(plan.forecast_start_hour),
         "--hours", str(plan.run_hours),
         "--name", name,
@@ -653,15 +710,26 @@ def authority_cmd(*, case_toml: Path, wps_namelist: Path, profile: str,
 
 
 def fetch_cmd(*, hints: dict, data_dir: Path, source: str) -> list[str]:
-    return [
+    argv = [
         _py(), "-m", "gpuwm.cli", "fetch", "--source", source,
         "--cycle", str(hints["cycle"]),
         "--hours", str(hints["hours"]),
         f"--area={hints['area']}",
         "--out", str(data_dir),
-        "--cadence", str(hints.get("cadence", 1)),
-        "--forecast-start-hour", str(hints["forecast_start_hour"]),
     ]
+    if "cadence" in hints:
+        # The wizard emits a cadence only for sources that HAVE one to
+        # choose (GFS 1/3 h); `gpuwm fetch --source hrrr` refuses the
+        # flag outright because HRRR is hourly and nothing else.
+        argv.extend(("--cadence", str(hints["cadence"])))
+    # `.get(..., 0)`, not `[...]`: the wizard writes forecast_start_hour
+    # into its [fetch] hints only when it is nonzero, and an init that
+    # lands exactly on a background cycle -- the COMMON case on hourly
+    # HRRR cycles, and any synoptic-hour window end on GFS -- is lead 0.
+    # Indexing here raised KeyError on exactly those runs (issue #74).
+    argv.extend(("--forecast-start-hour",
+                 str(hints.get("forecast_start_hour", 0))))
+    return argv
 
 
 def manifest_cmd(*, data_dir: Path, authority_dir: Path,
@@ -674,14 +742,51 @@ def manifest_cmd(*, data_dir: Path, authority_dir: Path,
     ]
 
 
-def prepare_cmd(*, data_dir: Path, authority_dir: Path, bridge: Path,
+def prepare_cmd(*, data_dir: Path, authority_dir: Path,
+                bridge: Path | None,
                 profile: str, geog_root: Path, prepared_root: Path,
-                plan: WindowPlan, manifest_sha: str,
-                source: str) -> list[str]:
+                plan: WindowPlan, manifest_sha: str, source: str,
+                namelist_input: Path | None = None,
+                domain_spec: Path | None = None,
+                history_interval_seconds: float | None = None
+                ) -> list[str]:
+    """The preparation command, in the SOURCE's own argument grammar.
+
+    The two grammars are different on purpose and neither is bent to
+    the other: the GFS route reads a decoded series plus the manifest
+    the fetch authored, while the HRRR route reads the raw GRIB2
+    directory bound by its fetch-written ``SHA256SUMS`` and derives
+    every stage clock from cycle + lead (``gpuwm.source_cli``'s own
+    ``--source hrrr`` contract; ``--experiment-config`` and ``--bridge``
+    are refused there).  ``manifest_sha`` is therefore the digest of a
+    DIFFERENT file per source, and the three HRRR-only keyword
+    arguments are exactly the wizard-emitted route inputs the GFS
+    grammar has no use for.
+    """
+
+    if source == "hrrr":
+        return [
+            _py(), "-m", "gpuwm.source_cli", "--source", source,
+            "--source-root", str(data_dir),
+            "--source-manifest", str(data_dir / "SHA256SUMS"),
+            "--source-manifest-sha256", manifest_sha,
+            "--namelist-input", str(namelist_input),
+            "--domain-spec", str(domain_spec),
+            "--wps-namelist", str(authority_dir / "namelist.wps"),
+            "--valid-time",
+            plan.background_cycle.strftime("%Y-%m-%d_%H:00:00"),
+            "--forecast-start-hour", str(plan.forecast_start_hour),
+            "--run-seconds", str(plan.run_seconds),
+            "--history-interval-seconds",
+            f"{float(history_interval_seconds):g}",
+            "--physics-profile", profile,
+            "--geog-root", str(geog_root),
+            "--output-root", str(prepared_root),
+        ]
     return [
         _py(), "-m", "gpuwm.source_cli", "--source", source,
         "--gfs-series", str(data_dir / "gfs-series.tsv"),
-        "--cycle", plan.gfs_cycle.strftime("%Y-%m-%d_%H:00:00"),
+        "--cycle", plan.background_cycle.strftime("%Y-%m-%d_%H:00:00"),
         "--bridge", str(bridge),
         "--wps-namelist", str(authority_dir / "namelist.wps"),
         "--experiment-config", str(authority_dir / "experiment.toml"),
@@ -712,12 +817,161 @@ def forecast_cmd(*, prepared_root: Path, authority_dir: Path,
     ]
 
 
-def obs_cmd(*, site: str, valid: datetime, grid_wrfout: Path,
-            out_nc: Path, work_dir: Path,
-            bucket: str | None) -> list[str]:
+@dataclass(frozen=True)
+class RadarSelection:
+    """Which radars every observation of this case is built from.
+
+    One radar measures the wind along its own beam and nothing else, so
+    a single-radar analysis is one projection of a three-component
+    field.  ``tools/obs_radar_grid_build.py`` has accepted several
+    radars per analysis time since the Level-II work; this type is how
+    the front door asks for them, and it is the ONE place the request
+    is turned into that tool's argv -- the cycle's observations and the
+    rolling verifier's observed composites are built from the same
+    object, so a case cannot grade itself against a thinner (or
+    thicker) analysis than it assimilated.
+
+    ``anchor`` is always the surveyed site: it sites the domain, it
+    names the case's files, and it is what a receipt means by
+    ``site``.  It is distinct from the radars that CONTRIBUTE, which
+    is why both are carried.
+
+    Three shapes, and the default is the old behaviour exactly:
+
+    * neither ``sites`` nor ``discover``  -> ``--site <anchor>``, the
+      single-radar argv this function emitted before multi-radar
+      existed, byte for byte;
+    * ``sites``    -> ``--site`` repeated, anchor first, deduplicated;
+    * ``discover`` -> ``--discover-sites``, and the radars are computed
+      from the georeference by :mod:`gpuwm.obs.coverage`.  The anchor
+      is NOT named in this route -- the obs builder refuses to mix
+      naming and discovery, on the grounds that the receipt could not
+      then say which route chose which radar, and the anchor sits at
+      the domain centre so discovery finds it with the best coverage
+      of any site anyway.
+    """
+
+    anchor: str
+    sites: tuple[str, ...] = ()
+    discover: bool = False
+    min_coverage_fraction: float | None = None
+    max_radars: int | None = None
+    min_radars: int | None = None
+    max_time_spread_seconds: float | None = None
+
+    @property
+    def multi(self) -> bool:
+        """Does this ask for more than the anchor radar?"""
+
+        return bool(self.discover or self.sites)
+
+    def argv_tail(self) -> list[str]:
+        """The radar-choosing half of the obs builder's command line."""
+
+        if self.discover:
+            argv = ["--discover-sites"]
+            if self.min_coverage_fraction is not None:
+                argv += ["--min-coverage-fraction",
+                         str(self.min_coverage_fraction)]
+            if self.max_radars is not None:
+                argv += ["--max-radars", str(self.max_radars)]
+        else:
+            named = [self.anchor, *self.sites]
+            seen: set[str] = set()
+            argv = []
+            for site in named:
+                if site not in seen:
+                    seen.add(site)
+                    argv += ["--site", site]
+        # These two constrain any route: they are about what the
+        # radars DELIVERED, not about how they were chosen.
+        if self.min_radars is not None:
+            argv += ["--min-radars", str(self.min_radars)]
+        if self.max_time_spread_seconds is not None:
+            argv += ["--max-radar-time-spread-seconds",
+                     str(self.max_time_spread_seconds)]
+        return argv
+
+    def to_payload(self) -> dict:
+        """The receipt's record of the request (not of the outcome).
+
+        What each build actually got -- which radars answered, which
+        refused and why, the measured time spread -- is the obs
+        builder's own receipt, per file.  This says what was ASKED.
+        """
+
+        return {
+            "anchor": self.anchor,
+            "route": "discover" if self.discover else "named",
+            "sites": list(self.sites),
+            "multi_radar": self.multi,
+            "min_coverage_fraction": self.min_coverage_fraction,
+            "max_radars": self.max_radars,
+            "min_radars": self.min_radars,
+            "max_radar_time_spread_seconds": self.max_time_spread_seconds,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict | None, *,
+                     anchor: str) -> "RadarSelection":
+        """Recover a selection from a receipt, anchor-only if absent.
+
+        A receipt written before this existed carries no ``radars``
+        block, and the right reading of that is the single-radar run it
+        was: the verifier then builds exactly what the cycle did.
+        """
+
+        if not payload:
+            return cls(anchor=anchor)
+        return cls(
+            anchor=validate_site(payload.get("anchor") or anchor),
+            sites=tuple(validate_site(s)
+                        for s in payload.get("sites") or ()),
+            discover=bool(payload.get("route") == "discover"),
+            min_coverage_fraction=payload.get("min_coverage_fraction"),
+            max_radars=payload.get("max_radars"),
+            min_radars=payload.get("min_radars"),
+            max_time_spread_seconds=payload.get(
+                "max_radar_time_spread_seconds"),
+        )
+
+
+def radar_selection(args) -> RadarSelection:
+    """The caller's radar request, refused early if contradictory."""
+
+    named = tuple(validate_site(s) for s in (getattr(args, "sites", None)
+                                             or ()))
+    discover = bool(getattr(args, "discover_sites", False))
+    if named and discover:
+        raise FrontDoorError(
+            "--sites and --discover-sites are mutually exclusive: "
+            "naming some radars and discovering others leaves a receipt "
+            "that cannot say which route chose which")
+    return RadarSelection(
+        anchor=args.site,
+        sites=named,
+        discover=discover,
+        min_coverage_fraction=getattr(args, "min_coverage_fraction", None),
+        max_radars=getattr(args, "max_radars", None),
+        min_radars=getattr(args, "min_radars", None),
+        max_time_spread_seconds=getattr(
+            args, "max_radar_time_spread_seconds", None),
+    )
+
+
+def obs_cmd(*, selection: RadarSelection, valid: datetime,
+            grid_wrfout: Path, out_nc: Path, work_dir: Path,
+            bucket: str | None, dealias: bool = False) -> list[str]:
+    """Build the obs-stage argv.
+
+    ``dealias`` has to reach *both* callers of this function or the run
+    scores itself against a differently-built truth.  See
+    :func:`build_verify_frame`.
+    """
+
     argv = [
         _py(), "-m", "tools.obs_radar_grid_build",
-        "--site", site,
+        *selection.argv_tail(),
         "--valid-time", iso(valid),
         "--grid-wrfout", str(grid_wrfout),
         "--out", str(out_nc),
@@ -726,6 +980,8 @@ def obs_cmd(*, site: str, valid: datetime, grid_wrfout: Path,
     ]
     if bucket:
         argv.extend(("--bucket", bucket))
+    if dealias:
+        argv.append("--dealias")
     return argv
 
 
@@ -741,8 +997,17 @@ def cycle_cmd(*, prepared_root: Path, authority_dir: Path, profile: str,
               resume_ensemble: Path | None = None,
               save_ensemble: Path | None = None,
               leg_number_offset: int = 0,
-              memory_budget_mib: float = DEFAULT_MEMORY_BUDGET_MIB
-              ) -> list[str]:
+              memory_budget_mib: float = DEFAULT_MEMORY_BUDGET_MIB,
+              hydrometeors: bool = False,
+              positivity_policy: str | None = None,
+              reflectivity_analysis: bool = False,
+              clear_air_analysis: bool = False,
+              surface_obs: Path | None = None,
+              sfc_t2_sigma_k: float | None = None,
+              sfc_wspd_sigma_ms: float | None = None,
+              sfc_max_age_s: float | None = None,
+              goes_cwp: list[Path] | None = None,
+              cwp_vertical_loc_m: float | None = None) -> list[str]:
     """The cycle driver's command line for one run.
 
     ``plan`` supplies the run length and the default cadence; the
@@ -795,6 +1060,39 @@ def cycle_cmd(*, prepared_root: Path, authority_dir: Path, profile: str,
         argv.extend(("--obs", str(obs)))
     for grid in grid_wrfouts:
         argv.extend(("--grid-wrfout", str(grid)))
+    if hydrometeors:
+        # The science switch, explicit here exactly as it is on the
+        # driver: moisture/hydrometeor state is perturbed AND analysed,
+        # and a positivity policy must be stated because clip / reject /
+        # none are not equivalent (gpuwm.da.positivity).
+        argv.append("--hydrometeors")
+        argv.extend(("--positivity-policy", str(positivity_policy)))
+    if reflectivity_analysis:
+        argv.append("--reflectivity-analysis")
+    if clear_air_analysis:
+        argv.append("--clear-air-analysis")
+    # The non-radar streams. They reach the driver from here or not at
+    # all: before this, --goes-cwp and --surface-obs existed only on the
+    # driver's own command line, so no run launched from this front door
+    # -- which is every WaH run -- could have assimilated either of them.
+    if surface_obs is not None:
+        argv.extend(("--surface-obs", str(surface_obs)))
+        # A surface QUANTITY is enabled by stating its error stddev, so
+        # these are not decoration: --surface-obs with neither sigma
+        # assimilates nothing and the driver refuses it.
+        if sfc_t2_sigma_k is not None:
+            argv.extend(("--sfc-t2-sigma-k", str(float(sfc_t2_sigma_k))))
+        if sfc_wspd_sigma_ms is not None:
+            argv.extend(("--sfc-wspd-sigma-ms",
+                         str(float(sfc_wspd_sigma_ms))))
+        if sfc_max_age_s is not None:
+            argv.extend(("--sfc-max-age-s", str(float(sfc_max_age_s))))
+    for path in (goes_cwp or ()):
+        # One file per leg, in leg order; the driver matches them to legs
+        # by position and refuses more files than legs.
+        argv.extend(("--goes-cwp", str(path)))
+    if cwp_vertical_loc_m is not None:
+        argv.extend(("--cwp-vertical-loc-m", str(float(cwp_vertical_loc_m))))
     if free_leg_seconds is not None:
         argv.extend(("--free-leg-seconds", str(float(free_leg_seconds))))
     if resume_ensemble is not None:
@@ -1037,20 +1335,34 @@ def start_verification(case_dir: Path, *, frames, poll_seconds: int,
     return block
 
 
-def build_verify_frame(*, case_dir: Path, site: str, init: datetime,
+def build_verify_frame(*, case_dir: Path, selection: RadarSelection,
+                       init: datetime,
                        valid: datetime, bucket: str | None,
                        max_offset_seconds: float,
-                       repo_root: Path) -> tuple[bool, str]:
-    """Build one frame's observed composite from the live archive."""
+                       repo_root: Path,
+                       dealias: bool = False) -> tuple[bool, str]:
+    """Build one frame's observed composite from the live archive.
+
+    Built from the SAME :class:`RadarSelection` the cycle assimilated,
+    recovered from the receipt.  A multi-radar nowcast graded against a
+    single-radar truth field would be scored on a different observation
+    than it was given, and the difference would look like skill.
+
+    ``dealias`` is recovered from the receipt for exactly the same reason
+    and carries exactly the same hazard.  Dealiasing changes which velocity
+    gates exist and what they are worth; a run that assimilated unfolded
+    velocities and was then graded against a masked-only truth field would
+    be scored on an observation nobody gave it.
+    """
 
     obsverify = case_dir / "obsverify"
     obsverify.mkdir(parents=True, exist_ok=True)
-    out_nc = obsverify / verify_obs_name(site, valid)
+    out_nc = obsverify / verify_obs_name(selection.anchor, valid)
     grid = (case_dir / "run" / "wrfout"
             / wrfout_name(init, (valid - init).total_seconds()))
-    argv = obs_cmd(site=site, valid=valid, grid_wrfout=grid,
+    argv = obs_cmd(selection=selection, valid=valid, grid_wrfout=grid,
                    out_nc=out_nc, work_dir=case_dir / "vols",
-                   bucket=bucket)
+                   bucket=bucket, dealias=dealias)
     argv.extend(("--max-offset-seconds", str(max_offset_seconds)))
     proc = subprocess.run(argv, cwd=str(repo_root), capture_output=True,
                           text=True, errors="replace")
@@ -1068,10 +1380,12 @@ def build_verify_frame(*, case_dir: Path, site: str, init: datetime,
     return False, " ".join(tail) or f"obs build exit {proc.returncode}"
 
 
-def verify_pass(*, case_dir: Path, site: str, init: datetime,
+def verify_pass(*, case_dir: Path, selection: RadarSelection,
+                init: datetime,
                 frames: list[dict], bucket: str | None,
                 max_offset_seconds: float,
-                repo_root: Path) -> tuple[list[dict], int]:
+                repo_root: Path,
+                dealias: bool = False) -> tuple[list[dict], int]:
     """One sweep: build what the archive now covers, re-render if new.
 
     The observation file on disk is the record of what was fetched;
@@ -1082,7 +1396,8 @@ def verify_pass(*, case_dir: Path, site: str, init: datetime,
     built = 0
     for frame in frames:
         valid = parse_iso(frame["valid"])
-        out_nc = case_dir / "obsverify" / verify_obs_name(site, valid)
+        out_nc = (case_dir / "obsverify"
+                  / verify_obs_name(selection.anchor, valid))
         if out_nc.is_file():
             frame["obs_file"] = out_nc.name
             continue
@@ -1090,9 +1405,9 @@ def verify_pass(*, case_dir: Path, site: str, init: datetime,
             frame["note"] = "valid time not reached yet"
             continue
         ok, why = build_verify_frame(
-            case_dir=case_dir, site=site, init=init, valid=valid,
+            case_dir=case_dir, selection=selection, init=init, valid=valid,
             bucket=bucket, max_offset_seconds=max_offset_seconds,
-            repo_root=repo_root)
+            repo_root=repo_root, dealias=dealias)
         if ok:
             built += 1
             frame["obs_file"] = out_nc.name
@@ -1304,7 +1619,49 @@ def build_parser() -> argparse.ArgumentParser:
         "run", help="survey a site and run the whole nowcast pipeline")
     run.add_argument("--site", required=True, type=validate_site,
                      help="four-letter radar station id (argument, "
-                          "never a default)")
+                          "never a default). The ANCHOR: it sites the "
+                          "domain, names the case's files, and always "
+                          "contributes observations")
+    run.add_argument("--sites", action="append", default=[],
+                     type=validate_site, metavar="SITE",
+                     help="an ADDITIONAL radar contributing to every "
+                          "observation of this run, repeatable. The "
+                          "anchor is always included, so --sites names "
+                          "what to add to it. Two radars whose coverage "
+                          "overlaps measure two projections of the same "
+                          "wind and constrain what neither can alone. "
+                          "Mutually exclusive with --discover-sites")
+    run.add_argument("--discover-sites", action="store_true",
+                     help="find the contributing radars from the "
+                          "domain's own georeference and the vendored "
+                          "NEXRAD site table, instead of naming them. "
+                          "The anchor is not named on this route (the "
+                          "obs builder refuses to mix naming and "
+                          "discovery) but sits at the domain centre, so "
+                          "discovery finds it with the best coverage of "
+                          "any site")
+    run.add_argument("--min-coverage-fraction", type=float, default=None,
+                     help="discovery floor: skip a radar reaching less "
+                          "than this fraction of the domain (obs "
+                          "builder's default when unset). Raising it "
+                          "buys density, lowering it buys the edges")
+    run.add_argument("--max-radars", type=int, default=None,
+                     help="keep at most this many discovered radars, "
+                          "best coverage first")
+    run.add_argument("--min-radars", type=int, default=None,
+                     help="refuse an observation built from fewer than "
+                          "this many radars. Applies to both routes. "
+                          "The obs builder's default of 1 lets a "
+                          "multi-radar request degrade to whatever "
+                          "answered; raising it makes the count a hard "
+                          "requirement of every cycle AND of every "
+                          "verification frame")
+    run.add_argument("--max-radar-time-spread-seconds", type=float,
+                     default=None,
+                     help="refuse if the contributing volumes' own "
+                          "valid times span more than this. Radars are "
+                          "never synchronous; this is where the caller "
+                          "says how much asynchrony is one atmosphere")
     run.add_argument("--window-end", required=True,
                      help="last assimilated cycle valid time "
                           "(ISO-8601 UTC) or 'latest' to derive it "
@@ -1328,13 +1685,102 @@ def build_parser() -> argparse.ArgumentParser:
                           "FSS and saves no VRAM")
     run.add_argument("--out", type=Path, required=True,
                      help="case directory (created; holds every stage)")
-    run.add_argument("--source", default="gfs",
-                     choices=("gfs",),
-                     help="background source (the cycle driver's "
-                          "SUPPORTED_SOURCES; gfs today)")
+    run.add_argument("--source", default="hrrr",
+                     choices=("hrrr", "gfs"),
+                     help="background source. Default hrrr -- the "
+                          "convection-allowing background is the "
+                          "nowcast's background, permanently (Drew "
+                          "ruling, 2026-08-06); gfs is retained for "
+                          "archival reproduction of pre-HRRR runs "
+                          "only. Both names are gpuwm.da.background "
+                          "registry entries, and the NEXT source "
+                          "(RRFS, when HRRR retires behind it) must "
+                          "be a registry entry there, not another "
+                          "branch here")
     run.add_argument("--physics-profile",
                      default="wsm6-ysu-mm5-noah-no-radiation-v1",
                      help="shipped physics profile for every stage")
+    run.add_argument("--hydrometeors", action="store_true",
+                     help="perturb AND analyse the scheme's moisture and "
+                          "hydrometeor state instead of u/v alone "
+                          "(forwarded to the cycle driver; requires "
+                          "--positivity-policy)")
+    run.add_argument("--positivity-policy", default=None,
+                     choices=("clip", "reject", "none"),
+                     help="required with --hydrometeors; clip / reject / "
+                          "none are not equivalent and gpuwm.da.positivity "
+                          "documents what each costs")
+    run.add_argument("--reflectivity-analysis", action="store_true",
+                     help="assimilate the merged reflectivity batch beside "
+                          "the velocity batches; requires --hydrometeors, "
+                          "since reflectivity against a wind-only state "
+                          "vector analyses nothing")
+    run.add_argument("--clear-air-analysis", action="store_true",
+                     help="assimilate clear-air 'zero' observations: cells "
+                          "the radar measured and found free of significant "
+                          "echo. Suppresses spurious convection. Requires "
+                          "--hydrometeors")
+    run.add_argument("--surface-obs", type=Path, default=None,
+                     help="a gpuwm-obs.asos-surface.v1 file, assimilated as "
+                          "2 m temperature and 10 m wind speed at k=0 "
+                          "beside the radar batches. Build it with rw_asos "
+                          "decode. A quantity is enabled by STATING ITS "
+                          "SIGMA below; this flag alone assimilates nothing")
+    run.add_argument("--sfc-t2-sigma-k", type=float, default=None,
+                     help="assimilate 2 m temperature with this error "
+                          "stddev (K). Representativeness, not instrument "
+                          "precision -- WoFS-like practice is 1.5-2.5 K at "
+                          "storm-scale grids")
+    run.add_argument("--sfc-wspd-sigma-ms", type=float, default=None,
+                     help="assimilate 10 m wind SPEED (the v1 seam carries "
+                          "no direction) with this error stddev (m/s); H is "
+                          "hypot(u10, v10) of the member diagnostics")
+    run.add_argument("--sfc-max-age-s", type=float, default=None,
+                     help="refuse surface reports older or newer than this "
+                          "at the analysis (driver default 900). ASOS is "
+                          "HOURLY by decoder design and each report enters "
+                          "exactly one analysis, so on a sub-hourly cycle "
+                          "most cycles legitimately see none; widen this to "
+                          "let a cycle reach the nearest hourly report")
+    run.add_argument("--goes-cwp", type=Path, action="append", default=[],
+                     help="one gpuwm-obs.goes-grid.v1 file per cycle, in "
+                          "cycle order, assimilated as a cloud-water-path "
+                          "batch. Cycles past the end of this list "
+                          "assimilate radar only. Requires --hydrometeors "
+                          "and --cwp-vertical-loc-m")
+    run.add_argument("--cwp-vertical-loc-m", type=float, default=None,
+                     help="vertical localisation for the CWP batch, in "
+                          "metres. REQUIRED with --goes-cwp and "
+                          "deliberately without a default: CWP is a column "
+                          "integral carried at one level, so this radius "
+                          "decides whether the observation acts on the "
+                          "column it integrated or on a slab")
+    run.add_argument("--dealias", action="store_true",
+                     help="unfold radial velocity per sweep instead of "
+                          "masking every gate that might be folded. "
+                          "Recovers the gates above 0.8 * Nyquist that "
+                          "carry a mesocyclone's couplet; gates the "
+                          "unfolder cannot resolve are still dropped and "
+                          "counted. Applied to the assimilated obs AND to "
+                          "the verification composites, so the run is "
+                          "graded against a truth field built the same "
+                          "way it was fed. Requires scipy")
+    run.add_argument("--da", choices=("full", "vr", "custom"),
+                     default="custom",
+                     help="observation-stream preset. 'full' is the "
+                          "certified full-stack configuration -- radial "
+                          "velocity plus reflectivity, clear air, "
+                          "dealiasing, surface and GOES CWP "
+                          "(evidence/da-demo/full-stack) -- subtract "
+                          "streams with --without. 'vr' is radial "
+                          "velocity alone. 'custom' (the default) means "
+                          "the individual flags are the whole story, "
+                          "exactly as before this flag existed")
+    run.add_argument("--without", action="append", default=[],
+                     choices=DA_SUBTRACTABLE, metavar="STREAM",
+                     help="with --da full: drop one stream from the "
+                          "preset (repeatable). One of: "
+                          + ", ".join(DA_SUBTRACTABLE))
     run.add_argument("--dx-km", type=float, default=3.0,
                      help="grid spacing in km (default 3)")
     run.add_argument("--vram-gib", type=float, default=None,
@@ -1488,10 +1934,166 @@ def main(argv=None) -> int:
     return verify_pipeline(args)
 
 
+def resolve_da_preset(args) -> None:
+    """--da full/vr become concrete stream flags, before validation.
+
+    'full' reproduces the certified full-stack configuration
+    (evidence/da-demo/full-stack/run.sh): reflectivity, clear air,
+    dealiasing, surface and GOES CWP beside the velocity batches, with
+    the pinned positivity policy and CWP localisation.  --without
+    subtracts a stream.  Science values the evidence bundle does not pin
+    (the surface sigmas) stay the caller's to state.  'vr' is the
+    velocity-only base configuration.  'custom' changes nothing.
+    """
+    without = set(getattr(args, "without", None) or ())
+    if args.da == "custom":
+        if without:
+            raise FrontDoorError(
+                "--without subtracts from a preset, and --da custom has "
+                "none: every stream is already opt-in, so pass the flags "
+                "you want instead")
+        return
+    if args.da == "vr":
+        stated = [flag for flag, on in (
+            ("--reflectivity-analysis", args.reflectivity_analysis),
+            ("--clear-air-analysis", args.clear_air_analysis),
+            ("--dealias", args.dealias),
+            ("--hydrometeors", args.hydrometeors),
+            ("--surface-obs", args.surface_obs is not None),
+            ("--goes-cwp", bool(args.goes_cwp)),
+        ) if on]
+        stated += [f"--without {w}" for w in sorted(without)]
+        if stated:
+            raise FrontDoorError(
+                "--da vr is radial velocity alone and contradicts "
+                + ", ".join(stated)
+                + ". Say --da full --without ... for full-minus-a-stream, "
+                  "or --da custom to state flags individually")
+        return
+    # --da full
+    contradictions = sorted(
+        w for w in without
+        if (w == "reflectivity" and args.reflectivity_analysis)
+        or (w == "clear-air" and args.clear_air_analysis)
+        or (w == "dealias" and args.dealias)
+        or (w == "surface" and args.surface_obs is not None)
+        or (w == "cwp" and bool(args.goes_cwp)))
+    if contradictions:
+        raise FrontDoorError(
+            "--without " + ", ".join(contradictions) + " subtracts a "
+            "stream this command line also explicitly enables; state one "
+            "intention")
+    args.hydrometeors = True
+    if args.positivity_policy is None:
+        args.positivity_policy = "clip"
+    if "reflectivity" not in without:
+        args.reflectivity_analysis = True
+    if "clear-air" not in without:
+        args.clear_air_analysis = True
+    if "dealias" not in without:
+        args.dealias = True
+    if "surface" not in without and args.surface_obs is None:
+        raise FrontDoorError(
+            "--da full includes the surface stream: pass --surface-obs "
+            "<gpuwm-obs.asos-surface.v1> (build it with rw_asos decode) "
+            "plus at least one of --sfc-t2-sigma-k / --sfc-wspd-sigma-ms "
+            "(WoFS-like practice is 1.5-2.5 K at storm-scale grids), or "
+            "drop the stream with --without surface")
+    if "cwp" not in without:
+        if not args.goes_cwp:
+            raise FrontDoorError(
+                "--da full includes the GOES cloud-water-path stream: "
+                "pass one --goes-cwp <gpuwm-obs.goes-grid.v1> per cycle "
+                "(tools/obs_goes_grid_build.py builds them), or drop the "
+                "stream with --without cwp")
+        if args.cwp_vertical_loc_m is None:
+            args.cwp_vertical_loc_m = DA_FULL_CWP_VLOC_M
+    streams = ["vr"] + [s for s in DA_SUBTRACTABLE if s not in without]
+    print(f"da preset: full -> streams {', '.join(streams)}"
+          + (f" (minus {', '.join(sorted(without))})" if without else ""))
+
+
+def validate_analysis_flags(args) -> None:
+    """The driver's own refusal chain, met at the front door instead.
+
+    tools.da_cycle_prepared refuses these combinations itself, but only
+    at the cycle stage -- after the fetch, the preparation and the
+    georeference forecast have been paid for.  The same two sentences
+    here cost a second.
+    """
+
+    if getattr(args, "reflectivity_analysis", False) \
+            and not getattr(args, "hydrometeors", False):
+        raise FrontDoorError(
+            "--reflectivity-analysis needs --hydrometeors: reflectivity "
+            "constrains condensate, and against a u/v state vector every "
+            "dBZ increment would be sampling noise")
+    if getattr(args, "hydrometeors", False) \
+            and getattr(args, "positivity_policy", None) is None:
+        raise FrontDoorError(
+            "--hydrometeors analyses physically non-negative fields and "
+            "--positivity-policy is unstated; clip / reject / none are "
+            "not equivalent (gpuwm.da.positivity documents the costs)")
+    if getattr(args, "dealias", False):
+        # The obs stage refuses this too, but only once per cycle and
+        # only after that cycle's volumes have been fetched.  A run that
+        # is going to be unable to dealias should learn it now.
+        from gpuwm.obs.dealias import SCIPY_REMEDY, scipy_available
+        if not scipy_available():
+            raise FrontDoorError(f"--dealias: {SCIPY_REMEDY}")
+    # The non-radar streams. Same reasoning as the driver's own refusals,
+    # met here so a six-hour run does not pay for the fetch and the
+    # georeference forecast before learning it was underspecified.
+    if getattr(args, "clear_air_analysis", False) \
+            and not getattr(args, "hydrometeors", False):
+        raise FrontDoorError(
+            "--clear-air-analysis needs --hydrometeors: a clear-air zero "
+            "says condensate is absent, and against a u/v state vector "
+            "there is no condensate for it to act on")
+    if getattr(args, "goes_cwp", None):
+        if not getattr(args, "hydrometeors", False):
+            raise FrontDoorError(
+                "--goes-cwp needs --hydrometeors: cloud water path IS the "
+                "column condensate, and against a u/v state vector every "
+                "CWP increment would be wind-condensate sampling "
+                "covariance, which at storm scale is noise")
+        if getattr(args, "cwp_vertical_loc_m", None) is None:
+            raise FrontDoorError(
+                "--goes-cwp needs an explicit --cwp-vertical-loc-m. CWP is "
+                "a column integral carried at one model level, so its "
+                "vertical localisation radius is not a tuning detail: it "
+                "decides whether the observation acts on the column it "
+                "integrated. Inheriting the radar radius would silently "
+                "assimilate a whole-column measurement as a 4 km-tall one")
+    if getattr(args, "surface_obs", None) is not None \
+            and getattr(args, "sfc_t2_sigma_k", None) is None \
+            and getattr(args, "sfc_wspd_sigma_ms", None) is None:
+        raise FrontDoorError(
+            "--surface-obs was given with neither --sfc-t2-sigma-k nor "
+            "--sfc-wspd-sigma-ms. A surface quantity is enabled by stating "
+            "its error standard deviation, so this run would carry a "
+            "surface file and assimilate nothing from it -- which is "
+            "exactly the silent-stream shape gpuwm.da.treatment exists to "
+            "stop, caught here before the card is taken")
+    for path, flag in ((getattr(args, "surface_obs", None), "--surface-obs"),
+                       *((p, "--goes-cwp")
+                         for p in (getattr(args, "goes_cwp", None) or ()))):
+        if path is not None and not Path(path).is_file():
+            raise FrontDoorError(
+                f"{flag} names a missing file: {path}. An observation "
+                "stream that cannot be read assimilates nothing, and a run "
+                "that discovers this mid-cycle has already spent the card")
+
+
 def run_pipeline(args) -> int:
     now = datetime.now(timezone.utc)
+    resolve_da_preset(args)
+    validate_analysis_flags(args)
     out: Path = args.out
     receipts = out / "receipts"
+    # Resolved before the survey moves a byte: a contradictory radar
+    # request should cost nothing to refuse.
+    selection = radar_selection(args)
     out.mkdir(parents=True, exist_ok=True)
     repo_root = Path(__file__).resolve().parent.parent
 
@@ -1523,7 +2125,7 @@ def run_pipeline(args) -> int:
     plan = plan_window(window_end, cycles=args.cycles,
                        cycle_seconds=args.cycle_seconds,
                        free_legs=args.free_legs, now=now,
-                       run_hours=args.run_hours)
+                       run_hours=args.run_hours, source=args.source)
     seed = (args.seed if args.seed is not None
             else int(plan.window_end.strftime("%Y%m%d")))
 
@@ -1559,6 +2161,7 @@ def run_pipeline(args) -> int:
     case_toml = case_dir / f"{case_name}.toml"
     plan_receipt = {
         "schema": SCHEMA, "partial": True, "site": args.site,
+        "radars": selection.to_payload(),
         "plan": plan.to_payload(), "domain_center": center,
         "seed": seed, "case_name": case_name}
     (receipts / "01-plan.json").write_text(
@@ -1578,6 +2181,20 @@ def run_pipeline(args) -> int:
     if not wps_namelist.is_file():
         raise FrontDoorError(
             f"wizard did not emit {wps_namelist.name} beside the TOML")
+    namelist_input = domain_spec = None
+    if args.source == "hrrr":
+        # The HRRR preparation reads namelists and a target-domain
+        # document, not the TOML; the wizard emits all of them beside
+        # it (gpuwm.hrrr_route_inputs.route_input_paths).
+        namelist_input = case_toml.with_name(
+            case_toml.stem + ".namelist.input")
+        domain_spec = case_toml.with_name(
+            case_toml.stem + ".d01-target.json")
+        for route_input in (namelist_input, domain_spec):
+            if not route_input.is_file():
+                raise FrontDoorError(
+                    f"wizard did not emit {route_input.name} beside the "
+                    "TOML; the HRRR route cannot be prepared without it")
 
     # The georeference lattice.  Every observation is gridded onto the
     # wrfout nearest its valid time, so how often one is written IS the
@@ -1589,10 +2206,22 @@ def run_pipeline(args) -> int:
     retimed, was = retime_history(
         case_toml.read_text(encoding="utf-8"), history_seconds)
     case_toml.write_text(retimed, encoding="utf-8")
+    if namelist_input is not None:
+        # The HRRR route reads its experiment from the namelist, not the
+        # TOML, so the cadence has to land in BOTH or the prepared
+        # bundle's hash-bound experiment carries the wizard's hourly
+        # default and every downstream stage that states the run's own
+        # cadence is refused against it.  Same key, same pattern, same
+        # editor.
+        renamelist, _ = retime_history(
+            namelist_input.read_text(encoding="utf-8"), history_seconds)
+        namelist_input.write_text(renamelist, encoding="utf-8")
     (receipts / "02-history-cadence.json").write_text(json.dumps({
         "schema": STAGE_SCHEMA, "stage": "history-cadence",
         "started": iso(datetime.now(timezone.utc)),
         "file": str(case_toml),
+        "also_retimed": (None if namelist_input is None
+                         else str(namelist_input)),
         "history_interval_s": {"wizard": was, "run": history_seconds},
         "why": ("observations are gridded onto the wrfout nearest their "
                 "valid time; the wizard's root default is hourly, which "
@@ -1628,11 +2257,19 @@ def run_pipeline(args) -> int:
     run_stage("fetch", fetch_cmd(hints=hints, data_dir=data_dir,
                                  source=args.source),
               cwd=repo_root, receipts_dir=receipts, index=4)
-    run_stage("manifest", manifest_cmd(
-        data_dir=data_dir, authority_dir=authority_dir,
-        source=args.source),
-        cwd=repo_root, receipts_dir=receipts, index=5)
-    manifest_sha = sha256_file(data_dir / "gfs-input-manifest.json")
+    if args.source == "hrrr":
+        # No manifest stage: `gpuwm fetch --source hrrr` already wrote
+        # the SHA256SUMS the HRRR front door consumes, and
+        # --author-front-door-manifest refuses the source by design.
+        # The receipt index 5 is deliberately left unused so every
+        # stage keeps the same number on both routes.
+        manifest_sha = sha256_file(data_dir / "SHA256SUMS")
+    else:
+        run_stage("manifest", manifest_cmd(
+            data_dir=data_dir, authority_dir=authority_dir,
+            source=args.source),
+            cwd=repo_root, receipts_dir=receipts, index=5)
+        manifest_sha = sha256_file(data_dir / "gfs-input-manifest.json")
     if _stop(args.stop_after, "fetch"):
         print("stopped after fetch (receipts written)")
         return 0
@@ -1640,16 +2277,45 @@ def run_pipeline(args) -> int:
     prepared_root = out / "prepared"
     run_stage("prepare", prepare_cmd(
         data_dir=data_dir, authority_dir=authority_dir,
-        bridge=resolve_bridge(args.bridge),
+        # The gfs GRIB2 bridge is a GFS-route artifact; the HRRR route
+        # resolves its own native decoder inside the preparation.  Not
+        # resolving it here keeps a box that never built the gfs bridge
+        # able to run the default route.
+        bridge=(None if args.source == "hrrr"
+                else resolve_bridge(args.bridge)),
         profile=args.physics_profile,
         geog_root=resolve_geog_root(args.geog_root),
         prepared_root=prepared_root, plan=plan,
-        manifest_sha=manifest_sha, source=args.source),
+        manifest_sha=manifest_sha, source=args.source,
+        namelist_input=namelist_input, domain_spec=domain_spec,
+        history_interval_seconds=history_seconds),
         cwd=repo_root, receipts_dir=receipts, index=6)
-    proof_sha = sha256_file(prepared_root / "proof.json")
-    content_sha = json.loads(
-        (prepared_root / "proof.json").read_text(encoding="utf-8")
-    )["prepared_cache"]["content_sha256"]
+    if args.source == "hrrr":
+        # The preparation published the portable bundle INTO the
+        # prepared root: proof.json, source-input-manifest.json,
+        # experiment.toml and namelist.wps all live there, and the
+        # wrapper receipt carries the three digests downstream stages
+        # must quote back.  From here on the bundle root IS the
+        # authority directory -- its experiment config is the one the
+        # proof hash-binds, not the pre-preparation authority's.
+        wrapper = json.loads(
+            (prepared_root / "public-wrapper-result.json")
+            .read_text(encoding="utf-8"))
+        pins = wrapper.get("portable_bundle")
+        if not pins:
+            raise FrontDoorError(
+                "the HRRR preparation wrote no portable_bundle block; "
+                "that is what a preparation run without --wps-namelist "
+                "leaves behind, and this driver always passes it")
+        proof_sha = pins["proof_sha256"]
+        manifest_sha = pins["source_manifest_sha256"]
+        content_sha = pins["prepared_content_sha256"]
+        authority_dir = prepared_root
+    else:
+        proof_sha = sha256_file(prepared_root / "proof.json")
+        content_sha = json.loads(
+            (prepared_root / "proof.json").read_text(encoding="utf-8")
+        )["prepared_cache"]["content_sha256"]
     # The three digests every downstream runner has to quote back.  They
     # are written as their own receipt rather than only into the final
     # one, so a run stopped early (--stop-after prepare/forecast) still
@@ -1668,6 +2334,7 @@ def run_pipeline(args) -> int:
         "plan": plan.to_payload(),
         "case_name": case_name,
         "site": args.site,
+        "radars": selection.to_payload(),
         "seed": seed,
     }, indent=1), encoding="utf-8")
     if _stop(args.stop_after, "prepare"):
@@ -1698,9 +2365,9 @@ def run_pipeline(args) -> int:
         out_nc = obs_dir / (f"obs-{args.site.lower()}-"
                             f"{valid:%Y%m%d%H%M}.nc")
         run_stage(f"obs-{valid:%H%M}", obs_cmd(
-            site=args.site, valid=valid, grid_wrfout=grid,
+            selection=selection, valid=valid, grid_wrfout=grid,
             out_nc=out_nc, work_dir=out / "vols",
-            bucket=args.bucket),
+            bucket=args.bucket, dealias=args.dealias),
             cwd=repo_root, receipts_dir=receipts, index=8)
         obs_files.append(out_nc)
         grid_wrfouts.append(grid)
@@ -1721,7 +2388,17 @@ def run_pipeline(args) -> int:
         horizontal_loc_m=args.horizontal_loc_m,
         vertical_loc_m=args.vertical_loc_m,
         length_scale_km=length_scale_km, source=args.source,
-        memory_budget_mib=args.memory_budget_mib),
+        memory_budget_mib=args.memory_budget_mib,
+        hydrometeors=args.hydrometeors,
+        positivity_policy=args.positivity_policy,
+        reflectivity_analysis=args.reflectivity_analysis,
+        clear_air_analysis=args.clear_air_analysis,
+        surface_obs=args.surface_obs,
+        sfc_t2_sigma_k=args.sfc_t2_sigma_k,
+        sfc_wspd_sigma_ms=args.sfc_wspd_sigma_ms,
+        sfc_max_age_s=args.sfc_max_age_s,
+        goes_cwp=args.goes_cwp,
+        cwp_vertical_loc_m=args.cwp_vertical_loc_m),
         cwd=repo_root, receipts_dir=receipts, index=9)
     if _stop(args.stop_after, "cycle"):
         print("stopped after cycle (receipts written)")
@@ -1738,6 +2415,33 @@ def run_pipeline(args) -> int:
                     "registered campaign; no skill claim is made or "
                     "implied"),
         "site": args.site,
+        # Which radars were ASKED for, and by which route.  The
+        # rolling verifier reads this back so its observed composites
+        # are built from the same radars the cycle assimilated.
+        "radars": selection.to_payload(),
+        # How the observations were BUILT, as opposed to which radars
+        # they came from.  The rolling verifier reads this back so its
+        # truth composites are built the same way the assimilated ones
+        # were; a run graded against a differently-built truth field
+        # would show the difference as skill.
+        "obs": {
+            "dealias": bool(args.dealias),
+            # Which streams this run CLAIMS. Whether each one actually
+            # assimilated anything is measured per cycle by
+            # gpuwm.da.treatment and recorded in cycle-report.json under
+            # "treatment" -- these are the claims, those are the counts,
+            # and the run stops if they disagree.
+            "streams_requested": {
+                "radial_velocity": True,
+                "reflectivity": bool(args.reflectivity_analysis),
+                "clear_air_reflectivity": bool(args.clear_air_analysis),
+                "surface": args.surface_obs is not None,
+                "cloud_water_path": bool(args.goes_cwp),
+            },
+            "surface_obs_file": (None if args.surface_obs is None
+                                 else str(args.surface_obs)),
+            "goes_cwp_files": [str(p) for p in (args.goes_cwp or ())],
+        },
         "members": args.members,
         # What shaped this run's size, so a receipt can be read back
         # against the measurements the defaults were set from.
@@ -1807,8 +2511,19 @@ def run_pipeline(args) -> int:
     return 0
 
 
-def _case_context(case_dir: Path) -> tuple[str, datetime, list[dict]]:
-    """Site, model init and the free-forecast frames of a case dir.
+def _case_context(case_dir: Path) -> tuple[RadarSelection, datetime,
+                                           list[dict], bool]:
+    """Radar selection, model init, free-forecast frames and obs treatment.
+
+    The selection comes from the receipt rather than from the
+    verifier's own command line, which is what makes ``watch`` and
+    ``verify`` grade against the same radars the cycle assimilated
+    without being told twice.  A receipt with no ``radars`` block is a
+    single-radar case and reads back as one.
+
+    The dealias flag rides back the same way and for the same reason.  A
+    receipt with no ``obs`` block predates the flag and reads back False,
+    which is what those runs did.
 
     Frames resume from whatever the gallery has already graded, so a
     verifier that is re-run (or restarted) never re-grades work nor
@@ -1816,26 +2531,28 @@ def _case_context(case_dir: Path) -> tuple[str, datetime, list[dict]]:
     """
 
     receipt = read_receipt(case_dir)
-    site = validate_site(receipt["site"])
+    selection = RadarSelection.from_payload(
+        receipt.get("radars"), anchor=validate_site(receipt["site"]))
     plan_p = receipt["plan"]
     frames = merge_gallery_rows(
         initial_frames(plan_p["free_leg_times"]),
         gallery_rows(case_dir))
-    return site, parse_iso(plan_p["init"]), frames
+    dealias = bool(receipt.get("obs", {}).get("dealias", False))
+    return selection, parse_iso(plan_p["init"]), frames, dealias
 
 
 def verify_pipeline(args) -> int:
     """One pass, then a verdict: grade what the archive covers now."""
 
     case_dir: Path = args.case_dir
-    site, init, frames = _case_context(case_dir)
+    selection, init, frames, dealias = _case_context(case_dir)
     repo_root = Path(__file__).resolve().parent.parent
     started = iso(datetime.now(timezone.utc))
     frames, _ = verify_pass(
-        case_dir=case_dir, site=site, init=init, frames=frames,
+        case_dir=case_dir, selection=selection, init=init, frames=frames,
         bucket=args.bucket,
         max_offset_seconds=args.max_offset_seconds,
-        repo_root=repo_root)
+        repo_root=repo_root, dealias=dealias)
     state = advance_state(frames, exhausted=True)
     block = verification_block(frames=frames, state=state,
                                started=started)
@@ -1858,7 +2575,7 @@ def watch_pipeline(args) -> int:
     """
 
     case_dir: Path = args.case_dir
-    site, init, frames = _case_context(case_dir)
+    selection, init, frames, dealias = _case_context(case_dir)
     repo_root = Path(__file__).resolve().parent.parent
     started = iso(datetime.now(timezone.utc))
     watcher = {"pid": os.getpid(), "log": str(case_dir /
@@ -1870,10 +2587,11 @@ def watch_pipeline(args) -> int:
          "free-forecast frames to grade")
     while True:
         frames, _ = verify_pass(
-            case_dir=case_dir, site=site, init=init, frames=frames,
+            case_dir=case_dir, selection=selection, init=init,
+            frames=frames,
             bucket=args.bucket,
             max_offset_seconds=args.max_offset_seconds,
-            repo_root=repo_root)
+            repo_root=repo_root, dealias=dealias)
         state = advance_state(frames,
                               exhausted=time.monotonic() > deadline)
         block = verification_block(frames=frames, state=state,

@@ -82,6 +82,10 @@ class _Run:
     output_interval_s: float = 3600.0
     restart_interval_s: float = 0.0
     nwp_diagnostics: int = 0
+    inflow_perturbation: bool = False
+    inflow_perturbation_seed: int = 0
+    inflow_perturbation_amplitude_scale: float = 1.0
+    inflow_perturbation_faces: str = "inflow"
 
 
 @dataclass(frozen=True)
@@ -477,6 +481,43 @@ def test_public_gate_accepts_a_per_domain_history_cadence():
         laddered.domains[0],
         replace(laddered.domains[1], run=replace(
             laddered.domains[1].run, sf_surface_physics=3)),
+    ))
+    with pytest.raises(ValueError, match="certified native"):
+        _slice(drifted, _target())
+
+
+def test_public_gate_accepts_a_child_only_inflow_perturbation():
+    """The P3 inflow keys on a child, refused after expensive preparation.
+
+    Same finding as the history cadence above, for the third time: the
+    generator acts at runtime FORCE on the child-owned rolling NEST
+    boundary tables, and preparation never computes those.  The ruling
+    that these fields are preparation-inert is already committed as
+    ``gpuwm.ingest.prepared_cache.PREPARATION_INERT_RUN_FIELDS``; this
+    gate was the second preparation-side comparison and had not been
+    given it, so an LES tree with the generator ON died here holding a
+    prepared root that was in fact exactly the right prepared root.
+    """
+
+    native = _native()
+    seeded = replace(native, domains=(
+        native.domains[0],
+        replace(native.domains[1], run=replace(
+            native.domains[1].run,
+            inflow_perturbation=True,
+            inflow_perturbation_seed=20160524,
+            inflow_perturbation_amplitude_scale=1.0,
+            inflow_perturbation_faces="inflow")),
+    ))
+
+    _slice(seeded, _target())
+
+    # The control: a field preparation DOES read still refuses, so this
+    # is an admission of four named keys and not a hole in the check.
+    drifted = replace(seeded, domains=(
+        seeded.domains[0],
+        replace(seeded.domains[1], run=replace(
+            seeded.domains[1].run, sf_sfclay_physics=1)),
     ))
     with pytest.raises(ValueError, match="certified native"):
         _slice(drifted, _target())

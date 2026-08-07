@@ -71,13 +71,15 @@ from pathlib import Path
 
 try:                                    # python -m tools.da_nowcast_auto
     from tools import da_ensemble_state as ens_state
-    from tools.da_nowcast import (cycle_cmd, iso, obs_cmd, parse_iso,
-                                  render_cmd, resolvable_length_scale_km,
+    from tools.da_nowcast import (RadarSelection, cycle_cmd, iso, obs_cmd,
+                                  parse_iso, render_cmd,
+                                  resolvable_length_scale_km,
                                   spawn_detached, validate_site)
 except ImportError:                     # python tools/da_nowcast_auto.py
     import da_ensemble_state as ens_state
-    from da_nowcast import (cycle_cmd, iso, obs_cmd, parse_iso,
-                            render_cmd, resolvable_length_scale_km,
+    from da_nowcast import (RadarSelection, cycle_cmd, iso, obs_cmd,
+                            parse_iso, render_cmd,
+                            resolvable_length_scale_km,
                             spawn_detached, validate_site)
 
 #: The status file a page or a person polls.
@@ -520,6 +522,7 @@ def bootstrap_cmd(*, site: str, out: Path, args) -> list[str]:
         "--run-hours", str(int(args.epoch_hours)),
         "--members", str(int(args.members)),
         "--out", str(out),
+        "--source", args.source,
         "--dx-km", f"{args.dx_km:g}",
         "--box-half-km", f"{args.box_half_km:g}",
         "--physics-profile", args.physics_profile,
@@ -680,6 +683,15 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--free-leg-seconds", type=float, default=900.0,
                         help="length of one free-forecast leg "
                              "(default 900)")
+    parser.add_argument("--source", default="hrrr",
+                        choices=("hrrr", "gfs"),
+                        help="background source for every epoch's "
+                             "prepared case. Default hrrr, permanently "
+                             "(Drew ruling, 2026-08-06); gfs is "
+                             "retained for archival reproduction only. "
+                             "The roster is gpuwm.da.background's "
+                             "registry -- the next source (RRFS) is a "
+                             "registry entry, not a new branch")
     parser.add_argument("--dx-km", type=float, default=3.0)
     parser.add_argument("--box-half-km", type=float, default=198.0)
     parser.add_argument("--polygon", type=Path, default=None,
@@ -1067,6 +1079,10 @@ class Daemon:
             "ny": int(experiment["domain"][0]["ny"]),
             "nz": int(experiment["shared"]["nz"]),
             "case_name": bindings["case_name"],
+            # Quoted back to the cycle driver on every cycle: the
+            # prepared case IS one source's case, and the bindings
+            # receipt is the authority on which.
+            "source": bindings["source"],
             "bootstrap": str(boot),
             "authority": str(authority),
             "prepared_root": bindings["prepared_root"],
@@ -1141,7 +1157,25 @@ class Daemon:
         obs_dir.mkdir(parents=True, exist_ok=True)
         out_nc = obs_dir / (f"obs-{self.site.lower()}-"
                             f"{plan.valid:%Y%m%d%H%M}.nc")
-        argv = obs_cmd(site=self.site, valid=plan.valid,
+        # Single-radar, deliberately, and this is the whole reason.
+        #
+        # The front door (``tools/da_nowcast.py run``) takes --sites and
+        # --discover-sites and records the selection in its receipt, so
+        # its rolling verifier recovers the same radars from disk.  This
+        # daemon has no such seam: it re-execs itself across epochs by
+        # REBUILDING its own argv (see the relaunch in main), so a radar
+        # flag that did not survive that reconstruction would silently
+        # thin a long-running daemon from multi-radar to single-radar at
+        # the first epoch roll -- and every gallery after it would say
+        # multi-radar because the first one did.
+        #
+        # A half-done passthrough here is worse than none.  Wiring it
+        # properly means the flags, the selection, the bootstrap argv
+        # (``bootstrap_cmd``), and the re-exec argv all agreeing, with a
+        # test that an epoch roll preserves the radars.  Until that
+        # exists this stays explicit: one radar, named, no default.
+        argv = obs_cmd(selection=RadarSelection(anchor=self.site),
+                       valid=plan.valid,
                        grid_wrfout=grid, out_nc=out_nc,
                        work_dir=base / "vols", bucket=args.bucket)
         argv.extend(("--max-offset-seconds",
@@ -1181,7 +1215,7 @@ class Daemon:
             horizontal_loc_m=args.horizontal_loc_m,
             vertical_loc_m=args.vertical_loc_m,
             length_scale_km=self.epoch["length_scale_km"],
-            source="gfs",
+            source=self.epoch["source"],
             leg_seconds=plan.leg_seconds, free_legs=free_legs,
             free_leg_seconds=args.free_leg_seconds,
             resume_ensemble=resume, save_ensemble=save,

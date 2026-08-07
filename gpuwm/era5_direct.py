@@ -258,6 +258,11 @@ def prepare_era5_wrf(
 
     total_started = time.perf_counter()
     exp = load_experiment(paths["experiment_config"])
+    from gpuwm.experiment import refuse_unrouted_perturbation
+    refuse_unrouted_perturbation(exp, "ERA5-direct prepared-cache")
+    from gpuwm.static.highres_production import refuse_inert_highres
+    refuse_inert_highres(paths["experiment_config"],
+                         lane="ERA5-direct adapter")
     cfg = exp.root.run
     if len(exp.domains) == 1:
         grid = validate_native_lambert_contract(

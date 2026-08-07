@@ -1,7 +1,42 @@
 # High-resolution static geography
 
-RW-WPS currently uses the standard 30-arc-second WPS geography tree for its
-production static fields.  That is roughly 0.8 km east-west in Ohio, so it is
+## Production path (config-driven, US-interior)
+
+The pilot machinery below is now reachable per-case through one declared
+TOML block:
+
+```toml
+[static.highres]
+enabled = true
+cache_root = "/data/highres-cache"
+on_refuse = "error"          # or "fallback-30s"
+```
+
+When enabled, every domain of the case replaces terrain, land-use
+fractions/index/mask, and top/bottom soil fractions/categories from USGS
+3DEP 1/3 arc-second tiles, the Annual NLCD year nearest the case date, and
+SoilGrids v2 250 m -- fetched on demand for the domain footprint + halo
+(`gpuwm.static.highres_fetch`), cached under `cache_root`, whole published
+artifacts only (complete 1x1-degree 3DEP tiles, the complete Annual NLCD
+year bundle), with the SHA-256 of every fetched byte recorded into a
+per-domain receipt at fetch time.  Monthly climatologies stay 30s with the
+pilot's counted donor fill; TMN is recomputed.  Absence of the block is
+the identity: the 30-arc-second build runs byte-unchanged.
+
+The lane refuses loudly, with the reason in the receipt, when the
+footprint leaves the joint 3DEP/Annual-NLCD publication envelope, when
+the domain's own 30s baseline land use reports WRF ocean category
+anywhere (the inland-water rule is not coast-safe), when the baseline
+land-use inventory is not MODIS-21, when source tiles are missing (named),
+and when an enabled block would replace zero cells.  `on_refuse =
+"fallback-30s"` proceeds on the unchanged baseline beneath a receipt that
+names the refusal; the default stops the case.  Pre-1985 cases take the
+earliest NLCD map and the receipt names the anachronism in years.
+
+## The pilot
+
+RW-WPS previously used only the standard 30-arc-second WPS geography tree
+for its production static fields.  That is roughly 0.8 km east-west in Ohio, so it is
 not a genuinely sub-kilometre description even when the model grid is 500 m
 or 333 m.  The opt-in code in `gpuwm.static.highres` is the first narrow,
 provenance-bound path beyond that baseline.  It reads local GeoTIFF subsets

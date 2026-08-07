@@ -640,7 +640,8 @@ def _updated_real_result(original: RealInitResult,
         total_specific_volume=_host(state.alt),
         integrated_moisture_pressure=original.integrated_moisture_pressure,
         hypsometric_opt=original.hypsometric_opt,
-        hydrometeor_initialization=original.hydrometeor_initialization)
+        hydrometeor_initialization=original.hydrometeor_initialization,
+        initial_perturbation=original.initial_perturbation)
 
 
 def _prepare_child_input_on_grid(
@@ -685,6 +686,17 @@ def _prepare_child_input_on_grid(
             catalog, child_dc.grid_id, declaration)
     landuse_attrs = geog_selection_from_catalog(
         static_catalog, child_dc.grid_id).landuse_global_attrs()
+    # Optional [static.highres] overlay: the validated config rides the
+    # top-level input catalog (gpuwm.ingest.preflight.build_input_catalog).
+    # Absent/disabled is the identity 30-arc-second path.
+    _highres = getattr(catalog, "static_highres", None)
+    if _highres is not None and getattr(_highres, "enabled", False):
+        from gpuwm.static.highres_production import apply_highres_statics
+        static_fields, _ = apply_highres_statics(
+            static_fields, grid, config=_highres,
+            domain_id=child_dc.grid_id,
+            case_date=child_dc.start_time.date(),
+            landuse_attrs=landuse_attrs)
     lake_mask = np.asarray(static_fields["LU_INDEX"]) == int(
         landuse_attrs["ISLAKE"])
     mapping_receipt: dict[str, object] = dict(preprocess.receipt())
@@ -833,8 +845,22 @@ def finalize_prepared_child(
         dycore_state_workspace=None,
         state_backend: str = "cuda",
         sfcp_to_sfcp: bool = True,
-        soil_layer_contract=None) -> ChildInitResult:
-    """Run GPU/model-state and parent-dependent WRF child initialization."""
+        soil_layer_contract=None,
+        initial_perturbation=None) -> ChildInitResult:
+    """Run GPU/model-state and parent-dependent WRF child initialization.
+
+    ``initial_perturbation`` is the experiment's validated
+    :class:`gpuwm.experiment.PerturbationConfig` (or ``None``), passed
+    only for children that initialize AT the experiment start time.  The
+    bubbles are evaluated on THIS child's own grid inside its own
+    ``initialize_real`` -- the child does not inherit the parent's
+    perturbed theta, because real-data nest init re-ingests the source
+    analysis per domain -- and they land BEFORE the terrain blend /
+    adjust_tempqv / press_adj sequence, so the perturbed columns pass
+    through WRF's child adjustments exactly like the analyzed ones.  A
+    bubble centered outside this child is recorded, not refused; the
+    coarse-domain containment refusal already ran.
+    """
 
     if not isinstance(prepared, PreparedChildInput):
         raise TypeError("prepared must be a PreparedChildInput")
@@ -856,6 +882,13 @@ def finalize_prepared_child(
         init_kwargs["scratch_arena"] = scratch_arena
     if dycore_state_workspace is not None:
         init_kwargs["dycore_state_workspace"] = dycore_state_workspace
+    if initial_perturbation is not None:
+        from gpuwm.ingest.init_perturbation import (
+            build_initial_state_perturbation)
+        init_kwargs["initial_perturbation"] = \
+            build_initial_state_perturbation(
+                initial_perturbation, grid, grid_id=int(child_dc.grid_id),
+                require_containment=False)
     real = initialize_real(
         horizontal, cfg, coord, static_fields["HGT_M"], **init_kwargs)
     state = real.state
@@ -874,15 +907,27 @@ def finalize_prepared_child(
     child_attrs = prepared.landuse_attrs
     child_soil_type = static_fields["SCT_DOM"]
     if child_attrs is not None:
+        child_soil_temperature = horizontal.fields.get(
+            MAPPED_SOIL_TEMPERATURE, horizontal.fields.get("ST000007"))
+        if child_soil_temperature is None:
+            # The native-HRRR lane spells its soil temperature SOILT --
+            # the 3-D mapped column whose water cells the mapper has
+            # already filled with SKINTEMP (gpuwm/ingest/hrrr.py), so
+            # the reconciler's top-level read resolves every
+            # land-carrying-water-soil shoreline column exactly as
+            # real.exe does.  Looked up only after the pressure-lane
+            # names: found 2026-08-06 when the first whole-second
+            # nested native-HRRR preparation after the ONE-RULEBOOK
+            # motion aborted with mismatch_landmask_ivgtyp on 38
+            # 1 km shoreline columns.
+            child_soil_temperature = horizontal.fields.get("SOILT")
         child_soil_type = reconciled_soil_category(
             static_fields["LU_INDEX"], soil_type=child_soil_type,
             xice=horizontal.fields.get("XICE", 0.0),
             iswater=int(child_attrs["ISWATER"]),
             islake=int(child_attrs["ISLAKE"]),
             isice=int(child_attrs["ISICE"]),
-            soil_temperature=horizontal.fields.get(
-                MAPPED_SOIL_TEMPERATURE,
-                horizontal.fields.get("ST000007")),
+            soil_temperature=child_soil_temperature,
             sst=horizontal.fields.get("SST"))
     soil = preprocess_land_surface_soil(
         horizontal.fields, sf_surface_physics=int(cfg.sf_surface_physics),
@@ -1018,7 +1063,8 @@ def initialize_child(
         soil_layer_contract=None,
         preprocess_backend: str | object = "cuda",
         preprocess_workers: int | None = None,
-        cpu_bridge: Path | str | None = None) -> ChildInitResult:
+        cpu_bridge: Path | str | None = None,
+        initial_perturbation=None) -> ChildInitResult:
     """Initialize a real-data child in the binding five-step WRF order.
 
     The public sequential behavior is preserved.  Multi-domain startup may
@@ -1040,7 +1086,8 @@ def initialize_child(
         dycore_state_workspace=dycore_state_workspace,
         state_backend=state_backend,
         sfcp_to_sfcp=sfcp_to_sfcp,
-        soil_layer_contract=soil_layer_contract)
+        soil_layer_contract=soil_layer_contract,
+        initial_perturbation=initial_perturbation)
 
 
 def _coord_from_parent(state: DomainState, parent_cfg) -> VerticalCoord:

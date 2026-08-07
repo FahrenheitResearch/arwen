@@ -2,8 +2,8 @@
 
 ArWen's configuration surface is the experiment TOML
 (`[experiment]` / `[projection]` / `[shared]` / `[[domain]]` /
-`[case_data]`), and `gpuwm import-namelist WPS INPUT` translates a WRF
-`namelist.wps` + `namelist.input` pair into it. The contract of that
+`[case_data]` / `[perturbation]`), and `gpuwm import-namelist WPS
+INPUT` translates a WRF `namelist.wps` + `namelist.input` pair into it. The contract of that
 translation is *never silent*: every namelist key lands in exactly one
 of three report sections --
 
@@ -215,6 +215,49 @@ allowed values are the subject of [PHYSICS.md](PHYSICS.md). Selectable
 in the TOML schema is deliberately wider than runnable: readiness is
 owned by `gpuwm/physics_compat.py`, which fails closed with a complete
 port receipt, and the importer's runnable sets are narrower still.
+
+### `[perturbation]` -- initial-state theta bubbles (ArWen-only)
+
+Adjusted initial conditions for real-data experiments: one or more
+warm bubbles added ONCE to the initial potential temperature after the
+base real-data state is final, WRF's `em_quarter_ss` cosine-squared
+shape evaluated in geographic coordinates. No WRF namelist can express
+this block (stock WRF has warm bubbles only in its idealized
+initializers), so `import-namelist` never emits it. Applied per domain
+inside each domain's own `initialize_real` -- real-data nest init
+re-ingests the source analysis per domain, so a bubble inside a nest's
+footprint reaches the nest through the nest's own init, not through
+the parent's state. Domains with a delayed start take no fresh bubble
+(they initialize from the analysis at activation time). Absent block =
+byte-identical prepared state and an unchanged experiment fingerprint.
+
+```toml
+[[perturbation.bubbles]]
+center_lat = 38.5        # degrees
+center_lon = -99.5
+center_height_m = 1500.0 # bubble center, metres AGL
+radius_km = 10.0         # horizontal radius
+depth_m = 1500.0         # vertical HALF-depth
+amplitude_k = 2.5        # peak theta perturbation, (0, 10] K
+rh_preserve = false      # optional: adjust qv so RH survives the theta change
+```
+
+The block is honored on two routes: `gpuwm run` / `gpuwm ingest`
+(applied inside each domain's `initialize_real`, geopotential
+rebalanced) and the prepared domain-tree forecast runner (applied to
+the restored sealed states -- the preparation stays the pure analysis,
+so a bubble-on arm and its control can share one preparation).
+Refusals (never silent): unknown keys; nonpositive
+`radius_km`/`depth_m`/`amplitude_k`; `amplitude_k` above the 10 K
+sanity bound (refused with the value named); a center outside the
+coarse domain; an enabled bubble that touches zero cells on a domain
+that contains its center. Routes that do not thread the block (the
+prepared-cache front doors and the single-domain prepared runner)
+refuse it by name rather than dropping it. What was actually written
+-- per-domain cells touched, max theta delta, qv adjustment under
+`rh_preserve` -- lands in `initial-perturbation.json` in the run
+directory (the tree runner's `evidence/`), written before integration
+starts.
 
 ## Identity-pinned option families
 

@@ -827,10 +827,21 @@ def _ack_instruction(acknowledgement: str) -> str:
     )
 
 
+#: Sentinel for "this caller did not mention the selector at all", which is
+#: a different statement from "it named None".
+_ABSENT = object()
+
+
 def _selection_value(settings: Mapping[str, object] | object, name: str):
+    value = _selection_value_or_absent(settings, name)
+    return None if value is _ABSENT else value
+
+
+def _selection_value_or_absent(settings: Mapping[str, object] | object,
+                               name: str):
     if isinstance(settings, Mapping):
-        return settings.get(name)
-    return getattr(settings, name, None)
+        return settings.get(name, _ABSENT)
+    return getattr(settings, name, _ABSENT)
 
 
 def _registry_pointer(component_id: str, option_id: str | None = None) -> str:
@@ -857,9 +868,29 @@ def _resolve_physics_component_options(
         selector_keys = tuple(component.get("selector_keys", ()))
         if not selector_keys:
             continue
-        selected = {
-            key: _selection_value(settings, key)
+        raw_selected = {
+            key: _selection_value_or_absent(settings, key)
             for key in selector_keys
+        }
+        if all(value is _ABSENT for value in raw_selected.values()):
+            # A caller that never mentions a component's selectors is not
+            # selecting that component, and resolving one it did not ask
+            # about cannot be right.  This matters because a selector can
+            # MOVE here: km_opt was a registry parameter with a default
+            # until it became components/turbulence's selector key, and
+            # every caller that passes an explicit settings mapping --
+            # gpuwm.physics_compat.validate_resolved_physics_vertical_levels
+            # is the public one -- was written before the component
+            # existed and omits it.  Refusing all of them because one key
+            # is unmentioned would be a silent contract change on a
+            # public API, and it reported itself as "no implemented
+            # option for selectors {'km_opt': None}", which names a
+            # value nobody wrote.  An object (a RunConfig) always carries
+            # its own default, so nothing on the run path is skipped.
+            continue
+        selected = {
+            key: (None if value is _ABSENT else value)
+            for key, value in raw_selected.items()
         }
         candidates = []
         for option_id, raw_option in component["options"].items():

@@ -198,6 +198,31 @@ def analytic_base_terrain_height(surface_pressure: float,
                  / (2.0 * c.G))
 
 
+def base_layer_depths(znw: np.ndarray, hybrid_opt: int, etac: float,
+                      p_top: float, base_temp: float = 290.0) -> np.ndarray:
+    """Base-state layer depths in metres for one vertical coordinate.
+
+    ``dz[k] = z_full[k+1] - z_full[k]`` at the reference column
+    ``ps = P0``, where half- and full-level dry pressure is
+    ``c3*(P0 - pt) + c4 + pt`` (:func:`compute_hybrid_coeffs`) and
+    :func:`analytic_base_terrain_height` turns pressure into height.  No
+    sounding, no state, no GPU: a loader can ask how deep this
+    coordinate's layers are before anything has been allocated.
+
+    These are the depths a vertical mixing length is built from, so they
+    are also what a HORIZONTAL operator handed a vertical exchange
+    coefficient has to be judged against
+    (:func:`gpuwm.config.anisotropic_w_mixing_ratio`).
+    """
+
+    znw = np.asarray(znw, dtype=np.float64)
+    hy = compute_hybrid_coeffs(znw, hybrid_opt, etac, c.P0, float(p_top))
+    pd_full = hy["c3f"] * (c.P0 - float(p_top)) + hy["c4f"] + float(p_top)
+    z_full = np.array([analytic_base_terrain_height(float(p), base_temp)
+                       for p in pd_full])
+    return np.diff(z_full)
+
+
 def largest_supported_etac(znw: np.ndarray, p_top: float,
                            surface_pressure: float) -> float | None:
     """Largest ``etac`` whose reference column stays ordered at ``ps``.

@@ -1,7 +1,7 @@
 //! The library face of ArWen's NEXRAD front door.
 //!
-//! `rw_nexrad` began as a bin-only crate, and two of its three modules turned
-//! out to be about *archives* rather than about radar:
+//! `rw_nexrad` began as a bin-only crate, and two of its modules turned out
+//! to be about *archives* rather than about radar:
 //!
 //! * [`s3`] is an anonymous-S3 client — `ListObjectsV2` over a hardened,
 //!   schema-checked XML reader, a content-addressed download cache, SHA-256
@@ -16,15 +16,13 @@
 //! XML reader in particular was hardened over a nine-round fix-then-attack
 //! audit; a parallel implementation would re-earn those bugs rather than
 //! inherit the fixes. So the modules become public and the binary consumes
-//! them exactly as it did when they were private — `main.rs` swapped three
+//! them exactly as it did when they were private — `main.rs` swapped four
 //! `mod` lines for one `use`, and no item moved, changed signature, or
 //! changed behavior.
 //!
-//! [`decode`] and [`live`] are genuinely NEXRAD-specific and are exported only
-//! so the binary can keep reaching them through the same path as their
-//! siblings. [`live`] in particular addresses [`s3`] and [`pack`] as
-//! `crate::s3` and `crate::pack`, so it belongs in the crate that defines
-//! them rather than in the binary that consumes them.
+//! [`decode`] and [`live`] are genuinely NEXRAD-specific and are exported
+//! only so the binary can keep reaching them through the same path as their
+//! siblings.
 
 pub mod decode;
 pub mod live;

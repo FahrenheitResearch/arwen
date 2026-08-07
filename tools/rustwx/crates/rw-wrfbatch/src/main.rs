@@ -135,6 +135,10 @@ enum Invocation {
 fn print_product_catalog() -> Result<(), CliError> {
     let slugs = rusty_weather::render_all::known_product_slugs();
     println!("group keywords: all, direct, derived, heavy, windowed");
+    // The generic family's vocabulary belongs to the STORE, not this
+    // build, so no slug list can be printed here; the store-aware listing
+    // names each `var:` row it can serve.
+    println!("generic products: var:<stored 2-D variable name>");
     for slug in &slugs {
         // Deliberately NOT the `PRODUCT\t...` record the store-aware listing
         // emits: that one is parsed by gpuwm/rustwx.py as five tab-separated
@@ -413,6 +417,12 @@ fn domain_title_label(identity: &GridIdentity) -> Option<String> {
     }
 }
 
+/// One import note as its own greppable stderr record.  Tab-separated so
+/// the note text (which contains spaces and colons) stays one field.
+fn import_note_line(note: &str) -> String {
+    format!("IMPORT_NOTE\t{note}")
+}
+
 fn run(args: Args) -> Result<(), String> {
     let options = WrfProcessOptions {
         heavy_ecape: args.heavy,
@@ -447,6 +457,12 @@ fn run(args: Args) -> Result<(), String> {
         import.variables.len(),
         import.notes.len()
     );
+    // Every note verbatim, not just the count.  A `notes=7` tally hid real
+    // uvmet/uvmet10/interpolation failures -- named products degraded or
+    // vanished with nothing on the transcript saying why.
+    for note in &import.notes {
+        eprintln!("{}", import_note_line(note));
+    }
 
     let run_manifest = args
         .store_root
@@ -604,6 +620,13 @@ fn run(args: Args) -> Result<(), String> {
 /// status -- a product that cannot render always names the fields it
 /// is missing (gpuwm architectural rule; the listing test rejects any
 /// identity-gated row).
+///
+/// WHAT is renderable comes from `inspect_renderable_products` -- the
+/// same shared catalog the render pass consumes -- so this listing can
+/// never disagree with what a render would attempt (it used to rebuild
+/// its own product list and silently omitted whole families, which is
+/// how generic `var:` rows stayed invisible).  This function only adds
+/// the WHY for rows the catalog does not carry.
 fn list_products(
     store_root: &std::path::Path,
     model_slug: &str,
@@ -611,6 +634,7 @@ fn list_products(
     stored_slots: &[u16],
     heavy_imported: bool,
 ) -> Result<(), String> {
+    use rusty_weather::batch_render::BatchProductKind;
     use rusty_weather::render_all::StoreFieldSource;
     use rusty_weather::render_all::windowed_store;
 
@@ -618,13 +642,16 @@ fn list_products(
         .first()
         .copied()
         .ok_or("catalog listing needs at least one stored frame")?;
+    let catalog = inspect_renderable_products(store_root, model_slug, run_slug, first_slot)?;
+    let renderable_slugs: std::collections::HashSet<&str> = catalog
+        .products
+        .iter()
+        .map(|product| product.slug.as_str())
+        .collect();
+    // Diagnostics only: the catalog decides WHAT renders; the store is
+    // still consulted to name the fields a non-renderable recipe misses.
     let store = StoreFieldSource::open(store_root, model_slug, run_slug, first_slot)
         .map_err(|err| err.to_string())?;
-    let stored_derived: std::collections::HashSet<&str> = store
-        .derived_slugs()
-        .iter()
-        .map(String::as_str)
-        .collect();
 
     let mut rows: Vec<(String, &str, &str, String)> = Vec::new();
 
@@ -653,7 +680,7 @@ fn list_products(
                         )),
                     })
                     .collect();
-                if missing.is_empty() {
+                if renderable_slugs.contains(spec.slug.as_str()) {
                     // The title, then the canonical selector the FILL
                     // resolves to.  A title alone cannot distinguish a
                     // chart of a quantity from a chart with that
@@ -670,12 +697,19 @@ fn list_products(
                         None => spec.title.clone(),
                     };
                     rows.push((spec.slug, "direct", "renderable", detail));
-                } else {
+                } else if !missing.is_empty() {
                     rows.push((
                         spec.slug,
                         "direct",
                         "missing-fields",
                         format!("not stored: {}", missing.join(", ")),
+                    ));
+                } else {
+                    rows.push((
+                        spec.slug,
+                        "direct",
+                        "excluded",
+                        "not offered by the shared render catalog for this store".to_string(),
                     ));
                 }
             }
@@ -684,7 +718,7 @@ fn list_products(
 
     for entry in rustwx_products::derived::supported_derived_recipe_inventory() {
         let kind = if entry.heavy { "heavy" } else { "derived" };
-        if stored_derived.contains(entry.slug) {
+        if renderable_slugs.contains(entry.slug) {
             rows.push((entry.slug.to_string(), kind, "renderable", entry.title.to_string()));
         } else if entry.heavy {
             let reason = if heavy_imported {
@@ -716,8 +750,33 @@ fn list_products(
         ));
     }
 
-    let windowed_ready = windowed_store::windowed_axis_ready(store_root, model_slug, run_slug)
-        .map_err(|err| err.to_string())?;
+    // Generic rows come straight off the shared catalog: every stored 2-D
+    // variable that no named product already renders, as `var:<name>`.
+    // The catalog's dedup exclusions were logged on stderr when it built.
+    for product in &catalog.products {
+        if product.kind != BatchProductKind::Generic {
+            continue;
+        }
+        let field = product
+            .source_fields
+            .first()
+            .map(String::as_str)
+            .unwrap_or("");
+        rows.push((
+            product.slug.clone(),
+            "generic",
+            "renderable",
+            format!(
+                "stored 2-D variable '{field}' [{}]",
+                product.units.as_deref().unwrap_or("unknown units")
+            ),
+        ));
+    }
+
+    let windowed_ready = catalog
+        .products
+        .iter()
+        .any(|product| product.kind == BatchProductKind::Windowed);
     let windowed_slugs: Vec<String> =
         rustwx_products::windowed::HrrrWindowedProduct::supported_products()
             .iter()
@@ -905,6 +964,27 @@ mod tests {
 
         let _ = std::fs::remove_file(&good);
         let _ = std::fs::remove_file(&bad);
+    }
+
+    #[test]
+    fn import_failures_surface_as_import_note_lines_not_a_count() {
+        // The regression this pins: the transcript said `notes=1` and
+        // nothing else, so a real import failure (wrf_process pushes notes
+        // like "PSFC skipped: ...", "uvmet unavailable: ...") was invisible
+        // unless the caller went digging.  Every note must become one
+        // verbatim, tab-separated IMPORT_NOTE record.
+        let notes = [
+            "PSFC skipped: missing variable".to_string(),
+            "uvmet unavailable: rotation constants absent".to_string(),
+        ];
+        let lines: Vec<String> = notes.iter().map(|note| import_note_line(note)).collect();
+        assert_eq!(lines.len(), notes.len(), "one record per note, no tally");
+        for (line, note) in lines.iter().zip(&notes) {
+            assert_eq!(line, &format!("IMPORT_NOTE\t{note}"));
+            let (tag, body) = line.split_once('\t').expect("tab-separated record");
+            assert_eq!(tag, "IMPORT_NOTE");
+            assert_eq!(body, note, "the note text must survive verbatim");
+        }
     }
 
     #[test]

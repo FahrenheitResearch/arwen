@@ -40,6 +40,25 @@ def _eta_lines(eta) -> str:
         for index, row in enumerate(rows))
 
 
+def _time_step_lines(target) -> str:
+    """The root clock, spelled the way stock WRF reads it.
+
+    WRF's registry carries the clock as integer ``time_step`` plus an
+    exact rational remainder (``time_step_fract_num/den``).  A 1.5 km
+    ladder's 7.5 s clock therefore spells 7 + 1/2 -- the SAME spelling
+    the experiment TOML uses -- and a whole-second clock stays the
+    single line every prior emission wrote.
+    """
+    lines = [f" time_step                           = "
+             f"{target.time_step_seconds},"]
+    if getattr(target, "time_step_fract_num", 0):
+        lines.append(f" time_step_fract_num                 = "
+                     f"{target.time_step_fract_num},")
+        lines.append(f" time_step_fract_den                 = "
+                     f"{target.time_step_fract_den},")
+    return "\n".join(lines)
+
+
 def render_namelist(
         *, target, eta, valid_time, run_seconds: int,
         p_top: float = 10_000.0, hybrid_opt: int = 2,
@@ -64,7 +83,7 @@ def render_namelist(
  /
 
 &domains
- time_step                           = {target.time_step_seconds},
+{_time_step_lines(target)}
  max_dom                             = 1,
  e_we                                = {target.nx + 1},
  e_sn                                = {target.ny + 1},

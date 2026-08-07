@@ -2019,6 +2019,46 @@ def _rebalance_moist_pressure(pressure_guess, qv, dry_mass, base, coord, *,
     return pressure
 
 
+def _half_level_height_agl(base, coord, dry_mass, alpha, *,
+                           hypsometric_opt: int = 1) -> np.ndarray:
+    """FP64 half-level (mass point) heights AGL of the hydrostatic column.
+
+    The same discrete operator :func:`_fp32_geopotential_split` quantizes
+    -- opt 1 ``d(phi) = -dnw*(c1h*mu+c2h)*alpha``, opt 2 ``d(phi) =
+    alpha*phm*log(pfd/pfu)`` on the total dry mass -- evaluated in plain
+    float64 and referenced to the surface, so the caller gets geometric
+    metres above local terrain without any FP32 quantization.  Used to
+    place configured initial-state perturbations on the UNPERTURBED
+    column before the perturbed geopotential is formed.
+    """
+    if hypsometric_opt not in (1, 2):
+        raise ValueError(
+            f"hypsometric_opt must be 1 or 2, got {hypsometric_opt}")
+    mu = np.asarray(dry_mass, dtype=np.float64)
+    target = np.asarray(alpha, dtype=np.float64)
+    nz = coord.dnw.size
+    dphi = np.empty_like(target)
+    if hypsometric_opt == 2:
+        c3f = np.asarray(coord.c3f, dtype=np.float64)[:, None, None]
+        c4f = np.asarray(coord.c4f, dtype=np.float64)[:, None, None]
+        c3h = np.asarray(coord.c3h, dtype=np.float64)[:, None, None]
+        c4h = np.asarray(coord.c4h, dtype=np.float64)[:, None, None]
+        p_top = float(base.p_top)
+        pfu = c3f[1:] * mu[None] + c4f[1:] + p_top
+        pfd = c3f[:-1] * mu[None] + c4f[:-1] + p_top
+        phm = c3h * mu[None] + c4h + p_top
+        dphi[...] = target * phm * np.log(pfd / pfu)
+    else:
+        dnw = np.asarray(coord.dnw, dtype=np.float64)[:, None, None]
+        increment = (np.asarray(coord.c1h, dtype=np.float64)[:, None, None]
+                     * mu[None]
+                     + np.asarray(coord.c2h, dtype=np.float64)[:, None, None])
+        dphi[...] = -dnw * increment * target
+    phi_agl = np.zeros((nz + 1,) + mu.shape, dtype=np.float64)
+    np.cumsum(dphi, axis=0, out=phi_agl[1:])
+    return (0.5 * (phi_agl[:-1] + phi_agl[1:])) / c.G
+
+
 def _fp32_geopotential_split_serial(base, coord, dry_mass, alpha,
                                     hypsometric_opt: int = 1):
     """Choose phi' ulps that best preserve the float64 hydrostatic layers.
@@ -2153,6 +2193,11 @@ class RealInitResult:
     #: native-HRRR lane and the pressure-level/RH lane, and that map only
     #: exists on the former.
     aerosol_initialization: dict[str, object] = field(default_factory=dict)
+    #: What the configured [perturbation] bubbles actually wrote into THIS
+    #: domain's initial theta/qv: per-bubble cells touched and max deltas
+    #: (:mod:`gpuwm.ingest.init_perturbation`).  Empty when no perturbation
+    #: was requested -- the OFF path stores nothing and runs nothing.
+    initial_perturbation: dict[str, object] = field(default_factory=dict)
 
 
 def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
@@ -2167,7 +2212,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     flag_sh_surface_fallback=None,
                     timing_report=None,
                     scratch_arena=None,
-                    dycore_state_workspace=None) -> RealInitResult:
+                    dycore_state_workspace=None,
+                    initial_perturbation=None) -> RealInitResult:
     """Construct a moist, discretely hydrostatic :class:`DomainState`.
 
     The pressure-level/RH lane requires TT, RH, GHT, UU, VV, PSFC, T2,
@@ -2202,6 +2248,14 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     Native export callers select ``state_backend='preprocess'``: CPU
     preprocessing then retains the completed setup/export state in NumPy
     host memory, while CUDA preprocessing keeps it on device.
+    ``initial_perturbation`` is an optional
+    :class:`gpuwm.ingest.init_perturbation.InitialStatePerturbation`:
+    when present its theta bubbles are applied once to the final
+    theta/qv columns before alpha/geopotential are formed (constant
+    analyzed pressure and column mass, geopotential rebalanced -- the
+    em_quarter_ss convention) and the per-bubble application stats are
+    returned as ``RealInitResult.initial_perturbation``.  ``None`` (the
+    default) runs not one instruction of that path.
     """
     if timing_report is not None:
         if not isinstance(timing_report, MutableMapping):
@@ -2635,6 +2689,31 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             "vertical_disposition": vertical_disposition,
         }
 
+    # -- Configured initial-state perturbation (theta bubbles) ----------
+    # Applied ONCE, here, after the base real-data state is final (the
+    # WRF two-pass moist rebalance above) and BEFORE the specific volume
+    # and geopotential are formed, so alpha/thp/php below are computed
+    # FROM the perturbed theta/qv and the state stays discretely
+    # hydrostatic at the analyzed pressure -- the em_quarter_ss
+    # convention (bubble at constant column mass, geopotential
+    # rebalanced), which hydrostatic_residual then grades unchanged.
+    # ``initial_perturbation is None`` is the whole OFF contract: not one
+    # instruction of this block runs and the state is byte-identical to a
+    # build without the feature.
+    perturbation_receipt: dict[str, object] = {}
+    if initial_perturbation is not None:
+        alpha_unperturbed = _moist_specific_volume(
+            theta_h, qv_h, total_pressure_h,
+            column_workers=column_workers)
+        z_half_agl = _half_level_height_agl(
+            base, coord, dry_mass, alpha_unperturbed,
+            hypsometric_opt=cfg.hypsometric_opt)
+        perturbation_receipt = initial_perturbation.apply(
+            theta=theta_h, qv=qv_h, pressure=total_pressure_h,
+            z_half_agl=z_half_agl)
+        del alpha_unperturbed, z_half_agl
+        mark_timing("initial_perturbation")
+
     alpha = _moist_specific_volume(
         theta_h, qv_h, total_pressure_h,
         column_workers=column_workers)
@@ -2777,7 +2856,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         integrated_moisture_pressure=intq,
         hypsometric_opt=cfg.hypsometric_opt,
         hydrometeor_initialization=hydrometeor_initialization,
-        aerosol_initialization=aerosol_initialization)
+        aerosol_initialization=aerosol_initialization,
+        initial_perturbation=perturbation_receipt)
 
 
 def source_orography_from_catalog(catalog, grid, *,

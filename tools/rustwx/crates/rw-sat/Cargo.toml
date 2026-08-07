@@ -1,0 +1,39 @@
+# Vendored from Drew's rusty-weather workspace @ d3264700 (crates/rw-sat)
+# with the four rw-sat cloud-product patches from
+# evidence/upstream/rw-sat-cloud-products/ applied (0002/0004 clean,
+# 0001/0003 hand-merged where only surrounding context had drifted; the
+# added code is byte-identical to the patch bodies).  Divergences from
+# upstream, recorded in VENDOR.md: the `rw_sat` live-follow bin is not
+# vendored (it needs clap, which is outside this workspace's vendor
+# closure; gpuwm's front door is `rw_goes`, which follows the
+# rw_nexrad hand-rolled CLI pattern instead).
+
+[package]
+name = "rw-sat"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Continuous GOES ABI ingest: live S3 follow -> NetCDF decode -> rw-store rolling time-window frames"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+rayon.workspace = true
+rustls.workspace = true
+rustls-rustcrypto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ureq.workspace = true
+
+# Pure-Rust NetCDF4/HDF5 reading: the vendored production stack from the old
+# rustwx satellite pipeline. hdf5-reader resolves to the vendored tree via
+# the workspace-root [patch.crates-io] pin.
+hdf5-reader = "0.3"
+netcrust = { path = "../../vendor/netcrust" }
+
+rustwx-core = { path = "../rustwx-core" }
+rw-ingest = { path = "../rw-ingest" }
+rw-store = { path = "../rw-store" }

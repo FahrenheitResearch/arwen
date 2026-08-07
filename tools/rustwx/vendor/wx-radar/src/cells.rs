@@ -559,7 +559,7 @@ pub fn associate_mesos_with_cells(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::level2::{Level2Sweep, MomentData, RadialData};
+    use crate::level2::{censor, Level2Sweep, MomentData, RadialData};
 
     fn make_test_sweep() -> Level2Sweep {
         let mut radials = Vec::new();
@@ -596,6 +596,16 @@ mod tests {
                     gate_count: 500,
                     first_gate_range: 2125,
                     gate_size: 250,
+                    censor: ref_data
+                        .iter()
+                        .map(|value| {
+                            if value.is_nan() {
+                                censor::BELOW_THRESHOLD
+                            } else {
+                                censor::MEASURED
+                            }
+                        })
+                        .collect(),
                     data: ref_data,
                 }],
             });

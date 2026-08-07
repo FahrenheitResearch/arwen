@@ -151,6 +151,17 @@ decode options
   --max-elevation-deg DEG drop sweeps above this elevation (default 20)
   --site-latlon LAT,LON,ALT_M
                           place a site the vendored table does not know
+  --censor-flags          emit a |u1 censor plane beside every moment plane
+                          and declare the pack gpuwm-obs.radar-sweeps.v2. The
+                          plane says WHY each NaN gate is not a number: 0
+                          measured, 1 below threshold (the radar looked and
+                          detected nothing -- a clear-air observation), 2
+                          range folded (second-trip ambiguity, never usable
+                          as clear air), 3 not collected (a radial that
+                          carried no such moment). Without it the pack is
+                          byte-identical to what this tool has always
+                          written, which is why it is a flag and not the
+                          default.
 
 verify options
   --volume FILE           the pack to re-prove (--out is accepted too)
@@ -218,6 +229,7 @@ struct Options {
     volume_id: Option<u32>,
     allow_partial: bool,
     min_chunks: Option<usize>,
+    censor_flags: bool,
 }
 
 impl Options {
@@ -245,6 +257,7 @@ impl Options {
                 }
                 "--cache" => options.cache = Some(PathBuf::from(value()?)),
                 "--no-cache" => options.no_cache = true,
+                "--censor-flags" => options.censor_flags = true,
                 "--out" => options.out = Some(PathBuf::from(value()?)),
                 "--volume" => options.volume = Some(PathBuf::from(value()?)),
                 "--moments" => options.moments = Some(value()?),
@@ -892,6 +905,7 @@ fn cmd_decode(options: &Options) -> Result<String, Box<dyn Error>> {
         max_range_km: options.max_range_km.unwrap_or(300.0),
         max_elevation_deg: options.max_elevation_deg.unwrap_or(20.0),
         site_override: options.site_latlon,
+        censor_flags: options.censor_flags,
     };
     let (meta, payload) = decode::build_pack(&request)?;
     let pack_bytes = write_pack(out, &meta, &payload)?;

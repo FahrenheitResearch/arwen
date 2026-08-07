@@ -146,7 +146,26 @@ PHYSICS_PROFILES = (
     NOAHMP_PHYSICS_PROFILE,
     MYNN_NOAHMP_PHYSICS_PROFILE,
 )
-SUPPORTED_SOURCES = frozenset({"gfs", "era5", "20crv3"})
+SUPPORTED_SOURCES = frozenset({"gfs", "era5", "20crv3", "hrrr"})
+
+#: The HRRR bundle this runner reads is the one
+#: ``tools/prepare_hrrr_wrf.py`` publishes, and it is NOT the portable
+#: single-domain layout the other sources share.  Its artifacts keep the
+#: names the native HRRR route has always written -- the preparation is
+#: the certified one and renaming its outputs to suit a reader would put
+#: the certification at risk for nothing -- so the reader learns the
+#: layout instead.  Everything hash-bound about it is identical: the
+#: same prepared-cache format, the same identity recomputation, the same
+#: fail-closed comparison against the caller's pins.
+HRRR_DIRECT_LAYOUT = "hrrr-native-direct-v1"
+
+#: Where an HRRR bundle keeps each artifact, relative to --prepared-root.
+HRRR_BUNDLE_PATHS = MappingProxyType({
+    "static": "native-static.npz",
+    "geometry_receipt": "native-geometry-receipt.json",
+    "prepared_cache": "native/prepared-cache",
+    "bridge_manifest": "native/native-bridge/SHA256SUMS",
+})
 
 #: ``mp_physics`` values whose microphysics call stages a scheme-native
 #: REFL_10CM field, i.e. exactly ``gpuwm.runtime.REFL_10CM_MICROPHYSICS``.
@@ -188,6 +207,13 @@ _SOURCE_PHYSICS_PROFILES = MappingProxyType({
         THOMPSON_PHYSICS_PROFILE, MORRISON_PHYSICS_PROFILE,
         NSSL2_PHYSICS_PROFILE, NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE,
         MYNN_PHYSICS_PROFILE),
+    # HRRR's own stock-WRF gate is the WSM6/YSU/MM5-91/Noah slice, and
+    # gpuwm/hrrr_route_inputs.py's SUPPORTED_MICROPHYSICS admits the
+    # same scheme set the other sources report here.
+    "hrrr": (
+        PHYSICS_PROFILE, THOMPSON_PHYSICS_PROFILE,
+        MORRISON_PHYSICS_PROFILE, NSSL2_PHYSICS_PROFILE,
+        NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE),
 })
 _TWENTYCRV3_WSM6_RUNTIME_SWITCHES = MappingProxyType({
     "moist": True, "moist_cq": False, "mp_physics": 6,
@@ -229,11 +255,13 @@ _SOURCE_SCHEMA = {
     "gfs": "gpuwm-gfs-direct-input-manifest-v1",
     "era5": "gpuwm-era5-direct-input-manifest-v1",
     "20crv3": "gpuwm-20crv3-grib2-inputs-v1",
+    "hrrr": "gpuwm-hrrr-native-input-manifest-v1",
 }
 _PROOF_SCHEMA = {
     "gfs": "gpuwm-gfs-direct-wrf-proof-v3",
     "era5": "gpuwm-era5-direct-wrf-proof-v2",
     "20crv3": "gpuwm-mapped-direct-wrf-proof-v1",
+    "hrrr": "gpuwm-hrrr-native-direct-wrf-proof-v1",
 }
 _LEGACY_PROOF_SCHEMAS = {
     # v2 remains independently verifiable.  It predates the explicit
@@ -242,11 +270,20 @@ _LEGACY_PROOF_SCHEMAS = {
     "gfs": frozenset({"gpuwm-gfs-direct-wrf-proof-v2"}),
     "era5": frozenset(),
     "20crv3": frozenset(),
+    # New in this runner as of the DA background lane: there is no
+    # earlier HRRR bundle for it to have to accept.
+    "hrrr": frozenset(),
 }
 _HIERARCHY_PROOF_SCHEMA = {
     "gfs": "gpuwm-gfs-native-hierarchy-proof-v2",
     "era5": "gpuwm-era5-native-hierarchy-proof-v1",
     "20crv3": "gpuwm-mapped-native-hierarchy-proof-v1",
+    # HRRR's multi-domain route is gpuwm.hrrr_hierarchy_direct feeding
+    # gpuwm.prepared_domain_tree_forecast, a designed division of labour
+    # this lane does not widen.  Naming a schema no HRRR preparation
+    # writes keeps _resolve_prepared_layout's generic path from matching
+    # by accident; the explicit refusal below is what a caller sees.
+    "hrrr": "gpuwm-hrrr-native-hierarchy-proof-unreachable-here",
 }
 _LEGACY_HIERARCHY_PROOF_SCHEMAS = {
     # v1 predates the front-door physics receipt the v2 hierarchy proof
@@ -255,11 +292,14 @@ _LEGACY_HIERARCHY_PROOF_SCHEMAS = {
     "gfs": frozenset({"gpuwm-gfs-native-hierarchy-proof-v1"}),
     "era5": frozenset(),
     "20crv3": frozenset(),
+    "hrrr": frozenset(),
 }
 _SOURCE_ADAPTER = {
     "gfs": "gfs-pgrb2-0p25-direct-v1",
     "era5": "era5-grib1-direct-v1",
     "20crv3": "rw-wps-20crv3-member-grib2-v1",
+    # The adapter identity gpuwm/source_adapters.py declares for HRRR.
+    "hrrr": "hrrr-native-state-v1",
 }
 _DECODER_IMPLEMENTATION = {
     "gfs": "gpuwm-all-rust-gfs-grib2-bridge",
@@ -282,7 +322,8 @@ _TWENTYCRV3_FILENAME = re.compile(
     r"(?P<role>pl|sfc)\.grb2$")
 _TWENTYCRV3_DECODER_ROLES = frozenset({"grib2_inventory", "grib2_dump"})
 _DIRECT_LAYOUTS = frozenset({
-    "portable-single-domain-v2", "mapped-direct-d01-v1"})
+    "portable-single-domain-v2", "mapped-direct-d01-v1",
+    HRRR_DIRECT_LAYOUT})
 _HIERARCHY_LAYOUTS = frozenset({
     "hierarchy-d01-v1", "mapped-hierarchy-d01-v1"})
 _THOMPSON_IMPLEMENTATION_FILES = (
@@ -976,6 +1017,9 @@ def _render_materialized_experiment(
     base_raw = tomllib.loads(base_text)
     base_exp = build_experiment(_experiment_tables(base_raw),
                                 source="base named-source experiment")
+    from gpuwm.experiment import refuse_unrouted_perturbation
+    refuse_unrouted_perturbation(
+        base_exp, "prepared single-domain forecast")
     if profile is None:
         for domain in base_exp.domains:
             component = land_surface_component_for_selector(
@@ -1658,6 +1702,41 @@ def _resolve_prepared_layout(
     if proof.get("status") != "READY_NOT_YET_STOCK_WRF_GATED":
         raise ValueError(
             f"{source.upper()} preparation proof is not READY for forecast")
+    if source == "hrrr":
+        if schema != _PROOF_SCHEMA[source]:
+            raise ValueError(
+                f"unsupported HRRR preparation proof schema {schema!r}; "
+                "this runner reads the single-domain bundle "
+                "tools/prepare_hrrr_wrf.py publishes.  A prepared HRRR "
+                "domain TREE is the other route: run it with "
+                "gpuwm-prepared-tree-forecast (module form: python -m "
+                "gpuwm.prepared_domain_tree_forecast)")
+        if len(source_exp.domains) != 1:
+            raise ValueError(
+                "the HRRR single-domain bundle requires a one-domain "
+                "experiment; a domain tree runs on the tree runner")
+        expected = prepared_root.resolve()
+        if domain_bundle is not None \
+                and Path(domain_bundle).resolve() != expected:
+            raise ValueError(
+                "HRRR preparation --domain-bundle must equal --prepared-root")
+        return _PreparedLayout(
+            kind=HRRR_DIRECT_LAYOUT,
+            domain_bundle=expected,
+            static_path=_require_file(
+                expected / HRRR_BUNDLE_PATHS["static"],
+                "native static cache"),
+            geometry_receipt_path=_require_file(
+                expected / HRRR_BUNDLE_PATHS["geometry_receipt"],
+                "geometry receipt"),
+            prepared_cache_path=_require_directory(
+                expected / HRRR_BUNDLE_PATHS["prepared_cache"],
+                "prepared cache"),
+            authority_paths=MappingProxyType({
+                "bridge_manifest":
+                    expected / HRRR_BUNDLE_PATHS["bridge_manifest"],
+            }),
+        )
     if (schema == _PROOF_SCHEMA[source]
             or schema in _LEGACY_PROOF_SCHEMAS[source]):
         if len(source_exp.domains) != 1:
@@ -2073,8 +2152,8 @@ def _manifest_file_specs(
     if source == "20crv3":
         return _twentycrv3_manifest_file_specs(manifest), None
     expected_schema = _SOURCE_SCHEMA[source]
-    expected_keys = {"schema", "files", "source"} if source == "gfs" \
-        else {"schema", "files"}
+    expected_keys = {"schema", "files", "source"} \
+        if source in {"gfs", "hrrr"} else {"schema", "files"}
     if set(manifest) != expected_keys or manifest.get("schema") != expected_schema:
         raise ValueError(
             f"{source.upper()} portable source manifest has an unsupported "
@@ -2100,6 +2179,24 @@ def _manifest_file_specs(
                 spec.get("sha256"), f"source manifest {role} sha256"),
         }
     common = {"bridge", "experiment_config", "wps_namelist"}
+    if source == "hrrr":
+        # HRRR's portable manifest binds one more authority than the
+        # others: the WRF namelist.input.  It is not decoration -- the
+        # prepared-cache identity's ``namelist_sha256`` IS that file's
+        # digest on this route (the native preparer reads the explicit
+        # eta ladder and p_top out of it), so a bundle that did not name
+        # it could not have its identity recomputed here at all.
+        required = common | {"namelist_input", "source_manifest"}
+        optional = {"static_input", "static_receipt", "domain_spec"}
+        if not required <= set(normalized) \
+                or set(normalized) - required - optional:
+            raise ValueError(
+                "HRRR source manifest role inventory is unsupported: "
+                f"{sorted(normalized)}")
+        static_pair = {"static_input", "static_receipt"} & set(normalized)
+        if static_pair not in (set(), {"static_input", "static_receipt"}):
+            raise ValueError("HRRR source manifest static roles are incomplete")
+        return normalized, None
     if source == "gfs":
         allowed = common | {"series", "static_input", "static_receipt"}
         dynamic = {role for role in normalized if role.startswith("grib-f")}
@@ -2417,23 +2514,31 @@ def _validate_front_door_physics_proof(
     is separately enforced against the config by ``_validate_physics``.
     """
 
-    if source != "gfs" or proof.get("schema") in _LEGACY_PROOF_SCHEMAS[source]:
+    # HRRR joins this gate at its FIRST schema rather than a later one:
+    # its bundle is new here, so there is no history of proofs written
+    # before the receipt existed, and a new source has no reason to be
+    # admitted on weaker evidence than the one beside it.
+    if source not in {"gfs", "hrrr"} \
+            or proof.get("schema") in _LEGACY_PROOF_SCHEMAS[source]:
         return None
     if proof.get("schema") != _PROOF_SCHEMA[source]:
         return None
+    label = source.upper()
     selected = proof.get("physics")
     if not isinstance(selected, dict):
-        raise ValueError("GFS v3 preparation proof physics receipt is missing")
+        raise ValueError(
+            f"{label} v3 preparation proof physics receipt is missing")
     acknowledgements = selected.get("acknowledgements")
     acknowledgement_provenance = selected.get(
         "acknowledgement_provenance")
     if (not isinstance(acknowledgements, list)
             or any(not isinstance(value, str) for value in acknowledgements)):
         raise ValueError(
-            "GFS v3 preparation proof acknowledgements are malformed")
+            f"{label} v3 preparation proof acknowledgements are malformed")
     if not isinstance(acknowledgement_provenance, dict):
         raise ValueError(
-            "GFS v3 preparation proof acknowledgement provenance is malformed")
+            f"{label} v3 preparation proof acknowledgement provenance is "
+            "malformed")
     if selected.get("schema") == MULTI_DOMAIN_SELECTION_SCHEMA:
         expected = single_domain_physics_selection(
             cfg,
@@ -2443,16 +2548,16 @@ def _validate_front_door_physics_proof(
         proof_profile = selected.get("profile")
         if not isinstance(proof_profile, str):
             raise ValueError(
-                "GFS v3 preparation proof physics receipt names no profile "
-                "and is not a per-domain selection receipt")
+                f"{label} v3 preparation proof physics receipt names no "
+                "profile and is not a per-domain selection receipt")
         expected = validate_single_domain_physics_profile(
             proof_profile, config=cfg,
             expert_acknowledgements=tuple(acknowledgements),
             acknowledgement_provenance=acknowledgement_provenance)
     if selected != expected:
         raise ValueError(
-            "GFS v3 preparation proof physics selection differs from the "
-            "hash-bound experiment/profile")
+            f"{label} v3 preparation proof physics selection differs from "
+            "the hash-bound experiment/profile")
     return expected
 
 
@@ -2747,6 +2852,81 @@ def _validate_twentycrv3_mapped_evidence(
     }), str(manifest["member"])
 
 
+#: What the native HRRR preparation writes into every prepared cache's
+#: ``source_identity``, beyond the install provenance block whose keys
+#: differ between a git checkout, a wheel and a sealed distribution.
+#: These five ARE checked, because each one changes what the arrays mean.
+_HRRR_IDENTITY_REQUIRED = ("source_sha256", "source_cycle",
+                           "model_start_time", "source_forecast_hours",
+                           "model_forcing_hours")
+
+#: The gpuwm modules whose bytes decide how HRRR GRIB2 becomes model
+#: state.  The preparation hashes exactly these into the cache identity;
+#: this reader requires them to be present and to agree with the proof,
+#: so a cache decoded by a different ingest cannot restore under a proof
+#: that names this one.
+_HRRR_DECODE_SOURCES = (
+    "gpuwm/hrrr_forecast.py",
+    "gpuwm/ingest/hrrr.py",
+    "gpuwm/ingest/hrrr_physics.py",
+    "gpuwm/ingest/hrrr_surface.py",
+    "gpuwm/ingest/real.py",
+    "gpuwm/ingest/soil.py",
+    "gpuwm/ingest/lateral_bc.py",
+    "gpuwm/ingest/prepared_cache.py",
+    "gpuwm/state_serialization_contract.py",
+    "tools/hrrr_single_domain_benchmark.py",
+)
+
+
+def _validate_hrrr_source_identity(
+        identity: Mapping[str, object], proof: Mapping[str, object],
+) -> Mapping[str, object]:
+    """Bind an HRRR prepared cache to the proof published beside it.
+
+    HRRR's source identity is a different SHAPE from the portable one --
+    it carries per-file digests of the ingest that decoded the GRIB2 and
+    the cycle/lead vocabulary that names which HRRR run it came from,
+    where the portable sources carry an adapter name and a single bridge
+    digest.  Both answer the same question; only one of them can be
+    checked with the portable code, so this checks the other.
+
+    The check is a comparison against the PROOF, which the caller pinned
+    by digest before this ran.  A cache whose identity says something
+    the proof does not is refused -- that is the whole point of
+    re-deriving the front door in every worker rather than passing a
+    verdict across a process boundary.
+    """
+
+    missing = [key for key in _HRRR_IDENTITY_REQUIRED if key not in identity]
+    if missing:
+        raise ValueError(
+            f"HRRR prepared cache source identity is incomplete: {missing}")
+    digests = identity.get("source_sha256")
+    if not isinstance(digests, dict):
+        raise ValueError(
+            "HRRR prepared cache source identity carries no decode digests")
+    absent = [name for name in _HRRR_DECODE_SOURCES if name not in digests]
+    if absent:
+        raise ValueError(
+            f"HRRR prepared cache decode identity omits {absent}")
+    if any(not isinstance(value, str) or len(value) != 64
+           for value in digests.values()):
+        raise ValueError(
+            "HRRR prepared cache decode digests are malformed")
+    if identity.get("source_sha256") != proof.get("source_sha256"):
+        raise ValueError(
+            "HRRR prepared cache decode identity differs from its proof: "
+            "the cache was built by a different ingest than the proof names")
+    for key in ("source_cycle", "model_start_time", "source_forecast_hours",
+                "model_forcing_hours"):
+        if identity.get(key) != proof.get(key):
+            raise ValueError(
+                f"HRRR prepared cache source identity {key} differs from "
+                "the preparation proof")
+    return identity
+
+
 def _validate_source_identity(
         source: str, identity: object, manifest_sha256: str,
         manifest_files: Mapping[str, Mapping[str, object]], proof,
@@ -2787,6 +2967,8 @@ def _validate_source_identity(
             raise ValueError(
                 "20CRv3 prepared cache source identity has an unsupported shape")
         return identity
+    if source == "hrrr":
+        return _validate_hrrr_source_identity(identity, proof)
     required = {"adapter", "input_manifest_schema", "input_manifest_sha256",
                 "decoder", "preprocessing"}
     if not required <= set(identity):
@@ -2848,7 +3030,25 @@ def _validate_cache_metadata(
             exp.start_time + timedelta(hours=forcing_hours[-1])).isoformat(),
         "forcing_hours": list(forcing_hours),
     }
-    if layout == "portable-single-domain-v2":
+    if layout == HRRR_DIRECT_LAYOUT:
+        # The native preparation's own user metadata, which names the
+        # HRRR cycle and both lead vocabularies rather than an adapter
+        # string and a preprocessing receipt.  Compared exactly, like
+        # every other layout's -- the shape differs, the strictness does
+        # not.  ``mapping_reports`` is a per-field decode report whose
+        # contents are the preparer's, so its PRESENCE is required and
+        # its value is not re-derived here.
+        expected_user.update({
+            "source_cycle": proof.get("source_cycle"),
+            "source_forecast_hours": proof.get("source_forecast_hours"),
+            "model_forcing_hours": list(forcing_hours),
+        })
+        reports = user.get("mapping_reports") if isinstance(user, dict) else None
+        if not isinstance(reports, dict):
+            raise ValueError(
+                "HRRR prepared cache carries no field mapping reports")
+        expected_user["mapping_reports"] = reports
+    elif layout == "portable-single-domain-v2":
         expected_user.update({
             "source_adapter": source,
             "boundary_interval_seconds": boundary_interval_seconds,
@@ -3127,6 +3327,9 @@ def preflight_prepared_forecast(
     proof = _load_json_object(proof_path, "preparation proof")
     manifest = _load_json_object(source_manifest_path, "portable source manifest")
     source_exp = load_experiment(experiment_config)
+    from gpuwm.experiment import refuse_unrouted_perturbation
+    refuse_unrouted_perturbation(
+        source_exp, "prepared single-domain forecast")
     layout = _resolve_prepared_layout(
         source=source, prepared_root=prepared_root, proof=proof,
         source_exp=source_exp, domain_bundle=domain_bundle)
@@ -3189,6 +3392,15 @@ def preflight_prepared_forecast(
     if len(deltas) != 1 or next(iter(deltas)) <= 0:
         raise ValueError("preparation proof forcing cadence is not uniform")
     cadence_hours = next(iter(deltas))
+    if source == "hrrr" and cadence_hours != 1:
+        # Not a warning like the others: HRRR publishes hourly and the
+        # native preparer's whole forcing contract
+        # (gpuwm.hrrr_forecast) is built on contiguous hourly leads, so
+        # a non-hourly HRRR cadence is a malformed preparation rather
+        # than a coarser one.
+        raise ValueError(
+            f"HRRR forcing cadence of {cadence_hours} h is not hourly; the "
+            "native HRRR route prepares contiguous hourly leads")
     if (source == "gfs" and cadence_hours not in {1, 3}) \
             or (source in {"era5", "20crv3"} and cadence_hours < 1):
         # The cadence is uniform (checked above) and the coverage is
@@ -3238,6 +3450,43 @@ def preflight_prepared_forecast(
             warn("the GFS source manifest binds forecast hour(s) "
                  + ", ".join(f"f{hour:03d}" for hour in unused)
                  + " that this run's forcing window does not use")
+    elif source == "hrrr":
+        # Two vocabularies again, and on this route they are ALWAYS
+        # different: NOAA's absolute leads (f004..f010 of one cycle) and
+        # the model-relative forcing offsets (0..6) the cache and the
+        # exporter use.  gpuwm.hrrr_forecast owns the window contract;
+        # this binds the proof's two lists to each other so a bundle
+        # cannot claim one window and carry another.
+        from gpuwm.hrrr_forecast import validate_hrrr_source_forecast_hours
+
+        declared = proof.get("source_forecast_hours")
+        cycle_text = proof.get("source_cycle")
+        if not isinstance(declared, list) or not isinstance(cycle_text, str):
+            raise ValueError(
+                "HRRR preparation proof names no source cycle/lead window")
+        try:
+            cycle = datetime.fromisoformat(cycle_text)
+            source_hours = validate_hrrr_source_forecast_hours(
+                declared, cycle=cycle)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"HRRR preparation proof source window is invalid: {error}"
+            ) from None
+        if len(source_hours) != len(forcing_hours) \
+                or list(range(len(source_hours))) != list(forcing_hours):
+            raise ValueError(
+                "HRRR preparation proof forcing offsets are not 0..N-1 of "
+                "its own source lead window")
+        if (cycle + timedelta(hours=source_hours[0])) != exp.start_time:
+            raise ValueError(
+                f"HRRR preparation proof cycle {cycle_text} at "
+                f"f{source_hours[0]:03d} is not the experiment start "
+                f"{exp.start_time.isoformat()}")
+        if proof.get("model_start_time") != exp.start_time.isoformat() \
+                or proof.get("model_forcing_hours") != list(forcing_hours):
+            raise ValueError(
+                "HRRR preparation proof model start/forcing differ from "
+                "the hash-bound experiment")
     elif source == "20crv3":
         if (manifest.get("valid_times") != expected_times
                 or manifest.get("cadence_seconds")
@@ -3249,7 +3498,7 @@ def preflight_prepared_forecast(
     if source != "20crv3" \
             and proof.get("input_manifest_sha256") != source_manifest_sha256:
         raise ValueError("preparation proof input manifest hash differs")
-    if layout.kind == "portable-single-domain-v2":
+    if layout.kind in {"portable-single-domain-v2", HRRR_DIRECT_LAYOUT}:
         expected_source_inputs = {
             "manifest_schema": _SOURCE_SCHEMA[source],
             "manifest_sha256": source_manifest_sha256,
@@ -3284,15 +3533,51 @@ def preflight_prepared_forecast(
     if layout.kind in _HIERARCHY_LAYOUTS \
             and source_identity.get("grid_id") != 1:
         raise ValueError("hierarchy prepared-cache source identity is not d01")
-    expected_identity = prepared_cache_identity(
-        bridge_manifest_sha256=source_manifest_sha256,
-        source_manifest_sha256=source_manifest_sha256,
-        static_cache_sha256=static_sha256,
-        namelist_sha256=_sha256(experiment_config),
-        domain_config=exp.root,
-        forcing_hours=forcing_hours,
-        source_identity=source_identity,
-    )
+    if layout.kind == HRRR_DIRECT_LAYOUT:
+        # Three of this identity's inputs are genuinely different values
+        # on the HRRR route, where for the portable sources two of them
+        # happen to coincide.  The bridge manifest is the DECODED
+        # intermediate's SHA256SUMS, the source manifest is the raw
+        # GRIB2 set's, and the namelist is WRF's namelist.input (the
+        # native preparer reads the explicit eta ladder out of it), not
+        # the experiment TOML.  Each is taken from the portable manifest
+        # -- pinned by --source-manifest-sha256 -- and each is verified
+        # against the file in the bundle before it is used.
+        bridge_path = layout.authority_paths["bridge_manifest"]
+        bridge_digest = _sha256(
+            _require_file(bridge_path, "HRRR native bridge manifest"))
+        if bridge_digest != manifest_files["bridge"]["sha256"]:
+            raise ValueError(
+                "HRRR native bridge manifest differs from the portable "
+                "source manifest")
+        namelist_path = _require_file(
+            prepared_root / manifest_files["namelist_input"]["name"],
+            "HRRR WRF namelist.input")
+        if _sha256(namelist_path) != manifest_files["namelist_input"]["sha256"]:
+            raise ValueError(
+                "bundled HRRR namelist.input differs from the portable "
+                "source manifest")
+        expected_identity = prepared_cache_identity(
+            bridge_manifest_sha256=bridge_digest,
+            source_manifest_sha256=manifest_files["source_manifest"]["sha256"],
+            static_cache_sha256=static_sha256,
+            namelist_sha256=manifest_files["namelist_input"]["sha256"],
+            domain_config=exp.root,
+            forcing_hours=forcing_hours,
+            source_identity=source_identity,
+            namelist_extension_invariant=proof.get(
+                "namelist_extension_invariant"),
+        )
+    else:
+        expected_identity = prepared_cache_identity(
+            bridge_manifest_sha256=source_manifest_sha256,
+            source_manifest_sha256=source_manifest_sha256,
+            static_cache_sha256=static_sha256,
+            namelist_sha256=_sha256(experiment_config),
+            domain_config=exp.root,
+            forcing_hours=forcing_hours,
+            source_identity=source_identity,
+        )
     cache_identity, cache_identity_compatibility = (
         _resolve_cache_identity_compatibility(
             source=source, observed=header_identity,
@@ -3316,11 +3601,21 @@ def preflight_prepared_forecast(
         REPO / "gpuwm" / "wrf_direct_v461_contract.json",
         "direct-WRF contract")
     if layout.kind in _DIRECT_LAYOUTS:
+        # An HRRR bundle keeps its artifacts where the certified native
+        # preparation has always written them, so the paths its proof
+        # declares are that layout's, not the portable one's.  The
+        # DIGESTS compared against them are identical either way -- the
+        # relative path is a label, the sha256 is the binding.
+        bundle_relative = (
+            dict(HRRR_BUNDLE_PATHS) if layout.kind == HRRR_DIRECT_LAYOUT
+            else {"static": "native-static.npz",
+                  "geometry_receipt": "geometry-receipt.json",
+                  "prepared_cache": "prepared-cache"})
         cache_proof = proof.get("prepared_cache")
         expected_cache_proof = {
             "schema": PREPARED_CACHE_SCHEMA,
             "status": "BUILT",
-            "path": "prepared-cache",
+            "path": bundle_relative["prepared_cache"],
             "content_sha256": reader.content_sha256,
             "array_count": len(reader.arrays),
             "payload_bytes": reader.payload_bytes,
@@ -3338,14 +3633,15 @@ def preflight_prepared_forecast(
                 expected_path="source-input-manifest.json",
                 actual=source_manifest_path, label="source manifest")
             _validate_artifact_record(
-                artifacts.get("static_cache"), expected_path="native-static.npz",
+                artifacts.get("static_cache"),
+                expected_path=bundle_relative["static"],
                 actual=static_path, label="static cache")
             _validate_artifact_record(
                 artifacts.get("geometry_receipt"),
-                expected_path="geometry-receipt.json",
+                expected_path=bundle_relative["geometry_receipt"],
                 actual=geometry_receipt_path, label="geometry receipt")
             expected_artifact_cache = {
-                "path": "prepared-cache",
+                "path": bundle_relative["prepared_cache"],
                 "content_sha256": reader.content_sha256,
                 "payload_bytes": reader.payload_bytes,
             }
@@ -3361,8 +3657,8 @@ def preflight_prepared_forecast(
         }
         expected_export_schema = (
             "gpuwm-native-direct-wrf-export-v3"
-            if source == "gfs"
-            and proof.get("schema") == _PROOF_SCHEMA["gfs"]
+            if source in {"gfs", "hrrr"}
+            and proof.get("schema") == _PROOF_SCHEMA[source]
             else "gpuwm-native-direct-wrf-export-v2"
         )
         if (not isinstance(export, dict)
@@ -3379,8 +3675,8 @@ def preflight_prepared_forecast(
         if expected_export_schema.endswith("-v3") \
                 and export.get("physics") != front_door_physics:
             raise ValueError(
-                "GFS v3 export physics receipt differs from the preparation "
-                "proof")
+                f"{source.upper()} v3 export physics receipt differs from "
+                "the preparation proof")
         export_source = export.get("source")
         expected_export_source = {
             "contract_sha256": _sha256(contract_path),

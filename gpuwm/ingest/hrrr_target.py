@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from fractions import Fraction
 from functools import lru_cache
 import hashlib
 import json
@@ -130,7 +131,15 @@ class HrrrTargetDomain:
     truelat1: float
     truelat2: float
     stand_lon: float
+    #: The root clock, spelled the way WRF's own registry spells it
+    #: (Registry.EM_COMMON: integer ``time_step`` plus the exact
+    #: rational remainder).  A 1.5 km root runs a 7.5 s clock; an
+    #: integer-only field refused that ladder outright, so the spec
+    #: carries whole seconds here and the remainder in the two fract
+    #: fields below -- exact, never a float.
     time_step_seconds: int
+    time_step_fract_num: int = 0
+    time_step_fract_den: int = 1
     spec_bdy_width: int = 5
     spec_zone: int = 1
     relax_zone: int = 4
@@ -144,8 +153,10 @@ class HrrrTargetDomain:
                 "native HRRR target map_proj must be 'lambert'; other "
                 "projection families are not certified")
         for field_name in (
-                "nx", "ny", "nz", "time_step_seconds", "spec_bdy_width",
-                "spec_zone", "relax_zone", "surface_fallback_radius_cells"):
+                "nx", "ny", "nz", "time_step_seconds",
+                "time_step_fract_num", "time_step_fract_den",
+                "spec_bdy_width", "spec_zone", "relax_zone",
+                "surface_fallback_radius_cells"):
             value = getattr(self, field_name)
             if isinstance(value, bool) or not isinstance(value, int):
                 raise TypeError(f"target-domain {field_name} must be an integer")
@@ -171,8 +182,20 @@ class HrrrTargetDomain:
         if not math.isclose(
                 self.dx_m, self.dy_m, rel_tol=1.0e-12, abs_tol=0.0):
             raise ValueError("Lambert target requires dx_m == dy_m")
-        if self.time_step_seconds <= 0:
-            raise ValueError("target-domain time_step_seconds must be positive")
+        if self.time_step_seconds < 0:
+            raise ValueError(
+                "target-domain time_step_seconds must be non-negative "
+                "whole seconds (the fractional remainder rides "
+                "time_step_fract_num/den)")
+        if self.time_step_fract_den < 1:
+            raise ValueError(
+                "target-domain time_step_fract_den must be at least 1")
+        if not 0 <= self.time_step_fract_num < self.time_step_fract_den:
+            raise ValueError(
+                "target-domain time_step_fract_num must be a proper "
+                "remainder: 0 <= num < den")
+        if self.time_step_exact <= 0:
+            raise ValueError("target-domain time step must be positive")
         if not (0 <= self.surface_fallback_radius_cells
                 <= SURFACE_FALLBACK_RADIUS_MAX):
             raise ValueError(
@@ -245,8 +268,25 @@ class HrrrTargetDomain:
             dy=self.dy_m,
         )
 
+    @property
+    def time_step_exact(self) -> Fraction:
+        """The root clock as the exact rational the three fields spell."""
+
+        return (Fraction(self.time_step_seconds)
+                + Fraction(self.time_step_fract_num,
+                           self.time_step_fract_den))
+
     def to_payload(self) -> dict[str, object]:
-        return {"schema": TARGET_DOMAIN_SCHEMA, **asdict(self)}
+        payload = {"schema": TARGET_DOMAIN_SCHEMA, **asdict(self)}
+        # A whole-second clock's payload is byte-identical to what this
+        # writer emitted before the fract fields existed, so every
+        # stored identity_sha256 of an integer-clock target survives
+        # the widening.  Only a genuinely fractional clock carries the
+        # two extra keys.
+        if self.time_step_fract_num == 0 and self.time_step_fract_den == 1:
+            payload.pop("time_step_fract_num")
+            payload.pop("time_step_fract_den")
+        return payload
 
     def identity_sha256(self) -> str:
         encoded = json.dumps(
@@ -268,7 +308,13 @@ def load_hrrr_target_domain(path: Path | str | None) -> HrrrTargetDomain:
     values = dict(payload)
     values.pop("schema")
     expected = set(HrrrTargetDomain.__dataclass_fields__)
-    optional_v1_defaults = {"surface_fallback_radius_cells": 8}
+    optional_v1_defaults = {
+        "surface_fallback_radius_cells": 8,
+        # The rational-clock remainder (whole-second documents omit it;
+        # a 1.5 km ladder's 7.5 s root clock carries 1/2 here).
+        "time_step_fract_num": 0,
+        "time_step_fract_den": 1,
+    }
     missing = expected - set(values)
     extra = set(values) - expected
     if extra or not missing <= set(optional_v1_defaults):

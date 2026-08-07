@@ -172,7 +172,21 @@ def _target_from_payload(payload) -> HrrrTargetDomain:
     if values.pop("schema", None) != "gpuwm-hrrr-target-domain-v1":
         raise ValueError("HRRR static receipt target-domain schema mismatch")
     expected = set(HrrrTargetDomain.__dataclass_fields__)
-    optional_v1_defaults = {"surface_fallback_radius_cells": 8}
+    # The SAME optional set as gpuwm.ingest.hrrr_target.
+    # load_hrrr_target_domain, and it must stay the same: to_payload()
+    # deliberately omits the rational-clock remainder for a whole-second
+    # clock (so every stored integer-clock identity_sha256 survived the
+    # 2026-08-05 widening), which means every whole-second static
+    # receipt reaches this verifier WITHOUT the two fract keys.  When
+    # this copy defaulted only surface_fallback_radius_cells, the
+    # writer and the verifier disagreed within one tree and the nested
+    # HRRR hierarchy refused every integer-dt preparation (found
+    # 2026-08-06 by the init-perturbation demo's 15 s root clock).
+    optional_v1_defaults = {
+        "surface_fallback_radius_cells": 8,
+        "time_step_fract_num": 0,
+        "time_step_fract_den": 1,
+    }
     missing = expected - set(values)
     if set(values) - expected or not missing <= set(optional_v1_defaults):
         raise ValueError("HRRR static receipt target-domain fields mismatch")
