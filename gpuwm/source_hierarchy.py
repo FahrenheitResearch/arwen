@@ -32,6 +32,11 @@ from gpuwm.native_hierarchy import (
     NativeHierarchyExportResult,
     initialize_and_export_native_hierarchy,
 )
+from gpuwm.static.corridor import (
+    STATICS_CORRIDOR_DIRNAME,
+    emit_statics_corridor_set,
+    validated_corridor_selection,
+)
 
 
 _IMPLEMENTATION_PATHS = (
@@ -464,7 +469,11 @@ def initialize_and_export_regular_source_hierarchy(
     """
 
     grids = tuple(grids)
-    corridor_grid_ids = _validated_corridor_selection(exp, statics_corridor)
+    # Resolved HERE as well as inside the emitter, and deliberately: the
+    # emission happens after the whole join, so a mistyped grid id would
+    # otherwise refuse an hour of work that had already succeeded.  Same
+    # pure function, same inputs, same answer.
+    validated_corridor_selection(exp, statics_corridor)
     topology_receipt = _validated_static_one_way_topology(exp, grids)
     if (isinstance(workers, bool) or not isinstance(workers, int)
             or not 1 <= workers <= 32):
@@ -580,28 +589,17 @@ def initialize_and_export_regular_source_hierarchy(
         artifact_manifest_reference=artifact_manifest_reference,
         stock_wrf_export=stock_wrf_export,
     )
-    corridor_receipt = None
-    if corridor_grid_ids:
-        # AFTER the artifact join: the hierarchy tree is already atomic
-        # and sealed on its own terms, and the corridor set lands beside
-        # it inside the caller's staging directory, bound by its own
-        # receipt (which the caller embeds in the preparation document).
-        from gpuwm.static.corridor import (STATICS_CORRIDOR_DIRNAME,
-                                           build_child_statics_corridor,
-                                           write_statics_corridor_set)
-
-        by_id = {int(domain.grid_id): index
-                 for index, domain in enumerate(exp.domains)}
-        builds = []
-        for grid_id in corridor_grid_ids:
-            child = exp.domains[by_id[grid_id]]
-            parent_run = exp.domains[by_id[int(child.parent_id)]].run
-            builds.append(build_child_statics_corridor(
-                child_dc=child, parent_run=parent_run,
-                reference_grid=grids[by_id[grid_id]],
-                static_catalog=static_catalog))
-        corridor_receipt = write_statics_corridor_set(
-            Path(artifact_output) / STATICS_CORRIDOR_DIRNAME, builds)
+    # AFTER the artifact join: the hierarchy tree is already atomic and
+    # sealed on its own terms, and the corridor set lands beside it
+    # inside the caller's staging directory, bound by its own receipt
+    # (which the caller embeds in the preparation document).  Through
+    # the corridor module's own emitter, which the HRRR hierarchy stage
+    # calls too -- one emission for both chains, because one runner
+    # consumes both bundles.
+    corridor_receipt = emit_statics_corridor_set(
+        exp=exp, grids=grids, static_catalog=static_catalog,
+        directory=Path(artifact_output) / STATICS_CORRIDOR_DIRNAME,
+        statics_corridor=statics_corridor)
     return RegularSourceHierarchyResult(
         hierarchy=hierarchy,
         static_catalog_receipt=static_receipt,
@@ -611,41 +609,6 @@ def initialize_and_export_regular_source_hierarchy(
         boundary_interval_seconds=interval,
         statics_corridor_receipt=corridor_receipt,
     )
-
-
-def _validated_corridor_selection(exp, statics_corridor) -> tuple[int, ...]:
-    """Resolve the corridor opt-in to an ordered tuple of child grid ids."""
-    if statics_corridor is None:
-        return ()
-    children = [int(domain.grid_id) for domain in exp.domains
-                if int(domain.parent_id) != 0]
-    if not children:
-        raise ValueError(
-            "statics_corridor was requested but this experiment has no "
-            "child domain; a corridor is child-resolution statics over a "
-            "parent, so a single-domain preparation has nothing to emit")
-    if isinstance(statics_corridor, str):
-        token = statics_corridor.strip().lower()
-        if token != "all":
-            raise ValueError(
-                f"statics_corridor accepts 'all' or child grid ids, got "
-                f"{statics_corridor!r}")
-        return tuple(children)
-    try:
-        requested = tuple(int(value) for value in statics_corridor)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"statics_corridor accepts 'all' or child grid ids, got "
-            f"{statics_corridor!r}") from exc
-    unknown = sorted(set(requested) - set(children))
-    if unknown:
-        raise ValueError(
-            f"statics_corridor names grid ids {unknown} that are not "
-            f"child domains of this experiment (children: {children})")
-    if len(set(requested)) != len(requested):
-        raise ValueError(
-            f"statics_corridor repeats grid ids: {list(requested)}")
-    return tuple(sorted(set(requested)))
 
 
 __all__ = [

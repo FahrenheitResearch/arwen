@@ -183,10 +183,12 @@ runner checks each supplied file's name and digest against the portable
 manifest. The relayed digests are cross-checked against `proof.json` on
 disk before the forecast starts.
 
-Multi-domain HRRR is refused with a sentence naming the limitation and
-the chain that does run it (`gpuwm.hrrr_hierarchy_direct`, then
-`gpuwm-prepared-tree-forecast`); see the note at the end of this file.
-Multi-domain GFS runs, as above.
+Multi-domain HRRR runs too, on a four-stage chain: the fetch, the root
+preparation, `gpuwm.hrrr_hierarchy_direct` to build `d02..dNN` from the
+sealed root, and then the same `gpuwm-prepared-tree-forecast` the GFS
+tree uses. Multi-domain GFS runs, as above. A nested HRRR tree can also
+*move* a nest: the hierarchy stage seals the statics corridor — see
+moving nests, above.
 
 `physics_profile` is passed to the HRRR preparer only when the plan
 states it (as an intent key or a run option). The route owns its own
@@ -203,28 +205,104 @@ never a particular experiment.
 
 #### Moving nests (`[relocation]`) by route
 
-A config with a `[relocation]` follow source (`[relocation.follow]` or
-`[[relocation.move]]`) runs on the `experiment` route as before: the
-case-data process holds the GEOG source and wires the real-data
-relocation runner (footprint-rebuilt statics per move).
+A moving nest is a config with a `[relocation]` follow source —
+`[relocation.follow]` or `[[relocation.move]]`. Enabled `[relocation]`
+with neither is a *bounds-only* nest: it constrains where the nest may
+sit, the nest does not move, and none of this section applies to it.
 
-On the prepared chains the same config needs the bundle prepared with
-**`--statics-corridor`**: the preparation seals child-resolution
+**Nothing to add to the plan document.** A moving nest is declared in
+the config, and every door reads it from there
+(`gpuwm.static.corridor.config_declares_follow_source` — one predicate,
+shared by `gpuwm go`, the printed `rw-wps` line and run-plan, so they
+cannot disagree). There is no `run_options` key for it: a caller that
+could ask for a moving nest and separately forget the statics it moves
+onto would be a caller that can prepare a bundle its own forecast stage
+refuses.
+
+| chain | how a moving nest gets its statics |
+|---|---|
+| `experiment` | the route holds the geography source for the whole run and rebuilds each footprint at move time. Nothing prepared, nothing priced. |
+| `prepared` + gfs | the preparation seals a **statics corridor** and the tree runner crops it. Run-plan composes `--statics-corridor` on the rw-wps prepare stage. |
+| `prepared` + hrrr | the same corridor, sealed by the **hierarchy stage**. Run-plan composes `--statics-corridor` on `gpuwm.hrrr_hierarchy_direct`. |
+
+On either prepared chain the preparation seals child-resolution
 statics over each child's whole parent extent beside the other
-hierarchy artifacts, digest-bound into the preparation receipt, and the
-tree runner (`gpuwm-prepared-tree-forecast`) then crops each new
-footprint's statics out of that corridor at move time — the run stays
-fully sealed, no runtime ingest. The GFS prepare stage adds the flag
-itself whenever the experiment config declares a follow source (the
-printed `rw-wps` line from `gpuwm fetch --author-front-door-manifest`
-carries it too, from the same predicate). A bundle prepared *without*
-a corridor refuses a follow config at the tree runner's preflight, with
-the flag named as the remedy; a corridor that fails digest or geometry
-verification refuses loudly rather than running the nest silently
-static. Bounds-only `[relocation]` (no follow source) never needs a
-corridor. The corridor is disk/host-side only (97 float64 planes,
-776 bytes per corridor cell — a 900x900 corridor is ~629 MB); it adds
-no GPU memory, so the VRAM gate is unchanged.
+hierarchy artifacts, digest-bound into the preparation document, and the
+tree runner (`gpuwm-prepared-tree-forecast`) crops each new footprint's
+statics out of that corridor at move time — the run stays fully sealed,
+no runtime ingest. A bundle prepared *without* a
+corridor refuses a follow config at the tree runner's preflight with
+the flag named as the remedy, and a corridor that fails digest or
+geometry verification refuses loudly rather than running the nest
+silently static.
+
+**Which stage carries the flag differs, and that is the only
+difference.** On GFS the whole hierarchy is prepared inside rw-wps, so
+the corridor rides `gpuwm.source_cli` (`gpuwm go` derives it from the
+config, and run-plan drives `go`). HRRR prepares its root first and
+builds `d02..dNN` in a separate stage, and only *that* stage knows the
+children exist or holds `--geog-root` — its root preparer would refuse
+the flag. So the HRRR corridor is sealed by
+`gpuwm.hrrr_hierarchy_direct --statics-corridor`, into
+`hierarchy-artifacts/statics-corridor/` and bound into `receipt.json`,
+which is the same relative path and the same digest discipline the GFS
+bundle uses in `proof.json`. The tree runner reads whichever document
+matched its pinned digest and cannot tell the two apart.
+
+All of it is derived from one predicate
+(`gpuwm.static.corridor.config_declares_follow_source`) and emitted by
+one function (`gpuwm.static.corridor.emit_statics_corridor_set`), so
+neither chain can drift into a second corridor format or a second
+reading of what "a moving nest" means.
+
+**`--resolve` says so before anything runs.** The decision is a record
+of its own plus an `automatic_resolutions` entry:
+
+```json
+"moving_nest": {"chain":"prepared:go","delivery":"statics_corridor",
+                "relocation_grid_id":2,"statics_corridor":true}
+```
+```json
+{"scope":"preparation","key":"statics_corridor","value":true,
+ "basis":"relocation_follow","note":"the config declares a [relocation] follow source on d02, so the prepare stage is composed with --statics-corridor …"}
+```
+
+`moving_nest` is `null` for a config that moves no nest, and that plan
+resolves and prepares exactly as it did before this existed.
+
+**`--estimate` prices it.** The corridor is the largest single thing
+the preparation writes for a moving nest, and it is not inferable from
+the domain sizes a caller already has — it is *parent extent at child
+resolution*, so a 45×45 nest with `parent_grid_ratio = 3` on a 398×320
+root is a 1194×960 corridor:
+
+```json
+"corridor": {
+  "domains": [{"domain":"d02","grid_id":2,"parent_id":1,
+               "corridor_nx":1194,"corridor_ny":960,"cells":1146240,
+               "planes_per_cell":97,"bytes_per_cell":776,
+               "host_bytes":889482240}],
+  "host_bytes": 889482240, "host_gib": 0.8284, "basis": "…"
+}
+```
+
+Every child is priced, not only the one that relocates: run-plan passes
+the flag bare, which the preparation reads as "every child domain".
+Disk and host are the same figure to within container headers — the
+cache is an uncompressed NPZ of exactly those arrays, loaded whole by
+the runner's preflight. It adds **no GPU residency**, so the `vram`
+block is identical with and without a corridor and the VRAM gate is
+unchanged. `host_bytes` is `0` with an empty `domains` list when no
+nest moves.
+
+**A chain that could not feed a moving nest would refuse at resolve
+time, not minutes in.** Every chain this front door dispatches to can
+feed one today, so nothing reachable takes that path — but the
+machinery stays, because the alternative is a plan that fetches,
+prepares a root and builds a hierarchy before the forecast preflight
+rejects it. A chain added without an answer to "and where does a moving
+nest get its statics on it?" fails the delivery table's completeness
+test rather than falling through to whatever the chain happened to do.
 
 ### `run_options`
 
@@ -460,6 +538,25 @@ reader that silently drops a partial line cannot tell "still going" from
 "died here". Pass `allow_partial_tail=True` once you have established
 which.
 
+### Do not touch the checkout a run is reading
+
+If the run is executing out of a git checkout, leave that checkout
+alone until it finishes. Committing to it, staging into it, or merely
+dropping a scratch file beside it will fail the run, and by design: the
+HRRR hierarchy stage samples `git status --short` when it publishes and
+refuses a tree with anything uncommitted in it —
+`public HRRR hierarchy requires a completely clean source tree` —
+because a bundle stamped with a commit it was not actually built from
+is a provenance claim that is false. `git status --short` reports
+untracked files too, so an editor swap file is enough to do it.
+
+Nothing about this is specific to moving nests; it is just easy to hit
+on the prepared HRRR route, where the hierarchy stage runs minutes into
+a run rather than at the start. Work in a second worktree, or run from
+an installed package — an install has no worktree to dirty, and its
+identity comes from the sealed distribution manifest or from pip's own
+`RECORD`, neither of which an edit elsewhere on the box can move.
+
 ---
 
 ## Nothing silent: `automatic_resolutions`
@@ -496,18 +593,23 @@ Each prints exactly one JSON document to stdout and runs nothing.
 
 **`--resolve PLAN.json`** → `gpuwm.run-plan.resolved.v1`. The fully
 resolved configuration (the objects the model will actually run, not a
-re-read of the TOML), `automatic_resolutions`, and any warnings the load
-produced. This is the "what will this do?" answer, and it creates
-nothing on disk.
+re-read of the TOML), `automatic_resolutions`, `moving_nest`, and any
+warnings the load produced. This is the "what will this do?" answer, and
+it creates nothing on disk. It is also where a plan that cannot run is
+refused — a moving nest on a chain whose preparation cannot feed one is
+rejected here, from the config alone, rather than after the fetch.
 
 **`--estimate PLAN.json`** → `gpuwm.run-plan.estimate.v1`. VRAM from
 `gpuwm.core.preflight`'s own itemization — the arithmetic `gpuwm check`
 reports, on the CPU, with no CUDA context. Output-frame counts per
-domain, which are exact. Where this package has no measured number
-(bytes per frame, download size, wall time for an arbitrary
-configuration) the field is `null` **with its `basis` stated**. A front
-end showing an invented duration would be showing gpuwm's name on a
-number gpuwm never measured.
+domain, which are exact. A `corridor` block sizing the statics corridor
+a moving nest's preparation will seal (disk and host; zero VRAM), from
+the corridor module's own arithmetic rather than an estimate that
+merely agrees with it. Where this package has no measured number (bytes
+per frame, download size, wall time for an arbitrary configuration) the
+field is `null` **with its `basis` stated**. A front end showing an
+invented duration would be showing gpuwm's name on a number gpuwm never
+measured.
 
 **`--catalog`** → `gpuwm.run-plan.catalog.v1`. The renderer's product
 catalog — what may go in `render_products`. Asked of the renderer, never
@@ -580,17 +682,14 @@ against the tree runner's own table) and binds its digest for
 `gpuwm-prepared-tree-forecast`. The estimate is tree-aware
 (`peak_envelope_bytes` beside the pool request) and `model_progress`
 carries a per-domain clock list when the tree has more than one domain.
-What remains unreachable:
-
-**Multi-domain HRRR.** Needs a third stage
-(`python -m gpuwm.hrrr_hierarchy_direct`) between the preparation and
-the forecast, and the tree runner rather than the single-domain one.
-Refused with that named.
-
-The enabling seams for that are already in place: both
-prepared runners take `observer=` on `run_*` and on `main()`, and
-`PerDomainWrfoutWriters.attach_progress_callback` binds the output hook
-late. What is missing is the chain, not the observability.
+**Multi-domain HRRR** runs as well, on the four-stage chain described
+under Routes. **A moving nest on a nested HRRR tree** runs too, as of
+the corridor emission on `gpuwm.hrrr_hierarchy_direct`: the tree runner
+was always source-agnostic about relocation — it wants a sealed statics
+corridor and does not care which preparation sealed it — and what was
+missing was purely that nothing on the HRRR path wrote one. It was a
+preparation-side change, and that is where it was made; run-plan's part
+was to stop refusing and to compose the flag on the right stage.
 
 ---
 

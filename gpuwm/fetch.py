@@ -2077,6 +2077,7 @@ def author_gfs_front_door_manifest(
     try:
         from gpuwm.experiment import load_experiment
         from gpuwm.physics_compat import identify_single_domain_profile
+        from gpuwm.static.corridor import config_declares_follow_source
 
         experiment = load_experiment(Path(experiment_config))
         matched = identify_single_domain_profile(experiment.root.run)
@@ -2084,12 +2085,10 @@ def author_gfs_front_door_manifest(
             profile_arg = f" --physics-profile {matched}"
         # A config that declares a [relocation] follow source needs the
         # sealed statics corridor prepared, or the tree runner refuses
-        # the very bundle this command builds.  Same predicate `gpuwm
-        # go` derives its prepare stage from, so the pasted line and
-        # the driven line cannot drift apart on it.
-        if experiment.relocation.enabled and (
-                experiment.relocation.follow is not None
-                or experiment.relocation.moves):
+        # the very bundle this command builds.  The predicate itself
+        # lives in the corridor module, so the pasted line, `gpuwm go`'s
+        # driven line and run-plan's refusal cannot drift apart on it.
+        if config_declares_follow_source(experiment):
             corridor_arg = " --statics-corridor"
     except Exception:
         # A config this process cannot load is not a reason to withhold

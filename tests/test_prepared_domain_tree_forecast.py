@@ -801,37 +801,96 @@ def _preflight(prepared, receipt, config):
     )
 
 
+#: The corridor refusal matrix runs against BOTH hierarchy documents.
+#:
+#: ``_synthetic_prepared_tree`` writes the HRRR shape -- ``receipt.json``
+#: carrying ``gpuwm-native-hrrr-hierarchy-direct-v1`` -- and until the
+#: HRRR chain could seal a corridor these cases only ever proved the
+#: runner's behaviour against a document no corridor-bearing bundle
+#: actually used.  Now both chains emit, so both shapes are exercised:
+#: the corridor is read out of whichever document matched the pinned
+#: digest, and no branch of this preflight may key on which one it was.
+_DOCUMENTS = ("hrrr", "gfs")
+
+
+def _as_document(prepared: Path, receipt: Path, source: str) -> Path:
+    """Re-shape the prepared bundle's top document for ``source``.
+
+    Only the envelope changes -- filename, schema, status and how the
+    initialization time is spelled.  ``hierarchy-artifacts/`` is written
+    by one artifact writer for every source and is untouched, which is
+    exactly why the corridor lives under it.
+    """
+    if source == "hrrr":
+        return receipt
+    preparation = json.loads(receipt.read_text(encoding="utf-8"))
+    proof = {
+        "schema": "gpuwm-gfs-native-hierarchy-proof-v2",
+        "status": "READY_NOT_YET_STOCK_WRF_GATED",
+        "forcing_times": [preparation["valid_time"]],
+        "domain_count": preparation["domain_count"],
+        "forcing_hours": preparation["forcing_hours"],
+        "artifact_receipt": preparation["artifact_receipt"],
+    }
+    if "statics_corridor" in preparation:
+        proof["statics_corridor"] = preparation["statics_corridor"]
+    receipt.unlink()
+    path = prepared / "proof.json"
+    path.write_text(json.dumps(proof), encoding="utf-8")
+    return path
+
+
+def _bind_corridor(receipt: Path, corridor_set) -> None:
+    preparation = json.loads(receipt.read_text(encoding="utf-8"))
+    preparation["statics_corridor"] = corridor_set
+    receipt.write_text(json.dumps(preparation), encoding="utf-8")
+
+
+_D02_CORRIDOR_SET = {
+    "schema": "gpuwm-statics-corridor-set-v1",
+    "status": "READY",
+    "domains": {"d02": {"cache": {"path": "d02.npz", "sha256": "e" * 64}}},
+}
+
+
+@pytest.mark.parametrize("source", _DOCUMENTS)
 def test_follow_source_without_a_corridor_refuses_with_the_remedy(
-        tmp_path, monkeypatch):
-    """The corridor-less refusal survives, and now names its remedy."""
+        tmp_path, monkeypatch, source):
+    """The corridor-less refusal survives, and names its remedy.
+
+    Same sentence whichever chain prepared the bundle: the remedy is a
+    flag both preparation doors now spell identically.
+    """
 
     prepared, receipt, config = _synthetic_prepared_tree(tmp_path, monkeypatch)
     _with_relocation(config, _RELOCATION_FOLLOW_TOML)
+    document = _as_document(prepared, receipt, source)
     with pytest.raises(ValueError) as excinfo:
-        _preflight(prepared, receipt, config)
+        _preflight(prepared, document, config)
     message = str(excinfo.value)
     assert "cannot rebuild a relocated child's statics" in message
     assert "--statics-corridor" in message
     assert "gpuwm run" in message
 
 
+@pytest.mark.parametrize("source", _DOCUMENTS)
 def test_follow_source_with_an_uncovered_child_names_the_coverage(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, source):
     prepared, receipt, config = _synthetic_prepared_tree(tmp_path, monkeypatch)
     _with_relocation(config, _RELOCATION_FOLLOW_TOML)
-    preparation = json.loads(receipt.read_text(encoding="utf-8"))
-    preparation["statics_corridor"] = {
+    _bind_corridor(receipt, {
         "schema": "gpuwm-statics-corridor-set-v1",
         "status": "READY",
         "domains": {"d09": {"cache": {"path": "d09.npz"}}},
-    }
-    receipt.write_text(json.dumps(preparation), encoding="utf-8")
+    })
+    document = _as_document(prepared, receipt, source)
     with pytest.raises(ValueError, match=r"covers only \['d09'\]"):
-        _preflight(prepared, receipt, config)
+        _preflight(prepared, document, config)
 
 
+@pytest.mark.parametrize("source", _DOCUMENTS)
 def test_follow_source_with_a_verified_corridor_is_accepted(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, source):
     """Corridor present and verified: the preflight resolves a runnable
     plan carrying the loaded corridor, through the real loader seam."""
 
@@ -839,15 +898,8 @@ def test_follow_source_with_a_verified_corridor_is_accepted(
 
     prepared, receipt, config = _synthetic_prepared_tree(tmp_path, monkeypatch)
     _with_relocation(config, _RELOCATION_FOLLOW_TOML)
-    corridor_set = {
-        "schema": "gpuwm-statics-corridor-set-v1",
-        "status": "READY",
-        "domains": {"d02": {"cache": {"path": "d02.npz",
-                                      "sha256": "e" * 64}}},
-    }
-    preparation = json.loads(receipt.read_text(encoding="utf-8"))
-    preparation["statics_corridor"] = corridor_set
-    receipt.write_text(json.dumps(preparation), encoding="utf-8")
+    _bind_corridor(receipt, _D02_CORRIDOR_SET)
+    document = _as_document(prepared, receipt, source)
 
     seen = {}
     stub = object()
@@ -862,19 +914,23 @@ def test_follow_source_with_a_verified_corridor_is_accepted(
 
     monkeypatch.setattr(corridor_module, "load_child_statics_corridor",
                         fake_load)
-    inputs = _preflight(prepared, receipt, config)
+    inputs = _preflight(prepared, document, config)
+    assert inputs.source == source
     assert inputs.statics_corridor is stub
     assert seen["grid_id"] == 2 and seen["child"] == 2
     assert seen["parent_nx"] == 100
-    assert seen["expected"] == corridor_set
+    assert seen["expected"] == _D02_CORRIDOR_SET
+    # The corridor sits at the same place in both bundles, because the
+    # artifact writer that makes hierarchy-artifacts/ is one writer.
     assert seen["directory"] == (
         prepared / "hierarchy-artifacts" / "statics-corridor")
     assert inputs.statics_corridor_cache_path == (
         prepared / "hierarchy-artifacts" / "statics-corridor" / "d02.npz")
 
 
+@pytest.mark.parametrize("source", _DOCUMENTS)
 def test_a_failed_corridor_verification_refuses_never_runs_static(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, source):
     """A corridor that fails digest verification is a LOUD refusal on
     the preflight path -- the run never degrades to a static nest."""
 
@@ -882,14 +938,8 @@ def test_a_failed_corridor_verification_refuses_never_runs_static(
 
     prepared, receipt, config = _synthetic_prepared_tree(tmp_path, monkeypatch)
     _with_relocation(config, _RELOCATION_FOLLOW_TOML)
-    preparation = json.loads(receipt.read_text(encoding="utf-8"))
-    preparation["statics_corridor"] = {
-        "schema": "gpuwm-statics-corridor-set-v1",
-        "status": "READY",
-        "domains": {"d02": {"cache": {"path": "d02.npz",
-                                      "sha256": "e" * 64}}},
-    }
-    receipt.write_text(json.dumps(preparation), encoding="utf-8")
+    _bind_corridor(receipt, _D02_CORRIDOR_SET)
+    document = _as_document(prepared, receipt, source)
 
     def refusing_load(directory, **_kwargs):
         raise corridor_module.CorridorRefusal(
@@ -898,7 +948,23 @@ def test_a_failed_corridor_verification_refuses_never_runs_static(
     monkeypatch.setattr(corridor_module, "load_child_statics_corridor",
                         refusing_load)
     with pytest.raises(ValueError, match="digest mismatch"):
-        _preflight(prepared, receipt, config)
+        _preflight(prepared, document, config)
+
+
+def test_no_corridor_branch_of_the_preflight_reads_the_source():
+    """Source-agnostic by construction, not by coincidence.
+
+    The parametrized cases above show the two documents behaving alike
+    today.  This is the reason they must: the resolved source is carried
+    on the inputs for reporting, and nothing between the relocation gate
+    and the corridor load consults it.
+    """
+    import inspect
+
+    source = inspect.getsource(runner.preflight_prepared_tree)
+    gate = source.index("relocation_follow")
+    load = source.index("load_child_statics_corridor")
+    assert "prepared_source" not in source[gate:load]
 
 
 def test_bounds_only_relocation_still_passes_without_a_corridor(

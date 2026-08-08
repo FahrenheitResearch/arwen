@@ -651,6 +651,239 @@ def _run_option(key: str, value: object, base: Path) -> Any:
     raise PlanError(f"{label} is not a run option this build understands")
 
 
+# ---------------------------------------------------------------------------
+# Moving nests: which chain can feed one, and at what price
+# ---------------------------------------------------------------------------
+
+#: How a ``[relocation]`` follow source gets its per-move statics on
+#: each chain this front door can dispatch to.
+#:
+#: A moving nest needs child-resolution statics for a footprint nobody
+#: knew about at preparation time.  There are exactly two honest ways to
+#: have them, and one way to not have them:
+#:
+#: ``"case_data_ingest"``   the route holds the geography source for the
+#:                          whole run and rebuilds each footprint at
+#:                          move time.  Nothing to prepare, nothing to
+#:                          price.
+#: ``"statics_corridor"``   the preparation seals child-resolution
+#:                          statics over the whole parent extent and the
+#:                          tree runner crops them.  Run-plan's prepare
+#:                          stage carries ``--statics-corridor``,
+#:                          derived from the very same predicate that
+#:                          indexes this table.
+#: ``None``                 the chain's preparation emits neither, so a
+#:                          follow config is REFUSED at resolve time.
+#:                          Without this entry the run reaches the tree
+#:                          runner's preflight instead -- after the
+#:                          fetch and both preparation stages, which is
+#:                          minutes of work to arrive at a refusal that
+#:                          was knowable from the config alone.
+#:
+#: Every chain :func:`_chain_key` can return must appear here; a test
+#: fails if one does not, so a chain cannot be added without answering
+#: "and where does a moving nest get its statics on it?".
+_FOLLOW_STATICS_DELIVERY: dict[str, str | None] = {
+    "experiment": "case_data_ingest",
+    "prepared:go": "statics_corridor",
+    # Was ``None`` until the HRRR chain learned to seal one.  Its
+    # corridor comes out of the stage that builds the children and holds
+    # the GEOG root (``gpuwm.hrrr_hierarchy_direct --statics-corridor``)
+    # rather than out of rw-wps, which is not on this path at all -- but
+    # it is the same corridor module, the same sealed artifact and the
+    # same digest relay, so the tree runner cannot tell the two apart
+    # and this table says the same word for both.
+    "prepared:hrrr": "statics_corridor",
+}
+
+
+#: Which stage of each corridor-sealing chain carries the flag.  Named
+#: in the resolution note because "the prepare stage" is the wrong
+#: sentence on HRRR -- its root preparer seals no corridor and would
+#: refuse the flag -- and a reader who went looking for it there would
+#: conclude the feature was not wired.  A completeness test requires an
+#: entry for every chain whose delivery is ``statics_corridor``.
+_CORRIDOR_STAGE = {
+    "prepared:go": "the rw-wps prepare stage (gpuwm.source_cli)",
+    "prepared:hrrr": "the hierarchy stage (gpuwm.hrrr_hierarchy_direct) "
+                     "-- the stage that builds the children and holds "
+                     "the geography root --",
+}
+
+
+def _chain_key(route: str, config_source: str | None) -> str:
+    """Which chain this plan dispatches to.
+
+    The prepared route is two chains wearing one name:
+    :func:`_hrrr_chain` drives the HRRR tools, everything else goes to
+    ``gpuwm go``'s rw-wps chain.  :func:`_execute_prepared_route`
+    branches on this function rather than on its own copy of the test,
+    so the chain that RUNS and the chain the refusal above was decided
+    for are the same chain by construction.
+    """
+    if route != "prepared":
+        return route
+    return ("prepared:hrrr" if (config_source or "").lower() == "hrrr"
+            else "prepared:go")
+
+
+def follow_statics_decision(exp, *, chain: str) -> dict[str, Any] | None:
+    """How a moving nest gets its statics on ``chain``, or ``None``.
+
+    ``None`` means the config declares no moving nest, which is most of
+    them: a plan that is not relocating anything is not priced, not
+    annotated, and its composed commands are untouched.
+
+    Otherwise a record stating the delivery, whether the preparation
+    must seal a corridor, and -- when the chain cannot feed a moving
+    nest at all -- the refusal to raise.
+    """
+    from gpuwm.static.corridor import config_declares_follow_source
+
+    if not config_declares_follow_source(exp):
+        return None
+    if chain not in _FOLLOW_STATICS_DELIVERY:
+        raise PlanError(
+            f"run-plan cannot say how a [relocation] follow source is fed "
+            f"on chain {chain!r}: it is not in the follow-statics "
+            "delivery table, and guessing would either refuse a runnable "
+            "config or prepare a bundle its own forecast stage rejects")
+    delivery = _FOLLOW_STATICS_DELIVERY[chain]
+    grid_id = int(exp.relocation.grid_id)
+    return {
+        "chain": chain,
+        "delivery": delivery,
+        "relocation_grid_id": grid_id,
+        "statics_corridor": delivery == "statics_corridor",
+        "refusal": (None if delivery is not None
+                    else _follow_unsupported_refusal(chain, grid_id)),
+    }
+
+
+#: What ``automatic_resolutions`` says about each supported delivery.
+#: A caller reads this to know, BEFORE launching, whether the
+#: preparation it is about to pay for will seal a corridor.
+_CORRIDOR_RESOLUTION_NOTE = {
+    "statics_corridor":
+        "the config declares a [relocation] follow source on d{grid_id:02d}, "
+        "so {stage} is composed with --statics-corridor and the "
+        "bundle will carry sealed child-resolution statics over each "
+        "child's whole parent extent; without it "
+        "gpuwm-prepared-tree-forecast refuses this config at its "
+        "preflight.  Derived from the config, not from a run option: "
+        "there is no way to ask for a moving nest and separately forget "
+        "the statics it moves onto.  See --estimate for the size.",
+    "case_data_ingest":
+        "the config declares a [relocation] follow source on d{grid_id:02d}, "
+        "and this route holds the geography source for the whole run, so "
+        "each footprint's statics are rebuilt at move time.  No corridor "
+        "is prepared and none is needed",
+}
+
+
+#: Why each chain with no delivery cannot feed a moving nest, in its
+#: own words.  A refusal that named another chain's tools would send a
+#: reader to the wrong file, so the chain-specific half of the sentence
+#: lives beside the chain rather than inside a generic formatter; the
+#: completeness test requires an entry for every ``None`` delivery.
+#:
+#: EMPTY, and that is the current truth rather than a dropped feature:
+#: every chain this front door dispatches to can now feed a moving nest.
+#: ``prepared:hrrr`` was the one entry, and it went when its hierarchy
+#: stage learned to seal a corridor.  The machinery stays because a
+#: chain added tomorrow may not be able to, and the generic sentence in
+#: :func:`_follow_unsupported_refusal` would then be its stand-in until
+#: someone writes it a better one.
+_FOLLOW_UNSUPPORTED_DETAIL: dict[str, str] = {}
+
+
+def _follow_unsupported_refusal(chain: str, grid_id: int) -> str:
+    """Why this chain cannot run a moving nest, and what will."""
+
+    detail = _FOLLOW_UNSUPPORTED_DETAIL.get(
+        chain, "its preparation seals no child-resolution statics "
+               "corridor and it holds no geography source at run time")
+    return (
+        f"this plan's config declares a [relocation] follow source on "
+        f"d{grid_id:02d}, and the {chain!r} chain cannot supply the "
+        f"statics a moving nest needs: {detail} -- so it is refused "
+        "here instead, before the fetch.\n"
+        "  remedy: run this config on a prepared chain that seals a "
+        "corridor -- gfs (rw-wps) or hrrr (the hierarchy stage) -- "
+        "either of which run-plan composes --statics-corridor for "
+        "itself, from this same [relocation] predicate; or run it on "
+        "the `experiment` route with a "
+        "[case_data] block, which holds the geography source and "
+        "rebuilds each footprint's statics at move time; or drop the "
+        "follow source for a bounds-only [relocation], which does not "
+        "move the nest and needs neither.")
+
+
+def corridor_estimate(exp, decision: Mapping[str, Any] | None
+                      ) -> dict[str, Any]:
+    """What the sealed corridor will cost, priced before it is built.
+
+    The corridor is the one preparation artifact whose size a caller
+    cannot infer from the domain sizes it already has -- it is
+    parent-extent at CHILD resolution, so a modest nest on a large
+    parent is hundreds of megabytes.  A front end that launches a
+    moving-nest plan without showing that number is hiding the largest
+    single thing the preparation will write.
+
+    Priced through the preparation's OWN child selection
+    (:func:`gpuwm.static.corridor.validated_corridor_selection`) and the
+    corridor module's own arithmetic
+    (:func:`gpuwm.static.corridor.corridor_cost`), so the figure shown
+    before the run and the artifact written during it come from one
+    source rather than from an estimate that agrees with it today.
+
+    Chain-agnostic by construction: nothing here reads the chain, only
+    the experiment's own domain tree, so the same arithmetic prices a
+    GFS corridor and an HRRR one.  The ``decision`` is consulted for
+    WHETHER a corridor is sealed, never for how big it is.
+    """
+    if decision is None or not decision["statics_corridor"]:
+        return {
+            "domains": [], "host_bytes": 0, "host_gib": 0.0,
+            "basis": ("this config declares no [relocation] follow "
+                      "source, so no statics corridor is prepared"
+                      if decision is None else
+                      "a moving nest on this chain is fed by "
+                      f"{decision['delivery']}, which seals no corridor"),
+        }
+    from gpuwm.static.corridor import (corridor_cost,
+                                       validated_corridor_selection)
+
+    # `--statics-corridor` is passed bare, which the preparation reads
+    # as "every child domain" -- so every child is priced, not only the
+    # one [relocation] names.
+    by_id = {int(domain.grid_id): domain for domain in exp.domains}
+    domains = []
+    for grid_id in validated_corridor_selection(exp, "all"):
+        child = by_id[grid_id]
+        cost = corridor_cost(child, by_id[int(child.parent_id)].run)
+        cost["domain"] = f"d{grid_id:02d}"
+        domains.append(cost)
+    total = sum(entry["host_bytes"] for entry in domains)
+    return {
+        "domains": domains,
+        "host_bytes": int(total),
+        "host_gib": round(total / 1024 ** 3, 4),
+        "basis": (
+            "each child's corridor is its parent's full extent at the "
+            "child's resolution (parent_nx*ratio x parent_ny*ratio "
+            "cells) carrying the native static contract's "
+            f"{domains[0]['planes_per_cell']} float64 planes, so "
+            f"{domains[0]['bytes_per_cell']} bytes per corridor cell; "
+            "counted from the same field inventory the build is "
+            "shape-checked against.  DISK and HOST are the same figure "
+            "to within container headers: the cache is an uncompressed "
+            "NPZ of exactly these arrays.  No GPU residency -- a "
+            "corridor is cropped on the host, so the VRAM estimate "
+            "above is unchanged by it."),
+    }
+
+
 def _absolute(value: object, base: Path, label: str) -> Path:
     text = _nonempty_string(value, label)
     path = Path(text)
@@ -1443,6 +1676,31 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
                 "in run-manifest.json is the pid doing the model work "
                 "and the caller owns restart policy"})
 
+    # A moving nest, decided and REPORTED before anything is fetched.
+    # The chain is read off the config's own [fetch] table, which is
+    # what `_execute_prepared_route` dispatches on, so the chain judged
+    # here is the chain that runs.  A plan with no follow source adds
+    # nothing to this document.
+    decision = follow_statics_decision(
+        exp, chain=_chain_key(plan.route,
+                              (raw.get("fetch") or {}).get("source")))
+    if decision is not None:
+        if decision["refusal"] is not None:
+            raise PlanError(decision["refusal"])
+        # Published without the refusal slot: reaching here means there
+        # was none, and a null field inviting a caller to test it would
+        # imply this document ever carries a live one.
+        decision = {key: value for key, value in decision.items()
+                    if key != "refusal"}
+        resolutions.append({
+            "scope": "preparation", "key": "statics_corridor",
+            "value": decision["statics_corridor"],
+            "basis": "relocation_follow",
+            "note": _CORRIDOR_RESOLUTION_NOTE[decision["delivery"]].format(
+                grid_id=decision["relocation_grid_id"],
+                stage=_CORRIDOR_STAGE.get(decision["chain"],
+                                          "the preparation"))})
+
     return {
         "schema": RESOLVE_SCHEMA,
         "plan": {
@@ -1461,6 +1719,12 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
         # a front end shows it, and a reader can check what the wizard
         # decided on their behalf before anything runs.
         "generated_config": generated_text,
+        # The moving-nest decision as a record, beside the sentence
+        # `automatic_resolutions` carries: a front end that wants to
+        # draw a corridor toggle reads this, and one that just prints
+        # the resolutions gets the same fact in prose.  ``null`` when
+        # the config moves no nest.
+        "moving_nest": decision,
         "configuration": _config_snapshot(exp, data),
         "declared_inputs": inputs,
         "inputs_present": all(entry["present"] for entry in inputs),
@@ -1773,10 +2037,17 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
         # Everything above -- fetch, and the root preparation this
         # branch shares -- is identical, which is why the split is here
         # and not at the top of the function.
+        from gpuwm.static.corridor import config_declares_follow_source
+
         tree_root = _hrrr_hierarchy_stage(
             prep_root=prep_root, inputs=inputs, hints=hints,
             geog_root=geog_root, manifest=manifest, cycle=cycle,
-            run_dir=run_dir, observer=observer)
+            run_dir=run_dir, observer=observer,
+            # THE predicate, not a copy of it: the same function
+            # `follow_statics_decision` consulted at resolve time, so a
+            # plan reported as corridor-bearing seals one and a plan
+            # reported as still does not.
+            statics_corridor=config_declares_follow_source(exp))
         _hrrr_tree_forecast(
             tree_root=tree_root, config_path=config_path,
             forecast_dir=forecast_dir, observer=observer)
@@ -1863,7 +2134,8 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
 def _hrrr_hierarchy_stage(*, prep_root: Path, inputs: Mapping[str, Path],
                           hints: Mapping[str, Any], geog_root,
                           manifest: Path, cycle: str, run_dir: Path,
-                          observer: RunObserver) -> Path:
+                          observer: RunObserver,
+                          statics_corridor: bool = False) -> Path:
     """Build d02..dNN from the sealed root preparation.
 
     The stage the GFS tree does not have.  rw-wps is not on this path at
@@ -1877,6 +2149,15 @@ def _hrrr_hierarchy_stage(*, prep_root: Path, inputs: Mapping[str, Path],
     either neighbour: two tools that take *almost* the same flags are
     exactly where a shared builder starts passing one of them something
     it refuses.
+
+    ``statics_corridor`` adds the tenth, and it is where the HRRR chain
+    answers a moving nest.  On the GFS chain the corridor flag rides the
+    rw-wps prepare stage; here the root preparer knows nothing of the
+    children, so the flag belongs to THIS stage -- the one holding
+    ``--geog-root`` and the child geometries.  The caller derives the
+    boolean from the corridor module's own follow predicate, so the
+    plan that was resolved as corridor-bearing is the plan that seals
+    one.
     """
 
     from gpuwm.fetch import sha256_file
@@ -1897,6 +2178,11 @@ def _hrrr_hierarchy_stage(*, prep_root: Path, inputs: Mapping[str, Path],
         "--cycle", cycle,
         "--output-root", str(tree_root),
     ]
+    if statics_corridor:
+        # Bare, exactly as the GFS chain passes it: the preparation
+        # reads that as "every child domain", which is also what
+        # corridor_estimate priced for this plan.
+        command.append("--statics-corridor")
     # Only when nonzero.  This stage raises on a negative lead, and
     # raises again if a lead is passed beside the deprecated
     # --valid-time; passing a bare 0 is legal but says nothing, and the
@@ -2045,8 +2331,13 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
     # table rather than from the plan, so a config.path plan lands on the
     # same chain its emission targeted.
     raw = tomllib.load(io.BytesIO(Path(config_path).read_bytes()))
-    source = str((raw.get("fetch") or {}).get("source", "")).lower()
-    if source == "hrrr":
+    # Through _chain_key, not a second copy of the same test: the
+    # follow-statics refusal in resolve_plan was decided for whichever
+    # chain that function names, and this is where the naming becomes a
+    # dispatch.  One function, so a config cannot be judged as one chain
+    # and then run as the other.
+    if _chain_key(plan.route,
+                  (raw.get("fetch") or {}).get("source")) == "prepared:hrrr":
         return _hrrr_chain(plan, config_path=Path(config_path), exp=exp,
                            observer=observer, run_dir=plan.run_dir)
 
@@ -2553,6 +2844,11 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
 
     resolution, exp, _data = resolve_plan(plan, require_inputs=False)
     estimate = estimate_experiment(exp)
+    # Taken from the resolution rather than re-derived, so the corridor
+    # a caller was told about and the corridor it is quoted a price for
+    # are one decision.  A chain that cannot feed a moving nest has
+    # already refused inside resolve_plan, above.
+    corridor = corridor_estimate(exp, resolution["moving_nest"])
     frames = []
     for domain in exp.domains:
         interval = float(domain.history_interval_s)
@@ -2597,6 +2893,10 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
                      "not measured by this package, so no byte figure "
                      "is reported rather than an invented one",
         },
+        # The preparation's largest single artifact when a nest moves,
+        # and absent-by-arithmetic when none does.  Disk AND host: the
+        # runner loads the corridor whole at preflight.
+        "corridor": corridor,
         "download": {
             "bytes": None,
             "basis": ("no [fetch] in this plan" if plan.fetch_arguments
@@ -2931,10 +3231,10 @@ __all__ = [
     "PLAN_SCHEMA", "PROBE_SCHEMA", "RESOLVE_SCHEMA", "ROUTES", "STAGES",
     "GENERATED_CONFIG_NAME",
     "EventStream", "PlanError", "Route", "RunObserver", "RunPlan",
-    "build_plan", "collect_warnings", "declared_inputs",
-    "domain_size_floor",
-    "estimate_plan", "execute_plan", "generate_intent_config",
-    "render_catalog",
+    "build_plan", "collect_warnings", "corridor_estimate",
+    "declared_inputs", "domain_size_floor",
+    "estimate_plan", "execute_plan", "follow_statics_decision",
+    "generate_intent_config", "render_catalog",
     "intent_arguments", "load_plan", "probe_environment", "read_events",
     "register_cli", "resolve_fetch_cycle", "resolve_plan",
     "run_plan_main", "write_manifest",

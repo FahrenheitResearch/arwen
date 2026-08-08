@@ -104,6 +104,27 @@ def _canonical(value) -> bytes:
                       ensure_ascii=True, allow_nan=False).encode("utf-8")
 
 
+def config_declares_follow_source(exp) -> bool:
+    """Does this experiment move a nest during the run?
+
+    THE predicate.  Every door that has to react to a moving nest asks
+    this one function: ``gpuwm go``'s prepare stage and the printed
+    ``rw-wps`` line both derive ``--statics-corridor`` from it, and
+    ``gpuwm run-plan`` decides from it whether the chain it is about to
+    dispatch can supply a moving nest's statics at all.  Three readings
+    of the same sentence used to be three copies of it; a config that
+    one door thought was following and another did not would prepare a
+    bundle its own forecast stage refuses.
+
+    Bounds-only ``[relocation]`` (enabled, but naming neither a follow
+    source nor an explicit itinerary) is not a moving nest: it
+    constrains where a nest may sit, and the nest stays put.
+    """
+    relocation = exp.relocation
+    return bool(relocation.enabled
+                and (relocation.follow is not None or relocation.moves))
+
+
 # ---------------------------------------------------------------------------
 # Geometry: where the corridor sits on the child lattice
 # ---------------------------------------------------------------------------
@@ -138,6 +159,65 @@ def corridor_geometry(child_dc, parent_run) -> dict[str, object]:
         # grid to the corridor origin (parent cell 1).
         "origin_translation_child_cells": [
             (1 - ref_i) * ratio, (1 - ref_j) * ratio],
+    }
+
+
+def _planes_per_cell() -> int:
+    """Float64 planes one corridor cell carries.
+
+    Counted off the native static contract itself -- the SAME inventory
+    :func:`_validate_corridor_fields` shape-checks a built corridor
+    against -- rather than restated as a literal, so a field added to
+    the contract reprices the corridor instead of silently making the
+    quoted size wrong.
+    """
+    planes = 0
+    for name in NATIVE_STATIC_REQUIRED:
+        if name in _NATIVE_STATIC_CATEGORY_COUNT:
+            planes += int(_NATIVE_STATIC_CATEGORY_COUNT[name])
+        elif name in _NATIVE_STATIC_MONTHLY:
+            planes += 12
+        else:
+            planes += 1
+    return planes
+
+
+#: Float64 planes, and therefore bytes, one corridor cell costs.  The
+#: build's own dtype is float64 (``_validate_corridor_fields`` refuses
+#: anything else), so the itemsize is asked of numpy rather than
+#: assumed to be 8.
+CORRIDOR_PLANES_PER_CELL = _planes_per_cell()
+CORRIDOR_BYTES_PER_CELL = (CORRIDOR_PLANES_PER_CELL
+                           * int(np.dtype(np.float64).itemsize))
+
+
+def corridor_cost(child_dc, parent_run) -> dict[str, int]:
+    """What one child's corridor will cost, WITHOUT building it.
+
+    Pure arithmetic on the geometry and the field inventory: no GEOG
+    source, no ``build_static`` call, nothing on disk.  That is what
+    lets a front door price a corridor before the preparation runs --
+    the figure a caller sees ahead of launch and the ``host_bytes`` the
+    sealed receipt reports afterwards come out of the same two facts
+    (cell count and plane count), and
+    ``tests/test_statics_corridor.py`` holds them equal against a real
+    build rather than against each other.
+
+    ``host_bytes`` is the loaded footprint AND, to within the container
+    headers, the on-disk one: the cache is an uncompressed
+    (``ZIP_STORED``) NPZ of exactly these arrays.
+    """
+    geometry = corridor_geometry(child_dc, parent_run)
+    cells = int(geometry["corridor_nx"]) * int(geometry["corridor_ny"])
+    return {
+        "grid_id": int(geometry["grid_id"]),
+        "parent_id": int(geometry["parent_id"]),
+        "corridor_nx": int(geometry["corridor_nx"]),
+        "corridor_ny": int(geometry["corridor_ny"]),
+        "cells": cells,
+        "planes_per_cell": CORRIDOR_PLANES_PER_CELL,
+        "bytes_per_cell": CORRIDOR_BYTES_PER_CELL,
+        "host_bytes": cells * CORRIDOR_BYTES_PER_CELL,
     }
 
 
@@ -271,6 +351,89 @@ def build_child_statics_corridor(*, child_dc, parent_run, reference_grid,
     }
     return CorridorBuild(grid_id=int(child_dc.grid_id), fields=fields,
                          entry=entry)
+
+
+def validated_corridor_selection(exp, statics_corridor) -> tuple[int, ...]:
+    """Resolve the corridor opt-in to an ordered tuple of child grid ids.
+
+    ``None`` selects nothing, ``"all"`` every child domain, and a
+    sequence exactly those children.  It lives here rather than beside
+    one chain's preparation because THREE readers need the same answer:
+    the GFS hierarchy join, the HRRR hierarchy stage, and
+    ``run-plan --estimate``, which prices what a bare flag will build.
+    A selection resolved one way at pricing time and another at
+    preparation time would quote a corridor set that is not the one
+    written.
+    """
+    if statics_corridor is None:
+        return ()
+    children = [int(domain.grid_id) for domain in exp.domains
+                if int(domain.parent_id) != 0]
+    if not children:
+        raise ValueError(
+            "statics_corridor was requested but this experiment has no "
+            "child domain; a corridor is child-resolution statics over a "
+            "parent, so a single-domain preparation has nothing to emit")
+    if isinstance(statics_corridor, str):
+        token = statics_corridor.strip().lower()
+        if token != "all":
+            raise ValueError(
+                f"statics_corridor accepts 'all' or child grid ids, got "
+                f"{statics_corridor!r}")
+        return tuple(children)
+    try:
+        requested = tuple(int(value) for value in statics_corridor)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"statics_corridor accepts 'all' or child grid ids, got "
+            f"{statics_corridor!r}") from exc
+    unknown = sorted(set(requested) - set(children))
+    if unknown:
+        raise ValueError(
+            f"statics_corridor names grid ids {unknown} that are not "
+            f"child domains of this experiment (children: {children})")
+    if len(set(requested)) != len(requested):
+        raise ValueError(
+            f"statics_corridor repeats grid ids: {list(requested)}")
+    return tuple(sorted(set(requested)))
+
+
+def emit_statics_corridor_set(*, exp, grids, static_catalog, directory,
+                              statics_corridor):
+    """Build and seal the selected children's corridors, or emit nothing.
+
+    THE emission.  Every preparation chain that can seal a corridor
+    calls this one function -- the GFS/ERA5 hierarchy join
+    (:func:`gpuwm.source_hierarchy
+    .initialize_and_export_regular_source_hierarchy`) and the HRRR
+    hierarchy stage (:func:`gpuwm.hrrr_hierarchy_direct
+    .prepare_hrrr_hierarchy`) -- rather than each walking its own
+    children and calling the builder itself.  The two chains reach it
+    from opposite ends of the codebase and their bundles are consumed by
+    ONE runner, so a forked emission loop would be two corridor formats
+    wearing one schema.
+
+    ``grids`` is positionally aligned with ``exp.domains``, which is the
+    convention both callers already hold for the reference grids they
+    pass to the artifact writer.  Returns the set receipt for the caller
+    to bind into its preparation document, or ``None`` when the
+    selection is empty -- in which case nothing is written and the
+    bundle is byte-for-byte what it would have been.
+    """
+    grid_ids = validated_corridor_selection(exp, statics_corridor)
+    if not grid_ids:
+        return None
+    index_by_id = {int(domain.grid_id): index
+                   for index, domain in enumerate(exp.domains)}
+    builds = []
+    for grid_id in grid_ids:
+        child = exp.domains[index_by_id[grid_id]]
+        parent_run = exp.domains[index_by_id[int(child.parent_id)]].run
+        builds.append(build_child_statics_corridor(
+            child_dc=child, parent_run=parent_run,
+            reference_grid=grids[index_by_id[grid_id]],
+            static_catalog=static_catalog))
+    return write_statics_corridor_set(Path(directory), builds)
 
 
 def _write_deterministic_npz(path: Path,
@@ -532,12 +695,15 @@ def corridor_footprint_statics_builder(corridor: ChildStaticsCorridor):
 
 
 __all__ = [
+    "CORRIDOR_BYTES_PER_CELL", "CORRIDOR_PLANES_PER_CELL",
     "CORRIDOR_REBUILT_STATICS", "CORRIDOR_STRIP_FILL_SOURCE",
     "ChildStaticsCorridor", "CorridorBuild", "CorridorRefusal",
     "STATICS_CORRIDOR_DIRNAME", "STATICS_CORRIDOR_FLAG",
     "STATICS_CORRIDOR_RECEIPT", "STATICS_CORRIDOR_SCHEMA",
     "STATICS_CORRIDOR_SET_SCHEMA", "build_child_statics_corridor",
+    "config_declares_follow_source", "corridor_cost",
     "corridor_footprint_statics_builder", "corridor_geometry",
-    "corridor_grid", "grid_identity_probes", "load_child_statics_corridor",
+    "corridor_grid", "emit_statics_corridor_set", "grid_identity_probes",
+    "load_child_statics_corridor", "validated_corridor_selection",
     "write_statics_corridor_set",
 ]

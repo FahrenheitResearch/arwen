@@ -694,11 +694,13 @@ def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
     the HRRR one was ever reached.
 
     Every value this emission knows is bound -- the four input files,
-    the cycle, the lead, the run length, the cadence, the profile.  What
-    is left as a placeholder is what cannot exist yet: the WPS_GEOG
-    root, which is the reader's install, and the sha256 of each stage's
-    own receipt, which does not exist until that stage has run and which
-    that stage prints.
+    the cycle, the lead, the run length, the cadence, the profile, and
+    ``--statics-corridor`` on the hierarchy stage when the config
+    declares a ``[relocation]`` follow source.  What is left as a
+    placeholder is what cannot exist yet: the WPS_GEOG root, which is
+    the reader's install, and the sha256 of each stage's own receipt,
+    which does not exist until that stage has run and which that stage
+    prints.
 
     **Every time printed here is the CYCLE, and the lead is printed
     beside it.**  Model time zero (cycle + K) is derived by each stage,
@@ -727,6 +729,17 @@ def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
     cadence = int(exp.domains[0].history_interval_s)
     profile_flag = (f"      --physics-profile {profile} \\\n"
                     if profile is not None else "")
+    # The hierarchy stage's corridor flag, on exactly the configs that
+    # need it.  Derived from the corridor module's own follow predicate
+    # -- the same function `gpuwm go`'s plan and run-plan's decision
+    # read -- so a config whose printed chain omits this flag is a
+    # config no door would have added it for.  A pasted chain that
+    # forgot it would prepare a bundle the last line of the same chain
+    # refuses.
+    from gpuwm.static.corridor import config_declares_follow_source
+
+    corridor_flag = ("      --statics-corridor \\\n"
+                     if config_declares_follow_source(exp) else "")
     prepare = (
         _guard_exports_block(profile)
         + "  python -m tools.prepare_hrrr_wrf \\\n"
@@ -817,6 +830,7 @@ def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
         "      --source-manifest-sha256 <printed by gpuwm fetch> \\\n"
         f"      --cycle {cycle_text} \\\n"
         + lead_flag
+        + corridor_flag
         + f"      --output-root {tree}\n"
         "  python -m gpuwm.prepared_domain_tree_forecast \\\n"
         f"      --prepared-root {tree} \\\n"

@@ -25,12 +25,16 @@ import pytest
 
 import gpuwm.static.corridor as corridor_module
 from gpuwm.static.build import GeogSelection, build_static
+from gpuwm.native_wrf_contract import NATIVE_STATIC_REQUIRED
 from gpuwm.static.corridor import (
+    CORRIDOR_BYTES_PER_CELL,
+    CORRIDOR_PLANES_PER_CELL,
     CORRIDOR_REBUILT_STATICS,
     ChildStaticsCorridor,
     CorridorRefusal,
     STATICS_CORRIDOR_RECEIPT,
     build_child_statics_corridor,
+    corridor_cost,
     corridor_footprint_statics_builder,
     corridor_geometry,
     corridor_grid,
@@ -210,6 +214,47 @@ def test_corridor_geometry_covers_the_whole_parent():
     # Every placement that keeps the child inside the parent crops
     # inside the corridor: (ip-1)*ratio + nx <= corridor_nx.
     assert (8 - 1) * 3 + 9 == geometry["corridor_nx"] - 3 + 3
+
+
+def test_the_quoted_price_equals_what_the_build_actually_costs(
+        corridor_build):
+    """``corridor_cost`` prices a corridor nobody has built yet.
+
+    ``gpuwm run-plan --estimate`` shows that figure to a caller BEFORE
+    the preparation runs, so it has to be the same number the sealed
+    receipt reports afterwards -- not close to it.  One side is
+    arithmetic on the geometry and the field inventory; the other is
+    measured off the built arrays.  They are held equal here against a
+    real build rather than against each other.
+    """
+    quoted = corridor_cost(_child_dc(), _parent_run())
+    entry = corridor_build.entry
+
+    assert quoted["cells"] == entry["cells"]
+    assert quoted["host_bytes"] == entry["host_bytes"]
+    assert quoted["corridor_nx"] == entry["corridor_nx"]
+    assert quoted["corridor_ny"] == entry["corridor_ny"]
+    # And the per-cell figure is the whole contract, not a subset that
+    # happens to sum correctly for this fixture's field list.
+    assert set(entry["fields"]) == set(NATIVE_STATIC_REQUIRED)
+    assert (quoted["host_bytes"]
+            == quoted["cells"] * CORRIDOR_BYTES_PER_CELL)
+
+
+def test_a_field_added_to_the_contract_reprices_the_corridor(monkeypatch):
+    """The price is counted off the contract, never restated.
+
+    A static field added to ``NATIVE_STATIC_REQUIRED`` enlarges every
+    corridor.  If the bytes-per-cell figure were a literal, the
+    estimate would keep quoting the old size and a caller would size a
+    disk for a corridor that no longer fits it.
+    """
+    import gpuwm.static.corridor as corridor_module
+
+    grown = tuple(NATIVE_STATIC_REQUIRED) + ("SOME_NEW_STATIC",)
+    monkeypatch.setattr(corridor_module, "NATIVE_STATIC_REQUIRED", grown)
+    assert (corridor_module._planes_per_cell()
+            == CORRIDOR_PLANES_PER_CELL + 1)
 
 
 def test_corridor_grid_is_the_reference_lattice():
@@ -399,24 +444,24 @@ def test_initializer_seam_requires_exactly_one_statics_source():
 
 
 def test_corridor_selection_validation():
-    from gpuwm.source_hierarchy import _validated_corridor_selection
+    from gpuwm.static.corridor import validated_corridor_selection
 
     exp = SimpleNamespace(domains=(
         SimpleNamespace(grid_id=1, parent_id=0),
         SimpleNamespace(grid_id=2, parent_id=1),
         SimpleNamespace(grid_id=3, parent_id=2),
     ))
-    assert _validated_corridor_selection(exp, None) == ()
-    assert _validated_corridor_selection(exp, "all") == (2, 3)
-    assert _validated_corridor_selection(exp, (3,)) == (3,)
+    assert validated_corridor_selection(exp, None) == ()
+    assert validated_corridor_selection(exp, "all") == (2, 3)
+    assert validated_corridor_selection(exp, (3,)) == (3,)
     with pytest.raises(ValueError, match="not child domains"):
-        _validated_corridor_selection(exp, (1,))
+        validated_corridor_selection(exp, (1,))
     with pytest.raises(ValueError, match="'all' or child grid ids"):
-        _validated_corridor_selection(exp, "some")
+        validated_corridor_selection(exp, "some")
     single = SimpleNamespace(domains=(
         SimpleNamespace(grid_id=1, parent_id=0),))
     with pytest.raises(ValueError, match="no child domain"):
-        _validated_corridor_selection(single, "all")
+        validated_corridor_selection(single, "all")
 
 
 # ---------------------------------------------------------------------------

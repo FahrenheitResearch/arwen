@@ -1,5 +1,102 @@
 # Changelog
 
+## 1.8.6 (2026-08-08)
+
+New:
+- Moving nests run on both prepared routes, driven from `gpuwm
+  run-plan`. 1.8.4 landed the statics corridor on `gpuwm go` and the
+  tree runner; what was left was the front door. The prepared GFS chain
+  already composed `--statics-corridor` on its prepare stage and nobody
+  had checked it from this door, so that is now pinned by driving the
+  real chain for a follow plan and reading the composed command back.
+  The prepared HRRR chain could not do it at all, and now does.
+- `gpuwm.hrrr_hierarchy_direct` takes `--statics-corridor`, bare or as
+  comma-separated child grid ids, spelled exactly as the GFS door
+  spells it. It seals the set into
+  `hierarchy-artifacts/statics-corridor/` -- the same relative path the
+  GFS bundle uses -- and binds its receipt into `receipt.json` beside
+  `artifact_receipt`, exactly as the GFS chain binds it into
+  `proof.json`. It is that stage and not `tools/prepare_hrrr_wrf`
+  because a corridor is child-resolution statics over the parent
+  extent, and the root preparer never sees a child: the hierarchy stage
+  requires `--geog-root`, builds `d02..dNN`, and already holds the
+  verified GEOG catalog. Without the flag the receipt has no such key
+  and the bundle is byte-for-byte what it was.
+- The tree runner reads `statics_corridor` out of whichever hierarchy
+  document matched its pinned digest and cannot tell the two chains
+  apart, which was true by construction in 1.8.4 and is now a
+  measurement: the corridor refusal matrix -- no corridor, uncovered
+  child, failed verification, accepted -- is parametrized over both the
+  GFS `proof.json` and the HRRR `receipt.json`.
+- `gpuwm run-plan --resolve` reports the decision instead of leaving a
+  caller to guess or launch and find out. A `moving_nest` record names
+  the chain, the delivery, the relocating grid and whether a corridor
+  will be built, with a matching `automatic_resolutions` entry (scope
+  `preparation`, basis `relocation_follow`) whose note names the stage
+  that actually carries the flag -- on HRRR that is the hierarchy
+  stage, and "the prepare stage" would have sent a reader to a tool
+  that refuses it. `moving_nest` is `null` for a config that moves no
+  nest.
+- `gpuwm run-plan --estimate` prices the corridor. It is the one
+  preparation artifact whose size cannot be inferred from the domain
+  sizes a caller already has, being parent extent at child resolution:
+  a 45x45 nest at `parent_grid_ratio = 3` on a 398x320 root is a
+  1194x960 corridor at 889 MB. The new `corridor` block prices every
+  child, because run-plan passes the flag bare and the preparation
+  reads that as every child domain, and it prices them through the
+  preparation's own child selection and the corridor module's own
+  arithmetic rather than a second copy of either. `corridor_cost` is
+  held equal to a real build's sealed `host_bytes` by a test instead of
+  by agreeing today. The corridor adds no GPU residency, so the `vram`
+  block and the VRAM gate are unchanged with and without it; that was
+  verified by pricing one experiment on both chains and requiring the
+  two figures to be equal, not assumed.
+
+Fixed:
+- One emitter, one child selection, one predicate. Both chains now call
+  `gpuwm.static.corridor.emit_statics_corridor_set`, the child
+  selection moved to `validated_corridor_selection` in that module
+  (`source_hierarchy` held one copy and run-plan's pricing reached in
+  past a leading underscore to read it), and the follow predicate that
+  had three copies kept equal by a drift test is now the single
+  `config_declares_follow_source` that `gpuwm go`, the printed `rw-wps`
+  line and run-plan all call. The tree runner's own inline copy of that
+  predicate is gone -- it was the one place that decides whether a
+  bundle is accepted, holding its own reading of the sentence every
+  preparation door reads from the module.
+- A moving nest on a nested HRRR tree no longer fetches, prepares a
+  root and builds a hierarchy before dying at the forecast preflight.
+  `_FOLLOW_STATICS_DELIVERY` declares per chain where a moving nest's
+  statics come from -- corridor, live ingest, or nowhere -- under a
+  completeness guard, and `_execute_prepared_route` dispatches through
+  the same `_chain_key` the refusal is decided on, so a config cannot
+  be judged as one chain and run as the other. With HRRR moving from
+  `None` to `statics_corridor` the refusal table is empty: no chain
+  this front door dispatches to refuses a moving nest today. The
+  refusal machinery and both completeness tests stay for a chain added
+  tomorrow that cannot feed one, and the refusal is now called directly
+  so that retained machinery is exercised rather than merely retained.
+- `docs/run-plan.md` no longer says nested HRRR is refused. It shipped
+  in c45e24924 without the doc catching up, which by 1.8.6 directly
+  contradicted the section above it.
+- `docs/run-plan.md` now says not to touch a checkout a run is reading
+  from. The HRRR hierarchy stage samples `git status --short` when it
+  publishes and refuses a tree with anything uncommitted in it, which
+  is deliberate -- a bundle stamped with a commit it was not built from
+  is a false provenance claim -- but the stage runs minutes into a run,
+  `git status --short` counts untracked files, and a commit landing in
+  the worktree mid-run therefore kills the run.
+
+Evidence: crop-versus-direct bitwise identity re-proven for a corridor
+built through the HRRR chain's own grids and catalog, 5 placements x 14
+fields, with the instrument validated by a planted single-ULP flip
+caught as exactly one differing word. Emission determinism, the
+receipt-bytes round trip, a tampered-cache refusal, and the real
+`prepare_hrrr_hierarchy` sealing and binding. Live on a real 18Z HRRR
+cycle: both moves executed off the sealed corridor, the parent bitwise
+unchanged, 42 of 42 fields bit-identical against direct builds, and the
+`--estimate` figure equal to the sealed bytes exactly.
+
 ## 1.8.5 (2026-08-08)
 
 Fixed:

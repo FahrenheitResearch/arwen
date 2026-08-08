@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import time
 import tomllib
 from types import SimpleNamespace
@@ -43,6 +44,11 @@ from gpuwm.namelist_seal import validated_namelist_extension_invariant
 from gpuwm.native_domain_artifacts import _atomic_staging_sibling
 from gpuwm.native_hierarchy import initialize_and_export_native_hierarchy
 from gpuwm.native_wrf_contract import validate_native_lambert_contracts
+from gpuwm.static.corridor import (
+    STATICS_CORRIDOR_DIRNAME,
+    emit_statics_corridor_set,
+    validated_corridor_selection,
+)
 from gpuwm.static.lambert import grids_from_projection_config
 from gpuwm.core.microphysics_transition import resolve_microphysics_transition
 
@@ -920,9 +926,27 @@ def prepare_hrrr_hierarchy(
         stock_wrf_namelist_input: Path, geog_root: Path,
         source_manifest: Path, source_manifest_sha256: str,
         valid_time: datetime, output_root: Path, workers: int = 8,
-        cpu_bridge: Path | None = None,
+        cpu_bridge: Path | None = None, statics_corridor=None,
 ) -> dict[str, object]:
-    """Verify one root preparation and publish generic stock-WRF inputs."""
+    """Verify one root preparation and publish generic stock-WRF inputs.
+
+    ``statics_corridor`` opts this stage into sealing child-resolution
+    statics over each child's whole parent extent
+    (:mod:`gpuwm.static.corridor`): ``None`` emits nothing and leaves
+    the bundle byte-for-byte unchanged, ``"all"`` covers every child
+    domain, and a sequence of grid ids covers exactly those children.
+
+    This is the HRRR chain's corridor door, and it is HERE rather than
+    in ``tools/prepare_hrrr_wrf`` for one reason: a corridor is
+    child-resolution statics, and this is the stage that knows the
+    children exist.  The root preparer prepares d01 alone and never
+    reads a child geometry; this stage takes ``--geog-root``, builds
+    d02..dNN, and already holds the verified GEOG catalog every child's
+    statics come from.  The set receipt is bound into ``receipt.json``
+    beside ``artifact_receipt``, exactly as the GFS chain binds it into
+    ``proof.json``, which is what makes the sealed artifact rather than
+    any printed line the contract the tree runner verifies.
+    """
 
     if isinstance(workers, bool) or workers not in range(1, 33):
         raise ValueError("workers must be an integer from 1 through 32")
@@ -967,6 +991,18 @@ def prepare_hrrr_hierarchy(
     target = load_hrrr_target_domain(root_domain_spec)
     _supported_hierarchy_slice(
         native_exp, target, forcing_hours=forcing_hours)
+    # Resolved the moment a domain tree exists, and long before the
+    # expensive restore/decode/join below: a corridor asked of a
+    # single-domain namelist, or naming a grid id this tree does not
+    # have, is a typed flag rather than a failure of the preparation,
+    # and refusing it after the join would throw away work that
+    # succeeded.  The emission re-resolves the same pure function.
+    if statics_corridor is not None and len(native_exp.domains) < 2:
+        raise ValueError(
+            "--statics-corridor seals child-resolution statics over a "
+            "parent extent, and this namelist has no child domain; "
+            "remove the flag or prepare a domain tree")
+    validated_corridor_selection(native_exp, statics_corridor)
     wps_runtime_contract = _require_raw_wps_contract(
         Path(wps_namelist), len(native_exp.domains))
     if native_exp.start_time != valid_time:
@@ -1127,6 +1163,17 @@ def prepare_hrrr_hierarchy(
             stock_wrf_export="optional",
         )
         hierarchy_seconds = time.perf_counter() - hierarchy_started
+        # AFTER the artifact join, and inside the same staging directory
+        # the atomic publication renames: the hierarchy tree is already
+        # sealed on its own terms, and the corridor set lands beside it
+        # under hierarchy-artifacts/, which is where the tree runner
+        # looks for it whichever chain wrote the bundle.  The GFS chain
+        # emits through this same function.
+        corridor_receipt = emit_statics_corridor_set(
+            exp=native_exp, grids=grids, static_catalog=static_catalog,
+            directory=(staging / "hierarchy-artifacts"
+                       / STATICS_CORRIDOR_DIRNAME),
+            statics_corridor=statics_corridor)
         stock_copy = staging / "namelist.input"
         shutil.copyfile(stock_wrf_namelist_input, stock_copy)
         payload = {
@@ -1152,6 +1199,13 @@ def prepare_hrrr_hierarchy(
             },
             "artifact_receipt": dict(result.artifacts.receipt),
             "wrf_manifest": dict(result.wrf_manifest),
+            # Present only when this preparation opted in: the sealed
+            # statics-corridor set, digest-bound here the way every
+            # other sealed artifact of this bundle is, and read from
+            # here by gpuwm-prepared-tree-forecast's preflight.  Absent,
+            # the receipt is byte-for-byte what it always was.
+            **({"statics_corridor": dict(corridor_receipt)}
+               if corridor_receipt is not None else {}),
         }
         receipt = staging / "receipt.json"
         temporary = receipt.with_suffix(".json.tmp")
@@ -1196,6 +1250,19 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--cpu-preprocess-bridge", type=Path)
+    # Spelled exactly as the GFS door spells it
+    # (gpuwm/gfs_direct.py), because one runner consumes both bundles
+    # and its refusal names this flag as the remedy whichever chain
+    # prepared the tree.
+    parser.add_argument(
+        "--statics-corridor", nargs="?", const="all", default=None,
+        metavar="GRID_IDS",
+        help="also seal child-resolution statics over each child's whole "
+             "parent extent (the moving-nest corridor); bare flag covers "
+             "every child domain, or pass comma-separated child grid ids "
+             "(e.g. 2,3).  Required before the prepared tree runner will "
+             "honor a [relocation] follow source; omitted, the bundle is "
+             "byte-for-byte unchanged")
     return parser
 
 
@@ -1222,6 +1289,15 @@ def main(argv=None) -> int:
     valid_time = (
         instant if from_valid_time
         else instant + timedelta(hours=args.forecast_start_hour))
+    statics_corridor = args.statics_corridor
+    if statics_corridor is not None and statics_corridor != "all":
+        try:
+            statics_corridor = tuple(
+                int(part) for part in statics_corridor.split(",") if part)
+        except ValueError:
+            raise ValueError(
+                "--statics-corridor accepts 'all' or comma-separated "
+                f"child grid ids, got {args.statics_corridor!r}") from None
     payload = prepare_hrrr_hierarchy(
         root_preparation=args.root_preparation,
         root_domain_spec=args.root_domain_spec,
@@ -1233,6 +1309,7 @@ def main(argv=None) -> int:
         source_manifest_sha256=args.source_manifest_sha256,
         valid_time=valid_time, output_root=args.output_root,
         workers=args.workers, cpu_bridge=args.cpu_preprocess_bridge,
+        statics_corridor=statics_corridor,
     )
     # The forecast runner takes --preparation-receipt-sha256 over the
     # receipt this stage just wrote, and the emitted chain tells the
@@ -1260,6 +1337,20 @@ def main(argv=None) -> int:
         "preparation_receipt_sha256": sha256_file(
             args.output_root / "receipt.json"),
     }, indent=2, sort_keys=True, allow_nan=False))
+    corridor = payload.get("statics_corridor")
+    if isinstance(corridor, dict):
+        # Size honesty at the door, in the GFS door's own words: the
+        # corridor is parent-extent at child resolution, and its cost is
+        # stated where it is paid.
+        for label, entry in sorted(corridor.get("domains", {}).items()):
+            print(
+                f"  statics corridor {label}: "
+                f"{entry['corridor_nx']}x{entry['corridor_ny']} child "
+                f"cells over the whole d{int(entry['parent_id']):02d} "
+                f"extent, {entry['cache']['bytes'] / 1.0e6:.1f} MB on "
+                f"disk, {entry['host_bytes'] / 1.0e6:.1f} MB host when "
+                "loaded by a relocating run (no GPU residency)",
+                file=sys.stderr)
     return 0
 
 

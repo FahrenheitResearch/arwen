@@ -59,13 +59,37 @@ class _Observer:
         return lambda *args, **kwargs: None
 
 
-def _drive(tmp_path, monkeypatch, **intent):
+def _follow_block(exp) -> str:
+    """A one-move itinerary on d02, at a whole number of root steps."""
+
+    return f"""
+[relocation]
+enabled = true
+grid_id = 2
+
+[[relocation.move]]
+at_seconds = {float(exp.root.run.dt) * 2:.1f}
+di_parent_cells = 1
+dj_parent_cells = 0
+"""
+
+
+def _drive(tmp_path, monkeypatch, follow=False, **intent):
     """Run the chain with every stage captured and nothing executed."""
 
     plan = _plan(tmp_path, **intent)
     with contextlib.redirect_stdout(io.StringIO()):
         config, _ = generate_intent_config(plan, destination=plan.run_dir)
         exp = resolve_plan(plan, require_inputs=False)[1]
+    if follow:
+        # Grown on the config the wizard just emitted, so the four HRRR
+        # route inputs beside it stay the ones this chain reads.
+        from gpuwm.experiment import load_experiment
+
+        config.write_text(
+            config.read_text(encoding="utf-8") + _follow_block(exp),
+            encoding="utf-8")
+        exp = load_experiment(config)
 
     staged: list[tuple[str, list[str]]] = []
     tree_root = plan.run_dir / "chain" / "hrrr-hierarchy"
@@ -191,8 +215,78 @@ def test_a_zero_lead_is_left_off_rather_than_passed_as_zero(tmp_path,
 
 
 # ---------------------------------------------------------------------------
-# The receipt relay
+# The moving nest: the tenth flag, and where it goes
 # ---------------------------------------------------------------------------
+
+
+def test_a_follow_config_puts_the_corridor_flag_on_the_hierarchy_stage(
+        tmp_path, monkeypatch):
+    """The stage that builds the children is the stage that seals.
+
+    On the GFS chain the corridor flag rides rw-wps.  There is no rw-wps
+    here, and the root preparer knows only d01 -- it never reads a child
+    geometry and would refuse the flag.  So it belongs to the hierarchy
+    stage, which holds --geog-root and the child domains.
+    """
+    staged, _captured, _tree, _config = _drive(
+        tmp_path, monkeypatch, follow=True)
+
+    hierarchy = _stage(staged, "hierarchy")
+    assert "--statics-corridor" in hierarchy
+    # Bare: the preparation reads that as "every child domain", which is
+    # what run-plan's --estimate priced for this plan.
+    flag = hierarchy.index("--statics-corridor")
+    assert flag == len(hierarchy) - 1 or hierarchy[flag + 1].startswith("--")
+    # Not on the root preparation, and not on the fetch.
+    assert "--statics-corridor" not in _stage(staged, "prepare")
+    assert "--statics-corridor" not in _stage(staged, "fetch")
+
+
+def test_a_still_nested_hrrr_plan_composes_exactly_what_it_always_did(
+        tmp_path, monkeypatch):
+    """Token for token, the two arms differ by one flag and nothing else.
+
+    A corridor that leaked into an ordinary nested HRRR run would change
+    what every existing plan prepares.
+    """
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    still, _c, _t, _cfg = _drive(tmp_path / "a", monkeypatch)
+    follow, _c2, _t2, _cfg2 = _drive(tmp_path / "b", monkeypatch,
+                                     follow=True)
+
+    def _shape(entries, root):
+        return {name: [token.replace(str(root), "<ROOT>")
+                       .replace("\\", "/") for token in command]
+                for name, command in entries}
+
+    still_shape = _shape(still, tmp_path / "a")
+    follow_shape = _shape(follow, tmp_path / "b")
+    assert set(still_shape) == set(follow_shape)
+    for stage in ("fetch", "prepare"):
+        assert still_shape[stage] == follow_shape[stage], stage
+    assert (still_shape["hierarchy"]
+            == [token for token in follow_shape["hierarchy"]
+                if token != "--statics-corridor"])
+
+
+def test_the_flag_the_chain_composes_is_the_one_the_stage_accepts(
+        tmp_path, monkeypatch):
+    """Composed argv, parsed by the real tool's own parser.
+
+    A flag spelled correctly here and differently there is exactly the
+    failure a composed chain cannot see until it runs -- and this chain
+    runs the stage as a subprocess, so argparse's refusal would arrive
+    after the fetch and the whole root preparation.
+    """
+    from gpuwm.hrrr_hierarchy_direct import _parser
+
+    staged, _captured, _tree, _config = _drive(
+        tmp_path, monkeypatch, follow=True)
+    hierarchy = _stage(staged, "hierarchy")
+    # Drop `python -m gpuwm.hrrr_hierarchy_direct`; parse the rest.
+    parsed = _parser().parse_args(hierarchy[3:])
+    assert parsed.statics_corridor == "all"
 
 
 def test_the_relay_binds_the_hierarchy_receipt_off_its_bytes(tmp_path,

@@ -212,6 +212,7 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
 
     from gpuwm.experiment import load_experiment
     from gpuwm.physics_compat import identify_single_domain_profile
+    from gpuwm.static.corridor import config_declares_follow_source
 
     config = Path(config)
     if not config.is_file():
@@ -378,11 +379,11 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         # A config that declares a [relocation] follow source needs the
         # sealed statics corridor prepared, or the forecast stage will
         # refuse the very bundle stage 4 just built.  Derived from the
-        # config here so the chain stays config-driven end to end.
-        "statics_corridor": bool(
-            experiment.relocation.enabled
-            and (experiment.relocation.follow is not None
-                 or experiment.relocation.moves)),
+        # config here so the chain stays config-driven end to end, and
+        # through the corridor module's own predicate so this door, the
+        # printed rw-wps line and run-plan's refusal all read the same
+        # sentence out of one place.
+        "statics_corridor": config_declares_follow_source(experiment),
     }
 
 

@@ -859,8 +859,14 @@ def preflight_prepared_tree(
     # nest.
     from gpuwm.experiment import refuse_unrouted_spawn
     refuse_unrouted_spawn(exp, "prepared domain-tree")
-    relocation_follow = exp.relocation.enabled and (
-        exp.relocation.follow is not None or exp.relocation.moves)
+    # THE predicate, asked rather than restated.  This runner is the
+    # door the whole corridor mechanism exists to satisfy, and it used
+    # to hold its own copy of the sentence -- so a reading of
+    # "[relocation] with moves but no follow" that the preparation doors
+    # agreed on could have differed here, in the one place that decides
+    # whether a bundle is accepted.
+    from gpuwm.static.corridor import config_declares_follow_source
+    relocation_follow = config_declares_follow_source(exp)
     if relocation_follow:
         # The [static.highres] idiom: an enabled surface refuses on the
         # lanes that cannot honor it.  A prepared tree deliberately runs

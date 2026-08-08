@@ -1,0 +1,720 @@
+"""Moving nests on run-plan's front door: derived, reported, priced.
+
+1.8.4 sealed the statics corridor at preparation and taught the tree
+runner to honour a ``[relocation]`` follow source when one is present.
+What a MACHINE caller could not do was produce such a preparation from a
+plan document: run-plan's own tests never drove a follow config, and
+nothing in ``--resolve`` or ``--estimate`` mentioned a corridor, so a
+front end had no way to know a plan would build one, what it would cost,
+or -- on the HRRR chain -- that it would fail.
+
+The corridor flag itself turned out to be already flowing: run-plan's
+prepared route hands the config to ``go_main``, whose prepare stage
+derives ``--statics-corridor`` from the config's own follow predicate.
+:func:`test_a_follow_plan_composes_the_corridor_prepare_command` is the
+test that was missing under that claim -- it drives the real chain and
+reads the composed command -- and the rest of this file is the
+reporting, pricing and refusal that genuinely were not there.
+
+CPU-only: the chain is captured at ``go_cli._run_stage``, the seam every
+other prepared-route test uses, and no stage subprocess is spawned.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+import gpuwm.runplan as runplan_module
+from gpuwm import go_cli
+from gpuwm.cli import main as cli_main
+from gpuwm.runplan import (PLAN_SCHEMA, PlanError, estimate_plan, load_plan,
+                           resolve_plan)
+
+_PROFILE = "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1"
+
+
+# ---------------------------------------------------------------------------
+# Fixtures: a wizard-emitted config, and the same config grown a nest
+# ---------------------------------------------------------------------------
+
+def _emit(directory: Path, name: str, source: str) -> Path:
+    """One wizard-emitted config per source, with that source's physics.
+
+    The GFS arm names the certified profile explicitly; the HRRR arm
+    takes the wizard's own ``--source hrrr`` default, because the
+    nested HRRR route refuses a suite with ``cu_physics != 0`` and the
+    wizard says so at emission.
+    """
+    out = directory / f"{name}.toml"
+    argv = [
+        "domain", "--point=35.3,-97.5", "--card", "24gb", "--ladder", "12",
+        "--source", source, "--cycle", "2026-07-29T18", "--hours", "6",
+        "--out", str(out)]
+    if source == "gfs":
+        argv += ["--physics-profile", _PROFILE]
+    assert cli_main(argv) == 0
+    return out
+
+
+def _with_child(config: Path, *, follow: bool) -> str:
+    """The emitted config plus a child, and optionally an itinerary.
+
+    The two arms differ ONLY by the ``[relocation]`` block, so every
+    "with follow / without follow" pair below is comparing the presence
+    of a moving nest and nothing else.
+    """
+    from gpuwm.experiment import load_experiment
+
+    dt = float(load_experiment(config).root.run.dt)
+    text = config.read_text(encoding="utf-8") + """
+[[domain]]
+grid_id = 2
+parent_id = 1
+i_parent_start = 30
+j_parent_start = 30
+parent_grid_ratio = 3
+parent_time_step_ratio = 3
+nx = 45
+ny = 45
+history_interval_s = 3600.0
+"""
+    if not follow:
+        return text
+    return text + f"""
+[relocation]
+enabled = true
+grid_id = 2
+
+[[relocation.move]]
+at_seconds = {dt * 2:.1f}
+di_parent_cells = 1
+dj_parent_cells = 0
+"""
+
+
+@pytest.fixture(scope="module")
+def gfs_tree(tmp_path_factory):
+    """A two-domain GFS config that follows, and its still twin."""
+
+    directory = tmp_path_factory.mktemp("gfs-tree")
+    base = _emit(directory, "base", "gfs")
+    made = {}
+    for label, follow in (("follow", True), ("still", False)):
+        path = directory / f"{label}.toml"
+        path.write_text(_with_child(base, follow=follow), encoding="utf-8")
+        path.with_suffix(".namelist.wps").write_bytes(
+            base.with_suffix(".namelist.wps").read_bytes())
+        made[label] = path
+    return made
+
+
+@pytest.fixture(autouse=True)
+def _two_plan_directories(tmp_path):
+    """Tests that compare two arms write one plan into each of these."""
+
+    (tmp_path / "a").mkdir(exist_ok=True)
+    (tmp_path / "b").mkdir(exist_ok=True)
+
+
+def _plan(tmp_path: Path, config: Path, name: str = "corridor-plan") -> Path:
+    path = tmp_path / f"{name}.json"
+    path.write_text(json.dumps({
+        "schema": PLAN_SCHEMA, "name": name, "route": "prepared",
+        "config": {"path": str(config)},
+        "output_root": str(tmp_path / "out")}), encoding="utf-8")
+    return path
+
+
+# ---------------------------------------------------------------------------
+# 1. The composed preparation, from the real chain
+# ---------------------------------------------------------------------------
+
+def _drive_to_prepare(plan_path: Path, monkeypatch) -> dict[str, list[str]]:
+    """Run the prepared route for real, stopping at the prepare stage.
+
+    Every stage is captured at ``_run_stage`` -- the same seam the rest
+    of the prepared-route suite uses -- so the commands recorded here
+    are the ones the chain composed, not ones this test rebuilt.  The
+    manifest stage writes its artifact because the stage AFTER it
+    refuses without one, and that refusal is not what is under test.
+    """
+    captured: dict[str, list[str]] = {}
+
+    def _stage(label, command, **kwargs):
+        captured[label] = list(command)
+        if label == "manifest":
+            out = Path(command[command.index("--out") + 1])
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "gfs-input-manifest.json").write_text(
+                "{}", encoding="utf-8")
+        if label == "prepare":
+            raise go_cli.GoStageFailed(7)
+
+    monkeypatch.setattr(go_cli, "_run_stage", _stage)
+    monkeypatch.setattr(go_cli, "resolve_bridge", lambda: Path("bridge"))
+    monkeypatch.setattr(go_cli, "geography_refusal", lambda root: None)
+    monkeypatch.setattr(go_cli, "memory_gate", lambda plan, **kw: {
+        "verdict": "the forecast is the memory-binding phase at 9.00 GiB",
+        "refuse": False, "warn": False, "free_bytes": 30 * 1024 ** 3})
+
+    plan = load_plan(plan_path)
+    resolution, exp, data = resolve_plan(plan, require_inputs=False)
+
+    class _Observer:
+        def enter_stage(self, *args, **kwargs):
+            pass
+
+        def finish_stage(self, *args, **kwargs):
+            pass
+
+        def warn(self, *args, **kwargs):
+            pass
+
+    with pytest.raises(RuntimeError):
+        runplan_module._execute_prepared_route(
+            plan, exp=exp, data=data, config_path=plan.config_path,
+            observer=_Observer())
+    return captured
+
+
+def test_a_follow_plan_composes_the_corridor_prepare_command(
+        tmp_path, gfs_tree, monkeypatch):
+    """One plan document in, a corridor-sealing preparation out.
+
+    The claim this file exists to hold: a caller who submits a plan
+    naming a follow config gets a bundle the tree runner will accept,
+    without having to know the flag exists.
+    """
+    captured = _drive_to_prepare(
+        _plan(tmp_path, gfs_tree["follow"]), monkeypatch)
+
+    assert set(captured) == {"authority", "fetch", "manifest", "prepare"}
+    prepare = captured["prepare"]
+    assert "--statics-corridor" in prepare
+    # Bare, not scoped to a grid id: the preparation reads that as
+    # "every child domain", which is what corridor_estimate prices.
+    flag = prepare.index("--statics-corridor")
+    assert prepare[flag + 1].startswith("--")
+    # And it is the rw-wps preparation that carries it, not some other
+    # stage that happens to mention a corridor.
+    assert "gpuwm.source_cli" in prepare
+
+
+def test_a_still_nest_emits_exactly_what_it_always_did(
+        tmp_path, gfs_tree, monkeypatch):
+    """The no-follow arm is byte-identical to today's emission.
+
+    Not "does not contain --statics-corridor": the WHOLE composed
+    chain, stage for stage and token for token, against the same tree
+    without the [relocation] block.  A corridor that leaked into an
+    ordinary nested run would change what every existing plan prepares.
+    """
+    still = _drive_to_prepare(
+        _plan(tmp_path / "a", gfs_tree["still"]), monkeypatch)
+    follow = _drive_to_prepare(
+        _plan(tmp_path / "b", gfs_tree["follow"]), monkeypatch)
+
+    assert "--statics-corridor" not in still["prepare"]
+
+    # The two arms necessarily differ in their output root and in the
+    # name of the config file they were emitted to; both are erased so
+    # what is left is the argv SHAPE, which must be identical.
+    def _shape(tokens: list[str], root: Path, label: str) -> list[str]:
+        return [token.replace(str(root), "<ROOT>").replace("\\", "/")
+                .replace(f"/{label}.", "/<CONFIG>.")
+                for token in tokens]
+
+    still_shape = {stage: _shape(tokens, tmp_path / "a", "still")
+                   for stage, tokens in still.items()}
+    follow_shape = {stage: _shape(tokens, tmp_path / "b", "follow")
+                    for stage, tokens in follow.items()}
+    assert set(still_shape) == set(follow_shape)
+    for stage in ("authority", "fetch", "manifest"):
+        assert still_shape[stage] == follow_shape[stage], stage
+    assert (still_shape["prepare"]
+            == [token for token in follow_shape["prepare"]
+                if token != "--statics-corridor"])
+
+
+# ---------------------------------------------------------------------------
+# 2. --resolve: the caller can SEE the corridor before launching
+# ---------------------------------------------------------------------------
+
+def test_resolve_reports_the_corridor_and_names_its_basis(tmp_path,
+                                                          gfs_tree):
+    resolution, _exp, _data = resolve_plan(
+        load_plan(_plan(tmp_path, gfs_tree["follow"])), require_inputs=False)
+
+    assert resolution["moving_nest"] == {
+        "chain": "prepared:go",
+        "delivery": "statics_corridor",
+        "relocation_grid_id": 2,
+        "statics_corridor": True,
+    }
+    entry, = [item for item in resolution["automatic_resolutions"]
+              if item.get("key") == "statics_corridor"]
+    assert entry["scope"] == "preparation"
+    assert entry["value"] is True
+    assert entry["basis"] == "relocation_follow"
+    assert "--statics-corridor" in entry["note"]
+
+
+def test_a_still_plan_says_nothing_about_corridors(tmp_path, gfs_tree):
+    """No follow source, no new resolution and no new record.
+
+    A plan that moves nothing must resolve exactly as it did before
+    this feature existed; a null `moving_nest` and an absent resolution
+    are how that is stated.
+    """
+    resolution, _exp, _data = resolve_plan(
+        load_plan(_plan(tmp_path, gfs_tree["still"])), require_inputs=False)
+
+    assert resolution["moving_nest"] is None
+    assert not [item for item in resolution["automatic_resolutions"]
+                if item.get("key") == "statics_corridor"]
+
+
+# ---------------------------------------------------------------------------
+# 3. --estimate: the corridor is priced before it is built
+# ---------------------------------------------------------------------------
+
+def test_estimate_prices_the_corridor_off_the_real_arithmetic(tmp_path,
+                                                              gfs_tree):
+    from gpuwm.experiment import load_experiment
+    from gpuwm.static.corridor import (CORRIDOR_BYTES_PER_CELL,
+                                       CORRIDOR_PLANES_PER_CELL)
+
+    plan = load_plan(_plan(tmp_path, gfs_tree["follow"]))
+    estimate = estimate_plan(plan)
+    corridor = estimate["corridor"]
+    root = load_experiment(gfs_tree["follow"]).root
+
+    entry, = corridor["domains"]
+    assert entry["domain"] == "d02"
+    assert entry["grid_id"] == 2 and entry["parent_id"] == 1
+    # Parent extent at CHILD resolution -- the root's own grid times the
+    # nest's refinement ratio, not the nest's 45x45.  This is the whole
+    # reason the number is worth showing: the corridor is far larger
+    # than the nest that moves across it.
+    assert entry["corridor_nx"] == root.run.nx * 3
+    assert entry["corridor_ny"] == root.run.ny * 3
+    assert entry["cells"] == entry["corridor_nx"] * entry["corridor_ny"]
+    assert entry["cells"] > 45 * 45
+
+    assert entry["planes_per_cell"] == CORRIDOR_PLANES_PER_CELL
+    assert entry["bytes_per_cell"] == CORRIDOR_BYTES_PER_CELL
+    assert entry["host_bytes"] == entry["cells"] * CORRIDOR_BYTES_PER_CELL
+    assert corridor["host_bytes"] == entry["host_bytes"] > 0
+    assert corridor["host_gib"] == pytest.approx(
+        corridor["host_bytes"] / 1024 ** 3, rel=1e-3)
+    assert "No GPU residency" in corridor["basis"]
+
+
+def test_the_corridor_costs_no_vram(tmp_path, gfs_tree):
+    """Disk and host only -- the VRAM figure must not move.
+
+    The corridor is cropped on the host, so a plan that seals one and
+    the same plan without it are the same size on the card.  A front
+    end that priced it into the VRAM budget would refuse runs that fit.
+    """
+    moving = estimate_plan(load_plan(_plan(tmp_path / "a",
+                                           gfs_tree["follow"])))
+    still = estimate_plan(load_plan(_plan(tmp_path / "b",
+                                          gfs_tree["still"])))
+
+    assert moving["vram"] == still["vram"]
+    assert moving["corridor"]["host_bytes"] > 0
+    assert still["corridor"]["host_bytes"] == 0
+    assert still["corridor"]["domains"] == []
+    assert "no [relocation] follow source" in still["corridor"]["basis"]
+
+
+def test_every_child_is_priced_not_only_the_one_that_moves(tmp_path,
+                                                           gfs_tree):
+    """Bare ``--statics-corridor`` covers every child, so price them all.
+
+    The flag run-plan composes takes no grid-id list, and the
+    preparation reads that as "every child domain".  An estimate that
+    priced only the relocating nest would under-report a three-domain
+    tree's disk cost by the corridors it is about to write anyway.
+    """
+    from gpuwm.static.corridor import validated_corridor_selection
+
+    plan = load_plan(_plan(tmp_path, gfs_tree["follow"]))
+    _resolution, exp, _data = resolve_plan(plan, require_inputs=False)
+
+    priced = [entry["grid_id"]
+              for entry in estimate_plan(plan)["corridor"]["domains"]]
+    # The preparation's OWN selection for the bare flag, asked rather
+    # than restated here.
+    assert priced == list(validated_corridor_selection(exp, "all"))
+
+
+# ---------------------------------------------------------------------------
+# 4. The HRRR chain: was refused here, now feeds a moving nest too
+# ---------------------------------------------------------------------------
+
+def _hrrr_follow(tmp_path: Path) -> Path:
+    base = _emit(tmp_path, "hrrr-base", "hrrr")
+    config = tmp_path / "hrrr-follow.toml"
+    config.write_text(_with_child(base, follow=True), encoding="utf-8")
+    return config
+
+
+def test_a_follow_config_on_the_hrrr_chain_resolves_and_seals(tmp_path):
+    """The refusal this replaces was about EMISSION, not the runner.
+
+    The tree runner never cared which preparation sealed the corridor
+    -- it reads the corridor set out of whichever hierarchy document
+    matched its pinned digest.  What was missing was an HRRR stage that
+    wrote one.  With ``gpuwm.hrrr_hierarchy_direct --statics-corridor``
+    the delivery table says the same word for both prepared chains, and
+    this plan resolves instead of being turned away.
+    """
+    resolution, _exp, _data = resolve_plan(
+        load_plan(_plan(tmp_path, _hrrr_follow(tmp_path))),
+        require_inputs=False)
+
+    assert resolution["moving_nest"] == {
+        "chain": "prepared:hrrr",
+        "delivery": "statics_corridor",
+        "relocation_grid_id": 2,
+        "statics_corridor": True,
+    }
+    entry, = [item for item in resolution["automatic_resolutions"]
+              if item.get("key") == "statics_corridor"]
+    assert entry["value"] is True
+    assert entry["basis"] == "relocation_follow"
+    # The note names the stage that actually carries the flag on THIS
+    # chain.  "the prepare stage" is the GFS sentence and would send a
+    # reader to tools.prepare_hrrr_wrf, which seals no corridor and
+    # would refuse the flag.
+    assert "hrrr_hierarchy_direct" in entry["note"]
+    assert "rw-wps" not in entry["note"]
+
+
+def test_the_gfs_note_still_names_rw_wps(tmp_path, gfs_tree):
+    """The other half of the same guard: neither chain inherits the
+    other's stage name."""
+
+    resolution, _exp, _data = resolve_plan(
+        load_plan(_plan(tmp_path, gfs_tree["follow"])), require_inputs=False)
+    entry, = [item for item in resolution["automatic_resolutions"]
+              if item.get("key") == "statics_corridor"]
+    assert "rw-wps" in entry["note"]
+    assert "hrrr_hierarchy_direct" not in entry["note"]
+
+
+def test_the_hrrr_plan_is_priced_by_the_same_chain_agnostic_arithmetic(
+        tmp_path):
+    """`corridor_estimate` reads the domain tree, never the chain.
+
+    Verified rather than assumed: the SAME experiment priced as a GFS
+    plan and as an HRRR plan must produce identical figures, because the
+    corridor's size is a property of the geometry and the static field
+    inventory and of nothing else.
+    """
+    from gpuwm.runplan import corridor_estimate, follow_statics_decision
+
+    plan = load_plan(_plan(tmp_path, _hrrr_follow(tmp_path)))
+    _resolution, exp, _data = resolve_plan(plan, require_inputs=False)
+
+    hrrr = corridor_estimate(
+        exp, follow_statics_decision(exp, chain="prepared:hrrr"))
+    gfs = corridor_estimate(
+        exp, follow_statics_decision(exp, chain="prepared:go"))
+    assert hrrr == gfs
+    assert hrrr["host_bytes"] > 0
+
+    # And the front door reports that same block for the HRRR plan.
+    assert estimate_plan(plan)["corridor"] == hrrr
+
+
+def test_the_hrrr_estimate_costs_no_vram(tmp_path):
+    """Host and disk only, on this chain as on the other."""
+
+    moving = estimate_plan(load_plan(_plan(tmp_path / "a",
+                                           _hrrr_follow(tmp_path))))
+    base = _emit(tmp_path / "b", "hrrr-base", "hrrr")
+    still_config = tmp_path / "b" / "hrrr-still.toml"
+    still_config.write_text(_with_child(base, follow=False),
+                            encoding="utf-8")
+    still = estimate_plan(load_plan(_plan(tmp_path / "b", still_config)))
+
+    assert moving["vram"] == still["vram"]
+    assert moving["corridor"]["host_bytes"] > 0
+    assert still["corridor"]["host_bytes"] == 0
+
+
+def test_a_still_hrrr_tree_says_nothing_about_corridors(tmp_path):
+    """Only a MOVING nest pays for one."""
+
+    base = _emit(tmp_path, "hrrr-base", "hrrr")
+    config = tmp_path / "hrrr-still.toml"
+    config.write_text(_with_child(base, follow=False), encoding="utf-8")
+
+    resolution, _exp, _data = resolve_plan(
+        load_plan(_plan(tmp_path, config)), require_inputs=False)
+    assert resolution["moving_nest"] is None
+    assert not [item for item in resolution["automatic_resolutions"]
+                if item.get("key") == "statics_corridor"]
+
+
+def test_no_chain_this_door_dispatches_to_refuses_a_moving_nest():
+    """The delivery table's current truth, stated as a test.
+
+    Every chain `_chain_key` can name can now feed a moving nest.  The
+    refusal machinery stays for a chain added tomorrow that cannot --
+    which is why the completeness guards below still run -- but nothing
+    reachable today takes that path.
+    """
+    from gpuwm.runplan import _FOLLOW_STATICS_DELIVERY
+
+    assert not [chain for chain, delivery
+                in _FOLLOW_STATICS_DELIVERY.items() if delivery is None]
+
+
+# ---------------------------------------------------------------------------
+# 5. The completeness guard on the delivery table
+# ---------------------------------------------------------------------------
+
+def test_every_chain_declares_where_a_moving_nest_gets_its_statics():
+    """A chain cannot be added without answering the question.
+
+    The table is the whole mechanism: a chain missing from it would
+    otherwise fall through to whatever the chain happened to do, which
+    on a prepared route means preparing a bundle its own forecast stage
+    refuses.  Every key `_chain_key` can produce is checked here
+    against the routes that actually exist.
+    """
+    from gpuwm.runplan import ROUTES, _FOLLOW_STATICS_DELIVERY, _chain_key
+
+    reachable = set()
+    for route in ROUTES:
+        # The prepared route forks on the config's [fetch].source; every
+        # other route is its own chain.
+        for source in (None, "gfs", "hrrr", "era5"):
+            reachable.add(_chain_key(route, source))
+    assert reachable == set(_FOLLOW_STATICS_DELIVERY)
+
+
+def test_every_refusing_chain_explains_itself_in_its_own_words():
+    """A refusal must not name another chain's tools.
+
+    The generic half of the sentence is shared; the half that says WHY
+    this particular preparation cannot seal a corridor has to be
+    written per chain, or a second refusing chain would send its reader
+    to `tools.prepare_hrrr_wrf`.
+    """
+    from gpuwm.runplan import (_FOLLOW_STATICS_DELIVERY,
+                               _FOLLOW_UNSUPPORTED_DETAIL)
+
+    refusing = {chain for chain, delivery
+                in _FOLLOW_STATICS_DELIVERY.items() if delivery is None}
+    assert refusing == set(_FOLLOW_UNSUPPORTED_DETAIL)
+
+
+def test_every_corridor_chain_names_the_stage_that_carries_the_flag():
+    """"The prepare stage" is only true on one of them.
+
+    GFS seals its corridor in rw-wps; HRRR seals it in the hierarchy
+    stage, because its root preparer never sees a child.  A resolution
+    note that named the wrong one would send a reader to a tool that
+    refuses the flag, which is how a chain-shaped sentence becomes a
+    support ticket.
+    """
+    from gpuwm.runplan import _CORRIDOR_STAGE, _FOLLOW_STATICS_DELIVERY
+
+    sealing = {chain for chain, delivery
+               in _FOLLOW_STATICS_DELIVERY.items()
+               if delivery == "statics_corridor"}
+    assert sealing == set(_CORRIDOR_STAGE)
+    # Each entry names its own tool and not its neighbour's.
+    assert "source_cli" in _CORRIDOR_STAGE["prepared:go"]
+    assert "hrrr_hierarchy_direct" in _CORRIDOR_STAGE["prepared:hrrr"]
+
+
+def test_the_retained_refusal_still_says_something_useful():
+    """No chain reaches it today; it must still work when one does.
+
+    Machinery kept "for later" and never exercised is machinery that
+    has quietly rotted by the time later arrives.  This calls the
+    refusal directly, on a chain with no bespoke detail, and requires
+    the generic sentence to name the problem and all three remedies.
+    """
+    from gpuwm.runplan import _follow_unsupported_refusal
+
+    message = _follow_unsupported_refusal("prepared:someday", 3)
+    assert "[relocation] follow source on d03" in message
+    assert "'prepared:someday' chain cannot supply the statics" in message
+    assert "seals no child-resolution statics corridor" in message
+    assert "remedy:" in message
+    # Both corridor-sealing chains, and both corridor-free routes out.
+    assert "gfs" in message and "hrrr" in message
+    assert "[case_data]" in message
+    assert "bounds-only [relocation]" in message
+
+
+def test_a_chain_with_no_declared_delivery_refuses_rather_than_guesses():
+    from gpuwm.runplan import follow_statics_decision
+
+    class _Relocation:
+        enabled, follow, moves, grid_id = True, "vortex", (), 2
+
+    class _Experiment:
+        relocation = _Relocation()
+
+    with pytest.raises(PlanError) as refusal:
+        follow_statics_decision(_Experiment(), chain="prepared:invented")
+    assert "delivery table" in str(refusal.value)
+
+
+def test_the_dispatch_and_the_refusal_read_the_same_chain(tmp_path,
+                                                          gfs_tree,
+                                                          monkeypatch):
+    """`_execute_prepared_route` branches on `_chain_key`, not a copy.
+
+    If the dispatch grew its own test of the source, a config could be
+    judged corridor-capable at resolve time and then sent down the
+    chain that cannot build one.  Proven by making `_chain_key` claim
+    everything is HRRR and watching the GFS plan land in `_hrrr_chain`.
+    """
+    plan = load_plan(_plan(tmp_path, gfs_tree["follow"]))
+    # Resolved FIRST, against the real chain key: this plan is a
+    # legitimate corridor-bearing GFS plan, and resolve_plan agrees.
+    _resolution, exp, data = resolve_plan(plan, require_inputs=False)
+
+    seen: list[str] = []
+    monkeypatch.setattr(runplan_module, "_chain_key",
+                        lambda route, source: "prepared:hrrr")
+    monkeypatch.setattr(
+        runplan_module, "_hrrr_chain",
+        lambda *a, **k: seen.append("hrrr") or {})
+    runplan_module._execute_prepared_route(
+        plan, exp=exp, data=data, config_path=plan.config_path,
+        observer=None)
+    assert seen == ["hrrr"]
+
+
+# ---------------------------------------------------------------------------
+# 6. The predicate all three doors read
+# ---------------------------------------------------------------------------
+
+def test_one_predicate_feeds_go_the_printed_line_and_run_plan(gfs_tree):
+    """`gpuwm go`, the pasted rw-wps line and run-plan cannot disagree.
+
+    They used to hold three copies of the same sentence, kept equal by
+    a drift test.  Now there is one function and the drift test proves
+    the obvious; this test names the callers so a fourth reader cannot
+    quietly reintroduce a copy.
+    """
+    from gpuwm.experiment import load_experiment
+    from gpuwm.static.corridor import config_declares_follow_source
+
+    following = load_experiment(gfs_tree["follow"])
+    still = load_experiment(gfs_tree["still"])
+    assert config_declares_follow_source(following) is True
+    assert config_declares_follow_source(still) is False
+
+    # go's plan and run-plan's decision, from that one predicate.
+    plan = go_cli.plan_from_config(gfs_tree["follow"],
+                                   outdir=gfs_tree["follow"].parent / "go",
+                                   allow_tree=True)
+    assert plan["statics_corridor"] is True
+    decision = runplan_module.follow_statics_decision(
+        following, chain="prepared:go")
+    assert decision["statics_corridor"] is True
+    assert runplan_module.follow_statics_decision(
+        still, chain="prepared:go") is None
+
+
+def test_the_same_predicate_feeds_both_hrrr_doors(tmp_path):
+    """The driven HRRR chain and the wizard's printed one, one function.
+
+    Two more readers of the same sentence arrived with the HRRR
+    emission: run-plan's ``_hrrr_chain`` (which composes the hierarchy
+    stage's argv) and ``domain_wizard.hrrr_route_commands`` (which
+    prints that same stage for a reader to paste).  A printed chain that
+    disagreed with the driven one would hand somebody a paste that
+    prepares a bundle the last line of the same paste refuses.
+    """
+    import inspect
+
+    from gpuwm import domain_wizard
+    from gpuwm.experiment import load_experiment
+    from gpuwm.static.corridor import config_declares_follow_source
+
+    base = _emit(tmp_path, "hrrr-base", "hrrr")
+    follow_path = tmp_path / "hrrr-follow.toml"
+    follow_path.write_text(_with_child(base, follow=True), encoding="utf-8")
+    still_path = tmp_path / "hrrr-still.toml"
+    still_path.write_text(_with_child(base, follow=False), encoding="utf-8")
+    following = load_experiment(follow_path)
+    still = load_experiment(still_path)
+
+    assert config_declares_follow_source(following) is True
+    assert config_declares_follow_source(still) is False
+    assert runplan_module.follow_statics_decision(
+        following, chain="prepared:hrrr")["statics_corridor"] is True
+    assert runplan_module.follow_statics_decision(
+        still, chain="prepared:hrrr") is None
+
+    # The printed chain: flag present for the mover, absent for the
+    # still nest, and on the hierarchy stage rather than the preparer.
+    printed = domain_wizard.hrrr_route_commands(
+        base, following, profile=None, data_dir=str(tmp_path / "data"))
+    assert "--statics-corridor" in printed
+    hierarchy_block = printed.split("gpuwm.hrrr_hierarchy_direct")[1]
+    assert "--statics-corridor" in hierarchy_block
+    assert "--statics-corridor" not in printed.split(
+        "tools.prepare_hrrr_wrf")[1].split("gpuwm.hrrr_hierarchy_direct")[0]
+    assert "--statics-corridor" not in domain_wizard.hrrr_route_commands(
+        base, still, profile=None, data_dir=str(tmp_path / "data"))
+
+    # And both HRRR doors reach the predicate itself rather than
+    # re-deriving it: neither source mentions `relocation.follow`.
+    for function in (domain_wizard.hrrr_route_commands,
+                     runplan_module._hrrr_chain):
+        source = inspect.getsource(function)
+        assert "config_declares_follow_source" in source
+        assert "relocation.follow" not in source
+
+
+def test_the_tree_runner_asks_the_predicate_too():
+    """The door the whole mechanism exists to satisfy held its own copy.
+
+    A reading of ``[relocation]`` that the preparation doors agreed on
+    could have differed in the one place that decides whether a bundle
+    is accepted -- so the runner asks the same function.
+    """
+    import inspect
+
+    from gpuwm import prepared_domain_tree_forecast as runner
+
+    source = inspect.getsource(runner.preflight_prepared_tree)
+    assert "config_declares_follow_source(exp)" in source
+    assert "exp.relocation.follow is not None" not in source
+
+
+def test_bounds_only_relocation_is_not_a_moving_nest(gfs_tree, tmp_path):
+    """Enabled [relocation] with no itinerary needs no corridor."""
+
+    from gpuwm.static.corridor import config_declares_follow_source
+
+    config = tmp_path / "bounds.toml"
+    config.write_text(
+        gfs_tree["still"].read_text(encoding="utf-8")
+        + "\n[relocation]\nenabled = true\ngrid_id = 2\n",
+        encoding="utf-8")
+    config.with_suffix(".namelist.wps").write_bytes(
+        gfs_tree["still"].with_suffix(".namelist.wps").read_bytes())
+
+    from gpuwm.experiment import load_experiment
+    assert config_declares_follow_source(load_experiment(config)) is False
+
+    resolution, _exp, _data = resolve_plan(
+        load_plan(_plan(tmp_path, config)), require_inputs=False)
+    assert resolution["moving_nest"] is None
