@@ -1,0 +1,85 @@
+# The release battery's stage-1 curated list.
+#
+# WHAT THIS IS
+#   The set of test files the release battery runs as its stage-1 leg:
+#   CPU-only (GPUWM_NO_LOCAL_GPU=1), fast enough to run on every cut, and
+#   chosen to cover the paths a release most often breaks.  It is a
+#   CURATED list, not a discovered one -- `pytest tests/` is a different,
+#   much longer job, and stage 1 exists precisely because it is short.
+#
+# WHO CONSUMES IT
+#   The per-assembly queue scripts (scratchpad q<NNN>_legs.ps1, "LEG S1").
+#   Their $stage1 array is GENERATED from this file, not retyped:
+#
+#     $stage1 = @(Get-Content (Join-Path $CUT 'tools/battery/stage1_files.txt') |
+#         ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
+#
+#   See scratchpad q_TEMPLATE_stage1.ps1 for the full leg.  Before this
+#   file existed the list lived ONLY in those scratchpad scripts and was
+#   propagated by copy from one assembly to the next; a lost scratchpad
+#   silently lost every amendment ever made to it.  That is the failure
+#   this file closes (task #122).
+#
+# FORMAT
+#   One repository-relative path per line, forward slashes.  Blank lines
+#   and lines whose first non-space character is `#` are ignored.  Order
+#   is the order the battery runs them and is append-only by convention,
+#   so the amendment history stays legible.
+#
+# AMENDMENT DISCIPLINE
+#   An addition carries its REASON inline, on the line above it, naming
+#   the task or the incident that earned the entry.  A removal is not a
+#   tidy-up: say why the coverage is no longer needed, in the commit.
+#   tests/test_stage1_manifest.py is the gate -- it checks every path
+#   exists, rejects duplicates, and pins the two entries whose absence
+#   caused a real miss.
+
+tests/test_runplan.py
+tests/test_nest_spawn_soil.py
+tests/test_nocturnal_radiation_guard.py
+tests/test_domain_wizard.py
+tests/test_go_chain.py
+tests/test_hrrr_prepared_background.py
+tests/test_da_nowcast_presets.py
+tests/test_da_nowcast.py
+tests/test_da_sweep.py
+tests/test_anisotropic_mixing_advisory.py
+tests/test_anisotropic_mixing_w_stability.py
+tests/test_les_tornado_attempt1_config.py
+tests/test_doctor.py
+tests/test_ftz_claim_consistency.py
+tests/test_letkf_osse.py
+tests/test_certification_capsule.py
+tests/test_package_data_coverage.py
+
+# Task #121: the physics registry and its citation checker.  The 1.8.5
+# battery was the first to inherit the checker, and stage 1 had no gate
+# on the registry itself until this entry was added.
+tests/test_physics_registry.py
+
+# Task #122: the suites that gate registry-DERIVED artifacts.  During the
+# 1.8.5 assembly this suite went red --
+# test_ground_truth_receipt_regenerates_byte_for_byte, because
+# docs/public/receipts/F2-ground-truth.json is regenerated from the
+# registry and had not been landed with the registry edit.  Stage 1
+# reported 0 failures on that same tree; only the lane-union leg caught
+# it, and a lane union is assembled per cut, so it is not a gate.  A
+# registry edit reaches these receipts on every cut, so the gate belongs
+# here.
+tests/test_physics_registry_composition.py
+
+# ArWen 1.8.7: the render-on-first-committed-frame surface.  The run now
+# renders the analysis frame as it lands rather than at finalize, which
+# puts a new default-adjacent output on every run: the
+# first_products_ready event, and a finalize that must digest-SKIP the
+# frame the early render already claimed.  A regression here is silent --
+# the run still finishes and the products still exist -- so it belongs on
+# the list the battery runs every cut.
+tests/test_first_products.py
+
+# ArWen 1.8.7: the time-to-first-plot contract itself.  The fetch is
+# ordered analysis-hour-first so the analysis frame can be committed
+# early, and SHA256SUMS is pinned order-independent so that reordering
+# cannot move a digest.  Both halves are contract, not implementation
+# detail, and an ordering change would otherwise pass unnoticed.
+tests/test_fetch_analysis_first.py

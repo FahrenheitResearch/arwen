@@ -141,7 +141,8 @@ STAGES = ("fetch", "prepare", "initialize", "forecast", "finalize")
 #: ``event`` can be exhaustive against this tuple.
 EVENT_TAGS = (
     "plan_accepted", "resolved_plan", "stage_started", "stage_finished",
-    "model_progress", "output_committed", "warning", "completed", "failed",
+    "model_progress", "output_committed", "first_products_ready",
+    "warning", "completed", "failed",
 )
 
 #: Envelope keys an event's own fields may not shadow.
@@ -1167,10 +1168,28 @@ class RunObserver:
     """
 
     def __init__(self, events: EventStream, *, heartbeat=None,
-                 root_domain: int = 1):
+                 root_domain: int = 1, accepted_wall: float | None = None):
         self._events = events
         self._heartbeat = heartbeat
         self._root_domain = int(root_domain)
+        #: The monotonic reading taken when ``plan_accepted`` was
+        #: emitted.  Passed in rather than read here because this object
+        #: is built several steps into ``execute_plan``, and every wall
+        #: time this run reports is measured from the instant the plan
+        #: was accepted -- not from the instant an observer happened to
+        #: exist.  Defaulted for callers that build one directly.
+        self._accepted_wall = (time.perf_counter() if accepted_wall is None
+                               else float(accepted_wall))
+        #: Set by :meth:`arm_first_products` when a prepared chain wants
+        #: its first frame rendered as it lands.  ``None`` -- the default
+        #: and the whole of the ``experiment`` route -- means the
+        #: finalize stage is the only render there has ever been.
+        self._first_products = None
+        #: Time to first plot, once there is one.  Kept so the run's
+        #: ``completed`` event can carry the headline number too: a
+        #: reader comparing runs should not have to scan the stream for
+        #: the one line that has it.
+        self._first_products_seconds: float | None = None
         self._stage: str | None = None
         self._stage_phases: list[str] = []
         self._stage_started_wall = 0.0
@@ -1336,6 +1355,65 @@ class RunObserver:
             speed_x=speed, step_ms=None, phase=phase,
             status=status, source="stage_progress_file")
 
+    # -- time to first plot -------------------------------------------
+
+    @property
+    def first_products(self):
+        """The armed early render, or ``None``.
+
+        The finalize stage reads this off whatever observer it was given
+        -- directly or through :class:`_GoObserver` -- to collect the
+        render before deciding what is left to draw.
+        """
+
+        return self._first_products
+
+    @property
+    def first_products_seconds(self) -> float | None:
+        """Time to first plot, or ``None`` if no early render published."""
+
+        return self._first_products_seconds
+
+    def arm_first_products(self, render_plan) -> None:
+        """Render the first committed frame as it lands, not at finalize.
+
+        ``render_plan`` is the dict the finalize stage will hand
+        ``go_cli._render_stage``: the same output directory and the same
+        product spec, so the early render and the late one cannot drift
+        apart in what they draw or where they put it.
+
+        Silently does nothing when this run named no products, which is
+        the default.  A caller therefore does not have to ask whether
+        the feature applies before arming -- the answer lives in one
+        place, :func:`gpuwm.first_products.early_render_requested`.
+        """
+
+        from gpuwm.first_products import (FirstProducts,
+                                          early_render_requested)
+
+        if not early_render_requested(render_plan.get("render_products")):
+            return
+        self._first_products = FirstProducts(
+            render_plan, report=self._first_products_ready, warn=self.warn)
+
+    def _first_products_ready(self, receipt) -> None:
+        """The early render published.  This is the TTFP number.
+
+        Emitted from the render's own worker thread, which is why
+        ``EventStream`` holds a lock: this and ``model_progress`` from
+        the forecast genuinely do reach it at once.
+        """
+
+        elapsed = round(time.perf_counter() - self._accepted_wall, 6)
+        self._first_products_seconds = elapsed
+        self._events.emit(
+            "first_products_ready",
+            domain=receipt["domain"], valid_time=receipt["valid_time"],
+            frame=receipt["frame"], paths=list(receipt["paths"]),
+            render_products=receipt["render_products"],
+            render_seconds=receipt["render_seconds"],
+            seconds_from_plan_accepted=elapsed)
+
     def output_committed(self, *, domain: int, valid_time, path) -> None:
         """One wrfout is durable on disk.  Raised from the writer.
 
@@ -1344,6 +1422,12 @@ class RunObserver:
         and renamed the temporary onto its final name -- so the event is
         emitted for a file that exists and passes its own inventory
         check, never for one that is merely queued.
+
+        When an early render is armed, the FIRST root-domain frame also
+        dispatches it.  That frame is the analysis: the history alarm is
+        true at t = 0, so it is written before a single step is
+        integrated, and it is the picture a reader has been waiting the
+        whole download and preparation for.
         """
 
         self._committed += 1
@@ -1353,6 +1437,22 @@ class RunObserver:
                         if isinstance(valid_time, datetime)
                         else str(valid_time)),
             path=str(path))
+        trigger = self._first_products
+        if trigger is None or int(domain) != self._root_domain:
+            return
+        # Guarded here as well as inside the trigger.  This method is
+        # reached from `runtime._output_committed`, which -- unlike the
+        # async writer's own call site -- does not wrap the callback, so
+        # anything raised here would land in the model loop.
+        try:
+            trigger.frame_committed(
+                domain=domain, valid_time=valid_time, path=path)
+        except Exception as error:  # noqa: BLE001 - telemetry never fails
+            self.warn(
+                "first_products_not_dispatched",
+                "the early render of the first frame could not be "
+                f"started ({type(error).__name__}: {error}); the finalize "
+                "stage is unaffected")
 
     def complete(self, model_elapsed_seconds: float) -> None:
         if self._heartbeat is not None:
@@ -1885,6 +1985,15 @@ class _GoObserver:
     def output_committed(self, **fields) -> None:
         self._observer.output_committed(**fields)
 
+    # -- time to first plot, forwarded verbatim -----------------------
+
+    @property
+    def first_products(self):
+        return self._observer.first_products
+
+    def arm_first_products(self, render_plan) -> None:
+        self._observer.arm_first_products(render_plan)
+
     def starting(self) -> None:
         self._observer.starting()
 
@@ -2030,6 +2139,13 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     run_stage("prepare", prepare, explain=False,
               progress=prep_root / "progress.json",
               observer=_GoObserver(observer))
+
+    # Armed before either forecast arm, with the very dict `_hrrr_render`
+    # will hand the finalize stage below, so the frame rendered as it
+    # lands and the frames rendered at the end agree on both the output
+    # directory and the product spec by construction.
+    observer.arm_first_products(
+        _hrrr_render_plan(plan, forecast_dir=forecast_dir, run_dir=run_dir))
 
     if len(exp.domains) > 1:
         # A nested HRRR run takes a THIRD stage between the root
@@ -2242,6 +2358,20 @@ def _hrrr_tree_forecast(*, tree_root: Path, config_path: Path,
             "refusal is above")
 
 
+def _hrrr_render_plan(plan: RunPlan, *, forecast_dir: Path,
+                      run_dir: Path) -> dict[str, Any]:
+    """The plan dict this chain's render stage runs on.
+
+    One function because it now has two readers: the finalize render
+    below, and the early render armed before the forecast.  Two copies
+    of this literal is exactly how a run ends up publishing its first
+    frame into one directory and the rest into another.
+    """
+
+    return {"run": forecast_dir, "render": run_dir / "chain" / "png",
+            "render_products": plan.run_options.get("render_products")}
+
+
 def _hrrr_render(plan: RunPlan, *, forecast_dir: Path, run_dir: Path,
                  observer: RunObserver) -> Mapping[str, Any]:
     """go's render stage against this chain's output, then the summary."""
@@ -2250,8 +2380,7 @@ def _hrrr_render(plan: RunPlan, *, forecast_dir: Path, run_dir: Path,
 
     observer.enter_stage("finalize", phase="render")
     _render_stage(
-        {"run": forecast_dir, "render": run_dir / "chain" / "png",
-         "render_products": plan.run_options.get("render_products")},
+        _hrrr_render_plan(plan, forecast_dir=forecast_dir, run_dir=run_dir),
         explain=False, observer=_GoObserver(observer))
     return _chain_summary(run_dir / "chain", observer=observer)
 
@@ -2498,6 +2627,11 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
         plan_source=plan.source, plan_sha256=plan.sha256,
         run_dir=str(run_dir), manifest_path=str(manifest_path),
         events_path=str(events.path), pid=os.getpid(), run_id=run_id)
+    # Time to first plot is measured from HERE -- the instant this run
+    # was accepted -- because that is the instant the person who launched
+    # it started waiting.  Taken immediately after the event so the two
+    # cannot drift by whatever the next few resolution steps cost.
+    accepted_wall = time.perf_counter()
 
     stage = "prepare"
     observer: RunObserver | None = None
@@ -2564,7 +2698,8 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
             config_sha256=resolution["plan"]["config_sha256"],
             started_at_utc=started_at_utc)
         observer = RunObserver(
-            events, heartbeat=heartbeat, root_domain=exp.root.grid_id)
+            events, heartbeat=heartbeat, root_domain=exp.root.grid_id,
+            accepted_wall=accepted_wall)
         heartbeat.starting()
 
         if fetch_arguments is not None:
@@ -2629,6 +2764,11 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
                                       str(manifest_path)),
             receipts=receipts,
             outputs_committed=observer.outputs_committed,
+            # Time to first plot, repeated here from
+            # `first_products_ready` so the headline number is on the
+            # line every reader already reads.  Null when this run
+            # published no products early.
+            first_products_seconds=observer.first_products_seconds,
             summary=dict(summary))
         return 0
     except BaseException as error:  # noqa: BLE001 - every exit is an event

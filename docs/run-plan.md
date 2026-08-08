@@ -345,9 +345,10 @@ or reordered line, never a skipped one, and the reader refuses it.
 | `stage_finished` | `stage`, `wall_seconds`, `phases`, (`receipts`, `outcome`) | that stage closes |
 | `model_progress` | `domain`, `outer_step`, `model_seconds`, `wall_seconds`, `speed_x`, `step_ms`, `phase`, (`domains`) | each outer step |
 | `output_committed` | `domain`, `valid_time`, `path` | a wrfout is durable on disk |
+| `first_products_ready` | `domain`, `valid_time`, `frame`, `paths`, `render_products`, `render_seconds`, `seconds_from_plan_accepted` | the first frame's pictures are on disk, while the forecast runs on |
 | `model_progress` (polled) | as above plus `source: "stage_progress_file"`, `step_ms: null` | a `prepared` stage that runs as a subprocess, sampled from its own progress file |
 | `warning` | `code`, `message`, (`detail`) | anything worth saying, nothing worth stopping for |
-| `completed` | `dry_run`, `run_dir`, `receipt_path`, `receipts`, `outputs_committed`, `summary` | last line, exit 0 |
+| `completed` | `dry_run`, `run_dir`, `receipt_path`, `receipts`, `outputs_committed`, `first_products_seconds`, `summary` | last line, exit 0 |
 | `failed` | `stage`, `error_class`, `message`, `remedy`, `run_dir`, `receipts` | last line, nonzero exit |
 
 `stage` ∈ `fetch`, `prepare`, `initialize`, `forecast`, `finalize`.
@@ -721,3 +722,157 @@ configs, not pictures.
 
 The HRRR chain has no render step in its printed form; run-plan gives it
 `go`'s, so the option means the same thing on both sources.
+
+---
+
+## Time to first plot
+
+The first picture used to wait for the last timestep. It no longer does.
+
+The first frame a forecast commits is the **analysis** — the state the
+run was initialised from. WRF's history alarm is true at `t = 0`
+(`Clock.history_due`), so that frame is written before a single step is
+integrated, and the per-domain writer raises `output_committed` for it
+the moment it is fsynced, self-validated and renamed. On a two-hour run
+that finished picture then sat on disk for the whole forecast, waiting
+for the finalize stage to notice it.
+
+A run that sets `render_products` now renders that frame as it lands, on
+a worker thread, concurrent with the forecast, and emits:
+
+```json
+{"event":"first_products_ready","domain":1,"valid_time":"2026-07-28T05:00:00","frame":".../wrfout_d01_2026-07-28_05_00_00","paths":["...png"],"render_products":"refl,t2","render_seconds":3.9,"seconds_from_plan_accepted":118.7}
+```
+
+`seconds_from_plan_accepted` **is** the TTFP number: wall clock from the
+instant the plan was accepted — the instant the person who launched it
+started waiting — to the instant the pictures were readable. It is
+measured by the engine, on every run, and it lands in `events.jsonl`
+beside everything else. The `completed` event repeats it as
+`first_products_seconds` (null when nothing was published early), so
+comparing two runs does not mean scanning two streams.
+
+It is measured honestly: the event is emitted before the frame is
+digested and before the receipt is written, because both of those are
+bookkeeping for the finalize stage and hashing a 362 MB history frame
+first would have put a second of it inside the number.
+
+Default ON where it can apply, and inert everywhere else. A plan that
+names no products (the default) or names `none` gets exactly the
+behaviour it had before; the `experiment` route has no `render_products`
+option at all and is untouched. There is no second switch.
+
+**It does not contend with the forecast.** The render is a separate
+`python -m gpuwm.cli render` process driving the CPU-side Rust renderer.
+It imports cupy as a transitive dependency of the package and creates no
+CUDA context — measured with the driver itself, `cuCtxGetCurrent`
+returning `CUDA_ERROR_NOT_INITIALIZED`, and pinned as a test. The
+forecast keeps the card for its whole run.
+
+**Finalize does not redo the work, and does not take that on trust.**
+The early render leaves `first-products.json` beside the pictures naming
+the frame it read and every PNG it wrote, all by sha256. The finalize
+stage collects the render, then drops that frame from its own list only
+when the frame still hashes to the recorded digest, every recorded
+picture is on disk hashing to its recorded digest, and `render_products`
+has not changed. Any other answer — a deleted picture, an edited frame,
+a different product spec, a render still running — and the frame is
+simply rendered again. Byte-identity between the two paths is a property
+of construction: the early render runs the command `render_command`
+composes from the same plan, in the same working directory, with the
+same environment, naming one frame instead of all of them.
+
+Pictures are published by `os.replace` out of a scratch directory, so a
+reader watching the render output sees a whole PNG or none.
+
+### Measured
+
+A real seven-frame `d01-12km` run, 362 MB analysis frame, products
+`refl,t2,wind10,precip`, on the RTX 5090 box with the vendored Rust
+renderer:
+
+| | wall | output |
+|---|---:|---:|
+| early render, analysis frame alone | 17.0 s | 4 png |
+| finalize render, all 7 frames (before) | 116.0 s | 28 png |
+| finalize render, other 6 frames (after) | 100.0 s | 24 png |
+| `output_committed` → returns to the writer thread | 0.0007 s | |
+
+`17.0 + 100.0 = 117.0` against `116.0` for one batch, so splitting the
+work costs nothing measurable, and the 17 s is hidden under a forecast
+that is still running. The product set is unchanged: 28 pictures either
+way, 4 of them published by the early render and skipped at finalize
+with the message
+
+```
+-- render: 1 frame already published by the early render (4 picture(s), digests verified): wrfout_d01_...
+```
+
+All four early pictures are **byte-identical** to the same frame
+rendered inside the seven-frame finalize batch.
+
+What this buys on a live run is the render delta (100 s of the 116 s
+moves off the critical path) **plus the entire forecast wall time**,
+because the first plot no longer waits for the last timestep. Against
+the reference HRRR budget — 208.6 s fetch, 27 s prepare, both measured —
+the emitted number for this frame was `seconds_from_plan_accepted:
+253.2`.
+
+### What fetch ordering does and does not buy
+
+The other half of TTFP is the download, which on a live HRRR run is
+~85% of it. The analysis frame needs only the analysis hour's files, so
+the obvious lever is to fetch those first and let the boundary hours
+stream while preparation runs.
+
+**They are already fetched first.** Every ladder builder
+(`gfs_forecast_hours`, `gdas_forecast_hours`, `hrrr_forecast_hours`)
+returns an ascending `range` beginning at the forecast-start lead, and
+every fetch loop walks it in order — HRRR fetching both of an hour's
+products before touching the next hour. Reordering therefore buys
+**zero seconds**; there is nothing to reorder. That property was
+incidental and is now pinned (`tests/test_fetch_analysis_first.py`), because
+it is what any future overlap work would stand on.
+
+Pinned alongside it is the property such work would have to preserve:
+`SHA256SUMS` — the artifact preparation binds through
+`--source-manifest-sha256` — is **byte-identical whatever order the
+hours land in**, proven by fetching the same window forwards and
+backwards and comparing, not by reading the `sorted` call that makes it
+true. The payload files come out byte-for-byte identical too.
+
+The gain that ordering was supposed to unlock is **overlap**:
+preparation starting on the analysis hour while boundaries download.
+That is not available today, and the obstacle is not the digest
+discipline — it is the shape of preparation:
+
+* Root preparation is one pass over the whole series. The decoder is
+  invoked once with the series file, and the same loop that builds the
+  initial condition from `snapshots[0]` accumulates every snapshot's
+  perimeter into the boundary tables and seals them into the prepared
+  cache (`gfs_direct.py`). There is no later "LBC step" to defer to.
+* Three independent gates refuse a one-time series outright
+  (`gfs_direct._read_series`, `gfs_direct.prepare_gfs_wrf`,
+  `ingest/lateral_bc.build_lateral_boundaries`), and the HRRR preparer
+  refuses if any hour's atmosphere or soil file is missing.
+* The sealed manifest binds the **role set**, not just the bytes:
+  preparation refuses when the manifest's declared roles differ from the
+  ones it was asked for. Preparing from a subset means authoring a
+  manifest over that subset, which is a different sealed artifact with a
+  different digest — and the runner binds exactly one
+  `--source-manifest-sha256`.
+
+Splitting that is a preparation-format change (an IC-only artifact, a
+runner that can start from one, and a second seal for the boundary
+extension), not plumbing. It was **not** done here, because the only
+ways to do it quickly all weaken a digest binding to win seconds. The
+receiving end for a future attempt already exists: the fetch receipt is
+republished after every completed hour, with `forecast_hours` naming the
+verified prefix, so "the analysis is on disk and checked" is already an
+observable event.
+
+Fetch **parallelism** is separately debunked on this link: six
+concurrent streams aggregate 20.2 MB/s against 17.9 MB/s for one, a
+1.29x that is bandwidth-limited, not a 6x. It is also the wrong
+direction — concurrency stops the analysis hour landing first, which is
+the one property the overlap work above would need.

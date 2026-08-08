@@ -754,6 +754,14 @@ def _render_stage(plan: dict, *, explain: bool,
     list rather than in a separate boolean, so "which products" has one
     answer and not two that can disagree.  `none` is not a product name
     in the render catalog, so it cannot collide with one.
+
+    A run whose observer armed an early render (see
+    :mod:`gpuwm.first_products`) has already published its first frame
+    while the forecast was still going.  That render is collected here,
+    before anything is drawn, and the frame it claims is dropped from
+    this stage's list -- but only after its receipt has been checked,
+    digest by digest, against what is actually on disk.  An unproven
+    claim is simply not used, and the frame is rendered again.
     """
 
     if str(plan.get("render_products") or "").strip().lower() == "none":
@@ -773,6 +781,29 @@ def _render_stage(plan: dict, *, explain: bool,
         print("  -- render skipped: the forecast stage published no "
               f"wrfout frame under {plan['run'] / 'wrfout'}.")
         return False
+    already: list[Path] = []
+    trigger = getattr(observer, "first_products", None)
+    if trigger is not None:
+        from gpuwm.first_products import published_frames
+
+        # Collected first.  The early render writes into this stage's
+        # own output directory, so drawing before it has finished would
+        # be two writers on one directory for no reason -- and its
+        # receipt, which is what licenses the skip below, is the last
+        # thing it publishes.
+        trigger.wait()
+        frames, already, note = published_frames(frames, plan)
+        if note is not None:
+            print(f"  -- render: {note}")
+    if not frames:
+        # Every frame was published early.  Distinguished from the empty
+        # case above because "nothing to do because it is done" and
+        # "nothing to do because nothing was produced" are opposite
+        # outcomes and used to print the same sentence.
+        print(f"  -- render complete: {len(already)} frame(s) were "
+              "published by the early render and verified by digest; "
+              "nothing was left to draw.")
+        return True
     _run_stage("render", render_command(plan, frames), explain=explain,
                observer=observer)
     return True
@@ -1408,6 +1439,13 @@ def go_main(args, *, observer=None, allow_tree=False) -> int:
         # own one digest instead, so it is not asked for here.
         digests = ({} if plan.get("domains", 1) > 1
                    else proof_digests(plan["prepared"]))
+        # The first frame the forecast commits is the analysis, and an
+        # observer that wants it rendered as it lands is told so before
+        # the forecast starts -- with THIS plan, the one the render
+        # stage below runs on.  `_notify` because an observer without
+        # the hook (there is no such thing in tree, but `go` takes any
+        # duck) must not be a reason a chain stops.
+        _notify(observer, "arm_first_products", render_plan=plan)
         _run_forecast(plan, digests, explain=explain, observer=observer)
         rendered = _render_stage(plan, explain=explain,
                                  observer=observer)

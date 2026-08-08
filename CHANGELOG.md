@@ -1,5 +1,87 @@
 # Changelog
 
+## 1.8.7 (2026-08-08)
+
+New:
+- The first plot lands while the forecast is still running. The first
+  frame a forecast commits is the analysis -- WRF's history alarm is
+  true at `t = 0`, so it is written before a single step is integrated
+  -- and it used to sit finished on disk until the finalize stage,
+  which waits for the last timestep. A run that sets `render_products`
+  now renders that frame the moment `output_committed` fires for it, on
+  a worker thread, concurrent with the forecast. Default ON where it
+  applies and inert everywhere else: a plan naming no products (the
+  default) or `none` behaves exactly as before, and the `experiment`
+  route has no such option. There is no second switch.
+- Every run receipt now carries a time-to-first-plot number.
+  `first_products_ready` names the frame, the pictures and
+  `seconds_from_plan_accepted` -- wall clock from the instant the plan
+  was accepted, which is the instant the person who launched it started
+  waiting, to the instant the pictures were readable. It is measured by
+  the engine rather than by a stopwatch outside it, and it is emitted
+  before the frame is digested and before the receipt is written,
+  because both are finalize bookkeeping and hashing a 362 MB history
+  frame would have put a second of it inside the number. The
+  `completed` event repeats it as `first_products_seconds`, null and
+  not zero when a run published nothing early, so comparing two runs
+  does not mean scanning two event streams.
+- Finalize does not redo the early work, and does not take that on
+  trust. The early render leaves `first-products.json` naming the frame
+  it read and every PNG it wrote, all by sha256. Finalize drops that
+  frame from its own list only when the frame still hashes to the
+  recorded digest, every recorded picture is on disk hashing to its
+  recorded digest, and `render_products` has not changed. Any other
+  answer -- a deleted picture, an edited frame, a different product
+  spec, a render still running -- and the frame is rendered again. Six
+  mutations are pinned to void the claim. Pictures are published by
+  `os.replace` out of a scratch directory, so a reader watching the
+  output directory sees a whole PNG or none.
+- The release battery's stage-1 curated list ships in the repository,
+  at `tools/battery/stage1_files.txt`, gated by
+  `tests/test_stage1_manifest.py`. Until now that list existed only as
+  an array inside per-assembly scratchpad scripts, propagated by copy
+  from one assembly to the next: a lost scratchpad silently lost every
+  amendment ever made to it and nothing anywhere failed when it did.
+  The file carries each entry's reason inline, the gate checks that
+  every path exists and nothing is listed twice, and the two entries
+  whose absence caused a real miss are pinned by name against a
+  tidy-up. This release is the first assembly to consume it, and the
+  first to amend it in the repository rather than in a scratchpad.
+- Analysis-hour-first fetch ordering is now a contract rather than an
+  accident. Every ladder builder already returned an ascending range
+  from the forecast-start lead and every fetch loop already walked it
+  in order, so reordering buys zero seconds -- there was nothing to
+  reorder. The property is pinned because it is what any future overlap
+  work stands on, and pinned alongside it is the property such work
+  would have to preserve: `SHA256SUMS`, which preparation binds through
+  `--source-manifest-sha256`, is byte-identical whatever order the
+  hours land in. That is proven by fetching the same window forwards
+  and backwards and comparing bytes, not by reading the `sorted` call
+  that makes it true, and a second test keeps order independence from
+  becoming order blindness by requiring the receipt to claim only hours
+  that completed.
+
+Evidence: measured on a real seven-frame `d01-12km` run, 362 MB
+analysis frame, products `refl,t2,wind10,precip`. Early render of the
+analysis frame alone, 17.0 s and 4 pictures; the finalize render that
+used to do all seven frames, 116.0 s and 28 pictures; the finalize
+render of the remaining six, 100.0 s. So the split costs nothing
+measurable and the 17 s hides under a running forecast, while the first
+plot stops waiting for the last timestep. All four early pictures are
+byte-identical to the same frame rendered inside the seven-frame batch.
+The renderer never touches the card: it is a separate `python -m
+gpuwm.cli render` process driving the CPU-side Rust binary, and it
+creates no CUDA context -- `cuCtxGetCurrent` returns
+`CUDA_ERROR_NOT_INITIALIZED`, interrogated from the driver rather than
+read off the module table. Handing the committed frame to the worker
+returns to the writer thread in 0.0007 s, and every telemetry path
+swallows into a `warning` so no render can fail a forecast. Why the
+larger overlap win was not taken -- preparation is one pass that seals
+the initial condition and the boundary tables together, and the sealed
+manifest binds the role set, so preparing from a subset is a different
+digest against a runner that binds exactly one -- is recorded in
+`docs/run-plan.md` rather than left for the next reader to rediscover.
+
 ## 1.8.6 (2026-08-08)
 
 New:

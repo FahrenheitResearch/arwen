@@ -51,6 +51,15 @@ _TOP_LEVEL_EXCLUDES = {
     # exists to call is not in this wheel, so shipping it would offer a
     # command that cannot run.
     "go_cli.py",
+    # The early-render worker `gpuwm go` and run-plan arm to draw the
+    # analysis frame while the forecast runs.  It is reached only from a
+    # running forecast, its only two referrers are go_cli.py and
+    # runplan.py -- both excluded directly above and below -- and it
+    # imports gpuwm.go_cli itself, so staging it put a module in the
+    # wheel reaching for one deliberately absent from it and this
+    # builder's own unresolved-import scan refused the staging.  A
+    # preprocessing wheel renders no forecast frames.
+    "first_products.py",
     # The two prepared-cache GPU forecast runners.  Their substance
     # moved out of tools/ and into the package so a `pip install gpuwm`
     # can finish a forecast; that makes them top-level modules here, and
