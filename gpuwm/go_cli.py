@@ -46,6 +46,7 @@ hand either.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -154,6 +155,29 @@ def _stage_cwd() -> Path:
     """
 
     return Path.cwd()
+
+
+def _stage_env() -> dict:
+    """The environment every stage subprocess gets.
+
+    ``PYTHONSAFEPATH`` is the whole of it, and it is not a nicety.
+    Every stage is spawned as ``python -m MODULE``, and ``-m`` prepends
+    the CURRENT DIRECTORY to ``sys.path`` -- ahead of the installed
+    package.  :func:`_stage_cwd` is deliberately the caller's directory
+    so a relative ``--out`` means what the person typing it meant, so a
+    chain started from inside a source checkout imported that checkout
+    instead of the install.  A live run was hijacked exactly that way.
+
+    Moving the cwd would fix the imports and break the relative paths.
+    ``PYTHONSAFEPATH`` separates the two: the child still RESOLVES paths
+    against the caller's directory and no longer IMPORTS from it.
+
+    Set here rather than as a ``-P`` on each command line because the
+    commands are composed in six places and an env var cannot be
+    forgotten by the seventh.
+    """
+
+    return {**os.environ, "PYTHONSAFEPATH": "1"}
 
 
 def _quote(value) -> str:
@@ -351,6 +375,14 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         # Preparation does not branch; the forecast does.
         "runner": (TREE_RUNNER_MODULE if domain_count > 1
                    else RUNNER_MODULE),
+        # A config that declares a [relocation] follow source needs the
+        # sealed statics corridor prepared, or the forecast stage will
+        # refuse the very bundle stage 4 just built.  Derived from the
+        # config here so the chain stays config-driven end to end.
+        "statics_corridor": bool(
+            experiment.relocation.enabled
+            and (experiment.relocation.follow is not None
+                 or experiment.relocation.moves)),
     }
 
 
@@ -460,6 +492,10 @@ def prepare_command(plan: dict, bridge: Path, *, manifest: Path,
             # written and its verification status reported.
             *_profile_flags(plan),
             "--geog-root", str(geog_root),
+            # The config declared a follow source, so the bundle must
+            # carry the sealed statics corridor or stage 5 refuses it.
+            *(["--statics-corridor"] if plan.get("statics_corridor")
+              else []),
             "--output-root", str(plan["prepared"])]
 
 
@@ -877,7 +913,8 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
             # signal it -- see GoInterrupted).
             proc = subprocess.Popen(
                 command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, errors="replace", cwd=str(_stage_cwd()))
+                text=True, errors="replace", cwd=str(_stage_cwd()),
+                env=_stage_env())
             box["pid"] = proc.pid
             out, err = proc.communicate()
             box["completed"] = subprocess.CompletedProcess(

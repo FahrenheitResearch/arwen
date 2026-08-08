@@ -15,6 +15,7 @@ from gpuwm.ingest.hrrr_target import HrrrTargetDomain
 from gpuwm.native_wrf_contract import (
     NATIVE_LANDUSE_IDENTITY,
     canonical_noah_surface,
+    load_native_static_cache,
     native_geometry_contract,
     native_static_export_fields,
     validate_native_static_fields,
@@ -519,3 +520,70 @@ def test_native_static_contract_rejects_persisted_geometry_drift():
 
     with pytest.raises(ValueError, match="MAPFAC_M"):
         validate_native_static_fields(fields, grid, 3, 4)
+
+
+def test_native_static_cache_reuse_cycle_is_byte_identical(tmp_path):
+    """A reused cache must republish the same NPZ bytes it was loaded from.
+
+    This is what makes cross-cycle static reuse a scheduling change rather
+    than a product change.  The prepared-state identity keys on
+    static_cache_sha256, so if the second cycle's republished NPZ hashed
+    differently from the first, reuse would silently fork the identity even
+    though every array was equal.
+    """
+
+    grid = _grid()
+    cfg = SimpleNamespace(nx=4, ny=3, nz=2, dx=12_000.0, dy=12_000.0)
+    built = _complete_native_static(grid)
+
+    # Cycle 1: build geography, publish the cache and its receipt.
+    first_path = tmp_path / "native-static.npz"
+    first = write_native_static_cache(
+        first_path, native_static_export_fields(built, grid))
+    receipt_path = tmp_path / "geometry-receipt.json"
+    write_native_geometry_receipt(receipt_path, grid, cfg, first_path)
+
+    # Cycle 2: consume cycle 1's artifact instead of rebuilding, then
+    # republish exactly as a real preparation does.
+    verify_native_static_receipt(receipt_path, first_path, grid, cfg)
+    loaded = load_native_static_cache(first_path, grid, cfg.ny, cfg.nx)
+    second_path = tmp_path / "republished" / "native-static.npz"
+    second = write_native_static_cache(
+        second_path, native_static_export_fields(loaded, grid))
+
+    assert second["sha256"] == first["sha256"]
+    assert second["fields"] == first["fields"]
+    assert second_path.read_bytes() == first_path.read_bytes()
+    # Every field the builder produced survived the round trip exactly.
+    for name in built:
+        np.testing.assert_array_equal(
+            loaded[name], np.asarray(built[name], dtype=np.float64),
+            err_msg=f"{name} changed across the reuse cycle")
+
+
+def test_native_static_cache_refuses_a_cache_from_another_domain(tmp_path):
+    """The receipt is what stops a stale or foreign cache being reused."""
+
+    grid = _grid()
+    cfg = SimpleNamespace(nx=4, ny=3, nz=2, dx=12_000.0, dy=12_000.0)
+    static_path = tmp_path / "native-static.npz"
+    write_native_static_cache(
+        static_path, native_static_export_fields(
+            _complete_native_static(grid), grid))
+    receipt_path = tmp_path / "geometry-receipt.json"
+    write_native_geometry_receipt(receipt_path, grid, cfg, static_path)
+
+    other = LambertGrid(
+        ref_lat=41.0, ref_lon=-97.0, truelat1=30.0, truelat2=60.0,
+        stand_lon=-97.0, dx=12_000.0, dy=12_000.0, e_we=5, e_sn=4)
+    with pytest.raises(ValueError, match="geometry differs from target"):
+        verify_native_static_receipt(receipt_path, static_path, other, cfg)
+
+    # And a cache whose bytes moved after the receipt was sealed.
+    static_path.unlink()
+    mutated = _complete_native_static(grid)
+    mutated["HGT_M"] = mutated["HGT_M"] + 1.0
+    write_native_static_cache(
+        static_path, native_static_export_fields(mutated, grid))
+    with pytest.raises(ValueError, match="does not bind the supplied cache"):
+        verify_native_static_receipt(receipt_path, static_path, grid, cfg)

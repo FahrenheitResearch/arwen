@@ -395,6 +395,52 @@ def test_scheduled_moves_execute_at_their_boundaries(tmp_path):
     assert events == ["relocated", "relocated", "held", "summary"]
 
 
+def test_the_run_end_summary_appears_exactly_once(tmp_path):
+    """One run, one summary row -- however many times the executor closes.
+
+    ``execute_experiment`` closes the runner every time it returns, and on
+    a leg-walking route (``gpuwm.runtime.walk_spawn_legs``) it returns once
+    per leg.  A live 12-move run shipped ``relocation_receipts.json`` with
+    two byte-identical summary rows in a 25-row list, so a consumer
+    counting summaries double-counted.  The surviving row must also be the
+    LAST state, not the first: freezing it would report a stale
+    ``moves_executed``.
+    """
+
+    parent_plane, parent, child = _cpu_tree()
+    model = _model(parent, child)
+    receipts_path = tmp_path / "relocation.json"
+    runner = _runner(parent_plane, _manual_config((
+        ScheduledRelocationMove(60.0, 1, 0),
+        ScheduledRelocationMove(120.0, 1, 0))),
+        receipts_path=receipts_path)
+
+    # Leg one: one move, then the executor returns and closes.
+    for ticks in (0, 60):
+        _advance(model, parent, child, ticks)
+        runner.on_period_begin(model, {1: parent.clock})
+    first = runner.close_receipt(model)
+    assert first["moves_executed"] == 1
+
+    # Leg two: the second move, and a second close.
+    _advance(model, parent, child, 120)
+    runner.on_period_begin(model, {1: parent.clock})
+    second = runner.close_receipt(model)
+
+    summaries = [row for row in runner.receipts if row["event"] == "summary"]
+    assert len(summaries) == 1
+    assert summaries[0] is second
+    assert summaries[0]["moves_executed"] == 2
+    assert summaries[0]["unconsumed_moves"] == []
+
+    document = json.loads(receipts_path.read_text(encoding="utf-8"))
+    events = [row["event"] for row in document["receipts"]]
+    assert events.count("summary") == 1
+    # And it stays the run's final row rather than being stranded mid-list
+    # by the moves that came after the first close.
+    assert events == ["relocated", "relocated", "summary"]
+
+
 def test_cadence_gates_the_opportunities():
     parent_plane, parent, child = _cpu_tree()
     model = _model(parent, child)
@@ -530,15 +576,18 @@ def test_run_experiment_front_door_lift_and_residual_refusals(
         runtime.run_experiment(tree, None, tmp_path / "out2")
 
 
-def test_prepared_tree_route_still_refuses_a_follow_source():
-    """The rebuild needs the case's GEOG source; a prepared tree runs
-    without it, so its preflight refusal survives leg 3 by design."""
+def test_prepared_tree_route_still_refuses_a_corridor_less_follow_source():
+    """A prepared tree runs without the case's GEOG source, so the
+    refusal survives for CORRIDOR-LESS bundles -- and now names the
+    remedy: re-prepare with --statics-corridor (the sealed
+    child-resolution statics the runner crops per move)."""
     import inspect
 
     from gpuwm import prepared_domain_tree_forecast as route
 
     source = inspect.getsource(route)
     assert "cannot rebuild a relocated child's statics" in source
+    assert "--statics-corridor" in source
     assert "gpuwm run" in source
 
 
@@ -629,3 +678,70 @@ def test_moved_receipts_supply_the_checkpoint_header_block():
              if row.get("event") == "relocated"]
     assert len(moved) == 1
     assert set(moved[0]) >= {"record_sha256", "segment_id", "grid_id"}
+
+
+def test_prepared_tree_route_wires_the_corridor_runner(tmp_path):
+    """The corridor lift: build_prepared_tree_relocation_runner assembles
+    the SAME RelocationRunner shape the case-data route does -- the
+    shared initializer with the corridor-crop statics seam, the
+    prepared-route preparer, corridor provenance -- and keeps the
+    bounds-only and corridor-less postures."""
+
+    from gpuwm.core.relocation_runner import RelocationRunner
+    from gpuwm.runtime import (PreparedTreeRelocationChildPreparer,
+                               build_prepared_tree_relocation_runner)
+    from gpuwm.static.corridor import (CORRIDOR_REBUILT_STATICS,
+                                       CORRIDOR_STRIP_FILL_SOURCE,
+                                       ChildStaticsCorridor)
+    from gpuwm.static.lambert import LambertGrid
+    from test_nest_relocation_staging import _scaffold
+
+    scaffold = _scaffold()
+    child_dc = scaffold.domains[1]
+    manual = _manual_config((ScheduledRelocationMove(60.0, 1, 0),))
+    exp = SimpleNamespace(
+        relocation=manual, domains=scaffold.domains, vertical=object(),
+        start_time=None)
+    grid = LambertGrid(
+        ref_lat=35.0, ref_lon=-97.0, truelat1=30.0, truelat2=60.0,
+        stand_lon=-97.0, dx=1000.0, dy=1000.0, e_we=13, e_sn=13)
+    node = SimpleNamespace(cfg=child_dc, grid=grid)
+    model = SimpleNamespace(
+        node=lambda gid: node,
+        schedule=SimpleNamespace(
+            period_ticks=60, clock=SimpleNamespace(tick_den=1)))
+    corridor = ChildStaticsCorridor(
+        geometry={"grid_id": 2, "parent_grid_ratio": 3, "child_nx": 12,
+                  "child_ny": 12, "corridor_nx": 36, "corridor_ny": 36},
+        fields={}, cache_sha256="f" * 64)
+    workspace = object()
+
+    runner = build_prepared_tree_relocation_runner(
+        exp, statics_corridor=corridor, model=model, outdir=tmp_path,
+        radiation_workspace=workspace)
+    assert isinstance(runner, RelocationRunner)
+    assert isinstance(runner.on_child_built,
+                      PreparedTreeRelocationChildPreparer)
+    assert runner.on_child_built.data is None
+    assert runner.on_child_built._radiation_workspace is workspace
+    assert runner.static_provenance == CORRIDOR_REBUILT_STATICS
+    initializer = runner.initializer
+    assert initializer.static_provenance == CORRIDOR_REBUILT_STATICS
+    assert initializer.strip_fill_source == CORRIDOR_STRIP_FILL_SOURCE
+    assert callable(initializer.post_transplant)
+    assert initializer.donor_alignment_frame_width == (
+        int(child_dc.run.spec_bdy_width)
+        + int(getattr(child_dc, "blend_width", 5)))
+
+    # Bounds-only [relocation] stays runnerless, exactly as elsewhere.
+    bounds_only = SimpleNamespace(relocation=RelocationConfig(
+        enabled=True, grid_id=2), domains=scaffold.domains)
+    assert build_prepared_tree_relocation_runner(
+        bounds_only, statics_corridor=corridor, model=model,
+        outdir=tmp_path) is None
+
+    # A follow source with no corridor may not sneak past the preflight
+    # refusal through this constructor.
+    with pytest.raises(ValueError, match="verified statics corridor"):
+        build_prepared_tree_relocation_runner(
+            exp, statics_corridor=None, model=model, outdir=tmp_path)

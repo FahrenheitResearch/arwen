@@ -196,11 +196,14 @@ void health_final(const real* __restrict__ partial,
 // Phase-5 full mutable-state health gate.
 //
 // Pointer/size/status metadata is represented as pairs of uint32 words in
-// the model's sanctioned FP32 scratch pool.  One block owns each descriptor;
-// all descriptors run in this single kernel launch.  The compact result is
-// [uint64 ORed-status, uint64 packed-first-bad], where packed-first-bad is
+// the model's sanctioned FP32 scratch pool.  blockIdx.y selects the
+// descriptor and blockIdx.x a ``chunk`` of contiguous elements within it, so
+// the launch stays one kernel while the largest descriptor is spread over
+// many multiprocessors instead of stalling a single one.  The compact result
+// is [uint64 ORed-status, uint64 packed-first-bad], where packed-first-bad is
 // (field_id << 48) | flat_index.  atomicMin therefore gives deterministic
-// field-first, then index-first attribution independent of block scheduling.
+// field-first, then index-first attribution independent of block scheduling,
+// and therefore independent of how the elements are split into chunks.
 // -------------------------------------------------------------------------
 
 #define VALIDATE_LOWER       1u
@@ -228,9 +231,9 @@ void validate_full_state(
         const unsigned* __restrict__ plane_sizes,
         const unsigned* __restrict__ status_bit_words,
         unsigned long long* __restrict__ result,
-        int nfields)
+        int nfields, unsigned long long chunk)
 {
-    int field = blockIdx.x;
+    int field = blockIdx.y;
     if (field >= nfields) return;
     unsigned long long values_address = words_u64(
         field_pointer_words, field);
@@ -239,12 +242,17 @@ void validate_full_state(
     const real* auxiliary = reinterpret_cast<const real*>(
         words_u64(auxiliary_pointer_words, field));
     unsigned long long size = words_u64(field_size_words, field);
+    // Block-uniform: chunks past the end of a short descriptor leave before
+    // the __syncthreads() below, so the reduction is never split.
+    unsigned long long begin = (unsigned long long)blockIdx.x * chunk;
+    if (begin >= size) return;
+    unsigned long long end = begin + chunk < size ? begin + chunk : size;
     unsigned flags = rule_flags[field];
     real lower = bounds[2 * field];
     real upper = bounds[2 * field + 1];
     bool failed = false;
     unsigned long long first = 0xffffffffffffffffull;
-    for (unsigned long long index = threadIdx.x; index < size;
+    for (unsigned long long index = begin + threadIdx.x; index < end;
          index += blockDim.x) {
         real value = ((flags & VALIDATE_INT32)
                       ? (real)integer_values[index] : values[index]);

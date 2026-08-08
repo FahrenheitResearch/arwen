@@ -44,6 +44,11 @@ def _experiment(domain_count: int, *, nz: int = 49, run_seconds: int = 3600):
     for index in range(domain_count):
         run = SimpleNamespace(
             nz=nz,
+            # Mass-grid extent of the _Grid fakes below.  A real domain run
+            # config carries these; the prebuilt-static loader is shape
+            # checked against them.
+            nx=2,
+            ny=2,
             hybrid_opt=2,
             etac=0.2,
             spec_bdy_width=5,
@@ -848,6 +853,8 @@ def test_mapped_cli_forwards_exact_composed_hierarchy_arguments(
         "grib2_dump": Path("/bin/grib2_dump"),
         "wps_namelist": Path("/case/namelist.wps"),
         "geog_root": Path("/static/WPS_GEOG"),
+        "static_input": None,
+        "static_receipt": None,
         "experiment_config": Path("/case/experiment.toml"),
         "output_root": Path("/output/mapped"),
         "preprocess_backend": "cpu",
@@ -855,4 +862,196 @@ def test_mapped_cli_forwards_exact_composed_hierarchy_arguments(
         "cpu_preprocess_bridge": Path("/bin/libgpuwm_preprocess_cpu.so"),
         "hierarchy_workers": 6,
     }
+    assert '"status": "PASS"' in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Prebuilt hash-bound static cache (the bypass the other adapters already have)
+# ---------------------------------------------------------------------------
+
+def _install_prebuilt_static(monkeypatch, tmp_path, args, *, fields):
+    """Point the run at a prebuilt native-static cache and record the calls.
+
+    verify_native_static_receipt / load_native_static_cache are the already
+    certified native_wrf_contract primitives, covered in
+    tests/test_native_wrf_contract.py.  What is under test here is that
+    prepare_mapped_wrf routes to them at all, with the right arguments,
+    instead of rebuilding geography from WPS_GEOG.
+    """
+
+    static_npz = tmp_path / "prior-native-static.npz"
+    static_npz.write_bytes(b"prebuilt-static-npz")
+    receipt_path = tmp_path / "prior-geometry-receipt.json"
+    receipt_path.write_text("{}", encoding="utf-8")
+    receipt = {"schema": "gpuwm-native-static-direct-v1", "status": "PASS"}
+    seen = {"verify": [], "load": []}
+
+    def verify(actual_receipt, actual_static, grid, cfg):
+        seen["verify"].append((actual_receipt, actual_static, grid, cfg))
+        return receipt
+
+    def load(path, grid, ny, nx):
+        seen["load"].append((path, grid, ny, nx))
+        return dict(fields)
+
+    monkeypatch.setattr(mapped_direct, "verify_native_static_receipt", verify)
+    monkeypatch.setattr(mapped_direct, "load_native_static_cache", load)
+    args["static_input"] = static_npz
+    args["static_receipt"] = receipt_path
+    return SimpleNamespace(
+        npz=static_npz, receipt_path=receipt_path, receipt=receipt, seen=seen)
+
+
+def test_prebuilt_static_cache_replaces_the_wps_geog_rebuild(
+        monkeypatch, tmp_path):
+    args, calls, expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu",
+    )
+    prebuilt = _install_prebuilt_static(
+        monkeypatch, tmp_path, args, fields=expected.static)
+
+    proof = mapped_direct.prepare_mapped_wrf(**args)
+
+    # The WPS_GEOG rebuild did not happen at all.
+    assert calls["build_static"] == 0
+    assert len(prebuilt.seen["verify"]) == 1
+    assert len(prebuilt.seen["load"]) == 1
+    # The receipt is verified against the same resolved cache that is loaded,
+    # and against the target grid -- not merely read.
+    verify_receipt, verify_static, verify_grid, _cfg = prebuilt.seen["verify"][0]
+    assert verify_receipt == prebuilt.receipt_path.resolve()
+    assert verify_static == prebuilt.npz.resolve()
+    assert verify_grid is expected.grids[0]
+    load_path, load_grid, _ny, _nx = prebuilt.seen["load"][0]
+    assert load_path == prebuilt.npz.resolve()
+    assert load_grid is expected.grids[0]
+
+    execution = proof["execution_inputs"]
+    assert execution["root_static_provider"] == "prebuilt-hash-bound-cache"
+    assert execution["root_static_receipt"] == prebuilt.receipt
+    # geog_root is still bound: the proof names the resolved datasets, and a
+    # child domain would still need the tree.
+    assert execution["geog_root"] == str(args["geog_root"].resolve())
+    assert execution["geog_datasets"]
+    # The run still publishes its own cache, so the next cycle can reuse it.
+    assert (args["output_root"] / "native-static.npz").is_file()
+    assert (args["output_root"] / "geometry-receipt.json").is_file()
+
+
+def test_default_path_still_builds_from_geog_and_names_the_provider(
+        monkeypatch, tmp_path):
+    args, calls, _expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu",
+    )
+
+    proof = mapped_direct.prepare_mapped_wrf(**args)
+
+    assert calls["build_static"] == 1
+    execution = proof["execution_inputs"]
+    assert execution["root_static_provider"] == "native-wps-geog"
+    assert execution["root_static_receipt"] is None
+
+
+def test_prebuilt_static_cache_is_recorded_in_the_hierarchy_proof(
+        monkeypatch, tmp_path):
+    args, calls, expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=2, backend="cpu",
+    )
+    prebuilt = _install_prebuilt_static(
+        monkeypatch, tmp_path, args, fields=expected.static)
+
+    proof = mapped_direct.prepare_mapped_wrf(**args)
+
+    assert proof["schema"] == mapped_direct.HIERARCHY_PROOF_SCHEMA
+    assert calls["build_static"] == 0
+    execution = proof["execution_inputs"]
+    assert execution["root_static_provider"] == "prebuilt-hash-bound-cache"
+    assert execution["root_static_receipt"] == prebuilt.receipt
+    # The loaded root static is what the children are seeded from.
+    assert calls["hierarchy"][0]["root_static_fields"] == expected.static
+
+
+def test_static_input_and_receipt_must_be_supplied_together(
+        monkeypatch, tmp_path):
+    args, calls, _expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu",
+    )
+    args["static_input"] = tmp_path / "prior-native-static.npz"
+
+    with pytest.raises(ValueError, match="must be supplied together"):
+        mapped_direct.prepare_mapped_wrf(**args)
+    assert calls["build_static"] == 0
+
+    del args["static_input"]
+    args["static_receipt"] = tmp_path / "prior-geometry-receipt.json"
+    with pytest.raises(ValueError, match="must be supplied together"):
+        mapped_direct.prepare_mapped_wrf(**args)
+
+
+def test_absent_prebuilt_static_fails_closed_before_any_work(
+        monkeypatch, tmp_path):
+    args, calls, _expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu",
+    )
+    args["static_input"] = tmp_path / "does-not-exist.npz"
+    args["static_receipt"] = tmp_path / "also-missing.json"
+
+    with pytest.raises(FileNotFoundError):
+        mapped_direct.prepare_mapped_wrf(**args)
+    assert calls["build_static"] == 0
+    assert not args["output_root"].exists()
+
+
+def test_mapped_cli_rejects_a_half_supplied_static_cache(monkeypatch, capsys):
+    monkeypatch.setattr(
+        mapped_direct, "load_mapping", lambda _path: {"format": "netcdf"})
+    monkeypatch.setattr(
+        mapped_direct, "prepare_mapped_wrf",
+        lambda **_kwargs: pytest.fail("must not prepare"))
+    argv = [
+        "--source-format", "netcdf",
+        "--composition", "/case/composition.json",
+        "--mapping", "/case/mapping.json",
+        "--input", "/source/f000.nc",
+        "--input-manifest", "/case/input-manifest.json",
+        "--input-manifest-sha256", _DIGEST,
+        "--wps-namelist", "/case/namelist.wps",
+        "--geog-root", "/static/WPS_GEOG",
+        "--experiment-config", "/case/experiment.toml",
+        "--output-root", "/output/mapped",
+        "--static-input", "/prior/native-static.npz",
+    ]
+
+    with pytest.raises(SystemExit):
+        mapped_direct.main(argv)
+    assert "--static-input and --static-receipt" in capsys.readouterr().err
+
+
+def test_mapped_cli_forwards_the_prebuilt_static_pair(monkeypatch, capsys):
+    observed = {}
+    monkeypatch.setattr(
+        mapped_direct, "load_mapping", lambda _path: {"format": "netcdf"})
+    monkeypatch.setattr(
+        mapped_direct, "prepare_mapped_wrf",
+        lambda **kwargs: observed.update(kwargs) or {"status": "PASS"})
+    argv = [
+        "--source-format", "netcdf",
+        "--composition", "/case/composition.json",
+        "--mapping", "/case/mapping.json",
+        "--input", "/source/f000.nc",
+        "--input-manifest", "/case/input-manifest.json",
+        "--input-manifest-sha256", _DIGEST,
+        "--wps-namelist", "/case/namelist.wps",
+        "--geog-root", "/static/WPS_GEOG",
+        "--experiment-config", "/case/experiment.toml",
+        "--output-root", "/output/mapped",
+        "--static-input", "/prior/native-static.npz",
+        "--static-receipt", "/prior/geometry-receipt.json",
+    ]
+
+    assert mapped_direct.main(argv) == 0
+    assert observed["static_input"] == Path("/prior/native-static.npz")
+    assert observed["static_receipt"] == Path("/prior/geometry-receipt.json")
+    # --geog-root is still mandatory on this route.
+    assert observed["geog_root"] == Path("/static/WPS_GEOG")
     assert '"status": "PASS"' in capsys.readouterr().out

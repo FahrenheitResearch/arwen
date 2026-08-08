@@ -756,28 +756,38 @@ __device__ int morr_sediment_nstep(
         real morr_ag, real morr_bg, real morr_rhog)
 {
     real max_courant = 0.0f;
-    for (int kind = 0; kind < 5; ++kind) {
-        const real* mass = kind == 0 ? qc : (kind == 1 ? qr :
-                           (kind == 2 ? qi : (kind == 3 ? qs : qg)));
-        const real* number = kind == 0 ? cloud_nc_for_sedimentation :
-                             (kind == 1 ? nr :
-                             (kind == 2 ? ni : (kind == 3 ? ns : ng)));
-        real vm_above = 0.0f, vn_above = 0.0f;
-        for (int k = nz - 1; k >= 0; --k) {
-            size_t idx = IDX3(k, j, i);
-            real rhoa = fabsf(rho_fixed[idx]);
-            real temp = theta[idx] * pii[idx];
+    // Level-outer: rho, theta, pii and dz are one load per level instead of
+    // one per level per category.  The reduction is a chain of fmaxf, which
+    // is exactly associative and commutative -- max rounds nothing, and
+    // fmaxf(NaN, x) == x makes NaN a two-sided identity -- so regrouping it
+    // by level cannot move a bit.  Each category still walks downward, so
+    // its empty-level speed rebound is unchanged; the five carried pairs
+    // stay in registers because the category loop is fully unrolled.
+    real vm_above[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    real vn_above[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    for (int k = nz - 1; k >= 0; --k) {
+        size_t idx = IDX3(k, j, i);
+        real rhoa = fabsf(rho_fixed[idx]);
+        real temp = theta[idx] * pii[idx];
+        real dzk = dz[idx];
+#pragma unroll
+        for (int kind = 0; kind < 5; ++kind) {
+            const real* mass = kind == 0 ? qc : (kind == 1 ? qr :
+                               (kind == 2 ? qi : (kind == 3 ? qs : qg)));
+            const real* number = kind == 0 ? cloud_nc_for_sedimentation :
+                                 (kind == 1 ? nr :
+                                 (kind == 2 ? ni : (kind == 3 ? ns : ng)));
             real nn, vm, vn;
             morr_terminal_velocity(kind, fmaxf(mass[idx], 0.0f),
                                    number[idx], rhoa, temp, &nn, &vm, &vn,
                                    morr_ag, morr_bg, morr_rhog);
             if (k < nz - 1) {
-                if (vm < 1.0e-10f) vm = vm_above;
-                if (vn < 1.0e-10f) vn = vn_above;
+                if (vm < 1.0e-10f) vm = vm_above[kind];
+                if (vn < 1.0e-10f) vn = vn_above[kind];
             }
-            vm_above = vm; vn_above = vn;
+            vm_above[kind] = vm; vn_above[kind] = vn;
             max_courant = fmaxf(max_courant,
-                                fmaxf(vm, vn) * dt / dz[idx]);
+                                fmaxf(vm, vn) * dt / dzk);
         }
     }
     return max((int)(max_courant + 1.0f), 1);
@@ -794,6 +804,7 @@ __device__ __forceinline__ real morr_sediment_pair(
     real qd[KMAX], nd[KMAX], nd0[KMAX];
     real vm[KMAX], vn[KMAX];
     real vm_above = 0.0f, vn_above = 0.0f;
+    int ktop = -1;
     for (int k = nz - 1; k >= 0; --k) {
         size_t idx = IDX3(k, j, i);
         real temp = theta[idx] * pii[idx];
@@ -810,6 +821,10 @@ __device__ __forceinline__ real morr_sediment_pair(
             if (vn[k] < 1.0e-10f) vn[k] = vn_above;
         }
         vm_above = vm[k]; vn_above = vn[k];
+        // Highest level this category can fall from.  The rebound above
+        // makes the speeds non-zero all the way down from it, so the
+        // sedimenting span is exactly [0, ktop].
+        if (ktop < 0 && (vm[k] != 0.0f || vn[k] != 0.0f)) ktop = k;
         qd[k] = q * rhoa;
         // DLAM rebound changes fall speed only; flux the clipped prognostic
         // number moment itself (WRF 3376-3432).
@@ -818,18 +833,19 @@ __device__ __forceinline__ real morr_sediment_pair(
     }
     real dts = dt / (real)nstep;
     real exported = 0.0f;
-    int top = nz - 1;
-    for (int nsub = 0; nsub < nstep; ++nsub) {
+    // Above ktop both speeds are exactly zero, so every flux there is
+    // 0*qd == +0 on a quantity that cannot be negative: those levels are the
+    // identity and are skipped.  Entering the span with a zero inflow rather
+    // than a separate top statement is bit-exact -- (0-x) == -x and
+    // ((0-x)*d)/z == -((x*d)/z) -- and keeps the k==0 surface export on the
+    // one path that reaches the ground, which a span top of 0 shares.
+    for (int nsub = 0; ktop >= 0 && nsub < nstep; ++nsub) {
         // The update walks downward, so only the flux through the interface
         // above the current level must survive.  Carrying those two FP32
         // values preserves every per-level expression while avoiding two
         // KMAX local arrays (512 bytes/thread in the d01 specialization).
-        real fm_above = vm[top] * qd[top];
-        real fn_above = vn[top] * nd[top];
-        size_t idtop = IDX3(top, j, i);
-        qd[top] -= fm_above * dts / dz[idtop];
-        nd[top] -= fn_above * dts / dz[idtop];
-        for (int k = top - 1; k >= 0; --k) {
+        real fm_above = 0.0f, fn_above = 0.0f;
+        for (int k = ktop; k >= 0; --k) {
             size_t idx = IDX3(k, j, i);
             real fm_here = vm[k] * qd[k];
             real fn_here = vn[k] * nd[k];

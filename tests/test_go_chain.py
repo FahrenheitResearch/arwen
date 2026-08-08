@@ -1253,3 +1253,98 @@ def test_go_carries_the_configs_forecast_lead_into_its_fetch(tmp_path):
         _emit(tmp_path, "plain"), outdir=tmp_path / "go-plain")
     assert plain["forecast_start_hour"] == 0
     assert "--forecast-start-hour" not in go_cli.fetch_command(plain)
+
+
+def test_go_derives_the_statics_corridor_from_a_follow_config(tmp_path,
+                                                              gfs_config):
+    """A config that declares a [relocation] follow source gets
+    --statics-corridor on the prepare stage; every other config's
+    prepare line is byte-for-byte what it always was."""
+
+    two_domain = tmp_path / "follow.toml"
+    two_domain.write_text(_write_follow_tree_config(gfs_config),
+                          encoding="utf-8")
+    plan = go_cli.plan_from_config(two_domain, outdir=tmp_path / "go",
+                                   allow_tree=True)
+    assert plan["statics_corridor"] is True
+    command = go_cli.prepare_command(
+        plan, tmp_path / "bridge", manifest=tmp_path / "m.json",
+        manifest_sha256="a" * 64, cycle_stamp="2026-07-29_18:00:00",
+        geog_root=tmp_path / "geog")
+    assert "--statics-corridor" in command
+
+    plain = go_cli.plan_from_config(gfs_config, outdir=tmp_path / "go2")
+    assert plain["statics_corridor"] is False
+    unchanged = go_cli.prepare_command(
+        plain, tmp_path / "bridge", manifest=tmp_path / "m.json",
+        manifest_sha256="a" * 64, cycle_stamp="2026-07-29_18:00:00",
+        geog_root=tmp_path / "geog")
+    assert "--statics-corridor" not in unchanged
+
+
+def _write_follow_tree_config(gfs_config) -> str:
+    """The wizard's own single-domain emission, grown into a two-domain
+    follow tree: a child plus a [relocation] itinerary on it."""
+
+    from gpuwm.experiment import load_experiment
+
+    base = load_experiment(gfs_config)
+    dt = float(base.root.run.dt)
+    text = gfs_config.read_text(encoding="utf-8")
+    return text + f"""
+[[domain]]
+grid_id = 2
+parent_id = 1
+i_parent_start = 30
+j_parent_start = 30
+parent_grid_ratio = 3
+parent_time_step_ratio = 3
+nx = 45
+ny = 45
+history_interval_s = 3600.0
+
+[relocation]
+enabled = true
+grid_id = 2
+
+[[relocation.move]]
+at_seconds = {dt * 2:.1f}
+di_parent_cells = 1
+dj_parent_cells = 0
+"""
+
+
+def test_the_printed_rw_wps_line_and_go_agree_on_the_corridor(tmp_path,
+                                                              gfs_config):
+    """The pasted manual line and go's driven line derive the corridor
+    flag from the same config predicate, so neither can drift: both
+    carry --statics-corridor for a follow config."""
+
+    from gpuwm.fetch import author_gfs_front_door_manifest
+
+    config = tmp_path / "follow.toml"
+    config.write_text(_write_follow_tree_config(gfs_config),
+                      encoding="utf-8")
+    config.with_suffix(".namelist.wps").write_bytes(
+        gfs_config.with_suffix(".namelist.wps").read_bytes())
+    plan = go_cli.plan_from_config(config, outdir=tmp_path / "go",
+                                   allow_tree=True)
+    bridge = tmp_path / "gfs_grib2_bridge"
+    bridge.write_bytes(b"stub")
+    _stage_a_fetched_directory(plan["data"], config, plan["authority"])
+
+    printed: list[str] = []
+    manifest, digest = author_gfs_front_door_manifest(
+        out=plan["data"], bridge=bridge,
+        wps_namelist=plan["authority"] / "namelist.wps",
+        experiment_config=plan["authority"] / "experiment.toml",
+        progress=printed.append)
+    theirs = _printed_flags(
+        [line for block in printed for line in str(block).splitlines()])
+    mine = _flags(go_cli.prepare_command(
+        plan, bridge, manifest=manifest, manifest_sha256=digest,
+        cycle_stamp="2026-07-29_18:00:00",
+        geog_root=Path(theirs["--geog-root"])))
+    assert theirs.get("--statics-corridor") is True
+    assert mine.get("--statics-corridor") is True
+    assert set(mine) == set(theirs)

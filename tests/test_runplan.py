@@ -237,6 +237,75 @@ def test_a_schema_default_the_config_did_not_spell_is_reported(tmp_path):
     assert {"feedback", "blend_width", "spec_bdy_width"} <= defaults
 
 
+_PROJECTION_TOML = """
+[projection]
+map_proj = "lambert"
+ref_lat = 35.0
+ref_lon = -97.0
+truelat1 = 30.0
+truelat2 = 60.0
+stand_lon = -97.0
+"""
+
+
+def test_a_field_authored_as_its_own_table_is_not_a_schema_default(tmp_path):
+    """The author wrote it; ``--resolve`` must not say the schema did.
+
+    ``projection``, ``relocation`` and ``perturbation`` are
+    ``ExperimentConfig`` fields written as TOP-LEVEL tables, and the
+    spelled-key check read only inside ``[experiment]``.  A moving-nest
+    plan was therefore told ``relocation`` was a schema default and handed
+    the schema's value -- ``enabled = false`` -- for a nest that follows a
+    storm.  Both directions are asserted, because a check that reported
+    nothing would also pass the first half.
+    """
+
+    from test_case_data import _EXPERIMENT_TOML
+
+    def _defaults(experiment_toml):
+        config = make_case_toml(tmp_path, experiment=experiment_toml)
+        resolution, _exp, _ = resolve_plan(
+            load_plan(_write_plan(tmp_path, config, tmp_path / "run")))
+        return {entry["key"]
+                for entry in resolution["automatic_resolutions"]
+                if entry.get("basis") == "schema_default"
+                and entry["scope"] == "experiment"}
+
+    assert "projection" in _defaults(_EXPERIMENT_TOML)
+    spelled = _defaults(_EXPERIMENT_TOML + _PROJECTION_TOML)
+    assert "projection" not in spelled
+    # Still reported for the tables this config genuinely does not carry.
+    assert {"relocation", "perturbation"} <= spelled
+
+
+def test_the_spelled_check_covers_every_table_a_field_can_be_written_as():
+    """Directly, on the one function, for the tables the fixture cannot carry.
+
+    ``[relocation]`` needs a validated two-domain tree to load, so the
+    end-to-end fixture above cannot spell it; the mechanism is the same
+    one, so it is asserted here where the document can be written by hand.
+    """
+
+    from gpuwm.runplan import _schema_default_resolutions
+
+    experiment = {"name": "x", "start_time": None, "run_seconds": 1.0,
+                  "restart_interval_s": 0.0}
+    document = {"experiment": experiment}
+    bare = {entry["key"]
+            for entry in _schema_default_resolutions(document)}
+    assert {"relocation", "projection", "perturbation"} <= bare
+
+    authored = {entry["key"] for entry in _schema_default_resolutions({
+        "experiment": experiment,
+        "relocation": {"enabled": True, "grid_id": 2},
+        "projection": {"map_proj": "lambert"},
+        "perturbation": {"bubbles": []},
+    })}
+    assert not ({"relocation", "projection", "perturbation"} & authored)
+    # An [experiment] key still resolves the same way it always did.
+    assert "blend_width" in authored
+
+
 def test_a_library_warning_reaches_the_stream_as_fields(tmp_path):
     captured: list[dict[str, str]] = []
     from gpuwm.runplan import collect_warnings
@@ -805,25 +874,27 @@ def test_the_wizard_writes_every_file_the_hrrr_route_reads(tmp_path):
         assert path.is_file(), role
 
 
-def test_the_prepared_route_refuses_a_multi_domain_hrrr_plan(tmp_path):
-    """Naming the limitation, and the chain that does run it."""
+def test_the_prepared_route_now_drives_a_multi_domain_hrrr_plan(tmp_path):
+    """This asserted a refusal until the tree chain was wired.
+
+    It named the two things it could not drive -- the hierarchy stage
+    and the tree runner -- so the honest replacement is that both are
+    now on the path.  The chain itself is covered end to end in
+    tests/test_runplan_hrrr_tree.py; this is the negative-control side:
+    a nested HRRR plan no longer stops at a sentence.
+    """
+
+    import inspect
 
     from gpuwm.runplan import _hrrr_chain
 
-    plan = load_plan(_hrrr_plan(tmp_path, tmp_path / "run"))
-
-    class _Exp:
-        domains = (object(), object())
-
-    with pytest.raises(PlanError) as refusal:
-        _hrrr_chain(plan, config_path=tmp_path / "c.toml", exp=_Exp(),
-                    observer=None, run_dir=tmp_path / "run")
-    text = str(refusal.value)
-    assert "2-domain tree" in text
-    assert "single-domain only" in text
-    # It names the chain that DOES run a tree rather than just refusing.
-    assert "hrrr_hierarchy_direct" in text
-    assert "prepared-tree-forecast" in text
+    source = inspect.getsource(_hrrr_chain)
+    assert "single-domain only" not in source
+    # The branch is taken on domain count, after the shared root
+    # preparation rather than before it.
+    assert "if len(exp.domains) > 1:" in source
+    assert "_hrrr_hierarchy_stage(" in source
+    assert "_hrrr_tree_forecast(" in source
 
 
 def test_a_source_the_prepared_route_cannot_drive_is_refused(tmp_path):

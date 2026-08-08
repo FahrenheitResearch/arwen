@@ -406,10 +406,11 @@ def _build_footprint_statics(grid, catalog, child_dc):
     return fields, selection, landuse_attrs, highres_applied
 
 
-def real_relocation_initializer(*, catalog, vertical, child_config,
+def real_relocation_initializer(*, catalog=None, vertical, child_config,
                                 reference_grid, reference_i_parent_start,
                                 reference_j_parent_start,
-                                drift_tolerance_deg: float = 1.0e-8):
+                                drift_tolerance_deg: float = 1.0e-8,
+                                statics_builder=None):
     """Build the per-footprint rebuild seam for one real-data child.
 
     ``reference_grid`` is the child's grid as originally placed
@@ -423,12 +424,31 @@ def real_relocation_initializer(*, catalog, vertical, child_config,
     instrument to the region where its invariant is defined
     (``donor_alignment_frame_width``), and installs the blend-frame
     rebase as its ``post_transplant`` hook.
+
+    WHERE THE STATICS COME FROM is the one route-owned seam.  The
+    case-data route holds its input ``catalog`` (the GEOG source) and
+    rebuilds per footprint through ``build_static_for_domain``; the
+    prepared routes hold no ingest inputs and pass ``statics_builder``
+    instead -- a callable ``(grid, new_dc) -> fields`` (the sealed
+    statics-corridor crop, :func:`gpuwm.static.corridor
+    .corridor_footprint_statics_builder`) carrying ``static_provenance``
+    and ``source_label`` attributes for the receipt.  Everything after
+    the statics -- the SINT fill, the t=0 terrain adjustment, the
+    rebase hook -- is one implementation, never forked per route.
     """
     if not hasattr(child_config, "run") or not hasattr(child_config,
                                                        "grid_id"):
         raise TypeError(
             "child_config must be the child's DomainConfig (an object "
             "with grid_id, parent_grid_ratio and a run config)")
+    if (catalog is None) == (statics_builder is None):
+        raise TypeError(
+            "real_relocation_initializer takes exactly one statics "
+            "source: the case-data route's input catalog OR a "
+            "statics_builder (the prepared routes' sealed-corridor "
+            "crop); a rebuild with neither has nothing to build "
+            "footprint statics from, and with both one would silently "
+            "shadow the other")
     cfg = child_config.run
     ratio = int(child_config.parent_grid_ratio)
     ref_i = int(reference_i_parent_start)
@@ -471,8 +491,16 @@ def real_relocation_initializer(*, catalog, vertical, child_config,
                 "grid does not belong to this tree")
 
         started = time.perf_counter()
-        static_fields, selection, landuse_attrs, highres_applied = \
-            _build_footprint_statics(grid, catalog, new_dc)
+        if statics_builder is None:
+            static_fields, selection, landuse_attrs, highres_applied = \
+                _build_footprint_statics(grid, catalog, new_dc)
+            static_source = str(selection.root)
+        else:
+            static_fields = statics_builder(grid, new_dc)
+            static_source = str(getattr(
+                statics_builder, "source_label", "statics_builder"))
+            highres_applied = bool(getattr(
+                statics_builder, "highres_applied", False))
         statics_seconds = time.perf_counter() - started
 
         extra = {}
@@ -520,8 +548,8 @@ def real_relocation_initializer(*, catalog, vertical, child_config,
 
         receipt = {
             "initializer": "real_relocation_initializer",
-            "static_source": str(selection.root),
-            "static_provenance": REAL_DATA_FOOTPRINT_REBUILT_STATICS,
+            "static_source": static_source,
+            "static_provenance": initialize.static_provenance,
             "highres_applied": bool(highres_applied),
             "placement_translation_child_cells": [shift_i, shift_j],
             "translation_drift_deg": float(drift),
@@ -547,8 +575,15 @@ def real_relocation_initializer(*, catalog, vertical, child_config,
             source_state=source_state, target_state=target_state,
             plan=plan, cfg=cfg)
 
-    initialize.static_provenance = REAL_DATA_FOOTPRINT_REBUILT_STATICS
-    initialize.strip_fill_source = REAL_DATA_STRIP_FILL_SOURCE
+    if statics_builder is None:
+        initialize.static_provenance = REAL_DATA_FOOTPRINT_REBUILT_STATICS
+        initialize.strip_fill_source = REAL_DATA_STRIP_FILL_SOURCE
+    else:
+        initialize.static_provenance = str(getattr(
+            statics_builder, "static_provenance",
+            REAL_DATA_FOOTPRINT_REBUILT_STATICS))
+        from gpuwm.static.corridor import CORRIDOR_STRIP_FILL_SOURCE
+        initialize.strip_fill_source = CORRIDOR_STRIP_FILL_SOURCE
     # The donor-alignment instrument compares SINT/analytic base fields
     # that are placement-invariant only OUTSIDE both placements' blend
     # frames; inside them the t=0 machinery blends toward the parent at

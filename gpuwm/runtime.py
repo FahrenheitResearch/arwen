@@ -671,7 +671,8 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     from gpuwm.core.landuse import (initialize_landuse,
                                     reconciled_soil_category)
     from gpuwm.core.physics import initialize_physics
-    from gpuwm.ingest.soil_contract import MAPPED_SOIL_TEMPERATURE
+    from gpuwm.ingest.soil import (reconciler_soil_temperature,
+                                   reconciler_sst)
 
     times = tuple(forcing_times)
     if not times or times[0] != start_time:
@@ -800,15 +801,19 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     # and LSMINIT (phys/module_sf_noahdrv.F) derives SH2O afterwards.  Ours
     # ran the other way round, because initialize_landuse below needs this
     # call's own outputs (snow, xice, TSLB) and therefore cannot precede it.
+    # Evidence spellings come from the one per-source table in
+    # gpuwm/ingest/soil.py, so this root call and the nested-child call in
+    # gpuwm/ingest/nest_init.py cannot drift apart again: an inline chain
+    # here knew only the mapped and classic per-layer names, which is the
+    # same gap that aborted the native-HRRR and nested-GFS lanes.
     reconciled_soil_type = reconciled_soil_category(
         static["LU_INDEX"], soil_type=static["SCT_DOM"],
         xice=soil_fields.get("XICE", 0.0),
         iswater=int(landuse_attrs["ISWATER"]),
         islake=int(landuse_attrs["ISLAKE"]),
         isice=int(landuse_attrs["ISICE"]),
-        soil_temperature=soil_fields.get(MAPPED_SOIL_TEMPERATURE,
-                                         soil_fields.get("ST000007")),
-        sst=soil_fields.get("SST"))
+        soil_temperature=reconciler_soil_temperature(soil_fields),
+        sst=reconciler_sst(soil_fields))
     soil = preprocess_land_surface_soil(
         soil_fields, sf_surface_physics=int(cfg.sf_surface_physics),
         soil_type=reconciled_soil_type,
@@ -1174,7 +1179,8 @@ def _relocation_host(value) -> np.ndarray:
 def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
                                          data: CaseDataConfig, model,
                                          initialized, child_dc, parent_node,
-                                         land) -> float:
+                                         land, landuse_attrs=None,
+                                         radiation_factory=None) -> float:
     """Rebuild one child's physics driver over a supplied land state.
 
     The operation both mid-run child events need, and the reason they can
@@ -1193,6 +1199,16 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
     as it did when this lived inside the relocation preparer.
     Accumulators are NOT here: they are re-initialised at the new
     footprint, and both callers' receipts say so.
+
+    ``landuse_attrs`` and ``radiation_factory`` are the two route seams:
+    ``None`` (every case-data caller) derives both from ``data`` exactly
+    as before -- the GEOG selection's land-use identity and the shared
+    child radiation adapter.  The prepared tree route, which has no
+    ``CaseDataConfig``, passes its own native land-use identity and a
+    factory reproducing its t=0 radiation wiring
+    (``radiation_factory(child_dc, state, lat, lon) -> callable|None``;
+    ``None`` lets ``initialize_physics`` build the scheme from the
+    RunConfig, byte-for-byte the prepared t=0 path).
 
     Returns the wall seconds the rebuild took.
     """
@@ -1215,16 +1231,22 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
     vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], now)
     lai = monthly_interp_to_date(static["LAI12M"], now)
     lat, lon = grid.latlon_mass()
-    parent_physics = getattr(parent_node.state, "physics", None)
-    radiation = _child_radiation_adapter(
-        exp, data, child_dc, state, lat, lon,
-        radiation_workspace=(
-            model._activation_context or {}).get("radiation_workspace"),
-        radiation_parent=(None if parent_physics is None
-                          else parent_physics.radiation_callable))
-    geog_selection = GeogSelection.from_case_data(
-        data, domain_id=int(child_dc.grid_id))
-    attrs = geog_selection.landuse_global_attrs()
+    if radiation_factory is None:
+        parent_physics = getattr(parent_node.state, "physics", None)
+        radiation = _child_radiation_adapter(
+            exp, data, child_dc, state, lat, lon,
+            radiation_workspace=(
+                model._activation_context or {}).get("radiation_workspace"),
+            radiation_parent=(None if parent_physics is None
+                              else parent_physics.radiation_callable))
+    else:
+        radiation = radiation_factory(child_dc, state, lat, lon)
+    if landuse_attrs is None:
+        geog_selection = GeogSelection.from_case_data(
+            data, domain_id=int(child_dc.grid_id))
+        attrs = geog_selection.landuse_global_attrs()
+    else:
+        attrs = dict(landuse_attrs)
     landuse = initialize_landuse(
         static["LU_INDEX"], soil_type=static["SCT_DOM"],
         landmask=static["LANDMASK"],
@@ -1490,6 +1512,118 @@ def build_real_relocation_runner(exp: ExperimentConfig,
         exp, schedule=model.schedule, on_child_built=preparer,
         initializer=initializer,
         static_provenance=REAL_DATA_FOOTPRINT_REBUILT_STATICS,
+        receipts_path=Path(outdir) / "relocation_receipts.json")
+
+
+class PreparedTreeRelocationChildPreparer(RealRelocationChildPreparer):
+    """The prepared tree route's relocation preparer.
+
+    The capture / overlap-statics assertion / donor-fill machinery is
+    the case-data preparer's, inherited unchanged -- the two routes
+    differ only in the seams the case route derives from its
+    ``CaseDataConfig``:
+
+    * the driver rebuild uses the NATIVE land-use identity the prepared
+      route already binds at t=0 and lets ``initialize_physics`` build
+      radiation from the RunConfig (byte-for-byte the t=0
+      ``initialize_prepared_physics`` wiring), then re-attaches the
+      shared radiation workspace exactly as the tree runner does at
+      start;
+    * ``after_move`` refreshes the tree runner's SimpleNamespace
+      prepared-case bookkeeping (the case route's is a dataclass), so
+      the NEXT move's overlap-statics assertion holds the rebuilt
+      footprint's statics, not the t=0 crop.
+    """
+
+    def __init__(self, *, exp: ExperimentConfig, model,
+                 radiation_workspace=None):
+        self.exp = exp
+        self.data = None
+        self.model = model
+        self.writers = None
+        self.last_receipt = None
+        self._captured = None
+        self._pending_refresh = None
+        self._radiation_workspace = radiation_workspace
+
+    def _rebuild_driver(self, initialized, new_dc, parent_node,
+                        moved) -> float:
+        from gpuwm.native_wrf_contract import NATIVE_LANDUSE_IDENTITY
+
+        seconds = rebuild_child_driver_from_land_state(
+            exp=self.exp, data=None, model=self.model,
+            initialized=initialized, child_dc=new_dc,
+            parent_node=parent_node, land=moved,
+            landuse_attrs=dict(NATIVE_LANDUSE_IDENTITY),
+            radiation_factory=lambda _dc, _state, _lat, _lon: None)
+        driver = getattr(initialized.state, "physics", None)
+        radiation = (None if driver is None
+                     else driver.radiation_callable)
+        if radiation is not None and self._radiation_workspace is not None:
+            radiation.column_chunk = self._radiation_workspace.column_chunk
+            radiation.chunk_workspace = self._radiation_workspace
+        return seconds
+
+    def after_move(self, node) -> None:
+        pending = self._pending_refresh
+        self._pending_refresh = None
+        if pending is None:
+            return
+        grid_id, grid, static = pending
+        case = self.model._prepared_by_grid_id.get(grid_id)
+        if case is not None:
+            # The tree runner's bookkeeping is a mutable SimpleNamespace;
+            # refresh in place so the next capture_outgoing snapshots the
+            # statics the child actually sits on.
+            case.static_fields = dict(static)
+            case.geog_selection = None
+        if self.writers is not None:
+            self.writers.refresh_domain(grid_id, grid=grid,
+                                        static_fields=static)
+
+
+def build_prepared_tree_relocation_runner(exp: ExperimentConfig, *,
+                                          statics_corridor, model, outdir,
+                                          radiation_workspace=None):
+    """Wire the prepared tree route's RelocationRunner, or ``None``.
+
+    The prepared-route counterpart of
+    :func:`build_real_relocation_runner`: same runner, same initializer,
+    same preparer seams -- only the statics source differs (the sealed
+    corridor crop instead of a per-footprint GEOG build), which is what
+    lifts this route's follow-source refusal WHEN a verified corridor is
+    on hand.  ``None`` for bounds-only ``[relocation]`` exactly as on
+    the case-data route.
+    """
+    relocation = exp.relocation
+    if not (relocation.enabled and (relocation.follow is not None
+                                    or relocation.moves)):
+        return None
+    if statics_corridor is None:
+        raise ValueError(
+            "build_prepared_tree_relocation_runner requires the verified "
+            "statics corridor; the preflight refusal owns the "
+            "corridor-less case and must not be bypassed here")
+    from gpuwm.core.relocation_runner import RelocationRunner
+    from gpuwm.ingest.relocation_init import real_relocation_initializer
+    from gpuwm.static.corridor import (CORRIDOR_REBUILT_STATICS,
+                                       corridor_footprint_statics_builder)
+
+    node = model.node(int(relocation.grid_id))
+    child_config = node.cfg
+    initializer = real_relocation_initializer(
+        vertical=exp.vertical, child_config=child_config,
+        reference_grid=node.grid,
+        reference_i_parent_start=child_config.i_parent_start,
+        reference_j_parent_start=child_config.j_parent_start,
+        statics_builder=corridor_footprint_statics_builder(
+            statics_corridor))
+    preparer = PreparedTreeRelocationChildPreparer(
+        exp=exp, model=model, radiation_workspace=radiation_workspace)
+    return RelocationRunner.from_experiment(
+        exp, schedule=model.schedule, on_child_built=preparer,
+        initializer=initializer,
+        static_provenance=CORRIDOR_REBUILT_STATICS,
         receipts_path=Path(outdir) / "relocation_receipts.json")
 
 

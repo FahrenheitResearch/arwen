@@ -389,15 +389,19 @@ class GeogDataset:
                      * self.index.tile_x + 1)
         y_origins = ((y - 1) // self.index.tile_y
                      * self.index.tile_y + 1)
-        mask = np.zeros((y.size, x.size), dtype=bool)
-        for j, (ys, inside_y) in enumerate(zip(y_origins, y_inside)):
-            if not inside_y:
-                continue
-            mask[j] = x_inside & np.fromiter(
-                ((int(xs), int(ys)) in self.tiles for xs in x_origins),
-                dtype=bool, count=x.size,
-            )
-        return mask
+        # Tile presence depends only on the (x_origin, y_origin) pair, and a
+        # model window spans a couple of dozen distinct origins at most.  Probe
+        # each distinct pair once and expand through the unique inverses rather
+        # than asking the inventory the same question once per source cell: a
+        # 30-arcsec domain window is millions of cells but ~15 origins.
+        ux, xinv = np.unique(x_origins, return_inverse=True)
+        uy, yinv = np.unique(y_origins, return_inverse=True)
+        present = np.fromiter(
+            ((int(xs), int(ys)) in self.tiles for ys in uy for xs in ux),
+            dtype=bool, count=ux.size * uy.size,
+        ).reshape(uy.size, ux.size)
+        return (present[yinv.reshape(-1)][:, xinv.reshape(-1)]
+                & x_inside[None, :] & y_inside[:, None])
 
     def _extent_mask(self, x0: int, x1: int,
                      y0: int, y1: int) -> np.ndarray:
@@ -416,16 +420,20 @@ class GeogDataset:
 
         mask = self.tile_coverage_mask(x0, x1, y0, y1)
         missing_cells = ~mask & self._extent_mask(x0, x1, y0, y1)
-        missing: set[tuple[int, int]] = set()
-        for j, i in np.argwhere(missing_cells):
-            x = x0 + int(i)
-            y = y0 + int(j)
-            if self.wraps_x:
-                x = (x - 1) % self.nx_global + 1
-            xs = (x - 1) // self.index.tile_x * self.index.tile_x + 1
-            ys = (y - 1) // self.index.tile_y * self.index.tile_y + 1
-            missing.add((xs, ys))
-        return tuple(sorted(missing, key=lambda item: (item[1], item[0])))
+        rows, cols = np.nonzero(missing_cells)
+        if rows.size == 0:
+            return ()
+        x = x0 + cols.astype(np.int64)
+        y = y0 + rows.astype(np.int64)
+        if self.wraps_x:
+            x = (x - 1) % self.nx_global + 1
+        xs = (x - 1) // self.index.tile_x * self.index.tile_x + 1
+        ys = (y - 1) // self.index.tile_y * self.index.tile_y + 1
+        # unique over (y_origin, x_origin) rows sorts lexicographically on that
+        # column order, which is exactly the (item[1], item[0]) ordering the
+        # scalar implementation produced.
+        origins = np.unique(np.stack((ys, xs), axis=1), axis=0)
+        return tuple((int(row[1]), int(row[0])) for row in origins)
 
     def required_tile_origins(
             self, x0: int, x1: int, y0: int,

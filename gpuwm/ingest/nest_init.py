@@ -60,7 +60,8 @@ from gpuwm.ingest.hrrr import (HrrrNativeSnapshot,
                                interpolate_hrrr_to_lambert)
 from gpuwm.ingest.real import RealInitResult, initialize_real
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
-from gpuwm.ingest.soil import NoahSoilState
+from gpuwm.ingest.soil import (NoahSoilState, reconciler_soil_temperature,
+                               reconciler_sst)
 from gpuwm.static.build import (build_static_for_domain,
                                 geog_selection_from_catalog)
 from gpuwm.static.lambert import LambertGrid
@@ -902,33 +903,27 @@ def finalize_prepared_child(
     # integrates, exactly as the root path does.  Nests are the finest
     # grids and so carry the most land/water-disagreeing shoreline cells.
     from gpuwm.core.landuse import reconciled_soil_category
-    from gpuwm.ingest.soil_contract import MAPPED_SOIL_TEMPERATURE
 
     child_attrs = prepared.landuse_attrs
     child_soil_type = static_fields["SCT_DOM"]
     if child_attrs is not None:
-        child_soil_temperature = horizontal.fields.get(
-            MAPPED_SOIL_TEMPERATURE, horizontal.fields.get("ST000007"))
-        if child_soil_temperature is None:
-            # The native-HRRR lane spells its soil temperature SOILT --
-            # the 3-D mapped column whose water cells the mapper has
-            # already filled with SKINTEMP (gpuwm/ingest/hrrr.py), so
-            # the reconciler's top-level read resolves every
-            # land-carrying-water-soil shoreline column exactly as
-            # real.exe does.  Looked up only after the pressure-lane
-            # names: found 2026-08-06 when the first whole-second
-            # nested native-HRRR preparation after the ONE-RULEBOOK
-            # motion aborted with mismatch_landmask_ivgtyp on 38
-            # 1 km shoreline columns.
-            child_soil_temperature = horizontal.fields.get("SOILT")
+        # The reconciler's two pieces of evidence come from ONE table of
+        # per-source spellings (gpuwm/ingest/soil.py), never from a chain
+        # written out here.  A chain written out here was short by the
+        # native-HRRR SOILT spelling on 2026-08-06 and by the GFS
+        # GFS_ST000010 spelling on 2026-08-08, and both times a child that
+        # was holding the soil column right there in horizontal.fields
+        # aborted with mismatch_landmask_ivgtyp instead of reading it.
+        # Nests are the finest grids, so they carry the most disagreeing
+        # shoreline and inland-water columns and feel this first.
         child_soil_type = reconciled_soil_category(
             static_fields["LU_INDEX"], soil_type=child_soil_type,
             xice=horizontal.fields.get("XICE", 0.0),
             iswater=int(child_attrs["ISWATER"]),
             islake=int(child_attrs["ISLAKE"]),
             isice=int(child_attrs["ISICE"]),
-            soil_temperature=child_soil_temperature,
-            sst=horizontal.fields.get("SST"))
+            soil_temperature=reconciler_soil_temperature(horizontal.fields),
+            sst=reconciler_sst(horizontal.fields))
     soil = preprocess_land_surface_soil(
         horizontal.fields, sf_surface_physics=int(cfg.sf_surface_physics),
         soil_type=child_soil_type,

@@ -1325,3 +1325,116 @@ def test_an_internal_invariant_keeps_its_traceback(monkeypatch, tmp_path):
             "--input-manifest-sha256", "a" * 64,
             "--output-root", str(tmp_path / "prep"),
         ])
+
+
+# ---------------------------------------------------------------------------
+# The statics corridor request reaches the adapter from both front doors
+# ---------------------------------------------------------------------------
+
+def test_the_gfs_front_door_forwards_the_corridor_request_only_when_named():
+    from gpuwm import source_cli
+
+    default = source_cli._gfs_command(_gfs_front_door_args([]))
+    bare = source_cli._gfs_command(
+        _gfs_front_door_args(["--statics-corridor"]))
+    selected = source_cli._gfs_command(
+        _gfs_front_door_args(["--statics-corridor", "2,3"]))
+
+    assert "--statics-corridor" not in default
+    assert "--statics-corridor" in bare
+    assert selected[selected.index("--statics-corridor") + 1] == "2,3"
+    assert source_cli._required_gfs_args(
+        _gfs_front_door_args(["--statics-corridor"])) == []
+    assert _gfs_front_door_args([]).statics_corridor is None
+
+    # Malformed grid lists and a corridor without a GEOG source are
+    # named at the door, not one process later.
+    errors = source_cli._required_gfs_args(
+        _gfs_front_door_args(["--statics-corridor", "2,potato"]))
+    assert any("comma-separated" in error for error in errors)
+    args = _gfs_front_door_args(["--statics-corridor"])
+    args.geog_root = None
+    args.static_input = "static.npz"
+    args.static_receipt = "static.json"
+    errors = source_cli._required_gfs_args(args)
+    assert any("requires --geog-root" in error for error in errors)
+
+
+def test_the_corridor_request_is_a_gfs_route_flag_and_says_so_elsewhere():
+    from gpuwm import source_cli
+
+    args = _gfs_front_door_args(["--statics-corridor"])
+    for validator in (source_cli._required_era5_args,
+                      source_cli._required_twentycr_args,
+                      source_cli._required_mapped_args,
+                      source_cli._required_hrrr_args):
+        errors = validator(args)
+        assert any("--statics-corridor" in error for error in errors), \
+            validator.__name__
+
+
+def test_the_gfs_adapter_cli_carries_the_corridor_request_to_the_preparation(
+        monkeypatch, tmp_path, capsys):
+    from gpuwm import gfs_direct
+
+    observed = {}
+
+    def prepare(**kwargs):
+        observed.update(kwargs)
+        return {"schema": "test", "wrf_manifest": {"status": "READY"}}
+
+    monkeypatch.setattr(gfs_direct, "prepare_gfs_wrf", prepare)
+    monkeypatch.setattr(
+        gfs_direct, "prepared_forecast_next_command",
+        lambda *_a, **_k: [])
+    base = [
+        "--series", "series.tsv", "--cycle", "2026-07-29_06:00:00",
+        "--bridge", "bridge.exe", "--wps-namelist", "namelist.wps",
+        "--experiment-config", "experiment.toml",
+        "--input-manifest", "manifest.json",
+        "--input-manifest-sha256", "a" * 64,
+        "--output-root", str(tmp_path / "prep"),
+    ]
+
+    assert gfs_direct.main(base) == 0
+    assert observed["statics_corridor"] is None
+
+    assert gfs_direct.main(base + ["--statics-corridor"]) == 0
+    assert observed["statics_corridor"] == "all"
+
+    assert gfs_direct.main(base + ["--statics-corridor", "2,4"]) == 0
+    assert observed["statics_corridor"] == (2, 4)
+
+    assert gfs_direct.main(base + ["--statics-corridor", "2,x"]) == 2
+    capsys.readouterr()
+
+
+def test_the_adapter_prints_corridor_size_honesty_lines(
+        monkeypatch, tmp_path, capsys):
+    from gpuwm import gfs_direct
+
+    proof = {
+        "schema": "test",
+        "wrf_manifest": {"status": "READY"},
+        "statics_corridor": {"domains": {"d02": {
+            "parent_id": 1, "corridor_nx": 900, "corridor_ny": 900,
+            "cache": {"bytes": 629_000_000}, "host_bytes": 628_000_000,
+        }}},
+    }
+    monkeypatch.setattr(gfs_direct, "prepare_gfs_wrf",
+                        lambda **_kwargs: proof)
+    monkeypatch.setattr(gfs_direct, "prepared_forecast_next_command",
+                        lambda *_a, **_k: [])
+    assert gfs_direct.main([
+        "--series", "series.tsv", "--cycle", "2026-07-29_06:00:00",
+        "--bridge", "bridge.exe", "--wps-namelist", "namelist.wps",
+        "--experiment-config", "experiment.toml",
+        "--input-manifest", "manifest.json",
+        "--input-manifest-sha256", "a" * 64,
+        "--output-root", str(tmp_path / "prep"),
+        "--statics-corridor",
+    ]) == 0
+    err = capsys.readouterr().err
+    assert "statics corridor d02: 900x900 child cells" in err
+    assert "629.0 MB on disk" in err
+    assert "no GPU residency" in err

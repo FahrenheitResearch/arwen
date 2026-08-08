@@ -62,6 +62,17 @@ _ADD_AUX = 1 << 3
 _AUX_LEVEL = 1 << 4
 _INT32_STORAGE = 1 << 5
 
+# Chunk sizing for the fused gate.  One block per descriptor left the whole
+# check waiting on the single largest field while the rest of the device sat
+# idle, so the launch also spreads each descriptor over ``ceil(size / chunk)``
+# blocks.  The chunk is driven by the TOTAL element count, targeting roughly
+# _CHUNK_TARGET_BLOCKS blocks over the whole inventory, so one huge descriptor
+# cannot explode the count of blocks that exit immediately on the short ones.
+# The measured time is flat over chunks of 8192-65536 elements, so the floor
+# only has to keep tiny inventories from launching a block per 256 elements.
+_CHUNK_TARGET_BLOCKS = 8192
+_MIN_CHUNK_ELEMENTS = 4096
+
 # These are immutable setup-time category maps, not floating model state.
 # They cannot contain NaN/Inf, and their legal ranges depend on the selected
 # Noah vegetation/soil tables (which validate them at initialization).  Keep
@@ -621,6 +632,8 @@ class StateHealthValidator:
         self._status = state.scratch((MAX_HEALTH_FIELDS * 2,),
                                      "integration_health_status_bits")
         self._result = state.scratch((4,), "integration_health_validation")
+        self._chunk = _MIN_CHUNK_ELEMENTS
+        self._chunk_count = 1
         self.fields: tuple[HealthField, ...] = ()
         self.excluded_integer_fields: tuple[HealthField, ...] = ()
 
@@ -630,13 +643,30 @@ class StateHealthValidator:
         fields: list[HealthField] = []
         excluded: list[HealthField] = []
         storage_flags: list[int] = []
+        pointers_by_field: list[int] = []
+        seen: set[tuple] = set()
         for field in collected:
             flag = gpu_integer_policy(field.name, field.values.dtype)
             if flag is None:
                 excluded.append(field)
-            else:
-                fields.append(field)
-                storage_flags.append(flag)
+                continue
+            pointer = _cuda_pointer(field.values, field.name)
+            # collect_state_fields reaches the cumulus-tendency and
+            # microphysics-accumulator buffers twice, once as a driver
+            # attribute and once as restart-persistent scratch.  A second
+            # descriptor over the identical allocation, extent and rule reads
+            # the same bytes to the same verdict, and atomicMin already keeps
+            # the first registration, so scanning it again buys nothing.  The
+            # auxiliary enters the key by object identity rather than by base
+            # pointer: anything short of provably the same scan is kept.
+            key = (pointer, int(field.values.size), flag, field.rule,
+                   id(field.auxiliary), field.aux_mode, field.plane_size)
+            if key in seen:
+                continue
+            seen.add(key)
+            fields.append(field)
+            storage_flags.append(flag)
+            pointers_by_field.append(pointer)
         fields_tuple = tuple(fields)
         pointers = np.zeros(MAX_HEALTH_FIELDS, dtype=np.uint64)
         auxiliaries = np.zeros(MAX_HEALTH_FIELDS, dtype=np.uint64)
@@ -646,7 +676,7 @@ class StateHealthValidator:
         planes = np.zeros(MAX_HEALTH_FIELDS, dtype=np.uint32)
         bits = np.zeros(MAX_HEALTH_FIELDS, dtype=np.uint64)
         for index, field in enumerate(fields):
-            pointers[index] = _cuda_pointer(field.values, field.name)
+            pointers[index] = pointers_by_field[index]
             sizes[index] = int(field.values.size)
             rule = field.rule
             flags[index] |= storage_flags[index]
@@ -682,6 +712,11 @@ class StateHealthValidator:
         self._status.set(_word_floats(_u64_words(bits)))
         initial = np.asarray([0, (1 << 64) - 1], dtype=np.uint64)
         self._result.set(_word_floats(_u64_words(initial)))
+        scanned = sizes[:len(fields)]
+        self._chunk = max(_MIN_CHUNK_ELEMENTS,
+                          int(scanned.sum()) // _CHUNK_TARGET_BLOCKS)
+        largest = int(scanned.max(initial=0))
+        self._chunk_count = max(1, (largest + self._chunk - 1) // self._chunk)
         self.fields = fields_tuple
         self.excluded_integer_fields = tuple(excluded)
 
@@ -695,9 +730,10 @@ class StateHealthValidator:
         if not nfield:
             return ValidationReport(True, 0, phase=phase)
         kernel = get_kernel("health", "validate_full_state")
-        kernel((nfield,), (256,), (
+        kernel((self._chunk_count, nfield), (256,), (
             self._ptr, self._aux, self._size, self._bounds, self._flags,
-            self._planes, self._status, self._result, np.int32(nfield)))
+            self._planes, self._status, self._result, np.int32(nfield),
+            np.uint64(self._chunk)))
         words = cp.asnumpy(self._result).view(np.uint64)
         status, packed = (int(words[0]), int(words[1]))
         if packed == (1 << 64) - 1:

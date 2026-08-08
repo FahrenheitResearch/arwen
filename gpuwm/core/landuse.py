@@ -167,8 +167,18 @@ def _integer_categories(value, shape: tuple[int, int], name: str) -> np.ndarray:
 
 
 def _top_soil_level(value, shape: tuple[int, int], name: str):
-    """The first soil level of a ``(nsoil, ny, nx)`` profile, or ``None``."""
+    """The first soil level of a ``(nsoil, ny, nx)`` profile, or ``None``.
 
+    Marshalled through :func:`_host_input` like the rest of this module's
+    entry points: a 2-D single-layer field or a stacked node column can
+    arrive straight off the decoder, still device-resident, and the bare
+    ``np.asarray`` below is what CuPy refuses outright.  The refusal was
+    unreachable until a column actually disagreed -- this is the one read
+    that only a mismatching grid performs -- so it waited here behind the
+    reconciler's own hot path rather than failing at setup.
+    """
+
+    value = _host_input(value)
     if value is None:
         return None
     array = np.asarray(value, dtype=np.float64)
@@ -214,6 +224,10 @@ def _reconcile_landmask_soil_category(
     if not np.any(mismatch):
         return land
     top_soil = _top_soil_level(soil_temperature, shape, "soil_temperature")
+    # The SST travels with the soil temperature and reaches this read the
+    # same way, so it takes the same host marshalling; leaving it bare
+    # would move the CuPy TypeError one line down rather than removing it.
+    sst = _host_input(sst)
     surface_sea = (None if sst is None
                    else _surface_field(sst, shape, "sst", np.float64))
     warm_soil = (np.zeros(shape, dtype=bool) if top_soil is None

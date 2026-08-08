@@ -44,28 +44,155 @@ def _setup(nx=32, nz=16, moist=True):
 @requires_gpu
 @pytest.mark.parametrize("clamp", [False, True])
 def test_scalar_update_in_place_matches_expression_bits(clamp):
-    """The scratch-reuse form preserves every eager CuPy FP32 boundary."""
+    """The fused form preserves every eager CuPy FP32 boundary."""
     import cupy as cp
 
     from gpuwm.core.moist import _update_scalar_in_place
 
     rng = cp.random.RandomState(20260731)
-    shape = (5, 3, 4)
+    nz, ny, nx = 5, 3, 4
+    shape = (nz, ny, nx)
     q0 = rng.standard_normal(shape, dtype=cp.float32)
-    chm0 = rng.uniform(0.75, 1.25, shape).astype(cp.float32)
-    chm = rng.uniform(0.75, 1.25, shape).astype(cp.float32)
+    c1h = rng.uniform(0.75, 1.25, nz).astype(cp.float32)
+    c2h = rng.uniform(0.75, 1.25, nz).astype(cp.float32)
+    mu0 = rng.uniform(0.75, 1.25, (ny, nx)).astype(cp.float32)
+    mu = rng.uniform(0.75, 1.25, (ny, nx)).astype(cp.float32)
     tend = rng.standard_normal(shape, dtype=cp.float32)
     dt_eff = 0.375
+    chm0 = c1h[:, None, None] * mu0[None] + c2h[:, None, None]
+    chm = c1h[:, None, None] * mu[None] + c2h[:, None, None]
     expected = (chm0 * q0 + dt_eff * tend) / chm
     if clamp:
         expected = cp.maximum(expected, 0.0)
 
     got = cp.empty_like(q0)
-    tend_scratch = tend.copy()
     _update_scalar_in_place(
-        got, q0, chm0, chm, tend_scratch, dt_eff, clamp=clamp)
+        got, q0, tend, c1h, c2h, mu0.reshape(-1), mu.reshape(-1), dt_eff,
+        clamp=clamp)
 
     cp.testing.assert_array_equal(got, expected)
+
+
+def _hostile_f32(rng, n):
+    """``n`` FP32 words that walk every class the fused update can meet.
+
+    The pool is what makes this test able to fail: FMA contraction moves
+    ordinary words, but a wrong FTZ decision moves ONLY the subnormal band and
+    a wrong NaN arm moves only the payload, so both boundaries and both signed
+    zeros have to be in every operand.
+    """
+    tiny = np.finfo(np.float32).tiny
+    pool = np.array([
+        0.0, -0.0, 1.0, -1.0, np.inf, -np.inf, np.nan, -np.nan,
+        np.finfo(np.float32).max, -np.finfo(np.float32).max,
+        tiny, -tiny,                                # smallest normal
+        np.float32(tiny) * 0.5, -np.float32(tiny) * 0.5,
+        np.float32(1.4e-45), -np.float32(1.4e-45),  # smallest subnormal
+        np.float32(1.1754942e-38),                  # largest subnormal
+        1e-30, 1e-38, 1e-44, 300.0, 1e6, -1e6,
+    ], dtype=np.float32)
+    out = np.empty(n, dtype=np.float32)
+    k = min(n, pool.size)
+    out[:k] = pool[:k]
+    half = (n - k) // 2
+    out[k:k + half] = rng.uniform(-1e3, 1e3, half)
+    raw = rng.integers(0, 1 << 32, n - k - half, dtype=np.uint64)
+    out[k + half:] = raw.astype(np.uint32).view(np.float32)
+    rng.shuffle(out)
+    return out
+
+
+@pytest.mark.gpu
+@requires_gpu
+@pytest.mark.parametrize("has_msf", [False, True])
+@pytest.mark.parametrize("has_physics", [False, True])
+@pytest.mark.parametrize("has_fixed", [False, True])
+@pytest.mark.parametrize("clamp", [False, True])
+def test_fused_scalar_update_is_bit_identical(has_msf, has_physics,
+                                              has_fixed, clamp):
+    """Every branch of the fused update, compared as raw 32-bit words.
+
+    The reference is the eager ufunc chain ``advance_scalars_stage`` ran
+    before the fusion, transcribed operator for operator.  Tolerances would
+    hide exactly the two failures this guards -- NVRTC contracting
+    ``c1h*mu + c2h`` into an FMA, and an intrinsic that disagrees with the
+    ufuncs about flushing subnormals -- so the comparison is on the uint32
+    view and the expected difference count is zero.
+    """
+    import cupy as cp
+
+    from gpuwm.core.moist import _update_scalar_in_place
+
+    rng = np.random.default_rng(20260807)
+    nz, ny, nx = 7, 5, 11
+
+    def dev(shape):
+        return cp.asarray(
+            _hostile_f32(rng, int(np.prod(shape))).reshape(shape))
+
+    q0 = dev((nz, ny, nx))
+    tend = dev((nz, ny, nx))
+    c1h = dev((nz,))
+    c2h = dev((nz,))
+    mu0 = dev((ny, nx))
+    mu = dev((ny, nx))
+    msft = dev((ny, nx)) if has_msf else None
+    physics = dev((nz, ny, nx)) if has_physics else None
+    fixed = dev((nz, ny, nx)) if has_fixed else None
+    dt_eff = float(np.float32(20.0 / 3.0))
+
+    t = tend.copy()
+    if msft is not None:
+        t *= msft[None]
+    if physics is not None:
+        t += physics
+    if fixed is not None:
+        t += fixed
+    chm0 = c1h[:, None, None] * mu0[None] + c2h[:, None, None]
+    chm = c1h[:, None, None] * mu[None] + c2h[:, None, None]
+    expected = cp.empty_like(q0)
+    cp.multiply(chm0, q0, out=expected)
+    cp.multiply(np.float32(dt_eff), t, out=t)
+    cp.add(expected, t, out=expected)
+    cp.divide(expected, chm, out=expected)
+    if clamp:
+        cp.maximum(expected, np.float32(0.0), out=expected)
+
+    got = cp.empty_like(q0)
+    _update_scalar_in_place(
+        got, q0, tend, c1h, c2h, mu0.reshape(-1), mu.reshape(-1), dt_eff,
+        msft=None if msft is None else msft.reshape(-1),
+        physics=physics, fixed=fixed, clamp=clamp)
+
+    differing = int((cp.asnumpy(got).view(np.uint32)
+                     != cp.asnumpy(expected).view(np.uint32)).sum())
+    assert differing == 0
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_fused_scalar_update_leaves_the_tendency_scratch_alone():
+    """``dt_eff*tend`` is not written back, so ``tend`` survives the call.
+
+    The dropped store is only safe because every reader of the shared
+    ``moist_rq_t`` slot re-zeros it first; this pins the property that made it
+    droppable rather than the fact that it was dropped.
+    """
+    import cupy as cp
+
+    from gpuwm.core.moist import _update_scalar_in_place
+
+    rng = cp.random.RandomState(20260807)
+    nz, ny, nx = 4, 3, 5
+    q0 = rng.standard_normal((nz, ny, nx), dtype=cp.float32)
+    tend = rng.standard_normal((nz, ny, nx), dtype=cp.float32)
+    before = tend.copy()
+    _update_scalar_in_place(
+        cp.empty_like(q0), q0, tend,
+        cp.ones(nz, dtype=cp.float32), cp.zeros(nz, dtype=cp.float32),
+        cp.ones(ny * nx, dtype=cp.float32), cp.ones(ny * nx, dtype=cp.float32),
+        0.5, clamp=False)
+    cp.testing.assert_array_equal(tend, before)
 
 
 @pytest.mark.gpu
@@ -216,6 +343,51 @@ def test_stage_fluxes_public_surface_with_map_factors():
     np.testing.assert_allclose(cp.asnumpy(ww)[1:nz], ww_ref[1:nz],
                                rtol=2e-3,
                                atol=2e-3 * np.abs(ww_ref).max())
+
+
+@pytest.mark.gpu
+@requires_gpu
+@pytest.mark.parametrize("has_msf", [False, True])
+def test_fused_momentum_coupling_is_bit_identical(has_msf):
+    """WRF couple_momentum, fused, against the ufunc chain it replaces.
+
+    The two tests above already pin the fused kernel on realistic states;
+    this one walks the operand classes they cannot reach -- both signed
+    zeros, both infinities, NaN, and the subnormal/normal boundary -- because
+    an FMA contraction or a disagreement with the ufuncs about flushing
+    subnormals would otherwise show up only far downstream.
+    """
+    import cupy as cp
+
+    from gpuwm.core.dycore import _couple_momentum_kernel
+
+    rng = np.random.default_rng(20260807)
+    nz, ny, nxu = 6, 5, 13
+    ncol = ny * nxu
+
+    def dev(shape):
+        return cp.asarray(
+            _hostile_f32(rng, int(np.prod(shape))).reshape(shape))
+
+    wind = dev((nz, ny, nxu))
+    c1h = dev((nz,))
+    c2h = dev((nz,))
+    muface = dev((ny, nxu))
+    msf = dev((ny, nxu))
+
+    expected = (c1h[:, None, None] * muface[None] + c2h[:, None, None]) * wind
+    if has_msf:
+        expected = expected / msf[None]
+
+    got = cp.empty_like(wind)
+    args = [wind, c1h, c2h, muface.reshape(-1)]
+    if has_msf:
+        args.append(msf.reshape(-1))
+    _couple_momentum_kernel(has_msf)(*args, np.int32(ncol), got)
+
+    differing = int((cp.asnumpy(got).view(np.uint32)
+                     != cp.asnumpy(expected).view(np.uint32)).sum())
+    assert differing == 0
 
 
 @pytest.mark.gpu

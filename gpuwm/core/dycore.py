@@ -28,6 +28,7 @@ at CFL ~ 0.3-0.5.
 
 from __future__ import annotations
 
+from functools import lru_cache
 import math
 
 import cupy as cp
@@ -130,6 +131,34 @@ def _omega_ref(state: DomainState, cfg: RunConfig,
     return ww
 
 
+@lru_cache(maxsize=None)
+def _couple_momentum_kernel(has_msf: bool):
+    """WRF ``couple_momentum`` for one staggering, in a single pass.
+
+    Replaces five full-size ufunc launches per component -- the c1h*muface
+    multiply, the c2h add, the wind multiply, the copy into the flux scratch
+    and the map-factor divide -- along with the two staggered temporaries
+    they round through.  Same discipline as
+    :func:`gpuwm.core.moist._update_scalar_kernel`: explicit round-to-nearest
+    intrinsics plus ``-fmad=false``, because the chain this replaces rounds
+    to FP32 at every operator boundary, and the map-factor divide stays a
+    separate division AFTER the multiply rather than folding into it.
+    """
+    params = ["T wind", "raw T c1h", "raw T c2h", "raw T muface"]
+    body = ["const int lev = static_cast<int>(i) / ncol;",
+            "const int col = static_cast<int>(i) % ncol;",
+            "T v = __fmul_rn(__fadd_rn(__fmul_rn(c1h[lev], muface[col]), "
+            "c2h[lev]), wind);"]
+    if has_msf:
+        params.append("raw T msf")
+        body.append("v = __fdiv_rn(v, msf[col]);")
+    params.append("int32 ncol")
+    body.append("flux = v;")
+    return cp.ElementwiseKernel(", ".join(params), "T flux", "\n".join(body),
+                                "gpuwm_couple_momentum",
+                                options=("-fmad=false",))
+
+
 def stage_fluxes(state: DomainState, cfg: RunConfig
                  ) -> tuple[cp.ndarray, cp.ndarray, cp.ndarray]:
     """Public RK-stage transport surface (Task 5): ``(ru, rv, ww)``.
@@ -154,8 +183,6 @@ def stage_fluxes(state: DomainState, cfg: RunConfig
     """
     nz, ny, nx = state.p.shape
     mu = state.total_mu()                              # (ny, nx) t* mass
-    c1h = state.c1h[:, None, None]
-    c2h = state.c2h[:, None, None]
     mux = mu_at_u_faces(mu)
     muy = mu_at_v_faces(mu)
     # Open boundaries: the boundary-face column mass is the boundary CELL's
@@ -169,11 +196,13 @@ def stage_fluxes(state: DomainState, cfg: RunConfig
         muy[-1, :] = mu[-1, :]
     ru = state.scratch((nz, ny, nx + 1), "rk_ru")
     rv = state.scratch((nz, ny + 1, nx), "rk_rv")
-    ru[...] = (c1h * mux[None] + c2h) * state.u
-    rv[...] = (c1h * muy[None] + c2h) * state.v
-    if state.has_msf:                                  # WRF couple_momentum:
-        ru /= state.msfu[None]                         # U = C(mu)*u/msfu,
-        rv /= state.msfv[None]                         # V = C(mu)*v/msfv
+    kernel = _couple_momentum_kernel(state.has_msf)    # WRF couple_momentum:
+    for wind, muface, msf, flux in ((state.u, mux, state.msfu, ru),
+                                    (state.v, muy, state.msfv, rv)):
+        args = [wind, state.c1h, state.c2h, muface.reshape(-1)]
+        if state.has_msf:                              # U = C(mu)*u/msfu,
+            args.append(msf.reshape(-1))               # V = C(mu)*v/msfv
+        kernel(*args, np.int32(muface.size), flux)
     return ru, rv, _omega_ref(state, cfg, ru, rv)
 
 

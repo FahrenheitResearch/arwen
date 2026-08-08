@@ -266,7 +266,9 @@ class ProjectedGrid:
                           moad_cen_lat=self.moad_cen_lat,
                           moad_cen_lon=self.moad_cen_lon)
 
-    def translated(self, di_cells: int, dj_cells: int) -> "ProjectedGrid":
+    def translated(self, di_cells: int, dj_cells: int, *,
+                   e_we: int | None = None,
+                   e_sn: int | None = None) -> "ProjectedGrid":
         """The same grid moved by a whole number of its own cells.
 
         The returned grid's transforms DELEGATE to the reference grid
@@ -286,6 +288,13 @@ class ProjectedGrid:
         shared ground.  Translating a translated grid composes the
         offsets onto the ORIGINAL reference, so a long move chain never
         accumulates float error.
+
+        ``e_we``/``e_sn`` re-extent the translated grid on the SAME
+        lattice (omitted keeps the reference extent).  This is what a
+        parent-extent statics corridor is built on: a larger window onto
+        the reference grid's own cells, whose per-cell transforms stay
+        the reference's exact arithmetic, so a footprint cropped out of
+        a corridor build equals a direct footprint build bitwise.
         """
         di = int(di_cells)
         dj = int(dj_cells)
@@ -300,6 +309,12 @@ class ProjectedGrid:
         else:
             di0, dj0 = self._translation_offset
             di_total, dj_total = di0 + di, dj0 + dj
+        e_we = self.e_we if e_we is None else int(e_we)
+        e_sn = self.e_sn if e_sn is None else int(e_sn)
+        if e_we < 2 or e_sn < 2:
+            raise ValueError(
+                f"a translated extent needs at least one cell per axis, "
+                f"got e_we={e_we}, e_sn={e_sn}")
         cls = type(base)
         translated_cls = _TRANSLATED_GRID_CLASSES.get(cls)
         if translated_cls is None:
@@ -309,7 +324,7 @@ class ProjectedGrid:
             _TRANSLATED_GRID_CLASSES[cls] = translated_cls
         new = translated_cls(
             base.ref_lat, base.ref_lon, base.truelat1, base.truelat2,
-            base.stand_lon, base.dx, base.dy, base.e_we, base.e_sn,
+            base.stand_lon, base.dx, base.dy, e_we, e_sn,
             known_x=base.known_x - di_total,
             known_y=base.known_y - dj_total,
             moad_cen_lat=base.moad_cen_lat,

@@ -763,3 +763,148 @@ def test_the_tree_preflight_checks_tables_before_the_hierarchy(tmp_path,
 
     source = inspect.getsource(runner.preflight_prepared_tree)
     assert "_verify_thompson_assets(exp)" in source
+
+
+# ---------------------------------------------------------------------------
+# [relocation] on the prepared route: the corridor lift and its refusals
+# ---------------------------------------------------------------------------
+
+_RELOCATION_FOLLOW_TOML = """
+[relocation]
+enabled = true
+grid_id = 2
+
+[[relocation.move]]
+at_seconds = 1800.0
+di_parent_cells = 1
+dj_parent_cells = 0
+"""
+
+_RELOCATION_BOUNDS_TOML = """
+[relocation]
+enabled = true
+grid_id = 2
+"""
+
+
+def _with_relocation(config: Path, block: str) -> None:
+    config.write_text(config.read_text(encoding="utf-8") + block,
+                      encoding="utf-8")
+
+
+def _preflight(prepared, receipt, config):
+    return runner.preflight_prepared_tree(
+        prepared_root=prepared,
+        preparation_receipt_sha256=_sha(receipt),
+        experiment_config=config,
+        experiment_config_sha256=_sha(config),
+    )
+
+
+def test_follow_source_without_a_corridor_refuses_with_the_remedy(
+        tmp_path, monkeypatch):
+    """The corridor-less refusal survives, and now names its remedy."""
+
+    prepared, receipt, config = _synthetic_prepared_tree(tmp_path, monkeypatch)
+    _with_relocation(config, _RELOCATION_FOLLOW_TOML)
+    with pytest.raises(ValueError) as excinfo:
+        _preflight(prepared, receipt, config)
+    message = str(excinfo.value)
+    assert "cannot rebuild a relocated child's statics" in message
+    assert "--statics-corridor" in message
+    assert "gpuwm run" in message
+
+
+def test_follow_source_with_an_uncovered_child_names_the_coverage(
+        tmp_path, monkeypatch):
+    prepared, receipt, config = _synthetic_prepared_tree(tmp_path, monkeypatch)
+    _with_relocation(config, _RELOCATION_FOLLOW_TOML)
+    preparation = json.loads(receipt.read_text(encoding="utf-8"))
+    preparation["statics_corridor"] = {
+        "schema": "gpuwm-statics-corridor-set-v1",
+        "status": "READY",
+        "domains": {"d09": {"cache": {"path": "d09.npz"}}},
+    }
+    receipt.write_text(json.dumps(preparation), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"covers only \['d09'\]"):
+        _preflight(prepared, receipt, config)
+
+
+def test_follow_source_with_a_verified_corridor_is_accepted(
+        tmp_path, monkeypatch):
+    """Corridor present and verified: the preflight resolves a runnable
+    plan carrying the loaded corridor, through the real loader seam."""
+
+    import gpuwm.static.corridor as corridor_module
+
+    prepared, receipt, config = _synthetic_prepared_tree(tmp_path, monkeypatch)
+    _with_relocation(config, _RELOCATION_FOLLOW_TOML)
+    corridor_set = {
+        "schema": "gpuwm-statics-corridor-set-v1",
+        "status": "READY",
+        "domains": {"d02": {"cache": {"path": "d02.npz",
+                                      "sha256": "e" * 64}}},
+    }
+    preparation = json.loads(receipt.read_text(encoding="utf-8"))
+    preparation["statics_corridor"] = corridor_set
+    receipt.write_text(json.dumps(preparation), encoding="utf-8")
+
+    seen = {}
+    stub = object()
+
+    def fake_load(directory, *, expected_set_receipt, grid_id, child_dc,
+                  parent_run, reference_grid):
+        seen.update(directory=Path(directory), grid_id=grid_id,
+                    expected=expected_set_receipt,
+                    child=int(child_dc.grid_id),
+                    parent_nx=int(parent_run.nx))
+        return stub
+
+    monkeypatch.setattr(corridor_module, "load_child_statics_corridor",
+                        fake_load)
+    inputs = _preflight(prepared, receipt, config)
+    assert inputs.statics_corridor is stub
+    assert seen["grid_id"] == 2 and seen["child"] == 2
+    assert seen["parent_nx"] == 100
+    assert seen["expected"] == corridor_set
+    assert seen["directory"] == (
+        prepared / "hierarchy-artifacts" / "statics-corridor")
+    assert inputs.statics_corridor_cache_path == (
+        prepared / "hierarchy-artifacts" / "statics-corridor" / "d02.npz")
+
+
+def test_a_failed_corridor_verification_refuses_never_runs_static(
+        tmp_path, monkeypatch):
+    """A corridor that fails digest verification is a LOUD refusal on
+    the preflight path -- the run never degrades to a static nest."""
+
+    import gpuwm.static.corridor as corridor_module
+
+    prepared, receipt, config = _synthetic_prepared_tree(tmp_path, monkeypatch)
+    _with_relocation(config, _RELOCATION_FOLLOW_TOML)
+    preparation = json.loads(receipt.read_text(encoding="utf-8"))
+    preparation["statics_corridor"] = {
+        "schema": "gpuwm-statics-corridor-set-v1",
+        "status": "READY",
+        "domains": {"d02": {"cache": {"path": "d02.npz",
+                                      "sha256": "e" * 64}}},
+    }
+    receipt.write_text(json.dumps(preparation), encoding="utf-8")
+
+    def refusing_load(directory, **_kwargs):
+        raise corridor_module.CorridorRefusal(
+            "d02 statics corridor cache digest mismatch: planted")
+
+    monkeypatch.setattr(corridor_module, "load_child_statics_corridor",
+                        refusing_load)
+    with pytest.raises(ValueError, match="digest mismatch"):
+        _preflight(prepared, receipt, config)
+
+
+def test_bounds_only_relocation_still_passes_without_a_corridor(
+        tmp_path, monkeypatch):
+    prepared, receipt, config = _synthetic_prepared_tree(tmp_path, monkeypatch)
+    _with_relocation(config, _RELOCATION_BOUNDS_TOML)
+    inputs = _preflight(prepared, receipt, config)
+    assert inputs.statics_corridor is None
+    assert inputs.statics_corridor_cache_path is None

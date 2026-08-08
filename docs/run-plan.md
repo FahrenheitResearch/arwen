@@ -201,6 +201,31 @@ in `[case_data]` instead.
 Routes are named generically. A route is a way of running the model,
 never a particular experiment.
 
+#### Moving nests (`[relocation]`) by route
+
+A config with a `[relocation]` follow source (`[relocation.follow]` or
+`[[relocation.move]]`) runs on the `experiment` route as before: the
+case-data process holds the GEOG source and wires the real-data
+relocation runner (footprint-rebuilt statics per move).
+
+On the prepared chains the same config needs the bundle prepared with
+**`--statics-corridor`**: the preparation seals child-resolution
+statics over each child's whole parent extent beside the other
+hierarchy artifacts, digest-bound into the preparation receipt, and the
+tree runner (`gpuwm-prepared-tree-forecast`) then crops each new
+footprint's statics out of that corridor at move time — the run stays
+fully sealed, no runtime ingest. The GFS prepare stage adds the flag
+itself whenever the experiment config declares a follow source (the
+printed `rw-wps` line from `gpuwm fetch --author-front-door-manifest`
+carries it too, from the same predicate). A bundle prepared *without*
+a corridor refuses a follow config at the tree runner's preflight, with
+the flag named as the remedy; a corridor that fails digest or geometry
+verification refuses loudly rather than running the nest silently
+static. Bounds-only `[relocation]` (no follow source) never needs a
+corridor. The corridor is disk/host-side only (97 float64 planes,
+776 bytes per corridor cell — a 900x900 corridor is ~629 MB); it adds
+no GPU memory, so the VRAM gate is unchanged.
+
 ### `run_options`
 
 | option | default | meaning |

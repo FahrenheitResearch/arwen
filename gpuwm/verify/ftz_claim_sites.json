@@ -10,10 +10,10 @@
     "gpuwm/ingest/hrrr.py"
   ],
   "attribution_note": "route/mechanism attribution is judgment across five measured routes and is not machine-derivable; unattributed records carry asserted_token: null and the gate requires only that a token, once written, agrees with the receipt",
-  "site_count": 772,
+  "site_count": 780,
   "site_count_by_kind": {
     "behavioural": 31,
-    "prose": 741
+    "prose": 749
   },
   "sites": [
     {
@@ -106,7 +106,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 672,
+      "line": 790,
       "kind": "prose",
       "anchor": "- Two silent wrong answers on sm_120, where FP32 subnormals are flushed",
       "anchor_sha256": "bcc677ec38d515737f2fb65993dfd2d0c0ff7f019725b8552b6e232d1668e1ad",
@@ -117,7 +117,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 674,
+      "line": 792,
       "kind": "prose",
       "anchor": "whose cube is subnormal and flushes to zero, turning a quotient into",
       "anchor_sha256": "d16d72f334e8d30903c3d85abea785c1573abd77b9da707e1a4a5721f5997048",
@@ -128,7 +128,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 933,
+      "line": 1051,
       "kind": "prose",
       "anchor": "FP32 subnormal flushing on sm_120 was described as a hardware property no",
       "anchor_sha256": "9845ca444fc2d1b5f5725fdb68f0b92434646fa1c15e917f719b3d7da391d204",
@@ -139,7 +139,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 935,
+      "line": 1053,
       "kind": "prose",
       "anchor": "the same source built without an appended `-ftz=true` keeps full IEEE",
       "anchor_sha256": "2e9db2d996710d5597910bd049935b00c288546c51893027e4da7cb352f1b818",
@@ -150,7 +150,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 936,
+      "line": 1054,
       "kind": "prose",
       "anchor": "subnormals on the same card. The CPU reference binary was described as an Intel",
       "anchor_sha256": "af90298485911dcdd5f05cf5efa704c8500e4a6f04ac8f3be6cd3da1092f68e1",
@@ -161,7 +161,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2039,
+      "line": 2157,
       "kind": "prose",
       "anchor": "functions, FP32 subnormal flushing), what each compared surface covers",
       "anchor_sha256": "2e3226a8e81d2f609a854e0ef0205ff199a9b03595eeb01dd045446a32e6cb6b",
@@ -3306,6 +3306,28 @@
       "attribution": "unattributed"
     },
     {
+      "file": "gpuwm/core/moist.py",
+      "line": 363,
+      "kind": "prose",
+      "anchor": "``-ftz=true`` after these options for this kernel and for the ufuncs",
+      "anchor_sha256": "765e4fcd61c7df4d9134d12428d3dc38f37e71788e7e2aec8ef47f2e593ff5e0",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "gpuwm/core/moist.py",
+      "line": 364,
+      "kind": "prose",
+      "anchor": "alike, so the subnormal band matches as well; both halves are pinned by",
+      "anchor_sha256": "7f96abc1d657d4d8624b26d21079fa3211b4bea877eb3dfcf0f92212611f59f5",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
       "file": "gpuwm/core/mynn_pbl_gpu.py",
       "line": 263,
       "kind": "prose",
@@ -4714,6 +4736,72 @@
       "attribution": "unattributed"
     },
     {
+      "file": "tests/test_moist.py",
+      "line": 80,
+      "kind": "prose",
+      "anchor": "ordinary words, but a wrong FTZ decision moves ONLY the subnormal band and",
+      "anchor_sha256": "f55e7e26f1838998387056ae0478d1901c9df728d1991b88f39c6f85903de3be",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "tests/test_moist.py",
+      "line": 90,
+      "kind": "prose",
+      "anchor": "np.float32(1.4e-45), -np.float32(1.4e-45),  # smallest subnormal",
+      "anchor_sha256": "ba826fee37c9c4ce4286614655ba161a3a2aaa34a03c5ce9bca25e253be174e9",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "tests/test_moist.py",
+      "line": 91,
+      "kind": "prose",
+      "anchor": "np.float32(1.1754942e-38),                  # largest subnormal",
+      "anchor_sha256": "cbf8ba9216c3f63fe767340d49a4e5ed5fa815698c2e12daa8cc1c7e58ad9834",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "tests/test_moist.py",
+      "line": 119,
+      "kind": "prose",
+      "anchor": "ufuncs about flushing subnormals -- so the comparison is on the uint32",
+      "anchor_sha256": "1bf79c4c9b32a97ec0efd676b8f656766aaf9f1f3acd2a11e735d2886ba786e6",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "tests/test_moist.py",
+      "line": 356,
+      "kind": "prose",
+      "anchor": "zeros, both infinities, NaN, and the subnormal/normal boundary -- because",
+      "anchor_sha256": "67a5a1e1716fa21aaefcbfcecf7d955e467658c6a1bcc2713403b66b879b771d",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "tests/test_moist.py",
+      "line": 358,
+      "kind": "prose",
+      "anchor": "subnormals would otherwise show up only far downstream.",
+      "anchor_sha256": "d5349cd99a1ccac0b1e0989b8107af1883431e73f7f1e490bbb47ba374cf2d2a",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
       "file": "tests/test_morrison_wrf461_parity.py",
       "line": 186,
       "kind": "prose",
@@ -4759,7 +4847,7 @@
     },
     {
       "file": "tests/test_mp8_frozen.py",
-      "line": 434,
+      "line": 456,
       "kind": "prose",
       "anchor": "# subnormal and flushes to zero on sm_120, turning WRF's prfac2",
       "anchor_sha256": "705c3e872f792e9ddf3ecce3ac106d898251ab5f13910dc8c0c50d34218f48b9",

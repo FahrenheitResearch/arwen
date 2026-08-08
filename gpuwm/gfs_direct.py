@@ -933,6 +933,7 @@ def prepare_gfs_wrf(
     physics_profile: str | None = None,
     expert_acknowledgements: tuple[str, ...] = (),
     stock_wrf_export: bool = True,
+    statics_corridor=None,
 ) -> dict[str, object]:
     """Build native GFS initial/boundary files and return the proof receipt.
 
@@ -951,6 +952,12 @@ def prepare_gfs_wrf(
     a downstream file-format contract.  Pass False to skip the export
     outright.  The single-domain route is unaffected: there the export IS
     the product, and it takes the profile-aware branch anyway.
+
+    ``statics_corridor`` opts the DOMAIN-TREE route into emitting sealed
+    child-resolution statics corridors (``"all"`` or a sequence of child
+    grid ids; :mod:`gpuwm.static.corridor`), which is what lets the
+    prepared tree runner honor ``[relocation]`` follow sources.  ``None``
+    (the default) leaves every published byte exactly as before.
     """
 
     cycle_time = datetime.strptime(cycle, "%Y-%m-%d_%H:%M:%S")
@@ -1289,6 +1296,12 @@ def prepare_gfs_wrf(
             shutil.copy2(Path(input_manifest), portable_source_manifest)
             _write_static_cache(static_cache, static)
             _write_geometry_receipt(geometry_receipt, grid, cfg, static_cache)
+            if statics_corridor is not None and len(exp.domains) < 2:
+                raise ValueError(
+                    "--statics-corridor prepares child-resolution statics "
+                    "over a parent extent, and this experiment has no "
+                    "child domain; remove the flag or prepare a domain "
+                    "tree")
             if len(exp.domains) > 1:
                 selected_workers = hierarchy_workers
                 if selected_workers is None:
@@ -1322,6 +1335,7 @@ def prepare_gfs_wrf(
                         "../hierarchy-artifacts/domain-artifacts.json"),
                     stock_wrf_export=(
                         "optional" if stock_wrf_export else "off"),
+                    statics_corridor=statics_corridor,
                 )
                 hierarchy_seconds = time.perf_counter() - hierarchy_started
                 final_manifest = _verify_input_manifest(
@@ -1362,6 +1376,15 @@ def prepare_gfs_wrf(
                         hierarchy.hierarchy.artifacts.receipt),
                     "wrf_manifest": dict(
                         hierarchy.hierarchy.wrf_manifest),
+                    # Present only when the preparation opted in: the
+                    # sealed statics-corridor set, digest-bound here the
+                    # way every other sealed artifact is.  Absent, the
+                    # bundle is byte-for-byte what it always was.
+                    **(
+                        {"statics_corridor": dict(
+                            hierarchy.statics_corridor_receipt)}
+                        if hierarchy.statics_corridor_receipt is not None
+                        else {}),
                     "timing_seconds": {
                         "decode": decode_seconds,
                         "initialize_all_root_times": initialize_seconds,
@@ -1713,7 +1736,26 @@ def main(argv: list[str] | None = None) -> int:
         action="store_false", default=True,
         help="prepare the forecast only, and do not attempt the bonus "
              "unchanged-WRF wrfinput/wrfbdy export of a domain tree")
+    parser.add_argument(
+        "--statics-corridor", nargs="?", const="all", default=None,
+        metavar="GRID_IDS",
+        help="also seal child-resolution statics over each child's whole "
+             "parent extent (the moving-nest corridor); bare flag covers "
+             "every child domain, or pass comma-separated child grid ids "
+             "(e.g. 2,3).  Required before the prepared tree runner will "
+             "honor a [relocation] follow source; omitted, the bundle is "
+             "byte-for-byte unchanged")
     args = parser.parse_args(argv)
+    statics_corridor = args.statics_corridor
+    if statics_corridor is not None and statics_corridor != "all":
+        try:
+            statics_corridor = tuple(
+                int(part) for part in statics_corridor.split(",") if part)
+        except ValueError:
+            print("rw-wps --source gfs: --statics-corridor accepts 'all' "
+                  f"or comma-separated child grid ids, got "
+                  f"{args.statics_corridor!r}.", file=sys.stderr)
+            return 2
     try:
         proof = prepare_gfs_wrf(
             series=args.series, cycle=args.cycle, bridge=args.bridge,
@@ -1731,6 +1773,7 @@ def main(argv: list[str] | None = None) -> int:
             physics_profile=args.physics_profile,
             expert_acknowledgements=tuple(args.ack),
             stock_wrf_export=args.stock_wrf_export,
+            statics_corridor=statics_corridor,
         )
     except (ValueError, OSError) as error:
         # Every gate this door applies is a refusal, and a refusal is a
@@ -1744,6 +1787,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"rw-wps --source gfs: {error}.", file=sys.stderr)
         return 2
     print(json.dumps(proof, indent=2, sort_keys=True))
+    corridor = proof.get("statics_corridor")
+    if isinstance(corridor, dict):
+        # Size honesty at the door: the corridor is parent-extent at
+        # child resolution, and its cost is stated where it is paid.
+        for label, entry in sorted(corridor.get("domains", {}).items()):
+            print(
+                f"  statics corridor {label}: "
+                f"{entry['corridor_nx']}x{entry['corridor_ny']} child "
+                f"cells over the whole d{int(entry['parent_id']):02d} "
+                f"extent, {entry['cache']['bytes'] / 1.0e6:.1f} MB on "
+                f"disk, {entry['host_bytes'] / 1.0e6:.1f} MB host when "
+                "loaded by a relocating run (no GPU residency)",
+                file=sys.stderr)
     for line in stock_wrf_export_notice(proof):
         print(line, file=sys.stderr)
     for line in prepared_forecast_next_command(

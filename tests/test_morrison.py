@@ -607,6 +607,124 @@ def test_morrison_kernel_water_conservation_is_sedimentation_flux_aware(regime):
     assert min(a.min() for a in after_host.values()) >= 0.0
 
 
+def _fall_only_columns(nz=12):
+    """Two sedimentation columns: one surface-only, one ordinary.
+
+    Column 0 carries rain and graupel in the lowest model level and nothing
+    above it; column 1 is a deep precipitating layer, so one warp holds both
+    vertical spans.  Levels are 100 m apart, which puts a 90 s call several
+    substeps deep.
+    """
+    z = 50.0 + 100.0 * np.arange(nz, dtype=np.float64)
+    p = 100000.0 * np.exp(-z / 8000.0)
+    temp = 290.0 - 0.0065 * z
+    pii = (p / c.P0) ** c.RCP
+    rho = (p / (c.RD * temp))[:, None]
+    active = np.zeros((nz, 2), dtype=bool)
+    active[0, 0] = True
+    active[:nz - 2, 1] = True
+    column = {
+        "theta": np.repeat((temp / pii)[:, None], 2, axis=1),
+        "pii": np.repeat(pii[:, None], 2, axis=1),
+        "pressure": np.repeat(p[:, None], 2, axis=1),
+        "rho": np.repeat(rho, 2, axis=1),
+        "dz": np.full((nz, 2), 100.0),
+        "nc": np.repeat(250.0e6 / rho, 2, axis=1),
+        "qr": np.where(active, 8.0e-4, 0.0),
+        "nr": np.where(active, 1.5e6 / rho, 0.0),
+        "qg": np.where(active, 4.0e-4, 0.0),
+        "ng": np.where(active, 8.0e4 / rho, 0.0),
+    }
+    for name in ("qv", "qc", "qi", "qs", "ni", "ns"):
+        column[name] = np.zeros((nz, 2))
+    return {name: np.ascontiguousarray(value[:, None, :], dtype=np.float32)
+            for name, value in column.items()}
+
+
+def _launch_morrison_sedimentation(host, dt):
+    """Run the sedimentation stage alone over a prepared FP32 column batch."""
+    import cupy as cp
+
+    from gpuwm.core import morrison as morr
+    from gpuwm.core.kernels import get_kernel
+    from gpuwm.core.morrison_constants import rimed_ice_constants
+
+    nz, ny, nx = host["theta"].shape
+    dev = {name: cp.asarray(value) for name, value in host.items()}
+    precip = {name: cp.zeros((ny, nx), cp.float32) for name in
+              ("rainnc", "rainncv", "snownc", "snowncv",
+               "graupelnc", "graupelncv", "sr")}
+    rimed = rimed_ice_constants(1)
+    kernel = ("morrison_sediment_64" if nz <= morr._SHALLOW_KMAX
+              else "morrison_sediment_256")
+    blocks = (ny * nx + morr._COLUMN_TPB - 1) // morr._COLUMN_TPB
+    get_kernel("morrison", kernel)(
+        (blocks,), (morr._COLUMN_TPB,),
+        (dev["qc"], dev["qr"], dev["qi"], dev["qs"], dev["qg"],
+         dev["nc"], dev["nr"], dev["ni"], dev["ns"], dev["ng"],
+         dev["nc"], dev["theta"], dev["pii"], dev["pressure"],
+         dev["rho"], dev["dz"],
+         precip["rainnc"], precip["rainncv"],
+         precip["snownc"], precip["snowncv"],
+         precip["graupelnc"], precip["graupelncv"], precip["sr"],
+         np.float32(dt), np.float32(rimed.ag), np.float32(rimed.bg),
+         np.float32(rimed.rhog), np.int32(nz), np.int32(ny), np.int32(nx)))
+    return ({name: cp.asnumpy(value) for name, value in dev.items()},
+            {name: cp.asnumpy(value) for name, value in precip.items()})
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_morrison_sedimentation_exports_a_category_held_in_the_lowest_level():
+    """Rain and graupel confined to k=0 still reach the ground.
+
+    The substep sweep runs only over the levels that carry a fall speed, so
+    for this column the top of the span and the level that owns the surface
+    export are the same level.  Treating those as separate cases drops the
+    export -- rainnc/rainncv/graupelnc/graupelncv/sr all go to zero -- while
+    the column mass still falls out of k=0.  Categories that fall nowhere,
+    and the levels above each span, must come back untouched.
+    """
+    nz = 12
+    host = _fall_only_columns(nz)
+    after, precip = _launch_morrison_sedimentation(host, dt=90.0)
+
+    for name in ("qc", "qi", "qs", "ni", "ns", "nc"):
+        np.testing.assert_array_equal(after[name], host[name],
+                                      err_msg=f"{name} does not sediment")
+    for name in ("qr", "qg", "nr", "ng"):
+        np.testing.assert_array_equal(after[name][1:, 0, 0],
+                                      np.zeros(nz - 1, np.float32),
+                                      err_msg=f"{name} above the span")
+        np.testing.assert_array_equal(after[name][nz - 2:, 0, 1],
+                                      np.zeros(2, np.float32),
+                                      err_msg=f"{name} above the span")
+
+    rho = host["rho"][:, 0, :].astype(np.float64)
+    dz = host["dz"][:, 0, :].astype(np.float64)
+    fell = {name: np.sum((host[name][:, 0, :].astype(np.float64)
+                          - after[name][:, 0, :].astype(np.float64))
+                         * rho * dz, axis=0)
+            for name in ("qr", "qg")}
+    total = precip["rainncv"][0].astype(np.float64)
+    graupel = precip["graupelncv"][0].astype(np.float64)
+    assert np.all(total > 0.0) and np.all(graupel > 0.0)
+    # The surface-only column drained, and the deep column's span really
+    # begins at its own top level rather than one below it.
+    assert after["qr"][0, 0, 0] < host["qr"][0, 0, 0]
+    assert after["qr"][nz - 3, 0, 1] < host["qr"][nz - 3, 0, 1]
+    # rainncv is the all-category total and graupelncv the graupel part of
+    # it; no other category carries mass here, so the two surface fluxes are
+    # exactly the mass that left each column, to the FP32 substep floor.
+    np.testing.assert_allclose(graupel, fell["qg"], rtol=1.0e-5)
+    np.testing.assert_allclose(total - graupel, fell["qr"], rtol=1.0e-5)
+    np.testing.assert_array_equal(precip["snowncv"],
+                                  np.zeros((1, 2), np.float32))
+    np.testing.assert_allclose(precip["sr"][0], graupel / (total + 1.0e-12),
+                               rtol=1.0e-6)
+    np.testing.assert_array_equal(precip["rainnc"], precip["rainncv"])
+
+
 @pytest.mark.gpu
 @requires_gpu
 def test_morrison_public_dispatch_allocates_two_moment_state():

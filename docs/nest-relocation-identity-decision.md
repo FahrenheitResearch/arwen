@@ -357,10 +357,11 @@ The §6 follow-up, built complete:
   `gpuwm run` wires `gpuwm.runtime.build_real_relocation_runner` and no
   longer refuses follow-source configs (a single-domain follow config
   still refuses -- no nest to move).  The prepared domain-tree route
-  KEEPS its refusal: a prepared tree runs without the case's GEOG
-  source, so no footprint can be rebuilt there; the message now says
-  exactly that and points at the run route.  `execute_experiment` still
-  refuses a follow source on any route that wired no runner.
+  kept its refusal at this leg: a prepared tree runs without the case's
+  GEOG source, so no footprint could be rebuilt there.  §8 lifts it for
+  bundles prepared WITH a statics corridor; corridor-less bundles still
+  refuse, with the remedy named.  `execute_experiment` still refuses a
+  follow source on any route that wired no runner.
 - Receipts per move now carry: static source and rebuild timings, the
   placement translation, the terrain adjustment applied, the overlap-
   statics verdict, donor-fill provenance counts, rebase counts, and the
@@ -372,3 +373,68 @@ input catalog + memory).  16 GiB note: the affine estimates are 8.9 /
 envelopes are 14.9 / 15.7 GiB -- above a 16 GiB card's usable budget --
 so the first 4080 run should re-measure the 1.746x floor rather than
 trust it across cards.
+
+## 8. Leg 4 (2026-08-08): the statics corridor — prepared routes move
+
+The §7 refusal on the prepared (GFS/ERA5/mapped tree) route existed
+because relocation rebuilds a child's statics from the GEOG source and
+a prepared tree deliberately runs without its ingest inputs.  The
+corridor moves the rebuild to PREPARATION time, when the source IS on
+hand, and keeps the run fully sealed (`gpuwm/static/corridor.py`):
+
+- **Emission (opt-in).** `--statics-corridor` on the GFS tree
+  preparation (`rw-wps --source gfs`, `python -m gpuwm.gfs_direct`;
+  bare flag = every child domain, or comma-separated child grid ids)
+  builds child-resolution statics over each child's WHOLE parent extent
+  -- the chase cannot leave the parent -- through the same
+  `build_static` the domain statics use, on the child reference grid
+  `translated` and re-extented on the SAME lattice.  Sealed as
+  `hierarchy-artifacts/statics-corridor/dNN.npz` (byte-deterministic
+  writer) plus a receipt whose copy is embedded in `proof.json`, so the
+  corridor digests are covered by `--preparation-receipt-sha256` like
+  every other sealed artifact.  Flag absent: the bundle is byte-for-byte
+  unchanged.  `gpuwm fetch --author-front-door-manifest` prints the
+  flag, and the go/run-plan prepare stage passes it, whenever the
+  experiment config declares a follow source (same predicate both
+  sides, so the pasted and driven lines cannot drift).
+- **Acceptance.** `prepared_domain_tree_forecast` accepts
+  `[relocation]` follow/moves when the bundle carries a corridor
+  covering the follow child: receipt-vs-proof equality, cache SHA-256,
+  geometry-vs-experiment equality, and exact float64 grid-arithmetic
+  probes are all verified at preflight; the corridor is re-hashed after
+  the run.  ANY verification failure refuses loudly -- a follow config
+  never degrades to a silently static nest.  Corridor-less bundles keep
+  the §7 refusal, now naming `--statics-corridor` as the remedy.
+- **Consumption is the §7 machinery, not a fork.**
+  `real_relocation_initializer` grew a `statics_builder` seam (the one
+  route-owned input); the corridor supplies a crop-backed builder and
+  everything after the statics -- full-parent SINT, the t=0 terrain
+  adjustment, blend-frame rebase, donor-fill land movement, driver
+  rebuild (`rebuild_child_driver_from_land_state`, with the prepared
+  route's native land-use identity and t=0 radiation wiring) -- is the
+  same implementation, wired by
+  `gpuwm.runtime.build_prepared_tree_relocation_runner` into the same
+  `RelocationRunner`.  The overlap-statics bitwise assertion stays
+  armed on every move.
+- **Why a crop is exact.** The corridor grid delegates per-cell
+  transforms to the child reference grid (float32 sampling twin
+  included), the static build is per-cell on those coordinates, and the
+  terrain smoother's dependency cone lies inside the shared halo -- so
+  a footprint cropped from the corridor equals the direct footprint
+  build BITWISE.  tests/test_statics_corridor.py proves it across
+  placements on a synthetic WPS_GEOG tree spanning the build's gcell /
+  categorical-count / interpolation / smoother paths, validates the
+  instrument with a planted one-ULP perturbation, and re-proves it
+  against the real 30-arc-second tree when the case bundle is staged.
+- **Cost, stated where it is paid.** The corridor is parent-extent at
+  child resolution: 97 float64 planes = 776 bytes per corridor cell.
+  A 3 km parent of 300x300 cells at ratio 3 is a 900x900 corridor
+  (~629 MB on disk, same when loaded to host at run time); 450x450
+  cells at ratio 3 is ~1.41 GB.  The preparation prints the numbers per
+  corridor, the run receipt carries `statics_corridor_host_bytes`, and
+  it is HOST memory only -- crops happen on the CPU and a rebuilt child
+  re-occupies the same device footprint, so the GPU preflight estimate
+  is unchanged.
+- HRRR trees inherit all of this when their preparation emits the same
+  sealed artifact: the acceptance, verification and consumption live at
+  the source-agnostic tree-runner/hierarchy seam.

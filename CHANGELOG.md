@@ -1,5 +1,123 @@
 # Changelog
 
+## 1.8.4 (2026-08-08)
+
+New:
+- `gpuwm run-plan` runs nested HRRR end to end, the last route that
+  refused. An HRRR tree is not a GFS tree with a different source:
+  rw-wps is not on the path at all, the root preparation is
+  `tools.prepare_hrrr_wrf`, and a third stage builds d02..dNN from the
+  sealed d01 before the same `gpuwm-prepared-tree-forecast` the GFS
+  tree route already drives takes over. The branch is taken after the
+  root preparation, which both HRRR depths share, so neither fetch nor
+  that preparation is duplicated. The hierarchy writes `receipt.json`
+  where rw-wps writes `proof.json`, and the document resolver added
+  for the GFS tree matches on schema rather than filename, so the
+  receipt relay needed no new machinery. Render is now one helper
+  shared by both HRRR arms, so `render_products` -- including `none`
+  -- means the same thing however the forecast was produced.
+- Moving nests run on the prepared routes. A prepared tree is
+  digest-bound and carries no ingest inputs, so a `[relocation]`
+  follow source had nothing to rebuild child statics from and the tree
+  runner refused it outright. `--statics-corridor` closes the gap at
+  preparation time, when the geography source is still on hand:
+  parent-extent child-resolution statics per child, built through the
+  same `build_static` the domain statics use, written
+  byte-deterministically and sealed with a SHA-256 receipt. Corridor
+  crops are bitwise the direct footprint build, pinned by a
+  crop-vs-direct identity test across the build's gcell, categorical,
+  interpolation and smoother paths with a planted one-ULP
+  perturbation proving the instrument fires. At forecast time a
+  follow source is accepted only over a verified corridor (receipt
+  against proof, cache digest, geometry and grid-arithmetic probes);
+  a corridor-less bundle keeps the refusal and now names the flag,
+  and a failed verification refuses loudly rather than running a
+  silently static nest. Opt-in throughout: without the flag the
+  bundle is byte-for-byte what it was. `gpuwm go` and run-plan pass
+  it whenever the config declares a follow source, and the printed
+  rw-wps chain derives it from the same predicate, so the pasted and
+  the driven chain cannot drift on it.
+- `prepare_mapped_wrf` accepts a prebuilt native static cache
+  (`--static-input` / `--static-receipt`). It was the last direct
+  adapter with no such bypass: it called `build_static` every cycle
+  and then serialized the exact artifact it had no way to read back.
+  The receipt is verified against the resolved cache and the target
+  grid before the load, and the proof records `root_static_provider`
+  as `prebuilt-hash-bound-cache`.
+- The solver step and the preprocessing that feeds it are faster, with
+  every output byte unchanged. The surveyed arm took the
+  representative full-physics trace from 41.345 to 37.514
+  ms/model-step, and a fused coupled-scalar update, a fused
+  `couple_momentum`, a Morrison active-span substep sweep and a
+  chunked state gate landed on top of it, for about 13% off the step
+  in total. `validate_full_state` on a seeded 250x200x49 mp10 state
+  went 5.25 to 0.52 ms per check. `build_static` against the
+  reference WPS_GEOG tree at d01 251x201 went 18.701 to 5.359 s
+  (3.49x), which pays on every path a static cache cannot serve: the
+  cold first cycle, geometry changes, moving and spawned nests, and
+  child domains. The byte proofs: forecast SHA-256 unchanged on the
+  seeded mp10 and dry lanes, ValidationReports bitwise identical
+  across a 14-case corruption-injection battery, and all 14 static
+  field digests identical in every arm.
+
+Fixed:
+- Nested GFS preparation no longer refuses on inland water. An
+  ordinary 12-3 km tree died 15.9 s into its prepare stage with 73
+  columns disagreeing between land mask and soil category, and the 73
+  were reservoirs and rivers scattered across the whole child rather
+  than an edge artifact, so this refused essentially any CONUS child
+  holding inland water, moving nest or not. The soil-temperature
+  lookup was an inline chain that did not know the GFS spelling; it is
+  now one table of per-source spellings read by both reconciler call
+  sites, the nested child and the root case. The SST argument had no
+  fallback and the GFS lane carries no SST field, so WRF's second arm
+  could never fire; it now takes real.exe's own precedence, SST then
+  the skin temperature that `module_initialize_real.F` substitutes
+  where SST has no valid support. The reconciler's soil-temperature
+  and SST reads also went straight to `np.asarray` on values that can
+  arrive device-resident, which CuPy refuses; both are marshalled to
+  the host now, like the rest of that module. That refusal was
+  unreachable until a column actually disagreed, so it sat behind the
+  reconciler's own hot path instead of failing at setup.
+- A chain stage no longer imports from the caller's directory. Every
+  prepared-chain stage is spawned as `python -m MODULE`, and `-m`
+  prepends the current directory to `sys.path` ahead of the installed
+  package, so a chain started inside a source checkout imported that
+  checkout; a live run was hijacked exactly that way. The stage cwd is
+  deliberately the caller's directory so a relative `--out` means what
+  the person typing it meant, so moving it was not the fix.
+  `PYTHONSAFEPATH` separates the two: the child still resolves paths
+  against the caller's directory and no longer imports from it.
+- Progress telemetry reports real numbers on every prepared route.
+  `speed_x` was null and `wall_seconds` 0.0 on all 181 progress events
+  of a completed run, because the baselines were armed on the stage
+  transition and every prepared chain opens the forecast stage itself
+  before handing the runner over. They arm on the first progress call
+  now, which is true however the stage was opened.
+- A completed tree run no longer summarizes itself as zero. The
+  summary knew only the single-domain runner's `progress.json` and
+  `report.json`; the tree runner writes a certification capsule and
+  neither of those, so a run that finished 10800 model seconds and
+  wrote 17 frames reported `completed_seconds` 0.0, and the heartbeat
+  fed from it published a model time of zero beside an `outer_step` of
+  180. Completed seconds now come from the observer, which saw every
+  step on either route, and the capsule is read for frames and named
+  in the summary. Where no receipt states a status, status stays null
+  and `status_basis` says why.
+- `gpuwm run-plan --resolve` no longer reports an authored table as a
+  schema default. It decided "the author did not type this" by looking
+  only inside the `[experiment]` table, but several fields are
+  authored as their own top-level table, so a config declaring
+  `[relocation]` was reported with the schema's `enabled: false`. For
+  a moving-nest plan that reads exactly backwards. A top-level table
+  whose name is a field name now counts as the author spelling that
+  field, taken from the document rather than from a second list.
+- `relocation_receipts.json` carries one run-end summary row. On a
+  leg-walking route the executor returns once per leg, so a live
+  12-move run left two byte-identical summary rows in a 25-row list.
+  The superseded row is dropped and the new one appended, so the
+  summary stays last and current.
+
 ## 1.8.3 (2026-08-08)
 
 New:

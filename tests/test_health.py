@@ -293,8 +293,11 @@ def test_gpu_validator_handles_nssl2_post_step_descriptor_high_watermark():
     import cupy as cp
 
     state = _GPUState(cp, "qvolg", 0.0)
-    one = cp.ones((1,), dtype=cp.float32)
-    extra = {f"post_step_{index:03d}": one for index in range(526)}
+    # Distinct allocations: the device build keeps one descriptor per
+    # allocation, so aliasing every table onto one buffer would exercise the
+    # de-duplication rather than the 527-descriptor high-water mark.
+    extra = {f"post_step_{index:03d}": cp.ones((1,), dtype=cp.float32)
+             for index in range(526)}
     validator = StateHealthValidator(state, extra_tables=extra)
     report = validator.validate(phase="nssl2-post-step-high-watermark")
     assert len(validator.fields) == 527
@@ -317,4 +320,126 @@ def test_gpu_fused_gate_twins_attribute_every_uncovered_corruption(
     }.get(field, field)
     assert not report.ok
     assert report.first_bad_field == expected
+    assert report.first_bad_flat_index == 4
+
+
+class _ChunkedGPUState:
+    """Device state whose scanned fields span several gate chunks each.
+
+    The fused gate spreads one descriptor over ``ceil(size / chunk)`` blocks,
+    so a fault that only ever lands in the first chunk would not exercise the
+    geometry at all.  16,384 elements is four chunks at this inventory size.
+    """
+
+    def __init__(self, cp):
+        self._cp = cp
+        self._scratch = {}
+        self.physics = None
+        self.lateral_boundaries = None
+        self._lateral_boundary_device = None
+        self.u = cp.zeros((4, 64, 64), dtype=cp.float32)
+        self.w = cp.zeros((4, 64, 64), dtype=cp.float32)
+
+    def scratch(self, shape, slot):
+        if slot not in self._scratch:
+            self._scratch[slot] = self._cp.zeros(shape, dtype=self._cp.float32)
+        return self._scratch[slot]
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize(("corruption", "flat"), (
+    (np.nan, 9000),
+    (np.inf, 13000),
+    (-np.inf, 4096),        # the first element of a chunk
+    (-300.0, 12287),        # finite, but outside the |w| <= 200 bound
+    (250.0, 16383),         # the very last element of the last chunk
+))
+def test_gpu_chunked_gate_catches_a_fault_outside_the_first_chunk(
+        corruption, flat):
+    import cupy as cp
+
+    state = _ChunkedGPUState(cp)
+    state.w.reshape(-1)[flat] = cp.float32(corruption)
+    validator = StateHealthValidator(state)
+    report = validator.validate(phase="gpu-chunked")
+    assert validator._chunk_count > 1
+    assert flat >= validator._chunk
+    assert not report.ok
+    assert report.first_bad_field == "w"
+    assert report.first_bad_flat_index == flat
+    assert report.status_bits != 0
+    assert report.reason
+
+
+@pytest.mark.gpu
+def test_gpu_chunked_gate_keeps_index_first_then_field_first_attribution():
+    """Chunking must not disturb which fault is reported.
+
+    The lowest flat index within a field wins even when a later chunk finds
+    its own fault first, and the lowest field id still wins overall -- both
+    come from the same atomicMin over (field << 48) | index.
+    """
+    import cupy as cp
+
+    state = _ChunkedGPUState(cp)
+    for flat in (15000, 9000, 4100, 12000):
+        state.w.reshape(-1)[flat] = cp.float32(np.nan)
+    validator = StateHealthValidator(state)
+    report = validator.validate(phase="gpu-chunked-many")
+    mirror = validate_fields_cpu({"u": cp.asnumpy(state.u),
+                                  "w": cp.asnumpy(state.w)})
+    assert not report.ok
+    assert report.first_bad_field == "w"
+    assert report.first_bad_flat_index == 4100
+    assert (report.first_bad_field, report.first_bad_flat_index) == (
+        mirror.first_bad_field, mirror.first_bad_flat_index)
+
+    state.u.reshape(-1)[15000] = cp.float32(np.inf)
+    report = validator.validate(phase="gpu-chunked-field-first")
+    assert report.first_bad_field == "u"
+    assert report.first_bad_flat_index == 15000
+
+
+class _AliasedGPUState:
+    """Device state registering a cumulus tendency under both spellings.
+
+    ``collect_state_fields`` reaches ``driver.cu_rates`` and the restart-
+    persistent ``cu_rthcuten`` scratch slot separately; on a real prepared
+    state they are one allocation.
+    """
+
+    def __init__(self, cp, held, scratch):
+        self._cp = cp
+        self._scratch = {"cu_rthcuten": scratch}
+        self.lateral_boundaries = None
+        self._lateral_boundary_device = None
+        self.physics = SimpleNamespace(
+            pbl_tendencies=None, radiation_tendencies=None,
+            cumulus_tendencies=None, fields={}, microphysics=None,
+            rthratenlw=None, rthratensw=None, cu_nca=None, cu_pratec=None,
+            cu_raincv=None, cu_rates=SimpleNamespace(rthcuten=held),
+            _pending_rainbl=None)
+
+    def scratch(self, shape, slot):
+        if slot not in self._scratch:
+            self._scratch[slot] = self._cp.zeros(shape, dtype=self._cp.float32)
+        return self._scratch[slot]
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("aliased", (True, False))
+def test_gpu_gate_scans_an_aliased_buffer_once_and_still_attributes_it(
+        aliased):
+    import cupy as cp
+
+    held = cp.zeros((2, 3), dtype=cp.float32)
+    scratch = held if aliased else cp.zeros((2, 3), dtype=cp.float32)
+    held.reshape(-1)[4] = cp.float32(np.nan)
+    validator = StateHealthValidator(_AliasedGPUState(cp, held, scratch))
+    report = validator.validate(phase="gpu-aliased")
+    assert [field.name for field in validator.fields] == (
+        ["held.cu_rates.rthcuten"] if aliased
+        else ["held.cu_rates.rthcuten", "held.scratch.cu_rthcuten"])
+    assert not report.ok
+    assert report.first_bad_field == "held.cu_rates.rthcuten"
     assert report.first_bad_flat_index == 4

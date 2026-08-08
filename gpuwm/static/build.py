@@ -906,12 +906,17 @@ class _DomainSampler:
         extent = ds._extent_mask(win.x0, win.x1, win.y0, win.y1)
         missing_tile_cells = int(np.count_nonzero(~coverage & extent))
         outside_extent_cells = int(np.count_nonzero(~coverage & ~extent))
-        missing_tiles = ds.missing_tiles(
-            win.x0, win.x1, win.y0, win.y1)
         required_origins = ds.required_tile_origins(
             win.x0, win.x1, win.y0, win.y1)
 
         if missing_cells:
+            # Only the failure message needs the absent origins, and deriving
+            # them re-walks the whole window.  On a passing run -- every run
+            # that ships a product -- that was a second complete pass over the
+            # source window whose result was discarded: the PASS receipt below
+            # never references it.
+            missing_tiles = ds.missing_tiles(
+                win.x0, win.x1, win.y0, win.y1)
             first_j, first_i = np.argwhere(~coverage)[0]
             source_x = win.x0 + int(first_i)
             source_y = win.y0 + int(first_j)

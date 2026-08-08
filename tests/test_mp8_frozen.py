@@ -233,8 +233,18 @@ FROZEN_MODULE_DIGESTS = {
         '93846074b99bdb5f03b33da51c7f70aeedc2cb0d9058d3baac43c107f8387e90',
         'a1510158f36fc8b2289e309339dba17f371f6c6f79f51f600b2be621abaadcdf'),
     'health': (
-        '381575b3b81aed334bd175c98abfe7360842b2783c01e8edf7cb6e3ca38fc7e0',
-        'df8a33c13788d1832995a34dc9a3259a933d1be302ea182ca9e13a4145838ae8'),
+        # Re-pinned for the validation-gate launch geometry: blockIdx.y now
+        # selects the descriptor and blockIdx.x a chunk within it, so the
+        # full-state scan is no longer one block per field.  health is not
+        # an mp=8 translation unit -- it computes no model state at all, it
+        # only reads state and writes the compact health record -- so the
+        # mp=8 numerics guarantee is untouched.  The record itself is
+        # unchanged by construction: the epilogue is the same atomicOr over
+        # status bits and the same atomicMin over (field << 48) | index,
+        # both order-independent, so which block visits an element cannot
+        # change what is reported (tests/test_health.py).
+        'c6ee3291ee9265df4b11cdff8f5190b742731598308b75e63ef77ea4443c611a',
+        '051f4e4228a4a904f0341cd1df82ba5fbdc85adceadf11a690b0061fea013a2a'),
     'kessler': (
         'fecf2e8028fda0ed4cb47fccce4c602d4632048d2dcbdd163613685ded952fdc',
         '530faef7f3bc5e5600d7a5f1086c9e4d0914a3aeda735214072bed30907c05d7'),
@@ -248,8 +258,20 @@ FROZEN_MODULE_DIGESTS = {
         'fadf66fea201e4eac56e8a58d72b11940325b142a4e08fcc0b8db80fd78b53ec',
         '4cd1c59322d6a800eaebee8182a5a2a25413c37ffe4681f56a164a71ebd3a47b'),
     'morrison': (
-        'fb0e18e4df5c78735b9aac80e719fcd2703497765422a72087794c6183e0033f',
-        '2e6c69adedf7a2c3195840d7906fb2ae5e9a637bd74fa604e03e0b15bb6fd53d'),
+        # Re-pinned for two bit-exact sedimentation rearrangements: the
+        # substep sweep now runs only over the levels that carry a fall
+        # speed, and the Courant pass reads each level once for all five
+        # categories instead of once per category.  morrison is not an mp=8
+        # translation unit, and neither edit changes an FP operation --
+        # the skipped substep levels add +0 to a quantity that cannot be
+        # negative, and the Courant reduction is a chain of exactly
+        # associative fmaxf.  Measured byte-for-byte identical over all 10
+        # mutated 3-D fields and all 7 surface fields in the layered,
+        # shallow and every-level-occupied regimes, with the seeded
+        # 250x200x49 mp=10 lane's SHA-256 unchanged.  This pin moves while
+        # the compiled binary's FP results do not.
+        '58eb091a705a476226b07cd82b4b7d8cf03d549c97c92cee312b19ef53e732b3',
+        '075757cb4d75818a76ce4f8b43515c601e4b2de06567bcde2502772f9db90f09'),
     'mynn_pbl': (
         'b53ab90e634e61367afadfaa77667c8f2eb2430fc061ce9976509fe0e2f4490e',
         '87f80d06cc7724fd1277eefbf91738fe8eb0e774768ed64292cb1157f19a2d84'),

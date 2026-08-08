@@ -88,6 +88,8 @@ interest.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import cupy as cp
 import numpy as np
 
@@ -338,20 +340,95 @@ def _pd_fold_sources(state: DomainState, cfg: RunConfig, name: str,
     return q0_eff
 
 
-def _update_scalar_in_place(q, q0, chm0, chm, tend, dt_eff: float,
-                            *, clamp: bool) -> None:
-    """Apply WRF's coupled scalar update without expression temporaries.
+#: CuPy's own ``maximum`` ufunc carries exactly this guard, so the clamp arm
+#: below has to resolve ``NAN`` the same way it does or a NaN carrier would
+#: come out with a different payload.
+_NAN_PREAMBLE = """
+#ifndef NAN
+#define NAN __int_as_float(0x7fffffff)
+#endif
+"""
 
-    Each ufunc is kept separate and in the original expression order so its
-    FP32 rounding boundary is unchanged.  ``tend`` is write-before-read
-    scratch that every species resets before its next use.
+
+@lru_cache(maxsize=None)
+def _update_scalar_kernel(has_msf: bool, has_physics: bool, has_fixed: bool,
+                          clamp: bool):
+    """One fused coupled-scalar update kernel per branch combination.
+
+    Every FP32 operation is spelled with an explicit round-to-nearest
+    intrinsic AND the kernel is compiled with ``-fmad=false``, because the
+    ufunc chain this replaces rounds to FP32 at every operator boundary while
+    NVRTC would happily contract ``c1h*mu + c2h`` and ``chm0*q0 + dt*tend``
+    into FMAs -- silently moving roughly 3% of the words.  CuPy appends
+    ``-ftz=true`` after these options for this kernel and for the ufuncs
+    alike, so the subnormal band matches as well; both halves are pinned by
+    tests/test_moist.py::test_fused_scalar_update_is_bit_identical.
+
+    Branch specialization rather than runtime flags keeps every launch free of
+    dead loads.  A run visits at most a handful of the sixteen combinations
+    and each pays one NVRTC compile at warmup.
     """
-    cp.multiply(chm0, q0, out=q)
-    cp.multiply(dt_eff, tend, out=tend)
-    cp.add(q, tend, out=q)
-    cp.divide(q, chm, out=q)
+    params = ["T q0", "T tend", "raw T c1h", "raw T c2h",
+              "raw T mu0", "raw T mu"]
+    # 32-bit index arithmetic: a field big enough to overflow it would be
+    # 8 GB of FP32 on its own, and CuPy's own indexer makes the same call.
+    body = ["const int lev = static_cast<int>(i) / ncol;",
+            "const int col = static_cast<int>(i) % ncol;",
+            "T t = tend;"]
+    if has_msf:
+        params.append("raw T msft")
+        body.append("t = __fmul_rn(t, msft[col]);")
+    if has_physics:
+        params.append("T physics")
+        body.append("t = __fadd_rn(t, physics);")
+    if has_fixed:
+        params.append("T fixed")
+        body.append("t = __fadd_rn(t, fixed);")
+    params += ["T dt_eff", "int32 ncol"]
+    body += [
+        "const T chm0 = __fadd_rn(__fmul_rn(c1h[lev], mu0[col]), c2h[lev]);",
+        "const T chm = __fadd_rn(__fmul_rn(c1h[lev], mu[col]), c2h[lev]);",
+        "T v = __fmul_rn(chm0, q0);",
+        "t = __fmul_rn(dt_eff, t);",
+        "v = __fadd_rn(v, t);",
+        "v = __fdiv_rn(v, chm);",
+    ]
     if clamp:
-        cp.maximum(q, DTYPE(0.0), out=q)
+        body.append("v = isnan(v) ? T(NAN) : T(max(v, T(0)));")
+    body.append("q = v;")
+    return cp.ElementwiseKernel(
+        ", ".join(params), "T q", "\n".join(body),
+        "gpuwm_update_scalar", preamble=_NAN_PREAMBLE,
+        options=("-fmad=false",))
+
+
+def _update_scalar_in_place(q, q0, tend, c1h, c2h, mu0, mu, dt_eff: float,
+                            *, msft=None, physics=None, fixed=None,
+                            clamp: bool) -> None:
+    """Apply WRF's coupled scalar update in one pass over the field.
+
+    Fuses what used to be up to eight full-size ufunc launches per species --
+    ``tend *= msft``, ``tend += physics``, ``tend += fixed``, then
+    ``multiply``/``multiply``/``add``/``divide``/``maximum`` -- plus the two
+    (nz, ny, nx) column-mass temporaries ``chm0``/``chm`` the caller used to
+    materialize per stage.  The kernel rebuilds both per element from the
+    (nz,) coefficient rows and the FLAT (ny*nx,) column masses, deriving the
+    level and the column ordinal from its linear index; the operation order
+    and every FP32 rounding boundary are those of the ufunc chain, word for
+    word.
+
+    ``dt_eff*tend`` is deliberately not written back to ``tend``.  That store
+    was dead: every reader of the shared ``moist_rq_t`` scratch -- each
+    species iteration here and :func:`advance_tke_stage` -- re-zeros it first.
+    """
+    kern = _update_scalar_kernel(msft is not None, physics is not None,
+                                 fixed is not None, clamp)
+    args = [q0, tend, c1h, c2h, mu0, mu]
+    for optional in (msft, physics, fixed):
+        if optional is not None:
+            args.append(optional)
+    args += [DTYPE(dt_eff), np.int32(mu.size), q]
+    kern(*args)
 
 
 def advance_scalars_stage(state: DomainState, cfg: RunConfig,
@@ -391,12 +468,13 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
     ``apply_state_boundary_values`` exactly as in WRF.
     """
     nz, ny, nx = state.p.shape
-    c1h = state.c1h[:, None, None]
-    c2h = state.c2h[:, None, None]
     mu0 = state.mub2d + state.mup0                     # time-t column mass
     mu = state.mub2d + state.mup                       # post-acoustic mass
-    chm0 = c1h * mu0[None] + c2h
-    chm = c1h * mu[None] + c2h
+    # Flat column rows for the fused update, which addresses a column by the
+    # ordinal it derives from its linear index.
+    mu0_row = mu0.reshape(-1)
+    mu_row = mu.reshape(-1)
+    msft_row = state.msft.reshape(-1)
     tend = state.scratch((nz, ny, nx), "moist_rq_t")
     boundary_forced = cfg.specified or cfg.nested
     boundary_x = cfg.open_x or boundary_forced
@@ -414,6 +492,11 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
     # gpuwm deviation (open-BC benchmark pins).
     pd = (final and cfg.moist_adv_opt == 1
           and not (cfg.open_x or cfg.open_y))
+    # The coupled update rebuilds both column masses per element, so the only
+    # consumer left of a materialized ``chm0`` is the PD source fold; ``chm``
+    # has none at all.
+    chm0 = (state.c1h[:, None, None] * mu0[None] + state.c2h[:, None, None]
+            if pd else None)
     # WRF captures qv's lateral spec+relax tendency ONCE per model step,
     # on RK step 1 from the time-t scalar (relax_bdy_scalar +
     # spec_bdy_scalar into moist_tend, solve_em.F:2255-2292, gated
@@ -446,10 +529,15 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
     for name in SPECIES:
         q = getattr(state, name)
         q0 = getattr(state, name + "0")
-        tend[...] = 0
+        # The zeroing lives on each consuming branch rather than the loop
+        # prologue: on the positive-definite path the buffer is re-zeroed
+        # below before any kernel reads it, so a prologue memset was ten
+        # dead full-field writes per step on non-nested lanes.  Only the
+        # nested lateral fold reads ``tend`` before that second zeroing.
         if pd:
             nested_held = None
             if cfg.nested and apply_scalar_lbc is not None:
+                tend[...] = 0
                 apply_scalar_lbc(state, cfg, name, tend, apply_relax=True,
                                  source_field=q0)
                 nested_held = tend
@@ -474,22 +562,33 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                                    dx=cfg.dx, dy=cfg.dy, dt=dt_eff,
                                    msft=state.msft, has_msf=state.has_msf,
                                    open_x=boundary_x, open_y=boundary_y)
-            if state.has_msf:                 # WRF rk_update_scalar:
-                tend *= state.msft[None]      # tendency = advect_tend*msfty
+            # ``msft`` carries WRF rk_update_scalar's
+            # tendency = advect_tend*msfty, now inside the fused update.
             _update_scalar_in_place(
-                q, q0_eff, chm0, chm, tend, dt_eff, clamp=True)
+                q, q0_eff, tend, state.c1h, state.c2h, mu0_row, mu_row,
+                dt_eff, msft=(msft_row if state.has_msf else None),
+                clamp=True)
         else:
+            # flux_div_scalar accumulates into ``tend`` and deliberately
+            # writes nothing at specified-boundary cells, so this branch
+            # must start from a clean buffer.
+            tend[...] = 0
             launch_flux_div_scalar(q, ru, rv, ww, tend, state,
                                    cfg.dx, cfg.dy,
                                    open_x=boundary_x, open_y=boundary_y,
                                    msf=state.msft, has_msf=state.has_msf,
                                    spec=boundary_forced)
-            if state.has_msf:                 # WRF rk_update_scalar:
-                tend *= state.msft[None]      # tendency = advect_tend*msfty
+            held = held_lbc.get(name)
+            # A lateral tendency landing in ``tend`` below would be scaled a
+            # second time if the msf coupling waited for the fused update, so
+            # those rows keep the standalone multiply.
+            lbc_after_msf = (held is not None
+                             or (cfg.nested and apply_scalar_lbc is not None))
+            if state.has_msf and lbc_after_msf:  # WRF rk_update_scalar:
+                tend *= state.msft[None]         # tendency=advect_tend*msfty
             if cfg.nested and apply_scalar_lbc is not None:
                 apply_scalar_lbc(state, cfg, name, tend, apply_relax=True,
                                  source_field=q0)
-            held = held_lbc.get(name)
             if held is not None:
                 # The held spec+relax tendency enters EVERY stage (WRF
                 # rk_update_scalar adds moist_tend on every rk step over
@@ -503,25 +602,26 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                 tend[:, sz:ny - sz, :sz] = held[:, sz:ny - sz, :sz]
                 tend[:, sz:ny - sz, nx - sz:] = (
                     held[:, sz:ny - sz, nx - sz:])
-            if physics_tendencies is not None:
-                physics = physics_tendencies.scalar_for(name)
-                if physics is not None:
-                    tend += physics
-            if fixed_tendencies is not None:
-                fixed = fixed_tendencies.get(name)
-                if fixed is not None:
-                    tend += fixed
             _update_scalar_in_place(
-                q, q0, chm0, chm, tend, dt_eff, clamp=final)
+                q, q0, tend, state.c1h, state.c2h, mu0_row, mu_row, dt_eff,
+                msft=(msft_row if state.has_msf and not lbc_after_msf
+                      else None),
+                physics=(physics_tendencies.scalar_for(name)
+                         if physics_tendencies is not None else None),
+                fixed=(fixed_tendencies.get(name)
+                       if fixed_tendencies is not None else None),
+                clamp=final)
 
     if getattr(state, "qi", None) is not None:
         for name in extra_moist_species(state):
             q = getattr(state, name)
             q0 = getattr(state, name + "0")
-            tend[...] = 0
+            # See the qv/qc/qr loop: zeroing moved onto the branches that
+            # consume it, dropping the dead prologue memset on the pd path.
             if pd:
                 nested_held = None
                 if cfg.nested and apply_scalar_lbc is not None:
+                    tend[...] = 0
                     apply_scalar_lbc(state, cfg, name, tend,
                                      apply_relax=True, source_field=q0)
                     nested_held = tend
@@ -545,23 +645,28 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                                        msft=state.msft,
                                        has_msf=state.has_msf,
                                        open_x=boundary_x, open_y=boundary_y)
-                if state.has_msf:
-                    tend *= state.msft[None]
                 _update_scalar_in_place(
-                    q, q0_eff, chm0, chm, tend, dt_eff, clamp=True)
+                    q, q0_eff, tend, state.c1h, state.c2h, mu0_row, mu_row,
+                    dt_eff,
+                    msft=(msft_row if state.has_msf else None), clamp=True)
             else:
+                # flux_div_scalar accumulates; start from a clean buffer.
+                tend[...] = 0
                 launch_flux_div_scalar(q, ru, rv, ww, tend, state,
                                        cfg.dx, cfg.dy,
                                        open_x=boundary_x, open_y=boundary_y,
                                        msf=state.msft,
                                        has_msf=state.has_msf,
                                        spec=boundary_forced)
-                if state.has_msf:
+                held = held_lbc.get(name)
+                lbc_after_msf = (
+                    held is not None
+                    or (cfg.nested and apply_scalar_lbc is not None))
+                if state.has_msf and lbc_after_msf:
                     tend *= state.msft[None]
                 if cfg.nested and apply_scalar_lbc is not None:
                     apply_scalar_lbc(state, cfg, name, tend,
                                      apply_relax=True, source_field=q0)
-                held = held_lbc.get(name)
                 if held is not None:
                     sz = cfg.spec_zone
                     tend += held
@@ -570,16 +675,16 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                     tend[:, sz:ny - sz, :sz] = held[:, sz:ny - sz, :sz]
                     tend[:, sz:ny - sz, nx - sz:] = (
                         held[:, sz:ny - sz, nx - sz:])
-                if physics_tendencies is not None:
-                    physics = physics_tendencies.scalar_for(name)
-                    if physics is not None:
-                        tend += physics
-                if fixed_tendencies is not None:
-                    fixed = fixed_tendencies.get(name)
-                    if fixed is not None:
-                        tend += fixed
                 _update_scalar_in_place(
-                    q, q0, chm0, chm, tend, dt_eff, clamp=final)
+                    q, q0, tend, state.c1h, state.c2h, mu0_row, mu_row,
+                    dt_eff,
+                    msft=(msft_row if state.has_msf and not lbc_after_msf
+                          else None),
+                    physics=(physics_tendencies.scalar_for(name)
+                             if physics_tendencies is not None else None),
+                    fixed=(fixed_tendencies.get(name)
+                           if fixed_tendencies is not None else None),
+                    clamp=final)
     if cfg.specified:
         from gpuwm.ingest.lateral_bc import apply_flow_dependent_boundaries
         fields = tuple(getattr(state, name) for name in moist_species(state)

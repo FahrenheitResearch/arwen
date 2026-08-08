@@ -670,3 +670,83 @@ def test_preparer_refuses_a_rebuild_without_a_capture(monkeypatch):
     preparer, _node, new_dc, initialized = _preparer_fixture(monkeypatch)
     with pytest.raises(RelocationRefusal, match="capture_outgoing"):
         preparer(initialized, new_dc, SimpleNamespace())
+
+
+# ---------------------------------------------------------------------------
+# 6. The corridor arm: the prepared routes' statics_builder is a drop-in
+# ---------------------------------------------------------------------------
+
+def _corridor_initializer(monkeypatch, reference_dc, reference_grid):
+    """The SAME CPU scaffold as _cpu_initializer, statics from a sealed
+    synthetic corridor crop instead of the catalog build."""
+    from gpuwm.static.corridor import (ChildStaticsCorridor,
+                                       corridor_footprint_statics_builder)
+
+    monkeypatch.setattr(ni, "DomainState", _TerrainCpuState)
+    monkeypatch.setattr(
+        ni, "sint",
+        lambda field, reg: np_sint(field, reg, dtype=np.float64).astype(F32))
+    monkeypatch.setattr(ni, "update_diagnostics", _fake_diagnostics)
+
+    # Absolute-ground corridor over the whole 14x14 parent (ratio 1):
+    # cell (j, i) carries the same bytes _footprint_hgt evaluates for
+    # any footprint covering it, which is the corridor's own contract.
+    x = np.arange(1, _PNX + 1)[None, :].astype(np.float64)
+    y = np.arange(1, _PNY + 1)[:, None].astype(np.float64)
+    corridor = ChildStaticsCorridor(
+        geometry={"grid_id": 2, "parent_id": 1, "parent_grid_ratio": 1,
+                  "reference_i_parent_start": reference_dc.i_parent_start,
+                  "reference_j_parent_start": reference_dc.j_parent_start,
+                  "child_nx": _CNX, "child_ny": _CNY,
+                  "parent_nx": _PNX, "parent_ny": _PNY,
+                  "corridor_nx": _PNX, "corridor_ny": _PNY,
+                  "origin_translation_child_cells": [
+                      1 - reference_dc.i_parent_start,
+                      1 - reference_dc.j_parent_start]},
+        fields={"HGT_M": 150.0 + 90.0 * np.sin(0.9 * x) * np.sin(0.8 * y),
+                "LANDMASK": np.ones((_PNY, _PNX))},
+        cache_sha256="c" * 64)
+    return ri.real_relocation_initializer(
+        vertical=_vertical(), child_config=reference_dc,
+        reference_grid=reference_grid,
+        reference_i_parent_start=reference_dc.i_parent_start,
+        reference_j_parent_start=reference_dc.j_parent_start,
+        statics_builder=corridor_footprint_statics_builder(corridor))
+
+
+def test_corridor_statics_builder_is_a_drop_in_for_the_catalog_arm(
+        monkeypatch):
+    """End to end on the CPU scaffold: the corridor-fed initializer
+    produces byte-identical rebuilt-child state to the catalog-fed one
+    at a MOVED placement, and its receipt states the corridor
+    provenance.  This is the prepared tree route's rebuild, minus only
+    the GPU physics driver."""
+    from gpuwm.static.corridor import (CORRIDOR_REBUILT_STATICS,
+                                       CORRIDOR_STRIP_FILL_SOURCE)
+
+    moved = _child_dc(6, 3)
+
+    parent_node, parent_grid = _terrain_parent()
+    ref_dc = _child_dc(4, 4)
+    ref_grid = parent_grid.nest(4, 4, 1, _CNX + 1, _CNY + 1)
+    catalog_arm = _cpu_initializer(monkeypatch, parent_node, ref_dc,
+                                   ref_grid)
+    catalog_result = catalog_arm(moved, parent_node)
+
+    corridor_arm = _corridor_initializer(monkeypatch, ref_dc, ref_grid)
+    assert corridor_arm.static_provenance == CORRIDOR_REBUILT_STATICS
+    assert corridor_arm.strip_fill_source == CORRIDOR_STRIP_FILL_SOURCE
+    corridor_result = corridor_arm(moved, parent_node)
+
+    np.testing.assert_array_equal(
+        corridor_result.static_fields["HGT_M"],
+        catalog_result.static_fields["HGT_M"])
+    for name in ("ht", "mub2d", "phb", "pb", "thb", "alb", "thp", "mup"):
+        np.testing.assert_array_equal(
+            getattr(corridor_result.state, name),
+            getattr(catalog_result.state, name), err_msg=name)
+    receipt = corridor_result.preprocess_receipt
+    assert receipt["static_provenance"] == CORRIDOR_REBUILT_STATICS
+    assert receipt["static_source"].startswith("statics-corridor d02")
+    assert receipt["highres_applied"] is False
+    assert receipt["placement_translation_child_cells"] == [2, -1]

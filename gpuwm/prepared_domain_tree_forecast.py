@@ -426,6 +426,14 @@ def runner_capabilities() -> dict[str, object]:
             ],
             "every_domain_cache_reread_and_sha256_verified": True,
         },
+        "relocation": {
+            "follow_sources": (
+                "accepted only over a sealed, digest-verified statics "
+                "corridor prepared with --statics-corridor; corridor-less "
+                "bundles refuse with that remedy named"),
+            "bounds_only": "accepted (manual/API mechanism, no runner)",
+            "corridor_memory": "disk/host only; no GPU residency",
+        },
         "output": {
             "directory_policy": "create-only",
             "io_modes": ["history", "none"],
@@ -477,6 +485,12 @@ class PreparedTreeInputs:
     #: than as a match -- empty on a cache written by this release.
     tolerated_identity_fields: Mapping[str, tuple[str, ...]] = (
         MappingProxyType({}))
+    #: The verified statics corridor
+    #: (:class:`gpuwm.static.corridor.ChildStaticsCorridor`) when the
+    #: experiment configures a [relocation] follow source, else ``None``.
+    statics_corridor: object | None = None
+    #: The corridor cache file, for the unchanged-during-run re-hash.
+    statics_corridor_cache_path: Path | None = None
 
 
 def _domain_rows(exp) -> list[dict[str, object]]:
@@ -845,24 +859,52 @@ def preflight_prepared_tree(
     # nest.
     from gpuwm.experiment import refuse_unrouted_spawn
     refuse_unrouted_spawn(exp, "prepared domain-tree")
-    if exp.relocation.enabled and (
-            exp.relocation.follow is not None or exp.relocation.moves):
+    relocation_follow = exp.relocation.enabled and (
+        exp.relocation.follow is not None or exp.relocation.moves)
+    if relocation_follow:
         # The [static.highres] idiom: an enabled surface refuses on the
-        # lanes that cannot honor it.  The statics-on-move rebuild and
-        # the land-surface preparer EXIST (gpuwm.ingest.relocation_init
-        # + gpuwm.runtime.build_real_relocation_runner, wired on the
-        # case-data route), but they rebuild statics from the case's
-        # GEOG source -- and a prepared tree deliberately runs WITHOUT
-        # its ingest inputs, so no static source is on hand to rebuild
-        # a footprint from.  A config that says "follow the storm" must
-        # not integrate as a silently static nest, so this refuses.
-        raise ValueError(
-            "[relocation] configures a follow source, but the prepared "
-            "domain-tree route runs without the case's static (GEOG) "
-            "source and cannot rebuild a relocated child's statics for "
-            "a new footprint.  Run the case-data route (gpuwm run), "
-            "which wires the real-data relocation runner, or remove "
-            "[relocation.follow]/[[relocation.move]] from this config.")
+        # lanes that cannot honor it.  A prepared tree deliberately runs
+        # WITHOUT its ingest inputs, so a relocated child's statics
+        # cannot be rebuilt from a GEOG source at runtime.  What CAN
+        # honor a follow source here is the sealed statics corridor:
+        # child-resolution statics over the whole parent extent, emitted
+        # at preparation time (--statics-corridor) with its digest bound
+        # into the preparation document, and cropped per footprint at
+        # runtime through the same rebuild machinery the case-data route
+        # wires.  A bundle prepared without one still refuses -- a
+        # config that says "follow the storm" must not integrate as a
+        # silently static nest.
+        if int(exp.relocation.grid_id) not in {
+                int(domain.grid_id) for domain in exp.domains}:
+            raise ValueError(
+                f"[relocation] names grid_id = {exp.relocation.grid_id}, "
+                "which is not a domain of this experiment")
+        corridor_set = preparation.get("statics_corridor")
+        corridor_label = f"d{int(exp.relocation.grid_id):02d}"
+        if not isinstance(corridor_set, Mapping):
+            raise ValueError(
+                "[relocation] configures a follow source, but this "
+                "prepared bundle carries no statics corridor: the "
+                "prepared domain-tree route runs without the case's "
+                "static (GEOG) source and "
+                "cannot rebuild a relocated child's statics for a new "
+                "footprint at runtime.  Re-prepare the tree with "
+                "--statics-corridor (the tree preparation front door "
+                "seals child-resolution statics over the whole parent "
+                "extent, which this runner then crops per move), run "
+                "the case-data route (gpuwm run), or remove "
+                "[relocation.follow]/[[relocation.move]] from this "
+                "config.")
+        corridor_domains = corridor_set.get("domains")
+        if (not isinstance(corridor_domains, Mapping)
+                or corridor_label not in corridor_domains):
+            covered = (sorted(corridor_domains)
+                       if isinstance(corridor_domains, Mapping) else [])
+            raise ValueError(
+                f"[relocation] names {corridor_label}, but this bundle's "
+                f"statics corridor covers only {covered}; re-prepare "
+                f"with --statics-corridor covering {corridor_label} "
+                "(bare --statics-corridor covers every child domain).")
     # The physics this config selects has to be RUNNABLE before the
     # hierarchy is verified, not after: this is the preflight, and a
     # missing lookup table is exactly the class of thing a preflight
@@ -1100,6 +1142,30 @@ def preflight_prepared_tree(
         raise RuntimeError("prepared hierarchy resolved no forcing schedule")
     if common_source_identity is None:
         raise RuntimeError("prepared hierarchy resolved no source identity")
+    statics_corridor = None
+    statics_corridor_cache_path = None
+    if relocation_follow:
+        # Digest-verified against the preparation document (whose own
+        # digest the caller pinned), geometry-verified against this
+        # experiment, grid-probe-verified against this machine's own
+        # arithmetic.  A corridor that fails ANY of these refuses loudly
+        # -- it never degrades to a silently static nest.
+        from gpuwm.static.corridor import (STATICS_CORRIDOR_DIRNAME,
+                                           load_child_statics_corridor)
+        grid_id = int(exp.relocation.grid_id)
+        by_id = {int(domain.grid_id): index
+                 for index, domain in enumerate(exp.domains)}
+        child = exp.domains[by_id[grid_id]]
+        parent_run = exp.domains[by_id[int(child.parent_id)]].run
+        corridor_directory = hierarchy_root / STATICS_CORRIDOR_DIRNAME
+        statics_corridor = load_child_statics_corridor(
+            corridor_directory,
+            expected_set_receipt=preparation["statics_corridor"],
+            grid_id=grid_id, child_dc=child, parent_run=parent_run,
+            reference_grid=grids[by_id[grid_id]])
+        statics_corridor_cache_path = corridor_directory / (
+            preparation["statics_corridor"]["domains"]
+            [f"d{grid_id:02d}"]["cache"]["path"])
     interval_hours = forcing_hours[1] - forcing_hours[0]
     if exp.run_seconds > forcing_hours[-1] * 3600.0:
         # The gate that keeps a longer run_seconds honest.  A restart may
@@ -1140,6 +1206,8 @@ def preflight_prepared_tree(
         tolerated_identity_fields=MappingProxyType({
             label: tuple(names)
             for label, names in tolerated_identity.items()}),
+        statics_corridor=statics_corridor,
+        statics_corridor_cache_path=statics_corridor_cache_path,
     )
 
 
@@ -1152,6 +1220,11 @@ def _verify_inputs_unchanged(inputs: PreparedTreeInputs) -> None:
     }
     if current != dict(inputs.authority_sha256):
         raise RuntimeError("prepared tree authorities changed during execution")
+    if inputs.statics_corridor_cache_path is not None:
+        observed = _sha256(inputs.statics_corridor_cache_path)
+        if observed != inputs.statics_corridor.cache_sha256:
+            raise RuntimeError(
+                "prepared statics corridor changed during execution")
     for bundle in inputs.domains:
         observed = {
             "cache_header": _sha256(bundle.cache / "header.json"),
@@ -1527,6 +1600,18 @@ def run_prepared_tree(
     model._io_manager = None
     model._last_checkpoint = None
 
+    # The corridor lift: with a verified statics corridor on hand this
+    # route wires the SAME RelocationRunner the case-data route does --
+    # corridor crops standing in for per-footprint GEOG rebuilds --
+    # which is exactly what makes the preflight's corridor-less refusal
+    # honest rather than permanent.  Bounds-only [relocation] builds no
+    # runner, exactly as everywhere else.
+    relocation_runner = (
+        runtime.build_prepared_tree_relocation_runner(
+            exp, statics_corridor=inputs.statics_corridor, model=model,
+            outdir=outdir, radiation_workspace=radiation_workspace)
+        if inputs.statics_corridor is not None else None)
+
     if restart is not None:
         checkpoint = validate_manifest_checkpoint(Path(restart))
         restore_tree_restart(
@@ -1624,6 +1709,10 @@ def run_prepared_tree(
     # attach to and commits no outputs, so there is nothing to announce.
     if observer is not None and writers is not None:
         writers.attach_progress_callback(observer)
+    if relocation_runner is not None and writers is not None:
+        # Same seam as the case-data route: a moved domain's later
+        # frames must describe the footprint that produced them.
+        relocation_runner.on_child_built.attach_writers(writers)
 
     try:
         memory_watch.start()
@@ -1637,6 +1726,7 @@ def run_prepared_tree(
                 health_debug=health_debug,
                 skip_feedback_path=True,
                 pool_trim_per_period=True,
+                relocation_runner=relocation_runner,
             )
             wrfout_paths = ()
         else:
@@ -1650,9 +1740,12 @@ def run_prepared_tree(
                     health_debug=health_debug,
                     skip_feedback_path=True,
                     pool_trim_per_period=True,
+                    relocation_runner=relocation_runner,
                 )
                 writers.drain()
                 wrfout_paths = writers.paths
+        if relocation_runner is not None:
+            relocation_runner.close_receipt(model)
     finally:
         memory_watch.stop()
     cp.cuda.Stream.null.synchronize()
@@ -1740,11 +1833,28 @@ def run_prepared_tree(
                 model, "_restart_crossed_relocation", None),
         },
         # The [relocation] echo (None when the config never opted in).
-        # This route refuses follow-source configs at preflight, so any
-        # non-None block here is bounds-only, and the receipts list stays
-        # empty until the statics-on-move follow-up lands.
+        # A follow source reaches execution only over a verified statics
+        # corridor (the preflight refuses corridor-less bundles), so a
+        # non-None block is either bounds-only or carries the corridor
+        # binding plus every move receipt the runner recorded.
         "relocation": (
-            exp.relocation.receipt() if exp.relocation.enabled else None),
+            None if not exp.relocation.enabled else {
+                "config": exp.relocation.receipt(),
+                "statics_corridor": (
+                    None if inputs.statics_corridor is None else {
+                        "grid_id": int(
+                            inputs.statics_corridor.geometry["grid_id"]),
+                        "corridor_nx": int(
+                            inputs.statics_corridor.geometry["corridor_nx"]),
+                        "corridor_ny": int(
+                            inputs.statics_corridor.geometry["corridor_ny"]),
+                        "cache_sha256":
+                            inputs.statics_corridor.cache_sha256,
+                        "host_bytes": inputs.statics_corridor.host_bytes,
+                    }),
+                "receipts": _strict_json(list(
+                    getattr(model, "_relocation_receipts", ()) or ())),
+            }),
         "wall_seconds": timing["total"],
         "timing_seconds": timing,
         "executor": {
@@ -1775,6 +1885,12 @@ def run_prepared_tree(
             # What each number above actually measured, how often it was
             # sampled, and whether observation stayed complete.
             "gpu_peak_sampling": memory_watch.summary(),
+            # Host-side, not VRAM: the corridor is cropped on the CPU
+            # and the rebuilt child re-occupies the same device
+            # footprint, so the GPU preflight estimate is unchanged.
+            "statics_corridor_host_bytes": (
+                None if inputs.statics_corridor is None
+                else inputs.statics_corridor.host_bytes),
         },
         "output": {
             "io_mode": io_mode,

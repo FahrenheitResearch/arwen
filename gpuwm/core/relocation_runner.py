@@ -226,13 +226,33 @@ class RelocationRunner:
 
     # -- receipts ---------------------------------------------------------
 
-    def _record(self, model, entry: dict) -> dict:
+    def _record(self, model, entry: dict, *, unique: bool = False) -> dict:
+        """Append one receipt row, or REPLACE the run's single unique row.
+
+        ``unique`` belongs to the run-end summary, which is a statement
+        about the whole run rather than about an instant: it is written
+        whenever the executor finishes, and the executor finishes once per
+        leg on a route that walks legs (``gpuwm.runtime.walk_spawn_legs``)
+        rather than once per run.  Appending gave a receipts list with two
+        or more byte-identical summary rows in it, so a consumer counting
+        them double-counted.
+
+        The superseded row is DROPPED and the new one appended, not
+        overwritten in place: an in-place rewrite would leave the summary
+        stranded before the moves that followed it, and an idempotence
+        guard that kept the first row would freeze ``moves_executed`` at
+        the first leg's total.  One row, current, last.
+        """
+
         entry = {"contract": RELOCATION_RUNNER_CONTRACT, **entry}
         drain = getattr(self.provider, "drain_receipts", None)
         if callable(drain):
             tracker_rows = drain()
             if tracker_rows:
                 entry["tracker_receipts"] = tracker_rows
+        if unique:
+            self.receipts[:] = [row for row in self.receipts
+                                if row.get("event") != entry["event"]]
         self.receipts.append(entry)
         if getattr(model, "_relocation_receipts", None) is not self.receipts:
             model._relocation_receipts = self.receipts
@@ -454,7 +474,11 @@ class RelocationRunner:
         })
 
     def close_receipt(self, model) -> dict:
-        """The run-end summary row (unconsumed itinerary is a finding)."""
+        """The run-end summary row (unconsumed itinerary is a finding).
+
+        Exactly ONE such row exists in the receipts, however many times the
+        executor closes; see :meth:`_record`.
+        """
         summary = {
             "event": "summary",
             "moves_executed": int(self.moves_executed),
@@ -463,7 +487,7 @@ class RelocationRunner:
         unconsumed = getattr(self.provider, "unconsumed", None)
         if callable(unconsumed):
             summary["unconsumed_moves"] = list(unconsumed())
-        return self._record(model, summary)
+        return self._record(model, summary, unique=True)
 
 
 __all__ = [

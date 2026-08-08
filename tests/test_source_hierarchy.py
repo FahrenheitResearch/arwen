@@ -375,3 +375,56 @@ def test_regular_source_hierarchy_requires_bound_external_lbc(
         tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="complete external LBC"):
         _call(tmp_path, monkeypatch, root_boundaries=object())
+
+
+def test_regular_source_hierarchy_emits_corridors_only_on_opt_in(
+        tmp_path, monkeypatch):
+    """statics_corridor=None is byte-inert; 'all' builds one corridor per
+    child through the real corridor module seam and returns the set
+    receipt for the source door to bind into its preparation document."""
+
+    from pathlib import Path
+
+    import gpuwm.static.corridor as corridor_module
+
+    calls = []
+
+    def fake_build(*, child_dc, parent_run, reference_grid, static_catalog):
+        assert static_catalog.files == ("wps", "geog")
+        calls.append((int(child_dc.grid_id), int(parent_run.nx),
+                      reference_grid.name))
+        return SimpleNamespace(grid_id=int(child_dc.grid_id), fields={},
+                               entry={})
+
+    written = {}
+    set_receipt = {"schema": "gpuwm-statics-corridor-set-v1",
+                   "status": "READY", "domains": {}}
+
+    def fake_write(directory, builds):
+        written["directory"] = Path(directory)
+        written["grid_ids"] = [build.grid_id for build in builds]
+        return set_receipt
+
+    monkeypatch.setattr(
+        corridor_module, "build_child_statics_corridor", fake_build)
+    monkeypatch.setattr(
+        corridor_module, "write_statics_corridor_set", fake_write)
+
+    result, _ = _call(tmp_path, monkeypatch, statics_corridor="all")
+    assert dict(result.statics_corridor_receipt) == set_receipt
+    assert written["grid_ids"] == [2, 3]
+    assert written["directory"] == (
+        tmp_path / "artifacts" / "statics-corridor")
+    assert calls == [(2, 60, "d02-grid"), (3, 60, "d03-grid")]
+
+    calls.clear()
+    written.clear()
+    inert, _ = _call(tmp_path, monkeypatch)
+    assert inert.statics_corridor_receipt is None
+    assert calls == [] and written == {}
+
+    selected, _ = _call(tmp_path, monkeypatch, statics_corridor=(3,))
+    assert written["grid_ids"] == [3]
+
+    with pytest.raises(ValueError, match="not child domains"):
+        _call(tmp_path, monkeypatch, statics_corridor=(1,))

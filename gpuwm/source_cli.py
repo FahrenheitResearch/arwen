@@ -354,6 +354,18 @@ def _parser() -> argparse.ArgumentParser:
         help="prepare the forecast only, and do not attempt the bonus "
              "unchanged-WRF wrfinput/wrfbdy export of a domain tree",
     )
+    gfs.add_argument(
+        "--statics-corridor",
+        nargs="?",
+        const="all",
+        default=None,
+        metavar="GRID_IDS",
+        help="also seal child-resolution statics over each child's whole "
+             "parent extent (the moving-nest corridor); bare flag covers "
+             "every child domain, or pass comma-separated child grid ids "
+             "(e.g. 2,3).  Required before the prepared tree runner will "
+             "honor a [relocation] follow source",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -720,6 +732,7 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
         "--grib2-dump": args.grib2_dump,
         "--hierarchy-workers": args.hierarchy_workers,
         "--no-stock-wrf-export": args.no_stock_wrf_export or None,
+        "--statics-corridor": args.statics_corridor,
     }
     errors.extend(
         f"{flag} is not used by --source hrrr"
@@ -835,6 +848,7 @@ def _required_era5_args(args: argparse.Namespace) -> list[str]:
         "--grib2-inventory": args.grib2_inventory,
         "--grib2-dump": args.grib2_dump,
         "--no-stock-wrf-export": args.no_stock_wrf_export or None,
+        "--statics-corridor": args.statics_corridor,
     }
     errors.extend(
         f"{flag} is not used by --source era5"
@@ -924,6 +938,19 @@ def _required_gfs_args(args: argparse.Namespace) -> list[str]:
         errors.append("--hierarchy-workers must be between 1 and 32")
     if args.hierarchy_workers is not None and args.geog_root is None:
         errors.append("--hierarchy-workers requires --geog-root")
+    if args.statics_corridor is not None:
+        if args.geog_root is None:
+            errors.append(
+                "--statics-corridor builds child-resolution statics from "
+                "the geography source and requires --geog-root")
+        if args.statics_corridor != "all":
+            parts = [part for part in args.statics_corridor.split(",")
+                     if part]
+            if not parts or any(not part.strip().isdigit()
+                                for part in parts):
+                errors.append(
+                    "--statics-corridor accepts 'all' or comma-separated "
+                    f"child grid ids, got {args.statics_corridor!r}")
     if args.cycle is not None:
         try:
             parsed = datetime.strptime(args.cycle, "%Y-%m-%d_%H:%M:%S")
@@ -1056,6 +1083,7 @@ def _required_twentycr_args(args: argparse.Namespace) -> list[str]:
         "--source-orography-variable": args.source_orography_variable,
         "--domain-source-orography": args.domain_source_orography,
         "--no-stock-wrf-export": args.no_stock_wrf_export or None,
+        "--statics-corridor": args.statics_corridor,
     }
     errors.extend(
         f"{flag} is not used by --source 20crv3"
@@ -1148,6 +1176,7 @@ def _required_mapped_args(args: argparse.Namespace) -> list[str]:
         "--gfs-series": args.gfs_series,
         "--cycle": args.cycle,
         "--no-stock-wrf-export": args.no_stock_wrf_export or None,
+        "--statics-corridor": args.statics_corridor,
     }
     errors.extend(
         f"{flag} is not used by --source mapped"
@@ -1368,6 +1397,11 @@ def _gfs_command(args: argparse.Namespace) -> list[str]:
         command.extend(("--physics-profile", args.physics_profile))
     if args.no_stock_wrf_export:
         command.append("--no-stock-wrf-export")
+    if args.statics_corridor is not None:
+        if args.statics_corridor == "all":
+            command.append("--statics-corridor")
+        else:
+            command.extend(("--statics-corridor", args.statics_corridor))
     if args.static_input is not None:
         command.extend(("--static-input", str(args.static_input)))
         command.extend(("--static-receipt", str(args.static_receipt)))

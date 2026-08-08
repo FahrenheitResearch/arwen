@@ -945,6 +945,11 @@ class RunObserver:
         self._forecast_started_model: float | None = None
         self._committed = 0
         self._progress_events = 0
+        #: The last model time this observer saw.  The chain summary's
+        #: only route-independent source for how far the run got: the
+        #: single-domain runner publishes it in progress.json and the
+        #: tree runner does not publish it at all.
+        self._last_model_seconds: float | None = None
 
     # -- stage bookkeeping --------------------------------------------
 
@@ -957,6 +962,10 @@ class RunObserver:
     @property
     def outputs_committed(self) -> int:
         return self._committed
+
+    @property
+    def last_model_seconds(self) -> float | None:
+        return self._last_model_seconds
 
     def enter_stage(self, stage: str, *, phase: str | None = None) -> None:
         """Close whatever stage is open and open ``stage``."""
@@ -1027,8 +1036,16 @@ class RunObserver:
                 last_checkpoint=last_checkpoint, phase=phase,
                 step_wall_seconds=step_wall_seconds, **extra)
         model_seconds = float(model_elapsed_seconds)
+        self._last_model_seconds = model_seconds
         if self._stage != "forecast":
             self.enter_stage("forecast", phase=phase)
+        if self._forecast_started_wall is None:
+            # Armed on the FIRST progress call, not on entering the
+            # stage.  Every prepared chain opens `forecast` itself
+            # before handing the runner over, so keying this off the
+            # stage transition meant it never armed there: a live
+            # nested run published 181 progress events with speed_x
+            # null and wall_seconds 0.0 on every one of them.
             self._forecast_started_wall = time.perf_counter()
             self._forecast_started_model = model_seconds
         wall_seconds = (
@@ -1139,18 +1156,32 @@ def _config_snapshot(exp, data) -> dict[str, Any]:
 
 
 def _schema_default_resolutions(raw: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Every ``[experiment]`` key the document did not spell.
+    """Every ``ExperimentConfig`` field the document did not spell.
 
     Mechanical, from the dataclass itself: a field with a declared
     default that the TOML did not set was chosen by the schema, not by
     the author, and that is exactly what ``automatic_resolutions``
     exists to say out loud.
+
+    "Did not set" spans BOTH places an author can write one of these
+    fields.  Several are authored as their own top-level table --
+    ``[relocation]``, ``[projection]``, ``[perturbation]`` -- and reading
+    only inside ``[experiment]`` reported them as schema defaults with
+    the schema's value attached, which for a moving-nest plan says
+    ``relocation.enabled = false`` about a config whose nest follows a
+    storm.  The run was right and the ``configuration`` block in the same
+    event was right; only this list lied, and it lied to exactly the
+    programmatic caller it exists for.
     """
 
     from gpuwm.experiment import ExperimentConfig
 
     table = raw.get("experiment")
     spelled = set(table) if isinstance(table, dict) else set()
+    # A top-level table whose name IS a field name is the author spelling
+    # that field.  Taken from the document rather than from a second list
+    # of "the tabular ones", so a table added later needs no edit here.
+    spelled |= {name for name in raw if name != "experiment"}
     resolutions = []
     for field in dataclasses.fields(ExperimentConfig):
         if field.default is dataclasses.MISSING:
@@ -1653,18 +1684,6 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     from gpuwm.go_cli import proof_digests, run_stage
     from gpuwm.hrrr_route_inputs import route_input_paths
 
-    if len(exp.domains) != 1:
-        raise PlanError(layered(
-            f"this plan is a {len(exp.domains)}-domain tree, and the "
-            "prepared route runs HRRR single-domain only.",
-            "A nested HRRR run needs a third stage -- "
-            "`python -m gpuwm.hrrr_hierarchy_direct` between the "
-            "preparation and the forecast -- and a different runner "
-            "(gpuwm-prepared-tree-forecast).  That chain is documented "
-            "and works by hand; it is not driven from here yet.  Emit a "
-            "single-domain ladder (omit --ladder / --chain), or run the "
-            "tree chain by hand."))
-
     inputs = route_input_paths(config_path)
     absent = sorted(role for role, path in inputs.items()
                     if not path.is_file())
@@ -1748,6 +1767,22 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
               progress=prep_root / "progress.json",
               observer=_GoObserver(observer))
 
+    if len(exp.domains) > 1:
+        # A nested HRRR run takes a THIRD stage between the root
+        # preparation and the forecast, and then a different runner.
+        # Everything above -- fetch, and the root preparation this
+        # branch shares -- is identical, which is why the split is here
+        # and not at the top of the function.
+        tree_root = _hrrr_hierarchy_stage(
+            prep_root=prep_root, inputs=inputs, hints=hints,
+            geog_root=geog_root, manifest=manifest, cycle=cycle,
+            run_dir=run_dir, observer=observer)
+        _hrrr_tree_forecast(
+            tree_root=tree_root, config_path=config_path,
+            forecast_dir=forecast_dir, observer=observer)
+        return _hrrr_render(plan, forecast_dir=forecast_dir,
+                            run_dir=run_dir, observer=observer)
+
     # The preparer publishes its own handoff -- prepared_root, the three
     # digests, and the PUBLISHED authority paths -- into
     # public-wrapper-result.json.  Read it rather than re-deriving any
@@ -1816,11 +1851,115 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
             "above")
 
     # -- render --------------------------------------------------------
-    # go's own render stage, against this chain's output.  Reused rather
-    # than rebuilt so `render_products` -- including `none` -- means
-    # exactly the same thing on both chains; the wizard's printed HRRR
-    # chain has no render step, so this is the one place the two
-    # sources' end-of-run behaviour is made to agree.
+    # Shared with the tree arm above: `render_products` -- including
+    # `none` -- must mean exactly the same thing however the forecast
+    # was produced, and the wizard's printed HRRR chain has no render
+    # step at all, so this is the one place the sources are made to
+    # agree.
+    return _hrrr_render(plan, forecast_dir=forecast_dir, run_dir=run_dir,
+                        observer=observer)
+
+
+def _hrrr_hierarchy_stage(*, prep_root: Path, inputs: Mapping[str, Path],
+                          hints: Mapping[str, Any], geog_root,
+                          manifest: Path, cycle: str, run_dir: Path,
+                          observer: RunObserver) -> Path:
+    """Build d02..dNN from the sealed root preparation.
+
+    The stage the GFS tree does not have.  rw-wps is not on this path at
+    all: the root preparation above is ``tools.prepare_hrrr_wrf``, and
+    this turns its sealed d01 into a hierarchy the tree runner can
+    execute.
+
+    Nine required flags, and they are not the preparer's -- notably
+    ``--stock-wrf-namelist-input``, which rw-wps rejects outright.  That
+    is why this composes its own argv rather than sharing a builder with
+    either neighbour: two tools that take *almost* the same flags are
+    exactly where a shared builder starts passing one of them something
+    it refuses.
+    """
+
+    from gpuwm.fetch import sha256_file
+    from gpuwm.go_cli import run_stage
+
+    tree_root = run_dir / "chain" / "hrrr-hierarchy"
+    command = [
+        sys.executable, "-m", "gpuwm.hrrr_hierarchy_direct",
+        "--root-preparation", str(prep_root),
+        "--root-domain-spec", str(inputs["target_domain"]),
+        "--wps-namelist", str(inputs["wps_namelist"]),
+        "--namelist-input", str(inputs["namelist_input"]),
+        # rw-wps has no such flag; this stage requires it.
+        "--stock-wrf-namelist-input", str(inputs["stock_namelist_input"]),
+        "--geog-root", str(geog_root),
+        "--source-manifest", str(manifest),
+        "--source-manifest-sha256", sha256_file(manifest),
+        "--cycle", cycle,
+        "--output-root", str(tree_root),
+    ]
+    # Only when nonzero.  This stage raises on a negative lead, and
+    # raises again if a lead is passed beside the deprecated
+    # --valid-time; passing a bare 0 is legal but says nothing, and the
+    # chain reads better without it.
+    lead = hints.get("forecast_start_hour")
+    if lead:
+        command += ["--forecast-start-hour", str(int(lead))]
+
+    observer.enter_stage("prepare", phase="hierarchy")
+    run_stage("hierarchy", command, explain=False,
+              progress=tree_root / "progress.json",
+              observer=_GoObserver(observer))
+    if not tree_root.is_dir():
+        raise PlanError(
+            f"the HRRR hierarchy stage wrote no {tree_root}; its own "
+            "output is above")
+    observer.finish_stage(hierarchy_root=str(tree_root))
+    return tree_root
+
+
+def _hrrr_tree_forecast(*, tree_root: Path, config_path: Path,
+                        forecast_dir: Path,
+                        observer: RunObserver) -> None:
+    """The same tree runner the GFS tree route drives.
+
+    The relay is the same shape too -- one preparation-receipt digest
+    plus the experiment config's own -- and it reaches the same
+    schema-matched document resolver.  Only the filename underneath
+    differs: this hierarchy writes ``receipt.json`` where rw-wps writes
+    ``proof.json``, and because the resolver matches on SCHEMA rather
+    than on filename order it needed no change to find it.
+
+    The tool also prints ``preparation_receipt_sha256`` on stdout.  It
+    is not read: the tool computes that value as the sha256 of
+    ``receipt.json``'s bytes, so hashing the artifact gives the
+    identical digest without making a printed line load-bearing.
+    """
+
+    from gpuwm.fetch import sha256_file
+    from gpuwm.go_cli import _hierarchy_document
+
+    receipt = _hierarchy_document(tree_root)
+    argv = [
+        "--prepared-root", str(tree_root),
+        "--preparation-receipt-sha256", sha256_file(receipt),
+        "--experiment-config", str(config_path),
+        "--experiment-config-sha256", sha256_file(config_path),
+        "--io-mode", "history", "--outdir", str(forecast_dir),
+    ]
+    observer.enter_stage("forecast", phase="forecast")
+    from gpuwm import prepared_domain_tree_forecast as runner
+
+    code = runner.main(argv, observer=observer)
+    if code:
+        raise RuntimeError(
+            f"the HRRR tree forecast stage exited {code}; its own "
+            "refusal is above")
+
+
+def _hrrr_render(plan: RunPlan, *, forecast_dir: Path, run_dir: Path,
+                 observer: RunObserver) -> Mapping[str, Any]:
+    """go's render stage against this chain's output, then the summary."""
+
     from gpuwm.go_cli import _render_stage
 
     observer.enter_stage("finalize", phase="render")
@@ -1828,27 +1967,56 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
         {"run": forecast_dir, "render": run_dir / "chain" / "png",
          "render_products": plan.run_options.get("render_products")},
         explain=False, observer=_GoObserver(observer))
-    return _chain_summary(run_dir / "chain")
+    return _chain_summary(run_dir / "chain", observer=observer)
 
 
-def _chain_summary(chain: Path) -> dict[str, Any]:
-    """A finished chain's completion signals, from its own artifacts."""
+def _chain_summary(chain: Path, *,
+                   observer: "RunObserver | None" = None) -> dict[str, Any]:
+    """A finished chain's completion signals, from its own artifacts.
+
+    The two runners do not leave the same receipts.  The single-domain
+    one writes ``progress.json`` and ``report.json``; the tree one
+    writes a ``certification-capsule.json`` and neither of the others.
+    Reading only the first pair made a completed nested run report
+    ``completed_seconds: 0.0`` and ``status: null`` -- and, because the
+    heartbeat is fed from this summary, published a ``complete``
+    heartbeat whose model time was zero beside an outer_step of 180.
+
+    ``completed_seconds`` therefore comes from the observer, which saw
+    every step on either route.  Nothing is inferred: where a receipt
+    does not state a status, this says so rather than assuming a PASS
+    from the absence of a failure.
+    """
 
     forecast = chain / "run"
     progress = _read_json_object(forecast / "progress.json")
     report = _read_json_object(forecast / "report.json")
+    capsule_path = forecast / "certification-capsule.json"
+    capsule = _read_json_object(capsule_path)
     wrfouts = sorted(forecast.glob("**/wrfout_*"))
+
+    frames = capsule.get("output", {}).get("frames")
     completed_seconds = progress.get("model_elapsed_seconds")
+    if not isinstance(completed_seconds, (int, float)) and observer is not None:
+        completed_seconds = observer.last_model_seconds
     status = report.get("status") or progress.get("status")
     return {
         "wrfout_count": (len(wrfouts) if wrfouts
+                         else len(frames) if isinstance(frames, list)
                          else int(progress.get("frame_count") or 0)),
         "completed_seconds": _finite_seconds(completed_seconds),
         "nan_free": None if status is None else status == "PASS",
         "status": status,
+        "status_basis": (
+            "the runner's own report" if status is not None
+            else "this runner publishes a certification capsule rather "
+                 "than a status report; the capsule's presence is not "
+                 "read as a verdict here"),
         "chain_root": str(chain),
         "report": (str(forecast / "report.json")
                    if (forecast / "report.json").is_file() else None),
+        "certification_capsule": (str(capsule_path)
+                                  if capsule_path.is_file() else None),
         "restarted": False,
     }
 
@@ -1921,7 +2089,7 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
     # successful prepared run ended by announcing failure, after `go`
     # had already printed its validity PASS.  A consumer that trusts the
     # contract marked every good run failed.
-    return _chain_summary(plan.run_dir / "chain")
+    return _chain_summary(plan.run_dir / "chain", observer=observer)
 
 
 ROUTES: dict[str, Route] = {

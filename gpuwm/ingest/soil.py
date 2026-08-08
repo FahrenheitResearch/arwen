@@ -101,6 +101,74 @@ _GFS_TEMP_NAMES = (
     "GFS_ST000010", "GFS_ST010040", "GFS_ST040100", "GFS_ST100200")
 _GFS_MOIST_NAMES = (
     "GFS_SM000010", "GFS_SM010040", "GFS_SM040100", "GFS_SM100200")
+#: The native-HRRR lane carries ONE stacked 3-D node column instead of a
+#: per-layer name; its water cells are already filled with SKINTEMP by the
+#: mapper (``gpuwm/ingest/hrrr.py``).
+_HRRR_TEMP_NAME = "SOILT"
+
+#: EVERY spelling of a source soil-temperature column, in lookup order, for
+#: WRF-real's landmask/soil-category reconciliation
+#: (:func:`gpuwm.core.landuse.reconciled_soil_category`).
+#:
+#: ONE table instead of an inline chain per call site, because the inline
+#: chain has now been short by one spelling twice, and each time the symptom
+#: was a hard ``mismatch_landmask_ivgtyp`` refusal on ordinary shoreline or
+#: inland-water columns rather than anything that named a missing field:
+#:
+#: * 2026-08-06, native HRRR: ``SOILT`` was absent from the chain and a
+#:   nested 1 km preparation aborted on 38 shoreline columns;
+#: * 2026-08-08, nested GFS: ``GFS_ST000010`` was absent and a 3 km child
+#:   aborted on 73 inland-water columns (reservoirs and rivers), which made
+#:   nested-GFS preparation impossible for essentially any child holding
+#:   inland water.
+#:
+#: A lane that adds a soil source adds its top-layer name HERE, once, and
+#: every reconciler call site is current.  Order is by inventory rather than
+#: preference: :func:`preprocess_noah_soil` refuses mixed soil modes, so at
+#: most one of these names is ever present in a single field mapping.
+SOIL_TEMPERATURE_RECONCILER_NAMES = (
+    MAPPED_SOIL_TEMPERATURE,   # declarative mapped (rw-wps) sources
+    _TEMP_NAMES[0],            # classic per-layer Vtable spelling
+    _GFS_TEMP_NAMES[0],        # the GFS per-layer spelling
+    _HRRR_TEMP_NAME,           # the native-HRRR stacked node column
+)
+
+#: The reconciler's SST evidence, in real.exe's own precedence.
+#:
+#: ``module_initialize_real.F:2844-2866``: where SST has no valid support
+#: real.exe keeps exactly that column's SKINTEMP, so the mismatch pass at
+#: ``:3608-3650`` reads a skin temperature there, not a hole.  The sibling
+#: routes already do this -- ``gpuwm/ingest/hrrr_physics.py`` falls back to
+#: ``TSK`` and ``preprocess_noah_soil`` below to ``SKINTEMP`` -- and this
+#: table is those two spellings of the one fallback, met-source inventory
+#: first, so a single call serves either inventory.
+SST_RECONCILER_NAMES = ("SST", "SKINTEMP", "TSK")
+
+
+def _first_present(fields: Mapping[str, object], names):
+    for name in names:
+        value = fields.get(name)
+        if value is not None:
+            return value
+    return None
+
+
+def reconciler_soil_temperature(fields: Mapping[str, object]):
+    """This mapping's soil-temperature evidence, or ``None``.
+
+    ``None`` means the mapping genuinely carries no soil column under ANY
+    known spelling, which is the state WRF's third arm exists for; it must
+    stay reachable, because a reconciliation with no evidence is a refusal
+    and never a guess.
+    """
+
+    return _first_present(fields, SOIL_TEMPERATURE_RECONCILER_NAMES)
+
+
+def reconciler_sst(fields: Mapping[str, object]):
+    """This mapping's sea-surface evidence, or ``None``."""
+
+    return _first_present(fields, SST_RECONCILER_NAMES)
 
 
 def _require_same_shape(fields: Mapping[str, object], names) -> tuple[int, int]:
@@ -794,4 +862,7 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
 
 __all__ = ["ERA5_LAYER_BOTTOMS_M", "HRRR_SOIL_NODE_DEPTHS_M",
            "NOAH_LAYER_MIDPOINTS_M",
-           "NOAH_LAYER_THICKNESS_M", "NoahSoilState", "preprocess_noah_soil"]
+           "NOAH_LAYER_THICKNESS_M", "NoahSoilState",
+           "SOIL_TEMPERATURE_RECONCILER_NAMES", "SST_RECONCILER_NAMES",
+           "preprocess_noah_soil", "reconciler_soil_temperature",
+           "reconciler_sst"]

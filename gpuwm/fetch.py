@@ -2073,18 +2073,29 @@ def author_gfs_front_door_manifest(
     # that case after preparation, and inventing a flag here would only
     # move the refusal earlier without making it truer.
     profile_arg = ""
+    corridor_arg = ""
     try:
         from gpuwm.experiment import load_experiment
         from gpuwm.physics_compat import identify_single_domain_profile
 
-        matched = identify_single_domain_profile(
-            load_experiment(Path(experiment_config)).root.run)
+        experiment = load_experiment(Path(experiment_config))
+        matched = identify_single_domain_profile(experiment.root.run)
         if matched is not None:
             profile_arg = f" --physics-profile {matched}"
+        # A config that declares a [relocation] follow source needs the
+        # sealed statics corridor prepared, or the tree runner refuses
+        # the very bundle this command builds.  Same predicate `gpuwm
+        # go` derives its prepare stage from, so the pasted line and
+        # the driven line cannot drift apart on it.
+        if experiment.relocation.enabled and (
+                experiment.relocation.follow is not None
+                or experiment.relocation.moves):
+            corridor_arg = " --statics-corridor"
     except Exception:
         # A config this process cannot load is not a reason to withhold
         # the rest of a correct command.
         profile_arg = ""
+        corridor_arg = ""
     output_root = out.resolve() / "prepared"
     progress(f"fetch {source}: front-door manifest {path}")
     progress(f"fetch {source}: front-door manifest sha256 {digest}")
@@ -2121,7 +2132,7 @@ def author_gfs_front_door_manifest(
         f" --experiment-config {printed(experiment_config)}"
         f" --source-manifest {printed(path)}"
         f" --source-manifest-sha256 {digest}"
-        f"{profile_arg}{static_args} "
+        f"{profile_arg}{corridor_arg}{static_args} "
         f"--output-root {printed(output_root)}")
     return path, digest
 

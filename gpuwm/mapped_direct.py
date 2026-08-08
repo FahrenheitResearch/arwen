@@ -49,9 +49,11 @@ from gpuwm.mapped_source import (
 )
 from gpuwm.native_wrf_contract import (
     canonical_noah_surface,
+    load_native_static_cache,
     native_static_export_fields,
     validate_native_lambert_contract,
     validate_native_lambert_contracts,
+    verify_native_static_receipt,
     write_native_geometry_receipt,
     write_native_static_cache,
 )
@@ -215,6 +217,8 @@ def prepare_mapped_wrf(
     grib2_dump: str | Path | None = None,
     wps_namelist: str | Path,
     geog_root: str | Path,
+    static_input: str | Path | None = None,
+    static_receipt: str | Path | None = None,
     experiment_config: str | Path,
     output_root: str | Path,
     preprocess_backend: str = "cuda",
@@ -232,6 +236,15 @@ def prepare_mapped_wrf(
     initialized independently and finalized parent-before-child.  Products
     are published atomically only after source and run-control authorities are
     reverified.
+
+    ``static_input``/``static_receipt`` supply a previously published
+    native-static NPZ instead of rebuilding the root domain's geography from
+    WPS_GEOG, exactly as the ERA5/GFS/HRRR adapters already accept.  The
+    receipt binds the target geometry contract and the NPZ SHA-256, and the
+    loader re-derives MAPFAC/F/E/SINALPHA/COSALPHA from the grid, so a cache
+    that does not belong to this domain is refused rather than trusted.
+    ``geog_root`` remains required either way: the proof's geog_datasets
+    binding and any child-domain statics are still resolved from the tree.
     """
 
     started = time.perf_counter()
@@ -265,11 +278,21 @@ def prepare_mapped_wrf(
         None if cpu_preprocess_bridge is None
         else Path(cpu_preprocess_bridge).resolve()
     )
+    if (static_input is None) != (static_receipt is None):
+        raise ValueError(
+            "mapped static-input and static-receipt must be supplied together"
+        )
+    prebuilt_static = (
+        None if static_input is None else Path(static_input).resolve())
+    prebuilt_receipt = (
+        None if static_receipt is None else Path(static_receipt).resolve())
     for path in (
         composition, mapping, input_manifest, wps_namelist,
         experiment_config, *decoders.values(), *primary,
         *(path for paths in supplements.values() for path in paths),
         *provenance.values(),
+        *(() if prebuilt_static is None
+          else (prebuilt_static, prebuilt_receipt)),
     ):
         if not path.is_file():
             raise FileNotFoundError(path)
@@ -413,7 +436,20 @@ def prepare_mapped_wrf(
         )
 
     static_started = time.perf_counter()
-    static = build_static(grid, geog_root, selection=selection)
+    if prebuilt_static is None:
+        static = build_static(grid, geog_root, selection=selection)
+        root_static_provider = "native-wps-geog"
+        root_static_receipt = None
+    else:
+        # The receipt binds native_geometry_contract(grid, cfg) AND the NPZ
+        # SHA-256; the loader then re-derives the geometry fields from the
+        # grid and refuses a stored copy that disagrees.  A cache built for
+        # another domain cannot survive either check.
+        root_static_receipt = verify_native_static_receipt(
+            prebuilt_receipt, prebuilt_static, grid, cfg)
+        static = load_native_static_cache(
+            prebuilt_static, grid, cfg.ny, cfg.nx)
+        root_static_provider = "prebuilt-hash-bound-cache"
     static_seconds = time.perf_counter() - static_started
 
     preprocess = resolve_preprocess_backend(
@@ -530,7 +566,7 @@ def prepare_mapped_wrf(
                 destination,
                 bundle.terrain_provenance_sha256,
             )
-        static_receipt = write_native_static_cache(
+        static_output_receipt = write_native_static_cache(
             static_path, native_static_export_fields(static, grid),
         )
         geometry_receipt = write_native_geometry_receipt(
@@ -636,11 +672,13 @@ def prepare_mapped_wrf(
                         "per_domain_resolved_dataset_paths_plus_native_"
                         "static_output_sha256"
                     ),
+                    "root_static_provider": root_static_provider,
+                    "root_static_receipt": root_static_receipt,
                 },
                 "source_composition": composition_receipt,
                 "preprocessing": preprocess_receipt,
                 "hierarchy_workers": selected_workers,
-                "root_static": static_receipt,
+                "root_static": static_output_receipt,
                 "root_geometry": geometry_receipt,
                 "static_catalog": dict(
                     hierarchy_result.static_catalog_receipt
@@ -677,7 +715,7 @@ def prepare_mapped_wrf(
         identity = prepared_cache_identity(
             bridge_manifest_sha256=bundle.input_manifest_sha256,
             source_manifest_sha256=bundle.input_manifest_sha256,
-            static_cache_sha256=static_receipt["sha256"],
+            static_cache_sha256=static_output_receipt["sha256"],
             namelist_sha256=_sha256(experiment_config),
             domain_config=exp.root,
             **forcing_identity,
@@ -733,6 +771,8 @@ def prepare_mapped_wrf(
                 "geog_source_binding": (
                     "resolved_dataset_paths_plus_native_static_output_sha256"
                 ),
+                "root_static_provider": root_static_provider,
+                "root_static_receipt": root_static_receipt,
                 "geog_resolution_tokens": list(selection.resolution_tokens),
                 "geog_datasets": {
                     field: str(selection.path(field))
@@ -745,7 +785,7 @@ def prepare_mapped_wrf(
             },
             "source_composition": composition_receipt,
             "preprocessing": preprocess.receipt(),
-            "static": static_receipt,
+            "static": static_output_receipt,
             "geometry": geometry_receipt,
             "prepared_cache": cache_receipt,
             "export": export_receipt,
@@ -828,7 +868,22 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--grib2-inventory", type=Path)
     parser.add_argument("--grib2-dump", type=Path)
     parser.add_argument("--wps-namelist", type=Path, required=True)
+    # --geog-root stays required even with a prebuilt static cache: the proof
+    # binds the resolved geog dataset paths, and child domains in a hierarchy
+    # still build their own statics from the tree.
     parser.add_argument("--geog-root", type=Path, required=True)
+    parser.add_argument(
+        "--static-input", type=Path,
+        help=(
+            "previously published native-static.npz to load instead of "
+            "rebuilding root geography; requires --static-receipt"),
+    )
+    parser.add_argument(
+        "--static-receipt", type=Path,
+        help=(
+            "geometry-receipt.json binding --static-input by geometry "
+            "contract and SHA-256"),
+    )
     parser.add_argument("--experiment-config", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument(
@@ -878,6 +933,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(
             "--cpu-preprocess-bridge requires --preprocess-backend cpu"
         )
+    if (args.static_input is None) != (args.static_receipt is None):
+        parser.error("--static-input and --static-receipt must be given together")
     try:
         supplements = _role_bindings(args.supplement, multiple=True)
         provenance = _role_bindings(args.provenance, multiple=False)
@@ -896,6 +953,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         grib2_dump=args.grib2_dump,
         wps_namelist=args.wps_namelist,
         geog_root=args.geog_root,
+        static_input=args.static_input,
+        static_receipt=args.static_receipt,
         experiment_config=args.experiment_config,
         output_root=args.output_root,
         preprocess_backend=args.preprocess_backend,
