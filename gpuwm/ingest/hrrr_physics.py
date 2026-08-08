@@ -104,9 +104,20 @@ def _validate_prepared_near_surface(result, met, cfg) -> Mapping[str, np.ndarray
             raise ValueError(
                 f"prepared near-surface {name} must be finite numeric data")
         if array.min() < lower or array.max() > upper:
+            # Name the numbers.  This refusal used to say only which field
+            # and which range, and a field report ("surface_qv is outside
+            # the physical range 0.0..0.2") cost a full re-run of a
+            # two-stage preparation to learn that the excursion was two
+            # cells at -1.8e-05 rather than, say, a unit error.  The
+            # observed extremes and the offending-cell count are already
+            # in hand here and decide which of those it is on sight.
+            outside = int(np.count_nonzero(
+                (array < lower) | (array > upper)))
             raise ValueError(
                 f"prepared near-surface {name} is outside the physical "
-                f"range {lower}..{upper}")
+                f"range {lower}..{upper}: {outside} of {array.size} "
+                f"cell(s) are out, observed range "
+                f"{float(array.min()):.6g}..{float(array.max()):.6g}")
         validated[name] = array
     if not np.isin(validated["LANDSEA"], (0.0, 1.0)).all():
         raise ValueError("prepared near-surface LANDSEA must be exactly binary")

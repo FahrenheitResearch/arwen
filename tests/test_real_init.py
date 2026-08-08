@@ -12,7 +12,9 @@ from gpuwm.config import RunConfig
 from gpuwm.core import constants as c
 from gpuwm.core.grid import make_vertical_coord
 from gpuwm.ingest.real import (
+    _WRF_QV_MIN_VALUE,
     _cap_stratospheric_qv,
+    _floor_flag_sh_surface_mixing_ratio,
     _mixing_ratio_to_relative_humidity,
     _saturation_mixing_ratio,
     _specific_humidity_to_mixing_ratio,
@@ -1757,3 +1759,91 @@ def test_mp28_real_ingest_state_is_shaped_typed_and_physical():
     control_residual = hydrostatic_residual(control)
     assert np.isfinite(residual).all()
     np.testing.assert_array_equal(residual, control_residual)
+
+
+#: What the refusing d02 actually held, and what its healthy neighbours
+#: held, from the gpuwm 1.8.4 nested HRRR tree at 39.0,-103.0 on cycle
+#: 2026-08-08T09.  216x272 cells; exactly two below zero.
+_SAN_JUAN_SURFACE_QV = (-1.785645637e-05, -1.478747851e-05)
+_SAN_JUAN_SURFACE_QV_MAX = 0.0176926
+#: The same tree's ROOT, which passed: its minimum is small but positive,
+#: so the floor must leave it alone.  And the flat-terrain Oklahoma d02
+#: from the release's completing cell, three orders of magnitude clear.
+_COLORADO_ROOT_SURFACE_QV_MIN = 3.043969e-05
+_OKLAHOMA_CHILD_SURFACE_QV_MIN = 0.00871458
+
+
+def test_flag_sh_surface_qv_floor_lifts_the_refusing_colorado_cells():
+    """The two real negative cells become WRF's qv_min_value, nothing else.
+
+    These are the values that produced "prepared near-surface surface_qv
+    is outside the physical range 0.0..0.2" on the 1.8.4 nested-HRRR tree
+    over eastern Colorado.  The floor is WRF's own ``qv_min_value``
+    (Registry default 1e-6, module_initialize_real.F:7499-7503) -- the
+    same constant :func:`_saturation_mixing_ratio` already applies to the
+    RH lane's surface value -- so after it the guard's 0.0 bound cannot be
+    crossed by this lane.
+    """
+    surface_qv = np.full((4, 4), 0.004)
+    surface_qv[1, 2] = _SAN_JUAN_SURFACE_QV[0]
+    surface_qv[2, 1] = _SAN_JUAN_SURFACE_QV[1]
+    surface_qv[0, 0] = _SAN_JUAN_SURFACE_QV_MAX
+    psfc = np.full((4, 4), 68_000.0)
+
+    floored, receipt = _floor_flag_sh_surface_mixing_ratio(surface_qv, psfc)
+
+    assert floored.min() == pytest.approx(_WRF_QV_MIN_VALUE)
+    assert floored[1, 2] == _WRF_QV_MIN_VALUE
+    assert floored[2, 1] == _WRF_QV_MIN_VALUE
+    # Every healthy cell is byte-identical, including the domain maximum.
+    untouched = np.ones((4, 4), dtype=bool)
+    untouched[1, 2] = untouched[2, 1] = False
+    np.testing.assert_array_equal(floored[untouched], surface_qv[untouched])
+    assert receipt["floored_cells"] == 2
+    assert receipt["negative_cells"] == 2
+    assert receipt["min_pre_floor"] == pytest.approx(
+        min(_SAN_JUAN_SURFACE_QV))
+    assert receipt["qv_min_value"] == _WRF_QV_MIN_VALUE
+
+
+@pytest.mark.parametrize(
+    "minimum",
+    [_COLORADO_ROOT_SURFACE_QV_MIN, _OKLAHOMA_CHILD_SURFACE_QV_MIN])
+def test_flag_sh_surface_qv_floor_is_a_no_op_above_wrf_qv_min(minimum):
+    """Shapes that already passed keep every bit and report nothing.
+
+    The Colorado ROOT on the very cycle whose child refused, and the
+    Oklahoma child that completed.  Both sit above WRF's floor, so the
+    fix cannot move a single existing artifact -- which is the whole
+    reason it is safe to apply on a release line.
+    """
+    surface_qv = np.linspace(minimum, 0.02, 12).reshape(3, 4)
+    psfc = np.full((3, 4), 84_000.0)
+
+    floored, receipt = _floor_flag_sh_surface_mixing_ratio(surface_qv, psfc)
+
+    np.testing.assert_array_equal(floored, surface_qv)
+    assert receipt == {}
+
+
+def test_flag_sh_surface_qv_floor_refuses_mismatched_shapes():
+    with pytest.raises(ValueError, match="shapes differ"):
+        _floor_flag_sh_surface_mixing_ratio(
+            np.zeros((2, 3)), np.zeros((3, 2)))
+
+
+def test_rh_lane_surface_qv_already_carries_the_same_floor():
+    """The divergence this fix closed, stated as a test.
+
+    GFS/ERA5 build surface_qv through :func:`_saturation_mixing_ratio`,
+    which floors at WRF's qv_min_value inline (real.exe rh_to_mxrat1:7379)
+    -- so that lane could never present a negative to the prepared
+    near-surface guard, and a nested GFS run over the same eastern
+    Colorado placement completed while the HRRR one refused.  The FLAG_SH
+    lane had no floor at all; now both share this constant.
+    """
+    bone_dry = _saturation_mixing_ratio(
+        np.full((2, 2), 250.0), np.full((2, 2), 68_000.0),
+        np.zeros((2, 2)))
+
+    assert np.all(bone_dry == _WRF_QV_MIN_VALUE)

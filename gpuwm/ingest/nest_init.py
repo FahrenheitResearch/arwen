@@ -642,6 +642,7 @@ def _updated_real_result(original: RealInitResult,
         integrated_moisture_pressure=original.integrated_moisture_pressure,
         hypsometric_opt=original.hypsometric_opt,
         hydrometeor_initialization=original.hydrometeor_initialization,
+        surface_moisture_floor=original.surface_moisture_floor,
         initial_perturbation=original.initial_perturbation)
 
 

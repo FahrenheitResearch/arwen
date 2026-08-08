@@ -2438,6 +2438,40 @@ def test_source_neutral_near_surface_contract_rejects_bad_arrays(
             result, SimpleNamespace(fields=met_fields), cfg)
 
 
+def test_near_surface_refusal_names_the_offending_cells_and_extremes():
+    """The refusal has to say WHICH cells and HOW far, not just the bound.
+
+    Field 2026-08-08: a nested HRRR tree over eastern Colorado refused
+    with "prepared near-surface surface_qv is outside the physical range
+    0.0..0.2" and nothing else, and reading the two offending cells back
+    cost a full re-run of a two-stage preparation.  The numbers below are
+    that run's real d02 minimum; with them in the message the excursion
+    is legible as a two-cell WPS interpolation undershoot on sight,
+    rather than as a possible unit error.
+    """
+    cfg = SimpleNamespace(ny=2, nx=3)
+    surface_qv = np.full((2, 3), 0.0176926)
+    surface_qv[0, 1] = -1.785645637e-05
+    surface_qv[1, 2] = -1.478747851e-05
+    result = SimpleNamespace(
+        surface_pressure=np.full((2, 3), 95_000.0), surface_qv=surface_qv)
+    met = SimpleNamespace(fields={
+        "T2": np.full((2, 3), 290.0),
+        "SKINTEMP": np.full((2, 3), 291.0),
+        "U10": np.zeros((2, 4)),
+        "V10": np.zeros((3, 3)),
+        "LANDSEA": np.ones((2, 3)),
+    })
+
+    with pytest.raises(ValueError) as refusal:
+        _validate_prepared_near_surface(result, met, cfg)
+
+    message = str(refusal.value)
+    assert "surface_qv is outside the physical range 0.0..0.2" in message
+    assert "2 of 6 cell(s) are out" in message
+    assert "-1.78565e-05" in message
+
+
 def test_source_neutral_surface_contract_rejects_land_identity_drift():
     shape = (2, 3)
     fields = {

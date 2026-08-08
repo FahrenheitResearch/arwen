@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import hashlib
 import json
+import sys
 from time import perf_counter
 import zlib
 
@@ -1398,6 +1399,117 @@ def _specific_humidity_to_mixing_ratio(
     return output
 
 
+#: WRF's ``qv_min`` sanity floor and the pressure below which it applies
+#: (Registry.EM_COMMON:2306-2308 defaults ``qv_min_p_safe = 110000`` Pa,
+#: ``qv_min_flag = qv_min_value = 1e-6``; applied at
+#: ``module_initialize_real.F:7499-7503``).  This is the SAME 1e-6 that
+#: :func:`_saturation_mixing_ratio` already applies unconditionally on the
+#: RH lane (:7379, ``q = MAX(eps*es/(p/100.-es), 1.E-6)``), named here so
+#: the FLAG_SH surface lane can share one floor with it instead of
+#: carrying none.
+_WRF_QV_MIN_P_SAFE = 110_000.0
+_WRF_QV_MIN_VALUE = 1.0e-6
+
+_SURFACE_QV_FLOOR_WRF_REFERENCE = {
+    "wrf_version": "v4.6.1",
+    "wrf_citation": (
+        "dyn_em/module_initialize_real.F:1138-1167 (FLAG_SH branch: "
+        "qv_gc = sh_gc/(1-sh_gc) at :1157, no floor), :1253-1259 "
+        "(grid%q2 = qv_gc(i,1,j) verbatim); the qv_min sanity floor "
+        "real.exe applies to every other moisture value lives in "
+        "rh_to_mxrat1 (:7379 unconditional 1e-6; :7499-7503 "
+        "qv_min_p_safe/qv_min_flag/qv_min_value) and is called on the "
+        "prognostic field only (:1837-1860), never on the surface "
+        "pseudo-level of this branch"),
+    "wrf_behavior": (
+        "real.exe publishes an unfloored Q2: WPS routes SPECHUMD through "
+        "the overshooting sixteen_pt operator (METGRID.TBL "
+        "interp_option=sixteen_pt+four_pt+average_4pt), so a 2 m specific "
+        "humidity that is exactly zero over high dry terrain interpolates "
+        "NEGATIVE, and both qv_gc(:,1,:) and grid%q2 keep the sign"),
+    "gpuwm_behavior": (
+        "the PUBLISHED surface mixing ratio (RealInitResult.surface_qv, "
+        "which becomes Q2) is floored at WRF's own qv_min_value where the "
+        "WPS undershoot took it below that floor, which is exactly what "
+        "the RH lane's _saturation_mixing_ratio already does to the same "
+        "quantity; sfcprs2, integ_moist and the vertical-interpolation "
+        "pseudo-level keep the raw WRF value, so no prognostic field and "
+        "no existing fingerprint moves"),
+    "gpuwm_divergence_reason": (
+        "a mixing ratio cannot be negative and every consumer of Q2 "
+        "(relative humidity, dewpoint, vapour-pressure deficit) needs the "
+        "log of a positive number -- the same reason the runtime's own "
+        "SFCDIAGS transcription refuses to publish WRF's negative Q2 "
+        "(gpuwm/core/physics.py _refresh_surface_diagnostics), applied at "
+        "initialization so the value the forecast STARTS from is physical "
+        "too"),
+}
+
+
+def _floor_flag_sh_surface_mixing_ratio(surface_qv, surface_pressure):
+    """Apply WRF's ``qv_min`` floor to the PUBLISHED 2 m mixing ratio.
+
+    WPS's ``sixteen_pt`` overlapping parabolic is an overshooting
+    operator and METGRID.TBL routes ``SPECHUMD`` through it, so a source
+    2 m specific humidity that decodes to EXACTLY zero -- which HRRR's
+    GRIB2 packing does over high, dry terrain -- interpolates to a small
+    negative.  ``real.exe`` keeps that sign all the way into ``grid%q2``
+    (see :data:`_SURFACE_QV_FLOOR_WRF_REFERENCE`), and reproducing it
+    bit-for-bit would publish a negative 2 m mixing ratio.
+
+    The floor is WRF's own ``qv_min_value``, not an invented number, and
+    it is the identical constant the RH lane already applies to the
+    identical quantity inside :func:`_saturation_mixing_ratio` -- so this
+    makes the two surface lanes agree rather than inventing a third
+    behaviour.
+
+    It is applied at the PUBLICATION point and nowhere else.  ``sfcprs2``,
+    ``integ_moist`` and the vertical-interpolation surface pseudo-level
+    are uses real.exe is DEFINED for, and they keep the raw value, so the
+    prognostic state stays bit-for-bit what it was on every lane --
+    including the explicit ``use_sh_qv=True`` lane, whose prognostic qv IS
+    the interpolated surface value and which WRF likewise never floors.
+    Only cells the undershoot pushed below the floor move, and only in the
+    published array, which is why no artifact whose surface moisture stays
+    above 1e-6 changes at all.
+
+    Returns the floored array and a receipt; the receipt is empty when
+    nothing was floored, and that is the overwhelmingly common case.
+    """
+    surface_qv = np.asarray(surface_qv, dtype=np.float64)
+    pressure = np.asarray(surface_pressure, dtype=np.float64)
+    if pressure.shape != surface_qv.shape:
+        raise ValueError(
+            "surface pressure and surface mixing ratio shapes differ")
+    below = ((pressure < _WRF_QV_MIN_P_SAFE)
+             & (surface_qv < _WRF_QV_MIN_VALUE))
+    if not below.any():
+        return surface_qv, {}
+    floored = np.where(below, _WRF_QV_MIN_VALUE, surface_qv)
+    count = int(np.count_nonzero(below))
+    negative = int(np.count_nonzero(below & (surface_qv < 0.0)))
+    minimum = float(np.min(surface_qv[below]))
+    receipt = {
+        "policy": "flag-sh-surface-qv-floored-to-wrf-qv-min-value",
+        "wrf_reference": dict(_SURFACE_QV_FLOOR_WRF_REFERENCE),
+        "qv_min_value": _WRF_QV_MIN_VALUE,
+        "qv_min_p_safe": _WRF_QV_MIN_P_SAFE,
+        "floored_cells": count,
+        "negative_cells": negative,
+        "min_pre_floor": minimum,
+    }
+    print(
+        f"surface moisture floor: {count} FLAG_SH 2 m mixing-ratio "
+        f"value(s) below WRF's qv_min_value {_WRF_QV_MIN_VALUE:g} floored "
+        f"to it ({negative} of them negative; min pre-floor "
+        f"{minimum:.6g}); WPS's overshooting sixteen_pt operator "
+        "undershoots SPECHUMD that is exactly zero over high dry terrain, "
+        "and real.exe carries that sign into grid%q2 unfloored "
+        "(module_initialize_real.F:1157,1257)",
+        file=sys.stderr)
+    return floored, receipt
+
+
 def _mixing_ratio_to_relative_humidity_serial(
         temperature, pressure, mixing_ratio, *, allow_wps_undershoot=False):
     """Diagnose and validate one contiguous relative-humidity chunk."""
@@ -2193,6 +2305,16 @@ class RealInitResult:
     #: native-HRRR lane and the pressure-level/RH lane, and that map only
     #: exists on the former.
     aerosol_initialization: dict[str, object] = field(default_factory=dict)
+    #: How many cells of ``surface_qv`` ABOVE were floored at WRF's
+    #: ``qv_min_value`` on the way out, and how far below it they were
+    #: (:func:`_floor_flag_sh_surface_mixing_ratio`).  Only the FLAG_SH
+    #: lane can populate this: it is the one lane whose surface value WPS's
+    #: overshooting sixteen_pt operator can push below zero and real.exe
+    #: never floors.  Empty when nothing was floored -- the usual case --
+    #: and always empty on the RH lane, whose
+    #: :func:`_saturation_mixing_ratio` applies the same floor inline and
+    #: so has no separate divergence to report.
+    surface_moisture_floor: dict[str, object] = field(default_factory=dict)
     #: What the configured [perturbation] bubbles actually wrote into THIS
     #: domain's initial theta/qv: per-bubble cells touched and max deltas
     #: (:mod:`gpuwm.ingest.init_perturbation`).  Empty when no perturbation
@@ -2387,6 +2509,12 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         surface_specific = _wrf_flag_sh_surface_specific_humidity(
             fields["Q2"], fields["SPFH"], pressure,
             force_fallback=flag_sh_surface_fallback)
+        # The WPS undershoot envelope is ADMITTED here, exactly as WRF
+        # admits it, and it stays admitted through sfcprs2, integ_moist
+        # and the vertical-interpolation pseudo-level, because those are
+        # the uses real.exe is DEFINED for and it hands them the raw
+        # value.  Only the value this function PUBLISHES as Q2 is floored,
+        # and that happens once at the result, below.
         surface_qv = _specific_humidity_to_mixing_ratio(
             surface_specific, allow_wps_undershoot=True,
             column_workers=column_workers)
@@ -2845,11 +2973,18 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     state.w[...] = 0.0
     total_phi = _host(state.phb + state.php)
     mark_timing("remaining_state_upload_and_geopotential_readback")
+    # The ONE place a surface mixing ratio is published rather than
+    # consumed: everything above has had WRF's raw value, and this is what
+    # becomes Q2 in the physics driver, in wrfinput, and in the prepared
+    # cache.  A no-op on the RH lane, whose _saturation_mixing_ratio
+    # already returned nothing below this floor.
+    published_surface_qv, surface_qv_floor = (
+        _floor_flag_sh_surface_mixing_ratio(surface_qv, fields["PSFC"]))
     if timing_report is not None:
         timing_report["total_seconds"] = perf_counter() - timing_start
     return RealInitResult(
         state=state, coord=coord, base=base,
-        surface_pressure=surface_pressure, surface_qv=surface_qv,
+        surface_pressure=surface_pressure, surface_qv=published_surface_qv,
         dry_mass=dry_mass, dry_pressure=dry_pressure,
         total_pressure=total_pressure_h, total_geopotential=total_phi,
         total_specific_volume=alpha,
@@ -2857,6 +2992,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         hypsometric_opt=cfg.hypsometric_opt,
         hydrometeor_initialization=hydrometeor_initialization,
         aerosol_initialization=aerosol_initialization,
+        surface_moisture_floor=surface_qv_floor,
         initial_perturbation=perturbation_receipt)
 
 

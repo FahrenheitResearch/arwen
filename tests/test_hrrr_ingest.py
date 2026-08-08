@@ -12,6 +12,7 @@ from gpuwm.ingest.hrrr import (
     HRRR_WPS_EQUIVALENT_DX_M,
     _build_masked_bilinear_stencil,
     _gate_forecast_hours,
+    _wps_oned_cpu,
     hrrr_source_grid,
     load_hrrr_native_series,
     load_hrrr_native_window,
@@ -238,3 +239,101 @@ def test_ohio_like_lake_edge_requires_explicit_radius_ten():
     assert report["fallback_distance_ceiling_histogram_cells"] == {"10": 1}
     assert report["unresolved_target_count"] == 0
     assert report["cross_surface_donor_count"] == 0
+
+
+#: The two HRRR 2 m specific-humidity stencils that refused a nested run.
+#:
+#: gpuwm 1.8.4, HRRR cycle 2026-08-08T09 f00, nested 12-3 km tree centred
+#: 39.0,-103.0.  Both preparation stages passed and the tree forecast then
+#: refused its own d02 input: "prepared near-surface surface_qv is outside
+#: the physical range 0.0..0.2".  These are the source values behind it,
+#: read out of that run's native bridge window -- HRRR's GRIB2 packing
+#: quantises Q2 to 1e-5, so over the San Juan Mountains (source SOILHGT
+#: 2557..3535 m) it decodes to EXACTLY zero beside neighbours three orders
+#: of magnitude larger.  WPS routes SPECHUMD through the overshooting
+#: sixteen_pt operator (METGRID.TBL
+#: interp_option=sixteen_pt+four_pt+average_4pt), which undershoots such a
+#: stencil below zero.  Real numbers, not a constructed contrast: nothing
+#: synthetic reproduces how flat the dry side of these stencils is.
+_SAN_JUAN_Q2_STENCILS = (
+    # d02 (j=64, i=32); 37.75206 N, 106.58660 W; target terrain 3061.6 m
+    {
+        "stencil": np.array([
+            [3.9e-04, 4.1e-04, 5.4e-04, 7.6e-04],
+            [1.8e-04, 3.0e-05, 0.0e+00, 3.9e-04],
+            [2.5e-04, 8.0e-05, 1.5e-04, 8.5e-04],
+            [2.3e-04, 4.1e-04, 5.9e-04, 9.2e-04],
+        ], dtype=np.float32),
+        "fx": np.float32(0.2811026275),
+        "fy": np.float32(0.513708055),
+        "mapped": -1.785677523e-05,
+    },
+    # d02 (j=65, i=28); 37.77501 N, 106.72648 W; target terrain 3226.5 m
+    {
+        "stencil": np.array([
+            [1.48e-03, 5.60e-04, 7.00e-05, 1.20e-04],
+            [1.40e-04, 0.00e+00, 1.00e-05, 6.00e-05],
+            [0.00e+00, 0.00e+00, 1.00e-05, 1.40e-04],
+            [1.00e-04, 7.00e-05, 5.00e-05, 2.40e-04],
+        ], dtype=np.float32),
+        "fx": np.float32(0.2865612507),
+        "fy": np.float32(0.767305851),
+        "mapped": -1.478769718e-05,
+    },
+)
+
+
+def _sixteen_point(stencil, fx, fy):
+    """Run the shipped operator over one 4x4 stencil, as ``apply`` does.
+
+    ``_ProjectedCpuPlan.apply`` substitutes 1e-20 for exact zeros before
+    ``oned`` and maps an exact 1e-20 result back to zero; that is WPS's
+    own REAL*4 quirk (interp_module.F:1255-1257,1299) and it is what
+    makes a stencil containing zeros run the full overshooting parabolic
+    instead of collapsing to WPS's ``b*c == 0`` zero.  Reproduced here so
+    the pin exercises the same arithmetic the mapper does.
+    """
+    tiny = np.float32(1.0e-20)
+    zero = np.float32(0.0)
+    values = np.where(stencil == zero, tiny, stencil)
+    rows = [_wps_oned_cpu(fx, *values[row]) for row in range(4)]
+    result = _wps_oned_cpu(fy, *rows)
+    return np.where(result == tiny, zero, result)
+
+
+@pytest.mark.parametrize("case", _SAN_JUAN_Q2_STENCILS)
+def test_wps_sixteen_point_undershoots_zero_valued_hrrr_surface_moisture(case):
+    """The WPS operator really does go negative here -- pin it, do not fix it.
+
+    METGRID.TBL puts SPECHUMD on ``sixteen_pt``, so this undershoot is
+    what WPS produces and what ``real.exe`` then carries into ``grid%q2``
+    unfloored (module_initialize_real.F:1157, :1257).  The engine's answer
+    is a floor on the published surface value
+    (:func:`gpuwm.ingest.real._floor_flag_sh_surface_mixing_ratio`), NOT a
+    quietly de-overshot operator: swapping this for a non-negative
+    interpolator would change every HRRR field's numbers and diverge from
+    WPS for no stated reason.  If this test starts failing because the
+    result is no longer negative, the operator was changed.
+    """
+    mapped = _sixteen_point(case["stencil"], case["fx"], case["fy"])
+
+    assert case["stencil"].min() == 0.0
+    assert mapped < 0.0
+    assert float(mapped) == pytest.approx(case["mapped"], rel=1e-6)
+
+
+def test_zero_free_hrrr_surface_moisture_stencil_stays_positive():
+    """The same operator on the same shape of stencil, minus the zeros.
+
+    The control for the pin above: what makes those two cells negative is
+    the exact zeros, not the terrain and not the operator on its own.  A
+    stencil with the same span whose floor is a real HRRR value maps well
+    clear of zero, which is why the flat-terrain Oklahoma tree at the same
+    release completes.
+    """
+    case = _SAN_JUAN_Q2_STENCILS[0]
+    lifted = np.maximum(case["stencil"], np.float32(8.0e-4))
+
+    mapped = _sixteen_point(lifted, case["fx"], case["fy"])
+
+    assert float(mapped) > 0.0

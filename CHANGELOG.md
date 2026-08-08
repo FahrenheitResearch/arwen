@@ -1,5 +1,59 @@
 # Changelog
 
+## 1.8.5 (2026-08-08)
+
+Fixed:
+- HRRR no longer publishes a negative 2 m mixing ratio over high
+  terrain. A nested 12-3 km tree over eastern Colorado cleared both
+  preparation stages on 1.8.4 and was then refused by the tree
+  forecast's own input check, `prepared near-surface surface_qv is
+  outside the physical range 0.0..0.2`. The guard was right and the
+  data was WRF-faithful, which is why nothing upstream caught it.
+  HRRR's GRIB2 packing quantises 2 m specific humidity to 1e-5, so
+  over source orography of 2557..3535 m it decodes to exactly zero
+  beside neighbours three orders of magnitude larger; METGRID.TBL
+  routes SPECHUMD through the overshooting `sixteen_pt` operator,
+  which undershoots such a stencil below zero, and
+  `module_initialize_real.F` converts it with `qv_gc = sh_gc/(1 -
+  sh_gc)` and no floor before assigning `grid%q2` verbatim. Two child
+  cells came out at -1.79e-05 and -1.48e-05. Nested GFS completed the
+  same placement only because its lane builds the same quantity
+  through `_saturation_mixing_ratio`, which floors at WRF's
+  `qv_min_value` inline; the specific-humidity lane had no floor at
+  all, and that asymmetry is the whole defect, since one guard written
+  against the floored lane's contract was applied to both. The
+  published `surface_qv` is now floored at that same `qv_min_value`,
+  at the publication point and nowhere else: `sfcprs2`, `integ_moist`
+  and the vertical-interpolation pseudo-level are uses real.exe is
+  defined for and keep the raw value, so no prognostic field moves on
+  any lane, including the explicit `use_sh_qv=True` lane whose
+  prognostic qv is the interpolated surface value. Cells at or above
+  the floor are byte-untouched, so no existing artifact changes; 1 of
+  63 arrays moved in the refusing tree's cache and a control tree was
+  byte-identical across all 270. The divergence is recorded on
+  `RealInitResult.surface_moisture_floor` and printed, like the
+  soil-moisture floor beside it. Single-domain HRRR carried the
+  identical latent defect on the same lane behind the same guard, and
+  was unexposed only because the shipped cell runs over flat Oklahoma;
+  a 3 km root over the same Colorado terrain reproduces both negative
+  cells. The near-surface refusal now names the offending cell count
+  and the observed extremes, because reading them back off the old
+  message cost a full re-run of a two-stage preparation.
+- The two `km_opt` registry citations point at the LES-closure
+  docstrings again. 1.8.4 shipped with `tests/test_physics_registry.py`
+  red: both anchors in `gpuwm/core/dycore.py` were 29 lines stale
+  because the solver perf work added the cached `couple_momentum`
+  kernel well above them. The code moved, not the claim, and the two
+  want opposite fixes, so it was checked before repointing: both
+  docstrings are byte-identical between 1.8.3 and 1.8.4, as is the
+  whole of `dycore.py` from the first anchor to end of file. Only the
+  line numbers move, 824 to 853 and 914 to 943, in the registry
+  warning text and in the checker's paired RESOLVED rows, which must
+  move together or the checker fails from the other side. The citation
+  checker now reports 85 citations with 0 failing, and the curated
+  first-stage battery carries that test so the next drift is caught by
+  a release gate rather than by a sweep.
+
 ## 1.8.4 (2026-08-08)
 
 New:
