@@ -1210,6 +1210,71 @@ def _set_staging(monkeypatch, tmp_path, *, available):
     return pins
 
 
+class _ArrangedSys:
+    """Stands in for `sys`, overriding ONLY what an arrangement changes.
+
+    The predecessor was a bare SimpleNamespace carrying two attributes,
+    and the third one some code path eventually reached did not exist.
+    That cost a release: `_driver_library_names` reads `sys.platform`,
+    reaching it depends on GPUWM_NO_LOCAL_GPU -- which the battery sets
+    and CI does not -- so the double was complete enough locally and a
+    hole on the runner, and the two layers of the test net disagreed for
+    the first time.
+
+    A double that enumerates attributes can always be one short of the
+    code it stands in for.  This one cannot: anything not deliberately
+    arranged DELEGATES to the real module, so the failure mode is a
+    correct answer rather than an AttributeError, and adding a
+    `sys.<anything>` read to doctor can never again break only on the
+    machine that happens to reach it.
+    """
+
+    def __init__(self, **arranged):
+        self.__dict__.update(arranged)
+
+    def __getattr__(self, name):
+        import sys as real_sys
+        return getattr(real_sys, name)
+
+
+def test_the_sys_double_answers_every_attribute_doctor_reads():
+    """The double cannot be one attribute short of the module it fakes.
+
+    This is the regression pin for the v1.8.1 CI failure.  The old
+    double was a two-attribute SimpleNamespace; doctor grew a
+    `sys.platform` read; 24 parametrizations died on the runner while
+    the battery stayed green, because whether that read is REACHED
+    depends on GPUWM_NO_LOCAL_GPU and the battery sets it.
+
+    Rather than re-listing attributes here (a list is what failed), this
+    scans doctor for every `sys.<name>` it actually reads and asks the
+    double for each one.  A new read added tomorrow is covered the day
+    it lands, with no list to remember to update.
+    """
+    import ast
+    import sys as real_sys
+
+    source = (Path(__file__).parents[1] / "gpuwm"
+              / "doctor.py").read_text(encoding="utf-8")
+    names = {
+        node.attr
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "sys"
+    }
+    assert names, "the scan found no sys reads at all; it has stopped working"
+
+    double = _ArrangedSys(version_info=(3, 10, 4), platform="linux")
+    for name in sorted(names):
+        getattr(double, name)          # must not raise
+
+    # Arranged values win; everything else is the truth from the module.
+    assert double.platform == "linux"
+    assert double.version_info == (3, 10, 4)
+    assert double.maxsize == real_sys.maxsize
+
+
 def _force_every_gap(monkeypatch, tmp_path, *, windows, shape, mode,
                      staging=False):
     """Make collect_checks() reach a remedy on (nearly) every check.
@@ -1254,8 +1319,21 @@ def _force_every_gap(monkeypatch, tmp_path, *, windows, shape, mode,
 
     # python below the floor; cupy and the render extra absent (with
     # find_spec gone, the import probes spawn nothing).
-    monkeypatch.setattr(doctor, "sys", types.SimpleNamespace(
-        version_info=(3, 10, 4), executable=real_sys.executable))
+    #
+    # ``platform`` is NOT optional here, and leaving it out cost a
+    # release.  This namespace stands in for the whole `sys` module for
+    # every line of doctor that reads it, so an attribute the real
+    # module has and this one does not is a hole that opens the moment
+    # some code path reaches for it.  `_driver_library_names` reads
+    # `sys.platform`, and whether it is reached depends on
+    # GPUWM_NO_LOCAL_GPU -- which the battery sets and CI does not, so
+    # the hole was invisible locally and fatal on the runner.  It is set
+    # from `windows` so the fake agrees with the shell `_force_shell`
+    # just installed, rather than being a third opinion about the
+    # platform.
+    monkeypatch.setattr(doctor, "sys", _ArrangedSys(
+        version_info=(3, 10, 4), executable=real_sys.executable,
+        platform=("win32" if windows else "linux")))
     monkeypatch.setattr(doctor, "find_spec", lambda name: None)
 
     def _raise_missing(*_args, **_kwargs):
@@ -1335,8 +1413,9 @@ def _force_every_gap(monkeypatch, tmp_path, *, windows, shape, mode,
 @pytest.mark.parametrize("shape", ("checkout", "wheel"))
 @pytest.mark.parametrize("mode", ("absent", "stale", "override"))
 @pytest.mark.parametrize("staging", (False, True))
+@pytest.mark.parametrize("driver", (None, 13))
 def test_the_whole_printed_report_pastes_as_one_sequence(
-        monkeypatch, tmp_path, windows, shape, mode, staging):
+        monkeypatch, tmp_path, windows, shape, mode, staging, driver):
     """Every remedy doctor can print, in print order, pasted as a block.
 
     The contract is not "each block is well formed"; it is "select the
@@ -1353,6 +1432,17 @@ def test_the_whole_printed_report_pastes_as_one_sequence(
     minutes to obtain files the line above already staged, so the
     composition has to be checked in that arrangement too.
     """
+
+    # THE DRIVER ARRANGEMENT, PINNED RATHER THAN INHERITED.  Both
+    # remedies this can print are real: with a major in hand doctor
+    # names the ONE matching extra, without one it prints both and
+    # defaults to neither.  Until this parameter existed the arrangement
+    # was whatever the HOST happened to be -- a driver on Drew's box, no
+    # driver on the runner -- so the battery and CI were testing
+    # different code and could disagree, which they did.  Both now run
+    # everywhere, and the suppression env var cannot decide the outcome.
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
+    monkeypatch.setattr(doctor, "_driver_cuda_major", lambda: driver)
 
     _force_every_gap(monkeypatch, tmp_path, windows=windows, shape=shape,
                      mode=mode, staging=staging)

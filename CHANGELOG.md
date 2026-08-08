@@ -1,6 +1,25 @@
 # Changelog
 
-## 1.8.1 (2026-08-07)
+## 1.8.2 (2026-08-08)
+
+1.8.1 was tagged but never published: its release workflow's own test
+job failed on the runner, so PyPI received nothing and the release was
+withdrawn to a draft. The tag stays where it is, because tags here are
+forward-only. Everything 1.8.1 carried ships in this release, plus the
+fix below.
+
+Fixed:
+- `gpuwm doctor`'s printed report no longer depends on whether the box
+  running the tests has an NVIDIA driver. The report suite substituted a
+  stand-in for `sys` that carried two attributes, and the CUDA-major
+  remedy added in 1.8.1 reads a third (`sys.platform`). Whether anything
+  reached it depended on `GPUWM_NO_LOCAL_GPU`, so the gap was
+  unreachable on a developer box and fatal on a driverless runner. The
+  stand-in now delegates every attribute it was not deliberately given
+  to the real module, and the report test pins the driver arrangement
+  itself instead of inheriting the host's.
+
+## 1.8.1 (2026-08-07, tagged but not published)
 
 New:
 - `gpuwm run-plan` reaches HRRR. The `prepared` route takes
