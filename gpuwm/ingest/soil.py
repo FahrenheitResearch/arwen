@@ -39,6 +39,41 @@ def _host(value) -> np.ndarray:
     return np.asarray(value, dtype=np.float64)
 
 
+def _nonphysical_tsk_message(tsk: np.ndarray, land: np.ndarray) -> str:
+    """Name the cells, the split, and the one fill value that causes this.
+
+    ``module_initialize_real.F:3278-3296`` prints the offending cell and
+    then SUBSTITUTES TMN, or SST, before its ``grid%tsk unreasonable``
+    abort.  gpuwm refuses instead: a deep-soil temperature standing in for
+    a skin temperature is a silent 3 m-depth initial condition at the
+    surface, and the substitution hides the input gap that produced it.
+    The divergence is deliberate; this message carries the diagnosis the
+    WRF print carries, for every offending cell at once.
+    """
+    bad = ~np.isfinite(tsk) | (tsk < 170.0) | (tsk > 400.0)
+    total = int(bad.sum())
+    on_land = int((bad & land).sum())
+    on_water = total - on_land
+    finite = tsk[bad & np.isfinite(tsk)]
+    detail = ""
+    if finite.size:
+        values = np.unique(finite)
+        shown = ", ".join(f"{value:g}" for value in values[:4])
+        detail = (f"; values {shown}"
+                  + ("..." if values.size > 4 else ""))
+        if values.size == 1 and values[0] == 0.0:
+            detail += (
+                ".  0 K is METGRID.TBL fill_missing for SKINTEMP, which "
+                "means the masked interpolation found no usable source "
+                "cell on that surface -- check that the forcing's "
+                "land-sea mask actually resolves the land this domain "
+                "resolves")
+    return (
+        f"TSK contains non-finite or nonphysical values: {total} cell(s) "
+        f"outside 170..400 K ({on_land} on land/sea-ice, {on_water} on "
+        f"open water) of {tsk.size}{detail}")
+
+
 @dataclass(frozen=True)
 class NoahSoilState:
     """Setup-time, float64 Noah surface/soil initial conditions."""
@@ -573,7 +608,7 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
                                  & (sst <= 400.0), sst, skin)
     tsk = np.where(terrestrial | sea_ice, skin, water_temperature)
     if not np.isfinite(tsk).all() or np.any((tsk < 170.0) | (tsk > 400.0)):
-        raise ValueError("TSK contains non-finite or nonphysical values")
+        raise ValueError(_nonphysical_tsk_message(tsk, terrestrial | sea_ice))
 
     if mapped_layers:
         temperatures = []

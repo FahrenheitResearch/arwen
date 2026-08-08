@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "1.8.0"
+version = "1.8.1"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 # The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
@@ -39,14 +39,30 @@ Repository = "https://github.com/FahrenheitResearch/arwen"
 Changelog = "https://github.com/FahrenheitResearch/arwen/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-# The CuPy wheel must match the CUDA major the box actually serves:
-# cupy-cuda12x on a CUDA-13-only box imports cleanly and then dies at
-# the first cuBLAS load (proven on a rented CUDA 13.2 node, 2026-08-05).
-# [gpu] stays cu12 for compatibility with every install that already
-# works; a CUDA-13-only box wants [gpu-cu13].  `gpuwm doctor` verifies
-# the pairing and names the right extra when they disagree.
-gpu = ["cupy-cuda12x>=13.0"]
+# CuPy ships ONE wheel per CUDA major, and the wheel must match the CUDA
+# major the box actually serves: cupy-cuda12x on a CUDA-13-only box
+# imports cleanly, compiles kernels, and then dies at the first cuBLAS
+# load (proven on a rented CUDA 13.2 node, 2026-08-05).
+#
+# A pip extra CANNOT detect a CUDA major -- there is no environment
+# marker for it -- so this table does not pretend to choose.  The choice
+# is NAMED, one extra per major:
+#
+#     CUDA 12.x box .......... gpuwm[gpu-cu12]   (or gpuwm[all-cu12])
+#     CUDA-13-only box ....... gpuwm[gpu-cu13]   (or gpuwm[all-cu13])
+#
+# [gpu] and [all] are kept and still resolve to cu12, because every
+# install that already works names them and a silently-changed default
+# would break those boxes.  They are ALIASES for the cu12 pair, not a
+# third policy: there is exactly one place each wheel is pinned.
+#
+# The honest-intent rule this table cannot enforce by itself is enforced
+# by `gpuwm doctor`, which reads the box's CUDA major straight off the
+# driver -- with or without CuPy installed -- and prints the extra that
+# matches it rather than a cu12 default.
+gpu-cu12 = ["cupy-cuda12x>=13.0"]
 gpu-cu13 = ["cupy-cuda13x>=13.6"]
+gpu = ["gpuwm[gpu-cu12]"]
 # gpuwm render's mandated science core: derived quantities come from the
 # wrf package (pip distribution wrf-rust), pinned to the certified version.
 # pyshp: the demo/gallery renderer (tools/da_nowcast_render.py and the
@@ -72,7 +88,16 @@ dev = ["pytest>=8.0"]
 # between two that most readers want both of. Deliberately NOT geog:
 # that extra pulls rasterio/pyproj for authoring static tiles, which is
 # a different job from running the model.
-all = ["gpuwm[gpu]", "gpuwm[render]"]
+#
+# One [all-*] per CUDA major for the same reason [gpu-*] is split: the
+# quickstart's one-liner is the single most-followed instruction in the
+# project, so it must be able to reach the cu13 wheel.  Before this pair
+# existed, [all] was the ONLY documented one-liner and it hard-routed to
+# cu12 -- a CUDA-13 box following the quickstart got the wrong wheel and
+# no warning until its first matmul.
+all-cu12 = ["gpuwm[gpu-cu12]", "gpuwm[render]"]
+all-cu13 = ["gpuwm[gpu-cu13]", "gpuwm[render]"]
+all = ["gpuwm[all-cu12]"]
 
 [project.scripts]
 gpuwm = "gpuwm.cli:main"

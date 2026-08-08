@@ -1210,7 +1210,83 @@ def _build_relocation(raw: dict, source: str, domains,
                 f"[[relocation.move]] at_seconds = {move.at_seconds} "
                 f"in {source} is at or past the end of the run "
                 f"(run_seconds = {run_seconds}); it can never fire.")
+    if relocation.follow is not None:
+        _refuse_unservable_follow_cadence(
+            relocation, domains, source, root_dt=root_dt)
     return relocation
+
+
+def _refuse_unservable_follow_cadence(relocation, domains, source,
+                                      *, root_dt) -> None:
+    """The reflectivity stash must be able to serve every evaluation.
+
+    The tracker's composite-reflectivity plane is not a diagnostic it can
+    ask for on demand: ``refl_10cm`` is stashed by the microphysics
+    drivers inside their ``refl_10cm_due`` branch, which follows the
+    HISTORY cadence.  So an evaluation cadence that is not a whole
+    multiple of the watched domain's ``history_interval_s`` asks for a
+    plane at instants where it does not exist, and the run discovers
+    that mid-flight as a ``TrackerRefusal`` -- at the first cadence where
+    UH is under threshold and the echo fallback is consulted, which may
+    be hours in and is exactly the moment a storm-following nest is
+    supposed to be working.
+
+    This is issue #111, and the contract is not new: the shipped
+    ``moving_nest_20110427_follow_2km.toml`` states it in a comment above
+    ``cadence_seconds`` and nothing enforced it.  Refused here, at
+    admission, naming both knobs and the multiple that would work.
+
+    It applies to ``field = "uh"`` as much as to ``field =
+    "reflectivity"``: the echo handoff is automatic, not opt-in, so a
+    UH-primary tracker whose cadence the stash cannot serve is a run that
+    refuses the first time rotation is absent.
+
+    The watched domain is the PARENT of ``grid_id``.  ``grid_id`` names
+    the child that MOVES; ``RelocationRunner`` hands the provider
+    ``node.parent.state``, so the stash whose cadence matters belongs to
+    the parent.
+    """
+
+    by_id = {int(dc.grid_id): dc for dc in domains}
+    try:
+        child = by_id[int(relocation.grid_id)]
+        parent = by_id[int(child.parent_id)]
+        stash = float(parent.history_interval_s)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        # A child with no resolvable parent, or a domain missing the
+        # fields this reads.  Tree integrity and per-domain schema are
+        # other validators' refusals; preempting them with a cadence
+        # message would send the reader to the wrong knob.
+        return
+    if not math.isfinite(stash) or stash <= 0.0:
+        return
+    where = (f"history_interval_s = {stash} s on the domain the tracker "
+             f"watches ([[domain]] grid_id = {int(parent.grid_id)}, the "
+             f"parent of the relocating grid_id = "
+             f"{int(relocation.grid_id)})")
+    why = ("the tracker's composite-reflectivity signal is stashed by the "
+           "microphysics at history cadence (gpuwm.core.refl), so a "
+           "consultation off that cadence asks for a refl_10cm plane that "
+           "does not exist and the run refuses mid-flight")
+    if relocation.cadence_seconds is None:
+        raise ValueError(
+            f"[relocation] of {source} configures a [relocation.follow] "
+            f"tracker but no cadence_seconds, which means EVERY complete "
+            f"cycle boundary (root dt = {float(root_dt)} s), and {where} "
+            f"cannot serve that: {why}. Set cadence_seconds to a whole "
+            f"multiple of {stash} (the history interval itself, {stash}, "
+            f"is the usual choice).")
+    cadence = float(relocation.cadence_seconds)
+    multiples = cadence / stash
+    if abs(multiples - round(multiples)) > _REL_TOL * max(
+            1.0, abs(multiples)):
+        lower = max(1, int(multiples)) * stash
+        raise ValueError(
+            f"cadence_seconds = {cadence} in [relocation] of {source} is "
+            f"not a whole multiple of {where}: {why}. Use a whole multiple "
+            f"of {stash} (nearest below/above: {lower} / "
+            f"{lower + stash}), or set that domain's history_interval_s "
+            f"to a value {cadence} divides into.")
 
 
 def _require_keys(table_name: str, entries: dict, required, source: str):

@@ -418,10 +418,14 @@ def _follow_table(**over):
     return {k: v for k, v in base.items() if v is not None}
 
 
-def _relocation_raw(follow=None, enabled=True):
+def _relocation_raw(follow=None, enabled=True, cadence_seconds=900.0):
     table = {"enabled": enabled, "grid_id": 2, "max_move_parent_cells": 6}
     if follow is not None:
         table["follow"] = follow
+        # A tracker needs a cadence the refl stash can serve (issue
+        # #111); the fixture's watched domain writes history every 900 s.
+        if cadence_seconds is not None:
+            table["cadence_seconds"] = cadence_seconds
     if not enabled:
         table = {"enabled": False, "follow": follow}
     return {"relocation": table}
@@ -434,9 +438,11 @@ def _build(raw):
     # dt, which gates cadence/at_seconds alignment) and the run length.
     # These stand-ins carry exactly what that validation reads.
     domains = [
-        SimpleNamespace(grid_id=1, time_step=60, time_step_fract_num=0,
-                        time_step_fract_den=1),
-        SimpleNamespace(grid_id=2, time_step=None),
+        SimpleNamespace(grid_id=1, parent_id=None, time_step=60,
+                        time_step_fract_num=0, time_step_fract_den=1,
+                        history_interval_s=900.0),
+        SimpleNamespace(grid_id=2, parent_id=1, time_step=None,
+                        history_interval_s=900.0),
     ]
     return _build_relocation(raw, "test.toml", domains, 43200.0)
 

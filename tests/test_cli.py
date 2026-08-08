@@ -178,7 +178,10 @@ def test_missing_cupy_is_a_clean_install_gap_message(monkeypatch,
                    "--out", str(tmp_path / "area.toml")])
     assert rc == 2
     err = capsys.readouterr().err
-    assert "gpuwm[gpu]" in err and "cupy-cuda12x" in err
+    # Both CUDA majors, neither offered as the default: this message
+    # cannot see which one the box serves, and the version that led with
+    # the cu12 extra was read as the recommendation by CUDA-13 owners.
+    assert "gpuwm[gpu-cu12]" in err and "gpuwm[gpu-cu13]" in err
     assert "gpuwm doctor" in err and "Traceback" not in err
 
 

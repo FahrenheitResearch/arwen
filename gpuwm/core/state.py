@@ -66,8 +66,11 @@ def _require_cupy():
 
     if cp is None:
         message = (
-            "CuPy is required for CUDA forecast state; install gpuwm[gpu] "
-            "or select the RW-WPS CPU preprocessing backend")
+            "CuPy is required for CUDA forecast state; install "
+            "gpuwm[gpu-cu12] on a CUDA 12.x box or gpuwm[gpu-cu13] on a "
+            "CUDA-13-only one (`gpuwm doctor` reads the major off the "
+            "driver and names it), or select the RW-WPS CPU "
+            "preprocessing backend")
         if _CUPY_UNAVAILABLE is not None and not isinstance(
                 _CUPY_UNAVAILABLE, ImportError):
             # Installed and unloadable is a different problem from

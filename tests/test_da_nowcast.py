@@ -10,19 +10,21 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from tools.da_nowcast import (
     STAGES, VERIFY_SCHEMA, FrontDoorError, RadarSelection, WindowPlan,
-    _stop, advance_state,
+    _stop, _stopped_early, advance_state,
     build_parser, cycle_cmd, fetch_cmd, gallery_rows, geojson_box,
     handoff_state, initial_frames, latest_gfs_cycle,
     merge_gallery_rows, motion_from_centroids, obs_cmd, plan_window,
     prepare_cmd, radar_selection, resolve_latest_window_end,
     site_domain_center, start_verification,
     validate_site, verdict_line, verification_block, verify_obs_name,
-    verify_pass, watch_cmd, wizard_cmd, wrfout_name, write_verification)
+    verify_pass, watch_cmd, wizard_cmd, wrfout_name,
+    write_partial_receipt, write_verification)
 from tools.da_nowcast_render import footer_band_fraction
 
 
@@ -640,6 +642,169 @@ def seed_case(tmp_path: Path, free_times=FREE_TIMES) -> Path:
                  "cycle_seconds": 900,
                  "free_leg_times": list(free_times)}}), encoding="utf-8")
     return tmp_path
+
+
+# ---------------------------------------------------------------------------
+# the partial receipt a run that stops early owes its verifier (#110)
+# ---------------------------------------------------------------------------
+class TestThePartialReceiptAStoppedRunLeaves:
+    """A two-phase case must reach `verify` without hand-synthesis.
+
+    Every --stop-after door returns before the stage that writes the
+    full receipt, so a run whose later phase is driven directly (the
+    supported route for tools/da_cycle_prepared) left a case directory
+    the verify door refused outright.  What people did instead was write
+    the file by hand.
+    """
+
+    PLAN = {
+        "schema": "gpuwm-da.nowcast.v1", "partial": True, "site": "KICT",
+        "radars": {"anchor": "KICT", "route": "discover", "sites": [],
+                   "multi_radar": True, "min_coverage_fraction": 0.2,
+                   "max_radars": None, "min_radars": 2,
+                   "max_radar_time_spread_seconds": None},
+        "plan": {"init": "2026-08-05T04:00:00Z", "cycle_seconds": 900,
+                 "free_leg_times": list(FREE_TIMES)},
+        "domain_center": {"lat": 37.65, "lon": -97.44},
+        "seed": 20260807, "case_name": "nowcast_kict_202608050400",
+    }
+
+    def _case(self, tmp_path):
+        receipts = tmp_path / "receipts"
+        receipts.mkdir(parents=True)
+        (receipts / "01-plan.json").write_text(
+            json.dumps(self.PLAN), encoding="utf-8")
+        return receipts
+
+    def test_the_five_fields_the_verifier_reads_are_all_present(
+            self, tmp_path):
+        """The requirement, stated as the requirement.
+
+        Read through `_case_context` rather than by poking keys, so the
+        test tracks what the verifier actually does.
+        """
+        from tools.da_nowcast import _case_context
+
+        receipts = self._case(tmp_path)
+        written = write_partial_receipt(
+            tmp_path, receipts=receipts, dealias=True, stopped_after="obs")
+        assert written == tmp_path / "nowcast-receipt.json"
+
+        selection, init, frames, dealias = _case_context(tmp_path)
+        assert selection.anchor == "KICT"
+        assert selection.min_radars == 2
+        assert init == datetime(2026, 8, 5, 4, 0, tzinfo=timezone.utc)
+        assert [frame["valid"] for frame in frames] == list(FREE_TIMES)
+        assert dealias is True
+
+    def test_nothing_in_it_is_invented(self, tmp_path):
+        """Verbatim from the plan receipt, or from the launch command."""
+        receipts = self._case(tmp_path)
+        write_partial_receipt(tmp_path, receipts=receipts, dealias=False,
+                              stopped_after="obs")
+        receipt = json.loads(
+            (tmp_path / "nowcast-receipt.json").read_text(encoding="utf-8"))
+        for key in ("site", "radars", "plan", "domain_center", "seed",
+                    "case_name"):
+            assert receipt[key] == self.PLAN[key]
+        assert receipt["obs"] == {"dealias": False}
+        provenance = receipt["receipt_provenance"]
+        assert set(provenance["verbatim_from_receipts_01_plan_json"]) == {
+            "site", "radars", "plan", "domain_center", "seed", "case_name"}
+        # What a complete run would carry is ABSENT, not guessed.
+        for key in ("sizing", "survey", "outputs", "length_scale_km",
+                    "members"):
+            assert key not in receipt
+            assert key in provenance["not_reconstructed"]
+
+    def test_it_says_it_is_partial_and_who_wrote_it(self, tmp_path):
+        receipts = self._case(tmp_path)
+        write_partial_receipt(tmp_path, receipts=receipts, dealias=False,
+                              stopped_after="forecast")
+        receipt = json.loads(
+            (tmp_path / "nowcast-receipt.json").read_text(encoding="utf-8"))
+        assert receipt["partial"] is True
+        assert receipt["schema"] == "gpuwm-da.nowcast.v1"
+        provenance = receipt["receipt_provenance"]
+        assert provenance["written_by"] == (
+            "da_nowcast run --stop-after forecast")
+        install = provenance["install"]
+        assert "identity_source" in install or "identity_error" in install
+
+    def test_verify_can_write_its_verdict_onto_a_partial_receipt(
+            self, tmp_path):
+        """The other half of "reaches verify": the receipt is writable.
+
+        `write_verification` re-reads and rewrites the whole file, so a
+        partial receipt that could be read but not updated would fail at
+        the very end of a verify pass.
+        """
+        receipts = self._case(tmp_path)
+        write_partial_receipt(tmp_path, receipts=receipts, dealias=True,
+                              stopped_after="obs")
+        write_verification(tmp_path, verification_block(
+            frames=initial_frames(FREE_TIMES), state="pending"))
+        receipt = json.loads(
+            (tmp_path / "nowcast-receipt.json").read_text(encoding="utf-8"))
+        assert receipt["verification"]["state"] == "pending"
+        assert receipt["site"] == "KICT"      # nothing else disturbed
+
+    def test_a_complete_receipt_is_never_downgraded(self, tmp_path):
+        """A full run of this case outranks a later partial one."""
+        receipts = self._case(tmp_path)
+        (tmp_path / "nowcast-receipt.json").write_text(json.dumps({
+            "schema": "gpuwm-da.nowcast.v1", "site": "KICT",
+            "sizing": {"members": 6}}), encoding="utf-8")
+        assert write_partial_receipt(
+            tmp_path, receipts=receipts, dealias=True,
+            stopped_after="obs") is None
+        receipt = json.loads(
+            (tmp_path / "nowcast-receipt.json").read_text(encoding="utf-8"))
+        assert receipt["sizing"] == {"members": 6}
+
+    def test_an_earlier_partial_receipt_is_refreshed(self, tmp_path):
+        receipts = self._case(tmp_path)
+        write_partial_receipt(tmp_path, receipts=receipts, dealias=False,
+                              stopped_after="survey")
+        write_partial_receipt(tmp_path, receipts=receipts, dealias=True,
+                              stopped_after="obs")
+        receipt = json.loads(
+            (tmp_path / "nowcast-receipt.json").read_text(encoding="utf-8"))
+        assert receipt["obs"]["dealias"] is True
+        assert receipt["receipt_provenance"]["written_by"].endswith("obs")
+
+    def test_a_run_that_never_planned_writes_nothing(self, tmp_path):
+        """No plan receipt means nothing honest to copy."""
+        (tmp_path / "receipts").mkdir()
+        assert write_partial_receipt(
+            tmp_path, receipts=tmp_path / "receipts", dealias=False,
+            stopped_after="survey") is None
+        assert not (tmp_path / "nowcast-receipt.json").exists()
+
+    def test_a_corrupt_plan_receipt_writes_nothing(self, tmp_path):
+        receipts = tmp_path / "receipts"
+        receipts.mkdir()
+        (receipts / "01-plan.json").write_text("{not json", encoding="utf-8")
+        assert write_partial_receipt(
+            tmp_path, receipts=receipts, dealias=False,
+            stopped_after="obs") is None
+
+    def test_every_stop_door_goes_through_the_emitter(self, tmp_path,
+                                                      capsys):
+        """One emitter, so a door added later cannot forget the receipt.
+
+        The defect was seven independent `return 0`s; a test that only
+        covered `obs` would let the next one regress.
+        """
+        receipts = self._case(tmp_path)
+        for stage in STAGES:
+            (tmp_path / "nowcast-receipt.json").unlink(missing_ok=True)
+            args = SimpleNamespace(dealias=False)
+            assert _stopped_early(tmp_path, receipts, args, stage) == 0
+            out = capsys.readouterr().out
+            assert f"stopped after {stage}" in out
+            assert "partial receipt" in out
+            assert (tmp_path / "nowcast-receipt.json").is_file()
 
 
 class TestWatchCommand:

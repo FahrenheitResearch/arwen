@@ -38,6 +38,7 @@ Exit status: 0 when nothing actionable is missing, 1 otherwise.
 
 from __future__ import annotations
 
+import ctypes
 from dataclasses import dataclass
 import hashlib
 import importlib.metadata
@@ -61,9 +62,31 @@ from gpuwm.explain import explain_enabled
 # parenthetical that used to trail the command on the same line --
 # `pip install 'gpuwm[gpu]'   (or: pip install cupy-cuda12x)` -- is a
 # shell error the moment anyone does the obvious thing with it.
-GPU_EXTRA_HINT = ("pip install 'gpuwm[gpu]'\n"
-                  "  # or, without the extra: pip install cupy-cuda12x\n"
-                  "  # on a CUDA-13-only box: pip install 'gpuwm[gpu-cu13]'")
+#
+# The CuPy hint is the one remedy in this module that must NOT lead with
+# a single command, and it is the exception that proves the rule: CuPy
+# ships one wheel per CUDA major, pip cannot detect the major, and this
+# text is only reached when the box's own major could not be read
+# either.  A hint that led with `pip install 'gpuwm[gpu]'` -- as it did
+# through 1.8.0 -- handed a CUDA-13 box the cu12 wheel and called it the
+# default.  So when the major is unknown, BOTH are printed and neither
+# is the default; when it is known, `_gpu_extra_hint` below replaces
+# this text with the one line that matches the box.
+GPU_EXTRA_HINT = ("nvidia-smi\n"
+                  "  # read the CUDA version out of that header.  CuPy\n"
+                  "  # ships one wheel per CUDA major and pip cannot\n"
+                  "  # detect which one this box serves, so the extra\n"
+                  "  # has to name it.  Then, for a CUDA 12.x box:\n"
+                  "pip install 'gpuwm[gpu-cu12]'\n"
+                  "  # or, for a box whose CUDA is 13-only:\n"
+                  "pip install 'gpuwm[gpu-cu13]'")
+
+#: The brief report has room for exactly one command.  It carries the
+#: cu12 wheel with the cu13 alternative fused on as a shell comment --
+#: which runs as printed in sh and in PowerShell alike -- because the
+#: one thing this line may never do is imply cu12 is simply correct.
+GPU_EXTRA_UNKNOWN_ACTION = ("pip install 'gpuwm[gpu-cu12]'  "
+                            "# CUDA 12.x; cu13 box: gpuwm[gpu-cu13]")
 RENDER_EXTRA_HINT = ("pip install 'gpuwm[render]'\n"
                      "  # installs wrf-rust + matplotlib")
 GEOG_HINT = (
@@ -290,7 +313,75 @@ _CUPY_WHEEL_NAME = re.compile(r"^cupy-cuda(\d+)x$")
 
 #: CUDA major -> the pip extra that installs its wheel.  A major outside
 #: this table gets the bare wheel name instead of an extra.
-_GPU_EXTRA_BY_MAJOR = {12: "gpu", 13: "gpu-cu13"}
+#:
+#: 12 names ``gpu-cu12``, not the ``gpu`` alias: a remedy that says which
+#: major it chose and why is the whole point, and ``gpu`` says neither.
+#: The alias still resolves for anyone who already types it.
+_GPU_EXTRA_BY_MAJOR = {12: "gpu-cu12", 13: "gpu-cu13"}
+
+
+def _driver_library_names() -> tuple[str, ...]:
+    """The CUDA driver library this platform would load, by name."""
+
+    if sys.platform == "win32":
+        return ("nvcuda.dll",)
+    if sys.platform == "darwin":
+        return ()
+    return ("libcuda.so.1", "libcuda.so")
+
+
+def _driver_cuda_major() -> int | None:
+    """The CUDA major this box's DRIVER serves, or ``None`` if unknown.
+
+    Read with ``ctypes`` straight off the driver library rather than
+    through CuPy, because the case that needs the answer most is the box
+    that has NO CuPy yet: that is where the remedy has to name an extra,
+    and where every CuPy-based probe is by definition unavailable.  Until
+    1.8.1 that case got a static hint whose only command was the cu12
+    extra, so a CUDA-13 box asked doctor what to install and was told to
+    install the wheel that cannot load cuBLAS on it.
+
+    ``cuDriverGetVersion`` is the one entry point that answers this
+    without ``cuInit``: no context, no device open, nothing that could
+    disturb a card another process is using.  It is still driver contact,
+    so ``GPUWM_NO_LOCAL_GPU`` suppresses it and the caller falls back to
+    naming both extras.  Every failure is a ``None`` -- a box with no
+    NVIDIA driver is the ordinary case here, not an error.
+    """
+
+    if os.environ.get("GPUWM_NO_LOCAL_GPU", "") not in ("", "0"):
+        return None
+    for name in _driver_library_names():
+        try:
+            library = ctypes.CDLL(name)
+            version = ctypes.c_int(0)
+            if library.cuDriverGetVersion(ctypes.byref(version)) != 0:
+                continue
+        except (OSError, AttributeError, ValueError):
+            continue
+        if version.value > 0:
+            return version.value // 1000
+    return None
+
+
+def _gpu_extra_hint(box_major: int | None) -> tuple[str, str]:
+    """``(remedy, action)`` for a box with no working CuPy.
+
+    With the box's CUDA major in hand the remedy leads with the ONE
+    extra that matches it and says which major it read.  Without it,
+    both extras are printed and neither is presented as the default,
+    because a silent default is exactly how a CUDA-13 box ends up
+    running cupy-cuda12x.
+    """
+
+    extra = _GPU_EXTRA_BY_MAJOR.get(box_major) if box_major else None
+    if extra is None:
+        return GPU_EXTRA_HINT, GPU_EXTRA_UNKNOWN_ACTION
+    install = f"pip install 'gpuwm[{extra}]'"
+    remedy = (f"# this box's driver serves CUDA {box_major}, and CuPy ships\n"
+              f"# one wheel per CUDA major; this extra is the matching one\n"
+              f"{install}")
+    return remedy, install
 
 
 def _installed_cupy_wheels() -> list[tuple[str, int | None]]:
@@ -416,19 +507,25 @@ def _cupy_check() -> Check:
         if box_major:
             remedy, action = _wrong_wheel_remedy(wheels, box_major)
         else:
-            remedy, action = GPU_EXTRA_HINT, "pip install 'gpuwm[gpu]'"
+            remedy, action = _gpu_extra_hint(_driver_cuda_major())
         return Check("cupy (GPU runtime)", "missing", detail, remedy,
                      action=action, brief=_short(str(cublas)))
+    # No usable CuPy.  The extra to name is a property of the BOX, so it
+    # is read from the driver here rather than defaulted: this is the
+    # branch a fresh CUDA-13 machine lands on, and the branch that used
+    # to hand it the cu12 wheel.
+    box_major = _driver_cuda_major()
+    remedy, action = _gpu_extra_hint(box_major)
+    served = "" if box_major is None else f"; this box serves CUDA {box_major}"
     if evidence == "not installed":
         return Check(
             "cupy (GPU runtime)", "missing",
             "not installed -- gpuwm check/run and the domain wizard's "
             "sizing estimator need it; fetch/import-namelist/render "
-            "do not", GPU_EXTRA_HINT,
-            action="pip install 'gpuwm[gpu]'", brief="not installed",
-            blocking=False)
-    return Check("cupy (GPU runtime)", "missing", evidence, GPU_EXTRA_HINT,
-                 action="pip install 'gpuwm[gpu]'", brief=_short(evidence),
+            f"do not{served}", remedy,
+            action=action, brief="not installed", blocking=False)
+    return Check("cupy (GPU runtime)", "missing", evidence + served, remedy,
+                 action=action, brief=_short(evidence),
                  blocking=False)
 
 
@@ -1616,6 +1713,26 @@ def _remedy_block(remedy: str) -> list[str]:
     return block
 
 
+def _install_headline() -> str:
+    """Which copy of gpuwm produced this report.
+
+    A report that diagnoses an estate has to say whose estate, and the
+    version number alone does not: an editable install shadows every
+    wheel pip writes, so a reader can be looking at findings from code
+    that is months older than the version they think they upgraded to.
+    No network here -- `gpuwm version` owns the index comparison; this
+    is the local identity only, and it never fails a report it is only
+    the header of.
+    """
+
+    try:
+        from gpuwm.version_cli import headline
+
+        return headline()
+    except Exception as error:                          # noqa: BLE001
+        return f"(install identity unavailable: {type(error).__name__})"
+
+
 def format_report(checks: list[Check]) -> str:
     """The full report: every finding's evidence and whole remedy block.
 
@@ -1772,10 +1889,19 @@ def doctor_main(args) -> int:
     if getattr(args, "json", False):
         print(json.dumps(
             [check.__dict__ for check in checks], indent=2))
-    elif explain_enabled(args):
-        print(format_report(checks))
-    else:
-        print(format_brief(checks))
+        return 1 if blocking_gaps(checks) else 0
+    # WHICH copy of gpuwm produced this report.  Printed here rather
+    # than folded into format_report/format_brief because those two are
+    # pinned verbatim by a golden test, and rightly: --explain's promise
+    # is that the long form comes back unchanged.  A header is a
+    # property of the printed command, not of the report text.
+    #
+    # It goes FIRST because it reframes everything under it: an estate
+    # diagnosed from an editable install months behind the version the
+    # reader thinks they upgraded to is a different report.
+    print(_install_headline())
+    print(format_report(checks) if explain_enabled(args)
+          else format_brief(checks))
     return 1 if blocking_gaps(checks) else 0
 
 

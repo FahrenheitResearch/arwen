@@ -752,6 +752,382 @@ def test_an_intent_key_the_prepared_route_cannot_deliver_is_refused(
 
 
 # ---------------------------------------------------------------------------
+# HRRR on the prepared route
+# ---------------------------------------------------------------------------
+
+
+_HRRR_INTENT = {"point": "35.2,-97.4", "source": "hrrr", "root_dx_km": 3,
+                "cycle": "2024-05-03T12", "hours": 6, "vram_gib": 24}
+
+
+def _hrrr_plan(tmp_path, run_dir, **overrides):
+    intent = {**_HRRR_INTENT, **overrides.pop("intent", {})}
+    document = {
+        "schema": PLAN_SCHEMA, "name": "hrrr-plan", "route": "prepared",
+        "config": {"intent": intent}, "output_root": str(run_dir),
+        **overrides,
+    }
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def test_an_hrrr_intent_resolves_through_the_wizard(tmp_path):
+    plan = load_plan(_hrrr_plan(tmp_path, tmp_path / "run"))
+    resolution, exp, data = resolve_plan(plan, require_inputs=False)
+
+    assert data is None
+    assert len(exp.domains) == 1
+    assert exp.domains[0].run.dx == 3000.0
+    assert 'source = "hrrr"' in resolution["generated_config"]
+
+
+def test_an_hrrr_intent_estimates(tmp_path, capsys):
+    from gpuwm.cli import build_parser
+
+    plan_path = _hrrr_plan(tmp_path, tmp_path / "run")
+    assert run_plan_main(build_parser().parse_args(
+        ["run-plan", "--estimate", str(plan_path)])) == 0
+    document = json.loads(capsys.readouterr().out)
+    assert document["vram"]["estimate_bytes"] > 0
+    assert document["disk"]["total_frames"] > 0
+
+
+def test_the_wizard_writes_every_file_the_hrrr_route_reads(tmp_path):
+    """Four files beside the config; the HRRR tools read them, not the TOML."""
+
+    from gpuwm.hrrr_route_inputs import route_input_paths
+    from gpuwm.runplan import generate_intent_config
+
+    plan = load_plan(_hrrr_plan(tmp_path, tmp_path / "run"))
+    generated, _ = generate_intent_config(plan, destination=tmp_path / "gen")
+    for role, path in route_input_paths(generated).items():
+        assert path.is_file(), role
+
+
+def test_the_prepared_route_refuses_a_multi_domain_hrrr_plan(tmp_path):
+    """Naming the limitation, and the chain that does run it."""
+
+    from gpuwm.runplan import _hrrr_chain
+
+    plan = load_plan(_hrrr_plan(tmp_path, tmp_path / "run"))
+
+    class _Exp:
+        domains = (object(), object())
+
+    with pytest.raises(PlanError) as refusal:
+        _hrrr_chain(plan, config_path=tmp_path / "c.toml", exp=_Exp(),
+                    observer=None, run_dir=tmp_path / "run")
+    text = str(refusal.value)
+    assert "2-domain tree" in text
+    assert "single-domain only" in text
+    # It names the chain that DOES run a tree rather than just refusing.
+    assert "hrrr_hierarchy_direct" in text
+    assert "prepared-tree-forecast" in text
+
+
+def test_a_source_the_prepared_route_cannot_drive_is_refused(tmp_path):
+    with pytest.raises(PlanError) as refusal:
+        build_plan({"schema": PLAN_SCHEMA, "name": "x", "route": "prepared",
+                    "config": {"intent": {**_HRRR_INTENT,
+                                          "source": "era5"}}},
+                   source="probe.json", base_dir=tmp_path, sha256="0" * 64)
+    text = str(refusal.value)
+    assert "era5" in text and "experiment" in text
+
+
+def _staged_hrrr_chain(tmp_path, monkeypatch, **plan_overrides):
+    """Assemble the HRRR chain without executing any stage."""
+
+    import gpuwm.go_cli as go_cli
+    import gpuwm.runplan as runplan_module
+
+    staged = []
+    monkeypatch.setattr(
+        go_cli, "run_stage",
+        lambda label, command, **kw: staged.append((label, list(command))))
+
+    def fake_fetch(arguments, run_dir):
+        out = Path(arguments[arguments.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "SHA256SUMS").write_text("x", encoding="utf-8")
+        staged.append(("fetch", list(arguments)))
+        return {}
+
+    monkeypatch.setattr(runplan_module, "_run_fetch", fake_fetch)
+    geog = tmp_path / "GEOG"
+    geog.mkdir(exist_ok=True)
+    plan_overrides.setdefault("run_options", {"geog_root": str(geog)})
+    plan = load_plan(_hrrr_plan(tmp_path, tmp_path / "run",
+                                **plan_overrides))
+    plan.run_dir.mkdir(parents=True, exist_ok=True)
+    with EventStream(plan.run_dir / EVENTS_FILENAME, mirror=None) as events:
+        execute_plan(plan, events=events)
+    return staged, read_events(plan.run_dir / EVENTS_FILENAME)
+
+
+def test_the_hrrr_chain_passes_the_wps_namelist_to_the_preparer(
+        tmp_path, monkeypatch):
+    """The whole point of this increment.
+
+    The runner's HRRR manifest role inventory requires a wps_namelist
+    role, and the preparer only records it if handed the file.  The
+    wizard's printed chain never passed it, so the bundle could not be
+    read by the single-domain runner at all.
+    """
+
+    staged, _events = _staged_hrrr_chain(tmp_path, monkeypatch)
+    prepare = next(cmd for label, cmd in staged if label == "prepare")
+
+    assert "--wps-namelist" in prepare
+    namelist = Path(prepare[prepare.index("--wps-namelist") + 1])
+    assert namelist.name.endswith(".namelist.wps")
+    assert namelist.is_file()
+
+
+def test_the_hrrr_prepare_command_is_the_wizards_printed_one(
+        tmp_path, monkeypatch):
+    """Every flag the documented chain passes, and the cycle it spells."""
+
+    staged, _events = _staged_hrrr_chain(tmp_path, monkeypatch)
+    prepare = next(cmd for label, cmd in staged if label == "prepare")
+
+    assert prepare[1:3] == ["-m", "tools.prepare_hrrr_wrf"]
+    for flag in ("--source-root", "--source-manifest",
+                 "--source-manifest-sha256", "--domain-spec",
+                 "--namelist-input", "--geog-root", "--cycle",
+                 "--run-seconds", "--history-interval-seconds",
+                 "--skip-stock-wrf-export", "--output-root"):
+        assert flag in prepare, flag
+    # [fetch] spells the cycle YYYY-MM-DDTHH; the preparer takes
+    # YYYY-MM-DD_HH:MM:SS.  Converted, not sliced.
+    assert prepare[prepare.index("--cycle") + 1] == "2024-05-03_12:00:00"
+    assert prepare[prepare.index("--run-seconds") + 1] == "21600"
+    # The digest is the real one, of the file the fetch actually wrote.
+    import hashlib
+
+    manifest = Path(prepare[prepare.index("--source-manifest") + 1])
+    assert prepare[prepare.index("--source-manifest-sha256") + 1] == \
+        hashlib.sha256(manifest.read_bytes()).hexdigest()
+
+
+def test_the_hrrr_fetch_argv_comes_from_the_configs_own_fetch_hints(
+        tmp_path, monkeypatch):
+    staged, _events = _staged_hrrr_chain(tmp_path, monkeypatch)
+    fetch = next(cmd for label, cmd in staged if label == "fetch")
+
+    assert fetch[fetch.index("--source") + 1] == "hrrr"
+    assert fetch[fetch.index("--cycle") + 1] == "2024-05-03T12"
+    assert fetch[fetch.index("--hours") + 1] == "6"
+    assert "--area" in fetch          # the wizard sized it
+    # And it is a valid `gpuwm fetch` argv, by that parser's own reckoning.
+    from gpuwm.cli import build_parser
+
+    build_parser().parse_args(["fetch", *fetch])
+
+
+def test_the_hrrr_chain_emits_the_stages_in_the_documented_order(
+        tmp_path, monkeypatch):
+    _staged, events = _staged_hrrr_chain(tmp_path, monkeypatch)
+    started = [r["stage"] for r in events if r["event"] == "stage_started"]
+    assert started[:2] == ["fetch", "prepare"]
+
+
+def test_the_physics_profile_is_passed_only_when_the_plan_states_it(
+        tmp_path, monkeypatch):
+    """The route owns its physics gate; this layer must not invent one."""
+
+    staged, _ = _staged_hrrr_chain(tmp_path, monkeypatch)
+    prepare = next(cmd for label, cmd in staged if label == "prepare")
+    assert "--physics-profile" not in prepare
+
+    second = tmp_path / "stated"
+    second.mkdir()
+    staged, _ = _staged_hrrr_chain(
+        second, monkeypatch,
+        run_options={"geog_root": str(second / "GEOG"),
+                     "physics_profile": "wsm6-ysu-mm5-noah-no-radiation-v1"})
+    prepare = next(cmd for label, cmd in staged if label == "prepare")
+    assert prepare[prepare.index("--physics-profile") + 1] == \
+        "wsm6-ysu-mm5-noah-no-radiation-v1"
+
+
+# ---------------------------------------------------------------------------
+# Selective rendering
+# ---------------------------------------------------------------------------
+
+
+def _go_plan(tmp_path, **extra):
+    return {"run": tmp_path / "run", "render": tmp_path / "png", **extra}
+
+
+def test_render_products_reaches_the_render_command_verbatim(tmp_path):
+    """The renderer owns the vocabulary; this passes the spec through."""
+
+    from gpuwm.go_cli import render_command
+
+    frames = [tmp_path / "wrfout_d01_0001"]
+    plain = render_command(_go_plan(tmp_path), frames)
+    assert "--products" not in plain          # default set, unchanged
+
+    filtered = render_command(
+        _go_plan(tmp_path, render_products="sbcape,srh_0_1km"), frames)
+    assert filtered[filtered.index("--products") + 1] == "sbcape,srh_0_1km"
+    # Everything else about the command is identical.
+    assert filtered[:len(plain)] == plain
+
+
+def test_render_products_none_skips_the_stage_without_running_it(
+        tmp_path, monkeypatch, capsys):
+    import gpuwm.go_cli as go_cli
+
+    ran = []
+    monkeypatch.setattr(go_cli, "_run_stage",
+                        lambda label, command, **kw: ran.append(label))
+
+    assert go_cli._render_stage(
+        _go_plan(tmp_path, render_products="none"), explain=False) is False
+    assert ran == []
+    assert "render skipped" in capsys.readouterr().out
+
+    # Spelled any way a person would spell it.
+    assert go_cli._render_stage(
+        _go_plan(tmp_path, render_products=" NONE "), explain=False) is False
+    assert ran == []
+
+
+def test_the_default_render_stage_is_untouched_when_no_filter_is_given(
+        tmp_path, monkeypatch):
+    """`gpuwm go` itself sets nothing, so its behaviour cannot move."""
+
+    import gpuwm.go_cli as go_cli
+
+    ran = []
+    monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
+    monkeypatch.setattr(go_cli, "wrfout_frames",
+                        lambda plan: [tmp_path / "wrfout_d01_0001"])
+    monkeypatch.setattr(
+        go_cli, "_run_stage",
+        lambda label, command, **kw: ran.append((label, list(command))))
+
+    assert go_cli._render_stage(_go_plan(tmp_path), explain=False) is True
+    assert ran[0][0] == "render"
+    assert "--products" not in ran[0][1]
+
+
+def test_render_products_is_a_run_option_on_the_prepared_route(tmp_path):
+    from gpuwm.runplan import ROUTES
+
+    assert "render_products" in ROUTES["prepared"].run_options
+    # Not an intent key: intent mirrors `gpuwm domain` flags one for
+    # one, and the wizard writes configs, not pictures.
+    from gpuwm.runplan import _INTENT_FLAGS
+
+    assert "render_products" not in _INTENT_FLAGS
+
+    plan = load_plan(_prepared_plan(
+        tmp_path, tmp_path / "run",
+        ))
+    assert plan.run_options["render_products"] is None
+
+
+def test_the_run_option_is_stamped_onto_the_namespace_go_reads(
+        tmp_path, monkeypatch):
+    import gpuwm.go_cli as go_cli
+
+    seen = {}
+    monkeypatch.setattr(
+        go_cli, "go_main",
+        lambda args, *, observer=None: seen.update(
+            products=getattr(args, "render_products", None)) or 1)
+
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps({
+        "schema": PLAN_SCHEMA, "name": "p", "route": "prepared",
+        "config": {"intent": dict(_GFS_INTENT)},
+        "run_options": {"render_products": "refl,t2"},
+        "output_root": str(tmp_path / "run"),
+    }), encoding="utf-8")
+    plan = load_plan(path)
+    plan.run_dir.mkdir(parents=True, exist_ok=True)
+    with EventStream(plan.run_dir / EVENTS_FILENAME, mirror=None) as events:
+        execute_plan(plan, events=events)
+    assert seen["products"] == "refl,t2"
+
+
+def test_both_chains_honour_the_same_render_filter(tmp_path, monkeypatch):
+    """The HRRR chain renders too, so the option cannot mean two things."""
+
+    import gpuwm.go_cli as go_cli
+    import gpuwm.runplan as runplan_module
+
+    rendered = []
+    monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
+    monkeypatch.setattr(go_cli, "wrfout_frames",
+                        lambda plan: [tmp_path / "wrfout_d01_0001"])
+    monkeypatch.setattr(
+        go_cli, "_run_stage",
+        lambda label, command, **kw: rendered.append(list(command)))
+
+    # The HRRR arm builds the same render plan go does, from its own
+    # forecast directory.
+    stage = runplan_module._GoObserver
+    assert stage is not None
+    go_cli._render_stage(
+        {"run": tmp_path / "run", "render": tmp_path / "png",
+         "render_products": "composite_reflectivity"},
+        explain=False)
+    assert rendered[0][rendered[0].index("--products") + 1] ==         "composite_reflectivity"
+
+
+def test_the_catalog_query_returns_the_renderers_real_list(capsys):
+    """Asked, never transcribed -- and the parse is checked."""
+
+    from gpuwm.cli import build_parser
+    from gpuwm.runplan import CATALOG_SCHEMA
+
+    assert run_plan_main(
+        build_parser().parse_args(["run-plan", "--catalog"])) == 0
+    document = json.loads(capsys.readouterr().out)
+
+    assert document["schema"] == CATALOG_SCHEMA
+    assert document["engine"] in ("rust", "matplotlib")
+    assert document["skip_token"] == "none"
+    products = document["products"]
+    assert products and all(entry["name"] for entry in products)
+    # No header or footer line leaked in as a product.
+    names = [entry["name"] for entry in products]
+    assert not any(" " in name for name in names)
+    assert not any(name.startswith(("group keywords", "selectable_slugs"))
+                   for name in names)
+    # A disagreement with the renderer's own count is reported, not hidden.
+    assert "parse_warning" not in document
+
+
+def test_the_catalog_needs_no_plan_and_writes_nothing(tmp_path):
+    from gpuwm.runplan import render_catalog
+
+    document = render_catalog()
+    assert document["spec"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_matplotlib_only_box_still_answers_the_catalog(monkeypatch):
+    """The fallback engine's five products are the honest answer there."""
+
+    import gpuwm.render as render_module
+
+    monkeypatch.setattr(render_module, "_resolve_engine",
+                        lambda requested: ("matplotlib", "no rust renderer"))
+    from gpuwm.runplan import render_catalog
+
+    document = render_catalog()
+    assert document["engine"] == "matplotlib"
+    assert [entry["name"] for entry in document["products"]] == \
+        list(render_module.PRODUCTS)
+
+
+# ---------------------------------------------------------------------------
 # Output cadence
 # ---------------------------------------------------------------------------
 
@@ -988,6 +1364,28 @@ def test_a_replayed_stream_is_identical_to_what_was_emitted(tmp_path):
             emitted.append(events.emit("model_progress", domain=1,
                                        model_seconds=float(index)))
     assert read_events(path) == emitted
+
+
+def test_a_second_stream_into_the_same_file_continues_the_sequence(tmp_path):
+    """Append must not restart at 1, or the whole file becomes unreadable.
+
+    The file is opened for append, so a resume -- or any caller that
+    reuses a run directory -- writes after records that already exist.
+    A restarted counter puts a 1 after a 7 and read_events refuses the
+    lot as reordered.
+    """
+
+    path = tmp_path / EVENTS_FILENAME
+    with EventStream(path, mirror=None) as events:
+        events.emit("plan_accepted", name="first")
+        events.emit("completed", dry_run=True)
+    with EventStream(path, mirror=None) as events:
+        assert events.sequence == 2
+        events.emit("plan_accepted", name="second")
+
+    records = read_events(path)
+    assert [r["sequence"] for r in records] == [1, 2, 3]
+    assert records[-1]["name"] == "second"
 
 
 def test_a_torn_final_line_is_refused_unless_the_caller_says_otherwise(

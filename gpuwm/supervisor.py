@@ -37,6 +37,11 @@ from typing import Any, Callable
 import numpy as np
 
 from gpuwm.certify.capsule import emit_run_capsule
+# The refusal half of a layered message.  A capsule records `str(exc)`
+# verbatim, sentinel and all, and the sentinel is promised never to
+# reach a terminal -- so anything lifted OUT of a capsule and printed
+# has to go through this first.
+from gpuwm.explain import split as explain_split
 
 
 HEARTBEAT_SCHEMA = "gpuwm.run-progress/v1"
@@ -1329,17 +1334,93 @@ def _tail(path: Path, limit: int = 32_768) -> str:
     return data[-limit:].decode("utf-8", errors="replace")
 
 
-def _has_worker_failure_capsule(path: Path, *, run_id: str,
-                                worker_pid: int) -> bool:
-    """Whether the worker already published a richer capsule for this exit."""
+def _read_worker_failure_capsule(path: Path, *, run_id: str,
+                                 worker_pid: int) -> dict | None:
+    """The capsule the worker published FOR THIS EXIT, or ``None``.
+
+    The run/pid binding is the whole point: an unbound read would quote
+    a previous attempt's capsule into this attempt's error, which is a
+    worse failure than saying nothing.  Every I/O or parse problem is a
+    ``None`` -- the capsule reader sits on the crash-reporting path, and
+    the house rule there (see ``_capsule_embedded_text``) is that a
+    capture problem degrades to a recorded absence, never a second
+    crash.
+    """
+
     try:
         with path.open("r", encoding="utf-8") as stream:
             payload = json.load(stream)
-        return (payload.get("schema") in SUPPORTED_FAILURE_CAPSULE_SCHEMAS
-                and payload.get("run_id") == run_id
-                and payload.get("worker_pid") == worker_pid)
     except (OSError, ValueError, json.JSONDecodeError):
-        return False
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if (payload.get("schema") in SUPPORTED_FAILURE_CAPSULE_SCHEMAS
+            and payload.get("run_id") == run_id
+            and payload.get("worker_pid") == worker_pid):
+        return payload
+    return None
+
+
+def _has_worker_failure_capsule(path: Path, *, run_id: str,
+                                worker_pid: int) -> bool:
+    """Whether the worker already published a richer capsule for this exit."""
+    return _read_worker_failure_capsule(
+        path, run_id=run_id, worker_pid=worker_pid) is not None
+
+
+#: Capsule exception types the supervisor itself authored.  Their message
+#: IS "worker exited with status N", so quoting one back into that same
+#: sentence says nothing twice.
+_SUPERVISOR_AUTHORED_CAPSULE_TYPES = frozenset({
+    "WorkerExit", "WorkerMonitorFailure"})
+
+#: How much of a refusal sentence reaches the console.  Long enough for
+#: the refusals this exists to surface (the config loaders' are ~170
+#: characters) and short enough that an unbounded message -- a dumped
+#: array repr, a wrapped C++ exception -- cannot bury the rest of the
+#: SupervisorError under itself.
+_CAPSULE_HEADLINE_CAP = 240
+
+
+def _capsule_headline(payload: dict | None) -> str:
+    """``"ValueError: the refusal sentence"``, or ``""`` if there is none.
+
+    A guard refusal and a segfault leave the same shell of a
+    SupervisorError -- "worker exited with status 1" plus a path -- so
+    through 1.8.0 a config the loader deliberately rejected read on the
+    console as a crash, and the sentence explaining it sat one file away
+    in ``exception.message``.  This lifts the class and the first line of
+    that message into the error the CLI actually prints.
+
+    First LINE, not the whole message: layered refusals carry an
+    explanation half after the ``[[explain]]`` sentinel, which
+    ``explain.split`` removes because that sentinel is promised never to
+    reach a terminal, and multi-line messages still keep their headline
+    on line one.  The full text stays in the capsule, which the message
+    still names.
+    """
+
+    if not isinstance(payload, dict):
+        return ""
+    exception = payload.get("exception")
+    if not isinstance(exception, dict):
+        return ""
+    kind = str(exception.get("type") or "").strip()
+    if kind in _SUPERVISOR_AUTHORED_CAPSULE_TYPES:
+        return ""
+    action, _ = explain_split(str(exception.get("message") or ""))
+    first = next((line.strip() for line in action.splitlines()
+                  if line.strip()), "")
+    # A headline is fused into the middle of a longer sentence, so its
+    # own full stop would land as ".; no durable ...".  One trailing
+    # period goes; an ellipsis is not a full stop and stays.
+    if first.endswith(".") and not first.endswith(".."):
+        first = first[:-1]
+    if len(first) > _CAPSULE_HEADLINE_CAP:
+        first = first[:_CAPSULE_HEADLINE_CAP - 3].rstrip() + "..."
+    if kind and first:
+        return f"{kind}: {first}"
+    return kind or first
 
 
 def _worker_command(
@@ -1680,8 +1761,9 @@ def supervise_experiment(
             stderr_tail = _tail(stderr_path)
             hb = last_heartbeat
             worker_pid = effective_worker_pid or process.pid
-            if not _has_worker_failure_capsule(
-                    capsule_path, run_id=run_id, worker_pid=worker_pid):
+            worker_capsule = _read_worker_failure_capsule(
+                capsule_path, run_id=run_id, worker_pid=worker_pid)
+            if worker_capsule is None:
                 write_failure_capsule(
                     capsule_path, run_id=run_id, config_path=config_path,
                     config_sha256=digest, input_hashes=inputs, gpu=gpu,
@@ -1698,6 +1780,15 @@ def supervise_experiment(
                     last_checkpoint=(None if hb is None
                                      else hb.last_checkpoint),
                     worker_pid=worker_pid)
+            # What the worker itself said, on the line the CLI prints.
+            # "worker exited with status 1" plus a path is the same shell
+            # for a guard refusal and a segfault, so a config the loader
+            # deliberately rejected used to read as a crash; the sentence
+            # explaining it was one file away.  The capsule still carries
+            # the full text and the message still names it.
+            headline = _capsule_headline(worker_capsule)
+            if headline:
+                message = f"{message}: {headline}"
             if monitor_failure_kind in {
                     "prep-timeout", "heartbeat-identity",
                     "heartbeat-regression"}:

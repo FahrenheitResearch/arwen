@@ -61,10 +61,21 @@ product PNGs took 2.6 s (first-time-user acceptance transcript,
 
 ## Install
 
+Pick the line that matches your box's CUDA major. CuPy ships one wheel
+per major and pip cannot detect yours, so the extra names it -- the
+wrong one imports cleanly and then dies at its first cuBLAS load.
+`nvidia-smi` prints the CUDA version in its header.
+
 ```bash
-pip install 'gpuwm[all]'   # gpu + render extras
-gpuwm setup                # prebuilt Rust decoders + the externalized physics tables
+pip install 'gpuwm[all-cu12]'   # CUDA 12.x box: gpu + render extras
+pip install 'gpuwm[all-cu13]'   # CUDA-13-only box (e.g. a fresh RTX 5090 stack)
+gpuwm setup                     # prebuilt Rust decoders + the externalized physics tables
 ```
+
+`gpuwm doctor` reads the CUDA major off the driver -- before CuPy is
+installed as well as after -- and names the extra that matches. `[all]`
+and `[gpu]` still work and still mean cu12; they are kept for the
+installs that already use them.
 
 `gpuwm setup` runs `gpuwm fetch-bridges` then `gpuwm fetch-tables`,
 verifies every artifact against the SHA-256 pins packaged in the wheel,
@@ -132,7 +143,7 @@ the edge is in the last column rather than in your way.
 
 | Route | Status | What the gate found |
 |---|---|---|
-| Install: `pip install 'gpuwm[all]'` -> `gpuwm setup` -> `gpuwm doctor` | **Supported** | Green on a cold machine from this release's pinned bundle. |
+| Install: `pip install 'gpuwm[all-cu12]'` (or `[all-cu13]`) -> `gpuwm setup` -> `gpuwm doctor` | **Supported** | Green on a cold machine from this release's pinned bundle. |
 | Parts: `gpuwm fetch-bridges`, `gpuwm fetch-tables`, re-run | **Supported** | Green, and re-running either is safe: what is already staged and pin-valid is verified and skipped. |
 | `gpuwm fetch-geog` (the WPS_GEOG static tree) | **Supported** | Green. |
 | GFS, single domain, through `gpuwm go` | **Supported** | Green: one command from fetch to PNGs. |
@@ -285,8 +296,12 @@ the clone-and-`cargo build` route above is the answer. `--from DIR`
 stages the same bundle offline. `gpuwm doctor` prints whichever of the
 two remedies is true for your machine.
 
-`[gpu]` installs CuPy's CUDA-12 wheel (required by `gpuwm check`/`run`
-and the sizing wizard; on a CUDA-13-only box use `[gpu-cu13]`);
+`[gpu-cu12]` installs CuPy's CUDA-12 wheel and `[gpu-cu13]` its CUDA-13
+wheel (one of them is required by `gpuwm check`/`run` and the sizing
+wizard). There is no extra that picks for you: a pip extra cannot see
+the box's CUDA major, so naming it is the install's job and checking it
+is `gpuwm doctor`'s. `[all-cu12]`/`[all-cu13]` are those plus
+`[render]`. The older `[gpu]`/`[all]` names still resolve, to cu12;
 `[render]` installs the pinned `wrf-rust` package, and the shapefile
 reader the demo gallery draws basemaps with, for `gpuwm render`'s
 matplotlib fallback engine. The `tools/rustwx` build

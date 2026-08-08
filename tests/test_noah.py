@@ -679,6 +679,39 @@ def test_raw_lake_uses_source_water_skin_without_changing_land_or_ocean():
             lake_mask=lake_mask)
 
 
+def test_nonphysical_tsk_refusal_names_the_cells_and_the_metgrid_fill():
+    """The refusal has to say WHICH cells and WHY, like WRF's own print.
+
+    ``module_initialize_real.F:3278-3296`` prints the cell, LANDMASK, TSK,
+    SST and TMN before it gives up.  A land target that found no usable
+    source cell on its surface carries METGRID.TBL fill_missing (0 K for
+    SKINTEMP), and that one value is worth naming outright.
+    """
+    from gpuwm.ingest.soil import preprocess_noah_soil
+
+    shape = (1, 3)
+    fields = {
+        "LANDSEA": np.array([[1.0, 0.0, 0.0]]),
+        # Cell 0 is land and carries the METGRID.TBL SKINTEMP fill.
+        "SKINTEMP": np.array([[0.0, 300.0, 300.5]]),
+        "SST": np.array([[0.0, 300.2, 300.7]]),
+    }
+    for name in ("ST000007", "ST007028", "ST028100", "ST100289"):
+        fields[name] = np.full(shape, 285.0)
+    for name in ("SM000007", "SM007028", "SM028100", "SM100289"):
+        fields[name] = np.full(shape, 0.3)
+    with pytest.raises(ValueError) as excinfo:
+        preprocess_noah_soil(
+            fields, soil_type=np.full(shape, 6.0),
+            deep_soil_temperature=np.full(shape, 299.0))
+    message = str(excinfo.value)
+    assert message.startswith(
+        "TSK contains non-finite or nonphysical values")
+    assert "1 cell(s) outside 170..400 K" in message
+    assert "1 on land/sea-ice, 0 on open water" in message
+    assert "METGRID.TBL fill_missing" in message
+
+
 def _snow_case(snowh_values):
     shape = (1, len(snowh_values))
     fields = {

@@ -1,6 +1,7 @@
 # One-command install for a gpuwm (ArWen) developer checkout (PowerShell).
 #
-#   .\install.ps1 [-Yes] [-NoRender]        -- from a checkout root
+#   .\install.ps1 [-Yes] [-NoRender] [-Cuda 12|13]
+#                                           -- from a checkout root
 #
 # The standalone (iwr | iex) form clones the public repository into
 # .\gpuwm when run outside a checkout; GPUWM_REPO_URL overrides the
@@ -8,7 +9,11 @@
 #
 # What it does, in order (every step is re-run safe):
 #   1. finds the checkout (or clones $env:GPUWM_REPO_URL into .\gpuwm);
-#   2. creates .venv if absent and installs -e ".[gpu,render]" into it;
+#   2. creates .venv if absent and installs -e ".[gpu-cuNN,render]" into
+#      it, where NN is the CUDA major this box's driver reports (CuPy
+#      ships one wheel per major and the wrong one dies at its first
+#      cuBLAS load); -Cuda overrides the detection, and an undetectable
+#      major is announced rather than defaulted quietly;
 #   3. stages the externalized Thompson tables with `gpuwm fetch-tables`
 #      (downloads only what is absent -- ~243 MiB from a checkout --
 #      SHA-256 verified before install; a no-op when already staged;
@@ -31,6 +36,7 @@
 #   GPUWM_INSTALL_YES  "1" behaves like -Yes
 #   GPUWM_INSTALL_NO_RENDER  "1" behaves like -NoRender
 #   GPUWM_INSTALL_NO_FETCH_TABLES  "1" behaves like -NoFetchTables
+#   GPUWM_INSTALL_CUDA  "12" or "13" behaves like -Cuda
 #
 # No param() block: the script must also run when piped through iex,
 # where param() is unavailable; flags arrive via $args or environment.
@@ -40,18 +46,27 @@ $ErrorActionPreference = 'Stop'
 $Yes = ($env:GPUWM_INSTALL_YES -eq '1')
 $NoRender = ($env:GPUWM_INSTALL_NO_RENDER -eq '1')
 $NoFetchTables = ($env:GPUWM_INSTALL_NO_FETCH_TABLES -eq '1')
+$CudaMajor = $env:GPUWM_INSTALL_CUDA
 $scriptArgs = @()
 if (Test-Path variable:args) { $scriptArgs = @($args) }
+$wantCuda = $false
 foreach ($arg in $scriptArgs) {
+    if ($wantCuda) { $CudaMajor = "$arg"; $wantCuda = $false; continue }
     switch -Regex ($arg) {
         '^(-y|-Yes|--yes)$' { $Yes = $true }
         '^(-NoRender|--no-render)$' { $NoRender = $true }
         '^(-NoFetchTables|--no-fetch-tables)$' { $NoFetchTables = $true }
+        '^(-Cuda|--cuda)$' { $wantCuda = $true }
+        '^(-Cuda|--cuda)[:=](.+)$' { $CudaMajor = $Matches[2] }
         default {
             throw ("install.ps1: unknown argument '$arg' " +
-                   "(-Yes, -NoRender, and -NoFetchTables)")
+                   "(-Yes, -NoRender, -NoFetchTables, and -Cuda)")
         }
     }
+}
+if ($wantCuda) { throw 'install.ps1: -Cuda needs a value (12 or 13)' }
+if ($CudaMajor -and @('12', '13') -notcontains "$CudaMajor") {
+    throw "install.ps1: -Cuda takes 12 or 13, not '$CudaMajor'"
 }
 
 function Say([string]$Message) { Write-Host "install: $Message" }
@@ -101,9 +116,52 @@ if (Test-Path $venvPython) {
 Invoke-Step 'pip upgrade' {
     & $venvPython -m pip install --upgrade pip
 }
-Say 'installing gpuwm with the [gpu,render] extras (editable)'
+# ------------------------------------------------------------ CUDA major
+# CuPy ships ONE wheel per CUDA major and pip cannot detect the major, so
+# the extra has to name it.  Through 1.8.0 this line pasted
+# ".[gpu,render]" unconditionally -- the cu12 wheel -- so a CUDA-13-only
+# box got a CuPy that imports cleanly, compiles kernels, and then dies at
+# its first cuBLAS load, with nothing in the install saying so.  Read the
+# major off the driver instead, and when it cannot be read, SAY that
+# rather than defaulting in silence.
+function Get-CudaMajor {
+    if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) {
+        return $null
+    }
+    try { $smi = & nvidia-smi } catch { return $null }
+    # The header label is not one string: Linux drivers print
+    # "CUDA Version: 12.4" and the Windows driver on the reference box
+    # prints "CUDA UMD Version: 13.3".  Matching only the first
+    # spelling read as "no NVIDIA driver" on a machine that plainly
+    # had one.
+    foreach ($line in @($smi)) {
+        if ("$line" -match 'CUDA[A-Za-z ]*Version:\s*(\d+)') {
+            return $Matches[1]
+        }
+    }
+    return $null
+}
+
+if ($CudaMajor) {
+    Say "CUDA major $CudaMajor was given on the command line"
+} else {
+    $CudaMajor = Get-CudaMajor
+    if ($CudaMajor) { Say "nvidia-smi reports CUDA $CudaMajor" }
+}
+if (@('12', '13') -contains "$CudaMajor") {
+    $gpuExtra = "gpu-cu$CudaMajor"
+} else {
+    $gpuExtra = 'gpu-cu12'
+    Say 'the box''s CUDA major could not be read (no nvidia-smi, or no'
+    Say 'driver answered), so this install falls back to [gpu-cu12].'
+    Say 'IF THIS BOX''S CUDA IS 13-ONLY THAT WHEEL IS WRONG: it will'
+    Say 'import fine and fail at the first cuBLAS load.  Re-run with'
+    Say '-Cuda 13 in that case; gpuwm doctor judges the pairing at the'
+    Say 'end of this script either way.'
+}
+Say "installing gpuwm with the [$gpuExtra,render] extras (editable)"
 Invoke-Step 'pip install' {
-    & $venvPython -m pip install -e '.[gpu,render]'
+    & $venvPython -m pip install -e ".[$gpuExtra,render]"
 }
 
 # ------------------------------------------------------- externalized tables

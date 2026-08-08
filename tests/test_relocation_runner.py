@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from fractions import Fraction
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -41,11 +42,20 @@ from test_nest_relocation_staging import (_cpu_tree, _footprint_statics,
 # Config governance
 # ---------------------------------------------------------------------------
 
-def _domains():
+def _domains(history_interval_s=900.0):
+    """Stand-ins carrying exactly what _build_relocation reads.
+
+    parent_id and history_interval_s joined the list for the refl-stash
+    cadence contract (issue #111): the tracker watches grid_id 2's
+    PARENT, so the root's history interval is the one that gates the
+    follow cadence.
+    """
     return [
-        SimpleNamespace(grid_id=1, time_step=60, time_step_fract_num=0,
-                        time_step_fract_den=1),
-        SimpleNamespace(grid_id=2, time_step=None),
+        SimpleNamespace(grid_id=1, parent_id=None, time_step=60,
+                        time_step_fract_num=0, time_step_fract_den=1,
+                        history_interval_s=history_interval_s),
+        SimpleNamespace(grid_id=2, parent_id=1, time_step=None,
+                        history_interval_s=history_interval_s),
     ]
 
 
@@ -138,6 +148,113 @@ def test_follow_table_with_cadence_loads():
     cfg = _build(_raw(cadence_seconds=900.0, follow=dict(_FOLLOW)))
     assert cfg.cadence_seconds == 900.0
     assert cfg.follow is not None and not cfg.moves
+
+
+# --- The refl stash has to be able to serve the cadence (issue #111) -----
+#
+# refl_10cm is stashed by the microphysics on the HISTORY cadence, so a
+# tracker consulted off that cadence asks for a plane that does not
+# exist -- and finds out at the first evaluation where UH is under
+# threshold and the echo fallback is consulted, which is hours into a
+# run and is precisely when a storm-following nest should be working.
+# The contract was already written in prose above cadence_seconds in
+# configs/moving_nest_20110427_follow_2km.toml; nothing enforced it.
+
+
+def _follow_build(cadence, history_interval_s=900.0, run_seconds=43200.0):
+    return _build_relocation(
+        _raw(cadence_seconds=cadence, follow=dict(_FOLLOW)), "test.toml",
+        _domains(history_interval_s), run_seconds)
+
+
+@pytest.mark.parametrize("cadence", [900.0, 1800.0, 2700.0, 3600.0])
+def test_a_cadence_the_stash_can_serve_loads(cadence):
+    """Whole multiples of the watched domain's history interval pass."""
+    cfg = _follow_build(cadence)
+    assert cfg.cadence_seconds == cadence
+    assert cfg.follow is not None
+
+
+@pytest.mark.parametrize("cadence", [300.0, 600.0, 1200.0, 2400.0])
+def test_a_cadence_the_stash_cannot_serve_refuses_at_load(cadence):
+    """And it refuses AT LOAD, naming both knobs and the fix."""
+    with pytest.raises(ValueError) as caught:
+        _follow_build(cadence)
+    message = str(caught.value)
+    assert "cadence_seconds" in message           # knob one
+    assert "history_interval_s" in message        # knob two
+    assert "whole multiple" in message            # the fix
+    assert "refl_10cm" in message                 # why
+
+
+def test_a_follow_block_with_no_cadence_refuses():
+    """Absent means EVERY cycle boundary, which the stash cannot serve."""
+    with pytest.raises(ValueError, match="no cadence_seconds"):
+        _follow_build(None)
+
+
+def test_the_refusal_names_the_watched_parent_not_the_moving_child():
+    """grid_id names the child that MOVES; the tracker reads its parent.
+
+    Naming the wrong domain would send a reader to edit a
+    history_interval_s that has nothing to do with the failure.
+    """
+    with pytest.raises(ValueError) as caught:
+        _follow_build(600.0)
+    message = str(caught.value)
+    assert "grid_id = 1" in message and "parent of the relocating" in message
+
+
+@pytest.mark.parametrize("domains", [
+    # A child whose parent_id names no domain, and a domain list with no
+    # history_interval_s at all.  Both are OTHER validators' refusals;
+    # this check must not preempt them with a cadence message that sends
+    # the reader to the wrong knob.
+    [SimpleNamespace(grid_id=1, parent_id=None, time_step=60,
+                     time_step_fract_num=0, time_step_fract_den=1,
+                     history_interval_s=900.0),
+     SimpleNamespace(grid_id=2, parent_id=7, time_step=None,
+                     history_interval_s=900.0)],
+    [SimpleNamespace(grid_id=1, parent_id=None, time_step=60,
+                     time_step_fract_num=0, time_step_fract_den=1),
+     SimpleNamespace(grid_id=2, parent_id=1, time_step=None)],
+])
+def test_an_unresolvable_tree_is_left_to_its_own_validator(domains):
+    cfg = _build_relocation(
+        _raw(cadence_seconds=600.0, follow=dict(_FOLLOW)), "test.toml",
+        domains, 43200.0)
+    assert cfg.follow is not None
+
+
+def test_an_itinerary_without_a_tracker_is_not_bound_by_the_stash():
+    """[[relocation.move]] reads no fields, so no plane has to exist."""
+    cfg = _build(_raw(cadence_seconds=600.0, move=[_MOVE]))
+    assert cfg.cadence_seconds == 600.0 and cfg.follow is None
+
+
+def test_the_shipped_follow_config_satisfies_its_own_contract():
+    """The config whose comment states this rule must obey it.
+
+    It is the only committed [relocation.follow] worked example, so a
+    contract it fails is a contract that ships broken.
+    """
+    import tomllib
+
+    root = Path(__file__).parents[1]
+    for name in ("moving_nest_20110427_follow_2km.toml",
+                 "moving_nest_20110427_spawn_2km.toml"):
+        path = root / "configs" / name
+        with path.open("rb") as stream:
+            raw = tomllib.load(stream)
+        if "follow" not in raw.get("relocation", {}):
+            continue
+        cadence = raw["relocation"]["cadence_seconds"]
+        child = next(d for d in raw["domain"]
+                     if d["grid_id"] == raw["relocation"]["grid_id"])
+        parent = next(d for d in raw["domain"]
+                      if d["grid_id"] == child["parent_id"])
+        multiples = cadence / parent["history_interval_s"]
+        assert multiples == int(multiples) and multiples >= 1, name
 
 
 # ---------------------------------------------------------------------------

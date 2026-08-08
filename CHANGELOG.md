@@ -1,5 +1,66 @@
 # Changelog
 
+## 1.8.1 (2026-08-07)
+
+New:
+- `gpuwm run-plan` reaches HRRR. The `prepared` route takes
+  `source = "hrrr"` for a single domain, so the credential-free machine
+  path is no longer GFS-only. 1.8.0 shipped this route explicitly scoped
+  to GFS and said so; the preparation side is what had to change, not
+  run-plan.
+- A plan chooses what to render. The `render_products` run option takes
+  the product names a run should draw instead of drawing the default
+  set, so a fleet controller asking for four fields does not pay for the
+  whole catalog.
+- `gpuwm run-plan --catalog` prints the render catalog as one JSON
+  document and runs nothing, the same shape as `--resolve`,
+  `--estimate` and `--probe`. A front end offering a product picker can
+  populate it from the build rather than from a list it maintains.
+- `gpuwm version` says which code is actually running: the import path,
+  whether it resolves inside a checkout or a site-packages install, the
+  distribution version, and whether pip would move it. An install whose
+  behaviour does not match its version is the first thing to rule out in
+  a bug report, and it was the one thing no command reported.
+- The GPU install extra names its CUDA major. CuPy ships one wheel per
+  CUDA major and the wheel must match the major the box serves: a
+  `cupy-cuda12x` wheel on a CUDA-13-only box imports cleanly, compiles
+  kernels, and then dies at the first cuBLAS load. A pip extra cannot
+  detect a CUDA major, so this does not pretend to choose one:
+  `gpuwm[gpu-cu12]` and `gpuwm[gpu-cu13]` name it, with `[all-cu12]` and
+  `[all-cu13]` beside them. `[gpu]` and `[all]` still resolve to cu12,
+  as aliases rather than a third policy, because every install that
+  already works names them.
+- `gpuwm doctor` reads the box's CUDA major straight off the driver,
+  with or without CuPy installed, and prints the extra that matches it.
+
+Fixed:
+- A supervisor guard refusal reads as a refusal. A run refused by a
+  physics or configuration guard surfaced as a crash capsule, so the
+  headline a user saw was a stack trace rather than the sentence the
+  guard wrote for them.
+- A `[relocation.follow]` cadence that the reflectivity stash cannot
+  serve is refused when the config loads, not at the first cadence that
+  needs the fallback. The tracker's composite-reflectivity fallback
+  reads a plane the microphysics stashes at history cadence, so a follow
+  cadence off that lattice ran fine until the first evaluation where
+  updraft helicity was under threshold and then refused mid-run.
+- A two-phase DA run that stops early still writes the receipt its
+  verifier needs, so the run can be graded instead of being unscoreable.
+- A domain tree that cannot be resolved is left to its own validator
+  rather than being reported by the tracker, which is not the component
+  that knows what is wrong with it.
+- An island domain whose source land-sea mask rounds all its land away
+  now initializes from the real land fraction instead of refusing. WPS's
+  `make_zero_or_one` binarizes the mask, so a sub-grid island whose land
+  fraction never reaches 0.5 anywhere in an all-ocean crop left the
+  binarized donor set empty over the whole domain, and the nest took a
+  METGRID-fill `TSK = 0.0`. The fall back to the discarded fraction fires
+  only when that donor set is empty across the entire crop, and it says
+  so in a per-domain receipt. The nonphysical-TSK refusal that used to be
+  the only symptom now names the offending cells and the fill that
+  produced them. The CONUS reference domain is byte-identical across this
+  change.
+
 ## 1.8.0 (2026-08-07)
 
 New:

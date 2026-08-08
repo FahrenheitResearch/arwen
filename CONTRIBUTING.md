@@ -40,7 +40,8 @@ has and has not been verified.
 
 Practicalities:
 
-- Python 3.11+; install with `pip install -e '.[gpu,render,dev]'`;
+- Python 3.11+; install with `pip install -e '.[gpu-cu12,render,dev]'`
+  (`gpu-cu13` instead on a CUDA-13-only box);
   build the Rust workspace with
   `cargo build --release --locked --offline` from `tools/grib1_bridge`
   (the vendored, locked build is the supported one).

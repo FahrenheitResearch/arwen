@@ -585,6 +585,132 @@ def test_snapshot_interpolates_every_field_to_expected_stagger_and_fp32():
     assert np.all(cp.asnumpy(result.fields["SNOW_EC"])[~target_land] == 0.0)
 
 
+def _sub_grid_island_grid():
+    """A fine tropical mass grid that resolves a source-sub-grid island."""
+    return MercatorGrid(13.4, 144.8, 13.4, 13.4, 144.8,
+                        6_000.0, 6_000.0, 13, 11)
+
+
+_ISLAND_SOURCE_LAT = np.linspace(12.5, 14.5, 9, dtype=np.float64)
+_ISLAND_SOURCE_LON = np.linspace(143.5, 146.0, 11, dtype=np.float64)
+
+
+def _island_source_fields(peak_fraction):
+    """Source with land ONLY as an area fraction at three cells."""
+    shape = (_ISLAND_SOURCE_LAT.size, _ISLAND_SOURCE_LON.size)
+    landsea = np.zeros(shape, dtype=np.float64)
+    landsea[4, 5] = peak_fraction
+    landsea[4, 6] = peak_fraction * 0.75
+    landsea[3, 5] = peak_fraction * 0.6
+    land = landsea > 0.0
+    skin = np.full(shape, 301.0, dtype=np.float64)
+    skin[land] = 305.0
+    soil_t = np.full(shape, 302.0, dtype=np.float64)
+    soil_t[land] = 306.0
+    soil_m = np.full(shape, 0.02, dtype=np.float64)
+    soil_m[land] = 0.31
+    return {"LANDSEA": landsea, "SKINTEMP": skin,
+            "ST000007": soil_t, "SM000007": soil_m}
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_island_smaller_than_a_source_cell_takes_the_fractional_land_state():
+    """The one case WPS cannot serve: no flagged source land anywhere.
+
+    ``ungrib`` binarizes an ECMWF land-sea mask at the half mark
+    (rrpr.F:869-876), so an island whose area is a fraction of a 0.25
+    degree cell leaves metgrid with no land donor at all and every land
+    target of a domain that RESOLVES the island takes METGRID.TBL
+    fill_missing: 0 K skin, 285 K soil, 1.0 soil moisture.  The
+    second-chance pass reads the fraction instead.
+    """
+    import cupy as cp
+
+    grid = _sub_grid_island_grid()
+    fields = _island_source_fields(0.15)
+    assert not np.any(fields["LANDSEA"] > 0.5), "fixture must starve WPS"
+    mass_lat, mass_lon = grid.latlon_mass()
+    target_land = np.zeros(mass_lat.shape, dtype=bool)
+    target_land[4:7, 5:8] = True
+
+    snapshot = Era5Snapshot(
+        valid_time=datetime(2000, 1, 1, 0),
+        levels_hpa=np.array([1000.0], dtype=np.float64),
+        latitude=_ISLAND_SOURCE_LAT, longitude=_ISLAND_SOURCE_LON,
+        fields=fields)
+    result = interpolate_era5_to_lambert(
+        snapshot, grid, target_landmask=target_land)
+
+    got_skin = cp.asnumpy(result.fields["SKINTEMP"])
+    got_st = cp.asnumpy(result.fields["ST000007"])
+    got_sm = cp.asnumpy(result.fields["SM000007"])
+    # No land target carries the fill, and every cell is a temperature the
+    # surface preprocessor accepts (its 170..400 K guard).
+    assert not np.any(got_skin == 0.0)
+    assert np.all(got_skin > 170.0) and np.all(got_skin < 400.0)
+    assert np.all(got_st[target_land] > 285.0)
+    assert np.all(got_sm[target_land] > 0.02)
+    # ... and the masked-out side is untouched METGRID.TBL fill_missing.
+    assert np.all(got_st[~target_land] == 285.0)
+    assert np.all(got_sm[~target_land] == 1.0)
+
+    # The recovered values are the fractional cells' own land state, read
+    # through the unchanged WPS chain.
+    expected_skin_land = wps_masked_field_interpolate(
+        fields["SKINTEMP"], _ISLAND_SOURCE_LAT, _ISLAND_SOURCE_LON,
+        mass_lat, mass_lon,
+        source_valid=fields["LANDSEA"] > 0.0, target_active=target_land,
+        chain=_WPS_FULL_CHAIN, fill_value=0.0)
+    np.testing.assert_array_equal(
+        got_skin[target_land],
+        expected_skin_land.astype(np.float32)[target_land])
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_a_source_with_flagged_land_never_reaches_the_second_chance():
+    """WPS parity is the default: pass two is gated on an EMPTY donor set.
+
+    Add one cell the binarized flag calls land and the whole field must
+    come from metgrid's own pass, fractional neighbours excluded exactly
+    as ``make_zero_or_one`` excludes them.
+    """
+    import cupy as cp
+
+    grid = _sub_grid_island_grid()
+    fields = _island_source_fields(0.15)
+    fields["LANDSEA"] = fields["LANDSEA"].copy()
+    fields["LANDSEA"][0, 0] = 1.0
+    fields["SKINTEMP"] = fields["SKINTEMP"].copy()
+    fields["SKINTEMP"][0, 0] = 288.0
+    flagged = fields["LANDSEA"] > 0.5
+    assert np.count_nonzero(flagged) == 1
+
+    mass_lat, mass_lon = grid.latlon_mass()
+    target_land = np.zeros(mass_lat.shape, dtype=bool)
+    target_land[4:7, 5:8] = True
+    snapshot = Era5Snapshot(
+        valid_time=datetime(2000, 1, 1, 0),
+        levels_hpa=np.array([1000.0], dtype=np.float64),
+        latitude=_ISLAND_SOURCE_LAT, longitude=_ISLAND_SOURCE_LON,
+        fields=fields)
+    result = interpolate_era5_to_lambert(
+        snapshot, grid, target_landmask=target_land)
+
+    wps_only = wps_masked_field_interpolate(
+        fields["SKINTEMP"], _ISLAND_SOURCE_LAT, _ISLAND_SOURCE_LON,
+        mass_lat, mass_lon,
+        source_valid=flagged, target_active=target_land,
+        chain=_WPS_FULL_CHAIN, fill_value=0.0)
+    got_skin = cp.asnumpy(result.fields["SKINTEMP"])
+    np.testing.assert_array_equal(
+        got_skin[target_land], wps_only.astype(np.float32)[target_land])
+    # The single flagged cell is the only donor, so every land target is
+    # its value -- the fractional cells next door never contribute.
+    assert np.all(got_skin[target_land] == np.float32(288.0))
+
+
 @requires_gpu
 @pytest.mark.gpu
 def test_seaice_without_local_finite_support_zero_fills_open_water():

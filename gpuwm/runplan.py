@@ -126,6 +126,7 @@ MANIFEST_SCHEMA = "gpuwm.run-manifest.v1"
 RESOLVE_SCHEMA = "gpuwm.run-plan.resolved.v1"
 ESTIMATE_SCHEMA = "gpuwm.run-plan.estimate.v1"
 PROBE_SCHEMA = "gpuwm.run-plan.probe.v1"
+CATALOG_SCHEMA = "gpuwm.run-plan.catalog.v1"
 
 EVENTS_FILENAME = "events.jsonl"
 MANIFEST_FILENAME = "run-manifest.json"
@@ -239,6 +240,11 @@ _INTENT_DELIVERY = {
     # The static geography tree: [case_data].geog_root on the ERA5
     # route, and a `gpuwm go` flag on the prepared one.
     "geog_root": "go:--geog-root",
+    # Read by the HRRR preparer as a flag; on the gfs chain the wizard
+    # bakes the resulting physics into the config and `go` needs no
+    # flag, so this is declared config-delivered and the HRRR arm reads
+    # it off the plan directly.
+    "physics_profile": "config",
     # ERA5's declared inputs.  The prepared chain fetches its own GRIB
     # and takes its Vtable from the bridge, so there is nothing for
     # these to mean there and no flag to carry them.
@@ -257,6 +263,10 @@ GENERATED_CONFIG_NAME = "intent-config.toml"
 #: but its consumer is the native/prepared front door, and those are
 #: not routes yet.
 _CASE_DATA_SOURCES = frozenset({"era5"})
+
+#: Sources the prepared route can drive end to end.  gfs runs `gpuwm
+#: go`'s chain; hrrr runs its own, which `go` refuses by construction.
+_PREPARED_SOURCES = frozenset({"gfs", "hrrr"})
 
 #: ``gpuwm run``'s own documented default output directory.  A plan that
 #: omits ``output_root`` lands where the command it wraps would have.
@@ -539,6 +549,14 @@ def _build_intent(intent: object, *, route: str) -> dict[str, Any]:
                 "Vtable from the bridge; neither is yours to set."))
 
     source = intent.get("source", "era5")
+    if (not ROUTES[route].needs_case_data
+            and source not in _PREPARED_SOURCES):
+        raise PlanError(layered(
+            f"run plan 'config.intent' names source {source!r}, which "
+            f"the {route!r} route cannot drive.",
+            "This route drives " + ", ".join(sorted(_PREPARED_SOURCES))
+            + ".  An era5 intent belongs on route = \"experiment\", "
+            "which consumes its [case_data] declarations directly."))
     if ROUTES[route].needs_case_data and source not in _CASE_DATA_SOURCES:
         raise PlanError(layered(
             f"run plan 'config.intent' names source {source!r}, which "
@@ -592,6 +610,14 @@ _RUN_OPTION_DEFAULTS: dict[str, Any] = {
     "health_debug": False,
     "data_dir": None,
     "geog_root": None,
+    "physics_profile": None,
+    # `gpuwm render --products`' own spec: a comma-separated product
+    # list, or `all`, or `none` to skip rendering entirely.  Absent
+    # leaves the chain's default set exactly as it was.  NOT an intent
+    # key: intent is the wizard's flag list one-for-one, and the wizard
+    # writes configs rather than pictures -- there is no --render-products
+    # flag for it to mirror.
+    "render_products": None,
 }
 
 
@@ -616,6 +642,10 @@ def _run_option(key: str, value: object, base: Path) -> Any:
         raise PlanError(
             f"{label} must be a nonnegative GPU index or full GPU UUID, "
             f"got {selector!r}")
+    if key == "render_products":
+        return None if value is None else _nonempty_string(value, label)
+    if key == "physics_profile":
+        return None if value is None else _nonempty_string(value, label)
     if key in ("restart", "data_dir", "geog_root"):
         return None if value is None else str(_absolute(value, base, label))
     raise PlanError(f"{label} is not a run option this build understands")
@@ -708,6 +738,34 @@ def load_plan(path: str | Path) -> RunPlan:
 # ---------------------------------------------------------------------------
 
 
+def _last_sequence(path: Path) -> int:
+    """The highest sequence already in an event file, or 0.
+
+    Tolerant by design: this runs before anything is written, against a
+    file that may not exist, may be empty, or may end in a torn line
+    from a killed run.  None of those is a reason to refuse to START a
+    stream -- they are things :func:`read_events` reports to whoever
+    reads it.
+    """
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return 0
+    highest = 0
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        sequence = record.get("sequence") if isinstance(record, dict) else None
+        if isinstance(sequence, int) and sequence > highest:
+            highest = sequence
+    return highest
+
+
 def _jsonable(value: object) -> Any:
     if isinstance(value, Path):
         return str(value)
@@ -750,7 +808,15 @@ class EventStream:
         self._mirror = sys.stdout if mirror is EventStream.MIRROR_STDOUT \
             else mirror
         self._lock = threading.Lock()
-        self._sequence = 0
+        # Continue an existing stream rather than restarting its
+        # numbering.  The file is opened for APPEND, so a second run
+        # into the same directory -- a resume, or a caller that reused a
+        # run_dir -- would otherwise write a record numbered 1 after a
+        # record numbered 7, and read_events would refuse the whole file
+        # as reordered.  Counting what is already there keeps the
+        # sequence dense across the join, which is the one property
+        # every reader of this stream depends on.
+        self._sequence = _last_sequence(self.path)
         self._stream = self.path.open("a", encoding="utf-8", newline="\n")
 
     @property
@@ -1524,6 +1590,259 @@ class _GoObserver:
         self._observer.failed()
 
 
+def _fetch_arguments_from_hints(hints: Mapping[str, Any],
+                                *, out: Path) -> list[str]:
+    """The ``gpuwm fetch`` argv one ``[fetch]`` hints table spells.
+
+    The wizard's own words for that table are "keys mirror `gpuwm fetch`
+    flags", so the mapping is mechanical: ``forecast_start_hour``
+    becomes ``--forecast-start-hour``.  Nothing is filtered by a list
+    kept here -- the argv is handed to gpuwm's real fetch parser, which
+    accepts exactly what `gpuwm fetch` accepts and refuses the rest.
+    """
+
+    arguments: list[str] = []
+    for key in sorted(hints):
+        if key == "out":
+            continue          # run-plan owns where the data lands
+        value = hints[key]
+        if isinstance(value, bool):
+            if value:
+                arguments.append("--" + key.replace("_", "-"))
+            continue
+        arguments += ["--" + key.replace("_", "-"), str(value)]
+    return arguments + ["--out", str(out)]
+
+
+def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
+                observer: RunObserver, run_dir: Path) -> Mapping[str, Any]:
+    """The documented HRRR chain: fetch, prepare, forecast.
+
+    HRRR is not ``gpuwm go``'s.  ``go`` refuses the source by
+    construction (``ORCHESTRATED_SOURCES = ("gfs",)``), preparation is
+    ``tools/prepare_hrrr_wrf`` rather than rw-wps, and the HRRR tools
+    read the four namelist/JSON files the wizard writes beside the
+    config rather than the TOML itself.  So the stages and their order
+    here are the wizard's own printed chain
+    (:func:`gpuwm.domain_wizard.hrrr_route_commands`), driven rather
+    than printed, with each stage's refusals left entirely alone.
+
+    ONE thing is added to that chain: ``--wps-namelist``.  The runner's
+    HRRR manifest role inventory requires a ``wps_namelist`` role
+    (prepared_single_domain_forecast.py:2181 -- the prepared-cache
+    identity's ``namelist_sha256`` IS that file's digest on this
+    route), and the preparer only records the role if it is handed the
+    file.  The printed chain never passed it, so the bundle it produced
+    could not be read by the single-domain runner at all, and HRRR was
+    sent to a benchmark script instead.  Passing it makes a
+    single-domain HRRR bundle structurally identical to a GFS one at
+    the run step -- same runner, same digests, same observer.
+    """
+
+    from gpuwm.fetch import sha256_file
+    from gpuwm.go_cli import proof_digests, run_stage
+    from gpuwm.hrrr_route_inputs import route_input_paths
+
+    if len(exp.domains) != 1:
+        raise PlanError(layered(
+            f"this plan is a {len(exp.domains)}-domain tree, and the "
+            "prepared route runs HRRR single-domain only.",
+            "A nested HRRR run needs a third stage -- "
+            "`python -m gpuwm.hrrr_hierarchy_direct` between the "
+            "preparation and the forecast -- and a different runner "
+            "(gpuwm-prepared-tree-forecast).  That chain is documented "
+            "and works by hand; it is not driven from here yet.  Emit a "
+            "single-domain ladder (omit --ladder / --chain), or run the "
+            "tree chain by hand."))
+
+    inputs = route_input_paths(config_path)
+    absent = sorted(role for role, path in inputs.items()
+                    if not path.is_file())
+    if absent:
+        raise PlanError(
+            f"the HRRR route reads {absent} beside {config_path.name}, "
+            "and `gpuwm domain` writes them at emission; this config was "
+            "not emitted for the HRRR route")
+
+    raw = tomllib.load(io.BytesIO(config_path.read_bytes()))
+    hints = dict(raw.get("fetch") or {})
+    intent = plan.config_intent or {}
+    data_dir = Path(plan.run_options.get("data_dir")
+                    or intent.get("data_dir") or (run_dir / "data"))
+    geog_root = plan.run_options.get("geog_root") or intent.get("geog_root")
+    if geog_root is None:
+        from gpuwm.geog_assets import default_geog_root
+
+        geog_root = default_geog_root()
+    # Not created here, and deliberately so: the preparer refuses an
+    # --output-root that already exists ("refusing existing output
+    # root"), which is its own create-only guarantee.
+    prep_root = run_dir / "chain" / "hrrr-root-prep"
+    forecast_dir = run_dir / "chain" / "run"
+
+    # -- fetch ---------------------------------------------------------
+    observer.enter_stage("fetch", phase="fetch")
+    fetch_report = _run_fetch(
+        _fetch_arguments_from_hints(hints, out=data_dir), run_dir)
+    manifest = data_dir / "SHA256SUMS"
+    if not manifest.is_file():
+        raise PlanError(
+            f"the HRRR fetch wrote no {manifest}, so the preparation "
+            "stage has nothing to bind against")
+    observer.finish_stage(fetch=fetch_report)
+
+    # -- prepare -------------------------------------------------------
+    observer.enter_stage("prepare", phase="prepare")
+    # The two stages spell the same instant differently: [fetch] carries
+    # YYYY-MM-DDTHH (what `gpuwm fetch` takes) and the preparer takes
+    # YYYY-MM-DD_HH:MM:SS (what the wizard's printed chain passes it).
+    # Converted through the real parser rather than by slicing the
+    # string, so a cadence rule the parser enforces is enforced here.
+    from gpuwm.fetch import parse_cycle
+
+    cycle = parse_cycle(
+        str(hints["cycle"]), "hrrr").strftime("%Y-%m-%d_%H:%M:%S")
+    cadence = int(exp.domains[0].history_interval_s)
+    prepare = [
+        sys.executable, "-m", "tools.prepare_hrrr_wrf",
+        "--source-root", str(data_dir),
+        "--source-manifest", str(manifest),
+        "--source-manifest-sha256", sha256_file(manifest),
+        "--domain-spec", str(inputs["target_domain"]),
+        "--namelist-input", str(inputs["namelist_input"]),
+        # THE addition.  Without it the emitted bundle has no
+        # wps_namelist role and the runner refuses it outright.
+        "--wps-namelist", str(inputs["wps_namelist"]),
+        "--geog-root", str(geog_root),
+        "--cycle", cycle,
+        "--run-seconds", str(int(exp.run_seconds)),
+        "--history-interval-seconds", str(cadence),
+        "--skip-stock-wrf-export",
+        "--output-root", str(prep_root),
+    ]
+    profile = (plan.run_options.get("physics_profile")
+               or intent.get("physics_profile"))
+    if profile:
+        # Passed only when the plan states it.  The route owns its own
+        # physics gate and the emitted TOML records physics as numbers
+        # rather than a profile id, so there is nothing to recover from
+        # a config.path plan -- and a default invented at this layer
+        # would silently outrank the preparer's own.  Where the two
+        # disagree the runner's identity check refuses, loudly, which is
+        # the gate doing its job.
+        prepare += ["--physics-profile", str(profile)]
+    lead = hints.get("forecast_start_hour")
+    if lead:
+        prepare += ["--forecast-start-hour", str(int(lead))]
+    run_stage("prepare", prepare, explain=False,
+              progress=prep_root / "progress.json",
+              observer=_GoObserver(observer))
+
+    # The preparer publishes its own handoff -- prepared_root, the three
+    # digests, and the PUBLISHED authority paths -- into
+    # public-wrapper-result.json.  Read it rather than re-deriving any
+    # of it: that is the same relay-from-the-artifact rule `go` follows,
+    # and every part of it is a value this layer must not compute.
+    #
+    # Three things here are not guessable and were each wrong first
+    # time:
+    #   * proof.json lives at the OUTPUT ROOT, not inside the prepared
+    #     cache -- the bundle root IS --output-root;
+    #   * --prepared-root is therefore that root too, because the
+    #     runner's HRRR_BUNDLE_PATHS are relative to it;
+    #   * --experiment-config / --wps-namelist must be the PUBLISHED
+    #     copies (experiment.toml, namelist.wps) and not the wizard's
+    #     originals, because the runner checks each supplied file's
+    #     NAME and digest against the portable source manifest.
+    wrapper = _read_json_object(prep_root / "public-wrapper-result.json")
+    handoff = wrapper.get("portable_bundle")
+    if not isinstance(handoff, dict):
+        raise PlanError(layered(
+            f"the HRRR preparation published no portable bundle in "
+            f"{prep_root / 'public-wrapper-result.json'}.",
+            "That bundle -- proof.json, the role-keyed source manifest "
+            "and the experiment authority -- is what the forecast stage "
+            "binds, and the preparer only publishes it when handed "
+            "--wps-namelist, which this chain does pass.  Its own "
+            "output is above."))
+    prepared_root = Path(handoff["prepared_root"])
+    # Cross-check the relayed digests against the proof on disk, using
+    # go's own reader.  Cheap, and it catches a handoff that does not
+    # describe the artifacts beside it.
+    digests = proof_digests(prepared_root)
+    for key, relayed in (("proof", "proof_sha256"),
+                         ("source_manifest", "source_manifest_sha256"),
+                         ("prepared_content", "prepared_content_sha256")):
+        if handoff.get(relayed) != digests[key]:
+            raise PlanError(
+                f"the HRRR preparation's published {relayed} does not "
+                f"match {prepared_root / 'proof.json'}; the bundle and "
+                "the proof beside it disagree")
+    observer.finish_stage(prepared_root=str(prepared_root),
+                          bundle=str(prep_root /
+                                     "public-wrapper-result.json"))
+
+    # -- forecast ------------------------------------------------------
+    # In process, so the runner's per-step progress and its per-wrfout
+    # landing hook reach the observer.  Same runner and same flags the
+    # GFS chain uses; only --source and the bundle differ.
+    argv = [
+        "--source", "hrrr",
+        "--prepared-root", str(prepared_root),
+        "--proof-sha256", digests["proof"],
+        "--source-manifest-sha256", digests["source_manifest"],
+        "--prepared-content-sha256", digests["prepared_content"],
+        "--experiment-config", str(handoff["experiment_config"]),
+        "--wps-namelist", str(handoff["wps_namelist"]),
+        "--io-mode", "history", "--outdir", str(forecast_dir),
+    ]
+    observer.enter_stage("forecast", phase="forecast")
+    from gpuwm import prepared_single_domain_forecast as runner
+
+    code = runner.main(argv, observer=observer)
+    if code:
+        raise RuntimeError(
+            f"the HRRR forecast stage exited {code}; its own refusal is "
+            "above")
+
+    # -- render --------------------------------------------------------
+    # go's own render stage, against this chain's output.  Reused rather
+    # than rebuilt so `render_products` -- including `none` -- means
+    # exactly the same thing on both chains; the wizard's printed HRRR
+    # chain has no render step, so this is the one place the two
+    # sources' end-of-run behaviour is made to agree.
+    from gpuwm.go_cli import _render_stage
+
+    observer.enter_stage("finalize", phase="render")
+    _render_stage(
+        {"run": forecast_dir, "render": run_dir / "chain" / "png",
+         "render_products": plan.run_options.get("render_products")},
+        explain=False, observer=_GoObserver(observer))
+    return _chain_summary(run_dir / "chain")
+
+
+def _chain_summary(chain: Path) -> dict[str, Any]:
+    """A finished chain's completion signals, from its own artifacts."""
+
+    forecast = chain / "run"
+    progress = _read_json_object(forecast / "progress.json")
+    report = _read_json_object(forecast / "report.json")
+    wrfouts = sorted(forecast.glob("**/wrfout_*"))
+    completed_seconds = progress.get("model_elapsed_seconds")
+    status = report.get("status") or progress.get("status")
+    return {
+        "wrfout_count": (len(wrfouts) if wrfouts
+                         else int(progress.get("frame_count") or 0)),
+        "completed_seconds": _finite_seconds(completed_seconds),
+        "nan_free": None if status is None else status == "PASS",
+        "status": status,
+        "chain_root": str(chain),
+        "report": (str(forecast / "report.json")
+                   if (forecast / "report.json").is_file() else None),
+        "restarted": False,
+    }
+
+
 def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
                             observer: RunObserver) -> Mapping[str, Any]:
     """The native/prepared route: ``gpuwm go``'s chain, in this process.
@@ -1544,6 +1863,15 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
     from gpuwm.cli import build_parser
     from gpuwm.go_cli import go_main
 
+    # Which chain this config is on.  Read from the config's own [fetch]
+    # table rather than from the plan, so a config.path plan lands on the
+    # same chain its emission targeted.
+    raw = tomllib.load(io.BytesIO(Path(config_path).read_bytes()))
+    source = str((raw.get("fetch") or {}).get("source", "")).lower()
+    if source == "hrrr":
+        return _hrrr_chain(plan, config_path=Path(config_path), exp=exp,
+                           observer=observer, run_dir=plan.run_dir)
+
     tokens = ["go", str(config_path), "--outdir",
               str(plan.run_dir / "chain")]
     # Every intent key whose delivery is a `gpuwm go` flag, forwarded.
@@ -1561,6 +1889,11 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
         if value:
             tokens += [delivery.split(":", 1)[1], str(value)]
     args = build_parser().parse_args(tokens)
+    # Not a `gpuwm go` CLI flag: it is stamped onto the namespace that
+    # go_main reads, the same way go_main reads --outdir.  Adding a flag
+    # to `gpuwm go` for it is a separate decision about that command's
+    # surface, and this front door does not get to make it.
+    args.render_products = plan.run_options.get("render_products")
     code = go_main(args, observer=_GoObserver(observer))
     if code:
         raise RuntimeError(
@@ -1576,31 +1909,7 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
     # successful prepared run ended by announcing failure, after `go`
     # had already printed its validity PASS.  A consumer that trusts the
     # contract marked every good run failed.
-    chain = plan.run_dir / "chain"
-    forecast = chain / "run"
-    progress = _read_json_object(forecast / "progress.json")
-    report = _read_json_object(forecast / "report.json")
-    wrfouts = sorted(forecast.glob("**/wrfout_*"))
-
-    completed_seconds = progress.get("model_elapsed_seconds")
-    if not isinstance(completed_seconds, (int, float)):
-        completed_seconds = 0.0
-    frame_count = progress.get("frame_count")
-    status = report.get("status") or progress.get("status")
-    return {
-        "wrfout_count": (len(wrfouts) if wrfouts
-                         else int(frame_count or 0)),
-        "completed_seconds": float(completed_seconds),
-        # The runner gates its own NaN health and refuses rather than
-        # reporting; a PASS is the statement.  Reported as the status it
-        # actually is, never as a bool this function invented.
-        "nan_free": None if status is None else status == "PASS",
-        "status": status,
-        "chain_root": str(chain),
-        "report": (str(forecast / "report.json")
-                   if (forecast / "report.json").is_file() else None),
-        "restarted": False,
-    }
+    return _chain_summary(plan.run_dir / "chain")
 
 
 ROUTES: dict[str, Route] = {
@@ -1611,7 +1920,8 @@ ROUTES: dict[str, Route] = {
                 "documented order (what `gpuwm go CONFIG` executes) -- "
                 "for sources the config-driven route cannot decode",
         run_options=frozenset({*_RUN_OPTION_DEFAULTS, "data_dir",
-                               "geog_root"}),
+                               "geog_root", "physics_profile",
+                               "render_products"}),
         needs_case_data=False,
         execute=_execute_prepared_route),
     "experiment": Route(
@@ -1620,7 +1930,8 @@ ROUTES: dict[str, Route] = {
                 "with its [case_data] inputs, prepared and integrated in "
                 "this process (what `gpuwm run CONFIG` executes)",
         run_options=frozenset(_RUN_OPTION_DEFAULTS)
-        - {"data_dir", "geog_root"},
+        - {"data_dir", "geog_root", "physics_profile",
+           "render_products"},
         execute=_execute_experiment_route),
 }
 
@@ -1682,7 +1993,9 @@ def write_manifest(plan: RunPlan, *, run_dir: Path, events_path: Path,
 _REMEDIES = {
     "ModuleNotFoundError": (
         "this route needs the GPU runtime (CuPy), which the base "
-        "install does not include: pip install 'gpuwm[gpu]'"),
+        "install does not include: pip install 'gpuwm[gpu-cu12]' on a "
+        "CUDA 12.x box, 'gpuwm[gpu-cu13]' on a CUDA-13-only one; "
+        "`gpuwm doctor` names the one this box needs"),
     "PlanError": "fix the plan document and re-run; nothing was started",
     "FileNotFoundError": "a declared input is not at the path the config "
                          "names; `gpuwm check CONFIG` names all of them",
@@ -2108,6 +2421,87 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
     }
 
 
+def render_catalog() -> dict[str, Any]:
+    """What may be put in ``render_products``, as JSON.
+
+    The renderer's own answer, asked rather than transcribed.  Which
+    engine speaks is part of the answer, not an implementation detail:
+    the rust catalog is much larger than the matplotlib fallback's five,
+    so a picker built against one and run against the other would offer
+    products that do not exist.  The engine is named in the document.
+
+    ``render.py`` already refuses to keep a second copy of the rust
+    catalog for exactly this reason; this keeps that promise across the
+    machine seam too.
+    """
+
+    from gpuwm.render import PRODUCTS, _resolve_engine, fallback_notice
+
+    engine, why = _resolve_engine("auto")
+    document: dict[str, Any] = {
+        "schema": CATALOG_SCHEMA,
+        "engine": engine,
+        "engine_notice": fallback_notice(engine, why),
+        "spec": "a comma-separated list of the names below, or 'all'; "
+                "'none' skips rendering entirely",
+        "skip_token": "none",
+    }
+    if engine == "matplotlib":
+        document["products"] = [{"name": name} for name in PRODUCTS]
+        document["source"] = "gpuwm.render.PRODUCTS (matplotlib engine)"
+        return document
+
+    import subprocess
+
+    from gpuwm import rustwx
+
+    try:
+        renderer = rustwx.find_renderer()
+        result = subprocess.run(
+            [str(renderer), "--list-products"], capture_output=True,
+            text=True, errors="replace", env=rustwx.renderer_env(),
+            timeout=120)
+    except (OSError, subprocess.SubprocessError) as error:
+        document["products"] = None
+        document["error"] = f"{type(error).__name__}: {error}"
+        return document
+    if result.returncode != 0:
+        document["products"] = None
+        document["error"] = (result.stderr or "").strip() or             f"renderer exited {result.returncode}"
+        return document
+    # The renderer INDENTS its product lines and leaves its header and
+    # footers flush left.  That is the discriminator, not a guess about
+    # which words look like slugs -- and the footer declares the count,
+    # so the parse is CHECKED rather than trusted.  A disagreement is
+    # reported instead of silently returning a short list to a picker.
+    products, groups, declared = [], [], None
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        if line.startswith((" ", "	")):
+            products.append({"name": line.strip()})
+            continue
+        head, sep, tail = line.partition(":")
+        if sep and head.strip() == "group keywords":
+            groups = [word.strip() for word in tail.split(",") if word.strip()]
+            continue
+        name, sep, value = line.partition("=")
+        if sep and name.strip() == "selectable_slugs":
+            try:
+                declared = int(value.strip())
+            except ValueError:
+                declared = None
+    document["products"] = products
+    document["group_keywords"] = groups
+    document["source"] = "the rust renderer's own --list-products"
+    if declared is not None and declared != len(products):
+        document["parse_warning"] = (
+            f"the renderer declared {declared} selectable slugs and this "
+            f"read {len(products)}; the raw output is carried below")
+        document["raw"] = result.stdout
+    return document
+
+
 def probe_environment(*, readiness: bool = True) -> dict[str, Any]:
     """This machine's device inventory and readiness, as one JSON document.
 
@@ -2197,7 +2591,8 @@ def probe_environment(*, readiness: bool = True) -> dict[str, Any]:
     document["schemas"] = {
         "plan": PLAN_SCHEMA, "event": EVENT_SCHEMA,
         "manifest": MANIFEST_SCHEMA, "resolve": RESOLVE_SCHEMA,
-        "estimate": ESTIMATE_SCHEMA, "probe": PROBE_SCHEMA}
+        "estimate": ESTIMATE_SCHEMA, "probe": PROBE_SCHEMA,
+        "catalog": CATALOG_SCHEMA}
     return json.loads(json.dumps(document, default=_jsonable))
 
 
@@ -2225,6 +2620,10 @@ def run_plan_main(args: argparse.Namespace) -> int:
         machine_channel.flush()
         return 0
 
+    if getattr(args, "catalog", False):
+        with contextlib.redirect_stdout(sys.stderr):
+            document = render_catalog()
+        return answer(document)
     if getattr(args, "probe", False):
         with contextlib.redirect_stdout(sys.stderr):
             document = probe_environment(
@@ -2232,8 +2631,8 @@ def run_plan_main(args: argparse.Namespace) -> int:
         return answer(document)
     if args.plan is None:
         raise PlanError(
-            "gpuwm run-plan needs a PLAN.json, or --probe (which needs "
-            "no plan)")
+            "gpuwm run-plan needs a PLAN.json, or one of --probe / "
+            "--catalog (which need no plan)")
 
     plan = load_plan(args.plan)
     if getattr(args, "resolve", False):
@@ -2293,6 +2692,11 @@ def register_cli(subparsers: argparse._SubParsersAction) -> None:
         help="print this plan's VRAM estimate and output-frame counts "
              "as one JSON document, and run nothing")
     mode.add_argument(
+        "--catalog", action="store_true",
+        help="print the renderer's product catalog as one JSON "
+             "document -- what may be put in the render_products run "
+             "option -- and run nothing; needs no plan")
+    mode.add_argument(
         "--probe", action="store_true",
         help="print this machine's device inventory and runtime-estate "
              "readiness as one JSON document; needs no plan.  The "
@@ -2329,7 +2733,7 @@ if __name__ == "__main__":
 
 
 __all__ = [
-    "DEFAULT_OUTPUT_ROOT", "ESTIMATE_SCHEMA", "EVENTS_FILENAME",
+    "CATALOG_SCHEMA", "DEFAULT_OUTPUT_ROOT", "ESTIMATE_SCHEMA", "EVENTS_FILENAME",
     "EVENT_SCHEMA", "EVENT_TAGS", "MANIFEST_FILENAME", "MANIFEST_SCHEMA",
     "PLAN_SCHEMA", "PROBE_SCHEMA", "RESOLVE_SCHEMA", "ROUTES", "STAGES",
     "GENERATED_CONFIG_NAME",
@@ -2337,6 +2741,7 @@ __all__ = [
     "build_plan", "collect_warnings", "declared_inputs",
     "domain_size_floor",
     "estimate_plan", "execute_plan", "generate_intent_config",
+    "render_catalog",
     "intent_arguments", "load_plan", "probe_environment", "read_events",
     "register_cli", "resolve_fetch_cycle", "resolve_plan",
     "run_plan_main", "write_manifest",

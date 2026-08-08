@@ -164,7 +164,8 @@ def printable(command: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 def plan_from_config(config: Path, *, outdir: Path | None = None,
-                     data_dir: Path | None = None) -> dict:
+                     data_dir: Path | None = None,
+                     render_products: str | None = None) -> dict:
     """Everything the five stages need, or a refusal saying why not.
 
     Read from the wizard's own emitted tables rather than asked for
@@ -333,6 +334,9 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         "authority": Path(root) / "authority",
         "prepared": Path(root) / "prepared",
         "run": Path(root) / "run",
+        # Set by a caller that wants a subset; `gpuwm go` itself never
+        # sets it, so its render stage is unchanged.
+        "render_products": render_products,
         "render": Path(root) / "png",
         "runner": RUNNER_MODULE,
     }
@@ -570,8 +574,18 @@ def render_command(plan: dict, frames: list[Path] | None = None) -> list[str]:
 
     targets = ([str(frame) for frame in frames] if frames is not None
                else [str(plan["run"] / "wrfout" / "*")])
-    return [sys.executable, "-m", "gpuwm.cli", "render", *targets,
-            "--out", str(plan["render"])]
+    command = [sys.executable, "-m", "gpuwm.cli", "render", *targets,
+               "--out", str(plan["render"])]
+    # `products` is `gpuwm render --products`' own spec, passed through
+    # verbatim: a comma-separated list of product names, or `all`.  It
+    # is NOT parsed or validated here -- the render front door owns that
+    # vocabulary, and a second copy of it in this module is the
+    # enumeration drift render.py's own catalog code already refuses to
+    # pay for.  Absent leaves the default set exactly as it was.
+    products = plan.get("render_products")
+    if products:
+        command += ["--products", str(products)]
+    return command
 
 
 def render_extra_missing() -> str | None:
@@ -594,8 +608,19 @@ def render_extra_missing() -> str | None:
 
 def _render_stage(plan: dict, *, explain: bool,
                   observer=None) -> bool:
-    """Run the render stage; return whether anything was rendered."""
+    """Run the render stage; return whether anything was rendered.
 
+    ``plan["render_products"] == "none"`` skips the stage outright.
+    That spelling is deliberate: it lives in the same field as a product
+    list rather than in a separate boolean, so "which products" has one
+    answer and not two that can disagree.  `none` is not a product name
+    in the render catalog, so it cannot collide with one.
+    """
+
+    if str(plan.get("render_products") or "").strip().lower() == "none":
+        print("  -- render skipped: this run asked for no products "
+              "(render_products = none).")
+        return False
     missing = render_extra_missing()
     if missing is not None:
         print("  -- render skipped: this environment has no 'wrf' "
@@ -837,6 +862,18 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
 #: Failure-replay tail length: enough to carry any refusal message this
 #: tree prints plus a Python traceback's tail, small enough to read.
 _FAILURE_TAIL_LINES = 30
+
+
+#: The chain-stage primitive, under a public name.
+#:
+#: `go` owns the GFS chain, but "run one documented command, capture it,
+#: heartbeat while it waits, replay everything it said if it failed, and
+#: tell an observer" is not GFS-specific -- it is what running ANY stage
+#: of ANY documented chain looks like here.  The HRRR route reuses it
+#: rather than growing a second copy with slightly different capture and
+#: failure-replay semantics, which is how two chains end up refusing
+#: differently for the same reason.
+run_stage = _run_stage
 
 
 class GoStageFailed(Exception):
@@ -1112,7 +1149,9 @@ def go_main(args, *, observer=None) -> int:
     explain = explain_enabled(args)
     plan = plan_from_config(args.config,
                             outdir=getattr(args, "outdir", None),
-                            data_dir=getattr(args, "data_dir", None))
+                            data_dir=getattr(args, "data_dir", None),
+                            render_products=getattr(
+                                args, "render_products", None))
     bridge = resolve_bridge()
     geog_root = (Path(args.geog_root) if getattr(args, "geog_root", None)
                  else default_geog_root())
@@ -1368,5 +1407,6 @@ __all__ = [
     "manifest_command", "memory_gate", "plan_from_config",
     "prepare_command", "printable",
     "proof_digests", "register_cli", "render_command",
-    "render_extra_missing", "resolve_bridge", "wrfout_frames",
+    "render_extra_missing", "resolve_bridge", "run_stage",
+    "wrfout_frames",
 ]

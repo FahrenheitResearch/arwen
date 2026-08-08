@@ -78,10 +78,16 @@ def test_build_rust_bridge_wheel_failure_names_the_remedy(monkeypatch,
 
 def test_doctor_names_missing_extras_with_exact_remedies(monkeypatch):
     monkeypatch.setattr(doctor, "find_spec", lambda name: None)
+    # Pin the box away from the test machine's own driver: the CuPy
+    # remedy is now a function of the box's CUDA major, so an
+    # unpinned run would assert different things on different hosts.
+    monkeypatch.setattr(doctor, "_driver_cuda_major", lambda: None)
     by_name = {check.name: check for check in doctor.collect_checks()}
     cupy = by_name["cupy (GPU runtime)"]
     assert cupy.status == "missing"
-    assert "gpuwm[gpu]" in cupy.remedy and "cupy-cuda12x" in cupy.remedy
+    # Undetectable major: BOTH extras, neither presented as the default.
+    assert "gpuwm[gpu-cu12]" in cupy.remedy
+    assert "gpuwm[gpu-cu13]" in cupy.remedy
     render = by_name["render extra (wrf-rust + matplotlib)"]
     assert render.status == "missing"
     assert "gpuwm[render]" in render.remedy
@@ -123,7 +129,9 @@ def test_doctor_cli_exit_codes_and_report_shape(monkeypatch, capsys,
     if explain:
         assert "gpuwm doctor: runtime estate" in out
     else:
-        assert out.startswith("gpuwm doctor\n")
+        # Line 1 is the install headline (which copy of gpuwm produced
+        # this); the report's own banner follows it.
+        assert "\ngpuwm doctor\n" in out
     assert rc_healthy_or_not in (0, 1)
 
     monkeypatch.setattr(doctor, "find_spec", lambda name: None)
@@ -143,7 +151,10 @@ def test_doctor_cli_exit_codes_and_report_shape(monkeypatch, capsys,
         # plus the pointer at the full layer (printed exactly when
         # there are gaps to explain).
         assert "remedy:" not in out
-        assert "-> pip install 'gpuwm[gpu]'" in out
+        # The CuPy line names a CUDA-major-specific extra, never the
+        # bare `gpu` alias: whichever branch this box takes, the brief
+        # line has to say which wheel it is recommending.
+        assert "-> pip install 'gpuwm[gpu-cu1" in out
         assert "--explain" in out
 
 
@@ -643,6 +654,11 @@ _REMEDY_COMMANDS = frozenset({
     # and installs none of them left a node-8 validation run at six
     # MISSING while every line it pasted was, technically, honest.
     "mkdir", "cp", "New-Item", "Copy-Item",
+    # The CuPy remedy's first step when the box's CUDA major could not
+    # be read: the reader has to look it up before choosing an extra,
+    # and the lookup is a command, so it is printed as one.  Ships with
+    # every NVIDIA driver on both platforms.
+    "nvidia-smi",
 })
 
 #: A bare ALL-CAPS word is a placeholder the reader must expand.
@@ -2071,7 +2087,9 @@ def test_cu13_wheel_on_a_cuda12_box_names_the_gpu_extra(monkeypatch):
                    "object file: No such file or directory"})
     assert check.status == "missing" and check.blocking
     assert "pip uninstall -y cupy-cuda13x" in check.remedy
-    assert check.action == "pip install 'gpuwm[gpu]'"
+    # gpu-cu12, not the bare `gpu` alias: a remedy printed because the
+    # majors disagree has to say WHICH major it chose.
+    assert check.action == "pip install 'gpuwm[gpu-cu12]'"
     for windows in (False, True):
         _assert_remedy_lines_are_commands_or_comments(
             check.remedy, windows=windows)
@@ -2117,22 +2135,212 @@ def test_a_cuda_major_without_a_packaged_extra_gets_the_bare_wheel(
             check.remedy, windows=windows)
 
 
-def test_the_gpu_extras_pin_one_cupy_wheel_per_cuda_major():
-    """[gpu] stays cu12 (compatibility); [gpu-cu13] is the cu13 wheel.
-
-    The doctor remedy names these extras, so their existence and their
-    wheels are part of the check's contract, not just packaging.
-    """
+def _extras() -> dict[str, list[str]]:
     import tomllib
 
     with (Path(__file__).parents[1] / "pyproject.toml").open("rb") as stream:
-        extras = tomllib.load(stream)["project"]["optional-dependencies"]
-    assert any(dep.startswith("cupy-cuda12x") for dep in extras["gpu"])
-    assert any(dep.startswith("cupy-cuda13x") for dep in extras["gpu-cu13"])
-    assert not any("cupy-cuda13x" in dep for dep in extras["gpu"])
+        return tomllib.load(stream)["project"]["optional-dependencies"]
+
+
+def _resolve_extra(extras: dict[str, list[str]], name: str) -> set[str]:
+    """Every concrete requirement ``pip install 'gpuwm[name]'`` reaches.
+
+    `gpuwm[...]` self-references are followed, because that is what pip
+    does and because the whole point of the alias layer is that one
+    wheel is pinned in exactly one place.
+    """
+
+    seen: set[str] = set()
+    out: set[str] = set()
+    stack = [name]
+    while stack:
+        key = stack.pop()
+        if key in seen:
+            continue
+        seen.add(key)
+        assert key in extras, f"pyproject declares no [{key}] extra"
+        for dep in extras[key]:
+            inner = re.fullmatch(r"gpuwm\[([^\]]+)\]", dep.strip())
+            if inner:
+                stack.extend(part.strip()
+                             for part in inner.group(1).split(","))
+            else:
+                out.add(dep)
+    return out
+
+
+def _cupy_wheels(requirements) -> set[str]:
+    return {re.split(r"[<>=!~ ]", dep)[0] for dep in requirements
+            if dep.startswith("cupy")}
+
+
+def test_the_gpu_extras_pin_one_cupy_wheel_per_cuda_major():
+    """One extra per CUDA major, and each reaches exactly one wheel.
+
+    The doctor remedy names these extras, so their existence and their
+    wheels are part of the check's contract, not just packaging.
+
+    `gpu`/`all` are kept as cu12 ALIASES rather than second definitions:
+    every install that already works names them, so they may not change
+    meaning, but they also may not be a place a wheel is pinned twice --
+    the 1.8.0 table pinned cu12 in `[gpu]` and had no cu13 one-liner at
+    all, which is how a CUDA-13 box following the quickstart got a wheel
+    that cannot load cuBLAS on it (issue #76).
+    """
+    extras = _extras()
+    assert _cupy_wheels(_resolve_extra(extras, "gpu-cu12")) == {
+        "cupy-cuda12x"}
+    assert _cupy_wheels(_resolve_extra(extras, "gpu-cu13")) == {
+        "cupy-cuda13x"}
+    # The aliases: same wheel, no drift, and no cu13 leaking into cu12.
+    assert _resolve_extra(extras, "gpu") == _resolve_extra(
+        extras, "gpu-cu12")
+    assert _resolve_extra(extras, "all") == _resolve_extra(
+        extras, "all-cu12")
+    # A one-liner per major, each carrying the renderer too.
+    for major, wheel in ((12, "cupy-cuda12x"), (13, "cupy-cuda13x")):
+        resolved = _resolve_extra(extras, f"all-cu{major}")
+        assert _cupy_wheels(resolved) == {wheel}
+        assert any(dep.startswith("wrf-rust") for dep in resolved)
     # The demo/gallery renderer's shapefile reader rides the extra the
     # quickstart installs (proven missing on a fresh env without it).
     assert any(dep.startswith("pyshp") for dep in extras["render"])
+
+
+def test_every_cuda_major_doctor_names_has_an_extra_that_exists():
+    """The remedy table and the packaging table cannot drift apart.
+
+    `_GPU_EXTRA_BY_MAJOR` is what doctor prints at the moment a user is
+    deciding what to install; an extra named there that pyproject does
+    not declare is a remedy that fails when pasted.
+    """
+    extras = _extras()
+    for major, extra in doctor._GPU_EXTRA_BY_MAJOR.items():
+        assert _cupy_wheels(_resolve_extra(extras, extra)) == {
+            f"cupy-cuda{major}x"}
+
+
+# --- The extra a box with NO CuPy yet is told to install (issue #76) ----
+#
+# This is the branch the pairing probe above can never reach: it needs a
+# CuPy to interrogate, and the user who most needs the right answer has
+# none.  Through 1.8.0 the remedy here was a constant whose only command
+# was the cu12 extra, so a CUDA-13-only box asked doctor what to install
+# and was told to install the wheel that cannot load cuBLAS on it.
+
+
+def _absent_cupy(monkeypatch, box_major):
+    monkeypatch.setattr(doctor, "find_spec", lambda name: None)
+    monkeypatch.setattr(doctor, "_driver_cuda_major", lambda: box_major)
+    return doctor._cupy_check()
+
+
+def test_a_cuda13_box_with_no_cupy_is_told_to_install_the_cu13_extra(
+        monkeypatch):
+    check = _absent_cupy(monkeypatch, 13)
+    assert check.status == "missing" and not check.blocking
+    assert check.action == "pip install 'gpuwm[gpu-cu13]'"
+    assert "gpu-cu12" not in check.remedy
+    assert "CUDA 13" in check.remedy
+    for windows in (False, True):
+        _assert_remedy_lines_are_commands_or_comments(
+            check.remedy, windows=windows)
+
+
+def test_a_cuda12_box_with_no_cupy_is_told_to_install_the_cu12_extra(
+        monkeypatch):
+    check = _absent_cupy(monkeypatch, 12)
+    assert check.action == "pip install 'gpuwm[gpu-cu12]'"
+    assert "gpu-cu13" not in check.remedy
+    for windows in (False, True):
+        _assert_remedy_lines_are_commands_or_comments(
+            check.remedy, windows=windows)
+
+
+def test_an_unreadable_cuda_major_names_both_extras_and_defaults_to_neither(
+        monkeypatch):
+    """No detection is not licence to guess cu12.
+
+    The failure this closes is silent: a wrong default reads as a
+    recommendation, and the reader has no way to tell that doctor did
+    not actually know.
+    """
+    check = _absent_cupy(monkeypatch, None)
+    assert "pip install 'gpuwm[gpu-cu12]'" in check.remedy
+    assert "pip install 'gpuwm[gpu-cu13]'" in check.remedy
+    # The one-command brief line still carries the alternative.
+    assert "gpu-cu13" in check.action
+    for windows in (False, True):
+        _assert_remedy_lines_are_commands_or_comments(
+            check.remedy, windows=windows)
+
+
+def test_an_exotic_cuda_major_with_no_extra_falls_back_to_the_choice(
+        monkeypatch):
+    """A major gpuwm does not package must not be invented as an extra."""
+    check = _absent_cupy(monkeypatch, 14)
+    assert "gpuwm[gpu-cu14]" not in check.remedy
+    assert "pip install 'gpuwm[gpu-cu12]'" in check.remedy
+    assert "pip install 'gpuwm[gpu-cu13]'" in check.remedy
+
+
+def test_the_driver_probe_stays_off_the_device_under_no_local_gpu(
+        monkeypatch):
+    """GPUWM_NO_LOCAL_GPU suppresses the driver read too.
+
+    cuDriverGetVersion opens no context, but the flag's promise is that
+    doctor does not touch the local card at all -- so the probe answers
+    "unknown" rather than reaching for nvcuda.dll, and the remedy
+    degrades to naming both extras.
+    """
+    monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "1")
+
+    def explode(name):
+        raise AssertionError(f"loaded {name!r} under GPUWM_NO_LOCAL_GPU")
+
+    monkeypatch.setattr(doctor.ctypes, "CDLL", explode)
+    assert doctor._driver_cuda_major() is None
+
+
+def test_the_driver_probe_reports_none_when_no_driver_is_installed(
+        monkeypatch):
+    """A box with no NVIDIA driver is the ordinary case, not an error."""
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
+
+    def missing(name):
+        raise OSError(f"cannot open shared object file: {name}")
+
+    monkeypatch.setattr(doctor.ctypes, "CDLL", missing)
+    assert doctor._driver_cuda_major() is None
+
+
+def test_the_driver_probe_reads_the_major_out_of_cudrivergetversion(
+        monkeypatch):
+    """13040 is CUDA 13.4, so the major is 13."""
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
+
+    class _Driver:
+        @staticmethod
+        def cuDriverGetVersion(out):
+            out._obj.value = 13040
+            return 0
+
+    monkeypatch.setattr(doctor.ctypes, "CDLL", lambda name: _Driver)
+    assert doctor._driver_cuda_major() == 13
+
+
+def test_the_driver_probe_ignores_a_nonzero_cuda_status(monkeypatch):
+    """A driver that refuses the call has told us nothing, not zero."""
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
+
+    class _Driver:
+        @staticmethod
+        def cuDriverGetVersion(out):
+            out._obj.value = 12080
+            return 3          # CUDA_ERROR_NOT_INITIALIZED
+
+    monkeypatch.setattr(doctor.ctypes, "CDLL", lambda name: _Driver)
+    assert doctor._driver_cuda_major() is None
 
 
 def test_no_local_gpu_keeps_doctor_off_the_device(monkeypatch):

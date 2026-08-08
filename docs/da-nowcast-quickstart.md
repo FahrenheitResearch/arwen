@@ -71,7 +71,7 @@ is required to get one.
 git clone https://github.com/FahrenheitResearch/arwen gpuwm && cd gpuwm
 python -m venv .venv
 source .venv/bin/activate           # Windows: .venv\Scripts\Activate.ps1
-python -m pip install -e '.[gpu,render]'
+python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
 gpuwm fetch-geog
 ```

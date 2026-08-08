@@ -1250,6 +1250,114 @@ def read_receipt(case_dir: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+#: The five things `_case_context` reads out of a receipt, which is the
+#: whole of what `da_nowcast verify` and `watch` need.  Named here so the
+#: partial receipt below is written against the requirement rather than
+#: against a guess at it.
+VERIFY_REQUIRED_FIELDS = ("site", "radars", "plan.init",
+                          "plan.free_leg_times", "obs.dealias")
+
+
+def install_provenance() -> dict:
+    """This install's identity, or a recorded reason there is none.
+
+    Same resolver every other gpuwm receipt uses (manifest, then a real
+    checkout of this tree, then the installed wheel record), so a
+    partial receipt can be told apart from a hand-made one by a reader
+    who was not there.  It never raises: a provenance nicety may not
+    take down a receipt the run is writing on its way out.
+    """
+
+    try:
+        from gpuwm import runtime_manifest
+        from gpuwm import __version__
+
+        root = Path(runtime_manifest.__file__).resolve().parent.parent
+        block = {"gpuwm_version": __version__, "package_root": str(root)}
+        block.update(runtime_manifest.provenance(root))
+        return block
+    except Exception as error:                          # noqa: BLE001
+        return {"identity_source": None,
+                "identity_error": f"{type(error).__name__}: {error}"}
+
+
+def write_partial_receipt(out: Path, *, receipts: Path, dealias: bool,
+                          stopped_after: str) -> Path | None:
+    """The receipt a run that stops early still owes its verifier.
+
+    Every `--stop-after` door returns before the full receipt is
+    written, so a two-phase case -- the supported route when a later
+    stage has to be driven directly, as `tools/da_cycle_prepared` is --
+    used to leave a case directory that `da_nowcast verify` refused with
+    "carries no nowcast-receipt.json".  The fix people found was to
+    hand-synthesize the file; this emits it instead.
+
+    NOTHING HERE IS INVENTED.  `site`, `radars`, `plan`, `domain_center`,
+    `seed` and `case_name` are copied verbatim from the run's own
+    `receipts/01-plan.json`.  `obs.dealias` is the one field the verifier
+    reads that the plan receipt has never carried, and it comes from the
+    launch command.  Fields a completed run would fill -- sizing,
+    survey, outputs, length_scale_km, the rest of the obs block -- are
+    OMITTED rather than guessed, and `receipt_provenance` says so, so a
+    reader can tell this apart from a front-door receipt.
+
+    `partial: true` is already the marker `01-plan.json` uses.  Returns
+    the path written, or None when there is nothing honest to write.
+    """
+
+    plan_path = receipts / "01-plan.json"
+    if not plan_path.is_file():
+        # Every door this runs at is after the plan receipt, so this is
+        # a run that failed before planning.  Nothing to copy.
+        return None
+    try:
+        plan_receipt = json.loads(plan_path.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+
+    target = out / "nowcast-receipt.json"
+    if target.is_file():
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8"))
+        except ValueError:
+            existing = {}
+        if not existing.get("partial", False):
+            # A complete receipt from an earlier full run of this case
+            # outranks a partial one; downgrading it would lose the
+            # sizing, outputs and verification a reader depends on.
+            return None
+
+    verbatim = [key for key in ("site", "radars", "plan", "domain_center",
+                                "seed", "case_name")
+                if key in plan_receipt]
+    receipt = {"schema": SCHEMA, "partial": True,
+               "generated": iso(datetime.now(timezone.utc)),
+               "honesty": ("demo-grade nowcast; UNSCORED, outside any "
+                           "registered campaign; no skill claim is made "
+                           "or implied")}
+    receipt.update({key: plan_receipt[key] for key in verbatim})
+    receipt["obs"] = {"dealias": bool(dealias)}
+    receipt["receipt_provenance"] = {
+        "written_by": f"da_nowcast run --stop-after {stopped_after}",
+        "why": ("the run stopped at a --stop-after door, before the "
+                "stage that writes the complete receipt; this carries "
+                "the fields the verify door reads so a two-phase case "
+                "does not have to hand-synthesize them"),
+        "verbatim_from_receipts_01_plan_json": verbatim,
+        "stated_from_the_launch_command": {
+            "obs.dealias": "--dealias passed to da_nowcast run"},
+        "not_reconstructed": ["sizing", "survey", "outputs",
+                              "length_scale_km", "members",
+                              "obs.streams_requested"],
+        "note": ("fields a completed front-door run would fill were left "
+                 "out rather than guessed; this is not a complete "
+                 "receipt and says so with partial = true"),
+        "install": install_provenance(),
+    }
+    target.write_text(json.dumps(receipt, indent=1), encoding="utf-8")
+    return target
+
+
 def write_verification(case_dir: Path, block: dict) -> None:
     """Rewrite ONLY the receipt's verification key, atomically.
 
@@ -1924,6 +2032,25 @@ def _stop(requested: str | None, stage: str) -> bool:
             and STAGES.index(stage) >= STAGES.index(requested))
 
 
+def _stopped_early(out: Path, receipts: Path, args, stage: str) -> int:
+    """Leave the partial receipt behind, then report the stop.
+
+    One place, so a door added later cannot forget it -- the whole
+    defect was that seven `return 0`s each individually skipped the
+    line that writes this file.
+    """
+
+    written = write_partial_receipt(
+        out, receipts=receipts, dealias=bool(getattr(args, "dealias", False)),
+        stopped_after=stage)
+    print(f"stopped after {stage} (receipts written)")
+    if written is not None:
+        print(f"  partial receipt: {written}")
+        print("  `da_nowcast verify --case-dir "
+              f"{out}` can read this case as it stands")
+    return 0
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.mode == "run":
@@ -2167,8 +2294,7 @@ def run_pipeline(args) -> int:
     (receipts / "01-plan.json").write_text(
         json.dumps(plan_receipt, indent=1), encoding="utf-8")
     if _stop(args.stop_after, "survey"):
-        print("stopped after survey (receipts written)")
-        return 0
+        return _stopped_early(out, receipts, args, "survey")
 
     run_stage("domain", wizard_cmd(
         polygon=polygon, out_toml=case_toml, plan=plan,
@@ -2229,8 +2355,7 @@ def run_pipeline(args) -> int:
     }, indent=1), encoding="utf-8")
     print(f"georeference cadence: {was:g} s -> {history_seconds:g} s")
     if _stop(args.stop_after, "domain"):
-        print("stopped after domain (receipts written)")
-        return 0
+        return _stopped_early(out, receipts, args, "domain")
 
     # ---- authority + fetch + manifest + prepare -------------------------
     authority_dir = out / "authority"
@@ -2271,8 +2396,7 @@ def run_pipeline(args) -> int:
             cwd=repo_root, receipts_dir=receipts, index=5)
         manifest_sha = sha256_file(data_dir / "gfs-input-manifest.json")
     if _stop(args.stop_after, "fetch"):
-        print("stopped after fetch (receipts written)")
-        return 0
+        return _stopped_early(out, receipts, args, "fetch")
 
     prepared_root = out / "prepared"
     run_stage("prepare", prepare_cmd(
@@ -2338,8 +2462,7 @@ def run_pipeline(args) -> int:
         "seed": seed,
     }, indent=1), encoding="utf-8")
     if _stop(args.stop_after, "prepare"):
-        print("stopped after prepare (receipts written)")
-        return 0
+        return _stopped_early(out, receipts, args, "prepare")
 
     # ---- georeference forecast ------------------------------------------
     print(f"GPU before forecast: {gpu_snapshot()}")
@@ -2351,8 +2474,7 @@ def run_pipeline(args) -> int:
         content_sha=content_sha, source=args.source),
         cwd=repo_root, receipts_dir=receipts, index=7)
     if _stop(args.stop_after, "forecast"):
-        print("stopped after forecast (receipts written)")
-        return 0
+        return _stopped_early(out, receipts, args, "forecast")
 
     # ---- obs ladder ------------------------------------------------------
     obs_dir = out / "obs"
@@ -2372,8 +2494,7 @@ def run_pipeline(args) -> int:
         obs_files.append(out_nc)
         grid_wrfouts.append(grid)
     if _stop(args.stop_after, "obs"):
-        print("stopped after obs (receipts written)")
-        return 0
+        return _stopped_early(out, receipts, args, "obs")
 
     # ---- cycled nowcast --------------------------------------------------
     print(f"GPU before cycle: {gpu_snapshot()}")
@@ -2401,8 +2522,7 @@ def run_pipeline(args) -> int:
         cwp_vertical_loc_m=args.cwp_vertical_loc_m),
         cwd=repo_root, receipts_dir=receipts, index=9)
     if _stop(args.stop_after, "cycle"):
-        print("stopped after cycle (receipts written)")
-        return 0
+        return _stopped_early(out, receipts, args, "cycle")
 
     # ---- gallery ---------------------------------------------------------
     run_stage("render", render_cmd(case_dir=out),

@@ -15,6 +15,7 @@ weights, and results are FP32.
 """
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
@@ -1045,6 +1046,9 @@ _LAND_FIELDS = {
 }
 _MASKED_SEARCH_RADIUS = 8
 _SNOW_FAMILY = {"SNOW", "SNOWH", "SNOW_EC"}
+#: Second-chance recoveries already announced, so the receipt appears once
+#: per domain instead of once per forcing time.
+_REPORTED_FRACTIONAL_RECOVERY: set = set()
 
 
 def _as_host_bool(value):
@@ -1059,6 +1063,62 @@ def _as_host_float64(value):
     if hasattr(value, "get"):
         value = value.get()
     return np.asarray(value, dtype=np.float64)
+
+
+def _land_pass_with_fractional_second_chance(
+        slab, latitude, longitude, target_lat, target_lon, *,
+        land_donors, partial_land_donors, target_active, chain, fill_value):
+    """The WPS land pass, then the fraction ungrib discarded, then the fill.
+
+    Pass one is byte-for-byte WPS: ``ungrib`` binarizes an ECMWF land-sea
+    mask at the half mark (rrpr.F:869-876) and metgrid interpolates a
+    masked=water field from what survives.  Where that produces a value --
+    everywhere a domain shares a coastline with a source cell the flag
+    calls land -- this function IS metgrid, unchanged.
+
+    Pass two exists because the binarization is lossy in one direction
+    that matters.  ERA5's mask is an area fraction on a 0.25 degree grid,
+    so an island smaller than roughly half a source cell rounds to ocean
+    everywhere near it; the land pass then has no donor at all, and every
+    land target of a domain fine enough to RESOLVE that island takes
+    METGRID.TBL fill_missing -- 0 K skin temperature, 285 K soil, 1.0 soil
+    moisture.  Stock WRF papers over the first of those in real.exe
+    (module_initialize_real.F:3283-3292, TSK <- TMN) and carries the other
+    two into the forecast.  The fraction those cells carry is real: IFS
+    integrates a land tile in any cell with LANDSEA > 0, so its soil and
+    skin state there is a land state, and it is a far better initial
+    condition for the island than a saturated 285 K column.
+
+    A deliberate divergence from WPS, and a deliberately narrow one: pass
+    two runs ONLY when the binarized flag marks no source land anywhere in
+    the crop, which is the one situation where WPS is guaranteed to fill
+    every land target.  Any domain that shares its source with real
+    flagged land -- every continental case -- takes pass one alone and is
+    bit-identical to before.  (The gate is the donor SET, not the
+    per-target outcome, because the snow family's four_pt+average_4pt
+    chain has no ``search`` and legitimately leaves cells for the fill
+    even where donors are plentiful.)
+
+    Returns ``(values, recovered)``; ``recovered`` counts what pass two
+    supplied, and is zero on every WPS-identical call.
+    """
+    active = np.asarray(target_active, dtype=bool)
+    values = wps_masked_field_interpolate(
+        slab, latitude, longitude, target_lat, target_lon,
+        source_valid=land_donors, target_active=active,
+        chain=chain, fill_value=np.nan)
+    recovered = 0
+    if (not np.any(land_donors) and np.any(active)
+            and np.any(partial_land_donors)):
+        starved = active & ~np.isfinite(values)
+        second = wps_masked_field_interpolate(
+            slab, latitude, longitude, target_lat, target_lon,
+            source_valid=partial_land_donors, target_active=starved,
+            chain=chain, fill_value=np.nan)
+        supplied = starved & np.isfinite(second)
+        values[supplied] = second[supplied]
+        recovered = int(supplied.sum())
+    return np.where(np.isfinite(values), values, fill_value), recovered
 
 
 def _wps_soil_fill(name: str) -> float:
@@ -1116,8 +1176,17 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
         raise ValueError("LANDSEA is required to interpolate masked fields")
 
     source_land = None
+    source_partial_land = None
     if "LANDSEA" in source_fields:
-        source_land = engine.float32(source_fields["LANDSEA"]) >= 0.5
+        source_landsea = engine.float32(source_fields["LANDSEA"])
+        # ungrib rrpr.F:869-876 runs make_zero_or_one on an ECMWF LANDSEA
+        # before metgrid ever sees it (``where(x > 0.5) 1 elsewhere 0``), so
+        # the WPS-parity donor set is the binarized flag, not the fraction.
+        source_land = source_landsea > 0.5
+        # ... and the fraction ungrib threw away, kept for the second-chance
+        # land pass below.  Any cell the source says is PART land can carry a
+        # land surface state; ECMWF's IFS integrates a land tile there.
+        source_partial_land = source_landsea > 0.0
     if target_landmask is None:
         if source_land is None:
             target_land = None
@@ -1129,6 +1198,10 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
             raise ValueError("target_landmask shape does not match mass grid")
 
     out: dict[str, object] = {}
+    # LOUD when it happened, silent when it did not: only a domain whose
+    # land the source rounded away reaches the second-chance pass, and when
+    # one does the reader is told which fields and how many cells.
+    fractional_recovery: dict[str, int] = {}
 
     def wind_pair(u_name, v_name, u_output, v_output):
         if u_name not in source_fields or v_name not in source_fields:
@@ -1210,6 +1283,7 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                     raise ValueError(
                         "LANDSEA is required to interpolate masked fields")
                 source_land_host = _as_host_bool(source_land)
+                partial_land_host = _as_host_bool(source_partial_land)
                 target_land_host = _as_host_bool(target_land)
                 if name in _MATCH_SURFACE_FIELDS:
                     chain = _WPS_FULL_CHAIN
@@ -1238,12 +1312,14 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                     # METGRID.TBL masked=both: land targets from land-only
                     # sources, water targets from water-only sources, each
                     # through the full chain.
-                    land_part = wps_masked_field_interpolate(
-                        slab_host, snapshot.latitude, snapshot.longitude,
-                        mass_lat, mass_lon,
-                        source_valid=source_land_host,
-                        target_active=target_land_host,
-                        chain=_WPS_FULL_CHAIN, fill_value=fill)
+                    land_part, recovered = (
+                        _land_pass_with_fractional_second_chance(
+                            slab_host, snapshot.latitude, snapshot.longitude,
+                            mass_lat, mass_lon,
+                            land_donors=source_land_host,
+                            partial_land_donors=partial_land_host,
+                            target_active=target_land_host,
+                            chain=_WPS_FULL_CHAIN, fill_value=fill))
                     water_part = wps_masked_field_interpolate(
                         slab_host, snapshot.latitude, snapshot.longitude,
                         mass_lat, mass_lon,
@@ -1252,13 +1328,26 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                         chain=_WPS_FULL_CHAIN, fill_value=fill)
                     combined = np.where(
                         target_land_host, land_part, water_part)
+                elif name in _LAND_FIELDS:
+                    combined, recovered = (
+                        _land_pass_with_fractional_second_chance(
+                            slab_host, snapshot.latitude, snapshot.longitude,
+                            mass_lat, mass_lon,
+                            land_donors=source_land_host,
+                            partial_land_donors=partial_land_host,
+                            target_active=target_active_host,
+                            chain=chain, fill_value=fill))
                 else:
+                    recovered = 0
                     combined = wps_masked_field_interpolate(
                         slab_host, snapshot.latitude, snapshot.longitude,
                         mass_lat, mass_lon,
                         source_valid=source_valid_host,
                         target_active=target_active_host,
                         chain=chain, fill_value=fill)
+                if recovered:
+                    fractional_recovery[name] = (
+                        fractional_recovery.get(name, 0) + recovered)
                 return engine.float32(combined.astype(np.float32))
 
             try:
@@ -1301,6 +1390,25 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
             if name == "Z":
                 out[output_name] = out[output_name] / xp.float32(9.81)
         handled.add(name)
+
+    if fractional_recovery:
+        signature = (mass_lat.shape, tuple(sorted(fractional_recovery.items())))
+        # Every forcing time of a domain recovers the same cells, so say it
+        # once per domain rather than once per snapshot.
+        if signature not in _REPORTED_FRACTIONAL_RECOVERY:
+            _REPORTED_FRACTIONAL_RECOVERY.add(signature)
+            summary = ", ".join(
+                f"{key} {value}"
+                for key, value in sorted(fractional_recovery.items()))
+            print(
+                "fractional source land: on the "
+                f"{mass_lat.shape[0]}x{mass_lat.shape[1]} mass grid, "
+                f"{sum(fractional_recovery.values())} land-target value(s) "
+                "came from source cells whose land fraction rounds to ocean "
+                f"({summary}); WPS writes METGRID.TBL fill_missing there, "
+                "because ungrib binarizes an ECMWF LANDSEA at 0.5 "
+                "(rrpr.F:869-876)",
+                file=sys.stderr)
 
     return HorizontalSnapshot(
         valid_time=snapshot.valid_time,

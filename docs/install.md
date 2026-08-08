@@ -11,7 +11,7 @@ changes the scientific support matrix.
 
 `install.sh` (POSIX) and `install.ps1` (PowerShell) at the repository root
 perform the whole developer install: create `.venv` if absent, install
-`-e '.[gpu,render]'` into it, stage the externalized Thompson tables
+`-e '.[gpu-cu12,render]'` (or `gpu-cu13`) into it, stage the externalized Thompson tables
 with `gpuwm fetch-tables` (downloads only what is absent -- ~243 MiB
 from a checkout -- SHA-256-verified against the packaged pins before
 install; `--no-fetch-tables`/`-NoFetchTables` or
@@ -56,7 +56,7 @@ git clone https://github.com/FahrenheitResearch/arwen gpuwm && cd gpuwm
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e '.[gpu,render]'
+python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
 (cd tools/grib1_bridge && cargo build --release --locked --offline)
 gpuwm doctor
@@ -69,19 +69,37 @@ git clone https://github.com/FahrenheitResearch/arwen gpuwm; cd gpuwm
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -e '.[gpu,render]'
+python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
 cd tools\grib1_bridge; cargo build --release --locked --offline; cd ..\..
 gpuwm doctor
 ```
 
-`[gpu]` = CuPy's CUDA-12 wheel for the CUDA runtime (`gpuwm
-check`/`run`, wizard sizing); `[gpu-cu13]` = the same, for a
-CUDA-13-only box (the cu12 wheel imports there and then fails at its
-first cuBLAS load -- `gpuwm doctor` detects the pairing and names the
-right one); `[render]` = the pinned `wrf-rust` + matplotlib + the
-demo gallery's shapefile reader for `gpuwm render`; add `[dev]` for
-the test suite:
+**Which GPU extra.** CuPy ships one wheel per CUDA major, and a pip
+extra cannot detect the major of the box it is installing on -- there is
+no environment marker for it. So the extra names the major, and you pick
+the one that matches:
+
+| Your box | Extra | Wheel |
+|---|---|---|
+| CUDA 12.x | `[gpu-cu12]`, or `[all-cu12]` with the renderer | `cupy-cuda12x` |
+| CUDA 13, no 12.x runtime libraries | `[gpu-cu13]`, or `[all-cu13]` | `cupy-cuda13x` |
+
+`nvidia-smi` prints the CUDA version in its header. Getting it wrong is
+quiet until it is not: the cu12 wheel on a CUDA-13-only box imports
+cleanly, compiles kernels, passes an import probe, and then fails at the
+first cuBLAS load -- which on a real run is the first matmul, hours in.
+`gpuwm doctor` reads the major straight off the driver, with or without
+CuPy installed, and names the extra that matches; `install.sh` /
+`install.ps1` do the same detection and take `--cuda 12|13` /
+`-Cuda 12|13` to override it.
+
+`[gpu]` and `[all]` are kept and still mean cu12, so every install that
+already names them keeps working; they are aliases for the cu12 pair,
+not a separate pin.
+
+`[render]` = the pinned `wrf-rust` + matplotlib + the demo gallery's
+shapefile reader for `gpuwm render`; add `[dev]` for the test suite:
 
 ```bash
 python -m pip install -e '.[dev]'
@@ -97,7 +115,7 @@ wheel deliberately contains no compiled Rust, so `gpuwm check`/`run`
 decode GRIB with until the artifacts are on the machine:
 
 ```bash
-pip install gpuwm
+pip install 'gpuwm[all-cu12]'   # or 'gpuwm[all-cu13]' on a CUDA-13-only box
 gpuwm fetch-bridges
 gpuwm fetch-tables
 gpuwm doctor
@@ -230,7 +248,9 @@ and the certified CUDA 12.x runtime family are available; otherwise it uses
 the Rust/NumPy path. HRRR's public driver does not yet expose the common
 backend selector.
 
-For the CUDA path, prepare the environment with `cupy-cuda12x>=13.0`, omit
+For the CUDA path, prepare the environment with the CuPy wheel matching
+the box's CUDA major -- `cupy-cuda12x>=13.0` on CUDA 12.x,
+`cupy-cuda13x>=13.6` on a CUDA-13-only box -- omit
 `--skip-gpu`, and verify the runtime receipt generated at install. The
 launcher repeats archive, wheel, bridge, dependency, and selected-backend
 checks rather than trusting an old receipt.

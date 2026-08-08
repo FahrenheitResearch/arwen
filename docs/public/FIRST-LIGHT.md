@@ -14,9 +14,11 @@ the shape of the path will not.
 
 - Python 3.11+, a Rust toolchain (`cargo`), git.
 - For the GPU forecast loop: an NVIDIA card with CUDA 12.x/13.x
-  (tested through 13.0) and the
-  `[gpu]` extra (CuPy). 8 GiB VRAM is enough for a first single-domain
-  run; nest ladders are sized to your card in step 2.
+  (tested through 13.0) and the CuPy extra that matches the box's CUDA
+  major -- `[gpu-cu12]` on CUDA 12.x, `[gpu-cu13]` where CUDA is 13-only
+  (`nvidia-smi` prints it; `gpuwm doctor` names the right one). 8 GiB
+  VRAM is enough for a first single-domain run; nest ladders are sized
+  to your card in step 2.
 - Disk: budget several GB. In the acceptance transcript the whole tree
   (venvs, data, outputs) reached 7.6 GB, dominated by hourly output
   frames at ~198 MB each.
@@ -29,7 +31,7 @@ the shape of the path will not.
 | step | measured wall |
 |---|---|
 | `git clone` (local) | 3.0 s |
-| `python -m venv` + `pip install -e '.[gpu,render]'` | ~25 s cached; a fresh machine downloads ~150 MB (numpy, matplotlib, netCDF4, CuPy) |
+| `python -m venv` + `pip install -e '.[gpu-cu12,render]'` | ~25 s cached; a fresh machine downloads ~150 MB (numpy, matplotlib, netCDF4, CuPy) |
 | `gpuwm fetch-tables` (externalized Thompson tables, a one-time ~243 MiB release-asset download from a checkout, SHA-256 verified; a no-op once staged) | connection-speed bound; instant when already present |
 | `cargo build --release --locked --offline` in `tools/grib1_bridge` | ~8 s (vendored workspace, no network) |
 | `cargo build --release --locked --offline` in `tools/rustwx` (the production render engine; `--no-render` skips it) | 67 s from clean (measured 2026-07-29, same box; vendored workspace, no network) |
@@ -37,7 +39,7 @@ the shape of the path will not.
 
 One command does all of it -- `bash install.sh` (POSIX; the universal
 form, mode-bit independent) or `.\install.ps1`
-(PowerShell) from the checkout root: venv, `[gpu,render]` extras, the
+(PowerShell) from the checkout root: venv, `[gpu-cu12,render]` extras, the
 offline Rust builds (the `tools/grib1_bridge` GRIB bridges and the
 `tools/rustwx` render engine; `--no-render` / `-NoRender` skips the
 renderer, the long pole of install), and a closing `gpuwm doctor`; it
@@ -49,7 +51,7 @@ POSIX:
 ```bash
 git clone https://github.com/FahrenheitResearch/arwen gpuwm && cd gpuwm
 python -m venv .venv && source .venv/bin/activate
-python -m pip install -e '.[gpu,render]'
+python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
 gpuwm fetch-geog       # WPS_GEOG static tree: ~1.3 GB down, ~16 GB unpacked
 (cd tools/grib1_bridge && cargo build --release --locked --offline)
@@ -62,7 +64,7 @@ Windows (PowerShell):
 ```powershell
 git clone https://github.com/FahrenheitResearch/arwen gpuwm; cd gpuwm
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
-python -m pip install -e '.[gpu,render]'
+python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
 gpuwm fetch-geog       # WPS_GEOG static tree: ~1.3 GB down, ~16 GB unpacked
 cd tools\grib1_bridge; cargo build --release --locked --offline; cd ..\..

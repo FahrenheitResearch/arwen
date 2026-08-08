@@ -134,23 +134,61 @@ another source on this route is refused up front, with that reason.
 | route | what it is | source |
 |---|---|---|
 | `experiment` | the config-driven route: one experiment TOML with its `[case_data]` inputs, prepared and integrated in this process — what `gpuwm run CONFIG` executes | era5 |
-| `prepared` | the native prepared-cache chain: authority, fetch, manifest, preparation, forecast, render, in the documented order — what `gpuwm go CONFIG` executes | gfs, single domain |
+| `prepared` | the native prepared-cache chain, in the documented order | **gfs** or **hrrr**, single domain |
 
 **The credential-free path is `prepared` + `gfs`.** ERA5 needs a
 Copernicus CDS key; GFS is public. A `prepared` plan therefore runs end
 to end on a machine with no credentials at all.
 
-`prepared` runs `gpuwm go`, which is the documented chain and the only
-one that relays the integrity digests between stages without a person
-carrying them. run-plan re-implements none of it: it builds the same
-argparse namespace the `go` subcommand builds and hands `go_main` an
-observer.
+The route reads the config's own `[fetch].source` and drives that
+source's documented chain. Neither chain is re-implemented here.
 
-Its scope is `go`'s scope — **GFS, single domain**. `go` refuses an
-ERA5 `[case_data]` config, a multi-domain tree, and any other source,
-each naming the manual chain, and run-plan surfaces that refusal
-verbatim as a `failed` event. HRRR and multi-domain GFS are not
-reachable from run-plan yet; see the note at the end of this file.
+**gfs** runs `gpuwm go` — the documented chain, and the only thing that
+relays the integrity digests between stages without a person carrying
+them. run-plan builds the same argparse namespace the `go` subcommand
+builds and hands `go_main` an observer. Its scope is `go`'s scope, so
+`go`'s refusals (an ERA5 `[case_data]` config, a tree, another source)
+surface verbatim as a `failed` event.
+
+**hrrr** runs its own chain, because `go` refuses the source by
+construction (`ORCHESTRATED_SOURCES = ("gfs",)`): fetch →
+`tools.prepare_hrrr_wrf` → `prepared_single_domain_forecast`. The
+stages and their order are the wizard's own printed chain
+(`domain_wizard.hrrr_route_commands`), driven rather than printed, with
+every stage's refusals left alone. It reuses `go`'s stage primitive, so
+capture, heartbeats and failure replay are identical on both chains.
+
+One thing is *added* to the HRRR chain: **`--wps-namelist`**. The
+runner's HRRR manifest requires a `wps_namelist` role (the prepared
+cache identity's `namelist_sha256` **is** that file's digest on this
+route), and the preparer only publishes the portable bundle — `proof.json`,
+the role-keyed source manifest, the experiment authority — when handed
+that flag. The printed chain never passed it, so the bundle it produced
+could not be read by the single-domain runner at all and HRRR was sent
+to a benchmark script instead. Passing it makes a single-domain HRRR
+bundle structurally identical to a GFS one at the run step: same runner,
+same digests, same in-process observer.
+
+The forecast stage's inputs come from the preparer's published
+`portable_bundle` handoff (in `public-wrapper-result.json`), not from
+re-derivation. Three of them are not guessable: `proof.json` lives at
+the **output root**, not inside the prepared cache; `--prepared-root` is
+that same root; and `--experiment-config` / `--wps-namelist` must be the
+**published copies** (`experiment.toml`, `namelist.wps`), because the
+runner checks each supplied file's name and digest against the portable
+manifest. The relayed digests are cross-checked against `proof.json` on
+disk before the forecast starts.
+
+Multi-domain HRRR is refused with a sentence naming the limitation and
+the chain that does run it (`gpuwm.hrrr_hierarchy_direct`, then
+`gpuwm-prepared-tree-forecast`). Multi-domain GFS is likewise not
+reachable; see the note at the end of this file.
+
+`physics_profile` is passed to the HRRR preparer only when the plan
+states it (as an intent key or a run option). The route owns its own
+physics gate, the emitted TOML records physics as numbers rather than a
+profile id, and a default invented at this layer would silently outrank
+the preparer's own.
 
 `prepared` additionally takes the `data_dir` run option (where the
 fetch lands). The `experiment` route does not: it declares its inputs
@@ -166,6 +204,10 @@ never a particular experiment.
 | `device` | `null` | GPU index or full `GPU-…` UUID; sets `CUDA_VISIBLE_DEVICES` before anything can create a context |
 | `dry_run` | `false` | resolve and validate, emit `resolved_plan`, stop before any device work |
 | `restart` | `null` | a `gpuwmrst` checkpoint to continue from |
+| `render_products` | `null` | which products the render stage draws — `gpuwm render --products`' own spec (a comma-separated list, or `all`), or `none` to skip rendering. Absent leaves the default set unchanged. `prepared` route only |
+| `geog_root` | `null` | static geography tree (`prepared` route only) |
+| `data_dir` | `null` | where the fetch lands (`prepared` route only) |
+| `physics_profile` | `null` | passed to the HRRR preparer when stated (`prepared` route only) |
 | `health_debug` | `false` | enable debug phase health attribution |
 
 `run-plan` integrates in **this** process rather than re-executing under
@@ -432,6 +474,17 @@ configuration) the field is `null` **with its `basis` stated**. A front
 end showing an invented duration would be showing gpuwm's name on a
 number gpuwm never measured.
 
+**`--catalog`** → `gpuwm.run-plan.catalog.v1`. The renderer's product
+catalog — what may go in `render_products`. Asked of the renderer, never
+transcribed: on a box with the Rust engine that is its own
+`--list-products` (150 slugs plus the `all`/`direct`/`derived`/`heavy`/
+`windowed` group keywords); on a matplotlib-only box it is that engine's
+five, and the document names which engine answered, because a picker
+built against one and run against the other would offer products that do
+not exist. The parse is checked against the renderer's own declared
+count, and a disagreement is reported in `parse_warning` with the raw
+output carried, rather than silently returning a short list.
+
 **`--probe`** → `gpuwm.run-plan.probe.v1`. Device inventory (name, UUID,
 driver, VRAM total/used/free) read through NVML only — **no CUDA context
 is created**, so it is safe to poll on a busy card. Plus route and schema
@@ -483,9 +536,7 @@ name, and absent means nothing happens.
 
 ## What the `prepared` route does not reach yet
 
-`prepared` is `gpuwm go`, so it inherits exactly `go`'s scope: **GFS,
-single domain**. Two routes remain unreachable, and neither is a small
-addition:
+Single-domain **gfs** and **hrrr** both run. What remains unreachable:
 
 **Multi-domain GFS.** `rw-wps` prepares the whole hierarchy in one call
 and prints a preparation-receipt digest that
@@ -493,33 +544,43 @@ and prints a preparation-receipt digest that
 there is no chain to drive — driving it means owning that two-stage
 relay, which is new orchestration rather than reuse.
 
-**HRRR, at any domain count.** Materially different, not merely
-different flags:
-
-- `gpuwm go` refuses it by construction (`ORCHESTRATED_SOURCES = ("gfs",)`).
-- Preparation is `python -m tools.prepare_hrrr_wrf`, not `rw-wps`, and
-  it has no importable entry point — it is a monolithic `main()` that
-  shells out to three further subprocesses.
-- The wizard emits five files for HRRR (target-domain JSON, two
-  namelist.inputs) against two for GFS, and the HRRR tools read the
-  namelists rather than the TOML.
-- Two GRIB files per lead (atmosphere + soil), hourly contiguous leads
-  enforced.
-- No authority-materialization stage and no front-door manifest; the
-  fetched `SHA256SUMS` is consumed directly.
-- The tree route needs a third stage (`gpuwm.hrrr_hierarchy_direct`).
-- Physics is a closed choice list defaulting to WSM6, because the native
-  HRRR route admits one physics slice.
-
-There is a real opening worth recording: `prepared_single_domain_forecast`
-already accepts `--source hrrr` and has a full HRRR layout, but the
-bundle it needs only exists if `--wps-namelist` is passed to
-`prepare_hrrr_wrf` — which the wizard's printed chain does not do. Pass
-it, and single-domain HRRR becomes structurally identical to GFS at the
-run step. That is the cheapest path to HRRR and it is a preparation-side
-change, not a run-plan one.
+**Multi-domain HRRR.** Needs a third stage
+(`python -m gpuwm.hrrr_hierarchy_direct`) between the preparation and
+the forecast, and the tree runner rather than the single-domain one.
+Refused with that named.
 
 The enabling seams for all of the above are already in place: both
 prepared runners take `observer=` on `run_*` and on `main()`, and
 `PerDomainWrfoutWriters.attach_progress_callback` binds the output hook
 late. What is missing is the chain, not the observability.
+
+---
+
+## Selective rendering
+
+Both chains end in `gpuwm render`, and both take the same filter:
+
+```json
+"run_options": { "render_products": "composite_reflectivity,sbcape" }
+"run_options": { "render_products": "all" }
+"run_options": { "render_products": "none" }     // skip the stage
+```
+
+The value is `gpuwm render --products`' own spec, passed through
+**verbatim** — this front door does not parse or validate it, because the
+render command owns that vocabulary and a second copy of it here is the
+enumeration drift `render.py`'s own catalog code already refuses to pay
+for. Absent leaves the default set exactly as it was, so `gpuwm go`'s
+own behaviour is unchanged.
+
+`none` lives in the same field as the product list rather than in a
+separate boolean, so "which products" has one answer and not two that
+can disagree; it is not a product name in the catalog, so it cannot
+collide with one.
+
+Ask `run-plan --catalog` for the list. It is **not** an intent key:
+intent mirrors `gpuwm domain`'s flags one for one, and the wizard writes
+configs, not pictures.
+
+The HRRR chain has no render step in its printed form; run-plan gives it
+`go`'s, so the option means the same thing on both sources.

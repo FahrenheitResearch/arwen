@@ -405,6 +405,7 @@ class _ScriptedProcess:
         self.terminated = False
         outdir = Path(command[command.index("--outdir") + 1])
         self.heartbeat_path = outdir / "run-progress.json"
+        self.capsule_path = outdir / "failure-capsule.json"
         self.initial_checkpoint = (
             command[command.index("--restart") + 1]
             if "--restart" in command else None)
@@ -424,6 +425,27 @@ class _ScriptedProcess:
             int(event.get("step", 0)), None,
             None if checkpoint is None else str(Path(checkpoint).resolve())))
 
+    def _publish_capsule(self, capsule):
+        """Leave a worker-authored failure capsule, as a real worker does.
+
+        Bound to this attempt the same way the real one is -- the run id
+        out of the worker's own environment and this process's pid -- so
+        the supervisor's run/pid check is exercised rather than bypassed.
+        """
+        self.capsule_path.write_text(json.dumps({
+            "schema": supervisor.FAILURE_CAPSULE_SCHEMA,
+            "run_id": self.env["GPUWM_RUN_ID"],
+            "worker_pid": self.pid,
+            "last_phase": capsule.get("phase", "preparing:load-config"),
+            "last_step": 0,
+            "exception": {
+                "type": capsule["type"],
+                "message": capsule["message"],
+                "traceback": capsule.get("traceback", "Traceback ...\n"),
+                "cuda_fatal": False,
+            },
+        }), encoding="utf-8")
+
     def poll(self):
         if self.returncode is not None:
             return self.returncode
@@ -431,6 +453,8 @@ class _ScriptedProcess:
             event = self.script.pop(0)
             if "status" in event:
                 self._publish(event)
+            if "capsule" in event:
+                self._publish_capsule(event["capsule"])
             if "exit" in event:
                 self.returncode = int(event["exit"])
         return self.returncode
@@ -449,7 +473,8 @@ class _ScriptedProcess:
 
 def _install_scripted_supervisor(monkeypatch, tmp_path, scripts, *,
                                  clock_step=1.0,
-                                 publish_before_popen_returns=False):
+                                 publish_before_popen_returns=False,
+                                 real_capsule_reader=False):
     import gpuwm.supervisor as supervisor
 
     config = tmp_path / "experiment.toml"
@@ -492,8 +517,13 @@ def _install_scripted_supervisor(monkeypatch, tmp_path, scripts, *,
     monkeypatch.setattr(supervisor.subprocess, "Popen", popen)
     monkeypatch.setattr(supervisor, "validate_manifest_checkpoint",
                         lambda path: Path(path).resolve())
-    monkeypatch.setattr(supervisor, "_has_worker_failure_capsule",
-                        lambda *args, **kwargs: False)
+    if not real_capsule_reader:
+        # No capsule reaches disk under this harness, so the reader is
+        # short-circuited rather than left to hunt for a file that is
+        # never there.  `real_capsule_reader=True` lets a scripted worker
+        # publish a genuine capsule and the real reader find it.
+        monkeypatch.setattr(supervisor, "_read_worker_failure_capsule",
+                            lambda *args, **kwargs: None)
     monkeypatch.setattr(
         supervisor, "write_failure_capsule",
         lambda path, **kwargs: Path(path))
@@ -789,20 +819,27 @@ def test_existing_child_failure_capsule_is_matched_by_effective_pid(
         ]])
     checked = []
 
-    def has_capsule(path, *, run_id, worker_pid):
+    def read_capsule(path, *, run_id, worker_pid):
         checked.append((Path(path), run_id, worker_pid))
-        return True
+        return {"schema": supervisor.FAILURE_CAPSULE_SCHEMA,
+                "run_id": run_id, "worker_pid": worker_pid,
+                "exception": {"type": "RuntimeError",
+                              "message": "the child's own words"}}
 
     def unexpected_write(*args, **kwargs):
         raise AssertionError("supervisor overwrote the worker failure capsule")
 
     import gpuwm.supervisor as supervisor
-    monkeypatch.setattr(supervisor, "_has_worker_failure_capsule", has_capsule)
+    monkeypatch.setattr(supervisor, "_read_worker_failure_capsule",
+                        read_capsule)
     monkeypatch.setattr(supervisor, "write_failure_capsule", unexpected_write)
-    with pytest.raises(SupervisorError, match="no durable manifest-valid"):
+    with pytest.raises(SupervisorError, match="no durable manifest-valid") \
+            as caught:
         supervise_experiment(config, tmp_path / "out", poll_seconds=0.05)
     assert len(checked) == 1
     assert checked[0][2] == child_pid
+    # The capsule it matched is also the capsule it quotes.
+    assert "the child's own words" in str(caught.value)
 
 
 def test_supervise_monitor_validates_final_heartbeat_regression(
@@ -1438,6 +1475,165 @@ def test_git_commit_survives_a_host_with_no_git_binary(monkeypatch):
     recorded = supervisor.git_commit()
     assert recorded.startswith("unavailable: ")
     assert "FileNotFoundError" in recorded
+
+
+# --- A refusal must read as a refusal on the console --------------------
+#
+# "worker exited with status 1 ... (failure capsule: PATH)" is the same
+# shell for a segfault and for a config the loader deliberately rejected.
+# Through 1.8.0 the sentence that explained it sat one file away.
+
+
+def _refusal_config(tmp_path):
+    """A config the loader refuses: no [case_data] table at all."""
+    payload = b"[experiment]\nname = 'fixture'\n"
+    config = tmp_path / "experiment.toml"
+    captured = tmp_path / "captured.toml"
+    config.write_bytes(payload)
+    captured.write_bytes(payload)
+    return config, captured, payload
+
+
+def test_a_config_load_refusal_capsule_carries_the_refusal_sentence(
+        monkeypatch, tmp_path):
+    """First: a REAL worker refusal produces the capsule we claim to read.
+
+    Written against the genuine artifact rather than a synthetic capsule
+    so the schema path is proven end to end -- a committed fixture in the
+    wrong shape is exactly how this class of reader goes quietly blind
+    (tests/test_report_bundle.py carries one).
+    """
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    config, captured, payload = _refusal_config(tmp_path)
+    monkeypatch.setattr(supervisor, "git_commit", lambda: "test-commit")
+    monkeypatch.setenv("GPUWM_RUN_ID", "refusal-run")
+    monkeypatch.setenv(
+        "GPUWM_CONFIG_DIGEST", hashlib.sha256(payload).hexdigest())
+    monkeypatch.setenv("GPUWM_STARTED_AT_UTC", "2026-08-07T00:00:00Z")
+    monkeypatch.setenv("GPUWM_GPU_UUID", "GPU-test")
+    monkeypatch.setenv("GPUWM_GPU_DRIVER", "610.74")
+    monkeypatch.setenv("GPUWM_GPU_NAME", "RTX 5090")
+    monkeypatch.setenv("GPUWM_INPUT_HASHES_JSON", json.dumps({}))
+    monkeypatch.delenv(supervisor.INPUT_AUTHORITIES_ENV, raising=False)
+
+    with pytest.raises(ValueError, match=r"\[\[domain\]\]") as refused:
+        supervisor._worker_main(supervisor.argparse.Namespace(
+            config=config, config_payload=captured, outdir=outdir,
+            restart=None, health_debug=False))
+
+    capsule = json.loads((
+        outdir / supervisor.FAILURE_CAPSULE_NAME).read_text(encoding="utf-8"))
+    assert capsule["exception"]["type"] == "ValueError"
+    assert capsule["last_phase"] == "preparing:load-config"
+    assert capsule["exception"]["cuda_fatal"] is False
+    headline = supervisor._capsule_headline(capsule)
+    assert headline.startswith("ValueError: ")
+    # The sentence the user can act on, verbatim from the loader.
+    assert "must carry at least one [[domain]] table" in headline
+    assert str(refused.value).splitlines()[0].rstrip(".") in headline
+
+    from gpuwm.explain import EXPLAIN_MARK
+    assert EXPLAIN_MARK not in headline
+
+
+def test_a_worker_that_dies_on_a_refusal_says_so_in_the_supervisor_error(
+        monkeypatch, tmp_path):
+    """THE requirement: the refusal sentence reaches the raised error.
+
+    A guard refusal that prints only an exit status and a path is
+    indistinguishable from a crash, and the user's actual problem -- the
+    thing they can fix -- is in a file the message merely names.
+    """
+    refusal = ("experiment config fixture.toml carries no [case_data] "
+               "table; the experiment runtime requires declared inputs "
+               "(forcing, vtable, wps_namelist, geog_root, and policies).")
+    config, checkpoint, processes = _install_scripted_supervisor(
+        monkeypatch, tmp_path, [[
+            {"status": "preparing:load-config"},
+            {"capsule": {"type": "ValueError", "message": refusal}},
+            {"exit": 1},
+        ]], real_capsule_reader=True)
+    del checkpoint          # no restart: the run never got far enough
+
+    with pytest.raises(SupervisorError) as caught:
+        supervise_experiment(
+            config, tmp_path / "out", max_restarts=0, poll_seconds=0.05)
+
+    message = str(caught.value)
+    assert refusal.rstrip(".") in message
+    assert "ValueError" in message
+    # The old information is not traded away for the new: the exit
+    # status, the reason no restart followed, and the capsule path all
+    # survive, because each answers a different question.
+    assert "worker exited with status 1" in message
+    assert "no durable manifest-valid checkpoint" in message
+    assert "failure-capsule.json" in message
+    assert len(processes) == 1
+
+
+def test_a_supervisor_authored_capsule_is_not_quoted_back_at_itself(
+        monkeypatch, tmp_path):
+    """WorkerExit's message IS "worker exited with status N"."""
+    config, checkpoint, _ = _install_scripted_supervisor(
+        monkeypatch, tmp_path, [[
+            {"status": "preparing:load-config"},
+            {"capsule": {"type": "WorkerExit",
+                         "message": "worker exited with status 1"}},
+            {"exit": 1},
+        ]], real_capsule_reader=True)
+
+    with pytest.raises(SupervisorError) as caught:
+        supervise_experiment(
+            config, tmp_path / "out", restart=checkpoint,
+            max_restarts=0, poll_seconds=0.05)
+    assert str(caught.value).count("worker exited with status 1") == 1
+
+
+def test_a_capsule_from_another_attempt_is_not_quoted(monkeypatch, tmp_path):
+    """The run/pid binding, which is why the reader validates it."""
+    outdir = tmp_path / "out"
+    outdir.mkdir(parents=True)
+    (outdir / "failure-capsule.json").write_text(json.dumps({
+        "schema": supervisor.FAILURE_CAPSULE_SCHEMA,
+        "run_id": "some-older-run", "worker_pid": 999,
+        "exception": {"type": "ValueError", "message": "a stale sentence"},
+    }), encoding="utf-8")
+    config, checkpoint, _ = _install_scripted_supervisor(
+        monkeypatch, tmp_path, [[{"status": "preparing:load-config"}, {"exit": 1}]],
+        real_capsule_reader=True)
+
+    with pytest.raises(SupervisorError) as caught:
+        supervise_experiment(
+            config, outdir, restart=checkpoint,
+            max_restarts=0, poll_seconds=0.05)
+    assert "a stale sentence" not in str(caught.value)
+
+
+@pytest.mark.parametrize("payload", [
+    None, {}, {"exception": None}, {"exception": {}},
+    {"exception": {"type": "", "message": ""}},
+    {"exception": "not a mapping"},
+])
+def test_an_unusable_capsule_degrades_to_the_old_message(payload):
+    """Never a second crash on the crash-reporting path."""
+    assert supervisor._capsule_headline(payload) == ""
+
+
+def test_the_headline_drops_the_explain_half_and_caps_the_length():
+    """A layered refusal's sentinel is promised never to reach a terminal."""
+    from gpuwm.explain import layered
+
+    action = "the short refusal sentence."
+    message = layered(action, "The long explanation nobody pasted.")
+    headline = supervisor._capsule_headline(
+        {"exception": {"type": "ValueError", "message": message}})
+    assert headline == f"ValueError: {action.rstrip(chr(46))}"
+    assert "explanation nobody pasted" not in headline
+
+    long = supervisor._capsule_headline(
+        {"exception": {"type": "RuntimeError", "message": "x" * 4000}})
+    assert len(long) < 300 and long.endswith("...")
 
 
 def test_worker_failure_capsule_embeds_the_exact_config_and_small_text_inputs(

@@ -86,6 +86,7 @@ from gpuwm.setup_cli import register_cli as setup_register_cli
 from gpuwm.stream import register_cli as stream_register_cli
 from gpuwm.table_assets import register_cli as table_assets_register_cli
 from gpuwm.update_cli import register_cli as update_register_cli
+from gpuwm.version_cli import register_cli as version_register_cli
 from gpuwm.verify import cases
 
 #: Discovered verification cases: name -> case module exposing
@@ -285,6 +286,7 @@ def build_parser() -> argparse.ArgumentParser:
     report_register_cli(sub)
     run_plan_register_cli(sub)
     update_register_cli(sub)
+    version_register_cli(sub)
     lst = sub.add_parser(
         "cases", help="list the discovered verification cases and the "
                       "entry points each one declares")
@@ -458,11 +460,17 @@ def main(argv: list[str] | None = None) -> int:
                 # the same physical line as the first, so pasting the
                 # whole remedy was a shell error in either shell.  This
                 # is doctor's form, which this message predates.
-                "  remedy: pip install 'gpuwm[gpu]'\n"
-                "  # or, if you pin the CUDA wheel yourself:\n"
-                "  #   pip install cupy-cuda12x\n"
-                "  # on a CUDA-13-only box: pip install 'gpuwm[gpu-cu13]'\n"
-                "  # `gpuwm doctor` checks the whole runtime estate.",
+                #
+                # Neither extra leads.  CuPy ships one wheel per CUDA
+                # major, this message cannot see which major the box
+                # serves, and the version that led with the cu12 extra
+                # was read by CUDA-13 owners as the recommendation.
+                "  # CuPy ships one wheel per CUDA major; pick yours:\n"
+                "  remedy: pip install 'gpuwm[gpu-cu12]'\n"
+                "  #   ... on a box whose CUDA is 13-only, instead:\n"
+                "  #   pip install 'gpuwm[gpu-cu13]'\n"
+                "  # `gpuwm doctor` reads the major off the driver, names\n"
+                "  # the matching extra, and checks the runtime estate.",
                 file=sys.stderr)
             return 2
         raise
@@ -513,7 +521,7 @@ def _dispatch(args) -> int:
                         "enprod", "downscale", "doctor", "fetch-tables",
                         "fetch-bridges", "setup", "go", "adapt", "certify",
                         "dual-run", "multi-run", "report", "run-plan",
-                        "update"):
+                        "update", "version"):
         return args.func(args)
 
     if args.command == "cases":
