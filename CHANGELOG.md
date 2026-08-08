@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.8.3 (2026-08-08)
+
+New:
+- `gpuwm run-plan` runs nested GFS end to end. A multi-domain config on
+  the `prepared` route keeps the same preparation stages (rw-wps builds
+  the whole hierarchy in one call) and dispatches the forecast to
+  `gpuwm-prepared-tree-forecast`, with run-plan owning the receipt
+  relay the manual chain needed a person for: the sha256 of the
+  hierarchy document rw-wps left in the prepared root, matched on
+  schema against the tree runner's own table, plus the experiment
+  config's own digest. The interactive `gpuwm go` command keeps its
+  tree refusal; only run-plan, which dispatches to the tree runner,
+  drives trees. Multi-domain HRRR remains refused with its by-hand
+  chain named.
+- `gpuwm run-plan --estimate` reports `peak_envelope_bytes` beside the
+  pool request. That is the tree-aware figure: it adds a per-nest term
+  and, on WDDM, the measured footprint floor. A tree priced on the
+  pool request alone reads as fitting a card it does not fit.
+- `model_progress` events carry each grid's own clock on a domain tree
+  (a `domains` list of `{domain, model_seconds}`). Absent on a single
+  domain, where the root is the tree, so existing consumers see the
+  stream they always saw.
+
+Fixed:
+- Native HRRR prepared runs complete on Windows. The prepared-cache
+  identity keyed source digests by `str(path.relative_to(...))`, which
+  is backslashed on Windows, and the reader looks names up by
+  forward-slash constants, so the forecast handoff always failed with
+  "decode identity omits [...]" on a cache that was in fact complete.
+  Every producer now writes POSIX keys and the validator reads both
+  spellings, so caches already sealed on Windows under 1.8.2 stay
+  restorable. A dict carrying one path under both spellings is refused
+  rather than merged.
+- `sealed_extension_fingerprint` no longer differs between Windows and
+  Linux for identical code: the tree runner's runtime source identity
+  used OS-native separators in its keys. Linux fingerprints do not
+  move; Windows converges onto the existing value.
+
 ## 1.8.2 (2026-08-08)
 
 1.8.1 was tagged but never published: its release workflow's own test

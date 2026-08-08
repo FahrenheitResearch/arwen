@@ -705,8 +705,14 @@ def _source_identity() -> dict[str, object]:
     if missing:
         raise FileNotFoundError(
             f"HRRR installed source helpers are missing: {missing}")
+    # ``.as_posix()``, not ``str()``: this dict is written into the
+    # prepared cache's ``source_identity`` and into the proof beside it,
+    # and the forecast reader looks those keys up by the forward-slash
+    # names in ``_HRRR_DECODE_SOURCES``.  ``str()`` of a relative Path
+    # emits backslashes on Windows, which sealed caches keyed
+    # ``gpuwm\hrrr_forecast.py`` and made the reader refuse all ten.
     source_sha256 = {
-        str(path.relative_to(REPO)): _sha256(path) for path in paths
+        path.relative_to(REPO).as_posix(): _sha256(path) for path in paths
     }
     # Three real installs, three identities -- resolved in one shared
     # place (gpuwm.runtime_manifest.provenance).  This used to be a

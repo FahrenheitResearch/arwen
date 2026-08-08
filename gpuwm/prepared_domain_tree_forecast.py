@@ -1174,8 +1174,15 @@ def _runtime_source_identity() -> Mapping[str, object]:
         REPOSITORY_ROOT / "gpuwm/core/kernels/nest_microphysics.cu",
         Path(__file__).resolve(),
     )
+    # ``.as_posix()``, not ``str()``: this identity is hashed into
+    # ``sealed_extension_fingerprint`` and published in checkpoint
+    # headers, so a backslash key makes the SAME code fingerprint
+    # differently on Windows than on Linux and a leg cannot extend
+    # across machines.  On Linux the two spellings are byte-identical,
+    # so no already-sealed fingerprint moves; only Windows converges.
     source_sha256 = {
-        str(path.relative_to(REPOSITORY_ROOT)): _sha256(path) for path in files
+        path.relative_to(REPOSITORY_ROOT).as_posix(): _sha256(path)
+        for path in files
     }
     try:
         commit = subprocess.check_output(

@@ -68,6 +68,13 @@ from gpuwm.explain import explain_enabled, layered, render
 #: checkout, or a venv with neither on the working directory.
 RUNNER_MODULE = "gpuwm.prepared_single_domain_forecast"
 
+#: The runner a DOMAIN TREE goes to.  Preparation is identical -- the
+#: refusal below says so in as many words, "prepared the same way" --
+#: and only the forecast stage differs: the tree runner binds ONE
+#: preparation receipt where the single-domain runner binds three
+#: proof digests.
+TREE_RUNNER_MODULE = "gpuwm.prepared_domain_tree_forecast"
+
 #: The checkout spelling of the same runner, kept for the docs and for
 #: receipts that name it.  Not used to locate anything.
 RUNNER_RELATIVE = "tools/prepared_single_domain_forecast.py"
@@ -165,7 +172,8 @@ def printable(command: list[str]) -> str:
 
 def plan_from_config(config: Path, *, outdir: Path | None = None,
                      data_dir: Path | None = None,
-                     render_products: str | None = None) -> dict:
+                     render_products: str | None = None,
+                     allow_tree: bool = False) -> dict:
     """Everything the five stages need, or a refusal saying why not.
 
     Read from the wizard's own emitted tables rather than asked for
@@ -195,7 +203,8 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
             + str(config))
 
     domains = payload.get("domain")
-    if isinstance(domains, list) and len(domains) > 1:
+    domain_count = len(domains) if isinstance(domains, list) else 1
+    if domain_count > 1 and not allow_tree:
         # Named by its INSTALLED spelling: a wheel has no tools/
         # directory, so a tools/-path pointer names a file a pip reader
         # provably does not have.  And the re-emit remedy is complete
@@ -338,7 +347,10 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         # sets it, so its render stage is unchanged.
         "render_products": render_products,
         "render": Path(root) / "png",
-        "runner": RUNNER_MODULE,
+        "domains": domain_count,
+        # Preparation does not branch; the forecast does.
+        "runner": (TREE_RUNNER_MODULE if domain_count > 1
+                   else RUNNER_MODULE),
     }
 
 
@@ -380,7 +392,15 @@ def _profile_flags(plan: dict) -> list[str]:
 
 
 def authority_command(plan: dict) -> list[str]:
-    return [sys.executable, "-m", str(plan["runner"]),
+    # RUNNER_MODULE, not plan["runner"].  Materializing the physics
+    # authority is SOURCE-level work -- it writes the experiment.toml
+    # and namelist.wps every later stage binds -- and it lives in the
+    # single-domain module for every route, which is what FIRST-LIGHT
+    # step 2 spells even for a chain that ends in the tree runner.  The
+    # tree runner has no --materialize-authorities at all, so keying
+    # this off the plan's runner sent stage one to a module that would
+    # refuse the flag.
+    return [sys.executable, "-m", RUNNER_MODULE,
             "--materialize-authorities",
             "--source", plan["source"],
             "--base-experiment-config", str(plan["config"]),
@@ -457,6 +477,87 @@ def forecast_command(plan: dict, digests: dict) -> list[str]:
             "--io-mode", "history", "--outdir", str(plan["run"])]
 
 
+def tree_forecast_command(plan: dict) -> list[str]:
+    """The fifth stage for a DOMAIN TREE.
+
+    The tree runner binds ONE digest where the single-domain runner
+    binds three: the sha256 of the hierarchy document rw-wps left in the
+    prepared root (``proof.json`` for gfs/era5, ``receipt.json`` for
+    hrrr -- the runner accepts whichever filename carries a schema it
+    knows, and pins the digest exactly).  Plus the experiment config's
+    own digest, which the single-domain runner takes on trust from the
+    proof.
+
+    Both are read off the files on disk here, which is the same relay
+    rule :func:`proof_digests` follows: `go` transports a digest, it
+    never computes one the runner will then check against itself.  The
+    manual chain has a person copy these two out of what rw-wps printed;
+    nothing is printed-and-parsed here, the artifacts are the contract.
+    """
+
+    from gpuwm.fetch import sha256_file
+
+    prepared = Path(plan["prepared"])
+    receipt = _hierarchy_document(prepared)
+    config = Path(plan["authority"]) / "experiment.toml"
+    if not config.is_file():
+        raise GoRefusal(
+            f"the authority stage wrote no {config}, so the tree "
+            "forecast has no experiment config to bind")
+    return [sys.executable, "-m", str(plan["runner"]),
+            "--prepared-root", str(prepared),
+            "--preparation-receipt-sha256", sha256_file(receipt),
+            "--experiment-config", str(config),
+            "--experiment-config-sha256", sha256_file(config),
+            "--io-mode", "history", "--outdir", str(plan["run"])]
+
+
+def _hierarchy_document(prepared_root: Path) -> Path:
+    """The tree preparation's top-level document, whichever wrote it.
+
+    The candidate filenames are the tree runner's own
+    ``_HIERARCHY_DOCUMENTS`` table, read from it rather than restated:
+    which files count as a hierarchy document is that runner's
+    question, and a second list here is the enumeration drift this tree
+    keeps paying for.
+    """
+
+    from gpuwm.prepared_domain_tree_forecast import _HIERARCHY_DOCUMENTS
+
+    names: list[str] = []
+    for entry in _HIERARCHY_DOCUMENTS:
+        if entry["filename"] not in names:
+            names.append(entry["filename"])
+    # Matched on SCHEMA, not on filename order.  Four sources write
+    # `proof.json` and one writes `receipt.json`; picking by position
+    # would hand the runner a digest of the wrong file, and the runner
+    # would then refuse with "carries no hierarchy document matching" --
+    # true, unhelpful, and this function's fault.
+    accepted = {entry["schema"] for entry in _HIERARCHY_DOCUMENTS}
+    present: list[str] = []
+    for name in names:
+        candidate = Path(prepared_root) / name
+        if not candidate.is_file():
+            continue
+        present.append(name)
+        try:
+            schema = json.loads(
+                candidate.read_text(encoding="utf-8")).get("schema")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if schema in accepted:
+            return candidate
+    if present:
+        raise GoRefusal(
+            f"{prepared_root} carries {present}, but none of them is a "
+            "hierarchy document this build knows; the preparation may "
+            "have written a single-domain product, whose runner is "
+            f"{RUNNER_MODULE}")
+    raise GoRefusal(
+        f"the preparation wrote none of {names} into {prepared_root}, so "
+        "the tree forecast has no preparation receipt to bind")
+
+
 def _run_forecast(plan: dict, digests: dict, *, explain: bool,
                   observer=None) -> None:
     """The forecast stage: subprocess by default, in-process for an observer.
@@ -480,7 +581,8 @@ def _run_forecast(plan: dict, digests: dict, *, explain: bool,
     and run-plan does exactly that -- it IS the supervising process.
     """
 
-    command = forecast_command(plan, digests)
+    command = (tree_forecast_command(plan) if plan.get("domains", 1) > 1
+               else forecast_command(plan, digests))
     progress = plan["run"] / "progress.json"
     if observer is None:
         _run_stage("forecast", command, explain=explain, progress=progress)
@@ -1126,7 +1228,7 @@ def geography_refusal(geog_root: Path) -> str | None:
         + "\n".join(f"  {gap.name}: {gap.detail}" for gap in gaps))
 
 
-def go_main(args, *, observer=None) -> int:
+def go_main(args, *, observer=None, allow_tree=False) -> int:
     """The documented GFS chain, run in order.
 
     ``observer`` is an optional structured consumer of the same stage
@@ -1141,6 +1243,12 @@ def go_main(args, *, observer=None) -> int:
     ``None`` -- every existing caller, including `gpuwm go` itself --
     changes nothing: no notifications, and the forecast stays the
     subprocess it has always been.
+
+    ``allow_tree`` lets a multi-domain config through.  Off by default,
+    so `gpuwm go`'s refusal is byte-identical: that refusal protects an
+    interactive reader from a chain whose forecast stage would not run
+    their config.  A caller that dispatches to the tree runner instead
+    -- run-plan does -- is not the reader that refusal is for.
     """
 
     from gpuwm.fetch import sha256_file
@@ -1151,7 +1259,8 @@ def go_main(args, *, observer=None) -> int:
                             outdir=getattr(args, "outdir", None),
                             data_dir=getattr(args, "data_dir", None),
                             render_products=getattr(
-                                args, "render_products", None))
+                                args, "render_products", None),
+                            allow_tree=allow_tree)
     bridge = resolve_bridge()
     geog_root = (Path(args.geog_root) if getattr(args, "geog_root", None)
                  else default_geog_root())
@@ -1256,7 +1365,11 @@ def go_main(args, *, observer=None) -> int:
             cycle_stamp=cycle_stamp, geog_root=geog_root), explain=explain,
             progress=plan["prepared"] / "progress.json",
             observer=observer)
-        digests = proof_digests(plan["prepared"])
+        # A hierarchy proof carries no single prepared-cache identity,
+        # and proof_digests says so by refusing.  The tree arm reads its
+        # own one digest instead, so it is not asked for here.
+        digests = ({} if plan.get("domains", 1) > 1
+                   else proof_digests(plan["prepared"]))
         _run_forecast(plan, digests, explain=explain, observer=observer)
         rendered = _render_stage(plan, explain=explain,
                                  observer=observer)
@@ -1403,6 +1516,7 @@ def register_cli(subparsers) -> None:
 __all__ = [
     "GoRefusal", "GoStageFailed", "HEARTBEAT_SECONDS", "MANUAL_CHAIN",
     "ORCHESTRATED_SOURCES", "RUNNER_MODULE", "RUNNER_RELATIVE",
+    "TREE_RUNNER_MODULE", "tree_forecast_command",
     "authority_command", "fetch_command", "forecast_command", "go_main",
     "manifest_command", "memory_gate", "plan_from_config",
     "prepare_command", "printable",

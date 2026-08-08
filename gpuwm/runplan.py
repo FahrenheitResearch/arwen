@@ -1052,6 +1052,16 @@ class RunObserver:
         payload["step_ms"] = round(step_ms, 3) if step_ms > 0.0 else None
         if last_checkpoint is not None:
             payload["last_checkpoint"] = str(last_checkpoint)
+        # `domain` above is the ROOT clock, and on a tree that is only
+        # part of the answer: the nests advance on their own clocks.
+        # Present only when there is more than one, so the single-domain
+        # route's events are unchanged and a consumer can treat the key's
+        # absence as "the root IS the tree".
+        clocks = extra.get("domain_clocks")
+        if isinstance(clocks, dict) and len(clocks) > 1:
+            payload["domains"] = [
+                {"domain": int(grid_id), "model_seconds": float(seconds)}
+                for grid_id, seconds in sorted(clocks.items())]
         self._progress_events += 1
         self._events.emit("model_progress", **payload)
 
@@ -1894,7 +1904,9 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
     # to `gpuwm go` for it is a separate decision about that command's
     # surface, and this front door does not get to make it.
     args.render_products = plan.run_options.get("render_products")
-    code = go_main(args, observer=_GoObserver(observer))
+    # Trees allowed: this front door dispatches to the tree runner, so
+    # the interactive refusal `gpuwm go` keeps does not apply.
+    code = go_main(args, observer=_GoObserver(observer), allow_tree=True)
     if code:
         raise RuntimeError(
             f"`{' '.join(tokens)}` exited {code}; the stage that stopped "
@@ -2388,12 +2400,25 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
         "schema": ESTIMATE_SCHEMA,
         "plan": resolution["plan"],
         "vram": {
+            "domains": len(exp.domains),
             "estimate_bytes": int(estimate.alloc_estimate_bytes),
             "estimate_gib": round(
                 estimate.alloc_estimate_bytes / 1024 ** 3, 4),
-            "basis": "gpuwm.core.preflight.estimate_experiment "
-                     "(the estimator `gpuwm check` reports; no device "
-                     "context is created)",
+            # The figure a nested plan must be judged on.  alloc_estimate
+            # is the POOL REQUEST; the envelope is what the machine has
+            # to have free, and it is the tree-aware one --
+            # machine_peak_envelope_bytes adds a per-nest term
+            # (nests = domains - 1) and, on WDDM, takes the measured
+            # footprint floor.  A tree priced on alloc_estimate alone
+            # reads as fitting a card it does not fit.
+            "peak_envelope_bytes": int(estimate.peak_envelope_bytes),
+            "peak_envelope_gib": round(
+                estimate.peak_envelope_bytes / 1024 ** 3, 4),
+            "basis": "gpuwm.core.preflight.estimate_experiment, which "
+                     "sums every domain and shares the scratch arena "
+                     "across a tree; the envelope is its "
+                     "peak_envelope_bytes (the estimator `gpuwm check` "
+                     "reports; no device context is created)",
         },
         "disk": {
             "frames": frames,

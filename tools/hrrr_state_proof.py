@@ -210,7 +210,12 @@ def _source_identity() -> dict[str, object]:
     missing = [str(path) for path in paths if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"HRRR installed source helpers are missing: {missing}")
-    source_sha256 = {str(path.relative_to(REPO)): _sha256(path)
+    # ``.as_posix()``, not ``str()``: these keys are SERIALIZED into the
+    # proof and later looked up by the forward-slash names the reader
+    # spells (``_HRRR_DECODE_SOURCES``).  ``str()`` of a relative Path
+    # emits backslashes on Windows, so the proof named
+    # ``gpuwm\ingest\hrrr.py`` and every one of those lookups missed.
+    source_sha256 = {path.relative_to(REPO).as_posix(): _sha256(path)
                      for path in paths}
     # Manifest, then a genuine checkout of THIS tree, then the installed
     # wheel.  Same resolver as the benchmark's, for the same reason: the

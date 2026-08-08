@@ -1635,8 +1635,11 @@ def _runtime_source_identity() -> dict[str, object]:
     if missing:
         raise FileNotFoundError(
             f"prepared forecast runtime sources are missing: {missing}")
+    # ``.as_posix()`` is the one spelling every serialized identity key
+    # in this product uses; ``str()`` of a relative Path is the Windows
+    # bug it replaced.  Same bytes as the ``.replace`` this had.
     source_sha256 = {
-        str(path.relative_to(REPO)).replace("\\", "/"): _sha256(path)
+        path.relative_to(REPO).as_posix(): _sha256(path)
         for path in paths
     }
     # One resolver for all three installs (gpuwm.runtime_manifest).  The
@@ -2882,6 +2885,30 @@ _HRRR_DECODE_SOURCES = (
 )
 
 
+def _posix_digest_keys(digests: object) -> dict[str, object] | None:
+    """Read a serialized digest dict with machine-independent keys.
+
+    A repository-relative path is one thing; the separator it was
+    spelled with is which machine spelled it.  Returns ``None`` for
+    anything that is not a dict, so callers keep their own refusal.
+
+    A dict carrying BOTH spellings of one path is refused rather than
+    merged: collapsing it would silently drop one of two digests for
+    the same file, which is exactly the disagreement this check exists
+    to catch.  No producer emits that; only a hand-edited file can.
+    """
+
+    if not isinstance(digests, dict):
+        return None
+    normalized = {str(key).replace("\\", "/"): value
+                  for key, value in digests.items()}
+    if len(normalized) != len(digests):
+        raise ValueError(
+            "HRRR prepared cache decode digests name one file under two "
+            "path spellings")
+    return normalized
+
+
 def _validate_hrrr_source_identity(
         identity: Mapping[str, object], proof: Mapping[str, object],
 ) -> Mapping[str, object]:
@@ -2899,14 +2926,24 @@ def _validate_hrrr_source_identity(
     the proof does not is refused -- that is the whole point of
     re-deriving the front door in every worker rather than passing a
     verdict across a process boundary.
+
+    Both digest dicts are read through :func:`_posix_digest_keys` first.
+    The producers now emit ``as_posix()`` keys everywhere, but caches
+    that 1.8.2 sealed on Windows carry ``gpuwm\\hrrr_forecast.py`` --
+    ``str()`` of a relative Path -- and every lookup below missed, so
+    the Windows prepared route refused its own caches at the handoff.
+    The digests bind the same file BYTES either way, and the separator
+    is a property of the machine that wrote the JSON rather than of
+    what ran, so normalizing on read keeps those sealed caches
+    restorable instead of orphaning them.
     """
 
     missing = [key for key in _HRRR_IDENTITY_REQUIRED if key not in identity]
     if missing:
         raise ValueError(
             f"HRRR prepared cache source identity is incomplete: {missing}")
-    digests = identity.get("source_sha256")
-    if not isinstance(digests, dict):
+    digests = _posix_digest_keys(identity.get("source_sha256"))
+    if digests is None:
         raise ValueError(
             "HRRR prepared cache source identity carries no decode digests")
     absent = [name for name in _HRRR_DECODE_SOURCES if name not in digests]
@@ -2917,7 +2954,7 @@ def _validate_hrrr_source_identity(
            for value in digests.values()):
         raise ValueError(
             "HRRR prepared cache decode digests are malformed")
-    if identity.get("source_sha256") != proof.get("source_sha256"):
+    if digests != _posix_digest_keys(proof.get("source_sha256")):
         raise ValueError(
             "HRRR prepared cache decode identity differs from its proof: "
             "the cache was built by a different ingest than the proof names")

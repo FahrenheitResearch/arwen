@@ -404,6 +404,157 @@ def test_preflight_refuses_an_hrrr_hierarchy_proof(tmp_path, monkeypatch):
         _preflight(bundle, proof_sha256=_sha256(proof_path))
 
 
+# ---------------------------------------------------------------------
+# path separators: the identity is a set of repository paths, not a set
+# of strings some machine happened to spell
+# ---------------------------------------------------------------------
+#
+# Live defect, released 1.8.2, Windows: the prepared HRRR chain ALWAYS
+# died at the forecast handoff with
+#
+#     ValueError: HRRR prepared cache decode identity omits
+#     ['gpuwm/hrrr_forecast.py', ...all ten...]
+#
+# and the artifact said why -- proof.json was keyed
+# ``gpuwm\hrrr_forecast.py``.  Both producers built their digest dict
+# with ``str(path.relative_to(REPO))``, which is backslashed on Windows,
+# while the reader looks names up by the forward-slash constants in
+# ``_HRRR_DECODE_SOURCES``.  On Linux the two spellings are the same
+# string, which is why every end-to-end HRRR proof -- all of them run on
+# rentals or WSL -- passed while the Windows route had never worked.
+
+
+def _identity_pair(*, separator: str = "/", digest: str = "a"):
+    """An identity and the proof beside it, keyed with one separator."""
+
+    digests = {
+        name.replace("/", separator): (digest * 64)[:64]
+        for name in runner._HRRR_DECODE_SOURCES
+    }
+    body = {
+        "source_cycle": CYCLE.isoformat(),
+        "model_start_time": CYCLE.isoformat(),
+        "source_forecast_hours": list(SOURCE_HOURS),
+        "model_forcing_hours": list(SOURCE_HOURS),
+    }
+    return ({"source_sha256": dict(digests), **body},
+            {"source_sha256": dict(digests), **body})
+
+
+def test_a_windows_sealed_cache_identity_validates():
+    """The shape 1.8.2 sealed on Windows must still restore.
+
+    Those caches are keyed with backslashes and cannot be rewritten,
+    but their digests bind the same file BYTES as a POSIX-keyed cache
+    of the same tree.  Refusing them would orphan real work over a
+    property of the machine that wrote the JSON.
+    """
+
+    identity, proof = _identity_pair(separator="\\")
+    assert any("\\" in key for key in identity["source_sha256"])
+    assert runner._validate_hrrr_source_identity(identity, proof) is identity
+
+
+def test_a_posix_keyed_identity_validates():
+    identity, proof = _identity_pair(separator="/")
+    assert runner._validate_hrrr_source_identity(identity, proof) is identity
+
+
+def test_a_windows_cache_validates_against_a_posix_proof():
+    """The mixed estate: a cache sealed on one machine, read on another."""
+
+    identity, _ = _identity_pair(separator="\\")
+    _, proof = _identity_pair(separator="/")
+    assert runner._validate_hrrr_source_identity(identity, proof) is identity
+
+
+def test_an_absent_decode_source_is_still_refused():
+    """Normalizing keys must not turn a missing file into a present one."""
+
+    identity, proof = _identity_pair(separator="\\")
+    dropped = runner._HRRR_DECODE_SOURCES[0].replace("/", "\\")
+    del identity["source_sha256"][dropped]
+    del proof["source_sha256"][dropped]
+    with pytest.raises(ValueError, match="decode identity omits"):
+        runner._validate_hrrr_source_identity(identity, proof)
+
+
+def test_a_different_ingest_is_still_refused_across_separators():
+    """The bar the leniency must not cross.
+
+    Reading both sides POSIX-normalized is only safe if a genuine
+    digest difference still lands.  Same file, two spellings, two
+    digests: refused.
+    """
+
+    identity, _ = _identity_pair(separator="\\", digest="a")
+    _, proof = _identity_pair(separator="/", digest="b")
+    with pytest.raises(ValueError, match="decode identity differs"):
+        runner._validate_hrrr_source_identity(identity, proof)
+
+
+def test_one_file_under_two_spellings_is_refused():
+    """A merge would silently drop one of two digests for one file."""
+
+    identity, proof = _identity_pair(separator="/")
+    name = runner._HRRR_DECODE_SOURCES[0]
+    identity["source_sha256"][name.replace("/", "\\")] = "c" * 64
+    with pytest.raises(ValueError, match="two path spellings"):
+        runner._validate_hrrr_source_identity(identity, proof)
+
+
+def test_the_identity_key_expression_is_posix_on_a_windows_path():
+    """Pins the expression itself, so a Linux runner catches a regression.
+
+    ``str()`` of a relative ``PureWindowsPath`` is the shipped bug,
+    evaluated identically on every platform.  This is the assertion
+    that would have failed in CI before a Windows user ever ran it.
+    """
+
+    from pathlib import PureWindowsPath
+
+    repo = PureWindowsPath(r"C:\gpuwm")
+    path = repo / "gpuwm" / "hrrr_forecast.py"
+    assert path.relative_to(repo).as_posix() == "gpuwm/hrrr_forecast.py"
+    assert str(path.relative_to(repo)) == "gpuwm\\hrrr_forecast.py"
+
+
+@pytest.mark.parametrize("module_name", [
+    "hrrr_single_domain_benchmark", "hrrr_state_proof"])
+def test_both_producers_emit_posix_identity_keys(module_name):
+    """The real producers, on whatever platform this runs.
+
+    Not a re-spelling of the expression above: this calls the shipped
+    ``_source_identity`` and looks at the dict a proof gets written
+    from, which is where the released defect actually lived.
+    """
+
+    import importlib
+
+    module = importlib.import_module(module_name)
+    digests = module._source_identity()["source_sha256"]
+    offenders = [key for key in digests if "\\" in key]
+    assert not offenders, (
+        f"{module_name} keyed its serialized identity with backslashes, "
+        f"which the forecast reader cannot look up: {offenders}")
+
+
+def test_the_benchmark_producer_covers_every_name_the_reader_demands():
+    """Producer and reader, checked against each other rather than a list.
+
+    ``_HRRR_DECODE_SOURCES`` is the reader's demand; the benchmark's
+    ``_source_identity`` is what a real cache is keyed with.  The
+    released defect was these two agreeing on Linux and not on Windows,
+    so the agreement itself is worth a test rather than only the
+    spelling.
+    """
+
+    from hrrr_single_domain_benchmark import _source_identity
+
+    keys = set(_source_identity()["source_sha256"])
+    assert set(runner._HRRR_DECODE_SOURCES) <= keys
+
+
 def test_bundle_writer_refuses_a_start_time_that_is_not_the_lead(tmp_path):
     """A cycle/lead pair that does not date the experiment is refused.
 

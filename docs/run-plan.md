@@ -146,9 +146,13 @@ source's documented chain. Neither chain is re-implemented here.
 **gfs** runs `gpuwm go` — the documented chain, and the only thing that
 relays the integrity digests between stages without a person carrying
 them. run-plan builds the same argparse namespace the `go` subcommand
-builds and hands `go_main` an observer. Its scope is `go`'s scope, so
-`go`'s refusals (an ERA5 `[case_data]` config, a tree, another source)
-surface verbatim as a `failed` event.
+builds and hands `go_main` an observer, with trees allowed: a
+multi-domain config keeps the same preparation stages and dispatches
+the forecast to `gpuwm-prepared-tree-forecast`, binding the sha256 of
+the hierarchy document rw-wps left in the prepared root. `go`'s other
+refusals (an ERA5 `[case_data]` config, another source) surface
+verbatim as a `failed` event, and the interactive `gpuwm go` command
+keeps its own tree refusal.
 
 **hrrr** runs its own chain, because `go` refuses the source by
 construction (`ORCHESTRATED_SOURCES = ("gfs",)`): fetch →
@@ -181,8 +185,8 @@ disk before the forecast starts.
 
 Multi-domain HRRR is refused with a sentence naming the limitation and
 the chain that does run it (`gpuwm.hrrr_hierarchy_direct`, then
-`gpuwm-prepared-tree-forecast`). Multi-domain GFS is likewise not
-reachable; see the note at the end of this file.
+`gpuwm-prepared-tree-forecast`); see the note at the end of this file.
+Multi-domain GFS runs, as above.
 
 `physics_profile` is passed to the HRRR preparer only when the plan
 states it (as an intent key or a run option). The route owns its own
@@ -236,7 +240,7 @@ or reordered line, never a skipped one, and the reader refuses it.
 | `resolved_plan` | `configuration`, `automatic_resolutions`, `config_sha256`, `config_source`, `run_options` | after the config loads, before any device work |
 | `stage_started` | `stage`, `phase` | a stage opens |
 | `stage_finished` | `stage`, `wall_seconds`, `phases`, (`receipts`, `outcome`) | that stage closes |
-| `model_progress` | `domain`, `outer_step`, `model_seconds`, `wall_seconds`, `speed_x`, `step_ms`, `phase` | each outer step |
+| `model_progress` | `domain`, `outer_step`, `model_seconds`, `wall_seconds`, `speed_x`, `step_ms`, `phase`, (`domains`) | each outer step |
 | `output_committed` | `domain`, `valid_time`, `path` | a wrfout is durable on disk |
 | `model_progress` (polled) | as above plus `source: "stage_progress_file"`, `step_ms: null` | a `prepared` stage that runs as a subprocess, sampled from its own progress file |
 | `warning` | `code`, `message`, (`detail`) | anything worth saying, nothing worth stopping for |
@@ -253,6 +257,12 @@ The finer pipeline phases inside a stage are not lost — they arrive on
 `speed_x` and `step_ms` are `null` rather than an infinity when no wall
 time has elapsed yet. A rate over no elapsed wall is undefined, not
 large.
+
+`domains` appears only on a domain tree with more than one clock: a
+list of `{domain, model_seconds}` giving each grid's own clock, the
+`domain`/`model_seconds` pair at the top level staying the root's. Its
+absence means the root **is** the tree, so single-domain consumers see
+the stream they always saw.
 
 `output_committed` is raised at the moment the file is genuinely durable
 — after the writer has fsynced it, validated it against its own
@@ -536,20 +546,23 @@ name, and absent means nothing happens.
 
 ## What the `prepared` route does not reach yet
 
-Single-domain **gfs** and **hrrr** both run. What remains unreachable:
-
-**Multi-domain GFS.** `rw-wps` prepares the whole hierarchy in one call
-and prints a preparation-receipt digest that
-`gpuwm-prepared-tree-forecast` requires. `go` refuses trees outright, so
-there is no chain to drive — driving it means owning that two-stage
-relay, which is new orchestration rather than reuse.
+Single-domain **gfs** and **hrrr** both run, and so do **GFS domain
+trees**: `rw-wps` prepares the whole hierarchy in one call, and run-plan
+owns the relay the manual chain used to need a person for — the
+forecast stage reads the hierarchy document the preparation left in the
+prepared root (`proof.json` or `receipt.json`, matched on schema
+against the tree runner's own table) and binds its digest for
+`gpuwm-prepared-tree-forecast`. The estimate is tree-aware
+(`peak_envelope_bytes` beside the pool request) and `model_progress`
+carries a per-domain clock list when the tree has more than one domain.
+What remains unreachable:
 
 **Multi-domain HRRR.** Needs a third stage
 (`python -m gpuwm.hrrr_hierarchy_direct`) between the preparation and
 the forecast, and the tree runner rather than the single-domain one.
 Refused with that named.
 
-The enabling seams for all of the above are already in place: both
+The enabling seams for that are already in place: both
 prepared runners take `observer=` on `run_*` and on `main()`, and
 `PerDomainWrfoutWriters.attach_progress_callback` binds the output hook
 late. What is missing is the chain, not the observability.

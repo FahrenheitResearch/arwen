@@ -613,7 +613,7 @@ def test_a_passing_prepared_run_ends_with_completed_not_failed(
     chain = tmp_path / "run" / "chain"
     forecast = chain / "run"
 
-    def fake_go_main(args, *, observer=None):
+    def fake_go_main(args, *, observer=None, **_):
         forecast.mkdir(parents=True, exist_ok=True)
         # The real filename function: WRF spells the valid time with
         # colons, which Windows will not accept in a path, so the
@@ -687,7 +687,7 @@ def test_go_delivered_intent_keys_are_forwarded_to_the_chain(
 
     seen = {}
 
-    def fake_go_main(args, *, observer=None):
+    def fake_go_main(args, *, observer=None, **_):
         seen["geog_root"] = getattr(args, "geog_root", None)
         seen["data_dir"] = getattr(args, "data_dir", None)
         return 1          # stop before the summary; forwarding is the point
@@ -714,7 +714,7 @@ def test_a_run_option_beats_the_intents_copy_of_the_same_key(
 
     seen = {}
     monkeypatch.setattr(go_cli, "go_main",
-                        lambda args, *, observer=None: seen.update(
+                        lambda args, *, observer=None, **_: seen.update(
                             geog_root=getattr(args, "geog_root", None)) or 1)
     intent_geog = tmp_path / "FROM_INTENT"
     intent_geog.mkdir()
@@ -1038,7 +1038,7 @@ def test_the_run_option_is_stamped_onto_the_namespace_go_reads(
     seen = {}
     monkeypatch.setattr(
         go_cli, "go_main",
-        lambda args, *, observer=None: seen.update(
+        lambda args, *, observer=None, **_: seen.update(
             products=getattr(args, "render_products", None)) or 1)
 
     path = tmp_path / "plan.json"

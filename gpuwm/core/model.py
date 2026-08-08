@@ -960,7 +960,27 @@ def execute_experiment(
                                      io_manager.last_durable_wrfout),
                 last_checkpoint=model._last_checkpoint,
                 phase="post-d01-sync",
-                step_wall_seconds=step_wall)
+                step_wall_seconds=step_wall,
+                # The whole tree's clocks, not only the root's.  This
+                # dict was already in scope and deliberately unforwarded,
+                # which left a nested run with no per-domain advancement
+                # anywhere on the callback: a consumer that wanted it had
+                # to parse child wrfout filenames, the re-derivation the
+                # output hook exists to avoid.
+                #
+                # Additive and safe.  Every consumer of this callback
+                # takes **kwargs -- the supervisor heartbeat, both
+                # prepared runners, run-plan's observer, the verify
+                # cases -- so an extra key is a TypeError for none of
+                # them, and one that ignores it behaves exactly as
+                # before.
+                #
+                # Read, never accumulated: each value is that clock's
+                # own tick-derived figure, which is what the clock audit
+                # in tests/test_clock.py is protecting.
+                domain_clocks={
+                    grid_id: float(clock.elapsed_seconds)
+                    for grid_id, clock in clocks.items()})
 
     clocks = {node.cfg.grid_id: node.clock
               for node in model.walk_parent_first()}
