@@ -1,6 +1,11 @@
 # Changelog
 
-## 1.8.8 (2026-08-10)
+## 1.8.9 (2026-08-10)
+
+1.8.8 was tagged but never published: the RW-WPS staging gate refused the
+standalone preprocessing wheel, so nothing reached PyPI. The tag stays where
+it is, because tags here are forward-only. Everything 1.8.8 carried ships
+here, plus the first fix below.
 
 New:
 - MYNN is selectable for a real forecast. Three shipped suites pair the
@@ -25,6 +30,13 @@ New:
   `tools/report_physics_composition_walk.py --table`.
 
 Fixed:
+- The standalone RW-WPS preprocessing wheel builds again, which is why
+  1.8.8 was withdrawn. Two imports added during that line reached modules
+  the wheel does not carry, one inside a refusal that fires when a config
+  loads: a standalone user who tripped it got an import error instead of
+  the sentence written for them. Both are resolved at the source rather
+  than waived, and the staging scan that caught them now runs in the
+  first-stage battery instead of only at a release cut.
 - Two refusals you could not act on. `km_opt = 2` with a PBL scheme on
   offered `km_opt 3/4`, but the branch above refuses 3 for the same reason;
   it names `km_opt = 4` now and says why 3 is not an option. The coupled
@@ -42,10 +54,10 @@ Fixed:
   menus. The revised MM5 surface layer was one of the three: the page said no
   config could reach it, while `sf_sfclay_physics = 1` is accepted and runs.
   The MYNN rows called the 5/5 PBL/surface-layer pairing mandatory both ways
-  when only the surface layer restricts its partner; what is genuinely pinned
-  is MYNN's twelve `bl_mynn_*`/`icloud_bl` knobs, each with one implemented
-  value. `tests/test_physics_md_reachability_claims.py` derives all of it
-  from the registry, the walk receipt and `build_experiment`.
+  when only the surface layer restricts its partner; what is pinned is MYNN's
+  twelve `bl_mynn_*`/`icloud_bl` knobs, each with one implemented value.
+  `tests/test_physics_md_reachability_claims.py` derives all of it from the
+  registry, the walk receipt and `build_experiment`.
 - `--materialize-authorities` no longer replaces a physics value your config
   states. It deleted all 26 profile-owned keys and rewrote them from the
   named profile, silently, into a file every later stage binds by hash: a
@@ -99,16 +111,16 @@ Fixed:
   `gpuwm.certify.verdict.CONDITIONS`.
 - The bundled renderer is checked against a contract, like every other
   bundled binary. `rw_wrfbatch` was asked only whether it started, so two
-  builds two days and 4 MB apart, neither from this tree, both printed the
-  usage line, were reported `verified`, and drew the plots. It answers
+  builds two days and 4 MB apart, neither from this tree, printed the usage
+  line, were reported `verified`, and drew the plots. It answers
   `--abi` now with the handshake `rw_fetch` and `rw_nexrad` have always
   answered, pinned in `gpuwm.rustwx.RENDERER_ABI_MARKER`. `gpuwm doctor`
   reports a mismatch with the rebuild remedy and lets the run proceed,
   matplotlib being the documented fallback; the rust render suite skips a
   foreign engine rather than substituting it.
 - `gpuwm render --engine rust` went around that check. Only `--engine auto`
-  probed, so the one caller who pinned the engine to be sure of the real
-  renderer was the one caller who did not get it. Both forms ask the same
+  probed, so the caller who pinned the engine to be sure of the real
+  renderer was the one who did not get it. Both forms ask the same
   question now: `auto` falls back with the reason, `rust` refuses with exit
   2. `--list-products` with no wrfout resolves its own engine and prints the
   same refusal instead of a traceback.
@@ -124,37 +136,33 @@ Fixed:
   forecast: `initialize_physics` defaulted `glw = 300.0` and no production
   call site passed anything else. Radiative equilibrium at 300 W m-2 is
   269.7 K; a Gulf-coast October night runs near 410 W m-2, or 291.6 K. That
-  deficit craters skin temperature, collapses the surface saturation humidity
+  deficit craters skin temperature, takes the surface saturation humidity
   with it, and produced the reported nocturnal dewpoint collapse. `glw` has
-  NO default now. The field has three honest origins and a run must have one:
-  a longwave scheme owns it, the caller types a constant or hands over a
-  source array, or nothing reads or publishes it. Anything else is refused,
-  naming the selectors, the number it would have fabricated, and three
-  remedies. WRF v4.6.1 refuses the same shortwave-only pairing outright, its
-  `lwrad_select` having no `lw = 0` case
-  (`phys/module_radiation_driver.F:2245`).
+  NO default now: a longwave scheme owns the field, or the caller types a
+  constant or hands over a source array, or nothing reads or publishes it.
+  Anything else is refused, naming the selectors, the number it would have
+  fabricated, and three remedies. WRF v4.6.1 refuses the same shortwave-only
+  pairing outright (`phys/module_radiation_driver.F:2245`).
 - Radiation entirely off is covered by the same rule, and is where gpuwm
   deliberately parts from WRF. That suite attached no radiation adapter,
   while Noah, Noah-MP and RUC read downward longwave every surface step, so
   the run integrated a constructor seed nobody chose. WRF's answer there is
-  0 W m-2, which is not a thin atmosphere but an absent one, and a column
-  under it cools without bound; gpuwm does not copy that. With a land surface
-  attached the pairing is refused at load, and a run that declares it
-  integrates `gpuwm.core.physics.DECLARED_CONSTANT_GLW_WM2`, 300 W m-2, as a
-  stated constant named in the run receipt. With no land surface nothing
-  reads or publishes the field and nothing fires. A run that has a longwave
-  scheme is byte-for-byte what it was.
+  0 W m-2, an absent atmosphere rather than a thin one, and a column under
+  it cools without bound; gpuwm does not copy that. With a land surface
+  attached the pairing is refused at load, and a declared run integrates
+  `gpuwm.physics_compat.DECLARED_CONSTANT_GLW_WM2`, 300 W m-2, named in the
+  run receipt. With no land surface nothing reads the field and nothing
+  fires. A run with a longwave scheme is byte-for-byte what it was.
 - A real experiment whose downward longwave would be consumed (a land
   surface with no longwave scheme) or published (shortwave on with no
   longwave scheme, so the GLW row reaches every wrfout frame) refuses at
   config load, at the one loader every front door shares, with its own
   acknowledgement: `constant-downward-longwave-v1`. The load guard and
   `initialize_physics` refuse the SAME selector set, so a config either fails
-  at the door or runs; it cannot pass the door and die mid-preparation. This
-  is deliberately NOT the 1.7.1 nocturnal token, which is checked before any
-  physics is inspected and so lifted this question too. Every
-  resolved-configuration report names each domain's downward-longwave source
-  on a `radiation.downward_longwave` line.
+  at the door or runs. This is deliberately NOT the 1.7.1 nocturnal token,
+  which is checked before any physics is inspected and so lifted this
+  question too. Every resolved-configuration report names each domain's
+  downward-longwave source on a `radiation.downward_longwave` line.
 - `configs/era5_wrf_direct_proof.toml`, `configs/gfs_wrf_direct_proof.toml`
   and `configs/gfs_wrf_hierarchy_proof.toml` ship with real radiation (legacy
   RRTMG on both streams, matching their paired stock-WRF namelists, which now
@@ -184,24 +192,20 @@ Fixed:
   trees at 4.23 on d04, 17x the limit and the exact configuration that
   aborted a run at step 5467 with `w = 239.48 m/s`. All four run
   `mix_isotropic = 1` on their LES children now. That key is inside the
-  restart fingerprint, so these trees run from t = 0. None has been
-  re-scored: every published number for them was measured on the old
-  bytes.
+  restart fingerprint, so these trees run from t = 0, and none has been
+  re-scored: every published number for them was measured on the old bytes.
 - The configuration a committed receipt was produced under is archived at
   `configs/frozen/`, pinned by sha256, and it loads. Each of the three
   records there declares the constant downward longwave its run always had,
-  so the loader accepts the file instead of refusing it, the sha256 gate
-  passes, and reproducing one of those runs gives the same physics the
-  archived run had. No physics selector moved and no committed receipt was
-  edited, so a record now carries two digests: the as-run one its receipts
-  name, and the on-disk one a reproduction passes.
-  `configs/frozen/README.md` publishes both and says which is which.
-  `docs/public/LES.md` and `docs/public/GRAYZONE-NEST.md` say now that their
-  measured numbers belong to the archived configuration rather than to the
-  configs those pages name.
-- Three more shipped configurations pass `gpuwm check` than before this
-  work: the three frozen LES records, which the new constant-longwave guard
-  refused until their declarations were written down.
+  so the loader accepts the file, the sha256 gate passes, and reproducing
+  one of those runs gives the same physics the archived run had. Those three
+  are why `gpuwm check` passes on three more shipped configurations than it
+  did. No physics selector moved and no committed receipt was edited, so a
+  record now carries two digests: the as-run one its receipts name, and the
+  on-disk one a reproduction passes. `configs/frozen/README.md` publishes
+  both and says which is which. `docs/public/LES.md` and
+  `docs/public/GRAYZONE-NEST.md` say now that their measured numbers belong
+  to the archived configuration rather than to the configs those pages name.
 - `tests/test_shipped_configs_mixing_stability.py` fails if any config under
   `configs/` arrives on the exposed mixing path, and it runs on every release
   cut; the criterion used to be checked only when somebody loaded a config
@@ -209,21 +213,19 @@ Fixed:
   its content hash.
 - The criterion is no longer skipped on a config that writes no eta ladder.
   `km_opt = 3` with `mix_isotropic = 0` at `dx = 100` m and no `eta_levels`
-  is the exact shape the criterion exists for, and it used to load in
-  silence, pass `gpuwm check` in silence, and be reported clean. The depths
-  are resolved the way the model resolves them now: uniform interfaces from
-  `nz`, with `ztop` converted to a pressure by the exact inverse of the
-  relation the depths are read with. This reverses a 1.6.0 ruling that
-  skipped such coordinates; downstream, a skip was indistinguishable from a
-  pass.
+  is the exact shape the criterion exists for, and it used to load and pass
+  `gpuwm check` in silence, reported clean. The depths are resolved the way
+  the model resolves them now: uniform interfaces from `nz`, with `ztop`
+  converted to a pressure by the exact inverse of the relation the depths
+  are read with. This reverses a 1.6.0 ruling that skipped such coordinates;
+  downstream, a skip was indistinguishable from a pass.
 - Where no depth can be produced at all, the criterion says so instead of
   going quiet. A model top above the analytic base state's ~24.6 km ceiling
   has no representable pressure, so such a domain sits on the exposed path
   with no number to judge it by. There is still no ratio, because a
-  fabricated depth in a stability criterion is worse than none; a separate
-  advisory fires instead, naming what could not be resolved and the two
-  remedies that apply: declare `eta_levels` and `p_top`, or set
-  `mix_isotropic = 1`.
+  fabricated depth in a stability criterion is worse than none; an advisory
+  fires instead, naming what could not be resolved and the two remedies:
+  declare `eta_levels` and `p_top`, or set `mix_isotropic = 1`.
 - `gpuwm check` repeats the mixing advisory in its report and under
   `advisories` in `--json`; the 1.6.0 run had been warned at config load,
   hours before it died. The advisory is tiered now: a ratio that inverts the

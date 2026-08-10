@@ -111,21 +111,22 @@ from gpuwm.ingest.soil import NOAH_LAYER_THICKNESS_M
 
 #: THE DECLARED CONSTANT downward longwave, in W m-2.  It is a number a
 #: caller may TYPE.  It is not a measurement, it is not a scheme, and no
-#: default hands it out.
+#: default hands it out: :func:`initialize_physics` takes ``glw`` with no
+#: default at all, and :func:`_resolve_initial_glw` names this constant
+#: for the two branches that have no longwave scheme to write one.
 #:
-#: Provenance.  Through 1.8.7 this value was the ``glw=300.0`` DEFAULT of
-#: :func:`initialize_physics`, and ``gpuwm/core/dudhia.py`` -- shortwave
-#: only -- returns ``glw=fields["glw"]``, the array it was handed, echoed
-#: back untouched.  No production call site ever passed ``glw=``.  So every
-#: run with ``ra_lw_physics = 0`` had a downward longwave of exactly
-#: 300.0 W m-2, everywhere, for the whole forecast: a plausible-looking
-#: number that never responded to temperature, humidity or cloud.  It
-#: produced a real user report -- 2 m dewpoints collapsing tens of degrees
-#: below the airmass over the Gulf warm sector overnight -- because
-#: radiative equilibrium at 300 W m-2 is 269.7 K (25.8 F) while a Gulf-coast
-#: October night runs near 410 W m-2, or 291.6 K (65.2 F).  A ~105 W m-2
-#: nightly deficit craters skin temperature, and surface saturation
-#: humidity follows it down.
+#: DEFINED ONE LAYER DOWN, in :mod:`gpuwm.physics_compat`, and re-exported
+#: here rather than the other way round.  The config-load refusals that
+#: quote the number -- ``constant_longwave_refusal`` and
+#: ``radiation_off_land_surface_refusal`` -- sit there beside
+#: ``CONSTANT_DOWNWARD_LONGWAVE_ACK``, the token that declares it, and
+#: they have to be able to state the number without importing a CUDA
+#: engine to read it.  The standalone RW-WPS preprocessing wheel is where
+#: that became load-bearing: it stages ``gpuwm/physics_compat.py`` and
+#: forbids ``gpuwm/core/physics.py``, so a refusal that reached up here
+#: for the constant raised ImportError instead of refusing.  One number,
+#: one definition, owned by the layer that can ship on its own; the
+#: provenance of the value is written at that definition.
 #:
 #: WHY 300.0 AND NOT SOMETHING BETTER.  The value is unchanged so that the
 #: idealised single-column cases that have always used it keep the
@@ -133,9 +134,8 @@ from gpuwm.ingest.soil import NOAH_LAYER_THICKNESS_M
 #: (``docs/superpowers/plans/2026-07-14-gpuwm-phase3.md``: "constant
 #: GLW=300 W/m^2 on a vegetated land column").  Making it a better number
 #: would silently move every one of them; making it explicit does not move
-#: any of them.  It is legitimate for an idealised column and illegitimate
-#: for a real case, and the difference is now stated rather than assumed.
-DECLARED_CONSTANT_GLW_WM2 = 300.0
+#: any of them.
+from gpuwm.physics_compat import DECLARED_CONSTANT_GLW_WM2
 
 _WSM6_MINOR_DT_SECONDS = np.float32(120.0)
 _FP32_SIGNIFICAND_SCALE = 1 << 24

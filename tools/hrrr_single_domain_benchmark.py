@@ -3562,6 +3562,7 @@ def run(args):
     from gpuwm.core.model import (
         DomainNode, ExperimentState, ModelRuntimeStatus, execute_experiment)
     from gpuwm.state_digest import canonical_state_digest
+    from gpuwm.runtime import declared_constant_glw
     from gpuwm.ingest.hrrr_physics import initialize_hrrr_physics
 
     if pipeline_producer is not None:
@@ -3570,7 +3571,6 @@ def run(args):
             args, pipeline_report, source_hash_receipt, source_window)
 
     started = time.perf_counter()
-    from gpuwm.runtime import declared_constant_glw
     driver = initialize_hrrr_physics(
         root_result, dc.run, root_met, static, attrs, grid,
         initial_snapshot.valid_time,

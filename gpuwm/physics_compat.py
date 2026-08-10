@@ -961,6 +961,40 @@ ASYMMETRIC_RADIATION_NOCTURNAL_ACK = (
 )
 
 
+#: THE DECLARED CONSTANT downward longwave, in W m-2.  It is a number a
+#: caller may TYPE.  It is not a measurement, it is not a scheme, and no
+#: default hands it out.
+#:
+#: WHY IT IS DEFINED HERE and re-exported by :mod:`gpuwm.core.physics`
+#: rather than the other way round.  The two config-load refusals that
+#: quote the number -- :func:`constant_longwave_refusal` and
+#: :func:`radiation_off_land_surface_refusal` -- sit in this module beside
+#: :data:`CONSTANT_DOWNWARD_LONGWAVE_ACK`, the token that declares it, and
+#: a refusal must be able to state the number without importing a CUDA
+#: engine to read it.  The standalone RW-WPS preprocessing wheel is where
+#: that stopped being a preference: it stages ``gpuwm/physics_compat.py``
+#: and forbids ``gpuwm/core/physics.py``, so the refusal that reached
+#: upward for this constant raised ImportError instead of refusing, for
+#: every user who hit it.  One number, one definition, owned by the layer
+#: that can ship on its own.
+#:
+#: Provenance.  Through 1.8.7 this value was the ``glw=300.0`` DEFAULT of
+#: :func:`gpuwm.core.physics.initialize_physics`, and
+#: ``gpuwm/core/dudhia.py`` -- shortwave only -- returns
+#: ``glw=fields["glw"]``, the array it was handed, echoed back untouched.
+#: No production call site ever passed ``glw=``.  So every run with
+#: ``ra_lw_physics = 0`` had a downward longwave of exactly 300.0 W m-2,
+#: everywhere, for the whole forecast: a plausible-looking number that
+#: never responded to temperature, humidity or cloud.  It produced a real
+#: user report -- 2 m dewpoints collapsing tens of degrees below the
+#: airmass over the Gulf warm sector overnight -- because radiative
+#: equilibrium at 300 W m-2 is 269.7 K (25.8 F) while a Gulf-coast October
+#: night runs near 410 W m-2, or 291.6 K (65.2 F).  A ~105 W m-2 nightly
+#: deficit craters skin temperature, and surface saturation humidity
+#: follows it down.
+DECLARED_CONSTANT_GLW_WM2 = 300.0
+
+
 #: Declared-experiment acknowledgement for integrating a real case whose
 #: downward longwave is a CONSTANT rather than a computed flux.
 #:
@@ -977,8 +1011,8 @@ ASYMMETRIC_RADIATION_NOCTURNAL_ACK = (
 #:
 #: What it declares: every domain of this experiment that runs a
 #: land-surface scheme with ``ra_lw_physics = 0`` will consume
-#: :data:`gpuwm.core.physics.DECLARED_CONSTANT_GLW_WM2` as its downward
-#: longwave for the whole forecast, and the run receipt will say so.
+#: :data:`DECLARED_CONSTANT_GLW_WM2` as its downward longwave for the
+#: whole forecast, and the run receipt will say so.
 CONSTANT_DOWNWARD_LONGWAVE_ACK = "constant-downward-longwave-v1"
 
 
@@ -1416,11 +1450,9 @@ def radiation_off_land_surface_refusal(
                      f"and ra_sw_physics 0{written})")
         remedy = ("Choose a suite with both radiation streams on (e.g. "
                   f"{MORRISON_PROFILE_ID}, the wizard's default)")
-    # The number the DECLARED branch actually runs, read from the engine
-    # rather than restated: a refusal that steers by a number no
-    # reachable run uses is worse than one that gives none.
-    from gpuwm.core.physics import DECLARED_CONSTANT_GLW_WM2
-
+    # The number the DECLARED branch actually runs, single-sourced from
+    # the module constant rather than restated: a refusal that steers by
+    # a number no reachable run uses is worse than one that gives none.
     declared_constant = f"{DECLARED_CONSTANT_GLW_WM2:g}"
     return layered(
         f"domain(s) {grid_ids} run a land-surface model ({surface_name}) "
@@ -1444,7 +1476,7 @@ def radiation_off_land_surface_refusal(
         "no scheme at all.  Declare the experiment and the land surface "
         f"integrates {declared_constant} W m-2 every step for the whole "
         "run -- gpuwm's declared constant "
-        "(gpuwm.core.physics.DECLARED_CONSTANT_GLW_WM2), not WRF's "
+        "(gpuwm.physics_compat.DECLARED_CONSTANT_GLW_WM2), not WRF's "
         "answer: WRF sets GLW = 0 for a longwave-free run "
         "(phys/module_physics_init.F:1168-1170 and "
         "phys/module_radiation_driver.F:1719-1722) and gpuwm deliberately "

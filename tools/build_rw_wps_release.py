@@ -201,6 +201,14 @@ _OPTIONAL_STAGED_IMPORTS = {
         "forecast-only output branch after the public --prepare-only return",
     ("tools/hrrr_single_domain_benchmark.py", "gpuwm.state_digest"):
         "forecast-only evidence branch after the public --prepare-only return",
+    ("tools/hrrr_single_domain_benchmark.py", "gpuwm.runtime"):
+        "forecast-only physics setup after the public --prepare-only "
+        "return: declared_constant_glw supplies initialize_hrrr_physics "
+        "with the declared downward longwave, and nothing on the "
+        "--prepare-only path calls it. The tool itself cannot be dropped "
+        "instead -- it is a member of native_wrf_distribution.HRRR_HELPERS, "
+        "so the sealed-runtime receipt refuses an installation that is "
+        "missing it",
     ("gpuwm/ingest/hrrr_physics.py", "gpuwm.core.physics"):
         "forecast-only physics setup after the public --prepare-only return",
 }

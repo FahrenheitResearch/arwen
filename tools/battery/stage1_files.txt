@@ -252,3 +252,20 @@ tests/test_battery_route.py
 # listed suite compared them.  A receipt gate without its render gate is
 # half a gate.
 tests/test_ftz_render.py
+
+# The 1.8.9 rebadge, and the reason there is one.  The wheel-staging gate
+# in tools/build_rw_wps_release.py is the only thing that proves the
+# standalone RW-WPS preprocessing wheel can be built and imported without
+# CuPy, and it ran only at a release cut.  Two imports added during the
+# 1.8.8 line pointed at modules that wheel deliberately does not carry;
+# nothing said so until the cut, the tag was already spent, and the
+# release became 1.8.9.  The WDM6 verifier's durability finding had
+# already named this suite and the one below as ungated coverage.
+tests/test_native_wrf_distribution.py
+
+# Named ungated by the same durability finding.  It pins that every
+# evidence axis a receipt publishes is one the readers agree on, which is
+# the class of drift that only shows up when a document and the tool that
+# derives it move in different commits -- exactly what stage 1 exists to
+# catch before a cut does.
+tests/test_evidence_axes.py
