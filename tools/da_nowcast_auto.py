@@ -71,13 +71,15 @@ from pathlib import Path
 
 try:                                    # python -m tools.da_nowcast_auto
     from tools import da_ensemble_state as ens_state
-    from tools.da_nowcast import (RadarSelection, cycle_cmd, iso, obs_cmd,
+    from tools.da_nowcast import (NOWCAST_DEFAULT_PHYSICS_PROFILE,
+                                  RadarSelection, cycle_cmd, iso, obs_cmd,
                                   parse_iso, render_cmd,
                                   resolvable_length_scale_km,
                                   spawn_detached, validate_site)
 except ImportError:                     # python tools/da_nowcast_auto.py
     import da_ensemble_state as ens_state
-    from da_nowcast import (RadarSelection, cycle_cmd, iso, obs_cmd,
+    from da_nowcast import (NOWCAST_DEFAULT_PHYSICS_PROFILE,
+                            RadarSelection, cycle_cmd, iso, obs_cmd,
                             parse_iso, render_cmd,
                             resolvable_length_scale_km,
                             spawn_detached, validate_site)
@@ -699,7 +701,9 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
                              "instead of siting one on the echo -- the "
                              "box a caller drew")
     parser.add_argument("--physics-profile",
-                        default="wsm6-ysu-mm5-noah-no-radiation-v1")
+                        default=NOWCAST_DEFAULT_PHYSICS_PROFILE,
+                        help="shipped physics profile for every stage "
+                             f"(default {NOWCAST_DEFAULT_PHYSICS_PROFILE})")
     parser.add_argument("--solve-device", default="cuda",
                         choices=("cuda", "host"))
     parser.add_argument("--epoch-hours", type=int, default=EPOCH_HOURS,

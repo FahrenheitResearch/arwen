@@ -336,14 +336,18 @@ gpuwm fetch --source hrrr --cycle 2026-07-28T00 --hours 18 \
 
 ## 20CRv3 (ensemble members, you supply the files)
 
-An **experimental, runnable** route for NOAA-CIRES-DOE Twentieth Century
-Reanalysis version 3 ensemble members. It is not certified: the route is
-not yet accepted by unchanged stock WRF (that gate is pending), and it
-certifies neither other 20CR products, nor arbitrary members mixed in
-one run, nor a larger domain count than the mapping's `max_dom = 4`.
+Point this **experimental, runnable** route at NOAA-CIRES-DOE Twentieth
+Century Reanalysis version 3 member GRIB2 files you already hold, and it
+initializes a run from them. Getting hold of the files is the one part
+ArWen does not do for you: there is no fetch route here, so
+`--source-root` takes a directory you filled yourself.
 
-**There is no fetch route, and this one is not self-serve.** You supply
-the member GRIB2 files. Obtaining every-member 20CRv3 GRIB2 typically
+It is not certified: the route is not yet accepted by unchanged stock
+WRF (that gate is pending), and it certifies neither other 20CR
+products, nor arbitrary members mixed in one run, nor a larger domain
+count than the mapping's `max_dom = 4`.
+
+Obtaining every-member 20CRv3 GRIB2 typically
 requires access to the NOAA-CIRES-DOE 20CRv3 archive holdings -- for
 instance through the project's own collaboration channels -- rather than
 an ordinary download; the publicly downloadable 20CRv3 products are

@@ -198,6 +198,32 @@ def analytic_base_terrain_height(surface_pressure: float,
                  / (2.0 * c.G))
 
 
+def analytic_base_pressure(height: float,
+                           base_temp: float = 290.0) -> float | None:
+    """WRF's analytic base-state ``p_s(z)``: the forward relation.
+
+    ``module_initialize_real.F:3787-3803`` again, unsolved this time --
+    ``p_s = p00*exp(-t00/a + sqrt((t00/a)^2 - 2*g*z/(a*Rd)))`` -- so that
+    a caller holding a model top in METRES can express it as the pressure
+    :func:`base_layer_depths` needs, in the SAME base state that function
+    inverts.  The pair round-trips: a coordinate resolved this way spans
+    exactly ``[0, height]``, which is what makes it usable as a stand-in
+    for a ladder a config declined to write out.
+
+    ``None`` when the square root's argument goes negative.  The profile
+    carries a 50 K lapse in ``ln p`` and so runs out of atmosphere at
+    ``(t00/a)^2 * a*Rd/(2g)`` -- about 24.6 km for the 290 K default.  A
+    model top above that has no representable base pressure here, and a
+    caller must be told that rather than handed a fabricated one.
+    """
+
+    ratio = float(base_temp) / _BASE_LAPSE_K
+    inner = ratio ** 2 - 2.0 * c.G * float(height) / (_BASE_LAPSE_K * c.RD)
+    if inner < 0.0:
+        return None
+    return float(c.P0 * np.exp(-ratio + np.sqrt(inner)))
+
+
 def base_layer_depths(znw: np.ndarray, hybrid_opt: int, etac: float,
                       p_top: float, base_temp: float = 290.0) -> np.ndarray:
     """Base-state layer depths in metres for one vertical coordinate.

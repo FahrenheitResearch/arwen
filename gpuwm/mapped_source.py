@@ -3103,6 +3103,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--grib2-inventory", type=Path)
     parser.add_argument("--grib2-dump", type=Path)
     args = parser.parse_args(argv)
+    # The evidence this prints is only as bindable as the tree that
+    # produced it, so the tree is named before the evidence.
+    import sys
+
+    from gpuwm.provenance_gate import announce_for_main
+
+    refusal = announce_for_main("gpuwm-mapped-inspect")
+    if refusal is not None:
+        print(f"gpuwm-mapped-inspect: {refusal}", file=sys.stderr)
+        return 2
     report = inspect_mapped_source(
         args.mapping, args.inputs,
         input_manifest=args.input_manifest,

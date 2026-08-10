@@ -126,13 +126,21 @@ def _validate_prepared_near_surface(result, met, cfg) -> Mapping[str, np.ndarray
 
 def initialize_prepared_physics(
         result, cfg, met, surface, static, landuse_attrs, grid, valid_time, *,
-        center_lat=None):
+        center_lat=None, constant_glw_wm2=None):
     """Attach physics to one restored source-neutral prepared initial state.
 
     ``surface`` is the canonical Noah inventory persisted with direct GFS and
     ERA5 caches.  Every field is validated before device allocation.  The
     actual land-use, diagnostics, physics-driver, and near-surface setup is the
     same implementation used by the native HRRR runner.
+
+    ``constant_glw_wm2`` is the DECLARED constant downward longwave, for a
+    suite that runs a land-surface scheme with ``ra_lw_physics = 0``.  The
+    caller reads it off the experiment's acknowledgements
+    (:func:`gpuwm.runtime.declared_constant_glw`); ``None`` -- the normal
+    answer -- lets the attached longwave scheme own the field, and makes
+    :func:`~gpuwm.core.physics.initialize_physics` refuse an undeclared
+    suite that has no longwave scheme at all.
     """
 
     import cupy as cp
@@ -178,6 +186,7 @@ def initialize_prepared_physics(
         vegfra=vegfra, tmn=fields["TMN"], xice=fields["SEAICE"],
         snow=fields["SNOW"], snow_depth=fields["SNOWH"],
         sst=fields.get("SST", fields["TSK"]),
+        glw=constant_glw_wm2,
         radiation_start_time=valid_time, radiation_latitude=lat,
         radiation_longitude=lon)
     driver.fields["snoalb"][...] = cp.asarray(
@@ -209,7 +218,8 @@ def initialize_prepared_physics(
 
 
 def initialize_hrrr_physics(
-        result, cfg, met, static, attrs, grid, valid_time):
+        result, cfg, met, static, attrs, grid, valid_time, *,
+        constant_glw_wm2=None):
     """Initialize physics, accepting either host or device ingestion fields."""
 
     from types import MappingProxyType, SimpleNamespace
@@ -228,7 +238,7 @@ def initialize_hrrr_physics(
     }
     return initialize_prepared_physics(
         result, cfg, met, surface, static, landuse_attrs, grid, valid_time,
-        center_lat=attrs["CEN_LAT"])
+        center_lat=attrs["CEN_LAT"], constant_glw_wm2=constant_glw_wm2)
 
 
 __all__ = ["initialize_hrrr_physics", "initialize_prepared_physics"]

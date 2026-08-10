@@ -54,7 +54,25 @@ bitwise identical (the no-ECC corruption screen).
 |---|---|---|---|
 | d01 | 3 km | **YSU, km_opt 4** (default) | The acceptance ladder's 3200 m rung was advisory-only, never gated — Shin-Hong's own boundary-layer depth shallows there and the rung sits on block-degenerate ground. Switching the coarse parent to 11 is an **owner option, not the default**. |
 | d02 | 750 m | **Shin-Hong 11, km_opt 4** | 750 m is inside the gray zone (dx between ~2 km and the child). This is exactly the `sweep_config(dx, 11)` configuration the ladder scored — Shin-Hong vertical transport, horizontal Smagorinsky — and every gated rung 1600/800/400/200/100 m landed inside its pre-registered Honnert (2011) band ([receipt](receipts/grayzone/PHASE1-SHINHONG-20260803.md)). At d02's scale the ladder read subgrid TKE fraction ≈ 0.83 (800 m rung) where every flat closure read ≈ 0.35 — and Finding 1 above is that the real case did not reproduce this. |
-| d03 | 250 m | **PBL off, km_opt 3** | Unchanged from the shipped LES child block, byte for byte: `c_s = 0.25`, `mix_isotropic = 0`, `mix_upper_bound = 0.1`, `isfflx = 1`. |
+| d03 | 250 m | **PBL off, km_opt 3** | Unchanged from the shipped LES child block, byte for byte: `c_s = 0.25`, `mix_isotropic = 1`, `mix_upper_bound = 0.1`, `isfflx = 1`. |
+
+> **`mix_isotropic` moved from 0 to 1 on 2026-08-09, in both files at
+> once.** At 0 the 250 m child sat at `mix_upper_bound·(dz_max/dx)² =
+> 0.702`, 2.8× the explicit horizontal diffusion limit — the same
+> criterion that read 4.23 on a 100 m tornado child and aborted that run
+> ([LES.md](LES.md) §4). **Every number on this page and in the P4
+> receipts was measured at `mix_isotropic = 0`**; that configuration is
+> archived at `configs/frozen/les_nest_250m_grayzone.toml` and
+> `configs/frozen/les_nest_250m_km3.toml`, whose as-run digests
+> `d3eb6c70c0…` and `2a3a279b6d…` are what the receipts name. Both files
+> gained a radiation declaration at 1.8.8 so they would keep loading, which
+> moved their own digests and no physics selector;
+> `configs/frozen/README.md` carries both numbers and what a reproduction
+> passes. The
+> shipped pair has not been re-scored, and the change does not touch the
+> findings below: it is applied identically to both files, so the two
+> trees still differ by exactly the d02 `bl_pbl_physics` row and the
+> comparison the campaign made is still a comparison of one row.
 
 The per-domain reading was cut from the idealized ladder: a parent whose
 dx lies between ~2 km and its LES child selects `bl_pbl_physics = 11`
@@ -63,22 +81,22 @@ elects otherwise; the LES child stays PBL-off with its LES closure.
 Whether that rule survives on real cases is exactly what Finding 1 puts
 to the adjudication.
 
-## What Shin-Hong on d02 does and does not hand the child
+## What Shin-Hong on d02 hands the child, and what stays on d02
 
-- **The scheme's subgrid TKE is not handed down.** Shin-Hong computes its
-  own SGS TKE every step and publishes it as `state.e_sgs`
-  (written to its wrfout as `TKE_SHINHONG`). Like WRF — where `tke` has
-  no nest-interpolation (`i`) and no feedback (`f`) Registry flag — that
-  field stays on its own domain. The child cold-starts whatever closure
-  energy it carries, exactly as it does under a YSU parent.
-- **The km_opt=2-on-a-nest refusal does not fire here.** The refusal
-  predicate keys on a `km_opt=2` PARENT ([LES.md](LES.md) §4): under such
+- **A `km_opt=2` LES child runs under a Shin-Hong parent.** The
+  km_opt=2-on-a-nest refusal keys on a `km_opt=2` PARENT ([LES.md](LES.md) §4): under such
   a parent there is a prognostic-TKE field the parent holds and WRF
   declines to hand down, and no such tree has been run. A Shin-Hong
   parent is `km_opt = 4` — its e_sgs is a published diagnostic, not the
   closure's prognostic carrier — so it passes that predicate, and a
   `km_opt=2` child under a Shin-Hong parent is admitted on the same
   terms as under any `km_opt=4` parent.
+- **The scheme's subgrid TKE stays on d02.** Shin-Hong computes its
+  own SGS TKE every step and publishes it as `state.e_sgs`
+  (written to its wrfout as `TKE_SHINHONG`). Like WRF — where `tke` has
+  no nest-interpolation (`i`) and no feedback (`f`) Registry flag — that
+  field stays on its own domain. The child cold-starts whatever closure
+  energy it carries, exactly as it does under a YSU parent.
 
 ## Bounds inherited from the shipped tree
 

@@ -588,6 +588,7 @@ def main() -> int:
     from gpuwm.ensemble.increments import apply_increments
     from gpuwm.ensemble.member import refresh_diagnostics
     from gpuwm.ingest.hrrr_physics import initialize_prepared_physics
+    from gpuwm.runtime import declared_constant_glw
     from gpuwm.ingest.prepared_cache import restore_prepared_cache
     from gpuwm.obs.target_grid import TargetGrid
     from gpuwm.prepared_single_domain_forecast import (
@@ -918,7 +919,8 @@ def main() -> int:
         driver = initialize_prepared_physics(
             restored.initial_result, cfg, restored.met, restored.surface,
             inputs.static, inputs.landuse_identity, inputs.grid,
-            exp.start_time)
+            exp.start_time,
+            constant_glw_wm2=declared_constant_glw(exp))
         tick = resolve_clock(
             exp_leg, lbc_interval_s=float(inputs.boundary_interval_seconds))
         schedule = build_schedule(exp_leg, tick)
@@ -1146,7 +1148,8 @@ def main() -> int:
                         landuse_identity=inputs.landuse_identity,
                         valid_time=exp.start_time,
                         clock=wired.clocks[nest_child_dc.grid_id],
-                        parent_driver=driver)
+                        parent_driver=driver,
+                        constant_glw_wm2=declared_constant_glw(exp))
                 child_state = child_node.state
                 nest_entry = leg_record["trajectories"].setdefault(
                     str(name), {}).setdefault("nest", {})

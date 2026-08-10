@@ -360,9 +360,16 @@ def determinism(*, dual_run_pairs: Sequence[Mapping[str, object]],
     for pair in dual_run_pairs:
         run_id = str(pair["run_id"])
         comparison = compare_capsules(pair["capsule_a"], pair["capsule_b"])
+        # ``compared_count`` travels with ``identical``, never without it.
+        # "Identical" is the same word for a screen over one quantity and
+        # a screen over a hundred, and this row is what a reader deciding
+        # whether a card is corrupting memory actually reads.  The CLI
+        # already prints the count for the same reason; a battery row that
+        # dropped it would be the same claim with the size cut off.
         rows.append({"run_id": run_id, "identical": comparison.identical,
                      "first_divergent_field": comparison.first_divergent_field,
-                     "divergence_count": len(comparison.divergences)})
+                     "divergence_count": len(comparison.divergences),
+                     "compared_count": comparison.compared_count})
         if not comparison.identical:
             failures.append(run_id)
     rehash_rows = []

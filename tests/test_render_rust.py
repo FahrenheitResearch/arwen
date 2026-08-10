@@ -34,10 +34,185 @@ _STAMPS = ("1974-04-03_18:00:00", "1974-04-03_18:30:00")
 _LEADS = ("lead_000h00m00s", "lead_000h30m00s")
 
 RENDERER = rustwx.find_renderer()
+
+
+def _renderer_gate() -> tuple[bool, str]:
+    """(usable, why not) for THIS tree's renderer -- contract, not stat().
+
+    Task #106.  The gate used to be ``find_renderer() is None``, which is
+    a question about a filename.  The resolution ladder's last rung is
+    ``~/.gpuwm/bridges``, so on any box that has ever installed a bundle
+    the answer was yes -- and the binary answering it was whichever build
+    happened to be staged there.  A stale one turned this suite red on a
+    correct tree (catalog 153 against 168, zero generic rows) and would
+    just as readily have turned a broken tree green, because none of
+    these tests can tell which engine drew the plots.
+
+    So the gate asks the contract question instead, and it asks it
+    through :func:`gpuwm.render.renderer_refusal` -- the one function the
+    render path itself reads, covering both the
+    :func:`gpuwm.rustwx.probe_renderer` ``--abi`` handshake ``gpuwm
+    doctor`` reports and the provenance clause that catches a sibling
+    checkout answering the same contract correctly.  Reading the
+    product's own gate rather than re-deriving it is the point: a gate
+    the suite defines for itself can admit a renderer the render path
+    then refuses, and the suite would report that as a failure of the
+    code under test.  A foreign engine SKIPS with its mismatch named
+    rather than silently standing in for this tree's.
+    """
+
+    if RENDERER is None:
+        return False, ("rust renderer not built (cd tools/rustwx && cargo "
+                       "build --release --locked --offline)")
+    from gpuwm.render import renderer_refusal
+
+    reason = renderer_refusal(RENDERER)
+    if reason is None:
+        return True, ""
+    return False, (
+        f"the renderer resolved at {RENDERER} is not this tree's: "
+        f"{reason}.  These tests assert THIS tree's product catalog, so "
+        "a foreign engine is skipped, not substituted")
+
+
+_RENDERER_USABLE, _RENDERER_SKIP_REASON = _renderer_gate()
 needs_renderer = pytest.mark.skipif(
-    RENDERER is None,
-    reason="rust renderer not built (cd tools/rustwx && cargo build "
-           "--release --locked --offline)")
+    not _RENDERER_USABLE, reason=_RENDERER_SKIP_REASON)
+
+
+def _checkout_build() -> Path | None:
+    """THIS checkout's own rw_wrfbatch, or None if it is not built.
+
+    Deliberately not :func:`gpuwm.rustwx.find_renderer`, whose ladder
+    ends at ``~/.gpuwm/bridges``: the marker test below is about drift
+    between this tree's Rust and this tree's Python, and a binary
+    installed from some other release cannot answer that question either
+    way.  Whoever has a stale bundle staged learns it from ``gpuwm
+    doctor``, which now reports it with the rebuild remedy; they do not
+    learn it from a red in a suite they cannot fix by editing code.
+    """
+
+    from gpuwm.bridges import executable_name
+
+    built = (rustwx.crate_dir() / "target" / "release"
+             / executable_name(rustwx.RENDERER_NAME))
+    return built if built.is_file() else None
+
+
+def test_the_pinned_abi_marker_is_the_built_renderer_s_own_answer():
+    """The Python constant against the Rust writer, not against itself.
+
+    A marker both halves read from one Python string proves nothing.
+    This runs the binary THIS checkout built and compares its stdout to
+    :data:`gpuwm.rustwx.RENDERER_ABI_MARKER` byte for byte, so editing
+    the contract on one side and not the other is red rather than a
+    silent skip of the whole rust lane.
+
+    Skipped only when this checkout has no build at all -- and that skip
+    cannot hide a mismatch, because there is nothing of this tree's to
+    mismatch with.
+    """
+
+    built = _checkout_build()
+    if built is None:
+        pytest.skip("this checkout's rust renderer is not built (cd "
+                    "tools/rustwx && cargo build --release --locked "
+                    "--offline)")
+    import subprocess
+
+    probe = subprocess.run([str(built), "--abi"], capture_output=True,
+                           text=True, errors="replace", timeout=60)
+    assert probe.returncode == 0, (
+        f"{built} --abi exited {probe.returncode}: "
+        f"{(probe.stderr or '').strip()!r} -- this build predates the "
+        "renderer contract handshake; rebuild it from this checkout")
+    assert probe.stdout.strip() == rustwx.RENDERER_ABI_MARKER, (
+        f"{built} answers a different render contract than "
+        "gpuwm.rustwx.RENDERER_ABI_MARKER pins")
+
+
+def test_every_bundled_rustwx_binary_pins_a_contract_marker():
+    """The renderer was the odd one out; nothing may be the odd one again.
+
+    ``rw_fetch`` and ``rw_nexrad`` have always pinned an exact ``--abi``
+    line in their Python wrapper.  ``rw_wrfbatch`` did not, which is how
+    two builds with different md5s both reported ``verified``.  This
+    holds the three together structurally, so the next binary added to
+    the workspace cannot arrive without a contract to check it against.
+    """
+
+    from gpuwm import rustwx_fetch
+    from gpuwm.obs import nexrad
+
+    markers = {
+        "rw_fetch": rustwx_fetch.FETCH_ABI_MARKER,
+        "rw_nexrad": nexrad.NEXRAD_ABI_MARKER,
+        "rw_wrfbatch": rustwx.RENDERER_ABI_MARKER,
+    }
+    for name, marker in markers.items():
+        assert isinstance(marker, str) and marker.strip(), name
+        assert "\t" in marker, (
+            f"{name}'s marker is not a tab-separated contract line: "
+            f"{marker!r}")
+    assert len(set(markers.values())) == len(markers), (
+        "two bundled binaries pin the SAME marker, so one of them would "
+        f"verify against the other's contract: {markers}")
+
+
+# ---- the probe's decision table -------------------------------------------
+#
+# Against the real binary above; here against the two answers a stale
+# build gives, which cannot be produced without shipping a stale binary.
+# What is stubbed is the subprocess layer, never the renderer's meaning:
+# these assert what probe_renderer DECIDES, given each observable.
+
+def _stub_probe(monkeypatch, *, abi_returncode, abi_stdout):
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "launchable", lambda path: (True, "ok"))
+
+    def run(command, **_kwargs):
+        if command[1] == "--help":
+            return SimpleNamespace(
+                returncode=0, stdout="usage: rw_wrfbatch --store-root DIR",
+                stderr="")
+        assert command[1] == "--abi", command
+        return SimpleNamespace(returncode=abi_returncode, stdout=abi_stdout,
+                               stderr="")
+
+    monkeypatch.setattr(rustwx.subprocess, "run", run)
+
+
+def test_a_binary_that_launches_but_predates_the_handshake_is_refused(
+        monkeypatch, tmp_path):
+    """`unknown option --abi`, exit 2: every build older than the contract."""
+
+    _stub_probe(monkeypatch, abi_returncode=2, abi_stdout="")
+    ok, evidence = rustwx.probe_renderer(tmp_path / "rw_wrfbatch.exe")
+    assert ok is False
+    assert "--abi does not match the render contract" in evidence
+    assert "REBUILD" in evidence
+
+
+def test_a_binary_answering_another_contract_is_refused(monkeypatch,
+                                                        tmp_path):
+    """A build that answers --abi, with somebody else's grammar."""
+
+    _stub_probe(monkeypatch, abi_returncode=0,
+                abi_stdout="gpuwm-rw-wrfbatch-catalog-v0\tPRODUCT\tslug\n")
+    ok, evidence = rustwx.probe_renderer(tmp_path / "rw_wrfbatch.exe")
+    assert ok is False
+    assert "gpuwm-rw-wrfbatch-catalog-v0" in evidence
+
+
+def test_the_probe_accepts_the_contract_it_pins(monkeypatch, tmp_path):
+    """The negative test: the guard does NOT fire on the right answer."""
+
+    _stub_probe(monkeypatch, abi_returncode=0,
+                abi_stdout=rustwx.RENDERER_ABI_MARKER + "\n")
+    ok, evidence = rustwx.probe_renderer(tmp_path / "rw_wrfbatch.exe")
+    assert ok is True, evidence
+    assert "--abi matches the render contract" in evidence
 
 
 def _frame(seed: int) -> dict:
@@ -386,6 +561,12 @@ def test_source_label_reaches_the_renderer_invocation(monkeypatch,
                         lambda: tmp_path / "rw_wrfbatch.exe")
     monkeypatch.setattr("gpuwm.rustwx.probe_renderer",
                         lambda path: (True, "stubbed"))
+    # A stub under tmp_path belongs to no tree, so the bridge gate would
+    # refuse it -- correctly.  Declaring it through the override is the
+    # documented way to say "this binary is the one I mean", and is what
+    # a person pointing gpuwm at a hand-built renderer does.
+    monkeypatch.setenv(rustwx.RENDERER_ENV,
+                       str((tmp_path / "rw_wrfbatch.exe").resolve()))
 
     render_module.render_wrfouts_rust(
         [tmp_path / "wrfout_d02_x.nc"], products="composite_reflectivity",
@@ -393,7 +574,12 @@ def test_source_label_reaches_the_renderer_invocation(monkeypatch,
     assert seen, "no renderer invocation was made"
     command = seen[-1]
     assert "--source-label" in command
-    assert command[command.index("--source-label") + 1] == "ArWen"
+    # The default label is the brand plus the EXECUTING version, and it
+    # is asked for rather than transcribed so the assertion survives a
+    # release cut.
+    assert (command[command.index("--source-label") + 1]
+            == render_module.default_source_label())
+    assert command[command.index("--source-label") + 1].startswith("ArWen ")
 
     seen.clear()
     render_module.render_wrfouts_rust(
@@ -446,6 +632,17 @@ def test_engine_outputs_are_rebranded_to_the_product_prefix(monkeypatch,
     monkeypatch.setattr(subprocess, "run", fake_renderer)
     monkeypatch.setattr("gpuwm.rustwx.find_renderer",
                         lambda: tmp_path / "rw_wrfbatch.exe")
+    # The renderer gate, satisfied both ways, exactly as the source-label
+    # test above does it: the CONTRACT half is stubbed because this
+    # tmp_path stub is a name and not an executable, and the PROVENANCE
+    # half is declared because a stub under tmp_path belongs to no tree
+    # and the bridge gate is right to refuse one nobody named.  What this
+    # test pins is the rebranding of the engine's output, not which
+    # engine is admitted.
+    monkeypatch.setattr("gpuwm.rustwx.probe_renderer",
+                        lambda path: (True, "stubbed"))
+    monkeypatch.setenv(rustwx.RENDERER_ENV,
+                       str((tmp_path / "rw_wrfbatch.exe").resolve()))
 
     written, failures, _skipped = render_module.render_wrfouts_rust(
         [tmp_path / "wrfout_d02_x.nc"], products="sbcape", timeidx=0,
@@ -513,6 +710,218 @@ def test_engine_auto_falls_back_to_matplotlib(
     assert rc == 0
     assert "render: engine matplotlib" in capsys.readouterr().out
     assert list(out.glob("t2_*.png"))
+
+
+# --------------------------------------------------------------------------
+# Task #106, the half `--engine auto` did not cover: an EXPLICIT engine
+# request must pass the same contract, or the one caller who pinned
+# `--engine rust` to be sure of the real renderer is the one caller who
+# still gets a foreign one.
+# --------------------------------------------------------------------------
+
+def _stage_foreign_renderer(monkeypatch, tmp_path):
+    """A renderer that resolves and fails the ``--abi`` contract.
+
+    The subprocess handshake itself is proved against real binaries --
+    ``test_the_pinned_abi_marker_is_the_built_renderer_s_own_answer``
+    runs this checkout's build, and a foreign build was run by hand for
+    the incident.  What is pinned here is what the CALLERS do with a
+    failing probe, which must be assertable on a clean checkout with no
+    build staged, since that is where a regression would land.
+    """
+
+    staged = tmp_path / "bridges" / rustwx.executable_name(
+        rustwx.RENDERER_NAME)
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_bytes(b"MZ not this tree's build")
+    evidence = ("launches, but --abi does not match the render contract "
+                "this gpuwm expects (exit 2 with no --abi line) -- it is a "
+                "build from another checkout")
+    monkeypatch.setattr("gpuwm.rustwx.find_renderer", lambda: staged)
+    monkeypatch.setattr("gpuwm.rustwx.probe_renderer",
+                        lambda path: (False, evidence))
+    return staged, evidence
+
+
+def test_engine_rust_refuses_a_renderer_that_fails_the_contract(
+        wrfout, tmp_path, monkeypatch, capsys):
+    staged, _ = _stage_foreign_renderer(monkeypatch, tmp_path)
+    out = tmp_path / "png"
+    rc = cli.main(["render", str(wrfout), "--engine", "rust",
+                   "--products", "t2", "--out", str(out)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--engine rust" in err
+    assert str(staged) in err
+    assert "--abi does not match the render contract" in err
+    # An explicit request is a statement about which engine must draw:
+    # no silent substitution, and no fallback either.
+    assert not out.exists() or not list(out.glob("*.png"))
+    # ... and the exit is named (1.8.8 refusal sweep).  Refusing to
+    # choose for the caller is not the same as refusing to tell them
+    # what the choices are, and on this identical tree --engine auto
+    # exits 0: a way through demonstrably exists, so it is named.
+    assert "cargo build --release" in err
+    assert "--engine auto to fall back to matplotlib" in err
+    assert "--engine matplotlib to select the fallback outright" in err
+
+
+def test_a_missing_renderer_override_names_the_three_ways_out(
+        tmp_path, monkeypatch, capsys):
+    """The other dead end on the same door: the variable names nothing.
+
+    ``GPUWM_RW_WRFBATCH`` pointing at a path that does not exist used to
+    refuse with the variable, the path, and nothing else -- no
+    suggestion to repoint it, to unset it and take the vendored ladder,
+    or to ask for the fallback engine.  A reader who inherited that
+    variable from a shell profile had a diagnosis and no instruction.
+    """
+
+    missing = tmp_path / "nonexistent-renderer.exe"
+    monkeypatch.setenv(rustwx.RENDERER_ENV, str(missing))
+    assert cli.main(["render", "--list-products", "--engine", "rust"]) == 2
+
+    err = capsys.readouterr().err
+    assert "names a missing file" in err
+    assert str(missing) in err
+    assert "Point it at a built rw_wrfbatch binary" in err
+    assert f"unset {rustwx.RENDERER_ENV}" in err
+    assert "--engine matplotlib" in err
+
+
+def test_engine_auto_falls_back_where_engine_rust_refuses(
+        wrfout, tmp_path, monkeypatch, capsys):
+    """Same staged renderer, two request forms, two different answers.
+
+    This is the pair the defect was invisible to: with a stale bridge
+    staged, ``auto`` fell back naming the mismatch while ``rust`` ran the
+    stale build without a word.  Asserting only the refusal would leave
+    the fallback free to become a refusal too, which would break the
+    documented default.
+    """
+
+    pytest.importorskip(
+        "wrf", reason="matplotlib fallback needs the render extra")
+    _stage_foreign_renderer(monkeypatch, tmp_path)
+    out = tmp_path / "png"
+    rc = cli.main(["render", str(wrfout), "--engine", "auto",
+                   "--products", "t2", "--out", str(out)])
+    assert rc == 0
+    printed = capsys.readouterr()
+    assert "render: engine matplotlib" in printed.out
+    assert "--abi does not match the render contract" in (
+        printed.out + printed.err)
+    assert list(out.glob("t2_*.png"))
+
+
+def test_engine_rust_accepts_the_renderer_that_passes_the_contract(
+        tmp_path, monkeypatch):
+    """The other direction: a passing probe still resolves to rust.
+
+    A refusal that fires on everything is not a contract check, it is an
+    outage.  Both request forms take the rust path on a probe that
+    passes, and neither consults anything else to decide.
+    """
+
+    from gpuwm.render import _resolve_engine
+
+    staged = tmp_path / rustwx.executable_name(rustwx.RENDERER_NAME)
+    staged.write_bytes(b"MZ this tree's build")
+    monkeypatch.setattr("gpuwm.rustwx.find_renderer", lambda: staged)
+    # The renderer gate has TWO clauses since 1.8.8 and this test is
+    # about the first one, so the second is satisfied here the same way
+    # the rebranding sibling satisfies it: the CONTRACT half is stubbed
+    # passing, and the PROVENANCE half is stubbed silent because a
+    # binary under tmp_path belongs to no tree and the bridge gate is
+    # right to refuse one nobody named.  Left unstubbed, whether this
+    # test passes depends on how the RUNNER was installed -- a wheel or
+    # a non-git source root makes bridge_tree_match unanswerable and the
+    # test green, an editable checkout makes the same tmp_path binary
+    # foreign and the test red -- which is a property of the box, not of
+    # the code under test.
+    monkeypatch.setattr("gpuwm.rustwx.probe_renderer",
+                        lambda path: (True, "--abi matches"))
+    monkeypatch.setattr("gpuwm.provenance_gate.renderer_bridge_refusal",
+                        lambda bridge, **kwargs: None)
+    assert _resolve_engine("rust") == ("rust", str(staged))
+    assert _resolve_engine("auto") == ("rust", str(staged))
+
+    monkeypatch.setattr("gpuwm.rustwx.probe_renderer",
+                        lambda path: (False, "stale"))
+    engine, why = _resolve_engine("auto")
+    assert engine == "matplotlib" and "stale" in why
+    with pytest.raises(RuntimeError, match="stale"):
+        _resolve_engine("rust")
+
+
+def test_the_product_catalog_refuses_an_engine_it_cannot_verify(
+        tmp_path, monkeypatch, capsys):
+    """``--list-products`` with no wrfout resolves the engine of its own.
+
+    It is the one entry point that reaches ``_resolve_engine`` outside
+    the render path's try, so the refusal has to be caught here too or a
+    documented refusal arrives as a traceback.
+    """
+
+    _stage_foreign_renderer(monkeypatch, tmp_path)
+    assert cli.main(["render", "--list-products", "--engine", "rust"]) == 2
+    assert "--abi does not match the render contract" in (
+        capsys.readouterr().err)
+
+
+def test_both_engine_resolvers_treat_an_explicit_request_the_same(
+        tmp_path, monkeypatch):
+    """The renderer was the odd one out here too; hold the pair together.
+
+    ``gpuwm fetch`` has always resolved ``--engine rust`` by probing and
+    then refusing an explicit request while degrading an automatic one.
+    The render resolver skipped the probe for an explicit request, which
+    is the whole defect.  Asserting both in one place is what makes the
+    next divergence a red rather than a discovery in the field.
+    """
+
+    from gpuwm import fetch as fetch_module
+    from gpuwm.render import _resolve_engine
+
+    # render: staged binary, failing contract.
+    _stage_foreign_renderer(monkeypatch, tmp_path)
+    with pytest.raises(RuntimeError):
+        _resolve_engine("rust")
+    assert _resolve_engine("auto")[0] == "matplotlib"
+
+    # fetch: staged backbone, failing contract, same two answers.
+    backbone = tmp_path / "rw_fetch"
+    backbone.write_bytes(b"MZ not this tree's build")
+    monkeypatch.setattr("gpuwm.rustwx_fetch.find_fetch_bin",
+                        lambda: backbone)
+    monkeypatch.setattr("gpuwm.rustwx_fetch.probe_fetch_bin",
+                        lambda path: (False, "abi mismatch"))
+    with pytest.raises(ValueError):
+        fetch_module.resolve_fetch_engine("rust", progress=lambda *a: None)
+    assert fetch_module.resolve_fetch_engine(
+        "auto", progress=lambda *a: None)[0] == "python"
+
+
+def test_doctor_reports_a_renderer_that_fails_the_contract(
+        tmp_path, monkeypatch):
+    """The doctor branch for a foreign build, without staging one.
+
+    ``test_doctor_reports_the_rust_renderer`` covers this outcome only
+    when a foreign build happens to be resolvable, which on a clean
+    checkout it is not -- so the branch that reports a stale bridge went
+    unexecuted in the ordinary battery, which is exactly where a
+    regression would be caught.
+    """
+
+    from gpuwm.doctor import _rust_renderer_check
+
+    staged, evidence = _stage_foreign_renderer(monkeypatch, tmp_path)
+    check = _rust_renderer_check()
+    assert check.status == "missing"
+    assert check.blocking is False
+    assert str(staged) in check.detail
+    assert evidence in check.detail
+    assert check.remedy and "cargo build" in check.remedy
 
 
 def test_parse_products_rust_mapping():
@@ -806,14 +1215,27 @@ def test_doctor_reports_the_rust_renderer():
 
     check = _rust_renderer_check()
     assert check.name.startswith("renderer rw_wrfbatch")
-    if RENDERER is not None:
-        assert check.status == "verified"
-        assert str(RENDERER) in check.detail
-        assert "basemap" in check.detail
-    else:
+    if RENDERER is None:
         # Not built: an info line with the build one-liner, never a gap
         # (matplotlib remains the documented fallback).
         assert check.status in ("info", "missing")
+        assert check.remedy and "cargo build" in check.remedy
+        return
+    assert str(RENDERER) in check.detail
+    if _RENDERER_USABLE:
+        assert check.status == "verified"
+        assert "basemap" in check.detail
+        assert "--abi matches the render contract" in check.detail
+    else:
+        # Task #106.  This branch used to be unreachable, because the
+        # condition above was `RENDERER is not None` -- the file existing.
+        # A resolved binary from another checkout was therefore REQUIRED
+        # by this test to report `verified`, which is the defect written
+        # down as an assertion.  A renderer that resolves but is not this
+        # tree's is reported, with the remedy, and does not block:
+        # matplotlib is still the documented fallback.
+        assert check.status == "missing"
+        assert check.blocking is False
         assert check.remedy and "cargo build" in check.remedy
 
 

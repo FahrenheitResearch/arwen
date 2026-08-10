@@ -1115,6 +1115,20 @@ _WPS_TEXT = """\
 /
 """
 
+from gpuwm.physics_compat import CONSTANT_DOWNWARD_LONGWAVE_ACK
+
+#: The imported namelists below run Dudhia shortwave with longwave OFF
+#: under Noah, which is now a DECLARED constant downward longwave
+#: (gpuwm.physics_compat.constant_longwave_refusal) -- and a namelist WRF
+#: v4.6.1 itself refuses, since its lwrad_select has no lw = 0 case.  A
+#: WRF namelist has no spelling for a gpuwm governance declaration, so the
+#: importer takes it through ``--ack`` / ``acknowledgements=``, which is
+#: what these fixtures do.  The radiation is incidental to every claim in
+#: this file; the declaration is here so the microphysics claims can be
+#: made against a config that loads.
+_CONSTANT_GLW_ACK = (CONSTANT_DOWNWARD_LONGWAVE_ACK,)
+
+
 _INPUT_TEMPLATE = """\
 &time_control
  run_hours = 6,
@@ -1220,7 +1234,8 @@ def test_a_plain_mp28_namelist_imports_and_stays_28(tmp_path):
     from gpuwm.namelist_import import import_namelists
 
     wps, inp = _namelist_pair(tmp_path)
-    toml_text, report = import_namelists(wps, inp, name="mp28-plain")
+    toml_text, report = import_namelists(wps, inp, name="mp28-plain",
+        acknowledgements=_CONSTANT_GLW_ACK)
     assert "mp_physics = 28" in toml_text
     assert not [s for s in report.substitutions if s.key == "mp_physics"]
 
@@ -1238,7 +1253,8 @@ def test_the_import_receipt_carries_the_deviation_where_a_user_sees_it(
     from gpuwm.namelist_import import import_namelists
 
     wps, inp = _namelist_pair(tmp_path)
-    _toml, report = import_namelists(wps, inp, name="mp28-receipt")
+    _toml, report = import_namelists(wps, inp, name="mp28-receipt",
+        acknowledgements=_CONSTANT_GLW_ACK)
     rendered = report.format()
     assert "thompson_init" in rendered
     assert "dyn_em/module_initialize_real.F:2735-2736" in rendered
@@ -1250,7 +1266,8 @@ def test_the_import_receipt_carries_the_deviation_where_a_user_sees_it(
     # paragraph about aerosol it never had.
     wps6, inp6 = _namelist_pair(tmp_path / "six", mp=6) \
         if (tmp_path / "six").mkdir() or True else (None, None)
-    _toml6, report6 = import_namelists(wps6, inp6, name="mp6-receipt")
+    _toml6, report6 = import_namelists(wps6, inp6, name="mp6-receipt",
+        acknowledgements=_CONSTANT_GLW_ACK)
     assert "thompson_init" not in report6.format()
 
 
@@ -1283,7 +1300,8 @@ def test_each_mp28_aerosol_key_is_refused_by_name(tmp_path, section, key,
         tmp_path, mp=28, physics_extra=extra["physics"],
         domains_extra=extra["domains"])
     with pytest.raises(ValueError) as caught:
-        import_namelists(wps, inp, name=f"mp28-{key}")
+        import_namelists(wps, inp, name=f"mp28-{key}",
+        acknowledgements=_CONSTANT_GLW_ACK)
     message = str(caught.value)
     assert f"&{section} {key}" in message
     assert "unmapped key" not in message
@@ -1313,7 +1331,8 @@ def test_mp28_aerosol_keys_drop_as_inert_under_another_scheme(
     wps, inp = _namelist_pair(
         tmp_path, mp=6, physics_extra=extra["physics"],
         domains_extra=extra["domains"])
-    _toml, report = import_namelists(wps, inp, name=f"mp6-{key}")
+    _toml, report = import_namelists(wps, inp, name=f"mp6-{key}",
+        acknowledgements=_CONSTANT_GLW_ACK)
     dropped = {(d.section, d.key): d.reason for d in report.dropped}
     assert (section, key) in dropped
     assert "thompsonaero" in dropped[(section, key)]
@@ -1554,7 +1573,8 @@ def test_a_mixed_column_asking_for_28_anywhere_still_refuses_the_wif_key(
     wps, inp = _namelist_pair(
         tmp_path, mp="6, 28", domains_extra=" wif_input_opt = 1,\n")
     with pytest.raises(ValueError) as caught:
-        import_namelists(wps, inp, name="mixed-mp-column")
+        import_namelists(wps, inp, name="mixed-mp-column",
+        acknowledgements=_CONSTANT_GLW_ACK)
     message = str(caught.value)
     assert "&domains wif_input_opt" in message
     assert "module_initialize_real.F:2735-2736" in message

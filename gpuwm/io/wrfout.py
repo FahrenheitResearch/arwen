@@ -259,15 +259,37 @@ _DEFAULT_LANDUSE_ATTRS = {
 
 
 def _producer_version() -> str:
-    """The release that wrote this file, from installed metadata.
+    """The release that wrote this file -- the one that EXECUTED.
 
-    Imported at call time rather than at module import so the writer stays
-    importable from a source tree that was never installed; ``gpuwm``
-    answers ``0+unknown`` there rather than inventing a number.
+    ``GPUWM_VERSION`` is the only version this product stamps onto an
+    output artifact, so it is the number a reader quotes back months
+    later.  It used to be ``gpuwm.__version__``, which is a claim made
+    by distribution METADATA rather than by the code doing the writing:
+    ``importlib.metadata`` is asked for the version of the distribution
+    NAMED gpuwm, and on a box with a stale editable install that answers
+    for a tree which is not the one running.  A file stamped that way
+    names a release it was not written by, and nothing downstream can
+    tell.
+
+    :func:`gpuwm.provenance_gate.executing_version` prefers the running
+    code's own declaration and falls back through the metadata to the
+    honest ``0+unknown``, so the attribute describes the bytes that
+    wrote the file.  On a plain wheel install the two are identical by
+    construction -- pip wrote the code and the metadata together -- so
+    nothing about an ordinary install's output moves.
+
+    Imported at call time rather than at module import so the writer
+    stays importable from a source tree that was never installed, and
+    fully defensive: a history write must not fail over a label.
     """
-    from gpuwm import __version__
+    try:
+        from gpuwm.provenance_gate import executing_version
 
-    return str(__version__)
+        return str(executing_version())
+    except Exception:                                   # noqa: BLE001
+        from gpuwm import __version__
+
+        return str(__version__)
 
 
 def wrfout_filename(valid_time, domain_id: int = 1) -> str:

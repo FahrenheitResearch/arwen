@@ -1,10 +1,13 @@
 # Driving stock WRF from the same preprocessor
 
-ArWen's preprocessor, `rw-wps`, does not produce `met_em*` files for
-`real.exe`. It replaces the whole `geogrid`/`ungrib`/`metgrid`/
-`real.exe` chain and emits `wrfinput_d0N` + `wrfbdy_d01` directly. The
-provable statement -- and the exact shape of the evidence behind it --
-is this:
+ArWen's preprocessor, `rw-wps`, takes a downloaded GRIB file straight to
+files that unchanged stock WRF runs: it replaces the whole
+`geogrid`/`ungrib`/`metgrid`/`real.exe` chain in one command and emits
+`wrfinput_d0N` + `wrfbdy_d01` directly. One thing to know before wiring
+it into an existing workflow: there are no `met_em*` files in the middle,
+so anything downstream that reads `met_em*` reads the
+`wrfinput`/`wrfbdy` pair instead. The provable statement -- and the exact
+shape of the evidence behind it -- is this:
 
 > Unchanged stock WRF v4.6.1 `wrf.exe` opened rw-wps-produced
 > `wrfinput`/`wrfbdy` bytes and integrated the model -- from HRRR,

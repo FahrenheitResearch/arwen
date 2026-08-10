@@ -1,0 +1,471 @@
+# ATTEMPT #1 of the tornado-scale LES ladder: a four-domain HRRR-initialized
+# chain descending 3 km -> 1 km -> 500 m -> 100 m over the Mayfield, KY
+# segment of the quad-state supercell of 2021-12-10/11.
+#
+# THIS IS A FALSIFIER, NOT A MILESTONE.  It is staged deliberately ahead of
+# P3/P5/P6 completion so that the design fails early and cheaply if it is
+# going to.  Every screen it is graded against is registered BEFORE it runs,
+# in docs/les/ATTEMPT1-EXPECTATIONS.md, and every one of them is committed
+# whatever it reads.  No obs-skill claim is made or admissible from this run.
+#
+# READ docs/public/LES.md AND docs/les/ATTEMPT1-EXPECTATIONS.md BEFORE
+# TRUSTING ANY OUTPUT FROM THIS FILE.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS CASE
+# ---------------------------------------------------------------------------
+# Ruled by Drew on 2026-08-06, replacing an earlier Dodge City 2016-05-24
+# pick.  The reason is procedural rather than meteorological: the 2016 cycle
+# is HRRRv1 and its hybrid cloud-ice record is GRIB2 category 6 / parameter 0
+# where the pinned native contract wants 1 / 82, which would have needed a
+# data-identity ruling before anything could run.  2021-12-10 is HRRRv4 and
+# needs no such ruling -- the admission probe ADMITS it outright.  The Dodge
+# City config and its ingest finding stay in the tree, PARKED, for a future
+# attempt.  See docs/superpowers/specs/P6-LES-DECISIONS-RATIFIED-2026-08-05.md
+# session 3.
+#
+# ---------------------------------------------------------------------------
+# THE CHAIN, AND WHY IT HAS THIS SHAPE
+# ---------------------------------------------------------------------------
+# `parent_time_step_ratio` is an integer, which forbids the 250 m -> 100 m
+# step the shipped demonstration's geometry would have suggested (2.5x).  The
+# clean integer route to 100 m is 3 km -> 1 km -> 500 m -> 100 m, ratios
+# 3 / 2 / 5, and that is what this file is.  The timestep law is
+# dt = 5 * dx(km): 15 / 5 / 2.5 / 0.5 s, which puts CFL near 0.5 at 100 m s-1.
+# A tornado core above ~130 m s-1 breaks that and forces a smaller dt; the
+# run therefore logs its max wind and CFL series so attempt #2 can be sized
+# from measurement rather than from this comment.
+#
+# Only d01 types a `time_step`.  Every child dx and dt is derived from the
+# parent chain by gpuwm/experiment.py and is never hand-typed.
+#
+# ---------------------------------------------------------------------------
+# PARENTS: YSU + km_opt = 4 (the shipped-demonstration configuration)
+# ---------------------------------------------------------------------------
+# d01 and d02 run the 1-D YSU PBL with 2-D Smagorinsky horizontal mixing --
+# the same parent configuration the scored 250 m demonstration used
+# (docs/superpowers/receipts/les/nested-les-scored-2026-08-02.md).  The P4
+# Shin-Hong (bl_pbl_physics = 11) gray-zone parent chain is deliberately NOT
+# used here: its AC-P4.2 partition screen reads OUT on every frame and
+# Finding 1 is unadjudicated.  That adjudication is explicitly NOT a gate on
+# this attempt -- the YSU fallback is available immediately and is what runs.
+# See the decisions doc, ruling G3.
+#
+# d02 at 1 km is inside the gray zone with a 1-D PBL active.  It is the
+# reference for the child comparison, never a ground truth.
+#
+# ---------------------------------------------------------------------------
+# CHILDREN: PBL off, km_opt = 3 (3-D Smagorinsky)
+# ---------------------------------------------------------------------------
+# d03 (500 m) and d04 (100 m) turn the PBL parameterization off and run WRF's
+# 3-D Smagorinsky closure, transcribed from v4.6.1 and certified on the
+# release line (gpuwm/core/dycore.py:914; dry-CBL oracle receipts in
+# docs/public/receipts/les/).  km_opt = 2 (prognostic TKE) is NOT used: it is
+# refused on a nest child until a nested prognostic-TKE domain has been run,
+# and the plan's optional km2 d04 arm is contingent on this km3 pair
+# succeeding first.
+#
+# ---------------------------------------------------------------------------
+# THE VERTICAL GRID -- the binding constraint, and what was done about it
+# ---------------------------------------------------------------------------
+# ArWen shares one vertical grid across every domain of a tree
+# (gpuwm/experiment.py:193 rejects per-domain vertical keys), so the 100 m
+# child runs its 3 km root's levels.  On the shipped 49-level ladder that is
+# 18 half levels below 1.7 km -- an effective dz of 96.7 m
+# (docs/public/LES.md:263-303) -- and the demonstration receipt named
+# vertical resolution, not horizontal dx, as the reason its 250 m child was
+# only COARSE LES.
+#
+# This ladder is the fix.  nz = 72 (73 full levels), built by
+# tools/build_stretched_eta_ladder.py from a geometrically stretched
+# thickness profile, dz0 = 20 m capped at dz_max = 650 m.  Scored through
+# WRF's own analytic base state at the reference column:
+#
+#     33 half levels below 1.7 km   (ratified threshold: >= 30)
+#     35 half levels below 2.0 km   (spec V4 planning target: 33-38)
+#     effective dz in the BL 51.5 m (spec V4 planning target: 50-60 m)
+#     first half level 10.0 m, largest dz in the column 649.9 m
+#
+# Receipt: docs/les/attempt1/eta72-ladder.json.  The generator's control arm
+# (--certified-ladder) reproduces the published 18 levels / 8.40 m first
+# level of the shipped ladder exactly, which is what qualifies it as an
+# instrument.  nz = 72 sits under the acoustic 129 tier
+# (gpuwm/core/acoustic.py:230), so the w''-phi'' solve compiles unspecialized
+# and is byte-identical to the shipped kernel; it is also under WSM6's
+# 80-level ceiling (gpuwm/physics_vertical_contract.py:26).
+#
+# NOTE, carried honestly: this is a nocturnal cool-season case.  The 1.7 km
+# threshold the vertical grid was ratified against is a daytime CBL depth,
+# and the boundary layer here will be far shallower and stably stratified
+# outside the storm's own circulation.  The ladder is if anything better
+# suited to it -- 33 levels below 1.7 km means the lowest few hundred metres
+# are resolved at 20-60 m -- but the "levels in the CBL" framing from the
+# demonstration does not transfer, and the expectation document scores
+# z_i/dx from the parent's diagnosed PBLH rather than assuming a depth.
+#
+# ---------------------------------------------------------------------------
+# THE 100 m BOX -- a TRANSIT box, not a genesis box
+# ---------------------------------------------------------------------------
+# All four domains are concentric on 36.72 N, 88.70 W, so d04 is a 20 x 20 km
+# box spanning 36.629-36.811 N, 88.814-88.586 W (verified against
+# gpuwm.static.projection on this exact geometry; see the placement receipt
+# docs/les/attempt1/mayfield-placement.json).
+#
+# The centre sits about 6 km southwest of Mayfield (36.7417 N, 88.6367 W),
+# which is INSIDE the box, in its northeast quadrant.  The supercell tracked
+# west-southwest to east-northeast, so it enters the box at the southwest
+# corner already mature and tornadic and transits past Mayfield -- which is
+# the point of the offset.  Mayfield was struck at approximately 03:27Z on
+# 2021-12-11.
+#
+# THIS IS A TRANSIT BOX AND THE SCREENS ARE TRANSIT SCREENS.  Convective
+# initiation happened far upstream in northeast Arkansas (near Monette,
+# ~35.89 N 90.34 W, around 02Z), which is inside d01 and d02 and outside
+# d03 and d04 by design -- the parents resolve genesis, the LES children
+# resolve the tornadic transit.  Nothing here grades genesis.
+#
+# DOCUMENTED LIMITATION, carried deliberately: the real storm's track is
+# roughly 250 km long, and no fixed 20 km box can follow it.  Verified
+# against this geometry: Princeton KY (~04:30Z) is inside d03 but outside
+# d04; Dawson Springs and Bremen KY (~05:05Z) are outside d03 entirely.  The
+# box holds one segment of one long-track storm, and that is all it claims.
+# A moving nest, or a wider 100 m box, is 96 GB territory per the plan's
+# sizing verdict and is attempt #2's problem.
+#
+# ---------------------------------------------------------------------------
+# THE SPIN-UP FETCH -- the pre-registered falsification risk of this placement
+# ---------------------------------------------------------------------------
+# A one-way LES child grows its own turbulence while the inflow advects
+# across it, and the shipped demonstration's measured D90 fetch was 56-100%
+# of the child (INFLOW-FETCH-D90-2026-08-03.md).  Two things make that the
+# headline risk for THIS placement, and both are registered before the run:
+#
+#   1. The storm ENTERS d03 rather than forming in it.  Verified against this
+#      geometry, the track crosses roughly 50-75 km of d03 (Woodland Mills
+#      and Cayce are inside d03, upstream of the box) before reaching d04 --
+#      at ~25-30 m s-1 storm motion that is only 30-50 minutes of in-domain
+#      transit for the inflow air to develop resolved turbulence.
+#   2. d04 is 20 km wide.  If the D90 fetch approaches that, there is no
+#      fetch-clean interior on d04 at all and the tornado-scale screens
+#      become unscoreable on this geometry.
+#
+# Both are FINDINGS if they happen, not failures, and they are exactly what
+# this run is staged early to discover.  inflow_perturbation is ON at both
+# LES domains partly to shorten (1).
+#
+# ---------------------------------------------------------------------------
+# INGEST
+# ---------------------------------------------------------------------------
+# The [fetch] block below is ADVISORY (validated at config load, never
+# executed).  The execution route is the HRRR native front door, not
+# `gpuwm run` and not `gpuwm go`, both of which refuse HRRR by design:
+#
+#     gpuwm fetch --source hrrr --mode full-file --transport s3 ...
+#     python -m tools.prepare_hrrr_wrf ...
+#     python -m gpuwm.hrrr_hierarchy_direct ...
+#     python -m gpuwm.prepared_domain_tree_forecast ...
+#
+# The 2021-12-11 00Z cycle ADMITS against the pinned native contract, probed
+# 2026-08-06 before any transfer: all 11 hybrid fields on all 50 levels
+# (CIMIXR present as category 1 / parameter 82), all 11 surface records, the
+# soil subset an exact 18-record match at the nine RUC depths, and f00..f08
+# published.  Receipt: scratchpad les-attempt1/receipts/.
+#
+# One route wall remains, and it is pre-existing rather than a defect in this
+# config: gpuwm.hrrr_route_inputs.render_namelist_input admits only
+# bl_pbl_physics in [1, 11], and this tree has TWO PBL-off domains, so no
+# product path can emit its namelists.  The route input set is therefore
+# hand-built by tools/emit_les_route_inputs.py -- the make_d03.py idiom,
+# generalized -- and round-trip verified back through gpuwm.namelist_import
+# against this file.
+#
+# The cycle date is 2021-12-11 while the case is named for 2021-12-10: the
+# event is a 2021-12-10 evening event in local (CST) time and crosses 00Z.
+# The 00Z analysis is the window start, so the tree initializes from an
+# analysis rather than from a 6-hour-old forecast.
+#
+# ---------------------------------------------------------------------------
+# PHYSICS PROFILE
+# ---------------------------------------------------------------------------
+# wsm6-ysu-mm5-noah-no-radiation-v1 -- mp_physics 6, longwave OFF, shortwave
+# Dudhia (radt 1 min), no cumulus, sf_surface_physics 2.  Taken verbatim from
+# gpuwm.physics_compat and unchanged from the shipped demonstration, so this
+# file passes the prepared-forecast runner's profile guard as emitted.
+# Shortwave is a near-no-op through a December overnight window; it is kept
+# rather than switched off so the profile stays the registered one.
+[experiment]
+name = "les_tornado_100m_mayfield_20211210"
+# 00Z on 2021-12-11, the HRRR analysis at the window start.  Convective
+# initiation upstream follows around 02Z and Mayfield is struck near 03:27Z,
+# so the LES children get roughly 3.5 h of spin-up before the storm arrives.
+start_time = 2021-12-11T00:00:00
+# 6 h, 00Z -> 06Z, covering the tornadic transit and the decay that follows
+# it.  This is the plan's floor, chosen over a longer window because every
+# extra hour is card time spent on ground the storm has already left.
+run_seconds = 21600.0
+feedback = 0
+smooth_option = 0
+blend_width = 5
+spec_bdy_width = 5
+# SET, unlike the demonstration.  Its restart_interval_s = 0.0 meant a run
+# that could not be resumed had it died, and the scored receipt records that
+# as a defect (nested-les-scored-2026-08-02.md:147-148).  3600 s is 240 whole
+# root steps at dt = 15 s.  A 2+-domain tree is on the checkpointing route
+# (gpuwm/checkpoint_routes.py:67), so this is exercised, not decorative.
+restart_interval_s = 3600.0
+# ---------------------------------------------------------------------------
+# RADIATION DECLARATIONS.  THIS FILE IS AN ARCHIVED RUN RECORD
+# (configs/frozen/README.md), NOT A TEMPLATE.  Do not copy it to start a
+# forecast; copy a config whose radiation is real, both streams on.
+# ---------------------------------------------------------------------------
+# JUSTIFY asymmetric-radiation-nocturnal-window-v1: this is the attempt #1
+# configuration, registered by sha256 in docs/les/ATTEMPT1-EXPECTATIONS.md
+# before the run.  It runs shortwave with longwave OFF across a 00Z-06Z
+# December window at 36.72 N, 88.70 W that is night from end to end, which
+# is the pairing the nocturnal guard exists to stop.  It is declared rather
+# than fixed because these bytes are a record: changing their physics would
+# make them the record of a run nobody made.  Carried from 1.7.1, restated
+# here in the JUSTIFY convention.  Restart-tolerated field.
+# JUSTIFY constant-downward-longwave-v1: added at 1.8.8, and the same fact
+# stated as the fact it actually is.  With ra_lw_physics = 0 nothing
+# computes downward longwave -- gpuwm's Dudhia adapter is shortwave-only and
+# returns the GLW array it was handed -- so Noah (sf_surface_physics 2) on
+# all four domains integrated a fixed 300 W m-2 for the whole 6 h window.
+# That was already true of the run these bytes are the record of; the
+# nocturnal token above was checked BEFORE any physics was inspected and so
+# silently covered it, and it no longer does.  This is the ONE reason a
+# frozen record may move -- its old bytes no longer LOAD.  No physics
+# selector changed here and none may: the token states the number the
+# archived run actually used, so the record loads on 1.8.8 and reproduces
+# the same physics it had.  WHAT IT MEANS FOR THE PUBLISHED NUMBERS: the
+# nocturnal boundary layer this run produced was radiatively wrong, so its
+# surface and near-surface fields are not admissible as skill, and no
+# obs-skill claim was made from them.
+acknowledgements = [
+    "asymmetric-radiation-nocturnal-window-v1",
+    "constant-downward-longwave-v1",
+]
+
+[projection]
+map_proj = "lambert"
+ref_lat = 36.72
+ref_lon = -88.7
+# The secant cone bracketing the reference latitude by +/- 10 deg, which is
+# the rule gpuwm/domain_wizard.py:1580-1581 applies.
+truelat1 = 26.72
+truelat2 = 46.72
+stand_lon = -88.7
+
+[shared]
+# 73 full levels -> nz = 72 mass levels.  Generated and scored by
+# tools/build_stretched_eta_ladder.py --nz 72 --dz0 20 --dz-max 650
+# --bl-top 1700 --require-below 30.  See the vertical-grid note above.
+nz = 72
+ztop = 20000.0
+p_top = 10000.0
+eta_levels = [
+    1.0, 0.99738, 0.99463, 0.99173, 0.98868,
+    0.98548, 0.98211, 0.97856, 0.97483, 0.97091,
+    0.96679, 0.96246, 0.95791, 0.95313, 0.9481,
+    0.94283, 0.93729, 0.93148, 0.92538, 0.91898,
+    0.91227, 0.90523, 0.89785, 0.89012, 0.88202,
+    0.87354, 0.86466, 0.85537, 0.84565, 0.8355,
+    0.82488, 0.8138, 0.80223, 0.79016, 0.77757,
+    0.76446, 0.75081, 0.7366, 0.72183, 0.70648,
+    0.69055, 0.67403, 0.65692, 0.6392, 0.62088,
+    0.60196, 0.58245, 0.56234, 0.54166, 0.52041,
+    0.49862, 0.4763, 0.45348, 0.43021, 0.40651,
+    0.38242, 0.35801, 0.33332, 0.30842, 0.28338,
+    0.25826, 0.23317, 0.20817, 0.18338, 0.15888,
+    0.13478, 0.1112, 0.08856, 0.06771, 0.04853,
+    0.03092, 0.01477, 0.0,
+]
+hybrid_opt = 2
+etac = 0.2
+base_temp = 290.0
+time_step_sound = 4
+emdiv = 0.01
+hypsometric_opt = 2
+h_sca_adv_order = 5
+smdiv = 0.1
+moist_adv_opt = 1
+w_damping = 1
+damp_opt = 3
+zdamp = 5000.0
+dampcoef = 0.2
+khdif = 0.0
+kvdif = 0.0
+spec_zone = 1
+relax_zone = 4
+bldt = 0.0
+nwp_diagnostics = 1
+moist = true
+moist_cq = false
+mp_physics = 6
+top_lid = true
+epssm = 0.5
+morr_rimed_ice = 1
+wsm6_hail_opt = 0
+ra_physics = 0
+ra_lw_physics = 0
+ra_sw_physics = 1
+wrf_rrtmg_compatibility = "none"
+sf_sfclay_physics = 91
+sf_surface_physics = 2
+bl_pbl_physics = 1
+num_soil_layers = 4
+terrain_opt = 1
+km_opt = 4
+diff_6th_opt = 2
+diff_6th_slopeopt = 1
+map_proj = 1
+
+# --- d01: 3 km, 918 x 732 km, the synoptic parent.  Holds the whole track
+# from the northeast-Arkansas initiation to the Kentucky decay.
+[[domain]]
+grid_id = 1
+parent_id = 0
+i_parent_start = 1
+j_parent_start = 1
+parent_grid_ratio = 1
+parent_time_step_ratio = 1
+nx = 306
+ny = 244
+time_step = 15
+dx = 3000.0
+specified = true
+nested = false
+# Hourly: the parent is context, not a subject.  Disk goes to the children.
+history_interval_s = 3600.0
+radt = 1.0
+cu_physics = 0
+cudt_minutes = 0.0
+diff_6th_factor = 0.08
+
+# --- d02: 1 km, 450 x 450 km, centred in d01.  Ratio 3, dt 5 s.
+# 150 parent cells wide, placed so its centre is d01's centre exactly:
+# i_parent_start = (306 - 450/3)/2 + 1 = 79, j = (244 - 450/3)/2 + 1 = 48.
+# Holds the initiation region and the whole tornadic track.
+[[domain]]
+grid_id = 2
+parent_id = 1
+i_parent_start = 79
+j_parent_start = 48
+parent_grid_ratio = 3
+parent_time_step_ratio = 3
+nx = 450
+ny = 450
+specified = false
+nested = true
+history_interval_s = 3600.0
+epssm = 0.5
+radt = 1.0
+cu_physics = 0
+diff_6th_factor = 0.1
+
+# --- d03: 500 m, 150 x 150 km, the first LES domain.  Ratio 2, dt 2.5 s.
+# 150 parent cells wide: i_parent_start = j_parent_start = (450 - 150)/2 + 1.
+# The storm ENTERS this domain from the west-southwest and gets 50-75 km of
+# transit inside it before reaching d04 -- see the spin-up fetch note above.
+[[domain]]
+grid_id = 3
+parent_id = 2
+i_parent_start = 151
+j_parent_start = 151
+parent_grid_ratio = 2
+parent_time_step_ratio = 2
+nx = 300
+ny = 300
+specified = false
+nested = true
+# 15 min: fine enough to carry the variance-profile and spectral screens
+# without paying the child's cadence.
+history_interval_s = 900.0
+epssm = 0.5
+radt = 1.0
+cu_physics = 0
+diff_6th_factor = 0.1
+# PBL off, resolved-turbulence closure on.
+km_opt = 3
+bl_pbl_physics = 0
+c_s = 0.25
+mix_isotropic = 0
+mix_upper_bound = 0.1
+isfflx = 1
+# P3 inflow seeding, pilot amplitude, fixed committed seed.  Settings are the
+# pilot ON arm verbatim from
+# docs/superpowers/receipts/les/inflow-generator/les.km3.p3.on-7h.toml:166-169.
+# The generator is opt-in and OFF by default; the D90 fetch meter runs on the
+# output and the scored footprint is the fetch-clean interior only.
+inflow_perturbation = true
+inflow_perturbation_seed = 20211210
+inflow_perturbation_amplitude_scale = 1.0
+inflow_perturbation_faces = "inflow"
+
+# --- d04: 100 m, 20 x 20 km, the tornado-scale child.  Ratio 5, dt 0.5 s.
+# 40 parent cells wide: i_parent_start = j_parent_start = (300 - 40)/2 + 1.
+# Centred ~6 km southwest of Mayfield so the storm enters mature.
+[[domain]]
+grid_id = 4
+parent_id = 3
+i_parent_start = 131
+j_parent_start = 131
+parent_grid_ratio = 5
+parent_time_step_ratio = 5
+nx = 200
+ny = 200
+specified = false
+nested = true
+# 5 min: 73 frames over the window, which is the sampling the d04
+# vertical-vorticity maximum and swirling-updraft time series are graded on.
+# Finer cadence is affordable in wall time but not in staged disk.
+history_interval_s = 300.0
+epssm = 0.5
+radt = 1.0
+cu_physics = 0
+diff_6th_factor = 0.1
+# PBL off, resolved-turbulence closure on.
+km_opt = 3
+bl_pbl_physics = 0
+c_s = 0.25
+mix_isotropic = 0
+mix_upper_bound = 0.1
+isfflx = 1
+# OFF on d04.  RULED 2026-08-06, after the model refused the run:
+#
+#   ValueError: inflow_perturbation defines its vertical extent from the
+#   parent-diagnosed PBLH and therefore requires a parent running a PBL
+#   scheme; parent bl_pbl_physics=0
+#
+# The generator exists for the mesoscale->LES handoff.  A parent running a
+# PBL scheme diagnoses PBLH because it PARAMETERIZES the turbulence its
+# child must spin up from nothing -- that is d02 (YSU) -> d03 exactly, and
+# it is why the perturbation stays ON there.
+#
+# d03 -> d04 is not that case.  The parent is itself LES at 500 m: its
+# RESOLVED eddies advect through d04's inflow faces and ARE the inflow
+# turbulence.  Injecting synthetic perturbations on top of them would
+# double-count.  The generator was never designed for a resolved-turbulence
+# parent, which is precisely why its own contract demands a parent PBLH --
+# the refusal is the model correctly encoding its applicability boundary,
+# not an obstacle to route around.
+#
+# FALSIFIER, registered: the d04 D90 spin-up fetch receipt (screen E1) is
+# still graded and still committed whatever it reads.  If d03 -> d04 fetch
+# turns out to be insufficient -- i.e. the resolved eddies do NOT arrive
+# developed -- this ruling is what attempt #2 revisits.
+inflow_perturbation = false
+
+# Advisory data-acquisition hints (validated, not executed); keys mirror
+# `gpuwm fetch` flags.  `area` is the d01 footprint (33.269-39.941 N,
+# 94.163-83.237 W, computed from gpuwm.static.projection) padded ~0.6 deg
+# for the HRRR surface-donor margin.  forecast_start_hour 0 + hours 8 is
+# f00..f08 off the 00Z cycle = 00Z through 08Z, which leaves two hours of
+# boundary margin past the 06Z end of the integration.
+[fetch]
+source = "hrrr"
+cycle = "2021-12-11T00"
+forecast_start_hour = 0
+hours = 8
+area = "32.7,-94.8,40.5,-82.6"
+out = "data"

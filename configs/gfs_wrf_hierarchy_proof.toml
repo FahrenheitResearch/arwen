@@ -7,12 +7,12 @@ smooth_option = 0
 blend_width = 5
 spec_bdy_width = 5
 restart_interval_s = 0.0
-# Nocturnal declaration (1.7.1): this proof's own suite runs radiation fully
-# OFF (both streams; never guarded), but materialized named-profile runs of
-# it (the wsm6 no-radiation family, shortwave on / longwave off) cross this
-# 00Z window's local night and are declared validation runs -- see
-# docs/public/PHYSICS.md, "Nocturnal validity".  Restart-tolerated field.
-acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"]
+# No acknowledgements.  Through 1.8.7 this file carried
+# ``asymmetric-radiation-nocturnal-window-v1`` on behalf of runs it does
+# not describe -- its own suite had radiation fully OFF, which the
+# nocturnal guard never looks at, so the token was pure standing bypass
+# on a file users copy as a two-domain starting point.  The suite below
+# now runs both radiation streams, so nothing needs declaring.
 
 [projection]
 map_proj = "lambert"
@@ -64,7 +64,18 @@ map_proj = 1
 sf_sfclay_physics = 91
 sf_surface_physics = 2
 bl_pbl_physics = 1
+# RADIATION: both streams, WRF v4.6.1's bundled legacy RRTMG exactly, to
+# match the paired stock-WRF namelist.  Through 1.8.7 this was the legacy
+# aggregate ra_physics = 0 -- radiation entirely off -- under Noah
+# (sf_surface_physics = 2), and Noah reads GLW every surface step.  WRF in
+# that configuration hands the land surface 0.0 W m-2; gpuwm handed it a
+# fixed 300 W m-2.  Neither is a downward longwave, so the proof now
+# computes one.
+wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-legacy-v1"
+ra_rrtmg_variant = "rrtmg_legacy"
 ra_physics = 0
+ra_lw_physics = 4
+ra_sw_physics = 4
 bldt = 0.0
 
 [[domain]]

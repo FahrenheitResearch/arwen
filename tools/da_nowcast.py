@@ -140,6 +140,33 @@ WATCH_MIN_AGE_SECONDS = 120.0
 #: with other work sharing the card.
 DEFAULT_MEMBERS = 10
 
+#: The physics profile the nowcast binds when the caller names none.
+#:
+#: It was ``wsm6-ysu-mm5-noah-no-radiation-v1`` until 2026-08-09: the
+#: lw-off / sw-on pairing, shipped as the DEFAULT of a storm-scale
+#: nowcast product whose cases are overwhelmingly nocturnal, while
+#: docs/public/PHYSICS.md stated in as many words that "no door emits an
+#: asymmetric pairing as a default".  This door is what made that
+#: sentence false.  Nothing computed the downward longwave, so every
+#: member of every cycle ran its land surface against a sky no scheme
+#: produced -- and the nocturnal guard stayed silent on the emitted case
+#: because ``gpuwm domain`` had written the declaration into it on the
+#: user's behalf.
+#:
+#: The replacement is the HRRR route's own default
+#: (:data:`gpuwm.hrrr_route_inputs.ROUTE_DEFAULT_PHYSICS_PROFILE`):
+#: Thompson microphysics with legacy RRTMG longwave AND shortwave and no
+#: cumulus parameterization.  Chosen because the nowcast's background is
+#: HRRR permanently (Drew ruling 2026-08-06) and a product must not
+#: default to a different suite from the route that prepares its
+#: background.  It is not free -- RRTMG on a 12-minute cadence per member
+#: instead of a 1-minute shortwave-only call, and mp8 carries more
+#: species than mp6 -- so a member-count or VRAM plan measured under the
+#: old default has to be re-measured rather than extrapolated.
+#: ``--physics-profile`` still takes any shipped profile, the retired one
+#: included, and a daylight validation window is exactly where it belongs.
+NOWCAST_DEFAULT_PHYSICS_PROFILE = "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1"
+
 #: The LETKF chunk workspace, in MiB.  This is the ONE term in the
 #: memory model an operator controls, which is why it is reachable from
 #: the front door at all.
@@ -1806,8 +1833,12 @@ def build_parser() -> argparse.ArgumentParser:
                           "be a registry entry there, not another "
                           "branch here")
     run.add_argument("--physics-profile",
-                     default="wsm6-ysu-mm5-noah-no-radiation-v1",
-                     help="shipped physics profile for every stage")
+                     default=NOWCAST_DEFAULT_PHYSICS_PROFILE,
+                     help="shipped physics profile for every stage "
+                          f"(default {NOWCAST_DEFAULT_PHYSICS_PROFILE}, "
+                          "which runs BOTH radiation streams; see "
+                          "NOWCAST_DEFAULT_PHYSICS_PROFILE for why the "
+                          "lw-off default was retired)")
     run.add_argument("--hydrometeors", action="store_true",
                      help="perturb AND analyse the scheme's moisture and "
                           "hydrometeor state instead of u/v alone "

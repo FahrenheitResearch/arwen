@@ -593,7 +593,8 @@ def child_land_inventory(static, surface, child_dc, parent_run) -> dict:
 
 def build_nested_child(parent_node, child_dc, *, static, surface,
                        landuse_identity, valid_time, clock,
-                       parent_driver, center_lat=None):
+                       parent_driver, center_lat=None,
+                       constant_glw_wm2=None):
     """Build the child domain from the parent's LIVE state.
 
     This is the step that makes the whole design worth doing.  The child's
@@ -620,7 +621,8 @@ def build_nested_child(parent_node, child_dc, *, static, surface,
     driver = _initialize_child_physics(
         initialized, child_dc.run, inventory, landuse_identity,
         valid_time, parent_driver=parent_driver,
-        registration=inventory["registration"], center_lat=center_lat)
+        registration=inventory["registration"], center_lat=center_lat,
+        constant_glw_wm2=constant_glw_wm2)
     parent_node.children.append(node)
     # The prepared route rebuilds a child per leg rather than restoring
     # one, and the restart classifier needs to hear that from the builder.
@@ -631,7 +633,7 @@ def build_nested_child(parent_node, child_dc, *, static, surface,
 def _initialize_child_physics(initialized, child_run, inventory,
                               landuse_identity, valid_time, *,
                               parent_driver, registration,
-                              center_lat=None):
+                              center_lat=None, constant_glw_wm2=None):
     """Attach Noah/PBL/surface-layer physics to a parent-derived child.
 
     Mirrors :func:`gpuwm.ingest.hrrr_physics.initialize_prepared_physics`
@@ -686,6 +688,12 @@ def _initialize_child_physics(initialized, child_run, inventory,
         vegfra=vegfra, tmn=fields["TMN"], xice=fields["SEAICE"],
         snow=fields["SNOW"], snow_depth=fields["SNOWH"],
         sst=fields.get("SST", fields["TSK"]),
+        # The child inherits its parent's DECLARED constant downward
+        # longwave, or nothing when a longwave scheme owns the field.
+        # initialize_physics refuses to invent one either way, so a suite
+        # with ra_lw_physics = 0 under a land surface has to arrive here
+        # carrying the declaration its experiment made.
+        glw=constant_glw_wm2,
         radiation_start_time=valid_time, radiation_latitude=lat,
         radiation_longitude=lon)
     from gpuwm.core.noah import noah_initial_snow_albedo

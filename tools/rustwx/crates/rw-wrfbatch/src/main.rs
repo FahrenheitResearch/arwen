@@ -56,6 +56,36 @@ use wrf_process::{WrfProcessMessage, WrfProcessOptions, spawn_process_paths};
 /// which ArWen did not produce and must not claim.
 const DEFAULT_SOURCE_LABEL: &str = "ArWen";
 
+/// The exact `--abi` line `gpuwm.rustwx.RENDERER_ABI_MARKER` pins.
+///
+/// The same handshake `rw_fetch` and `rw_nexrad` -- this workspace's two
+/// other bundled binaries -- already answer, applied to the third.  It
+/// exists because "does the binary start" is not a contract check: two
+/// rw_wrfbatch builds with different md5s both printed the usage line
+/// and both were reported `verified`, so a stale renderer substituted a
+/// foreign engine into every rust render gate and drew the plots
+/// afterwards (task #106).
+///
+/// What is listed is the vocabulary the PYTHON half parses, not a
+/// version number -- a rebuild bumps a version whether or not anything
+/// changed, and a marker that moves on every rebuild proves nothing:
+///
+/// * the five tab-separated `PRODUCT` fields and the `CATALOG` tally
+///   line `gpuwm.rustwx.list_products` reads;
+/// * the `RENDERED` / `SKIPPED` / `FAILED` event words
+///   `gpuwm.rustwx.run_renderer` reads;
+/// * the generic `var:` family and the `selectable_slugs` count of the
+///   store-independent catalog -- the lane whose ABSENCE from a stale
+///   build is what #106 was reported as (catalog 153 against this
+///   tree's 168, zero generic rows).
+///
+/// Changing any of those is changing this contract, so the literal
+/// changes with it and every binary predating the change fails the
+/// handshake instead of quietly answering the old grammar.
+const ABI_MARKER: &str = "gpuwm-rw-wrfbatch-catalog-v1\tPRODUCT\tslug\tkind\tstatus\tdetail\tCATALOG\t\
+gpuwm-rw-wrfbatch-events-v1\tRENDERED\tSKIPPED\tFAILED\t\
+gpuwm-rw-wrfbatch-vocabulary-v1\tgeneric\tvar:\tselectable_slugs";
+
 #[derive(Debug)]
 struct Args {
     store_root: PathBuf,
@@ -73,7 +103,7 @@ struct Args {
 fn usage() -> &'static str {
     "usage: rw_wrfbatch --store-root DIR --out-dir DIR [--products all|SLUGS] \
 [--frames all|N] [--width N] [--height N] [--heavy] [--source-label TEXT] \
-[--list-products] wrfout..."
+[--list-products] wrfout...\n       rw_wrfbatch --help | --abi"
 }
 
 /// What went wrong, and therefore what the user should be shown.
@@ -124,6 +154,8 @@ enum Invocation {
     Batch(Box<Args>),
     /// Print the product vocabulary and exit.
     Catalog,
+    /// Print [`ABI_MARKER`] and exit: the stale-build handshake.
+    Abi,
 }
 
 /// The static product vocabulary, for `--list-products` with no inputs.
@@ -220,6 +252,11 @@ fn parse_args() -> Result<Invocation, CliError> {
             "--heavy" => heavy = true,
             "--list-products" => list_products = true,
             "--help" | "-h" => return Err(CliError::Help),
+            // Answered before anything else is validated, and on stdout:
+            // the caller is asking what contract this BINARY speaks, not
+            // asking it to do work, so no other argument is required and
+            // none can suppress the answer.
+            "--abi" => return Ok(Invocation::Abi),
             _ if arg.starts_with('-') => {
                 return Err(CliError::Usage(format!("unknown option {arg}")));
             }
@@ -1098,6 +1135,10 @@ const EXIT_USAGE: u8 = 2;
 
 fn dispatch() -> Result<(), CliError> {
     match parse_args()? {
+        Invocation::Abi => {
+            println!("{ABI_MARKER}");
+            Ok(())
+        }
         Invocation::Catalog => print_product_catalog(),
         Invocation::Batch(args) => {
             validate_request(&args)?;

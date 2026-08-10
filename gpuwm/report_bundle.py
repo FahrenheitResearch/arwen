@@ -1038,7 +1038,22 @@ def _gpu_environment() -> dict:
 
 
 def _provenance_block() -> dict:
-    """This install's identity, through the product's own resolver."""
+    """This install's identity, through the product's own resolvers.
+
+    Two answers, because they are two different questions and the
+    reader of this bundle is someone trying to reproduce a stranger's
+    failure.  ``runtime_manifest.provenance`` is the receipt-binding
+    identity ladder (sealed manifest, then checkout, then wheel
+    RECORD) and stays exactly where it was.  ``running_tree`` is
+    :mod:`gpuwm.provenance_gate`'s answer to "which tree served the
+    imports": install kind, branch, sha, dirt, and whether the version
+    this install reports agrees with the version its own source
+    declares.
+
+    That last field is the one this bundle existed without.  A reporter
+    can send a perfect diagnostic zip whose ``gpuwm_version`` names a
+    release they never ran, and nothing in the bundle would say so.
+    """
 
     from gpuwm import runtime_manifest
 
@@ -1049,6 +1064,13 @@ def _provenance_block() -> dict:
     except Exception as error:  # noqa: BLE001 - a broken install still reports
         block["identity_source"] = None
         block["identity_error"] = f"{type(error).__name__}: {error}"
+    try:
+        from gpuwm.provenance_gate import receipt_block
+
+        block["running_tree"] = receipt_block()
+    except Exception as error:  # noqa: BLE001 - a broken install still reports
+        block["running_tree"] = {
+            "unavailable": f"{type(error).__name__}: {error}"}
     return block
 
 

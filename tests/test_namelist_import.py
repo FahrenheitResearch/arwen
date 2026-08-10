@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 import gpuwm.cli as cli
+from gpuwm.physics_compat import CONSTANT_DOWNWARD_LONGWAVE_ACK
 from gpuwm.experiment import DEFAULT_COLUMN_CHUNK, load_experiment
 from gpuwm.namelist_import import (SubstitutionReport, import_namelists,
                                    parse_namelist)
@@ -748,8 +749,14 @@ def test_split_radiation_imports_natively_and_refuses_the_unported_half(
     # this is where the native-split coverage lives: ra_physics is zeroed, the
     # two component selectors are emitted separately, icloud and swrad_scat
     # ride with them, and nothing on a radiation key is substituted.
-    toml_text, report = import_namelists(*_pair(tmp_path, inp=_radiation(0, 1)),
-                                         name="dudhia_split")
+    # Dudhia-only under Noah is a declared constant downward longwave
+    # since the constant-GLW guard, and a WRF namelist cannot spell a
+    # gpuwm declaration -- so it arrives through the importer's channel,
+    # which exists for exactly this.  WRF v4.6.1 refuses the same
+    # namelist outright (phys/module_radiation_driver.F:2245).
+    toml_text, report = import_namelists(
+        *_pair(tmp_path, inp=_radiation(0, 1)), name="dudhia_split",
+        acknowledgements=(CONSTANT_DOWNWARD_LONGWAVE_ACK,))
     output = tmp_path / "dudhia_split.toml"
     output.write_text(toml_text)
     exp = load_experiment(output)
@@ -964,7 +971,11 @@ def test_implicit_switches_come_from_the_shipped_profile_not_the_importer(
         " bl_pbl_physics = 11, 11,", " bl_pbl_physics = 1, 1,").replace(
         " cu_physics = 1, 0,", " cu_physics = 0, 0,").replace(
         " radt = 12, 3,", " radt = 1, 1,")
-    toml_text, report = import_namelists(*_pair(tmp_path, inp=wsm6))
+    toml_text, report = import_namelists(
+        *_pair(tmp_path, inp=wsm6),
+        # WSM6 no-radiation is a declared constant downward longwave;
+        # the claim under test is implicit switches, not radiation.
+        acknowledgements=(CONSTANT_DOWNWARD_LONGWAVE_ACK,))
 
     profile = single_domain_runtime_switches(WSM6_PROFILE_ID)
     assert profile["moist_cq"] is False and profile["top_lid"] is True
@@ -999,7 +1010,11 @@ def test_implicit_switches_come_from_the_shipped_profile_not_the_importer(
     explicit = wsm6.replace(
         " use_theta_m = 0,",
         " use_theta_m = 0,\n top_lid = .false., .false.,")
-    explicit_toml, _ = import_namelists(*_pair(tmp_path, inp=explicit))
+    explicit_toml, _ = import_namelists(
+        *_pair(tmp_path, inp=explicit),
+        # Derived from the WSM6 no-radiation pair above, so it carries the
+        # same constant-longwave declaration.
+        acknowledgements=(CONSTANT_DOWNWARD_LONGWAVE_ACK,))
     assert "top_lid = false" in explicit_toml
 
 

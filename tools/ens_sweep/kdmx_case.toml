@@ -1,5 +1,17 @@
 # Emitted by `gpuwm domain` -- point 41.73,-93.96, ladder 3 km.
-# PHYSICS: wsm6-ysu-mm5-noah-no-radiation-v1: mp_physics 6, longwave OFF, shortwave Dudhia (radt 1 min), NO cumulus parameterization, bl_pbl_physics 1, sf_surface_physics 2.
+# PHYSICS: thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1: mp_physics 8, WRF v4.6.1's bundled legacy RRTMG on BOTH streams (radt 12 min), NO cumulus parameterization, bl_pbl_physics 1, sf_surface_physics 2.
+# RE-SPECIFIED 2026-08-09.  This case was emitted with
+# wsm6-ysu-mm5-noah-no-radiation-v1 -- longwave OFF, Dudhia shortwave -- over a
+# 04Z + 6 h window at 41.73 N that has NO DAYLIGHT IN IT AT ALL (the sun is
+# below the horizon at every 15-minute sample).  So the shortwave half never
+# fired, no scheme computed the downward longwave, and the ensemble's land
+# surface ran the whole sweep against the initialize_physics seed: 300.0 W/m2
+# of sky that nothing produced.  This is live sweep tooling, not a campaign
+# record, so it is fixed rather than annotated.  Runs made under the old
+# profile are not comparable to runs made under this one -- the named
+# profile also pins moist_cq true (was false) and diff_6th_factor 0.12 (was
+# 0.08), because a config that NAMES a profile must match it switch for
+# switch or the prepared runner's guard refuses it.
 # Taken verbatim from gpuwm.physics_compat, so this file passes the prepared-
 # forecast runner's profile guard as emitted.  Child dx/dt derive exactly from
 # the parent chain and are never hand-typed (gpuwm/experiment.py).
@@ -13,10 +25,14 @@ smooth_option = 0
 blend_width = 5
 spec_bdy_width = 5
 restart_interval_s = 0.0
-# Nocturnal declaration (1.7.1): this case runs shortwave with longwave OFF
-# through local night, a declared validation/experiment configuration -- see
-# docs/public/PHYSICS.md, "Nocturnal validity".  Restart-tolerated field.
-acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"]
+# No acknowledgements.  This window is 04Z-10Z over central Iowa, which is
+# 23:00-05:00 local: the run is night from end to end.  Through 1.8.7 it ran
+# the wsm6 no-radiation profile with ``asymmetric-radiation-nocturnal-
+# window-v1`` declared, so every member of every sweep spent all six hours
+# with Noah reading a fixed 300 W m-2 downward longwave.  An ensemble whose
+# members share one fabricated surface energy budget is not measuring
+# spread, so the physics moved to a nocturnally valid shipped profile
+# instead of the declaration being renewed.
 
 [projection]
 map_proj = "lambert"
@@ -62,16 +78,17 @@ relax_zone = 4
 bldt = 0.0
 nwp_diagnostics = 1
 moist = true
-moist_cq = false
-mp_physics = 6
-top_lid = true
+moist_cq = true
+mp_physics = 8
+top_lid = false
 epssm = 0.5
 morr_rimed_ice = 1
 wsm6_hail_opt = 0
 ra_physics = 0
-ra_lw_physics = 0
-ra_sw_physics = 1
-wrf_rrtmg_compatibility = "none"
+ra_lw_physics = 4
+ra_sw_physics = 4
+wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-legacy-v1"
+ra_rrtmg_variant = "rrtmg_legacy"
 sf_sfclay_physics = 91
 sf_surface_physics = 2
 bl_pbl_physics = 1
@@ -96,10 +113,10 @@ dx = 3000.0
 specified = true
 nested = false
 history_interval_s = 900.0
-radt = 1.0
+radt = 12.0
 cu_physics = 0
 cudt_minutes = 0.0
-diff_6th_factor = 0.08
+diff_6th_factor = 0.12
 
 # Advisory data-acquisition hints (validated, not executed); keys mirror `gpuwm fetch` flags.
 [fetch]

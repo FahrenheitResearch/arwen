@@ -15,6 +15,13 @@ smooth_option = 0
 blend_width = 5
 spec_bdy_width = 5
 restart_interval_s = 0.0
+# JUSTIFY constant-downward-longwave-v1: the initial-perturbation
+# DEMONSTRATION pair.  Its only measurement is the difference between
+# this arm and initdemo_bubble_off.toml, which share every switch except
+# the perturbation, so the surface energy budget cancels out of the
+# comparison entirely.  Downward longwave is a declared 300 W m-2
+# constant here and it is identical in both arms by construction.
+acknowledgements = ["constant-downward-longwave-v1"]
 
 [projection]
 map_proj = "lambert"

@@ -266,6 +266,29 @@ gpuwm dual-run \
   --out-report out/dual-run-report.json
 ```
 
+It has three outcomes, not two:
+
+| Exit | Meaning |
+|---|---|
+| 0 | identical: `dual-run: capsules are identical field for field (71 compared quantities)` |
+| 1 | a divergence, naming the first field the two arms disagree on |
+| 2 | there was nothing to compare, or an arm could not be read |
+
+Read the count on the success line. "Identical" is the same sentence
+whether the screen compared one quantity or a hundred, and on this
+screen the size *is* the result: a pair of capsules that agree on 71
+leaves is a corruption screen, and a pair that agree on two is not.
+`--out-report` records the same number as `compared_count`.
+
+Exit 2 is what a screen over nothing gets. A zero-byte capsule, an empty
+one, or a pair that between them carry no leaf at all is refused by arm
+and by name with its byte count — this command used to answer two `{}`
+documents with `identical field for field` and exit 0, which is a green
+on nothing from the only detector that stands in for the ECC this card
+does not have. A real capsule against an empty one is still a
+divergence (exit 1), not a refusal: that pair has something to compare
+and it does not match.
+
 The comparison has no ignore list. The only normalization is for the
 pure output-location leaves `output.frames[i].path` and
 `receipts.<name>.path`: their final filenames are compared because two

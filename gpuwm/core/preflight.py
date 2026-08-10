@@ -369,6 +369,42 @@ def spawn_reservation_advisories(exp) -> list[str]:
     return lines
 
 
+def anisotropic_w_mixing_advisories(exp) -> list[str]:
+    """One line per domain whose per-axis mixing length is over the limit.
+
+    The same sentence :func:`gpuwm.config.warn_anisotropic_w_mixing`
+    prints at config load, repeated HERE because that is not where a
+    reader is looking.  The 1.6.0 instability that aborted an LES run
+    had already been warned about at load, hours earlier, in a stream
+    nobody re-read; the run then died 5,467 steps in on a health bound
+    that named a vertical velocity and not a cause.  A preflight report
+    is the door a user opens before paying for the run, and ``--json``
+    puts the same text under ``advisories`` where a script can gate on
+    it.
+
+    Advisory, exactly like its neighbours: it changes no exit code and
+    blocks nothing.  See ``warn_anisotropic_w_mixing`` for why the
+    criterion is not a refusal.
+    """
+
+    from gpuwm.config import anisotropic_w_mixing_advice
+    from gpuwm.experiment import anisotropic_w_mixing_exposure
+
+    dz_max, exposed, ladder = anisotropic_w_mixing_exposure(exp)
+    lines: list[str] = []
+    for domain in exposed:
+        _, advice = anisotropic_w_mixing_advice(
+            where=f"d{domain.grid_id:02d}",
+            km_opt=domain.run.km_opt,
+            mix_isotropic=domain.run.mix_isotropic,
+            mix_upper_bound=domain.run.mix_upper_bound,
+            dx=domain.run.dx, dy=domain.run.dy, dz_max=dz_max,
+            ladder=ladder)
+        if advice:
+            lines.append(advice)
+    return lines
+
+
 def check_advisories(exp, config_path=None) -> list[str]:
     """Every route advisory this config earns, in report order.
 
@@ -383,6 +419,7 @@ def check_advisories(exp, config_path=None) -> list[str]:
 
     advisories = [feedback_advisory(exp)]
     advisories.extend(spawn_reservation_advisories(exp))
+    advisories.extend(anisotropic_w_mixing_advisories(exp))
     if config_path is not None:
         advisories.append(checkpoint_route_advisory(
             domain_count=len(exp.domains),
@@ -1350,11 +1387,31 @@ def kernel_local_frame_bytes(exp: ExperimentConfig) -> dict[str, int]:
     modules = physics_kernel_modules(exp)
     unmeasured = sorted(modules & UNMEASURED_KERNEL_MODULES)
     if unmeasured:
+        # THE WAY THROUGH, named (1.8.8 refusal sweep).  This message
+        # ended at "Refusing to guess", which is honest and is a dead
+        # end: there is no flag that skips the local-memory pricing --
+        # `gpuwm check` prices it on every run, and --alloc only ADDS a
+        # device measurement on top.  The one exit that exists is a
+        # land-surface scheme whose modules ARE measured, so it is
+        # named, along with what taking it costs.  The underlying gap is
+        # a missing CHAINED_TRANSLATION_UNIT_FRAMES row for the Noah-MP
+        # translation unit, not broken code: these fragments compile
+        # only through noahmp_kernel_sources.translation_unit_source,
+        # exactly as the legacy-RRTMG fragments do, and those have a
+        # driver-measured composite row while Noah-MP does not.
         raise ValueError(
             "cannot price the local-memory reservation: "
             f"{', '.join(unmeasured)} do not compile at this checkout "
             "(NVRTC: identifier \"r_pow\" is undefined), so their per-thread "
-            "local frame has never been measured.  Refusing to guess.")
+            "local frame has never been measured.  Refusing to guess.  "
+            "No flag skips this pricing -- the memory preflight is what "
+            "the estimate is made of.  If Noah-MP is not the point of "
+            "this run, select sf_surface_physics = 2 (Noah), whose "
+            "kernels are measured and price normally; if it IS the "
+            "point, this configuration needs a measured composite frame "
+            "for the Noah-MP translation unit "
+            "(gpuwm/core/preflight.py CHAINED_TRANSLATION_UNIT_FRAMES, "
+            "the same treatment the legacy-RRTMG chain already has).")
     missing = sorted(modules - set(KERNEL_MAX_LOCAL_SIZE_BYTES)
                      - set(CHAINED_TRANSLATION_UNIT_FRAMES))
     if missing:
@@ -4733,10 +4790,19 @@ def _synthetic_root_boundaries(cfg: RunConfig, n_intervals: int):
         relax_zone=cfg.relax_zone)
 
 
-def _materialize_physics(state, cfg: RunConfig, start_time: datetime):
+def _materialize_physics(state, cfg: RunConfig, start_time: datetime,
+                         *, glw=None):
     """initialize_physics + the steady-state extras the first steps would
     allocate (composed rqr/rqi/rqs, Morrison accumulator optionals, KF W0AVG),
-    so the alloc proof covers the run's real persistent driver set."""
+    so the alloc proof covers the run's real persistent driver set.
+
+    ``glw`` is the experiment's DECLARED constant downward longwave, or
+    None: initialize_physics refuses to invent a GLW that something
+    would consume or publish, so an alloc proof for a config that
+    declared the constant (``constant-downward-longwave-v1``) must type
+    the same declaration here that the run preparers type -- otherwise
+    ``gpuwm check --alloc`` false-refuses the very configs whose device
+    footprint it exists to measure (the MYNN no-radiation d04 pair)."""
     import cupy as cp
     import numpy as np
     from gpuwm.core.physics import (initialize_physics,
@@ -4748,7 +4814,7 @@ def _materialize_physics(state, cfg: RunConfig, start_time: datetime):
     grid = np.zeros((ny, nx), dtype=np.float64)
     driver = initialize_physics(
         state, cfg, landmask=1.0, tsk=290.0, soil_temperature=285.0,
-        soil_moisture=0.30, radiation_start_time=start_time,
+        soil_moisture=0.30, glw=glw, radiation_start_time=start_time,
         radiation_latitude=grid, radiation_longitude=grid + 1.0)
     m = state.p.shape
     zero_m = lambda: cp.zeros(m, dtype=DTYPE)
@@ -4922,7 +4988,15 @@ def run_alloc_preflight(
                     state.scratch(shape, slot, dtype=dtypes[slot])
             from gpuwm.core.physics import physics_driver_required
             if physics_driver_required(dc.run):
-                _materialize_physics(state, dc.run, exp.start_time)
+                # The experiment's declared constant GLW (or None),
+                # exactly as prepare_real_case/prepare_child_case type
+                # it: a config that legitimately declared
+                # constant-downward-longwave-v1 must reach the device
+                # here too, or --alloc refuses the very footprint
+                # measurement it exists for.
+                from gpuwm.runtime import declared_constant_glw
+                _materialize_physics(state, dc.run, exp.start_time,
+                                     glw=declared_constant_glw(exp))
             sample(phase)
             remaining -= per_domain[dc.grid_id]
 

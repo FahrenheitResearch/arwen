@@ -27,6 +27,18 @@ from gpuwm.experiment import (DomainConfig, ExperimentConfig,
                               ProjectionConfig, VerticalConfig)
 from gpuwm.physics_compat import (WSM6_PROFILE_ID,
                                   single_domain_runtime_switches)
+from gpuwm.core.physics import DECLARED_CONSTANT_GLW_WM2  # noqa: E402
+
+#: The idealised constant downward longwave these fixtures declare.
+#:
+#: ``gpuwm.core.physics.initialize_physics`` no longer defaults ``glw``
+#: (300.0 through 1.8.7): a land-surface suite with no longwave scheme
+#: must state where its downward longwave comes from instead of being
+#: handed a plausible-looking 300 W m-2 nobody chose.  These are
+#: idealised columns; the constant is the right answer for them and this
+#: is where they say so.  The VALUE is 1.8.7's default, so every fixture
+#: below integrates exactly the numbers it always did.
+_IDEALISED_GLW = DECLARED_CONSTANT_GLW_WM2
 
 #: Small enough to be a correctness burst, large enough that the child
 #: has a real interior outside its own five-point specified frame plus
@@ -239,7 +251,7 @@ def _wire(exp, *, attach_nest, geometry=None):
         snow=surface.fields["SNOW"], snow_depth=surface.fields["SNOWH"],
         sst=surface.fields["TSK"],
         radiation_start_time=exp.start_time,
-        radiation_latitude=lat, radiation_longitude=lon)
+        radiation_latitude=lat, radiation_longitude=lon, glw=_IDEALISED_GLW)
 
     nested_exp = exp
     child_dc = None
@@ -257,7 +269,8 @@ def _wire(exp, *, attach_nest, geometry=None):
         child_node, child_driver, _receipt = nf.build_nested_child(
             root, child_dc, static=static, surface=surface,
             landuse_identity=identity, valid_time=exp.start_time,
-            clock=clocks[child_dc.grid_id], parent_driver=driver)
+            clock=clocks[child_dc.grid_id], parent_driver=driver,
+            constant_glw_wm2=_IDEALISED_GLW)
         nodes[child_dc.grid_id] = child_node
 
     model = ExperimentState(root, MappingProxyType(nodes), schedule, None,
@@ -390,13 +403,14 @@ def test_building_the_child_does_not_touch_the_parent_state():
         xice=surface.fields["SEAICE"], snow=surface.fields["SNOW"],
         snow_depth=surface.fields["SNOWH"], sst=surface.fields["TSK"],
         radiation_start_time=exp.start_time,
-        radiation_latitude=lat, radiation_longitude=lon)
+        radiation_latitude=lat, radiation_longitude=lon, glw=_IDEALISED_GLW)
 
     before = live_state_sha256(state)
     nf.build_nested_child(
         root, child_dc, static=static, surface=surface,
         landuse_identity=identity, valid_time=exp.start_time,
-        clock=clocks[child_dc.grid_id], parent_driver=driver)
+        clock=clocks[child_dc.grid_id], parent_driver=driver,
+            constant_glw_wm2=_IDEALISED_GLW)
     assert live_state_sha256(state) == before
 
 

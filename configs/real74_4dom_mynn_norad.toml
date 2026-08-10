@@ -38,6 +38,32 @@ spec_bdy_width = 5
 # No restart writing: a 60 s probe would never reach the cadence and
 # the checkpoint is 861,001 columns of disk nobody asked for.
 restart_interval_s = 0.0
+# TWO declarations, because this file makes two separate claims and each
+# has its own guard.  Both radiation streams are off AND Noah is running,
+# which is the one configuration both guards are about.
+# JUSTIFY radiation-off-land-surface-v1: nothing computes radiation at
+# all here -- ra_physics 0 resolves both streams to zero -- while Noah
+# (sf_surface_physics 2) reads downward longwave every surface step, so
+# its energy budget closes against a sky no scheme produced.  That is
+# deliberate and harmless HERE and only here: the run is 60 SECONDS long
+# and exists to measure peak VRAM and the d04 step cost, which no surface
+# energy budget enters.  Never copy this declaration into a forecast; see
+# docs/public/PHYSICS.md, "Radiation off with a land surface".
+# JUSTIFY constant-downward-longwave-v1: the second claim, about the
+# NUMBER rather than about the absence.  Radiation is off here on purpose
+# and the filename says so -- this is the four-domain MYNN capacity and
+# health probe, 60 s of integration measuring device footprint and the
+# per-step health inventory at d04 width, not a forecast.  Noah still
+# reads GLW, so with both radiation streams off that GLW is a declared
+# 300 W m-2 constant, and this token is what hands
+# initialize_physics that number rather than letting it invent one.  WRF
+# v4.6.1 in the same configuration hands Noah 0.0 W m-2; neither number
+# is a measurement, and at 60 s neither reaches the surface state anybody
+# reads.
+acknowledgements = [
+    "radiation-off-land-surface-v1",
+    "constant-downward-longwave-v1",
+]
 # RRTMGP column chunk.  The library default is the capacity-led 3125
 # (gpuwm/config.py); this case buys speed with the headroom it has.
 #
@@ -125,11 +151,14 @@ sf_sfclay_physics = 5
 sf_surface_physics = 2
 # MYNN 5/5 substitution, selector 2 of 2 (see the header).
 bl_pbl_physics = 5
-# Radiation OFF.  The MYNN 5/5 registry template
-# (wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1) carries
-# ra_physics 0, and RTE-RRTMGP is the single largest VRAM and step-time
-# item in the reference stack, so this variant is what isolates MYNN's
-# own cost from radiation's.
+# Radiation OFF -- this file's own choice, NOT the template's.  The MYNN 5/5
+# registry template (wsm6-mynn-mynn-noah-dudhia-sw-implemented-unverified-v1,
+# named ...-no-radiation-... until 2026-08-09) selects Dudhia SHORTWAVE with
+# longwave off, not radiation off; the old name is what this comment believed.
+# RTE-RRTMGP is the single largest VRAM and step-time item in the reference
+# stack, so this variant is what isolates MYNN's own cost from radiation's --
+# and with both streams off the run declares the land-surface consequence in
+# [experiment] above.
 ra_physics = 0
 wrf_rrtmg_compatibility = "none"
 bldt = 0.0

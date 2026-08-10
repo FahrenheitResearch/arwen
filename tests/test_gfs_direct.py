@@ -632,13 +632,16 @@ def test_a_config_bound_to_no_shipped_profile_prints_a_runnable_command(
     # matching none of the shipped profiles.  Derived from the shipped
     # file rather than hand-written, so the only difference from a
     # config that DOES resolve is the one line this test is about --
-    # and `radt` is the specific line, because 12.0 is the value the
-    # shipped descriptors carried while they matched no profile at all.
+    # and `radt` is the specific line.  The GLW fix moved the shipped
+    # descriptor from Dudhia-only at radt 1.0 to legacy RRTMG on both
+    # streams at radt 12.0 (it shipped a standing nocturnal bypass and a
+    # frozen 300 W m-2 downward longwave), so the perturbation moves off
+    # 12.0 now instead of off 1.0.
     descriptor = tmp_path / "off-profile.toml"
     shipped = Path("configs/gfs_wrf_direct_proof.toml").read_text(
         encoding="utf-8")
-    assert shipped.count("radt = 1.0") == 1
-    descriptor.write_text(shipped.replace("radt = 1.0", "radt = 12.0"),
+    assert shipped.count("radt = 12.0") == 1
+    descriptor.write_text(shipped.replace("radt = 12.0", "radt = 9.0"),
                           encoding="utf-8")
 
     lines = prepared_forecast_next_command(
@@ -729,16 +732,24 @@ def test_the_shipped_two_domain_proof_config_still_passes_the_front_door():
     """The 1.0.1-shape max_dom = 2 config prepares through the gate.
 
     `configs/gfs_wrf_hierarchy_proof.toml` is the committed two-domain
-    descriptor the hierarchy route has always used, and it is the
-    sharper case of the two: it selects the LEGACY AGGREGATE radiation
-    spelling with radiation off (`ra_lw_physics`/`ra_sw_physics` at -1,
-    `ra_physics` 0), which the registry has no option for.  So a fix
-    that merely swapped the profile whitelist for a registry-resolution
-    requirement would still refuse the project's own hierarchy config --
-    a second regression wearing the first one's clothes.  Recording is
-    not permission: the receipt names what it can and reports the
-    blocker for what it cannot, and neither answer refuses the run.
+    descriptor the hierarchy route has always used, and the door admits
+    it unnamed, with a per-domain receipt, rather than against a profile
+    whitelist.
+
+    Through 1.8.7 this file also carried the sharper half of the case: it
+    selected the LEGACY AGGREGATE radiation spelling with radiation OFF
+    (`ra_lw_physics`/`ra_sw_physics` at -1, `ra_physics` 0), which the
+    registry has no option for, so its receipt recorded a blocker and
+    the run proceeded anyway.  That spelling is gone from the shipped
+    file -- radiation off under Noah meant Noah read a fabricated
+    300 W m-2 downward longwave for the whole forecast -- so the
+    unresolvable-selectors half of the claim moved to the derived config
+    below, where it is still exercised.  Recording is not permission:
+    the receipt names what it can and reports the blocker for what it
+    cannot, and neither answer refuses the run.
     """
+
+    import dataclasses
 
     from gpuwm.gfs_direct import front_door_physics_selection
 
@@ -750,8 +761,24 @@ def test_the_shipped_two_domain_proof_config_still_passes_the_front_door():
     assert receipt["schema"] == (
         "gpuwm-front-door-physics-selection-multi-domain-v1")
     assert receipt["domains"]["1"]["selectors"]["mp_physics"] == 6
-    assert receipt["domains"]["1"]["components"] is None
-    assert "ra_physics" in receipt["domains"]["1"]["registry_blocker"]
+    # Both radiation streams now resolve to a registry component, so the
+    # receipt records components and no blocker.
+    assert receipt["domains"]["1"]["components"] is not None
+    assert receipt["domains"]["1"]["registry_blocker"] is None
+    assert receipt["domains"]["1"]["selectors"]["ra_lw_physics"] == 4
+
+    # The unresolvable spelling, preserved: the legacy aggregate with
+    # radiation off still records a blocker instead of refusing.
+    def _radiation_off(domain):
+        run = dataclasses.replace(
+            domain.run, ra_physics=0, ra_lw_physics=-1, ra_sw_physics=-1)
+        return dataclasses.replace(domain, run=run)
+
+    legacy = dataclasses.replace(
+        exp, domains=tuple(_radiation_off(d) for d in exp.domains))
+    legacy_receipt = front_door_physics_selection(legacy)
+    assert legacy_receipt["domains"]["1"]["components"] is None
+    assert "ra_physics" in legacy_receipt["domains"]["1"]["registry_blocker"]
 
 
 def test_the_single_domain_default_suite_passes_and_a_named_gate_binds(

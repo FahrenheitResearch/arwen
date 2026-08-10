@@ -391,6 +391,44 @@ def test_the_subtitle_extends_v1_0_1_with_the_member_count_and_the_stamp():
     assert enprod.EXPERIMENTAL_STAMP in context
 
 
+def test_the_stamp_carries_the_running_engine_version_not_a_frozen_one():
+    """A version on a product is a provenance claim, so it must be true.
+
+    ``EXPERIMENTAL_STAMP`` was the literal ``"EXPERIMENTAL (v1.2
+    ensemble, uncalibrated)"``, frozen at the release the suite was
+    written for and stamped onto every ensemble panel every release
+    since -- so a 1.8.7 plot claimed to have come from a 1.2 ensemble.
+    The uncalibrated warning is still true and stays; the version now
+    comes from the engine that produced the plot.
+    """
+    import gpuwm
+
+    stamp = enprod.experimental_stamp()
+    assert f"v{gpuwm.__version__} ensemble" in stamp
+    assert "EXPERIMENTAL" in stamp and "uncalibrated" in stamp
+    # The frozen literal, gone.  Asserted as an absence because the
+    # failure mode was a string that stayed correct-looking for six
+    # minor releases.
+    assert "v1.2 ensemble" not in stamp or gpuwm.__version__ == "1.2"
+
+
+def test_the_stamp_is_read_at_call_time_not_import_time(monkeypatch):
+    """Detector both directions: move the version, the stamp moves."""
+    import gpuwm
+
+    monkeypatch.setattr(gpuwm, "__version__", "9.9.9-probe")
+    assert "v9.9.9-probe ensemble" in enprod.experimental_stamp()
+    assert "v9.9.9-probe" in enprod.ensemble_plot_context(
+        "d02", 3000.0, "1974-04-03_18:00:00", "ArWen", 30)
+    # The compatibility ATTRIBUTE moves too: it is PEP 562 module
+    # __getattr__ over experimental_stamp(), not a constant evaluated at
+    # import.  A restored `EXPERIMENTAL_STAMP = experimental_stamp()`
+    # module constant -- the exact contradiction the function's docstring
+    # disclaims -- fails here, because enprod was imported long before
+    # this monkeypatch.
+    assert "v9.9.9-probe ensemble" in enprod.EXPERIMENTAL_STAMP
+
+
 def test_a_neighborhood_radius_needs_a_declared_grid_spacing():
     assert enprod.radius_in_cells(5.0, 1000.0) == 5.0
     assert enprod.radius_in_cells(5.0, 250.0) == 20.0

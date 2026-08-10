@@ -620,6 +620,13 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # binds the selector values themselves).
     "scheme_dispatch",
     "radiation_callable", "cumulus_callable",
+    # Where this domain's downward longwave came from ("scheme",
+    # "declared" or "unused").  A LABEL, not state: initialize_physics
+    # re-derives it on the resume from the same selectors and the same
+    # caller-supplied glw, and nothing in the physics reads it.  The GLW
+    # FIELD itself is serialized with the rest of the surface inventory,
+    # so a resumed run carries the same numbers whatever this says.
+    "glw_provenance",
     "ra_physics", "ra_lw_physics", "ra_sw_physics",
     "radiation_active", "cu_physics", "mp_physics", "surface_enabled",
     # Noah LSM option selectors: plain cfg-derived scalars reconstructed at

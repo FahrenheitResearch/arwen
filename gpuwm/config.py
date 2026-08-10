@@ -1140,7 +1140,9 @@ def validate_sase_config(cfg: RunConfig) -> None:
                 "surface-layer scheme (sf_sfclay_physics != 0): the "
                 "closure's lower boundary condition is the surface "
                 "layer's friction velocity, heat and moisture fluxes and "
-                "gust-corrected wind speed.")
+                "gust-corrected wind speed. Select sf_sfclay_physics=1 "
+                "(revised MM5) or 91 (classic MM5), which are the "
+                "surface layers SASE's registry option declares.")
         if cfg.sf_sfclay_physics == MYNN_SFCLAY_SCHEME:
             # The refusal belongs to the MYNN surface layer, not to SASE.
             # WRF v4.6.1 admits sf_sfclay_physics=5 with the MYNN PBL or
@@ -1430,7 +1432,11 @@ def validate_km_opt(cfg: RunConfig) -> None:
                 "bl_pbl_physics=0 only: WRF evolves TKE with the PBL on, "
                 "but that combination has no vertical TKE mixing "
                 "(vertical_diffusion_2 is PBL-off-gated) and is not "
-                "ported; select the LES topology or km_opt 3/4."
+                "ported; select bl_pbl_physics=0 for an LES domain, or "
+                "km_opt=4 (2-D Smagorinsky), which is the horizontal-only "
+                "closure every PBL-on template pins. km_opt=3 is NOT an "
+                "alternative with a PBL scheme on: it is refused three "
+                "lines above for the same PBL-off gate."
             )
         # km_opt=2 on a NEST child is no longer refused here.  This
         # function sees one domain at a time and cannot see the parent,
@@ -1475,11 +1481,39 @@ def validate_km_opt(cfg: RunConfig) -> None:
 #: operator that amplifies what it exists to remove.
 EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT = 0.25
 
+#: The second threshold on the same per-step factor, and a different
+#: statement: between 1/4 and 1/2 the factor is negative but still inside
+#: the unit circle, so the 2-grid-interval mode flips sign each step and
+#: shrinks; past 1/2 its magnitude exceeds one and the mode GROWS without
+#: bound.  Both are reported, because "inverts and decays" and "amplifies
+#: until the run aborts" deserve different sentences.
+EXPLICIT_HORIZONTAL_DIFFUSION_GROWTH_LIMIT = 0.5
+
 #: The mixing selectors that build SEPARATE horizontal and vertical
 #: exchange coefficients when ``mix_isotropic = 0``: 2 (prognostic TKE)
 #: and 3 (3-D Smagorinsky).  1 (constant K) and 4 (2-D Smagorinsky) build
 #: one coefficient on the horizontal grid spacing and are not exposed.
 _ANISOTROPIC_LENGTH_KM_OPTS = (2, 3)
+
+
+def selects_anisotropic_w_mixing(*, km_opt: int, mix_isotropic: int,
+                                 dx: float, dy: float) -> bool:
+    """Is this domain on the exposed path, depth aside?
+
+    The SELECTOR half of the criterion, asked without a layer depth.
+    :func:`anisotropic_w_mixing_ratio` folds the two halves together and
+    answers ``None`` for both "not on the path" and "on the path but the
+    depth could not be resolved", and those are opposite readings: the
+    first is genuinely nothing to say, the second is the criterion's own
+    subject with the number missing.  Splitting the selector out is what
+    lets :func:`anisotropic_w_mixing_advice` tell them apart.
+    """
+
+    if int(km_opt) not in _ANISOTROPIC_LENGTH_KM_OPTS:
+        return False
+    if int(mix_isotropic) != 0:
+        return False
+    return min(float(dx), float(dy)) > 0.0
 
 
 def anisotropic_w_mixing_ratio(*, km_opt: int, mix_isotropic: int,
@@ -1506,53 +1540,197 @@ def anisotropic_w_mixing_ratio(*, km_opt: int, mix_isotropic: int,
     an isotropic mixing length, or a selector that builds a single
     coefficient on the horizontal spacing -- so a caller can distinguish
     "not applicable" from "applicable and small".
+
+    ``None`` ALSO comes back for a domain that IS on the path but whose
+    ``dz_max`` is non-finite, because no number exists to return and
+    fabricating one would be worse.  That case is not silence: it is the
+    subject of the criterion with the depth missing, and
+    :func:`anisotropic_w_mixing_advice` separates it out (via
+    :func:`selects_anisotropic_w_mixing`) and says so in words.  A caller
+    reading this function's ``None`` alone must not read it as a pass.
     """
 
-    if int(km_opt) not in _ANISOTROPIC_LENGTH_KM_OPTS:
+    if not selects_anisotropic_w_mixing(
+            km_opt=km_opt, mix_isotropic=mix_isotropic, dx=dx, dy=dy):
         return None
-    if int(mix_isotropic) != 0:
+    if not math.isfinite(float(dz_max)):
         return None
     horizontal = min(float(dx), float(dy))
-    if not (horizontal > 0.0) or not math.isfinite(float(dz_max)):
-        return None
     return float(mix_upper_bound) * (float(dz_max) / horizontal) ** 2
 
 
-def warn_anisotropic_w_mixing(*, where: str, km_opt: int, mix_isotropic: int,
-                              mix_upper_bound: float, dx: float, dy: float,
-                              dz_max: float) -> float | None:
-    """Advise when the anisotropic mixing length exceeds the explicit limit.
+#: The phrase every no-number mixing advisory carries, so a reader
+#: skimming a door and a test asserting on one are matching the same
+#: string.  It is upper-case for the same reason the tier verbs are: the
+#: distinction a reader must not miss is that there is no ratio here, and
+#: that absence is the finding rather than the absence of one.
+UNRESOLVED_ANISOTROPIC_DEPTH_MARK = "NO LAYER DEPTH COULD BE RESOLVED"
 
-    A warning and not a refusal: the ratio is the WORST case the cap
-    admits, the deformation that would reach it may never occur in a
-    given flow, and configurations that have run for hours at a ratio
-    above the limit exist.  What it is not is a taste bound -- above the
-    limit the operator's own stability is no longer guaranteed by
-    anything, and the failure mode is grid-scale vertical velocity that
-    grows out of a field which should be being smoothed.
 
-    Returns the computed ratio (``None`` when not applicable) so a caller
-    can record the number whether or not it warned.
+def _unresolved_depth_advice(*, where: str, km_opt: int, horizontal: float,
+                             ladder: str) -> str:
+    """The advisory for an exposed domain whose depths will not resolve.
+
+    Separate wording from the over-the-limit sentence because it is a
+    separate statement: that one reports a number against a threshold,
+    this one reports that no number can be produced at all.  Both remedies
+    are named, and they are not the same pair -- lowering
+    ``mix_upper_bound`` cannot help when the quantity it multiplies is
+    unknown, so what this one offers instead is making the ladder
+    resolvable.
+    """
+
+    provenance = f" ({ladder})" if ladder else ""
+    return (
+        f"{where} runs km_opt = {int(km_opt)} with mix_isotropic = 0 at "
+        f"dx = {horizontal:g} m, so its horizontal mixing of w is handed "
+        f"a coefficient built on the LAYER DEPTH -- but "
+        f"{UNRESOLVED_ANISOTROPIC_DEPTH_MARK} for this grid"
+        f"{provenance}, so mix_upper_bound*(dz_max/dx)^2 cannot be "
+        f"evaluated and the criterion has no number to report. The "
+        f"absence of a ratio is NOT a pass: this domain is on the exposed "
+        f"path and nothing here can say whether it is over the limit "
+        f"{EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT} or under it. Declare "
+        f"eta_levels and p_top explicitly, or bring the model top inside "
+        f"the analytic base state's representable range, so the depths "
+        f"resolve and the criterion can run; or set mix_isotropic = 1 on "
+        f"this domain, which builds one length from (dx*dy*dz)^(1/3) and "
+        f"takes it off the per-axis path entirely, making the question "
+        f"moot. ADVISORY, not a refusal: the load and the run proceed.")
+
+
+def anisotropic_w_mixing_advice(*, where: str, km_opt: int,
+                                mix_isotropic: int, mix_upper_bound: float,
+                                dx: float, dy: float, dz_max: float,
+                                ladder: str = "",
+                                ) -> tuple[float | None, str | None]:
+    """``(ratio, one-sentence advisory)`` for the exposed-mixing check.
+
+    One wording, every door.  :func:`warn_anisotropic_w_mixing` prints
+    it at config load; ``gpuwm check`` repeats it in its advisory list
+    (``gpuwm.core.preflight.anisotropic_w_mixing_advisories``), because
+    the load-time line scrolls past hours before the run that pays for
+    it and the preflight report is where a reader is actually looking.
+
+    The advisory is ``None`` when the configuration is not on the
+    exposed path, or is on it and under the limit.  The ratio comes back
+    either way, so a caller can record the number whether or not there
+    was anything to say.
+
+    A NON-FINITE ``dz_max`` ON AN OTHERWISE-EXPOSED DOMAIN GETS ITS OWN
+    ADVISORY, and the ratio stays ``None``.  This is the third outcome,
+    added 2026-08-09: the domain selected the per-axis mixing length, but
+    its layer depths could not be resolved, so the criterion has a
+    subject and no number.  Before this branch existed the ``None`` from
+    :func:`anisotropic_w_mixing_ratio` collapsed that case back into "not
+    applicable" and every door went quiet -- the same silence-reads-as-a-
+    pass hole the resolved-ladder work had just closed one layer up.  No
+    number is invented: the sentence says the depth is unresolvable, why
+    (``ladder`` carries the provenance), and what to declare instead.
+
+    The sentence is TIERED, because the criterion has two thresholds and
+    they mean different things: above
+    :data:`EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT` the 2-grid-interval mode
+    inverts each step and still decays; above
+    :data:`EXPLICIT_HORIZONTAL_DIFFUSION_GROWTH_LIMIT` it grows.  A
+    reader who sees one number against one limit cannot tell 0.3 from
+    4.2, and 4.2 is the tier that aborted a run.
+
+    ``ladder`` is a provenance clause for ``dz_max``, appended verbatim
+    when non-empty (``gpuwm.experiment.ExposedMixing.ladder`` supplies
+    it).  A depth the caller RESOLVED for a config that wrote no eta
+    interfaces must not read the same as one the config declared, and
+    the number is otherwise indistinguishable.
     """
 
     ratio = anisotropic_w_mixing_ratio(
         km_opt=km_opt, mix_isotropic=mix_isotropic,
         mix_upper_bound=mix_upper_bound, dx=dx, dy=dy, dz_max=dz_max)
+    if ratio is None and not math.isfinite(float(dz_max)) \
+            and selects_anisotropic_w_mixing(
+                km_opt=km_opt, mix_isotropic=mix_isotropic, dx=dx, dy=dy):
+        return None, _unresolved_depth_advice(
+            where=where, km_opt=km_opt,
+            horizontal=min(float(dx), float(dy)), ladder=ladder)
     if ratio is None or ratio <= EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT:
-        return ratio
-    from gpuwm.explain import warn
+        return ratio, None
     horizontal = min(float(dx), float(dy))
     admitted = (EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT
                 * (horizontal / float(dz_max)) ** 2)
-    warn(
+    if ratio > EXPLICIT_HORIZONTAL_DIFFUSION_GROWTH_LIMIT:
+        tier = (
+            f"AMPLIFIES a 2dx mode instead of damping it -- past "
+            f"{EXPLICIT_HORIZONTAL_DIFFUSION_GROWTH_LIMIT} the per-step "
+            f"factor 1 - 4*K*dt/dx^2 has magnitude above one, so "
+            f"grid-scale vertical velocity grows out of the field the "
+            f"operator exists to smooth until a health bound stops the "
+            f"run")
+    else:
+        tier = (
+            f"INVERTS a 2dx mode every step instead of damping it; its "
+            f"magnitude still decays below "
+            f"{EXPLICIT_HORIZONTAL_DIFFUSION_GROWTH_LIMIT}, which is "
+            f"where the mode starts to grow instead")
+    provenance = f" ({ladder})" if ladder else ""
+    advice = (
         f"{where} runs km_opt = {int(km_opt)} with mix_isotropic = 0 at "
         f"dx = {horizontal:g} m over base-state layers up to "
-        f"{float(dz_max):.1f} m deep: mix_upper_bound*(dz_max/dx)^2 = "
+        f"{float(dz_max):.1f} m deep{provenance}: "
+        f"mix_upper_bound*(dz_max/dx)^2 = "
         f"{ratio:.3g} exceeds the explicit horizontal diffusion limit "
         f"{EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT}, so the horizontal "
-        f"mixing of w can amplify a 2dx mode instead of damping it; set "
-        f"mix_isotropic = 1 on this domain, or lower mix_upper_bound "
-        f"below {admitted:.3g}",
+        f"mixing of w {tier}. Set mix_isotropic = 1 on this domain, or "
+        f"lower mix_upper_bound below {admitted:.3g}. ADVISORY, not a "
+        f"refusal: {ratio:.3g} is the WORST case the cap admits and a "
+        f"flow that never reaches it never sees this, which is why "
+        f"trees above the limit have completed -- but above the limit "
+        f"nothing guarantees the operator's own stability, and what it "
+        f"costs when it does bite is an abort late in a long run rather "
+        f"than a number you can inspect")
+    return ratio, advice
+
+
+def warn_anisotropic_w_mixing(*, where: str, km_opt: int, mix_isotropic: int,
+                              mix_upper_bound: float, dx: float, dy: float,
+                              dz_max: float, ladder: str = "") -> float | None:
+    """Advise when the anisotropic mixing length exceeds the explicit limit.
+
+    A warning and not a refusal, RE-RULED 2026-08-09 after the shipped
+    configs were cleaned: the ratio is the WORST case the cap admits and
+    the criterion overestimates what a flow reaches.  The receipt-backed
+    leg of that is the 250 m nested tree, which completed five
+    multi-hour runs at 0.702 -- 2.8x the limit -- with no sign of the
+    failure mode.  Beside it sits one weaker observation, recorded in
+    prose rather than in an instrument: the attempt #2b post-mortem
+    notes 1.55 at the failing cell where the criterion read 4.23
+    (``configs/les_tornado_100m_mayfield_20211210_attempt3.toml:232``,
+    the only place that number is written down).  Refusing at load would
+    also make the frozen records under ``configs/`` unloadable, which is
+    the same as deleting the ability to reproduce a committed crash.
+
+    What it is not is a taste bound -- above the limit the operator's
+    own stability is no longer guaranteed by anything, and the failure
+    mode is grid-scale vertical velocity that grows out of a field which
+    should be being smoothed.  So it stays advisory, it says the number
+    and the tier, and ``tests/test_shipped_configs_mixing_stability.py``
+    keeps the shipped set out of the exposed state entirely.
+
+    Returns the computed ratio so a caller can record the number whether
+    or not it warned.  ``None`` covers two cases and a caller must not
+    conflate them: not applicable, and applicable with an unresolvable
+    layer depth -- the second one warns, and the warning is the only
+    place that distinction is visible from here.
+    """
+
+    ratio, advice = anisotropic_w_mixing_advice(
+        where=where, km_opt=km_opt, mix_isotropic=mix_isotropic,
+        mix_upper_bound=mix_upper_bound, dx=dx, dy=dy, dz_max=dz_max,
+        ladder=ladder)
+    if advice is None:
+        return ratio
+    from gpuwm.explain import warn
+    warn(
+        advice,
         why="With mix_isotropic = 0 the vertical exchange coefficient is "
             "built and capped on the LAYER DEPTH (xkm_v <= "
             "mix_upper_bound*dz^2/dt) and is then the coefficient the "
@@ -1746,7 +1924,8 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             f"sf_surface_physics={cfg.sf_surface_physics} requires a surface "
             "layer (sf_sfclay_physics != 0) for its exchange coefficients: "
             "Noah reads CHS/CHS2/CQS2/QGH/RIB, Noah-MP and RUC read the same "
-            "seam, and with sf_sfclay_physics=0 nothing writes them."
+            "seam, and with sf_sfclay_physics=0 nothing writes them. "
+            "Select sf_sfclay_physics=1 (revised MM5) or 91 (classic MM5)."
         )
     if cfg.cu_physics and not cfg.moist:
         raise ValueError(
@@ -1763,7 +1942,9 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
                 "trigger's temperature/moisture excesses and the shallow "
                 "arm read KPBL and the surface fluxes the PBL stack "
                 "maintains; with bl_pbl_physics=0 the engine has no KPBL "
-                "to hand the scheme."
+                "to hand the scheme. Select a PBL scheme, e.g. "
+                "bl_pbl_physics=1 (YSU); note GF also requires "
+                "cudt_minutes=0, so set both in one edit."
             )
         if cfg.cudt_minutes != 0.0:
             raise ValueError(
@@ -1859,8 +2040,13 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     if ((ra_lw_physics in (4, 90) or ra_sw_physics in (4, 90))
             and ra_lw_physics != ra_sw_physics):
         raise ValueError(
-            "RTE+RRTMGP (4) and analytic radiation (90) are coupled "
-            "LW/SW adapters and must be selected on both components")
+            f"ra_lw_physics={ra_lw_physics} and ra_sw_physics="
+            f"{ra_sw_physics}: RTE+RRTMGP (4) and analytic radiation (90) "
+            "are coupled LW/SW adapters and must be selected on both "
+            "components. Set ra_lw_physics = ra_sw_physics = 4 "
+            "(RTE+RRTMGP) or = 90 (the analytic proxy), or select the "
+            "0/0 (radiation off) or 0/1 (Dudhia shortwave, longwave off) "
+            "pair.")
     if cfg.icloud not in (0, 1):
         raise ValueError(f"icloud must be 0 or 1, got {cfg.icloud}.")
     if not math.isfinite(cfg.swrad_scat) or cfg.swrad_scat < 0.0:

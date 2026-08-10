@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import shlex
 import itertools
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -442,6 +443,62 @@ def test_a_config_matching_no_profile_prints_no_profile_flag(tmp_path):
     assert "--physics-profile" not in text
     # ...and the rest of the command is still printed in full.
     assert "--source-manifest-sha256" in text and "--output-root" in text
+
+
+def test_go_forwards_a_profile_only_when_the_whole_config_is_it(tmp_path):
+    """The derivation behind ``--physics-profile``, fixed 2026-08-09.
+
+    ``plan_from_config`` used to derive the forwarded profile from the
+    ROOT domain alone, while stage 1's drift refusal reads every
+    ``[[domain]]`` table -- so on the wizard's own ``--ladder`` trees
+    (root = the profile, nests deliberately departing: ``cu_physics =
+    0`` below the gray zone, tighter ``radt``, the ``diff_6th_factor``
+    ladder) the chain composed a stage-1 command guaranteed to refuse
+    its own config.  `gpuwm run-plan`'s prepared route dispatches
+    exactly this shape (``go_main(..., allow_tree=True)``).  Before the
+    stage-1 refusal existed the same derivation was WORSE, not fine: the
+    materializer silently flattened those nests onto the profile, which
+    is the ledger #90 defect itself.
+
+    The derivation now asks the materializer's own conflict predicate:
+    a config the profile contradicts nowhere carries the assertion end
+    to end, and one that deliberately says more runs as its own suite,
+    unnamed (owner ruling 2026-07-31), with the verification status
+    stated in the receipts.
+    """
+
+    tree = _emit(tmp_path, "tree", ladder="12-3")
+    plan = go_cli.plan_from_config(tree, outdir=tmp_path / "go",
+                                   allow_tree=True)
+    assert plan["profile"] is None
+    assert "--physics-profile" not in go_cli.authority_command(plan)
+    # And stage 1 ACCEPTS what go now composes, publishing the config's
+    # nest physics unchanged -- the whole point of omitting the flag.
+    from gpuwm.prepared_single_domain_forecast import (
+        _render_materialized_experiment)
+    _rendered, exp, _receipt = _render_materialized_experiment(
+        tree.read_text(encoding="utf-8"), source="gfs", profile=None)
+    assert int(exp.domains[1].run.cu_physics) == 0
+
+    # Agreement-driven, not tree-driven: the same tree with its nest
+    # brought onto the profile's values forwards the assertion again.
+    agreeing = tmp_path / "agreeing.toml"
+    agreeing.write_text(
+        tree.read_text(encoding="utf-8")
+        .replace("radt = 3.0", "radt = 12.0")
+        .replace("cu_physics = 0", "cu_physics = 1")
+        .replace("diff_6th_factor = 0.1\n", "diff_6th_factor = 0.12\n"),
+        encoding="utf-8")
+    shutil.copy(tree.with_suffix(".namelist.wps"),
+                agreeing.with_suffix(".namelist.wps"))
+    agreeing_plan = go_cli.plan_from_config(
+        agreeing, outdir=tmp_path / "go-agree", allow_tree=True)
+    assert agreeing_plan["profile"] == PROFILE
+
+    # The single-domain emission was never affected and still binds.
+    single = _emit(tmp_path, "single")
+    assert go_cli.plan_from_config(
+        single, outdir=tmp_path / "go-single")["profile"] == PROFILE
 
 
 def test_the_forecast_stage_matches_what_the_front_door_prints(tmp_path,

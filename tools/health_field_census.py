@@ -249,7 +249,7 @@ def _attach_driver(state, cfg, start_time: datetime, latitude_deg: float,
     them the census would understate a real run's steady state.
     """
     import gpuwm.core.physics as physics_mod
-    from gpuwm.config import radiation_enabled
+    from gpuwm.config import radiation_enabled, radiation_scheme_ids
 
     grid = np.zeros((cfg.ny, cfg.nx), dtype=np.float64)
     cold_starts = {name: getattr(physics_mod, name)
@@ -257,10 +257,21 @@ def _attach_driver(state, cfg, start_time: datetime, latitude_deg: float,
                    if name.endswith("_cold_start")}
     for name in cold_starts:
         setattr(physics_mod, name, lambda *a, **k: None)
+    # The census sweeps sf_surface_physics over every selectable value
+    # while inheriting radiation from whatever base descriptor it is
+    # pointed at.  A combination with no longwave scheme under an LSM is
+    # one initialize_physics refuses to fill silently -- correct for a
+    # forecast, wrong for this instrument, which measures the allocation
+    # of every selectable combination.  Declare the idealised constant
+    # for the lw=0 combinations (the guard's remedy 2, typed at the
+    # instrument's own call site); lw>0 keeps None so the scheme path is
+    # measured unchanged.
+    lw_scheme, _sw_scheme = radiation_scheme_ids(cfg)
+    census_glw = None if lw_scheme > 0 else physics_mod.DECLARED_CONSTANT_GLW_WM2
     try:
         driver = physics_mod.initialize_physics(
             state, cfg, landmask=1.0, tsk=290.0, soil_temperature=285.0,
-            soil_moisture=0.30, ivgtyp=10, isltyp=6,
+            soil_moisture=0.30, ivgtyp=10, isltyp=6, glw=census_glw,
             radiation=(lambda **kw: None) if radiation_enabled(cfg) else None,
             cumulus=(lambda **kw: None) if cfg.cu_physics else None,
             radiation_start_time=start_time,

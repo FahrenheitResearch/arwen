@@ -143,6 +143,61 @@ def test_the_physics_registry_suite_is_listed() -> None:
         "#121 added it so stage 1 has a gate on the registry itself")
 
 
+#: The radiation pair.  A refusal gate and a runs gate are not
+#: interchangeable, and the list carried only the first one.
+RADIATION_REFUSED = "tests/test_nocturnal_radiation_guard.py"
+RADIATION_RUNS = "tests/test_wrf_legacy_radiation.py"
+
+
+def test_the_radiation_pair_is_listed_in_both_directions() -> None:
+    """Both halves, or the gate is green on radiation that does nothing.
+
+    Found by the green-on-nothing gate audit (2026-08-09).  Stage 1
+    listed ``test_nocturnal_radiation_guard.py`` -- proof that a
+    shortwave-on/longwave-off pairing is REFUSED -- and nothing that
+    proves radiation RUNS.  Those are different claims.  On a tree whose
+    radiation step had stopped producing heating the refusal would still
+    fire, every listed suite would still pass, and the battery would
+    report a clean stage 1: a guard is not a measurement.
+
+    ``test_wrf_legacy_radiation.py`` is the measurement, on the CPU:
+    atmosphere -> stock Dudhia adapter -> the production PhysicsDriver
+    radiation seam, asserting a positive shortwave heating rate and a
+    positive SWDOWN through the real driver, with the exact-zero night
+    arm beside it so the instrument is exercised both ways.
+    """
+
+    entries = _entries()
+    assert RADIATION_REFUSED in entries, (
+        f"{RADIATION_REFUSED} was dropped from "
+        "tools/battery/stage1_files.txt; it is the half that proves a bad "
+        "radiation pairing is refused")
+    assert RADIATION_RUNS in entries, (
+        f"{RADIATION_RUNS} was dropped from tools/battery/stage1_files.txt.  "
+        f"Without it stage 1 proves only that a bad radiation config is "
+        f"refused ({RADIATION_REFUSED}) and never that radiation produces "
+        "heating at all -- which is exactly the shape of gate the "
+        "2026-08-09 audit was called to close")
+
+
+def test_the_radiation_runs_entry_carries_its_reason_inline() -> None:
+    """Same amendment discipline as the two task-numbered entries.
+
+    This one names an incident rather than a ledger number, which the
+    header explicitly allows ("the task OR the incident"), so it is
+    checked here rather than folded into the ``#12`` parametrization
+    below.
+    """
+
+    reason = _reasons().get(RADIATION_RUNS, "")
+    assert reason, (
+        f"{RADIATION_RUNS} has no comment block above it in "
+        "tools/battery/stage1_files.txt; additions carry their reason inline")
+    assert "green-on-nothing" in reason, (
+        f"the comment above {RADIATION_RUNS} does not name the audit that "
+        f"earned it: {reason!r}")
+
+
 @pytest.mark.parametrize(
     "entry",
     ["tests/test_physics_registry.py",

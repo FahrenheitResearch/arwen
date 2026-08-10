@@ -45,6 +45,18 @@ import pytest
 from conftest import requires_gpu
 
 from gpuwm.config import RunConfig, validate_run_config
+from gpuwm.core.physics import DECLARED_CONSTANT_GLW_WM2  # noqa: E402
+
+#: The idealised constant downward longwave these fixtures declare.
+#:
+#: ``gpuwm.core.physics.initialize_physics`` no longer defaults ``glw``
+#: (300.0 through 1.8.7): a land-surface suite with no longwave scheme
+#: must state where its downward longwave comes from instead of being
+#: handed a plausible-looking 300 W m-2 nobody chose.  These are
+#: idealised columns; the constant is the right answer for them and this
+#: is where they say so.  The VALUE is 1.8.7's default, so every fixture
+#: below integrates exactly the numbers it always did.
+_IDEALISED_GLW = DECLARED_CONSTANT_GLW_WM2
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +206,7 @@ def test_noah_receives_28s_scheme_sr_and_wrfs_frpcpn_flag(monkeypatch):
     cfg = validate_run_config(_mp_only_cfg(
         sf_sfclay_physics=1, sf_surface_physics=2, num_soil_layers=4))
     state = _balanced_state(cp, cfg)
-    driver = initialize_physics(state, cfg)
+    driver = initialize_physics(state, cfg, glw=_IDEALISED_GLW)
 
     # A scheme SR that the temperature proxy could never produce: 0.25
     # everywhere, in a column that is BELOW freezing at the surface (so the
@@ -337,7 +349,7 @@ def test_initialize_physics_installs_wrfs_synthetic_ccn_and_in_profile():
     assert float(cp.max(state.nwfa)) == 0.0
     assert float(cp.max(state.nifa)) == 0.0
 
-    driver = initialize_physics(state, cfg)
+    driver = initialize_physics(state, cfg, glw=_IDEALISED_GLW)
     cp.cuda.Stream.null.synchronize()
 
     assert driver.microphysics_init_receipt == {
@@ -398,7 +410,7 @@ def test_initialize_physics_is_the_only_caller_and_calls_it_once_per_domain():
 
     microphysics.microphysics_init = counting
     try:
-        initialize_physics(state, cfg)
+        initialize_physics(state, cfg, glw=_IDEALISED_GLW)
         assert calls == [28], (
             "initialize_physics did not call microphysics_init exactly once "
             f"(calls: {calls})")
@@ -455,7 +467,7 @@ def test_initialize_physics_does_not_refill_a_domain_that_carries_aerosol():
     state.nifa[...] = cp.asarray(carried_nifa)
     state.nwfa2d[...] = cp.asarray(carried_2d)
 
-    driver = initialize_physics(state, cfg)
+    driver = initialize_physics(state, cfg, glw=_IDEALISED_GLW)
     cp.cuda.Stream.null.synchronize()
     assert driver.microphysics_init_receipt == {
         "thompson_aerosol_profile": {"ccn": False, "in": False}}
@@ -469,7 +481,7 @@ def test_initialize_physics_does_not_refill_a_domain_that_carries_aerosol():
     half = _balanced_state(cp, cfg)
     half.nwfa[...] = cp.asarray(carried_nwfa)
     half.nifa[...] = 0.0
-    half_driver = initialize_physics(half, cfg)
+    half_driver = initialize_physics(half, cfg, glw=_IDEALISED_GLW)
     cp.cuda.Stream.null.synchronize()
     assert half_driver.microphysics_init_receipt == {
         "thompson_aerosol_profile": {"ccn": False, "in": True}}
@@ -506,7 +518,7 @@ def test_a_resumed_mp28_domain_keeps_its_checkpointed_aerosol(tmp_path):
 
     # (1) A run that has been going for a while: distinctive aerosol.
     source = _balanced_state(cp, cfg)
-    initialize_physics(source, cfg)
+    initialize_physics(source, cfg, glw=_IDEALISED_GLW)
     rng = np.random.default_rng(2028)
     carried = {
         "nwfa": rng.uniform(2.0e7, 4.0e8, source.nwfa.shape).astype(np.float32),
@@ -522,7 +534,7 @@ def test_a_resumed_mp28_domain_keeps_its_checkpointed_aerosol(tmp_path):
     # (2) The resume: fresh domain -> initialize_physics (fill RUNS, because
     #     the cold state is all-zero) -> restore_restart.
     resumed = _balanced_state(cp, cfg)
-    driver = initialize_physics(resumed, cfg)
+    driver = initialize_physics(resumed, cfg, glw=_IDEALISED_GLW)
     cp.cuda.Stream.null.synchronize()
     assert driver.microphysics_init_receipt == {
         "thompson_aerosol_profile": {"ccn": True, "in": True}}, (
@@ -557,7 +569,7 @@ def test_the_init_hook_is_an_unconditional_no_op_away_from_mp28():
 
     cfg = validate_run_config(_mp_only_cfg(mp_physics=8))
     state = _balanced_state(cp, cfg)
-    driver = initialize_physics(state, cfg)
+    driver = initialize_physics(state, cfg, glw=_IDEALISED_GLW)
     cp.cuda.Stream.null.synchronize()
     assert driver.microphysics_init_receipt == {}
     assert getattr(state, "nwfa", None) is None, (
@@ -584,7 +596,7 @@ def test_the_mp28_driver_aliases_the_schemes_own_accumulators():
     _tables_or_skip()
     cfg = validate_run_config(_mp_only_cfg())
     state = _balanced_state(cp, cfg)
-    driver = initialize_physics(state, cfg)
+    driver = initialize_physics(state, cfg, glw=_IDEALISED_GLW)
 
     for name, slot in (("rainnc", "mp_rainnc"), ("rainncv", "mp_rainncv"),
                        ("sr", "mp_sr"), ("snownc", "mp_snownc"),
@@ -635,7 +647,7 @@ def test_mp28_integrates_with_the_full_physics_driver_stack():
         sf_sfclay_physics=1, sf_surface_physics=2, num_soil_layers=4,
         bl_pbl_physics=1, bldt=0.0))
     state = _balanced_state(cp, cfg)
-    driver = initialize_physics(state, cfg)
+    driver = initialize_physics(state, cfg, glw=_IDEALISED_GLW)
     cp.cuda.Stream.null.synchronize()
 
     assert driver.microphysics_init_receipt == {
@@ -735,7 +747,7 @@ def test_the_mp28_health_descriptor_census_is_re_derived_not_assumed():
             mp_physics=mp, sf_sfclay_physics=1, sf_surface_physics=2,
             num_soil_layers=4, bl_pbl_physics=1))
         state = _balanced_state(cp, cfg)
-        initialize_physics(state, cfg)
+        initialize_physics(state, cfg, glw=_IDEALISED_GLW)
         cp.cuda.Stream.null.synchronize()
         names = [f.name for f in health.collect_state_fields(state)]
         counts[mp] = len(names)

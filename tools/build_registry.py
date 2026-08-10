@@ -3235,11 +3235,103 @@ def build(registry: dict) -> dict:
         "mp8-to-mp18-mass-diagnosed-v1",
         "mp-edge-mass-diagnosed-v1",
     ]
+    _no_radiation_name_warnings(registry)
     # Last, so both passes see every surface this builder created above --
     # including the legacy NSSL-2 template and the regenerated nest edges.
     _rename_maturities(registry)
     _evidence_architecture(registry)
     return registry
+
+
+#: Every template whose id says "no-radiation" and whose radiation component
+#: is ``dudhia-shortwave``.  Recomputed and cross-checked against the built
+#: registry below rather than trusted as a list, so a seventh one cannot be
+#: added quietly.
+_NO_RADIATION_NAMED_TEMPLATE_IDS = (
+    "wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1",
+    "wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1",
+    "wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1",
+    "wsm6-ysu-mm5-noah-no-radiation-v1",
+    "wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1",
+    "wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1",
+)
+
+#: The sentence every one of them now carries, verbatim.
+NO_RADIATION_NAME_WARNING = (
+    "THE NAME IS WRONG AND THE ID IS FROZEN. This template's id says "
+    "'no-radiation'; its radiation component is 'dudhia-shortwave', which "
+    "is ra_lw_physics 0 with ra_sw_physics 1 -- WRF's Dudhia SHORTWAVE "
+    "scheme RUNS, and no longwave scheme does. Downward longwave is "
+    "therefore never computed: GLW stays at zero (WRF's own value for a "
+    "longwave-free run, phys/module_physics_init.F:1168-1170 and "
+    "phys/module_radiation_driver.F:1719-1722) for the entire forecast, "
+    "and every land-surface model reads it every step. That makes this a "
+    "DAYTIME VALIDATION suite: a real window containing local night "
+    "refuses to load unless [experiment] declares acknowledgements = "
+    "[\"asymmetric-radiation-nocturnal-window-v1\"]. Read the label, not "
+    "the id -- the label has always named Dudhia SW. The id is not being "
+    "corrected because it is quoted by shipped configs, evidence receipts "
+    "and user plans; this warning, the label and docs/public/PHYSICS.md "
+    "are the authority on what the option runs."
+)
+
+
+def _no_radiation_name_warnings(registry: dict) -> None:
+    """Make six lying template ids say out loud what they actually run.
+
+    Found 2026-08-09 by execution.  Six shipped templates are named
+    ``...-no-radiation-...`` and every one of them selects Dudhia
+    shortwave with longwave off -- not radiation off, which is a
+    DIFFERENT registered option (``radiation: off``, the (0, 0) pair).
+    The gap is not theoretical: ``configs/real74_4dom_mynn_norad.toml``
+    reached for ``ra_physics = 0`` and explained itself with "the MYNN
+    5/5 registry template ... carries ra_physics 0", which the template
+    does not, and ``docs/public/STREAMING.md`` handed
+    ``wsm6-ysu-mm5-noah-no-radiation-v1`` to users in a copy-paste
+    streaming plan while that template's ``warnings`` list did not exist
+    and its maturity, ``supported``, is one of
+    ``warning_policy.nonwarning_maturities`` -- so selecting it produced
+    no warning of any kind at any door.
+
+    Maturity is deliberately NOT touched.  The ladder's axis is
+    ``conformance`` and every component of this suite is measured; saying
+    ``experimental-runtime`` would be a false claim about port fidelity
+    to buy a warning through the maturity channel.  ``warnings`` is the
+    channel that exists for "informed user review"
+    (``warning_policy.meaning``) and it is emitted for every template
+    regardless of maturity
+    (``gpuwm/physics_registry.py`` template-warning pass), so it is the
+    honest lever and it is the one used here.
+
+    Appended last and appended (not inserted at 0) on purpose: this
+    builder composes ``mynn_ruc`` and ``mynn_noahmp`` by copying another
+    template's ``warnings[0]``, so a leading insert would silently
+    reassign which sentence those two inherit.
+    """
+
+    templates = registry["templates"]
+    named = tuple(sorted(
+        template_id for template_id in templates
+        if "no-radiation" in template_id))
+    if named != _NO_RADIATION_NAMED_TEMPLATE_IDS:
+        raise SystemExit(
+            "the set of templates whose id says 'no-radiation' moved: "
+            f"expected {_NO_RADIATION_NAMED_TEMPLATE_IDS}, built {named}. "
+            "Update _NO_RADIATION_NAMED_TEMPLATE_IDS deliberately -- a new "
+            "member needs this warning, and a departed one must not be "
+            "silently dropped from it.")
+    for template_id in named:
+        template = templates[template_id]
+        radiation = template.get("components", {}).get("radiation")
+        if radiation != "dudhia-shortwave":
+            raise SystemExit(
+                f"template {template_id!r} is named 'no-radiation' and "
+                f"selects radiation {radiation!r}; this warning states "
+                "'dudhia-shortwave' and would now be the lie it exists to "
+                "correct")
+        warnings = template.setdefault("warnings", [])
+        if NO_RADIATION_NAME_WARNING not in warnings:
+            warnings.append(NO_RADIATION_NAME_WARNING)
 
 
 def render(registry: dict) -> bytes:

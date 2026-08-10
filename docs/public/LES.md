@@ -369,11 +369,70 @@ These are limits of the current build, not opinions about LES.
   idealized CBL case runs `mix_isotropic = 1`, where the two are the same
   number — the WRF oracle lane measured `XKMH == XKMV` at all 589,824
   points, maximum difference exactly 0 — so **every idealized result on
-  this page is unaffected by D8**. It is load-bearing on the nested 250 m
-  child, which runs `mix_isotropic = 0`: at dx 250 m against dz 17 m the
-  pairing is roughly two orders of magnitude in the explicit diffusion
-  number, and taking WRF's is unstable. Full argument in `PROVENANCE.md`,
-  section D8.
+  this page is unaffected by D8**. It was load-bearing on the nested
+  250 m child while that child ran `mix_isotropic = 0`: at dx 250 m
+  against dz 17 m the pairing is roughly two orders of magnitude in the
+  explicit diffusion number, and taking WRF's is unstable. **Since
+  2026-08-09 no config offered as a starting point runs
+  `mix_isotropic = 0` on an LES child** (below), so D8 is arithmetically
+  inert on everything a user would begin from. It is still live on the
+  five archived records that reproduce committed runs, and it stays
+  registered because the divergence is in the operator, not in the
+  configs. Full argument in `PROVENANCE.md`, section D8.
+
+### The mixing length on every shipped LES child, and why it is 1
+
+`mix_isotropic = 0` gives WRF per-axis mixing lengths, and on a grid
+whose layers are much deeper than the grid is wide that is a trap that
+has cost this project a run. WRF hands `horizontal_diffusion_w_2` the
+**vertical** exchange coefficient, `smag_km` both builds and caps that
+coefficient on the layer depth (`xkmv <= mix_upper_bound*dz²/dt`), and
+the operator then differences it over `dx`. Nothing compares the two, so
+the reachable `K·dt/dx²` is `mix_upper_bound·(dz_max/dx)²` — independent
+of `dt`, because the cap carries `1/dt` and the ratio carries `dt`. An
+explicit Laplacian multiplies a 2Δx mode by `1 − 4K·dt/dx²` per step:
+past **1/4** the sign flips, past **1/2** the mode grows.
+
+| tree | domain | ratio when it ran at `mix_isotropic = 0` | now |
+|---|---|---|---|
+| nested 250 m (`les_nest_250m_km3`, `les_nest_250m_grayzone`) | d03, 250 m | **0.702** (2.8×) | not on the path |
+| 100 m tornado (`les_tornado_100m_*`) | d03, 500 m | 0.169 | not on the path |
+| 100 m tornado | d04, 100 m | **4.23** (17×) | not on the path |
+
+The `attempt2` and `attempt2b` files at the top level of `configs/`, and
+the three archives under `configs/frozen/`, still run at those ratios.
+They are records of committed runs rather than configurations to start
+from, and each is pinned to its sha256 so the exemption cannot widen.
+
+The 4.23 tree aborted at step 5467 with `w = 239.48 m/s`, bit-identical
+across three instrumented reproductions. The 0.702 trees completed
+multi-hour runs at that ratio, which is the whole reason the criterion
+is an **advisory and not a refusal**: it is the worst case the cap
+admits, and five completed runs at 2.8× the limit are the receipt-backed
+evidence that a flow need not reach it. There is a second, weaker
+observation pointing the same way — the attempt #2b post-mortem records
+a realised 1.55 at the failing cell against a criterion of 4.23, written
+down in prose in
+`configs/les_tornado_100m_mayfield_20211210_attempt3.toml:232` and
+nowhere else, with no instrument output behind it. Treat the ~3×
+overshoot it implies as an indication, not a measurement; the refusal
+argument does not rest on it.
+
+What ships instead is a clean set plus a check that keeps it clean:
+`tests/test_shipped_configs_mixing_stability.py` fails if any config
+under `configs/` arrives on the exposed path, and `gpuwm check` now
+repeats the advisory in its report (and under `advisories` in `--json`)
+rather than leaving it as one line at config load. The check reads the
+layer depths from the config's eta ladder, and **resolves that ladder
+from `nz`/`ztop` when a config does not write one out** — a config is
+not safer for having left the interfaces implicit.
+
+**The receipts on this page belong to the pre-change bytes.** Every
+measured nested number in §2 was produced with `mix_isotropic = 0`; the
+exact files are archived at `configs/frozen/` and the receipts' sha256
+digests still resolve there. The shipped configs have not been
+re-scored, and `mix_isotropic` is inside the restart fingerprint, so no
+checkpoint crosses the change.
 
 ---
 

@@ -24,9 +24,10 @@ import pytest
 import certification_fixtures as fixtures
 from gpuwm.certify.band import write_certification_json
 from gpuwm.certify.capsule import SCHEMA_PATH
-from gpuwm.certify.dualrun import (capsule_field_paths, compare_capsule_files,
-                                   compare_capsules, delete_leaf, leaf_value,
-                                   set_leaf, split_path)
+from gpuwm.certify.dualrun import (DualRunError, capsule_field_paths,
+                                   compare_capsule_files, compare_capsules,
+                                   delete_leaf, leaf_value, set_leaf,
+                                   split_path)
 from gpuwm.cli import main
 
 CAPSULE = fixtures.matched_capsule(fixtures.shipped_band()["config_sha256"])
@@ -60,6 +61,98 @@ def test_two_matched_capsules_are_identical(tmp_path, capsys):
     assert main(["dual-run", "--capsule-a", str(a),
                  "--capsule-b", str(b)]) == 0
     assert "identical" in capsys.readouterr().out
+
+
+# ---- the empty screen ----------------------------------------------------
+#
+# Handed two empty capsules this command printed "capsules are identical
+# field for field" and exited 0.  It is total by construction, so it found
+# no divergence -- there was no field.  The detector for the corruption a
+# card with no ECC cannot report answered its one question with a green on
+# nothing.
+
+@pytest.mark.parametrize("payload", ["{}", "[]", "", "   \n"])
+def test_two_empty_documents_are_refused_not_called_identical(
+        tmp_path, capsys, payload):
+    a = tmp_path / "a.json"
+    b = tmp_path / "b.json"
+    a.write_text(payload, encoding="utf-8")
+    b.write_text(payload, encoding="utf-8")
+    assert main(["dual-run", "--capsule-a", str(a),
+                 "--capsule-b", str(b)]) != 0
+    captured = capsys.readouterr()
+    assert "identical" not in captured.out
+    assert "nothing to compare" in captured.err or "is empty" in captured.err
+
+
+def test_the_empty_screen_refusal_names_both_arms_and_the_remedy(tmp_path):
+    a = _write(tmp_path / "a.json", {})
+    b = _write(tmp_path / "b.json", {})
+    with pytest.raises(DualRunError) as raised:
+        compare_capsule_files(a, b)
+    message = str(raised.value)
+    assert "0 leaf field(s)" in message
+    assert "certification-capsule.json" in message
+
+
+def test_a_zero_byte_capsule_is_refused_by_name_and_by_arm(tmp_path):
+    a = tmp_path / "a.json"
+    a.write_bytes(b"")
+    b = _write(tmp_path / "b.json", CAPSULE)
+    with pytest.raises(DualRunError) as raised:
+        compare_capsule_files(a, b)
+    assert "capsule A" in str(raised.value)
+    assert "0 bytes" in str(raised.value)
+
+
+def test_the_empty_screen_guard_does_not_fire_on_real_capsules(
+        tmp_path, capsys):
+    """The negative half: a real pair still passes, and says how big it was.
+
+    ``compared_count`` is asserted against the capsule's own leaf count
+    rather than a transcribed number, so a capsule that grows a section
+    cannot leave this test asserting a stale figure.
+    """
+
+    a = _write(tmp_path / "a.json", CAPSULE)
+    b = _write(tmp_path / "b.json", copy.deepcopy(CAPSULE))
+    comparison = compare_capsule_files(a, b)
+    assert comparison.identical is True
+    assert comparison.compared_count == len(FIELD_PATHS)
+    assert comparison.compared_count > 40
+    assert main(["dual-run", "--capsule-a", str(a),
+                 "--capsule-b", str(b)]) == 0
+    out = capsys.readouterr().out
+    assert "identical field for field" in out
+    assert f"({comparison.compared_count} compared quantities)" in out
+
+
+def test_the_written_report_carries_the_compared_count(tmp_path):
+    a = _write(tmp_path / "a.json", CAPSULE)
+    b = _write(tmp_path / "b.json", copy.deepcopy(CAPSULE))
+    report = tmp_path / "report.json"
+    assert main(["dual-run", "--capsule-a", str(a), "--capsule-b", str(b),
+                 "--out-report", str(report)]) == 0
+    document = json.loads(report.read_text(encoding="utf-8"))
+    assert document["identical"] is True
+    assert document["compared_count"] == len(FIELD_PATHS)
+
+
+def test_one_empty_arm_against_a_real_one_is_a_divergence_not_a_refusal(
+        tmp_path):
+    """Half-empty is comparable, and every field of it diverges.
+
+    The guard is about having nothing to compare, not about one side
+    being thin: this pair has leaves, so it goes through the ordinary
+    comparison and refuses on the divergences it finds.
+    """
+
+    a = _write(tmp_path / "a.json", CAPSULE)
+    b = _write(tmp_path / "b.json", {})
+    comparison = compare_capsule_files(a, b)
+    assert comparison.identical is False
+    assert comparison.compared_count == len(FIELD_PATHS)
+    assert len(comparison.divergences) == len(FIELD_PATHS)
 
 
 def test_the_mutation_table_is_not_empty_and_covers_the_named_field_kinds():

@@ -1656,6 +1656,15 @@ def _quote_command(command: list[str]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    # Which tree is executing, before any source bytes are read; and a
+    # refusal when this install's version claims contradict each other.
+    from gpuwm.provenance_gate import announce_for_main
+
+    refusal = announce_for_main(
+        "rw-wps", explain=bool(getattr(args, "explain", False)))
+    if refusal is not None:
+        print(f"rw-wps: {refusal}", file=sys.stderr)
+        return 2
     if args.source_top_pressure_pa is not None and not args.namelist_support_report:
         parser.error(
             "--source-top-pressure-pa is only valid with "

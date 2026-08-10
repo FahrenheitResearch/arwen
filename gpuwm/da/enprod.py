@@ -127,10 +127,45 @@ _DIRECTORY_KEYS = ("member_dir", "dir", "directory", "path")
 #: stay an explicit ``--accept-status`` on the operator's part.
 DEFAULT_ACCEPT_STATUS = ("DONE", "complete")
 
-#: Stamped into every subtitle.  v1.2's ensemble products are new and
-#: uncalibrated; a plot that does not say so will be screenshotted into a
-#: briefing that assumes it was.
-EXPERIMENTAL_STAMP = "EXPERIMENTAL (v1.2 ensemble, uncalibrated)"
+def experimental_stamp() -> str:
+    """The uncalibrated-ensemble stamp, versioned by the RUNNING engine.
+
+    The warning half is still true and stays: these ensemble products
+    have never been calibrated against verification, and a panel that
+    does not say so will be screenshotted into a briefing that assumes
+    it was.
+
+    The VERSION half used to be the literal string ``v1.2``, frozen at
+    the release the suite was written for and stamped onto every panel
+    every release since -- so a 1.8.7 plot claimed to come from a 1.2
+    ensemble.  A version on a product is a provenance claim; the only
+    honest source for it is the engine that produced the product, which
+    is :data:`gpuwm.__version__` (read from the installed
+    distribution's metadata, so an editable checkout and a wheel both
+    answer for themselves).  Read at CALL time rather than at import
+    time so a process that reloads or reinstalls the package cannot
+    keep stamping the version it started with.
+    """
+
+    from gpuwm import __version__
+
+    return f"EXPERIMENTAL (v{__version__} ensemble, uncalibrated)"
+
+
+def __getattr__(name: str):
+    """``EXPERIMENTAL_STAMP`` is served at ACCESS time, never frozen.
+
+    The attribute survives for compatibility, but as PEP 562 module
+    ``__getattr__`` rather than a module constant: a constant evaluated
+    at import time is exactly the frozen-at-import stamping that
+    :func:`experimental_stamp`'s docstring says this suite no longer
+    does.  Every access re-reads the running engine's version; the
+    function is the authority and this name is a view of it.
+    """
+
+    if name == "EXPERIMENTAL_STAMP":
+        return experimental_stamp()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 #: What this suite does with a non-finite member value.  ONE policy, named
 #: and applied identically by every product, because the two ways it used
@@ -850,7 +885,7 @@ def ensemble_plot_context(domain: str | None, spacing_m: float | None,
     """
 
     base = plot_context(domain, spacing_m, stamp, source_label)
-    lines = [f"{base} | {n_members} members", EXPERIMENTAL_STAMP]
+    lines = [f"{base} | {n_members} members", experimental_stamp()]
     lines.extend(note for note in notes if note)
     return "\n".join(lines)
 
@@ -2178,7 +2213,7 @@ def enprod_main(args: argparse.Namespace) -> int:
              why="Every admitted member's frame inventory is checked "
                  "against the manifest before anything renders, and "
                  "the override is stamped on every panel.")
-    print(f"enprod: {EXPERIMENTAL_STAMP}")
+    print(f"enprod: {experimental_stamp()}")
     provenance: dict = {}
     try:
         written, failures = run_suite(
@@ -2285,6 +2320,7 @@ def register_cli(subparsers) -> None:
 __all__ = [
     "DEFAULT_ACCEPT_STATUS", "DEFAULT_NAN_POLICY", "DEFAULT_PMM_TIE_RULE",
     "EXPERIMENTAL_STAMP", "FIELDS", "MANIFEST_FILENAME", "MANIFEST_SCHEMA",
+    "experimental_stamp",
     "NAN_POLICIES", "PAINTBALL_PALETTE", "PMM_TIE_RULES", "PRODUCTS",
     "EnsembleManifest", "EnsembleMember", "EnsembleRefusal", "FieldSpec",
     "MemberFrames", "ProductRequest", "coverage_caption", "disc_offsets",

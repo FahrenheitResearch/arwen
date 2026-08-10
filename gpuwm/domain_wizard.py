@@ -91,9 +91,12 @@ from gpuwm.experiment import ExperimentConfig, build_experiment
 from gpuwm.explain import explain_enabled, warn
 from gpuwm.fetch import parse_cycle
 from gpuwm.physics_compat import (ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
+                                  CONSTANT_DOWNWARD_LONGWAVE_ACK,
                                   RRTMG_VARIANT_LEGACY,
                                   MORRISON_PROFILE_ID, MYNN_PROFILE_ID,
+                                  MYNN_RTE_RRTMGP_PROFILE_ID,
                                   MYNN_RUC_PROFILE_ID,
+                                  MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
                                   NSSL2_LEGACY_RRTMG_PROFILE_ID,
                                   NSSL2_PROFILE_ID,
                                   RUC_PROFILE_ID,
@@ -491,12 +494,21 @@ DEFAULT_SUITE_PHYSICS = {
 #: :data:`gpuwm.hrrr_route_inputs.REQUIRED_PHYSICS` refuses because HRRR's
 #: 3 km grid is convection permitting), so a door that did not offer them
 #: could only default HRRR to a shortwave-on/longwave-off suite.
+#:
+#: The nocturnally valid suites come first and the asymmetric ones after,
+#: which is why the two radiation-bearing MYNN rows sit at the end of the
+#: first block rather than beside the MYNN rows they mirror.  They close
+#: the gap that made this ordering a trap: until 1.8.7 every MYNN entry in
+#: this list was shortwave-on/longwave-off, so a reader who wanted MYNN
+#: had to leave the nocturnally valid block to get it.
 WIZARD_PHYSICS_PROFILES = (
     MORRISON_PROFILE_ID,
     NSSL2_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
+    MYNN_RTE_RRTMGP_PROFILE_ID,
+    MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     WSM6_PROFILE_ID,
     MYNN_PROFILE_ID,
@@ -895,8 +907,8 @@ def final_step_command(out: "Path", *, source: str, profile: str | None,
     # resolves without a checkout.
     if domain_count > 1:
         return (
-            "# this is a " + str(domain_count) + "-domain tree, which the "
-            "single-domain chain does not run.\n"
+            "# this is a " + str(domain_count) + "-domain tree: run it "
+            "with the tree runner, in two steps.\n"
             "#   prepare it with rw-wps, which prints both values below "
             "when it finishes, then:\n"
             "#   gpuwm-prepared-tree-forecast \\\n"
@@ -907,11 +919,12 @@ def final_step_command(out: "Path", *, source: str, profile: str | None,
             "python -m gpuwm.prepared_domain_tree_forecast)\n"
             f"#   the full sequence is {MANUAL_CHAIN}")
     return (
-        "# a native single-domain route with no one-command chain for "
-        "this source:\n"
+        "# this source runs stage by stage on the native single-domain "
+        "route:\n"
         f"#   follow {MANUAL_CHAIN}.  The runner executes the\n"
         "#   suite in this file as written; --physics-profile is an "
-        "optional binding.")
+        "optional binding.\n"
+        "#   (no one-command chain finishes this source yet.)")
 
 
 #: What ``--source hrrr`` binds when no ``--physics-profile`` is named.
@@ -2137,6 +2150,37 @@ def _relative_or_absolute(path: Path, base: Path) -> str:
         return _posix(Path(path).resolve())
 
 
+def declared_nocturnal_night(profile: str | None, *, start_time: datetime,
+                             hours: int, projection: dict):
+    """First local night of this window IF the suite forces a declaration.
+
+    ``None`` when nothing is declared: either the profile runs both
+    radiation streams, or the window is all daylight.  A ``datetime``
+    means :func:`render_config` will write
+    ``acknowledgements = [ASYMMETRIC_RADIATION_NOCTURNAL_ACK]`` into the
+    emitted ``[experiment]`` -- which disarms the load-time guard
+    (:func:`gpuwm.physics_compat.nocturnal_radiation_refusal`) at every
+    other front door for this file.
+
+    One function, two readers: the emission rule in
+    :func:`render_config` and the spoken advisory in
+    :func:`domain_main`.  They were allowed to be two expressions of the
+    same predicate exactly once, and the result was a wizard that wrote
+    the declaration and said nothing about it -- so the only statement of
+    a nocturnally invalid run was a comment inside a file the reader had
+    no reason to open.
+    """
+
+    shared = shared_physics(profile)
+    lw = int(shared.get("ra_lw_physics", shared.get("ra_physics", 0)))
+    sw = int(shared.get("ra_sw_physics", shared.get("ra_physics", 0)))
+    if not (sw > 0 and lw == 0):
+        return None
+    return first_local_night_time(
+        start_time, float(hours * 3600),
+        ref_lat=projection["ref_lat"], ref_lon=projection["ref_lon"])
+
+
 def render_config(*, name: str, start_time: datetime, hours: int,
                   projection: dict, dims: list[tuple[int, int]],
                   ratios: tuple[int, ...],
@@ -2146,8 +2190,22 @@ def render_config(*, name: str, start_time: datetime, hours: int,
                   interactive: bool = False,
                   level_buffers_km: tuple[float, ...] | None = None,
                   history_interval_s: float | None = None,
-                  nest_history_interval_s: float | None = None) -> str:
+                  nest_history_interval_s: float | None = None,
+                  acknowledgements: tuple[str, ...] = ()) -> str:
     """The emitted TOML text (the exact bytes the wizard validates).
+
+    ``acknowledgements`` is written into ``[experiment]`` verbatim and is
+    the ONLY source of that field.  Until 2026-08-09 this function wrote
+    ``[ASYMMETRIC_RADIATION_NOCTURNAL_ACK]`` into every emitted file
+    whose selected suite met a night window -- a declaration the user
+    never made, in a file that outlives the terminal session, which
+    disarmed the load-time guard at ``gpuwm check``, ``gpuwm run``,
+    ``gpuwm go``, run-plan and both prepared runners forever after.  An
+    acknowledgement is a person stating that they know what they are
+    running; a program cannot make it on their behalf and have it mean
+    anything.  ``gpuwm domain --ack <id>`` is how it is made now, and
+    :func:`domain_main` REFUSES rather than emit a file that needs one it
+    was not given.
 
     ``interactive`` records WHICH front door authored the file -- the
     prompt session or the flags -- in the header the file already
@@ -2178,12 +2236,55 @@ def render_config(*, name: str, start_time: datetime, hours: int,
     emitted_lw = int(shared.get("ra_lw_physics", shared.get("ra_physics", 0)))
     emitted_sw = int(shared.get("ra_sw_physics", shared.get("ra_physics", 0)))
     asymmetric_radiation = emitted_sw > 0 and emitted_lw == 0
-    first_night = (first_local_night_time(
-        start_time, float(hours * 3600),
-        ref_lat=projection["ref_lat"], ref_lon=projection["ref_lon"])
-        if asymmetric_radiation else None)
-    if first_night is not None:
-        experiment["acknowledgements"] = [ASYMMETRIC_RADIATION_NOCTURNAL_ACK]
+    # One predicate, read by the emission rule here and by the spoken
+    # advisory in domain_main: see declared_nocturnal_night.  It asks
+    # exactly what the inline expression here used to ask -- shortwave on,
+    # longwave off, and a local night inside the window.
+    first_night = declared_nocturnal_night(
+        profile, start_time=start_time, hours=hours, projection=projection)
+    # The SECOND declaration, and a separate question from the first:
+    # with no longwave scheme under a land-surface scheme, downward
+    # longwave is a declared constant rather than a computed flux, at
+    # noon as much as at midnight.  The nocturnal token used to stand in
+    # for this by accident -- it is checked before any physics is
+    # inspected, so a config carrying it never had its GLW source looked
+    # at -- and an all-daylight asymmetric emission declared nothing at
+    # all while still running Noah on a fixed 300 W m-2.  Both are now
+    # stated, separately, in ink.  The condition is the load guard's own
+    # classification, not a re-derivation, so an emission can never pass
+    # here and refuse there.
+    from gpuwm.physics_compat import downward_longwave_disposition
+    _glw_kind, _ = downward_longwave_disposition(
+        ra_lw_physics=emitted_lw, ra_sw_physics=emitted_sw,
+        sf_surface_physics=int(shared.get("sf_surface_physics", 0)))
+    constant_longwave = _glw_kind in ("consumed", "published")
+    # WHO DECLARES WHICH TOKEN, and why the two are not treated alike.
+    #
+    # The NOCTURNAL token is a claim about the WINDOW the user chose --
+    # "I know this run contains night and I want it anyway" -- and the
+    # wizard cannot make it for them.  It wrote that line by itself
+    # through 1.8.7, into a file that outlives the terminal session, and
+    # the line disarmed the load guard at every other front door
+    # forever after.  It now comes from ``gpuwm domain --ack`` or not at
+    # all, and domain_main refuses rather than emit a file needing one
+    # it was not given.
+    #
+    # The CONSTANT-LONGWAVE token is not a judgment: it is a mechanical
+    # consequence of the SUITE the user named on the command line, true
+    # of every window and every place that suite is run in.  Naming the
+    # profile IS the declaration, so it is written here in ink -- with
+    # the JUSTIFY line the shipped-config convention requires -- rather
+    # than left to silence.  Emitting it is what keeps the wizard's own
+    # daylight output loadable, which is the property that made this
+    # worth separating: an all-daylight asymmetric run has no nocturnal
+    # claim to make and still integrates a fabricated flux.
+    acknowledgements = tuple(acknowledgements)
+    emitted_acks = list(acknowledgements)
+    if constant_longwave and CONSTANT_DOWNWARD_LONGWAVE_ACK not in emitted_acks:
+        emitted_acks.append(CONSTANT_DOWNWARD_LONGWAVE_ACK)
+    if emitted_acks:
+        experiment["acknowledgements"] = emitted_acks
+    declared = ASYMMETRIC_RADIATION_NOCTURNAL_ACK in acknowledgements
     if not asymmetric_radiation:
         nocturnal_note = (
             "# NOCTURNALLY VALID: longwave and shortwave both run, so the "
@@ -2196,7 +2297,7 @@ def render_config(*, name: str, start_time: datetime, hours: int,
             "# all-daylight window; re-emit with a full lw+sw profile "
             "before running any\n"
             "# window that includes local night.\n")
-    else:
+    elif declared:
         nocturnal_note = (
             "# NOT NOCTURNALLY VALID: shortwave heats by day, longwave is "
             "OFF, and this\n"
@@ -2204,12 +2305,58 @@ def render_config(*, name: str, start_time: datetime, hours: int,
             f"{first_night:%Y-%m-%dT%H:%M}Z), so the surface\n"
             "# radiates with no downward longwave after sunset and skin "
             "temperature and\n"
-            "# 2 m moisture collapse.  Emitted ONLY because this profile "
-            "was selected\n"
-            "# explicitly; [experiment] carries acknowledgements = "
-            f'["{ASYMMETRIC_RADIATION_NOCTURNAL_ACK}"]\n'
-            "# to declare the validation experiment to every front door's "
-            "load guard.\n")
+            "# 2 m moisture collapse.  Emitted because YOU declared it: "
+            "the acknowledgement\n"
+            "# in [experiment] below came from `gpuwm domain --ack "
+            f"{ASYMMETRIC_RADIATION_NOCTURNAL_ACK}`,\n"
+            "# and it disarms the load guard at every other front door "
+            "for this file --\n"
+            "# check, run, go, run-plan and both prepared runners.\n")
+    else:
+        # `gpuwm domain` refuses this combination before it renders (see
+        # domain_main), so this is the LIBRARY caller's copy: a file that
+        # will not load must not also look fine.
+        nocturnal_note = (
+            "# NOT NOCTURNALLY VALID, AND THIS FILE WILL NOT LOAD: "
+            "shortwave heats by day,\n"
+            "# longwave is OFF, and this window includes local night "
+            "(first at\n"
+            f"# {first_night:%Y-%m-%dT%H:%M}Z).  Every front door refuses "
+            "it at config load.\n"
+            "# Re-emit with a full lw+sw profile, or -- if you mean the "
+            "daytime validation\n"
+            "# suite and accept the night -- re-emit with `gpuwm domain "
+            "--ack\n"
+            f"# {ASYMMETRIC_RADIATION_NOCTURNAL_ACK}`.\n")
+    if constant_longwave:
+        # The justification convention shipped configs are held to
+        # (tests/test_shipped_acknowledgement_justifications.py), written
+        # into every emitted file that needs the token so an emitted
+        # config meets the same bar as a committed one.  The middle
+        # sentence states the actual exposure -- integrated by the land
+        # surface, or merely published to wrfout -- from the same
+        # disposition the guard read.
+        if _glw_kind == "consumed":
+            exposure = (
+                "# the surface integrates a declared constant 300 W m-2 "
+                "for the whole\n"
+                "# forecast.")
+        else:
+            exposure = (
+                "# the declared constant 300 W m-2 is published as the "
+                "GLW row of every\n"
+                "# wrfout frame.")
+        nocturnal_note += (
+            f"# JUSTIFY {CONSTANT_DOWNWARD_LONGWAVE_ACK}: this suite "
+            "sets\n"
+            "# ra_lw_physics = 0, so NOTHING computes downward longwave "
+            "and\n"
+            + exposure +
+            "  Emitted only because this profile was selected "
+            "explicitly.\n"
+            "# Re-emit with a full lw+sw profile for any run whose "
+            "surface fields you\n"
+            "# intend to believe.\n")
     time_step = root_time_step_s(projection["ref_lat"], root_dx_m)
     chain_km = _ladder_dx_km(ratios, root_dx_m)
     if level_buffers_km is None:
@@ -2404,6 +2551,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                root_dx_m: float = ROOT_DX_M,
                profile: str | None = DEFAULT_PHYSICS_PROFILE,
                vram_gib: float | None = None,
+               acknowledgements: tuple[str, ...] = (),
                ) -> tuple[list[tuple[int, int]], ExperimentConfig]:
     """Largest centered layout whose peak envelope fits the budget, with
     headroom left over.
@@ -2435,7 +2583,11 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             name=name, start_time=start_time, hours=hours,
             projection=projection, dims=dims, ratios=ratios,
             fetch_hints={"source": source}, case_data=None,
-            root_dx_m=root_dx_m, profile=profile)
+            root_dx_m=root_dx_m, profile=profile,
+            # The candidate is the same file the user will get, so it
+            # carries the same declaration -- otherwise the sizing loop
+            # would refuse a layout the emission is allowed to write.
+            acknowledgements=acknowledgements)
         exp = experiment_from_text(text, source=f"<candidate {label}>")
         # Every PHASE, not just the forecast.  Sizing a domain against the
         # forecast alone is what let this wizard hand a user a config that
@@ -2741,6 +2893,7 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
                        root_dx_m: float = ROOT_DX_M,
                        profile: str | None = DEFAULT_PHYSICS_PROFILE,
                        vram_gib: float | None = None,
+                       acknowledgements: tuple[str, ...] = (),
                        ) -> tuple[list[tuple[int, int]], ExperimentConfig]:
     """Fit one polygon-bound ladder, refusing rather than clipping it.
 
@@ -2774,7 +2927,8 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
         name=name, start_time=start_time, hours=hours,
         projection=projection, dims=dims, ratios=ratios,
         fetch_hints={"source": source}, case_data=None,
-        root_dx_m=root_dx_m, profile=profile)
+        root_dx_m=root_dx_m, profile=profile,
+        acknowledgements=acknowledgements)
     exp = experiment_from_text(text, source="<polygon candidate>")
     if source == "hrrr":
         try:
@@ -3268,6 +3422,57 @@ def domain_main(args) -> int:
 
     profile = resolved_physics_profile(
         args.source, getattr(args, "physics_profile", None))
+
+    # THE NOCTURNAL DECLARATION IS THE USER'S TO MAKE, AND THIS IS WHERE
+    # THEY MAKE IT (2026-08-09).
+    #
+    # Until today this door wrote
+    # acknowledgements = [ASYMMETRIC_RADIATION_NOCTURNAL_ACK] into the
+    # emitted [experiment] by itself whenever an asymmetric suite met a
+    # window with local night in it.  Every downstream door reads that
+    # line and falls silent: `gpuwm check`, `gpuwm run`, `gpuwm go`,
+    # run-plan and both prepared runners.  So the wizard was manufacturing
+    # the user's consent, into a file that outlives the session, for the
+    # exact failure v1.7.1 shipped a guard for -- and the audit reproduced
+    # a real user's journey ending in a config that could never be
+    # refused by anything.  Speaking the declaration aloud (the advisory
+    # below, from lane/advisory) was necessary and is not sufficient: the
+    # FILE still carried a statement nobody made.
+    #
+    # Refuse instead, here, before any fitting or fetching, and name the
+    # two ways forward.  --ack is the project's existing idiom for
+    # exactly this (gpuwm/cli.py, gfs_direct, prepared_single_domain_
+    # forecast, source_cli), so the user types the token themselves and
+    # the emitted file records a decision that was actually taken.
+    acknowledgements = tuple(getattr(args, "ack", None) or ())
+    declared_night = declared_nocturnal_night(
+        profile, start_time=start_time, hours=args.hours,
+        projection=projection)
+    if (declared_night is not None
+            and ASYMMETRIC_RADIATION_NOCTURNAL_ACK not in acknowledgements):
+        from gpuwm.explain import layered
+        raise ValueError(layered(
+            f"profile {profile} runs shortwave with longwave OFF and this "
+            f"window includes local night (first at "
+            f"{declared_night:%Y-%m-%dT%H:%M}Z at "
+            f"{projection['ref_lat']:.4g}, {projection['ref_lon']:.4g}), so "
+            f"the config this would emit is one every front door refuses "
+            f"at load.  Choose a nocturnally valid profile with both "
+            f"radiation streams on -- --physics-profile "
+            f"{MORRISON_PROFILE_ID} -- or, if you mean the daytime "
+            f"validation suite and accept the night, declare it yourself "
+            f"with --ack {ASYMMETRIC_RADIATION_NOCTURNAL_ACK}",
+            "Shortwave heats the surface by day while no longwave scheme "
+            "runs, so after sunset the surface radiates to space with no "
+            "downward longwave to balance it: skin temperature craters, "
+            "the surface saturation humidity collapses with it, and 2 m "
+            "dewpoints read far below the airmass.  This wizard used to "
+            "write that acknowledgement into the emitted [experiment] for "
+            "you, which silenced the guard at every later command for the "
+            "life of the file.  A declaration nobody made is not a "
+            "declaration.  See docs/public/PHYSICS.md, 'Nocturnal "
+            "validity'."))
+
     if args.ladder is None:
         # Absence, resolved: bare means the single-domain `go` shape
         # (DEFAULT_LADDER); with --root-dx/--chain it means the custom
@@ -3290,7 +3495,8 @@ def domain_main(args) -> int:
                 ratios=ratios, root_dx_m=root_dx_m, free_bytes=free_bytes,
                 hours=args.hours, start_time=start_time,
                 projection=projection, source=args.source, name=name,
-                profile=profile, vram_gib=vram_gib)
+                profile=profile, vram_gib=vram_gib,
+                acknowledgements=acknowledgements)
         else:
             level_buffers = _buffers_for_levels(
                 level_buffer_values, len(ratios) + 1)
@@ -3299,7 +3505,8 @@ def domain_main(args) -> int:
                 ratios=ratios, root_dx_m=root_dx_m, free_bytes=free_bytes,
                 hours=args.hours, start_time=start_time,
                 projection=projection, source=args.source, name=name,
-                profile=profile, vram_gib=vram_gib)
+                profile=profile, vram_gib=vram_gib,
+                acknowledgements=acknowledgements)
         ladder = "-".join(f"{v:g}" for v in _ladder_dx_km(ratios, root_dx_m))
     else:
         root_dx_m = ROOT_DX_M
@@ -3327,7 +3534,8 @@ def domain_main(args) -> int:
                         ladder=candidate_ladder, free_bytes=free_bytes,
                         hours=args.hours, start_time=start_time,
                         projection=projection, source=args.source, name=name,
-                        profile=profile, vram_gib=vram_gib)
+                        profile=profile, vram_gib=vram_gib,
+                        acknowledgements=acknowledgements)
                     candidate_buffers = None
                 else:
                     candidate_buffers = _buffers_for_levels(
@@ -3338,7 +3546,8 @@ def domain_main(args) -> int:
                         free_bytes=free_bytes, hours=args.hours,
                         start_time=start_time, projection=projection,
                         source=args.source, name=name, profile=profile,
-                        vram_gib=vram_gib)
+                        vram_gib=vram_gib,
+                        acknowledgements=acknowledgements)
             except DomainFitError as error:
                 if args.ladder != "auto" or fixed_buffer_depth:
                     raise
@@ -3451,7 +3660,8 @@ def domain_main(args) -> int:
         interactive=getattr(args, "interactive", False),
         level_buffers_km=level_buffers,
         history_interval_s=args.history_interval,
-        nest_history_interval_s=args.nest_history_interval)
+        nest_history_interval_s=args.nest_history_interval,
+        acknowledgements=acknowledgements)
     # Round-trip the exact bytes through the real loader before writing.
     exp = experiment_from_text(text, source=str(out))
     interval = SOURCE_FORCING_INTERVAL_S[args.source]
@@ -3567,6 +3777,39 @@ def domain_main(args) -> int:
         case_data=case_data, exp=exp, cycle=cycle,
         forecast_start_hour=start_hour)
 
+    # The nocturnal declaration, SPOKEN.  `render_config` writes
+    # acknowledgements = [ASYMMETRIC_RADIATION_NOCTURNAL_ACK] into the
+    # emitted [experiment] whenever an explicitly selected asymmetric
+    # suite meets a window with local night in it, and that line disarms
+    # the load-time guard at every other front door for this file -- so
+    # `gpuwm check`, `gpuwm run`, `gpuwm go` and run-plan all fall
+    # silent on a run PHYSICS.md classes as nocturnally invalid.  Until
+    # now the only statement of that was a comment inside the emitted
+    # TOML, which is not a warning: this door was measured emitting the
+    # declaration with nothing on stdout or stderr, not even under
+    # --explain.  warn() is the right voice twice over -- it never
+    # blocks a deliberately selected validation suite, and it reaches
+    # run-plan's structured warning sink, so a front end driving the
+    # intent route sees the same sentence as a field.
+    if declared_night is not None:
+        warn(f"{out.name} is NOT NOCTURNALLY VALID: profile {profile} runs "
+             f"shortwave with longwave OFF and this window includes local "
+             f"night (first at {declared_night:%Y-%m-%dT%H:%M}Z).  The "
+             f"emitted [experiment] declares "
+             f'acknowledgements = ["{ASYMMETRIC_RADIATION_NOCTURNAL_ACK}", '
+             f'"{CONSTANT_DOWNWARD_LONGWAVE_ACK}"] -- the first because '
+             f"you passed --ack, the second because this suite fabricates "
+             f"its downward longwave and the file would not load without "
+             f"it -- so no later command will stop this run.  Re-emit "
+             f"with a full lw+sw "
+             f"profile (e.g. {MORRISON_PROFILE_ID}) for a forecast.",
+             why="Shortwave heats the surface by day while no longwave "
+                 "scheme runs, so after sunset the surface radiates to "
+                 "space with no downward longwave to balance it: skin "
+                 "temperature craters, the surface saturation humidity "
+                 "collapses with it, and 2 m dewpoints read far below "
+                 "the airmass.  See docs/public/PHYSICS.md, 'Nocturnal "
+                 "validity'.")
     for note in area_notes:
         warn(note,
              why="lat-lon source interpolation and static-tile windowing "
@@ -3800,8 +4043,8 @@ def register_cli(subparsers) -> None:
                              "*-validation-* profiles run reduced physics "
                              "with longwave OFF and are NOT nocturnally "
                              "valid -- selecting one for a window that "
-                             "includes local night emits the declared-"
-                             "experiment acknowledgement into the config.  "
+                             "includes local night is REFUSED unless you "
+                             "declare it yourself with --ack.  "
                              + _profile_help_route_note()
                              + "(gfs/era5 default: " + MORRISON_PROFILE_ID
                              + ", full RTE+RRTMGP + Kain-Fritsch, "
@@ -3809,6 +4052,18 @@ def register_cli(subparsers) -> None:
                              + HRRR_DEFAULT_PROFILE
                              + ", Thompson + full RRTMG lw+sw, no cumulus "
                              "at 3 km, nocturnally valid)")
+    parser.add_argument(
+        "--ack", action="append", default=[], metavar="ID",
+        help="declare a governed experiment, written verbatim into the "
+             "emitted [experiment].acknowledgements.  Repeatable.  This "
+             "door used to write the nocturnal declaration for you, which "
+             "silenced the load guard at check/run/go/run-plan and both "
+             "prepared runners for the life of the file; it no longer "
+             "does, and refuses instead.  The id it accepts is "
+             + ASYMMETRIC_RADIATION_NOCTURNAL_ACK
+             + ": a longwave-OFF suite over a window that includes local "
+             "night, which you are running deliberately as a daytime "
+             "validation experiment")
     parser.add_argument("--root-dx", type=float, default=None,
                         metavar="KM",
                         help="custom root grid spacing in km "
@@ -3893,7 +4148,7 @@ __all__ = [
     "LADDER_RATIOS", "MAX_FETCH_ABS_LAT", "POLE_CLEARANCE_DEG",
     "ROOT_DX_M", "ROOT_TIME_STEP_S", "TROPICAL_ROOT_TIME_STEP_S",
     "cumulus_by_domain", "cumulus_gray_zone_advisory",
-    "cumulus_gray_zone_headline",
+    "cumulus_gray_zone_headline", "declared_nocturnal_night",
     "domain_main", "experiment_from_text", "final_step_command",
     "fit_ladder", "fit_polygon_ladder", "gray_zone_advisory",
     "load_polygon_footprint", "max_fetch_abs_lat",

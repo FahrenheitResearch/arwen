@@ -423,6 +423,60 @@ NOAHMP_PROFILE_ID = (
 MYNN_NOAHMP_PROFILE_ID = (
     "wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1"
 )
+
+# ---------------------------------------------------------------------------
+# The radiation-bearing MYNN family.
+#
+# Until 1.8.7 every shipped MYNN suite was one of the three rows above, and
+# all three run shortwave with longwave OFF.  That pairing is a DAYTIME
+# validation configuration -- ``nocturnal_radiation_refusal`` below refuses
+# it at config load for any window containing local night, and
+# docs/public/PHYSICS.md lists all three under "nocturnally valid: no" --
+# so a user who chose MYNN from a menu landed in the nocturnally-invalid
+# class with no MYNN alternative to move to.  Composing MYNN with radiation
+# through a hand-written config was always accepted (there is no engine
+# lock: bl_pbl_physics 5 and ra_lw/sw_physics 4/4 resolve and are preserved
+# switch for switch); what did not exist was a NAMED suite, and a named
+# suite is what every menu, every ``--physics-profile`` choice list and
+# every route declaration is keyed by.
+#
+# WHICH RADIATION FAMILY.  gpuwm serves the resolved 4/4 pair two ways
+# (:data:`RRTMG_VARIANT_RTE_RRTMGP` and :data:`RRTMG_VARIANT_LEGACY`); these
+# rows take RTE+RRTMGP, the family the comparable YSU peers take --
+# :data:`MORRISON_PROFILE_ID` (the wizard's gfs/era5 default, and the
+# profile the nocturnal refusal itself names as the remedy) and
+# :data:`NSSL2_PROFILE_ID`.  Its registry option is 'supported', its
+# coefficient tables ship as package data, and it is the ``ra_rrtmg_variant``
+# default, so these rows sit beside those two without an asset-staging or
+# ``require_rrtmg_legacy_ready`` step of their own.  The legacy port stays
+# available to any config that names it; it is not what a menu default
+# should hand someone.
+#
+# Each row below is its no-radiation sibling with the RADIATION BLOCK
+# replaced and nothing else touched, so a paired run isolates radiation.
+# ``radt`` is part of that block and moves 1.0 -> 12.0: every
+# radiation-bearing suite this file ships runs 12.0, and calling RRTMG every
+# simulated minute costs twelve times what the sibling's Dudhia call did for
+# no forecast benefit.  The MYNN option identity (bl_mynn_*, icloud_bl,
+# iz0tlnd) is NOT restated here, exactly as it is not restated by the
+# no-radiation rows: those are RunConfig defaults validate_run_config pins
+# unconditionally, and a profile that repeated them could drift from them.
+#: MYNN 5/5 + Noah + RTE+RRTMGP longwave AND shortwave: the nocturnally
+#: valid member of the MYNN family, and the one a menu should offer first.
+MYNN_RTE_RRTMGP_PROFILE_ID = (
+    "wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1"
+)
+#: The HRRR operational pairing class (MYNN surface/PBL + RUC LSM) with
+#: both radiation streams on.
+MYNN_RUC_RTE_RRTMGP_PROFILE_ID = (
+    "wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1"
+)
+#: The expert Noah-MP member of the family with both streams on.  Noah-MP
+#: stays expert-only for the reason its no-radiation sibling does (no
+#: gpuwm/WRF forecast-trajectory comparison), not for a radiation reason.
+MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID = (
+    "wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1"
+)
 #: Every fixed single-domain template the front door can validate.  Expert
 #: templates remain in this discovery tuple: selection is accepted by the
 #: parser, then the registry-owned acknowledgement/capability checks below
@@ -437,10 +491,20 @@ SINGLE_DOMAIN_PHYSICS_PROFILES = (
     NSSL2_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     MYNN_PROFILE_ID,
+    # Each radiation-bearing twin sits immediately after the row it
+    # mirrors, the same way the Thompson and NSSL-2 legacy-RRTMG twins do.
+    # The order is not cosmetic: the HRRR runner publishes this tuple as
+    # its --physics-profile choice list and
+    # tests/test_physics_registry.py's live drift check compares it, in
+    # order, against the route's declared template list -- which the
+    # registry builds by inserting each twin after its own sibling.
+    MYNN_RTE_RRTMGP_PROFILE_ID,
     RUC_PROFILE_ID,
     MYNN_RUC_PROFILE_ID,
+    MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
     NOAHMP_PROFILE_ID,
     MYNN_NOAHMP_PROFILE_ID,
+    MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID,
 )
 
 # Complete runtime products shared by every source-specific single-domain
@@ -632,6 +696,55 @@ _SINGLE_DOMAIN_RUNTIME_SWITCHES = MappingProxyType({
         "ra_lw_physics": 0, "ra_sw_physics": 1, "radt": 1.0,
         "wrf_rrtmg_compatibility": "none",
         "sf_sfclay_physics": 5, "sf_surface_physics": 2,
+        "bl_pbl_physics": 5, "cu_physics": 0, "cudt_minutes": 0.0,
+        "num_soil_layers": 4, "terrain_opt": 1,
+        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
+        "diff_6th_slopeopt": 1,
+    }),
+    # --- the radiation-bearing MYNN family ------------------------------
+    # Each of the three rows below is the matching MYNN row above with the
+    # radiation block replaced -- ra_lw_physics 0 -> 4, ra_sw_physics 1 -> 4,
+    # radt 1.0 -> 12.0, the RTE+RRTMGP substitution token, and the explicit
+    # 4/4 implementation selector -- and EVERY other value transcribed from
+    # that row rather than re-derived.  Not top_lid, not moist_cq, not the
+    # diffusion ladder: the pair's whole purpose is that a paired run isolates
+    # radiation, and a second value moving here would make it a composition
+    # comparison instead.  See the block beside MYNN_RTE_RRTMGP_PROFILE_ID for
+    # why the family is RTE+RRTMGP rather than the exact legacy port.
+    MYNN_RTE_RRTMGP_PROFILE_ID: MappingProxyType({
+        "moist": True, "moist_cq": False, "mp_physics": 6,
+        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
+        "wsm6_hail_opt": 0, "ra_physics": 0,
+        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
+        "wrf_rrtmg_compatibility": WRF_RRTMG_TO_RTE_RRTMGP,
+        "ra_rrtmg_variant": RRTMG_VARIANT_RTE_RRTMGP,
+        "sf_sfclay_physics": 5, "sf_surface_physics": 2,
+        "bl_pbl_physics": 5, "cu_physics": 0, "cudt_minutes": 0.0,
+        "num_soil_layers": 4, "terrain_opt": 1,
+        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
+        "diff_6th_slopeopt": 1,
+    }),
+    MYNN_RUC_RTE_RRTMGP_PROFILE_ID: MappingProxyType({
+        "moist": True, "moist_cq": False, "mp_physics": 6,
+        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
+        "wsm6_hail_opt": 0, "ra_physics": 0,
+        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
+        "wrf_rrtmg_compatibility": WRF_RRTMG_TO_RTE_RRTMGP,
+        "ra_rrtmg_variant": RRTMG_VARIANT_RTE_RRTMGP,
+        "sf_sfclay_physics": 5, "sf_surface_physics": 3,
+        "bl_pbl_physics": 5, "cu_physics": 0, "cudt_minutes": 0.0,
+        "num_soil_layers": 9, "terrain_opt": 1,
+        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
+        "diff_6th_slopeopt": 1,
+    }),
+    MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID: MappingProxyType({
+        "moist": True, "moist_cq": False, "mp_physics": 6,
+        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
+        "wsm6_hail_opt": 0, "ra_physics": 0,
+        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
+        "wrf_rrtmg_compatibility": WRF_RRTMG_TO_RTE_RRTMGP,
+        "ra_rrtmg_variant": RRTMG_VARIANT_RTE_RRTMGP,
+        "sf_sfclay_physics": 5, "sf_surface_physics": 4,
         "bl_pbl_physics": 5, "cu_physics": 0, "cudt_minutes": 0.0,
         "num_soil_layers": 4, "terrain_opt": 1,
         "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
@@ -848,6 +961,189 @@ ASYMMETRIC_RADIATION_NOCTURNAL_ACK = (
 )
 
 
+#: Declared-experiment acknowledgement for integrating a real case whose
+#: downward longwave is a CONSTANT rather than a computed flux.
+#:
+#: Distinct from :data:`ASYMMETRIC_RADIATION_NOCTURNAL_ACK` on purpose,
+#: and the distinction is the point.  That token declares "I know this
+#: window contains night"; it says nothing about where GLW comes from,
+#: and because it is checked before any physics is inspected it lifted
+#: the whole question.  Ten shipped configs carried it, including the two
+#: files a new ERA5 or GFS user copies first, so copying one walked
+#: straight past the guard into a frozen 300 W m-2 forecast.  A token
+#: that lifts a nocturnal guard must not also lift a "this flux is
+#: fabricated" guard: they are different claims, so they are different
+#: tokens, and a config that means both says both.
+#:
+#: What it declares: every domain of this experiment that runs a
+#: land-surface scheme with ``ra_lw_physics = 0`` will consume
+#: :data:`gpuwm.core.physics.DECLARED_CONSTANT_GLW_WM2` as its downward
+#: longwave for the whole forecast, and the run receipt will say so.
+CONSTANT_DOWNWARD_LONGWAVE_ACK = "constant-downward-longwave-v1"
+
+
+#: The land-surface schemes that READ GLW every surface step, and are
+#: therefore what turns an absent longwave scheme into a wrong forecast
+#: rather than an unused buffer.  ``sf_surface_physics`` numbering.
+_GLW_CONSUMING_SURFACE_SCHEMES = MappingProxyType({
+    2: "Noah LSM", 3: "RUC LSM", 4: "Noah-MP",
+})
+
+
+def downward_longwave_disposition(
+        *, ra_lw_physics: int, ra_sw_physics: int,
+        sf_surface_physics: int) -> tuple[str, str | None]:
+    """What becomes of the GLW buffer under these selectors.
+
+    THE single classification every GLW decision reads --
+    :func:`constant_longwave_refusal` (the config-load guard),
+    ``gpuwm.core.physics._resolve_initial_glw`` (the initialize-time
+    guard), and ``gpuwm.runtime.downward_longwave_source`` (the receipt
+    line) all call this, so the door, the engine and the receipt can
+    never disagree about which configurations have a downward-longwave
+    question to answer.
+
+    Returns ``(kind, consumer)`` where ``consumer`` is the land-surface
+    scheme's name for ``"consumed"`` and ``None`` otherwise, and
+    ``kind`` is one of:
+
+    * ``"scheme"`` -- ``ra_lw_physics > 0``: a longwave scheme writes
+      GLW every radiation call; the initial buffer is scratch.
+    * ``"consumed"`` -- no longwave scheme, and a land-surface scheme
+      (:data:`_GLW_CONSUMING_SURFACE_SCHEMES`) reads GLW every surface
+      step.  Whatever is in the buffer becomes surface physics.
+    * ``"published"`` -- no longwave scheme and no land-surface
+      consumer, but shortwave is on, so the radiation slot is active and
+      the GLW row is written to every wrfout frame.  Nothing integrates
+      it, but a fabricated field in a wrfout file is indistinguishable
+      from a measured one downstream.
+    * ``"unused"`` -- radiation entirely off and no consumer: the buffer
+      reaches no scheme and no file.
+
+    ``"consumed"`` and ``"published"`` are the two kinds that must be
+    DECLARED (:data:`CONSTANT_DOWNWARD_LONGWAVE_ACK`, or an explicit
+    ``glw=`` at the initialize call) or refused.
+    """
+
+    if int(ra_lw_physics) > 0:
+        return "scheme", None
+    consumer = _GLW_CONSUMING_SURFACE_SCHEMES.get(int(sf_surface_physics))
+    if consumer is not None:
+        return "consumed", consumer
+    if int(ra_sw_physics) > 0:
+        return "published", None
+    return "unused", None
+
+
+def constant_longwave_refusal(
+        domains, *, acknowledgements: tuple[str, ...] = ()) -> str | None:
+    """Why this real case may not fabricate its downward longwave, or None.
+
+    THE constant-GLW guard, and the companion to
+    :func:`nocturnal_radiation_refusal` -- same front door, same load,
+    different question.  The nocturnal guard asks whether the WINDOW is
+    survivable; this one asks whether the downward longwave EXISTS.
+
+    Refuses when any domain's selectors classify as ``"consumed"`` or
+    ``"published"`` under :func:`downward_longwave_disposition` -- that
+    is EXACTLY the set ``gpuwm.core.physics.initialize_physics`` refuses
+    at initialize time, so a config either fails here, at load, or runs;
+    it can never pass the door and die mid-preparation.  ``"consumed"``:
+    a land-surface scheme reads GLW every surface step and nothing
+    computes it -- ``gpuwm/core/dudhia.py`` is shortwave-only and
+    returns the array it was handed -- so the land surface integrates
+    one frozen number for the whole forecast.  Through 1.8.7 that number
+    was :func:`gpuwm.core.physics.initialize_physics`'s ``glw=300.0``
+    default -- 269.7 K of radiative equilibrium under a warm-sector night
+    that wants about 410 W m-2 and 291.6 K.  ``"published"``: no land
+    surface reads it, but shortwave keeps the radiation slot active, so
+    the fabricated constant is written to every wrfout frame as if it
+    were a flux somebody computed.
+
+    WRF v4.6.1 refuses the shortwave-on half of this outright: with
+    ``ra_sw_physics > 0`` its ``radiation_driver`` reaches ``lwrad_select``
+    (``phys/module_radiation_driver.F:1839``), which has no ``CASE (0)``,
+    and calls ``wrf_error_fatal`` at ``:2245``.  With both streams off it
+    leaves GLW at 0.0 W m-2 and lets the land surface consume that.
+    gpuwm offers a third answer -- a DECLARED constant -- and this is
+    where the declaration is required.
+
+    :data:`CONSTANT_DOWNWARD_LONGWAVE_ACK` in the config's
+    ``[experiment].acknowledgements`` declares it and lifts the refusal;
+    the nocturnal token does not, and silence does not.
+
+    ``domains`` is an iterable of per-domain RunConfig-like objects.
+    """
+
+    from gpuwm.config import radiation_scheme_ids
+
+    if CONSTANT_DOWNWARD_LONGWAVE_ACK in acknowledgements:
+        return None
+    affected = []
+    for run in domains:
+        lw, sw = radiation_scheme_ids(run)
+        scheme = int(getattr(run, "sf_surface_physics", 0))
+        kind, consumer = downward_longwave_disposition(
+            ra_lw_physics=lw, ra_sw_physics=sw, sf_surface_physics=scheme)
+        if kind in ("consumed", "published"):
+            affected.append((int(getattr(run, "grid_id", 0)), sw, scheme,
+                             kind, consumer))
+    if not affected:
+        return None
+    grid_ids = ", ".join(str(grid_id) for grid_id, *_ in affected)
+    _, sw, scheme, kind, consumer = affected[0]
+    shortwave = ("with shortwave still ON (ra_sw_physics "
+                 f"{sw})" if sw else "with radiation entirely OFF")
+    if kind == "consumed":
+        # The classifier already named the consumer, so take its word for
+        # it rather than subscripting the table a second time.  A second
+        # lookup is a second definition of "consuming", and the moment
+        # they disagree -- a scheme the classifier learns to call consuming
+        # before this table lists it -- the door raises KeyError instead of
+        # refusing.  The engine (gpuwm.core.physics._resolve_initial_glw)
+        # and the receipt (gpuwm.runtime.downward_longwave_source) read the
+        # returned name for exactly this reason.
+        surface = consumer or "a GLW-consuming land-surface scheme"
+        exposure = (
+            f"domain(s) {grid_ids} run {surface} "
+            f"(sf_surface_physics {scheme}) with ra_lw_physics 0 -- no "
+            f"longwave scheme, {shortwave} -- so their downward longwave "
+            "would be a fixed 300 W m-2 for the whole forecast rather "
+            "than a computed flux.")
+    else:
+        exposure = (
+            f"domain(s) {grid_ids} run ra_lw_physics 0 -- no longwave "
+            f"scheme, {shortwave} -- with no land-surface scheme "
+            f"(sf_surface_physics {scheme}), so nothing integrates GLW, "
+            "but the active radiation slot publishes the fabricated "
+            "fixed 300 W m-2 as the GLW row of every wrfout frame.")
+    return layered(
+        exposure + "  Give the run real longwave (ra_lw_physics = 4 "
+        "with ra_sw_physics = 4, which is what every nocturnally valid "
+        f"shipped profile does -- e.g. {MORRISON_PROFILE_ID}), or, if "
+        "the fixed longwave is the experiment, declare it by adding "
+        f'acknowledgements = ["{CONSTANT_DOWNWARD_LONGWAVE_ACK}"] to '
+        "[experiment]",
+        "Nothing computes GLW when ra_lw_physics is 0: gpuwm's Dudhia "
+        "adapter is shortwave-only and returns the GLW array it was "
+        "given, unchanged, on every radiation call.  A land-surface "
+        "scheme then integrates that one number for the entire run.  "
+        "Radiative equilibrium at 300 W m-2 is 269.7 K (25.8 F) while a "
+        "Gulf-coast October night runs near 410 W m-2, or 291.6 K "
+        "(65.2 F); the deficit craters skin temperature, collapses the "
+        "surface saturation humidity with it, and drives 2 m dewpoints "
+        "far below the airmass.  That is a shipped user report, not a "
+        "hypothetical.  WRF v4.6.1 does not offer this pairing at all "
+        "with shortwave on -- its lwrad_select has no lw=0 case and "
+        "calls wrf_error_fatal (phys/module_radiation_driver.F:2245) -- "
+        "and with both streams off it hands the land surface 0.0 W m-2 "
+        "instead.  The acknowledgement is config-side (not --ack) "
+        "because the refusal happens at config load, before any runner "
+        "flag is read; it is a SEPARATE token from the nocturnal one "
+        "because 'this window has night in it' and 'this flux is "
+        "fabricated' are different claims.")
+
+
 def solar_elevation_deg(when, lat_deg: float, lon_deg: float) -> float:
     """Approximate solar elevation (degrees) at a naive-UTC instant.
 
@@ -962,7 +1258,12 @@ def nocturnal_radiation_refusal(
         f"profile (both radiation streams on -- e.g. "
         f"{MORRISON_PROFILE_ID}, the wizard's default), or declare the "
         f"validation experiment by adding acknowledgements = "
-        f'["{ASYMMETRIC_RADIATION_NOCTURNAL_ACK}"] to [experiment]',
+        f'["{ASYMMETRIC_RADIATION_NOCTURNAL_ACK}"] to [experiment].  '
+        f"With ra_lw_physics 0 this configuration also FABRICATES its "
+        f"downward longwave, which is a second and separate claim, so "
+        f"the declaration it needs is both tokens together: "
+        f'acknowledgements = ["{ASYMMETRIC_RADIATION_NOCTURNAL_ACK}", '
+        f'"{CONSTANT_DOWNWARD_LONGWAVE_ACK}"].  Two claims, two tokens',
         "Shortwave heats the surface by day while no longwave scheme "
         "runs, so after sunset the surface radiates to space with no "
         "downward longwave to balance it: skin temperature craters, the "
@@ -972,6 +1273,188 @@ def nocturnal_radiation_refusal(
         "with it verified exactly this failure.  The acknowledgement is "
         "config-side (not --ack) because the refusal happens at config "
         "load, before any runner flag is read.")
+
+
+#: Declared-experiment acknowledgement for running a LAND-SURFACE MODEL
+#: with radiation switched entirely off (``ra_lw_physics = 0`` AND
+#: ``ra_sw_physics = 0``), which means nothing will ever compute the
+#: downward longwave that model's energy budget reads.
+#:
+#: Provenance (2026-08-09).  The nocturnal guard above tests ``sw > 0 and
+#: lw == 0``, so a suite with BOTH streams off slid past it, and
+#: :func:`gpuwm.core.physics.initialize_physics` attaches no radiation
+#: adapter at all in that case (``radiation_active = bool(ra_lw_physics or
+#: ra_sw_physics)``).  Noah (``gpuwm/core/noah.py``), Noah-MP
+#: (``gpuwm/core/noahmp_runtime.py``) and RUC (``gpuwm/core/ruc.py``) each
+#: read ``fields["glw"]`` every surface step regardless, so the whole run's
+#: downward longwave was the constructor's seed -- a plausible-looking
+#: 300.0 that no scheme produced.  There is no seed any more:
+#: :func:`gpuwm.core.physics.initialize_physics` takes ``glw`` with NO
+#: DEFAULT and refuses to invent one, so the number a land surface
+#: integrates is always one somebody typed.  A surface budget with a
+#: declared sky is still not a forecast, so a real case says so out loud
+#: or does not run.
+#:
+#: THIS IS A DIFFERENT CLAIM FROM :data:`CONSTANT_DOWNWARD_LONGWAVE_ACK`,
+#: and both are required of the configuration they overlap on -- both
+#: radiation streams off, under a land-surface scheme.  This token says
+#: "nothing computes my sky at all"; that one says "the downward longwave
+#: my land surface integrates is a constant I declared".  Neither implies
+#: the other: a shortwave-on run makes only the second claim, and the
+#: second is what tells :func:`gpuwm.runtime.declared_constant_glw` which
+#: number to hand the engine.
+#:
+#: Same governance idiom and the same config-side delivery as
+#: :data:`ASYMMETRIC_RADIATION_NOCTURNAL_ACK`, for the same reason: the
+#: refusal happens at config LOAD, before any front door merges ``--ack``.
+RADIATION_OFF_LAND_SURFACE_ACK = "radiation-off-land-surface-v1"
+
+
+#: Every key a configuration can use to select radiation.  All three are
+#: ``[shared]``-only in the experiment schema (a ``[[domain]]`` that
+#: names one is refused by name a gate earlier), so "did this file
+#: choose radiation at all?" is answerable from one table.
+RADIATION_SELECTOR_KEYS = ("ra_physics", "ra_lw_physics", "ra_sw_physics")
+
+
+def declared_radiation_selectors(shared: Mapping[str, object]) -> tuple[str, ...]:
+    """Which radiation selectors a configuration's ``[shared]`` SPELLS.
+
+    Presence, not value: the point is whether the author made a choice,
+    not what they chose.  ``RunConfig`` defaults ``ra_physics`` to 0 and
+    ``ra_lw_physics``/``ra_sw_physics`` to -1, so by the time a
+    ``RunConfig`` exists a file that wrote ``ra_physics = 0`` and a file
+    that wrote nothing at all are the same object -- and they are not the
+    same mistake.  This is read off the raw table for the same reason
+    ``build_experiment`` reads ``declared_map_proj`` there.
+    """
+
+    return tuple(key for key in RADIATION_SELECTOR_KEYS if key in shared)
+
+
+def radiation_off_land_surface_refusal(
+        domains, *,
+        acknowledgements: tuple[str, ...] = (),
+        declared_selectors: tuple[str, ...] | None = None) -> str | None:
+    """Why this real case may not run an LSM with no radiation, or None.
+
+    Refuses when any domain resolves BOTH radiation streams off
+    (``ra_lw_physics == 0`` and ``ra_sw_physics == 0``) while a
+    land-surface model is selected (``sf_surface_physics != 0``).  No
+    scheme will ever write ``GLW``, so the land surface integrates
+    against a sky that is not a computed quantity for the entire run.
+
+    THE OMISSION CASE IS IN SCOPE AND SAYS SO.  Radiation resolves to off
+    by DEFAULT, so a real configuration that simply never named a
+    radiation selector is refused on exactly the same physics as one that
+    spelled two zeros -- it is the larger class of the two, and it is the
+    class that breaks previously-loading files.  ``declared_selectors``
+    (from :func:`declared_radiation_selectors`, which reads the raw
+    ``[shared]`` table) is how the message tells them apart: EMPTY means
+    the file chose nothing, and the refusal reports the absent line
+    instead of quoting back two zeros the author never wrote.  ``None``
+    means the caller could not say, and takes the spelled wording,
+    because claiming someone wrote nothing is a claim that needs
+    evidence.  A file spelling only the legacy ``ra_physics = 0`` DID
+    choose, and is told so -- which is what the three shipped declaring
+    configs do.
+
+    Unlike the nocturnal guard this asks nothing about the clock: a zero
+    sky is wrong at noon as well as at midnight, so there is no window to
+    scan and no reference point to need.  Delivering
+    :data:`RADIATION_OFF_LAND_SURFACE_ACK` in the config's
+    ``[experiment].acknowledgements`` declares the experiment and lifts
+    the refusal; silence does not.
+
+    ``domains`` is an iterable of per-domain RunConfig-like objects.
+    """
+
+    from gpuwm.config import radiation_scheme_ids
+
+    if RADIATION_OFF_LAND_SURFACE_ACK in acknowledgements:
+        return None
+    domains = list(domains)
+    offenders = []
+    for run in domains:
+        lw, sw = radiation_scheme_ids(run)
+        surface = int(getattr(run, "sf_surface_physics", 0) or 0)
+        if lw == 0 and sw == 0 and surface != 0:
+            offenders.append((int(getattr(run, "grid_id", 0)), surface))
+    if not offenders:
+        return None
+    grid_ids = ", ".join(str(grid_id) for grid_id, _ in offenders)
+    _, surface = offenders[0]
+    component = land_surface_component_for_selector(surface)
+    surface_name = (
+        f"sf_surface_physics {surface} = {component}" if component
+        else f"sf_surface_physics {surface}")
+    profile = identify_single_domain_profile(domains[0])
+    caused_by = (
+        f"profile {profile}" if profile is not None
+        else "a suite matching no shipped profile")
+    if declared_selectors is not None and not declared_selectors:
+        selectors = (
+            "with NO RADIATION SELECTOR SET AT ALL -- this configuration "
+            "names none of "
+            + ", ".join(RADIATION_SELECTOR_KEYS)
+            + ", and radiation defaults to OFF, which resolves to "
+            "ra_lw_physics 0 and ra_sw_physics 0 exactly as writing them "
+            "would")
+        remedy = (
+            "Most likely the radiation line is simply missing: name the "
+            "suite you meant, with both streams on (e.g. "
+            f"{MORRISON_PROFILE_ID}, the wizard's default)")
+    else:
+        # The RESOLVED pair, which is what the physics reads.  A file may
+        # have spelled it as the legacy aggregate (ra_physics = 0); the
+        # pair is still the honest statement of what was selected, and
+        # `written` names the key the reader should go looking for.
+        written = (
+            "" if not declared_selectors
+            else " (written here as " + ", ".join(declared_selectors) + ")")
+        selectors = ("with radiation switched entirely OFF (ra_lw_physics 0 "
+                     f"and ra_sw_physics 0{written})")
+        remedy = ("Choose a suite with both radiation streams on (e.g. "
+                  f"{MORRISON_PROFILE_ID}, the wizard's default)")
+    # The number the DECLARED branch actually runs, read from the engine
+    # rather than restated: a refusal that steers by a number no
+    # reachable run uses is worse than one that gives none.
+    from gpuwm.core.physics import DECLARED_CONSTANT_GLW_WM2
+
+    declared_constant = f"{DECLARED_CONSTANT_GLW_WM2:g}"
+    return layered(
+        f"domain(s) {grid_ids} run a land-surface model ({surface_name}) "
+        f"{selectors}; {caused_by}.  Nothing computes the downward "
+        f"longwave the land surface reads every step.  {remedy}, or "
+        f"switch the land surface off too (sf_surface_physics = 0, a "
+        f"prescribed skin temperature, which reads no GLW at all), or "
+        f"declare the experiment by adding acknowledgements = "
+        f'["{RADIATION_OFF_LAND_SURFACE_ACK}"] to [experiment] -- a '
+        f"declared run integrates the DECLARED constant "
+        f"{declared_constant} W m-2, not zero, which is a SECOND claim "
+        f"about this configuration and needs its own token beside the "
+        f'first: acknowledgements = ["{RADIATION_OFF_LAND_SURFACE_ACK}", '
+        f'"{CONSTANT_DOWNWARD_LONGWAVE_ACK}"].  Two claims, two tokens',
+        "A land-surface model closes a surface energy budget: downward "
+        "shortwave and downward longwave in, sensible/latent/ground heat "
+        "and sigma*T^4 out.  With no radiation scheme attached the two "
+        "incoming terms are never computed.  WHAT THE SURFACE THEN "
+        "INTEGRATES depends on which way out you take, and the two are "
+        "different physics.  Switch the land surface off and GLW reaches "
+        "no scheme at all.  Declare the experiment and the land surface "
+        f"integrates {declared_constant} W m-2 every step for the whole "
+        "run -- gpuwm's declared constant "
+        "(gpuwm.core.physics.DECLARED_CONSTANT_GLW_WM2), not WRF's "
+        "answer: WRF sets GLW = 0 for a longwave-free run "
+        "(phys/module_physics_init.F:1168-1170 and "
+        "phys/module_radiation_driver.F:1719-1722) and gpuwm deliberately "
+        "diverges, because a number somebody declared is auditable where "
+        "a zero that looks like a measurement is not.  Radiative "
+        f"equilibrium at {declared_constant} W m-2 is 269.7 K (25.8 F), "
+        "so a declared run is a surface-budget experiment and not a "
+        "forecast; what the declaration buys is that its sky is on the "
+        "record.  This refusal is config-side (not --ack) because it "
+        "happens at config load, before any runner flag is read.")
 
 
 #: Sentinel for "this caller did not mention the selector at all", which is
@@ -2316,11 +2799,15 @@ def require_ready_wrf_physics(**selection: int) -> None:
 
 __all__ = [
     "ASYMMETRIC_RADIATION_NOCTURNAL_ACK",
+    "CONSTANT_DOWNWARD_LONGWAVE_ACK",
     "EXPERIMENTAL_THOMPSON_ENV",
     "KESSLER_PROFILE_ID",
     "MYNN_NOAHMP_PROFILE_ID",
+    "MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID",
     "MYNN_PROFILE_ID",
+    "MYNN_RTE_RRTMGP_PROFILE_ID",
     "MYNN_RUC_PROFILE_ID",
+    "MYNN_RUC_RTE_RRTMGP_PROFILE_ID",
     "NOAHMP_PROFILE_ID",
     "NOAHMP_EXPERT_COLUMN_BUDGET_ENV",
     "NOAHMP_MEASURED_COLUMN_CEILING",
@@ -2340,6 +2827,7 @@ __all__ = [
     "PhysicsPortBlocker",
     "PhysicsCapabilityError",
     "PhysicsVerticalPreflightError",
+    "RADIATION_OFF_LAND_SURFACE_ACK",
     "RRTMG_VARIANT_LEGACY",
     "RRTMG_VARIANT_RTE_RRTMGP",
     "THOMPSON_PROFILE_ID",
@@ -2352,9 +2840,12 @@ __all__ = [
     "WRF_RRTMG_TO_RTE_RRTMGP_V1",
     "IMPLICIT_RUNTIME_SWITCHES",
     "first_local_night_time",
+    "constant_longwave_refusal",
+    "downward_longwave_disposition",
     "identify_single_domain_profile",
     "implicit_runtime_switches",
     "nocturnal_radiation_refusal",
+    "radiation_off_land_surface_refusal",
     "solar_elevation_deg",
     "packaged_thompson_table_root",
     "pending_wrf_physics_components",

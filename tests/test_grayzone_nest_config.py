@@ -50,11 +50,20 @@ def test_grayzone_tree_selects_the_ladder_scored_configuration():
     """The gray-zone parent runs the exact reading the ladder scored:
     Shin-Hong vertical transport with horizontal Smagorinsky (km_opt=4);
     the coarse parent stays YSU by default; the child stays PBL-off on
-    the LES closure with the shipped block's rows."""
+    the LES closure with the shipped block's rows.
+
+    ``mix_isotropic`` reads 1 and read 0 until 2026-08-09.  At 0 the
+    250 m child sat at ``mix_upper_bound*(dz_max/dx)^2 = 0.702``, 2.8x
+    the explicit horizontal diffusion limit, on the same criterion whose
+    4.23 aborted a 100 m tornado child; both this file and the shipped
+    tree moved to the isotropic length together, which is what keeps the
+    one-row claim above true.  The P4 campaign's numbers belong to the
+    archived bytes at ``configs/frozen/les_nest_250m_grayzone.toml``.
+    """
     exp = load_experiment(GRAYZONE)
     assert [d.run.bl_pbl_physics for d in exp.domains] == [1, 11, 0]
     assert [d.run.km_opt for d in exp.domains] == [4, 4, 3]
     assert [d.run.dx for d in exp.domains] == [3000.0, 750.0, 250.0]
     child = exp.domains[2].run
     assert (child.c_s, child.mix_isotropic, child.mix_upper_bound,
-            child.isfflx) == (0.25, 0, 0.1, 1)
+            child.isfflx) == (0.25, 1, 0.1, 1)

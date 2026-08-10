@@ -53,6 +53,18 @@ from gpuwm.ingest.nest_spawn_init import (SEA_ICE_MASKED_FIELDS,
                                           SpawnInitRefusal,
                                           spawn_land_state_from_parent)
 from gpuwm.ingest.relocation_init import LAND_SURFACE_CONTINUATION_FIELDS
+from gpuwm.core.physics import DECLARED_CONSTANT_GLW_WM2  # noqa: E402
+
+#: The idealised constant downward longwave these fixtures declare.
+#:
+#: ``gpuwm.core.physics.initialize_physics`` no longer defaults ``glw``
+#: (300.0 through 1.8.7): a land-surface suite with no longwave scheme
+#: must state where its downward longwave comes from instead of being
+#: handed a plausible-looking 300 W m-2 nobody chose.  These are
+#: idealised columns; the constant is the right answer for them and this
+#: is where they say so.  The VALUE is 1.8.7's default, so every fixture
+#: below integrates exactly the numbers it always did.
+_IDEALISED_GLW = DECLARED_CONSTANT_GLW_WM2
 
 ISWATER = 17          # the MODIS water category, the usual iswater
 ISICE = 15
@@ -465,7 +477,7 @@ def test_the_newborns_driver_comes_up_on_the_card_carrying_parent_soil():
     driver = initialize_physics(
         state, cfg, tsk=masked["tsk"],
         soil_temperature=masked["tslb"], soil_moisture=masked["smois"],
-        liquid_moisture=masked["sh2o"])
+        liquid_moisture=masked["sh2o"], glw=_IDEALISED_GLW)
     on_card = cp.asnumpy(driver.fields["tslb"])
     assert on_card.shape == (4, _CNY, _CNX)
     assert np.array_equal(on_card, masked["tslb"].astype(np.float32))
@@ -486,7 +498,8 @@ def test_the_newborns_driver_comes_up_on_the_card_carrying_parent_soil():
         parent_landuse=np.full_like(plu, LAND_CAT), flag_category=ISWATER)
     control = initialize_physics(
         state, cfg, tsk=masked["tsk"], soil_temperature=plain,
-        soil_moisture=masked["smois"], liquid_moisture=masked["sh2o"])
+        soil_moisture=masked["smois"], liquid_moisture=masked["sh2o"],
+        glw=_IDEALISED_GLW)
     delta = np.abs(cp.asnumpy(control.fields["tslb"]) - on_card)
     assert delta.max() > 1.0, (
         "masked and plain interpolation agreed exactly; the treatment "

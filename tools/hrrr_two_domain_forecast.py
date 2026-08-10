@@ -393,14 +393,16 @@ def run(args):
     })
 
     started = time.perf_counter()
+    from gpuwm.runtime import declared_constant_glw
+    constant_glw = declared_constant_glw(exp)
     root_driver = initialize_hrrr_physics(
         root_result, exp.domains[0].run, root_met,
         static[1], attrs[1], grids[0],
-        initial_snapshot.valid_time)
+        initial_snapshot.valid_time, constant_glw_wm2=constant_glw)
     child_driver = initialize_hrrr_physics(
         child_result, exp.domains[1].run, child_met,
         static[2], attrs[2], grids[1],
-        initial_snapshot.valid_time)
+        initial_snapshot.valid_time, constant_glw_wm2=constant_glw)
     timing["initialize_two_domain_physics"] = time.perf_counter() - started
 
     # The exact bridge inventory seal is independent of d02 initialization

@@ -634,6 +634,32 @@ def forcing_schedule(exp: ExperimentConfig, data: CaseDataConfig,
 # Prepare: static -> ingest -> initialize (the extracted case machinery)
 # ---------------------------------------------------------------------------
 
+def declared_constant_glw(exp: ExperimentConfig) -> float | None:
+    """The constant downward longwave this experiment DECLARED, or None.
+
+    A real case reaches a preparer only after
+    :func:`gpuwm.experiment.build_experiment` has run
+    :func:`gpuwm.physics_compat.constant_longwave_refusal`, so a config
+    that runs a land-surface scheme with ``ra_lw_physics = 0`` and got
+    this far carries
+    :data:`~gpuwm.physics_compat.CONSTANT_DOWNWARD_LONGWAVE_ACK`.  This
+    turns that declaration into the number the preparer TYPES into
+    :func:`~gpuwm.core.physics.initialize_physics`, because that function
+    refuses to invent one.
+
+    ``None`` for every other experiment, which is the normal answer: a
+    run with a longwave scheme has its GLW written by that scheme, and
+    passing a value would only pre-fill a buffer the scheme overwrites.
+    """
+
+    from gpuwm.physics_compat import CONSTANT_DOWNWARD_LONGWAVE_ACK
+
+    if CONSTANT_DOWNWARD_LONGWAVE_ACK in tuple(exp.acknowledgements or ()):
+        from gpuwm.core.physics import DECLARED_CONSTANT_GLW_WM2
+        return DECLARED_CONSTANT_GLW_WM2
+    return None
+
+
 def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
                       source_orography_path=None,
                       source_orography_variable=None,
@@ -648,6 +674,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
                       static_highres=None,
                       static_domain_id: int = 1,
                       initial_perturbation=None,
+                      constant_glw_wm2: float | None = None,
                       ) -> PreparedRealCase:
     """Run the real-case setup pipeline for one domain.
 
@@ -887,6 +914,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         vegfra=vegfra, tmn=soil.deep_soil_temperature,
         xice=soil.xice, snow=soil.snow_water, snow_depth=soil.snow_depth,
         sst=soil_fields.get("SST", soil.tsk),
+        glw=constant_glw_wm2,
         radiation=radiation,
         radiation_start_time=start_time, radiation_latitude=lat,
         radiation_longitude=lon)
@@ -984,7 +1012,8 @@ def prepare_root_experiment_case(exp: ExperimentConfig,
         radiation_column_chunk=exp.column_chunk,
         static_highres=getattr(data, "static_highres", None),
         static_domain_id=dc.grid_id,
-        initial_perturbation=exp.perturbation)
+        initial_perturbation=exp.perturbation,
+        constant_glw_wm2=declared_constant_glw(exp))
 
 
 def prepare_experiment_case(exp: ExperimentConfig,
@@ -1133,6 +1162,7 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
         ivgtyp=static["LU_INDEX"], isltyp=static["SCT_DOM"],
         vegfra=vegfra, tmn=soil.deep_soil_temperature,
         xice=soil.xice, snow=soil.snow_water, snow_depth=soil.snow_depth,
+        glw=declared_constant_glw(exp),
         radiation=radiation, radiation_start_time=exp.start_time,
         radiation_latitude=lat, radiation_longitude=lon)
     driver.fields["snoalb"][...] = cp.asarray(
@@ -1269,6 +1299,7 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
         xice=land.get("xice", 0.0), snow=land.get("snow", 0.0),
         snow_depth=land.get("snowh", 0.0),
         sst=land.get("tsk"),
+        glw=declared_constant_glw(exp),
         radiation=radiation, radiation_start_time=exp.start_time,
         radiation_latitude=lat, radiation_longitude=lon)
     driver.fields["snoalb"][...] = cp.asarray(
@@ -2462,6 +2493,59 @@ def integrate_prepared_case(
 # Resolved-config report (G2): every formerly implicit path/time/policy
 # ---------------------------------------------------------------------------
 
+def downward_longwave_source(exp: ExperimentConfig, cfg: RunConfig) -> str:
+    """One line naming where a domain's downward longwave comes from.
+
+    Written into every resolved-configuration report so that a run
+    integrating a CONSTANT GLW says so on the receipt.  A published GLW
+    row is indistinguishable from a measured one once it is in a wrfout
+    file; this is the sentence that distinguishes them.
+
+    The sentence is derived from
+    :func:`gpuwm.physics_compat.downward_longwave_disposition` -- the
+    same classification the config-load guard and ``initialize_physics``
+    refuse on -- so the receipt can never describe a fate the engine
+    does not enact.
+    """
+
+    from gpuwm.config import radiation_scheme_ids
+    from gpuwm.physics_compat import (CONSTANT_DOWNWARD_LONGWAVE_ACK,
+                                      downward_longwave_disposition)
+
+    lw, sw = radiation_scheme_ids(cfg)
+    kind, consumer = downward_longwave_disposition(
+        ra_lw_physics=lw, ra_sw_physics=sw,
+        sf_surface_physics=int(cfg.sf_surface_physics))
+    if kind == "scheme":
+        return (f"computed every radiation call by ra_lw_physics={lw} "
+                "(radt clock)")
+    constant = declared_constant_glw(exp)
+    if constant is None:
+        if kind == "unused":
+            return ("ra_lw_physics=0 and no constant declared -- nothing "
+                    "reads or publishes GLW in this suite")
+        # Unreachable through build_experiment, whose load guard refuses
+        # exactly the consumed/published kinds without the token; stated
+        # honestly anyway for a hand-assembled ExperimentConfig.
+        return ("NO SOURCE: ra_lw_physics=0 with no constant declared, "
+                f"yet GLW is {kind} -- this configuration is refused at "
+                "config load and by initialize_physics")
+    header = f"DECLARED CONSTANT {constant:g} W m-2, NOT a computed flux: "
+    footer = f" (declared by {CONSTANT_DOWNWARD_LONGWAVE_ACK})"
+    if kind == "consumed":
+        return (header + "ra_lw_physics=0, so no scheme produces downward "
+                f"longwave and the land surface ({consumer}) integrates "
+                "this one number for the whole forecast" + footer)
+    if kind == "published":
+        return (header + "ra_lw_physics=0 and no land-surface scheme "
+                "reads it, but shortwave keeps the radiation slot active, "
+                "so this one number is published as the GLW row of every "
+                "wrfout frame" + footer)
+    return (header + "declared but UNUSED -- no land-surface scheme reads "
+            "it and radiation is off, so it reaches no scheme and no "
+            "wrfout row" + footer)
+
+
 def resolved_config_report(exp: ExperimentConfig, data: CaseDataConfig,
                            forcing_times=None, *, input_catalog=None) -> str:
     """Human- and test-readable enumeration of every resolved value.
@@ -2490,6 +2574,8 @@ def resolved_config_report(exp: ExperimentConfig, data: CaseDataConfig,
     add("time.history_interval_s", f"{dc.history_interval_s:g}")
     add("time.restart_interval_s", f"{exp.restart_interval_s:g}")
     add("radiation.column_chunk", f"{exp.column_chunk}")
+    add("radiation.downward_longwave",
+        downward_longwave_source(exp, cfg))
     add("time.forcing_interval_s",
         "discover" if data.forcing_interval_s is None
         else f"{data.forcing_interval_s:g}")
@@ -2851,6 +2937,12 @@ def resolved_tree_config_report(exp: ExperimentConfig,
             f"mp_physics={dc.run.mp_physics} "
             "nest_microphysics_transition="
             f"{dc.run.nest_microphysics_transition}")
+        # Per domain, not once for the root: child domains may resolve a
+        # different ra_lw_physics, and this receipt's job is to name
+        # where EACH domain's downward longwave comes from.
+        lines.append(
+            f"  domain.d{dc.grid_id:02d}.radiation.downward_longwave = "
+            + downward_longwave_source(exp, dc.run))
     lines.append(
         "  output.filename_pattern = wrfout_d0X_<YYYY-MM-DD_HH_MM_SS>")
     return "\n".join(lines)
@@ -2867,6 +2959,7 @@ __all__ = [
     "forcing_schedule", "forcing_snapshots",
     "integrate_prepared_case", "load_source_orography",
     "prepare_child_case", "prepare_experiment_case",
+    "declared_constant_glw", "downward_longwave_source",
     "prepare_root_experiment_case", "prepare_real_case", "refl_10cm_due",
     "resolved_config_report", "resolved_tree_config_report",
     "restart_outer_steps", "run_experiment",

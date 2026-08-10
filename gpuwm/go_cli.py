@@ -284,6 +284,27 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     # omits --physics-profile and the receipts report the suite's
     # verification status.  A matched profile is still forwarded, so a
     # bound config keeps its exactness assertion end to end.
+    #
+    # Matched at the ROOT is not matched by the CONFIG, and the gap is
+    # not theoretical: the wizard's own --ladder trees write their nests
+    # with deliberate departures from the root suite (cumulus OFF below
+    # the gray zone, a tighter radt, the certified diff_6th_factor
+    # ladder), and stage 1 REFUSES a named profile that any declared
+    # value on any domain contradicts -- it used to silently flatten
+    # those nests onto the profile instead, which is the ledger #90
+    # defect.  Forwarding the root-derived name would therefore compose
+    # a stage-1 command guaranteed to refuse this chain's own config.
+    # The derivation asks the materializer's own conflict predicate, so
+    # this door and that refusal read the same sentence: agreement
+    # forwards the assertion, and a config that deliberately says more
+    # than the profile runs as its own suite, unnamed.
+    if profile is not None:
+        from gpuwm.prepared_single_domain_forecast import (
+            named_profile_config_conflicts)
+        if named_profile_config_conflicts(
+                config.read_text(encoding="utf-8"),
+                source=source, profile=profile):
+            profile = None
 
     # No "is the runner on disk?" gate any more.  It used to be here
     # because the runner was a script under tools/ that a wheel install

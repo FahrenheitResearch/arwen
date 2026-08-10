@@ -21,6 +21,12 @@ compared: a run that wrote the wrong domain, the wrong valid time or the
 wrong number of frames still diverges, and nothing is skipped.  Every byte
 that carries physics -- the per-frame SHA-256 set, the trajectory digest, the
 pins, the kernel manifest, the input bytes -- is compared verbatim.
+
+Because the comparison is total, it is also vacuous on nothing, and that was
+a hole: handed two empty capsules the command found no divergence and said
+so.  The screen now refuses a comparison with no leaves in it
+(:data:`MINIMUM_COMPARED_LEAVES`) and states how many quantities it compared
+when it passes, so "identical" is a claim with a size attached to it.
 """
 
 from __future__ import annotations
@@ -35,6 +41,32 @@ from typing import Any, Mapping
 #: exists with value ``null`` and a key that does not exist are different
 #: claims, and a comparison that conflated them would miss a dropped field.
 ABSENT = "<absent>"
+
+#: How many leaves two documents must offer before "identical" means
+#: anything.
+#:
+#: Handed two empty capsules -- ``{}`` and ``{}`` -- this command used to
+#: print ``dual-run: capsules are identical field for field`` and exit 0.
+#: It is total by construction, so it found no divergence, because there
+#: was no field: the detector for the corruption a card with no ECC cannot
+#: report answered its one question with a green on nothing.
+#:
+#: One, not some larger number.  Any threshold above "something" would be
+#: a figure nobody can derive from the artifact, and inventing one is how
+#: a gate starts refusing legitimate work.  The other half of the closure
+#: is the count in the success line: a run whose capsules carry a hundred
+#: leaves says so, and a reader who is told ``1 compared quantity`` can
+#: see the screen was hollow without anyone having guessed a floor.
+MINIMUM_COMPARED_LEAVES = 1
+
+
+class DualRunError(ValueError):
+    """The two documents cannot be compared at all.
+
+    A ``ValueError``, so ``gpuwm.cli`` prints it as a refusal and exits 2
+    the way every other documented refusal in this package does, rather
+    than surfacing a traceback.
+    """
 
 
 @dataclass(frozen=True)
@@ -53,10 +85,19 @@ class Divergence:
 
 @dataclass(frozen=True)
 class DualRunComparison:
-    """The result of comparing two capsules."""
+    """The result of comparing two capsules.
+
+    ``compared_count`` is how many leaf paths the comparison actually
+    visited -- the union of the two documents' leaves.  It is carried
+    rather than derived because "identical" on its own is the same
+    sentence whether the screen compared a hundred quantities or none,
+    and a reader deciding whether a card is silently corrupting memory
+    needs to know which.
+    """
 
     identical: bool
     divergences: tuple[Divergence, ...] = field(default=())
+    compared_count: int = 0
 
     @property
     def first_divergent_field(self) -> str | None:
@@ -66,6 +107,7 @@ class DualRunComparison:
         return {
             "schema": "gpuwm.dual-run-comparison/v1",
             "identical": self.identical,
+            "compared_count": self.compared_count,
             "first_divergent_field": self.first_divergent_field,
             "divergence_count": len(self.divergences),
             "divergences": [
@@ -278,25 +320,74 @@ def input_bytes_divergence_note(divergences) -> str | None:
 
 def compare_capsules(left: Mapping[str, Any],
                      right: Mapping[str, Any]) -> DualRunComparison:
-    """Compare two capsules leaf for leaf, in a deterministic path order."""
+    """Compare two capsules leaf for leaf, in a deterministic path order.
+
+    Raises :class:`DualRunError` when the two documents between them offer
+    fewer than :data:`MINIMUM_COMPARED_LEAVES` leaves.  There is no
+    verdict to give on an empty comparison: "no divergence was found" and
+    "no divergence could have been found" are different answers, and this
+    command reported the second as the first.
+    """
     flat_left = normalized_leaves(left)
     flat_right = normalized_leaves(right)
+    paths = sorted(set(flat_left) | set(flat_right))
+    if len(paths) < MINIMUM_COMPARED_LEAVES:
+        raise DualRunError(
+            f"there is nothing to compare: capsule A carries "
+            f"{len(flat_left)} leaf field(s) and capsule B carries "
+            f"{len(flat_right)}, so this screen would compare "
+            f"{len(paths)} quantities and report them all identical.  "
+            "A dual run is the only detector this project has for the "
+            "silent memory corruption a card with no ECC cannot report, "
+            "so an empty screen is refused rather than passed.  Pass the "
+            "certification-capsule.json each arm wrote (--outdir "
+            "ARM/certification-capsule.json), not an empty or placeholder "
+            "document")
     divergences = []
-    for path in sorted(set(flat_left) | set(flat_right)):
+    for path in paths:
         a = flat_left.get(path, ABSENT)
         b = flat_right.get(path, ABSENT)
         if a != b or type(a) is not type(b):
             divergences.append(Divergence(path, a, b))
     return DualRunComparison(identical=not divergences,
-                             divergences=tuple(divergences))
+                             divergences=tuple(divergences),
+                             compared_count=len(paths))
+
+
+def _read_capsule(path: str | Path, arm: str) -> Any:
+    """One capsule document, or a refusal naming the file and the arm.
+
+    A zero-byte file is the literal shape this command was reported
+    green on, and ``json.loads`` answers it with a ``JSONDecodeError``
+    whose message ("Expecting value: line 1 column 1") names neither the
+    file nor which arm it was.  A screen that cannot say which of its two
+    inputs is unreadable is a screen nobody can act on.
+    """
+    resolved = Path(path)
+    try:
+        payload = resolved.read_bytes()
+    except OSError as error:
+        raise DualRunError(f"capsule {arm} ({resolved}) cannot be read: "
+                           f"{error}") from error
+    if not payload.strip():
+        raise DualRunError(
+            f"capsule {arm} ({resolved}) is empty ({len(payload)} bytes).  "
+            "That is not a capsule, and comparing two of them would report "
+            "'identical' having compared nothing.  Point --capsule-"
+            f"{arm.lower()} at the certification-capsule.json that arm's run "
+            "wrote")
+    try:
+        return json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise DualRunError(
+            f"capsule {arm} ({resolved}) is not JSON: {error}") from error
 
 
 def compare_capsule_files(path_a: str | Path,
                           path_b: str | Path) -> DualRunComparison:
     """Read two capsules from disk and compare them."""
-    return compare_capsules(
-        json.loads(Path(path_a).read_text(encoding="utf-8")),
-        json.loads(Path(path_b).read_text(encoding="utf-8")))
+    return compare_capsules(_read_capsule(path_a, "A"),
+                            _read_capsule(path_b, "B"))
 
 
 def capsule_field_paths(document: Mapping[str, Any]) -> tuple[str, ...]:
@@ -312,10 +403,12 @@ def capsule_field_paths(document: Mapping[str, Any]) -> tuple[str, ...]:
 __all__ = [
     "ABSENT",
     "INPUT_BYTES_FIELDS",
+    "MINIMUM_COMPARED_LEAVES",
     "OUTPUT_PATH_FIELDS",
     "input_bytes_divergence_note",
     "Divergence",
     "DualRunComparison",
+    "DualRunError",
     "capsule_field_paths",
     "compare_capsule_files",
     "compare_capsules",

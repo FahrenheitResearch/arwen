@@ -289,9 +289,16 @@ def test_titles_carry_the_spacing_and_the_source_label(wrfout, tmp_path,
                    "--products", "t2", "--timeidx", "0",
                    "--out", str(tmp_path / "png")])
     assert rc == 0
+    # The default label carries the EXECUTING version, so it is asked
+    # for rather than transcribed -- a hardcoded "ArWen 1.8.7" here
+    # would have to be edited at every cut, and the property under test
+    # is that the label reaches the title, not what this release is
+    # numbered.
     assert titles == [
         "2 m temperature\nd02-1km | Δx 1 km | "
-        "valid 1974-04-03_18:00:00 | ArWen"]
+        f"valid 1974-04-03_18:00:00 | {render.default_source_label()}"]
+    # ... and that it really did carry a version, not the bare brand.
+    assert render.default_source_label().startswith("ArWen ")
 
     titles.clear()
     rc = cli.main(["render", "--engine", "matplotlib", str(wrfout),

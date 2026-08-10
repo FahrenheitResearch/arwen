@@ -23,6 +23,11 @@ from datetime import datetime
 
 import numpy as np
 
+try:                                     # python -m tools.da_nest_cost
+    from tools.da_nowcast import NOWCAST_DEFAULT_PHYSICS_PROFILE
+except ImportError:                      # python tools/da_nest_cost.py
+    from da_nowcast import NOWCAST_DEFAULT_PHYSICS_PROFILE
+
 MIB = 1024.0 * 1024.0
 
 
@@ -87,8 +92,16 @@ def main(argv=None) -> int:
     parser.add_argument("--dx-m", type=float, default=3000.0)
     parser.add_argument("--dt-s", type=float, default=15.0)
     parser.add_argument("--leg-seconds", type=float, default=900.0)
+    # The DEFAULT must be the profile the nowcast actually binds, not a
+    # profile this tool remembers.  A VRAM gate that prices a suite the
+    # route no longer runs is worse than no gate: it answers, and the
+    # answer fits.  Imported from the same constant the four nowcast
+    # entry points read so the six surfaces cannot drift apart again.
     parser.add_argument("--physics-profile",
-                        default="wsm6-ysu-mm5-noah-no-radiation-v1")
+                        default=NOWCAST_DEFAULT_PHYSICS_PROFILE,
+                        help="shipped physics profile to price "
+                             f"(default {NOWCAST_DEFAULT_PHYSICS_PROFILE}, "
+                             "the nowcast's own default)")
     parser.add_argument("--ratio", type=int, default=3)
     parser.add_argument("--half-width-km", type=float, action="append",
                         default=None,

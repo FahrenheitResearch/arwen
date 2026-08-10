@@ -20,10 +20,155 @@ option.
 | **implemented-unverified** | Runs on the GPU and is column-oracle-measured against unmodified WRF Fortran, but no dedicated ArWen/WRF forecast-trajectory comparison exists for it yet. The registry records its measured ULP distances and open divergences verbatim. |
 | **planned / port-in-progress** | Not selectable. The registry publishes the target so the roadmap is machine-readable; nothing can resolve to it. |
 
-An option that is not implemented is unreachable by construction -- a
-config asking for it fails loudly at load, never silently substitutes.
-The one exception is `gpuwm import-namelist`, which performs three
-explicit, reported substitutions (see the end of this page).
+Every option on the first five rungs is yours to select, two ways that
+end at the same loader: name a preset, or type the switch into your own
+`[shared]`/`[[domain]]` block. The last rung is the only one out of
+reach -- an option that is not ported yet refuses by name at load, and
+never silently substitutes something else for it. The one exception is
+`gpuwm import-namelist`, which performs three explicit, reported
+substitutions (see the end of this page).
+
+**A rung grades one OPTION, and most of the tree sits on the same
+rung.** `implemented-unverified` is not a mark against any particular
+scheme. It is carried by **17 of the registry's 35 component options**:
+YSU, MYNN (PBL and surface layer both), Shin-Hong, SASE, Morrison,
+Thompson aerosol-aware, Noah, Noah-MP, RUC, Grell-Freitas, the
+RTE+RRTMGP legacy-aggregate selector, and all five turbulence
+closures. It says
+exactly one thing -- no matched ArWen-versus-WRF forecast trajectory
+has been run with this option yet -- and it says it about the option,
+not about how freely that option may be composed with others. Those are
+different questions, and the second one is answered by measurement in
+the next section.
+
+A *suite* then takes the **strict minimum** rung over the options it
+selects (the registry's composition rule C2, "a composed suite is only
+as conformant as its weakest member"), which is why a suite carrying
+Thompson's matched-run microphysics beside YSU and Noah still reads
+`implemented-unverified`. Nothing is graded down for being newly named
+or newly composed, and adding a named suite never moves a rung.
+
+## Can you compose your own suite? Yes, and it is measured
+
+**The tables on this page are a CATALOGUE, not a gate.** They list the
+suites ArWen ships under a name; they do not list the suites a config
+may ask for, and they never have. Reading them as a gate has misled
+readers twice -- one outside collaborator and one of this project's own
+agents, who both concluded from a table cell that MYNN could not be run
+with radiation, because no named MYNN suite carried it at the time.
+Neither reader made a careless mistake; the page invited the reading.
+So, plainly, and in the order the two routes actually work:
+
+- **The preset route is a curated catalogue.** A shipped suite is a
+  name (`--physics-profile`, a wizard menu entry, a route declaration)
+  bound to a fixed set of switches that someone chose and evidenced.
+  Choosing a name is how you pin a run to a published product, and the
+  runner refuses on any switch drift from it.
+- **The config route composes freely.** Writing the switches yourself
+  in `[shared]` or a `[[domain]]` block asks the loader directly, and
+  the loader's answer is governed only by the per-option validation
+  rules -- not by whether any name exists for what you wrote. Most
+  configurations users run are of this second kind.
+- **A missing preset is a missing NAME, never a missing capability.**
+  That is the entire content of the MYNN incident: composing MYNN with
+  radiation was always accepted, and what did not exist was a row in a
+  menu. Three now do (see [Nocturnal validity](#nocturnal-validity)),
+  and the composition they name was reachable before they were added.
+
+The composition space is measured rather than argued.
+`tools/report_physics_composition_walk.py` writes 6530 physics
+combinations into real experiment TOMLs, pushes every one through
+`gpuwm.experiment.build_experiment` -- the single front door every
+runner reaches a per-domain `RunConfig` through -- and records the
+verdict. `docs/public/receipts/physics-composition-walk.json` is that
+record, and `tests/test_physics_composition_walk.py` regenerates it on
+every release cut and compares it byte for byte. As measured:
+
+- **749 of 6536 combinations are accepted**, against 18 registered
+  templates. The presets are a corner of the space, not the space.
+- **Every accepted run keeps every switch the file set**, checked
+  against the resolved per-domain `RunConfig`. Zero rewrites. An
+  admission is never a silent substitution.
+- **Every admitted value of every axis reaches an accepted run**, with
+  exactly one deliberate exception: `ra_lw_physics = 1` (WRF RRTM
+  longwave) is schema-legal and not ported, and says so.
+- **5787 refusals fall into 15 distinct rules**, every one of which
+  names the selector to change, and each of which has a
+  demonstrated remedy -- the receipt carries a before/after pair per
+  rule showing that doing what the message says reaches an accepted
+  run.
+- The axis tables themselves are measured, not transcribed: every
+  integer in [-2, 99] plus 900 and 901 is offered to the loader on each
+  axis, and the admitted set it reports must equal the declared one.
+
+The scope is config admission, which is where this question lives; the
+receipt's `scope` block states what it does not cover (execution,
+per-source route declarations, multi-domain trees).
+
+### Reachability is a menu axis, not a loader gate
+
+This is the distinction the whole misunderstanding turned on, so it is
+defined once here and every table that carries the column links back to
+it.
+
+`reachability.state` is a field of the physics registry, and the
+registry declares its own meaning
+(`authority.reachability_declaration`), quoted in full:
+
+> `components.<component>.options.<option>.reachability` declares how a
+> user can select the option: `'template'` through a registered base
+> template, `'component-override'` through either a route's full
+> `allowed_component_overrides` or its option-scoped
+> `allowed_component_options`, `'expert-template'` only through a
+> route's `expert_template_ids` with its `expert_acknowledgement_id`,
+> and `'unreachable'` not normally reachable -- which must name a
+> blocker. implemented and reachable are independent.
+> `tests/test_registry_reachability.py` recomputes every state.
+
+In plain words -- and every one of these is a way IN, not a wall:
+
+| registry state | what it means for you |
+|---|---|
+| `template` | **a preset exists**: pick it by name and every later stage enforces it switch for switch |
+| `component-override` | **a preset exists** on the routes that declare the override, and everywhere else you **type it in your config** |
+| `expert-template` | a preset exists behind one gate: **add one acknowledgement line** and it runs |
+| `unreachable` | no preset names it. Either **type it in your config** -- three of the five below do run that way -- or it is **not ported yet**, and then it refuses by name |
+
+Every one of those four states is a statement about the **named**
+routes -- what a menu, a `--physics-profile` choice list or a route
+declaration can hand you, all three of which are keyed by name. None of
+them is a statement about what `build_experiment` accepts from a config
+you wrote yourself. Two consequences, both measured:
+
+**`template` does not mean "only what the template selects".** MYNN is
+`template` on both of its halves, and that cell says nothing whatever
+about composition. The walk's 64-cell MYNN matrix (`mynn_matrix` in the
+receipt) crosses the MYNN PBL + MYNN surface-layer pair against all
+four land surfaces and all sixteen longwave/shortwave pairings: **the
+four land-surface columns are identical, cell for cell**, which is what
+arbitrary composition actually looks like -- the radiation verdict does
+not depend on the land-surface model. MYNN reaches every radiation
+pairing the loader admits at all (`0/0`, `0/1`, `4/4`, `90/90`), all
+seven microphysics schemes and all three cumulus schemes.
+
+**`unreachable` does not mean the loader refuses.** It means no
+template and no route selects it, and the registry must publish a
+blocker saying why. Whether a hand-written config can still reach it is
+a separate, measured fact, and it differs per option -- so the page now
+prints both:
+
+| registry `unreachable` option | selectors | what a config naming it actually gets |
+|---|---|---|
+| land surface `off` | `sf_surface_physics = 0` | **type it in your config**: **191 accepted**. Off the menus by policy (its blocker says so), not by the loader |
+| surface layer `off` | `sf_sfclay_physics = 0` | **type it in your config**: **39 accepted**, same reason |
+| radiation `analytic-clear-sky` | `ra_lw_physics = ra_sw_physics = 90` | **type it in your config**: **179 accepted**, same reason |
+| radiation `wrf-rrtm-dudhia` | `ra_lw_physics = 1` | **not ported yet -- refuses by name** at load: 0 accepted of 1600 tried |
+| microphysics `sase` | none declared | **not ported yet**: publishes a porting target and declares no selector, so nothing can resolve to it |
+
+Counts are per-axis accepted totals from the same walk. Read a blocker
+before using any of the first three: each states why the option is kept
+off the named routes, and that reasoning applies to your config too
+even though the loader does not enforce it.
 
 ## Microphysics (`mp_physics`)
 
@@ -464,12 +609,16 @@ that is correct and easy to assume is missing:
   WRF's separate Fu snow species.
 
 **How to select it.** mp=28 is registered with
-`reachability.state = "component-override"`: it is reachable *only* as
-an explicit per-domain microphysics override on the
+`reachability.state = "component-override"`: among the NAMED routes it
+is offered only as an explicit per-domain microphysics override on the
 experiment-per-domain tree route. No template selects it, it is no
 template's default, and `gpuwm domain` is unchanged. That is
 deliberate — an unverified scheme should be opt-in per domain, not
-something a suite hands you.
+something a suite hands you. As with every row on this page, that is a
+statement about the menus and not about the loader: a config that
+writes `mp_physics = 28` itself is accepted and runs it (measured, 14
+of the 15 combinations the walk tried). Opting in is the point; you
+just have to do it explicitly, by either door.
 
 Notes with teeth:
 
@@ -522,7 +671,7 @@ Notes with teeth:
 | option | WRF id | maturity | evidence, in one line |
 |---|---|---|---|
 | YSU | 1 | implemented-unverified | 24-column oracle vs unmodified `bl_ysu.F90`: theta tendency 1 ULP, exchange coefficients 7 ULP, PBLH 1 ULP; momentum/moisture tendencies 4.2e-8 m/s2 / 3.1e-11 kg/kg/s (near-total cancellations); part of the model-validated reference suite alongside Thompson |
-| MYNN (EDMF) | 5 | implemented-unverified | assembled driver bitwise on the warm step vs unmodified `module_bl_mynn.F`; 300-step coupled forecast gate; admitted only as the coupled 5/5 pair with the MYNN surface layer |
+| MYNN (EDMF) | 5 | implemented-unverified | assembled driver bitwise on the warm step vs unmodified `module_bl_mynn.F`; 300-step coupled forecast gate; composes with every radiation pairing the loader admits and with the MYNN (5), classic MM5 (91) or revised MM5 (1) surface layer -- see the MYNN scope note below |
 | Shin-Hong (scale-aware) | 11 | implemented-unverified | float32 CPU authority reproduces every output field of both `ctopo` arms at **max ULP 0** against the byte-frozen `module_bl_shinhong.F`, over 30 cases x 6 grid spacings x 40 levels; the CUDA mirror's heat tendency is bitwise (0 ULP through both tridiagonal solves), PBLH/WSTAR/DELTA 1 ULP, `EXCH_H` 8; and its resolved/subgrid partition was scored across a 3200-100 m ladder against pre-registered Honnert (2011) envelope bands -- every gated rung inside, 100 m LES anchor held ([receipts](receipts/grayzone/)) |
 | SASE | none: ArWen-only, `bl_pbl_physics = 900` outside WRF's namespace | implemented-unverified, **permanently** | no WRF v4.6.1 counterpart, so no oracle comparison against WRF Fortran exists or can exist and this ladder cannot rank it; numerics self-checked; physics unvalidated -- 2 of 7 frozen acceptance bars met on a single reference case on a single day ([Selecting an experimental scheme](#selecting-an-experimental-scheme)) |
 
@@ -561,20 +710,97 @@ true for every snow-carrying microphysics ArWen ships (6, 8, 10, 18,
 the defect that existed while 28 was missing from that set, and its
 closure.
 
+### MYNN scope note: what composes, and what is pinned
+
+MYNN is the scheme this page has been misread about, so its scope is
+stated here exhaustively, measured rather than described.
+
+**What composes freely.** `bl_pbl_physics = 5` may be written beside
+any radiation pairing the loader admits (`0/0`, `0/1`, `4/4`, `90/90`),
+any microphysics scheme, any cumulus scheme, any of the four land
+surfaces, and the MYNN (5), classic MM5 (91) or revised MM5 (1) surface
+layer -- all accepted, all preserved switch for switch on the resolved
+per-domain `RunConfig`. There is no engine lock and there never was.
+Three of those compositions now have NAMES as well, so MYNN can be
+chosen with radiation from a menu:
+`wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1`,
+`wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1` and
+`wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1`.
+
+**What is pinned, and it is a real scope limit.** MYNN's *namelist
+option identity* is a single validated combination. Twelve knobs --
+`bl_mynn_closure` 2.6, `bl_mynn_cloudpdf` 2, `bl_mynn_mixlength` 1,
+`bl_mynn_edmf` 1, `bl_mynn_edmf_mom` 1, `bl_mynn_edmf_tke` 0,
+`bl_mynn_mixscalars` 0, `bl_mynn_cloudmix` 1, `bl_mynn_mixqt` 0,
+`bl_mynn_output` 0, `bl_mynn_tkeadvect` false, `icloud_bl` 1
+(`gpuwm/config.py`, `MYNN_PBL_OPTION_IDENTITY`) -- have exactly one
+implemented value each, and any other value is refused before the run
+starts rather than three hours into a forecast. This is what you will
+see, verbatim:
+
+```
+bl_mynn_mixlength=2 is outside the admitted MYNN option identity; gpuwm implements bl_mynn_mixlength=1 only, and no nearby branch is substituted for an unported one.
+```
+
+So "MYNN now has radiation" does not mean "MYNN now takes options". The
+two facts are independent, and both are pinned by tests: radiation-bearing
+MYNN configs load, and a moved `bl_mynn_*` knob still refuses with
+radiation on.
+
+**One genuine pairing rule, and it points the other way from the usual
+misreading.** The MYNN *surface layer* requires the PBL slot to be MYNN
+or off -- WRF v4.6.1's own restriction, not ArWen's -- so
+`sf_sfclay_physics = 5` with YSU is refused, naming the WRF source
+lines:
+
+```
+requested WRF physics suite is not executable in gpuwm yet; no substitutions were applied:
+  - WRF v4.6.1 PBL/surface-layer compatibility (sf_sfclay_physics=5, bl_pbl_physics=1): WRF v4.6.1 refuses this pairing
+[[explain]]
+why these pairings are refused:
+  - WRF v4.6.1 PBL/surface-layer compatibility: phys/module_physics_init.F:3213-3219,3699-3701: MYNN surface sets isfc=5, and YSU fatals unless isfc=1
+```
+
+The MYNN *PBL* carries no such restriction: 5/91, 5/1 and 5/5 are all
+accepted -- **48, 48 and 72 distinct accepted combinations**
+respectively, counted from the walk receipt's `accepted_combinations`.
+Which field is counted matters, so it is said rather than left to be
+inferred: `mynn_slice.accepted` in the same receipt reads **73** for
+the 5/5 pairing because that field counts ATTEMPTS, and the walk
+re-tries its 5/5 anchor suite in a second tier -- 73 attempts over 72
+distinct configurations. Distinct configurations are what a reader
+asking "what may I compose?" wants, so that is what the three numbers
+above are. Earlier revisions of this page described the 5/5 pairing as
+mandatory in both directions. It is not, it was measured not to be, and
+`tests/test_physics_md_reachability_claims.py` now pins the asymmetry
+from both sides -- the refusal above and the three accepted pairings --
+so it cannot invert again.
+
+**Maturity is unchanged by any of this.** MYNN stays
+`implemented-unverified`, for the same reason YSU, Shin-Hong, Noah,
+Noah-MP, RUC, Morrison, Thompson aerosol-aware and Grell-Freitas do: no
+matched ArWen-versus-WRF forecast trajectory has been run with it.
+Naming a composition is not evidence, and none was claimed for it.
+
 ## Surface layer (`sf_sfclay_physics`)
 
 | option | WRF id | maturity (registry) | reachability (registry) | notes |
 |---|---|---|---|---|
 | MM5 (classic) | 91 | supported | template | the certified-slice surface layer; pairs with YSU and all three LSMs |
-| MYNN | 5 | implemented-unverified | template | column solver oracle-matched over land and water (max rel. err 4.3e-7); `isftcflx` 0-3 ported; only selectable as the 5/5 pair |
-| MM5 (revised) | 1 | supported | unreachable | implemented in the tree, but no registered template selects it and no route allows the override (every verified run used the classic scheme), so no config can reach it |
+| MYNN | 5 | implemented-unverified | template | column solver oracle-matched over land and water (max rel. err 4.3e-7); `isftcflx` 0-3 ported; needs the PBL slot to be MYNN or off, which is WRF v4.6.1's own restriction ([MYNN scope note](#mynn-scope-note-what-composes-and-what-is-pinned)) |
+| MM5 (revised) | 1 | supported | component-override | no base template selects it (every verified run used the classic scheme); the prepared-domain-tree route offers it as a surface-layer component override, and a config that writes `sf_sfclay_physics = 1` directly is accepted by the loader and runs it -- measured, 290 accepted combinations in [receipts/physics-composition-walk.json](receipts/physics-composition-walk.json) |
 
-Maturity and reachability are separate registry axes and are quoted
-verbatim here: `maturity` is the option's evidence tier, while
-`reachability.state` says whether any registered template or override
-route can actually select it (`template` = a registered template
-selects it; `unreachable` = nothing can, and the registry's blocker
-text records why).
+All three run. In plain words: `template` means **a preset exists**, and
+`component-override` means **a preset exists** on the routes that
+declare it and you **type it in your config** anywhere else -- which is
+how the revised MM5 row's 290 accepted combinations were measured.
+Maturity and reachability are separate registry axes, quoted verbatim
+from the registry: `maturity` is the option's evidence tier and
+`reachability.state` is how a NAMED route can offer it. Neither column
+constrains what you may write in a config -- see [Reachability is a
+menu axis, not a loader
+gate](#reachability-is-a-menu-axis-not-a-loader-gate) for the
+definition and for the measured difference between the two.
 
 ## Land surface (`sf_surface_physics`)
 
@@ -636,7 +862,7 @@ simulated minute, radt 12/3/1, same card and window). Full dossier:
 | option | WRF id | maturity | notes |
 |---|---|---|---|
 | Kain-Fritsch | 1 | supported | outer (>=10 km) domains; packaged lookup table; cudt 5 min in the certified templates |
-| Grell-Freitas (scale-aware) | 3 | implemented-unverified | whole GFDRV at the WRF v4.6.1 boundary, CPU and CUDA; per-domain override, no template selects it; runs on the model step (cudt pinned 0) |
+| Grell-Freitas (scale-aware) | 3 | implemented-unverified | whole GFDRV at the WRF v4.6.1 boundary, CPU and CUDA; no template selects it, so among the named routes it is a per-domain override -- a config writing `cu_physics = 3` is accepted directly; runs on the model step (cudt pinned 0) |
 | off | 0 | supported | the convection-permitting nests run with cumulus off |
 
 What is certified for Grell-Freitas, and what is not. The certified
@@ -665,8 +891,9 @@ label upgrade must clear. The uncertified half is the same sentence
 YSU, MYNN and Shin-Hong carry: no matched ArWen-versus-WRF forecast
 trajectory has been run with `cu_physics = 3`, and no real-case
 verification receipt exists -- which is why the label is
-`implemented-unverified` and the scheme is a per-domain override a
-user must ask for by name, never a default.
+`implemented-unverified` and the scheme is always opt-in, never a
+default: a per-domain override on the named routes, or an explicit
+`cu_physics = 3` in a config you wrote.
 
 ## Map projections (`map_proj`)
 
@@ -892,10 +1119,42 @@ Read the maturity label as "the numerics are self-checked", never as
 "the physics is validated". Use SASE to experiment. Do not use it for
 a forecast you intend to believe.
 
-## Which suites each data route can actually prepare
+## What each data route can prepare
 
-Selectable is not the same as preparable, and the difference is
-route-dependent. State of play in v1.1.1:
+**The physics suite is yours to choose, and the runners execute the one
+your config writes.** The GFS/ERA5/20CRv3 prepared single-domain runner
+and the multi-domain tree runner execute any suite the engine
+implements, exactly as your config writes it; there is no profile
+whitelist on those routes. `--physics-profile` is optional there:
+naming one asserts your config IS that shipped suite, and the runner
+refuses on any switch drift, which is how you keep a run pinned to a
+published product. Whether the suite you selected carries
+WRF-verification evidence is stated -- one sentence in the wizard
+output, the run receipt, and `--explain` -- and never gates: a suite
+without evidence prints "supported, not yet WRF-verified" and the run
+continues. An expert-template suite (Noah-MP) keeps its registry-owned
+acknowledgement on every route: **one line**, `--ack <id>` or
+`acknowledgements = ["<id>"]` in the experiment, and it runs. `gpuwm
+domain --explain` lists the shipped profiles and what each one actually
+runs -- several run full RTE+RRTMGP with Kain-Fritsch, several run
+longwave OFF with Dudhia shortwave and no cumulus. Read the names.
+
+One route is keyed differently and it is worth knowing which. HRRR cold
+start's evidence contract is keyed by shipped profile, so it prepares
+its own default profile when none is named and refuses a name outside
+its contract -- an unnamed HRRR config's own suite does not run as
+written there. The way through is to name a profile the contract
+carries; [Defaults](#defaults) lists what that default runs.
+
+What still refuses, on every route, is a switch value the engine
+genuinely does not implement (the refusal names the switch), the
+registry's land-surface route blockers (for example GFS+RUC, which
+dies at its first surface-temperature call), and -- since 1.7.1 -- an
+undeclared asymmetric radiation pairing across a window that includes
+local night (next section).
+
+Which NAMED suites each route prepares is the narrower question, and
+the answer is route-dependent. State of play in v1.1.1:
 
 | route | what it can prepare |
 |---|---|
@@ -925,33 +1184,6 @@ rw-wps --show-physics-registry
 Read `runner_routes.*.source_template_ids` and `expert_template_ids`.
 Where this page and that output disagree, the output is right.
 
-The physics suite is yours to choose. The GFS/ERA5/20CRv3 prepared
-single-domain runner and the multi-domain tree runner execute any suite
-the engine implements, exactly as your config writes it; there is no
-profile whitelist on those routes. `--physics-profile` is optional
-there: naming one asserts your config IS that shipped suite, and the
-runner refuses on any switch drift, which is how you keep a run pinned
-to a published product. The one route this does NOT describe is HRRR
-cold start: its evidence contract is keyed by shipped profile, so it
-prepares WSM6 when no profile is named and refuses a name outside its
-contract -- an unnamed HRRR config's own suite does not run as written
-there. Whether the suite you selected carries WRF-verification
-evidence is stated -- one sentence in the wizard
-output, the run receipt, and `--explain` -- and never gates: a suite
-without evidence prints "supported, not yet WRF-verified" and the run
-continues. An expert-template suite (Noah-MP) keeps its registry-owned
-acknowledgement on every route, delivered as `--ack <id>` or
-`acknowledgements = ["<id>"]` in the experiment. `gpuwm domain
---explain` lists the shipped profiles and
-what each one actually runs -- several run full RTE+RRTMGP with
-Kain-Fritsch, several run longwave OFF with Dudhia shortwave and no
-cumulus. Read the names. What still refuses, on every route, is a
-switch value the engine genuinely does not implement (the refusal names
-the switch), the registry's land-surface route blockers (for
-example GFS+RUC, which dies at its first surface-temperature call),
-and -- since 1.7.1 -- an undeclared asymmetric radiation pairing across
-a window that includes local night (next section).
-
 ## Nocturnal validity
 
 A suite whose shortwave runs while its longwave is OFF
@@ -963,6 +1195,23 @@ with it, and 2 m dewpoints read far below the airmass. A shipped 48 h
 case emitted with `thompson-mp8-ysu-mm5-noah-validation-v1` verified
 exactly this failure.
 
+If you are reading this because a run already did that to you, the
+user-facing walkthrough -- the symptom, how to tell which version is
+actually executing, and how to correct the config -- is
+[NOCTURNAL-DEWPOINTS.md](NOCTURNAL-DEWPOINTS.md).
+
+The table below classifies all **16 shipped single-domain profiles**
+(`gpuwm.physics_compat.SINGLE_DOMAIN_PHYSICS_PROFILES`, which is the
+`--physics-profile` choice list). The registry carries two further
+templates that are tree-only and so have no row here --
+`thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1`, the declared default
+template, and
+`20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1` --
+and both run RTE+RRTMGP on both components, so both are nocturnally
+valid. Being absent from this table is never a verdict: a config that
+composes its own suite is classified by the same rule, at load, by the
+same guard.
+
 | profile | radiation (lw / sw) | nocturnally valid |
 |---|---|---|
 | `morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** (the wizard's gfs/era5 default) |
@@ -970,38 +1219,212 @@ exactly this failure.
 | `nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1` | legacy RRTMG / legacy RRTMG | **yes** |
 | `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** (the wizard's hrrr default) |
 | `thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** |
+| `wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
+| `wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
+| `wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `thompson-mp8-ysu-mm5-noah-validation-v1` | OFF / Dudhia | **no** |
 | `wsm6-ysu-mm5-noah-no-radiation-v1` | OFF / Dudhia | **no** |
 | `kessler-mp1-ysu-mm5-noah-dudhia-v1` | OFF / Dudhia | **no** |
-| `wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1` | OFF / Dudhia | **no** |
+| `wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1` | OFF / Dudhia | **no** -- nocturnal sibling: `wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1` |
 | `wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1` | OFF / Dudhia | **no** |
-| `wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1` | OFF / Dudhia | **no** |
+| `wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1` | OFF / Dudhia | **no** -- nocturnal sibling: `wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1` |
 | `wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1` | OFF / Dudhia | **no** |
-| `wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1` | OFF / Dudhia | **no** |
+| `wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1` | OFF / Dudhia | **no** -- nocturnal sibling: `wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1` |
+
+Each MYNN sibling pair differs in the radiation block and nothing else
+-- exactly five switches move, measured: `ra_lw_physics` 0 -> 4,
+`ra_sw_physics` 1 -> 4, `radt` 1.0 -> 12.0, `wrf_rrtmg_compatibility`
+`none` -> `wrf-rrtmg-4-4-to-rte-rrtmgp-v2`, and `ra_rrtmg_variant`
+gaining `rte-rrtmgp` -- so switching between them isolates
+radiation and a paired run measures it. Through 1.8.7 the MYNN family
+had no `yes` row at all, which is what made "MYNN" and "nocturnally
+invalid" look like the same choice; they were never the same thing, and
+now they do not even look alike.
+
+**Running one over a night window is one line.** The pairing stays
+fully selectable -- for daytime validation windows as it always was,
+and for night windows as a **declared experiment**. Add to
+`[experiment]`:
+
+```
+acknowledgements = [
+  "asymmetric-radiation-nocturnal-window-v1",
+  "constant-downward-longwave-v1",
+]
+```
+
+Two tokens, one edit, because a shortwave-only suite makes two separate
+claims: it runs a night with no longwave scheme, and it fabricates the
+downward longwave its surface reads. The refusal prints them together
+so you never make the second trip.
 
 Every front door enforces this at config load (the guard lives in the
 one loader they all share, `gpuwm.experiment.build_experiment`): a real
 experiment whose window includes local night at its `[projection]`
-reference point refuses to load an asymmetric pairing, naming the
-physics, the matched profile, and both remedies. The pairing stays
-selectable for daytime validation windows, and for night windows as a
-**declared experiment**:
-
-```
-acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"]
-```
-
-in `[experiment]`. The wizard writes that declaration (and a
-`NOT NOCTURNALLY VALID` header) into any config it emits for an
-asymmetric profile whose window includes night. Idealized
+reference point refuses to load an *undeclared* asymmetric pairing,
+naming the physics, the matched profile, and both remedies. Idealized
 experiments (no `[projection]`) have no place or clock and are not
 guarded.
 
-**No door emits an asymmetric pairing as a default.** That includes the
-HRRR route, which was the exception through 1.7.1 and is not one now.
+**The declaration is yours to make, and only yours.** Through 1.8.7
+`gpuwm domain` wrote that line into any config it emitted for an
+asymmetric profile over a night window --- so the emitted file was one
+no later command could refuse, on the strength of a statement its owner
+had never made. Since 1.8.8 the wizard **refuses** that combination and
+names the two ways forward: pick a profile with both streams on, or
+declare it yourself with `gpuwm domain --ack
+asymmetric-radiation-nocturnal-window-v1`, which is what writes the
+line. Either way the emitted file also carries a `NOT NOCTURNALLY
+VALID` header, and a declared emission says so on stderr as it writes.
 
-Its default was `wsm6-ysu-mm5-noah-no-radiation-v1` because every
-full-radiation suite the route's physics gate admits is an mp8 suite,
+## Radiation off with a land surface
+
+A suite with **both** radiation streams off (`ra_lw_physics = 0` and
+`ra_sw_physics = 0`) beside any land-surface model runs three ways, and
+the loader names all three rather than picking one for you:
+
+1. **Give the run radiation.** Set the pairing you meant --
+   `ra_lw_physics = 4` with `ra_sw_physics = 4` is what every
+   nocturnally valid shipped profile does. For a config that never
+   wrote an `ra_*` line at all this is the likeliest fix, because the
+   line is simply absent.
+2. **Turn the land surface off too.** `sf_surface_physics = 0` is a
+   prescribed skin temperature, which reads no `GLW` at all, so nothing
+   is left to be fabricated.
+3. **Declare the experiment**, in one edit, in `[experiment]`:
+
+```
+acknowledgements = [
+  "radiation-off-land-surface-v1",
+  "constant-downward-longwave-v1",
+]
+```
+
+Two tokens, again, because there are two claims: "this run has no
+radiation scheme" and "the number the surface integrates is one
+somebody typed". A declared run integrates gpuwm's declared constant
+**300 W m-2** (`gpuwm.core.physics.DECLARED_CONSTANT_GLW_WM2`) every
+step -- a surface-budget experiment, not a forecast, and now on the
+record as one. Two shipped 60-second VRAM probes
+(`configs/real74_4dom_mynn_norad*.toml`) declare exactly that pair, and
+each says in the file why its surface energy budget is not something
+anyone reads.
+
+Everything below is why the loader asks, rather than something you have
+to do.
+
+> **Compatibility break, 1.8.8: this includes configs that never
+> mentioned radiation at all.** `ra_lw_physics` and `ra_sw_physics`
+> default to off, so a real case (one with a `[projection]`) that
+> selects a land surface and simply *omits* a radiation selector
+> resolves to the same both-off suite and is refused the same way. That
+> is the larger of the two classes and the one that breaks files which
+> loaded before, so the refusal says which one you are in: an omitting
+> config is told `NO RADIATION SELECTOR SET AT ALL` and offered the
+> missing line first, rather than being quoted two zeros it does not
+> contain. If a config of yours stops loading at 1.8.8 and you cannot
+> find the `ra_*` lines the older message named, this is why --- the
+> physics did not change, the silence did.
+
+Noah, Noah-MP and RUC each read downward longwave every surface step, and
+with no radiation scheme attached nothing ever computes it. Through 1.8.7
+that number was a seed nobody chose: `initialize_physics` defaulted `glw`
+to a plausible clear-sky **300.0 W/m2**, seeded once and read forever,
+which is why the 1.7.1 dewpoint collapse looked like weather instead of a
+missing scheme. There is no seed any more --- the argument has no default,
+so the value a land surface integrates is always one somebody typed, and
+the declaration above is where they type it.
+
+WRF's own answer for a longwave-free run is **zero**
+(`phys/module_physics_init.F:1168-1170` zeroes `GSW`/`GLW` at cold start,
+and `phys/module_radiation_driver.F:1719-1722` re-zeroes them at the top
+of every radiation call before the longwave branch that would fill them).
+gpuwm deliberately diverges and runs the DECLARED 300 W m-2 instead,
+because a number somebody declared is auditable where a zero that looks
+like a measurement is not. Neither is a sky; the difference is which one
+leaves a record.
+
+An **idealized** case that wants a fixed sky passes one explicitly to
+`gpuwm.core.physics.initialize_physics(glw=...)`. That is a declaration
+at the call site, it survives the longwave-off passthrough by design, and
+it is visible in the source where a default is not.
+
+## Defaults
+
+### Where the downward longwave comes from
+
+The nocturnal guard asks whether a WINDOW is survivable. A second,
+separate guard (new after 1.8.7) asks whether the downward longwave
+EXISTS.
+
+With `ra_lw_physics = 0` nothing computes GLW. gpuwm's Dudhia adapter
+is shortwave-only and returns the GLW array it was handed, unchanged,
+on every radiation call, so a land-surface scheme (`sf_surface_physics`
+2 / 3 / 4) integrates one frozen number for the entire forecast.
+Through 1.8.7 that number was `initialize_physics`' `glw = 300.0`
+default, and no production call site ever passed a different one.
+Radiative equilibrium at 300 W m-2 is 269.7 K (25.8 F); a Gulf-coast
+October night runs near 410 W m-2, or 291.6 K (65.2 F). Even with no
+land-surface scheme to integrate it, shortwave-on keeps the radiation
+slot active and publishes the fabricated constant as the GLW row of
+every wrfout frame, so that pairing is guarded too: the load guard and
+the initialize-time refusal cover exactly the same set of selectors
+(`gpuwm.physics_compat.downward_longwave_disposition` is the one
+classification both read), and a config either refuses at load or
+runs -- it cannot pass the door and die mid-preparation.
+
+**What WRF v4.6.1 does with the same selectors** (read out of
+`phys/module_radiation_driver.F`):
+
+| selectors | WRF v4.6.1 | gpuwm |
+|---|---|---|
+| `ra_lw_physics = 0`, `ra_sw_physics > 0` | **fatal.** `radiation_driver` returns early only when both are zero (`:1068`), so this reaches `lwrad_select` (`:1839`), which has no `CASE (0)` and falls to `CASE DEFAULT` (`:2245`): `wrf_error_fatal('The longwave option does not exist: lw_physics = 0')` | refuses at config load unless declared |
+| `ra_lw_physics = 0`, `ra_sw_physics = 0`, LSM on | driver returns at `:1068`; GLW keeps its Registry-allocated **0.0 W m-2** and the land surface consumes that | refuses at config load unless declared; when declared, uses 300 W m-2 (a **documented divergence** -- zero downward longwave is not a physical atmosphere) |
+| `ra_lw_physics > 0` | the scheme writes GLW every radiation call | identical: the buffer allocated at init is scratch the scheme overwrites |
+
+WRF fatally refuses shortwave-only, and longwave-only as well:
+`swrad_select`'s `CASE (0)` at `:2827` calls `wrf_error_fatal` for
+every `lw_physics` except Held-Suarez (`:2831-2835`), the one
+idealized case it excepts. So gpuwm refusing the shortwave-only
+pairing is WRF-conformant, not a divergence.
+
+Declare a constant longwave with
+
+```
+acknowledgements = ["constant-downward-longwave-v1"]
+```
+
+-- beside whichever of the two situational tokens applies, which is how
+both of the sections above print it: one edit, both lines.
+
+in `[experiment]`. It is a **different token** from the nocturnal one
+on purpose: the nocturnal token is checked before any physics is
+inspected, so a config carrying it never had its GLW source examined --
+which is how ten shipped configs, including the two proof descriptors
+users copy first, came to integrate a frozen 300 W m-2. A config that
+means both claims now makes both.
+
+`gpuwm.core.physics.initialize_physics` enforces the same rule one
+layer down: its `glw` argument has **no default**. A caller that wants
+a constant types it (`glw=300.0`); a route with a source GLW hands over
+the field; a suite with a longwave scheme passes nothing. Anything else
+refuses rather than inventing a flux. Every resolved-configuration
+report carries a `radiation.downward_longwave` line naming which of the
+three it is.
+
+**No door emits an asymmetric pairing as a default.** That includes the
+HRRR route, which was the exception through 1.7.1, and the radar-DA
+storm nowcast (`tools/da_nowcast.py` and the auto/launcher doors), which
+was the exception through 1.8.7 --- it defaulted to
+`wsm6-ysu-mm5-noah-no-radiation-v1` on cases that are mostly nocturnal,
+and now defaults to the HRRR route's own
+`thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1`, because the nowcast's
+background is HRRR. That costs more per member than a Dudhia-only call,
+so a member count or VRAM plan measured before 1.8.8 has to be
+re-measured rather than extrapolated.
+
+The HRRR route's default was `wsm6-ysu-mm5-noah-no-radiation-v1` because
+every full-radiation suite the route's physics gate admits is an mp8 suite,
 and the HRRR root preparer resolved microphysics lookup tables for
 exactly one profile, behind two environment variables. Nothing else
 staged tables at all, so the route could not default to full radiation:
@@ -1044,15 +1467,20 @@ Two consequences worth stating plainly:
   lighter `--physics-profile` alongside a shallower ladder and a bigger
   card, so the cheapest lever is stated rather than left to be guessed.
 
-The eight asymmetric profiles stay fully selectable, and selecting one
-for a night window is what writes the declaration --- as a stated
-choice. Through 1.7.1 the HRRR route wrote that declaration for its own
-DEFAULT, which is a declaration by silence and declares nothing; that
-died with the default that needed it. The route still builds its
-experiment in code rather than from a config file, so it still writes
-the declaration itself when an operator explicitly picks an asymmetric
-suite for a night window, and the experiment authority it publishes
-carries the line in ink.
+The eight asymmetric profiles stay fully selectable. Through 1.7.1 the
+HRRR route wrote the nocturnal declaration for its own DEFAULT, which is
+a declaration by silence and declares nothing; that died with the default
+that needed it, and **nothing writes that token on a caller's behalf any
+more.** Only two modules in the tree mention it at all --- the guard that
+requires it (`gpuwm/physics_compat.py`) and the wizard that emits it when
+you pass `--ack` (`gpuwm/domain_wizard.py`).
+
+The route builds its experiment in code rather than from a config file,
+but that experiment goes through the same `build_experiment` every config
+does (`gpuwm/hrrr_route_inputs.py`), so an operator who picks an
+asymmetric suite for a night window on this route meets the same load-time
+refusal a config file would --- and supplies the declaration the same way,
+deliberately, or picks a profile with both streams on.
 
 ## Namelist import substitutions
 

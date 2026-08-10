@@ -2550,6 +2550,7 @@ def write_manifest(plan: RunPlan, *, run_dir: Path, events_path: Path,
     capsule.  A front end should never have to know those filenames.
     """
 
+    from gpuwm.provenance_gate import receipt_block
     from gpuwm.supervisor import (FAILURE_CAPSULE_NAME,
                                   FAILURE_CAPSULE_SCHEMA, HEARTBEAT_NAME,
                                   HEARTBEAT_SCHEMA, atomic_write_json)
@@ -2561,6 +2562,11 @@ def write_manifest(plan: RunPlan, *, run_dir: Path, events_path: Path,
         "run_id": run_id,
         "pid": os.getpid(),
         "started_at_utc": started_at_utc,
+        # WHICH TREE is executing this plan.  A front end reattaching to
+        # a run, or comparing two runs, has to be able to answer that
+        # from the manifest alone -- the pid and the run_id say which
+        # process, and nothing here said which CODE until this field.
+        "provenance": receipt_block(),
         "plan_source": plan.source,
         "plan_sha256": plan.sha256,
         "run_dir": str(run_dir),
@@ -2622,11 +2628,17 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
         plan, run_dir=run_dir, events_path=events.path, run_id=run_id,
         started_at_utc=started_at_utc)
 
+    from gpuwm.provenance_gate import receipt_block
+
     events.emit(
         "plan_accepted", name=plan.name, route=plan.route,
         plan_source=plan.source, plan_sha256=plan.sha256,
         run_dir=str(run_dir), manifest_path=str(manifest_path),
-        events_path=str(events.path), pid=os.getpid(), run_id=run_id)
+        events_path=str(events.path), pid=os.getpid(), run_id=run_id,
+        # The first line of the stream names the tree, so a consumer
+        # that only ever tails events.jsonl never has to open the
+        # manifest to learn which code produced what follows.
+        provenance=receipt_block())
     # Time to first plot is measured from HERE -- the instant this run
     # was accepted -- because that is the instant the person who launched
     # it started waiting.  Taken immediately after the event so the two
@@ -3154,10 +3166,16 @@ def probe_environment(*, readiness: bool = True) -> dict[str, Any]:
     """
 
     from gpuwm import __version__
+    from gpuwm.provenance_gate import receipt_block
 
     document: dict[str, Any] = {
         "schema": PROBE_SCHEMA,
         "gpuwm_version": str(__version__),
+        # "Can I run?" is half a question without "what would run?".
+        # A front end that probes one box and then launches on it needs
+        # both, and gpuwm_version above is the metadata claim, not the
+        # tree.
+        "provenance": receipt_block(),
         "python": sys.version.split()[0],
         "executable": sys.executable,
         "pid": os.getpid(),

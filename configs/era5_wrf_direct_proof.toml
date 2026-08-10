@@ -7,10 +7,15 @@ smooth_option = 0
 blend_width = 5
 spec_bdy_width = 5
 restart_interval_s = 0.0
-# Nocturnal declaration (1.7.1): this case runs shortwave with longwave OFF
-# through local night, a declared validation/experiment configuration -- see
-# docs/public/PHYSICS.md, "Nocturnal validity".  Restart-tolerated field.
-acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"]
+# THIS FILE DECLARES NOTHING, and that is the point.  It ran shortwave
+# with longwave OFF through local night up to release 1.8.7 and carried
+# ``asymmetric-radiation-nocturnal-window-v1`` to say so -- a standing
+# bypass on a file whose whole job is to be COPIED, since it is the first
+# config a new ERA5 or GFS user opens.  The physics below is nocturnally
+# valid on its own (RRTMG-class longwave AND shortwave), so there is
+# nothing to declare.  Materializing a no-radiation --physics-profile
+# ONTO this base is a different act, and the runner writes that
+# profile's own declarations into the experiment.toml it publishes.
 
 [projection]
 map_proj = "lambert"
@@ -62,9 +67,20 @@ map_proj = 1
 sf_sfclay_physics = 91
 sf_surface_physics = 2
 bl_pbl_physics = 1
+# RADIATION: both streams, the exact port of WRF v4.6.1's bundled legacy
+# RRTMG rather than the RTE+RRTMGP substitution, so this proof's gpuwm arm
+# and the paired stock-WRF namelist (ra_lw_physics = 4, ra_sw_physics = 4)
+# run one radiation lineage.  Through 1.8.7 this was 0/1 -- Dudhia shortwave
+# with longwave OFF -- which WRF v4.6.1 cannot run at all: with
+# ra_sw_physics > 0 its lwrad_select has no lw = 0 case and calls
+# wrf_error_fatal (phys/module_radiation_driver.F:2245).  In gpuwm it ran,
+# and handed Noah a fixed 300 W m-2 downward longwave for the whole
+# forecast.
+wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-legacy-v1"
+ra_rrtmg_variant = "rrtmg_legacy"
 ra_physics = 0
-ra_lw_physics = 0
-ra_sw_physics = 1
+ra_lw_physics = 4
+ra_sw_physics = 4
 bldt = 0.0
 
 [[domain]]
@@ -81,7 +97,9 @@ dx = 12000.0
 specified = true
 nested = false
 history_interval_s = 3600.0
-radt = 1.0
+# 12-minute radiation clock, the cadence every shipped RRTMG-class
+# profile uses (gpuwm/physics_compat.py).  It was 1.0 under Dudhia.
+radt = 12.0
 cu_physics = 0
 cudt_minutes = 0.0
 diff_6th_factor = 0.08

@@ -1,11 +1,19 @@
 # Configuration knobs (WRF namelist parity)
 
+**Two ways in, both first-class.** Write the experiment TOML yourself --
+`[shared]` and `[[domain]]` take the WRF namelist keys verbatim, same
+spelling, same meaning, per-domain where WRF is per-domain -- or hand
+`gpuwm import-namelist WPS INPUT` a WRF `namelist.wps` +
+`namelist.input` pair and it writes one for you. A shipped physics
+profile is a third and shorter road to the same loader: a name for
+switches you could have typed, never a gate on what you may write
+([PHYSICS.md](PHYSICS.md)).
+
 ArWen's configuration surface is the experiment TOML
 (`[experiment]` / `[projection]` / `[shared]` / `[[domain]]` /
-`[case_data]` / `[perturbation]`), and `gpuwm import-namelist WPS
-INPUT` translates a WRF `namelist.wps` + `namelist.input` pair into it. The contract of that
-translation is *never silent*: every namelist key lands in exactly one
-of three report sections --
+`[case_data]` / `[perturbation]`), and the import contract is *never
+silent*: every namelist key lands in exactly one of three report
+sections --
 
 - **translated** -- a TOML value came out of it (including the three
   ratified physics substitutions);
@@ -312,8 +320,13 @@ value):
 
 ## Fixed by ArWen (WRF has a knob; ArWen has one implemented value)
 
-The importer validates these when present and refuses any other value.
-In the TOML they do not exist at all.
+Each of these keys has exactly one implemented value, and it is already
+what your run gets: in the TOML the key does not exist at all, so there
+is nothing for you to set. Import a namelist that names the pinned
+value and it passes; name anything else and the importer says which key
+and which value, rather than flipping it behind you. The two rows to
+read before importing are `use_theta_m` and `mix_full_fields`, whose
+pins differ from what WRF assumes for an omitted key.
 
 | WRF key | fixed at | where it is pinned |
 |---|---|---|

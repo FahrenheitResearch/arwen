@@ -1063,6 +1063,114 @@ def _rust_renderer_check() -> Check:
                  group=_GROUP_ENGINES)
 
 
+def _provenance_check() -> Check:
+    """Which tree is executing, and do its version claims agree?
+
+    The estate report's own subject.  Every other check here asks
+    whether some artifact beside gpuwm is usable; this one asks whether
+    the gpuwm doing the asking can name itself -- which is the question
+    that went unasked while a checkout sat 2,370 commits behind with an
+    editable install reporting a version from a different tree.
+
+    ``missing`` and blocking only for a genuine contradiction, which is
+    :func:`gpuwm.provenance_gate.version_identity_refusal`'s definition
+    and not "anything unusual": a wheel with no git, a clone nobody
+    installed, and a checkout with a borrowed-but-agreeing number are
+    all reported ``verified``, because none of them is wrong about
+    anything.
+    """
+
+    from gpuwm.explain import split
+    from gpuwm.provenance import resolve
+    from gpuwm.provenance_gate import (executing_version,
+                                       version_identity_refusal)
+
+    name = "install provenance (which tree is executing)"
+    try:
+        prov = resolve()
+        refusal = version_identity_refusal(prov)
+    except Exception as error:                          # noqa: BLE001
+        return Check(name, "missing",
+                     f"provenance could not be resolved: {error}",
+                     REINSTALL_HINT, action="pip install -e .",
+                     brief=_short(str(error)))
+    if refusal is not None:
+        action, _ = split(refusal)
+        return Check(
+            name, "missing", action,
+            f"# the two claims have to be re-bound:\n"
+            f"  pip install -e {prov.source_root}\n"
+            "  # (`gpuwm version` prints the same finding with the\n"
+            "  #  upgrade path for a wheel install)",
+            action=f"pip install -e {prov.source_root}",
+            brief="version claims disagree")
+    detail = f"{prov.install_kind} {executing_version()} at {prov.source_root}"
+    git = prov.git or {}
+    if git.get("commit"):
+        detail += (f", git {git['commit']} on "
+                   f"{git.get('branch') or 'a detached HEAD'}"
+                   f" ({'dirty' if git.get('dirty') else 'clean'})")
+    if prov.metadata_is_borrowed:
+        # Not a refusal -- the digits agree -- but a reader comparing
+        # receipts has to know the number came from elsewhere.
+        detail += ("; NOTE its version string is read from another "
+                   "install's metadata (no distribution provides this "
+                   "code), and happens to agree")
+    return Check(name, "verified", detail, brief=_short(detail))
+
+
+def _renderer_tree_check() -> Check:
+    """Does the resolved render engine belong to THIS tree?
+
+    Separate from :func:`_rust_renderer_check`, which asks whether a
+    renderer exists and runs.  Existence was the whole gate until now,
+    and existence is what let a checkout borrow the engine some other
+    tree had staged in the shared bridge directory -- a substitution
+    with no message anywhere and a different product catalog at the far
+    end of it.
+
+    Non-blocking, deliberately.  ``gpuwm render --engine rust``
+    REFUSES a foreign engine and ``--engine auto`` degrades to
+    matplotlib, so the estate is not broken; this line is how a reader
+    finds out before they run a render rather than after.
+    """
+
+    from gpuwm.provenance_gate import bridge_tree_match
+
+    name = f"renderer tree match ({rustwx.RENDERER_NAME} vs this checkout)"
+    try:
+        found = rustwx.find_renderer()
+    except FileNotFoundError as error:
+        # _rust_renderer_check already reports this one in full.
+        return Check(name, "info", str(error), brief=_short(str(error)),
+                     group=_GROUP_ENGINES)
+    match = bridge_tree_match(found, env_var=rustwx.RENDERER_ENV)
+    if match.verdict == "absent":
+        return Check(name, "info",
+                     "no renderer resolved, so there is nothing to match",
+                     brief="no renderer resolved", group=_GROUP_ENGINES)
+    if match.matched:
+        return Check(name, "verified", f"{match.verdict}: {match.basis}",
+                     brief=match.verdict, group=_GROUP_ENGINES)
+    return Check(
+        name, "missing",
+        f"{match.bridge} is from another tree -- {match.basis}, while "
+        f"this checkout is at {(match.engine_commit or '')[:12]}",
+        # Every non-comment line here must be a pasteable command --
+        # `tests/test_doctor.py` enforces it, and a bare `VAR=value` is
+        # neither a command nor portable between PowerShell and sh.  So
+        # the declaration route is printed the way `bridges
+        # .artifact_remedy` prints its own env-var route: commented.
+        "# build the engine this tree matches:\n"
+        + bridges.install_aware_build_hint(
+            rustwx.CARGO_BUILD_HINT, "tools/rustwx")
+        + "\n  # ... or, if that binary IS the one you mean, declare it:\n"
+        f"  #   {rustwx.RENDERER_ENV}={match.bridge}",
+        action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+        brief="renderer built from another commit",
+        group=_GROUP_ENGINES, blocking=False)
+
+
 def _cpu_library_check() -> Check:
     from gpuwm.ingest.cpu_backend import (
         CPU_BACKEND_ABI, CpuPreprocessBackend)
@@ -1669,6 +1777,7 @@ def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
     checks.append(_da_eigensolver_check())
     checks.append(_render_extra_check())
     checks.append(_rust_renderer_check())
+    checks.append(_renderer_tree_check())
     checks.append(_fetch_backbone_check())
     checks.append(_nexrad_front_door_check())
     checks.extend(_bridge_checks())
@@ -1677,6 +1786,7 @@ def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
     checks.append(_noah_tables_check())
     checks.extend(_case_data_root_check())
     checks.append(_distribution_manifest_check())
+    checks.append(_provenance_check())
     checks.append(_install_identity_check())
     checks.append(_non_git_import_check())
     for source in selected:

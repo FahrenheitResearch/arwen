@@ -19,8 +19,11 @@ from gpuwm.physics_compat import (
     KESSLER_PROFILE_ID,
     MORRISON_PROFILE_ID,
     MYNN_NOAHMP_PROFILE_ID,
+    MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID,
     MYNN_PROFILE_ID,
+    MYNN_RTE_RRTMGP_PROFILE_ID,
     MYNN_RUC_PROFILE_ID,
+    MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
     NOAHMP_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
@@ -32,6 +35,7 @@ from gpuwm.physics_compat import (
     WRF_RRTMG_LEGACY,
     WRF_RRTMG_TO_RTE_RRTMGP,
     WSM6_PROFILE_ID,
+    downward_longwave_disposition,
     single_domain_runtime_switches,
 )
 from tools.hrrr_single_domain_benchmark import (
@@ -75,8 +79,11 @@ def test_hrrr_runner_capability_query_is_side_effect_free_without_run_args(
         THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
         MORRISON_PROFILE_ID,
         NSSL2_PROFILE_ID, NSSL2_LEGACY_RRTMG_PROFILE_ID,
-        MYNN_PROFILE_ID, RUC_PROFILE_ID,
-        MYNN_RUC_PROFILE_ID, NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID]
+        MYNN_PROFILE_ID, MYNN_RTE_RRTMGP_PROFILE_ID,
+        RUC_PROFILE_ID,
+        MYNN_RUC_PROFILE_ID, MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
+        NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID,
+        MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID]
     assert payload["report_schema"] == "gpuwm-native-hrrr-benchmark-v2"
     assert payload["window"]["maximum_source_forecast_hour"] == 48
     assert payload["window"]["maximum_run_seconds"] == 172_800
@@ -1010,11 +1017,16 @@ def test_native_hrrr_nssl2_legacy_profile_binds_exact_solver_identity(
     assert "radiation_substitution" not in receipt
 
 
-def _profile_experiment(profile: str):
+def _profile_experiment(profile: str, **kwargs):
     """One HRRR experiment per profile, on a grid every profile accepts.
 
     nz=12 clears the Kain-Fritsch (>=8) and MYNN (>=5) vertical floors, so
     a refusal below is about the switch forward and nothing else.
+
+    ``kwargs`` reaches :func:`_experiment` untouched, which is how the
+    window tests below choose a start time: the default one is
+    all-daylight over this target and the declaration rule differs
+    between the two windows.
     """
 
     nz = 12
@@ -1025,7 +1037,89 @@ def _profile_experiment(profile: str):
     target = dataclasses.replace(HrrrTargetDomain.legacy_500x500(), nz=nz)
     return _experiment(
         vertical, run_seconds=3600.0, target=target,
-        physics_profile=profile)
+        physics_profile=profile, **kwargs)
+
+
+#: Every shipped profile whose downward longwave is fabricated: no
+#: longwave scheme, and a land-surface scheme that reads GLW every step.
+#: Derived from the product's own classifier rather than listed by hand,
+#: so a ninth profile joining the class arrives as coverage rather than
+#: as a field report.
+_FABRICATED_GLW_PROFILES = sorted(
+    profile for profile in SINGLE_DOMAIN_PHYSICS_PROFILES
+    if downward_longwave_disposition(
+        ra_lw_physics=int(single_domain_runtime_switches(profile).get(
+            "ra_lw_physics", 0)),
+        ra_sw_physics=int(single_domain_runtime_switches(profile).get(
+            "ra_sw_physics", 0)),
+        sf_surface_physics=int(single_domain_runtime_switches(profile).get(
+            "sf_surface_physics", 0)))[0] in ("consumed", "published"))
+
+#: 18Z over the route's reference point (-98 E) is early afternoon: an
+#: hour from here reaches no local night at all.  03Z is the small hours.
+_ALL_DAYLIGHT_START = datetime(2026, 7, 18, 18)
+_NOCTURNAL_START = datetime(2026, 7, 18, 3)
+
+
+@pytest.mark.parametrize("profile", _FABRICATED_GLW_PROFILES)
+def test_an_all_daylight_window_still_declares_the_fabricated_longwave(
+        profile):
+    """Daylight does not make a frozen 300 W m-2 into a computed flux.
+
+    The 1.8.8 assembly wrote BOTH radiation tokens below the night
+    check, so every one of these eight profiles refused at config BUILD
+    on an all-daylight window -- and this route synthesizes its config in
+    code, so there was no file for an operator to write the declaration
+    into.  Thirteen nodes of this file were red on it.
+
+    Two claims, two conditions: the constant-longwave token rides the
+    GLW disposition (which the sun has nothing to do with), the
+    nocturnal token rides the window.  Asserting the nocturnal token is
+    ABSENT here is the half that keeps the fix from degenerating into
+    "declare everything always", which would make a published
+    declaration mean nothing.
+    """
+
+    from gpuwm.physics_compat import (ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
+                                      CONSTANT_DOWNWARD_LONGWAVE_ACK)
+
+    experiment = _profile_experiment(profile,
+                                     start_time=_ALL_DAYLIGHT_START)
+
+    declared = tuple(experiment.acknowledgements or ())
+    assert CONSTANT_DOWNWARD_LONGWAVE_ACK in declared, (
+        f"{profile} fabricates its downward longwave on any window; the "
+        f"declaration cannot be conditional on nightfall")
+    assert ASYMMETRIC_RADIATION_NOCTURNAL_ACK not in declared, (
+        f"{profile} on an all-daylight window has no nocturnal claim to "
+        f"make, and a token written by reflex declares nothing")
+
+
+@pytest.mark.parametrize("profile", _FABRICATED_GLW_PROFILES)
+def test_a_nocturnal_window_declares_both_radiation_claims(profile):
+    """The night window carries both tokens, in the order it always did."""
+
+    from gpuwm.physics_compat import (ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
+                                      CONSTANT_DOWNWARD_LONGWAVE_ACK)
+
+    experiment = _profile_experiment(profile, start_time=_NOCTURNAL_START)
+
+    assert tuple(experiment.acknowledgements or ()) == (
+        ASYMMETRIC_RADIATION_NOCTURNAL_ACK, CONSTANT_DOWNWARD_LONGWAVE_ACK)
+
+
+def test_a_symmetric_profile_declares_nothing_on_either_window():
+    """The control: the route's own default carries no token at all.
+
+    Without this the two tests above pass just as well on a route that
+    declares both tokens unconditionally, which is the failure mode the
+    1.8 default change was made to end.
+    """
+
+    for start_time in (_ALL_DAYLIGHT_START, _NOCTURNAL_START):
+        experiment = _profile_experiment(ROUTE_DEFAULT_PHYSICS_PROFILE,
+                                         start_time=start_time)
+        assert tuple(experiment.acknowledgements or ()) == ()
 
 
 @pytest.mark.parametrize("profile", sorted(SINGLE_DOMAIN_PHYSICS_PROFILES))

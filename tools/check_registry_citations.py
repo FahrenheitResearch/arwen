@@ -149,7 +149,7 @@ RESOLVED: dict[str, tuple[str, str]] = {
     "gpuwm/verify/shinhong_ref.py:706": (
         "gpuwm/verify/shinhong_ref.py",
         "br > F(0.0)"),
-    "tests/test_mynn_pbl_runtime.py:49": (
+    "tests/test_mynn_pbl_runtime.py:61": (
         "tests/test_mynn_pbl_runtime.py",
         "sf_sfclay_physics=5, sf_surface_physics=2"),
     # The two LES closures' transcription headers.  The anchor is the

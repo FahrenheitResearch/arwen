@@ -365,6 +365,13 @@ def run(args) -> dict[str, object]:
     vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], valid_time)
     lai = monthly_interp_to_date(static["LAI12M"], valid_time)
     lat, lon = grid.latlon_mass()
+    # The frozen proof namelist runs Noah with ra_lw_physics 0 (asserted
+    # by _assert_frozen_namelist above), so nothing computes downward
+    # longwave and initialize_physics refuses to invent one.  This
+    # harness is bound to that historical configuration by design; the
+    # constant is DECLARED here -- 1.8.7's value, so the proof's
+    # trajectory receipts do not move -- rather than defaulted.
+    from gpuwm.core.physics import DECLARED_CONSTANT_GLW_WM2
     driver = initialize_physics(
         state, cfg, landuse=landuse, tsk=soil.tsk,
         soil_temperature=soil.soil_temperature,
@@ -373,6 +380,7 @@ def run(args) -> dict[str, object]:
         ivgtyp=static["LU_INDEX"], isltyp=static["SCT_DOM"],
         vegfra=vegfra, tmn=soil.deep_soil_temperature,
         xice=soil.xice, snow=soil.snow_water, snow_depth=soil.snow_depth,
+        glw=DECLARED_CONSTANT_GLW_WM2,
         radiation_start_time=valid_time, radiation_latitude=lat,
         radiation_longitude=lon)
     driver.fields["snoalb"][...] = cp.asarray(

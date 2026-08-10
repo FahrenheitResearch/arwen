@@ -189,5 +189,14 @@ gpuwm report --output /path/on/another/volume
 - `gpuwm doctor` answers the other question -- "is my install and my
   data estate complete" -- and prints the command that closes each gap.
   Run it first if the problem is that a command will not start.
+- `gpuwm version` answers "which copy of ArWen is actually executing",
+  which is not always the one you installed. Worth running before you
+  report a problem, because an editable install, a second environment
+  or a shell sitting inside a source checkout all make the version
+  number lie. [NOCTURNAL-DEWPOINTS.md](NOCTURNAL-DEWPOINTS.md#1-find-out-which-version-is-really-executing)
+  is the full checklist.
+- Wrong overnight 2 m dewpoints and a night-time skin-temperature
+  crash have a known cause and a known fix:
+  [NOCTURNAL-DEWPOINTS.md](NOCTURNAL-DEWPOINTS.md).
 - Security-sensitive findings go to the address in
   [SECURITY.md](../../SECURITY.md), not to a public issue.

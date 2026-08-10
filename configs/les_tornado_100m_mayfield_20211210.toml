@@ -66,6 +66,52 @@
 # succeeding first.
 #
 # ---------------------------------------------------------------------------
+# MIXING LENGTH: mix_isotropic = 1 on BOTH children.  CHANGED 2026-08-09.
+# ---------------------------------------------------------------------------
+# THIS FILE SHIPPED WITH mix_isotropic = 0, AND THAT CONFIGURATION ABORTS.
+# It is the configuration attempt #1 ran and the one attempt #3 was written
+# to replace; that configuration is archived at
+# configs/frozen/les_tornado_100m_mayfield_20211210.toml.  Its as-run digest
+# is 7aab68c6df..., which is what docs/les/ATTEMPT1-EXPECTATIONS.md
+# registered; the archived file gained a radiation declaration at 1.8.8 so
+# it would keep loading, moving its own digest and no physics selector
+# (configs/frozen/README.md carries both numbers).
+# Nothing about the case, the geometry, the ladder, the window
+# or the inflow treatment moved -- one key on two domains did.
+#
+# WHY, in the words of the attempt that closed it
+# (configs/les_tornado_100m_mayfield_20211210_attempt3.toml:196-260):
+# WRF hands horizontal_diffusion_w_2 the VERTICAL exchange coefficient
+# (dyn_em/module_diffusion_em.F:2998-3006, dummy spelled xkmv at :3524), and
+# with mix_isotropic = 0 smag_km both BUILDS and CAPS it on the layer depth
+# (:1890-1900), xkmv <= mix_upper_bound*dz^2/dt.  The operator differences it
+# over dx.  Nothing compares the two, so the reachable K*dt/dx^2 is
+# mix_upper_bound*(dz_max/dx)^2 -- dt-invariant.  An explicit Laplacian
+# multiplies a 2dx mode by 1 - 4*K*dt/dx^2 per step: past 1/4 the sign flips,
+# past 1/2 the mode GROWS.  On this ladder (dz_max 650.2 m):
+#
+#     d01   3000 m   km_opt 4                       not exposed
+#     d02   1000 m   km_opt 4                       not exposed
+#     d03    500 m   km_opt 3    ratio 0.169        under the limit
+#     d04    100 m   km_opt 3    ratio 4.23         17x the limit
+#
+# Attempt #2 revision b ran that d04 and tripped the health bound at step
+# 5467 with w(56,185,85) = 239.48 m/s, bit-identical across three
+# instrumented reproductions; a w-tendency instrument with a bitwise-zero
+# residual put it in the momentum equation and an arena-NaN-poison run
+# cleared memory aliasing.  It is the physics, and the physics is this.
+#
+# d03 switches with d04 even though 0.169 is under the limit, for attempt
+# #3's reason: 0.169 and 4.23 come off the SAME ladder, and a child that
+# mixes differently from its parent is a seam nobody needs.
+#
+# COSTS, STATED: mix_isotropic is inside the RunConfig restart fingerprint
+# (gpuwm/io/restart.py configuration_sha256), so this tree runs from its own
+# t = 0 and no checkpoint crosses the change; and the answer differs from
+# attempt #1's, which is the point.
+# ---------------------------------------------------------------------------
+#
+# ---------------------------------------------------------------------------
 # THE VERTICAL GRID -- the binding constraint, and what was done about it
 # ---------------------------------------------------------------------------
 # ArWen shares one vertical grid across every domain of a tree
@@ -213,10 +259,36 @@ spec_bdy_width = 5
 # root steps at dt = 15 s.  A 2+-domain tree is on the checkpointing route
 # (gpuwm/checkpoint_routes.py:67), so this is exercised, not decorative.
 restart_interval_s = 3600.0
-# Nocturnal declaration (1.7.1): this case runs shortwave with longwave OFF
-# through local night, a declared validation/experiment configuration -- see
-# docs/public/PHYSICS.md, "Nocturnal validity".  Restart-tolerated field.
-acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"]
+# ---------------------------------------------------------------------------
+# RADIATION DECLARATIONS.  THIS FILE IS A COMMITTED EXPERIMENT RECORD, NOT A
+# TEMPLATE.  Do not copy it to start a forecast; copy a config whose
+# radiation is real (both streams on, e.g.
+# configs/battery/shape_3km_thompson_rrtmg_legacy.toml).
+# ---------------------------------------------------------------------------
+# JUSTIFY asymmetric-radiation-nocturnal-window-v1: this case runs shortwave
+# with longwave OFF across a window that is night from end to end, which is
+# the pairing the nocturnal guard exists to stop.  It is declared, not
+# fixed, because the LES tornado ladder's attempts are REPRODUCTION
+# ARTEFACTS: their bytes are the provenance of the certified dual-run
+# comparisons and of the checkpoint the fine-cadence resume restarts from,
+# so changing their physics would invalidate every receipt written against
+# them rather than improve them.  Restart-tolerated field.
+# JUSTIFY constant-downward-longwave-v1: the same fact, stated as the fact
+# it actually is.  With ra_lw_physics = 0 nothing computes downward
+# longwave -- the Dudhia adapter is shortwave-only and returns the array it
+# was handed -- so Noah integrated a fixed 300 W m-2 for the entire run.
+# The nocturnal token above was checked BEFORE any physics was inspected
+# and so silently covered this too; it no longer does, and the two claims
+# are now made separately.  WHAT IT MEANS FOR THIS LADDER'S RESULTS: the
+# nocturnal boundary layer these runs produced was radiatively wrong, so
+# their surface and near-surface fields are not admissible as skill, and
+# no obs-skill claim was ever made from them.  The vortex-scale dynamics
+# the attempts were staged to falsify are aloft and were adjudicated on
+# their own terms.  The NEXT attempt runs real longwave.
+acknowledgements = [
+    "asymmetric-radiation-nocturnal-window-v1",
+    "constant-downward-longwave-v1",
+]
 
 [projection]
 map_proj = "lambert"
@@ -357,11 +429,12 @@ epssm = 0.5
 radt = 1.0
 cu_physics = 0
 diff_6th_factor = 0.1
-# PBL off, resolved-turbulence closure on.
+# PBL off, resolved-turbulence closure on.  mix_isotropic = 1: ONE mixing
+# length, (dx*dy*dz)^(1/3).  See "MIXING LENGTH" in the header.
 km_opt = 3
 bl_pbl_physics = 0
 c_s = 0.25
-mix_isotropic = 0
+mix_isotropic = 1
 mix_upper_bound = 0.1
 isfflx = 1
 # P3 inflow seeding, pilot amplitude, fixed committed seed.  Settings are the
@@ -396,11 +469,12 @@ epssm = 0.5
 radt = 1.0
 cu_physics = 0
 diff_6th_factor = 0.1
-# PBL off, resolved-turbulence closure on.
+# PBL off, resolved-turbulence closure on.  mix_isotropic = 1: ONE mixing
+# length, (dx*dy*dz)^(1/3).  See "MIXING LENGTH" in the header.
 km_opt = 3
 bl_pbl_physics = 0
 c_s = 0.25
-mix_isotropic = 0
+mix_isotropic = 1
 mix_upper_bound = 0.1
 isfflx = 1
 # OFF on d04.  RULED 2026-08-06, after the model refused the run:

@@ -9,8 +9,9 @@
     "cupy.ReductionKernel",
     "cupy.cuda.compiler.compile_using_nvrtc"
   ],
-  "site_count": 60,
+  "site_count": 62,
   "site_count_by_kind": {
+    "cupy.ElementwiseKernel": 2,
     "cupy.RawKernel": 1,
     "cupy.RawModule": 46,
     "cupy.ReductionKernel": 5,
@@ -22,6 +23,7 @@
       "cupy.cuda.compiler.compile_using_nvrtc": 1
     },
     "package": {
+      "cupy.ElementwiseKernel": 2,
       "cupy.RawModule": 9,
       "cupy.ReductionKernel": 3,
       "cupy.cuda.compiler.compile_using_nvrtc": 2
@@ -92,6 +94,22 @@
       "text": "mod = cp.RawModule(path=str(p)); k = mod.get_function('probe')"
     },
     {
+      "file": "gpuwm/core/dycore.py",
+      "line": 157,
+      "column": 11,
+      "surface": "package",
+      "constructor": "cp.ElementwiseKernel",
+      "constructor_kind": "cupy.ElementwiseKernel",
+      "enclosing": "_couple_momentum_kernel",
+      "takes_caller_options": false,
+      "options_argument_present": false,
+      "options_expression": null,
+      "options": null,
+      "options_element_expressions": null,
+      "options_are_literal": false,
+      "text": "return cp.ElementwiseKernel(\", \".join(params), \"T flux\", \"\\n\".join(body),"
+    },
+    {
       "file": "gpuwm/core/kernels/__init__.py",
       "line": 78,
       "column": 10,
@@ -130,6 +148,22 @@
       ],
       "options_are_literal": true,
       "text": "mod = cp.RawModule(code=src, options=(\"-std=c++17\",),"
+    },
+    {
+      "file": "gpuwm/core/moist.py",
+      "line": 399,
+      "column": 11,
+      "surface": "package",
+      "constructor": "cp.ElementwiseKernel",
+      "constructor_kind": "cupy.ElementwiseKernel",
+      "enclosing": "_update_scalar_kernel",
+      "takes_caller_options": false,
+      "options_argument_present": false,
+      "options_expression": null,
+      "options": null,
+      "options_element_expressions": null,
+      "options_are_literal": false,
+      "text": "return cp.ElementwiseKernel("
     },
     {
       "file": "gpuwm/core/mynn_pbl_gpu.py",

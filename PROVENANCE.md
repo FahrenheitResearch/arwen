@@ -188,11 +188,11 @@ bytes are outside the numerical oracle.
   `-ftz=true` to whatever the caller passed, at
   `cupy.cuda.compiler` line 585 (`options += ('-ftz=true',)`), after the
   caller's options, and NVRTC honours the last occurrence.
-  The inventory records 5 distinct caller-supplied option tuples across the 14
+  The inventory records 5 distinct caller-supplied option tuples across the 16
   compile sites in the shipped package, each listed here with a site that
   supplies it:
-  - no caller options -- `gpuwm/core/mynn_pbl_gpu.py:283`
-    (cp.ReductionKernel), and 6 other site(s)
+  - no caller options -- `gpuwm/core/dycore.py:157` (cp.ElementwiseKernel),
+    and 8 other site(s)
   - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:78` (cp.RawModule), and
     2 other site(s)
   - `-std=c++17` `--ftz=false` a target flag built from the device
@@ -690,9 +690,27 @@ bytes are outside the numerical oracle.
   before they could bind differently. Concretely, in this repository:
   the idealized CBL case runs `mix_isotropic = 1`, so **every idealized
   LES receipt is unaffected by D8**; the shipped nested configuration
-  `configs/les_nest_250m_km3.toml` runs `mix_isotropic = 0` on its 250 m
-  child, which is where the deviation is load-bearing and where the
-  failure it prevents was observed.
+  `configs/les_nest_250m_km3.toml` ran `mix_isotropic = 0` on its 250 m
+  child, which is where the deviation was load-bearing and where the
+  failure it prevents was observed. **Since 2026-08-09 the only files
+  under `configs/` that run `mix_isotropic = 0` on an LES child are the
+  five archived records** — `configs/frozen/les_nest_250m_km3.toml`,
+  `configs/frozen/les_nest_250m_grayzone.toml`,
+  `configs/frozen/les_tornado_100m_mayfield_20211210.toml`, and the
+  `attempt2` / `attempt2b` files that sit at the top level of `configs/`
+  because a receipt names them there. Every config offered as something
+  to run is off the path. The per-axis length exposes the horizontal `w`
+  operator to a coefficient capped on the layer depth, at
+  `mix_upper_bound*(dz_max/dx)^2` of 0.702 on that 250 m child and 4.23
+  on a 100 m one, and the second aborted a run (`docs/public/LES.md`
+  §4). D8 is therefore arithmetically inert on the configs a user starts
+  from, and live on the five records — which is the point of keeping
+  them: it is what makes their receipts reproducible. It stays
+  registered for a second reason too: the divergence is in the operator
+  rather than in any config, so a user who writes `mix_isotropic = 0`
+  reaches it immediately. The bytes of each record are pinned by sha256
+  in `tests/test_shipped_configs_mixing_stability.py`, which is also the
+  screen that keeps the first sentence true.
 - **WRF's own pairing, verified in the bundled v4.6.1 source.** Every
   subgrid stress is given the exchange coefficient of its own directions.
   tau11/tau22/tau12 are horizontal-horizontal and take `xkmh`

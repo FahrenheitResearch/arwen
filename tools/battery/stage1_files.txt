@@ -46,6 +46,18 @@ tests/test_da_sweep.py
 tests/test_anisotropic_mixing_advisory.py
 tests/test_anisotropic_mixing_w_stability.py
 tests/test_les_tornado_attempt1_config.py
+
+# 2026-08-09, the 1.6.0 exposed-mixing defect: the criterion and its
+# advisory (the three entries directly above) had been on this list since
+# they were written, and every shipped LES example was on the wrong side
+# of the criterion anyway -- nothing walked configs/ and checked.  This
+# is the file that walks it.  Placed with its three siblings rather than
+# appended, against the header's append-only convention and deliberately:
+# these four are one gate in four files, and a reader who finds three of
+# them here would reasonably conclude the fourth does not exist.  The
+# amendment history the convention protects is in this block.
+tests/test_shipped_configs_mixing_stability.py
+
 tests/test_doctor.py
 tests/test_ftz_claim_consistency.py
 tests/test_letkf_osse.py
@@ -83,3 +95,160 @@ tests/test_first_products.py
 # cannot move a digest.  Both halves are contract, not implementation
 # detail, and an ordering change would otherwise pass unnoticed.
 tests/test_fetch_analysis_first.py
+
+# Task #124: the radiation-bearing MYNN family.  Three shipped suites
+# whose whole point is a property no other test measures -- MYNN that a
+# night window may load -- and the property is easy to lose by accident:
+# any edit to a switch row, a registry template or the nocturnal guard
+# can silently put them back in the class the guard refuses.  The file
+# also carries the control that the no-radiation siblings ARE still
+# refused on the same window, so the claim cannot pass vacuously.
+tests/test_mynn_radiation_profiles.py
+
+# Task #124: the physics composition walk.  6530 combinations through
+# gpuwm.experiment.build_experiment, and a receipt regenerated from the
+# result and compared byte for byte.  It belongs on every cut for the
+# same reason the F2 receipts do -- any admission edit in gpuwm/config.py
+# or gpuwm/physics_compat.py moves the receipt, and a receipt that is not
+# landed with the edit is a silent red on the next assembly.  It also
+# carries the standing gate that every refusal names a selector and that
+# doing what a refusal says reaches an accepted run, which is the pair of
+# properties that found two defects the day it was written.
+tests/test_physics_composition_walk.py
+
+# Task #124: PHYSICS.md's reachability claims, derived from the objects
+# that own them.  The page's maturity/reachability columns claim to be
+# quoted verbatim from the registry, and they DRIFTED -- the revised MM5
+# row still said "unreachable" after the registry had moved it to
+# component-override, and the MYNN rows called the 5/5 pairing mandatory
+# in a direction the loader does not enforce.  Both misled real readers
+# into "the physics is hardcoded".  This pins the columns against the
+# registry, the two quoted refusal messages against what
+# build_experiment actually emits, and the implemented-unverified census
+# against the registry's own count, so the page cannot drift back.
+tests/test_physics_md_reachability_claims.py
+
+# Task #124 verification sweep: the OTHER line-anchored receipt.  The
+# census above (test_ftz_claim_consistency.py) has gated its artifact on
+# every cut since 1.5.1, but its sibling never joined the list --
+# tools/ftz_receipt/receipt/route_inventory.json pins a file:line and
+# the exact source text for all 62 cupy kernel-construction sites, and
+# only test_ftz_route_inventory.py regenerates it.  It was found stale
+# AT integration/release-1.8.7, missing the two cp.ElementwiseKernel
+# sites 6e9c690f0 added to gpuwm/core/dycore.py and gpuwm/core/moist.py:
+# a perf lane moved code, the receipt was not regenerated, and no stage-1
+# gate could see it.  Same failure mode as task #121's citation drift and
+# as the census miss this sweep opened with, so it belongs on the list
+# the battery runs every cut.
+tests/test_ftz_route_inventory.py
+
+# Task #125 (prov-wire): the provenance policy at the shared config
+# load.  build_experiment now refuses a version disagreement, warns one
+# line on a borrowed-but-agreeing version, and stays silent for a
+# wheel; every front door inherits all three from that seam.  A
+# regression is silent-green everywhere else -- the run still runs,
+# labelled with a release that is not executing -- so the wiring proof
+# runs on every cut.
+tests/test_provenance_wire.py
+
+# The green-on-nothing gate audit, 2026-08-09: the OTHER half of the
+# radiation gate.  This list already carries
+# tests/test_nocturnal_radiation_guard.py, which proves a bad radiation
+# pairing is REFUSED -- and nothing that proves radiation RUNS.  A
+# refusal-only gate is green on a tree where the radiation step has
+# stopped producing heating: the refusal still fires on the bad config,
+# every listed suite passes, and no stage-1 assertion anywhere would
+# read a single Kelvin per second.  This file closes that half on the
+# CPU: atmosphere -> stock Dudhia adapter -> the production
+# PhysicsDriver radiation seam, asserting rthratensw > 0 and swdown > 0
+# through the real driver, with the night arm (exact zero) beside it so
+# the instrument is exercised in both directions.  10 passed, 2 skipped
+# in 0.64 s under GPUWM_NO_LOCAL_GPU=1 -- the two skips are the
+# @pytest.mark.gpu CUDA twins, which stage 1 is supposed to skip.
+tests/test_wrf_legacy_radiation.py
+
+# The 1.8.8 fidelity audit, round 1: the three binding laws' own suites.
+# The eight-lane merge was landed on the strength of "FULL 28-file
+# stage-1 battery green, 0 failed" -- a true statement about the curated
+# list and NOT evidence that the laws landed intact, because every one of
+# the laws' suites sat outside it.  Running the battery UNION the 39
+# lane-touched files found 17 failures in 4 files, none of them on this
+# list.  Three of the seven entries below were red at that moment.  A
+# contract that gates a release belongs on the list the release runs, so
+# the next cut cannot be told the same true-and-irrelevant thing.
+#
+# Law B, the renderer contract: gpuwm.render.renderer_refusal is the one
+# decider at both seams (CLI and in-process), and this file carries the
+# positive control -- the test that proves the gate can ever say yes.
+# "A refusal that fires on everything is not a contract check, it is an
+# outage" is its own docstring, and it was red at 5d6470308.
+tests/test_render_rust.py
+
+# Law A, the guard: a land surface with no longwave scheme is refused
+# unless the experiment declares it.  This is the config-load half.
+tests/test_radiation_off_land_surface_guard.py
+
+# Law A, the receipt: gpuwm.runtime.downward_longwave_source, the line
+# that tells a reader whether the GLW in their run was computed, declared
+# or unused.  Guard and receipt read one classifier
+# (downward_longwave_disposition) on purpose; listing only the guard is
+# how they would be allowed to drift apart.
+tests/test_downward_longwave_source.py
+
+# Law C, the tokens: every shipped acknowledgement justified in its own
+# file, and the nocturnal token never standing in for the constant
+# longwave one.  Governance over configs/, so it goes red on a config
+# edit that no code test can see -- which is exactly what happened at
+# 5d6470308, where a frozen LES record missed the new union rule.
+tests/test_shipped_acknowledgement_justifications.py
+
+# Task #125's gate itself.  gpuwm/provenance_gate.py is new in 1.8.8 and
+# it refuses EVERY front door when the executing tree disagrees with the
+# installed metadata; the renderer bridge clause refuses a foreign
+# engine.  A regression in either direction is a release-stopper -- too
+# strict and no source checkout runs, too loose and receipts get stamped
+# with a version that is not executing -- and the wire test
+# (test_provenance_wire.py, listed above) proves the seam is called, not
+# what it decides.
+tests/test_provenance_gate.py
+
+# The materializer's declared-physics contract: --physics-profile may not
+# silently overwrite a value the config declares.  It publishes the
+# experiment.toml every later stage binds by hash, so a regression here
+# runs a different forecast than the config describes and still passes
+# every downstream check.  Red at 5d6470308 on a cross-lane collision
+# (materialize's assertion against glw's re-specified config).
+tests/test_prepared_single_domain_forecast.py
+
+# The HRRR single-domain route.  Thirteen nodes of this file were red at
+# 5d6470308 on a real production hole -- eight shipped asymmetric
+# profiles could not build an experiment on an all-daylight window, with
+# no operator escape hatch, because the route synthesizes its config in
+# code.  The file was outside the battery, so the assembly could not see
+# it.  It is CPU-only and runs in about 5 s.
+tests/test_hrrr_single_domain_benchmark.py
+
+# The 1.8.8 fidelity audit, round 4: the two-layer radiation refusal, seen
+# from the run route.  The 1.8.8 declaration guard fires at
+# gpuwm.experiment.load_experiment and PRE-EMPTED this file's own route
+# tests -- three of them went red at 48a88e3d5 because their fixture
+# configs stopped loading, so the route layer they name went untested
+# while the suite still looked like it covered it.  A layering change is
+# exactly the class stage 1 cannot see from outside: the guard's own
+# suite stays green, the route's suite goes red, and only running the
+# route's suite says which layer moved.  It also carries the load-layer
+# pin (token-less config refused before any route logic, preflight
+# exit 2 against exit 1) so the ORDER is a test and not a comment.
+tests/test_battery_route.py
+
+# The 1.8.8 fidelity audit, round 4: the derived-doc renderer.  The FTZ
+# statement blocks in PROVENANCE.md and docs/public/HARDWARE.md are
+# GENERATED from tools/ftz_receipt/receipt/, and this suite is what
+# compares the published bytes to a fresh render.  Its sibling
+# test_ftz_route_inventory.py is already on this list and regenerates the
+# receipt those blocks read -- which is how PROVENANCE.md came to publish
+# "the 14 compile sites" against a receipt recording 16: the receipt was
+# regenerated this release, the prose derived from it was not, and no
+# listed suite compared them.  A receipt gate without its render gate is
+# half a gate.
+tests/test_ftz_render.py

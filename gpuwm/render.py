@@ -27,8 +27,11 @@ of one run share every other filename component and the second render
 at a lead silently overwrote the first -- a forecast lost with no error
 and an exit code of 0.  The same spacing appears in the plot subtitle
 as ``Δx 3 km``, and plots are labelled with the model that produced
-them (``--source-label``, default ``ArWen``) rather than the GDEX fetch
-source the rust engine's ``wrf`` store identity inherits.
+them (``--source-label``, default :func:`default_source_label`) rather
+than the GDEX fetch source the rust engine's ``wrf`` store identity
+inherits.  That default carries the version of the code that is
+EXECUTING (``ArWen 1.8.7``), which is not the same number as
+``gpuwm.__version__``: see :func:`default_source_label`.
 
 Every derived quantity comes from the mandated ``wrf`` package (pip
 distribution ``wrf-rust``): destaggering, earth-rotation, and unit
@@ -90,7 +93,51 @@ _WRFOUT_DOMAIN = re.compile(r"wrfout_(d\d{2})")
 #: a GDEX fetch source from its ``wrf`` store-model identity, which this
 #: lane never fetched from; ``--source-label`` renames it for stock-WRF
 #: files, which ArWen did not produce and must not claim.
+#:
+#: The BRAND half only.  What actually reaches a plot is
+#: :func:`default_source_label`, which appends the executing version.
 DEFAULT_SOURCE_LABEL = "ArWen"
+
+
+def default_source_label() -> str:
+    """``ArWen 1.8.7`` -- the brand plus the version that is EXECUTING.
+
+    THE product stamp, and the reason it is a function rather than a
+    constant.  Both engines put this string on the plot verbatim: the
+    matplotlib engine through :func:`plot_context`, and the rust engine
+    through ``--source-label``, which ``rw_wrfbatch`` renders as its
+    ``subtitle_right`` without interpreting it.  So whatever this
+    returns is literally the label a reader sees on the image, and it
+    is the only place on a PNG where the producing build can be named
+    at all.
+
+    The number comes from :func:`gpuwm.provenance_gate.executing_version`
+    and NOT from ``gpuwm.__version__``, because those two are not the
+    same claim.  ``__version__`` asks distribution metadata for the
+    version of the distribution NAMED gpuwm, which on a box with a
+    stale editable install answers for a tree that is not the one
+    running -- exactly the field report this program was opened for,
+    where plots were labelled 1.6.2 and the reader believed they had
+    installed 1.8, and nothing in the product could say which of them
+    was right.  ``executing_version`` prefers the running code's own
+    declaration, so the label describes the code that drew the image.
+
+    An install that genuinely cannot name its version contributes
+    nothing rather than the ``0+unknown`` sentinel: a plot is not a
+    diagnostics channel, and a bare ``ArWen`` is the honest label there.
+    ``gpuwm version`` and the render receipt carry the full story.
+    """
+
+    from gpuwm.provenance import UNKNOWN_VERSION
+    from gpuwm.provenance_gate import executing_version
+
+    try:
+        version = executing_version()
+    except Exception:                                   # noqa: BLE001
+        return DEFAULT_SOURCE_LABEL
+    if not version or version == UNKNOWN_VERSION:
+        return DEFAULT_SOURCE_LABEL
+    return f"{DEFAULT_SOURCE_LABEL} {version}"
 
 
 def _import_wrf():
@@ -555,7 +602,7 @@ def _stamp_for_filename(stamp: str) -> str:
 def render_wrfouts(paths, *, products: tuple[str, ...],
                    timeidx: int | None, outdir: Path,
                    dpi: int = 150,
-                   source_label: str = DEFAULT_SOURCE_LABEL,
+                   source_label: str | None = None,
                    ) -> tuple[list[Path], list[str],
                               list[tuple[str, str]]]:
     """Render every requested product/frame.
@@ -581,6 +628,11 @@ def render_wrfouts(paths, *, products: tuple[str, ...],
     Nothing is silent either way: both lists come back for the CLI to
     print.
     """
+    # Resolved here rather than in the signature: a default argument is
+    # evaluated at import, and this one resolves provenance (a git
+    # subprocess).  `gpuwm --help` must not pay for it.
+    if source_label is None:
+        source_label = default_source_label()
     wrf = _import_wrf()
     plt = _pyplot()
     written: list[Path] = []
@@ -795,7 +847,15 @@ def catalog_main(args) -> int:
 
     from gpuwm import rustwx
 
-    engine, why = _resolve_engine(args.engine)
+    try:
+        engine, why = _resolve_engine(args.engine)
+    except (RuntimeError, FileNotFoundError) as exc:
+        # ``--engine rust`` is a refusal now, not a fallback, and this
+        # entry point is reached before the render path's own try.  The
+        # other two failures here print one line and exit 2; a renderer
+        # that cannot answer for itself is the same shape of answer.
+        print(f"render: {exc}", file=sys.stderr)
+        return 2
     notice = fallback_notice(engine, why)
     if notice is not None:
         print(notice, file=sys.stderr)
@@ -828,7 +888,7 @@ def catalog_main(args) -> int:
 def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
                         outdir: Path, size: tuple[int, int],
                         heavy: bool = False,
-                        source_label: str = DEFAULT_SOURCE_LABEL,
+                        source_label: str | None = None,
                         ) -> tuple[list[Path], list[str],
                                    list[tuple[str, str]]]:
     """Rusty Weather engine; ``(written, failures, skipped)``.
@@ -842,11 +902,25 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
 
     from gpuwm import rustwx
 
+    if source_label is None:
+        source_label = default_source_label()
     renderer = rustwx.find_renderer()
     if renderer is None:
         raise RuntimeError(
             "the rust render engine is not built; "
             + rustwx.renderer_remedy())
+    # The SAME gate `_resolve_engine` reads, at the LAST seam before the
+    # engine is launched.  The CLI already asked, but this function is
+    # also called directly (`gpuwm go`'s first-products leg, the DA
+    # gallery, tests), and a gate that only one caller passes through is
+    # a gate the next caller walks around.  There is no fallback to
+    # offer here -- the caller asked for the rust engine by name -- so
+    # the reason is raised rather than returned.
+    reason = renderer_refusal(renderer)
+    if reason is not None:
+        raise RuntimeError(
+            f"the rust render engine at {renderer} may not be used by "
+            f"this tree: {reason}")
     outdir.mkdir(parents=True, exist_ok=True)
     frames = "all" if timeidx is None else str(timeidx)
     width, height = size
@@ -937,12 +1011,80 @@ def _remove_scratch_store(store: Path) -> None:
               file=sys.stderr)
 
 
+def renderer_refusal(renderer) -> str | None:
+    """Why this tree may not draw with ``renderer``, or None if it may.
+
+    THE single answer to "is this renderer usable", and the only one.
+    Both seams that can launch the engine read it -- :func:`_resolve_engine`
+    for the CLI, :func:`render_wrfouts_rust` for every in-process caller
+    (``gpuwm go``'s first-products leg, the DA gallery) -- so a renderer
+    can never be usable at one seam and foreign at the other.  Two
+    independently correct gates landed here in one release and would
+    have been exactly that: two definitions of usable, diverging on the
+    first case they disagreed about.
+
+    Two questions, in the order a reader wants them answered:
+
+    * THE CONTRACT (task #106).  :func:`gpuwm.rustwx.probe_renderer`
+      runs ``--help``, then the ``--abi`` handshake against
+      :data:`gpuwm.rustwx.RENDERER_ABI_MARKER`.  This is the decisive
+      one, because it is a statement about the BINARY's own answer
+      rather than about where it sits: two builds of ``rw_wrfbatch``
+      with different md5s both passed the old ``--help``-only probe and
+      both reported ``verified``, and a build predating the handshake
+      says ``unknown option --abi`` on exit 2.
+    * THE PROVENANCE (task #125).
+      :func:`gpuwm.provenance_gate.renderer_bridge_refusal` refuses a
+      binary that answers the contract correctly and still belongs to
+      another tree -- the case the handshake cannot see, because a
+      sibling checkout at the same contract version answers it
+      perfectly.  ``find_renderer`` returns the first candidate that is
+      a file and its last candidate is ``~/.gpuwm/bridges``, a directory
+      every gpuwm on the machine writes into and none of them owns, so
+      "nobody chose this binary" is a real and silent state.
+
+    The reason is returned rather than raised, because what to DO about
+    it belongs to the caller: ``auto`` degrades and says why, an
+    explicit ``--engine rust`` refuses, and a direct in-process render
+    has no fallback to offer at all.
+    """
+
+    from gpuwm import rustwx
+    from gpuwm.provenance_gate import renderer_bridge_refusal
+
+    ok, evidence = rustwx.probe_renderer(renderer)
+    if not ok:
+        return evidence
+    # The provenance clause carries its own remedies (build here, or
+    # declare the staged binary through the environment), so it is
+    # returned verbatim rather than re-worded.
+    return renderer_bridge_refusal(renderer, env_var=rustwx.RENDERER_ENV)
+
+
 def _resolve_engine(requested: str) -> tuple[str, str]:
     """(engine, why) for ``--engine auto|rust|matplotlib``.
 
-    ``auto`` selects rust exactly when the built binary resolves AND
-    probe-executes (the doctor-verified condition); anything less falls
-    back to matplotlib with the reason in ``why``.
+    Rust is selected exactly when the binary resolves AND
+    :func:`renderer_refusal` has nothing to say about it.  The two
+    request forms differ only in what happens on failure: ``auto`` falls
+    back to matplotlib with the reason in ``why``; an explicit ``rust``
+    refuses.
+
+    The explicit path used to return the resolved binary WITHOUT the
+    probe -- only ``auto`` asked the contract question -- so the one
+    caller that pinned ``--engine rust`` to be certain of the real
+    renderer was exactly the caller that could still get a foreign one:
+    with a stale bridge staged, ``auto`` fell back naming the mismatch
+    while ``rust`` ran the stale build silently.  An explicit request is
+    a statement about which engine must draw, so failing its contract is
+    a refusal, never a silent substitution and never a fallback.
+
+    The shape is not invented here either:
+    :func:`gpuwm.fetch.resolve_fetch_engine` has always resolved
+    ``--engine rust`` this way -- probe, then refuse an explicit request
+    and degrade an automatic one.  The renderer was the odd one out at
+    the probe (task #106) and at the resolver, and this is the second
+    half.
     """
 
     if requested == "matplotlib":
@@ -950,19 +1092,32 @@ def _resolve_engine(requested: str) -> tuple[str, str]:
     from gpuwm import rustwx
 
     renderer = rustwx.find_renderer()
-    if requested == "rust":
-        if renderer is None:
+    if renderer is None:
+        if requested == "rust":
             raise RuntimeError(
                 "--engine rust: the renderer is not built; "
                 + rustwx.renderer_remedy())
-        return "rust", str(renderer)
-    if renderer is None:
         return "matplotlib", "rust renderer not built (gpuwm doctor shows " \
                              "the build one-liner)"
-    ok, evidence = rustwx.probe_renderer(renderer)
-    if ok:
+    reason = renderer_refusal(renderer)
+    if reason is None:
         return "rust", str(renderer)
-    return "matplotlib", f"rust renderer unusable: {evidence}"
+    if requested == "rust":
+        # NO SILENT SUBSTITUTION -- an explicit --engine rust that got a
+        # different engine is the defect this refusal exists for -- but
+        # the exit is named, because one demonstrably exists: the same
+        # command with --engine auto renders the whole catalog's
+        # matplotlib subset on this identical tree.  Refusing to choose
+        # for the caller is not the same as refusing to tell them what
+        # the choices are (1.8.8 refusal sweep).
+        raise RuntimeError(
+            f"--engine rust: the renderer at {renderer} failed its "
+            f"contract check: {reason}\n"
+            f"  Rebuild the renderer ({rustwx.CARGO_BUILD_HINT}), or use "
+            f"--engine auto to fall back to matplotlib with this reason "
+            f"printed, or --engine matplotlib to select the fallback "
+            f"outright.")
+    return "matplotlib", f"rust renderer unusable: {reason}"
 
 
 #: How many products each engine can draw, for the fallback notice.
@@ -1110,6 +1265,12 @@ def _pair_main(args: argparse.Namespace) -> int:
 
 
 def render_main(args: argparse.Namespace) -> int:
+    # Which tree is drawing these plots.  Idempotent -- `gpuwm.cli.main`
+    # has normally already announced -- and here as well because this
+    # handler is reachable without that front door.
+    from gpuwm.provenance_gate import announce
+
+    announce("gpuwm render")
     if args.pair:
         if args.wrfout:
             print("render: --pair composes already-rendered PNG "
@@ -1140,7 +1301,13 @@ def render_main(args: argparse.Namespace) -> int:
         else:
             products = parse_products(args.products)
     except (ValueError, RuntimeError, FileNotFoundError) as exc:
-        print(f"render: {exc}", file=sys.stderr)
+        # Through the layering boundary, not raw: the bridge refusal
+        # `_resolve_engine` can raise is composed with `explain.layered`,
+        # and printing it unrendered would put the [[explain]] sentinel
+        # on a terminal.
+        print("render: " + explain.render(
+            str(exc), explain=explain.explain_enabled(args),
+            command="gpuwm render"), file=sys.stderr)
         return 2
     notice = fallback_notice(engine, why)
     if notice is not None:
@@ -1155,13 +1322,26 @@ def render_main(args: argparse.Namespace) -> int:
         return list_products_main(args, engine)
     print(f"render: engine {engine} ({why})")
     if engine == "rust":
+        # The receipt line for WHICH engine binary drew these products.
+        # Recorded on the passing path too: "the in-tree engine ran" is
+        # the fact that was missing when a foreign engine's 153 products
+        # had to be explained after the fact.
+        from gpuwm import rustwx
+        from gpuwm.provenance_gate import bridge_tree_match
+
+        verdict = bridge_tree_match(rustwx.find_renderer(),
+                                    env_var=rustwx.RENDERER_ENV)
+        print(f"render: engine bridge {verdict.verdict} "
+              f"({verdict.basis})")
         try:
             written, failures, skipped = render_wrfouts_rust(
                 args.wrfout, products=rust_products, timeidx=timeidx,
                 outdir=args.out, size=size, heavy=args.heavy,
                 source_label=args.source_label)
-        except RuntimeError as exc:
-            print(f"render: {exc}", file=sys.stderr)
+        except (RuntimeError, ValueError) as exc:
+            print("render: " + explain.render(
+                str(exc), explain=explain.explain_enabled(args),
+                command="gpuwm render"), file=sys.stderr)
             return 2
     else:
         written, failures, skipped = render_wrfouts(
@@ -1227,11 +1407,15 @@ def register_cli(subparsers) -> None:
         "--size", default="1200x900", metavar="WxH",
         help="output pixels, rust engine (default 1200x900)")
     parser.add_argument(
-        "--source-label", default=DEFAULT_SOURCE_LABEL, metavar="TEXT",
+        # None, not the string: the default is resolved at render time
+        # by `default_source_label()`, which asks provenance which tree
+        # is executing.  Computing it here would put a git subprocess in
+        # `gpuwm --help`.
+        "--source-label", default=None, metavar="TEXT",
         help="model/provenance label stamped on every plot (default "
-             f"{DEFAULT_SOURCE_LABEL}); set it when rendering wrfout "
-             "files this model did not produce, so the sheet does not "
-             "claim them")
+             f"'{DEFAULT_SOURCE_LABEL} <the executing version>'); set it "
+             "when rendering wrfout files this model did not produce, so "
+             "the sheet does not claim them")
     parser.add_argument(
         "--heavy", action="store_true",
         help="rust engine: also compute the heavy ECAPE product family "
@@ -1260,7 +1444,8 @@ def register_cli(subparsers) -> None:
 
 
 __all__ = ["DEFAULT_SOURCE_LABEL", "PRODUCTS", "RUST_PRODUCT_ALIASES",
-           "WRF_PACKAGE_REQUIREMENT", "domain_token", "list_products_main",
+           "WRF_PACKAGE_REQUIREMENT", "default_source_label",
+           "domain_token", "list_products_main",
            "parse_products", "parse_products_rust", "parse_size",
            "parse_timeidx", "plot_context", "register_cli", "render_main",
            "missing_basemap_notice", "missing_declared_inputs",

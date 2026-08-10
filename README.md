@@ -265,6 +265,15 @@ cd tools\rustwx; cargo build --release --locked --offline; cd ..\..
 gpuwm doctor
 ```
 
+**Running from a source checkout: bind the tree to its own metadata**
+with `pip install -e <tree>` (both manual sequences above already do
+it, and so do `install.sh` / `install.ps1`), so a receipt is stamped
+with the release that is executing. New in 1.8.8: a checkout whose
+version disagrees with the gpuwm distribution pip has installed refuses
+at config load, naming both versions, both locations and that one-line
+fix. A wheel install never sees it, and a second checkout beside an
+editable install of the *same* version warns one line and runs.
+
 **`pip install gpuwm` needs two more commands before it can read
 weather data.** The wheel ships no compiled Rust, and every GRIB decode
 -- ERA5, GFS, GDAS, HRRR, 20CRv3 -- goes through the fail-closed Rust
@@ -345,11 +354,11 @@ gpuwm render out/myarea/wrfout_d01_* --out out/myarea/png
 Live progress is `run-progress.json` in the output directory (atomic,
 schema `gpuwm.run-progress/v1`); restart checkpoints are written every
 `restart_interval_s` and `gpuwm resume` continues from the newest valid
-one.  That is this route, the `[case_data]` route.  The prepared
-single-domain forecaster writes no checkpoints at any
-`restart_interval_s` -- `gpuwm check` names the limitation before you
-spend the run; use a multi-domain config or a `[case_data]` experiment
-when you need to resume.  The `tools/` runners write a different file: the domain-tree
+one.  That is this route, the `[case_data]` route.  When you need to
+resume, run a `[case_data]` experiment or a multi-domain config: both
+checkpoint.  The prepared single-domain forecaster writes none at any
+`restart_interval_s`, and `gpuwm check` says so before you spend the
+run.  The `tools/` runners write a different file: the domain-tree
 route writes `<outdir>/evidence/progress.json` and the single-domain
 runners write `<outdir>/progress.json`.
 
@@ -392,7 +401,11 @@ opt-in via `--heavy`.*
 
 ## Limits
 
-Stated plainly, up front:
+Stated plainly, up front. What is not on this list runs: the physics
+suite is yours to compose, `[shared]` and `[[domain]]` take WRF's
+namelist keys verbatim, and a shipped preset is a shortcut to that same
+loader rather than a gate on it
+([PHYSICS.md](docs/public/PHYSICS.md)).
 
 - **Projection and location.** Lambert conformal (both hemispheres),
   Mercator, and polar stereographic (both poles) run end to end --
@@ -422,9 +435,9 @@ Stated plainly, up front:
   No end-to-end bit-identity with WRF is claimed anywhere; see
   [VERIFICATION.md](docs/public/VERIFICATION.md) for exactly what is
   claimed.
-- **No data assimilation on the supported path.** `gpuwm run` cold-starts
-  from public analyses only. v1.2 adds EXPERIMENTAL ensemble and DA
-  machinery reachable **only** through experimental tools that nothing
+- **Data assimilation is experimental, and it is reachable.**
+  `gpuwm run` cold-starts from public analyses only; the ensemble and
+  DA machinery v1.2 added runs through experimental tools that nothing
   else calls -- `tools/ensemble_forecast.py` (perturbed members, cycling
   with an assimilation seam), `gpuwm enprod` (ensemble products), and
   `tools/da_synthetic_cycle.py` (the composition gate). None of it is on
@@ -510,6 +523,7 @@ What it does detect, what it does not, and the pin set that defines
 - [Verification](docs/public/VERIFICATION.md)
 - [Determinism and the no-ECC dual-run screen](docs/public/DETERMINISM.md)
 - [Physics options and maturity](docs/public/PHYSICS.md)
+- [Overnight dewpoints far below the airmass](docs/public/NOCTURNAL-DEWPOINTS.md)
 - [Configuration knobs (WRF namelist parity)](docs/public/CONFIGURATION.md)
 - [Getting data](docs/public/DATA.md)
 - [Hardware and VRAM sizing](docs/public/HARDWARE.md)

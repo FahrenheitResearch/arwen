@@ -41,6 +41,7 @@ from dataclasses import dataclass, fields, replace as _dc_replace
 from datetime import datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
@@ -1803,6 +1804,14 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
 
     # ---- [shared] ------------------------------------------------------
     shared = dict(raw.get("shared", {}))
+    # Captured from the RAW table, before anything defaults it: whether
+    # the author CHOSE radiation at all.  ra_physics defaults to 0 and
+    # ra_lw/sw_physics to -1, so by RunConfig time "wrote ra_physics = 0"
+    # and "wrote nothing" are the same object -- and the radiation-off
+    # land-surface refusal has to tell those two readers apart.  Same
+    # idiom, and the same reason, as ``declared_map_proj`` below.
+    from gpuwm.physics_compat import declared_radiation_selectors
+    declared_radiation = declared_radiation_selectors(shared)
     _reject_moving_nest_keys("shared", shared, source)
     run_field_names = {f.name for f in fields(RunConfig)}
     for key, where in _SHARED_FORBIDDEN.items():
@@ -2500,7 +2509,9 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         physics_mode=physics_mode,
         perturbation=perturbation)
     from gpuwm.physics_compat import (
+        constant_longwave_refusal,
         nocturnal_radiation_refusal,
+        radiation_off_land_surface_refusal,
         validate_resolved_physics_vertical_levels,
     )
     for domain in experiment.domains:
@@ -2516,6 +2527,20 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     # can miss it.  [experiment].acknowledgements carries the
     # declared-experiment override; the refusal names it.
     if experiment.projection is not None:
+        # The provenance guard (task #125) shares this seam and this
+        # voice: a real case may not load under an install whose
+        # metadata version contradicts the version its own source
+        # declares -- that is the "plots say 1.6.2 while 1.8.7
+        # executes" shape, and the refusal names both numbers, both
+        # locations and the remedy.  A BORROWED number that agrees --
+        # every worktree beside an editable install -- warns one line
+        # naming the install the number came from, and never refuses;
+        # a wheel has one version claim and passes in silence.
+        # Idealized loads (no projection, no place, no clock) are not
+        # a disagreement, exactly as they are not this nocturnal
+        # guard's business.
+        from gpuwm.provenance_gate import require_version_identity
+        require_version_identity(source)
         refusal = nocturnal_radiation_refusal(
             [dc.run for dc in experiment.domains],
             start_time=experiment.start_time,
@@ -2525,43 +2550,183 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             acknowledgements=experiment.acknowledgements)
         if refusal is not None:
             raise ValueError(f"experiment config {source}: {refusal}")
+        # THE TWO RADIATION-ABSENCE GUARDS, in order of how much they
+        # diagnose.  Both landed in this release, both read the same
+        # selectors, and they overlap on exactly one class -- both
+        # streams off under a land-surface scheme -- which is the class
+        # BOTH of them are about.  Where they overlap, the radiation-off
+        # guard speaks first, because "you have no radiation at all" is
+        # the larger fact and its message carries the three remedies;
+        # being told "your longwave is a declared constant" while
+        # shortwave is also off would answer a smaller question than the
+        # one the reader has.  A config in that overlap needs BOTH
+        # declarations, which is a feature and not an accident: they are
+        # two claims -- "nothing computes my sky" and "the number my land
+        # surface integrates is one I typed" -- and a file that means
+        # both says both.
+        #
+        # The radiation-OFF land-surface guard (2026-08-09), the other
+        # half of the same hole.  The nocturnal guard tests sw > 0 and
+        # lw == 0, so a suite with BOTH streams off walked past it while
+        # initialize_physics attached no radiation adapter at all -- and
+        # Noah/Noah-MP/RUC read fields["glw"] every surface step anyway.
+        # Same door, same declaration idiom, no clock: a sky nothing
+        # computes is wrong at noon as well as at midnight.  The
+        # declared-selector set travels with it because radiation
+        # defaults to OFF: a config that simply never named a selector is
+        # in this class too, and gets told THAT rather than being quoted
+        # two zeros it does not contain.
+        refusal = radiation_off_land_surface_refusal(
+            [dc.run for dc in experiment.domains],
+            acknowledgements=experiment.acknowledgements,
+            declared_selectors=declared_radiation)
+        if refusal is not None:
+            raise ValueError(f"experiment config {source}: {refusal}")
+        # The constant-GLW guard (2026-08-09), the nocturnal guard's
+        # companion and deliberately a SECOND question rather than a
+        # clause of the first: that one asks whether the window is
+        # survivable, this one asks whether the downward longwave
+        # exists at all.  Kept separate because the nocturnal
+        # acknowledgement was checked before any physics was inspected,
+        # so a config carrying it never had its GLW source examined --
+        # which is how ten shipped configs came to integrate a frozen
+        # 300 W m-2.  Same load, same front doors, its own token.  It
+        # refuses EXACTLY the set initialize_physics refuses, so a config
+        # that passes here runs rather than dying mid-preparation.
+        refusal = constant_longwave_refusal(
+            [dc.run for dc in experiment.domains],
+            acknowledgements=experiment.acknowledgements)
+        if refusal is not None:
+            raise ValueError(f"experiment config {source}: {refusal}")
     _advise_anisotropic_w_mixing(experiment, source)
     _assert_derived_copies(experiment, source)
     return experiment
+
+
+class ExposedMixing(NamedTuple):
+    """What :func:`anisotropic_w_mixing_exposure` hands its callers.
+
+    ``dz_max`` -- deepest base-state layer of the vertical coordinate, in
+    metres, or ``inf`` when the coordinate cannot be resolved at all.
+    ``inf`` is a sentinel a caller must route on, not a depth to compute
+    with; see :func:`anisotropic_w_mixing_exposure` for what it selects.
+    ``domains`` -- the DomainConfigs on the exposed path, possibly empty.
+    ``ladder`` -- how ``dz_max`` was obtained, EMPTY when the config
+    wrote its own eta interfaces and non-empty when they were resolved
+    for it; callers put it in the advisory so a derived number never
+    reads like a declared one.
+    """
+
+    dz_max: float
+    domains: tuple
+    ladder: str
+
+
+def anisotropic_w_mixing_exposure(experiment: ExperimentConfig
+                                  ) -> ExposedMixing:
+    """Layer depths and the domains that would be judged against them.
+
+    This is the only place both halves of the question are known -- the
+    shared vertical coordinate owns the layer depths, each domain owns
+    its horizontal spacing and its mixing selectors -- so it is where the
+    layer depths meet the selectors.  It computes no verdict: callers
+    hand the result to :func:`gpuwm.config.anisotropic_w_mixing_advice`,
+    which owns the criterion and the wording.
+
+    A COORDINATE WITH NO EXPLICIT ETA INTERFACES IS RESOLVED, NOT
+    SKIPPED.  Skipping it was a hole: ``km_opt = 3`` with
+    ``mix_isotropic = 0`` at ``dx = 100`` m and no ``eta_levels`` is the
+    exact configuration the criterion exists for, and until 2026-08-09 it
+    came back empty and every door went quiet -- silence read as a pass
+    by anything downstream, which is the opposite of what the absence of
+    a number means.  When the ladder is not written down it is rebuilt
+    the way the model rebuilds it: the uniform interfaces
+    :func:`gpuwm.core.grid.make_vertical_coord` produces from ``nz``
+    (every idealized/legacy route in the tree calls it with no
+    ``stretch``), with the model top expressed as a pressure by
+    :func:`gpuwm.core.grid.analytic_base_pressure`, whose base state is
+    the one :func:`~gpuwm.core.grid.base_layer_depths` already inverts --
+    so the resolved column spans exactly ``[0, ztop]``.
+
+    ``nz``/``ztop`` come off the first domain because they cannot differ
+    across domains: they are in ``_DOMAIN_VERTICAL_KEYS``, so a
+    per-domain spelling is a load error and the vertical grid is shared
+    by construction.
+
+    ``dz_max = inf`` when even that fails (a model top above the analytic
+    base state's ~24.6 km ceiling).  Infinity is a SENTINEL, not a large
+    depth: no ratio is computed from it -- ``anisotropic_w_mixing_ratio``
+    returns ``None`` for a non-finite depth, because there is no number
+    and inventing one would put a fictitious depth into a stability
+    criterion.  What it does instead is select a different sentence:
+    :func:`gpuwm.config.anisotropic_w_mixing_advice` recognises the
+    non-finite depth on an otherwise-exposed domain and advises that the
+    criterion CANNOT BE EVALUATED here, quoting ``ladder`` for the reason.
+    That advisory reaches the same three doors the numeric one does --
+    the load-time warning, ``gpuwm check``, and the repository screen in
+    ``tests/test_shipped_configs_mixing_stability.py``, which reports the
+    domain with an infinite ratio exactly as its legacy branch does.
+
+    Until 2026-08-09 that sentinel went nowhere: the ``None`` it produced
+    was the same ``None`` a config OFF the exposed path produces, so all
+    three doors read it as "not applicable" and went quiet.  Anything
+    here that consumes the ratio alone must not read its absence as a
+    pass -- ask for the advice.
+    """
+
+    exposed = tuple(d for d in experiment.domains
+                    if d.run.km_opt in (2, 3) and d.run.mix_isotropic == 0)
+    if not exposed:
+        return ExposedMixing(0.0, (), "")
+
+    from gpuwm.core.grid import (analytic_base_pressure, base_layer_depths,
+                                 make_vertical_coord)
+
+    vertical = experiment.vertical
+    if vertical.eta_levels:
+        znw = vertical.eta_levels
+        p_top = vertical.p_top
+        ladder = ""
+    else:
+        run = experiment.domains[0].run
+        p_top = analytic_base_pressure(run.ztop)
+        if p_top is None:
+            return ExposedMixing(
+                math.inf, exposed,
+                f"no eta_levels, and ztop = {float(run.ztop):g} m is above "
+                f"the analytic base state's representable ceiling, so no "
+                f"layer depth can be resolved for this grid at all")
+        znw = make_vertical_coord(int(run.nz)).znw
+        ladder = (f"resolved ladder -- this config declares no eta_levels, "
+                  f"so the depths are the uniform nz = {int(run.nz)} "
+                  f"interfaces the model builds, spanning ztop = "
+                  f"{float(run.ztop):g} m")
+
+    dz_max = float(base_layer_depths(
+        znw, vertical.hybrid_opt, vertical.etac, p_top).max())
+    return ExposedMixing(dz_max, exposed, ladder)
 
 
 def _advise_anisotropic_w_mixing(experiment: ExperimentConfig,
                                  source: str) -> None:
     """Advisory pass: per-axis mixing lengths against the explicit limit.
 
-    This is the only place both halves of the question are known -- the
-    shared vertical coordinate owns the layer depths, each domain owns
-    its horizontal spacing and its mixing selectors -- so it is where the
-    ratio is computed.  Warn, never block: see
-    :func:`gpuwm.config.warn_anisotropic_w_mixing`.
-
-    A coordinate with no explicit eta interfaces (idealized/legacy) has
-    no layer depths to read here and is skipped rather than guessed at.
+    Warn, never block: see
+    :func:`gpuwm.config.warn_anisotropic_w_mixing` for the ruling and
+    the numbers behind it.  ``gpuwm check`` repeats the same sentence in
+    its advisory list, because this line is emitted at config load and
+    the report is where a reader is looking.
     """
 
-    vertical = experiment.vertical
-    if not vertical.eta_levels:
-        return
-    exposed = [d for d in experiment.domains
-               if d.run.km_opt in (2, 3) and d.run.mix_isotropic == 0]
-    if not exposed:
-        return
-    from gpuwm.core.grid import base_layer_depths
-    dz_max = float(base_layer_depths(
-        vertical.eta_levels, vertical.hybrid_opt, vertical.etac,
-        vertical.p_top).max())
+    dz_max, exposed, ladder = anisotropic_w_mixing_exposure(experiment)
     for domain in exposed:
         warn_anisotropic_w_mixing(
             where=f"domain grid_id = {domain.grid_id} of {source}",
             km_opt=domain.run.km_opt,
             mix_isotropic=domain.run.mix_isotropic,
             mix_upper_bound=domain.run.mix_upper_bound,
-            dx=domain.run.dx, dy=domain.run.dy, dz_max=dz_max)
+            dx=domain.run.dx, dy=domain.run.dy, dz_max=dz_max,
+            ladder=ladder)
 
 
 def _assert_derived_copies(experiment: ExperimentConfig,

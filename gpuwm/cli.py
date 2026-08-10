@@ -432,6 +432,19 @@ def main(argv: list[str] | None = None) -> int:
     _warn_if_interrupt_is_ignored(args.command)
 
     try:
+        # WHICH TREE IS EXECUTING, said out loud before anything runs,
+        # and a refusal when the install cannot answer consistently.
+        # Inside the try because the refusal is a ValueError and the
+        # boundary below is where every refusal in this product prints:
+        # one sentence, exit 2, `--explain` for the mechanism.
+        #
+        # The diagnostic subcommands (`version`, `doctor`, `report`,
+        # `update`) still print the banner but are never refused --
+        # they are what a reader runs BECAUSE the install is confusing,
+        # and a gate that blocks its own diagnostic leaves no way out.
+        from gpuwm.provenance_gate import announce
+
+        announce(f"gpuwm {args.command}")
         return _dispatch(args)
     except KeyboardInterrupt:
         # Ctrl-C.  Every subcommand gets the same bounded contract: one

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -157,6 +158,14 @@ def test_validate_hrrr_domain_is_an_exclusive_inventory_action(capsys):
 
 
 def test_validate_hrrr_domain_subprocess_exit_and_lf_are_stable():
+    # The provenance banner (one line on stderr at every front door) is
+    # silenced through its own documented switch: this test pins the
+    # RECEIPT's byte stability, and "stderr carries nothing but what
+    # this door was asked for" is only true of a caller who asked for
+    # quiet.  On a dev worktree the banner would otherwise be here by
+    # design.
+    environment = dict(os.environ)
+    environment["GPUWM_PROVENANCE_BANNER"] = "0"
     completed = subprocess.run(
         [
             sys.executable,
@@ -168,6 +177,7 @@ def test_validate_hrrr_domain_subprocess_exit_and_lf_are_stable():
         cwd=ROOT,
         capture_output=True,
         check=False,
+        env=environment,
     )
 
     assert completed.returncode == 0, completed.stderr.decode()

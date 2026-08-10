@@ -13,6 +13,18 @@ from tools.hrrr_state_proof import (
     _physics_update_counts,
     _strict_json,
 )
+from gpuwm.core.physics import DECLARED_CONSTANT_GLW_WM2  # noqa: E402
+
+#: The idealised constant downward longwave these fixtures declare.
+#:
+#: ``gpuwm.core.physics.initialize_physics`` no longer defaults ``glw``
+#: (300.0 through 1.8.7): a land-surface suite with no longwave scheme
+#: must state where its downward longwave comes from instead of being
+#: handed a plausible-looking 300 W m-2 nobody chose.  These are
+#: idealised columns; the constant is the right answer for them and this
+#: is where they say so.  The VALUE is 1.8.7's default, so every fixture
+#: below integrates exactly the numbers it always did.
+_IDEALISED_GLW = DECLARED_CONSTANT_GLW_WM2
 
 
 def test_receipt_reads_public_physics_driver_update_counters():
@@ -58,7 +70,7 @@ def test_entire_physics_receipt_serializes_from_initialized_driver():
         radiation_start_time=datetime(2026, 7, 18),
         radiation_latitude=np.full((cfg.ny, cfg.nx), 35.0),
         radiation_longitude=np.full((cfg.ny, cfg.nx), -98.0),
-    )
+        glw=_IDEALISED_GLW)
     receipt = _strict_json({"physics": _physics_receipt(driver, cp)})
     # allow_nan=False is the actual JSON finiteness gate, not just a type check.
     encoded = json.dumps(receipt, allow_nan=False, sort_keys=True)

@@ -89,7 +89,13 @@ def _dual_run_main(args) -> int:
     if args.out_report is not None:
         write_certification_json(args.out_report, comparison.report())
     if comparison.identical:
-        print("dual-run: capsules are identical field for field")
+        # The count is not decoration.  "capsules are identical field for
+        # field" is the same sentence whether the screen compared a
+        # hundred quantities or one, and this command is the project's
+        # only detector for silent VRAM corruption on a card with no ECC.
+        # A reader has to be able to see that it did work.
+        print("dual-run: capsules are identical field for field "
+              f"({comparison.compared_count} compared quantities)")
         return 0
     print(f"dual-run: first divergent field "
           f"{comparison.first_divergent_field}", file=sys.stderr)

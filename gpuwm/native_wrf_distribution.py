@@ -670,6 +670,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--contract", action="store_true")
     parser.add_argument("--skip-gpu", action="store_true")
     args = parser.parse_args(argv)
+    # A runtime check whose own runtime is unnamed is not a check.
+    from gpuwm.provenance_gate import announce_for_main
+
+    refusal = announce_for_main("gpuwm-wrf-runtime-check")
+    if refusal is not None:
+        print(f"gpuwm-wrf-runtime-check: {refusal}", file=sys.stderr)
+        return 2
     if args.contract:
         if args.bridge_dir is not None or args.receipt is not None:
             parser.error("--contract cannot be combined with runtime verification inputs")

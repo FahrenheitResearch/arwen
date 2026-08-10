@@ -1,5 +1,302 @@
 # Changelog
 
+## 1.8.8 (2026-08-10)
+
+New:
+- MYNN is selectable for a real forecast. Three shipped suites pair the
+  MYNN PBL and MYNN surface layer with RTE+RRTMGP longwave AND shortwave,
+  one per land surface the no-radiation MYNN family already covered:
+  `wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1`,
+  `wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1` and the expert
+  `wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1`. Every named MYNN suite
+  before this ran shortwave with longwave off, which is refused over a night
+  window unless declared, so picking MYNN from a menu meant picking the
+  nocturnally invalid class. Each new row is its no-radiation sibling with
+  only the radiation block changed (`ra_lw_physics` 0 to 4, `ra_sw_physics` 1
+  to 4, `radt` 1.0 to 12.0). MYNN's pinned option identity is unchanged.
+- "Is the physics hardcoded?" is now a measurement.
+  `docs/public/receipts/physics-composition-walk.json` records 6536 physics
+  combinations pushed through `gpuwm.experiment.build_experiment` one at a
+  time: 749 accepted (741 distinct suites against 18 registered templates),
+  5787 refused, 15 distinct refusal rules, and zero accepted runs whose
+  resolved `RunConfig` differs from what the file asked for. Every admitted
+  value of every selector reaches an accepted run except `ra_lw_physics = 1`,
+  which is unported and says so. Regenerate with
+  `tools/report_physics_composition_walk.py --table`.
+
+Fixed:
+- Two refusals you could not act on. `km_opt = 2` with a PBL scheme on
+  offered `km_opt 3/4`, but the branch above refuses 3 for the same reason;
+  it names `km_opt = 4` now and says why 3 is not an option. The coupled
+  LW/SW adapter rule, the most frequent refusal in the configuration space,
+  named no key and no offending value; it opens with `ra_lw_physics=<got>`
+  and `ra_sw_physics=<got>` now and lists the admitted pairs. A standing
+  check requires every refusal to name a selector and to lead somewhere that
+  runs.
+- `docs/public/PHYSICS.md` read as though the shipped suites were the only
+  suites, which is what let readers conclude the physics was hardcoded. It
+  says on the page now that the tables are a catalogue and not a gate,
+  defines `reachability.state` by quoting the registry, and prints what a
+  config naming each registry-unreachable option actually gets: two are
+  genuinely unreachable, three are accepted by the loader and merely off the
+  menus. The revised MM5 surface layer was one of the three: the page said no
+  config could reach it, while `sf_sfclay_physics = 1` is accepted and runs.
+  The MYNN rows called the 5/5 PBL/surface-layer pairing mandatory both ways
+  when only the surface layer restricts its partner; what is genuinely pinned
+  is MYNN's twelve `bl_mynn_*`/`icloud_bl` knobs, each with one implemented
+  value. `tests/test_physics_md_reachability_claims.py` derives all of it
+  from the registry, the walk receipt and `build_experiment`.
+- `--materialize-authorities` no longer replaces a physics value your config
+  states. It deleted all 26 profile-owned keys and rewrote them from the
+  named profile, silently, into a file every later stage binds by hash: a
+  config saying WSM6 with no longwave ran as Morrison with RRTMG and every
+  downstream check passed. A named profile now SUPPLIES the keys a config is
+  silent about and REFUSES the ones it states differently, naming each key,
+  both values and both remedies, before the fetch. Silent agreement is
+  unchanged.
+- `gpuwm go` and `gpuwm run-plan`'s prepared route derive the forwarded
+  `--physics-profile` from the whole config, not the root domain alone. The
+  wizard's `--ladder` trees declare nests that deliberately depart from the
+  root suite, so the root-only derivation composed a stage-1 command the
+  refusal above is guaranteed to refuse. A config the profile contradicts
+  nowhere carries the assertion end to end; one that says more runs unnamed,
+  as its own suite.
+- A refusal whose root already IS the named profile no longer offers the
+  flag it just refused as the remedy. It says to omit `--physics-profile`,
+  and no longer suggests editing an LES nest's resolved-turbulence keys back
+  to a PBL suite.
+- `ra_rrtmg_variant` is governed under a profile that resolves the RRTMG
+  (4, 4) pair without pinning the variant. A config declaring the other
+  variant kept it and ran legacy RRTMG under a profile named rte-rrtmgp,
+  silently; it refuses by name now. A declaration matching the resolved
+  variant is kept where it was written.
+- `gpuwm certify` exited 0 on a metrics CSV with a header and no data rows,
+  because every row condition is a statement about all rows and is true of
+  none. A declared condition, `the_comparison_is_not_empty`, runs before the
+  per-row ones and names what it found against what it required, and
+  `rederive_verdict` refuses an empty comparison independently. The floor is
+  one row and one comparison, so a run shorter than the band's longest lead
+  is still a legitimate partial comparison.
+- `gpuwm dual-run` reported `capsules are identical field for field` on two
+  empty documents, and it is the only detector this project has for the
+  silent memory corruption a card with no ECC cannot report. An empty
+  comparison is refused by name and by arm, a zero-byte capsule is refused
+  with its byte count, and every passing screen states its size
+  (`... (71 compared quantities)`), with `compared_count` in the written
+  report. A half-empty pair is still a divergence, not a refusal.
+- The certification schema version moved with the condition set it declares.
+  `the_comparison_is_not_empty` was added while `verdict_schema_version`
+  stayed at `1.0.0`, and `rederive_verdict` compares that set for exact
+  equality, so a genuine document from the previous release rederived
+  `False`: the same silent answer a forged one gets. The version is `1.1.0`,
+  `CONDITIONS_BY_SCHEMA_VERSION` carries the older set, an unknown version
+  fails closed naming itself, and every refusal carries a reason. The
+  minimum-comparison floor applies on every version.
+- `docs/public/CERTIFICATION.md` listed seven conditions where the code
+  declares eight, and described `dual-run` as two outcomes where there are
+  three. Both are corrected, in `docs/public/DETERMINISM.md` as well, and a
+  test pins the public condition table to
+  `gpuwm.certify.verdict.CONDITIONS`.
+- The bundled renderer is checked against a contract, like every other
+  bundled binary. `rw_wrfbatch` was asked only whether it started, so two
+  builds two days and 4 MB apart, neither from this tree, both printed the
+  usage line, were reported `verified`, and drew the plots. It answers
+  `--abi` now with the handshake `rw_fetch` and `rw_nexrad` have always
+  answered, pinned in `gpuwm.rustwx.RENDERER_ABI_MARKER`. `gpuwm doctor`
+  reports a mismatch with the rebuild remedy and lets the run proceed,
+  matplotlib being the documented fallback; the rust render suite skips a
+  foreign engine rather than substituting it.
+- `gpuwm render --engine rust` went around that check. Only `--engine auto`
+  probed, so the one caller who pinned the engine to be sure of the real
+  renderer was the one caller who did not get it. Both forms ask the same
+  question now: `auto` falls back with the reason, `rust` refuses with exit
+  2. `--list-products` with no wrfout resolves its own engine and prints the
+  same refusal instead of a traceback.
+- The release battery's stage-1 list gained the other half of its radiation
+  gate. It proved a shortwave-on/longwave-off pairing is refused and proved
+  nothing about radiation running: forcing the Dudhia heating rate to zero
+  left the entire pre-amendment list green (901 passed, 6 skipped).
+  `tests/test_wrf_legacy_radiation.py` is listed now; it drives the
+  production `PhysicsDriver` radiation seam on the CPU and fails on that
+  mutation, and `tests/test_stage1_manifest.py` pins both halves.
+- Downward longwave is no longer a number nobody chose. Any run with
+  `ra_lw_physics = 0` integrated a fixed 300 W m-2 GLW for its whole
+  forecast: `initialize_physics` defaulted `glw = 300.0` and no production
+  call site passed anything else. Radiative equilibrium at 300 W m-2 is
+  269.7 K; a Gulf-coast October night runs near 410 W m-2, or 291.6 K. That
+  deficit craters skin temperature, collapses the surface saturation humidity
+  with it, and produced the reported nocturnal dewpoint collapse. `glw` has
+  NO default now. The field has three honest origins and a run must have one:
+  a longwave scheme owns it, the caller types a constant or hands over a
+  source array, or nothing reads or publishes it. Anything else is refused,
+  naming the selectors, the number it would have fabricated, and three
+  remedies. WRF v4.6.1 refuses the same shortwave-only pairing outright, its
+  `lwrad_select` having no `lw = 0` case
+  (`phys/module_radiation_driver.F:2245`).
+- Radiation entirely off is covered by the same rule, and is where gpuwm
+  deliberately parts from WRF. That suite attached no radiation adapter,
+  while Noah, Noah-MP and RUC read downward longwave every surface step, so
+  the run integrated a constructor seed nobody chose. WRF's answer there is
+  0 W m-2, which is not a thin atmosphere but an absent one, and a column
+  under it cools without bound; gpuwm does not copy that. With a land surface
+  attached the pairing is refused at load, and a run that declares it
+  integrates `gpuwm.core.physics.DECLARED_CONSTANT_GLW_WM2`, 300 W m-2, as a
+  stated constant named in the run receipt. With no land surface nothing
+  reads or publishes the field and nothing fires. A run that has a longwave
+  scheme is byte-for-byte what it was.
+- A real experiment whose downward longwave would be consumed (a land
+  surface with no longwave scheme) or published (shortwave on with no
+  longwave scheme, so the GLW row reaches every wrfout frame) refuses at
+  config load, at the one loader every front door shares, with its own
+  acknowledgement: `constant-downward-longwave-v1`. The load guard and
+  `initialize_physics` refuse the SAME selector set, so a config either fails
+  at the door or runs; it cannot pass the door and die mid-preparation. This
+  is deliberately NOT the 1.7.1 nocturnal token, which is checked before any
+  physics is inspected and so lifted this question too. Every
+  resolved-configuration report names each domain's downward-longwave source
+  on a `radiation.downward_longwave` line.
+- `configs/era5_wrf_direct_proof.toml`, `configs/gfs_wrf_direct_proof.toml`
+  and `configs/gfs_wrf_hierarchy_proof.toml` ship with real radiation (legacy
+  RRTMG on both streams, matching their paired stock-WRF namelists, which now
+  say the same) and carry no acknowledgement at all.
+  `tools/ens_sweep/kdmx_case.toml`, a 04Z-10Z Iowa window that is night end
+  to end, moves to `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1`. The LES
+  records, the battery shape smoke, the init demos and the MYNN no-radiation
+  probes keep their physics, their bytes being the provenance of committed
+  results, and declare the constant instead.
+- A shipped config may not carry an acknowledgement token silently. Each one
+  must be answered by a `# JUSTIFY <token>:` block of real length in the
+  same file, gated by
+  `tests/test_shipped_acknowledgement_justifications.py`.
+- `gpuwm enprod` stamped `EXPERIMENTAL (v1.2 ensemble, uncalibrated)` onto
+  every ensemble panel, frozen at the release the suite was written for, so a
+  1.8.7 plot claimed to come from a 1.2 ensemble. The warning stays and is
+  still true; the version comes from the running engine now.
+- The wizard no longer manufactures your consent. `gpuwm domain` wrote
+  `acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"]` into the
+  emitted `[experiment]` by itself, and every later door reads that line for
+  the life of the file. It refuses an asymmetric profile over a night window
+  now and names both ways forward; `--ack <id>` is what writes the line.
+- The shipped LES configs no longer carry the setting that caused the 1.6.0
+  anisotropic-mixing instability. 1.6.0 closed that defect with a criterion
+  and left every example config on the wrong side of it: the two 250 m nested
+  trees at `mix_upper_bound*(dz_max/dx)^2 = 0.702`, and both 100 m tornado
+  trees at 4.23 on d04, 17x the limit and the exact configuration that
+  aborted a run at step 5467 with `w = 239.48 m/s`. All four run
+  `mix_isotropic = 1` on their LES children now. That key is inside the
+  restart fingerprint, so these trees run from t = 0. None has been
+  re-scored: every published number for them was measured on the old
+  bytes.
+- The configuration a committed receipt was produced under is archived at
+  `configs/frozen/`, pinned by sha256, and it loads. Each of the three
+  records there declares the constant downward longwave its run always had,
+  so the loader accepts the file instead of refusing it, the sha256 gate
+  passes, and reproducing one of those runs gives the same physics the
+  archived run had. No physics selector moved and no committed receipt was
+  edited, so a record now carries two digests: the as-run one its receipts
+  name, and the on-disk one a reproduction passes.
+  `configs/frozen/README.md` publishes both and says which is which.
+  `docs/public/LES.md` and `docs/public/GRAYZONE-NEST.md` say now that their
+  measured numbers belong to the archived configuration rather than to the
+  configs those pages name.
+- Three more shipped configurations pass `gpuwm check` than before this
+  work: the three frozen LES records, which the new constant-longwave guard
+  refused until their declarations were written down.
+- `tests/test_shipped_configs_mixing_stability.py` fails if any config under
+  `configs/` arrives on the exposed mixing path, and it runs on every release
+  cut; the criterion used to be checked only when somebody loaded a config
+  and read stderr. The frozen records are the one exemption, each pinned to
+  its content hash.
+- The criterion is no longer skipped on a config that writes no eta ladder.
+  `km_opt = 3` with `mix_isotropic = 0` at `dx = 100` m and no `eta_levels`
+  is the exact shape the criterion exists for, and it used to load in
+  silence, pass `gpuwm check` in silence, and be reported clean. The depths
+  are resolved the way the model resolves them now: uniform interfaces from
+  `nz`, with `ztop` converted to a pressure by the exact inverse of the
+  relation the depths are read with. This reverses a 1.6.0 ruling that
+  skipped such coordinates; downstream, a skip was indistinguishable from a
+  pass.
+- Where no depth can be produced at all, the criterion says so instead of
+  going quiet. A model top above the analytic base state's ~24.6 km ceiling
+  has no representable pressure, so such a domain sits on the exposed path
+  with no number to judge it by. There is still no ratio, because a
+  fabricated depth in a stability criterion is worse than none; a separate
+  advisory fires instead, naming what could not be resolved and the two
+  remedies that apply: declare `eta_levels` and `p_top`, or set
+  `mix_isotropic = 1`.
+- `gpuwm check` repeats the mixing advisory in its report and under
+  `advisories` in `--json`; the 1.6.0 run had been warned at config load,
+  hours before it died. The advisory is tiered now: a ratio that inverts the
+  2dx mode (above 1/4) reads differently from one that grows it (above 1/2),
+  so 0.3 and 4.2 no longer look alike. Still not a refusal.
+
+CONTRACT CHANGE: a config that declares a suite and is materialized under a
+different named profile used to succeed and now refuses. Edit the config's
+physics to the profile's values, name the profile the config already is, or
+omit `--physics-profile` to publish the config's own suite.
+
+CONTRACT CHANGE, prepared-cache identity: a config declaring `radt_minutes`
+keeps it now (no profile pins that key; the old materializer deleted it),
+which moves `prepared_domain_config_identity` for that key. A prepared tree
+built from such a config before this change must be prepared once more. No
+shipped config declares `radt_minutes`, and the kept value is physically
+inert under every shipped profile.
+
+CONTRACT CHANGE, version identity: running gpuwm from a source checkout
+while a DIFFERENT gpuwm version is pip-installed now refuses at config load,
+because every receipt would otherwise be stamped with a release that is not
+executing. Bind the tree to its own metadata with `pip install -e <tree>`, or
+run the installed copy. A borrowed version that AGREES warns one line and
+still runs, so ordinary worktrees beside an editable install are unaffected,
+and a plain wheel install never sees this at all. The refusal fires at the
+one load every front door shares, and it names both versions, both locations
+and the one-line fix.
+
+Changed (compatibility):
+- **A real config that runs a land-surface model with no radiation is now
+  refused at load.** This is a load-time break of files that worked before,
+  and it is wider than "configs that set `ra_*_physics = 0`": radiation
+  defaults to off, so **any** real config (one with a `[projection]`) that
+  selects a land surface and simply OMITS a radiation selector is in the
+  class. That is the larger group and the likelier surprise, so an omitting
+  config is told `NO RADIATION SELECTOR SET AT ALL` and offered the missing
+  line as the first remedy, instead of being quoted two zeros its author
+  never wrote. Idealized experiments (no `[projection]`) are not guarded. To
+  keep such a run, both claims have to be declared, in one edit, in
+  `[experiment]`:
+
+  ```
+  acknowledgements = [
+    "radiation-off-land-surface-v1",
+    "constant-downward-longwave-v1",
+  ]
+  ```
+
+  Two tokens, because there are two claims: this run has no radiation
+  scheme, and the number its surface integrates is one somebody typed. The
+  first token alone is still refused. Two shipped configs are in the class,
+  and each declares the pair in-file with its reason.
+- **Two refusal layers, in a fixed order, and an exit code that tells them
+  apart.** The declaration guard above answers at config load, before any
+  route logic runs: a token-less radiation-off config never becomes an
+  experiment at all. Route admission (`gpuwm.hrrr_route_inputs`) answers
+  second, and only about configs that loaded. Tools carrying both report it
+  the same way `tools/battery_route_preflight.py` does: exit 2 with no
+  receipt for the config error, exit 1 with a `REFUSED` receipt naming the
+  gate for a route-refused run.
+- **The radar-DA storm nowcast's default physics profile changed, and it
+  roughly doubles the VRAM plan.** `wsm6-ysu-mm5-noah-no-radiation-v1`
+  (shortwave on, longwave off) was the default of a product whose cases are
+  overwhelmingly nocturnal; it is now the HRRR route's own
+  `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1`, because the nowcast's
+  background is HRRR. On the shipped 132x132x49 3 km parent that moves the
+  machine peak envelope from 3606 MiB to 6993 MiB (+3.3 GiB, 1.94x) and the
+  allocation estimate from 618 MiB to 3499 MiB. **A member count or VRAM plan
+  measured before this has to be re-measured, not extrapolated.** All six
+  surfaces move together, including `tools/da_nest_cost.py`, the route's
+  documented VRAM gate, which imports the constant now rather than restating
+  it. `--physics-profile` still takes any shipped profile.
+
 ## 1.8.7 (2026-08-08)
 
 New:

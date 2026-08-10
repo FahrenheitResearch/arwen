@@ -46,13 +46,17 @@ from gpuwm.ingest.hrrr_target import (  # noqa: E402
 )
 from gpuwm.physics_compat import (  # noqa: E402
     ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
+    CONSTANT_DOWNWARD_LONGWAVE_ACK,
     EXPERIMENTAL_THOMPSON_ENV,
     KESSLER_PROFILE_ID,
     SINGLE_DOMAIN_PHYSICS_PROFILES,
     MORRISON_PROFILE_ID,
     MYNN_NOAHMP_PROFILE_ID,
+    MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID,
     MYNN_PROFILE_ID,
+    MYNN_RTE_RRTMGP_PROFILE_ID,
     MYNN_RUC_PROFILE_ID,
+    MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
     NOAHMP_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
@@ -64,6 +68,7 @@ from gpuwm.physics_compat import (  # noqa: E402
     WRF_RRTMG_LEGACY,
     WRF_RRTMG_TO_RTE_RRTMGP,
     WSM6_PROFILE_ID,
+    downward_longwave_disposition,
     first_local_night_time,
     single_domain_runtime_switches,
     thompson_guard_exports,
@@ -279,11 +284,25 @@ def runner_capabilities() -> dict[str, object]:
                 "explicit_expert_consent_required": False,
                 "runtime_guards": [],
             },
+            MYNN_RTE_RRTMGP_PROFILE_ID: {
+                "selector": 6,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": False,
+                "runtime_guards": [],
+                "radiation_solver": "RTE+RRTMGP",
+            },
             MYNN_RUC_PROFILE_ID: {
                 "selector": 6,
                 "readiness": "IMPLEMENTED_UNVERIFIED",
                 "explicit_expert_consent_required": False,
                 "runtime_guards": [],
+            },
+            MYNN_RUC_RTE_RRTMGP_PROFILE_ID: {
+                "selector": 6,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": False,
+                "runtime_guards": [],
+                "radiation_solver": "RTE+RRTMGP",
             },
             RUC_PROFILE_ID: {
                 "selector": 6,
@@ -312,6 +331,18 @@ def runner_capabilities() -> dict[str, object]:
                     "measured column ceiling or explicit accepted budget",
                     "glacier columns refused",
                 ],
+            },
+            MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID: {
+                "selector": 6,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": True,
+                "expert_acknowledgement_id":
+                    "noahmp-host-column-throughput-v1",
+                "runtime_guards": [
+                    "measured column ceiling or explicit accepted budget",
+                    "glacier columns refused",
+                ],
+                "radiation_solver": "RTE+RRTMGP",
             },
         },
         "window": {
@@ -859,12 +890,58 @@ _NATIVE_HRRR_NAMELIST_CONTRACTS = MappingProxyType({
             "diff_6th_slopeopt": 1.0,
         }),
     }),
+    # Each radiation-bearing MYNN twin carries its OWN row for the same
+    # reason the legacy-RRTMG Thompson twin does (see the note further
+    # down): this table is a hard per-field equality gate on the supplied
+    # namelist, and the twins genuinely move the fields it pins --
+    # ra_lw_physics 0 -> 4, ra_sw_physics 1 -> 4, radt 1.0 -> 12.0.  A
+    # twin "simplified" to an alias of its sibling would pin the
+    # sibling's radiation against the profile's own and refuse the
+    # namelist one gate later.
+    MYNN_RTE_RRTMGP_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 6.0,
+            "ra_lw_physics": 4.0,
+            "ra_sw_physics": 4.0,
+            "radt": 12.0,
+            "sf_sfclay_physics": 5.0,
+            "sf_surface_physics": 2.0,
+            "bl_pbl_physics": 5.0,
+            "cu_physics": 0.0,
+            "num_soil_layers": 4.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.08,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
     MYNN_RUC_PROFILE_ID: MappingProxyType({
         "physics": MappingProxyType({
             "mp_physics": 6.0,
             "ra_lw_physics": 0.0,
             "ra_sw_physics": 1.0,
             "radt": 1.0,
+            "sf_sfclay_physics": 5.0,
+            "sf_surface_physics": 3.0,
+            "bl_pbl_physics": 5.0,
+            "cu_physics": 0.0,
+            "num_soil_layers": 9.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.08,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
+    MYNN_RUC_RTE_RRTMGP_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 6.0,
+            "ra_lw_physics": 4.0,
+            "ra_sw_physics": 4.0,
+            "radt": 12.0,
             "sf_sfclay_physics": 5.0,
             "sf_surface_physics": 3.0,
             "bl_pbl_physics": 5.0,
@@ -922,6 +999,25 @@ _NATIVE_HRRR_NAMELIST_CONTRACTS = MappingProxyType({
             "ra_lw_physics": 0.0,
             "ra_sw_physics": 1.0,
             "radt": 1.0,
+            "sf_sfclay_physics": 5.0,
+            "sf_surface_physics": 4.0,
+            "bl_pbl_physics": 5.0,
+            "cu_physics": 0.0,
+            "num_soil_layers": 4.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.08,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
+    MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 6.0,
+            "ra_lw_physics": 4.0,
+            "ra_sw_physics": 4.0,
+            "radt": 12.0,
             "sf_sfclay_physics": 5.0,
             "sf_surface_physics": 4.0,
             "bl_pbl_physics": 5.0,
@@ -1118,6 +1214,13 @@ _INITIALIZATION_CONTRACT_ALIASES = MappingProxyType({
     # microphysics.  Its NAMELIST contract is its own row above, because
     # that table does pin the switch it moves.
     THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID: THOMPSON_PROFILE_ID,
+    # The radiation-bearing MYNN twins, on exactly the same reasoning:
+    # each selects a different radiation composition and changes nothing
+    # about which species HRRR supplies or what an absent one cold-starts
+    # to.  All three are WSM6, whose entry is the empty pair.
+    MYNN_RTE_RRTMGP_PROFILE_ID: MYNN_PROFILE_ID,
+    MYNN_RUC_RTE_RRTMGP_PROFILE_ID: MYNN_RUC_PROFILE_ID,
+    MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID: MYNN_NOAHMP_PROFILE_ID,
 })
 
 
@@ -1676,17 +1779,17 @@ def _experiment_tables(
         }],
     }
     _forward_profile_switches(raw, switches)
-    _declare_nocturnal_asymmetric_radiation(
+    _declare_asymmetric_radiation(
         raw, switches, target=target, start_time=start_time,
         run_seconds=run_seconds)
     return raw, target
 
 
-def _declare_nocturnal_asymmetric_radiation(
+def _declare_asymmetric_radiation(
         raw: dict[str, object], switches: Mapping[str, object], *,
         target: HrrrTargetDomain, start_time: datetime,
         run_seconds: float) -> None:
-    """Declare this route's asymmetric radiation when the window has night.
+    """Declare this route's asymmetric radiation, per claim, per guard.
 
     Eight of the thirteen profiles this route stages run
     ``ra_sw_physics 1`` (Dudhia) with ``ra_lw_physics 0`` -- the whole
@@ -1719,27 +1822,64 @@ def _declare_nocturnal_asymmetric_radiation(
     is now what it was always supposed to mean -- a deliberate choice,
     recorded.
 
-    Written ONLY when the resolved pairing is actually asymmetric AND
-    the window actually includes local night, matching the wizard's
-    emission rule exactly (:func:`gpuwm.domain_wizard.render_config`):
-    the RRTMG-class HRRR profiles (4/4) and every all-daylight window
-    carry nothing, so a declaration in a published document always means
-    a real nocturnal asymmetric run.
+    TWO CLAIMS, TWO CONDITIONS.  The pairing raises two separate
+    questions and each token answers exactly one of them, so each is
+    written under its own condition rather than under a shared one:
+
+    * :data:`ASYMMETRIC_RADIATION_NOCTURNAL_ACK` -- "this window has
+      night in it".  Written only when the resolved pairing is
+      asymmetric AND :func:`first_local_night_time` finds night inside
+      the window, matching the wizard's emission rule exactly
+      (:func:`gpuwm.domain_wizard.render_config`).  An all-daylight
+      window carries nothing, so this token in a published document
+      always means a real nocturnal asymmetric run.
+    * :data:`CONSTANT_DOWNWARD_LONGWAVE_ACK` -- "this flux is
+      fabricated".  Written whenever
+      :func:`gpuwm.physics_compat.downward_longwave_disposition`
+      classifies the resolved selectors as ``consumed`` or
+      ``published``, which is EXACTLY the set
+      :func:`gpuwm.physics_compat.constant_longwave_refusal` refuses.
+      The sun has nothing to do with it: a fixed 300 W m-2 under a land
+      surface is fabricated at noon just as it is at midnight.
+
+    THE BUG THIS FIXES (1.8.8 round 2).  Both tokens used to be written
+    below the night check, so an ALL-DAYLIGHT window under any of the
+    eight asymmetric profiles reached the constant-GLW guard with no
+    declaration and refused at config build -- with no escape hatch,
+    because this route synthesizes its config in code and the refusal
+    correctly says the acknowledgement is config-side (not ``--ack``).
+    Thirteen nodes of ``tests/test_hrrr_single_domain_benchmark.py``
+    were red on it.  Reading the disposition classifier rather than
+    re-deriving the rule here is the same discipline the guard, the
+    initializer and the receipt already share: one decider, so this
+    route cannot declare a different set from the one the door refuses.
     """
 
     lw = int(switches.get("ra_lw_physics", switches.get("ra_physics", 0)))
     sw = int(switches.get("ra_sw_physics", switches.get("ra_physics", 0)))
-    if not (sw > 0 and lw == 0):
+    surface = int(switches.get("sf_surface_physics", 0))
+
+    asymmetric = sw > 0 and lw == 0
+    nocturnal = asymmetric and first_local_night_time(
+        start_time, float(run_seconds),
+        ref_lat=target.ref_lat, ref_lon=target.ref_lon) is not None
+    kind, _consumer = downward_longwave_disposition(
+        ra_lw_physics=lw, ra_sw_physics=sw, sf_surface_physics=surface)
+    fabricated = kind in ("consumed", "published")
+    if not (nocturnal or fabricated):
         return
-    if first_local_night_time(
-            start_time, float(run_seconds),
-            ref_lat=target.ref_lat, ref_lon=target.ref_lon) is None:
-        return
+
     experiment = raw["experiment"]
     assert isinstance(experiment, dict)          # built above, in this file
     declared = list(experiment.get("acknowledgements", ()))
-    if ASYMMETRIC_RADIATION_NOCTURNAL_ACK not in declared:
-        declared.append(ASYMMETRIC_RADIATION_NOCTURNAL_ACK)
+    required = []
+    if nocturnal:
+        required.append(ASYMMETRIC_RADIATION_NOCTURNAL_ACK)
+    if fabricated:
+        required.append(CONSTANT_DOWNWARD_LONGWAVE_ACK)
+    for acknowledgement in required:
+        if acknowledgement not in declared:
+            declared.append(acknowledgement)
     experiment["acknowledgements"] = declared
 
 
@@ -3430,9 +3570,11 @@ def run(args):
             args, pipeline_report, source_hash_receipt, source_window)
 
     started = time.perf_counter()
+    from gpuwm.runtime import declared_constant_glw
     driver = initialize_hrrr_physics(
         root_result, dc.run, root_met, static, attrs, grid,
-        initial_snapshot.valid_time)
+        initial_snapshot.valid_time,
+        constant_glw_wm2=declared_constant_glw(exp))
     timing["initialize_physics"] = time.perf_counter() - started
 
     clock = resolve_clock(exp, lbc_interval_s=3600.0)

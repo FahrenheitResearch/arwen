@@ -305,8 +305,11 @@
 # NOT A RESTART.  mix_isotropic is inside the restart fingerprint, so
 # attempt #3 runs from 00Z.  Revision b's file is FROZEN at
 # configs/les_tornado_100m_mayfield_20211210_attempt2b.toml (sha256
-# ffa4e5e3...), because a committed result must keep pointing at the file it
-# was produced under.
+# 3f3cbcb3...), because a committed result must keep pointing at the file it
+# was produced under.  That digest read ffa4e5e3... here until 2026-08-09
+# and never matched the file; the pin that is checked lives in
+# tests/test_shipped_configs_mixing_stability.py, which is where the
+# correct value came from.
 #
 # The other candidate fix -- clamping xkmv against a cap built on dx*dy in
 # the kernel, one line -- is PARKED for a ruling.  It changes the operator
@@ -337,10 +340,36 @@ restart_interval_s = 3600.0
 # UNCHANGED from attempt #1, and now a projection ORIGIN rather than a box
 # centre: d01 and d02 stay exactly where they were so their prepared caches
 # remain reusable, while d03 and d04 move off-centre onto the corridor.
-# Nocturnal declaration (1.7.1): this case runs shortwave with longwave OFF
-# through local night, a declared validation/experiment configuration -- see
-# docs/public/PHYSICS.md, "Nocturnal validity".  Restart-tolerated field.
-acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"]
+# ---------------------------------------------------------------------------
+# RADIATION DECLARATIONS.  THIS FILE IS A COMMITTED EXPERIMENT RECORD, NOT A
+# TEMPLATE.  Do not copy it to start a forecast; copy a config whose
+# radiation is real (both streams on, e.g.
+# configs/battery/shape_3km_thompson_rrtmg_legacy.toml).
+# ---------------------------------------------------------------------------
+# JUSTIFY asymmetric-radiation-nocturnal-window-v1: this case runs shortwave
+# with longwave OFF across a window that is night from end to end, which is
+# the pairing the nocturnal guard exists to stop.  It is declared, not
+# fixed, because the LES tornado ladder's attempts are REPRODUCTION
+# ARTEFACTS: their bytes are the provenance of the certified dual-run
+# comparisons and of the checkpoint the fine-cadence resume restarts from,
+# so changing their physics would invalidate every receipt written against
+# them rather than improve them.  Restart-tolerated field.
+# JUSTIFY constant-downward-longwave-v1: the same fact, stated as the fact
+# it actually is.  With ra_lw_physics = 0 nothing computes downward
+# longwave -- the Dudhia adapter is shortwave-only and returns the array it
+# was handed -- so Noah integrated a fixed 300 W m-2 for the entire run.
+# The nocturnal token above was checked BEFORE any physics was inspected
+# and so silently covered this too; it no longer does, and the two claims
+# are now made separately.  WHAT IT MEANS FOR THIS LADDER'S RESULTS: the
+# nocturnal boundary layer these runs produced was radiatively wrong, so
+# their surface and near-surface fields are not admissible as skill, and
+# no obs-skill claim was ever made from them.  The vortex-scale dynamics
+# the attempts were staged to falsify are aloft and were adjudicated on
+# their own terms.  The NEXT attempt runs real longwave.
+acknowledgements = [
+    "asymmetric-radiation-nocturnal-window-v1",
+    "constant-downward-longwave-v1",
+]
 
 [projection]
 map_proj = "lambert"

@@ -224,8 +224,6 @@ runner, documented in section 3a.**
 
 ## 3a. GFS -> GPU forecast: the complete route
 
-`gpuwm run` refuses a GFS config by design (no `[case_data]` table).
-
 **The short version is one command.** `gpuwm go` runs the whole chain
 below -- authority, fetch, front-door manifest, rw-wps, forecast,
 render -- carrying each stage's digests to the next instead of asking
@@ -243,7 +241,10 @@ Bare `gpuwm domain` at a terminal asks four questions and supplies both
 of those flags for you, so its emitted config is a `gpuwm go` config.
 `gpuwm go --dry-run` prints the six commands, filled in, without
 running them. The long form below is what `go` runs, stage by stage;
-read it when a stage refuses, or when you want to change one.
+read it when a stage refuses, or when you want to change one. `gpuwm go`
+is the command for this source: `gpuwm run` is the other door, the
+`[case_data]`/ERA5 route in section 5, and it refuses a GFS config by
+design (no `[case_data]` table).
 
 **The order matters**: the runner binds the experiment config into the
 prepared cache, so materializing the physics *after* preprocessing
@@ -265,6 +266,13 @@ theirs.
 gpuwm domain --point=35.3,-97.5 --card 24gb --ladder 12     --source gfs --cycle latest --hours 6     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --out configs/myarea.toml
 
 # 2. Materialize the exact physics authority.  BEFORE rw-wps, not after.
+#    The profile SUPPLIES every physics key your config is silent about.
+#    It never replaces one your config states: where the two disagree,
+#    step 2 refuses and names each key, your value, the profile's value,
+#    and the remedy that fits -- the shipped profile your config matches
+#    when it matches one, or omitting --physics-profile, which publishes
+#    your config's own suite unchanged with its verification status in
+#    the receipt.  Nothing is rewritten behind you.
 python -m gpuwm.prepared_single_domain_forecast --materialize-authorities     --source gfs     --base-experiment-config configs/myarea.toml     --base-wps-namelist configs/myarea.namelist.wps     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --output-directory work/myarea-authority
 
 # 3. Fetch, then author the front-door manifest.  Step 3 prints the

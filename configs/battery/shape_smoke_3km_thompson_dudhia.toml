@@ -39,6 +39,15 @@ smooth_option = 0
 blend_width = 5
 spec_bdy_width = 5
 restart_interval_s = 0.0
+# JUSTIFY constant-downward-longwave-v1: this is the battery's SHAPE and
+# SIZING smoke -- one hour at 12Z, measuring wall time and device
+# footprint at the battery's grid, never a forecast anybody reads.  The
+# Dudhia-only pairing is the subject: it is the cheapest radiation the
+# battery ships, the file is named for it, and its GLW is therefore a
+# declared 300 W m-2 constant rather than a computed flux.  Nothing here
+# is a template -- copy configs/battery/shape_3km_thompson_rrtmg_legacy
+# .toml for a config with real longwave.
+acknowledgements = ["constant-downward-longwave-v1"]
 
 [projection]
 map_proj = "lambert"

@@ -45,6 +45,18 @@ from gpuwm.io.wrf_output_schema import (
     SCHEME_OUTPUT_FIELDS, WRF_FIELD_TYPE_INTEGER, WRF_FIELD_TYPE_REAL,
 )
 from test_wrf_output_schema import WRF_RUST_SHADOWED_NAMES
+from gpuwm.core.physics import DECLARED_CONSTANT_GLW_WM2  # noqa: E402
+
+#: The idealised constant downward longwave these fixtures declare.
+#:
+#: ``gpuwm.core.physics.initialize_physics`` no longer defaults ``glw``
+#: (300.0 through 1.8.7): a land-surface suite with no longwave scheme
+#: must state where its downward longwave comes from instead of being
+#: handed a plausible-looking 300 W m-2 nobody chose.  These are
+#: idealised columns; the constant is the right answer for them and this
+#: is where they say so.  The VALUE is 1.8.7's default, so every fixture
+#: below integrates exactly the numbers it always did.
+_IDEALISED_GLW = DECLARED_CONSTANT_GLW_WM2
 
 #: The four integer scheme fields, and the scheme each belongs to.  Both
 #: schemes and all four names are exercised: a dtype gate proved at one
@@ -369,7 +381,8 @@ def _build_precipitation(cu_physics):
     base = make_base_state(coord, theta, p_surf=cfg.p_surf, ztop=cfg.ztop)
     state = init_moist_balanced(cfg, coord, base, qvapor)
     state.u[...] = cp.float32(5.0)
-    driver = initialize_physics(state, cfg, landmask=1.0, tsk=303.0)
+    driver = initialize_physics(state, cfg, landmask=1.0, tsk=303.0,
+                                glw=_IDEALISED_GLW)
     return state, cfg, driver
 
 

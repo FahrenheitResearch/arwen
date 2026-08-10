@@ -61,7 +61,10 @@ from gpuwm.core.thompson_contract import (  # noqa: E402
     validate_table_assets as validate_thompson_table_assets,
 )
 from gpuwm.experiment import build_experiment, load_experiment  # noqa: E402
-from gpuwm.explain import warn  # noqa: E402
+from gpuwm.explain import (  # noqa: E402
+    add_explain_flag, explain_enabled, layered, render as render_explanation,
+    warn,
+)
 from gpuwm.kernel_compile_notice import (  # noqa: E402
     COMPILING_STATUS, kernel_compile_notice,
 )
@@ -83,8 +86,11 @@ from gpuwm.physics_compat import (  # noqa: E402
     MORRISON_PROFILE_ID,
     MULTI_DOMAIN_SELECTION_SCHEMA,
     MYNN_NOAHMP_PROFILE_ID,
+    MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID,
     MYNN_PROFILE_ID,
+    MYNN_RTE_RRTMGP_PROFILE_ID,
     MYNN_RUC_PROFILE_ID,
+    MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
     NOAHMP_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
@@ -132,6 +138,9 @@ MYNN_RUC_PHYSICS_PROFILE = MYNN_RUC_PROFILE_ID
 MYNN_PHYSICS_PROFILE = MYNN_PROFILE_ID
 NOAHMP_PHYSICS_PROFILE = NOAHMP_PROFILE_ID
 MYNN_NOAHMP_PHYSICS_PROFILE = MYNN_NOAHMP_PROFILE_ID
+MYNN_RTE_RRTMGP_PHYSICS_PROFILE = MYNN_RTE_RRTMGP_PROFILE_ID
+MYNN_RUC_RTE_RRTMGP_PHYSICS_PROFILE = MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+MYNN_NOAHMP_RTE_RRTMGP_PHYSICS_PROFILE = MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID
 PHYSICS_PROFILES = (
     PHYSICS_PROFILE,
     KESSLER_PHYSICS_PROFILE,
@@ -141,10 +150,13 @@ PHYSICS_PROFILES = (
     NSSL2_PHYSICS_PROFILE,
     NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE,
     MYNN_PHYSICS_PROFILE,
+    MYNN_RTE_RRTMGP_PHYSICS_PROFILE,
     RUC_PHYSICS_PROFILE,
     MYNN_RUC_PHYSICS_PROFILE,
+    MYNN_RUC_RTE_RRTMGP_PHYSICS_PROFILE,
     NOAHMP_PHYSICS_PROFILE,
     MYNN_NOAHMP_PHYSICS_PROFILE,
+    MYNN_NOAHMP_RTE_RRTMGP_PHYSICS_PROFILE,
 )
 SUPPORTED_SOURCES = frozenset({"gfs", "era5", "20crv3", "hrrr"})
 
@@ -190,23 +202,29 @@ _SOURCE_PHYSICS_PROFILES = MappingProxyType({
     # item) -- is enforced on the resolved sf_surface_physics selector
     # by the registry's land-surface route declaration instead, in
     # ``_validate_physics`` below, for named and unnamed suites alike.
+    # Each radiation-bearing MYNN twin follows the MYNN row it mirrors,
+    # in the same order the registry route declares it: the drift check in
+    # tests/test_physics_registry.py compares these lists to the route's
+    # own, element for element.
     "gfs": (
         PHYSICS_PROFILE, THOMPSON_PHYSICS_PROFILE,
         MORRISON_PHYSICS_PROFILE, NSSL2_PHYSICS_PROFILE,
         NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE,
-        MYNN_PHYSICS_PROFILE,
-        NOAHMP_PHYSICS_PROFILE, MYNN_NOAHMP_PHYSICS_PROFILE),
+        MYNN_PHYSICS_PROFILE, MYNN_RTE_RRTMGP_PHYSICS_PROFILE,
+        NOAHMP_PHYSICS_PROFILE, MYNN_NOAHMP_PHYSICS_PROFILE,
+        MYNN_NOAHMP_RTE_RRTMGP_PHYSICS_PROFILE),
     "era5": (
         PHYSICS_PROFILE, THOMPSON_PHYSICS_PROFILE,
         MORRISON_PHYSICS_PROFILE, NSSL2_PHYSICS_PROFILE,
         NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE,
-        MYNN_PHYSICS_PROFILE,
-        RUC_PHYSICS_PROFILE, MYNN_RUC_PHYSICS_PROFILE),
+        MYNN_PHYSICS_PROFILE, MYNN_RTE_RRTMGP_PHYSICS_PROFILE,
+        RUC_PHYSICS_PROFILE, MYNN_RUC_PHYSICS_PROFILE,
+        MYNN_RUC_RTE_RRTMGP_PHYSICS_PROFILE),
     "20crv3": (
         TWENTYCRV3_WSM6_PHYSICS_PROFILE, PHYSICS_PROFILE,
         THOMPSON_PHYSICS_PROFILE, MORRISON_PHYSICS_PROFILE,
         NSSL2_PHYSICS_PROFILE, NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE,
-        MYNN_PHYSICS_PROFILE),
+        MYNN_PHYSICS_PROFILE, MYNN_RTE_RRTMGP_PHYSICS_PROFILE),
     # HRRR's own stock-WRF gate is the WSM6/YSU/MM5-91/Noah slice, and
     # gpuwm/hrrr_route_inputs.py's SUPPORTED_MICROPHYSICS admits the
     # same scheme set the other sources report here.
@@ -241,6 +259,22 @@ _SUITE_RECEIPT_SWITCH_KEYS = (
     "num_soil_layers", "terrain_opt", "km_opt", "diff_6th_opt",
     "diff_6th_factor", "diff_6th_slopeopt",
 )
+#: The keys a NAMED profile is allowed to own in the materialized
+#: authority -- i.e. every key whose value the generated experiment.toml
+#: may state on the profile's behalf.  It is deliberately WIDER than any
+#: one profile's switch table (`radt_minutes` is a compatibility
+#: spelling of `radt`, `ra_rrtmg_variant` is pinned only by the
+#: RRTMG-family profiles), because it doubles as the mask
+#: :func:`_without_materialized_physics` applies to BOTH sides of the
+#: non-physics descriptor digest: a key that one profile pins and
+#: another does not must be outside that digest either way, or the
+#: "descriptors unchanged" proof would read a physics choice as a
+#: descriptor change.
+#:
+#: Membership here does NOT license deleting a value the user wrote.
+#: What a given materialization may rewrite is the narrower
+#: :func:`_profile_pinned_physics` map, and even that only after
+#: :func:`_declared_physics_conflicts` has proved the config agrees.
 _MATERIALIZED_PHYSICS_KEYS = frozenset({
     "moist", "moist_cq", "mp_physics", "top_lid", "epssm",
     "morr_rimed_ice", "wsm6_hail_opt", "ra_physics",
@@ -251,6 +285,19 @@ _MATERIALIZED_PHYSICS_KEYS = frozenset({
     "diff_6th_opt", "diff_6th_factor", "diff_6th_slopeopt",
     "nest_microphysics_transition",
 })
+#: The nest-transition rule every materialized authority states.  No
+#: profile switch table carries it, so it is pinned here, once, and read
+#: from here by both the emitter and the agreement check -- a second
+#: literal would let the two disagree about what the profile "is".
+_NEST_MICROPHYSICS_TRANSITION = "same-scheme-only"
+#: The three keys that spell ONE selection.  ``ra_lw_physics =
+#: ra_sw_physics = -1`` is documented in gpuwm/config.py as preserving
+#: the historical ``ra_physics`` aggregate exactly, and explicit pairs
+#: require ``ra_physics = 0``, so a config and a profile can name the
+#: same two schemes through different keys.  They are compared as a
+#: resolved pair, never key by key; see :func:`_declared_physics_conflicts`.
+_RADIATION_SELECTION_KEYS = frozenset({
+    "ra_physics", "ra_lw_physics", "ra_sw_physics"})
 _SOURCE_SCHEMA = {
     "gfs": "gpuwm-gfs-direct-input-manifest-v1",
     "era5": "gpuwm-era5-direct-input-manifest-v1",
@@ -962,6 +1009,271 @@ def _without_materialized_physics(raw: Mapping[str, object]) -> object:
     return normalized
 
 
+def _profile_pinned_physics(
+        switches: Mapping[str, object]) -> dict[str, object]:
+    """Every key THIS materialization writes on the profile's behalf.
+
+    The profile's own switch table plus the nest-transition rule the
+    emitter appends.  A key outside it -- ``radt_minutes``, which no
+    switch table pins -- is one the profile writes nothing for, so the
+    materializer leaves the config's own value exactly where the user
+    wrote it rather than deleting a setting nothing is replacing.
+    (Keeping ``radt_minutes`` is physically inert under every shipped
+    profile, all of which pin a positive ``radt`` that every consumption
+    site prefers; what it moves is the prepared-cache domain identity
+    for a user config declaring a non-default value, disclosed in the
+    CHANGELOG and measured in
+    ``test_a_key_no_profile_pins_is_kept_rather_than_deleted``.)
+
+    Unpinned is not the same as unGOVERNED: a kept key whose value the
+    profile still resolves is checked for agreement -- see
+    :func:`_profile_resolved_unpinned_physics`.
+    """
+
+    pinned = dict(switches)
+    pinned["nest_microphysics_transition"] = _NEST_MICROPHYSICS_TRANSITION
+    return pinned
+
+
+def _profile_resolved_unpinned_physics(
+        pinned: Mapping[str, object]) -> dict[str, object]:
+    """Keys the profile does not PIN but its authority still RESOLVES.
+
+    ``ra_rrtmg_variant`` selects which radiation IMPLEMENTATION a
+    resolved RRTMG (4, 4) pair executes -- gpuwm/core/rrtmg_legacy.py or
+    gpuwm/core/rrtmgp.py.  A profile that pins the pair without pinning
+    the variant (the 20CRv3 WSM6 suite is the one shipped example)
+    resolves the variant through the RunConfig default, so a config
+    declaring the OTHER variant would keep it under the kept-unpinned
+    rule and run a different radiation implementation under the
+    profile's name -- and step 5 (:func:`_validate_profile_switches`)
+    could never notice, because the key is outside the switch table.
+    Such a key is governed for AGREEMENT exactly like a pinned one,
+    while staying outside the strip-and-rewrite set: a declaration that
+    matches the resolved value survives where the user wrote it.
+
+    Under a profile whose pair is not (4, 4) the variant is inert and
+    ungoverned here: a config coherent enough to build with the legacy
+    variant declares a 4/4 pair of its own, which the radiation
+    comparison already refuses by name, and a variant row against a
+    no-RRTMG profile would be noise beside it.
+    """
+
+    if "ra_rrtmg_variant" in pinned \
+            or _profile_radiation_pair(pinned) != (4, 4):
+        return {}
+    from dataclasses import fields as dataclass_fields
+    from gpuwm.config import RunConfig
+    return {"ra_rrtmg_variant": next(
+        field.default for field in dataclass_fields(RunConfig)
+        if field.name == "ra_rrtmg_variant")}
+
+
+def _profile_radiation_pair(pinned: Mapping[str, object]) -> tuple[int, int]:
+    """The ``(lw, sw)`` this profile resolves to, aggregate included."""
+
+    lw = int(pinned["ra_lw_physics"])
+    sw = int(pinned["ra_sw_physics"])
+    if (lw, sw) == (-1, -1):
+        aggregate = int(pinned["ra_physics"])
+        return aggregate, aggregate
+    return lw, sw
+
+
+def _physics_values_agree(declared: object, pinned: object) -> bool:
+    """Whether a config's value IS the profile's value.
+
+    ``true``/``1`` are different statements about a boolean switch and
+    never agree; ``12`` and ``12.0`` are the same number written twice
+    and always do, because TOML types an unsuffixed integer as ``int``
+    while the switch tables carry the float the RunConfig field holds.
+    """
+
+    if isinstance(declared, bool) or isinstance(pinned, bool):
+        return (isinstance(declared, bool) and isinstance(pinned, bool)
+                and declared is pinned)
+    if isinstance(declared, (int, float)) \
+            and isinstance(pinned, (int, float)):
+        return float(declared) == float(pinned)
+    return type(declared) is type(pinned) and declared == pinned
+
+
+def _declared_physics_conflicts(
+        base_raw: Mapping[str, object], base_exp, *,
+        pinned: Mapping[str, object],
+) -> list[dict[str, object]]:
+    """Every profile-owned physics value the config states differently.
+
+    Only keys the config actually WRITES are considered: a key it is
+    silent about is a key the profile is free to supply, which is the
+    whole point of materializing an authority.  Radiation is compared as
+    one resolved ``(lw, sw)`` selection rather than key by key, so a
+    config that reaches the profile's exact two schemes through the
+    aggregate spelling is agreement and not a conflict.  The governed
+    set is the pinned keys plus the resolved-but-unpinned ones
+    (:func:`_profile_resolved_unpinned_physics`): both are values the
+    generated authority states on the profile's behalf, whether by
+    writing them or by resolving their defaults.
+    """
+
+    governed = {**_profile_resolved_unpinned_physics(pinned), **pinned}
+    expected_radiation = _profile_radiation_pair(pinned)
+
+    def radiation_agrees(run) -> bool:
+        try:
+            return radiation_scheme_ids(run) == expected_radiation
+        except ValueError:
+            # A config whose own radiation keys are incoherent cannot
+            # have reached here (build_experiment resolves them first),
+            # but a resolver that raises must not read as agreement.
+            return False
+
+    runs = {int(domain.grid_id): domain.run for domain in base_exp.domains}
+    scopes: list[tuple[str, Mapping[str, object], bool]] = []
+    shared = base_raw.get("shared")
+    if isinstance(shared, Mapping):
+        # A [shared] radiation key is inherited by every domain, so it
+        # agrees only when every domain resolves to the profile's pair.
+        scopes.append(("[shared]", shared,
+                       all(radiation_agrees(run) for run in runs.values())))
+    domains = base_raw.get("domain")
+    if isinstance(domains, list):
+        for index, domain in enumerate(domains):
+            if not isinstance(domain, Mapping):
+                continue
+            grid_id = int(domain.get("grid_id", index + 1))
+            run = runs.get(grid_id)
+            scopes.append((f"[[domain]] d{grid_id:02d}", domain,
+                           run is not None and radiation_agrees(run)))
+
+    conflicts: list[dict[str, object]] = []
+    for label, table, radiation_ok in scopes:
+        for key in sorted(table):
+            if key not in governed:
+                continue
+            if key in _RADIATION_SELECTION_KEYS and radiation_ok:
+                continue
+            if _physics_values_agree(table[key], governed[key]):
+                continue
+            conflicts.append({
+                "scope": label,
+                "key": key,
+                "config_value": table[key],
+                "profile_value": governed[key],
+            })
+    return conflicts
+
+
+def _refuse_declared_physics_drift(
+        conflicts: list[dict[str, object]], *, profile: str, origin: str,
+        base_exp,
+) -> None:
+    """Name every overwritten key, both values, and both remedies.
+
+    The sibling rail is the physics-fidelity axis
+    (:func:`gpuwm.experiment._reject_axis_authored_keys`), and it refuses
+    a second author for a governed key even when the two AGREE.  This
+    one does not, on purpose: ``physics_mode``'s remedy is "strip the
+    key and let the axis write it", while a named ``--physics-profile``
+    is an ASSERTION that the config IS that suite -- step 5 of the
+    documented chain (:func:`_validate_profile_switches`) refuses the run
+    unless the experiment states the profile's values switch for switch.
+    A config that agrees is therefore the documented happy path (`gpuwm
+    domain --physics-profile P` writes P and step 2 names P), and
+    refusing it would refuse the route's own output.  Disagreement is
+    the whole of what is wrong here.
+    """
+
+    if not conflicts:
+        return
+    matched = identify_single_domain_profile(base_exp.root.run)
+    rows = "\n".join(
+        f"    {row['scope']} {row['key']}: config {row['config_value']!r}, "
+        f"profile {row['profile_value']!r}"
+        for row in conflicts)
+    plural = "value" if len(conflicts) == 1 else "values"
+    if matched == profile:
+        # A remedy that cannot help is not a remedy.  The root already
+        # resolves to the named profile, so "name the profile you meant"
+        # would hand back the very flag that refused, and "edit those
+        # keys to the profile values" would flatten the config's own
+        # deliberate departures -- on the shipped LES trees that means
+        # switching a PBL parameterization back ON over nests running
+        # resolved turbulence.  The flag asserts every domain runs the
+        # suite; this config says more than the suite on purpose, and
+        # the one honest instruction is to stop asserting.
+        remedy = (
+            f"  REMEDY: omit --physics-profile.  This config's root "
+            f"domain already resolves to {profile}, and the values "
+            f"above are its own deliberate departures from that suite "
+            f"on other scopes (a nest running its own turbulence or "
+            f"cumulus choice, for example).  Without the flag, the "
+            f"config's own physics is published unchanged on every "
+            f"domain and the receipt records the suite's verification "
+            f"status; editing those keys to the profile values would "
+            f"change the physics this config was written to run.")
+    else:
+        own_suite = (
+            f"--physics-profile {matched} (the shipped suite this "
+            f"config already IS)" if matched is not None else
+            "omit --physics-profile, which publishes the config's own "
+            "suite unchanged and records its verification status in "
+            "the receipt")
+        remedy = (
+            f"  REMEDY, either: edit those keys in {origin} to the "
+            f"profile values printed above, so the config and the "
+            f"profile say the same thing; or name the profile you "
+            f"meant -- {own_suite}.")
+    raise ValueError(layered(
+        f"--physics-profile {profile} contradicts the physics {origin} "
+        f"declares: {len(conflicts)} {plural} would be overwritten.\n"
+        f"{rows}\n"
+        f"{remedy}",
+        "--materialize-authorities publishes the experiment.toml every "
+        "later stage binds by hash: the fetch manifest, the front door, "
+        "the prepared-cache identity and the forecast all read THAT "
+        "file, not the one you passed in.  Rewriting a physics value you "
+        "wrote, into a file you never see, would run a different "
+        "forecast than the one your config describes and would still "
+        "pass every downstream check, because those checks compare the "
+        "generated authority against the same profile.  Step 5 of the "
+        "documented chain refuses this exact drift when a run reaches it "
+        "(`experiment physics differs from the ... profile`); this "
+        "refusal is the same rule applied at the first step, before a "
+        "fetch and a preprocessing run have been paid for."))
+
+
+def named_profile_config_conflicts(
+        base_text: str, *, source: str, profile: str,
+) -> list[dict[str, object]]:
+    """The conflicts ``--materialize-authorities`` would refuse on.
+
+    The seam ``gpuwm go`` (and through it `gpuwm run-plan`'s prepared
+    route) derives its forwarded ``--physics-profile`` with.  The
+    derivation used to read the ROOT domain alone
+    (``identify_single_domain_profile(experiment.root.run)``) while the
+    refusal above reads every ``[[domain]]`` table, so on the wizard's
+    own ``--ladder`` trees -- root = the profile, nests deliberately
+    departing from it -- the chain composed a stage-1 command guaranteed
+    to refuse its own config.  Deriving through the SAME predicate the
+    refusal runs is what keeps the two doors reading one sentence: an
+    empty list here is exactly the promise that stage 1 will not raise
+    the drift refusal for this (config, source, profile) triple.
+
+    Returns the conflict rows (empty = the profile may be asserted).
+    Raises what :func:`_render_materialized_experiment`'s own base
+    parsing would raise for a config that does not load; callers that
+    already loaded the experiment will not see that.
+    """
+
+    base_raw = tomllib.loads(base_text)
+    base_exp = build_experiment(_experiment_tables(base_raw),
+                                source="base named-source experiment")
+    pinned = _profile_pinned_physics(
+        _profile_runtime_switches(source, profile))
+    return _declared_physics_conflicts(base_raw, base_exp, pinned=pinned)
+
+
 def _json_safe_toml(value: object) -> object:
     if isinstance(value, Mapping):
         return {
@@ -1002,8 +1314,63 @@ def _experiment_tables(raw: Mapping[str, object]) -> dict[str, object]:
     return tables
 
 
+def _profile_acknowledgements(switches, base_exp) -> tuple[str, ...]:
+    """Governance declarations a named profile's own switches require.
+
+    Two, and they are separate claims about the same selectors:
+
+    * :data:`~gpuwm.physics_compat.CONSTANT_DOWNWARD_LONGWAVE_ACK` --
+      ``ra_lw_physics = 0`` under a land-surface scheme, so nothing
+      computes downward longwave and the surface integrates a declared
+      constant.  True at noon as much as at midnight.
+    * :data:`~gpuwm.physics_compat.ASYMMETRIC_RADIATION_NOCTURNAL_ACK`
+      -- additionally, shortwave is ON and this experiment's window
+      contains local night at its reference point.
+    """
+
+    from gpuwm.physics_compat import (
+        ASYMMETRIC_RADIATION_NOCTURNAL_ACK, CONSTANT_DOWNWARD_LONGWAVE_ACK,
+        downward_longwave_disposition, first_local_night_time)
+
+    lw = int(switches.get("ra_lw_physics", switches.get("ra_physics", 0)))
+    sw = int(switches.get("ra_sw_physics", switches.get("ra_physics", 0)))
+    surface = int(switches.get("sf_surface_physics", 0))
+    required: list[str] = []
+    if sw > 0 and lw == 0 and base_exp.projection is not None:
+        if first_local_night_time(
+                base_exp.start_time, float(base_exp.run_seconds),
+                ref_lat=base_exp.projection.ref_lat,
+                ref_lon=base_exp.projection.ref_lon) is not None:
+            required.append(ASYMMETRIC_RADIATION_NOCTURNAL_ACK)
+    # The load guard's own classification, so a materialized experiment
+    # can never need a token this function did not attach.
+    kind, _consumer = downward_longwave_disposition(
+        ra_lw_physics=lw, ra_sw_physics=sw, sf_surface_physics=surface)
+    if kind in ("consumed", "published"):
+        required.append(CONSTANT_DOWNWARD_LONGWAVE_ACK)
+    return tuple(required)
+
+
+def _acknowledgement_lines(merged, *, profile, added) -> list[str]:
+    """The merged acknowledgements array, with why it grew."""
+
+    lines = []
+    for value in added:
+        lines.append(f"# JUSTIFY {value}: required by the named physics")
+        lines.append(f"# profile {profile}, which this materialized")
+        lines.append("# experiment runs.  An explicit --physics-profile")
+        lines.append("# selection is the declaration, written here in ink")
+        lines.append("# rather than left to the base config's silence.")
+        lines.append("# See docs/public/PHYSICS.md, \"Nocturnal validity\".")
+    lines.append(
+        "acknowledgements = ["
+        + ", ".join(f'"{value}"' for value in merged) + "]")
+    return lines
+
+
 def _render_materialized_experiment(
         base_text: str, *, source: str, profile: str | None,
+        origin: str = "the base experiment config",
 ) -> tuple[str, object, dict[str, object]]:
     """Patch only profile-owned TOML keys and preserve all other controls.
 
@@ -1012,6 +1379,15 @@ def _render_materialized_experiment(
     later stages bind these exact bytes -- with no switch rewritten, and
     the receipt reports the suite's verification status instead of a
     profile.
+
+    A NAMED profile supplies every profile-owned key the config is
+    SILENT about, and must agree with every one it states.  It may not
+    replace a physics value the user wrote: a disagreement is refused
+    here by name (:func:`_refuse_declared_physics_drift`), before the
+    output directory is claimed, before the fetch, and before
+    preprocessing.  Contract change 2026-08-09; until then this function
+    deleted all 26 profile-owned keys from the config and rewrote them
+    from the profile without saying so.
     """
 
     base_raw = tomllib.loads(base_text)
@@ -1053,9 +1429,36 @@ def _render_materialized_experiment(
         blocker = land_surface_route_blocker(component, source=source)
         if blocker is not None:
             raise ValueError(blocker)
+    pinned = _profile_pinned_physics(switches)
+    _refuse_declared_physics_drift(
+        _declared_physics_conflicts(base_raw, base_exp, pinned=pinned),
+        profile=profile, origin=origin, base_exp=base_exp)
     header = re.compile(
         r"^\s*(\[\[|\[)([A-Za-z0-9_.-]+)(\]\]|\])\s*(?:#.*)?$")
     assignment = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*=")
+    # DECLARATIONS THE NAMED PROFILE ITSELF REQUIRES.
+    #
+    # Naming a profile on the command line is an explicit selection, and
+    # the project's rule is that an explicit selection is declared in
+    # INK rather than by silence -- the domain wizard has written the
+    # same declarations into its emissions since 1.7.1.  A materialized
+    # experiment is not a file anybody hand-wrote; its physics comes
+    # from the profile the operator named, so the profile's governance
+    # consequences are written beside it here and appear in the
+    # published experiment.toml where a reader meets them.
+    #
+    # Through 1.8.7 this was invisible because the shipped proof configs
+    # carried a standing nocturnal acknowledgement that covered every
+    # profile materialized onto them.  They no longer do (they run real
+    # radiation now), so the declaration is attached to the thing that
+    # actually needs it.
+    required_acknowledgements = _profile_acknowledgements(
+        switches, base_exp)
+    declared = tuple(base_raw.get("experiment", {}).get(
+        "acknowledgements", ()) or ())
+    merged = list(declared) + [
+        value for value in required_acknowledgements if value not in declared]
+    rewrite_acknowledgements = tuple(merged) != declared
     has_shared = any(
         (match := header.match(line)) is not None
         and match.group(1) == "[" and match.group(2) == "shared"
@@ -1068,11 +1471,13 @@ def _render_materialized_experiment(
             f"{key} = {_toml_literal(value)}"
             for key, value in switches.items()
         ),
-        'nest_microphysics_transition = "same-scheme-only"',
+        f"nest_microphysics_transition = "
+        f"{_toml_literal(_NEST_MICROPHYSICS_TRANSITION)}",
     ]
     output: list[str] = []
     section: str | None = None
     shared_emitted = False
+    skipping_acknowledgements = False
 
     def finish_section() -> None:
         nonlocal shared_emitted
@@ -1094,10 +1499,30 @@ def _render_materialized_experiment(
                 has_shared = True
             section = next_section
             output.append(line)
+            if rewrite_acknowledgements and section == "experiment":
+                output.extend(_acknowledgement_lines(
+                    merged, profile=profile,
+                    added=required_acknowledgements))
+            continue
+        if skipping_acknowledgements:
+            # Inside the base config's own acknowledgements array, which
+            # may span lines; it is re-emitted merged above.
+            if "]" in line:
+                skipping_acknowledgements = False
             continue
         key_match = assignment.match(line)
+        # ``pinned``, not ``_MATERIALIZED_PHYSICS_KEYS``: only a key this
+        # profile actually states is replaced by the block above.  Every
+        # surviving line has been proved to agree with the profile, so
+        # dropping it changes no value -- and a key the profile does not
+        # pin keeps the value the config gave it instead of vanishing.
         if (section in {"shared", "domain"} and key_match is not None
-                and key_match.group(1) in _MATERIALIZED_PHYSICS_KEYS):
+                and key_match.group(1) in pinned):
+            continue
+        if (rewrite_acknowledgements and section == "experiment"
+                and key_match is not None
+                and key_match.group(1) == "acknowledgements"):
+            skipping_acknowledgements = "]" not in line
             continue
         output.append(line)
     finish_section()
@@ -1110,7 +1535,19 @@ def _render_materialized_experiment(
     rendered_exp = build_experiment(
         _experiment_tables(rendered_raw),
         source="materialized named-source experiment")
-    base_non_physics = _non_physics_descriptor_sha256(base_raw)
+    # The base digest is taken with the profile's own declarations
+    # already merged in.  They are a CONSEQUENCE of the named physics,
+    # not a descriptor control the materializer chose to move, so the
+    # guard still says exactly what it always said -- nothing else
+    # changed -- while letting a no-radiation profile carry the
+    # declaration it requires.
+    base_for_digest = base_raw
+    if rewrite_acknowledgements:
+        base_for_digest = dict(base_raw)
+        experiment_table = dict(base_for_digest.get("experiment", {}))
+        experiment_table["acknowledgements"] = list(merged)
+        base_for_digest["experiment"] = experiment_table
+    base_non_physics = _non_physics_descriptor_sha256(base_for_digest)
     generated_non_physics = _non_physics_descriptor_sha256(rendered_raw)
     if generated_non_physics != base_non_physics:
         raise RuntimeError(
@@ -1121,6 +1558,9 @@ def _render_materialized_experiment(
         "base_non_physics_descriptor_sha256": base_non_physics,
         "generated_non_physics_descriptor_sha256": generated_non_physics,
         "profile_validation": validation,
+        # Never silent: what the named profile forced into the published
+        # experiment.toml, so the receipt carries it too.
+        "profile_acknowledgements": list(required_acknowledgements),
     }
 
 
@@ -1152,7 +1592,8 @@ def materialize_named_source_authorities(
         base_wps_namelist, "base WPS namelist")
     base_text = base_experiment_config.read_text(encoding="utf-8")
     rendered, exp, validation = _render_materialized_experiment(
-        base_text, source=source, profile=physics_profile)
+        base_text, source=source, profile=physics_profile,
+        origin=str(base_experiment_config))
     # THE earliest point on the documented route at which the physics
     # this run will execute is known: step 2 of 6, before the fetch and
     # before preprocessing.  An mp8 suite whose lookup tables were never
@@ -1614,6 +2055,25 @@ def _validate_restored_cache_receipt(
             or receipt.get("content_sha256") != expected_content_sha256):
         raise ValueError(
             "restored prepared cache differs from the caller-pinned content")
+
+
+def _provenance_receipt() -> dict:
+    """The running tree, for the report.  Never raises.
+
+    Beside ``runtime_source_identity`` rather than instead of it: that
+    hashes the forecast implementation's BYTES, which is the strongest
+    binding available and stays the authority.  This says which INSTALL
+    those bytes came out of -- wheel, editable or checkout, on which
+    branch, dirty or clean -- which is the question a reader holding two
+    receipts with different numbers actually has.
+    """
+
+    try:
+        from gpuwm.provenance_gate import receipt_block
+
+        return receipt_block()
+    except Exception as error:                          # noqa: BLE001
+        return {"unavailable": f"{type(error).__name__}: {error}"}
 
 
 def _runtime_source_identity() -> dict[str, object]:
@@ -3902,6 +4362,7 @@ def run_prepared_forecast(
     from gpuwm.core.refl import consume_refl_10cm
     from gpuwm.core.uh_diag import reset_up_heli_max
     from gpuwm.ingest.hrrr_physics import initialize_prepared_physics
+    from gpuwm.runtime import declared_constant_glw
     from gpuwm.ingest.prepared_cache import restore_prepared_cache
     from gpuwm.io.wrfout import PerDomainWrfoutWriters
     from gpuwm.state_digest import canonical_state_digest
@@ -3954,7 +4415,8 @@ def run_prepared_forecast(
     started = time.perf_counter()
     driver = initialize_prepared_physics(
         restored.initial_result, cfg, restored.met, restored.surface,
-        inputs.static, inputs.landuse_identity, inputs.grid, exp.start_time)
+        inputs.static, inputs.landuse_identity, inputs.grid, exp.start_time,
+        constant_glw_wm2=declared_constant_glw(exp))
     timing["initialize_physics"] = time.perf_counter() - started
 
     tick_clock = resolve_clock(
@@ -4166,6 +4628,13 @@ def run_prepared_forecast(
             f"forecast using "
             f"{inputs.physics_receipt.get('profile') or 'the hash-bound experiment physics suite'}"),
         "gpuwm_version": __version__,
+        # ``gpuwm_version`` above is what distribution METADATA claims.
+        # This block is which tree actually executed -- package path,
+        # install kind, branch/sha/dirt, and whether the two version
+        # claims agree.  Both are kept: a reader comparing two receipts
+        # needs the number they have always compared, and the reason it
+        # can be wrong.
+        "provenance": _provenance_receipt(),
         "runtime_source_identity": runtime_source_identity,
         "domain": {
             "grid_id": 1,
@@ -4445,6 +4914,11 @@ def _parse_materialize_args(argv=None):
               "the base config's own physics is published unchanged and "
               "its WRF-verification status is reported"))
     parser.add_argument("--output-directory", type=Path, required=True)
+    # This stage now owns a LAYERED refusal (a config whose physics the
+    # named profile would have overwritten), and a layered message needs
+    # the flag that prints its second half -- otherwise the marker
+    # gpuwm/explain.py promises can never reach a terminal does.
+    add_explain_flag(parser)
     return parser.parse_args(argv)
 
 
@@ -4463,6 +4937,19 @@ def main(argv=None, *, observer=None) -> int:
     if argv == ["--show-capabilities"]:
         print(json.dumps(runner_capabilities(), sort_keys=True))
         return 0
+    # Which tree is about to integrate this forecast.  Announced before
+    # any argument is interpreted, and a refusal when the version this
+    # process would stamp into its report disagrees with the code
+    # writing it.  ``--show-capabilities`` is answered above, untouched:
+    # a front end probing the runner's capabilities gets JSON on stdout
+    # and nothing else, exactly as before.
+    from gpuwm.provenance_gate import announce_for_main
+
+    refusal = announce_for_main("gpuwm-prepared-forecast")
+    if refusal is not None:
+        print(f"prepared_single_domain_forecast: {refusal}",
+              file=sys.stderr)
+        return 2
     if argv[:1] == ["--materialize-authorities"]:
         args = _parse_materialize_args(argv[1:])
         # Same standard as --outdir below, and for the same reason: the
@@ -4483,10 +4970,18 @@ def main(argv=None, *, observer=None) -> int:
             return 2
         except (OSError, ValueError) as error:
             # A refusal this stage owns -- a profile its source cannot
-            # prepare, a base config that is not there -- is still a
+            # prepare, a base config that is not there, a physics value
+            # the named profile would have overwritten -- is still a
             # sentence rather than a traceback.  It is labelled as what
-            # it is, not as an --output-directory problem.
-            print(f"prepared_single_domain_forecast: refused: {error}",
+            # it is, not as an --output-directory problem.  Rendered,
+            # because a layered message printed raw leaks the
+            # ``[[explain]]`` marker onto the terminal.
+            print("prepared_single_domain_forecast: refused: "
+                  + render_explanation(
+                      str(error), explain=explain_enabled(args),
+                      command=(
+                          "python -m gpuwm.prepared_single_domain_forecast "
+                          "--materialize-authorities")),
                   file=sys.stderr)
             return 2
         print(json.dumps({

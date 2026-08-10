@@ -37,8 +37,6 @@ half-upgraded install happens.
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 import urllib.request
 from pathlib import Path
 
@@ -47,62 +45,50 @@ from pathlib import Path
 #: dead network sees the local answer without noticing the wait.
 PYPI_TIMEOUT_S = 2.0
 
-#: git is asked one short question at a time and is allowed to be
-#: missing, hung, or pointed at something that is not a repository.
-GIT_TIMEOUT_S = 5.0
+# git is no longer run from this module at all; :mod:`gpuwm.provenance`
+# owns every git question this product asks about its own tree, and its
+# GIT_TIMEOUT_S is the one that applies.
 
 
 def _direct_url(distribution) -> dict:
     """``direct_url.json`` for a distribution, or ``{}``.
 
-    PEP 610 records how a distribution was installed; ``dir_info
-    .editable`` is the modern, authoritative editable marker.
+    Delegates to :mod:`gpuwm.provenance`, which is the one resolver for
+    "which tree is executing".  Kept under this name because it is what
+    this module's readers and tests already call.
     """
 
-    try:
-        text = distribution.read_text("direct_url.json")
-    except Exception:                                   # noqa: BLE001
-        return {}
-    if not text:
-        return {}
-    try:
-        payload = json.loads(text)
-    except ValueError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    from gpuwm.provenance import direct_url
+
+    return direct_url(distribution)
 
 
 def _git_identity(root: Path) -> dict:
     """``{"commit": ..., "branch": ...}`` for a checkout, or ``{}``.
 
-    Guarded at every step: no git on PATH, a git that hangs, a directory
-    that is not a repository, and a detached HEAD all produce an absence
-    rather than an error.  ``git_checkout_root`` is reused for the
-    "is this a checkout" question because it also refuses the case that
-    matters -- a venv created inside somebody ELSE's repository, whose
-    history is not this code's provenance.
+    A thin adapter over :func:`gpuwm.provenance.git_identity`, which
+    asks git ONE question (``status --porcelain=v2 --branch``) instead
+    of the two ``rev-parse`` calls this used to make, and which is the
+    single implementation of every guard that matters: no git on PATH, a
+    git that hangs, a directory that is not a repository, a repository
+    with no commits, a detached HEAD, and -- the one that would
+    otherwise bind a stranger's history -- a venv created inside
+    somebody ELSE's repository.
+
+    The shape stays ``{}``-for-absent and omits ``branch`` on a detached
+    HEAD, because :func:`headline` distinguishes those and this module's
+    output is pinned by tests.
     """
 
-    from gpuwm.runtime_manifest import git_checkout_root
+    from gpuwm.provenance import git_identity
 
-    try:
-        if git_checkout_root(root) is None:
-            return {}
-    except Exception:                                   # noqa: BLE001
+    found = git_identity(root)
+    if not found:
         return {}
-    found: dict = {}
-    for key, arguments in (("commit", ("rev-parse", "--short", "HEAD")),
-                           ("branch", ("rev-parse", "--abbrev-ref", "HEAD"))):
-        try:
-            completed = subprocess.run(
-                ["git", "-C", str(root), *arguments],
-                capture_output=True, text=True, timeout=GIT_TIMEOUT_S,
-                check=False)
-        except (OSError, subprocess.SubprocessError):
-            return found
-        if completed.returncode == 0 and completed.stdout.strip():
-            found[key] = completed.stdout.strip()
-    return found
+    identity = {"commit": found["commit"]}
+    if found.get("branch"):
+        identity["branch"] = found["branch"]
+    return identity
 
 
 def describe_install(package_root: Path, distribution) -> dict:
@@ -158,10 +144,23 @@ def describe_install(package_root: Path, distribution) -> dict:
 
 
 def install_shape() -> dict:
-    """:func:`describe_install` for the gpuwm that is actually imported."""
+    """:func:`describe_install` for the gpuwm that is actually imported.
+
+    The distribution is located by
+    :func:`gpuwm.provenance.providing_distribution` rather than by
+    :func:`gpuwm.runtime_manifest.installed_distribution`, which cannot
+    answer for the very case this command exists to report.  A PEP 660
+    editable install puts no package in ``site-packages`` -- a ``.pth``
+    redirects the import -- so ``locate_file`` names a file that is not
+    there and the match fails.  Measured on the reference box: an
+    editable ``gpuwm 1.8.7`` pointing at its own source tree was
+    reported as "no installed distribution provides it", which dropped
+    the version from the headline of the one command whose job is to
+    print it.
+    """
 
     import gpuwm
-    from gpuwm.runtime_manifest import installed_distribution
+    from gpuwm.provenance import providing_distribution
 
     location = getattr(gpuwm, "__file__", None)
     if location is None:
@@ -169,11 +168,12 @@ def install_shape() -> dict:
         # single file to point at, so there is no location to report.
         # Seen in the wild on the reference box, from a stale wheel.
         location = Path(gpuwm.__path__[0]) / "__init__.py"
+    package_root = Path(location).resolve().parent
     try:
-        distribution = installed_distribution()
+        distribution = providing_distribution(package_root)
     except Exception:                                   # noqa: BLE001
         distribution = None
-    return describe_install(Path(location).resolve().parent, distribution)
+    return describe_install(package_root, distribution)
 
 
 def headline(shape: dict | None = None) -> str:

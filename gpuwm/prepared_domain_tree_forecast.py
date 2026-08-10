@@ -1245,6 +1245,23 @@ def _verify_inputs_unchanged(inputs: PreparedTreeInputs) -> None:
             )
 
 
+def _provenance_receipt() -> dict:
+    """The running tree, for the report.  Never raises.
+
+    Same contract as the single-domain runner's: beside
+    ``runtime_source_identity``, never instead of it.  That one binds
+    the implementation's bytes; this one names the install they came
+    out of.
+    """
+
+    try:
+        from gpuwm.provenance_gate import receipt_block
+
+        return receipt_block()
+    except Exception as error:                          # noqa: BLE001
+        return {"unavailable": f"{type(error).__name__}: {error}"}
+
+
 def _runtime_source_identity() -> Mapping[str, object]:
     files = (
         REPOSITORY_ROOT / "gpuwm/core/model.py",
@@ -1381,6 +1398,7 @@ def run_prepared_tree(
         build_shared_scratch_arena,
     )
     from gpuwm.ingest.hrrr_physics import initialize_prepared_physics
+    from gpuwm.runtime import declared_constant_glw
     from gpuwm.ingest.lateral_bc import bind_lateral_boundary_clock
     from gpuwm.ingest.prepared_cache import restore_prepared_cache
     from gpuwm.io.restart import restore_tree_restart, write_tree_restart
@@ -1521,6 +1539,7 @@ def run_prepared_tree(
             NATIVE_LANDUSE_IDENTITY,
             grid,
             exp.start_time,
+            constant_glw_wm2=declared_constant_glw(exp),
         )
         radiation = driver.radiation_callable
         if radiation is not None and radiation_workspace is not None:
@@ -1800,6 +1819,11 @@ def run_prepared_tree(
         "status": "PASS",
         "source": inputs.source,
         "readiness": "IMPLEMENTED_UNVERIFIED",
+        # Which install produced this tree of forecasts.  The
+        # runtime_source_identity below hashes the implementation's
+        # bytes; this names the install those bytes came out of, and
+        # whether its two version claims agree with each other.
+        "provenance": _provenance_receipt(),
         "execution_plan": inputs.execution_plan,
         "experiment": {
             "name": exp.name,
@@ -2011,6 +2035,15 @@ def main(argv=None, *, observer=None) -> int:
     if argv == ["--show-capabilities"]:
         print(json.dumps(runner_capabilities(), sort_keys=True))
         return 0
+    # Which tree is about to integrate this tree of domains.  Same
+    # contract as the single-domain runner, including leaving
+    # ``--show-capabilities`` above untouched.
+    from gpuwm.provenance_gate import announce_for_main
+
+    refusal = announce_for_main("gpuwm-prepared-tree-forecast")
+    if refusal is not None:
+        print(f"prepared_domain_tree_forecast: {refusal}", file=sys.stderr)
+        return 2
     args = _parser().parse_args(argv)
     # A rejected --outdir is a usage mistake, not a crash: it must read as
     # one sentence naming the problem and a directory that works.  A node-8

@@ -33,6 +33,7 @@ from gpuwm.domain_wizard import (DEFAULT_PHYSICS_PROFILE,
 from gpuwm.experiment import build_experiment
 from gpuwm.hrrr_route_inputs import ROUTE_DEFAULT_PHYSICS_PROFILE
 from gpuwm.physics_compat import (ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
+                                  CONSTANT_DOWNWARD_LONGWAVE_ACK,
                                   MORRISON_PROFILE_ID, THOMPSON_PROFILE_ID,
                                   WSM6_PROFILE_ID, first_local_night_time,
                                   single_domain_runtime_switches,
@@ -46,11 +47,20 @@ _PROJECTION = {
 }
 
 
-def _emitted(profile, *, start=datetime(2011, 4, 26, 12), hours=48):
+def _emitted(profile, *, start=datetime(2011, 4, 26, 12), hours=48,
+             acknowledgements=()):
+    """The wizard's emitted bytes.
+
+    ``acknowledgements`` defaults to NOTHING, which is the 1.8.8 change:
+    :func:`render_config` no longer invents the nocturnal declaration, so
+    a caller that wants one passes it, exactly as ``gpuwm domain --ack``
+    does.
+    """
     return render_config(
         name="guardcase", start_time=start, hours=hours,
         projection=dict(_PROJECTION), dims=[(120, 100)], ratios=(),
-        fetch_hints={"source": "era5"}, case_data=None, profile=profile)
+        fetch_hints={"source": "era5"}, case_data=None, profile=profile,
+        acknowledgements=tuple(acknowledgements))
 
 
 def _raw(text):
@@ -209,20 +219,79 @@ def test_legacy_asymmetric_night_config_refuses_at_load_naming_everything():
 
 
 def test_asymmetric_night_with_declared_acknowledgement_loads():
+    # BOTH tokens.  The nocturnal declaration now answers only the
+    # nocturnal question; the suite also runs Noah with ra_lw_physics 0,
+    # which is a constant downward longwave and its own declaration
+    # (gpuwm.physics_compat.constant_longwave_refusal).  Declaring one and
+    # not the other is exactly the elision that let ten shipped configs
+    # run on a frozen 300 W m-2.
     raw = _raw(_emitted(THOMPSON_PROFILE_ID))
     raw["experiment"]["acknowledgements"] = [
-        ASYMMETRIC_RADIATION_NOCTURNAL_ACK]
+        ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
+        CONSTANT_DOWNWARD_LONGWAVE_ACK]
     exp = build_experiment(raw, source="<declared-night>")
     assert ASYMMETRIC_RADIATION_NOCTURNAL_ACK in exp.acknowledgements
 
 
-def test_asymmetric_daylight_window_loads_without_declaration():
-    """Negative control: the guard must be passable where the physics is."""
+def test_the_nocturnal_token_alone_no_longer_admits_a_frozen_longwave():
+    """The bypass this lane closed, asserted as a refusal.
+
+    The 1.7.1 token is checked before any physics is inspected, so a
+    config carrying it was never asked where its downward longwave came
+    from.  It must no longer be enough on its own.
+    """
+    raw = _raw(_emitted(THOMPSON_PROFILE_ID))
+    raw["experiment"]["acknowledgements"] = [
+        ASYMMETRIC_RADIATION_NOCTURNAL_ACK]
+    with pytest.raises(ValueError) as caught:
+        build_experiment(raw, source="<nocturnal-token-only>")
+    message = str(caught.value)
+    assert CONSTANT_DOWNWARD_LONGWAVE_ACK in message
+    assert "300 W m-2" in message
+
+
+def test_a_publisher_only_suite_refuses_at_load_not_mid_run():
+    """lw=0/sw=1 with NO land surface: the DOOR refuses, not the engine.
+
+    The scope finding this closes: the load refusal used to fire only
+    for sf_surface_physics in {2, 3, 4} while initialize_physics also
+    refused the publisher case (radiation active, so the fabricated GLW
+    row reaches every wrfout frame), so this exact configuration loaded
+    clean through build_experiment and died after ingest and prepare.
+    All-daylight window on purpose: this is the constant guard firing,
+    not the nocturnal one.
+    """
     raw = _raw(_emitted(THOMPSON_PROFILE_ID,
                         start=datetime(2011, 4, 26, 15), hours=3))
+    raw["shared"].update({"sf_surface_physics": 0, "sf_sfclay_physics": 0,
+                          "bl_pbl_physics": 0, "km_opt": 1})
     raw["experiment"].pop("acknowledgements", None)
+    with pytest.raises(ValueError) as caught:
+        build_experiment(raw, source="<publisher-only>")
+    message = str(caught.value)
+    assert CONSTANT_DOWNWARD_LONGWAVE_ACK in message
+    assert "wrfout frame" in message
+    # And the same declaration that admits the consumed case admits this
+    # one -- fail at load, always; run once declared.
+    raw["experiment"]["acknowledgements"] = [CONSTANT_DOWNWARD_LONGWAVE_ACK]
+    exp = build_experiment(raw, source="<publisher-declared>")
+    assert CONSTANT_DOWNWARD_LONGWAVE_ACK in exp.acknowledgements
+
+
+def test_asymmetric_daylight_window_loads_without_declaration():
+    """Negative control: the NOCTURNAL guard must be passable by daylight.
+
+    Daylight lifts the nocturnal guard and nothing else: the suite still
+    runs Noah with no longwave scheme, so it still declares the constant.
+    A frozen 300 W m-2 is wrong at noon too -- clear-sky downward
+    longwave over a warm surface runs 350-400 W m-2 -- it is merely less
+    catastrophic than it is at 3 a.m.
+    """
+    raw = _raw(_emitted(THOMPSON_PROFILE_ID,
+                        start=datetime(2011, 4, 26, 15), hours=3))
+    raw["experiment"]["acknowledgements"] = [CONSTANT_DOWNWARD_LONGWAVE_ACK]
     exp = build_experiment(raw, source="<daylight>")
-    assert exp.acknowledgements == ()
+    assert ASYMMETRIC_RADIATION_NOCTURNAL_ACK not in exp.acknowledgements
 
 
 def test_full_radiation_night_window_is_not_guarded():
@@ -246,11 +315,38 @@ def test_idealized_experiment_without_projection_is_untouched():
 # The wizard's own emissions of explicitly selected asymmetric profiles.
 # ---------------------------------------------------------------------------
 
-def test_wizard_declares_explicit_asymmetric_night_selection_in_ink():
+def test_wizard_does_not_declare_a_nocturnal_experiment_by_itself():
+    """1.8.8: the emitted bytes carry no declaration nobody made.
+
+    Through 1.8.7 this exact call wrote
+    ``acknowledgements = [ASYMMETRIC_RADIATION_NOCTURNAL_ACK]`` into the
+    emitted ``[experiment]`` on its own, and that line disarmed the load
+    guard at every other front door for the life of the file.  Now the
+    file says what is wrong with it, names the flag, and does not load
+    until its owner declares it.
+    """
     text = _emitted(THOMPSON_PROFILE_ID)
+    assert "# NOT NOCTURNALLY VALID, AND THIS FILE WILL NOT LOAD" in text
+    assert ASYMMETRIC_RADIATION_NOCTURNAL_ACK in text   # named as the remedy
+    assert (f'acknowledgements = ["{ASYMMETRIC_RADIATION_NOCTURNAL_ACK}"]'
+            not in text)                                # but NOT declared
+    with pytest.raises(ValueError, match="local night"):
+        experiment_from_text(text, source="<undeclared-night>")
+
+
+def test_wizard_writes_the_declaration_it_is_handed():
+    """...and when its owner does declare it, the file loads and says so."""
+    text = _emitted(THOMPSON_PROFILE_ID,
+                    acknowledgements=(ASYMMETRIC_RADIATION_NOCTURNAL_ACK,))
     assert "# NOT NOCTURNALLY VALID" in text
-    assert f'acknowledgements = ["{ASYMMETRIC_RADIATION_NOCTURNAL_ACK}"]' \
-        in text
+    assert "because YOU declared it" in text
+    # Membership, not the one-element spelling: this suite ALSO gets the
+    # suite-derived constant-longwave token (see
+    # test_wizard_daylight_asymmetric_emission_warns_without_declaring),
+    # so the array has two members.  What this pins is that the token the
+    # caller handed in is the one written.
+    assert ASYMMETRIC_RADIATION_NOCTURNAL_ACK in _raw(text)[
+        "experiment"]["acknowledgements"]
     # And the file it emits still loads through every front door's guard.
     exp = experiment_from_text(text, source="<explicit-night>")
     assert ASYMMETRIC_RADIATION_NOCTURNAL_ACK in exp.acknowledgements
@@ -262,7 +358,105 @@ def test_wizard_daylight_asymmetric_emission_warns_without_declaring():
     assert "NOT NOCTURNALLY VALID" in text
     assert "all-daylight" in text
     assert ASYMMETRIC_RADIATION_NOCTURNAL_ACK not in text
+    # It DOES declare the constant longwave, with a justification, because
+    # daylight does not make a fabricated flux a computed one.
+    assert CONSTANT_DOWNWARD_LONGWAVE_ACK in text
+    assert f"# JUSTIFY {CONSTANT_DOWNWARD_LONGWAVE_ACK}:" in text
     experiment_from_text(text, source="<explicit-day>")
+
+
+# ---------------------------------------------------------------------------
+# The declaration the wizard writes must also be SPOKEN.
+#
+# Measured 2026-08-09 on 1.8.7: `gpuwm domain --physics-profile <asymmetric>`
+# over a night window emitted the acknowledgement -- which disarms the load
+# guard at every other front door for that file -- and printed nothing about
+# it on stdout or stderr, not even under --explain.  The only statement was a
+# comment inside the emitted TOML.  The advisory is asserted through the
+# WARNING OBSERVER rather than captured text because that is the channel a
+# machine consumer reads: `gpuwm run-plan --resolve` collects exactly these
+# records into its `warnings` array, so one assertion covers the person at
+# the terminal and the front end driving the intent route.
+# ---------------------------------------------------------------------------
+
+def _wizard_warnings(tmp_path, *, profile, cycle, hours, name, ack=(),
+                     expect_code=0):
+    """Run the real `gpuwm domain` door and collect its warning records."""
+    from gpuwm import explain
+    from gpuwm.cli import main
+
+    records: list[dict] = []
+    explain.add_warning_observer(records.append)
+    try:
+        out = tmp_path / f"{name}.toml"
+        argv = ["domain", "--point", "33.8,-87.29", "--source", "era5",
+                "--cycle", cycle, "--hours", str(hours),
+                "--physics-profile", profile, "--out", str(out)]
+        for token in ack:
+            argv += ["--ack", token]
+        code = main(argv)
+    finally:
+        explain.remove_warning_observer(records.append)
+    assert code == expect_code
+    return out, [record for record in records
+                 if "NOCTURNALLY VALID" in record["action"]]
+
+
+def test_wizard_speaks_the_nocturnal_declaration_it_writes(tmp_path):
+    out, spoken = _wizard_warnings(
+        tmp_path, profile=THOMPSON_PROFILE_ID, cycle="2011-04-26T12",
+        hours=48, name="night",
+        ack=(ASYMMETRIC_RADIATION_NOCTURNAL_ACK,))
+    # Membership, not the one-element spelling: this suite also gets the
+    # suite-derived constant-longwave token, so the array has two members.
+    # What this pins is that the token --ack handed in is the one written.
+    assert ASYMMETRIC_RADIATION_NOCTURNAL_ACK in _raw(out.read_text())[
+        "experiment"]["acknowledgements"]
+    assert len(spoken) == 1, [record["action"] for record in spoken]
+    action = spoken[0]["action"]
+    assert THOMPSON_PROFILE_ID in action           # what did it
+    assert ASYMMETRIC_RADIATION_NOCTURNAL_ACK in action  # what was declared
+    assert MORRISON_PROFILE_ID in action           # the remedy
+    assert "local night" in action
+    assert "skin temperature" in spoken[0]["why"]  # the physics, layered
+
+
+def test_wizard_speaks_only_where_there_is_something_to_declare(tmp_path):
+    """Both negative controls, bound to the positive case so they can fail.
+
+    A warning that cannot stay quiet is as wrong as one that cannot
+    fire, and this one guards a deliberate, supported validation
+    configuration -- crying on every emission would train the reader to
+    skip the line that matters.  So the controls are real.
+
+    But asserting ``spoken == []`` on the two controls ALONE is not a
+    test: it holds on any tree where the wizard says nothing at all,
+    including the tree from before this advisory existed, which is the
+    exact-zero-delta failure mode -- a measurement that agrees with the
+    hypothesis because the experiment never ran.  The controls are
+    therefore measured as a CONTRAST against the one emission that must
+    speak: 1 warning where a declaration is written into the file, 0
+    where none is.  The positive arm is what makes this pair
+    discriminate; drop it and the test goes green on a reverted tree.
+
+    Only the counts live here.  What the spoken warning has to SAY is
+    asserted in
+    :func:`test_wizard_speaks_the_nocturnal_declaration_it_writes`.
+    """
+    _, declared = _wizard_warnings(
+        tmp_path, profile=THOMPSON_PROFILE_ID, cycle="2011-04-26T12",
+        hours=48, name="contrast-night",
+        ack=(ASYMMETRIC_RADIATION_NOCTURNAL_ACK,))
+    _, valid_suite = _wizard_warnings(
+        tmp_path, profile=MORRISON_PROFILE_ID, cycle="2011-04-26T12",
+        hours=48, name="valid")
+    daylight_out, daylight = _wizard_warnings(
+        tmp_path, profile=THOMPSON_PROFILE_ID, cycle="2011-04-26T15",
+        hours=3, name="daylight")
+    assert (len(declared), len(valid_suite), len(daylight)) == (1, 0, 0), (
+        [record["action"]
+         for record in declared + valid_suite + daylight])
+    assert ASYMMETRIC_RADIATION_NOCTURNAL_ACK not in daylight_out.read_text()
 
 
 # ---------------------------------------------------------------------------
@@ -290,3 +484,228 @@ def test_first_local_night_time_both_directions():
     assert first_local_night_time(
         datetime(2011, 4, 26, 15), 3 * 3600.0,
         ref_lat=33.8, ref_lon=-87.29) is None
+
+
+# ---------------------------------------------------------------------------
+# The wizard REFUSES rather than declare a nocturnal experiment for you.
+#
+# Measured 2026-08-09 on 1.8.7: `gpuwm domain --physics-profile <asymmetric>`
+# over a night window wrote acknowledgements = [<ack>] into the emitted file
+# by itself.  lane/advisory made that emission speak; speaking is necessary
+# and not sufficient, because the FILE still carried a statement its owner
+# had never made, and every later reader of the file -- `check`, `run`, `go`,
+# run-plan, both prepared runners -- reads the file and not the terminal.
+# ---------------------------------------------------------------------------
+
+def _domain(argv):
+    """Run the real `gpuwm domain` door in process; return its exit code."""
+    from gpuwm.cli import main
+
+    try:
+        return main(argv)
+    except SystemExit as exit_code:          # argparse-style exits
+        return int(exit_code.code or 0)
+
+
+def _loaded(path):
+    """The emitted file through the shared loader, [case_data] and all."""
+    return build_experiment(_raw(path.read_text(encoding="utf-8")),
+                            source=str(path))
+
+
+def test_wizard_door_refuses_an_undeclared_nocturnal_selection(tmp_path):
+    """The door, run for real, with no --ack: refuses and writes nothing."""
+    out = tmp_path / "undeclared.toml"
+    code = _domain(["domain", "--point", "33.8,-87.29", "--source", "era5",
+                    "--cycle", "2011-04-26T12", "--hours", "48",
+                    "--physics-profile", THOMPSON_PROFILE_ID,
+                    "--out", str(out)])
+    assert code != 0
+    # No file at all: a config that cannot load is worse than no config,
+    # because it looks like progress.
+    assert not out.exists()
+
+
+def test_wizard_door_refusal_names_the_profile_the_window_and_both_ways_out(
+        tmp_path, capsys):
+    out = tmp_path / "undeclared2.toml"
+    assert _domain(["domain", "--point", "33.8,-87.29", "--source", "era5",
+                    "--cycle", "2011-04-26T12", "--hours", "48",
+                    "--physics-profile", THOMPSON_PROFILE_ID,
+                    "--out", str(out)]) != 0
+    printed = capsys.readouterr()
+    message = printed.out + printed.err
+    assert THOMPSON_PROFILE_ID in message                 # what did it
+    assert "local night" in message                       # why
+    assert MORRISON_PROFILE_ID in message                 # remedy 1
+    assert f"--ack {ASYMMETRIC_RADIATION_NOCTURNAL_ACK}" in message  # 2
+
+
+def test_wizard_door_with_the_declaration_emits_and_the_file_loads(tmp_path):
+    """The positive arm, through the same door: --ack is what writes it."""
+    out = tmp_path / "declared.toml"
+    assert _domain([
+        "domain", "--point", "33.8,-87.29", "--source", "era5",
+        "--cycle", "2011-04-26T12", "--hours", "48",
+        "--physics-profile", THOMPSON_PROFILE_ID,
+        "--ack", ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
+        "--out", str(out)]) == 0
+    # The nocturnal token comes from --ack; the constant-longwave one is a
+    # consequence of the named suite and the wizard writes it in ink.  Both
+    # are expected here, and they stay DISTINCT tokens.
+    assert _loaded(out).acknowledgements == (
+        ASYMMETRIC_RADIATION_NOCTURNAL_ACK, CONSTANT_DOWNWARD_LONGWAVE_ACK)
+
+
+def test_wizard_door_negative_controls_still_emit_without_any_ack(tmp_path):
+    """NEGATIVE: the refusal must not fire on the cases it is not about.
+
+    Bound as a CONTRAST against the refusing case above rather than as
+    three bare successes, because three bare successes also pass on a
+    tree where the refusal was never wired in.
+    """
+    # 1. The default (full lw+sw) over the SAME night window.
+    full = tmp_path / "full.toml"
+    assert _domain(["domain", "--point", "33.8,-87.29", "--source", "era5",
+                    "--cycle", "2011-04-26T12", "--hours", "48",
+                    "--out", str(full)]) == 0
+    assert _loaded(full).acknowledgements == ()
+
+    # 2. The asymmetric suite over an ALL-DAYLIGHT window.
+    day = tmp_path / "day.toml"
+    assert _domain(["domain", "--point", "33.8,-87.29", "--source", "era5",
+                    "--cycle", "2011-04-26T15", "--hours", "3",
+                    "--physics-profile", THOMPSON_PROFILE_ID,
+                    "--out", str(day)]) == 0
+    # No NOCTURNAL declaration -- that is what this control is about, and
+    # the wizard makes none because the window is all daylight.  The
+    # constant-longwave token IS written, because daylight does not make a
+    # fabricated flux a computed one: the suite runs Noah with
+    # ra_lw_physics = 0 at noon as much as at midnight.  Distinct tokens,
+    # distinct claims.
+    assert _loaded(day).acknowledgements == (CONSTANT_DOWNWARD_LONGWAVE_ACK,)
+    assert ASYMMETRIC_RADIATION_NOCTURNAL_ACK not in day.read_text()
+
+    # 3. And the hrrr door's own default, which is also full lw+sw.
+    hrrr = tmp_path / "hrrr.toml"
+    assert _domain(["domain", "--point", "33.8,-87.29", "--source", "hrrr",
+                    "--cycle", "2026-08-05T00", "--hours", "6",
+                    "--out", str(hrrr)]) == 0
+    assert _loaded(hrrr).acknowledgements == ()
+
+
+# ---------------------------------------------------------------------------
+# The six templates whose NAME says "no-radiation" and whose radiation
+# component is Dudhia shortwave, and the doors that used to default to one.
+# ---------------------------------------------------------------------------
+
+def test_every_no_radiation_named_template_says_what_it_actually_runs():
+    """The name lies; the warning has to stop it from lying silently.
+
+    ``wsm6-ysu-mm5-noah-no-radiation-v1`` was maturity ``supported`` with
+    NO ``warnings`` key at all, and ``supported`` is one of
+    ``warning_policy.nonwarning_maturities`` -- so selecting it produced
+    nothing, at any door, while docs/public/STREAMING.md handed it to
+    users in a copy-paste plan.  Recomputed from the registry, not from a
+    list here: a seventh template named this way must fail this.
+    """
+    from gpuwm.physics_registry import physics_registry
+
+    registry = physics_registry()
+    named = sorted(template_id for template_id in registry["templates"]
+                   if "no-radiation" in template_id)
+    assert len(named) == 6, named
+    for template_id in named:
+        template = registry["templates"][template_id]
+        # The premise: the name is wrong because the component is Dudhia.
+        assert template["components"]["radiation"] == "dudhia-shortwave"
+        warnings = template.get("warnings", [])
+        naming = [text for text in warnings
+                  if "THE NAME IS WRONG" in text]
+        assert len(naming) == 1, (template_id, warnings)
+        text = naming[0]
+        assert "dudhia-shortwave" in text
+        assert "ra_lw_physics 0 with ra_sw_physics 1" in text
+        assert ASYMMETRIC_RADIATION_NOCTURNAL_ACK in text
+        # The label never lied, and the warning says to read it.
+        assert "Dudhia SW" in template["label"]
+
+
+def test_the_naming_warning_reaches_a_resolution_of_a_supported_template():
+    """Emitted, not merely stored -- on the one whose maturity is silent."""
+    from gpuwm.physics_registry import physics_registry, validate_physics_plan
+
+    template_id = WSM6_PROFILE_ID
+    registry = physics_registry()
+    assert registry["templates"][template_id]["maturity"] == "supported"
+    assert "supported" in registry["warning_policy"]["nonwarning_maturities"]
+
+    result = validate_physics_plan({
+        "schema": registry["plan_schema"],
+        "runner": "tools.prepared_single_domain_forecast",
+        "source": "gfs",
+        "domains": [{"grid_id": 1, "template_id": template_id}],
+    })
+    spoken = [warning["message"] for warning in result["warnings"]
+              if "THE NAME IS WRONG" in warning["message"]]
+    assert len(spoken) == 1, result["warnings"]
+
+
+def test_no_shipped_door_defaults_to_an_asymmetric_pairing():
+    """PHYSICS.md says this in as many words; here it is, measured.
+
+    The storm-nowcast product made that sentence false through 1.8.7:
+    ``tools/da_nowcast.py`` and its two sibling doors defaulted to
+    ``wsm6-ysu-mm5-noah-no-radiation-v1`` on cases that are mostly
+    nocturnal.
+    """
+    from gpuwm.domain_interactive import DEFAULT_PHYSICS_PROFILE_BY_SOURCE
+    from tools.da_nowcast import NOWCAST_DEFAULT_PHYSICS_PROFILE
+
+    doors = {
+        "gpuwm domain (era5)": resolved_physics_profile("era5", None),
+        "gpuwm domain (gfs)": resolved_physics_profile("gfs", None),
+        "gpuwm domain (hrrr)": resolved_physics_profile("hrrr", None),
+        "gpuwm domain --interactive (era5)":
+            DEFAULT_PHYSICS_PROFILE_BY_SOURCE["era5"],
+        "gpuwm domain --interactive (gfs)":
+            DEFAULT_PHYSICS_PROFILE_BY_SOURCE["gfs"],
+        "gpuwm domain --interactive (hrrr)":
+            DEFAULT_PHYSICS_PROFILE_BY_SOURCE["hrrr"],
+        "tools.da_nowcast": NOWCAST_DEFAULT_PHYSICS_PROFILE,
+    }
+    asymmetric = {}
+    for door, profile in doors.items():
+        switches = single_domain_runtime_switches(profile)
+        if int(switches["ra_sw_physics"]) > 0 \
+                and int(switches["ra_lw_physics"]) == 0:
+            asymmetric[door] = profile
+    assert asymmetric == {}, asymmetric
+    # The instrument, proved able to fire: the retired default IS the
+    # shape this test looks for, so a door that went back to it fails.
+    retired = single_domain_runtime_switches(WSM6_PROFILE_ID)
+    assert int(retired["ra_sw_physics"]) > 0
+    assert int(retired["ra_lw_physics"]) == 0
+    # And the profile that replaced it resolves through the gate the
+    # nowcast's own runner applies, on every source it can run on --
+    # a default the runner would refuse is not a fix.
+    from gpuwm.prepared_single_domain_forecast import (
+        SUPPORTED_SOURCES, _profile_runtime_switches)
+
+    for source in sorted(SUPPORTED_SOURCES):
+        switches = _profile_runtime_switches(
+            source, NOWCAST_DEFAULT_PHYSICS_PROFILE)
+        assert int(switches["ra_lw_physics"]) == 4, source
+        assert int(switches["ra_sw_physics"]) == 4, source
+        # No cumulus: the nowcast runs convection-permitting grids.
+        assert int(switches["cu_physics"]) == 0, source
+
+
+def test_the_nowcast_doors_all_bind_the_same_default():
+    """One owner for the number, because 1.7.1 proved the alternative."""
+    from tools.da_nowcast import NOWCAST_DEFAULT_PHYSICS_PROFILE
+    from tools.da_nowcast_auto import (
+        NOWCAST_DEFAULT_PHYSICS_PROFILE as auto_default)
+
+    assert auto_default == NOWCAST_DEFAULT_PHYSICS_PROFILE
+    assert NOWCAST_DEFAULT_PHYSICS_PROFILE == ROUTE_DEFAULT_PHYSICS_PROFILE

@@ -31,12 +31,34 @@ the whole list rather than the first refusal and a rerun.
 | `geography_input_hashed_by_content` | a declared directory input was bound by its listing (`sha256-directory-inventory`) rather than by its bytes |
 | `every_pin_resolved` | a published environment pin carries a status other than `resolved` |
 | `every_metrics_column_classified` | the metrics CSV carries a column the band's `metric_coverage` does not classify |
+| `the_comparison_is_not_empty` | the run produced no metrics row, or the band gates none of the columns it did produce, so no comparison was made at all |
 | `every_banded_row_inside_its_interval` | a gated comparison row falls strictly outside its own interval |
 
-The last two are the ones that catch drift rather than mistakes. A comparator
-column added later is not silently ignored: it is an unclassified column, and
-certification stops until somebody decides whether it is gated or merely
-recorded.
+`every_metrics_column_classified` and `every_banded_row_inside_its_interval`
+are the ones that catch drift rather than mistakes. A comparator column added
+later is not silently ignored: it is an unclassified column, and certification
+stops until somebody decides whether it is gated or merely recorded.
+
+`the_comparison_is_not_empty` is the floor under the whole table. Every other
+row condition is a statement about all rows, and a statement about all rows is
+true of no rows — a metrics CSV carrying its header and nothing else therefore
+certified as `PASS (0 banded comparisons)` and exited 0, as did one whose rows
+the band gated no column of. One row and one banded comparison are required,
+not full coverage of the band: a run legitimately shorter than the band's
+longest lead produces fewer rows than the band has cells, and refusing that
+would be a guard firing on the ordinary case. The passing line prints the
+count (`certify: PASS (210 banded comparisons, ...)`) so a comparison that is
+technically non-empty and actually thin stays visible rather than reading the
+same as a full one.
+
+The verdict document records which condition set it was written against in
+`verdict_schema_version`; `gpuwm.certify.verdict.CONDITIONS_BY_SCHEMA_VERSION`
+carries the older sets, so an independent verifier rederiving a verdict from
+an earlier release gets that verdict's own answer rather than a bare refusal.
+A version this code does not know fails closed and says so. Reading an older
+set does not reopen what it was missing: the minimum-comparison floor is
+enforced on rederivation for every version, including the ones whose condition
+list predates it.
 
 ## The acceptance band
 
@@ -96,10 +118,30 @@ gpuwm dual-run --capsule-a out/run-a/certification-capsule.json \
                --capsule-b out/run-b/certification-capsule.json
 ```
 
-Two capsules from what should be the same run, compared leaf for leaf. Exit 0
-when they are identical; nonzero naming the first field they disagree on, in a
-deterministic path order that is a property of the two documents rather than of
-dictionary iteration.
+Two capsules from what should be the same run, compared leaf for leaf, in a
+deterministic path order that is a property of the two documents rather than
+of dictionary iteration. Three outcomes:
+
+| Exit | Meaning |
+|---|---|
+| 0 | identical, with the size of the screen attached: `dual-run: capsules are identical field for field (71 compared quantities)` |
+| 1 | they disagree, naming the first field they disagree on |
+| 2 | there was nothing to compare, or an arm could not be read |
+
+The third is not a formality. Handed two empty capsules — `{}` and `{}` — this
+command used to print `identical field for field` and exit 0: the comparison
+is total by construction, so it found no divergence, because there was no
+field. "No divergence was found" and "no divergence could have been found" are
+different answers, and this is the only detector the project has for the
+silent memory corruption a card without ECC cannot report. A capsule that is
+zero bytes, empty, or carries no leaf between the two arms is now refused by
+arm and by name, with the byte count, and told which file to point at instead.
+A real capsule against an empty one remains a *divergence*, not a refusal.
+
+The count on the success line is there for the same reason: "identical" is the
+same sentence over one quantity and over a hundred. `--out-report` records it
+as `compared_count`, and the obs battery's `determinism` control carries it on
+every dual-run row it reports.
 
 Nothing is skipped, because every field a comparison skips is a field a
 silent bit flip can hide in. A field that is absent and a field that is

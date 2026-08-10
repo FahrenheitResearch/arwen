@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 
 import pytest
@@ -91,6 +92,64 @@ def _fidelity_arm(tmp_path: Path, patches, *, base: Path = FAITHFUL_ARM,
         "[experiment]", "[experiment]\n" + "\n".join(overlay), 1)
     config = tmp_path / f"{name}.toml"
     config.write_text(text, encoding="utf-8")
+    return config
+
+
+#: The smoke config's own declaration line, matched literally so this
+#: helper fails loudly the day the shipped config stops carrying it
+#: rather than silently writing an arm that declares nothing.
+_ACK_BLOCK = re.compile(
+    r"^# JUSTIFY .*?^acknowledgements = \[[^]]*]\n",
+    re.DOTALL | re.MULTILINE)
+
+
+def _radiation_fully_off(tmp_path: Path, *, declared: bool,
+                         name: str = "radiation_fully_off.toml") -> Path:
+    """The smoke config with BOTH radiation streams off, either way round.
+
+    Two layers refuse this physics and they answer in a fixed order.
+    :func:`gpuwm.experiment.load_experiment` runs the DECLARATION guard
+    (``gpuwm.physics_compat.radiation_off_land_surface_refusal``): a land
+    surface with no radiation scheme at all is refused unless the file
+    declares the experiment.  Only a config that gets past it exists as
+    an ``Experiment`` at all, and only then can
+    ``gpuwm.hrrr_route_inputs.validate_route_physics`` answer the second,
+    separate question -- whether the HRRR run route ADMITS the pair.
+
+    ``declared=True`` is therefore what a test of the ROUTE layer needs:
+    the arm carries the tokens, loads, and is refused by the route for
+    the route's own reason.  ``declared=False`` strips the declaration so
+    the arm never reaches the route at all, which is the load-layer pin
+    (:func:`test_a_token_less_radiation_off_config_is_refused_at_load`).
+
+    The tokens are read from the guards that own them, so a rename moves
+    these fixtures with it.
+    """
+
+    from gpuwm.physics_compat import (CONSTANT_DOWNWARD_LONGWAVE_ACK,
+                                      RADIATION_OFF_LAND_SURFACE_ACK)
+
+    text = SIZING_SMOKE.read_text(encoding="utf-8")
+    assert "ra_sw_physics = 1" in text
+    assert _ACK_BLOCK.search(text), (
+        f"{SIZING_SMOKE.name} no longer carries a justified acknowledgement "
+        "block; this helper edits that block and would otherwise write an "
+        "arm whose declarations are not the ones it means")
+    text = text.replace("ra_sw_physics = 1", "ra_sw_physics = 0")
+    if declared:
+        replacement = (
+            f"# JUSTIFY {CONSTANT_DOWNWARD_LONGWAVE_ACK}: a test arm, never "
+            f"a forecast.\n"
+            f"# JUSTIFY {RADIATION_OFF_LAND_SURFACE_ACK}: this arm exists to "
+            f"be refused by the RUN ROUTE, so it has to load first.  Both "
+            f"streams off under Noah is two claims and takes two tokens.\n"
+            f'acknowledgements = ["{CONSTANT_DOWNWARD_LONGWAVE_ACK}", '
+            f'"{RADIATION_OFF_LAND_SURFACE_ACK}"]\n')
+    else:
+        replacement = ""
+    config = tmp_path / name
+    config.write_text(_ACK_BLOCK.sub(replacement, text, count=1),
+                      encoding="utf-8")
     return config
 
 
@@ -325,18 +384,19 @@ def test_route_refuses_a_radiation_pair_outside_the_admitted_set(tmp_path):
     pair outside that set is refused at emission with the pair named,
     which keeps the widening bounded to the two compositions the motion
     costed.  (A MIXED 4/1 pair never reaches this gate at all: the
-    experiment schema's coupled-adapter rule refuses it first.)"""
+    experiment schema's coupled-adapter rule refuses it first.)
+
+    The arm is DECLARED because this is a test of the route layer: the
+    load-time declaration guard governs what a config may say and would
+    otherwise answer first, which is a different refusal and is pinned
+    separately by
+    :func:`test_a_token_less_radiation_off_config_is_refused_at_load`."""
 
     from gpuwm.experiment import load_experiment
     from gpuwm.hrrr_route_inputs import (HrrrRouteInputError,
                                          validate_route_physics)
 
-    text = SIZING_SMOKE.read_text(encoding="utf-8")
-    assert "ra_sw_physics = 1" in text
-    config = tmp_path / "radiation_fully_off.toml"
-    config.write_text(
-        text.replace("ra_sw_physics = 1", "ra_sw_physics = 0"),
-        encoding="utf-8")
+    config = _radiation_fully_off(tmp_path, declared=True)
     exp = load_experiment(config)
     with pytest.raises(HrrrRouteInputError, match=r"\(0, 0\)"):
         validate_route_physics(exp)
@@ -401,15 +461,14 @@ def test_preflight_names_the_tree_runner_for_a_real_tree():
 def test_preflight_cli_exit_status_follows_the_verdict(tmp_path):
     # Both battery configs are ADMITTED since the four-item route motion
     # landed; the refused leg uses a schema-valid radiation pair the
-    # route does not admit, derived from the smoke config.
+    # route does not admit, derived from the smoke config.  It is a
+    # DECLARED arm so that the CLI reaches a VERDICT: a config the
+    # load-time guard refuses never becomes a receipt at all and exits 2
+    # as a config error, which is the sibling pin below.
     admitted = tmp_path / "admitted.json"
     faithful = tmp_path / "faithful.json"
     refused = tmp_path / "refused.json"
-    refused_config = tmp_path / "radiation_fully_off.toml"
-    refused_config.write_text(
-        SIZING_SMOKE.read_text(encoding="utf-8").replace(
-            "ra_sw_physics = 1", "ra_sw_physics = 0"),
-        encoding="utf-8")
+    refused_config = _radiation_fully_off(tmp_path, declared=True)
     assert preflight.main([
         "--experiment-config", str(SIZING_SMOKE),
         "--receipt", str(admitted), "--quiet"]) == 0
@@ -422,6 +481,50 @@ def test_preflight_cli_exit_status_follows_the_verdict(tmp_path):
     assert json.loads(admitted.read_text())["status"] == "ADMITTED"
     assert json.loads(faithful.read_text())["status"] == "ADMITTED"
     assert json.loads(refused.read_text())["status"] == "REFUSED"
+
+
+def test_a_token_less_radiation_off_config_is_refused_at_load(tmp_path):
+    """The two refusal layers, in the order they answer.
+
+    FIRST the declaration guard, at
+    :func:`gpuwm.experiment.load_experiment`: it governs WHAT A CONFIG
+    MAY DECLARE, and a land surface with both radiation streams off is
+    not a thing a file may say by accident.  SECOND the route admission
+    gate, ``gpuwm.hrrr_route_inputs.validate_route_physics``: it governs
+    WHAT THE ROUTE ADMITS, and it can only ever see a config that got
+    past the first layer.  The two tests directly above hold the second
+    layer; this one holds the first, and the pair is what keeps either
+    from being quietly satisfied by the other.
+
+    The consequence a caller sees is the exit code, and the two are not
+    the same answer.  A token-less config is a CONFIG ERROR: the loader
+    raised, the preflight never formed a verdict, it exits 2 and writes
+    no receipt.  A declared config that the route refuses is a VERDICT:
+    exit 1, with a REFUSED receipt on disk saying which gate said so.
+    """
+
+    from gpuwm.experiment import load_experiment
+    from gpuwm.physics_compat import RADIATION_OFF_LAND_SURFACE_ACK
+
+    config = _radiation_fully_off(tmp_path, declared=False)
+    assert RADIATION_OFF_LAND_SURFACE_ACK not in config.read_text(
+        encoding="utf-8")
+
+    # Layer one: the config does not become an Experiment at all, so no
+    # route logic runs.  The refusal names the token that would let it.
+    with pytest.raises(ValueError,
+                       match=RADIATION_OFF_LAND_SURFACE_ACK):
+        load_experiment(config)
+
+    # And the CLI reports that as a config error, not as a verdict.
+    receipt = tmp_path / "never_written.json"
+    assert preflight.main([
+        "--experiment-config", str(config),
+        "--receipt", str(receipt), "--quiet"]) == 2
+    assert not receipt.exists(), (
+        "the preflight wrote a receipt for a config it could not load; a "
+        "receipt is a verdict about a run route and there was no experiment "
+        "to have one")
 
 
 def test_node_plan_generates_the_mirrored_namelist_from_the_config(tmp_path):
@@ -792,16 +895,17 @@ def test_launch_script_survives_a_pre_existing_tmux_server(tmp_path):
 
 
 def test_node_plan_refuses_a_suite_the_run_route_refuses(tmp_path):
-    """A physics the ArWen arm cannot run must not reach a node either."""
+    """A physics the ArWen arm cannot run must not reach a node either.
+
+    The arm is DECLARED so the config loads and the refusal on test is
+    the ROUTE's own, which is what this test is named for; the load-time
+    declaration guard is held by
+    :func:`test_a_token_less_radiation_off_config_is_refused_at_load`.
+    """
 
     from gpuwm.hrrr_route_inputs import HrrrRouteInputError
 
-    text = SIZING_SMOKE.read_text(encoding="utf-8")
-    assert "ra_sw_physics = 1" in text
-    config = tmp_path / "radiation_fully_off.toml"
-    config.write_text(
-        text.replace("ra_sw_physics = 1", "ra_sw_physics = 0"),
-        encoding="utf-8")
+    config = _radiation_fully_off(tmp_path, declared=True)
     outdir = tmp_path / "node"
     with pytest.raises(HrrrRouteInputError, match="ra_sw_physics"):
         node_plan.build(config, outdir, ranks=24,

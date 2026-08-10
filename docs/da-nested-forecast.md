@@ -137,15 +137,32 @@ Nest work scales as (child columns / parent columns) × ratio, times the
 number of nested trajectories. Against the shipped 132×132×49 3 km
 nowcast with a measured 34.5 s parent leg over 11 trajectories:
 
+The parent alone is **3499 MiB allocated, 6993 MiB machine peak
+envelope**, and the nest is priced on top of that:
+
 | half-width | child | Δ machine peak | control-only | all 11 trajectories |
 | --- | --- | --- | --- | --- |
-| 30 km | 60×60 | +59 MiB | +1.9 s/leg | +21.4 s/leg |
-| 45 km | 90×90 | +108 MiB | +4.4 s/leg | +48.1 s/leg |
-| 60 km | 120×120 | +176 MiB | +7.8 s/leg | +85.5 s/leg |
-| 90 km | 180×180 | +735 MiB | +17.5 s/leg | +192.5 s/leg |
+| 30 km | 60×60 | +194 MiB | +1.9 s/leg | +21.4 s/leg |
+| 45 km | 90×90 | +246 MiB | +4.4 s/leg | +48.1 s/leg |
+| 60 km | 120×120 | +317 MiB | +7.8 s/leg | +85.5 s/leg |
+| 90 km | 180×180 | +838 MiB | +17.5 s/leg | +192.5 s/leg |
+
+**These numbers moved with the nowcast's default physics profile.** They
+were +59/+108/+176/+735 MiB on a 618 MiB / 3606 MiB parent while the
+default was `wsm6-ysu-mm5-noah-no-radiation-v1`; the default is now
+`thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1`
+(`tools.da_nowcast.NOWCAST_DEFAULT_PHYSICS_PROFILE`, which
+`tools/da_nest_cost.py` imports rather than restates), and mp8's extra
+species plus RRTMG's two streams take the parent's binding envelope from
+3.5 GiB to 6.8 GiB. On a 16 GiB card that is the difference between
+comfort and a plan that does not fit, so **a VRAM plan measured before
+this change has to be re-measured, not extrapolated.** Pass
+`--physics-profile` to price any other shipped suite; the wall-time
+columns are ratios against the measured parent leg and do not move with
+the profile.
 
 That is why `--nest-members` defaults to 0. A 60 km half-width 1 km nest
-on the control alone adds about 23 % to a leg and under 200 MiB; the same
+on the control alone adds about 23 % to a leg and about 300 MiB; the same
 nest on the whole ensemble costs nine minutes over six free legs and the
 nowcast starts to stop being a nowcast. The parent carries the ensemble;
 the nest carries the detail.

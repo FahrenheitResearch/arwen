@@ -25,6 +25,7 @@ from gpuwm.physics_registry import (
 from gpuwm.physics_compat import (
     KESSLER_PROFILE_ID,
     MYNN_NOAHMP_PROFILE_ID,
+    MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
     NOAHMP_PROFILE_ID,
@@ -114,7 +115,8 @@ def _single_plan(template_id: str = WSM6_TEMPLATE_ID) -> dict[str, object]:
         "domains": [{"domain_id": "d01", "template_id": template_id}],
         "edges": [],
     }
-    if template_id in (NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID):
+    if template_id in (NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID,
+                       MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID):
         plan["acknowledgements"] = [
             "noahmp-host-column-throughput-v1"]
     return plan

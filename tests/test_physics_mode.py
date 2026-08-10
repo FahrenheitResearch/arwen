@@ -26,12 +26,29 @@ from gpuwm.config import RunConfig
 from gpuwm.experiment import build_experiment
 
 
+# This probe is a REAL case (it has a [projection]) that runs Noah with no
+# radiation selector at all, which is precisely the class
+# gpuwm.physics_compat.radiation_off_land_surface_refusal refuses at load:
+# nothing computes the downward longwave Noah reads every surface step.  The
+# axis under test here is the physics-fidelity one and its 60 seconds never
+# read a surface budget, so the probe DECLARES the experiment rather than
+# muting the guard -- the same answer the shipped 60-second VRAM/step-cost
+# probes give, and it keeps every arm below loading through the real front
+# door instead of a fixture-only bypass.
+#
+# BOTH tokens, for the same reason the shipped probes carry both: radiation
+# entirely off under a land surface is the one class the two 1.8.8 guards
+# overlap on, and they ask different questions -- "nothing computes my sky"
+# and "the number my land surface integrates is one I typed".  Dropping
+# either one puts this fixture back behind a refusal.
 BASE_TOML = """
 [experiment]
 name = "axis-probe"
 start_time = 2021-06-01T12:00:00
 run_seconds = 60.0
 restart_interval_s = 0.0
+acknowledgements = ["radiation-off-land-surface-v1",
+                    "constant-downward-longwave-v1"]
 {extra}
 
 [projection]

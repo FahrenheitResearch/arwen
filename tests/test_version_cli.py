@@ -186,10 +186,14 @@ def test_a_directory_that_is_not_a_repository_reports_no_git(tmp_path):
 
 
 def test_an_absent_git_binary_is_not_an_error(tmp_path, monkeypatch):
+    """Patched where git is now actually run: gpuwm.provenance."""
+
+    import subprocess
+
     def no_git(*args, **kwargs):
         raise OSError("git: not found")
 
-    monkeypatch.setattr(version_cli.subprocess, "run", no_git)
+    monkeypatch.setattr(subprocess, "run", no_git)
     assert version_cli._git_identity(tmp_path) == {}
 
 

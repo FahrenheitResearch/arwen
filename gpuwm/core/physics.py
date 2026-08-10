@@ -109,6 +109,34 @@ from gpuwm.core.ysu import launch_ysu, validate_ysu_outputs
 from gpuwm.ingest.soil import NOAH_LAYER_THICKNESS_M
 
 
+#: THE DECLARED CONSTANT downward longwave, in W m-2.  It is a number a
+#: caller may TYPE.  It is not a measurement, it is not a scheme, and no
+#: default hands it out.
+#:
+#: Provenance.  Through 1.8.7 this value was the ``glw=300.0`` DEFAULT of
+#: :func:`initialize_physics`, and ``gpuwm/core/dudhia.py`` -- shortwave
+#: only -- returns ``glw=fields["glw"]``, the array it was handed, echoed
+#: back untouched.  No production call site ever passed ``glw=``.  So every
+#: run with ``ra_lw_physics = 0`` had a downward longwave of exactly
+#: 300.0 W m-2, everywhere, for the whole forecast: a plausible-looking
+#: number that never responded to temperature, humidity or cloud.  It
+#: produced a real user report -- 2 m dewpoints collapsing tens of degrees
+#: below the airmass over the Gulf warm sector overnight -- because
+#: radiative equilibrium at 300 W m-2 is 269.7 K (25.8 F) while a Gulf-coast
+#: October night runs near 410 W m-2, or 291.6 K (65.2 F).  A ~105 W m-2
+#: nightly deficit craters skin temperature, and surface saturation
+#: humidity follows it down.
+#:
+#: WHY 300.0 AND NOT SOMETHING BETTER.  The value is unchanged so that the
+#: idealised single-column cases that have always used it keep the
+#: trajectories their receipts were written against
+#: (``docs/superpowers/plans/2026-07-14-gpuwm-phase3.md``: "constant
+#: GLW=300 W/m^2 on a vegetated land column").  Making it a better number
+#: would silently move every one of them; making it explicit does not move
+#: any of them.  It is legitimate for an idealised column and illegitimate
+#: for a real case, and the difference is now stated rather than assumed.
+DECLARED_CONSTANT_GLW_WM2 = 300.0
+
 _WSM6_MINOR_DT_SECONDS = np.float32(120.0)
 _FP32_SIGNIFICAND_SCALE = 1 << 24
 _FP32_ONE_BITS = 0x3F800000
@@ -1460,13 +1488,29 @@ class PhysicsDriver:
     last_sase_ledger: dict[str, float] | None = None
     sase_nan_guard_fires: int = 0
 
+    #: Where this domain's downward longwave comes from, as one of
+    #: ``"scheme"`` (a longwave scheme computes it every radiation call),
+    #: ``"declared"`` (the caller typed a constant or handed a field),
+    #: or ``"unused"`` (nothing reads it and nothing publishes it).
+    #: :func:`initialize_physics` sets it; the class default answers for a
+    #: driver assembled directly, whose GLW buffer its builder owns.
+    #:
+    #: Read by :func:`gpuwm.runtime.resolved_config_report`, so a run that
+    #: is integrating a CONSTANT downward longwave says so in its receipt
+    #: instead of publishing a GLW row that looks like a measurement.
+    glw_provenance: str = "declared"
+
     def __init__(self, state: DomainState, cfg: RunConfig,
                  fields: dict[str, cp.ndarray], sfclay_result: SFClayResult,
                  noah_params, radiation=None, cumulus=None,
                  noahmp_params=None, noahmp_geometry=None,
-                 ruc_params=None):
+                 ruc_params=None, glw_provenance="declared"):
         self.state = state
         self.fields = fields
+        # Where this domain's downward longwave came from; see the class
+        # attribute above.  A driver assembled directly owns its own GLW
+        # buffer, so the default says so.
+        self.glw_provenance = glw_provenance
         self.sfclay_result = sfclay_result
         self.mynn_sfclay_result = (
             MynnSurfaceResult(**{
@@ -3589,12 +3633,112 @@ class PhysicsDriver:
         return output
 
 
+def _resolve_initial_glw(glw, *, ra_lw_physics: int, radiation_active: bool,
+                         sf_surface_physics: int) -> tuple[object, str]:
+    """Return ``(initial GLW, provenance)`` or refuse to invent one.
+
+    Downward longwave has exactly three honest origins, and this function
+    is where a run is made to name which one it has.
+
+    * ``"scheme"`` -- a longwave scheme is attached (``ra_lw_physics >
+      0``), so the buffer allocated here is scratch: the scheme
+      overwrites the whole field on its first radiation call, exactly as
+      WRF's radiation driver zeroes ``GLW`` at the top of every call
+      (``phys/module_radiation_driver.F:1722``) before its
+      ``lwrad_select`` fills it.  The fill value is
+      :data:`DECLARED_CONSTANT_GLW_WM2` because that is the value 1.8.7
+      allocated, and a healthy run must stay byte-for-byte what it was.
+    * ``"declared"`` -- the CALLER typed a value or handed a field.  An
+      idealised column that wants a fixed longwave says so here; a route
+      with a source GLW passes the source's array here.
+    * ``"unused"`` -- nothing reads the buffer and nothing publishes it:
+      no land-surface scheme to consume it, and radiation entirely off so
+      no ``GLW`` row reaches wrfout.
+
+    Anything else is a run that will CONSUME or PUBLISH a downward
+    longwave that no scheme computed and no caller declared, and it is
+    refused rather than filled.
+
+    WHAT WRF v4.6.1 DOES with the same selectors, because the standing
+    rule is to implement the defined behaviour rather than reproduce a
+    bug, and here WRF is defined in both branches:
+
+    * ``ra_lw_physics = 0`` with ``ra_sw_physics > 0``: FATAL.
+      ``radiation_driver`` returns early only when BOTH are zero
+      (``:1068``), so a shortwave-only run reaches ``lwrad_select``
+      (``:1839``), which has no ``CASE (0)`` -- it falls to ``CASE
+      DEFAULT`` (``:2245``) and calls ``wrf_error_fatal('The longwave
+      option does not exist: lw_physics = 0')``.  The reciprocal
+      pairing is fatal too: ``swrad_select``'s ``CASE (0)`` at ``:2827``
+      calls ``wrf_error_fatal`` for every ``lw_physics`` except
+      Held-Suarez (``:2831-2835``), so WRF permits a single stream only
+      for that one idealised case.  gpuwm refusing this pairing is
+      WRF-CONFORMANT, not a divergence.
+    * ``ra_lw_physics = 0`` with ``ra_sw_physics = 0``: the driver
+      returns at ``:1068`` and ``GLW`` keeps its Registry-allocated
+      0.0 W m-2, which every land-surface scheme then consumes as a real
+      flux.  gpuwm does NOT copy that: zero downward longwave is not a
+      physical atmosphere, it is an absent one, and a column run under it
+      cools without bound.  gpuwm's divergence is to require the constant
+      to be DECLARED -- documented here and named in the run receipt --
+      instead of inheriting either WRF's 0.0 or 1.8.7's silent 300.0.
+    """
+
+    from gpuwm.physics_compat import downward_longwave_disposition
+
+    if glw is not None:
+        return glw, "declared"
+    # ONE classification, shared with the config-load guard
+    # (physics_compat.constant_longwave_refusal) and the receipt line
+    # (runtime.downward_longwave_source), so this refusal can never be
+    # wider or narrower than the door's.  With lw=0 the radiation slot is
+    # active exactly when shortwave is, which is what radiation_active
+    # says here.
+    kind, consumer = downward_longwave_disposition(
+        ra_lw_physics=int(ra_lw_physics),
+        ra_sw_physics=1 if radiation_active else 0,
+        sf_surface_physics=int(sf_surface_physics))
+    if kind == "scheme":
+        return DECLARED_CONSTANT_GLW_WM2, "scheme"
+    if kind == "unused":
+        return DECLARED_CONSTANT_GLW_WM2, "unused"
+    if kind == "consumed":
+        reads = (f"sf_surface_physics={int(sf_surface_physics)} "
+                 f"({consumer}) reads GLW every surface step")
+    else:
+        reads = ("radiation is active, so the GLW row is written to every "
+                 "wrfout frame")
+    raise ValueError(
+        "downward longwave (GLW) has no source: ra_lw_physics=0, so no "
+        f"longwave scheme computes it, and {reads}. "
+        "initialize_physics will not invent one. "
+        "REMEDY, in preference order: (1) run a longwave scheme -- set "
+        "ra_lw_physics=4 with ra_sw_physics=4 (RRTMG-class), which is "
+        "what every nocturnally valid shipped profile does; or (2) if "
+        "this is an idealised column that genuinely wants a fixed "
+        "longwave, declare it by passing glw=<W m-2> explicitly "
+        f"(gpuwm.core.physics.DECLARED_CONSTANT_GLW_WM2 = "
+        f"{DECLARED_CONSTANT_GLW_WM2} is the historical idealised value); "
+        "or (3) hand this call the source's own GLW field as glw=<array>. "
+        "WHY: through 1.8.7 this call defaulted to glw=300.0 and "
+        "gpuwm/core/dudhia.py -- shortwave only -- returns the array it "
+        "was given, so the whole forecast ran on one frozen number that "
+        "never responded to temperature, humidity or cloud.  Radiative "
+        "equilibrium at 300 W m-2 is 269.7 K; a Gulf-coast October night "
+        "is near 410 W m-2, or 291.6 K.  That deficit craters skin "
+        "temperature, collapses surface saturation humidity with it, and "
+        "drove 2 m dewpoints tens of degrees below the airmass in a real "
+        "user report.  WRF v4.6.1 does not offer this configuration at "
+        "all: with ra_sw_physics>0 its lwrad_select has no lw=0 case and "
+        "calls wrf_error_fatal (phys/module_radiation_driver.F:2245).")
+
+
 def initialize_physics(
         state: DomainState, cfg: RunConfig, *, landmask=1.0, tsk=300.0,
         soil_temperature=285.0, soil_moisture=0.30, liquid_moisture=None,
         ivgtyp=10, isltyp=6, vegfra=50.0, tmn=285.0, xice=0.0, snow=0.0,
         snow_depth=0.0, sst=None,
-        swdown=0.0, glw=300.0, pblh=0.0, mavail=1.0,
+        swdown=0.0, glw=None, pblh=0.0, mavail=1.0,
         landuse=None,
         noah_params=None, radiation=None, cumulus=None,
         radiation_start_time=None, radiation_latitude=None,
@@ -3628,6 +3772,24 @@ def initialize_physics(
     scheme callable receives keyword arguments ``atmosphere``, ``fields``,
     ``state``, and ``cfg`` and must return :class:`RadiationResult` or
     :class:`CumulusResult`, respectively.
+
+    ``glw`` HAS NO DEFAULT -- see :func:`_resolve_initial_glw`, which is
+    where the argument is turned into a value or the call is refused.
+    With a longwave scheme attached the buffer is a transient: WRF
+    ordering runs radiation before the surface layer and the LSM, and the
+    first radiation call is due at ``itimestep = 1``, so the scheme's own
+    flux is in the field before anything reads it.  With
+    ``ra_lw_physics = 0`` it is NOT a transient -- Dudhia hands the field
+    straight back and a fully radiation-free run has no adapter at all --
+    so whatever is in the buffer IS the run's entire downward longwave,
+    and this function will not pick that number on the caller's behalf.
+    Pass ``glw=`` explicitly to declare a fixed sky (the historical
+    idealised value is :data:`DECLARED_CONSTANT_GLW_WM2`) or to hand the
+    call a source's own GLW field.  A real experiment that means it also
+    declares it in the config, which is what
+    :func:`gpuwm.physics_compat.constant_longwave_refusal` and
+    :func:`gpuwm.physics_compat.radiation_off_land_surface_refusal` read
+    at load -- two separate claims, two separate tokens.
     """
     if not physics_driver_required(cfg):
         raise ValueError("initialize_physics requires at least one enabled "
@@ -3750,6 +3912,14 @@ def initialize_physics(
     intervals = (cfg.radt, cfg.bldt, cfg.radt_minutes, cfg.cudt_minutes)
     if any(not np.isfinite(value) or value < 0.0 for value in intervals):
         raise ValueError("physics intervals must be finite and non-negative")
+
+    # Downward longwave, before anything can consume it.  Named, never
+    # defaulted: see _resolve_initial_glw for what each provenance means
+    # and for what WRF v4.6.1 does with the same selectors.
+    glw, glw_provenance = _resolve_initial_glw(
+        glw, ra_lw_physics=int(ra_lw_physics),
+        radiation_active=radiation_active,
+        sf_surface_physics=int(cfg.sf_surface_physics))
 
     shape = state.mup.shape
     if landuse is not None:
@@ -4005,7 +4175,8 @@ def initialize_physics(
                            radiation=radiation, cumulus=cumulus,
                            noahmp_params=noahmp_params,
                            noahmp_geometry=noahmp_geometry,
-                           ruc_params=ruc_params)
+                           ruc_params=ruc_params,
+                           glw_provenance=glw_provenance)
     if int(cfg.sf_surface_physics) == 3:
         # ruclsminit runs once, before the first step, where
         # module_physics_init.F runs it.  Without it SH2O is whatever the
@@ -4069,7 +4240,8 @@ def initialize_physics(
     return driver
 
 
-__all__ = ["CumulusResult", "LAND_SURFACE_SFCDIAGS_SCHEMES",
+__all__ = ["CumulusResult", "DECLARED_CONSTANT_GLW_WM2",
+           "LAND_SURFACE_SFCDIAGS_SCHEMES",
            "PHYSICS_SLOT_DISPATCH", "PhysicsDriver", "PhysicsTendencies",
            "RadiationResult", "UnroutedPhysicsSelectorError",
            "couple_column_tendencies",

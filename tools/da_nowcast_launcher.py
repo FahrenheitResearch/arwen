@@ -1250,8 +1250,14 @@ def add_common(parser: argparse.ArgumentParser) -> None:
                         help="the cycle length the cost estimate is "
                              "quoted for; the daemon itself cycles on "
                              "the radar's own volume times")
+    # One owner for the default, so this door and `da_nowcast run` cannot
+    # disagree about which suite an unnamed nowcast gets.
+    from tools.da_nowcast import NOWCAST_DEFAULT_PHYSICS_PROFILE
+
     parser.add_argument("--physics-profile",
-                        default="wsm6-ysu-mm5-noah-no-radiation-v1")
+                        default=NOWCAST_DEFAULT_PHYSICS_PROFILE,
+                        help="shipped physics profile for every stage "
+                             f"(default {NOWCAST_DEFAULT_PHYSICS_PROFILE})")
     parser.add_argument("--epoch-hours", type=int, default=4)
     parser.add_argument("--range-km", type=float, default=None,
                         help="radar range authority for coverage "

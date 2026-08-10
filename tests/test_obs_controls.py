@@ -396,6 +396,52 @@ def test_determinism_refuses_an_empty_run_set():
         controls.determinism(dual_run_pairs=[], rehash_records=[])
 
 
+def test_each_dual_run_row_says_how_much_it_compared():
+    """`identical` without a size is a claim with its scale cut off.
+
+    The dual-run CLI prints the count for this reason: "identical field
+    for field" is the same sentence over four quantities and over
+    seventy, and this control's row is what a reader of the obs battery
+    sees instead of that line.  Both rows below are `identical`; only
+    the count distinguishes a screen worth trusting from a thin one.
+    """
+
+    from gpuwm.certify.dualrun import capsule_field_paths
+
+    small = _capsule()
+    big = _capsule(run={"frames": ["a", "b", "c", "d"], "digest": "abc"},
+                   pins={"dt": 15, "diff_opt": 2, "km_opt": 4})
+    outcome = controls.determinism(
+        dual_run_pairs=[
+            {"run_id": "small", "capsule_a": small, "capsule_b": small},
+            {"run_id": "big", "capsule_a": big, "capsule_b": big}],
+        rehash_records=[{"uri": "s3://obs/1", "matches": True,
+                         "rehash_performed": True}])
+    assert outcome["status"] == controls.PASS
+    rows = {row["run_id"]: row for row in outcome["dual_run"]}
+    assert rows["small"]["identical"] is rows["big"]["identical"] is True
+    # Against the comparator's own leaf enumeration, not a transcribed number.
+    assert rows["small"]["compared_count"] == len(capsule_field_paths(small))
+    assert rows["big"]["compared_count"] == len(capsule_field_paths(big))
+    assert rows["big"]["compared_count"] > rows["small"]["compared_count"]
+
+
+def test_a_dual_run_pair_with_nothing_to_compare_refuses(tmp_path):
+    """The control cannot be green on nothing either.
+
+    ``compare_capsules`` raises on a pair that offers no leaf, and the
+    control lets it out: a ValueError, consistent with its own empty-pairs
+    refusal, rather than a PASS row reading `identical: True`.
+    """
+
+    with pytest.raises(ValueError):
+        controls.determinism(
+            dual_run_pairs=[{"run_id": "hollow", "capsule_a": {},
+                             "capsule_b": {}}],
+            rehash_records=[{"uri": "s3://obs/1", "matches": True,
+                             "rehash_performed": True}])
+
+
 # --------------------------------------------------------------------------
 # the summary
 # --------------------------------------------------------------------------
