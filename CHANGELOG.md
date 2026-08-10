@@ -19,7 +19,7 @@ New:
   nocturnally invalid class. Each new row is its no-radiation sibling with
   only the radiation block changed (`ra_lw_physics` 0 to 4, `ra_sw_physics` 1
   to 4, `radt` 1.0 to 12.0). MYNN's pinned option identity is unchanged.
-- "Is the physics hardcoded?" is now a measurement.
+- Physics composability is now a measurement.
   `docs/public/receipts/physics-composition-walk.json` records 6536 physics
   combinations pushed through `gpuwm.experiment.build_experiment` one at a
   time: 749 accepted (741 distinct suites against 18 registered templates),
@@ -46,7 +46,7 @@ Fixed:
   check requires every refusal to name a selector and to lead somewhere that
   runs.
 - `docs/public/PHYSICS.md` read as though the shipped suites were the only
-  suites, which is what let readers conclude the physics was hardcoded. It
+  suites. It
   says on the page now that the tables are a catalogue and not a gate,
   defines `reachability.state` by quoting the registry, and prints what a
   config naming each registry-unreachable option actually gets: two are
@@ -131,7 +131,7 @@ Fixed:
   `tests/test_wrf_legacy_radiation.py` is listed now; it drives the
   production `PhysicsDriver` radiation seam on the CPU and fails on that
   mutation, and `tests/test_stage1_manifest.py` pins both halves.
-- Downward longwave is no longer a number nobody chose. Any run with
+- Downward longwave no longer has a silent default. Any run with
   `ra_lw_physics = 0` integrated a fixed 300 W m-2 GLW for its whole
   forecast: `initialize_physics` defaulted `glw = 300.0` and no production
   call site passed anything else. Radiative equilibrium at 300 W m-2 is
@@ -146,7 +146,7 @@ Fixed:
 - Radiation entirely off is covered by the same rule, and is where gpuwm
   deliberately parts from WRF. That suite attached no radiation adapter,
   while Noah, Noah-MP and RUC read downward longwave every surface step, so
-  the run integrated a constructor seed nobody chose. WRF's answer there is
+  the run integrated an undeclared constructor seed. WRF's answer there is
   0 W m-2, an absent atmosphere rather than a thin one, and a column under
   it cools without bound; gpuwm does not copy that. With a land surface
   attached the pairing is refused at load, and a declared run integrates
@@ -180,7 +180,7 @@ Fixed:
   every ensemble panel, frozen at the release the suite was written for, so a
   1.8.7 plot claimed to come from a 1.2 ensemble. The warning stays and is
   still true; the version comes from the running engine now.
-- The wizard no longer manufactures your consent. `gpuwm domain` wrote
+- The wizard no longer writes the acknowledgement itself. `gpuwm domain` wrote
   `acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"]` into the
   emitted `[experiment]` by itself, and every later door reads that line for
   the life of the file. It refuses an asymmetric profile over a night window
@@ -275,7 +275,7 @@ Changed (compatibility):
   ```
 
   Two tokens, because there are two claims: this run has no radiation
-  scheme, and the number its surface integrates is one somebody typed. The
+  scheme, and the number its surface integrates is one the config declares. The
   first token alone is still refused. Two shipped configs are in the class,
   and each declares the pair in-file with its reason.
 - **Two refusal layers, in a fixed order, and an exit code that tells them
@@ -1308,7 +1308,7 @@ Fixed:
   cell-layers differ as a result.
 - The refusal that run produced named the wrong scheme. A non-finite
   surface heat flux handed to YSU leaves as a non-finite tendency, and
-  the message named only that tendency, so readers went to the
+  the message named only that tendency, pointing at the
   boundary-layer scheme when the defect was in the surface layer feeding
   it. 1,474,560 fuzzed columns of finite input never produce a
   non-finite tendency at all, so when one appears an input is the cause.
